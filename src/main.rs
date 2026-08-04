@@ -102,6 +102,75 @@ fn main() -> Result<()> {
     res
 }
 
+/// 起動コマンドを組み立てる。
+/// npmシム等の拡張子なしスクリプトは CreateProcess が直接起動できない
+/// (os error 193) ため、PATH+PATHEXT を探索して .cmd/.bat は cmd.exe /c 経由にする
+fn build_command(cmd_args: &[String]) -> CommandBuilder {
+    let Some(prog) = cmd_args.first() else {
+        return CommandBuilder::new("powershell.exe");
+    };
+    let rest = &cmd_args[1..];
+    match resolve_windows_command(prog) {
+        Some(path) => {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
+                let mut c = CommandBuilder::new("cmd.exe");
+                c.arg("/c");
+                c.arg(path);
+                for a in rest {
+                    c.arg(a);
+                }
+                c
+            } else {
+                let mut c = CommandBuilder::new(path);
+                for a in rest {
+                    c.arg(a);
+                }
+                c
+            }
+        }
+        // 解決できなければそのまま渡してエラーを表面化させる
+        None => {
+            let mut c = CommandBuilder::new(prog);
+            for a in rest {
+                c.arg(a);
+            }
+            c
+        }
+    }
+}
+
+/// PATH と実行可能拡張子 (.exe/.com/.cmd/.bat) でコマンドを実ファイルに解決する
+fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+    const EXTS: [&str; 4] = ["exe", "com", "cmd", "bat"];
+
+    let has_exec_ext = |p: &Path| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| EXTS.contains(&e.to_ascii_lowercase().as_str()))
+    };
+    let try_base = |base: PathBuf| -> Option<PathBuf> {
+        if has_exec_ext(&base) && base.is_file() {
+            return Some(base);
+        }
+        EXTS.iter()
+            .map(|e| base.with_extension(e))
+            .find(|cand| cand.is_file())
+    };
+
+    let p = Path::new(prog);
+    // パス区切りを含む指定はPATH探索せずそのまま解決
+    if p.components().count() > 1 {
+        return try_base(p.to_path_buf());
+    }
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var).find_map(|dir| try_base(dir.join(prog)))
+}
+
 /// タブバー・枠線・ステータスバーを除いた、PTYに渡す端末サイズ (rows, cols)
 fn pty_dims(size: Size) -> (u16, u16) {
     let cols = size.width.saturating_sub(TAB_BAR_WIDTH + 2).max(10);
@@ -177,13 +246,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
         pixel_height: 0,
     })?;
 
-    let mut cmd = if cmd_args.is_empty() {
-        CommandBuilder::new("powershell.exe")
-    } else {
-        let mut c = CommandBuilder::new(&cmd_args[0]);
-        c.args(&cmd_args[1..]);
-        c
-    };
+    let mut cmd = build_command(&cmd_args);
     cmd.cwd(std::env::current_dir()?);
     let session_title = if cmd_args.is_empty() {
         "LOCAL SHELL".to_string()
