@@ -221,12 +221,32 @@ impl Config {
     }
 }
 
-pub fn load() -> Option<Config> {
-    let exe_side = std::env::current_exe()
+/// 設定ファイルの探索順 (exe隣 → カレント)
+fn config_candidates() -> Vec<std::path::PathBuf> {
+    let mut v = Vec::new();
+    if let Some(p) = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("config.json")));
-    let candidates = [exe_side, Some(std::path::PathBuf::from("config.json"))];
-    for path in candidates.into_iter().flatten() {
+        .and_then(|p| p.parent().map(|d| d.join("config.json")))
+    {
+        v.push(p);
+    }
+    v.push(std::path::PathBuf::from("config.json"));
+    v
+}
+
+/// Web GUIの編集対象となる設定ファイルのパス。
+/// 既存ファイルがあればそれを、無ければexe隣に新規作成する想定のパスを返す
+pub fn config_file_path() -> std::path::PathBuf {
+    let candidates = config_candidates();
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone())
+}
+
+pub fn load() -> Option<Config> {
+    for path in config_candidates() {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };

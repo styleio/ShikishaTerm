@@ -18,6 +18,7 @@ mod hooks;
 mod notify;
 mod profile;
 mod tab;
+mod webui;
 
 use std::time::{Duration, Instant};
 
@@ -404,6 +405,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut help_open = false;
     // タブバー境界線のドラッグ中フラグ (マウスで幅を調整できる)
     let mut dragging_divider = false;
+    // 設定Web GUI (INDEXの [e] で起動、アプリ終了時に停止)
+    let mut web: Option<webui::WebUi> = None;
+    let config_file = config::config_file_path();
 
     loop {
         // 200ms毎に全タブの状態を判定 (非アクティブタブの完了もINDEXに反映される)
@@ -689,8 +693,23 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 &mut password,
                             )?);
                         }
+                        // 設定GUI: ローカルWebサーバーを起動してブラウザで開く
                         KeyCode::Char('e') => {
-                            flash = Some(">> 設定GUI (ブラウザ) は次の実装で対応します".to_string());
+                            flash = Some(match web.as_ref() {
+                                Some(w) => {
+                                    open_browser(&w.url);
+                                    format!(">> 設定GUI: {}", w.url)
+                                }
+                                None => match webui::WebUi::start(config_file.clone()) {
+                                    Ok(w) => {
+                                        open_browser(&w.url);
+                                        let msg = format!(">> 設定GUIを開きました: {}", w.url);
+                                        web = Some(w);
+                                        msg
+                                    }
+                                    Err(e) => format!(">> 設定GUI起動失敗: {e}"),
+                                },
+                            });
                         }
                         KeyCode::Char('q') => break,
                         _ => {}
@@ -822,10 +841,21 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         }
     }
 
+    if let Some(w) = &web {
+        w.shutdown();
+    }
     for t in tabs.iter_mut() {
         t.kill();
     }
     Ok(())
+}
+
+/// 既定のブラウザでURLを開く
+fn open_browser(url: &str) {
+    // cmd の start はURL内の & を分割してしまうため、空タイトル引数の後に渡す
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", "start", "", url])
+        .spawn();
 }
 
 /// ワークスペースのタブ群を起動する (初回アクティブ化時に呼ぶ)
