@@ -10,10 +10,6 @@
       "profile": "claude"
     },
     {
-      "name": "rocky",
-      "command": "ssh user@example.com"
-    },
-    {
       "name": "shell",
       "command": "powershell.exe"
     }
