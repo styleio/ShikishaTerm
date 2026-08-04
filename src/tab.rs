@@ -222,6 +222,11 @@ pub struct Tab {
     pub state: TabState,
     pub spinner_idx: usize,
     pub copy: Option<CopyState>,
+    /// 自動送信チェーンの深度 (透明のボールに記録された「渡された回数」。
+    /// 自動送信で+1を継承、人間の手動入力で0にリセット)
+    pub chain_depth: u32,
+    /// 最後に人間が手動入力した時刻 (相対ms)。直後の自動送信をガードする
+    pub last_manual_ms: u64,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     child_exited: Arc<AtomicBool>,
@@ -299,6 +304,8 @@ impl Tab {
             state: TabState::Wait,
             spinner_idx: 0,
             copy: None,
+            chain_depth: 0,
+            last_manual_ms: 0,
             master: pair.master,
             killer,
             child_exited,
@@ -339,11 +346,13 @@ impl Tab {
     }
 
     /// 200ms毎の状態判定 (非アクティブタブも含めて呼ぶこと)。
-    /// 活動の有無は「画面内容の変化」で判定する (最下部のステータス行は除外)
-    pub fn tick(&mut self, start: Instant) {
+    /// 活動の有無は「画面内容の変化」で判定する (最下部のステータス行は除外)。
+    /// 戻り値はフック発火用の (旧状態, 新状態)
+    pub fn tick(&mut self, start: Instant) -> (TabState, TabState) {
         if self.exited() {
+            let old = self.state;
             self.state = TabState::Exited;
-            return;
+            return (old, self.state);
         }
         let (screen_text, hash) = {
             let p = self.parser.lock().unwrap();
@@ -376,6 +385,7 @@ impl Tab {
         if old_state == TabState::Busy && self.state == TabState::Done {
             self.last_response = Some(self.capture_since_marker());
         }
+        (old_state, self.state)
     }
 
     /// 現在のスクロールバック蓄積行数 (表示位置は変更しない)

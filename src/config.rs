@@ -7,6 +7,13 @@ use serde::Deserialize;
 pub struct Config {
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
+    /// フックスクリプトのパス (例: "scripts/hooks.lua")
+    #[serde(default)]
+    pub lua: Option<String>,
+    /// 自動送信チェーンの深度上限 (既定10)。
+    /// 自動送信のたびに+1されてタブ間を受け継がれ、人間の手動入力で0に戻る
+    #[serde(default)]
+    pub max_chain: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

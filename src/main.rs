@@ -13,6 +13,7 @@
 
 mod config;
 mod detect;
+mod hooks;
 mod profile;
 mod tab;
 
@@ -32,6 +33,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use tui_term::widget::PseudoTerminal;
 
 use detect::TabState;
+use hooks::{Command, HookEngine, TabCtx};
 use tab::{CopyState, Tab, extract_text};
 
 const TAB_BAR_WIDTH: u16 = 18;
@@ -98,6 +100,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let (rows, cols) = pty_dims(terminal.size()?);
 
     // タブ構成: CLI引数 (デバッグ用) > config.json > 既定 (PowerShell 1タブ)
+    let cfg = if cmd_args.is_empty() {
+        config::load()
+    } else {
+        None
+    };
     let mut tabs: Vec<Tab> = Vec::new();
     let mut startup_errors: Vec<String> = Vec::new();
     if !cmd_args.is_empty() {
@@ -109,7 +116,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             rows,
             cols,
         )?);
-    } else if let Some(cfg) = config::load() {
+    } else if let Some(cfg) = &cfg {
         for t in &cfg.tabs {
             let argv = t.command.argv();
             if argv.is_empty() {
@@ -137,6 +144,21 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         )?);
     }
 
+    // Luaフックエンジン (config.jsonの "lua" 指定時のみ)
+    let mut engine: Option<HookEngine> = cfg
+        .as_ref()
+        .and_then(|c| c.lua.as_deref())
+        .and_then(|p| match HookEngine::load(&resolve_data_path(p)) {
+            Ok(e) => Some(e),
+            Err(e) => {
+                startup_errors.push(format!("Lua: {e:#}"));
+                None
+            }
+        });
+    let max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
+    let mut auto_enabled = true;
+    let mut started_fired = vec![false; tabs.len()];
+
     // 0 = INDEX、1.. = セッション
     let mut active: usize = 1;
     let mut prefix_active = false;
@@ -147,12 +169,68 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         // 200ms毎に全タブの状態を判定 (非アクティブタブの完了もINDEXに反映される)
         if last_detect.elapsed() >= Duration::from_millis(200) {
             last_detect = Instant::now();
-            for t in tabs.iter_mut() {
-                t.tick(start);
+            let mut transitions = Vec::with_capacity(tabs.len());
+            for (i, t) in tabs.iter_mut().enumerate() {
+                let (old, new) = t.tick(start);
+                transitions.push((i + 1, old, new));
+            }
+
+            // フック発火 → wait中コルーチン再開 → 積まれた操作の実行
+            if let Some(eng) = engine.as_mut() {
+                if auto_enabled {
+                    for (i, fired) in started_fired.iter_mut().enumerate() {
+                        if !*fired {
+                            *fired = true;
+                            eng.fire("on_start", &tab_ctx(&tabs[i], i + 1), None);
+                        }
+                    }
+                    for &(idx, old, new) in &transitions {
+                        if old == new {
+                            continue;
+                        }
+                        let ctx = tab_ctx(&tabs[idx - 1], idx);
+                        match new {
+                            TabState::Busy => eng.fire("on_busy", &ctx, None),
+                            TabState::Done if old == TabState::Busy => {
+                                eng.fire("on_done", &ctx, None);
+                            }
+                            TabState::Question => {
+                                let screen =
+                                    tabs[idx - 1].parser.lock().unwrap().screen().contents();
+                                eng.fire("on_question", &ctx, Some(&screen));
+                            }
+                            TabState::Exited => eng.fire("on_exit", &ctx, None),
+                            _ => {}
+                        }
+                    }
+                    if eng.has("on_tick") {
+                        for (i, t) in tabs.iter().enumerate() {
+                            eng.fire("on_tick", &tab_ctx(t, i + 1), Some(t.state.label()));
+                        }
+                    }
+                    eng.tick_pending(&|idx| {
+                        tabs.get(idx.wrapping_sub(1))
+                            .map(|t| t.parser.lock().unwrap().screen().contents())
+                    });
+                }
+                let cmds = eng.drain_commands();
+                if !cmds.is_empty() {
+                    let now_ms = start.elapsed().as_millis() as u64;
+                    exec_commands(cmds, &mut tabs, max_chain, auto_enabled, now_ms, &mut flash);
+                }
             }
         }
 
-        terminal.draw(|f| draw(f, &tabs, active, prefix_active, flash.as_deref()))?;
+        terminal.draw(|f| {
+            draw(
+                f,
+                &tabs,
+                active,
+                prefix_active,
+                flash.as_deref(),
+                engine.as_ref().map(|_| auto_enabled),
+            );
+        })?;
 
         if !event::poll(Duration::from_millis(16))? {
             continue;
@@ -181,6 +259,19 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             if let Some(t) = session_mut(&mut tabs, active) {
                                 t.write_bytes(&[0x02])?;
                             }
+                        }
+                        // Ctrl+B a 自動化ON/OFF、Ctrl+B x 緊急停止
+                        KeyCode::Char('a') => {
+                            auto_enabled = !auto_enabled;
+                            flash = Some(
+                                if auto_enabled { ">> AUTO: ON" } else { ">> AUTO: OFF" }
+                                    .to_string(),
+                            );
+                        }
+                        KeyCode::Char('x') => {
+                            auto_enabled = false;
+                            flash =
+                                Some(">> EMERGENCY STOP: 全自動化停止 (Ctrl+B aで再開)".to_string());
                         }
                         // Ctrl+B c で最新キャプチャ応答をクリップボードへ
                         KeyCode::Char('c') => {
@@ -217,23 +308,32 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     }
                 } else {
                     let size = terminal.size()?;
+                    let now_ms = start.elapsed().as_millis() as u64;
                     if let Some(t) = session_mut(&mut tabs, active) {
                         if t.copy.is_some() {
                             handle_copy_key(t, &key, size, &mut flash)?;
                         } else if let Some(bytes) = key_to_bytes(&key) {
+                            // 手動入力: チェーン(透明のボール)をリセットし、
+                            // 直後の自動送信をガードする
+                            t.chain_depth = 0;
+                            t.last_manual_ms = now_ms;
                             t.write_bytes(&bytes)?;
                         }
                     }
                 }
             }
             Event::Paste(text) => {
+                let now_ms = start.elapsed().as_millis() as u64;
                 if let Some(t) = session_mut(&mut tabs, active) {
+                    t.chain_depth = 0;
+                    t.last_manual_ms = now_ms;
                     t.write_bytes(text.as_bytes())?;
                 }
             }
             Event::Mouse(m) => {
                 let size = terminal.size()?;
-                handle_mouse(&mut tabs, &mut active, m, size, &mut flash)?;
+                let now_ms = start.elapsed().as_millis() as u64;
+                handle_mouse(&mut tabs, &mut active, m, size, now_ms, &mut flash)?;
             }
             Event::Resize(width, height) => {
                 let (rows, cols) = pty_dims(Size { width, height });
@@ -256,6 +356,117 @@ fn session_mut(tabs: &mut [Tab], active: usize) -> Option<&mut Tab> {
         None
     } else {
         tabs.get_mut(active - 1)
+    }
+}
+
+/// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する
+fn resolve_data_path(p: &str) -> std::path::PathBuf {
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+    {
+        let cand = dir.join(p);
+        if cand.exists() {
+            return cand;
+        }
+    }
+    std::path::PathBuf::from(p)
+}
+
+fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
+    TabCtx {
+        index,
+        name: t.title.clone(),
+        state: t.state.label().to_string(),
+        profile: t.profile_name().to_string(),
+        output: t.last_response.clone().unwrap_or_default(),
+    }
+}
+
+/// 手動入力直後は自動送信を控える猶予 (打鍵の混線防止)
+const MANUAL_GUARD_MS: u64 = 5000;
+
+fn append_hook_log(msg: &str) {
+    let _ = std::fs::create_dir_all("logs");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("logs/hooks.log")
+    {
+        use std::io::Write as _;
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
+/// Luaフックが積んだ操作依頼を実行する。
+/// 自動送信はチェーン深度 (透明のボール) を継承し、上限で止める
+fn exec_commands(
+    cmds: Vec<Command>,
+    tabs: &mut [Tab],
+    max_chain: u32,
+    auto_enabled: bool,
+    now_ms: u64,
+    flash: &mut Option<String>,
+) {
+    for cmd in cmds {
+        match cmd {
+            Command::Log(msg) => append_hook_log(&msg),
+            Command::Notify { dest, text } => {
+                append_hook_log(&format!("NOTIFY[{dest}] {text}"));
+                *flash = Some(format!(">> NOTIFY[{dest}] {text}"));
+            }
+            Command::SendKeys { target, keys } => {
+                if !auto_enabled {
+                    continue;
+                }
+                if let Some(t) = tabs.get(target.wrapping_sub(1)) {
+                    if now_ms.saturating_sub(t.last_manual_ms) < MANUAL_GUARD_MS {
+                        continue;
+                    }
+                    let _ = t.write_bytes(keys.as_bytes());
+                }
+            }
+            Command::SendPrompt {
+                target,
+                text,
+                origin,
+            } => {
+                if !auto_enabled {
+                    continue;
+                }
+                let depth = tabs
+                    .get(origin.wrapping_sub(1))
+                    .map(|t| t.chain_depth)
+                    .unwrap_or(0)
+                    + 1;
+                if depth > max_chain {
+                    *flash = Some(format!(">> 自動チェーン上限({max_chain})に達したため停止"));
+                    append_hook_log(&format!("chain limit ({max_chain}): tab{origin} -> tab{target}"));
+                    continue;
+                }
+                let Some(t) = tabs.get_mut(target.wrapping_sub(1)) else {
+                    continue;
+                };
+                if now_ms.saturating_sub(t.last_manual_ms) < MANUAL_GUARD_MS {
+                    *flash = Some(">> 手動操作中のため自動送信をスキップ".to_string());
+                    continue;
+                }
+                t.chain_depth = depth;
+                let bracketed = t.parser.lock().unwrap().screen().bracketed_paste();
+                let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+                let mut bytes = Vec::new();
+                if bracketed {
+                    bytes.extend_from_slice(b"\x1b[200~");
+                    bytes.extend_from_slice(normalized.as_bytes());
+                    bytes.extend_from_slice(b"\x1b[201~");
+                } else {
+                    bytes.extend_from_slice(normalized.as_bytes());
+                }
+                bytes.push(b'\r');
+                let _ = t.write_bytes(&bytes);
+                append_hook_log(&format!("auto-send tab{origin} -> tab{target} (depth {depth})"));
+            }
+        }
     }
 }
 
@@ -343,6 +554,7 @@ fn handle_mouse(
     active: &mut usize,
     m: MouseEvent,
     size: Size,
+    now_ms: u64,
     flash: &mut Option<String>,
 ) -> Result<()> {
     // タブバークリックで切替 (行0=INDEX、行1..=セッション)
@@ -454,6 +666,8 @@ fn handle_mouse(
             if t.copy.take().is_some() {
                 t.parser.lock().unwrap().screen_mut().set_scrollback(0);
             }
+            t.chain_depth = 0;
+            t.last_manual_ms = now_ms;
             *flash = paste_clipboard(t)?;
         }
         _ => {}
@@ -471,7 +685,14 @@ fn indicator(t: &Tab) -> (char, Color) {
     }
 }
 
-fn draw(f: &mut Frame, tabs: &[Tab], active: usize, prefix_active: bool, flash: Option<&str>) {
+fn draw(
+    f: &mut Frame,
+    tabs: &[Tab],
+    active: usize,
+    prefix_active: bool,
+    flash: Option<&str>,
+    auto: Option<bool>,
+) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(STATUS_BAR_HEIGHT)])
@@ -514,14 +735,29 @@ fn draw(f: &mut Frame, tabs: &[Tab], active: usize, prefix_active: bool, flash: 
     f.render_widget(tabs_widget, main[0]);
 
     if active == 0 {
-        draw_index(f, tabs, main[1], outer[1], flash);
+        draw_index(f, tabs, main[1], outer[1], flash, auto);
     } else if let Some(t) = tabs.get(active - 1) {
-        draw_session(f, t, main[1], outer[1], prefix_active, flash);
+        draw_session(f, t, main[1], outer[1], prefix_active, flash, auto);
+    }
+}
+
+fn auto_label(auto: Option<bool>) -> &'static str {
+    match auto {
+        Some(true) => "AUTO:ON | ",
+        Some(false) => "AUTO:OFF | ",
+        None => "",
     }
 }
 
 /// INDEXダッシュボード: 全セッションの一覧と状態
-fn draw_index(f: &mut Frame, tabs: &[Tab], area: Rect, status_area: Rect, flash: Option<&str>) {
+fn draw_index(
+    f: &mut Frame,
+    tabs: &[Tab],
+    area: Rect,
+    status_area: Rect,
+    flash: Option<&str>,
+    auto: Option<bool>,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(NEON_BLUE))
@@ -559,9 +795,12 @@ fn draw_index(f: &mut Frame, tabs: &[Tab], area: Rect, status_area: Rect, flash:
     )));
     f.render_widget(Paragraph::new(lines), inner);
 
-    let status = flash
-        .map(|m| format!(" {m}"))
-        .unwrap_or_else(|| " INDEX | 1-9: タブ切替 / Ctrl+B q: EXIT".to_string());
+    let status = flash.map(|m| format!(" {m}")).unwrap_or_else(|| {
+        format!(
+            " {}INDEX | 1-9: タブ切替 / Ctrl+B q: EXIT",
+            auto_label(auto)
+        )
+    });
     f.render_widget(
         Paragraph::new(status).style(Style::default().fg(Color::Black).bg(NEON_BLUE)),
         status_area,
@@ -569,6 +808,7 @@ fn draw_index(f: &mut Frame, tabs: &[Tab], area: Rect, status_area: Rect, flash:
 }
 
 /// セッションペイン: 子端末の描画 + コピーモードハイライト + IMEカーソル + ステータス
+#[allow(clippy::too_many_arguments)]
 fn draw_session(
     f: &mut Frame,
     t: &Tab,
@@ -576,6 +816,7 @@ fn draw_session(
     status_area: Rect,
     prefix_active: bool,
     flash: Option<&str>,
+    auto: Option<bool>,
 ) {
     let border_color = if t.copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
     let block = Block::default()
@@ -655,7 +896,8 @@ fn draw_session(
         format!(" {msg}")
     } else {
         format!(
-            " PROFILE:{} [{}] | ドラッグ:コピー 右クリック:ペースト | Ctrl+B q: EXIT",
+            " {}PROFILE:{} [{}] | ドラッグ:コピー 右クリック:ペースト | Ctrl+B q: EXIT",
+            auto_label(auto),
             t.profile_name(),
             t.state.label()
         )
