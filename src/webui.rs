@@ -91,6 +91,68 @@ fn query_token(url: &str) -> String {
         .to_string()
 }
 
+/// ?file=... のパスを安全に解決する。
+/// 設定ファイルと同じディレクトリ配下の .json だけを許可し、
+/// 絶対パス・親ディレクトリ参照 (..) は拒否する (パストラバーサル対策)
+fn safe_workspace_path(
+    url: &str,
+    config_path: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let raw = url
+        .split_once('?')?
+        .1
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("file="))?;
+    let decoded = percent_decode(raw);
+    let rel = std::path::Path::new(&decoded);
+    if rel.is_absolute() {
+        return None;
+    }
+    if rel
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::Prefix(_)))
+    {
+        return None;
+    }
+    if rel.extension().and_then(|e| e.to_str()) != Some("json") {
+        return None;
+    }
+    let base = config_path.parent()?;
+    Some(base.join(rel))
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(b) => {
+                        out.push(b);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -> Result<()> {
     // DNS rebinding対策: Hostは必ずループバックであること
     let host = header_value(&req, "Host");
@@ -127,6 +189,43 @@ fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -
                     .unwrap(),
             );
             req.respond(resp)?;
+        }
+        // ワークスペース定義ファイル (外部ファイル参照) の読み書き
+        ("GET", "/api/workspace") => {
+            let Some(p) = safe_workspace_path(req.url(), config_path) else {
+                return req
+                    .respond(Response::from_string("bad path").with_status_code(400))
+                    .map_err(Into::into);
+            };
+            let text = std::fs::read_to_string(&p).unwrap_or_else(|_| r#"{"tabs":[]}"#.into());
+            let resp = Response::from_string(text).with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
+                    .unwrap(),
+            );
+            req.respond(resp)?;
+        }
+        ("POST", "/api/workspace") => {
+            let Some(p) = safe_workspace_path(req.url(), config_path) else {
+                return req
+                    .respond(Response::from_string("bad path").with_status_code(400))
+                    .map_err(Into::into);
+            };
+            let mut req = req;
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body)?;
+            match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(_) => {
+                    if let Some(dir) = p.parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    crate::crypto::write_atomic(&p, &body)?;
+                    req.respond(Response::from_string(r#"{"ok":true}"#))?;
+                }
+                Err(e) => {
+                    let msg = serde_json::json!({ "ok": false, "error": e.to_string() });
+                    req.respond(Response::from_string(msg.to_string()).with_status_code(400))?;
+                }
+            }
         }
         ("POST", "/api/config") => {
             let mut req = req;
@@ -181,8 +280,13 @@ const PAGE: &str = r##"<!doctype html>
  .warn { color:#ffea00; font-size:12px; margin-top:6px; }
  fieldset { border:1px solid #1f4d2a; margin:18px 0; padding:12px 16px; }
  legend { color:#ffea00; padding:0 6px; }
- table { border-collapse:collapse; width:100%; }
- td { padding:4px 6px; border-bottom:1px solid #12261a; }
+ table { border-collapse:collapse; width:100%; margin:10px 0; }
+ td { padding:4px 6px; border-bottom:1px solid #12261a; vertical-align:middle; }
+ td input[type=text] { width:100%; min-width:90px; }
+ td button { padding:2px 8px; font-size:12px; }
+ input[type=checkbox] { width:16px; height:16px; accent-color:#39ff14; }
+ b { color:#00aaff; font-weight:normal; font-size:12px; }
+ .tree { color:#ffea00; margin-left:4px; }
 </style></head><body>
 <h1>SHIKISHA-TERM-AI :: CONFIG</h1>
 
@@ -193,15 +297,16 @@ const PAGE: &str = r##"<!doctype html>
  <div class="row"><label>自動チェーン上限</label>
    <input type="number" id="chain" min="1" max="100">
    <span class="warn">AI同士の自動転送が何回続いたら止めるか</span></div>
- <div class="row"><label>Luaフック</label>
-   <input type="text" id="lua" placeholder="scripts/hooks.lua"></div>
+ <div class="row"><label>Luaフック(全体)</label>
+   <input type="text" id="lua" placeholder="scripts/hooks.lua">
+   <span class="warn">ワークスペース・タブ側の指定が優先されます</span></div>
  <div class="row"><label>secretsファイル</label>
    <input type="text" id="secrets" placeholder="secrets.json"></div>
 </fieldset>
 
-<fieldset><legend>タブ / ワークスペース (JSONを直接編集)</legend>
- <textarea id="json" spellcheck="false"></textarea>
- <div class="warn">保存前にJSONの妥当性を検証します。壊れた内容では保存されません。</div>
+<fieldset><legend>ワークスペースとタブ</legend>
+ <div id="wslist"></div>
+ <button class="ghost" onclick="addWs()">＋ ワークスペースを追加</button>
 </fieldset>
 
 <div class="row">
@@ -216,34 +321,177 @@ const PAGE: &str = r##"<!doctype html>
 const TOKEN = "__TOKEN__";
 const api = (m, b) => fetch("/api/config", {
    method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
+
+// 画面の状態。JSONは触らせず、この配列を編集して保存時に組み立てる
 let current = {};
+let wss = [];   // [{name, file, tabs:[{name,command,profile,lua,locked,auto_restart,depth}]}]
+
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) n.setAttribute(k, v);
+  }
+  for (const c of kids) n.append(c);
+  return n;
+};
+
+/// config上の入れ子(children)を、画面用のフラットな配列に変換する
+function flatten(tabs, depth, out) {
+  for (const t of tabs || []) {
+    out.push({ name: t.name || "", command: cmdToText(t.command), profile: t.profile || "",
+               lua: t.lua || "", locked: !!t.locked, auto_restart: !!t.auto_restart, depth });
+    flatten(t.children, depth + 1, out);
+  }
+  return out;
+}
+/// フラットな配列を depth に従って children へ組み直す
+function nest(flat) {
+  const roots = [], stack = [];
+  for (const f of flat) {
+    const node = { name: f.name, command: f.command };
+    if (f.profile) node.profile = f.profile;
+    if (f.lua) node.lua = f.lua;
+    if (f.locked) node.locked = true;
+    if (f.auto_restart) node.auto_restart = true;
+    const d = Math.min(f.depth, stack.length);
+    if (d === 0) roots.push(node);
+    else {
+      const parent = stack[d - 1];
+      (parent.children = parent.children || []).push(node);
+    }
+    stack[d] = node; stack.length = d + 1;
+  }
+  return roots;
+}
+const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
+
+function render() {
+  const box = document.getElementById("wslist");
+  box.textContent = "";
+  wss.forEach((ws, wi) => {
+    const head = el("div", {class:"row"},
+      el("label", {}, "ワークスペース"),
+      input(ws, "name", "名前", "text"),
+      el("span", {class:"warn"}, "Lua"),
+      input(ws, "lua", "scripts/xxx.lua", "text"),
+      el("span", {class:"warn"}, ws.file ? "定義ファイル: " + ws.file : "config.json内に定義"),
+      el("button", {class:"ghost", onclick:() => { wss.splice(wi,1); render(); }}, "削除"),
+      el("button", {class:"ghost", onclick:() => { moveWs(wi,-1); }}, "↑"),
+      el("button", {class:"ghost", onclick:() => { moveWs(wi, 1); }}, "↓"));
+    const table = el("table");
+    table.append(el("tr", {},
+      th("階層"), th("タブ名"), th("コマンド"), th("プロファイル"),
+      th("Luaフック"), th("ロック"), th("自動再起動"), th("")));
+    (ws.tabs || []).forEach((t, ti) => {
+      table.append(el("tr", {},
+        td(el("button", {class:"ghost", title:"1段下げる (親タブの子にする)",
+             onclick:() => { t.depth = Math.min((t.depth||0)+1, ti); render(); }}, "→"),
+           el("button", {class:"ghost", title:"1段上げる",
+             onclick:() => { t.depth = Math.max((t.depth||0)-1, 0); render(); }}, "←"),
+           el("span", {class:"tree"}, "　".repeat(t.depth||0) + (t.depth ? "└" : ""))),
+        td(input(t, "name", "A:実装", "text")),
+        td(input(t, "command", "claude / ssh user@host", "text")),
+        td(input(t, "profile", "claude", "text")),
+        td(input(t, "lua", "scripts/reviewer.lua", "text")),
+        td(check(t, "locked")),
+        td(check(t, "auto_restart")),
+        td(el("button", {class:"ghost", onclick:() => { ws.tabs.splice(ti,1); render(); }}, "削除"),
+           el("button", {class:"ghost", onclick:() => { moveTab(ws, ti,-1); }}, "↑"),
+           el("button", {class:"ghost", onclick:() => { moveTab(ws, ti, 1); }}, "↓"))));
+    });
+    box.append(el("fieldset", {}, el("legend", {}, ws.name || "(名称未設定)"), head, table,
+      el("button", {class:"ghost", onclick:() => {
+        (ws.tabs = ws.tabs || []).push({name:"", command:"", profile:"", lua:"",
+                                        locked:false, auto_restart:false, depth:0});
+        render();
+      }}, "＋ タブを追加")));
+  });
+}
+const th = t => el("td", {}, el("b", {}, t));
+const td = (...k) => el("td", {}, ...k);
+function input(obj, key, ph, type) {
+  const i = el("input", {type, placeholder: ph});
+  i.value = obj[key] ?? "";
+  i.addEventListener("input", () => { obj[key] = i.value; });
+  return i;
+}
+function check(obj, key) {
+  const i = el("input", {type:"checkbox"});
+  i.checked = !!obj[key];
+  i.addEventListener("change", () => { obj[key] = i.checked; });
+  return i;
+}
+function moveWs(i, d) { const j=i+d; if(j<0||j>=wss.length) return;
+  [wss[i],wss[j]]=[wss[j],wss[i]]; render(); }
+function moveTab(ws, i, d) { const j=i+d; if(j<0||j>=ws.tabs.length) return;
+  [ws.tabs[i],ws.tabs[j]]=[ws.tabs[j],ws.tabs[i]]; render(); }
+function addWs() { wss.push({name:"新しいワークスペース", lua:"", tabs:[]}); render(); }
+
+// 外部ファイル参照のワークスペース定義を読み書きする
+const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(file), {
+   method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
 
 async function load() {
-  const r = await api("GET");
-  current = await r.json();
+  current = await (await api("GET")).json();
   document.getElementById("tabw").value    = current.tab_bar_width ?? "";
   document.getElementById("chain").value   = current.max_chain ?? "";
   document.getElementById("lua").value     = current.lua ?? "";
   document.getElementById("secrets").value = current.secrets ?? "";
-  const rest = {};
-  for (const k of ["workspaces","tabs","notify"]) if (k in current) rest[k] = current[k];
-  document.getElementById("json").value = JSON.stringify(rest, null, 2);
+  const list = (Array.isArray(current.workspaces) && current.workspaces.length)
+      ? current.workspaces
+      : [{ name: "DEFAULT", tabs: current.tabs || [] }];
+  wss = [];
+  for (const w of list) {
+    const ws = { name: w.name || "", file: w.file || null, lua: w.lua || "", tabs: [] };
+    if (ws.file) {
+      // 定義ファイルの中身も読み込み、GUIから編集できるようにする
+      try {
+        const f = await (await wsApi("GET", ws.file)).json();
+        ws.tabs = flatten(f.tabs, 0, []);
+        if (!ws.lua && f.lua) ws.lua = f.lua;
+      } catch (e) { ws.loadError = String(e); }
+    } else {
+      ws.tabs = flatten(w.tabs, 0, []);
+    }
+    wss.push(ws);
+  }
+  render();
   msg("読み込みました", "#39ff14");
 }
 
 async function save() {
-  let rest;
-  try { rest = JSON.parse(document.getElementById("json").value || "{}"); }
-  catch (e) { return msg("JSONエラー: " + e.message, "#ff4646"); }
-  const out = Object.assign({}, rest);
+  const out = Object.assign({}, current);
   const tabw  = document.getElementById("tabw").value;
   const chain = document.getElementById("chain").value;
   const lua   = document.getElementById("lua").value.trim();
   const sec   = document.getElementById("secrets").value.trim();
-  if (tabw)  out.tab_bar_width = Number(tabw);
-  if (chain) out.max_chain     = Number(chain);
-  if (lua)   out.lua           = lua;
-  if (sec)   out.secrets       = sec;
+  tabw  ? out.tab_bar_width = Number(tabw) : delete out.tab_bar_width;
+  chain ? out.max_chain     = Number(chain) : delete out.max_chain;
+  lua   ? out.lua           = lua : delete out.lua;
+  sec   ? out.secrets       = sec : delete out.secrets;
+
+  delete out.tabs;
+  // 外部ファイル参照のワークスペースは、その定義ファイル側に中身を書き戻す
+  for (const w of wss) {
+    if (!w.file) continue;
+    const body = { name: w.name, tabs: nest(w.tabs) };
+    if (w.lua) body.lua = w.lua;
+    const rf = await wsApi("POST", w.file, JSON.stringify(body, null, 2));
+    const jf = await rf.json().catch(() => ({ok:false, error:"保存に失敗"}));
+    if (!jf.ok) return msg(w.file + " の保存に失敗: " + (jf.error || ""), "#ff4646");
+  }
+  out.workspaces = wss.map(w => {
+    const o = { name: w.name };
+    // 定義ファイル側にluaを書いたので、config側は参照だけにする
+    if (w.file) o.file = w.file;
+    else {
+      if (w.lua) o.lua = w.lua;
+      o.tabs = nest(w.tabs);
+    }
+    return o;
+  });
   const r = await api("POST", JSON.stringify(out, null, 2));
   const j = await r.json();
   msg(j.ok ? "保存しました (アプリ再起動で反映)" : "保存失敗: " + j.error,
@@ -271,6 +519,20 @@ mod tests {
         assert_eq!(query_token("/?token=deadbeef"), "deadbeef");
         assert_eq!(query_token("/api/config?x=1&token=zz"), "zz");
         assert_eq!(query_token("/"), "");
+    }
+
+    #[test]
+    fn workspace_path_rejects_traversal() {
+        let cfg = std::path::Path::new("C:/app/config.json");
+        // 正常系
+        assert!(safe_workspace_path("/api/workspace?file=workspaces/x.json", cfg).is_some());
+        // パストラバーサル・絶対パス・非JSONは拒否
+        assert!(safe_workspace_path("/api/workspace?file=../secrets.json", cfg).is_none());
+        assert!(safe_workspace_path("/api/workspace?file=workspaces/../../x.json", cfg).is_none());
+        assert!(safe_workspace_path("/api/workspace?file=C:/windows/x.json", cfg).is_none());
+        assert!(safe_workspace_path("/api/workspace?file=workspaces/x.lua", cfg).is_none());
+        // URLエンコードされた .. も拒否
+        assert!(safe_workspace_path("/api/workspace?file=%2E%2E%2Fsecrets.json", cfg).is_none());
     }
 
     #[test]

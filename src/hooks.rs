@@ -83,12 +83,31 @@ function shikisha.sleep(ms)
 end
 "#;
 
+/// 1つのLuaスクリプト。独立した環境(_ENV)で読み込むので、
+/// 複数ファイルが同じ `on_done` を定義しても衝突しない
+struct Script {
+    /// 表示用のパス
+    path: String,
+    /// このスクリプトの環境テーブル (ここからフック関数を引く)
+    env: Table,
+    defined: HashSet<String>,
+}
+
+/// フックの引き当て先。より具体的な方が優先される (タブ > ワークスペース > 基本)
+#[derive(Default)]
+struct Attach {
+    base: Option<usize>,
+    workspace: Option<usize>,
+    tabs: std::collections::HashMap<usize, usize>,
+}
+
 pub struct HookEngine {
     lua: Lua,
     commands: Rc<RefCell<Vec<Command>>>,
     current_origin: Rc<Cell<usize>>,
     pending: Vec<Pending>,
-    defined: HashSet<String>,
+    scripts: Vec<Script>,
+    attach: Attach,
 }
 
 const HOOK_NAMES: [&str; 6] = [
@@ -101,13 +120,16 @@ const HOOK_NAMES: [&str; 6] = [
 ];
 
 impl HookEngine {
-    pub fn load(script_path: &std::path::Path) -> Result<Self> {
-        let source = std::fs::read_to_string(script_path)
-            .with_context(|| format!("Luaスクリプトを読めません: {}", script_path.display()))?;
-        Self::from_source(&source)
+    /// スクリプトを1本だけ読み込んで基本設定に紐づける (テスト・単純構成用)
+    #[cfg(test)]
+    pub fn from_source(source: &str) -> Result<Self> {
+        let mut e = Self::new()?;
+        let id = e.load_source("(inline)", source)?;
+        e.attach.base = Some(id);
+        Ok(e)
     }
 
-    pub fn from_source(source: &str) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let lua = Lua::new_with(
             StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::COROUTINE,
             LuaOptions::default(),
@@ -193,38 +215,99 @@ impl HookEngine {
         }
         lua.globals().set("shikisha", shikisha).map_err(lerr)?;
         lua.load(PRELUDE).exec().map_err(lerr)?;
-        lua.load(source)
-            .exec()
-            .map_err(|e| anyhow::anyhow!("Luaスクリプトの実行に失敗: {e}"))?;
-
-        let mut defined = HashSet::new();
-        for name in HOOK_NAMES {
-            if lua.globals().get::<mlua::Function>(name).is_ok() {
-                defined.insert(name.to_string());
-            }
-        }
 
         Ok(Self {
             lua,
             commands,
             current_origin,
             pending: Vec::new(),
-            defined,
+            scripts: Vec::new(),
+            attach: Attach::default(),
         })
     }
 
-    pub fn has(&self, hook: &str) -> bool {
-        self.defined.contains(hook)
+    /// スクリプトをファイルから読み込む。同じパスは再利用する
+    pub fn load_file(&mut self, path: &std::path::Path) -> Result<usize> {
+        let key = path.display().to_string();
+        if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
+            return Ok(i);
+        }
+        let source = std::fs::read_to_string(path)
+            .with_context(|| format!("Luaスクリプトを読めません: {key}"))?;
+        self.load_source(&key, &source)
+    }
+
+    /// スクリプトを独立した環境で読み込む。
+    /// 環境の __index はグローバル (string/math/shikisha 等) を指すので
+    /// 標準機能とAPIは使えるが、フック関数は各スクリプトに閉じる
+    fn load_source(&mut self, path: &str, source: &str) -> Result<usize> {
+        let env = self.lua.create_table().map_err(lerr)?;
+        let mt = self.lua.create_table().map_err(lerr)?;
+        mt.set("__index", self.lua.globals()).map_err(lerr)?;
+        env.set_metatable(Some(mt)).map_err(lerr)?;
+        self.lua
+            .load(source)
+            .set_environment(env.clone())
+            .exec()
+            .map_err(|e| anyhow::anyhow!("{path}: Luaスクリプトの実行に失敗: {e}"))?;
+
+        let mut defined = HashSet::new();
+        for name in HOOK_NAMES {
+            if env.get::<mlua::Function>(name).is_ok() {
+                defined.insert(name.to_string());
+            }
+        }
+        self.scripts.push(Script {
+            path: path.to_string(),
+            env,
+            defined,
+        });
+        Ok(self.scripts.len() - 1)
+    }
+
+    pub fn set_base(&mut self, id: usize) {
+        self.attach.base = Some(id);
+    }
+
+    pub fn set_workspace(&mut self, id: usize) {
+        self.attach.workspace = Some(id);
+    }
+
+    /// タブ番号 (1始まり) にスクリプトを紐づける
+    pub fn set_tab(&mut self, tab_index: usize, id: usize) {
+        self.attach.tabs.insert(tab_index, id);
+    }
+
+    /// そのタブのそのフックを担当するスクリプトを解決する
+    /// (タブ > ワークスペース > 基本。両方は実行しない)
+    fn resolve(&self, hook: &str, tab_index: usize) -> Option<usize> {
+        [
+            self.attach.tabs.get(&tab_index).copied(),
+            self.attach.workspace,
+            self.attach.base,
+        ]
+        .into_iter()
+        .flatten()
+        .find(|&id| self.scripts[id].defined.contains(hook))
+    }
+
+    /// どこかにそのフックが定義されているか (on_tickの空回し防止用)
+    pub fn has_any(&self, hook: &str) -> bool {
+        self.scripts.iter().any(|s| s.defined.contains(hook))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.scripts.is_empty()
     }
 
     /// フックを発火する。extra は on_question の画面テキスト等
     pub fn fire(&mut self, hook: &str, ctx: &TabCtx, extra: Option<&str>) {
-        if !self.has(hook) {
+        let Some(id) = self.resolve(hook, ctx.index) else {
             return;
-        }
+        };
         self.current_origin.set(ctx.index);
         let result = (|| -> mlua::Result<()> {
-            let func: mlua::Function = self.lua.globals().get(hook)?;
+            let func: mlua::Function = self.scripts[id].env.get(hook)?;
             let thread = self.lua.create_thread(func)?;
             let tbl = self.make_tab_table(ctx)?;
             let args = match extra {
@@ -472,6 +555,71 @@ mod tests {
         e.fire("on_done", &ctx(1, ""), None);
         let cmds = e.drain_commands();
         assert!(matches!(&cmds[1], Command::Log(m) if m == "round 2"));
+    }
+
+    #[test]
+    fn tab_script_wins_over_workspace_and_base() {
+        let mut e = HookEngine::new().unwrap();
+        let base = e
+            .load_source("base", r#"function on_done(t) shikisha.log("base") end
+                                    function on_exit(t) shikisha.log("base-exit") end"#)
+            .unwrap();
+        let ws = e
+            .load_source("ws", r#"function on_done(t) shikisha.log("ws") end"#)
+            .unwrap();
+        let tab = e
+            .load_source("tab", r#"function on_done(t) shikisha.log("tab") end"#)
+            .unwrap();
+        e.set_base(base);
+        e.set_workspace(ws);
+        e.set_tab(2, tab);
+
+        // タブ2はタブ用が勝つ
+        e.fire("on_done", &ctx(2, ""), None);
+        // タブ1はタブ用が無いのでワークスペース用
+        e.fire("on_done", &ctx(1, ""), None);
+        // タブ用にon_exitが無ければ基本へフォールバック
+        e.fire("on_exit", &ctx(2, ""), None);
+
+        let logs: Vec<String> = e
+            .drain_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Log(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(logs, vec!["tab", "ws", "base-exit"]);
+    }
+
+    #[test]
+    fn scripts_share_vars_but_not_hook_names() {
+        let mut e = HookEngine::new().unwrap();
+        let a = e
+            .load_source(
+                "a",
+                r#"function on_done(t) shikisha.set_var("n", (shikisha.get_var("n") or 0) + 1) end"#,
+            )
+            .unwrap();
+        let b = e
+            .load_source(
+                "b",
+                r#"function on_done(t) shikisha.log("n=" .. tostring(shikisha.get_var("n"))) end"#,
+            )
+            .unwrap();
+        e.set_tab(1, a);
+        e.set_tab(2, b);
+        e.fire("on_done", &ctx(1, ""), None);
+        e.fire("on_done", &ctx(2, ""), None);
+        let logs: Vec<String> = e
+            .drain_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Log(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(logs, vec!["n=1"], "別ファイルでも共有変数は共有される");
     }
 
     #[test]

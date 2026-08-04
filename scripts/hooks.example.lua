@@ -1,5 +1,12 @@
 -- ShikishaTerm-AI フックスクリプト例
--- config.json に "lua": "scripts/hooks.lua" を書くと読み込まれる。
+--
+-- スクリプトは3階層のどこにでも紐づけられ、より具体的な方が優先される:
+--   タブ設定の "lua"        … そのタブ専用 (最優先)
+--   ワークスペースの "lua"  … そのワークスペース共通
+--   config.json の "lua"    … 全体共通 (フォールバック)
+-- あるフックをタブ用スクリプトが定義していなければ、ワークスペース→全体へ
+-- 順にフォールバックする (両方は実行されない)。
+-- 共有変数 (get_var/set_var) はワークスペース内の全スクリプトで共有される。
 -- 使えるフック: on_start / on_question / on_busy / on_done / on_exit / on_tick
 -- API: shikisha.send_to_tab(n, text)  プロンプト送信 (Enter付き、チェーン深度+1)
 --      shikisha.send(tab, keys)       生のキー送信 (そのまま)

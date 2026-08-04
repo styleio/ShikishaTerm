@@ -51,6 +51,18 @@ const NEON_BLUE: Color = Color::Rgb(0, 170, 255);
 const NEON_RED: Color = Color::Rgb(255, 70, 70);
 
 fn main() -> Result<()> {
+    // 設定だけ開くモード (TUIを起動せずブラウザで設定を編集する)
+    if std::env::args().nth(1).as_deref() == Some("--settings") {
+        let web = webui::WebUi::start(config::config_file_path())?;
+        println!("設定GUI: {}", web.url);
+        open_browser(&web.url);
+        println!("Enterキーで終了します...");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        web.shutdown();
+        return Ok(());
+    }
+
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
     let res = run(&mut terminal);
@@ -324,17 +336,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         let _ = t.resize(rows, cols);
     }
 
-    // Luaフックエンジン (config.jsonの "lua" 指定時のみ)
-    let mut engine: Option<HookEngine> = cfg
-        .as_ref()
-        .and_then(|c| c.lua.as_deref())
-        .and_then(|p| match HookEngine::load(&resolve_data_path(p)) {
-            Ok(e) => Some(e),
-            Err(e) => {
-                startup_errors.push(format!("Lua: {e:#}"));
-                None
-            }
-        });
+    // Luaフックエンジンはワークスペース単位 (共有変数もその中で共有される)。
+    // 未使用のワークスペースは作らず、切替時に必要なら生成する
+    let mut engines: Vec<Option<HookEngine>> = (0..workspaces.len().max(1)).map(|_| None).collect();
+    engines[0] = build_engine(
+        cfg.as_ref(),
+        workspaces.first(),
+        &mut startup_errors,
+    );
+    let mut engine = engines[0].take();
     let max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
     // secretsが暗号化されていれば起動時にマスターパスワードを尋ねる
     let mut password: Option<String> = None;
@@ -453,7 +463,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             _ => {}
                         }
                     }
-                    if eng.has("on_tick") {
+                    if eng.has_any("on_tick") {
                         for (i, t) in tabs.iter().enumerate() {
                             eng.fire("on_tick", &tab_ctx(t, i + 1), Some(t.state.label()));
                         }
@@ -534,6 +544,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     cols,
                                     &mut startup_errors,
                                     &mut started_fired,
+                                    cfg.as_ref(),
+                                    &mut engine,
+                                    &mut engines,
                                 );
                             }
                             ws_open = false;
@@ -606,6 +619,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     cols,
                                     &mut startup_errors,
                                     &mut started_fired,
+                                    cfg.as_ref(),
+                                    &mut engine,
+                                    &mut engines,
                                 );
                             }
                         }
@@ -775,6 +791,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     cols,
                                     &mut startup_errors,
                                     &mut started_fired,
+                                    cfg.as_ref(),
+                                    &mut engine,
+                                    &mut engines,
                                 );
                             }
                         }
@@ -858,6 +877,63 @@ fn open_browser(url: &str) {
         .spawn();
 }
 
+/// Luaフックを3階層 (基本 > ワークスペース > タブ) で読み込む。
+/// フックの引き当ては「より具体的な方が勝つ」ので、タブ用スクリプトが
+/// 定義していないフックだけがワークスペース・基本へフォールバックする
+fn build_engine(
+    cfg: Option<&config::Config>,
+    ws: Option<&config::Workspace>,
+    errors: &mut Vec<String>,
+) -> Option<HookEngine> {
+    let base = cfg.and_then(|c| c.lua.clone());
+    let ws_lua = ws.and_then(|w| w.lua.clone());
+    let tab_luas: Vec<(usize, String)> = ws
+        .map(|w| {
+            w.tabs
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| t.cfg.lua.clone().map(|p| (i + 1, p)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if base.is_none() && ws_lua.is_none() && tab_luas.is_empty() {
+        return None;
+    }
+
+    let mut engine = match HookEngine::new() {
+        Ok(e) => e,
+        Err(e) => {
+            errors.push(format!("Lua: {e:#}"));
+            return None;
+        }
+    };
+    let load = |engine: &mut HookEngine, path: &str, errors: &mut Vec<String>| -> Option<usize> {
+        match engine.load_file(&resolve_data_path(path)) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                errors.push(format!("Lua({path}): {e:#}"));
+                None
+            }
+        }
+    };
+    if let Some(p) = &base {
+        if let Some(id) = load(&mut engine, p, errors) {
+            engine.set_base(id);
+        }
+    }
+    if let Some(p) = &ws_lua {
+        if let Some(id) = load(&mut engine, p, errors) {
+            engine.set_workspace(id);
+        }
+    }
+    for (idx, p) in &tab_luas {
+        if let Some(id) = load(&mut engine, p, errors) {
+            engine.set_tab(*idx, id);
+        }
+    }
+    (!engine.is_empty()).then_some(engine)
+}
+
 /// ワークスペースのタブ群を起動する (初回アクティブ化時に呼ぶ)
 fn spawn_workspace(
     ws: &config::Workspace,
@@ -899,16 +975,26 @@ fn switch_workspace(
     cols: u16,
     errors: &mut Vec<String>,
     started_fired: &mut Vec<bool>,
+    cfg: Option<&config::Config>,
+    engine: &mut Option<HookEngine>,
+    engines: &mut [Option<HookEngine>],
 ) {
     if to == *ws_index || to >= workspaces.len() {
         return;
     }
     ws_tabs[*ws_index] = std::mem::take(tabs);
+    // Lua環境はワークスペース毎に保持する (共有変数が切替で失われない)
+    engines[*ws_index] = engine.take();
     *ws_index = to;
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {
         spawn_workspace(&workspaces[to], rows, cols, tabs, errors);
     }
+    *engine = match engines[to].take() {
+        Some(e) => Some(e),
+        None => build_engine(cfg, workspaces.get(to), errors),
+    };
+    started_fired.clear();
     started_fired.resize(tabs.len(), false);
     *active = if tabs.is_empty() { 0 } else { 1 };
 }

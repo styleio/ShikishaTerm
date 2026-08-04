@@ -87,6 +87,9 @@ pub struct WorkspaceSpec {
     /// インライン定義
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
+    /// このワークスペース共通のLuaフック (タブ指定が無い場合に使われる)
+    #[serde(default)]
+    pub lua: Option<String>,
 }
 
 /// ワークスペース定義ファイル (workspaces/*.json) の中身
@@ -96,6 +99,9 @@ pub struct WorkspaceFile {
     pub name: Option<String>,
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
+    /// このワークスペース共通のLuaフック
+    #[serde(default)]
+    pub lua: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -114,6 +120,9 @@ pub struct TabConfig {
     /// SSH切断や、CLIツールの自己更新後の復帰に使う
     #[serde(default)]
     pub auto_restart: bool,
+    /// このタブ専用のLuaフック (最優先で引き当てられる)
+    #[serde(default)]
+    pub lua: Option<String>,
     /// 表示上の子タブ (転送関係はLuaが決める。ここでは階層表示のみ)
     #[serde(default)]
     pub children: Vec<TabConfig>,
@@ -141,6 +150,8 @@ impl CommandSpec {
 pub struct Workspace {
     pub name: String,
     pub tabs: Vec<FlatTab>,
+    /// ワークスペース階層のLuaフック
+    pub lua: Option<String>,
 }
 
 pub struct FlatTab {
@@ -207,21 +218,23 @@ impl Config {
                 out.push(Workspace {
                     name: "DEFAULT".into(),
                     tabs,
+                    lua: None,
                 });
             }
             return (out, errors);
         }
         for ws in &self.workspaces {
-            let (tab_defs, file_name): (Vec<TabConfig>, Option<String>) = match &ws.file {
-                Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
-                    Ok(p) => (p.tabs, p.name),
-                    Err(e) => {
-                        errors.push(format!("{}: {e:#}", ws.name));
-                        continue;
-                    }
-                },
-                None => (ws.tabs.clone(), None),
-            };
+            let (tab_defs, file_name, file_lua): (Vec<TabConfig>, Option<String>, Option<String>) =
+                match &ws.file {
+                    Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
+                        Ok(p) => (p.tabs, p.name, p.lua),
+                        Err(e) => {
+                            errors.push(format!("{}: {e:#}", ws.name));
+                            continue;
+                        }
+                    },
+                    None => (ws.tabs.clone(), None, None),
+                };
             let mut tabs = Vec::new();
             flatten(&tab_defs, 0, &mut tabs);
             out.push(Workspace {
@@ -232,6 +245,8 @@ impl Config {
                     ws.name.clone()
                 },
                 tabs,
+                // config側の指定を優先し、無ければ定義ファイル側を使う
+                lua: ws.lua.clone().or(file_lua),
             });
         }
         (out, errors)
