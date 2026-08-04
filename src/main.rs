@@ -438,6 +438,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 
             // フック発火 → wait中コルーチン再開 → 積まれた操作の実行
             if let Some(eng) = engine.as_mut() {
+                // ループ中から現在の状態を読めるようにする (shikisha.state)
+                eng.set_states(tabs.iter().map(|t| t.state.label().to_string()).collect());
+                // 終了したタブで待機中のループは破棄する (無限ループを残さない)
+                for &(idx, old, new) in &transitions {
+                    if new == TabState::Exited && old != TabState::Exited {
+                        eng.cancel_tab(idx);
+                    }
+                }
                 if auto_enabled {
                     for (i, fired) in started_fired.iter_mut().enumerate() {
                         if !*fired {
@@ -468,11 +476,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             }
                             TabState::Exited => eng.fire("on_exit", &ctx, None),
                             _ => {}
-                        }
-                    }
-                    if eng.has_any("on_tick") {
-                        for (i, t) in tabs.iter().enumerate() {
-                            eng.fire("on_tick", &tab_ctx(t, i + 1), Some(t.state.label()));
                         }
                     }
                     eng.tick_pending(&|idx| {
@@ -587,6 +590,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         }
                         // Ctrl+B r このタブを再起動 (終了・切断からの復帰)
                         KeyCode::Char('r') => {
+                            if let Some(eng) = engine.as_mut() {
+                                eng.cancel_tab(active);
+                            }
                             if let Some(t) = session_mut(&mut tabs, active) {
                                 flash = Some(match t.restart(rows, cols) {
                                     Ok(()) => format!(">> {} を再起動しました", t.title),
@@ -645,6 +651,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         }
                         KeyCode::Char('x') => {
                             auto_enabled = false;
+                            // 待機中のループも全て破棄する (再開時に蘇らせない)
+                            if let Some(eng) = engine.as_mut() {
+                                eng.cancel_all();
+                            }
                             flash =
                                 Some(">> EMERGENCY STOP: 全自動化停止 (Ctrl+B aで再開)".to_string());
                         }

@@ -173,13 +173,12 @@ fn load_manual(config_path: &std::path::Path) -> String {
     EMBEDDED_MANUAL.to_string()
 }
 
-const EVENT_FILES: [&str; 7] = [
+const EVENT_FILES: [&str; 6] = [
     "on_start",
     "on_done",
     "on_question",
     "on_exit",
     "on_busy",
-    "on_tick",
     "_shared",
 ];
 
@@ -659,7 +658,7 @@ const PAGE: &str = r##"<!doctype html>
      <span id="automsg"></span>
    </div>
    <p class="warn">
-     <a href="/help" target="_blank" style="color:#00aaff">📖 書き方を見る（変数・命令の一覧と例）</a>
+     <a href="/help?token=__TOKEN__" target="_blank" style="color:#00aaff">📖 書き方を見る（変数・命令の一覧と例）</a>
      　自動化からファイル操作やインターネット接続はできません（サンドボックス）。</p>
  </div>
 </div>
@@ -830,8 +829,8 @@ const EVENTS = [
   ["on_done",     "応答が完了したとき",     "例: 結果を他のタブへ渡す / Slackに通知する"],
   ["on_question", "確認を聞かれたとき",     "文字列を返すと自動で送信、返さなければ人間の判断待ち"],
   ["on_exit",     "セッションが終了したとき", "例: 切断されたら再接続する"],
-  ["on_busy",     "応答が始まったとき（上級）", ""],
-  ["on_tick",     "0.2秒ごと（上級）",      "多用すると重くなります"],
+  ["on_busy",     "応答が始まったとき（上級）",
+   "例: 処理中に定期的に様子を見る (while shikisha.state(tab)==\"BUSY\" do ... end)"],
   ["_shared",     "共通の下請け関数",       "他のイベントから呼べる関数を定義しておく場所"],
 ];
 let autoTarget = null, autoData = {}, autoEvent = "on_done";

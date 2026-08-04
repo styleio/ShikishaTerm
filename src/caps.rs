@@ -169,13 +169,6 @@ impl Capabilities {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.spec.files.is_empty()
-            && self.spec.http.is_empty()
-            && self.spec.allow_dirs.is_empty()
-            && self.spec.allow_hosts.is_empty()
-    }
-
     /// 名前付き窓口のパスを解決する
     fn named_path(&self, name: &str, rel: &str, want_write: bool) -> Result<PathBuf> {
         let Some(cap) = self.spec.files.get(name) else {
@@ -319,7 +312,6 @@ mod tests {
     #[test]
     fn nothing_is_allowed_by_default() {
         let c = caps(CapabilitySpec::default(), PathBuf::from("."));
-        assert!(c.is_empty());
         assert!(c.write("reports", "a.md", "x").is_err());
         assert!(c.http("api", "{}").is_err());
         assert!(c.write_raw("a.md", "x").is_err());

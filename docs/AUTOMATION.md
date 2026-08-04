@@ -20,7 +20,6 @@
 | `on_question.lua` | AIが確認・選択肢を出してきたとき |
 | `on_exit.lua` | セッションが終了したとき（切断・クラッシュを含む） |
 | `on_busy.lua` | 応答が始まったとき（上級者向け） |
-| `on_tick.lua` | 約0.2秒ごと（上級者向け・多用しないこと） |
 | `_shared.lua` | 上記より先に読まれる。共通の下請け関数を置く場所 |
 
 ファイルの中身は**処理の本体だけ**を書きます。`function ... end` は不要です。
@@ -57,7 +56,9 @@ shikisha.send_to_tab(2, "このコードをレビューして:\n" .. tab.output)
 | `shikisha.send_to_tab(番号, "文字列")` | 他のタブへ送信して実行させる（自動チェーン+1） |
 | `shikisha.send(tab, "文字列")` | そのタブへキー入力を送る（改行は `\r`） |
 | `shikisha.wait(tab, "正規表現", ミリ秒)` | 画面にその文字が出るまで待つ。出たら `true` |
-| `shikisha.sleep(ミリ秒)` | 待つ |
+| `shikisha.sleep(ミリ秒)` | 待つ（待っている間も他のタブは動きます） |
+| `shikisha.state(tab)` | **今の**状態を読む（ループの終了条件に使う） |
+| `shikisha.wait_state(tab, "DONE", ミリ秒)` | その状態になるまで待つ |
 | `shikisha.notify("宛先", "文字列")` | Slack / Telegram へ通知（設定済みの宛先のみ） |
 | `shikisha.restart(tab)` | そのタブを再起動する |
 | `shikisha.log("文字列")` | `logs/hooks.log` に記録 |
@@ -118,6 +119,22 @@ shikisha.set_var("retry", n)
 shikisha.sleep(2000)
 shikisha.restart(tab)      -- 再起動後は on_start がもう一度動く
 ```
+
+### 定期的に様子を見る（on_busy.lua）
+
+`sleep` で待っている間も画面や他のタブは止まりません。間隔は自分で決められます。
+
+```lua
+-- 処理中の間だけ、30秒おきに記録する
+while shikisha.state(tab) == "BUSY" do
+  shikisha.sleep(30000)
+  shikisha.log(tab.name .. " はまだ処理中")
+end
+```
+
+`tab.state` は**呼ばれた瞬間の**状態なので、ループの条件には
+`shikisha.state(tab)`（今の状態）を使ってください。
+タブが終了・再起動すると、待機中のループは自動で破棄されます。
 
 ### 完了したらSlackに通知するだけ（on_done.lua）
 

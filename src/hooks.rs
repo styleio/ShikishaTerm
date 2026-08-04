@@ -74,6 +74,16 @@ const PRELUDE: &str = r#"
 shikisha.__vars = {}
 function shikisha.get_var(k) return shikisha.__vars[k] end
 function shikisha.set_var(k, v) shikisha.__vars[k] = v end
+-- 状態が変わるまで待つ (state と sleep で組み立てられるのでLua側で実装)
+function shikisha.wait_state(tab, want, timeout_ms)
+  local left = timeout_ms or 60000
+  while left > 0 do
+    if shikisha.state(tab) == want then return true end
+    shikisha.sleep(200)
+    left = left - 200
+  end
+  return false
+end
 function shikisha.wait(tab, pattern, timeout_ms)
   local idx = (type(tab) == "table") and tab.index or tab
   return coroutine.yield({ op = "wait", tab = idx, pattern = pattern, timeout_ms = timeout_ms or 10000 })
@@ -108,19 +118,14 @@ pub struct HookEngine {
     lua: Lua,
     commands: Rc<RefCell<Vec<Command>>>,
     current_origin: Rc<Cell<usize>>,
+    /// 各タブの現在の状態 (ループ中から読めるようにする)
+    states: Rc<RefCell<Vec<String>>>,
     pending: Vec<Pending>,
     scripts: Vec<Script>,
     attach: Attach,
 }
 
-const HOOK_NAMES: [&str; 6] = [
-    "on_start",
-    "on_question",
-    "on_busy",
-    "on_done",
-    "on_exit",
-    "on_tick",
-];
+const HOOK_NAMES: [&str; 5] = ["on_start", "on_question", "on_busy", "on_done", "on_exit"];
 
 impl HookEngine {
     /// スクリプトを1本だけ読み込んで基本設定に紐づける (テスト・単純構成用)
@@ -132,6 +137,8 @@ impl HookEngine {
         Ok(e)
     }
 
+    /// 能力を与えないエンジン (テスト・単純構成用)
+    #[cfg(test)]
     pub fn new() -> Result<Self> {
         Self::with_caps(std::rc::Rc::new(crate::caps::Capabilities::disabled()))
     }
@@ -146,8 +153,27 @@ impl HookEngine {
 
         let commands: Rc<RefCell<Vec<Command>>> = Rc::new(RefCell::new(Vec::new()));
         let current_origin = Rc::new(Cell::new(1usize));
+        let states: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
 
         let shikisha = lua.create_table().map_err(lerr)?;
+        {
+            // 現在の状態を読む。ループの終了条件に使う
+            // (フック引数の tab.state は発火時点のスナップショットなので変化しない)
+            let s = Rc::clone(&states);
+            shikisha
+                .set(
+                    "state",
+                    lua.create_function(move |_, tab: Value| {
+                        let idx = tab_index_of(&tab)?;
+                        Ok(s.borrow()
+                            .get(idx.wrapping_sub(1))
+                            .cloned()
+                            .unwrap_or_else(|| "EXIT".to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
         {
             let c = Rc::clone(&commands);
             let o = Rc::clone(&current_origin);
@@ -308,10 +334,36 @@ impl HookEngine {
             lua,
             commands,
             current_origin,
+            states,
             pending: Vec::new(),
             scripts: Vec::new(),
             attach: Attach::default(),
         })
+    }
+
+    /// 検出ティックごとに全タブの状態を反映する
+    pub fn set_states(&self, states: Vec<String>) {
+        *self.states.borrow_mut() = states;
+    }
+
+    /// そのタブで待機中のループを破棄する (終了・再起動時)
+    pub fn cancel_tab(&mut self, tab: usize) {
+        let dropped: Vec<Pending> = {
+            let (keep, drop): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut self.pending).into_iter().partition(|p| p.origin != tab);
+            self.pending = keep;
+            drop
+        };
+        for p in dropped {
+            let _ = self.lua.remove_registry_value(p.key);
+        }
+    }
+
+    /// 待機中のループを全て破棄する (緊急停止)
+    pub fn cancel_all(&mut self) {
+        for p in std::mem::take(&mut self.pending) {
+            let _ = self.lua.remove_registry_value(p.key);
+        }
     }
 
     /// 自動化を読み込む。同じパスは再利用する。
@@ -417,11 +469,6 @@ impl HookEngine {
         .into_iter()
         .flatten()
         .find(|&id| self.scripts[id].defined.contains(hook))
-    }
-
-    /// どこかにそのフックが定義されているか (on_tickの空回し防止用)
-    pub fn has_any(&self, hook: &str) -> bool {
-        self.scripts.iter().any(|s| s.defined.contains(hook))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -683,6 +730,59 @@ mod tests {
         e.fire("on_done", &ctx(1, ""), None);
         let cmds = e.drain_commands();
         assert!(matches!(&cmds[1], Command::Log(m) if m == "round 2"));
+    }
+
+    #[test]
+    fn loop_can_read_live_state_and_exit() {
+        // on_tick の代わりに「開始時 + ループ + sleep」で定期処理が書けること
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_busy(tab)
+              while shikisha.state(tab) == "BUSY" do
+                shikisha.log("working")
+                shikisha.sleep(1000)
+              end
+              shikisha.log("done")
+            end
+            "#,
+        )
+        .unwrap();
+        e.set_states(vec!["BUSY".into()]);
+        e.fire("on_busy", &ctx(1, ""), None);
+        // 状態がBUSYの間はループが続く
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        e.tick_pending(&|_| None);
+        // 状態が変わればループを抜ける
+        e.set_states(vec!["DONE".into()]);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        e.tick_pending(&|_| None);
+        let logs: Vec<String> = e
+            .drain_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Log(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(logs, vec!["working", "working", "done"]);
+    }
+
+    #[test]
+    fn pending_loops_are_dropped_when_tab_ends() {
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_start(tab)
+              shikisha.sleep(1000)
+              shikisha.log("これは実行されないはず")
+            end
+            "#,
+        )
+        .unwrap();
+        e.fire("on_start", &ctx(1, ""), None);
+        e.cancel_tab(1);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        e.tick_pending(&|_| None);
+        assert!(e.drain_commands().is_empty(), "破棄後は再開されない");
     }
 
     #[test]
