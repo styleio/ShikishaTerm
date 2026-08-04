@@ -16,6 +16,8 @@ pub enum TabState {
     Question,
     /// 青: 待機 (動作なし)
     Wait,
+    /// 赤: 子プロセス終了 (Detectorではなく Tab が設定する)
+    Exited,
 }
 
 impl TabState {
@@ -25,6 +27,7 @@ impl TabState {
             TabState::Done => "DONE",
             TabState::Question => "QUESTION",
             TabState::Wait => "WAIT",
+            TabState::Exited => "EXIT",
         }
     }
 }

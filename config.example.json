@@ -1,0 +1,17 @@
+{
+  "tabs": [
+    {
+      "name": "local-claude",
+      "command": "claude"
+    },
+    {
+      "name": "dev-server",
+      "command": "ssh user@example.com",
+      "profile": "claude"
+    },
+    {
+      "name": "shell",
+      "command": "powershell.exe"
+    }
+  ]
+}

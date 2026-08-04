@@ -62,21 +62,24 @@ impl Profile {
     }
 }
 
-/// exe隣 (ポータブル配置) → カレント直下の順で profiles/*.json を探し、
-/// コマンド名にマッチするプロファイルを返す。無ければ汎用フォールバック
-pub fn load_for_command(cmd: &str) -> Profile {
-    let needle = std::path::Path::new(cmd)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(cmd)
-        .to_lowercase();
-
-    let exe_dir = std::env::current_exe()
+/// exe隣 (ポータブル配置) → カレント直下の順で探す
+fn candidate_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(d) = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("profiles")));
-    let candidates = [exe_dir, Some(std::path::PathBuf::from("profiles"))];
+        .and_then(|p| p.parent().map(|d| d.join("profiles")))
+    {
+        dirs.push(d);
+    }
+    dirs.push(std::path::PathBuf::from("profiles"));
+    dirs
+}
 
-    for dir in candidates.into_iter().flatten() {
+fn find_profile<F>(pred: F) -> Option<Profile>
+where
+    F: Fn(&std::path::Path, &ProfileFile) -> bool,
+{
+    for dir in candidate_dirs() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -91,17 +94,40 @@ pub fn load_for_command(cmd: &str) -> Profile {
             let Ok(pf) = serde_json::from_str::<ProfileFile>(&text) else {
                 continue;
             };
-            if pf
-                .command_match
-                .iter()
-                .any(|m| needle.contains(&m.to_lowercase()))
-            {
-                match Profile::compile(pf) {
-                    Ok(p) => return p,
-                    Err(_) => continue,
+            if pred(&path, &pf) {
+                if let Ok(p) = Profile::compile(pf) {
+                    return Some(p);
                 }
             }
         }
     }
-    Profile::generic()
+    None
+}
+
+/// コマンド名にマッチするプロファイルを返す。無ければ汎用フォールバック
+pub fn load_for_command(cmd: &str) -> Profile {
+    let needle = std::path::Path::new(cmd)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(cmd)
+        .to_lowercase();
+    find_profile(|_, pf| {
+        pf.command_match
+            .iter()
+            .any(|m| needle.contains(&m.to_lowercase()))
+    })
+    .unwrap_or_else(Profile::generic)
+}
+
+/// プロファイル名 (ファイル名 or name フィールド) の明示指定でロードする。
+/// config.jsonのタブ定義 "profile": "claude" 用 (ssh先のAI等、コマンド名で判別できない場合)
+pub fn load_by_name(name: &str) -> Profile {
+    let needle = name.to_lowercase();
+    find_profile(|path, pf| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.to_lowercase() == needle)
+            || pf.name.to_lowercase() == needle
+    })
+    .unwrap_or_else(Profile::generic)
 }

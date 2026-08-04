@@ -1,25 +1,24 @@
-//! ShikishaTerm-AI Phase 1 スパイク:
-//! PTYで子プロセス(既定: PowerShell、引数で任意コマンド)を起動し、
-//! tui-termでタブ内に端末画面を表示する。DESIGN.md 14章 Phase 1。
+//! ShikishaTerm-AI: ポータブル・マルチセッションAIオーケストレーションTUI
 //!
-//! 起動例:
-//!   Shikisha-Term-AI.exe            # PowerShellをラップ
-//!   Shikisha-Term-AI.exe claude     # Claude Codeをラップ
+//! Phase 3: マルチタブ + INDEXダッシュボード + config.json
 //!
-//! 操作: Ctrl+B → q で終了（それ以外のキーは子プロセスへ透過）
+//! 起動:
+//!   Shikisha-Term-AI.exe                 # config.jsonのタブ構成 (無ければPowerShell 1タブ)
+//!   Shikisha-Term-AI.exe claude          # デバッグ用: 引数のコマンドを1タブで起動
+//!
+//! 操作 (プレフィックスキー Ctrl+B):
+//!   Ctrl+B q      終了 / Ctrl+B 0-9 タブ切替 (0=INDEX) / Ctrl+B n/p 隣のタブ
+//!   Ctrl+B [      コピーモード / Ctrl+B b 素のCtrl+Bを送信
+//! マウス: ホイール=スクロール(コピーモード) / 左ドラッグ=選択即コピー / 右クリック=ペースト
 
+mod config;
 mod detect;
 mod profile;
+mod tab;
 
-use std::io::{Read as _, Write as _};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use detect::{Detector, TabState};
-
 use anyhow::Result;
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use ratatui::Frame;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -32,152 +31,31 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use tui_term::widget::PseudoTerminal;
 
+use detect::TabState;
+use tab::{CopyState, Tab};
+
 const TAB_BAR_WIDTH: u16 = 18;
 const STATUS_BAR_HEIGHT: u16 = 1;
-const SCROLLBACK_LINES: usize = 5000;
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const NEON_GREEN: Color = Color::Rgb(57, 255, 20);
 const NEON_YELLOW: Color = Color::Rgb(255, 234, 0);
 const NEON_BLUE: Color = Color::Rgb(0, 170, 255);
-
-type PtyWriter = Arc<Mutex<Box<dyn std::io::Write + Send>>>;
-
-/// 子プロセスからの端末照会 (DSR/DA) への応答係。
-/// ConPTY配下のプログラム (ssh等) はカーソル位置照会 `\x1b[6n` への応答を
-/// 待ってブロックするため、本物のターミナルと同様にPTYへ書き戻す。
-/// あわせてベル文字 (完了通知によく使われる) を数え、状態検出の信号にする。
-struct QueryResponder {
-    writer: PtyWriter,
-    bell: Arc<AtomicU64>,
-}
-
-impl QueryResponder {
-    fn reply(&self, bytes: &[u8]) {
-        if let Ok(mut w) = self.writer.lock() {
-            let _ = w.write_all(bytes);
-            let _ = w.flush();
-        }
-    }
-}
-
-impl vt100::Callbacks for QueryResponder {
-    fn audible_bell(&mut self, _: &mut vt100::Screen) {
-        self.bell.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn unhandled_csi(
-        &mut self,
-        screen: &mut vt100::Screen,
-        i1: Option<u8>,
-        _i2: Option<u8>,
-        params: &[&[u16]],
-        c: char,
-    ) {
-        let p0 = params.first().and_then(|p| p.first()).copied();
-        match (i1, c, p0) {
-            // DSR-CPR: カーソル位置照会 → \x1b[{row};{col}R (1始まり)
-            (None, 'n', Some(6)) => {
-                let (row, col) = screen.cursor_position();
-                self.reply(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
-            }
-            // DSR: 端末ステータス照会 → 正常
-            (None, 'n', Some(5)) => self.reply(b"\x1b[0n"),
-            // DA1: 端末種別照会 → VT102相当
-            (None, 'c', _) => self.reply(b"\x1b[?6c"),
-            // DA2: 二次端末種別照会
-            (Some(b'>'), 'c', _) => self.reply(b"\x1b[>0;0;0c"),
-            _ => {}
-        }
-    }
-}
+const NEON_RED: Color = Color::Rgb(255, 70, 70);
 
 fn main() -> Result<()> {
-    let cmd_args: Vec<String> = std::env::args().skip(1).collect();
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
-    let res = run(&mut terminal, cmd_args);
+    let res = run(&mut terminal);
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     res
 }
 
-/// 起動コマンドを組み立てる。
-/// npmシム等の拡張子なしスクリプトは CreateProcess が直接起動できない
-/// (os error 193) ため、PATH+PATHEXT を探索して .cmd/.bat は cmd.exe /c 経由にする
-fn build_command(cmd_args: &[String]) -> CommandBuilder {
-    let Some(prog) = cmd_args.first() else {
-        return CommandBuilder::new("powershell.exe");
-    };
-    let rest = &cmd_args[1..];
-    match resolve_windows_command(prog) {
-        Some(path) => {
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase());
-            if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
-                let mut c = CommandBuilder::new("cmd.exe");
-                c.arg("/c");
-                c.arg(path);
-                for a in rest {
-                    c.arg(a);
-                }
-                c
-            } else {
-                let mut c = CommandBuilder::new(path);
-                for a in rest {
-                    c.arg(a);
-                }
-                c
-            }
-        }
-        // 解決できなければそのまま渡してエラーを表面化させる
-        None => {
-            let mut c = CommandBuilder::new(prog);
-            for a in rest {
-                c.arg(a);
-            }
-            c
-        }
-    }
-}
-
-/// PATH と実行可能拡張子 (.exe/.com/.cmd/.bat) でコマンドを実ファイルに解決する
-fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
-    use std::path::{Path, PathBuf};
-    const EXTS: [&str; 4] = ["exe", "com", "cmd", "bat"];
-
-    let has_exec_ext = |p: &Path| {
-        p.extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| EXTS.contains(&e.to_ascii_lowercase().as_str()))
-    };
-    let try_base = |base: PathBuf| -> Option<PathBuf> {
-        if has_exec_ext(&base) && base.is_file() {
-            return Some(base);
-        }
-        EXTS.iter()
-            .map(|e| base.with_extension(e))
-            .find(|cand| cand.is_file())
-    };
-
-    let p = Path::new(prog);
-    // パス区切りを含む指定はPATH探索せずそのまま解決
-    if p.components().count() > 1 {
-        return try_base(p.to_path_buf());
-    }
-    let path_var = std::env::var_os("PATH")?;
-    std::env::split_paths(&path_var).find_map(|dir| try_base(dir.join(prog)))
-}
-
 /// タブバー・枠線・ステータスバーを除いた、PTYに渡す端末サイズ (rows, cols)
 fn pty_dims(size: Size) -> (u16, u16) {
     let cols = size.width.saturating_sub(TAB_BAR_WIDTH + 2).max(10);
-    let rows = size
-        .height
-        .saturating_sub(STATUS_BAR_HEIGHT + 2)
-        .max(3);
+    let rows = size.height.saturating_sub(STATUS_BAR_HEIGHT + 2).max(3);
     (rows, cols)
 }
 
@@ -196,152 +74,87 @@ fn in_rect(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
-fn button_code(b: MouseButton) -> u16 {
-    match b {
-        MouseButton::Left => 0,
-        MouseButton::Middle => 1,
-        MouseButton::Right => 2,
-    }
+/// 画面最下行から数えた絶対行位置
+fn abs_line(offset: usize, rows: u16, cursor_row: u16) -> usize {
+    offset + rows.saturating_sub(1).saturating_sub(cursor_row) as usize
 }
 
-/// 子プロセスがマウスレポートを要求している場合のイベント透過 (SGRエンコードのみ対応)
-fn mouse_to_child_bytes(
-    m: &MouseEvent,
-    inner: Rect,
-    mode: vt100::MouseProtocolMode,
-    enc: vt100::MouseProtocolEncoding,
-) -> Option<Vec<u8>> {
-    use vt100::MouseProtocolMode as M;
-    if matches!(mode, M::None) || !matches!(enc, vt100::MouseProtocolEncoding::Sgr) {
-        return None;
-    }
-    if !in_rect(inner, m.column, m.row) {
-        return None;
-    }
-    let x = m.column - inner.x + 1;
-    let y = m.row - inner.y + 1;
-    let (btn, press) = match m.kind {
-        MouseEventKind::Down(b) => (button_code(b), true),
-        MouseEventKind::Up(b) if !matches!(mode, M::Press) => (button_code(b), false),
-        MouseEventKind::Drag(b) if matches!(mode, M::ButtonMotion | M::AnyMotion) => {
-            (button_code(b) + 32, true)
-        }
-        MouseEventKind::Moved if matches!(mode, M::AnyMotion) => (32 + 3, true),
-        MouseEventKind::ScrollUp => (64, true),
-        MouseEventKind::ScrollDown => (65, true),
-        _ => return None,
-    };
-    let suffix = if press { 'M' } else { 'm' };
-    Some(format!("\x1b[<{btn};{x};{y}{suffix}").into_bytes())
+/// argvからタブ名を生成 ("ssh" → "SSH")
+fn title_of(argv: &[String]) -> String {
+    argv.first()
+        .map(|c| {
+            std::path::Path::new(c)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(c)
+                .to_uppercase()
+        })
+        .unwrap_or_else(|| "SHELL".into())
 }
 
-fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result<()> {
+fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+    let cmd_args: Vec<String> = std::env::args().skip(1).collect();
+    let start = Instant::now();
     let (rows, cols) = pty_dims(terminal.size()?);
 
-    let pty_system = native_pty_system();
-    let pair = pty_system.openpty(PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
-
-    let mut cmd = build_command(&cmd_args);
-    cmd.cwd(std::env::current_dir()?);
-    let session_title = if cmd_args.is_empty() {
-        "LOCAL SHELL".to_string()
-    } else {
-        cmd_args[0].to_uppercase()
-    };
-
-    let mut child = pair.slave.spawn_command(cmd)?;
-    drop(pair.slave);
-    let mut killer = child.clone_killer();
-
-    let start = Instant::now();
-    let writer: PtyWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
-    let bell_count = Arc::new(AtomicU64::new(0));
-    let last_output_ms = Arc::new(AtomicU64::new(0));
-    let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-        rows,
-        cols,
-        SCROLLBACK_LINES,
-        QueryResponder {
-            writer: Arc::clone(&writer),
-            bell: Arc::clone(&bell_count),
-        },
-    )));
-    let child_exited = Arc::new(AtomicBool::new(false));
-
-    // PTY出力 → vt100パーサ (最終出力時刻も記録し、沈黙タイマーの信号にする)
-    {
-        let parser = Arc::clone(&parser);
-        let last_output_ms = Arc::clone(&last_output_ms);
-        let mut reader = pair.master.try_clone_reader()?;
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        last_output_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                        parser.lock().unwrap().process(&buf[..n]);
-                    }
-                }
+    // タブ構成: CLI引数 (デバッグ用) > config.json > 既定 (PowerShell 1タブ)
+    let mut tabs: Vec<Tab> = Vec::new();
+    let mut startup_errors: Vec<String> = Vec::new();
+    if !cmd_args.is_empty() {
+        let profile = profile::load_for_command(&cmd_args[0]);
+        tabs.push(Tab::spawn(
+            title_of(&cmd_args),
+            &cmd_args,
+            profile,
+            rows,
+            cols,
+            start,
+        )?);
+    } else if let Some(cfg) = config::load() {
+        for t in &cfg.tabs {
+            let argv = t.command.argv();
+            if argv.is_empty() {
+                continue;
             }
-        });
+            let profile = match &t.profile {
+                Some(name) => profile::load_by_name(name),
+                None => profile::load_for_command(&argv[0]),
+            };
+            let title = t.name.clone().unwrap_or_else(|| title_of(&argv));
+            match Tab::spawn(title.clone(), &argv, profile, rows, cols, start) {
+                Ok(tab) => tabs.push(tab),
+                Err(e) => startup_errors.push(format!("{title}: {e}")),
+            }
+        }
+    }
+    if tabs.is_empty() {
+        let argv = vec!["powershell.exe".to_string()];
+        tabs.push(Tab::spawn(
+            "SHELL".into(),
+            &argv,
+            profile::load_for_command("powershell"),
+            rows,
+            cols,
+            start,
+        )?);
     }
 
-    // 子プロセス終了検知
-    {
-        let flag = Arc::clone(&child_exited);
-        std::thread::spawn(move || {
-            let _ = child.wait();
-            flag.store(true, Ordering::SeqCst);
-        });
-    }
-
+    // 0 = INDEX、1.. = セッション
+    let mut active: usize = 1;
     let mut prefix_active = false;
-    let mut copy_state: Option<CopyState> = None;
-    let mut flash: Option<String> = None;
-
-    // 状態検出エンジン (プロファイルはコマンド名から選択)
-    let profile_cmd = cmd_args.first().map(String::as_str).unwrap_or("powershell");
-    let mut detector = Detector::new(profile::load_for_command(profile_cmd));
-    let mut tab_state = TabState::Wait;
-    let mut spinner_idx: usize = 0;
+    let mut flash: Option<String> = startup_errors.first().map(|e| format!(">> 起動失敗 {e}"));
     let mut last_detect = Instant::now() - Duration::from_secs(1);
 
     loop {
-        if child_exited.load(Ordering::SeqCst) {
-            break;
-        }
-
-        // 200ms毎に画面・沈黙時間・ベルから状態を判定
+        // 200ms毎に全タブの状態を判定 (非アクティブタブの完了もINDEXに反映される)
         if last_detect.elapsed() >= Duration::from_millis(200) {
             last_detect = Instant::now();
-            let screen_text = parser.lock().unwrap().screen().contents();
-            let now = start.elapsed().as_millis() as u64;
-            let since = now.saturating_sub(last_output_ms.load(Ordering::Relaxed));
-            tab_state = detector.tick(&screen_text, since, bell_count.load(Ordering::Relaxed));
-            if tab_state == TabState::Busy {
-                spinner_idx = spinner_idx.wrapping_add(1);
+            for t in tabs.iter_mut() {
+                t.tick(start);
             }
         }
 
-        terminal.draw(|f| {
-            draw(
-                f,
-                &parser,
-                &session_title,
-                prefix_active,
-                copy_state.as_ref(),
-                flash.as_deref(),
-                tab_state,
-                SPINNER[spinner_idx % SPINNER.len()],
-                detector.profile_name(),
-            );
-        })?;
+        terminal.draw(|f| draw(f, &tabs, active, prefix_active, flash.as_deref()))?;
 
         if !event::poll(Duration::from_millis(16))? {
             continue;
@@ -353,233 +166,498 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
                     prefix_active = false;
                     match key.code {
                         KeyCode::Char('q') => break,
+                        KeyCode::Char(c @ '0'..='9') => {
+                            let n = c as usize - '0' as usize;
+                            if n <= tabs.len() {
+                                active = n;
+                            }
+                        }
+                        KeyCode::Char('n') => {
+                            active = if active >= tabs.len() { 0 } else { active + 1 };
+                        }
+                        KeyCode::Char('p') => {
+                            active = if active == 0 { tabs.len() } else { active - 1 };
+                        }
                         // Ctrl+B b で子プロセスに素のCtrl+Bを送る
-                        KeyCode::Char('b') => pty_write(&writer, &[0x02])?,
+                        KeyCode::Char('b') => {
+                            if let Some(t) = session_mut(&mut tabs, active) {
+                                t.write_bytes(&[0x02])?;
+                            }
+                        }
                         // Ctrl+B [ でコピーモード (tmuxのコピーモード風)
                         KeyCode::Char('[') => {
-                            copy_state = Some(CopyState {
-                                cursor_row: pty_dims(terminal.size()?).0.saturating_sub(1),
-                                anchor: None,
-                            });
-                        }
-                        _ => {}
-                    }
-                } else if copy_state.is_some() {
-                    let mut cs = copy_state.take().unwrap();
-                    let (rows_v, cols_v) = pty_dims(terminal.size()?);
-                    let mut p = parser.lock().unwrap();
-                    let cur = p.screen().scrollback();
-                    let mut keep = true;
-                    match key.code {
-                        KeyCode::Esc | KeyCode::Char('q') => {
-                            p.screen_mut().set_scrollback(0);
-                            keep = false;
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            if cs.cursor_row > 0 {
-                                cs.cursor_row -= 1;
-                            } else {
-                                p.screen_mut().set_scrollback(cur + 1);
+                            let rows = pty_dims(terminal.size()?).0;
+                            if let Some(t) = session_mut(&mut tabs, active) {
+                                t.copy = Some(CopyState {
+                                    cursor_row: rows.saturating_sub(1),
+                                    anchor: None,
+                                });
                             }
                         }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            if cs.cursor_row + 1 < rows_v {
-                                cs.cursor_row += 1;
-                            } else {
-                                p.screen_mut().set_scrollback(cur.saturating_sub(1));
-                            }
-                        }
-                        KeyCode::PageUp => p.screen_mut().set_scrollback(cur + rows_v as usize),
-                        KeyCode::PageDown => {
-                            p.screen_mut().set_scrollback(cur.saturating_sub(rows_v as usize));
-                        }
-                        // 最古へ (実際の保持量にクランプされる)
-                        KeyCode::Home | KeyCode::Char('g') => {
-                            p.screen_mut().set_scrollback(usize::MAX / 2);
-                        }
-                        KeyCode::End | KeyCode::Char('G') => {
-                            p.screen_mut().set_scrollback(0);
-                            cs.cursor_row = rows_v.saturating_sub(1);
-                        }
-                        // 選択開始 / 解除
-                        KeyCode::Char('v') | KeyCode::Char(' ') => {
-                            cs.anchor = match cs.anchor {
-                                Some(_) => None,
-                                None => Some(abs_line(cur, rows_v, cs.cursor_row)),
-                            };
-                        }
-                        // 選択範囲 (未選択ならカーソル行) をコピーして復帰
-                        KeyCode::Char('y') | KeyCode::Enter => {
-                            let here = abs_line(cur, rows_v, cs.cursor_row);
-                            let (lo, hi) = match cs.anchor {
-                                Some(a) => (a.min(here), a.max(here)),
-                                None => (here, here),
-                            };
-                            let text = extract_text(&mut p, lo, hi, cols_v);
-                            p.screen_mut().set_scrollback(0);
-                            drop(p);
-                            flash = Some(copy_to_clipboard(&text));
-                            keep = false;
-                        }
-                        // 全履歴コピー
-                        KeyCode::Char('a') => {
-                            let text = extract_text(&mut p, 0, usize::MAX / 2, cols_v);
-                            p.screen_mut().set_scrollback(0);
-                            drop(p);
-                            flash = Some(copy_to_clipboard(&text));
-                            keep = false;
-                        }
                         _ => {}
-                    }
-                    if keep {
-                        copy_state = Some(cs);
                     }
                 } else if key.code == KeyCode::Char('b')
                     && key.modifiers.contains(KeyModifiers::CONTROL)
                 {
                     prefix_active = true;
-                } else if let Some(bytes) = key_to_bytes(&key) {
-                    pty_write(&writer, &bytes)?;
+                } else if active == 0 {
+                    // INDEX上では数字キーで直接タブ切替
+                    if let KeyCode::Char(c @ '0'..='9') = key.code {
+                        let n = c as usize - '0' as usize;
+                        if n <= tabs.len() {
+                            active = n;
+                        }
+                    }
+                } else {
+                    let size = terminal.size()?;
+                    if let Some(t) = session_mut(&mut tabs, active) {
+                        if t.copy.is_some() {
+                            handle_copy_key(t, &key, size, &mut flash)?;
+                        } else if let Some(bytes) = key_to_bytes(&key) {
+                            t.write_bytes(&bytes)?;
+                        }
+                    }
                 }
             }
-            Event::Paste(text) => pty_write(&writer, text.as_bytes())?,
+            Event::Paste(text) => {
+                if let Some(t) = session_mut(&mut tabs, active) {
+                    t.write_bytes(text.as_bytes())?;
+                }
+            }
             Event::Mouse(m) => {
-                let inner = pane_inner(terminal.size()?);
-                let in_pane = in_rect(inner, m.column, m.row);
-                let row_in_pane = m
-                    .row
-                    .saturating_sub(inner.y)
-                    .min(inner.height.saturating_sub(1));
-
-                // コピーモード外で子プロセスがマウスを要求していれば透過する
-                // (リモートのTUIアプリが自前でホイールスクロール等を処理できる)
-                // Shift押下時は透過せず、常にこちらのコピー/ペースト操作を優先する
-                if copy_state.is_none() && !m.modifiers.contains(KeyModifiers::SHIFT) {
-                    let (mode, enc) = {
-                        let p = parser.lock().unwrap();
-                        (
-                            p.screen().mouse_protocol_mode(),
-                            p.screen().mouse_protocol_encoding(),
-                        )
-                    };
-                    if !matches!(mode, vt100::MouseProtocolMode::None) {
-                        if let Some(bytes) = mouse_to_child_bytes(&m, inner, mode, enc) {
-                            pty_write(&writer, &bytes)?;
-                        }
-                        continue;
-                    }
-                }
-
-                match m.kind {
-                    // ホイール上: コピーモードへ入り過去へスクロール
-                    MouseEventKind::ScrollUp if in_pane || copy_state.is_some() => {
-                        if copy_state.is_none() {
-                            copy_state = Some(CopyState {
-                                cursor_row: row_in_pane,
-                                anchor: None,
-                            });
-                        }
-                        let mut p = parser.lock().unwrap();
-                        let cur = p.screen().scrollback();
-                        p.screen_mut().set_scrollback(cur + 3);
-                    }
-                    // ホイール下: 最下端まで戻ったら (未選択なら) ライブへ自動復帰
-                    MouseEventKind::ScrollDown if copy_state.is_some() => {
-                        let mut p = parser.lock().unwrap();
-                        let cur = p.screen().scrollback();
-                        let next = cur.saturating_sub(3);
-                        p.screen_mut().set_scrollback(next);
-                        drop(p);
-                        if next == 0 && copy_state.as_ref().is_some_and(|c| c.anchor.is_none()) {
-                            copy_state = None;
-                        }
-                    }
-                    // 左クリック: コピーモード開始 + その行から選択開始
-                    MouseEventKind::Down(MouseButton::Left) if in_pane => {
-                        flash = None;
-                        let offset = parser.lock().unwrap().screen().scrollback();
-                        let anchor = abs_line(offset, inner.height, row_in_pane);
-                        copy_state = Some(CopyState {
-                            cursor_row: row_in_pane,
-                            anchor: Some(anchor),
-                        });
-                    }
-                    // ドラッグで選択範囲を拡張
-                    MouseEventKind::Drag(MouseButton::Left) => {
-                        if let Some(cs) = copy_state.as_mut() {
-                            cs.cursor_row = row_in_pane;
-                        }
-                    }
-                    // 左ボタン解放: 選択範囲を即クリップボードへ (PuTTY流の選択即コピー)
-                    MouseEventKind::Up(MouseButton::Left) => {
-                        let mut exit_copy = false;
-                        if let Some(cs) = copy_state.as_mut() {
-                            if let Some(anchor) = cs.anchor.take() {
-                                let mut p = parser.lock().unwrap();
-                                let cur = p.screen().scrollback();
-                                let here = abs_line(
-                                    cur,
-                                    inner.height,
-                                    cs.cursor_row.min(inner.height.saturating_sub(1)),
-                                );
-                                let (lo, hi) = (anchor.min(here), anchor.max(here));
-                                let text = extract_text(&mut p, lo, hi, inner.width);
-                                drop(p);
-                                flash = Some(copy_to_clipboard(&text));
-                                // ライブ位置での選択なら、そのまま通常操作へ戻る
-                                exit_copy = cur == 0;
-                            }
-                        }
-                        if exit_copy {
-                            copy_state = None;
-                        }
-                    }
-                    // 右クリック: クリップボードの内容をペースト (PuTTY流)
-                    MouseEventKind::Down(MouseButton::Right) => {
-                        if copy_state.take().is_some() {
-                            parser.lock().unwrap().screen_mut().set_scrollback(0);
-                        }
-                        let bracketed = parser.lock().unwrap().screen().bracketed_paste();
-                        flash = paste_clipboard(&writer, bracketed)?;
-                    }
-                    _ => {}
-                }
+                let size = terminal.size()?;
+                handle_mouse(&mut tabs, &mut active, m, size, &mut flash)?;
             }
             Event::Resize(width, height) => {
                 let (rows, cols) = pty_dims(Size { width, height });
-                pair.master.resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                })?;
-                parser.lock().unwrap().screen_mut().set_size(rows, cols);
+                for t in &tabs {
+                    let _ = t.resize(rows, cols);
+                }
             }
             _ => {}
         }
     }
 
-    let _ = killer.kill();
+    for t in tabs.iter_mut() {
+        t.kill();
+    }
     Ok(())
 }
 
-fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
-    let mut w = writer.lock().expect("pty writer lock");
-    w.write_all(bytes)?;
+fn session_mut(tabs: &mut [Tab], active: usize) -> Option<&mut Tab> {
+    if active == 0 {
+        None
+    } else {
+        tabs.get_mut(active - 1)
+    }
+}
+
+/// コピーモード中のキー操作
+fn handle_copy_key(t: &mut Tab, key: &KeyEvent, size: Size, flash: &mut Option<String>) -> Result<()> {
+    let (rows_v, cols_v) = pty_dims(size);
+    let Some(mut cs) = t.copy.take() else {
+        return Ok(());
+    };
+    let mut p = t.parser.lock().unwrap();
+    let cur = p.screen().scrollback();
+    let mut keep = true;
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            p.screen_mut().set_scrollback(0);
+            keep = false;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if cs.cursor_row > 0 {
+                cs.cursor_row -= 1;
+            } else {
+                p.screen_mut().set_scrollback(cur + 1);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if cs.cursor_row + 1 < rows_v {
+                cs.cursor_row += 1;
+            } else {
+                p.screen_mut().set_scrollback(cur.saturating_sub(1));
+            }
+        }
+        KeyCode::PageUp => p.screen_mut().set_scrollback(cur + rows_v as usize),
+        KeyCode::PageDown => {
+            p.screen_mut().set_scrollback(cur.saturating_sub(rows_v as usize));
+        }
+        // 最古へ (実際の保持量にクランプされる)
+        KeyCode::Home | KeyCode::Char('g') => {
+            p.screen_mut().set_scrollback(usize::MAX / 2);
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+            p.screen_mut().set_scrollback(0);
+            cs.cursor_row = rows_v.saturating_sub(1);
+        }
+        // 選択開始 / 解除
+        KeyCode::Char('v') | KeyCode::Char(' ') => {
+            cs.anchor = match cs.anchor {
+                Some(_) => None,
+                None => Some(abs_line(cur, rows_v, cs.cursor_row)),
+            };
+        }
+        // 選択範囲 (未選択ならカーソル行) をコピーして復帰
+        KeyCode::Char('y') | KeyCode::Enter => {
+            let here = abs_line(cur, rows_v, cs.cursor_row);
+            let (lo, hi) = match cs.anchor {
+                Some(a) => (a.min(here), a.max(here)),
+                None => (here, here),
+            };
+            let text = extract_text(&mut p, lo, hi, cols_v);
+            p.screen_mut().set_scrollback(0);
+            drop(p);
+            *flash = Some(copy_to_clipboard(&text));
+            t.copy = None;
+            return Ok(());
+        }
+        // 全履歴コピー
+        KeyCode::Char('a') => {
+            let text = extract_text(&mut p, 0, usize::MAX / 2, cols_v);
+            p.screen_mut().set_scrollback(0);
+            drop(p);
+            *flash = Some(copy_to_clipboard(&text));
+            t.copy = None;
+            return Ok(());
+        }
+        _ => {}
+    }
+    if keep {
+        t.copy = Some(cs);
+    }
     Ok(())
 }
 
-/// コピーモード (Ctrl+B [) の状態
-struct CopyState {
-    /// ペイン内のカーソル行 (0 = 最上行)
-    cursor_row: u16,
-    /// 選択開始位置 (画面最下行から数えた行数)。None = 未選択
-    anchor: Option<usize>,
+/// マウス操作: タブバークリック切替 / ホイールスクロール / 選択即コピー / 右クリックペースト
+fn handle_mouse(
+    tabs: &mut [Tab],
+    active: &mut usize,
+    m: MouseEvent,
+    size: Size,
+    flash: &mut Option<String>,
+) -> Result<()> {
+    // タブバークリックで切替 (行0=INDEX、行1..=セッション)
+    if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+        if m.column < TAB_BAR_WIDTH {
+            let r = m.row as usize;
+            if r <= tabs.len() {
+                *active = r;
+            }
+            return Ok(());
+        }
+    }
+
+    let inner = pane_inner(size);
+    let in_pane = in_rect(inner, m.column, m.row);
+    let Some(t) = session_mut(tabs, *active) else {
+        return Ok(());
+    };
+    let row_in_pane = m
+        .row
+        .saturating_sub(inner.y)
+        .min(inner.height.saturating_sub(1));
+
+    // コピーモード外で子プロセスがマウスを要求していれば透過する
+    // (リモートのTUIアプリが自前でホイールスクロール等を処理できる)
+    // Shift押下時は透過せず、常にこちらのコピー/ペースト操作を優先する
+    if t.copy.is_none() && !m.modifiers.contains(KeyModifiers::SHIFT) {
+        let (mode, enc) = {
+            let p = t.parser.lock().unwrap();
+            (
+                p.screen().mouse_protocol_mode(),
+                p.screen().mouse_protocol_encoding(),
+            )
+        };
+        if !matches!(mode, vt100::MouseProtocolMode::None) {
+            if let Some(bytes) = mouse_to_child_bytes(&m, inner, mode, enc) {
+                t.write_bytes(&bytes)?;
+            }
+            return Ok(());
+        }
+    }
+
+    match m.kind {
+        // ホイール上: コピーモードへ入り過去へスクロール
+        MouseEventKind::ScrollUp if in_pane || t.copy.is_some() => {
+            if t.copy.is_none() {
+                t.copy = Some(CopyState {
+                    cursor_row: row_in_pane,
+                    anchor: None,
+                });
+            }
+            let mut p = t.parser.lock().unwrap();
+            let cur = p.screen().scrollback();
+            p.screen_mut().set_scrollback(cur + 3);
+        }
+        // ホイール下: 最下端まで戻ったら (未選択なら) ライブへ自動復帰
+        MouseEventKind::ScrollDown if t.copy.is_some() => {
+            let mut p = t.parser.lock().unwrap();
+            let cur = p.screen().scrollback();
+            let next = cur.saturating_sub(3);
+            p.screen_mut().set_scrollback(next);
+            drop(p);
+            if next == 0 && t.copy.as_ref().is_some_and(|c| c.anchor.is_none()) {
+                t.copy = None;
+            }
+        }
+        // 左クリック: コピーモード開始 + その行から選択開始
+        MouseEventKind::Down(MouseButton::Left) if in_pane => {
+            *flash = None;
+            let offset = t.parser.lock().unwrap().screen().scrollback();
+            let anchor = abs_line(offset, inner.height, row_in_pane);
+            t.copy = Some(CopyState {
+                cursor_row: row_in_pane,
+                anchor: Some(anchor),
+            });
+        }
+        // ドラッグで選択範囲を拡張
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some(cs) = t.copy.as_mut() {
+                cs.cursor_row = row_in_pane;
+            }
+        }
+        // 左ボタン解放: 選択範囲を即クリップボードへ (PuTTY流の選択即コピー)
+        MouseEventKind::Up(MouseButton::Left) => {
+            let mut exit_copy = false;
+            if let Some(cs) = t.copy.as_mut() {
+                if let Some(anchor) = cs.anchor.take() {
+                    let mut p = t.parser.lock().unwrap();
+                    let cur = p.screen().scrollback();
+                    let here = abs_line(
+                        cur,
+                        inner.height,
+                        cs.cursor_row.min(inner.height.saturating_sub(1)),
+                    );
+                    let (lo, hi) = (anchor.min(here), anchor.max(here));
+                    let text = extract_text(&mut p, lo, hi, inner.width);
+                    drop(p);
+                    *flash = Some(copy_to_clipboard(&text));
+                    // ライブ位置での選択なら、そのまま通常操作へ戻る
+                    exit_copy = cur == 0;
+                }
+            }
+            if exit_copy {
+                t.copy = None;
+            }
+        }
+        // 右クリック: クリップボードの内容をペースト (PuTTY流)
+        MouseEventKind::Down(MouseButton::Right) => {
+            if t.copy.take().is_some() {
+                t.parser.lock().unwrap().screen_mut().set_scrollback(0);
+            }
+            *flash = paste_clipboard(t)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
-/// 画面最下行から数えた絶対行位置
-fn abs_line(offset: usize, rows: u16, cursor_row: u16) -> usize {
-    offset + rows.saturating_sub(1).saturating_sub(cursor_row) as usize
+fn indicator(t: &Tab) -> (char, Color) {
+    match t.state {
+        TabState::Busy => (SPINNER[t.spinner_idx % SPINNER.len()], NEON_YELLOW),
+        TabState::Done => ('●', NEON_GREEN),
+        TabState::Question => ('?', NEON_BLUE),
+        TabState::Wait => ('●', NEON_BLUE),
+        TabState::Exited => ('✖', NEON_RED),
+    }
+}
+
+fn draw(f: &mut Frame, tabs: &[Tab], active: usize, prefix_active: bool, flash: Option<&str>) {
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(STATUS_BAR_HEIGHT)])
+        .split(f.area());
+    let main = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(TAB_BAR_WIDTH), Constraint::Min(1)])
+        .split(outer[0]);
+
+    // 縦タブバー
+    let index_style = if active == 0 {
+        Style::default().fg(Color::Black).bg(NEON_BLUE)
+    } else {
+        Style::default().fg(NEON_BLUE)
+    };
+    let mut lines = vec![Line::from(Span::styled("[≡] 0. INDEX", index_style))];
+    for (i, t) in tabs.iter().enumerate() {
+        let (ind, ind_color) = indicator(t);
+        let title_style = if active == i + 1 {
+            Style::default()
+                .fg(Color::Black)
+                .bg(NEON_GREEN)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("[{ind}] "),
+                Style::default().fg(ind_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{}. {}", i + 1, t.title), title_style),
+        ]));
+    }
+    let tabs_widget = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(NEON_GREEN)),
+    );
+    f.render_widget(tabs_widget, main[0]);
+
+    if active == 0 {
+        draw_index(f, tabs, main[1], outer[1], flash);
+    } else if let Some(t) = tabs.get(active - 1) {
+        draw_session(f, t, main[1], outer[1], prefix_active, flash);
+    }
+}
+
+/// INDEXダッシュボード: 全セッションの一覧と状態
+fn draw_index(f: &mut Frame, tabs: &[Tab], area: Rect, status_area: Rect, flash: Option<&str>) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(NEON_BLUE))
+        .title(Span::styled(
+            " ACTIVE SESSION MAP ",
+            Style::default().fg(NEON_YELLOW),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!(" {:<3} {:<16} {:<10} {}", "NO", "NAME", "STATE", "PROFILE"),
+            Style::default().fg(NEON_BLUE).add_modifier(Modifier::BOLD),
+        )),
+        Line::default(),
+    ];
+    for (i, t) in tabs.iter().enumerate() {
+        let (ind, color) = indicator(t);
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {ind} "), Style::default().fg(color)),
+            Span::raw(format!("{}. ", i + 1)),
+            Span::styled(
+                format!("{:<16}", t.title),
+                Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{:<10}", t.state.label()), Style::default().fg(color)),
+            Span::raw(t.profile_name().to_string()),
+        ]));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        " 数字キー / タブ名クリックで切替",
+        Style::default().fg(Color::DarkGray),
+    )));
+    f.render_widget(Paragraph::new(lines), inner);
+
+    let status = flash
+        .map(|m| format!(" {m}"))
+        .unwrap_or_else(|| " INDEX | 1-9: タブ切替 / Ctrl+B q: EXIT".to_string());
+    f.render_widget(
+        Paragraph::new(status).style(Style::default().fg(Color::Black).bg(NEON_BLUE)),
+        status_area,
+    );
+}
+
+/// セッションペイン: 子端末の描画 + コピーモードハイライト + IMEカーソル + ステータス
+fn draw_session(
+    f: &mut Frame,
+    t: &Tab,
+    area: Rect,
+    status_area: Rect,
+    prefix_active: bool,
+    flash: Option<&str>,
+) {
+    let border_color = if t.copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(
+            format!(" SESSION :: {} ", t.title),
+            Style::default().fg(NEON_YELLOW),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let scrollback_offset;
+    let alt_screen;
+    {
+        let parser = t.parser.lock().unwrap();
+        let screen = parser.screen();
+        scrollback_offset = screen.scrollback();
+        alt_screen = screen.alternate_screen();
+        f.render_widget(PseudoTerminal::new(screen), inner);
+
+        // IMEの変換ウィンドウ・未確定文字列はホスト端末の実カーソル位置に
+        // 表示されるため、子端末のカーソル位置に実カーソルを重ねておく。
+        // これが無いと日本語入力の変換候補が画面のあちこちに飛ぶ
+        if t.copy.is_none() && scrollback_offset == 0 && !screen.hide_cursor() {
+            let (crow, ccol) = screen.cursor_position();
+            if crow < inner.height && ccol < inner.width {
+                f.set_cursor_position((inner.x + ccol, inner.y + crow));
+            }
+        }
+    }
+
+    // コピーモード: カーソル行と選択範囲をハイライト
+    if let Some(cs) = &t.copy {
+        let rows_v = inner.height;
+        let cursor_row = cs.cursor_row.min(rows_v.saturating_sub(1));
+        let here = abs_line(scrollback_offset, rows_v, cursor_row);
+        for r in 0..rows_v {
+            let d = abs_line(scrollback_offset, rows_v, r);
+            let in_selection = cs
+                .anchor
+                .is_some_and(|a| d >= a.min(here) && d <= a.max(here));
+            let style = if r == cursor_row {
+                Some(Style::default().bg(NEON_GREEN).fg(Color::Black))
+            } else if in_selection {
+                Some(Style::default().bg(Color::Rgb(0, 80, 40)))
+            } else {
+                None
+            };
+            if let Some(style) = style {
+                f.buffer_mut().set_style(
+                    Rect {
+                        x: inner.x,
+                        y: inner.y + r,
+                        width: inner.width,
+                        height: 1,
+                    },
+                    style,
+                );
+            }
+        }
+    }
+
+    let status = if let Some(cs) = &t.copy {
+        let mode = if cs.anchor.is_some() { "SELECT" } else { "CURSOR" };
+        let hist = if alt_screen {
+            " | 履歴なし(全画面アプリ)"
+        } else {
+            ""
+        };
+        format!(
+            " [COPY:{mode}] -{scrollback_offset} | 選択で自動コピー 右クリック:ペースト | v y a / Esc: LIVE{hist}"
+        )
+    } else if prefix_active {
+        " [PREFIX] q: EXIT / 0-9: TAB / [: COPY / b: send Ctrl+B".to_string()
+    } else if let Some(msg) = flash {
+        format!(" {msg}")
+    } else {
+        format!(
+            " PROFILE:{} [{}] | ドラッグ:コピー 右クリック:ペースト | Ctrl+B q: EXIT",
+            t.profile_name(),
+            t.state.label()
+        )
+    };
+    let status_bg = if t.copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
+    f.render_widget(
+        Paragraph::new(status).style(Style::default().fg(Color::Black).bg(status_bg)),
+        status_area,
+    );
 }
 
 /// スクロールバック内の行範囲 (画面最下行からの行数 lo..=hi) をテキスト化する。
@@ -627,208 +705,23 @@ fn copy_to_clipboard(text: &str) -> String {
 
 /// クリップボードの内容を子プロセスへペーストする。
 /// 子がbracketed pasteモードなら \x1b[200~ ... \x1b[201~ で包む
-fn paste_clipboard(writer: &PtyWriter, bracketed: bool) -> Result<Option<String>> {
+fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
     match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
         Ok(text) => {
+            let bracketed = t.parser.lock().unwrap().screen().bracketed_paste();
             let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
             if bracketed {
                 let mut bytes = b"\x1b[200~".to_vec();
                 bytes.extend_from_slice(normalized.as_bytes());
                 bytes.extend_from_slice(b"\x1b[201~");
-                pty_write(writer, &bytes)?;
+                t.write_bytes(&bytes)?;
             } else {
-                pty_write(writer, normalized.as_bytes())?;
+                t.write_bytes(normalized.as_bytes())?;
             }
             Ok(None)
         }
         Err(e) => Ok(Some(format!(">> PASTE FAILED: {e}"))),
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parser_with_lines(rows: u16, cols: u16, n: usize) -> vt100::Parser {
-        let mut p = vt100::Parser::new(rows, cols, 100);
-        for i in 1..=n {
-            p.process(format!("line{i}\r\n").as_bytes());
-        }
-        p
-    }
-
-    #[test]
-    fn scrollback_view_shows_history() {
-        let mut p = parser_with_lines(5, 20, 30);
-        p.screen_mut().set_scrollback(10);
-        let contents = p.screen().contents();
-        assert!(
-            contents.contains("line17"),
-            "過去の行が見えるはず: {contents}"
-        );
-        assert!(
-            !contents.contains("line30"),
-            "最新行は画面外のはず: {contents}"
-        );
-    }
-
-    #[test]
-    fn extract_lines_from_scrollback() {
-        let mut p = parser_with_lines(5, 20, 30);
-        // 最下行(d=0)はプロンプト空行。d=1がline30、d=3がline28
-        let text = extract_text(&mut p, 1, 3, 20);
-        assert_eq!(text, "line28\nline29\nline30\n");
-        // 抽出後はスクロール位置が復元される
-        assert_eq!(p.screen().scrollback(), 0);
-    }
-
-    #[test]
-    fn extract_joins_wrapped_lines() {
-        // 5行画面: row0="abcdefghij"(折返し) row1="KLMNO" row2以降は空。
-        // 画面最下行から数えると折返し行はd=4、続きはd=3
-        let mut p = vt100::Parser::new(5, 10, 100);
-        p.process(b"abcdefghijKLMNO\r\n");
-        let text = extract_text(&mut p, 3, 4, 10);
-        assert_eq!(text, "abcdefghijKLMNO\n");
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw(
-    f: &mut Frame,
-    parser: &Arc<Mutex<vt100::Parser<QueryResponder>>>,
-    session_title: &str,
-    prefix_active: bool,
-    copy: Option<&CopyState>,
-    flash: Option<&str>,
-    state: TabState,
-    spinner: char,
-    profile_name: &str,
-) {
-    let outer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(STATUS_BAR_HEIGHT)])
-        .split(f.area());
-    let main = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(TAB_BAR_WIDTH), Constraint::Min(1)])
-        .split(outer[0]);
-
-    // 状態インジケータ: 🟡BUSY(スピナー) 🟢DONE 🔵WAIT/QUESTION
-    let (indicator, indicator_color) = match state {
-        TabState::Busy => (spinner, NEON_YELLOW),
-        TabState::Done => ('●', NEON_GREEN),
-        TabState::Question => ('?', NEON_BLUE),
-        TabState::Wait => ('●', NEON_BLUE),
-    };
-    let tabs = Paragraph::new(vec![
-        Line::from(Span::styled("[≡] 0. INDEX", Style::default().fg(NEON_BLUE))),
-        Line::from(vec![
-            Span::styled(
-                format!("[{indicator}] "),
-                Style::default()
-                    .fg(indicator_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("1. {session_title}"),
-                Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-    ])
-    .block(
-        Block::default()
-            .borders(Borders::RIGHT)
-            .border_style(Style::default().fg(NEON_GREEN)),
-    );
-    f.render_widget(tabs, main[0]);
-
-    let border_color = if copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .title(Span::styled(
-            format!(" SESSION 1 :: {session_title} "),
-            Style::default().fg(NEON_YELLOW),
-        ));
-    let inner = block.inner(main[1]);
-    f.render_widget(block, main[1]);
-    let scrollback_offset;
-    let alt_screen;
-    {
-        let parser = parser.lock().unwrap();
-        let screen = parser.screen();
-        scrollback_offset = screen.scrollback();
-        alt_screen = screen.alternate_screen();
-        f.render_widget(PseudoTerminal::new(screen), inner);
-
-        // IMEの変換ウィンドウ・未確定文字列はホスト端末の実カーソル位置に
-        // 表示されるため、子端末のカーソル位置に実カーソルを重ねておく。
-        // これが無いと日本語入力の変換候補が画面のあちこちに飛ぶ
-        if copy.is_none() && scrollback_offset == 0 && !screen.hide_cursor() {
-            let (crow, ccol) = screen.cursor_position();
-            if crow < inner.height && ccol < inner.width {
-                f.set_cursor_position((inner.x + ccol, inner.y + crow));
-            }
-        }
-    }
-
-    // コピーモード: カーソル行と選択範囲をハイライト
-    if let Some(cs) = copy {
-        let rows_v = inner.height;
-        let cursor_row = cs.cursor_row.min(rows_v.saturating_sub(1));
-        let here = abs_line(scrollback_offset, rows_v, cursor_row);
-        for r in 0..rows_v {
-            let d = abs_line(scrollback_offset, rows_v, r);
-            let in_selection = cs
-                .anchor
-                .is_some_and(|a| d >= a.min(here) && d <= a.max(here));
-            let style = if r == cursor_row {
-                Some(Style::default().bg(NEON_GREEN).fg(Color::Black))
-            } else if in_selection {
-                Some(Style::default().bg(Color::Rgb(0, 80, 40)))
-            } else {
-                None
-            };
-            if let Some(style) = style {
-                f.buffer_mut().set_style(
-                    ratatui::layout::Rect {
-                        x: inner.x,
-                        y: inner.y + r,
-                        width: inner.width,
-                        height: 1,
-                    },
-                    style,
-                );
-            }
-        }
-    }
-
-    let status = if let Some(cs) = copy {
-        let mode = if cs.anchor.is_some() { "SELECT" } else { "CURSOR" };
-        let hist = if alt_screen {
-            " | 履歴なし(全画面アプリ)"
-        } else {
-            ""
-        };
-        format!(
-            " [COPY:{mode}] -{scrollback_offset} | 選択で自動コピー 右クリック:ペースト | v y a / Esc: LIVE{hist}"
-        )
-    } else if prefix_active {
-        " [PREFIX] q: EXIT / [: COPY MODE / b: send Ctrl+B".to_string()
-    } else if let Some(msg) = flash {
-        format!(" {msg}")
-    } else {
-        format!(
-            " PROFILE:{profile_name} [{}] | ドラッグ:コピー 右クリック:ペースト | Ctrl+B q: EXIT",
-            state.label()
-        )
-    };
-    let status_bg = if copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
-    f.render_widget(
-        Paragraph::new(status).style(Style::default().fg(Color::Black).bg(status_bg)),
-        outer[1],
-    );
 }
 
 /// crossterm KeyEvent → 子PTYへ送るバイト列 (VT100/xterm系エンコード)
@@ -884,4 +777,91 @@ fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
         _ => return None,
     }
     Some(buf)
+}
+
+fn button_code(b: MouseButton) -> u16 {
+    match b {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    }
+}
+
+/// 子プロセスがマウスレポートを要求している場合のイベント透過 (SGRエンコードのみ対応)
+fn mouse_to_child_bytes(
+    m: &MouseEvent,
+    inner: Rect,
+    mode: vt100::MouseProtocolMode,
+    enc: vt100::MouseProtocolEncoding,
+) -> Option<Vec<u8>> {
+    use vt100::MouseProtocolMode as M;
+    if matches!(mode, M::None) || !matches!(enc, vt100::MouseProtocolEncoding::Sgr) {
+        return None;
+    }
+    if !in_rect(inner, m.column, m.row) {
+        return None;
+    }
+    let x = m.column - inner.x + 1;
+    let y = m.row - inner.y + 1;
+    let (btn, press) = match m.kind {
+        MouseEventKind::Down(b) => (button_code(b), true),
+        MouseEventKind::Up(b) if !matches!(mode, M::Press) => (button_code(b), false),
+        MouseEventKind::Drag(b) if matches!(mode, M::ButtonMotion | M::AnyMotion) => {
+            (button_code(b) + 32, true)
+        }
+        MouseEventKind::Moved if matches!(mode, M::AnyMotion) => (32 + 3, true),
+        MouseEventKind::ScrollUp => (64, true),
+        MouseEventKind::ScrollDown => (65, true),
+        _ => return None,
+    };
+    let suffix = if press { 'M' } else { 'm' };
+    Some(format!("\x1b[<{btn};{x};{y}{suffix}").into_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parser_with_lines(rows: u16, cols: u16, n: usize) -> vt100::Parser {
+        let mut p = vt100::Parser::new(rows, cols, 100);
+        for i in 1..=n {
+            p.process(format!("line{i}\r\n").as_bytes());
+        }
+        p
+    }
+
+    #[test]
+    fn scrollback_view_shows_history() {
+        let mut p = parser_with_lines(5, 20, 30);
+        p.screen_mut().set_scrollback(10);
+        let contents = p.screen().contents();
+        assert!(
+            contents.contains("line17"),
+            "過去の行が見えるはず: {contents}"
+        );
+        assert!(
+            !contents.contains("line30"),
+            "最新行は画面外のはず: {contents}"
+        );
+    }
+
+    #[test]
+    fn extract_lines_from_scrollback() {
+        let mut p = parser_with_lines(5, 20, 30);
+        // 最下行(d=0)はプロンプト空行。d=1がline30、d=3がline28
+        let text = extract_text(&mut p, 1, 3, 20);
+        assert_eq!(text, "line28\nline29\nline30\n");
+        // 抽出後はスクロール位置が復元される
+        assert_eq!(p.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn extract_joins_wrapped_lines() {
+        // 5行画面: row0="abcdefghij"(折返し) row1="KLMNO" row2以降は空。
+        // 画面最下行から数えると折返し行はd=4、続きはd=3
+        let mut p = vt100::Parser::new(5, 10, 100);
+        p.process(b"abcdefghijKLMNO\r\n");
+        let text = extract_text(&mut p, 3, 4, 10);
+        assert_eq!(text, "abcdefghijKLMNO\n");
+    }
 }
