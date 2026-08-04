@@ -14,7 +14,8 @@
           "name": "C:デプロイ",
           "command": "ssh user@example.com",
           "profile": "claude",
-          "locked": true
+          "locked": true,
+          "auto_restart": true
         }
       ]
     }

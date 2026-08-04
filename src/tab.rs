@@ -227,8 +227,13 @@ pub struct Tab {
     pub chain_depth: u32,
     /// 入力ロック (ソフトロック)。人間の誤入力を防ぐだけで、自動送信は通る
     pub locked: bool,
+    /// 子プロセス終了時に自動再起動するか
+    pub auto_restart: bool,
     /// タブバーの表示インデント段数 (0 = 親)
     pub depth: u16,
+    /// 再起動用に起動条件を保持する (プロセス終了後に同じ設定で再spawnできる)
+    argv: Vec<String>,
+    profile_spec: Option<String>,
     /// 最後に人間が手動入力した時刻 (相対ms)。直後の自動送信をガードする
     pub last_manual_ms: u64,
     master: Box<dyn MasterPty + Send>,
@@ -245,13 +250,23 @@ pub struct Tab {
 }
 
 impl Tab {
+    /// プロファイルは名前 (config指定) かコマンド名から都度解決する。
+    /// 再起動時に再解決されるので、profiles/*.json の修正が即反映される
+    fn resolve_profile(argv: &[String], spec: &Option<String>) -> Profile {
+        match spec {
+            Some(name) => crate::profile::load_by_name(name),
+            None => crate::profile::load_for_command(argv.first().map(String::as_str).unwrap_or("")),
+        }
+    }
+
     pub fn spawn(
         title: String,
         argv: &[String],
-        profile: Profile,
+        profile_spec: Option<String>,
         rows: u16,
         cols: u16,
     ) -> Result<Self> {
+        let profile = Self::resolve_profile(argv, &profile_spec);
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows,
@@ -310,7 +325,10 @@ impl Tab {
             copy: None,
             chain_depth: 0,
             locked: false,
+            auto_restart: false,
             depth: 0,
+            argv: argv.to_vec(),
+            profile_spec,
             last_manual_ms: 0,
             master: pair.master,
             killer,
@@ -345,6 +363,25 @@ impl Tab {
 
     pub fn kill(&mut self) {
         let _ = self.killer.kill();
+    }
+
+    /// 同じ設定でセッションを作り直す。
+    /// 子プロセスの自己更新・SSH切断・クラッシュからの復帰に使う。
+    /// ロック状態と階層表示は引き継ぎ、チェーン深度と履歴はリセットされる
+    pub fn restart(&mut self, rows: u16, cols: u16) -> Result<()> {
+        self.kill();
+        let mut fresh = Tab::spawn(
+            self.title.clone(),
+            &self.argv.clone(),
+            self.profile_spec.clone(),
+            rows,
+            cols,
+        )?;
+        fresh.locked = self.locked;
+        fresh.depth = self.depth;
+        fresh.auto_restart = self.auto_restart;
+        *self = fresh;
+        Ok(())
     }
 
     pub fn profile_name(&self) -> &str {

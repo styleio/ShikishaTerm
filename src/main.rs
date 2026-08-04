@@ -145,11 +145,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut tabs: Vec<Tab> = Vec::new();
     let mut ws_index = 0usize;
     if !cmd_args.is_empty() {
-        let profile = profile::load_for_command(&cmd_args[0]);
         tabs.push(Tab::spawn(
             title_of(&cmd_args),
             &cmd_args,
-            profile,
+            None,
             rows,
             cols,
         )?);
@@ -158,13 +157,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     }
     if tabs.is_empty() && workspaces.is_empty() {
         let argv = vec!["powershell.exe".to_string()];
-        tabs.push(Tab::spawn(
-            "SHELL".into(),
-            &argv,
-            profile::load_for_command("powershell"),
-            rows,
-            cols,
-        )?);
+        tabs.push(Tab::spawn("SHELL".into(), &argv, None, rows, cols)?);
     }
 
     // Luaフックエンジン (config.jsonの "lua" 指定時のみ)
@@ -223,6 +216,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         if old == new {
                             continue;
                         }
+                        // 再起動したら on_start をやり直す (SSH再接続後のresume自動化)
+                        if new != TabState::Exited && old == TabState::Exited {
+                            if let Some(f) = started_fired.get_mut(idx - 1) {
+                                *f = false;
+                            }
+                        }
                         let ctx = tab_ctx(&tabs[idx - 1], idx);
                         match new {
                             TabState::Busy => eng.fire("on_busy", &ctx, None),
@@ -251,7 +250,29 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 let cmds = eng.drain_commands();
                 if !cmds.is_empty() {
                     let now_ms = start.elapsed().as_millis() as u64;
-                    exec_commands(cmds, &mut tabs, max_chain, auto_enabled, now_ms, &mut flash);
+                    exec_commands(
+                        cmds,
+                        &mut tabs,
+                        max_chain,
+                        auto_enabled,
+                        now_ms,
+                        rows,
+                        cols,
+                        &mut flash,
+                    );
+                }
+            }
+
+            // auto_restart: 終了したタブを自動で復帰させる
+            for (i, t) in tabs.iter_mut().enumerate() {
+                if t.state == TabState::Exited && t.auto_restart {
+                    match t.restart(rows, cols) {
+                        Ok(()) => {
+                            append_hook_log(&format!("auto-restart tab{}", i + 1));
+                            flash = Some(format!(">> {} を自動再起動しました", t.title));
+                        }
+                        Err(e) => flash = Some(format!(">> 再起動失敗: {e}")),
+                    }
                 }
             }
         }
@@ -323,6 +344,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         KeyCode::Char('b') => {
                             if let Some(t) = session_mut(&mut tabs, active) {
                                 t.write_bytes(&[0x02])?;
+                            }
+                        }
+                        // Ctrl+B r このタブを再起動 (終了・切断からの復帰)
+                        KeyCode::Char('r') => {
+                            if let Some(t) = session_mut(&mut tabs, active) {
+                                flash = Some(match t.restart(rows, cols) {
+                                    Ok(()) => format!(">> {} を再起動しました", t.title),
+                                    Err(e) => format!(">> 再起動失敗: {e}"),
+                                });
                             }
                         }
                         // Ctrl+B l 入力ロック切替 / w ワークスペース一覧 / ? ヘルプ
@@ -415,6 +445,20 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 ws_open = true;
                             }
                         }
+                        KeyCode::Char('r') => {
+                            let mut msgs = Vec::new();
+                            for t in tabs.iter_mut().filter(|t| t.state == TabState::Exited) {
+                                match t.restart(rows, cols) {
+                                    Ok(()) => msgs.push(t.title.clone()),
+                                    Err(e) => msgs.push(format!("{}(失敗:{e})", t.title)),
+                                }
+                            }
+                            flash = Some(if msgs.is_empty() {
+                                ">> 終了しているタブはありません".to_string()
+                            } else {
+                                format!(">> 再起動: {}", msgs.join(", "))
+                            });
+                        }
                         KeyCode::Char('e') | KeyCode::Char('k') => {
                             flash = Some(">> 設定GUI / パスワード変更は Phase 5 で実装".to_string());
                         }
@@ -506,6 +550,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     size,
                     now_ms,
                     ws_offset,
+                    rows,
+                    cols,
                     &mut flash,
                 )?;
             }
@@ -538,14 +584,11 @@ fn spawn_workspace(
         if argv.is_empty() {
             continue;
         }
-        let profile = match &ft.cfg.profile {
-            Some(name) => profile::load_by_name(name),
-            None => profile::load_for_command(&argv[0]),
-        };
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        match Tab::spawn(title.clone(), &argv, profile, rows, cols) {
+        match Tab::spawn(title.clone(), &argv, ft.cfg.profile.clone(), rows, cols) {
             Ok(mut tab) => {
                 tab.locked = ft.cfg.locked;
+                tab.auto_restart = ft.cfg.auto_restart;
                 tab.depth = ft.depth;
                 tabs.push(tab);
             }
@@ -634,17 +677,31 @@ fn append_hook_log(msg: &str) {
 
 /// Luaフックが積んだ操作依頼を実行する。
 /// 自動送信はチェーン深度 (透明のボール) を継承し、上限で止める
+#[allow(clippy::too_many_arguments)]
 fn exec_commands(
     cmds: Vec<Command>,
     tabs: &mut [Tab],
     max_chain: u32,
     auto_enabled: bool,
     now_ms: u64,
+    rows: u16,
+    cols: u16,
     flash: &mut Option<String>,
 ) {
     for cmd in cmds {
         match cmd {
             Command::Log(msg) => append_hook_log(&msg),
+            Command::Restart { target } => {
+                if let Some(t) = tabs.get_mut(target.wrapping_sub(1)) {
+                    match t.restart(rows, cols) {
+                        Ok(()) => {
+                            append_hook_log(&format!("restart tab{target} (lua)"));
+                            *flash = Some(format!(">> {} を再起動しました", t.title));
+                        }
+                        Err(e) => *flash = Some(format!(">> 再起動失敗: {e}")),
+                    }
+                }
+            }
             Command::Notify { dest, text } => {
                 append_hook_log(&format!("NOTIFY[{dest}] {text}"));
                 *flash = Some(format!(">> NOTIFY[{dest}] {text}"));
@@ -791,6 +848,8 @@ fn handle_mouse(
     size: Size,
     now_ms: u64,
     ws_offset: u16,
+    rows: u16,
+    cols: u16,
     flash: &mut Option<String>,
 ) -> Result<()> {
     // セッション見出しの錠アイコン (枠の上辺) クリックでロック切替
@@ -823,8 +882,16 @@ fn handle_mouse(
             }
             let r = (m.row - ws_offset) as usize;
             if r >= 1 && r <= tabs.len() {
-                // 行末の🔒アイコン (右端の枠線1桁を除く2桁) でロック切替
                 let t = &mut tabs[r - 1];
+                // 終了したタブは ✖ インジケータのクリックで再起動
+                if t.state == TabState::Exited && m.column < 3 {
+                    *flash = Some(match t.restart(rows, cols) {
+                        Ok(()) => format!(">> {} を再起動しました", t.title),
+                        Err(e) => format!(">> 再起動失敗: {e}"),
+                    });
+                    return Ok(());
+                }
+                // 行末の🔒アイコン (右端の枠線1桁を除く2桁) でロック切替
                 if m.column >= TAB_BAR_WIDTH - 3 {
                     t.locked = !t.locked;
                     *flash = Some(
@@ -1103,6 +1170,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
         Line::from(" Ctrl+B 0-9    タブ切替 (0=INDEX)   n/p 隣のタブ"),
         Line::from(" Ctrl+B w / W  ワークスペース一覧 / 次へ"),
         Line::from(" Ctrl+B l      入力ロック切替 (🔒クリックでも可)"),
+        Line::from(" Ctrl+B r      タブ再起動 (✖クリックでも可)"),
         Line::from(" Ctrl+B [      コピーモード  c 最新応答をコピー"),
         Line::from(" Ctrl+B a / x  自動化ON/OFF / 緊急停止"),
         Line::from(" Ctrl+B b      子プロセスへ Ctrl+B を送る"),
@@ -1182,6 +1250,7 @@ fn draw_index(
     )));
     let menu = [
         ("[数字]", "タブへ切替 (タブ名クリックでも可)"),
+        ("[r]", "終了したタブを再起動"),
         ("[w]", "ワークスペース切替"),
         ("[e]", "設定を編集 (ブラウザ)"),
         ("[k]", "マスターパスワード変更"),
@@ -1307,9 +1376,12 @@ fn draw_session(
             " [COPY:{mode}] -{scrollback_offset} | 選択で自動コピー 右クリック:ペースト | v y a / Esc: LIVE{hist}"
         )
     } else if ui.prefix_active {
-        " [PREFIX] q:終了 0-9:タブ w:WS l:ロック [:コピー c:応答 a/x:自動 ?:ヘルプ".to_string()
+        " [PREFIX] q:終了 0-9:タブ w:WS l:ロック r:再起動 [:コピー c:応答 a/x:自動 ?:ヘルプ"
+            .to_string()
     } else if let Some(msg) = flash {
         format!(" {msg}")
+    } else if t.state == TabState::Exited {
+        " ✖ セッションが終了しました — Ctrl+B r または左の✖クリックで再起動".to_string()
     } else if t.locked {
         " 🔒 LOCKED — 入力は無効です (Ctrl+B l または 🔒クリックで解除)".to_string()
     } else {

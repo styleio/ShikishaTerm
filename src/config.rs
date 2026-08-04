@@ -59,6 +59,10 @@ pub struct TabConfig {
     /// 実行時に Ctrl+B l / 🔒クリックで解除できる
     #[serde(default)]
     pub locked: bool,
+    /// 子プロセスが終了したら自動で再起動する。
+    /// SSH切断や、CLIツールの自己更新後の復帰に使う
+    #[serde(default)]
+    pub auto_restart: bool,
     /// 表示上の子タブ (転送関係はLuaが決める。ここでは階層表示のみ)
     #[serde(default)]
     pub children: Vec<TabConfig>,

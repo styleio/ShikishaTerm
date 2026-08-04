@@ -33,6 +33,8 @@ pub enum Command {
     SendKeys { target: usize, keys: String },
     /// 登録済み通知先への通知 (Phase 4-3でSlack/Telegram実装、現状はログ+表示)
     Notify { dest: String, text: String },
+    /// タブの再起動 (SSH切断・CLI自己更新からの復帰)
+    Restart { target: usize },
     Log(String),
 }
 
@@ -156,6 +158,20 @@ impl HookEngine {
                     "notify",
                     lua.create_function(move |_, (dest, text): (String, String)| {
                         c.borrow_mut().push(Command::Notify { dest, text });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Rc::clone(&commands);
+            shikisha
+                .set(
+                    "restart",
+                    lua.create_function(move |_, tab: Value| {
+                        let target = tab_index_of(&tab)?;
+                        c.borrow_mut().push(Command::Restart { target });
                         Ok(())
                     })
                     .map_err(lerr)?,

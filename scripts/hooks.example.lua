@@ -29,6 +29,22 @@ function on_question(tab, screen)
   return "1\r"          -- 選択肢1を選ぶ
 end
 
+-- 例2b: 落ちたセッションの自動復帰 (SSH切断、CLIツールの自己更新など)
+-- config側で "auto_restart": true にしても同じことができる。
+-- Luaなら「何回まで再接続するか」「通知するか」を制御できる
+function on_exit(tab)
+  local key = "restarts_" .. tab.index
+  local n = (shikisha.get_var(key) or 0) + 1
+  if n > 5 then
+    shikisha.notify("slack", tab.name .. " が繰り返し終了しています。確認してください")
+    return
+  end
+  shikisha.set_var(key, n)
+  shikisha.log(tab.name .. " が終了 → 再起動 (" .. n .. "回目)")
+  shikisha.sleep(2000)
+  shikisha.restart(tab)     -- 再起動後は on_start が再実行される
+end
+
 -- 例3: A(実装) ⇔ B(レビュー) 自動ループ + 完了通知
 function on_done(tab)
   -- tab.chain_depth == 0 は「人間が直接指示した会話」。
