@@ -19,6 +19,23 @@ pub struct TabConfig {
     pub profile: Option<String>,
 }
 
+impl TabConfig {
+    /// 実行argvに正規化する。
+    /// "user@example.com" のような user@host 単体はPuTTY流の
+    /// SSH接続先指定とみなし、自動的に `ssh` を補う
+    pub fn resolved_argv(&self) -> Vec<String> {
+        let argv = self.command.argv();
+        if argv.len() == 1 && looks_like_ssh_target(&argv[0]) {
+            return vec!["ssh".to_string(), argv[0].clone()];
+        }
+        argv
+    }
+}
+
+fn looks_like_ssh_target(s: &str) -> bool {
+    s.contains('@') && !s.contains('/') && !s.contains('\\')
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum CommandSpec {
@@ -34,6 +51,41 @@ impl CommandSpec {
             CommandSpec::Line(s) => s.split_whitespace().map(str::to_string).collect(),
             CommandSpec::Argv(v) => v.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab(command: &str) -> TabConfig {
+        TabConfig {
+            name: None,
+            command: CommandSpec::Line(command.to_string()),
+            profile: None,
+        }
+    }
+
+    #[test]
+    fn user_at_host_becomes_ssh() {
+        assert_eq!(
+            tab("user@example.com").resolved_argv(),
+            vec!["ssh", "user@example.com"]
+        );
+    }
+
+    #[test]
+    fn explicit_command_is_kept() {
+        assert_eq!(
+            tab("ssh user@example.com").resolved_argv(),
+            vec!["ssh", "user@example.com"]
+        );
+        assert_eq!(tab("claude").resolved_argv(), vec!["claude"]);
+        // パスに@を含んでもコマンドとして扱う
+        assert_eq!(
+            tab("C:/tools/foo@2/run.exe").resolved_argv(),
+            vec!["C:/tools/foo@2/run.exe"]
+        );
     }
 }
 
