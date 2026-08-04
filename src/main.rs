@@ -14,6 +14,7 @@
 mod config;
 mod detect;
 mod hooks;
+mod notify;
 mod profile;
 mod tab;
 
@@ -199,6 +200,17 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             }
         });
     let max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
+    // 通知先 (Slack / Telegram)。Luaはここに登録された宛先にしか送れない
+    let notifier = match cfg.as_ref() {
+        Some(c) => {
+            let (dests, err) = c.resolve_notify();
+            if let Some(e) = err {
+                startup_errors.push(e);
+            }
+            notify::Notifier::new(dests)
+        }
+        None => notify::Notifier::new(Default::default()),
+    };
     let mut auto_enabled = true;
     let mut started_fired = vec![false; tabs.len()];
 
@@ -287,6 +299,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         now_ms,
                         rows,
                         cols,
+                        &notifier,
                         &mut flash,
                     );
                 }
@@ -487,6 +500,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 ">> 終了しているタブはありません".to_string()
                             } else {
                                 format!(">> 再起動: {}", msgs.join(", "))
+                            });
+                        }
+                        // 通知先の疎通確認 (フックを待たずに設定を検証できる)
+                        KeyCode::Char('t') => {
+                            flash = Some(if notifier.is_empty() {
+                                ">> 通知先が未登録です (config.jsonの notify / secrets)".to_string()
+                            } else {
+                                notifier.send_all("ShikishaTerm-AI: テスト通知")
                             });
                         }
                         KeyCode::Char('e') | KeyCode::Char('k') => {
@@ -720,7 +741,7 @@ fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
 /// 手動入力直後は自動送信を控える猶予 (打鍵の混線防止)
 const MANUAL_GUARD_MS: u64 = 5000;
 
-fn append_hook_log(msg: &str) {
+pub fn append_hook_log(msg: &str) {
     let _ = std::fs::create_dir_all("logs");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -743,6 +764,7 @@ fn exec_commands(
     now_ms: u64,
     rows: u16,
     cols: u16,
+    notifier: &notify::Notifier,
     flash: &mut Option<String>,
 ) {
     for cmd in cmds {
@@ -761,7 +783,7 @@ fn exec_commands(
             }
             Command::Notify { dest, text } => {
                 append_hook_log(&format!("NOTIFY[{dest}] {text}"));
-                *flash = Some(format!(">> NOTIFY[{dest}] {text}"));
+                *flash = Some(notifier.send(&dest, &text));
             }
             Command::SendKeys { target, keys } => {
                 if !auto_enabled {
@@ -1318,6 +1340,7 @@ fn draw_index(
         ("[数字]", "タブへ切替 (タブ名クリックでも可)"),
         ("[r]", "終了したタブを再起動"),
         ("[w]", "ワークスペース切替"),
+        ("[t]", "通知テスト送信 (Slack/Telegram)"),
         ("[e]", "設定を編集 (ブラウザ)"),
         ("[k]", "マスターパスワード変更"),
         ("[?]", "ヘルプ / キー一覧"),

@@ -28,6 +28,41 @@ pub struct Config {
     /// 実行中は境界線のドラッグでも変更できる
     #[serde(default)]
     pub tab_bar_width: Option<u16>,
+    /// 通知先の登録 (Luaはここに登録された宛先にしか送信できない)。
+    /// トークン類は secrets.json (gitignore対象) に分離することを推奨
+    #[serde(default)]
+    pub notify: std::collections::HashMap<String, crate::notify::Destination>,
+    /// 通知先などの秘密情報を別ファイルから読み込む (例: "secrets.json")
+    #[serde(default)]
+    pub secrets: Option<String>,
+}
+
+/// secrets.json: 資格情報だけを分離したファイル (共有厳禁)
+#[derive(Debug, Deserialize, Default)]
+pub struct Secrets {
+    #[serde(default)]
+    pub notify: std::collections::HashMap<String, crate::notify::Destination>,
+}
+
+impl Config {
+    /// config.json の notify に secrets.json の内容をマージする
+    /// (同名は secrets 側を優先)
+    pub fn resolve_notify(
+        &self,
+    ) -> (
+        std::collections::HashMap<String, crate::notify::Destination>,
+        Option<String>,
+    ) {
+        let mut map = self.notify.clone();
+        let mut err = None;
+        if let Some(path) = &self.secrets {
+            match read_json::<Secrets>(&resolve_data_path(path)) {
+                Ok(s) => map.extend(s.notify),
+                Err(e) => err = Some(format!("secrets: {e:#}")),
+            }
+        }
+        (map, err)
+    }
 }
 
 /// config.json 内のワークスペース定義。tabs直書き or 別ファイル参照

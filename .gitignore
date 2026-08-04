@@ -1,5 +1,9 @@
 .env
 config.json
+secrets.json
+projects/*.json
+!projects/*.example.json
+logs/
 
 
 # Added by cargo

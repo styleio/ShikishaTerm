@@ -5,6 +5,9 @@
   "//tab_bar_width": "左タブバーの幅(桁)。省略時はタブ名に合わせて自動。境界線ドラッグでも調整可",
   "tab_bar_width": 18,
 
+  "//secrets": "Slack/Telegramのトークンはここではなくsecretsファイルへ (共有厳禁)",
+  "secrets": "secrets.json",
+
   "workspaces": [
     {
       "name": "ProjectX",
