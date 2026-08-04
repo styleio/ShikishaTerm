@@ -101,6 +101,9 @@ struct Attach {
     tabs: std::collections::HashMap<usize, usize>,
 }
 
+/// 自動化に与える能力 (既定は空 = ファイル・通信ともに不可)
+pub type Caps = std::rc::Rc<crate::caps::Capabilities>;
+
 pub struct HookEngine {
     lua: Lua,
     commands: Rc<RefCell<Vec<Command>>>,
@@ -130,6 +133,10 @@ impl HookEngine {
     }
 
     pub fn new() -> Result<Self> {
+        Self::with_caps(std::rc::Rc::new(crate::caps::Capabilities::disabled()))
+    }
+
+    pub fn with_caps(caps: Caps) -> Result<Self> {
         let lua = Lua::new_with(
             StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::COROUTINE,
             LuaOptions::default(),
@@ -208,6 +215,87 @@ impl HookEngine {
                     lua.create_function(move |_, text: String| {
                         c.borrow_mut().push(Command::Log(text));
                         Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        // ファイル・HTTPは「登録済みの窓口」経由でのみ許可される (caps.rs)。
+        // 生のio/osは一切与えず、Rust側の関数だけを注入する
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "write_file",
+                    lua.create_function(move |_, (name, rel, data): (String, String, String)| {
+                        c.write(&name, &rel, &data)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "read_file",
+                    lua.create_function(move |_, (name, rel): (String, String)| {
+                        c.read(&name, &rel)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "http",
+                    lua.create_function(move |_, (name, body): (String, String)| {
+                        c.http(&name, &body)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        // 玄人向け: 生パス・生URL (allow_dirs / allow_hosts が空なら常に失敗する)
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "write_path",
+                    lua.create_function(move |_, (p, data): (String, String)| {
+                        c.write_raw(&p, &data)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "read_path",
+                    lua.create_function(move |_, p: String| {
+                        c.read_raw(&p)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "http_raw",
+                    lua.create_function(move |_, (url, body): (String, String)| {
+                        c.http_raw(&url, &body)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,
                 )

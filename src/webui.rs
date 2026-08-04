@@ -144,6 +144,35 @@ fn safe_dir_path(url: &str, config_path: &std::path::Path) -> Option<std::path::
     Some(config_path.parent()?.join(rel))
 }
 
+/// マニュアルはexeに埋め込む。どこから起動しても必ず参照でき、
+/// 配布物にドキュメントを同梱し忘れても壊れない
+const EMBEDDED_MANUAL: &str = include_str!("../docs/AUTOMATION.md");
+
+/// 隣に置かれたファイルがあればそちらを優先する (利用者が加筆できるように)
+fn load_manual(config_path: &std::path::Path) -> String {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(d) = config_path.parent() {
+        dirs.push(d.to_path_buf());
+    }
+    if let Some(d) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+    {
+        dirs.push(d);
+    }
+    dirs.push(std::path::PathBuf::from("."));
+    for d in dirs {
+        for rel in ["docs/AUTOMATION.md", "AUTOMATION.md"] {
+            if let Ok(s) = std::fs::read_to_string(d.join(rel)) {
+                if !s.trim().is_empty() {
+                    return s;
+                }
+            }
+        }
+    }
+    EMBEDDED_MANUAL.to_string()
+}
+
 const EVENT_FILES: [&str; 7] = [
     "on_start",
     "on_done",
@@ -157,23 +186,24 @@ const EVENT_FILES: [&str; 7] = [
 /// ローカルにインストール済みのAI CLIをワンショットで実行し、Luaコードを生成させる。
 /// APIキーは不要 (利用者のサブスク認証をそのまま使う)。
 /// 生成結果は必ず画面に表示し、利用者が承認するまで保存しない
+/// 対応するAI CLI (名前, 非対話実行の引数, 表示名)
+const AI_ENGINES: [(&str, &[&str], &str); 3] = [
+    ("claude", &["-p"], "Claude Code"),
+    ("codex", &["exec"], "Codex CLI"),
+    ("gemini", &["-p"], "Gemini CLI"),
+];
+
 fn generate_with_local_ai(
     event: &str,
     want: &str,
+    engine: Option<&str>,
     config_path: &std::path::Path,
 ) -> Result<String> {
     if want.trim().is_empty() {
         anyhow::bail!("やりたいことを入力してください");
     }
     // マニュアルを仕様書としてAIに渡す (独自APIは学習データに無いため)
-    let base = config_path.parent().unwrap_or(std::path::Path::new("."));
-    let manual = ["docs/AUTOMATION.md", "AUTOMATION.md"]
-        .iter()
-        .find_map(|p| std::fs::read_to_string(base.join(p)).ok())
-        .unwrap_or_default();
-    if manual.is_empty() {
-        anyhow::bail!("docs/AUTOMATION.md が見つかりません (AIに渡す仕様書です)");
-    }
+    let manual = load_manual(config_path);
 
     // 会話文を返させないため、出力形式をマーカーで固定する
     let prompt = format!(
@@ -190,7 +220,7 @@ fn generate_with_local_ai(
          では <<<LUA から始めてください。\n"
     );
 
-    let (cmd, args) = pick_local_ai()?;
+    let (cmd, args) = pick_local_ai(engine)?;
     let mut child = std::process::Command::new(&cmd)
         .args(&args)
         .stdin(std::process::Stdio::piped())
@@ -233,14 +263,12 @@ fn extract_lua(text: &str) -> Result<String> {
     )
 }
 
-/// 使えるAI CLIを探す (claude → codex → gemini の順)
-fn pick_local_ai() -> Result<(String, Vec<String>)> {
-    let candidates: [(&str, &[&str]); 3] = [
-        ("claude", &["-p"]),
-        ("codex", &["exec"]),
-        ("gemini", &["-p"]),
-    ];
-    for (name, args) in candidates {
+/// 使うAI CLIを決める。指定が無ければ claude → codex → gemini の順で最初に見つかったもの
+fn pick_local_ai(want: Option<&str>) -> Result<(String, Vec<String>)> {
+    for (name, args, _) in AI_ENGINES {
+        if want.is_some_and(|w| w != name) {
+            continue;
+        }
         if let Some(path) = crate::tab::resolve_command(name) {
             let p = path.to_string_lossy().to_string();
             // .cmd/.bat は cmd.exe 経由でないと起動できない
@@ -257,7 +285,13 @@ fn pick_local_ai() -> Result<(String, Vec<String>)> {
             });
         }
     }
-    anyhow::bail!("claude / codex / gemini のいずれもPATHに見つかりません")
+    match want {
+        Some(w) => anyhow::bail!("{w} が見つかりません"),
+        None => anyhow::bail!(
+            "AIコマンドが見つかりません。Claude Code / Codex CLI / Gemini CLI の\
+             いずれかをインストールすると、この機能が使えます"
+        ),
+    }
 }
 
 /// AIが付けがちなコードフェンスを取り除く
@@ -331,6 +365,15 @@ fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => {
             let html = PAGE.replace("__TOKEN__", token);
+            let resp = Response::from_string(html).with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+            );
+            req.respond(resp)?;
+        }
+        // 書き方の説明 (GUIから開ける。ファイルを探させない)
+        ("GET", "/help") => {
+            let md = load_manual(config_path);
+            let html = HELP_PAGE.replace("__MD__", &serde_json::to_string(&md)?);
             let resp = Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             );
@@ -429,6 +472,23 @@ fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -
             }
             req.respond(Response::from_string(r#"{"ok":true}"#))?;
         }
+        // 使えるAI CLIを調べる (画面を出す前に判定し、無ければ機能ごと隠す)
+        ("GET", "/api/ai") => {
+            let list: Vec<serde_json::Value> = AI_ENGINES
+                .iter()
+                .filter(|(name, _, _)| crate::tab::resolve_command(name).is_some())
+                .map(|(name, _, label)| serde_json::json!({ "id": name, "label": label }))
+                .collect();
+            let resp = Response::from_string(serde_json::json!({ "engines": list }).to_string())
+                .with_header(
+                    Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/json; charset=utf-8"[..],
+                    )
+                    .unwrap(),
+                );
+            req.respond(resp)?;
+        }
         // 自然言語からLuaを生成する (ローカルのAI CLIをワンショット実行)
         ("POST", "/api/generate") => {
             let mut req = req;
@@ -437,7 +497,19 @@ fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let event = parsed.get("event").and_then(|v| v.as_str()).unwrap_or("on_done");
             let want = parsed.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-            let resp = match generate_with_local_ai(event, want, config_path) {
+            // 指定が無ければ設定の ai_engine を使う
+            let from_cfg = std::fs::read_to_string(config_path)
+                .ok()
+                .and_then(|t| serde_json::from_str::<crate::config::Config>(&t).ok())
+                .and_then(|c| c.ai_engine)
+                .filter(|s| !s.is_empty());
+            let engine = parsed
+                .get("engine")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .or(from_cfg);
+            let resp = match generate_with_local_ai(event, want, engine.as_deref(), config_path) {
                 Ok(code) => serde_json::json!({ "ok": true, "code": code }),
                 Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
             };
@@ -541,6 +613,9 @@ const PAGE: &str = r##"<!doctype html>
    <span class="warn">各タブに設定が無いときに使われます</span></div>
  <div class="row"><label>secretsファイル</label>
    <input type="text" id="secrets" placeholder="secrets.json"></div>
+ <div class="row"><label>コードを書くAI</label>
+   <select id="aiengine"></select>
+   <span class="warn" id="aihint"></span></div>
 </fieldset>
 
 <fieldset><legend>ワークスペースとタブ</legend>
@@ -562,11 +637,15 @@ const PAGE: &str = r##"<!doctype html>
      <span class="warn" id="autohint"></span>
    </div>
    <textarea id="autocode" spellcheck="false" placeholder="ここに処理を書きます。空にすると「何もしない」になります"></textarea>
-   <div class="row">
+   <div class="row" id="airow">
      <label>AIに書いてもらう</label>
      <input type="text" id="autoask" placeholder="例: 完了したらタブ2にレビューさせて。5往復したら止めて"
             style="flex:1; min-width:320px">
      <button class="ghost" onclick="askAi()">生成</button>
+   </div>
+   <div class="row" id="ainone" style="display:none">
+     <span class="warn">日本語で指示してコードを書いてもらう機能は、
+       Claude Code / Codex CLI / Gemini CLI のいずれかを入れると使えます。</span>
    </div>
    <div id="aipreview" style="display:none">
      <div class="warn">生成されたコード（内容を確認してから反映してください）</div>
@@ -579,8 +658,9 @@ const PAGE: &str = r##"<!doctype html>
      <button class="ghost" onclick="closeAuto()">キャンセル</button>
      <span id="automsg"></span>
    </div>
-   <p class="warn">書き方は docs/AUTOMATION.md を参照してください。
-     自動化からファイル操作やインターネット接続はできません（サンドボックス）。</p>
+   <p class="warn">
+     <a href="/help" target="_blank" style="color:#00aaff">📖 書き方を見る（変数・命令の一覧と例）</a>
+     　自動化からファイル操作やインターネット接続はできません（サンドボックス）。</p>
  </div>
 </div>
 
@@ -777,6 +857,9 @@ async function openAuto(ws, t) {
   } catch (e) { autoData = {}; }
   autoEvent = "on_done"; sel.value = autoEvent;
   switchEvent();
+  // AIが1つも無ければ、その機能だけ隠して案内を出す
+  document.getElementById("airow").style.display = aiEngines.length ? "flex" : "none";
+  document.getElementById("ainone").style.display = aiEngines.length ? "none" : "flex";
   document.getElementById("aipreview").style.display = "none";
   document.getElementById("autobox").style.display = "flex";
 }
@@ -808,7 +891,8 @@ async function askAi() {
   automsg("AIに問い合わせています（数十秒かかることがあります）…", "#ffea00");
   const r = await fetch("/api/generate", {method:"POST",
       headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-      body: JSON.stringify({event: autoEvent, prompt: want})});
+      body: JSON.stringify({event: autoEvent, prompt: want,
+                            engine: document.getElementById("aiengine").value || null})});
   const j = await r.json();
   if (!j.ok) return automsg("生成できませんでした: " + j.error, "#ff4646");
   document.getElementById("aicode").textContent = j.code;
@@ -827,8 +911,32 @@ function automsg(t, c) { const m = document.getElementById("automsg");
 const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(file), {
    method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
 
+// 使えるAIコマンドを調べて、基本設定の選択肢を作る
+let aiEngines = [];
+async function loadAi() {
+  try { aiEngines = (await (await fetch("/api/ai", {headers:{"X-Token":TOKEN}})).json()).engines || []; }
+  catch (e) { aiEngines = []; }
+  const sel = document.getElementById("aiengine");
+  sel.textContent = "";
+  const hint = document.getElementById("aihint");
+  if (!aiEngines.length) {
+    sel.append(el("option", {value:""}, "（見つかりません）"));
+    sel.disabled = true;
+    hint.textContent = "Claude Code / Codex CLI / Gemini CLI のいずれかを入れると、日本語で指示してコードを書いてもらえます";
+    return;
+  }
+  sel.disabled = false;
+  sel.append(el("option", {value:""}, "自動（見つかったものを使う）"));
+  for (const e of aiEngines) sel.append(el("option", {value:e.id}, e.label));
+  hint.textContent = aiEngines.length > 1
+      ? "複数見つかりました。使いたいものを選べます"
+      : "検出: " + aiEngines[0].label;
+}
+
 async function load() {
+  await loadAi();
   current = await (await api("GET")).json();
+  document.getElementById("aiengine").value = current.ai_engine ?? "";
   document.getElementById("tabw").value    = current.tab_bar_width ?? "";
   document.getElementById("chain").value   = current.max_chain ?? "";
   document.getElementById("lua").value     = current.automation ?? current.lua ?? "";
@@ -866,6 +974,8 @@ async function save() {
   chain ? out.max_chain     = Number(chain) : delete out.max_chain;
   lua   ? out.automation    = lua : delete out.automation;
   sec   ? out.secrets       = sec : delete out.secrets;
+  const eng = document.getElementById("aiengine").value;
+  eng   ? out.ai_engine     = eng : delete out.ai_engine;
   delete out.lua;
 
   delete out.tabs;
@@ -899,9 +1009,84 @@ load();
 </script></body></html>
 "##;
 
+/// マニュアル表示ページ (Markdownの必要な部分だけを描画する簡易レンダラ)
+const HELP_PAGE: &str = r##"<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>自動化の書き方</title>
+<style>
+ :root { color-scheme: dark; }
+ body { background:#05080a; color:#c8f7c0; font-family:"Consolas","Meiryo",monospace;
+        margin:0; padding:24px 32px; line-height:1.7; }
+ h1,h2,h3 { color:#39ff14; border-bottom:1px solid #1f4d2a; padding-bottom:6px; }
+ h1 { font-size:20px; } h2 { font-size:17px; margin-top:32px; } h3 { font-size:15px; }
+ code { background:#0a1014; color:#ffea00; padding:1px 5px; border-radius:3px; }
+ pre { background:#0a1014; border:1px solid #1f4d2a; padding:12px; overflow:auto; }
+ pre code { color:#39ff14; background:none; padding:0; }
+ table { border-collapse:collapse; margin:12px 0; }
+ th,td { border:1px solid #1f4d2a; padding:5px 10px; text-align:left; }
+ th { color:#00aaff; }
+ hr { border:0; border-top:1px solid #1f4d2a; margin:28px 0; }
+ a { color:#00aaff; }
+</style></head><body><div id="doc"></div>
+<script>
+const MD = __MD__;
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const inline = s => esc(s)
+   .replace(/`([^`]+)`/g, "<code>$1</code>")
+   .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+function render(md) {
+  const out = []; const lines = md.split(/\r?\n/);
+  let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (l.startsWith("```")) {                      // コードブロック
+      const buf = []; i++;
+      while (i < lines.length && !lines[i].startsWith("```")) buf.push(lines[i++]);
+      i++; out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>"); continue;
+    }
+    if (/^\|/.test(l)) {                            // 表
+      const rows = [];
+      while (i < lines.length && /^\|/.test(lines[i])) rows.push(lines[i++]);
+      const cells = r => r.split("|").slice(1,-1).map(c => c.trim());
+      let html = "<table>";
+      rows.forEach((r, n) => {
+        if (/^\|[\s:|-]+\|$/.test(r)) return;        // 区切り行
+        const tag = n === 0 ? "th" : "td";
+        html += "<tr>" + cells(r).map(c => `<${tag}>${inline(c)}</${tag}>`).join("") + "</tr>";
+      });
+      out.push(html + "</table>"); continue;
+    }
+    const h = l.match(/^(#{1,3})\s+(.*)$/);
+    if (h) { const n = h[1].length; out.push(`<h${n}>${inline(h[2])}</h${n}>`); i++; continue; }
+    if (/^---+$/.test(l)) { out.push("<hr>"); i++; continue; }
+    if (/^[-*]\s+/.test(l)) {                        // 箇条書き
+      const buf = [];
+      while (i < lines.length && /^[-*]\s+/.test(lines[i]))
+        buf.push("<li>" + inline(lines[i++].replace(/^[-*]\s+/, "")) + "</li>");
+      out.push("<ul>" + buf.join("") + "</ul>"); continue;
+    }
+    if (l.trim() === "") { i++; continue; }
+    const buf = [];
+    while (i < lines.length && lines[i].trim() !== "" && !/^(#{1,3}\s|```|\||[-*]\s|---)/.test(lines[i]))
+      buf.push(lines[i++]);
+    out.push("<p>" + inline(buf.join(" ")) + "</p>");
+  }
+  return out.join("\n");
+}
+document.getElementById("doc").innerHTML = render(MD);
+</script></body></html>
+"##;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_is_embedded_and_usable() {
+        // どこから起動してもAIに渡す仕様書が手に入ること
+        assert!(EMBEDDED_MANUAL.contains("shikisha.send_to_tab"));
+        let m = load_manual(std::path::Path::new("/nonexistent/config.json"));
+        assert!(m.contains("shikisha."), "埋め込みにフォールバックする");
+    }
 
     #[test]
     fn token_compare_rejects_mismatch() {

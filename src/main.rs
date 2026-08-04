@@ -11,6 +11,7 @@
 //!   Ctrl+B [      コピーモード / Ctrl+B b 素のCtrl+Bを送信
 //! マウス: ホイール=スクロール(コピーモード) / 左ドラッグ=選択即コピー / 右クリック=ペースト
 
+mod caps;
 mod config;
 mod crypto;
 mod detect;
@@ -338,13 +339,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 
     // Luaフックエンジンはワークスペース単位 (共有変数もその中で共有される)。
     // 未使用のワークスペースは作らず、切替時に必要なら生成する
-    let mut engines: Vec<Option<HookEngine>> = (0..workspaces.len().max(1)).map(|_| None).collect();
-    engines[0] = build_engine(
-        cfg.as_ref(),
-        workspaces.first(),
-        &mut startup_errors,
-    );
-    let mut engine = engines[0].take();
     let max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
     // secretsが暗号化されていれば起動時にマスターパスワードを尋ねる
     let mut password: Option<String> = None;
@@ -393,6 +387,19 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         }
         None => notify::Notifier::new(Default::default()),
     };
+    // 自動化に与える能力 (既定は空)。設定ファイルにだけ書ける玄人向け機能
+    let caps: hooks::Caps = std::rc::Rc::new(match cfg.as_ref() {
+        Some(c) => caps::Capabilities::new(
+            c.capabilities.clone(),
+            config_file_dir(),
+            c.resolve_tokens(password.as_deref()),
+        ),
+        None => caps::Capabilities::disabled(),
+    });
+    let mut engines: Vec<Option<HookEngine>> = (0..workspaces.len().max(1)).map(|_| None).collect();
+    engines[0] = build_engine(cfg.as_ref(), workspaces.first(), &mut startup_errors, &caps);
+    let mut engine = engines[0].take();
+
     let mut auto_enabled = true;
     let mut started_fired = vec![false; tabs.len()];
 
@@ -547,6 +554,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     cfg.as_ref(),
                                     &mut engine,
                                     &mut engines,
+                                    &caps,
                                 );
                             }
                             ws_open = false;
@@ -622,6 +630,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     cfg.as_ref(),
                                     &mut engine,
                                     &mut engines,
+                                    &caps,
                                 );
                             }
                         }
@@ -794,6 +803,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     cfg.as_ref(),
                                     &mut engine,
                                     &mut engines,
+                                    &caps,
                                 );
                             }
                         }
@@ -884,6 +894,7 @@ fn build_engine(
     cfg: Option<&config::Config>,
     ws: Option<&config::Workspace>,
     errors: &mut Vec<String>,
+    caps: &hooks::Caps,
 ) -> Option<HookEngine> {
     let base = cfg.and_then(|c| c.automation_path());
     let ws_lua = ws.and_then(|w| w.automation.clone());
@@ -900,7 +911,7 @@ fn build_engine(
         return None;
     }
 
-    let mut engine = match HookEngine::new() {
+    let mut engine = match HookEngine::with_caps(hooks::Caps::clone(caps)) {
         Ok(e) => e,
         Err(e) => {
             errors.push(format!("Lua: {e:#}"));
@@ -978,6 +989,7 @@ fn switch_workspace(
     cfg: Option<&config::Config>,
     engine: &mut Option<HookEngine>,
     engines: &mut [Option<HookEngine>],
+    caps: &hooks::Caps,
 ) {
     if to == *ws_index || to >= workspaces.len() {
         return;
@@ -992,7 +1004,7 @@ fn switch_workspace(
     }
     *engine = match engines[to].take() {
         Some(e) => Some(e),
-        None => build_engine(cfg, workspaces.get(to), errors),
+        None => build_engine(cfg, workspaces.get(to), errors, caps),
     };
     started_fired.clear();
     started_fired.resize(tabs.len(), false);
@@ -1005,6 +1017,14 @@ fn session_mut(tabs: &mut [Tab], active: usize) -> Option<&mut Tab> {
     } else {
         tabs.get_mut(active - 1)
     }
+}
+
+/// 設定ファイルのあるフォルダ (相対パスの基準)
+fn config_file_dir() -> std::path::PathBuf {
+    config::config_file_path()
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
 /// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する

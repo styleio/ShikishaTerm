@@ -136,8 +136,65 @@ shikisha.notify("slack", tab.name .. " が完了しました:\n" .. tab.output)
 - **手動操作の優先** … 人間が触った直後5秒は自動送信されません
 - **緊急停止** … `Ctrl+B x` で全自動化を即停止、`Ctrl+B a` でON/OFF
 - **入力ロック** … 中間タブを🔒にしておけば、人間が誤って指示を出せません
-- **サンドボックス** … 自動化からはファイル操作もインターネット接続もできません。
+- **サンドボックス** … 自動化からはファイル操作もインターネット接続も**既定ではできません**。
   通知先も、設定に登録済みのSlack / Telegramにしか送れません
+
+---
+
+## 7. ファイル・通信を使う（上級者向け・既定は無効）
+
+必要な場合だけ、`config.json` に「窓口」を登録すると使えるようになります。
+設定画面からは編集できません（影響が大きいため、ファイルを直接編集する人だけの機能です）。
+
+```jsonc
+"capabilities": {
+  "files": {
+    "reports": { "dir": "reports", "read": true, "write": true }
+  },
+  "http": {
+    "github-issue": {
+      "url": "https://api.github.com/repos/me/proj/issues",
+      "method": "POST",
+      "auth_from_secrets": "github_token"
+    }
+  }
+}
+```
+
+```lua
+shikisha.write_file("reports", "review.md", tab.output)
+local prev = shikisha.read_file("reports", "review.md")
+shikisha.http("github-issue", '{"title":"指摘","body":"..."}')
+```
+
+| 命令 | 説明 |
+|---|---|
+| `shikisha.write_file(窓口, ファイル名, 文字列)` | 登録済みフォルダへ書き込む |
+| `shikisha.read_file(窓口, ファイル名)` | 登録済みフォルダから読む |
+| `shikisha.http(窓口, 本文)` | 登録済みURLへ送信（認証はアプリが付与） |
+
+**この方式の安全性**: スクリプトはパスもURLも組み立てられず、登録済みの名前しか
+呼べません。認証トークンはスクリプトから見えず、アプリが付与します。
+`config.json` / `secrets.json` / `.env` / `.lua` ファイルは、許可フォルダ内にあっても
+常に読み書きできません。
+
+さらに自由度が必要なら、生パス・生URLも使えます（**既定は空＝全拒否**）:
+
+```jsonc
+"capabilities": {
+  "allow_dirs": ["reports"],
+  "allow_hosts": ["api.example.com"]
+}
+```
+
+```lua
+shikisha.write_path("reports/a.md", "text")
+shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
+```
+
+接続先はホスト名の**完全一致**で照合し、`https` のみ許可されます
+（`api.example.com.evil.com` のようなすり抜けは弾かれます）。
+ファイル・通信は必ず `logs/hooks.log` に記録されます。
 
 ---
 

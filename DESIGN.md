@@ -344,6 +344,27 @@ function on_done(tab)
 end
 ```
 
+### 8.5 ファイル・通信の能力付与（既定オフ）
+サンドボックスは「利用者自身」ではなく「利用者が書いていないスクリプト」から守るための
+ものである（AI生成コード・共有されたワークスペース定義・ネットで拾った自動化）。
+そのため能力は**既定で全て無効**とし、設定ファイルに明示したものだけを有効にする。
+GUIからは編集させない（玄人向け機能であり、誤操作の影響が大きい）。
+
+方式は「名前付きの窓口」（通知と同じケーパビリティ注入）:
+
+- `capabilities.files` … 名前とフォルダの対応。`shikisha.write_file(窓口, 名前, 文字列)`
+- `capabilities.http` … 名前とURL・認証の対応。`shikisha.http(窓口, 本文)`
+- スクリプトはパスもURLも組み立てられず、**認証情報を見ることもできない**
+- 玄人向けに生パス・生URL（`allow_dirs` / `allow_hosts`）も用意するが既定は空
+
+不変条件:
+- Luaの `io` / `os` は決して有効にしない（`io.popen` 等の抜け穴があるため、
+  Rust側の専用関数のみを注入する）
+- `config.json` / `secrets.json` / `.env` / `*.lua` / `*.enc` は許可フォルダ内でも
+  常に拒否（自己書き換えと資格情報の吸い出しの防止）
+- ホスト照合は完全一致、`https` のみ。`user@host` 形式のURLは拒否
+- ファイル書き込み・通信は必ず `logs/hooks.log` に記録
+
 ### 8.4 通知（Slack / Telegram）
 - 実体はRust側notifier。config.jsonに登録したSlack Webhook / Telegram Bot APIへのみ送信
 - Luaを書かなくても、タブ設定のチェックボックスで「完了時に通知」をON可能

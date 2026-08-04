@@ -40,6 +40,14 @@ pub struct Config {
     /// 通知先などの秘密情報を別ファイルから読み込む (例: "secrets.json")
     #[serde(default)]
     pub secrets: Option<String>,
+    /// 自動化コードを書かせるAI ("claude" / "codex" / "gemini")。
+    /// 空なら見つかったものを使う
+    #[serde(default)]
+    pub ai_engine: Option<String>,
+    /// 自動化に与える能力 (ファイル・HTTP)。既定は空 = 何も許可しない。
+    /// 玄人向け機能のためGUIからは編集しない
+    #[serde(default)]
+    pub capabilities: crate::caps::CapabilitySpec,
 }
 
 /// secrets.json: 資格情報だけを分離したファイル (共有厳禁)
@@ -47,6 +55,9 @@ pub struct Config {
 pub struct Secrets {
     #[serde(default)]
     pub notify: std::collections::HashMap<String, crate::notify::Destination>,
+    /// HTTP窓口が使う認証情報 (スクリプトからは読めない)
+    #[serde(default)]
+    pub tokens: std::collections::HashMap<String, String>,
 }
 
 impl Config {
@@ -76,6 +87,21 @@ impl Config {
     /// secretsファイルのパス (存在すれば)
     pub fn secrets_path(&self) -> Option<std::path::PathBuf> {
         self.secrets.as_deref().map(resolve_data_path)
+    }
+
+    /// HTTP窓口が使う認証情報を取り出す (スクリプトには渡さない)
+    pub fn resolve_tokens(
+        &self,
+        password: Option<&str>,
+    ) -> std::collections::HashMap<String, String> {
+        let Some(path) = self.secrets_path() else {
+            return Default::default();
+        };
+        crate::crypto::read_maybe_encrypted(&path, password)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Secrets>(&t).ok())
+            .map(|s| s.tokens)
+            .unwrap_or_default()
     }
 }
 
