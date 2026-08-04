@@ -31,6 +31,11 @@ end
 
 -- 例3: A(実装) ⇔ B(レビュー) 自動ループ + 完了通知
 function on_done(tab)
+  -- tab.chain_depth == 0 は「人間が直接指示した会話」。
+  -- パイプラインを人間の手動指示に反応させたくない場合はここで抜ける
+  -- (中間タブは config の "locked": true と併用するとより安全)
+  if tab.chain_depth == 0 and tab.index ~= 1 then return end
+
   local out = tab.output
   if tab.index == 1 then
     local rounds = shikisha.get_var("rounds") or 0

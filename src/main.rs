@@ -105,8 +105,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     } else {
         None
     };
-    let mut tabs: Vec<Tab> = Vec::new();
     let mut startup_errors: Vec<String> = Vec::new();
+    let mut workspaces: Vec<config::Workspace> = Vec::new();
+    if let Some(c) = &cfg {
+        let (ws, errs) = c.resolve_workspaces();
+        workspaces = ws;
+        startup_errors.extend(errs);
+    }
+
+    let mut tabs: Vec<Tab> = Vec::new();
+    let mut ws_index = 0usize;
     if !cmd_args.is_empty() {
         let profile = profile::load_for_command(&cmd_args[0]);
         tabs.push(Tab::spawn(
@@ -116,24 +124,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             rows,
             cols,
         )?);
-    } else if let Some(cfg) = &cfg {
-        for t in &cfg.tabs {
-            let argv = t.command.argv();
-            if argv.is_empty() {
-                continue;
-            }
-            let profile = match &t.profile {
-                Some(name) => profile::load_by_name(name),
-                None => profile::load_for_command(&argv[0]),
-            };
-            let title = t.name.clone().unwrap_or_else(|| title_of(&argv));
-            match Tab::spawn(title.clone(), &argv, profile, rows, cols) {
-                Ok(tab) => tabs.push(tab),
-                Err(e) => startup_errors.push(format!("{title}: {e}")),
-            }
-        }
+    } else if !workspaces.is_empty() {
+        spawn_workspace(&workspaces[0], rows, cols, &mut tabs, &mut startup_errors);
     }
-    if tabs.is_empty() {
+    if tabs.is_empty() && workspaces.is_empty() {
         let argv = vec!["powershell.exe".to_string()];
         tabs.push(Tab::spawn(
             "SHELL".into(),
@@ -160,10 +154,22 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut started_fired = vec![false; tabs.len()];
 
     // 0 = INDEX、1.. = セッション
-    let mut active: usize = 1;
+    let mut active: usize = if tabs.is_empty() { 0 } else { 1 };
     let mut prefix_active = false;
     let mut flash: Option<String> = startup_errors.first().map(|e| format!(">> 起動失敗 {e}"));
     let mut last_detect = Instant::now() - Duration::from_secs(1);
+    // ワークスペースは仮想デスクトップ方式: 切替=非表示であって停止ではない。
+    // 各ワークスペースのタブ群を保持し、初回アクティブ化時に起動する
+    let mut ws_tabs: Vec<Vec<Tab>> = Vec::new();
+    if !workspaces.is_empty() {
+        ws_tabs.push(std::mem::take(&mut tabs));
+        for _ in 1..workspaces.len() {
+            ws_tabs.push(Vec::new());
+        }
+        tabs = std::mem::take(&mut ws_tabs[0]);
+    }
+    let mut ws_open = false;
+    let mut help_open = false;
 
     loop {
         // 200ms毎に全タブの状態を判定 (非アクティブタブの完了もINDEXに反映される)
@@ -221,16 +227,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             }
         }
 
-        terminal.draw(|f| {
-            draw(
-                f,
-                &tabs,
-                active,
-                prefix_active,
-                flash.as_deref(),
-                engine.as_ref().map(|_| auto_enabled),
-            );
-        })?;
+        let ui = Ui {
+            active,
+            prefix_active,
+            auto: engine.as_ref().map(|_| auto_enabled),
+            ws_names: workspaces.iter().map(|w| w.name.clone()).collect(),
+            ws_index,
+            ws_open,
+            help_open,
+        };
+        terminal.draw(|f| draw(f, &tabs, &ui, flash.as_deref()))?;
 
         if !event::poll(Duration::from_millis(16))? {
             continue;
@@ -238,6 +244,36 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         match event::read()? {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 flash = None;
+                // オーバーレイ (ヘルプ / ワークスペース一覧) が最優先
+                if help_open {
+                    help_open = false;
+                    continue;
+                }
+                if ws_open {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => ws_open = false,
+                        KeyCode::Char(c @ '1'..='9') => {
+                            let n = c as usize - '1' as usize;
+                            if n < workspaces.len() {
+                                switch_workspace(
+                                    n,
+                                    &mut ws_index,
+                                    &mut tabs,
+                                    &mut ws_tabs,
+                                    &workspaces,
+                                    &mut active,
+                                    rows,
+                                    cols,
+                                    &mut startup_errors,
+                                    &mut started_fired,
+                                );
+                            }
+                            ws_open = false;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 if prefix_active {
                     prefix_active = false;
                     match key.code {
@@ -260,6 +296,43 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 t.write_bytes(&[0x02])?;
                             }
                         }
+                        // Ctrl+B l 入力ロック切替 / w ワークスペース一覧 / ? ヘルプ
+                        KeyCode::Char('l') => {
+                            if let Some(t) = session_mut(&mut tabs, active) {
+                                t.locked = !t.locked;
+                                flash = Some(
+                                    if t.locked {
+                                        ">> このタブをロックしました (Ctrl+B l で解除)"
+                                    } else {
+                                        ">> ロック解除"
+                                    }
+                                    .to_string(),
+                                );
+                            }
+                        }
+                        KeyCode::Char('w') => {
+                            if workspaces.len() > 1 {
+                                ws_open = true;
+                            }
+                        }
+                        KeyCode::Char('W') => {
+                            if workspaces.len() > 1 {
+                                let next = (ws_index + 1) % workspaces.len();
+                                switch_workspace(
+                                    next,
+                                    &mut ws_index,
+                                    &mut tabs,
+                                    &mut ws_tabs,
+                                    &workspaces,
+                                    &mut active,
+                                    rows,
+                                    cols,
+                                    &mut startup_errors,
+                                    &mut started_fired,
+                                );
+                            }
+                        }
+                        KeyCode::Char('?') => help_open = true,
                         // Ctrl+B a 自動化ON/OFF、Ctrl+B x 緊急停止
                         KeyCode::Char('a') => {
                             auto_enabled = !auto_enabled;
@@ -299,19 +372,36 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 {
                     prefix_active = true;
                 } else if active == 0 {
-                    // INDEX上では数字キーで直接タブ切替
-                    if let KeyCode::Char(c @ '0'..='9') = key.code {
-                        let n = c as usize - '0' as usize;
-                        if n <= tabs.len() {
-                            active = n;
+                    // INDEX = ホーム画面: 数字でタブ切替、英字でメニュー実行
+                    match key.code {
+                        KeyCode::Char(c @ '0'..='9') => {
+                            let n = c as usize - '0' as usize;
+                            if n <= tabs.len() {
+                                active = n;
+                            }
                         }
+                        KeyCode::Char('?') | KeyCode::Char('h') => help_open = true,
+                        KeyCode::Char('w') => {
+                            if workspaces.len() > 1 {
+                                ws_open = true;
+                            }
+                        }
+                        KeyCode::Char('e') | KeyCode::Char('k') => {
+                            flash = Some(">> 設定GUI / パスワード変更は Phase 5 で実装".to_string());
+                        }
+                        KeyCode::Char('q') => break,
+                        _ => {}
                     }
                 } else {
                     let size = terminal.size()?;
                     let now_ms = start.elapsed().as_millis() as u64;
+                    let mut locked_hit = false;
                     if let Some(t) = session_mut(&mut tabs, active) {
                         if t.copy.is_some() {
                             handle_copy_key(t, &key, size, &mut flash)?;
+                        } else if t.locked {
+                            // ソフトロック: 閲覧・コピーはできるが入力は無視
+                            locked_hit = true;
                         } else if let Some(bytes) = key_to_bytes(&key) {
                             // 手動入力: チェーン(透明のボール)をリセットし、
                             // 直後の自動送信をガードする
@@ -320,20 +410,75 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             t.write_bytes(&bytes)?;
                         }
                     }
+                    if locked_hit {
+                        flash = Some(
+                            ">> 🔒 ロック中です (Ctrl+B l または 🔒クリックで解除)".to_string(),
+                        );
+                    }
                 }
             }
             Event::Paste(text) => {
                 let now_ms = start.elapsed().as_millis() as u64;
                 if let Some(t) = session_mut(&mut tabs, active) {
-                    t.chain_depth = 0;
-                    t.last_manual_ms = now_ms;
-                    t.write_bytes(text.as_bytes())?;
+                    if !t.locked {
+                        t.chain_depth = 0;
+                        t.last_manual_ms = now_ms;
+                        t.write_bytes(text.as_bytes())?;
+                    }
                 }
             }
             Event::Mouse(m) => {
                 let size = terminal.size()?;
                 let now_ms = start.elapsed().as_millis() as u64;
-                handle_mouse(&mut tabs, &mut active, m, size, now_ms, &mut flash)?;
+                if help_open {
+                    if matches!(m.kind, MouseEventKind::Down(_)) {
+                        help_open = false;
+                    }
+                    continue;
+                }
+                // ワークスペースのドロップダウン (左バー最上部)
+                if ws_open {
+                    if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+                        if m.column < TAB_BAR_WIDTH && m.row >= 1 {
+                            let n = (m.row - 1) as usize;
+                            if n < workspaces.len() {
+                                switch_workspace(
+                                    n,
+                                    &mut ws_index,
+                                    &mut tabs,
+                                    &mut ws_tabs,
+                                    &workspaces,
+                                    &mut active,
+                                    rows,
+                                    cols,
+                                    &mut startup_errors,
+                                    &mut started_fired,
+                                );
+                            }
+                        }
+                        ws_open = false;
+                    }
+                    continue;
+                }
+                // 左バー最上部のワークスペース名クリックで一覧を開く
+                if workspaces.len() > 1
+                    && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                    && m.column < TAB_BAR_WIDTH
+                    && m.row == 0
+                {
+                    ws_open = true;
+                    continue;
+                }
+                let ws_offset = if workspaces.len() > 1 { 1 } else { 0 };
+                handle_mouse(
+                    &mut tabs,
+                    &mut active,
+                    m,
+                    size,
+                    now_ms,
+                    ws_offset,
+                    &mut flash,
+                )?;
             }
             Event::Resize(width, height) => {
                 let (rows, cols) = pty_dims(Size { width, height });
@@ -349,6 +494,64 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         t.kill();
     }
     Ok(())
+}
+
+/// ワークスペースのタブ群を起動する (初回アクティブ化時に呼ぶ)
+fn spawn_workspace(
+    ws: &config::Workspace,
+    rows: u16,
+    cols: u16,
+    tabs: &mut Vec<Tab>,
+    errors: &mut Vec<String>,
+) {
+    for ft in &ws.tabs {
+        let argv = ft.cfg.command.argv();
+        if argv.is_empty() {
+            continue;
+        }
+        let profile = match &ft.cfg.profile {
+            Some(name) => profile::load_by_name(name),
+            None => profile::load_for_command(&argv[0]),
+        };
+        let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
+        match Tab::spawn(title.clone(), &argv, profile, rows, cols) {
+            Ok(mut tab) => {
+                tab.locked = ft.cfg.locked;
+                tab.depth = ft.depth;
+                tabs.push(tab);
+            }
+            Err(e) => errors.push(format!("{title}: {e}")),
+        }
+    }
+}
+
+/// ワークスペース切替 (仮想デスクトップ方式)。
+/// 切替は非表示化であって停止ではない — 裏に回ったタブも動き続ける。
+/// 未起動のワークスペースはこのタイミングで初回起動する
+#[allow(clippy::too_many_arguments)]
+fn switch_workspace(
+    to: usize,
+    ws_index: &mut usize,
+    tabs: &mut Vec<Tab>,
+    ws_tabs: &mut [Vec<Tab>],
+    workspaces: &[config::Workspace],
+    active: &mut usize,
+    rows: u16,
+    cols: u16,
+    errors: &mut Vec<String>,
+    started_fired: &mut Vec<bool>,
+) {
+    if to == *ws_index || to >= workspaces.len() {
+        return;
+    }
+    ws_tabs[*ws_index] = std::mem::take(tabs);
+    *ws_index = to;
+    *tabs = std::mem::take(&mut ws_tabs[to]);
+    if tabs.is_empty() {
+        spawn_workspace(&workspaces[to], rows, cols, tabs, errors);
+    }
+    started_fired.resize(tabs.len(), false);
+    *active = if tabs.is_empty() { 0 } else { 1 };
 }
 
 fn session_mut(tabs: &mut [Tab], active: usize) -> Option<&mut Tab> {
@@ -380,6 +583,8 @@ fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
         state: t.state.label().to_string(),
         profile: t.profile_name().to_string(),
         output: t.last_response.clone().unwrap_or_default(),
+        chain_depth: t.chain_depth,
+        locked: t.locked,
     }
 }
 
@@ -549,18 +754,39 @@ fn handle_copy_key(t: &mut Tab, key: &KeyEvent, size: Size, flash: &mut Option<S
 }
 
 /// マウス操作: タブバークリック切替 / ホイールスクロール / 選択即コピー / 右クリックペースト
+#[allow(clippy::too_many_arguments)]
 fn handle_mouse(
     tabs: &mut [Tab],
     active: &mut usize,
     m: MouseEvent,
     size: Size,
     now_ms: u64,
+    ws_offset: u16,
     flash: &mut Option<String>,
 ) -> Result<()> {
-    // タブバークリックで切替 (行0=INDEX、行1..=セッション)
+    // タブバークリックで切替 (ws_offset行目=INDEX、以降=セッション)
     if let MouseEventKind::Down(MouseButton::Left) = m.kind {
         if m.column < TAB_BAR_WIDTH {
-            let r = m.row as usize;
+            if m.row < ws_offset {
+                return Ok(());
+            }
+            let r = (m.row - ws_offset) as usize;
+            if r >= 1 && r <= tabs.len() {
+                // 行末の🔒アイコンをクリックしたらロック切替 (マウスだけで操作可能)
+                let t = &mut tabs[r - 1];
+                if m.column >= TAB_BAR_WIDTH.saturating_sub(3) {
+                    t.locked = !t.locked;
+                    *flash = Some(
+                        if t.locked {
+                            ">> 🔒 ロックしました"
+                        } else {
+                            ">> ロック解除"
+                        }
+                        .to_string(),
+                    );
+                    return Ok(());
+                }
+            }
             if r <= tabs.len() {
                 *active = r;
             }
@@ -620,6 +846,10 @@ fn handle_mouse(
             if next == 0 && t.copy.as_ref().is_some_and(|c| c.anchor.is_none()) {
                 t.copy = None;
             }
+        }
+        // ロック中タブでも閲覧・コピーはできる (右クリックのペーストのみ抑止)
+        MouseEventKind::Down(MouseButton::Right) if t.locked => {
+            *flash = Some(">> 🔒 ロック中のためペーストできません".to_string());
         }
         // 左クリック: コピーモード開始 + その行から選択開始
         MouseEventKind::Down(MouseButton::Left) if in_pane => {
@@ -685,14 +915,18 @@ fn indicator(t: &Tab) -> (char, Color) {
     }
 }
 
-fn draw(
-    f: &mut Frame,
-    tabs: &[Tab],
+/// 描画に必要なUI状態
+struct Ui {
     active: usize,
     prefix_active: bool,
-    flash: Option<&str>,
     auto: Option<bool>,
-) {
+    ws_names: Vec<String>,
+    ws_index: usize,
+    ws_open: bool,
+    help_open: bool,
+}
+
+fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(STATUS_BAR_HEIGHT)])
@@ -702,30 +936,76 @@ fn draw(
         .constraints([Constraint::Length(TAB_BAR_WIDTH), Constraint::Min(1)])
         .split(outer[0]);
 
-    // 縦タブバー
-    let index_style = if active == 0 {
-        Style::default().fg(Color::Black).bg(NEON_BLUE)
-    } else {
-        Style::default().fg(NEON_BLUE)
-    };
-    let mut lines = vec![Line::from(Span::styled("[≡] 0. INDEX", index_style))];
-    for (i, t) in tabs.iter().enumerate() {
-        let (ind, ind_color) = indicator(t);
-        let title_style = if active == i + 1 {
+    let mut lines: Vec<Line> = Vec::new();
+    let multi_ws = ui.ws_names.len() > 1;
+    // ワークスペースが複数ある時だけ、左バー最上部に現在地を出す
+    // (高さは1行のみ消費。クリックでドロップダウン)
+    if multi_ws {
+        let name = ui
+            .ws_names
+            .get(ui.ws_index)
+            .map(String::as_str)
+            .unwrap_or("-");
+        lines.push(Line::from(Span::styled(
+            format!("[▼] {name}"),
             Style::default()
                 .fg(Color::Black)
-                .bg(NEON_GREEN)
-                .add_modifier(Modifier::BOLD)
+                .bg(NEON_YELLOW)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    if ui.ws_open {
+        // ドロップダウン展開中はタブ一覧の代わりにワークスペース一覧を出す
+        for (i, name) in ui.ws_names.iter().enumerate() {
+            let style = if i == ui.ws_index {
+                Style::default().fg(Color::Black).bg(NEON_YELLOW)
+            } else {
+                Style::default().fg(NEON_YELLOW)
+            };
+            lines.push(Line::from(Span::styled(
+                format!(" {}. {name}", i + 1),
+                style,
+            )));
+        }
+    } else {
+        let index_style = if ui.active == 0 {
+            Style::default().fg(Color::Black).bg(NEON_BLUE)
         } else {
-            Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD)
+            Style::default().fg(NEON_BLUE)
         };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("[{ind}] "),
-                Style::default().fg(ind_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("{}. {}", i + 1, t.title), title_style),
-        ]));
+        lines.push(Line::from(Span::styled("[≡] 0. INDEX", index_style)));
+        for (i, t) in tabs.iter().enumerate() {
+            let (ind, ind_color) = indicator(t);
+            let title_style = if ui.active == i + 1 {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(NEON_GREEN)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD)
+            };
+            // 子タブは "└" とインデントで階層表示 (転送関係はLuaが決める)
+            let prefix = if t.depth > 0 {
+                format!("{}└", " ".repeat((t.depth as usize - 1) * 1))
+            } else {
+                String::new()
+            };
+            let label = format!("{prefix}{}. {}", i + 1, t.title);
+            let width = TAB_BAR_WIDTH as usize - 4 - 3;
+            let label: String = label.chars().take(width).collect();
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("[{ind}] "),
+                    Style::default().fg(ind_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(label, title_style),
+                Span::styled(
+                    if t.locked { " 🔒" } else { "   " },
+                    Style::default().fg(NEON_YELLOW),
+                ),
+            ]));
+        }
     }
     let tabs_widget = Paragraph::new(lines).block(
         Block::default()
@@ -734,11 +1014,58 @@ fn draw(
     );
     f.render_widget(tabs_widget, main[0]);
 
-    if active == 0 {
-        draw_index(f, tabs, main[1], outer[1], flash, auto);
-    } else if let Some(t) = tabs.get(active - 1) {
-        draw_session(f, t, main[1], outer[1], prefix_active, flash, auto);
+    if ui.active == 0 {
+        draw_index(f, tabs, main[1], outer[1], flash, ui);
+    } else if let Some(t) = tabs.get(ui.active - 1) {
+        draw_session(f, t, main[1], outer[1], flash, ui);
     }
+
+    if ui.help_open {
+        draw_help(f, f.area());
+    }
+}
+
+/// ヘルプオーバーレイ (どこからでも Ctrl+B ? / INDEXで ?)
+fn draw_help(f: &mut Frame, area: Rect) {
+    let w = 62.min(area.width.saturating_sub(4));
+    let h = 18.min(area.height.saturating_sub(2));
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(ratatui::widgets::Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(NEON_YELLOW))
+        .title(Span::styled(
+            " HELP ",
+            Style::default().fg(Color::Black).bg(NEON_YELLOW),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let text = vec![
+        Line::from(" Ctrl+B q      終了"),
+        Line::from(" Ctrl+B 0-9    タブ切替 (0=INDEX)   n/p 隣のタブ"),
+        Line::from(" Ctrl+B w / W  ワークスペース一覧 / 次へ"),
+        Line::from(" Ctrl+B l      入力ロック切替 (🔒クリックでも可)"),
+        Line::from(" Ctrl+B [      コピーモード  c 最新応答をコピー"),
+        Line::from(" Ctrl+B a / x  自動化ON/OFF / 緊急停止"),
+        Line::from(" Ctrl+B b      子プロセスへ Ctrl+B を送る"),
+        Line::default(),
+        Line::from(" マウス:"),
+        Line::from("  ホイール    スクロール(コピーモード)"),
+        Line::from("  左ドラッグ  選択して離すとコピー"),
+        Line::from("  右クリック  ペースト"),
+        Line::from("  タブ名/🔒   クリックで切替 / ロック解除"),
+        Line::default(),
+        Line::from(Span::styled(
+            " 何かキーを押すと閉じます",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    f.render_widget(Paragraph::new(text), inner);
 }
 
 fn auto_label(auto: Option<bool>) -> &'static str {
@@ -749,39 +1076,46 @@ fn auto_label(auto: Option<bool>) -> &'static str {
     }
 }
 
-/// INDEXダッシュボード: 全セッションの一覧と状態
+/// INDEX = ホーム画面: セッション一覧 + メニュー
 fn draw_index(
     f: &mut Frame,
     tabs: &[Tab],
     area: Rect,
     status_area: Rect,
     flash: Option<&str>,
-    auto: Option<bool>,
+    ui: &Ui,
 ) {
+    let title = match ui.ws_names.get(ui.ws_index) {
+        Some(n) if ui.ws_names.len() > 1 => format!(" ACTIVE SESSION MAP :: {n} "),
+        _ => " ACTIVE SESSION MAP ".to_string(),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(NEON_BLUE))
-        .title(Span::styled(
-            " ACTIVE SESSION MAP ",
-            Style::default().fg(NEON_YELLOW),
-        ));
+        .title(Span::styled(title, Style::default().fg(NEON_YELLOW)));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let mut lines = vec![
         Line::from(Span::styled(
-            format!(" {:<3} {:<16} {:<10} {}", "NO", "NAME", "STATE", "PROFILE"),
+            format!(" {:<3} {:<18} {:<10} {}", "NO", "NAME", "STATE", "PROFILE"),
             Style::default().fg(NEON_BLUE).add_modifier(Modifier::BOLD),
         )),
         Line::default(),
     ];
     for (i, t) in tabs.iter().enumerate() {
         let (ind, color) = indicator(t);
+        let name = format!(
+            "{}{}{}",
+            "  ".repeat(t.depth as usize),
+            t.title,
+            if t.locked { " 🔒" } else { "" }
+        );
         lines.push(Line::from(vec![
             Span::styled(format!(" {ind} "), Style::default().fg(color)),
             Span::raw(format!("{}. ", i + 1)),
             Span::styled(
-                format!("{:<16}", t.title),
+                format!("{name:<18}"),
                 Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("{:<10}", t.state.label()), Style::default().fg(color)),
@@ -790,15 +1124,32 @@ fn draw_index(
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        " 数字キー / タブ名クリックで切替",
-        Style::default().fg(Color::DarkGray),
+        " ── MENU ────────────────────────────",
+        Style::default().fg(NEON_BLUE),
     )));
+    let menu = [
+        ("[数字]", "タブへ切替 (タブ名クリックでも可)"),
+        ("[w]", "ワークスペース切替"),
+        ("[e]", "設定を編集 (ブラウザ)"),
+        ("[k]", "マスターパスワード変更"),
+        ("[?]", "ヘルプ / キー一覧"),
+        ("[q]", "終了"),
+    ];
+    for (key, desc) in menu {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {key:<7}"),
+                Style::default().fg(NEON_YELLOW).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(desc),
+        ]));
+    }
     f.render_widget(Paragraph::new(lines), inner);
 
     let status = flash.map(|m| format!(" {m}")).unwrap_or_else(|| {
         format!(
-            " {}INDEX | 1-9: タブ切替 / Ctrl+B q: EXIT",
-            auto_label(auto)
+            " {}INDEX | メニューはキー押下で実行 / Ctrl+B q: EXIT",
+            auto_label(ui.auto)
         )
     });
     f.render_widget(
@@ -808,22 +1159,30 @@ fn draw_index(
 }
 
 /// セッションペイン: 子端末の描画 + コピーモードハイライト + IMEカーソル + ステータス
-#[allow(clippy::too_many_arguments)]
 fn draw_session(
     f: &mut Frame,
     t: &Tab,
     area: Rect,
     status_area: Rect,
-    prefix_active: bool,
     flash: Option<&str>,
-    auto: Option<bool>,
+    ui: &Ui,
 ) {
-    let border_color = if t.copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
+    let border_color = if t.copy.is_some() {
+        NEON_YELLOW
+    } else if t.locked {
+        NEON_BLUE
+    } else {
+        NEON_GREEN
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" SESSION :: {} ", t.title),
+            format!(
+                " SESSION :: {} {}",
+                t.title,
+                if t.locked { "🔒 LOCKED " } else { "" }
+            ),
             Style::default().fg(NEON_YELLOW),
         ));
     let inner = block.inner(area);
@@ -890,14 +1249,16 @@ fn draw_session(
         format!(
             " [COPY:{mode}] -{scrollback_offset} | 選択で自動コピー 右クリック:ペースト | v y a / Esc: LIVE{hist}"
         )
-    } else if prefix_active {
-        " [PREFIX] q: EXIT / 0-9: TAB / [: COPY / c: 応答コピー / b: send Ctrl+B".to_string()
+    } else if ui.prefix_active {
+        " [PREFIX] q:終了 0-9:タブ w:WS l:ロック [:コピー c:応答 a/x:自動 ?:ヘルプ".to_string()
     } else if let Some(msg) = flash {
         format!(" {msg}")
+    } else if t.locked {
+        " 🔒 LOCKED — 入力は無効です (Ctrl+B l または 🔒クリックで解除)".to_string()
     } else {
         format!(
-            " {}PROFILE:{} [{}] | ドラッグ:コピー 右クリック:ペースト | Ctrl+B q: EXIT",
-            auto_label(auto),
+            " {}PROFILE:{} [{}] | ドラッグ:コピー 右クリック:ペースト | Ctrl+B ?: ヘルプ",
+            auto_label(ui.auto),
             t.profile_name(),
             t.state.label()
         )

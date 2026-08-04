@@ -44,6 +44,10 @@ pub struct TabCtx {
     pub state: String,
     pub profile: String,
     pub output: String,
+    /// 自動チェーンの深度。0 = 人間が始めた会話。
+    /// `if tab.chain_depth == 0 then return end` で人間の指示に反応しないフックが書ける
+    pub chain_depth: u32,
+    pub locked: bool,
 }
 
 enum WaitKind {
@@ -330,6 +334,8 @@ impl HookEngine {
         t.set("state", ctx.state.as_str())?;
         t.set("profile", ctx.profile.as_str())?;
         t.set("output", ctx.output.as_str())?;
+        t.set("chain_depth", ctx.chain_depth)?;
+        t.set("locked", ctx.locked)?;
         Ok(t)
     }
 
@@ -357,6 +363,8 @@ mod tests {
             state: "DONE".into(),
             profile: "test".into(),
             output: output.into(),
+            chain_depth: 0,
+            locked: false,
         }
     }
 

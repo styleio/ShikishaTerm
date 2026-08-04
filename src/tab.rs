@@ -225,6 +225,10 @@ pub struct Tab {
     /// 自動送信チェーンの深度 (透明のボールに記録された「渡された回数」。
     /// 自動送信で+1を継承、人間の手動入力で0にリセット)
     pub chain_depth: u32,
+    /// 入力ロック (ソフトロック)。人間の誤入力を防ぐだけで、自動送信は通る
+    pub locked: bool,
+    /// タブバーの表示インデント段数 (0 = 親)
+    pub depth: u16,
     /// 最後に人間が手動入力した時刻 (相対ms)。直後の自動送信をガードする
     pub last_manual_ms: u64,
     master: Box<dyn MasterPty + Send>,
@@ -305,6 +309,8 @@ impl Tab {
             spinner_idx: 0,
             copy: None,
             chain_depth: 0,
+            locked: false,
+            depth: 0,
             last_manual_ms: 0,
             master: pair.master,
             killer,

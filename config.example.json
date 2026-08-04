@@ -1,17 +1,17 @@
 {
-  "tabs": [
+  "lua": "scripts/hooks.lua",
+  "max_chain": 10,
+
+  "workspaces": [
     {
-      "name": "local-claude",
-      "command": "claude"
+      "name": "ProjectX",
+      "file": "projects/projectx.json"
     },
     {
-      "name": "dev-server",
-      "command": "ssh user@example.com",
-      "profile": "claude"
-    },
-    {
-      "name": "shell",
-      "command": "powershell.exe"
+      "name": "雑用",
+      "tabs": [
+        { "name": "shell", "command": "powershell.exe" }
+      ]
     }
   ]
 }

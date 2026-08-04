@@ -1,0 +1,22 @@
+{
+  "name": "ProjectX",
+  "tabs": [
+    {
+      "name": "A:実装",
+      "command": "claude",
+      "children": [
+        {
+          "name": "B:レビュー",
+          "command": "codex",
+          "locked": true
+        },
+        {
+          "name": "C:デプロイ",
+          "command": "ssh user@example.com",
+          "profile": "claude",
+          "locked": true
+        }
+      ]
+    }
+  ]
+}
