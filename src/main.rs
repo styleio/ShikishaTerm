@@ -757,9 +757,20 @@ fn draw(
     let alt_screen;
     {
         let parser = parser.lock().unwrap();
-        scrollback_offset = parser.screen().scrollback();
-        alt_screen = parser.screen().alternate_screen();
-        f.render_widget(PseudoTerminal::new(parser.screen()), inner);
+        let screen = parser.screen();
+        scrollback_offset = screen.scrollback();
+        alt_screen = screen.alternate_screen();
+        f.render_widget(PseudoTerminal::new(screen), inner);
+
+        // IMEの変換ウィンドウ・未確定文字列はホスト端末の実カーソル位置に
+        // 表示されるため、子端末のカーソル位置に実カーソルを重ねておく。
+        // これが無いと日本語入力の変換候補が画面のあちこちに飛ぶ
+        if copy.is_none() && scrollback_offset == 0 && !screen.hide_cursor() {
+            let (crow, ccol) = screen.cursor_position();
+            if crow < inner.height && ccol < inner.width {
+                f.set_cursor_position((inner.x + ccol, inner.y + crow));
+            }
+        }
     }
 
     // コピーモード: カーソル行と選択範囲をハイライト
