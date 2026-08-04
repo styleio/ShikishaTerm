@@ -112,7 +112,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         )?);
     } else if let Some(cfg) = config::load() {
         for t in &cfg.tabs {
-            let argv = t.resolved_argv();
+            let argv = t.command.argv();
             if argv.is_empty() {
                 continue;
             }
