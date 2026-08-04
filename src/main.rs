@@ -37,7 +37,8 @@ use hooks::{Command, HookEngine, TabCtx};
 use tab::{CopyState, Tab, extract_text};
 use unicode_width::UnicodeWidthStr as _;
 
-const TAB_BAR_WIDTH: u16 = 18;
+const TAB_BAR_MIN: u16 = 10;
+const TAB_BAR_MAX: u16 = 40;
 const STATUS_BAR_HEIGHT: u16 = 1;
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -56,21 +57,35 @@ fn main() -> Result<()> {
 }
 
 /// タブバー・枠線・ステータスバーを除いた、PTYに渡す端末サイズ (rows, cols)
-fn pty_dims(size: Size) -> (u16, u16) {
-    let cols = size.width.saturating_sub(TAB_BAR_WIDTH + 2).max(10);
+fn pty_dims(size: Size, tab_w: u16) -> (u16, u16) {
+    let cols = size.width.saturating_sub(tab_w + 2).max(10);
     let rows = size.height.saturating_sub(STATUS_BAR_HEIGHT + 2).max(3);
     (rows, cols)
 }
 
 /// ターミナルペインの内側 (枠線の内側) の矩形。pty_dimsと整合させること
-fn pane_inner(size: Size) -> Rect {
-    let (rows, cols) = pty_dims(size);
+fn pane_inner(size: Size, tab_w: u16) -> Rect {
+    let (rows, cols) = pty_dims(size, tab_w);
     Rect {
-        x: TAB_BAR_WIDTH + 1,
+        x: tab_w + 1,
         y: 1,
         width: cols,
         height: rows,
     }
+}
+
+/// タブ名に合わせたタブバー幅の自動算出。
+/// "[x] 12. タブ名 🔒" が収まる幅 (全角考慮) を求め、範囲内に収める
+fn auto_tab_width(tabs: &[Tab]) -> u16 {
+    let longest = tabs
+        .iter()
+        .map(|t| {
+            // インジケータ4桁 + "N. " + 名前 + インデント + 錠2桁 + 枠線1桁
+            4 + 4 + t.title.width() as u16 + t.depth + 2 + 1
+        })
+        .max()
+        .unwrap_or(TAB_BAR_MIN);
+    longest.clamp(TAB_BAR_MIN, TAB_BAR_MAX)
 }
 
 fn in_rect(rect: Rect, col: u16, row: u16) -> bool {
@@ -126,7 +141,9 @@ fn title_of(argv: &[String]) -> String {
 fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let cmd_args: Vec<String> = std::env::args().skip(1).collect();
     let start = Instant::now();
-    let (rows, cols) = pty_dims(terminal.size()?);
+    // 幅はconfig指定 → 無ければタブ名から自動算出 (タブ起動後に確定)
+    let mut tab_w = 18u16;
+    let (mut rows, mut cols) = pty_dims(terminal.size()?, tab_w);
 
     // タブ構成: CLI引数 (デバッグ用) > config.json > 既定 (PowerShell 1タブ)
     let cfg = if cmd_args.is_empty() {
@@ -158,6 +175,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     if tabs.is_empty() && workspaces.is_empty() {
         let argv = vec!["powershell.exe".to_string()];
         tabs.push(Tab::spawn("SHELL".into(), &argv, None, rows, cols)?);
+    }
+
+    // タブ名が出揃ってから幅を確定し、PTYサイズを合わせ直す
+    tab_w = match cfg.as_ref().and_then(|c| c.tab_bar_width) {
+        Some(w) => w.clamp(TAB_BAR_MIN, TAB_BAR_MAX),
+        None => auto_tab_width(&tabs),
+    };
+    (rows, cols) = pty_dims(terminal.size()?, tab_w);
+    for t in &tabs {
+        let _ = t.resize(rows, cols);
     }
 
     // Luaフックエンジン (config.jsonの "lua" 指定時のみ)
@@ -192,6 +219,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     }
     let mut ws_open = false;
     let mut help_open = false;
+    // タブバー境界線のドラッグ中フラグ (マウスで幅を調整できる)
+    let mut dragging_divider = false;
 
     loop {
         // 200ms毎に全タブの状態を判定 (非アクティブタブの完了もINDEXに反映される)
@@ -278,6 +307,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         }
 
         let ui = Ui {
+            tab_w,
             active,
             prefix_active,
             auto: engine.as_ref().map(|_| auto_enabled),
@@ -416,7 +446,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         }
                         // Ctrl+B [ でコピーモード (tmuxのコピーモード風)
                         KeyCode::Char('[') => {
-                            let rows = pty_dims(terminal.size()?).0;
+                            let rows = pty_dims(terminal.size()?, tab_w).0;
                             if let Some(t) = session_mut(&mut tabs, active) {
                                 t.copy = Some(CopyState {
                                     cursor_row: rows.saturating_sub(1),
@@ -471,7 +501,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     let mut locked_hit = false;
                     if let Some(t) = session_mut(&mut tabs, active) {
                         if t.copy.is_some() {
-                            handle_copy_key(t, &key, size, &mut flash)?;
+                            handle_copy_key(t, &key, size, tab_w, &mut flash)?;
                         } else if t.locked {
                             // ソフトロック: 閲覧・コピーはできるが入力は無視
                             locked_hit = true;
@@ -512,7 +542,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 // ワークスペースのドロップダウン (左バー最上部)
                 if ws_open {
                     if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-                        if m.column < TAB_BAR_WIDTH && m.row >= 1 {
+                        if m.column < tab_w && m.row >= 1 {
                             let n = (m.row - 1) as usize;
                             if n < workspaces.len() {
                                 switch_workspace(
@@ -533,10 +563,36 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     }
                     continue;
                 }
+                // タブバーの境界線をドラッグして幅を調整する
+                match m.kind {
+                    MouseEventKind::Down(MouseButton::Left) if m.column == tab_w - 1 => {
+                        dragging_divider = true;
+                        continue;
+                    }
+                    MouseEventKind::Drag(MouseButton::Left) if dragging_divider => {
+                        let new_w = (m.column + 1).clamp(TAB_BAR_MIN, TAB_BAR_MAX);
+                        if new_w != tab_w {
+                            tab_w = new_w;
+                            (rows, cols) = pty_dims(terminal.size()?, tab_w);
+                            for t in &tabs {
+                                let _ = t.resize(rows, cols);
+                            }
+                        }
+                        continue;
+                    }
+                    MouseEventKind::Up(MouseButton::Left) if dragging_divider => {
+                        dragging_divider = false;
+                        flash = Some(format!(
+                            ">> タブバー幅: {tab_w} (config.jsonの \"tab_bar_width\" で固定できます)"
+                        ));
+                        continue;
+                    }
+                    _ => {}
+                }
                 // 左バー最上部のワークスペース名クリックで一覧を開く
                 if workspaces.len() > 1
                     && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
-                    && m.column < TAB_BAR_WIDTH
+                    && m.column < tab_w
                     && m.row == 0
                 {
                     ws_open = true;
@@ -550,13 +606,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     size,
                     now_ms,
                     ws_offset,
+                    tab_w,
                     rows,
                     cols,
                     &mut flash,
                 )?;
             }
             Event::Resize(width, height) => {
-                let (rows, cols) = pty_dims(Size { width, height });
+                (rows, cols) = pty_dims(Size { width, height }, tab_w);
                 for t in &tabs {
                     let _ = t.resize(rows, cols);
                 }
@@ -762,8 +819,14 @@ fn exec_commands(
 }
 
 /// コピーモード中のキー操作
-fn handle_copy_key(t: &mut Tab, key: &KeyEvent, size: Size, flash: &mut Option<String>) -> Result<()> {
-    let (rows_v, cols_v) = pty_dims(size);
+fn handle_copy_key(
+    t: &mut Tab,
+    key: &KeyEvent,
+    size: Size,
+    tab_w: u16,
+    flash: &mut Option<String>,
+) -> Result<()> {
+    let (rows_v, cols_v) = pty_dims(size, tab_w);
     let Some(mut cs) = t.copy.take() else {
         return Ok(());
     };
@@ -848,16 +911,17 @@ fn handle_mouse(
     size: Size,
     now_ms: u64,
     ws_offset: u16,
+    tab_w: u16,
     rows: u16,
     cols: u16,
     flash: &mut Option<String>,
 ) -> Result<()> {
     // セッション見出しの錠アイコン (枠の上辺) クリックでロック切替
     if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-        if m.row == 0 && m.column >= TAB_BAR_WIDTH {
+        if m.row == 0 && m.column >= tab_w {
             if let Some(t) = session_mut(tabs, *active) {
                 let (_, lock, offset) = session_title(t);
-                let lo = TAB_BAR_WIDTH + 1 + offset;
+                let lo = tab_w + 1 + offset;
                 if m.column >= lo && m.column < lo + lock.width() as u16 {
                     t.locked = !t.locked;
                     *flash = Some(
@@ -876,7 +940,7 @@ fn handle_mouse(
 
     // タブバークリックで切替 (ws_offset行目=INDEX、以降=セッション)
     if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-        if m.column < TAB_BAR_WIDTH {
+        if m.column < tab_w {
             if m.row < ws_offset {
                 return Ok(());
             }
@@ -892,7 +956,7 @@ fn handle_mouse(
                     return Ok(());
                 }
                 // 行末の🔒アイコン (右端の枠線1桁を除く2桁) でロック切替
-                if m.column >= TAB_BAR_WIDTH - 3 {
+                if m.column >= tab_w.saturating_sub(3) {
                     t.locked = !t.locked;
                     *flash = Some(
                         if t.locked {
@@ -912,7 +976,7 @@ fn handle_mouse(
         }
     }
 
-    let inner = pane_inner(size);
+    let inner = pane_inner(size, tab_w);
     let in_pane = in_rect(inner, m.column, m.row);
     let Some(t) = session_mut(tabs, *active) else {
         return Ok(());
@@ -1035,6 +1099,7 @@ fn indicator(t: &Tab) -> (char, Color) {
 
 /// 描画に必要なUI状態
 struct Ui {
+    tab_w: u16,
     active: usize,
     prefix_active: bool,
     auto: Option<bool>,
@@ -1051,7 +1116,7 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
         .split(f.area());
     let main = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(TAB_BAR_WIDTH), Constraint::Min(1)])
+        .constraints([Constraint::Length(ui.tab_w), Constraint::Min(1)])
         .split(outer[0]);
 
     let mut lines: Vec<Line> = Vec::new();
@@ -1111,7 +1176,7 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
             };
             // 右端1桁は枠線。錠アイコン(全角2桁)とインジケータ4桁を除いた幅に収める
             const LOCK_W: u16 = 2;
-            let avail = TAB_BAR_WIDTH - 1 - 4 - LOCK_W;
+            let avail = ui.tab_w.saturating_sub(1 + 4 + LOCK_W).max(1);
             let label = truncate_width(&format!("{prefix}{}. {}", i + 1, t.title), avail);
             let pad = avail as usize - label.width();
             lines.push(Line::from(vec![
@@ -1180,6 +1245,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
         Line::from("  左ドラッグ  選択して離すとコピー"),
         Line::from("  右クリック  ペースト"),
         Line::from("  タブ名/🔒   クリックで切替 / ロック解除"),
+        Line::from("  境界線      ドラッグでタブバー幅を調整"),
         Line::default(),
         Line::from(Span::styled(
             " 何かキーを押すと閉じます",

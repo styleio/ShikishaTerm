@@ -24,6 +24,10 @@ pub struct Config {
     /// 自動送信のたびに+1されてタブ間を受け継がれ、人間の手動入力で0に戻る
     #[serde(default)]
     pub max_chain: Option<u32>,
+    /// 左タブバーの幅 (桁)。省略時はタブ名に合わせて自動調整。
+    /// 実行中は境界線のドラッグでも変更できる
+    #[serde(default)]
+    pub tab_bar_width: Option<u16>,
 }
 
 /// config.json 内のワークスペース定義。tabs直書き or 別ファイル参照
