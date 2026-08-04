@@ -148,6 +148,38 @@ fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
     std::env::split_paths(&path_var).find_map(|dir| try_base(dir.join(prog)))
 }
 
+/// 画面内容のハッシュ。最下部 ignore_bottom 行は判定から除外する
+/// (byobu/tmux等のステータスバーは時計が毎秒更新され、
+///  生の出力活動を見ると永遠にBUSYになってしまうため)
+pub fn screen_hash(screen: &vt100::Screen, ignore_bottom: u16) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let (rows, cols) = screen.size();
+    let keep = rows.saturating_sub(ignore_bottom) as usize;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for line in screen.rows(0, cols).take(keep) {
+        line.hash(&mut h);
+    }
+    h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::screen_hash;
+
+    #[test]
+    fn bottom_status_rows_are_ignored() {
+        let mut p = vt100::Parser::new(5, 20, 0);
+        p.process(b"main content\r\n");
+        let before = screen_hash(p.screen(), 2);
+        // 最下行 (byobuの時計に相当) だけを書き換える
+        p.process(b"\x1b[5;1H12:34:56");
+        assert_eq!(before, screen_hash(p.screen(), 2), "最下部の変化は無視");
+        // 本文が変わればハッシュも変わる
+        p.process(b"\x1b[1;1Hchanged!");
+        assert_ne!(before, screen_hash(p.screen(), 2));
+    }
+}
+
 pub struct Tab {
     pub title: String,
     pub parser: SharedParser,
@@ -159,7 +191,8 @@ pub struct Tab {
     killer: Box<dyn ChildKiller + Send + Sync>,
     child_exited: Arc<AtomicBool>,
     bell_count: Arc<AtomicU64>,
-    last_output_ms: Arc<AtomicU64>,
+    last_hash: u64,
+    last_change_ms: u64,
     detector: Detector,
 }
 
@@ -170,7 +203,6 @@ impl Tab {
         profile: Profile,
         rows: u16,
         cols: u16,
-        start: Instant,
     ) -> Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
@@ -187,7 +219,6 @@ impl Tab {
 
         let writer: PtyWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
         let bell_count = Arc::new(AtomicU64::new(0));
-        let last_output_ms = Arc::new(AtomicU64::new(0));
         let parser: SharedParser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
@@ -199,21 +230,16 @@ impl Tab {
         )));
         let child_exited = Arc::new(AtomicBool::new(false));
 
-        // PTY出力 → vt100パーサ (最終出力時刻も記録し、沈黙タイマーの信号にする)
+        // PTY出力 → vt100パーサ
         {
             let parser = Arc::clone(&parser);
-            let last_output_ms = Arc::clone(&last_output_ms);
             let mut reader = pair.master.try_clone_reader()?;
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            last_output_ms
-                                .store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                            parser.lock().unwrap().process(&buf[..n]);
-                        }
+                        Ok(n) => parser.lock().unwrap().process(&buf[..n]),
                     }
                 }
             });
@@ -238,7 +264,8 @@ impl Tab {
             killer,
             child_exited,
             bell_count,
-            last_output_ms,
+            last_hash: 0,
+            last_change_ms: 0,
             detector: Detector::new(profile),
         })
     }
@@ -270,15 +297,27 @@ impl Tab {
         self.detector.profile_name()
     }
 
-    /// 200ms毎の状態判定 (非アクティブタブも含めて呼ぶこと)
+    /// 200ms毎の状態判定 (非アクティブタブも含めて呼ぶこと)。
+    /// 活動の有無は「画面内容の変化」で判定する (最下部のステータス行は除外)
     pub fn tick(&mut self, start: Instant) {
         if self.exited() {
             self.state = TabState::Exited;
             return;
         }
-        let screen_text = self.parser.lock().unwrap().screen().contents();
+        let (screen_text, hash) = {
+            let p = self.parser.lock().unwrap();
+            let screen = p.screen();
+            (
+                screen.contents(),
+                screen_hash(screen, self.detector.ignore_bottom_rows()),
+            )
+        };
         let now = start.elapsed().as_millis() as u64;
-        let since = now.saturating_sub(self.last_output_ms.load(Ordering::Relaxed));
+        if hash != self.last_hash {
+            self.last_hash = hash;
+            self.last_change_ms = now;
+        }
+        let since = now.saturating_sub(self.last_change_ms);
         self.state = self
             .detector
             .tick(&screen_text, since, self.bell_count.load(Ordering::Relaxed));

@@ -54,6 +54,11 @@ impl Detector {
         &self.profile.name
     }
 
+    /// 画面変化判定から除外する最下部行数 (byobu等のステータスバー対策)
+    pub fn ignore_bottom_rows(&self) -> u16 {
+        self.profile.ignore_bottom_rows
+    }
+
     /// 定期実行 (200ms毎目安)。
     /// 優先度: QUESTION > BUSY(パターン) > ベル完了 > 活動タイマー > 沈黙タイマー
     pub fn tick(&mut self, screen_text: &str, ms_since_output: u64, bell_count: u64) -> TabState {
@@ -103,6 +108,7 @@ mod tests {
             busy_patterns: vec!["esc to interrupt".into()],
             question_patterns: vec!["Do you want".into(), "❯\\s*1\\.".into()],
             silence_ms: 2000,
+            ignore_bottom_rows: 2,
         })
         .unwrap()
     }

@@ -108,7 +108,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             profile,
             rows,
             cols,
-            start,
         )?);
     } else if let Some(cfg) = config::load() {
         for t in &cfg.tabs {
@@ -121,7 +120,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 None => profile::load_for_command(&argv[0]),
             };
             let title = t.name.clone().unwrap_or_else(|| title_of(&argv));
-            match Tab::spawn(title.clone(), &argv, profile, rows, cols, start) {
+            match Tab::spawn(title.clone(), &argv, profile, rows, cols) {
                 Ok(tab) => tabs.push(tab),
                 Err(e) => startup_errors.push(format!("{title}: {e}")),
             }
@@ -135,7 +134,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             profile::load_for_command("powershell"),
             rows,
             cols,
-            start,
         )?);
     }
 

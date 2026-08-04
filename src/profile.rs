@@ -17,13 +17,21 @@ pub struct ProfileFile {
     /// 画面にマッチしたらQUESTION (選択肢待ち) とみなす正規表現
     #[serde(default)]
     pub question_patterns: Vec<String>,
-    /// この時間 (ms) 出力が無ければ完了/待機とみなす
+    /// この時間 (ms) 画面に変化が無ければ完了/待機とみなす
     #[serde(default = "default_silence_ms")]
     pub silence_ms: u64,
+    /// 画面変化の判定から除外する最下部の行数。
+    /// byobu/tmux等のステータスバー (時計が毎秒更新される) を無視するため
+    #[serde(default = "default_ignore_bottom_rows")]
+    pub ignore_bottom_rows: u16,
 }
 
 fn default_silence_ms() -> u64 {
     2000
+}
+
+fn default_ignore_bottom_rows() -> u16 {
+    2
 }
 
 /// コンパイル済みプロファイル
@@ -32,6 +40,7 @@ pub struct Profile {
     pub busy: Vec<regex::Regex>,
     pub question: Vec<regex::Regex>,
     pub silence_ms: u64,
+    pub ignore_bottom_rows: u16,
 }
 
 impl Profile {
@@ -43,6 +52,7 @@ impl Profile {
             busy: Vec::new(),
             question: Vec::new(),
             silence_ms: default_silence_ms(),
+            ignore_bottom_rows: default_ignore_bottom_rows(),
         }
     }
 
@@ -57,6 +67,7 @@ impl Profile {
             busy: compile_all(&f.busy_patterns)?,
             question: compile_all(&f.question_patterns)?,
             silence_ms: f.silence_ms,
+            ignore_bottom_rows: f.ignore_bottom_rows,
             name: f.name,
         })
     }
