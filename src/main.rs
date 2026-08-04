@@ -35,6 +35,7 @@ use tui_term::widget::PseudoTerminal;
 use detect::TabState;
 use hooks::{Command, HookEngine, TabCtx};
 use tab::{CopyState, Tab, extract_text};
+use unicode_width::UnicodeWidthStr as _;
 
 const TAB_BAR_WIDTH: u16 = 18;
 const STATUS_BAR_HEIGHT: u16 = 1;
@@ -74,6 +75,34 @@ fn pane_inner(size: Size) -> Rect {
 
 fn in_rect(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
+}
+
+/// 表示幅 (全角=2桁) で切り詰める。日本語タブ名がはみ出さないように
+fn truncate_width(s: &str, max: u16) -> String {
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > max as usize {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out
+}
+
+/// セッション見出しの文言と、その中で錠アイコンが始まる表示位置。
+/// 描画とクリック判定の両方で使い、位置ズレが起きないようにする
+fn session_title(t: &Tab) -> (String, String, u16) {
+    let head = format!(" SESSION :: {} ", t.title);
+    let offset = head.width() as u16;
+    let lock = if t.locked {
+        "🔒 LOCKED ".to_string()
+    } else {
+        "🔓 UNLOCK ".to_string()
+    };
+    (head, lock, offset)
 }
 
 /// 画面最下行から数えた絶対行位置
@@ -764,6 +793,28 @@ fn handle_mouse(
     ws_offset: u16,
     flash: &mut Option<String>,
 ) -> Result<()> {
+    // セッション見出しの錠アイコン (枠の上辺) クリックでロック切替
+    if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+        if m.row == 0 && m.column >= TAB_BAR_WIDTH {
+            if let Some(t) = session_mut(tabs, *active) {
+                let (_, lock, offset) = session_title(t);
+                let lo = TAB_BAR_WIDTH + 1 + offset;
+                if m.column >= lo && m.column < lo + lock.width() as u16 {
+                    t.locked = !t.locked;
+                    *flash = Some(
+                        if t.locked {
+                            ">> 🔒 ロックしました (もう一度クリックで解除)"
+                        } else {
+                            ">> 🔓 ロックを解除しました"
+                        }
+                        .to_string(),
+                    );
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     // タブバークリックで切替 (ws_offset行目=INDEX、以降=セッション)
     if let MouseEventKind::Down(MouseButton::Left) = m.kind {
         if m.column < TAB_BAR_WIDTH {
@@ -772,9 +823,9 @@ fn handle_mouse(
             }
             let r = (m.row - ws_offset) as usize;
             if r >= 1 && r <= tabs.len() {
-                // 行末の🔒アイコンをクリックしたらロック切替 (マウスだけで操作可能)
+                // 行末の🔒アイコン (右端の枠線1桁を除く2桁) でロック切替
                 let t = &mut tabs[r - 1];
-                if m.column >= TAB_BAR_WIDTH.saturating_sub(3) {
+                if m.column >= TAB_BAR_WIDTH - 3 {
                     t.locked = !t.locked;
                     *flash = Some(
                         if t.locked {
@@ -987,21 +1038,23 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
             };
             // 子タブは "└" とインデントで階層表示 (転送関係はLuaが決める)
             let prefix = if t.depth > 0 {
-                format!("{}└", " ".repeat((t.depth as usize - 1) * 1))
+                format!("{}└", " ".repeat(t.depth as usize - 1))
             } else {
                 String::new()
             };
-            let label = format!("{prefix}{}. {}", i + 1, t.title);
-            let width = TAB_BAR_WIDTH as usize - 4 - 3;
-            let label: String = label.chars().take(width).collect();
+            // 右端1桁は枠線。錠アイコン(全角2桁)とインジケータ4桁を除いた幅に収める
+            const LOCK_W: u16 = 2;
+            let avail = TAB_BAR_WIDTH - 1 - 4 - LOCK_W;
+            let label = truncate_width(&format!("{prefix}{}. {}", i + 1, t.title), avail);
+            let pad = avail as usize - label.width();
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("[{ind}] "),
                     Style::default().fg(ind_color).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(label, title_style),
+                Span::styled(format!("{label}{}", " ".repeat(pad)), title_style),
                 Span::styled(
-                    if t.locked { " 🔒" } else { "   " },
+                    if t.locked { "🔒" } else { "  " },
                     Style::default().fg(NEON_YELLOW),
                 ),
             ]));
@@ -1174,17 +1227,21 @@ fn draw_session(
     } else {
         NEON_GREEN
     };
+    // 見出しの錠アイコンはクリックでロック切替できる (マウスだけで操作可能)
+    let (head, lock, _) = session_title(t);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
-        .title(Span::styled(
-            format!(
-                " SESSION :: {} {}",
-                t.title,
-                if t.locked { "🔒 LOCKED " } else { "" }
+        .title(Line::from(vec![
+            Span::styled(head, Style::default().fg(NEON_YELLOW)),
+            Span::styled(
+                lock,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(if t.locked { NEON_BLUE } else { NEON_GREEN })
+                    .add_modifier(Modifier::BOLD),
             ),
-            Style::default().fg(NEON_YELLOW),
-        ));
+        ]));
     let inner = block.inner(area);
     f.render_widget(block, area);
 

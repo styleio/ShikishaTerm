@@ -1608,6 +1608,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tui-term",
+ "unicode-width",
  "vt100",
 ]
 
