@@ -348,7 +348,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
 
                 // コピーモード外で子プロセスがマウスを要求していれば透過する
                 // (リモートのTUIアプリが自前でホイールスクロール等を処理できる)
-                if copy_state.is_none() {
+                // Shift押下時は透過せず、常にこちらのコピー/ペースト操作を優先する
+                if copy_state.is_none() && !m.modifiers.contains(KeyModifiers::SHIFT) {
                     let (mode, enc) = {
                         let p = parser.lock().unwrap();
                         (
@@ -404,22 +405,37 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
                             cs.cursor_row = row_in_pane;
                         }
                     }
-                    // 右クリック: 選択範囲をクリップボードへコピーして復帰
-                    MouseEventKind::Down(MouseButton::Right) => {
-                        if let Some(cs) = copy_state.take() {
-                            let mut p = parser.lock().unwrap();
-                            let cur = p.screen().scrollback();
-                            let here =
-                                abs_line(cur, inner.height, cs.cursor_row.min(inner.height - 1));
-                            let (lo, hi) = match cs.anchor {
-                                Some(a) => (a.min(here), a.max(here)),
-                                None => (here, here),
-                            };
-                            let text = extract_text(&mut p, lo, hi, inner.width);
-                            p.screen_mut().set_scrollback(0);
-                            drop(p);
-                            flash = Some(copy_to_clipboard(&text));
+                    // 左ボタン解放: 選択範囲を即クリップボードへ (PuTTY流の選択即コピー)
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        let mut exit_copy = false;
+                        if let Some(cs) = copy_state.as_mut() {
+                            if let Some(anchor) = cs.anchor.take() {
+                                let mut p = parser.lock().unwrap();
+                                let cur = p.screen().scrollback();
+                                let here = abs_line(
+                                    cur,
+                                    inner.height,
+                                    cs.cursor_row.min(inner.height.saturating_sub(1)),
+                                );
+                                let (lo, hi) = (anchor.min(here), anchor.max(here));
+                                let text = extract_text(&mut p, lo, hi, inner.width);
+                                drop(p);
+                                flash = Some(copy_to_clipboard(&text));
+                                // ライブ位置での選択なら、そのまま通常操作へ戻る
+                                exit_copy = cur == 0;
+                            }
                         }
+                        if exit_copy {
+                            copy_state = None;
+                        }
+                    }
+                    // 右クリック: クリップボードの内容をペースト (PuTTY流)
+                    MouseEventKind::Down(MouseButton::Right) => {
+                        if copy_state.take().is_some() {
+                            parser.lock().unwrap().screen_mut().set_scrollback(0);
+                        }
+                        let bracketed = parser.lock().unwrap().screen().bracketed_paste();
+                        flash = paste_clipboard(&writer, bracketed)?;
                     }
                     _ => {}
                 }
@@ -501,6 +517,26 @@ fn copy_to_clipboard(text: &str) -> String {
     match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())) {
         Ok(()) => format!(">> COPIED {lines} LINES TO CLIPBOARD"),
         Err(e) => format!(">> COPY FAILED: {e}"),
+    }
+}
+
+/// クリップボードの内容を子プロセスへペーストする。
+/// 子がbracketed pasteモードなら \x1b[200~ ... \x1b[201~ で包む
+fn paste_clipboard(writer: &PtyWriter, bracketed: bool) -> Result<Option<String>> {
+    match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+        Ok(text) => {
+            let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+            if bracketed {
+                let mut bytes = b"\x1b[200~".to_vec();
+                bytes.extend_from_slice(normalized.as_bytes());
+                bytes.extend_from_slice(b"\x1b[201~");
+                pty_write(writer, &bytes)?;
+            } else {
+                pty_write(writer, normalized.as_bytes())?;
+            }
+            Ok(None)
+        }
+        Err(e) => Ok(Some(format!(">> PASTE FAILED: {e}"))),
     }
 }
 
@@ -641,14 +677,14 @@ fn draw(
             ""
         };
         format!(
-            " [COPY:{mode}] -{scrollback_offset} | ドラッグ:選択 右クリック:コピー | v y a / Esc: LIVE{hist}"
+            " [COPY:{mode}] -{scrollback_offset} | 選択で自動コピー 右クリック:ペースト | v y a / Esc: LIVE{hist}"
         )
     } else if prefix_active {
         " [PREFIX] q: EXIT / [: COPY MODE / b: send Ctrl+B".to_string()
     } else if let Some(msg) = flash {
         format!(" {msg}")
     } else {
-        " KERNEL ACCESS GRANTED... PORTABLE_MODE_ON | ホイール/クリック: COPY | Ctrl+B q: EXIT"
+        " KERNEL ACCESS GRANTED... PORTABLE_MODE_ON | ドラッグ:コピー 右クリック:ペースト | Ctrl+B q: EXIT"
             .to_string()
     };
     let status_bg = if copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
