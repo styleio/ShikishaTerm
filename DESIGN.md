@@ -65,7 +65,7 @@ Go案はエコシステム上、成熟した組み込み用端末エミュレー
 | プロセス終了 | 子プロセスのexitコード | 確実 |
 
 ヘッドレスJSON連携の「100%確実」に対し本方式はヒューリスティックであるため、
-誤検知しても事故に至らないよう7.4の自動実行バジェットと「迷ったら止まって
+誤検知しても事故に至らないよう7.5の自動実行バジェットと「迷ったら止まって
 人間に返す」既定（9章）を前提に組む。
 
 ### 4.3 エージェントプロファイル（./profiles/*.json）
@@ -168,7 +168,55 @@ config.jsonで「タブNのイベントに `scripts/*.lua` を紐付け」。
 - ヘッドレスアダプタ有効時: 構造化出力から正確に取得
 - APIチャットタブ: APIレスポンスをそのまま使用（正確）
 
-### 7.4 暴走対策（自動実行バジェット）
+### 7.4 スタートアップ自動化（Expect）
+「アプリを起動するだけで前日の作業状態まで自動復旧する」ためのタブ毎の自動入力機能。
+例: SSHログイン → 作業フォルダへcd → `claude --resume` → 一番上のセッションを選択。
+
+タブはconfig.jsonで定義し、`startup` に「画面待ち→送信」のステップを並べる:
+
+```jsonc
+{
+  "tabs": [
+    {
+      "name": "dev-server",
+      "command": "ssh root@example.com",
+      "profile": "claude",          // 検出プロファイルの手動指定 (ssh先のAI用)
+      "startup": [
+        { "wait_for": "\\$ $",            "send": "cd /srv/myproj\r" },
+        { "wait_for": "\\$ $",            "send": "claude --resume\r" },
+        { "wait_for": "Select a session", "send": "\r" }
+      ]
+    }
+  ]
+}
+```
+
+より複雑な分岐 (初回だけ--resumeが無い、等) はLuaスタートアップスクリプトで:
+
+```jsonc
+{ "startup_lua": "scripts/resume_work.lua" }
+```
+
+```lua
+function on_start(tab)
+  if not shikisha.wait(tab, "\\$ $", 15000) then return end  -- ms。falseならタイムアウト
+  shikisha.send(tab, "cd /srv/myproj\r")
+  shikisha.wait(tab, "\\$ $", 5000)
+  shikisha.send(tab, "claude --resume\r")
+  if shikisha.wait(tab, "Select a session", 5000) then
+    shikisha.send(tab, "\r")                                 -- 一番上のセッションを選択
+  end
+end
+```
+
+- `wait_for` は検出エンジンの画面バッファに対する正規表現
+- 各ステップにタイムアウト (既定10秒)。超過時は自動入力を中断して青WAITで人間に引き渡す
+  (誤爆で暴走しない「迷ったら止まる」原則を踏襲)
+- 自動入力中はタブに専用インジケータを表示し、任意のキー入力で即座に人間が介入できる
+- パスワードの平文埋め込みは非推奨 (SSHは鍵認証を推奨)。どうしても必要な場合は
+  10章の暗号化ストアから参照する形とし、config.json平文には書かせない
+
+### 7.5 暴走対策（自動実行バジェット）
 自動フック連鎖・自動YES・時間あたりAPI呼び出しを単一バジェットで統合管理:
 - パイプライン定義時の循環検出（DAG強制）＋ 実行時最大チェーン深度（既定10）
 - 連続自動応答の上限回数（既定10、超過で青WAITに落とし人間へ返す）
@@ -193,9 +241,13 @@ config.jsonで「タブNのイベントに `scripts/*.lua` を紐付け」。
 | `shikisha.notify(dest, text)` | 登録済みSlack/Telegramへ通知（登録先限定） |
 | `shikisha.log(text)` | logs/ への記録 |
 | `shikisha.get_var(k)` / `set_var(k, v)` | フック間共有変数 |
+| `shikisha.wait(tab, pattern, timeout_ms)` | 画面に正規表現が現れるまで待つ (Expect) |
+| `shikisha.send(tab, text)` | タブへキー入力を送信 |
+| `shikisha.sleep(ms)` | 待機 |
 
 ### 8.3 フックイベント
 ```lua
+function on_start(tab) ... end                   -- タブ起動時 (スタートアップ自動化, 7.4章)
 function on_done(tab) ... end                    -- タブ完了時
 function on_question(tab, question, options) ... end  -- 選択肢検出時(9章)
 function on_error(tab, err) ... end              -- エラー時
@@ -227,7 +279,7 @@ function on_error(tab, err) ... end              -- エラー時
 - 各ツールの許可フラグ（`--full-auto`、`--permission-mode acceptEdits` 等）を
   プロファイルの起動コマンドに書く方法も併用可
   （アプリはフラグの意味を知らない＝ベンダー非依存原則と両立）
-- 全モード共通で7.4の自動実行バジェットが適用される
+- 全モード共通で7.5の自動実行バジェットが適用される
 
 ## 10. セキュリティ
 
@@ -279,7 +331,7 @@ function on_error(tab, err) ... end              -- エラー時
 | 1 | PTYスパイク: 単一タブでClaude Codeを表示・対話。日本語幅検証 | tui-term描画品質（本計画の最大リスクを最初に潰す） |
 | 2 | 状態検出エンジン＋プロファイル（claude / codex / gemini） | 検出精度、沈黙タイマー調整（第二のリスク） |
 | 3 | マルチタブ＋INDEX＋ステータスインジケータ | キー入力ルーティング |
-| 4 | パイプライン・応答キャプチャ・Luaフック・通知・自動YES | キャプチャ品質、バジェット制御 |
+| 4 | パイプライン・応答キャプチャ・Luaフック・通知・自動YES・スタートアップ自動化(Expect) | キャプチャ品質、バジェット制御 |
 | 5 | ヘッドレスアダプタ（オプション）・Web GUI・暗号化・仕上げ | 配布と署名 |
 
 ## 15. 既知の注意事項
