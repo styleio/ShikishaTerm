@@ -8,10 +8,15 @@
 //!
 //! 操作: Ctrl+B → q で終了（それ以外のキーは子プロセスへ透過）
 
+mod detect;
+mod profile;
+
 use std::io::{Read as _, Write as _};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use detect::{Detector, TabState};
 
 use anyhow::Result;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -30,6 +35,7 @@ use tui_term::widget::PseudoTerminal;
 const TAB_BAR_WIDTH: u16 = 18;
 const STATUS_BAR_HEIGHT: u16 = 1;
 const SCROLLBACK_LINES: usize = 5000;
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const NEON_GREEN: Color = Color::Rgb(57, 255, 20);
 const NEON_YELLOW: Color = Color::Rgb(255, 234, 0);
@@ -40,8 +46,10 @@ type PtyWriter = Arc<Mutex<Box<dyn std::io::Write + Send>>>;
 /// 子プロセスからの端末照会 (DSR/DA) への応答係。
 /// ConPTY配下のプログラム (ssh等) はカーソル位置照会 `\x1b[6n` への応答を
 /// 待ってブロックするため、本物のターミナルと同様にPTYへ書き戻す。
+/// あわせてベル文字 (完了通知によく使われる) を数え、状態検出の信号にする。
 struct QueryResponder {
     writer: PtyWriter,
+    bell: Arc<AtomicU64>,
 }
 
 impl QueryResponder {
@@ -54,6 +62,10 @@ impl QueryResponder {
 }
 
 impl vt100::Callbacks for QueryResponder {
+    fn audible_bell(&mut self, _: &mut vt100::Screen) {
+        self.bell.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn unhandled_csi(
         &mut self,
         screen: &mut vt100::Screen,
@@ -183,27 +195,35 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
     drop(pair.slave);
     let mut killer = child.clone_killer();
 
+    let start = Instant::now();
     let writer: PtyWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
+    let bell_count = Arc::new(AtomicU64::new(0));
+    let last_output_ms = Arc::new(AtomicU64::new(0));
     let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
         rows,
         cols,
         SCROLLBACK_LINES,
         QueryResponder {
             writer: Arc::clone(&writer),
+            bell: Arc::clone(&bell_count),
         },
     )));
     let child_exited = Arc::new(AtomicBool::new(false));
 
-    // PTY出力 → vt100パーサ
+    // PTY出力 → vt100パーサ (最終出力時刻も記録し、沈黙タイマーの信号にする)
     {
         let parser = Arc::clone(&parser);
+        let last_output_ms = Arc::clone(&last_output_ms);
         let mut reader = pair.master.try_clone_reader()?;
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
-                    Ok(n) => parser.lock().unwrap().process(&buf[..n]),
+                    Ok(n) => {
+                        last_output_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                        parser.lock().unwrap().process(&buf[..n]);
+                    }
                 }
             }
         });
@@ -222,9 +242,28 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
     let mut copy_state: Option<CopyState> = None;
     let mut flash: Option<String> = None;
 
+    // 状態検出エンジン (プロファイルはコマンド名から選択)
+    let profile_cmd = cmd_args.first().map(String::as_str).unwrap_or("powershell");
+    let mut detector = Detector::new(profile::load_for_command(profile_cmd));
+    let mut tab_state = TabState::Wait;
+    let mut spinner_idx: usize = 0;
+    let mut last_detect = Instant::now() - Duration::from_secs(1);
+
     loop {
         if child_exited.load(Ordering::SeqCst) {
             break;
+        }
+
+        // 200ms毎に画面・沈黙時間・ベルから状態を判定
+        if last_detect.elapsed() >= Duration::from_millis(200) {
+            last_detect = Instant::now();
+            let screen_text = parser.lock().unwrap().screen().contents();
+            let now = start.elapsed().as_millis() as u64;
+            let since = now.saturating_sub(last_output_ms.load(Ordering::Relaxed));
+            tab_state = detector.tick(&screen_text, since, bell_count.load(Ordering::Relaxed));
+            if tab_state == TabState::Busy {
+                spinner_idx = spinner_idx.wrapping_add(1);
+            }
         }
 
         terminal.draw(|f| {
@@ -235,6 +274,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
                 prefix_active,
                 copy_state.as_ref(),
                 flash.as_deref(),
+                tab_state,
+                SPINNER[spinner_idx % SPINNER.len()],
+                detector.profile_name(),
             );
         })?;
 
@@ -588,6 +630,7 @@ mod tests {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw(
     f: &mut Frame,
     parser: &Arc<Mutex<vt100::Parser<QueryResponder>>>,
@@ -595,6 +638,9 @@ fn draw(
     prefix_active: bool,
     copy: Option<&CopyState>,
     flash: Option<&str>,
+    state: TabState,
+    spinner: char,
+    profile_name: &str,
 ) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -605,12 +651,27 @@ fn draw(
         .constraints([Constraint::Length(TAB_BAR_WIDTH), Constraint::Min(1)])
         .split(outer[0]);
 
+    // 状態インジケータ: 🟡BUSY(スピナー) 🟢DONE 🔵WAIT/QUESTION
+    let (indicator, indicator_color) = match state {
+        TabState::Busy => (spinner, NEON_YELLOW),
+        TabState::Done => ('●', NEON_GREEN),
+        TabState::Question => ('?', NEON_BLUE),
+        TabState::Wait => ('●', NEON_BLUE),
+    };
     let tabs = Paragraph::new(vec![
         Line::from(Span::styled("[≡] 0. INDEX", Style::default().fg(NEON_BLUE))),
-        Line::from(Span::styled(
-            format!("[●] 1. {session_title}"),
-            Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD),
-        )),
+        Line::from(vec![
+            Span::styled(
+                format!("[{indicator}] "),
+                Style::default()
+                    .fg(indicator_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("1. {session_title}"),
+                Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD),
+            ),
+        ]),
     ])
     .block(
         Block::default()
@@ -684,8 +745,10 @@ fn draw(
     } else if let Some(msg) = flash {
         format!(" {msg}")
     } else {
-        " KERNEL ACCESS GRANTED... PORTABLE_MODE_ON | ドラッグ:コピー 右クリック:ペースト | Ctrl+B q: EXIT"
-            .to_string()
+        format!(
+            " PROFILE:{profile_name} [{}] | ドラッグ:コピー 右クリック:ペースト | Ctrl+B q: EXIT",
+            state.label()
+        )
     };
     let status_bg = if copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
     f.render_widget(

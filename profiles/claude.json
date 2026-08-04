@@ -1,0 +1,13 @@
+{
+  "name": "Claude Code",
+  "command_match": ["claude"],
+  "busy_patterns": ["esc to interrupt", "ctrl\\+c to stop"],
+  "question_patterns": [
+    "Do you want to",
+    "\u276f\\s*1\\.",
+    "\\(y/n\\)",
+    "yes/no",
+    "Allow .+\\?"
+  ],
+  "silence_ms": 2000
+}

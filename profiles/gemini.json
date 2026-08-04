@@ -1,0 +1,13 @@
+{
+  "name": "Gemini CLI",
+  "command_match": ["gemini"],
+  "busy_patterns": ["esc to cancel", "[Ww]aiting"],
+  "question_patterns": [
+    "Apply this change\\?",
+    "Allow execution",
+    "\\(y/n\\)",
+    "\u25cf\\s*1\\.",
+    "\u276f\\s*1\\."
+  ],
+  "silence_ms": 2000
+}
