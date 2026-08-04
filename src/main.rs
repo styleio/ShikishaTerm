@@ -159,26 +159,115 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
     }
 
     let mut prefix_active = false;
+    let mut copy_state: Option<CopyState> = None;
+    let mut flash: Option<String> = None;
 
     loop {
         if child_exited.load(Ordering::SeqCst) {
             break;
         }
 
-        terminal.draw(|f| draw(f, &parser, &session_title, prefix_active))?;
+        terminal.draw(|f| {
+            draw(
+                f,
+                &parser,
+                &session_title,
+                prefix_active,
+                copy_state.as_ref(),
+                flash.as_deref(),
+            );
+        })?;
 
         if !event::poll(Duration::from_millis(16))? {
             continue;
         }
         match event::read()? {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
+                flash = None;
                 if prefix_active {
                     prefix_active = false;
                     match key.code {
                         KeyCode::Char('q') => break,
                         // Ctrl+B b で子プロセスに素のCtrl+Bを送る
                         KeyCode::Char('b') => pty_write(&writer, &[0x02])?,
+                        // Ctrl+B [ でコピーモード (tmuxのコピーモード風)
+                        KeyCode::Char('[') => {
+                            copy_state = Some(CopyState {
+                                cursor_row: pty_dims(terminal.size()?).0.saturating_sub(1),
+                                anchor: None,
+                            });
+                        }
                         _ => {}
+                    }
+                } else if copy_state.is_some() {
+                    let mut cs = copy_state.take().unwrap();
+                    let (rows_v, cols_v) = pty_dims(terminal.size()?);
+                    let mut p = parser.lock().unwrap();
+                    let cur = p.screen().scrollback();
+                    let mut keep = true;
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => {
+                            p.screen_mut().set_scrollback(0);
+                            keep = false;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if cs.cursor_row > 0 {
+                                cs.cursor_row -= 1;
+                            } else {
+                                p.screen_mut().set_scrollback(cur + 1);
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if cs.cursor_row + 1 < rows_v {
+                                cs.cursor_row += 1;
+                            } else {
+                                p.screen_mut().set_scrollback(cur.saturating_sub(1));
+                            }
+                        }
+                        KeyCode::PageUp => p.screen_mut().set_scrollback(cur + rows_v as usize),
+                        KeyCode::PageDown => {
+                            p.screen_mut().set_scrollback(cur.saturating_sub(rows_v as usize));
+                        }
+                        // 最古へ (実際の保持量にクランプされる)
+                        KeyCode::Home | KeyCode::Char('g') => {
+                            p.screen_mut().set_scrollback(usize::MAX / 2);
+                        }
+                        KeyCode::End | KeyCode::Char('G') => {
+                            p.screen_mut().set_scrollback(0);
+                            cs.cursor_row = rows_v.saturating_sub(1);
+                        }
+                        // 選択開始 / 解除
+                        KeyCode::Char('v') | KeyCode::Char(' ') => {
+                            cs.anchor = match cs.anchor {
+                                Some(_) => None,
+                                None => Some(abs_line(cur, rows_v, cs.cursor_row)),
+                            };
+                        }
+                        // 選択範囲 (未選択ならカーソル行) をコピーして復帰
+                        KeyCode::Char('y') | KeyCode::Enter => {
+                            let here = abs_line(cur, rows_v, cs.cursor_row);
+                            let (lo, hi) = match cs.anchor {
+                                Some(a) => (a.min(here), a.max(here)),
+                                None => (here, here),
+                            };
+                            let text = extract_text(&mut p, lo, hi, cols_v);
+                            p.screen_mut().set_scrollback(0);
+                            drop(p);
+                            flash = Some(copy_to_clipboard(&text));
+                            keep = false;
+                        }
+                        // 全履歴コピー
+                        KeyCode::Char('a') => {
+                            let text = extract_text(&mut p, 0, usize::MAX / 2, cols_v);
+                            p.screen_mut().set_scrollback(0);
+                            drop(p);
+                            flash = Some(copy_to_clipboard(&text));
+                            keep = false;
+                        }
+                        _ => {}
+                    }
+                    if keep {
+                        copy_state = Some(cs);
                     }
                 } else if key.code == KeyCode::Char('b')
                     && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -213,11 +302,64 @@ fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// コピーモード (Ctrl+B [) の状態
+struct CopyState {
+    /// ペイン内のカーソル行 (0 = 最上行)
+    cursor_row: u16,
+    /// 選択開始位置 (画面最下行から数えた行数)。None = 未選択
+    anchor: Option<usize>,
+}
+
+/// 画面最下行から数えた絶対行位置
+fn abs_line(offset: usize, rows: u16, cursor_row: u16) -> usize {
+    offset + rows.saturating_sub(1).saturating_sub(cursor_row) as usize
+}
+
+/// スクロールバック内の行範囲 (画面最下行からの行数 lo..=hi) をテキスト化する。
+/// 折返し行は連結し、行末の空白は除去する。
+fn extract_text(
+    p: &mut vt100::Parser<QueryResponder>,
+    lo: usize,
+    hi: usize,
+    cols: u16,
+) -> String {
+    let saved = p.screen().scrollback();
+    p.screen_mut().set_scrollback(usize::MAX / 2);
+    let max = p.screen().scrollback();
+    let (rows, _) = p.screen().size();
+    let top = max + rows.saturating_sub(1) as usize;
+    let mut out = String::new();
+    for d in (lo..=hi.min(top)).rev() {
+        let s = d.min(max);
+        p.screen_mut().set_scrollback(s);
+        let r = (rows as usize - 1 - (d - s)) as u16;
+        let line = p.screen().rows(r, cols).next().unwrap_or_default();
+        if p.screen().row_wrapped(r) {
+            out.push_str(&line);
+        } else {
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+    }
+    p.screen_mut().set_scrollback(saved);
+    out
+}
+
+fn copy_to_clipboard(text: &str) -> String {
+    let lines = text.lines().count();
+    match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())) {
+        Ok(()) => format!(">> COPIED {lines} LINES TO CLIPBOARD"),
+        Err(e) => format!(">> COPY FAILED: {e}"),
+    }
+}
+
 fn draw(
     f: &mut Frame,
     parser: &Arc<Mutex<vt100::Parser<QueryResponder>>>,
     session_title: &str,
     prefix_active: bool,
+    copy: Option<&CopyState>,
+    flash: Option<&str>,
 ) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -242,27 +384,69 @@ fn draw(
     );
     f.render_widget(tabs, main[0]);
 
+    let border_color = if copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(NEON_GREEN))
+        .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             format!(" SESSION 1 :: {session_title} "),
             Style::default().fg(NEON_YELLOW),
         ));
     let inner = block.inner(main[1]);
     f.render_widget(block, main[1]);
+    let scrollback_offset;
     {
         let parser = parser.lock().unwrap();
+        scrollback_offset = parser.screen().scrollback();
         f.render_widget(PseudoTerminal::new(parser.screen()), inner);
     }
 
-    let status = if prefix_active {
-        " [PREFIX] q: EXIT / b: send Ctrl+B"
+    // コピーモード: カーソル行と選択範囲をハイライト
+    if let Some(cs) = copy {
+        let rows_v = inner.height;
+        let cursor_row = cs.cursor_row.min(rows_v.saturating_sub(1));
+        let here = abs_line(scrollback_offset, rows_v, cursor_row);
+        for r in 0..rows_v {
+            let d = abs_line(scrollback_offset, rows_v, r);
+            let in_selection = cs
+                .anchor
+                .is_some_and(|a| d >= a.min(here) && d <= a.max(here));
+            let style = if r == cursor_row {
+                Some(Style::default().bg(NEON_GREEN).fg(Color::Black))
+            } else if in_selection {
+                Some(Style::default().bg(Color::Rgb(0, 80, 40)))
+            } else {
+                None
+            };
+            if let Some(style) = style {
+                f.buffer_mut().set_style(
+                    ratatui::layout::Rect {
+                        x: inner.x,
+                        y: inner.y + r,
+                        width: inner.width,
+                        height: 1,
+                    },
+                    style,
+                );
+            }
+        }
+    }
+
+    let status = if let Some(cs) = copy {
+        let mode = if cs.anchor.is_some() { "SELECT" } else { "CURSOR" };
+        format!(
+            " [COPY:{mode}] -{scrollback_offset} | \u{2191}\u{2193} PgUp/Dn g/G | v: 選択 y: コピー a: 全履歴 | Esc: LIVE"
+        )
+    } else if prefix_active {
+        " [PREFIX] q: EXIT / [: COPY MODE / b: send Ctrl+B".to_string()
+    } else if let Some(msg) = flash {
+        format!(" {msg}")
     } else {
-        " KERNEL ACCESS GRANTED... PORTABLE_MODE_ON  |  Ctrl+B q: EXIT"
+        " KERNEL ACCESS GRANTED... PORTABLE_MODE_ON  |  Ctrl+B q: EXIT / [: COPY".to_string()
     };
+    let status_bg = if copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
     f.render_widget(
-        Paragraph::new(status).style(Style::default().fg(Color::Black).bg(NEON_GREEN)),
+        Paragraph::new(status).style(Style::default().fg(Color::Black).bg(status_bg)),
         outer[1],
     );
 }
