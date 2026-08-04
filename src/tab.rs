@@ -148,6 +148,41 @@ fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
     std::env::split_paths(&path_var).find_map(|dir| try_base(dir.join(prog)))
 }
 
+/// スクロールバック内の行範囲 (画面最下行からの行数 lo..=hi) をテキスト化する。
+/// 折返し行は連結し、行末の空白は除去する。
+pub fn extract_text<CB: vt100::Callbacks>(
+    p: &mut vt100::Parser<CB>,
+    lo: usize,
+    hi: usize,
+    cols: u16,
+) -> String {
+    let saved = p.screen().scrollback();
+    p.screen_mut().set_scrollback(usize::MAX / 2);
+    let max = p.screen().scrollback();
+    let (rows, _) = p.screen().size();
+    let top = max + rows.saturating_sub(1) as usize;
+    let mut out = String::new();
+    for d in (lo..=hi.min(top)).rev() {
+        let s = d.min(max);
+        p.screen_mut().set_scrollback(s);
+        let r = (rows as usize - 1 - (d - s)) as u16;
+        // rows(start_col, width) は各可視行の水平スライスを返すイテレータ
+        let line = p
+            .screen()
+            .rows(0, cols)
+            .nth(r as usize)
+            .unwrap_or_default();
+        if p.screen().row_wrapped(r) {
+            out.push_str(&line);
+        } else {
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+    }
+    p.screen_mut().set_scrollback(saved);
+    out
+}
+
 /// 画面内容のハッシュ。最下部 ignore_bottom 行は判定から除外する
 /// (byobu/tmux等のステータスバーは時計が毎秒更新され、
 ///  生の出力活動を見ると永遠にBUSYになってしまうため)
@@ -193,6 +228,10 @@ pub struct Tab {
     bell_count: Arc<AtomicU64>,
     last_hash: u64,
     last_change_ms: u64,
+    /// 最新応答のキャプチャ (DESIGN 7.3: 送信境界マーカー方式)
+    pub last_response: Option<String>,
+    /// BUSY遷移時のスクロールバック蓄積量 (応答の開始境界)
+    response_marker: Option<usize>,
     detector: Detector,
 }
 
@@ -266,6 +305,8 @@ impl Tab {
             bell_count,
             last_hash: 0,
             last_change_ms: 0,
+            last_response: None,
+            response_marker: None,
             detector: Detector::new(profile),
         })
     }
@@ -318,11 +359,49 @@ impl Tab {
             self.last_change_ms = now;
         }
         let since = now.saturating_sub(self.last_change_ms);
+        let old_state = self.state;
         self.state = self
             .detector
             .tick(&screen_text, since, self.bell_count.load(Ordering::Relaxed));
         if self.state == TabState::Busy {
             self.spinner_idx = self.spinner_idx.wrapping_add(1);
         }
+
+        // 応答キャプチャ (送信境界マーカー方式):
+        // BUSY開始時点のスクロールバック蓄積量を境界として記録し、
+        // DONEでその境界以降だけを抽出する (過去の応答は混ざらない)
+        if self.state == TabState::Busy && old_state != TabState::Busy {
+            self.response_marker = Some(self.scrollback_len());
+        }
+        if old_state == TabState::Busy && self.state == TabState::Done {
+            self.last_response = Some(self.capture_since_marker());
+        }
+    }
+
+    /// 現在のスクロールバック蓄積行数 (表示位置は変更しない)
+    fn scrollback_len(&self) -> usize {
+        let mut p = self.parser.lock().unwrap();
+        let saved = p.screen().scrollback();
+        p.screen_mut().set_scrollback(usize::MAX / 2);
+        let max = p.screen().scrollback();
+        p.screen_mut().set_scrollback(saved);
+        max
+    }
+
+    /// マーカー以降の新規出力をテキスト化する
+    fn capture_since_marker(&self) -> String {
+        let mut p = self.parser.lock().unwrap();
+        let (rows, cols) = p.screen().size();
+        if p.screen().alternate_screen() {
+            // 全画面TUIはスクロールしないため可視画面のスナップショットで代替
+            return extract_text(&mut p, 0, rows.saturating_sub(1) as usize, cols);
+        }
+        let saved = p.screen().scrollback();
+        p.screen_mut().set_scrollback(usize::MAX / 2);
+        let now_len = p.screen().scrollback();
+        p.screen_mut().set_scrollback(saved);
+        let marker = self.response_marker.unwrap_or(now_len);
+        let new_lines = now_len.saturating_sub(marker);
+        extract_text(&mut p, 0, new_lines + rows.saturating_sub(1) as usize, cols)
     }
 }

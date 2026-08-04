@@ -32,7 +32,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use tui_term::widget::PseudoTerminal;
 
 use detect::TabState;
-use tab::{CopyState, Tab};
+use tab::{CopyState, Tab, extract_text};
 
 const TAB_BAR_WIDTH: u16 = 18;
 const STATUS_BAR_HEIGHT: u16 = 1;
@@ -180,6 +180,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         KeyCode::Char('b') => {
                             if let Some(t) = session_mut(&mut tabs, active) {
                                 t.write_bytes(&[0x02])?;
+                            }
+                        }
+                        // Ctrl+B c で最新キャプチャ応答をクリップボードへ
+                        KeyCode::Char('c') => {
+                            if let Some(t) = session_mut(&mut tabs, active) {
+                                flash = Some(match &t.last_response {
+                                    Some(r) if !r.trim().is_empty() => copy_to_clipboard(r),
+                                    _ => ">> NO CAPTURED RESPONSE".to_string(),
+                                });
                             }
                         }
                         // Ctrl+B [ でコピーモード (tmuxのコピーモード風)
@@ -641,7 +650,7 @@ fn draw_session(
             " [COPY:{mode}] -{scrollback_offset} | 選択で自動コピー 右クリック:ペースト | v y a / Esc: LIVE{hist}"
         )
     } else if prefix_active {
-        " [PREFIX] q: EXIT / 0-9: TAB / [: COPY / b: send Ctrl+B".to_string()
+        " [PREFIX] q: EXIT / 0-9: TAB / [: COPY / c: 応答コピー / b: send Ctrl+B".to_string()
     } else if let Some(msg) = flash {
         format!(" {msg}")
     } else {
@@ -656,41 +665,6 @@ fn draw_session(
         Paragraph::new(status).style(Style::default().fg(Color::Black).bg(status_bg)),
         status_area,
     );
-}
-
-/// スクロールバック内の行範囲 (画面最下行からの行数 lo..=hi) をテキスト化する。
-/// 折返し行は連結し、行末の空白は除去する。
-fn extract_text<CB: vt100::Callbacks>(
-    p: &mut vt100::Parser<CB>,
-    lo: usize,
-    hi: usize,
-    cols: u16,
-) -> String {
-    let saved = p.screen().scrollback();
-    p.screen_mut().set_scrollback(usize::MAX / 2);
-    let max = p.screen().scrollback();
-    let (rows, _) = p.screen().size();
-    let top = max + rows.saturating_sub(1) as usize;
-    let mut out = String::new();
-    for d in (lo..=hi.min(top)).rev() {
-        let s = d.min(max);
-        p.screen_mut().set_scrollback(s);
-        let r = (rows as usize - 1 - (d - s)) as u16;
-        // rows(start_col, width) は各可視行の水平スライスを返すイテレータ
-        let line = p
-            .screen()
-            .rows(0, cols)
-            .nth(r as usize)
-            .unwrap_or_default();
-        if p.screen().row_wrapped(r) {
-            out.push_str(&line);
-        } else {
-            out.push_str(line.trim_end());
-            out.push('\n');
-        }
-    }
-    p.screen_mut().set_scrollback(saved);
-    out
 }
 
 fn copy_to_clipboard(text: &str) -> String {

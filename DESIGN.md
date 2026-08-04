@@ -163,8 +163,16 @@ config.jsonで「タブNのイベントに `scripts/*.lua` を紐付け」。
 タブ完了(DONE)時に加工→転送→自動実行までを無人実行できる。
 
 ### 7.3 応答テキストのキャプチャ（パイプラインの入力源）
-- ターミナルタブ: 送信時点からのスクロールバック差分を取得 → ANSI制御を除去 →
-  プロファイルの `capture_cleanup`（スピナー行除去等）を適用してテキスト化
+「最新の応答だけ」を取り出すための送信境界マーカー方式:
+
+- BUSY遷移時 (送信直後) のスクロールバック蓄積位置をマーカーとして記録
+- DONE遷移時にマーカー以降の行だけを抽出し `tab.output` として保持
+  （過去の応答・履歴はマーカーより前なので混入しない）
+- プロファイルの `capture_cleanup`（スピナー行・プロンプトエコー除去等）を適用
+- 全画面TUI (alt screen) はスクロールしないため可視画面スナップショットで代替
+  （UI枠が混ざり得る。Lua側の string.match 抽出で補正、精密さが必要なら
+  ヘッドレスアダプタ(4.4)を使う）
+- `Ctrl+B c` で最新キャプチャをクリップボードへコピー（動作確認・手動利用）
 - ヘッドレスアダプタ有効時: 構造化出力から正確に取得
 - APIチャットタブ: APIレスポンスをそのまま使用（正確）
 
@@ -245,12 +253,45 @@ end
 | `shikisha.send(tab, text)` | タブへキー入力を送信 |
 | `shikisha.sleep(ms)` | 待機 |
 
-### 8.3 フックイベント
+### 8.3 フックイベント (検出エンジンの状態遷移に紐づくイベント駆動)
+
+| フック | 発火タイミング | 用途例 |
+|---|---|---|
+| `on_start(tab)` | タブ起動直後 | resume自動化 (7.4章) |
+| `on_question(tab, screen)` | QUESTION検出時 | 自動承認。キー文字列を返すと送信、nilで人間へ |
+| `on_busy(tab)` | BUSY遷移時 (応答開始) | 開始ログ・経過タイマー |
+| `on_done(tab)` | BUSY→DONE遷移時 | 通知・`tab.output`の加工・他タブへ転送 |
+| `on_exit(tab, code)` | 子プロセス終了時 | SSH切断の自動再接続、異常終了通知 |
+| `on_tick(tab, state)` | 200ms毎 (既定なし・上級者向け) | 上記で表現できないポーリング |
+
+実行モデル: フックはLuaコルーチンとして実行され、`shikisha.wait()` は
+UIをブロックせず検出ティックで条件成立を待つ (見た目は同期・実体は非同期)。
+
+安全ルール (全フック共通):
+- 自動送信は自動実行バジェット (7.5章) でカウント、超過で青WAIT
+- 人間がそのタブへキー入力すると自動化を一時停止 (打鍵の混線防止)。再開キーあり
+- `wait` タイムアウトで自動化中断→人間へ引き渡し
+
+パイプラインループ例 — A(Claude実装) ⇔ B(Codexレビュー) ⇔ C(分岐先):
 ```lua
-function on_start(tab) ... end                   -- タブ起動時 (スタートアップ自動化, 7.4章)
-function on_done(tab) ... end                    -- タブ完了時
-function on_question(tab, question, options) ... end  -- 選択肢検出時(9章)
-function on_error(tab, err) ... end              -- エラー時
+function on_done(tab)
+  local out = tab.output                    -- 最新応答のみ (7.3章のマーカー方式)
+  if tab.index == 1 then                    -- A: 実装タブ
+    local rounds = (shikisha.get_var("rounds") or 0)
+    if out:match("LGTM") or rounds >= 5 then
+      shikisha.notify("slack", "自動ループ完了 (" .. rounds .. "往復)")
+      return                                -- 何もしない = ループ停止
+    end
+    shikisha.set_var("rounds", rounds + 1)
+    shikisha.send_to_tab(2, "このコードをレビューして:\n" .. out)
+  elseif tab.index == 2 then                -- B: レビュータブ
+    if out:match("要修正") then
+      shikisha.send_to_tab(1, "指摘を修正して:\n" .. out)
+    else
+      shikisha.send_to_tab(3, "ドキュメント化して:\n" .. out)  -- C へ分岐
+    end
+  end
+end
 ```
 
 ### 8.4 通知（Slack / Telegram）
