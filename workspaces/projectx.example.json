@@ -1,7 +1,7 @@
 {
   "//": "ワークスペース定義ファイル。config.json の workspaces から file で参照する",
   "name": "ProjectX",
-  "lua": "scripts/projectx.lua",
+  "automation": "scripts/projectx",
   "tabs": [
     {
       "name": "A:実装",
@@ -11,7 +11,7 @@
           "name": "B:レビュー",
           "command": "codex",
           "locked": true,
-          "lua": "scripts/reviewer.lua"
+          "automation": "scripts/projectx/reviewer"
         },
         {
           "name": "C:デプロイ",

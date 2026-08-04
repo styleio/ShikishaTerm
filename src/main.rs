@@ -885,14 +885,14 @@ fn build_engine(
     ws: Option<&config::Workspace>,
     errors: &mut Vec<String>,
 ) -> Option<HookEngine> {
-    let base = cfg.and_then(|c| c.lua.clone());
-    let ws_lua = ws.and_then(|w| w.lua.clone());
+    let base = cfg.and_then(|c| c.automation_path());
+    let ws_lua = ws.and_then(|w| w.automation.clone());
     let tab_luas: Vec<(usize, String)> = ws
         .map(|w| {
             w.tabs
                 .iter()
                 .enumerate()
-                .filter_map(|(i, t)| t.cfg.lua.clone().map(|p| (i + 1, p)))
+                .filter_map(|(i, t)| t.cfg.automation_path().map(|p| (i + 1, p)))
                 .collect()
         })
         .unwrap_or_default();
@@ -908,7 +908,7 @@ fn build_engine(
         }
     };
     let load = |engine: &mut HookEngine, path: &str, errors: &mut Vec<String>| -> Option<usize> {
-        match engine.load_file(&resolve_data_path(path)) {
+        match engine.load_path(&resolve_data_path(path)) {
             Ok(id) => Some(id),
             Err(e) => {
                 errors.push(format!("Lua({path}): {e:#}"));

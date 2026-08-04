@@ -20,7 +20,9 @@ pub struct Config {
     /// 後方互換: ワークスペースを使わない場合のタブ直書き
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
-    /// フックスクリプトのパス (例: "scripts/hooks.lua")
+    /// 全体共通の自動化 (例: "scripts/common" または "scripts/hooks.lua")
+    #[serde(default)]
+    pub automation: Option<String>,
     #[serde(default)]
     pub lua: Option<String>,
     /// 自動送信チェーンの深度上限 (既定10)。
@@ -87,7 +89,9 @@ pub struct WorkspaceSpec {
     /// インライン定義
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
-    /// このワークスペース共通のLuaフック (タブ指定が無い場合に使われる)
+    /// このワークスペース共通の自動化 (タブ指定が無い場合に使われる)
+    #[serde(default)]
+    pub automation: Option<String>,
     #[serde(default)]
     pub lua: Option<String>,
 }
@@ -99,7 +103,9 @@ pub struct WorkspaceFile {
     pub name: Option<String>,
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
-    /// このワークスペース共通のLuaフック
+    /// このワークスペース共通の自動化
+    #[serde(default)]
+    pub automation: Option<String>,
     #[serde(default)]
     pub lua: Option<String>,
 }
@@ -120,7 +126,11 @@ pub struct TabConfig {
     /// SSH切断や、CLIツールの自己更新後の復帰に使う
     #[serde(default)]
     pub auto_restart: bool,
-    /// このタブ専用のLuaフック (最優先で引き当てられる)
+    /// このタブ専用の自動化 (最優先で引き当てられる)。
+    /// ディレクトリならイベント別ファイル方式、.lua なら関数定義方式
+    #[serde(default)]
+    pub automation: Option<String>,
+    /// 旧称。automation が無いときに使われる
     #[serde(default)]
     pub lua: Option<String>,
     /// 表示上の子タブ (転送関係はLuaが決める。ここでは階層表示のみ)
@@ -150,8 +160,21 @@ impl CommandSpec {
 pub struct Workspace {
     pub name: String,
     pub tabs: Vec<FlatTab>,
-    /// ワークスペース階層のLuaフック
-    pub lua: Option<String>,
+    /// ワークスペース階層の自動化
+    pub automation: Option<String>,
+}
+
+impl TabConfig {
+    /// automation を優先し、旧称 lua にフォールバックする
+    pub fn automation_path(&self) -> Option<String> {
+        self.automation.clone().or_else(|| self.lua.clone())
+    }
+}
+
+impl Config {
+    pub fn automation_path(&self) -> Option<String> {
+        self.automation.clone().or_else(|| self.lua.clone())
+    }
 }
 
 pub struct FlatTab {
@@ -218,7 +241,7 @@ impl Config {
                 out.push(Workspace {
                     name: "DEFAULT".into(),
                     tabs,
-                    lua: None,
+                    automation: None,
                 });
             }
             return (out, errors);
@@ -227,7 +250,7 @@ impl Config {
             let (tab_defs, file_name, file_lua): (Vec<TabConfig>, Option<String>, Option<String>) =
                 match &ws.file {
                     Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
-                        Ok(p) => (p.tabs, p.name, p.lua),
+                        Ok(p) => (p.tabs, p.name, p.automation.or(p.lua)),
                         Err(e) => {
                             errors.push(format!("{}: {e:#}", ws.name));
                             continue;
@@ -246,7 +269,7 @@ impl Config {
                 },
                 tabs,
                 // config側の指定を優先し、無ければ定義ファイル側を使う
-                lua: ws.lua.clone().or(file_lua),
+                automation: ws.automation.clone().or_else(|| ws.lua.clone()).or(file_lua),
             });
         }
         (out, errors)

@@ -226,14 +226,54 @@ impl HookEngine {
         })
     }
 
-    /// スクリプトをファイルから読み込む。同じパスは再利用する
-    pub fn load_file(&mut self, path: &std::path::Path) -> Result<usize> {
+    /// 自動化を読み込む。同じパスは再利用する。
+    /// ディレクトリなら `on_done.lua` 等のイベント別ファイル方式、
+    /// `.lua` ファイルなら従来の関数定義方式として扱う
+    pub fn load_path(&mut self, path: &std::path::Path) -> Result<usize> {
         let key = path.display().to_string();
         if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
             return Ok(i);
         }
-        let source = std::fs::read_to_string(path)
-            .with_context(|| format!("Luaスクリプトを読めません: {key}"))?;
+        if path.is_dir() {
+            self.load_dir(path)
+        } else {
+            let source = std::fs::read_to_string(path)
+                .with_context(|| format!("自動化スクリプトを読めません: {key}"))?;
+            self.load_source(&key, &source)
+        }
+    }
+
+    /// イベント別ファイル方式。各ファイルの中身は「処理の本体」なので、
+    /// Rust側で関数に包んでからフックとして登録する
+    fn load_dir(&mut self, dir: &std::path::Path) -> Result<usize> {
+        let key = dir.display().to_string();
+        // 共通の下請け関数を先に読み込む (同一ディレクトリ内で名前空間を共有)
+        let shared = dir.join("_shared.lua");
+        let mut source = String::new();
+        if shared.is_file() {
+            source.push_str(
+                &std::fs::read_to_string(&shared)
+                    .with_context(|| format!("読めません: {}", shared.display()))?,
+            );
+            source.push('\n');
+        }
+        let mut found = false;
+        for hook in HOOK_NAMES {
+            let f = dir.join(format!("{hook}.lua"));
+            if !f.is_file() {
+                continue;
+            }
+            let body = std::fs::read_to_string(&f)
+                .with_context(|| format!("読めません: {}", f.display()))?;
+            // on_question は画面テキストを第2引数で受け取る
+            source.push_str(&format!("function {hook}(tab, screen)\n{body}\nend\n"));
+            found = true;
+        }
+        if !found && source.is_empty() {
+            anyhow::bail!(
+                "{key} にイベントファイル (on_done.lua 等) がありません"
+            );
+        }
         self.load_source(&key, &source)
     }
 
@@ -555,6 +595,29 @@ mod tests {
         e.fire("on_done", &ctx(1, ""), None);
         let cmds = e.drain_commands();
         assert!(matches!(&cmds[1], Command::Log(m) if m == "round 2"));
+    }
+
+    #[test]
+    fn event_files_in_directory_are_loaded_as_bodies() {
+        let dir = std::env::temp_dir().join("shikisha-auto-dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 中身は「処理の本体」だけ。function...end は書かない
+        std::fs::write(dir.join("_shared.lua"), "function greet(n) return 'hi ' .. n end").unwrap();
+        std::fs::write(dir.join("on_done.lua"), "shikisha.log(greet(tab.name))").unwrap();
+        std::fs::write(dir.join("on_question.lua"), "if screen:match('削除') then return nil end\nreturn '1\\r'").unwrap();
+
+        let mut e = HookEngine::new().unwrap();
+        let id = e.load_path(&dir).unwrap();
+        e.set_base(id);
+
+        e.fire("on_done", &ctx(1, ""), None);
+        e.fire("on_question", &ctx(1, ""), Some("Do you want to proceed?"));
+        e.fire("on_question", &ctx(1, ""), Some("ファイルを削除しますか"));
+        let cmds = e.drain_commands();
+        assert!(matches!(&cmds[0], Command::Log(m) if m == "hi tab1"), "共通関数が使える");
+        assert!(matches!(&cmds[1], Command::SendKeys { keys, .. } if keys == "1\r"));
+        assert_eq!(cmds.len(), 2, "削除確認は人間へ回るので送信されない");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

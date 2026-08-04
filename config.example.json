@@ -1,5 +1,6 @@
 {
-  "lua": "scripts/hooks.lua",
+  "//automation": "全体共通の自動化。フォルダならイベント別ファイル方式 (推奨)",
+  "automation": "scripts/common",
   "max_chain": 10,
 
   "//tab_bar_width": "左タブバーの幅(桁)。省略時はタブ名に合わせて自動。境界線ドラッグでも調整可",

@@ -121,6 +121,10 @@ pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
 }
 
 /// PATH と実行可能拡張子 (.exe/.com/.cmd/.bat) でコマンドを実ファイルに解決する
+pub fn resolve_command(prog: &str) -> Option<std::path::PathBuf> {
+    resolve_windows_command(prog)
+}
+
 fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
     use std::path::{Path, PathBuf};
     const EXTS: [&str; 4] = ["exe", "com", "cmd", "bat"];

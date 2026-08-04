@@ -121,6 +121,160 @@ fn safe_workspace_path(
     Some(base.join(rel))
 }
 
+/// 自動化フォルダのパスを安全に解決する (拡張子チェックなし版)
+fn safe_dir_path(url: &str, config_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let raw = url
+        .split_once('?')?
+        .1
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("dir="))?;
+    let decoded = percent_decode(raw);
+    let rel = std::path::Path::new(&decoded);
+    if rel.is_absolute() || decoded.is_empty() {
+        return None;
+    }
+    if rel.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir | std::path::Component::Prefix(_)
+        )
+    }) {
+        return None;
+    }
+    Some(config_path.parent()?.join(rel))
+}
+
+const EVENT_FILES: [&str; 7] = [
+    "on_start",
+    "on_done",
+    "on_question",
+    "on_exit",
+    "on_busy",
+    "on_tick",
+    "_shared",
+];
+
+/// ローカルにインストール済みのAI CLIをワンショットで実行し、Luaコードを生成させる。
+/// APIキーは不要 (利用者のサブスク認証をそのまま使う)。
+/// 生成結果は必ず画面に表示し、利用者が承認するまで保存しない
+fn generate_with_local_ai(
+    event: &str,
+    want: &str,
+    config_path: &std::path::Path,
+) -> Result<String> {
+    if want.trim().is_empty() {
+        anyhow::bail!("やりたいことを入力してください");
+    }
+    // マニュアルを仕様書としてAIに渡す (独自APIは学習データに無いため)
+    let base = config_path.parent().unwrap_or(std::path::Path::new("."));
+    let manual = ["docs/AUTOMATION.md", "AUTOMATION.md"]
+        .iter()
+        .find_map(|p| std::fs::read_to_string(base.join(p)).ok())
+        .unwrap_or_default();
+    if manual.is_empty() {
+        anyhow::bail!("docs/AUTOMATION.md が見つかりません (AIに渡す仕様書です)");
+    }
+
+    // 会話文を返させないため、出力形式をマーカーで固定する
+    let prompt = format!(
+        "あなたはShikishaTerm-AIの自動化スクリプトを書く変換器です。\n\
+         次の「やりたいこと」を満たす `{event}.lua` の中身を書いてください。\n\n\
+         ## 出力の決まり (厳守)\n\
+         - 必ず <<<LUA で始めて >>> で終わる。その間にLuaコードだけを書く\n\
+         - 挨拶・説明・確認・質問・コードフェンスは一切書かない\n\
+         - function ... end で包まない (処理の本体だけを書く)\n\
+         - 仕様書に載っていない関数やライブラリは使わない\n\
+         - ファイルの探索や確認は不要。この指示だけで完結させる\n\n\
+         ## やりたいこと\n{want}\n\n\
+         ## 仕様書\n{manual}\n\n\
+         では <<<LUA から始めてください。\n"
+    );
+
+    let (cmd, args) = pick_local_ai()?;
+    let mut child = std::process::Command::new(&cmd)
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("{cmd} を実行できません"))?;
+    {
+        use std::io::Write as _;
+        let mut stdin = child.stdin.take().context("stdinを開けません")?;
+        stdin.write_all(prompt.as_bytes())?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "{cmd} がエラーを返しました: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    extract_lua(&text)
+}
+
+/// AIの出力から <<<LUA ... >>> の中身を取り出す。
+/// マーカーが無ければコードフェンスを剥がして返し、それも無ければエラーにする
+/// (会話文をそのままコードとして保存してしまわないため)
+fn extract_lua(text: &str) -> Result<String> {
+    if let Some((_, rest)) = text.split_once("<<<LUA") {
+        let body = rest.split_once(">>>").map(|(b, _)| b).unwrap_or(rest);
+        return Ok(body.trim().to_string());
+    }
+    let stripped = strip_code_fence(text);
+    // コードらしさの最低条件: shikisha.* か tab. を含むこと
+    if stripped.contains("shikisha.") || stripped.contains("tab.") {
+        return Ok(stripped);
+    }
+    anyhow::bail!(
+        "AIがコードを返しませんでした。表現を変えて試してください（返答: {}）",
+        text.trim().chars().take(120).collect::<String>()
+    )
+}
+
+/// 使えるAI CLIを探す (claude → codex → gemini の順)
+fn pick_local_ai() -> Result<(String, Vec<String>)> {
+    let candidates: [(&str, &[&str]); 3] = [
+        ("claude", &["-p"]),
+        ("codex", &["exec"]),
+        ("gemini", &["-p"]),
+    ];
+    for (name, args) in candidates {
+        if let Some(path) = crate::tab::resolve_command(name) {
+            let p = path.to_string_lossy().to_string();
+            // .cmd/.bat は cmd.exe 経由でないと起動できない
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            return Ok(if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
+                let mut a = vec!["/c".to_string(), p];
+                a.extend(args.iter().map(|s| s.to_string()));
+                ("cmd.exe".to_string(), a)
+            } else {
+                (p, args.iter().map(|s| s.to_string()).collect())
+            });
+        }
+    }
+    anyhow::bail!("claude / codex / gemini のいずれもPATHに見つかりません")
+}
+
+/// AIが付けがちなコードフェンスを取り除く
+fn strip_code_fence(s: &str) -> String {
+    let t = s.trim();
+    let Some(rest) = t.strip_prefix("```") else {
+        return t.to_string();
+    };
+    let rest = rest.strip_prefix("lua").unwrap_or(rest);
+    rest.trim_start_matches('\n')
+        .rsplit_once("```")
+        .map(|(body, _)| body)
+        .unwrap_or(rest)
+        .trim()
+        .to_string()
+}
+
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -227,6 +381,76 @@ fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -
                 }
             }
         }
+        // 自動化 (イベント別ファイル) の読み書き
+        ("GET", "/api/automation") => {
+            let Some(dir) = safe_dir_path(req.url(), config_path) else {
+                return req
+                    .respond(Response::from_string("bad path").with_status_code(400))
+                    .map_err(Into::into);
+            };
+            let mut map = serde_json::Map::new();
+            for name in EVENT_FILES {
+                let f = dir.join(format!("{name}.lua"));
+                let body = std::fs::read_to_string(&f).unwrap_or_default();
+                map.insert(name.to_string(), serde_json::Value::String(body));
+            }
+            let resp = Response::from_string(serde_json::Value::Object(map).to_string())
+                .with_header(
+                    Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/json; charset=utf-8"[..],
+                    )
+                    .unwrap(),
+                );
+            req.respond(resp)?;
+        }
+        ("POST", "/api/automation") => {
+            let Some(dir) = safe_dir_path(req.url(), config_path) else {
+                return req
+                    .respond(Response::from_string("bad path").with_status_code(400))
+                    .map_err(Into::into);
+            };
+            let mut req = req;
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body)?;
+            let parsed: serde_json::Value = serde_json::from_str(&body)?;
+            std::fs::create_dir_all(&dir)?;
+            for name in EVENT_FILES {
+                let Some(code) = parsed.get(name).and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let f = dir.join(format!("{name}.lua"));
+                if code.trim().is_empty() {
+                    // 空にしたら「そのイベントでは何もしない」= ファイルごと削除
+                    let _ = std::fs::remove_file(&f);
+                } else {
+                    crate::crypto::write_atomic(&f, code)?;
+                }
+            }
+            req.respond(Response::from_string(r#"{"ok":true}"#))?;
+        }
+        // 自然言語からLuaを生成する (ローカルのAI CLIをワンショット実行)
+        ("POST", "/api/generate") => {
+            let mut req = req;
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body)?;
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let event = parsed.get("event").and_then(|v| v.as_str()).unwrap_or("on_done");
+            let want = parsed.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+            let resp = match generate_with_local_ai(event, want, config_path) {
+                Ok(code) => serde_json::json!({ "ok": true, "code": code }),
+                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+            };
+            req.respond(
+                Response::from_string(resp.to_string()).with_header(
+                    Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/json; charset=utf-8"[..],
+                    )
+                    .unwrap(),
+                ),
+            )?;
+        }
         ("POST", "/api/config") => {
             let mut req = req;
             let mut body = String::new();
@@ -287,6 +511,21 @@ const PAGE: &str = r##"<!doctype html>
  input[type=checkbox] { width:16px; height:16px; accent-color:#39ff14; }
  b { color:#00aaff; font-weight:normal; font-size:12px; }
  .tree { color:#ffea00; margin-left:4px; }
+ .tab { border:1px solid #12261a; border-radius:4px; padding:8px 10px; margin:8px 0;
+        background:#070d10; }
+ .tabhead { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+ .tabhead input[type=text] { width:190px; }
+ .detail { margin-top:10px; padding-top:8px; border-top:1px dashed #1f4d2a; }
+ .modal { position:fixed; inset:0; background:rgba(0,0,0,.75); display:flex;
+          align-items:center; justify-content:center; z-index:10; }
+ .modal-inner { background:#05080a; border:1px solid #39ff14; border-radius:4px;
+        padding:20px 24px; width:min(900px, 92vw); max-height:88vh; overflow:auto; }
+ h2 { font-size:15px; color:#ffea00; margin:0 0 12px; }
+ select { background:#0a1014; color:#39ff14; border:1px solid #1f4d2a; padding:6px;
+        font-family:inherit; }
+ pre { background:#0a1014; border:1px solid #1f4d2a; padding:10px; overflow:auto;
+        max-height:240px; color:#39ff14; }
+ #autocode { min-height:200px; }
 </style></head><body>
 <h1>SHIKISHA-TERM-AI :: CONFIG</h1>
 
@@ -297,9 +536,9 @@ const PAGE: &str = r##"<!doctype html>
  <div class="row"><label>自動チェーン上限</label>
    <input type="number" id="chain" min="1" max="100">
    <span class="warn">AI同士の自動転送が何回続いたら止めるか</span></div>
- <div class="row"><label>Luaフック(全体)</label>
-   <input type="text" id="lua" placeholder="scripts/hooks.lua">
-   <span class="warn">ワークスペース・タブ側の指定が優先されます</span></div>
+ <div class="row"><label>自動化(全体共通)</label>
+   <input type="text" id="lua" placeholder="scripts/common">
+   <span class="warn">各タブに設定が無いときに使われます</span></div>
  <div class="row"><label>secretsファイル</label>
    <input type="text" id="secrets" placeholder="secrets.json"></div>
 </fieldset>
@@ -307,7 +546,43 @@ const PAGE: &str = r##"<!doctype html>
 <fieldset><legend>ワークスペースとタブ</legend>
  <div id="wslist"></div>
  <button class="ghost" onclick="addWs()">＋ ワークスペースを追加</button>
+ <span class="warn">　テンプレートから作る:</span>
+ <button class="ghost" onclick="addTemplate('single')">Claude 1つ</button>
+ <button class="ghost" onclick="addTemplate('review')">実装＋レビュー往復</button>
+ <button class="ghost" onclick="addTemplate('ssh')">SSH先のAI</button>
 </fieldset>
+
+<!-- 自動化エディタ (タブの [⚙自動化] で開く) -->
+<div id="autobox" class="modal" style="display:none">
+ <div class="modal-inner">
+   <h2 id="autotitle">自動化</h2>
+   <div class="row">
+     <label>いつ動かすか</label>
+     <select id="autoevent" onchange="switchEvent()"></select>
+     <span class="warn" id="autohint"></span>
+   </div>
+   <textarea id="autocode" spellcheck="false" placeholder="ここに処理を書きます。空にすると「何もしない」になります"></textarea>
+   <div class="row">
+     <label>AIに書いてもらう</label>
+     <input type="text" id="autoask" placeholder="例: 完了したらタブ2にレビューさせて。5往復したら止めて"
+            style="flex:1; min-width:320px">
+     <button class="ghost" onclick="askAi()">生成</button>
+   </div>
+   <div id="aipreview" style="display:none">
+     <div class="warn">生成されたコード（内容を確認してから反映してください）</div>
+     <pre id="aicode"></pre>
+     <button onclick="applyAi()">この内容を反映</button>
+     <button class="ghost" onclick="document.getElementById('aipreview').style.display='none'">破棄</button>
+   </div>
+   <div class="row">
+     <button onclick="saveAuto()">保存して閉じる</button>
+     <button class="ghost" onclick="closeAuto()">キャンセル</button>
+     <span id="automsg"></span>
+   </div>
+   <p class="warn">書き方は docs/AUTOMATION.md を参照してください。
+     自動化からファイル操作やインターネット接続はできません（サンドボックス）。</p>
+ </div>
+</div>
 
 <div class="row">
   <button onclick="save()">保存</button>
@@ -341,7 +616,8 @@ const el = (tag, attrs = {}, ...kids) => {
 function flatten(tabs, depth, out) {
   for (const t of tabs || []) {
     out.push({ name: t.name || "", command: cmdToText(t.command), profile: t.profile || "",
-               lua: t.lua || "", locked: !!t.locked, auto_restart: !!t.auto_restart, depth });
+               automation: t.automation || t.lua || "",
+               locked: !!t.locked, auto_restart: !!t.auto_restart, depth });
     flatten(t.children, depth + 1, out);
   }
   return out;
@@ -352,7 +628,7 @@ function nest(flat) {
   for (const f of flat) {
     const node = { name: f.name, command: f.command };
     if (f.profile) node.profile = f.profile;
-    if (f.lua) node.lua = f.lua;
+    if (f.automation) node.automation = f.automation;
     if (f.locked) node.locked = true;
     if (f.auto_restart) node.auto_restart = true;
     const d = Math.min(f.depth, stack.length);
@@ -367,50 +643,72 @@ function nest(flat) {
 }
 const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 
+// 普段使う3つ (タブ名 / 動かすもの / 自動化) だけを見せ、残りは [詳細] に畳む
 function render() {
   const box = document.getElementById("wslist");
   box.textContent = "";
   wss.forEach((ws, wi) => {
     const head = el("div", {class:"row"},
-      el("label", {}, "ワークスペース"),
+      el("label", {}, "ワークスペース名"),
       input(ws, "name", "名前", "text"),
-      el("span", {class:"warn"}, "Lua"),
-      input(ws, "lua", "scripts/xxx.lua", "text"),
-      el("span", {class:"warn"}, ws.file ? "定義ファイル: " + ws.file : "config.json内に定義"),
-      el("button", {class:"ghost", onclick:() => { wss.splice(wi,1); render(); }}, "削除"),
       el("button", {class:"ghost", onclick:() => { moveWs(wi,-1); }}, "↑"),
-      el("button", {class:"ghost", onclick:() => { moveWs(wi, 1); }}, "↓"));
-    const table = el("table");
-    table.append(el("tr", {},
-      th("階層"), th("タブ名"), th("コマンド"), th("プロファイル"),
-      th("Luaフック"), th("ロック"), th("自動再起動"), th("")));
-    (ws.tabs || []).forEach((t, ti) => {
-      table.append(el("tr", {},
-        td(el("button", {class:"ghost", title:"1段下げる (親タブの子にする)",
-             onclick:() => { t.depth = Math.min((t.depth||0)+1, ti); render(); }}, "→"),
-           el("button", {class:"ghost", title:"1段上げる",
-             onclick:() => { t.depth = Math.max((t.depth||0)-1, 0); render(); }}, "←"),
-           el("span", {class:"tree"}, "　".repeat(t.depth||0) + (t.depth ? "└" : ""))),
-        td(input(t, "name", "A:実装", "text")),
-        td(input(t, "command", "claude / ssh user@host", "text")),
-        td(input(t, "profile", "claude", "text")),
-        td(input(t, "lua", "scripts/reviewer.lua", "text")),
-        td(check(t, "locked")),
-        td(check(t, "auto_restart")),
-        td(el("button", {class:"ghost", onclick:() => { ws.tabs.splice(ti,1); render(); }}, "削除"),
-           el("button", {class:"ghost", onclick:() => { moveTab(ws, ti,-1); }}, "↑"),
-           el("button", {class:"ghost", onclick:() => { moveTab(ws, ti, 1); }}, "↓"))));
-    });
-    box.append(el("fieldset", {}, el("legend", {}, ws.name || "(名称未設定)"), head, table,
+      el("button", {class:"ghost", onclick:() => { moveWs(wi, 1); }}, "↓"),
       el("button", {class:"ghost", onclick:() => {
-        (ws.tabs = ws.tabs || []).push({name:"", command:"", profile:"", lua:"",
-                                        locked:false, auto_restart:false, depth:0});
+        if (confirm(`ワークスペース「${ws.name}」を削除しますか？`)) { wss.splice(wi,1); render(); }
+      }}, "削除"));
+
+    const list = el("div");
+    (ws.tabs || []).forEach((t, ti) => {
+      const card = el("div", {class:"tab"});
+      const detail = el("div", {class:"detail", style:"display:none"},
+        el("div", {class:"row"},
+          el("label", {}, "プロファイル"), input(t, "profile", "自動判別", "text"),
+          el("span", {class:"warn"}, "検出ルール。SSH先のAIを指定するときに使う")),
+        el("div", {class:"row"},
+          el("label", {}, "自動化フォルダ"), input(t, "automation", "自動", "text"),
+          el("span", {class:"warn"}, "空欄なら自動で決まります。他のタブと同じ場所を指定すると共有できます")),
+        el("div", {class:"row"},
+          label2(check(t, "locked"), "入力をロックする（人間の誤操作を防ぐ）"),
+          label2(check(t, "auto_restart"), "終了したら自動で再起動する")),
+        el("div", {class:"row"},
+          el("label", {}, "表示の階層"),
+          el("button", {class:"ghost", title:"1段下げる (上のタブの子にする)",
+            onclick:() => { t.depth = Math.min((t.depth||0)+1, ti); render(); }}, "→ 下げる"),
+          el("button", {class:"ghost", title:"1段上げる",
+            onclick:() => { t.depth = Math.max((t.depth||0)-1, 0); render(); }}, "← 上げる")));
+
+      card.append(el("div", {class:"tabhead"},
+        el("span", {class:"tree"}, "　".repeat(t.depth||0) + (t.depth ? "└" : "・")),
+        input(t, "name", "タブ名 (例: A:実装)", "text"),
+        input(t, "command", "動かすもの (例: claude / ssh user@host)", "text"),
+        el("button", {class:"ghost", onclick:() => openAuto(ws, t)}, "⚙ 自動化"),
+        el("button", {class:"ghost", onclick:(e) => {
+          const d = detail.style.display === "none";
+          detail.style.display = d ? "block" : "none";
+          e.target.textContent = d ? "詳細 ▴" : "詳細 ▾";
+        }}, "詳細 ▾"),
+        el("button", {class:"ghost", onclick:() => { moveTab(ws, ti,-1); }}, "↑"),
+        el("button", {class:"ghost", onclick:() => { moveTab(ws, ti, 1); }}, "↓"),
+        el("button", {class:"ghost", onclick:() => {
+          if (confirm(`タブ「${t.name || "(無名)"}」を削除しますか？`)) { ws.tabs.splice(ti,1); render(); }
+        }}, "削除")), detail);
+      list.append(card);
+    });
+
+    box.append(el("fieldset", {}, el("legend", {}, ws.name || "(名称未設定)"), head, list,
+      el("button", {class:"ghost", onclick:() => {
+        (ws.tabs = ws.tabs || []).push(newTab());
         render();
       }}, "＋ タブを追加")));
   });
 }
-const th = t => el("td", {}, el("b", {}, t));
-const td = (...k) => el("td", {}, ...k);
+const newTab = (o = {}) => Object.assign(
+  {name:"", command:"", profile:"", automation:"", locked:false, auto_restart:false, depth:0}, o);
+const label2 = (ctrl, text) => {
+  const l = el("label", {style:"min-width:auto; color:#39ff14; cursor:pointer"});
+  l.append(ctrl, document.createTextNode(" " + text));
+  return l;
+};
 function input(obj, key, ph, type) {
   const i = el("input", {type, placeholder: ph});
   i.value = obj[key] ?? "";
@@ -427,7 +725,103 @@ function moveWs(i, d) { const j=i+d; if(j<0||j>=wss.length) return;
   [wss[i],wss[j]]=[wss[j],wss[i]]; render(); }
 function moveTab(ws, i, d) { const j=i+d; if(j<0||j>=ws.tabs.length) return;
   [ws.tabs[i],ws.tabs[j]]=[ws.tabs[j],ws.tabs[i]]; render(); }
-function addWs() { wss.push({name:"新しいワークスペース", lua:"", tabs:[]}); render(); }
+function addWs() { wss.push({name:"新しいワークスペース", automation:"", tabs:[]}); render(); }
+
+// 白紙から始めさせないためのテンプレート
+const TEMPLATES = {
+  single: { name:"マイAI", tabs:[ newTab({name:"Claude", command:"claude"}) ] },
+  review: { name:"実装＋レビュー", tabs:[
+      newTab({name:"A:実装", command:"claude"}),
+      newTab({name:"B:レビュー", command:"codex", depth:1, locked:true}) ] },
+  ssh:    { name:"リモート作業", tabs:[
+      newTab({name:"サーバー", command:"ssh user@example.com", profile:"claude",
+              auto_restart:true}) ] },
+};
+function addTemplate(kind) {
+  const t = TEMPLATES[kind];
+  wss.push({ name: t.name, automation:"", tabs: t.tabs.map(x => newTab(x)) });
+  render();
+  msg("テンプレートを追加しました。名前とコマンドを調整して保存してください", "#39ff14");
+}
+
+// ── 自動化エディタ ─────────────────────────────────────────────
+const EVENTS = [
+  ["on_start",    "起動したとき",           "例: 作業フォルダへ移動して前回の続きを再開する"],
+  ["on_done",     "応答が完了したとき",     "例: 結果を他のタブへ渡す / Slackに通知する"],
+  ["on_question", "確認を聞かれたとき",     "文字列を返すと自動で送信、返さなければ人間の判断待ち"],
+  ["on_exit",     "セッションが終了したとき", "例: 切断されたら再接続する"],
+  ["on_busy",     "応答が始まったとき（上級）", ""],
+  ["on_tick",     "0.2秒ごと（上級）",      "多用すると重くなります"],
+  ["_shared",     "共通の下請け関数",       "他のイベントから呼べる関数を定義しておく場所"],
+];
+let autoTarget = null, autoData = {}, autoEvent = "on_done";
+
+function autoDirOf(ws, t) {
+  if (t.automation) return t.automation;
+  // 規約で自動命名し、以後は設定に保存される（リネームしても壊れない）
+  const slug = s => (s || "").replace(/[^A-Za-z0-9_-]/g, "").toLowerCase();
+  const wi = wss.indexOf(ws) + 1, ti = (ws.tabs || []).indexOf(t) + 1;
+  return "scripts/" + (slug(ws.name) || ("ws" + wi)) + "/" + (slug(t.name) || ("tab" + ti));
+}
+
+async function openAuto(ws, t) {
+  autoTarget = { ws, t, dir: autoDirOf(ws, t) };
+  document.getElementById("autotitle").textContent =
+      "自動化 — " + (t.name || "(無名タブ)") + "　[" + autoTarget.dir + "]";
+  const sel = document.getElementById("autoevent");
+  sel.textContent = "";
+  for (const [id, label] of EVENTS) sel.append(el("option", {value:id}, label));
+  try {
+    autoData = await (await fetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
+        {headers:{"X-Token":TOKEN}})).json();
+  } catch (e) { autoData = {}; }
+  autoEvent = "on_done"; sel.value = autoEvent;
+  switchEvent();
+  document.getElementById("aipreview").style.display = "none";
+  document.getElementById("autobox").style.display = "flex";
+}
+function switchEvent() {
+  // 表示を切り替える前に、今の内容を控えておく
+  autoData[autoEvent] = document.getElementById("autocode").value;
+  autoEvent = document.getElementById("autoevent").value;
+  document.getElementById("autocode").value = autoData[autoEvent] || "";
+  const e = EVENTS.find(x => x[0] === autoEvent);
+  document.getElementById("autohint").textContent = e ? e[2] : "";
+}
+function closeAuto() { document.getElementById("autobox").style.display = "none"; }
+
+async function saveAuto() {
+  autoData[autoEvent] = document.getElementById("autocode").value;
+  const r = await fetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
+      {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+       body: JSON.stringify(autoData)});
+  if (!r.ok) return automsg("保存に失敗しました", "#ff4646");
+  // 使ったフォルダを設定にも記録する（以後リネームしても壊れない）
+  autoTarget.t.automation = autoTarget.dir;
+  closeAuto(); render();
+  msg("自動化を保存しました。設定も保存してください", "#39ff14");
+}
+
+async function askAi() {
+  const want = document.getElementById("autoask").value.trim();
+  if (!want) return automsg("やりたいことを書いてください", "#ff4646");
+  automsg("AIに問い合わせています（数十秒かかることがあります）…", "#ffea00");
+  const r = await fetch("/api/generate", {method:"POST",
+      headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+      body: JSON.stringify({event: autoEvent, prompt: want})});
+  const j = await r.json();
+  if (!j.ok) return automsg("生成できませんでした: " + j.error, "#ff4646");
+  document.getElementById("aicode").textContent = j.code;
+  document.getElementById("aipreview").style.display = "block";
+  automsg("内容を確認して「反映」を押してください", "#39ff14");
+}
+function applyAi() {
+  document.getElementById("autocode").value = document.getElementById("aicode").textContent;
+  document.getElementById("aipreview").style.display = "none";
+  automsg("反映しました（まだ保存されていません）", "#39ff14");
+}
+function automsg(t, c) { const m = document.getElementById("automsg");
+  m.textContent = t; m.style.color = c; }
 
 // 外部ファイル参照のワークスペース定義を読み書きする
 const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(file), {
@@ -437,20 +831,21 @@ async function load() {
   current = await (await api("GET")).json();
   document.getElementById("tabw").value    = current.tab_bar_width ?? "";
   document.getElementById("chain").value   = current.max_chain ?? "";
-  document.getElementById("lua").value     = current.lua ?? "";
+  document.getElementById("lua").value     = current.automation ?? current.lua ?? "";
   document.getElementById("secrets").value = current.secrets ?? "";
   const list = (Array.isArray(current.workspaces) && current.workspaces.length)
       ? current.workspaces
       : [{ name: "DEFAULT", tabs: current.tabs || [] }];
   wss = [];
   for (const w of list) {
-    const ws = { name: w.name || "", file: w.file || null, lua: w.lua || "", tabs: [] };
+    const ws = { name: w.name || "", file: w.file || null,
+                 automation: w.automation || w.lua || "", tabs: [] };
     if (ws.file) {
       // 定義ファイルの中身も読み込み、GUIから編集できるようにする
       try {
         const f = await (await wsApi("GET", ws.file)).json();
         ws.tabs = flatten(f.tabs, 0, []);
-        if (!ws.lua && f.lua) ws.lua = f.lua;
+        if (!ws.automation) ws.automation = f.automation || f.lua || "";
       } catch (e) { ws.loadError = String(e); }
     } else {
       ws.tabs = flatten(w.tabs, 0, []);
@@ -469,15 +864,16 @@ async function save() {
   const sec   = document.getElementById("secrets").value.trim();
   tabw  ? out.tab_bar_width = Number(tabw) : delete out.tab_bar_width;
   chain ? out.max_chain     = Number(chain) : delete out.max_chain;
-  lua   ? out.lua           = lua : delete out.lua;
+  lua   ? out.automation    = lua : delete out.automation;
   sec   ? out.secrets       = sec : delete out.secrets;
+  delete out.lua;
 
   delete out.tabs;
   // 外部ファイル参照のワークスペースは、その定義ファイル側に中身を書き戻す
   for (const w of wss) {
     if (!w.file) continue;
     const body = { name: w.name, tabs: nest(w.tabs) };
-    if (w.lua) body.lua = w.lua;
+    if (w.automation) body.automation = w.automation;
     const rf = await wsApi("POST", w.file, JSON.stringify(body, null, 2));
     const jf = await rf.json().catch(() => ({ok:false, error:"保存に失敗"}));
     if (!jf.ok) return msg(w.file + " の保存に失敗: " + (jf.error || ""), "#ff4646");
@@ -487,7 +883,7 @@ async function save() {
     // 定義ファイル側にluaを書いたので、config側は参照だけにする
     if (w.file) o.file = w.file;
     else {
-      if (w.lua) o.lua = w.lua;
+      if (w.automation) o.automation = w.automation;
       o.tabs = nest(w.tabs);
     }
     return o;
@@ -519,6 +915,21 @@ mod tests {
         assert_eq!(query_token("/?token=deadbeef"), "deadbeef");
         assert_eq!(query_token("/api/config?x=1&token=zz"), "zz");
         assert_eq!(query_token("/"), "");
+    }
+
+    #[test]
+    fn extracts_lua_from_ai_output() {
+        // マーカー付き (期待する形)
+        let s = "了解しました\n<<<LUA\nshikisha.log(\"hi\")\n>>>\n以上です";
+        assert_eq!(extract_lua(s).unwrap(), "shikisha.log(\"hi\")");
+        // コードフェンスのみでもコードらしければ受け入れる
+        let s2 = "```lua\nshikisha.send_to_tab(1, tab.output)\n```";
+        assert_eq!(
+            extract_lua(s2).unwrap(),
+            "shikisha.send_to_tab(1, tab.output)"
+        );
+        // 会話文だけならエラーにして、保存させない
+        assert!(extract_lua("どのような自動化を作りますか？").is_err());
     }
 
     #[test]
