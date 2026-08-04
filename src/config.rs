@@ -45,10 +45,11 @@ pub struct Secrets {
 }
 
 impl Config {
-    /// config.json の notify に secrets.json の内容をマージする
-    /// (同名は secrets 側を優先)
+    /// config.json の notify に secrets ファイルの内容をマージする
+    /// (同名は secrets 側を優先)。secretsは暗号化されていることがある
     pub fn resolve_notify(
         &self,
+        password: Option<&str>,
     ) -> (
         std::collections::HashMap<String, crate::notify::Destination>,
         Option<String>,
@@ -56,12 +57,20 @@ impl Config {
         let mut map = self.notify.clone();
         let mut err = None;
         if let Some(path) = &self.secrets {
-            match read_json::<Secrets>(&resolve_data_path(path)) {
+            let path = resolve_data_path(path);
+            match crate::crypto::read_maybe_encrypted(&path, password)
+                .and_then(|t| serde_json::from_str::<Secrets>(&t).context("secretsのJSONが不正"))
+            {
                 Ok(s) => map.extend(s.notify),
                 Err(e) => err = Some(format!("secrets: {e:#}")),
             }
         }
         (map, err)
+    }
+
+    /// secretsファイルのパス (存在すれば)
+    pub fn secrets_path(&self) -> Option<std::path::PathBuf> {
+        self.secrets.as_deref().map(resolve_data_path)
     }
 }
 

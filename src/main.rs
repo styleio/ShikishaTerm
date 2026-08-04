@@ -12,6 +12,7 @@
 //! マウス: ホイール=スクロール(コピーモード) / 左ドラッグ=選択即コピー / 右クリック=ペースト
 
 mod config;
+mod crypto;
 mod detect;
 mod hooks;
 mod notify;
@@ -139,6 +140,140 @@ fn title_of(argv: &[String]) -> String {
         .unwrap_or_else(|| "SHELL".into())
 }
 
+/// マスターパスワードの入力モーダル。入力は伏字表示。
+/// Escでキャンセル (None)。パスワードはTUI内で完結させ、ブラウザには出さない
+fn prompt_password(
+    terminal: &mut ratatui::DefaultTerminal,
+    title: &str,
+    note: &str,
+) -> Result<Option<String>> {
+    let mut input = String::new();
+    loop {
+        terminal.draw(|f| {
+            let area = f.area();
+            let w = 56.min(area.width.saturating_sub(4));
+            let rect = Rect {
+                x: area.x + (area.width.saturating_sub(w)) / 2,
+                y: area.y + area.height / 3,
+                width: w,
+                height: 7,
+            };
+            f.render_widget(ratatui::widgets::Clear, rect);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(NEON_YELLOW))
+                .title(Span::styled(
+                    format!(" {title} "),
+                    Style::default().fg(Color::Black).bg(NEON_YELLOW),
+                ));
+            let inner = block.inner(rect);
+            f.render_widget(block, rect);
+            let text = vec![
+                Line::from(Span::styled(note, Style::default().fg(Color::DarkGray))),
+                Line::default(),
+                Line::from(vec![
+                    Span::styled("  > ", Style::default().fg(NEON_GREEN)),
+                    Span::styled(
+                        "*".repeat(input.chars().count()),
+                        Style::default().fg(NEON_GREEN),
+                    ),
+                    Span::styled("_", Style::default().fg(NEON_GREEN)),
+                ]),
+                Line::default(),
+                Line::from(Span::styled(
+                    "  Enter: 確定 / Esc: キャンセル",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+            f.render_widget(Paragraph::new(text), inner);
+        })?;
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+            match key.code {
+                KeyCode::Enter => return Ok(Some(input)),
+                KeyCode::Esc => return Ok(None),
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) => {
+                    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                        input.push(c);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// マスターパスワードの設定・変更・解除 (INDEXメニュー [k])
+fn manage_master_password(
+    terminal: &mut ratatui::DefaultTerminal,
+    cfg: Option<&config::Config>,
+    password: &mut Option<String>,
+) -> Result<String> {
+    let Some(path) = cfg.and_then(|c| c.secrets_path()) else {
+        return Ok(">> secretsファイルが未設定です (config.jsonの \"secrets\")".into());
+    };
+    if !path.exists() {
+        return Ok(format!(">> {} が見つかりません", path.display()));
+    }
+    let text = std::fs::read_to_string(&path)?;
+
+    if crypto::is_encrypted(&text) {
+        // 変更 or 解除
+        let Some(old) = prompt_password(terminal, "現在のマスターパスワード", "変更するには現在のパスワードが必要です")? else {
+            return Ok(">> キャンセルしました".into());
+        };
+        let env: crypto::Envelope = serde_json::from_str(&text)?;
+        let plain = match crypto::decrypt(&env, &old) {
+            Ok(p) => p,
+            Err(e) => return Ok(format!(">> {e}")),
+        };
+        let Some(new) = prompt_password(
+            terminal,
+            "新しいマスターパスワード",
+            "空のまま Enter で暗号化を解除します (自己責任)",
+        )? else {
+            return Ok(">> キャンセルしました".into());
+        };
+        if new.is_empty() {
+            crypto::write_atomic(&path, &plain)?;
+            *password = None;
+            return Ok(">> 暗号化を解除しました (平文保存になりました)".into());
+        }
+        let confirm = prompt_password(terminal, "確認のためもう一度", "")?;
+        if confirm.as_deref() != Some(new.as_str()) {
+            return Ok(">> パスワードが一致しません".into());
+        }
+        crypto::write_atomic(&path, &serde_json::to_string_pretty(&crypto::encrypt(&plain, &new)?)?)?;
+        *password = Some(new);
+        Ok(">> マスターパスワードを変更しました".into())
+    } else {
+        // 新規設定
+        let Some(new) = prompt_password(
+            terminal,
+            "マスターパスワードを設定",
+            "secretsファイルを暗号化します (Argon2id + AES-GCM)",
+        )? else {
+            return Ok(">> キャンセルしました".into());
+        };
+        if new.is_empty() {
+            return Ok(">> 空のパスワードは設定できません".into());
+        }
+        let confirm = prompt_password(terminal, "確認のためもう一度", "")?;
+        if confirm.as_deref() != Some(new.as_str()) {
+            return Ok(">> パスワードが一致しません".into());
+        }
+        crypto::encrypt_file(&path, &new)?;
+        *password = Some(new);
+        Ok(">> secretsを暗号化しました".into())
+    }
+}
+
 fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let cmd_args: Vec<String> = std::env::args().skip(1).collect();
     let start = Instant::now();
@@ -200,10 +335,46 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             }
         });
     let max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
+    // secretsが暗号化されていれば起動時にマスターパスワードを尋ねる
+    let mut password: Option<String> = None;
+    if let Some(path) = cfg.as_ref().and_then(|c| c.secrets_path()) {
+        if std::fs::read_to_string(&path)
+            .map(|t| crypto::is_encrypted(&t))
+            .unwrap_or(false)
+        {
+            for attempt in 1..=3 {
+                let note = if attempt == 1 {
+                    "secrets が暗号化されています"
+                } else {
+                    "パスワードが違います。もう一度入力してください"
+                };
+                match prompt_password(terminal, "マスターパスワード", note)? {
+                    Some(pw) => {
+                        let ok = std::fs::read_to_string(&path)
+                            .ok()
+                            .and_then(|t| serde_json::from_str::<crypto::Envelope>(&t).ok())
+                            .map(|env| crypto::decrypt(&env, &pw).is_ok())
+                            .unwrap_or(false);
+                        if ok {
+                            password = Some(pw);
+                            break;
+                        }
+                    }
+                    // キャンセル時は秘密情報なしで続行 (通知だけが使えない)
+                    None => {
+                        startup_errors
+                            .push("secretsを復号せずに起動しました (通知は使えません)".into());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     // 通知先 (Slack / Telegram)。Luaはここに登録された宛先にしか送れない
     let notifier = match cfg.as_ref() {
         Some(c) => {
-            let (dests, err) = c.resolve_notify();
+            let (dests, err) = c.resolve_notify(password.as_deref());
             if let Some(e) = err {
                 startup_errors.push(e);
             }
@@ -510,8 +681,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 notifier.send_all("ShikishaTerm-AI: テスト通知")
                             });
                         }
-                        KeyCode::Char('e') | KeyCode::Char('k') => {
-                            flash = Some(">> 設定GUI / パスワード変更は Phase 5 で実装".to_string());
+                        // マスターパスワードの設定・変更・解除 (TUI内で完結)
+                        KeyCode::Char('k') => {
+                            flash = Some(manage_master_password(
+                                terminal,
+                                cfg.as_ref(),
+                                &mut password,
+                            )?);
+                        }
+                        KeyCode::Char('e') => {
+                            flash = Some(">> 設定GUI (ブラウザ) は次の実装で対応します".to_string());
                         }
                         KeyCode::Char('q') => break,
                         _ => {}
@@ -1658,3 +1837,4 @@ mod tests {
         assert_eq!(text, "abcdefghijKLMNO\n");
     }
 }
+
