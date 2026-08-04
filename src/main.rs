@@ -31,6 +31,51 @@ const NEON_GREEN: Color = Color::Rgb(57, 255, 20);
 const NEON_YELLOW: Color = Color::Rgb(255, 234, 0);
 const NEON_BLUE: Color = Color::Rgb(0, 170, 255);
 
+type PtyWriter = Arc<Mutex<Box<dyn std::io::Write + Send>>>;
+
+/// 子プロセスからの端末照会 (DSR/DA) への応答係。
+/// ConPTY配下のプログラム (ssh等) はカーソル位置照会 `\x1b[6n` への応答を
+/// 待ってブロックするため、本物のターミナルと同様にPTYへ書き戻す。
+struct QueryResponder {
+    writer: PtyWriter,
+}
+
+impl QueryResponder {
+    fn reply(&self, bytes: &[u8]) {
+        if let Ok(mut w) = self.writer.lock() {
+            let _ = w.write_all(bytes);
+            let _ = w.flush();
+        }
+    }
+}
+
+impl vt100::Callbacks for QueryResponder {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        _i2: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        let p0 = params.first().and_then(|p| p.first()).copied();
+        match (i1, c, p0) {
+            // DSR-CPR: カーソル位置照会 → \x1b[{row};{col}R (1始まり)
+            (None, 'n', Some(6)) => {
+                let (row, col) = screen.cursor_position();
+                self.reply(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
+            }
+            // DSR: 端末ステータス照会 → 正常
+            (None, 'n', Some(5)) => self.reply(b"\x1b[0n"),
+            // DA1: 端末種別照会 → VT102相当
+            (None, 'c', _) => self.reply(b"\x1b[?6c"),
+            // DA2: 二次端末種別照会
+            (Some(b'>'), 'c', _) => self.reply(b"\x1b[>0;0;0c"),
+            _ => {}
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cmd_args: Vec<String> = std::env::args().skip(1).collect();
     let mut terminal = ratatui::init();
@@ -78,7 +123,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
     drop(pair.slave);
     let mut killer = child.clone_killer();
 
-    let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_LINES)));
+    let writer: PtyWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
+    let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+        rows,
+        cols,
+        SCROLLBACK_LINES,
+        QueryResponder {
+            writer: Arc::clone(&writer),
+        },
+    )));
     let child_exited = Arc::new(AtomicBool::new(false));
 
     // PTY出力 → vt100パーサ
@@ -105,7 +158,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
         });
     }
 
-    let mut writer = pair.master.take_writer()?;
     let mut prefix_active = false;
 
     loop {
@@ -125,7 +177,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
                     match key.code {
                         KeyCode::Char('q') => break,
                         // Ctrl+B b で子プロセスに素のCtrl+Bを送る
-                        KeyCode::Char('b') => writer.write_all(&[0x02])?,
+                        KeyCode::Char('b') => pty_write(&writer, &[0x02])?,
                         _ => {}
                     }
                 } else if key.code == KeyCode::Char('b')
@@ -133,10 +185,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
                 {
                     prefix_active = true;
                 } else if let Some(bytes) = key_to_bytes(&key) {
-                    writer.write_all(&bytes)?;
+                    pty_write(&writer, &bytes)?;
                 }
             }
-            Event::Paste(text) => writer.write_all(text.as_bytes())?,
+            Event::Paste(text) => pty_write(&writer, text.as_bytes())?,
             Event::Resize(width, height) => {
                 let (rows, cols) = pty_dims(Size { width, height });
                 pair.master.resize(PtySize {
@@ -155,9 +207,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cmd_args: Vec<String>) -> Result
     Ok(())
 }
 
+fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
+    let mut w = writer.lock().expect("pty writer lock");
+    w.write_all(bytes)?;
+    Ok(())
+}
+
 fn draw(
     f: &mut Frame,
-    parser: &Arc<Mutex<vt100::Parser>>,
+    parser: &Arc<Mutex<vt100::Parser<QueryResponder>>>,
     session_title: &str,
     prefix_active: bool,
 ) {
