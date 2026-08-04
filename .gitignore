@@ -1,8 +1,9 @@
 .env
 config.json
 secrets.json
-projects/*.json
-!projects/*.example.json
+workspaces/*.json
+!workspaces/*.example.json
+projects/
 logs/
 
 

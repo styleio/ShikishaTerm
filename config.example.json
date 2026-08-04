@@ -8,10 +8,11 @@
   "//secrets": "Slack/Telegramのトークンはここではなくsecretsファイルへ (共有厳禁)",
   "secrets": "secrets.json",
 
+  "//workspaces": "切り替える単位。file で定義ファイルを参照するか、tabs を直書きする",
   "workspaces": [
     {
       "name": "ProjectX",
-      "file": "projects/projectx.json"
+      "file": "workspaces/projectx.json"
     },
     {
       "name": "雑用",

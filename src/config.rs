@@ -1,10 +1,13 @@
 //! config.json: ワークスペース / タブ構成の定義。DESIGN.md 7.4章。
 //! exe隣 (ポータブル配置) → カレント直下の順で探す。
 //!
-//! 設定は役割で3ファイルに分ける方針:
-//!   config.json     … 全体設定 + ワークスペース一覧 (滅多に変えない)
-//!   projects/*.json … プロジェクト毎のタブ定義 (コピー・共有できる単位)
-//!   secrets.enc     … 資格情報 (暗号化、共有厳禁 / Phase 5)
+//! 用語: 「ワークスペース」= 切り替える単位 (仮想デスクトップ相当)。
+//!       その中身を外部化したものが「ワークスペース定義ファイル」。
+//!
+//! 設定は役割で3種に分ける:
+//!   config.json       … 全体設定 + ワークスペース一覧 (滅多に変えない)
+//!   workspaces/*.json … ワークスペース定義ファイル (コピー・共有できる単位)
+//!   secrets.json      … 資格情報 (暗号化可、共有厳禁)
 
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
@@ -74,11 +77,11 @@ impl Config {
     }
 }
 
-/// config.json 内のワークスペース定義。tabs直書き or 別ファイル参照
+/// config.json 内のワークスペース項目。tabs直書き or 定義ファイル参照
 #[derive(Debug, Deserialize)]
 pub struct WorkspaceSpec {
     pub name: String,
-    /// 別ファイル参照 (例: "projects/projectx.json")
+    /// ワークスペース定義ファイルの参照 (例: "workspaces/projectx.json")
     #[serde(default)]
     pub file: Option<String>,
     /// インライン定義
@@ -86,9 +89,9 @@ pub struct WorkspaceSpec {
     pub tabs: Vec<TabConfig>,
 }
 
-/// projects/*.json の中身
+/// ワークスペース定義ファイル (workspaces/*.json) の中身
 #[derive(Debug, Deserialize)]
-pub struct ProjectFile {
+pub struct WorkspaceFile {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -163,15 +166,29 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T
     serde_json::from_str(&text).with_context(|| format!("JSONが不正: {}", path.display()))
 }
 
-/// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する
+/// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する。
+/// 旧称の projects/ を指す設定も workspaces/ にフォールバックして読める (互換)
 pub fn resolve_data_path(p: &str) -> std::path::PathBuf {
-    if let Some(dir) = std::env::current_exe()
+    let mut candidates = vec![p.to_string()];
+    // projects/ ↔ workspaces/ を相互にフォールバック
+    if let Some(rest) = p.strip_prefix("projects/") {
+        candidates.push(format!("workspaces/{rest}"));
+    } else if let Some(rest) = p.strip_prefix("workspaces/") {
+        candidates.push(format!("projects/{rest}"));
+    }
+    let exe_dir = std::env::current_exe()
         .ok()
-        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
-    {
-        let cand = dir.join(p);
-        if cand.exists() {
-            return cand;
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf));
+    for cand in &candidates {
+        if let Some(dir) = &exe_dir {
+            let full = dir.join(cand);
+            if full.exists() {
+                return full;
+            }
+        }
+        let local = std::path::PathBuf::from(cand);
+        if local.exists() {
+            return local;
         }
     }
     std::path::PathBuf::from(p)
@@ -196,7 +213,7 @@ impl Config {
         }
         for ws in &self.workspaces {
             let (tab_defs, file_name): (Vec<TabConfig>, Option<String>) = match &ws.file {
-                Some(f) => match read_json::<ProjectFile>(&resolve_data_path(f)) {
+                Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
                     Ok(p) => (p.tabs, p.name),
                     Err(e) => {
                         errors.push(format!("{}: {e:#}", ws.name));
@@ -208,7 +225,7 @@ impl Config {
             let mut tabs = Vec::new();
             flatten(&tab_defs, 0, &mut tabs);
             out.push(Workspace {
-                // 表示名はconfig側を優先し、空ならプロジェクトファイルのnameを使う
+                // 表示名はconfig側を優先し、空なら定義ファイルのnameを使う
                 name: if ws.name.is_empty() {
                     file_name.unwrap_or_else(|| "UNNAMED".into())
                 } else {
@@ -284,6 +301,24 @@ mod tests {
     }
 
     #[test]
+    fn legacy_projects_path_falls_back_to_workspaces() {
+        // 旧称 projects/ を指す既存設定でも workspaces/ 側を読めること
+        let dir = std::env::temp_dir().join("shikisha-ws-compat");
+        let ws_dir = dir.join("workspaces");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        std::fs::write(ws_dir.join("x.json"), r#"{"tabs":[]}"#).unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let resolved = resolve_data_path("projects/x.json");
+        let ok = resolved.exists();
+
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(ok, "projects/ 指定が workspaces/ にフォールバックする");
+    }
+
+    #[test]
     fn inline_workspaces_are_resolved() {
         let cfg: Config = serde_json::from_str(
             r#"{"workspaces":[
@@ -298,10 +333,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_project_file_is_reported_not_fatal() {
+    fn missing_workspace_file_is_reported_not_fatal() {
         let cfg: Config = serde_json::from_str(
             r#"{"workspaces":[
-                {"name":"Bad","file":"projects/does-not-exist.json"},
+                {"name":"Bad","file":"workspaces/does-not-exist.json"},
                 {"name":"Good","tabs":[{"name":"a","command":"a"}]}
             ]}"#,
         )

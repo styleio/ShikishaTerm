@@ -1,4 +1,5 @@
 {
+  "//": "ワークスペース定義ファイル。config.json の workspaces から file で参照する",
   "name": "ProjectX",
   "tabs": [
     {

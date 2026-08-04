@@ -7,6 +7,21 @@ Claude Code / Codex 等のCLIエージェントと、KIMI / DeepSeek / Ollama �
 
 ---
 
+## 0. 用語定義
+
+| 用語 | 意味 |
+|---|---|
+| **セッション** | 1つの子プロセス (Claude Code / SSH / シェル等) とその画面。1タブ=1セッション |
+| **タブ** | セッションを表示・操作する単位。左バーに縦に並ぶ |
+| **ワークスペース** | 切り替える単位。仮想デスクトップ相当で、複数タブをまとめたもの（例: ProjectX、雑用）|
+| **ワークスペース定義ファイル** | ワークスペースの中身 (タブ定義) を外部化したJSON。`workspaces/*.json`。コピー・共有できる単位 |
+| **プロファイル** | ツール毎の状態検出ルール。`profiles/*.json` |
+| **フック** | 状態遷移で発火するLuaスクリプト。`scripts/*.lua` |
+| **チェーン深度** | 自動送信が何回連鎖したかのカウンタ。人間の手動入力で0に戻る |
+
+config.json の `workspaces` は**ワークスペースの一覧（目次）**で、各項目は中身を
+`file` で外部参照するか `tabs` で直書きするかを選べる（両者は等価）。
+
 ## 1. システム概要
 
 - 複数のAIセッション（CLIエージェント / APIチャット）をタブで並行管理
@@ -367,11 +382,18 @@ Tailscale等のプライベートネットワーク経由で、スマホ・他PC
 ```
 [ShikishaTerm-AI Directory]
  ├── Shikisha-Term-AI.exe   # アプリ本体（単一バイナリ）
- ├── config.json            # ホスト接続・セッション・パイプライン設定（相対パス）
+ ├── config.json            # 全体設定 + ワークスペース一覧（相対パス）
+ ├── secrets.json           # 資格情報（暗号化可・共有厳禁）
+ ├── workspaces/            # ワークスペース定義ファイル（プロジェクト毎に配布可）
+ │     ├── projectx.json
+ │     └── zatsuyo.json
+ ├── profiles/              # エージェントプロファイル（検出ルール）
+ │     ├── claude.json
+ │     ├── codex.json
+ │     └── gemini.json
  ├── scripts/               # ユーザー作成のLuaフック
- │     ├── filter_code.lua
- │     └── tabA_to_tabB.lua
- └── logs/                  # 対話履歴バックアップ（セッション毎JSONL）
+ │     └── hooks.lua
+ └── logs/                  # 対話履歴・フック実行ログ
 ```
 
 ## 14. 開発フェーズ
