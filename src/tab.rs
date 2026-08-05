@@ -269,6 +269,9 @@ pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
     )
 }
 
+/// 波形の横幅 (サンプル数)。tickごとに1つ進む
+pub const ACTIVITY_LEN: usize = 24;
+
 pub struct Tab {
     pub title: String,
     /// 自動化から指すID (任意)。未設定ならタブ名で指す
@@ -300,6 +303,12 @@ pub struct Tab {
     killer: Box<dyn ChildKiller + Send + Sync>,
     child_exited: Arc<AtomicBool>,
     bell_count: Arc<AtomicU64>,
+    /// PTYから読んだ累計バイト数 (読み取りスレッドが加算する)
+    bytes_out: Arc<AtomicU64>,
+    /// 直近の出力量の履歴 (古い→新しい)。INDEXの波形用
+    activity: [u8; ACTIVITY_LEN],
+    /// 前回サンプル時点の累計バイト数
+    activity_mark: u64,
     last_hash: u64,
     last_change_ms: u64,
     /// 最新応答のキャプチャ (DESIGN 7.3: 送信境界マーカー方式)
@@ -350,6 +359,9 @@ impl Tab {
 
         let writer: PtyWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
         let bell_count = Arc::new(AtomicU64::new(0));
+        // 出力量の累計。INDEXの波形はこれの増分から描く
+        // (画面ハッシュの変化だけだと「動いている量」が分からない)
+        let bytes_out = Arc::new(AtomicU64::new(0));
         let parser: SharedParser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
@@ -364,6 +376,7 @@ impl Tab {
         // PTY出力 → (必要なら文字コード変換) → vt100パーサ / セッションログ
         {
             let parser = Arc::clone(&parser);
+            let counter = Arc::clone(&bytes_out);
             let mut reader = pair.master.try_clone_reader()?;
             let enc = opts.encoding;
             let mut log = opts
@@ -377,6 +390,7 @@ impl Tab {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
+                            counter.fetch_add(n as u64, Ordering::Relaxed);
                             let chunk: &[u8] = match decoder.as_mut() {
                                 // Shift_JIS等はUTF-8に直してからパーサへ渡す
                                 Some(d) => {
@@ -426,6 +440,9 @@ impl Tab {
             killer,
             child_exited,
             bell_count,
+            bytes_out,
+            activity: [0; ACTIVITY_LEN],
+            activity_mark: 0,
             last_hash: 0,
             last_change_ms: 0,
             last_response: None,
@@ -552,6 +569,7 @@ impl Tab {
         if self.state == TabState::Busy {
             self.spinner_idx = self.spinner_idx.wrapping_add(1);
         }
+        self.sample_activity();
 
         // 応答キャプチャ (送信境界マーカー方式):
         // BUSY開始時点のスクロールバック蓄積量を境界として記録し、
@@ -563,6 +581,32 @@ impl Tab {
             self.last_response = Some(self.capture_since_marker());
         }
         (old_state, self.state)
+    }
+
+    /// この tick の出力量を履歴に1つ積む。
+    /// 生バイト数は桁が振れすぎるので、対数で 0..=7 段に潰す
+    /// (「静か / ぽつぽつ / 流れている」が読めれば十分なので)
+    fn sample_activity(&mut self) {
+        let total = self.bytes_out.load(Ordering::Relaxed);
+        let delta = total.saturating_sub(self.activity_mark);
+        self.activity_mark = total;
+        let level = match delta {
+            0 => 0,
+            1..=31 => 1,
+            32..=127 => 2,
+            128..=511 => 3,
+            512..=2047 => 4,
+            2048..=8191 => 5,
+            8192..=32767 => 6,
+            _ => 7,
+        };
+        self.activity.rotate_left(1);
+        self.activity[ACTIVITY_LEN - 1] = level;
+    }
+
+    /// 直近の出力量 (古い→新しい、各 0..=7)
+    pub fn activity(&self) -> &[u8] {
+        &self.activity
     }
 
     /// 現在のスクロールバック蓄積行数 (表示位置は変更しない)

@@ -30,6 +30,8 @@
   "tui.col.name": "名前",
   "tui.col.state": "状態",
   "tui.col.profile": "プロファイル",
+  "tui.col.activity": "出力",
+  "tui.chain": "連鎖",
   "tui.menu": "メニュー",
   "tui.menu.tabs": "タブへ切替（タブ名クリックでも可）",
   "tui.menu.restart": "終了したタブを再起動",

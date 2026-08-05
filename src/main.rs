@@ -11,6 +11,7 @@
 //!   Ctrl+B [      コピーモード / Ctrl+B b 素のCtrl+Bを送信
 //! マウス: ホイール=スクロール(コピーモード) / 左ドラッグ=選択即コピー / 右クリック=ペースト
 
+mod ball;
 mod caps;
 mod config;
 mod crypto;
@@ -146,6 +147,14 @@ fn in_rect(rect: Rect, col: u16, row: u16) -> bool {
 }
 
 /// 表示幅 (全角=2桁) で切り詰める。日本語タブ名がはみ出さないように
+/// 表示幅で右詰めする。`format!("{:<n}")` は文字数で数えるため、
+/// 日本語のように1文字が2桁を占める名前が入るとカラムがずれる
+fn pad_width(s: &str, w: u16) -> String {
+    let t = truncate_width(s, w);
+    let pad = (w as usize).saturating_sub(t.width());
+    format!("{t}{}", " ".repeat(pad))
+}
+
 fn truncate_width(s: &str, max: u16) -> String {
     let mut out = String::new();
     let mut w = 0usize;
@@ -461,6 +470,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 
     let mut auto_enabled = true;
     let mut started_fired = vec![false; tabs.len()];
+    // 自動チェーンの「透明のボール」。今どのタブが仕事を持っているかを表示に使う
+    let mut ball = ball::Ball::default();
 
     // 0 = INDEX、1.. = セッション。初回はINDEX(案内のある画面)から始める
     let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
@@ -642,6 +653,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         cols,
                         &notifier,
                         &mut flash,
+                        &mut ball,
                     );
                 }
             }
@@ -742,6 +754,18 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             }
         }
 
+        // 人間が入力すると chain_depth が0に戻る。ボールもそれに追従させる
+        // (リセット箇所を増やさずに済むよう、持ち主の側から確認する)
+        if ball.holder > 0
+            && !tabs
+                .get(ball.holder - 1)
+                .map(|t| t.chain_depth > 0)
+                .unwrap_or(false)
+        {
+            ball.reset();
+        }
+        ball.clamp_to(tabs.len());
+
         let ui = Ui {
             tab_w,
             first_run,
@@ -754,6 +778,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             help_open,
             qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
             remote_on: remote_ui.is_some(),
+            ball,
+            max_chain,
+            now_ms: start.elapsed().as_millis() as u64,
         };
         terminal.draw(|f| draw(f, &tabs, &ui, flash.as_deref()))?;
 
@@ -1556,6 +1583,7 @@ fn exec_commands(
     cols: u16,
     notifier: &notify::Notifier,
     flash: &mut Option<String>,
+    ball: &mut ball::Ball,
 ) {
     // タブ名でも指定できるようにする (番号は並べ替えで変わるため)
     let keys: Vec<hooks::TabKey> = tabs.iter().map(|t| t.key()).collect();
@@ -1640,6 +1668,7 @@ fn exec_commands(
                 }
                 bytes.push(b'\r');
                 let _ = t.write_bytes(&bytes);
+                ball.throw(origin, target, depth, now_ms);
                 append_hook_log(&format!("auto-send tab{origin} -> tab{target} (depth {depth})"));
             }
         }
@@ -1919,6 +1948,121 @@ fn indicator(t: &Tab) -> (char, Color) {
     }
 }
 
+/// ボールのレーンが使う幅 (記号1桁 + 余白1桁)
+const LANE_W: u16 = 2;
+/// 自動チェーンのボール。状態インジケータの `●` と紛れないよう別の字にする
+const BALL: char = '◉';
+
+/// 連鎖の深さを色にする。上限に近づくほど熱くなる
+fn heat_color(heat: f32) -> Color {
+    if heat >= 0.8 {
+        NEON_RED
+    } else if heat >= 0.5 {
+        NEON_YELLOW
+    } else {
+        NEON_GREEN
+    }
+}
+
+/// 左バーのレーンに描く1コマ。`row` は 0=INDEX(人間)、1.. はタブ番号。
+/// 飛行中は経路を線で残すので、静止画でも「どこからどこへ」が読める
+fn lane_cell(ui: &Ui, row: usize) -> Span<'static> {
+    let blank = Span::raw("  ");
+    let hot = heat_color(ui.ball.heat(ui.max_chain));
+    let glyph = |c: char, style: Style| Span::styled(format!("{c} "), style);
+    match ui.ball.phase(ui.now_ms) {
+        ball::Phase::Idle => blank,
+        ball::Phase::Held { at } if at == row => glyph(BALL, Style::default().fg(hot)),
+        ball::Phase::Caught { at } if at == row => glyph(
+            BALL,
+            Style::default().fg(Color::Black).bg(hot).add_modifier(Modifier::BOLD),
+        ),
+        ball::Phase::Flying { from, to, progress } => {
+            let pos = from as f32 + (to as f32 - from as f32) * progress;
+            if pos.round() as usize == row {
+                return glyph(BALL, Style::default().fg(hot).add_modifier(Modifier::BOLD));
+            }
+            if row == to {
+                let head = if to > from { '▼' } else { '▲' };
+                return glyph(head, Style::default().fg(hot));
+            }
+            let (lo, hi) = if from < to { (from, to) } else { (to, from) };
+            if row >= lo && row <= hi {
+                return glyph('│', Style::default().fg(Color::DarkGray));
+            }
+            blank
+        }
+        _ => blank,
+    }
+}
+
+/// 左バー上部の連鎖カウンタ。自動チェーンが動いている間だけ出す。
+/// バーはINDEX側にあるので、狭い左バーでは数字だけにする
+fn chain_gauge_line(ui: &Ui, width: u16) -> Option<Line<'static>> {
+    if ui.ball.phase(ui.now_ms) == ball::Phase::Idle {
+        return None;
+    }
+    let hot = heat_color(ui.ball.heat(ui.max_chain));
+    let text = format!(" ⟲ {} {}/{}", i18n::t("tui.chain"), ui.ball.depth, ui.max_chain);
+    Some(Line::from(Span::styled(
+        pad_width(&text, width.saturating_sub(1)),
+        Style::default().fg(hot).add_modifier(Modifier::BOLD),
+    )))
+}
+
+/// INDEX上部の1行。連鎖ゲージと自動化の状態を並べる。
+/// チェーンが動いていないときは、動いていないと分かる形で出す
+fn chain_header(ui: &Ui, width: u16) -> Line<'static> {
+    let heat = ui.ball.heat(ui.max_chain);
+    let running = ui.ball.phase(ui.now_ms) != ball::Phase::Idle;
+    let hot = if running { heat_color(heat) } else { Color::DarkGray };
+    let label = i18n::t("tui.chain");
+    let count = if running {
+        format!("{}/{}", ui.ball.depth, ui.max_chain)
+    } else {
+        format!("—/{}", ui.max_chain)
+    };
+    // 区切りの "|" はステータス行用なので、ここでは落として並べる
+    let auto = format!(
+        "  {}{}",
+        auto_label(ui.auto).trim_end_matches(['|', ' ']),
+        if ui.remote_on { "  REMOTE:ON" } else { "" }
+    );
+    // 残った幅をゲージに使う。" ⟲ " と数字の前後の空白まで数に入れないと枠からはみ出す
+    let fixed = format!(" ⟲ {label}  {count}{auto}").width();
+    let bar_w = (width as usize).saturating_sub(fixed);
+    let filled = if running { (bar_w as f32 * heat).round() as usize } else { 0 };
+    Line::from(vec![
+        Span::styled(format!(" ⟲ {label} "), Style::default().fg(hot).add_modifier(Modifier::BOLD)),
+        Span::styled("━".repeat(filled), Style::default().fg(hot)),
+        Span::styled(
+            "━".repeat(bar_w.saturating_sub(filled)),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(format!(" {count}"), Style::default().fg(hot).add_modifier(Modifier::BOLD)),
+        Span::styled(auto, Style::default().fg(NEON_BLUE)),
+    ])
+}
+
+/// 出力量 0..=7 を波形の1文字にする
+fn spark(level: u8) -> char {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    BARS[(level as usize).min(7)]
+}
+
+/// INDEXのカード間のすき間に描く連結線。`below` の行の下のすき間を表す
+fn lane_gap(ui: &Ui, below: usize) -> Span<'static> {
+    if let ball::Phase::Flying { from, to, .. } = ui.ball.phase(ui.now_ms) {
+        let (lo, hi) = if from < to { (from, to) } else { (to, from) };
+        if below >= lo && below < hi {
+            let hot = heat_color(ui.ball.heat(ui.max_chain));
+            let c = if to > from { '│' } else { '│' };
+            return Span::styled(format!("{c} "), Style::default().fg(hot));
+        }
+    }
+    Span::raw("  ")
+}
+
 /// 描画に必要なUI状態
 struct Ui {
     tab_w: u16,
@@ -1935,6 +2079,12 @@ struct Ui {
     qr: Option<String>,
     /// リモートUIが待ち受け中か (常時わかるように表示する)
     remote_on: bool,
+    /// 自動チェーンの現在地 (透明のボールを見えるようにしたもの)
+    ball: ball::Ball,
+    /// チェーン上限。ボールの色が上限にどれだけ近いかを表す
+    max_chain: u32,
+    /// 描画時刻 (相対ms)。ボールのアニメ進行に使う
+    now_ms: u64,
 }
 
 fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
@@ -1985,7 +2135,15 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
         } else {
             Style::default().fg(NEON_BLUE)
         };
-        lines.push(Line::from(Span::styled(format!("[≡] 0. {}", i18n::t("tui.index")), index_style)));
+        // 自動チェーンが動いている間だけ、上部に連鎖の深さを出す
+        // (上限に近づくと色が変わるので、暴走対策が効いている様子が見える)
+        if let Some(line) = chain_gauge_line(ui, ui.tab_w) {
+            lines.push(line);
+        }
+        lines.push(Line::from(vec![
+            lane_cell(ui, 0),
+            Span::styled(format!("[≡] 0. {}", i18n::t("tui.index")), index_style),
+        ]));
         for (i, t) in tabs.iter().enumerate() {
             let (ind, ind_color) = indicator(t);
             let title_style = if ui.active == i + 1 {
@@ -2002,12 +2160,14 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
             } else {
                 String::new()
             };
-            // 右端1桁は枠線。錠アイコン(全角2桁)とインジケータ4桁を除いた幅に収める
+            // 右端1桁は枠線。錠アイコン(全角2桁)・インジケータ4桁・
+            // ボールのレーンを除いた幅に収める
             const LOCK_W: u16 = 2;
-            let avail = ui.tab_w.saturating_sub(1 + 4 + LOCK_W).max(1);
+            let avail = ui.tab_w.saturating_sub(1 + LANE_W + 4 + LOCK_W).max(1);
             let label = truncate_width(&format!("{prefix}{}. {}", i + 1, t.title), avail);
             let pad = avail as usize - label.width();
             lines.push(Line::from(vec![
+                lane_cell(ui, i + 1),
                 Span::styled(
                     format!("[{ind}] "),
                     Style::default().fg(ind_color).add_modifier(Modifier::BOLD),
@@ -2185,17 +2345,21 @@ fn draw_index(
         )));
         lines.push(Line::default());
     }
+    // 稼働盤: 何が動いていて、誰が仕事を持っているかを一望する。
+    // 光っているものは全部実データ (状態・出力量・連鎖の深さ) にしてある
+    lines.push(chain_header(ui, inner.width));
+    lines.push(Line::default());
     lines.push(Line::from(Span::styled(
         format!(
-            " {:<3} {:<18} {:<10} {}",
+            "    {:<3} {:<16} {:<10} {:<10} {}",  // 見出しは半角のみなので固定幅でよい
             i18n::t("tui.col.no"),
             i18n::t("tui.col.name"),
             i18n::t("tui.col.state"),
-            i18n::t("tui.col.profile")
+            i18n::t("tui.col.profile"),
+            i18n::t("tui.col.activity")
         ),
         Style::default().fg(NEON_BLUE).add_modifier(Modifier::BOLD),
     )));
-    lines.push(Line::default());
     for (i, t) in tabs.iter().enumerate() {
         let (ind, color) = indicator(t);
         let name = format!(
@@ -2204,16 +2368,23 @@ fn draw_index(
             t.title,
             if t.locked { " 🔒" } else { "" }
         );
+        let wave: String = t.activity().iter().map(|l| spark(*l)).collect();
         lines.push(Line::from(vec![
-            Span::styled(format!(" {ind} "), Style::default().fg(color)),
-            Span::raw(format!("{}. ", i + 1)),
+            lane_cell(ui, i + 1),
+            Span::styled("▌", Style::default().fg(color)),
+            Span::styled(format!("{ind} "), Style::default().fg(color)),
+            Span::raw(format!("{:<3}", format!("{}.", i + 1))),
             Span::styled(
-                format!("{name:<18}"),
+                pad_width(&name, 16),
                 Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("{:<10}", t.state.display()), Style::default().fg(color)),
-            Span::raw(t.profile_name().to_string()),
+            Span::styled(pad_width(&t.state.display(), 10), Style::default().fg(color)),
+            Span::raw(pad_width(t.profile_name(), 10)),
+            Span::styled(wave, Style::default().fg(color)),
         ]));
+        if i + 1 < tabs.len() {
+            lines.push(Line::from(lane_gap(ui, i + 1)));
+        }
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
@@ -2528,6 +2699,138 @@ mod tests {
         cfg.resolve_workspaces().0.into_iter().next().unwrap()
     }
 
+    /// 画面に出た文字を1つの文字列にする (空白は落として位置ずれの影響を消す)
+    fn screen_text(term: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+
+    fn test_ui(active: usize, ball: ball::Ball, now_ms: u64) -> Ui {
+        Ui {
+            tab_w: 22,
+            first_run: false,
+            active,
+            prefix_active: false,
+            auto: Some(true),
+            ws_names: vec![],
+            ws_index: 0,
+            ws_open: false,
+            help_open: false,
+            qr: None,
+            remote_on: false,
+            ball,
+            max_chain: 10,
+            now_ms,
+        }
+    }
+
+    /// ボールが「今どのタブにあるか」と「どこから飛んできたか」が画面に出ること。
+    /// 静止画でも経路が読めることが狙いなので、飛行中の連結線も確認する
+    #[test]
+    fn the_chain_ball_is_visible_and_shows_its_path() {
+        use ratatui::backend::TestBackend;
+        let argv = vec!["cmd.exe".to_string()];
+        let mut tabs: Vec<Tab> = (1..=3)
+            .map(|i| {
+                Tab::spawn(format!("T{i}"), &argv, None, 20, 100, tab::TabOptions::default()).unwrap()
+            })
+            .collect();
+        let mut term = ratatui::Terminal::new(TestBackend::new(100, 30)).unwrap();
+
+        // 誰も自動で動いていないうちはボールを出さない (常時ちらつかせない)
+        let ui = test_ui(0, ball::Ball::default(), 0);
+        term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
+        let idle = screen_text(&term);
+        assert!(!idle.contains(BALL), "静止中はボールを出さない: {idle}");
+        assert!(idle.contains("—/10"), "連鎖していないことが分かる: {idle}");
+
+        // タブ1がタブ3へ投げた直後: 飛行中の経路が見える
+        let mut b = ball::Ball::default();
+        b.throw(1, 3, 2, 1_000);
+        let ui = test_ui(0, b, 1_050);
+        term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
+        let flying = screen_text(&term);
+        assert!(flying.contains(BALL), "ボールが見える: {flying}");
+        assert!(flying.contains('│'), "経路が線で残る: {flying}");
+        assert!(flying.contains("2/10"), "連鎖の深さが出る: {flying}");
+
+        // 着弾後は持ち主のところに落ち着く
+        let ui = test_ui(0, b, 1_000 + 2_000);
+        term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
+        assert!(screen_text(&term).contains(BALL), "保持中も見える");
+
+        for t in tabs.iter_mut() {
+            t.kill();
+        }
+    }
+
+    /// 波形は飾りではなく出力量なので、何も出ていなければ底ばいであること
+    #[test]
+    fn activity_wave_reflects_real_output() {
+        let argv = vec!["cmd.exe".to_string()];
+        let mut t =
+            Tab::spawn("SHELL".into(), &argv, None, 20, 100, tab::TabOptions::default()).unwrap();
+        assert_eq!(t.activity().len(), tab::ACTIVITY_LEN);
+        assert!(t.activity().iter().all(|l| *l == 0), "起動直後は無音");
+
+        // 出力があったあとにtickすると、直近のコマが立ち上がる
+        t.write_bytes(b"echo hello\r").unwrap();
+        let start = Instant::now();
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(25));
+            t.tick(start);
+            if *t.activity().last().unwrap() > 0 {
+                break;
+            }
+        }
+        assert!(
+            t.activity().iter().any(|l| *l > 0),
+            "出力があれば波形が立つ: {:?}",
+            t.activity()
+        );
+        t.kill();
+    }
+
+    /// 目視確認用 (cargo test preview_ops_board -- --nocapture --ignored)
+    #[test]
+    #[ignore]
+    fn preview_ops_board() {
+        use ratatui::backend::TestBackend;
+        let argv = vec!["cmd.exe".to_string()];
+        let names = ["実装", "検査", "サーバー"];
+        let mut tabs: Vec<Tab> = names
+            .iter()
+            .map(|n| Tab::spawn(n.to_string(), &argv, None, 20, 100, tab::TabOptions::default()).unwrap())
+            .collect();
+        tabs[2].locked = true;
+        let start = Instant::now();
+        for _ in 0..12 {
+            std::thread::sleep(Duration::from_millis(40));
+            for t in tabs.iter_mut() { t.tick(start); }
+        }
+        let mut b = ball::Ball::default();
+        b.throw(1, 2, 3, 1_000);
+        for (title, now) in [("--- 飛行中 ---", 1_150u64), ("--- 保持中 ---", 3_000)] {
+            let ui = test_ui(0, b, now);
+            let mut term = ratatui::Terminal::new(TestBackend::new(96, 26)).unwrap();
+            term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
+            println!("{title}");
+            let buf = term.backend().buffer();
+            for y in 0..buf.area.height {
+                let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                println!("|{}|", row.trim_end());
+            }
+        }
+        for t in tabs.iter_mut() { t.kill(); }
+    }
+
     /// 初回起動でINDEXに案内が出ること (何をすればいいか分からないまま終わらせない)
     #[test]
     fn first_run_shows_how_to_open_settings() {
@@ -2548,6 +2851,9 @@ mod tests {
             help_open: false,
             qr: None,
             remote_on: false,
+            ball: ball::Ball::default(),
+            max_chain: 10,
+            now_ms: 0,
         };
         let mut term = ratatui::Terminal::new(TestBackend::new(100, 24)).unwrap();
         term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
