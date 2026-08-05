@@ -31,32 +31,26 @@ npm run build    # output in dist/
 
 ## Deploying to Cloudflare Pages
 
-Deployment runs from GitHub Actions (`.github/workflows/site.yml`) on every push to `main`
-that touches `site/` or `docs/` — `docs/` matters because the pages are generated from it.
+Connected through Cloudflare's own Git integration, so there are no tokens to manage:
+every push to `main` rebuilds and publishes.
 
-### One-time setup
+| Setting | Value |
+|---|---|
+| Framework preset | Astro |
+| Build command | `npm run build` |
+| Build output directory | `dist` |
+| Root directory | `site` |
+| Environment variable | `NODE_VERSION` = `22` |
 
-1. Create a Pages project in the Cloudflare dashboard (Workers &amp; Pages → Create →
-   Pages → **Direct Upload**). The workflow pushes the built site to it; it does not need
-   Cloudflare's Git integration. Note the project name.
-2. Create an API token at <https://dash.cloudflare.com/profile/api-tokens> →
-   **Create Custom Token**, with just **Account / Cloudflare Pages / Edit**.
-3. Add these under Settings → Secrets and variables → Actions:
+`NODE_VERSION` matters: Cloudflare's default Node is older than Astro needs, and that is
+the usual reason a first build fails.
 
-   | Kind | Name | Value |
-   |---|---|---|
-   | Secret | `CLOUDFLARE_API_TOKEN` | the token from step 2 |
-   | Secret | `CLOUDFLARE_ACCOUNT_ID` | shown in the Cloudflare sidebar |
-   | Variable | `CLOUDFLARE_PROJECT_NAME` | the project name from step 1 (defaults to `shikishaterm`) |
+The build runs `npm run sync` first, which reads `docs/` from the repository root — one
+level above the root directory set above. Editing the manual therefore republishes the
+site, which is the point.
 
 After attaching a custom domain, update `site` in `astro.config.mjs` — it is used for the
 sitemap and for social preview URLs.
-
-### Or skip the workflow entirely
-
-Cloudflare's own Git integration needs no tokens: connect the repository in the dashboard
-with root directory `site`, build command `npm run build`, output directory `dist`. Delete
-`.github/workflows/site.yml` if you go that way, so the site is not deployed twice.
 
 ## Adding a language to the site
 
