@@ -152,6 +152,15 @@ pub struct TabConfig {
     /// SSH切断や、CLIツールの自己更新後の復帰に使う
     #[serde(default)]
     pub auto_restart: bool,
+    /// スクロールバック行数 (省略時5000)
+    #[serde(default)]
+    pub scrollback: Option<usize>,
+    /// 文字コード ("shift_jis" 等)。省略時はUTF-8
+    #[serde(default)]
+    pub encoding: Option<String>,
+    /// セッションログを logs/ に保存する
+    #[serde(default)]
+    pub log: bool,
     /// このタブ専用の自動化 (最優先で引き当てられる)。
     /// ディレクトリならイベント別ファイル方式、.lua なら関数定義方式
     #[serde(default)]

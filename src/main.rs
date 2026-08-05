@@ -18,6 +18,7 @@ mod detect;
 mod hooks;
 mod notify;
 mod profile;
+mod session_log;
 mod tab;
 mod webui;
 
@@ -318,13 +319,21 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             None,
             rows,
             cols,
+            tab::TabOptions::default(),
         )?);
     } else if !workspaces.is_empty() {
         spawn_workspace(&workspaces[0], rows, cols, &mut tabs, &mut startup_errors);
     }
     if tabs.is_empty() && workspaces.is_empty() {
         let argv = vec!["powershell.exe".to_string()];
-        tabs.push(Tab::spawn("SHELL".into(), &argv, None, rows, cols)?);
+        tabs.push(Tab::spawn(
+            "SHELL".into(),
+            &argv,
+            None,
+            rows,
+            cols,
+            tab::TabOptions::default(),
+        )?);
     }
 
     // タブ名が出揃ってから幅を確定し、PTYサイズを合わせ直す
@@ -969,7 +978,12 @@ fn spawn_workspace(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        match Tab::spawn(title.clone(), &argv, ft.cfg.profile.clone(), rows, cols) {
+        let opts = tab::TabOptions {
+            scrollback: ft.cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
+            encoding: tab::TabOptions::encoding_from_name(ft.cfg.encoding.as_deref()),
+            log: ft.cfg.log,
+        };
+        match Tab::spawn(title.clone(), &argv, ft.cfg.profile.clone(), rows, cols, opts) {
             Ok(mut tab) => {
                 tab.locked = ft.cfg.locked;
                 tab.auto_restart = ft.cfg.auto_restart;

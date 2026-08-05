@@ -13,6 +13,39 @@ use crate::profile::Profile;
 
 pub const SCROLLBACK_LINES: usize = 5000;
 
+/// タブごとの端末設定 (PuTTYのセッション設定に相当するもの)
+#[derive(Clone)]
+pub struct TabOptions {
+    /// スクロールバック行数
+    pub scrollback: usize,
+    /// 文字コード ("utf-8" / "shift_jis" / "euc-jp" 等)。既定はUTF-8
+    pub encoding: Option<&'static encoding_rs::Encoding>,
+    /// セッションログを logs/ に保存する
+    pub log: bool,
+}
+
+impl Default for TabOptions {
+    fn default() -> Self {
+        Self {
+            scrollback: SCROLLBACK_LINES,
+            encoding: None,
+            log: false,
+        }
+    }
+}
+
+impl TabOptions {
+    /// 設定の文字列から文字コードを解決する (未知の名前はUTF-8扱い)
+    pub fn encoding_from_name(name: Option<&str>) -> Option<&'static encoding_rs::Encoding> {
+        let n = name?.trim();
+        if n.is_empty() || n.eq_ignore_ascii_case("utf-8") || n.eq_ignore_ascii_case("utf8") {
+            return None;
+        }
+        encoding_rs::Encoding::for_label(n.as_bytes())
+            .filter(|e| *e != encoding_rs::UTF_8)
+    }
+}
+
 pub type PtyWriter = Arc<Mutex<Box<dyn std::io::Write + Send>>>;
 pub type SharedParser = Arc<Mutex<vt100::Parser<QueryResponder>>>;
 
@@ -238,6 +271,7 @@ pub struct Tab {
     /// 再起動用に起動条件を保持する (プロセス終了後に同じ設定で再spawnできる)
     argv: Vec<String>,
     profile_spec: Option<String>,
+    opts: TabOptions,
     /// 最後に人間が手動入力した時刻 (相対ms)。直後の自動送信をガードする
     pub last_manual_ms: u64,
     master: Box<dyn MasterPty + Send>,
@@ -269,6 +303,7 @@ impl Tab {
         profile_spec: Option<String>,
         rows: u16,
         cols: u16,
+        opts: TabOptions,
     ) -> Result<Self> {
         let profile = Self::resolve_profile(argv, &profile_spec);
         let pty_system = native_pty_system();
@@ -289,7 +324,7 @@ impl Tab {
         let parser: SharedParser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
-            SCROLLBACK_LINES,
+            opts.scrollback,
             QueryResponder {
                 writer: Arc::clone(&writer),
                 bell: Arc::clone(&bell_count),
@@ -297,16 +332,37 @@ impl Tab {
         )));
         let child_exited = Arc::new(AtomicBool::new(false));
 
-        // PTY出力 → vt100パーサ
+        // PTY出力 → (必要なら文字コード変換) → vt100パーサ / セッションログ
         {
             let parser = Arc::clone(&parser);
             let mut reader = pair.master.try_clone_reader()?;
+            let enc = opts.encoding;
+            let mut log = opts
+                .log
+                .then(|| crate::session_log::SessionLog::open(std::path::Path::new("logs"), &title));
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
+                let mut decoder = enc.map(|e| e.new_decoder());
+                let mut text = String::new();
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
-                        Ok(n) => parser.lock().unwrap().process(&buf[..n]),
+                        Ok(n) => {
+                            let chunk: &[u8] = match decoder.as_mut() {
+                                // Shift_JIS等はUTF-8に直してからパーサへ渡す
+                                Some(d) => {
+                                    text.clear();
+                                    text.reserve(n * 3);
+                                    let _ = d.decode_to_string(&buf[..n], &mut text, false);
+                                    text.as_bytes()
+                                }
+                                None => &buf[..n],
+                            };
+                            if let Some(l) = log.as_mut() {
+                                l.write(chunk);
+                            }
+                            parser.lock().unwrap().process(chunk);
+                        }
                     }
                 }
             });
@@ -333,6 +389,7 @@ impl Tab {
             depth: 0,
             argv: argv.to_vec(),
             profile_spec,
+            opts,
             last_manual_ms: 0,
             master: pair.master,
             killer,
@@ -347,6 +404,14 @@ impl Tab {
     }
 
     pub fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
+        // 相手がUTF-8以外なら、送る文字も変換する
+        // (制御シーケンスはASCIIなのでそのまま通る)
+        if let Some(enc) = self.opts.encoding {
+            if let Ok(s) = std::str::from_utf8(bytes) {
+                let (encoded, _, _) = enc.encode(s);
+                return pty_write(&self.writer, &encoded);
+            }
+        }
         pty_write(&self.writer, bytes)
     }
 
@@ -380,6 +445,7 @@ impl Tab {
             self.profile_spec.clone(),
             rows,
             cols,
+            self.opts.clone(),
         )?;
         fresh.locked = self.locked;
         fresh.depth = self.depth;

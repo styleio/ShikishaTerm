@@ -696,7 +696,9 @@ function flatten(tabs, depth, out) {
   for (const t of tabs || []) {
     out.push({ name: t.name || "", command: cmdToText(t.command), profile: t.profile || "",
                automation: t.automation || t.lua || "",
-               locked: !!t.locked, auto_restart: !!t.auto_restart, depth });
+               locked: !!t.locked, auto_restart: !!t.auto_restart,
+               encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
+               depth });
     flatten(t.children, depth + 1, out);
   }
   return out;
@@ -710,6 +712,9 @@ function nest(flat) {
     if (f.automation) node.automation = f.automation;
     if (f.locked) node.locked = true;
     if (f.auto_restart) node.auto_restart = true;
+    if (f.encoding) node.encoding = f.encoding;
+    if (f.scrollback) node.scrollback = Number(f.scrollback);
+    if (f.log) node.log = true;
     const d = Math.min(f.depth, stack.length);
     if (d === 0) roots.push(node);
     else {
@@ -739,7 +744,15 @@ function render() {
     const list = el("div");
     (ws.tabs || []).forEach((t, ti) => {
       const card = el("div", {class:"tab"});
+      const cmdInput = input(t, "command", "動かすもの (例: claude / ssh user@host)", "text");
       const detail = el("div", {class:"detail", style:"display:none"},
+        sshPanel(t, cmdInput),
+        el("div", {class:"row"},
+          el("label", {}, "文字コード"), select(t, "encoding",
+            [["","UTF-8（標準）"],["shift_jis","Shift_JIS"],["euc-jp","EUC-JP"]]),
+          el("label", {style:"min-width:auto"}, "　スクロール行数"),
+          input(t, "scrollback", "5000", "number"),
+          label2(check(t, "log"), "セッションログを保存する（logs/）")),
         el("div", {class:"row"},
           el("label", {}, "プロファイル"), input(t, "profile", "自動判別", "text"),
           el("span", {class:"warn"}, "検出ルール。SSH先のAIを指定するときに使う")),
@@ -759,7 +772,7 @@ function render() {
       card.append(el("div", {class:"tabhead"},
         el("span", {class:"tree"}, "　".repeat(t.depth||0) + (t.depth ? "└" : "・")),
         input(t, "name", "タブ名 (例: A:実装)", "text"),
-        input(t, "command", "動かすもの (例: claude / ssh user@host)", "text"),
+        cmdInput,
         el("button", {class:"ghost", onclick:() => openAuto(ws, t)}, "⚙ 自動化"),
         el("button", {class:"ghost", onclick:(e) => {
           const d = detail.style.display === "none";
@@ -781,8 +794,127 @@ function render() {
       }}, "＋ タブを追加")));
   });
 }
+// ── SSH接続の入力補助 (PuTTYの設定画面に相当。コマンドを知らなくても繋げる) ──
+// 実体はコマンド文字列なので、玄人はそのまま上の欄に書いてもよい
+function parseSsh(cmd) {
+  const t = (cmd || "").trim().split(/\s+/);
+  if (t[0] !== "ssh") return null;
+  const o = {host:"", port:"", user:"", key:"", agent:false, x11:false,
+             forwards:[], jump:"", keepalive:"", extra:[]};
+  for (let i = 1; i < t.length; i++) {
+    const a = t[i];
+    if (a === "-p") o.port = t[++i] || "";
+    else if (a === "-i") o.key = t[++i] || "";
+    else if (a === "-J") o.jump = t[++i] || "";
+    else if (a === "-A") o.agent = true;
+    else if (a === "-X") o.x11 = true;
+    else if (a === "-L" || a === "-R" || a === "-D") o.forwards.push(a + " " + (t[++i] || ""));
+    else if (a === "-o") {
+      const v = t[++i] || "";
+      const m = v.match(/^ServerAliveInterval=(\d+)$/);
+      if (m) o.keepalive = m[1]; else o.extra.push("-o " + v);
+    }
+    else if (a.startsWith("-")) o.extra.push(a);
+    else if (!o.host) {
+      const at = a.split("@");
+      if (at.length === 2) { o.user = at[0]; o.host = at[1]; } else o.host = a;
+    }
+    else o.extra.push(a);
+  }
+  return o;
+}
+function buildSsh(o) {
+  const p = ["ssh"];
+  if (o.port) p.push("-p", o.port);
+  if (o.key) p.push("-i", o.key);
+  if (o.jump) p.push("-J", o.jump);
+  if (o.agent) p.push("-A");
+  if (o.x11) p.push("-X");
+  if (o.keepalive) p.push("-o", "ServerAliveInterval=" + o.keepalive);
+  for (const f of o.forwards) if (f.trim()) p.push(f.trim());
+  p.push(...o.extra);
+  if (o.host) p.push((o.user ? o.user + "@" : "") + o.host);
+  return p.join(" ");
+}
+
+// cmdInput は上段の「動かすもの」欄。ここを書き換えても再描画せず値だけ同期する
+// (入力のたびに再描画すると詳細が閉じたりフォーカスが飛んだりするため)
+function sshPanel(t, cmdInput) {
+  const box = el("div");
+  const build = () => {
+    box.textContent = "";
+    const ssh = parseSsh(t.command);
+    const head = el("div", {class:"row"},
+      el("label", {}, "接続の種類"),
+      (() => {
+        const s = el("select");
+        s.append(el("option", {value:"cmd"}, "コマンドを実行"),
+                 el("option", {value:"ssh"}, "SSH接続（サーバーに繋ぐ）"));
+        s.value = ssh ? "ssh" : "cmd";
+        s.addEventListener("change", () => {
+          t.command = s.value === "ssh" ? "ssh " : "";
+          if (cmdInput) cmdInput.value = t.command;
+          build();
+        });
+        return s;
+      })());
+    box.append(head);
+    if (!ssh) return;
+
+    const preview = el("span", {class:"warn"}, "");
+    const upd = () => {
+      t.command = buildSsh(ssh);
+      if (cmdInput) cmdInput.value = t.command;
+      preview.textContent = "実行されるコマンド: " + t.command;
+    };
+    const f = (label, key, ph, w) => {
+      const i = el("input", {type:"text", placeholder:ph, style:`width:${w||150}px`});
+      i.value = ssh[key] || "";
+      i.addEventListener("change", () => { ssh[key] = i.value.trim(); upd(); });
+      return [el("label", {style:"min-width:auto"}, label), i];
+    };
+    const cb = (label, key) => {
+      const i = el("input", {type:"checkbox"});
+      i.checked = !!ssh[key];
+      i.addEventListener("change", () => { ssh[key] = i.checked; upd(); });
+      return label2(i, label);
+    };
+    box.append(el("div", {class:"row"},
+      ...f("接続先", "host", "example.com", 200),
+      ...f("ポート", "port", "22", 70),
+      ...f("ユーザー名", "user", "root", 120)));
+    box.append(el("div", {class:"row"},
+      ...f("鍵ファイル", "key", "省略時はパスワード入力", 300),
+      cb("鍵の転送を許可 (-A)", "agent"),
+      cb("画面転送 (-X)", "x11")));
+    const fwd = el("input", {type:"text", style:"width:340px",
+        placeholder:"例: -L 8080:localhost:80 （複数はカンマ区切り）"});
+    fwd.value = (ssh.forwards || []).join(", ");
+    fwd.addEventListener("change", () => {
+      ssh.forwards = fwd.value.split(",").map(s => s.trim()).filter(Boolean); upd();
+    });
+    box.append(el("div", {class:"row"},
+      el("label", {style:"min-width:auto"}, "ポート転送"), fwd,
+      ...f("踏み台", "jump", "gw.example.com", 180),
+      ...f("接続維持(秒)", "keepalive", "60", 70)));
+    preview.textContent = "実行されるコマンド: " + t.command;
+    box.append(el("div", {class:"row"}, preview));
+  };
+  build();
+  return box;
+}
+
+function select(obj, key, opts) {
+  const s = el("select");
+  for (const [v, label] of opts) s.append(el("option", {value:v}, label));
+  s.value = obj[key] || "";
+  s.addEventListener("change", () => { obj[key] = s.value; });
+  return s;
+}
+
 const newTab = (o = {}) => Object.assign(
-  {name:"", command:"", profile:"", automation:"", locked:false, auto_restart:false, depth:0}, o);
+  {name:"", command:"", profile:"", automation:"", locked:false, auto_restart:false,
+   encoding:"", scrollback:"", log:false, depth:0}, o);
 const label2 = (ctrl, text) => {
   const l = el("label", {style:"min-width:auto; color:#39ff14; cursor:pointer"});
   l.append(ctrl, document.createTextNode(" " + text));

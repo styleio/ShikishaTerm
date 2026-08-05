@@ -15,10 +15,13 @@
         },
         {
           "name": "C:デプロイ",
-          "command": "ssh user@example.com",
+          "command": "ssh -p 22 -i C:/keys/id_ed25519 -o ServerAliveInterval=60 user@example.com",
           "profile": "claude",
           "locked": true,
-          "auto_restart": true
+          "auto_restart": true,
+          "//端末設定": "encoding は省略時UTF-8、log を true にすると logs/ に会話を保存",
+          "scrollback": 10000,
+          "log": true
         }
       ]
     }
