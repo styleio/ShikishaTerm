@@ -863,6 +863,23 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         ws_open = false;
                         continue;
                     }
+                    Some(Hit::EmergencyStop) => {
+                        auto_enabled = !auto_enabled;
+                        if !auto_enabled {
+                            // 送信予約が残っていると、止めた後に改行だけ届いてしまう
+                            pending_submit.clear();
+                            // 待機中のループも破棄する (Ctrl+B x と同じ)
+                            if let Some(e) = engine.as_mut() {
+                                e.cancel_all();
+                            }
+                        }
+                        flash = Some(i18n::t(if auto_enabled {
+                            "msg.auto_on"
+                        } else {
+                            "msg.emergency_stop"
+                        }));
+                        continue;
+                    }
                     Some(Hit::Divider) | None => ev,
                 }
             }
@@ -993,6 +1010,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         }
                         KeyCode::Char('x') => {
                             auto_enabled = false;
+                            // 送信予約が残っていると、止めた後に改行だけ届いてしまう
+                            pending_submit.clear();
                             // 待機中のループも全て破棄する (再開時に蘇らせない)
                             if let Some(eng) = engine.as_mut() {
                                 eng.cancel_all();
@@ -1992,6 +2011,8 @@ enum Hit {
     WorkspaceItem(usize),
     /// タブバーの幅を変える境界線
     Divider,
+    /// 全自動化の緊急停止 / 再開 (ステータス行の右端に常設)
+    EmergencyStop,
 }
 
 /// 押せる場所 (画面上の絶対座標)。描画しながら記録する
@@ -2105,6 +2126,61 @@ fn chain_header(ui: &Ui, width: u16) -> Line<'static> {
         Span::styled(format!(" {count}"), Style::default().fg(hot).add_modifier(Modifier::BOLD)),
         Span::styled(auto, Style::default().fg(NEON_BLUE)),
     ])
+}
+
+/// ステータス行を描く。右端に緊急停止ボタンを常設する。
+///
+/// INDEXでもセッション画面でも同じ位置にあることが大事で、
+/// 慌てているときに探させない。連鎖ゲージの隣に置く案もあったが、
+/// あれは連鎖中しか出ないので、いざという時に無いことがある
+fn draw_status(
+    f: &mut Frame,
+    area: Rect,
+    text: &str,
+    bg: Color,
+    ui: &Ui,
+    hits: &mut Vec<HitBox>,
+) {
+    // 自動化そのものが無い構成では出さない (押しても意味が無いため)
+    let Some(on) = ui.auto else {
+        f.render_widget(
+            Paragraph::new(text.to_string()).style(Style::default().fg(Color::Black).bg(bg)),
+            area,
+        );
+        return;
+    };
+
+    let label = if on {
+        format!(" ■ {} ", i18n::t("tui.stop"))
+    } else {
+        format!(" ▶ {} ", i18n::t("tui.resume"))
+    };
+    let btn_w = label.width() as u16;
+    let left_w = area.width.saturating_sub(btn_w);
+    hits.push(HitBox {
+        y: area.y,
+        x0: area.x + left_w,
+        x1: area.x + area.width,
+        hit: Hit::EmergencyStop,
+    });
+
+    // 止められる状態のときだけ赤くする。停止中は静かに再開ボタンとして残す
+    let btn_style = if !on {
+        Style::default().fg(Color::Black).bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+    } else if ui.hover == Some(Hit::EmergencyStop) {
+        Style::default().fg(NEON_YELLOW).bg(NEON_RED).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Black).bg(NEON_RED).add_modifier(Modifier::BOLD)
+    };
+    f.render_widget(
+        Paragraph::new(pad_width(text, left_w))
+            .style(Style::default().fg(Color::Black).bg(bg)),
+        Rect { width: left_w, ..area },
+    );
+    f.render_widget(
+        Paragraph::new(label).style(btn_style),
+        Rect { x: area.x + left_w, width: btn_w, ..area },
+    );
 }
 
 /// 出力量 0..=7 を波形の1文字にする
@@ -2574,10 +2650,7 @@ fn draw_index(
             i18n::t("tui.index.hint")
         )
     });
-    f.render_widget(
-        Paragraph::new(status).style(Style::default().fg(Color::Black).bg(NEON_BLUE)),
-        status_area,
-    );
+    draw_status(f, status_area, &status, NEON_BLUE, ui, hits);
 }
 
 /// セッションペイン: 子端末の描画 + コピーモードハイライト + IMEカーソル + ステータス
@@ -2718,10 +2791,7 @@ fn draw_session(
         )
     };
     let status_bg = if t.copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
-    f.render_widget(
-        Paragraph::new(status).style(Style::default().fg(Color::Black).bg(status_bg)),
-        status_area,
-    );
+    draw_status(f, status_area, &status, status_bg, ui, hits);
 }
 
 fn copy_to_clipboard(text: &str) -> String {
@@ -3016,6 +3086,51 @@ mod tests {
         t.kill();
     }
 
+    /// 緊急停止は、どの画面にいても同じ場所にあること。
+    /// 慌てているときに探させないのが目的なので、位置が動いたら意味が無い
+    #[test]
+    fn the_emergency_stop_is_always_in_the_same_corner() {
+        use ratatui::backend::TestBackend;
+        let argv = vec!["cmd.exe".to_string()];
+        let mut tabs = vec![
+            Tab::spawn("T1".into(), &argv, None, 20, 100, tab::TabOptions::default()).unwrap(),
+        ];
+        let mut term = ratatui::Terminal::new(TestBackend::new(100, 30)).unwrap();
+
+        let draw_with = |term: &mut ratatui::Terminal<TestBackend>, active, auto| {
+            let mut hits: Vec<HitBox> = Vec::new();
+            let mut ui = test_ui(active, ball::Ball::default(), 0);
+            ui.auto = auto;
+            term.draw(|f| draw(f, &tabs, &ui, None, &mut hits)).unwrap();
+            hits.into_iter().find(|h| h.hit == Hit::EmergencyStop)
+        };
+
+        // INDEXでもセッション画面でも、右下の同じ位置に出る
+        let on_index = draw_with(&mut term, 0, Some(true)).expect("INDEXに出る");
+        let on_session = draw_with(&mut term, 1, Some(true)).expect("セッション画面にも出る");
+        assert_eq!(
+            (on_index.y, on_index.x0, on_index.x1),
+            (on_session.y, on_session.x0, on_session.x1),
+            "画面が変わっても位置は動かない"
+        );
+        assert_eq!(on_index.x1, 100, "右端まで届く");
+        assert_eq!(on_index.y, 29, "最下行にある");
+        assert_eq!(
+            hit_at(&[on_index], 29, 99),
+            Some(Hit::EmergencyStop),
+            "右下の隅を押せる"
+        );
+
+        // 停止中は再開ボタンとして残る (戻り方が分からなくならないように)
+        assert!(draw_with(&mut term, 0, Some(false)).is_some(), "停止中も押せる");
+        // 自動化が無い構成では出さない
+        assert!(draw_with(&mut term, 0, None).is_none(), "自動化が無ければ出さない");
+
+        for t in tabs.iter_mut() {
+            t.kill();
+        }
+    }
+
     /// 押せる場所が、実際に描いた位置に記録されること。
     /// 座標を別に計算し直すとレイアウト変更で黙ってずれる (レーン追加で実際にずれた)
     #[test]
@@ -3110,9 +3225,8 @@ mod tests {
         let mut b = ball::Ball::default();
         b.throw(1, 2, 3, 1_000);
         for (title, now, hover) in [
-            ("--- 左バーのタブにホバー ---", 3_000u64, Some(Hit::Tab(1))),
-            ("--- 錠アイコンにホバー ---", 3_000, Some(Hit::Lock(2))),
-            ("--- INDEX行にホバー ---", 3_000, Some(Hit::Index)),
+            ("--- 停止ボタン (通常) ---", 3_000u64, None),
+            ("--- 停止ボタン (ホバー) ---", 3_000, Some(Hit::EmergencyStop)),
         ] {
             let mut ui = test_ui(0, b, now);
             ui.hover = hover;

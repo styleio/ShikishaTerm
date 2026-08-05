@@ -33,6 +33,8 @@
   "tui.col.profile": "PROFILE",
   "tui.col.activity": "ACTIVITY",
   "tui.chain": "CHAIN",
+  "tui.stop": "STOP",
+  "tui.resume": "RESUME",
   "tui.menu": "MENU",
   "tui.menu.tabs": "Switch tab (clicking a tab name also works)",
   "tui.menu.restart": "Restart stopped tabs",

@@ -33,6 +33,8 @@
   "tui.col.profile": "プロファイル",
   "tui.col.activity": "出力",
   "tui.chain": "連鎖",
+  "tui.stop": "停止",
+  "tui.resume": "再開",
   "tui.menu": "メニュー",
   "tui.menu.tabs": "タブへ切替（タブ名クリックでも可）",
   "tui.menu.restart": "終了したタブを再起動",
