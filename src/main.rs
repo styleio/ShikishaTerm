@@ -655,7 +655,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         // 実行(改行)がまだ届いていないタブは、貼り付けが置かれた
                         // だけの状態。静かになっても、それは応答ではない
                         let submitting = pending_submit.iter().any(|p| p.tab == idx);
-                        let answering = tabs[idx - 1].was_prompted() && !submitting;
+                        // 実行のあとに何も出ていないなら、届かなかったということ。
+                        // 貼り付けが見えているだけの画面を応答と読まない
+                        let answering = tabs[idx - 1].was_prompted()
+                            && !submitting
+                            && tabs[idx - 1].answered_since_submit();
                         match new {
                             TabState::Busy if answering => eng.fire("on_busy", &ctx, None),
                             TabState::Done if answering && old == TabState::Busy => {
@@ -760,7 +764,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 let seen = t.output_count();
                                 write_prompt(t, &text);
                                 pending_submit.push(PendingSubmit::new(tab, seen, now_ms));
-                                append_hook_log(&format!("remote送信 tab{tab}"));
+                                append_hook_log(&format!(
+                                    "remote送信 tab{tab}: {}",
+                                    log_excerpt(&text, 120)
+                                ));
                             }
                         }
                         remote::RemoteCmd::Keys { tab, keys } => {
@@ -814,7 +821,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 if !p.ready(t.output_count(), now_ms) {
                     return true;
                 }
+                // 反応を待って送ったのか、待ちきれずに送ったのかを残す。
+                // 実行が届かない事故はここの区別が手掛かりになる
+                let reacted = t.output_count() > p.seen;
                 let _ = t.write_bytes(b"\r");
+                append_hook_log(&format!(
+                    "submit tab{} ({})",
+                    p.tab,
+                    if reacted { "反応あり" } else { "無反応のまま送信" }
+                ));
                 false
             });
         }
@@ -1762,6 +1777,16 @@ fn touched_recently(t: &Tab, now_ms: u64) -> bool {
         .is_some_and(|m| now_ms.saturating_sub(m) < MANUAL_GUARD_MS)
 }
 
+/// ログ用に1行へ潰した抜粋。全文だと読めないので頭だけ残す
+fn log_excerpt(text: &str, max: usize) -> String {
+    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out: String = one.chars().take(max).collect();
+    if one.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
 pub fn append_hook_log(msg: &str) {
     let _ = std::fs::create_dir_all("logs");
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1865,7 +1890,10 @@ fn exec_commands(
                 write_prompt(t, &text);
                 pending_submit.push(PendingSubmit::new(target, seen, now_ms));
                 ball.throw(origin, target, depth, now_ms);
-                append_hook_log(&format!("auto-send tab{origin} -> tab{target} (depth {depth})"));
+                append_hook_log(&format!(
+                    "auto-send tab{origin} -> tab{target} (depth {depth}): {}",
+                    log_excerpt(&text, 120)
+                ));
             }
         }
     }

@@ -310,6 +310,49 @@ mod tests {
         );
     }
 
+    /// 実行してから相手が何か返したかどうかで、応答の有無を決めること。
+    ///
+    /// 実行が届かなければ画面は貼り付けが見えたまま静かになる。
+    /// 「動いて→止まった」形は応答と同じなので、実行より後の出力まで見ないと、
+    /// 一度も答えていない相手からボールが返ってくる
+    #[test]
+    fn an_answer_requires_output_after_the_submit() {
+        use super::{Tab, TabOptions};
+        use std::time::{Duration, Instant};
+
+        let argv = vec!["cmd.exe".to_string()];
+        let mut t = Tab::spawn("shell".into(), &argv, None, 10, 60, TabOptions::default()).unwrap();
+        let start = Instant::now();
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(50));
+            t.tick(start);
+        }
+        assert!(t.had_output(), "起動時の出力はある");
+
+        // 実行した直後は、まだ相手は何も返していない
+        t.write_bytes(b"echo REPLY
+").unwrap();
+        assert!(t.was_prompted(), "実行として記録される");
+        assert!(
+            !t.answered_since_submit(),
+            "実行した直後を応答ありと数えている (届かなくても応答扱いになる)"
+        );
+
+        // 返ってきたら応答あり
+        let mut answered = false;
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_millis(50));
+            t.tick(start);
+            if t.answered_since_submit() {
+                answered = true;
+                break;
+            }
+        }
+        assert!(answered, "出力が返れば応答として数える");
+
+        t.kill();
+    }
+
     /// 応答の途中で出力が止まっても、応答の始まりを取り直さないこと。
     ///
     /// 息継ぎのたびに取り直すと、取り込まれる応答が最後の一片だけになり、
@@ -590,6 +633,12 @@ pub struct Tab {
     /// 画面は変化するので、そのまま活動と数えると BUSY→DONE を通り、
     /// 応答が来たように見えてしまう
     last_resize_ms: AtomicU64,
+    /// 実行した時点の累計出力量。
+    ///
+    /// 実行が相手に届かなかった場合、画面は貼り付けが見えたまま静かになる。
+    /// 「動いて→止まった」形は応答と同じなので、実行より後に出力が
+    /// あったかどうかまで見ないと、答えていないものを答えたと扱ってしまう
+    submitted_output: AtomicU64,
     /// 実行された入力を待っているか。
     ///
     /// 「入力された」ではなく「実行された」であることが大事。文字を打っただけ、
@@ -734,6 +783,7 @@ impl Tab {
             bytes_out,
             created: Instant::now(),
             prompted: AtomicBool::new(false),
+            submitted_output: AtomicU64::new(0),
             last_resize_ms: AtomicU64::new(0),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
@@ -748,6 +798,12 @@ impl Tab {
     /// 実行された入力の応答を待っているか
     pub fn was_prompted(&self) -> bool {
         self.prompted.load(Ordering::Relaxed)
+    }
+
+    /// 実行してから、相手が何か出力したか。
+    /// 実行が届かなければ画面は静かなままなので、これが応答の有無になる
+    pub fn answered_since_submit(&self) -> bool {
+        self.output_count() > self.submitted_output.load(Ordering::Relaxed)
     }
 
     /// 応答を受け取り切ったので、次の実行を待つ状態に戻す
@@ -766,6 +822,8 @@ impl Tab {
     pub fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
         if contains_submit(bytes) {
             self.prompted.store(true, Ordering::Relaxed);
+            self.submitted_output
+                .store(self.output_count(), Ordering::Relaxed);
         }
         // 相手がUTF-8以外なら、送る文字も変換する
         // (制御シーケンスはASCIIなのでそのまま通る)
