@@ -290,9 +290,35 @@ const AI_ENGINES: [(&str, &[&str], &str); 3] = [
     ("gemini", &["-p"], "Gemini CLI"),
 ];
 
+/// タブ構成を説明文にする。AIに送信先の番号を分からせるために渡す
+/// (利用者はタブ名で指示できるべきなので)
+fn describe_tabs(parsed: &serde_json::Value) -> String {
+    let Some(tabs) = parsed.get("tabs").and_then(|v| v.as_array()) else {
+        return String::new();
+    };
+    if tabs.is_empty() {
+        return String::new();
+    }
+    let me = parsed.get("self").and_then(|v| v.as_u64()).unwrap_or(0);
+    let mut s = String::from(
+        "## タブ構成 (shikisha.send_to_tab の番号はこれを使うこと)\n",
+    );
+    for t in tabs {
+        let i = t.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+        let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        s.push_str(&format!("{i}. {name}"));
+        if i == me {
+            s.push_str("  ← このスクリプトが動くタブ (tab)");
+        }
+        s.push('\n');
+    }
+    s
+}
+
 fn generate_with_local_ai(
     event: &str,
     want: &str,
+    layout: &str,
     engine: Option<&str>,
     config_path: &std::path::Path,
 ) -> Result<String> {
@@ -313,6 +339,7 @@ fn generate_with_local_ai(
          - 仕様書に載っていない関数やライブラリは使わない\n\
          - ファイルの探索や確認は不要。この指示だけで完結させる\n\n\
          ## やりたいこと\n{want}\n\n\
+         {layout}\n\
          ## 仕様書\n{manual}\n\n\
          では <<<LUA から始めてください。\n"
     );
@@ -651,7 +678,9 @@ fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .or(from_cfg);
-            let resp = match generate_with_local_ai(event, want, engine.as_deref(), config_path) {
+            let layout = describe_tabs(&parsed);
+            let resp = match generate_with_local_ai(event, want, &layout, engine.as_deref(), config_path)
+            {
                 Ok(code) => serde_json::json!({ "ok": true, "code": code }),
                 Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
             };
@@ -1324,8 +1353,13 @@ async function askAi() {
   automsg("AIに問い合わせています（数十秒かかることがあります）…", "#ffea00");
   const r = await fetch("/api/generate", {method:"POST",
       headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+      // タブ構成も渡す。これが無いと「検査タブへ送って」と書いても
+      // AIは送信先の番号が分からない
       body: JSON.stringify({event: autoEvent, prompt: want,
-                            engine: document.getElementById("aiengine").value || null})});
+                            engine: document.getElementById("aiengine").value || null,
+                            tabs: (autoTarget.ws.tabs || []).map((x, i) =>
+                                    ({index: i + 1, name: x.name || ("タブ" + (i + 1))})),
+                            self: (autoTarget.ws.tabs || []).indexOf(autoTarget.t) + 1})});
   const j = await r.json();
   if (!j.ok) return automsg("生成できませんでした: " + j.error, "#ff4646");
   document.getElementById("aicode").textContent = j.code;
@@ -1537,6 +1571,21 @@ mod tests {
         assert_eq!(query_token("/?token=deadbeef"), "deadbeef");
         assert_eq!(query_token("/api/config?x=1&token=zz"), "zz");
         assert_eq!(query_token("/"), "");
+    }
+
+    #[test]
+    fn tab_layout_is_described_for_the_ai() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"self":1,"tabs":[{"index":1,"name":"実装"},{"index":2,"name":"検査"}]}"#,
+        )
+        .unwrap();
+        let s = describe_tabs(&v);
+        // 名前で指示できるよう、番号と名前の対応をAIに渡す
+        assert!(s.contains("1. 実装"), "{s}");
+        assert!(s.contains("2. 検査"), "{s}");
+        assert!(s.contains("← このスクリプトが動くタブ"), "{s}");
+        // タブ情報が無いときは何も足さない
+        assert_eq!(describe_tabs(&serde_json::json!({})), "");
     }
 
     #[test]
