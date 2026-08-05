@@ -9,6 +9,13 @@
   "//secrets": "Slack/Telegramのトークンはここではなくsecretsファイルへ (共有厳禁)",
   "secrets": "secrets.json",
 
+  "//remote": "スマホ等から監視・指示するリモートUI。既定は無効。bindはauto(Tailscale→LAN)を推奨",
+  "remote": {
+    "enabled": false,
+    "bind": "auto",
+    "port": 8787
+  },
+
   "//workspaces": "切り替える単位。file で定義ファイルを参照するか、tabs を直書きする",
   "workspaces": [
     {

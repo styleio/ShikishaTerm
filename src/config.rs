@@ -48,6 +48,42 @@ pub struct Config {
     /// 玄人向け機能のためGUIからは編集しない
     #[serde(default)]
     pub capabilities: crate::caps::CapabilitySpec,
+    /// スマホ等から見るリモートUI。既定は無効
+    #[serde(default)]
+    pub remote: RemoteSpec,
+}
+
+/// リモートUIの設定。遠隔からAIを操作できる機能なので既定はオフ
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteSpec {
+    #[serde(default)]
+    pub enabled: bool,
+    /// "auto" (Tailscale→LANの順に探す) / "127.0.0.1" / 明示のIP
+    #[serde(default = "default_bind")]
+    pub bind: String,
+    #[serde(default = "default_remote_port")]
+    pub port: u16,
+    /// プライベート網の外へ公開することを明示的に許可する
+    #[serde(default)]
+    pub allow_public: bool,
+}
+
+impl Default for RemoteSpec {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_bind(),
+            port: default_remote_port(),
+            allow_public: false,
+        }
+    }
+}
+
+fn default_bind() -> String {
+    "auto".into()
+}
+fn default_remote_port() -> u16 {
+    8787
 }
 
 /// secrets.json: 資格情報だけを分離したファイル (共有厳禁)
@@ -58,6 +94,9 @@ pub struct Secrets {
     /// HTTP窓口が使う認証情報 (スクリプトからは読めない)
     #[serde(default)]
     pub tokens: std::collections::HashMap<String, String>,
+    /// リモートUIのトークン。設定するとURLが固定され、再ペアリングが不要になる
+    #[serde(default)]
+    pub remote_token: Option<String>,
 }
 
 impl Config {
@@ -87,6 +126,16 @@ impl Config {
     /// secretsファイルのパス (存在すれば)
     pub fn secrets_path(&self) -> Option<std::path::PathBuf> {
         self.secrets.as_deref().map(resolve_data_path)
+    }
+
+    /// リモートUIのトークン (secretsに書かれていれば使う)
+    pub fn remote_token(&self, password: Option<&str>) -> Option<String> {
+        let path = self.secrets_path()?;
+        crate::crypto::read_maybe_encrypted(&path, password)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Secrets>(&t).ok())
+            .and_then(|s| s.remote_token)
+            .filter(|t| t.len() >= 16)
     }
 
     /// HTTP窓口が使う認証情報を取り出す (スクリプトには渡さない)

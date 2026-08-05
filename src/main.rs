@@ -16,8 +16,10 @@ mod config;
 mod crypto;
 mod detect;
 mod hooks;
+mod netaddr;
 mod notify;
 mod profile;
+mod remote;
 mod session_log;
 mod tab;
 mod watch;
@@ -53,7 +55,31 @@ const NEON_YELLOW: Color = Color::Rgb(255, 234, 0);
 const NEON_BLUE: Color = Color::Rgb(0, 170, 255);
 const NEON_RED: Color = Color::Rgb(255, 70, 70);
 
+/// 異常終了の理由を残す。TUIは画面を占有するため、
+/// パニックメッセージが見えないまま消えてしまうのを防ぐ
+fn install_crash_log() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let where_ = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        append_hook_log(&format!("!!! 異常終了 {where_}: {info}"));
+        let _ = std::fs::create_dir_all("logs");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("logs/crash.log")
+        {
+            use std::io::Write as _;
+            let _ = writeln!(f, "{where_}: {info}");
+        }
+        prev(info);
+    }));
+}
+
 fn main() -> Result<()> {
+    install_crash_log();
     // 設定だけ開くモード (TUIを起動せずブラウザで設定を編集する)
     if std::env::args().nth(1).as_deref() == Some("--settings") {
         let web = webui::WebUi::start(config::config_file_path())?;
@@ -413,6 +439,29 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     engines[0] = build_engine(cfg.as_ref(), workspaces.first(), &mut startup_errors, &caps);
     let mut engine = engines[0].take();
 
+    // リモートUI (スマホ等から監視・指示する)。設定で有効にしたときだけ待ち受ける
+    let mut remote_ui: Option<remote::RemoteUi> = None;
+    if let Some(c) = cfg.as_ref().filter(|c| c.remote.enabled) {
+        match netaddr::resolve_bind(&c.remote.bind, c.remote.allow_public) {
+            Ok((ip, note)) => {
+                let token = c
+                    .remote_token(password.as_deref())
+                    .unwrap_or_else(|| random_hex(24));
+                match remote::RemoteUi::start(ip, c.remote.port, token) {
+                    Ok(mut r) => {
+                        r.note = note;
+                        if let Some(n) = &r.note {
+                            startup_errors.push(n.clone());
+                        }
+                        remote_ui = Some(r);
+                    }
+                    Err(e) => startup_errors.push(format!("リモートUI: {e}")),
+                }
+            }
+            Err(e) => startup_errors.push(format!("リモートUI: {e}")),
+        }
+    }
+
     let mut auto_enabled = true;
     let mut started_fired = vec![false; tabs.len()];
 
@@ -437,6 +486,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 
     let mut ws_open = false;
     let mut help_open = false;
+    let mut qr_open = false;
     // タブバー境界線のドラッグ中フラグ (マウスで幅を調整できる)
     let mut dragging_divider = false;
     // 設定Web GUI (INDEXの [e] で起動、アプリ終了時に停止)
@@ -578,6 +628,87 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 }
             }
 
+            // リモートUIへ現在の状況を渡し、届いた操作を実行する
+            if let Some(r) = remote_ui.as_ref() {
+                *r.snapshot.lock().unwrap() = remote::Snapshot {
+                    workspace: workspaces
+                        .get(ws_index)
+                        .map(|w| w.name.clone())
+                        .unwrap_or_default(),
+                    auto_enabled,
+                    tabs: tabs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| remote::RemoteTab {
+                            index: i + 1,
+                            name: t.title.clone(),
+                            state: t.state.label().to_string(),
+                            locked: t.locked,
+                            output: trim_for_phone(
+                                &t.last_response.clone().unwrap_or_default(),
+                                200,
+                            ),
+                            screen: trim_for_phone(
+                                &t.parser.lock().unwrap().screen().contents(),
+                                200,
+                            ),
+                        })
+                        .collect(),
+                };
+                let now_ms = start.elapsed().as_millis() as u64;
+                while let Ok(cmd) = r.rx.try_recv() {
+                    match cmd {
+                        // 遠隔からの入力は人間の操作として扱う
+                        // (自動チェーンをリセットし、ロック中は拒否する)
+                        remote::RemoteCmd::Send { tab, text } => {
+                            if let Some(t) = tabs.get_mut(tab.wrapping_sub(1)) {
+                                if t.locked {
+                                    continue;
+                                }
+                                t.chain_depth = 0;
+                                t.last_manual_ms = now_ms;
+                                let bracketed =
+                                    t.parser.lock().unwrap().screen().bracketed_paste();
+                                let body = text.replace("\r\n", "\r").replace('\n', "\r");
+                                let mut bytes = Vec::new();
+                                if bracketed {
+                                    bytes.extend_from_slice(b"\x1b[200~");
+                                    bytes.extend_from_slice(body.as_bytes());
+                                    bytes.extend_from_slice(b"\x1b[201~");
+                                } else {
+                                    bytes.extend_from_slice(body.as_bytes());
+                                }
+                                bytes.push(b'\r');
+                                let _ = t.write_bytes(&bytes);
+                                append_hook_log(&format!("remote送信 tab{tab}"));
+                            }
+                        }
+                        remote::RemoteCmd::Keys { tab, keys } => {
+                            if let Some(t) = tabs.get_mut(tab.wrapping_sub(1)) {
+                                if t.locked {
+                                    continue;
+                                }
+                                t.chain_depth = 0;
+                                t.last_manual_ms = now_ms;
+                                let _ = t.write_bytes(keys.as_bytes());
+                            }
+                        }
+                        remote::RemoteCmd::SetAuto(on) => {
+                            auto_enabled = on;
+                            if !on {
+                                if let Some(eng) = engine.as_mut() {
+                                    eng.cancel_all();
+                                }
+                            }
+                            flash = Some(
+                                if on { ">> リモートから自動化を再開しました" }
+                                else { ">> リモートから自動化を停止しました" }.to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+
             // auto_restart: 終了したタブを自動で復帰させる
             for (i, t) in tabs.iter_mut().enumerate() {
                 if t.state == TabState::Exited && t.auto_restart {
@@ -602,6 +733,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             ws_index,
             ws_open,
             help_open,
+            qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
+            remote_on: remote_ui.is_some(),
         };
         terminal.draw(|f| draw(f, &tabs, &ui, flash.as_deref()))?;
 
@@ -611,9 +744,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         match event::read()? {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 flash = None;
-                // オーバーレイ (ヘルプ / ワークスペース一覧) が最優先
+                // オーバーレイ (ヘルプ / QR / ワークスペース一覧) が最優先
                 if help_open {
                     help_open = false;
+                    continue;
+                }
+                if qr_open {
+                    qr_open = false;
                     continue;
                 }
                 if ws_open {
@@ -772,6 +909,17 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             }
                         }
                         KeyCode::Char('?') | KeyCode::Char('h') => help_open = true,
+                        // スマホから繋ぐためのQRコードを出す
+                        KeyCode::Char('i') => {
+                            if remote_ui.is_some() {
+                                qr_open = true;
+                            } else {
+                                flash = Some(
+                                    ">> リモートUIは無効です (設定の remote.enabled で有効化)"
+                                        .to_string(),
+                                );
+                            }
+                        }
                         KeyCode::Char('w') => {
                             if workspaces.len() > 1 {
                                 ws_open = true;
@@ -961,6 +1109,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 
     if let Some(w) = &web {
         w.shutdown();
+    }
+    if let Some(r) = &remote_ui {
+        r.shutdown();
     }
     for t in tabs.iter_mut() {
         t.kill();
@@ -1233,6 +1384,34 @@ fn session_mut(tabs: &mut [Tab], active: usize) -> Option<&mut Tab> {
     } else {
         tabs.get_mut(active - 1)
     }
+}
+
+/// スマホへ送る画面テキストを整える。
+/// 端末の空行がそのままだと本文が見えなくなるので末尾を落とし、
+/// 通信量のために行数も抑える
+fn trim_for_phone(s: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let end = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let start = end.saturating_sub(max_lines);
+    lines[start..end]
+        .iter()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 16進のランダム文字列 (リモートUIのトークン用)
+fn random_hex(bytes: usize) -> String {
+    use rand::TryRng as _;
+    let mut buf = vec![0u8; bytes];
+    if rand::rngs::SysRng.try_fill_bytes(&mut buf).is_err() {
+        return "shikisha-fallback-token".into();
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// 設定ファイルのあるフォルダ (相対パスの基準)
@@ -1678,6 +1857,10 @@ struct Ui {
     ws_index: usize,
     ws_open: bool,
     help_open: bool,
+    /// QRコード表示中なら、その接続URL
+    qr: Option<String>,
+    /// リモートUIが待ち受け中か (常時わかるように表示する)
+    remote_on: bool,
 }
 
 fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
@@ -1785,6 +1968,48 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
     if ui.help_open {
         draw_help(f, f.area());
     }
+    if let Some(url) = &ui.qr {
+        draw_qr(f, f.area(), url);
+    }
+}
+
+/// スマホから繋ぐためのQRコード。URLを手入力させないための表示
+fn draw_qr(f: &mut Frame, area: Rect, url: &str) {
+    let lines = netaddr::qr_lines(url);
+    let w = (lines.first().map(|l| l.chars().count()).unwrap_or(30) as u16 + 4)
+        .min(area.width.saturating_sub(2));
+    let h = (lines.len() as u16 + 6).min(area.height.saturating_sub(2));
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(ratatui::widgets::Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(NEON_YELLOW))
+        .title(Span::styled(
+            " スマホから接続 ",
+            Style::default().fg(Color::Black).bg(NEON_YELLOW),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mut text: Vec<Line> = lines
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, Style::default().fg(Color::White))))
+        .collect();
+    text.push(Line::default());
+    text.push(Line::from(Span::styled(
+        url.to_string(),
+        Style::default().fg(NEON_BLUE),
+    )));
+    text.push(Line::from(Span::styled(
+        "カメラで読み取ってください（同じネットワーク内から接続できます）",
+        Style::default().fg(Color::DarkGray),
+    )));
+    f.render_widget(Paragraph::new(text), inner);
 }
 
 /// ヘルプオーバーレイ (どこからでも Ctrl+B ? / INDEXで ?)
@@ -1838,6 +2063,11 @@ fn auto_label(auto: Option<bool>) -> &'static str {
         Some(false) => "AUTO:OFF | ",
         None => "",
     }
+}
+
+/// 遠隔操作を受け付けている間は、忘れないよう常に表示する
+fn remote_label(on: bool) -> &'static str {
+    if on { "REMOTE:ON | " } else { "" }
 }
 
 /// INDEX = ホーム画面: セッション一覧 + メニュー
@@ -1919,6 +2149,7 @@ fn draw_index(
         ("[r]", "終了したタブを再起動"),
         ("[w]", "ワークスペース切替"),
         ("[t]", "通知テスト送信 (Slack/Telegram)"),
+        ("[i]", "スマホから接続 (QRコード)"),
         ("[e]", "設定を編集 (ブラウザ)"),
         ("[k]", "マスターパスワード変更"),
         ("[?]", "ヘルプ / キー一覧"),
@@ -1937,7 +2168,8 @@ fn draw_index(
 
     let status = flash.map(|m| format!(" {m}")).unwrap_or_else(|| {
         format!(
-            " {}INDEX | メニューはキー押下で実行 / Ctrl+B q: EXIT",
+            " {}{}INDEX | メニューはキー押下で実行 / Ctrl+B q: EXIT",
+            remote_label(ui.remote_on),
             auto_label(ui.auto)
         )
     });
@@ -2055,7 +2287,8 @@ fn draw_session(
         " 🔒 LOCKED — 入力は無効です (Ctrl+B l または 🔒クリックで解除)".to_string()
     } else {
         format!(
-            " {}PROFILE:{} [{}] | ドラッグ:コピー 右クリック:ペースト | Ctrl+B ?: ヘルプ",
+            " {}{}PROFILE:{} [{}] | ドラッグ:コピー 右クリック:ペースト | Ctrl+B ?: ヘルプ",
+            remote_label(ui.remote_on),
             auto_label(ui.auto),
             t.profile_name(),
             t.state.label()
@@ -2226,6 +2459,8 @@ mod tests {
             ws_index: 0,
             ws_open: false,
             help_open: false,
+            qr: None,
+            remote_on: false,
         };
         let mut term = ratatui::Terminal::new(TestBackend::new(100, 24)).unwrap();
         term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
@@ -2243,6 +2478,19 @@ mod tests {
         tabs[0].kill();
         assert!(screen.contains("ようこそ"), "初回の案内が出る: {screen}");
         assert!(screen.contains("設定画面が開きます"), "設定の開き方が示される");
+    }
+
+    #[test]
+    fn phone_view_drops_trailing_blank_lines() {
+        // 端末の空行をそのまま送ると、スマホでは本文が見えなくなる
+        let screen = "hello\nworld\n\n\n\n\n";
+        assert_eq!(trim_for_phone(screen, 200), "hello\nworld");
+        // 長すぎる場合は末尾だけ送る
+        let long: String = (1..=300).map(|i| format!("line{i}\n")).collect();
+        let out = trim_for_phone(&long, 10);
+        assert_eq!(out.lines().count(), 10);
+        assert!(out.ends_with("line300"));
+        assert_eq!(trim_for_phone("   \n\n", 200), "");
     }
 
     #[test]
