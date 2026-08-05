@@ -48,30 +48,15 @@ pub fn resolve_bind(spec: &str, allow_public: bool) -> Result<(Ipv4Addr, Option<
             return Ok((ip, None));
         }
         if let Some(ip) = lan_ip() {
-            return Ok((
-                ip,
-                Some(
-                    "Tailscaleが見つからないため家庭内LANのアドレスで待ち受けます。\
-                     同じネットワークにいる人はトークンがあれば操作できます"
-                        .into(),
-                ),
-            ));
+            return Ok((ip, Some(crate::i18n::t("remote.err.lan_only"))));
         }
-        return Err(
-            "接続できるネットワークが見つかりません。外から使うにはTailscale等の\
-             プライベートネットワーク、または同一LAN内での利用が必要です"
-                .into(),
-        );
+        return Err(crate::i18n::t("remote.err.no_network"));
     }
     let ip: Ipv4Addr = spec
         .parse()
-        .map_err(|_| format!("待ち受けアドレスが不正です: {spec}"))?;
+        .map_err(|_| crate::i18n::tp("remote.err.bad_address", &[("addr", spec)]))?;
     if !is_private(&ip) && !allow_public {
-        return Err(format!(
-            "{ip} は外部に公開されるアドレスです。本当に必要なら \
-             remote.allow_public を true にしてください (遠隔から任意のコマンドを\
-             実行できる機能である点に注意)"
-        ));
+        return Err(crate::i18n::tp("remote.err.public", &[("ip", &ip.to_string())]));
     }
     Ok((ip, None))
 }

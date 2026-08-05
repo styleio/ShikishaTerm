@@ -60,7 +60,12 @@ pub struct RemoteUi {
 impl RemoteUi {
     pub fn start(bind: std::net::Ipv4Addr, port: u16, token: String) -> Result<Self> {
         let server = Server::http((bind, port))
-            .map_err(|e| anyhow::anyhow!("リモートUIを開始できません ({bind}:{port}): {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(crate::i18n::tp(
+                    "remote.err.start",
+                    &[("addr", &format!("{bind}:{port}")), ("error", &e.to_string())]
+                ))
+            })?;
         let real_port = server
             .server_addr()
             .to_ip()
@@ -148,7 +153,9 @@ fn handle(
     let path = req.url().split('?').next().unwrap_or("/").to_string();
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => {
-            let html = PAGE.replace("__TOKEN__", token);
+            let html = crate::i18n::render(PAGE)
+                .replace("__TOKEN__", token)
+                .replace("__DICT__", &crate::i18n::dict_json());
             req.respond(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ))?;
@@ -193,10 +200,10 @@ fn handle(
 }
 
 const PAGE: &str = r##"<!doctype html>
-<html lang="ja"><head><meta charset="utf-8">
+<html lang="{{__lang__}}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0f1115">
-<title>ShikishaTerm</title>
+<title>{{app.title}}</title>
 <style>
  :root { --bg:#0f1115; --panel:#161a20; --panel2:#1b2027; --line:#262d37;
    --text:#e6e9ef; --muted:#8b95a5; --accent:#35c46a; --warn:#e3b341; --danger:#e5534b;
@@ -239,10 +246,10 @@ const PAGE: &str = r##"<!doctype html>
  .hint { color:var(--muted); font-size:12.5px; }
 </style></head><body>
 <header>
-  <b id="ws">ShikishaTerm</b>
+  <b id="ws">{{app.title}}</b>
   <span class="spacer"></span>
   <span class="hint" id="autost"></span>
-  <button class="stop" onclick="toggleAuto()" id="autobtn">停止</button>
+  <button class="stop" onclick="toggleAuto()" id="autobtn">{{phone.stop}}</button>
 </header>
 <main>
   <div id="list"></div>
@@ -251,10 +258,10 @@ const PAGE: &str = r##"<!doctype html>
     <div class="out" id="out"></div>
     <div class="quick btns" id="quick"></div>
     <div class="composer">
-      <textarea id="msg" rows="3" placeholder="指示を入力…"></textarea>
+      <textarea id="msg" rows="3" placeholder="{{phone.instruct.ph}}"></textarea>
       <div class="btns">
-        <button class="primary" onclick="send()">送信</button>
-        <button onclick="back()">一覧へ</button>
+        <button class="primary" onclick="send()">{{phone.send}}</button>
+        <button onclick="back()">{{phone.back}}</button>
         <span class="spacer"></span>
         <span class="hint" id="sent"></span>
       </div>
@@ -268,7 +275,9 @@ const api = (p, b) => fetch(p, {method: b ? "POST" : "GET",
 let snap = {tabs:[]}, sel = null, dirty = false;
 
 const CLS = {BUSY:"busy", DONE:"done", QUESTION:"quest", WAIT:"wait", EXIT:"exit"};
-const LABEL = {BUSY:"処理中", DONE:"完了", QUESTION:"確認待ち", WAIT:"待機", EXIT:"終了"};
+const T = __DICT__;
+const LABEL = {BUSY:T["state.busy"], DONE:T["state.done"], QUESTION:T["state.question"],
+               WAIT:T["state.wait"], EXIT:T["state.exit"]};
 
 async function poll() {
   try {
@@ -279,9 +288,9 @@ async function poll() {
 }
 
 function render() {
-  document.getElementById("ws").textContent = snap.workspace || "ShikishaTerm";
-  document.getElementById("autost").textContent = snap.auto_enabled ? "自動化 ON" : "自動化 OFF";
-  document.getElementById("autobtn").textContent = snap.auto_enabled ? "停止" : "再開";
+  document.getElementById("ws").textContent = snap.workspace || T["app.title"];
+  document.getElementById("autost").textContent = snap.auto_enabled ? T["phone.automation_on"] : T["phone.automation_off"];
+  document.getElementById("autobtn").textContent = snap.auto_enabled ? T["phone.stop"] : T["phone.resume"];
   const list = document.getElementById("list");
   const detail = document.getElementById("detail");
   if (sel === null) {
@@ -320,7 +329,8 @@ function render() {
   const q = document.getElementById("quick");
   q.textContent = "";
   if (t.state === "QUESTION") {
-    for (const [label, keys] of [["1","1\r"],["2","2\r"],["はい","y\r"],["いいえ","n\r"],["Enter","\r"]]) {
+    for (const [label, keys] of [["1","1\r"],["2","2\r"],[T["phone.answer.yes"],"y\r"],
+                                 [T["phone.answer.no"],"n\r"],["Enter","\r"]]) {
       const b = document.createElement("button");
       b.textContent = label;
       b.onclick = () => sendKeys(keys);
@@ -335,11 +345,11 @@ async function send() {
   if (!text || sel === null) return;
   await api("/api/send", JSON.stringify({tab: sel, text}));
   box.value = "";
-  flash("送信しました");
+  flash(T["phone.sent"]);
 }
 async function sendKeys(keys) {
   await api("/api/send", JSON.stringify({tab: sel, keys}));
-  flash("送信しました");
+  flash(T["phone.sent"]);
 }
 async function toggleAuto() {
   await api("/api/auto", JSON.stringify({on: !snap.auto_enabled}));
@@ -361,6 +371,24 @@ poll();
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// スマホ画面に `{{key}}` や `__DICT__` がそのまま出ていないこと
+    #[test]
+    fn page_is_fully_rendered_and_uses_known_keys() {
+        let html = crate::i18n::render(PAGE)
+            .replace("__TOKEN__", "t")
+            .replace("__DICT__", "{}");
+        assert!(!html.contains("{{"), "未置換の {{{{key}}}} が残っている");
+        assert!(!html.contains("__"), "未置換のプレースホルダが残っている");
+
+        let en: serde_json::Value = serde_json::from_str(include_str!("../lang/en.json")).unwrap();
+        let mut rest = PAGE;
+        while let Some(i) = rest.find("T[\"") {
+            rest = &rest[i + 3..];
+            let key = &rest[..rest.find('"').unwrap()];
+            assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
+        }
+    }
 
     #[test]
     fn token_is_required_and_compared_safely() {

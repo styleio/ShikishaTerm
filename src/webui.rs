@@ -157,10 +157,15 @@ fn safe_dir_path(url: &str, config_path: &std::path::Path) -> Option<std::path::
 }
 
 /// マニュアルはexeに埋め込む。どこから起動しても必ず参照でき、
-/// 配布物にドキュメントを同梱し忘れても壊れない
-const EMBEDDED_MANUAL: &str = include_str!("../docs/AUTOMATION.md");
+/// 配布物にドキュメントを同梱し忘れても壊れない。
+/// 翻訳を exe に同梱したい場合はここに1行足す (無くても docs/ に置けば読まれる)
+const EMBEDDED_MANUALS: &[(&str, &str)] = &[
+    ("en", include_str!("../docs/AUTOMATION.md")),
+    ("ja", include_str!("../docs/AUTOMATION.ja.md")),
+];
 
-/// 隣に置かれたファイルがあればそちらを優先する (利用者が加筆できるように)
+/// 隣に置かれたファイルがあればそちらを優先する (利用者が加筆できるように)。
+/// 言語版 (AUTOMATION.<コード>.md) → 英語 → 埋め込み の順に探す
 fn load_manual(config_path: &std::path::Path) -> String {
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Some(d) = config_path.parent() {
@@ -173,16 +178,27 @@ fn load_manual(config_path: &std::path::Path) -> String {
         dirs.push(d);
     }
     dirs.push(std::path::PathBuf::from("."));
-    for d in dirs {
-        for rel in ["docs/AUTOMATION.md", "AUTOMATION.md"] {
-            if let Ok(s) = std::fs::read_to_string(d.join(rel)) {
-                if !s.trim().is_empty() {
-                    return s;
+
+    let lang = crate::i18n::lang();
+    let mut names = Vec::new();
+    if lang != "en" {
+        names.push(format!("AUTOMATION.{lang}.md"));
+    }
+    names.push("AUTOMATION.md".to_string());
+
+    for name in &names {
+        for d in &dirs {
+            for rel in [d.join("docs").join(name), d.join(name)] {
+                if let Ok(s) = std::fs::read_to_string(rel) {
+                    if !s.trim().is_empty() {
+                        return s;
+                    }
                 }
             }
         }
     }
-    EMBEDDED_MANUAL.to_string()
+    let embedded = |code: &str| EMBEDDED_MANUALS.iter().find(|(c, _)| *c == code).map(|(_, m)| *m);
+    embedded(&lang).or_else(|| embedded("en")).unwrap_or_default().to_string()
 }
 
 /// 表示すべきリモートUIの状況を求める。
@@ -204,7 +220,7 @@ fn effective_remote(shared: &Arc<std::sync::Mutex<RemoteInfo>>) -> RemoteInfo {
                 c.remote.port,
                 crate::remote_token(&c, None)
             ),
-            note: "本体を起動している間だけ繋がります".into(),
+            note: crate::i18n::t("settings.phone.only_while_running"),
         },
         Err(e) => RemoteInfo {
             running: false,
@@ -341,11 +357,8 @@ fn describe_tabs(parsed: &serde_json::Value) -> String {
         return String::new();
     }
     let me = parsed.get("self").and_then(|v| v.as_u64()).unwrap_or(0);
-    let mut s = String::from(
-        "## タブ構成\n\
-         送信先はタブ名で指定すること (例: shikisha.send_to_tab(\"検査\", ...))。\n\
-         番号は並べ替えで変わるため、名前の方が安全。\n",
-    );
+    let mut s = crate::i18n::t("ai.tabs.header");
+    s.push('\n');
     for t in tabs {
         let i = t.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
         let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -354,10 +367,13 @@ fn describe_tabs(parsed: &serde_json::Value) -> String {
             s.push_str(&format!("{i}. {name}"));
         } else {
             // IDがある場合はそちらで指させる (タブ名を変えても壊れない)
-            s.push_str(&format!("{i}. {name} → 指定は \"{id}\""));
+            s.push_str(&format!(
+                "{i}. {name}{}",
+                crate::i18n::tp("ai.tabs.id", &[("id", id)])
+            ));
         }
         if i == me {
-            s.push_str("  ← このスクリプトが動くタブ (tab)");
+            s.push_str(&crate::i18n::t("ai.tabs.self"));
         }
         s.push('\n');
     }
@@ -372,25 +388,20 @@ fn generate_with_local_ai(
     config_path: &std::path::Path,
 ) -> Result<String> {
     if want.trim().is_empty() {
-        anyhow::bail!("やりたいことを入力してください");
+        anyhow::bail!("{}", crate::i18n::t("automation.editor.want"));
     }
     // マニュアルを仕様書としてAIに渡す (独自APIは学習データに無いため)
     let manual = load_manual(config_path);
 
     // 会話文を返させないため、出力形式をマーカーで固定する
-    let prompt = format!(
-        "あなたはShikishaTerm-AIの自動化スクリプトを書く変換器です。\n\
-         次の「やりたいこと」を満たす `{event}.lua` の中身を書いてください。\n\n\
-         ## 出力の決まり (厳守)\n\
-         - 必ず <<<LUA で始めて >>> で終わる。その間にLuaコードだけを書く\n\
-         - 挨拶・説明・確認・質問・コードフェンスは一切書かない\n\
-         - function ... end で包まない (処理の本体だけを書く)\n\
-         - 仕様書に載っていない関数やライブラリは使わない\n\
-         - ファイルの探索や確認は不要。この指示だけで完結させる\n\n\
-         ## やりたいこと\n{want}\n\n\
-         {layout}\n\
-         ## 仕様書\n{manual}\n\n\
-         では <<<LUA から始めてください。\n"
+    let prompt = crate::i18n::tp(
+        "ai.prompt",
+        &[
+            ("event", event),
+            ("want", want),
+            ("layout", layout),
+            ("manual", &manual),
+        ],
     );
 
     let (cmd, args) = pick_local_ai(engine)?;
@@ -400,7 +411,7 @@ fn generate_with_local_ai(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .with_context(|| format!("{cmd} を実行できません"))?;
+        .with_context(|| crate::i18n::tp("ai.err.cannot_run", &[("cmd", &cmd)]))?;
     {
         use std::io::Write as _;
         let mut stdin = child.stdin.take().context("stdinを開けません")?;
@@ -409,8 +420,11 @@ fn generate_with_local_ai(
     let out = child.wait_with_output()?;
     if !out.status.success() {
         anyhow::bail!(
-            "{cmd} がエラーを返しました: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
+            "{}",
+            crate::i18n::tp(
+                "ai.err.failed",
+                &[("cmd", &cmd), ("error", String::from_utf8_lossy(&out.stderr).trim())]
+            )
         );
     }
     let text = String::from_utf8_lossy(&out.stdout);
@@ -431,8 +445,11 @@ fn extract_lua(text: &str) -> Result<String> {
         return Ok(stripped);
     }
     anyhow::bail!(
-        "AIがコードを返しませんでした。表現を変えて試してください（返答: {}）",
-        text.trim().chars().take(120).collect::<String>()
+        "{}",
+        crate::i18n::tp(
+            "ai.err.no_code",
+            &[("reply", &text.trim().chars().take(120).collect::<String>())]
+        )
     )
 }
 
@@ -542,7 +559,9 @@ fn handle(
     let path = req.url().split('?').next().unwrap_or("/").to_string();
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => {
-            let html = PAGE.replace("__TOKEN__", token);
+            let html = crate::i18n::render(PAGE)
+                .replace("__TOKEN__", token)
+                .replace("__DICT__", &crate::i18n::dict_json());
             let resp = Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             );
@@ -551,7 +570,8 @@ fn handle(
         // 書き方の説明 (GUIから開ける。ファイルを探させない)
         ("GET", "/help") => {
             let md = load_manual(config_path);
-            let html = HELP_PAGE.replace("__MD__", &serde_json::to_string(&md)?);
+            let html = crate::i18n::render(HELP_PAGE)
+                .replace("__MD__", &serde_json::to_string(&md)?);
             let resp = Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             );
@@ -658,7 +678,8 @@ fn handle(
             req.as_reader().read_to_string(&mut body)?;
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("file");
-            let title = p.get("title").and_then(|v| v.as_str()).unwrap_or("選択");
+            let fallback = crate::i18n::t("settings.pick.title");
+            let title = p.get("title").and_then(|v| v.as_str()).unwrap_or(&fallback);
             let start = p
                 .get("start")
                 .and_then(|v| v.as_str())
@@ -817,8 +838,8 @@ fn handle(
 // 設定画面。本体のサイバー調とは別に、読みやすさを優先した静かなUIにしている
 // (サイドバー + 詳細ペイン。一覧は「何があるか」だけを見せ、編集は1つに集中させる)
 const PAGE: &str = r##"<!doctype html>
-<html lang="ja"><head><meta charset="utf-8">
-<title>ShikishaTerm-AI 設定</title>
+<html lang="{{__lang__}}"><head><meta charset="utf-8">
+<title>{{settings.title}}</title>
 <style>
  :root {
    --bg:#0f1115; --panel:#161a20; --panel2:#1b2027; --line:#262d37;
@@ -909,11 +930,11 @@ const PAGE: &str = r##"<!doctype html>
 </style></head><body>
 
 <header>
-  <h1>ShikishaTerm-AI 設定</h1>
+  <h1>{{settings.title}}</h1>
   <div class="spacer"></div>
   <span id="msg"></span>
-  <button class="quiet" onclick="load()">再読込</button>
-  <button class="primary" onclick="save()">保存</button>
+  <button class="quiet" onclick="load()">{{common.reload}}</button>
+  <button class="primary" onclick="save()">{{common.save}}</button>
 </header>
 
 <div class="layout">
@@ -925,36 +946,35 @@ const PAGE: &str = r##"<!doctype html>
 
 <div id="autobox" class="modal" style="display:none">
   <div class="modal-inner">
-    <h2 id="autotitle">自動化</h2>
+    <h2 id="autotitle">{{settings.tab.automation}}</h2>
     <div class="hint" id="autopath"></div>
     <div class="row" style="margin-top:12px">
-      <label>タイミング</label>
+      <label>{{automation.editor.when}}</label>
       <select id="autoevent" onchange="switchEvent()"></select>
       <span class="hint" id="autohint"></span>
     </div>
     <textarea id="autocode" spellcheck="false"
-      placeholder="ここに処理を書きます。空にすると「何もしない」になります"></textarea>
+      placeholder="{{automation.editor.code.ph}}"></textarea>
     <div class="row" id="airow">
-      <label>AIに書いてもらう</label>
+      <label>{{automation.editor.ask}}</label>
       <input type="text" id="autoask" class="grow"
-             placeholder="例: 完了したら検査タブに送ってレビューさせて">
-      <button onclick="askAi()">生成</button>
+             placeholder="{{automation.editor.ask.ph}}">
+      <button onclick="askAi()">{{automation.editor.generate}}</button>
     </div>
     <div class="row" id="ainone" style="display:none">
-      <span class="hint">Claude Code / Codex CLI / Gemini CLI のいずれかを入れると、
-        日本語で指示してコードを書いてもらえます。</span>
+      <span class="hint">{{automation.editor.no_ai}}</span>
     </div>
     <div id="aipreview" style="display:none">
-      <div class="hint">生成されたコード（確認してから反映してください）</div>
+      <div class="hint">{{automation.editor.generated}}</div>
       <pre id="aicode"></pre>
-      <button class="primary" onclick="applyAi()">反映</button>
-      <button class="quiet" onclick="document.getElementById('aipreview').style.display='none'">破棄</button>
+      <button class="primary" onclick="applyAi()">{{automation.editor.apply}}</button>
+      <button class="quiet" onclick="document.getElementById('aipreview').style.display='none'">{{automation.editor.discard}}</button>
     </div>
     <div class="row" style="border-top:1px solid var(--line); margin-top:12px; padding-top:14px">
-      <button class="primary" onclick="saveAuto()">保存して閉じる</button>
-      <button class="quiet" onclick="closeAuto()">キャンセル</button>
+      <button class="primary" onclick="saveAuto()">{{automation.editor.save}}</button>
+      <button class="quiet" onclick="closeAuto()">{{common.cancel}}</button>
       <span class="spacer" style="flex:1"></span>
-      <a href="/help?token=__TOKEN__" target="_blank">書き方を見る</a>
+      <a href="/help?token=__TOKEN__" target="_blank">{{automation.editor.help}}</a>
       <span id="automsg" class="hint"></span>
     </div>
   </div>
@@ -962,6 +982,10 @@ const PAGE: &str = r##"<!doctype html>
 
 <script>
 const TOKEN = "__TOKEN__";
+const T = __DICT__;
+// {name} 差し込み (Rust側の tp と同じ規則)
+const fill = (s, args) => Object.entries(args)
+  .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
 const api = (m, b) => fetch("/api/config", {
    method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
 const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(file), {
@@ -1025,7 +1049,7 @@ function pathField(obj, key, ph, kind, title) {
   const b = el("button", {class:"quiet", onclick: async () => {
     const p = await pickPath(kind, title, obj[key]);
     if (p !== null) { obj[key] = p; i.value = p; }
-  }}, "参照…");
+  }}, T["common.browse"]);
   return [i, b];
 }
 
@@ -1105,14 +1129,14 @@ const buildWsl = o => ["wsl", o.distro ? "-d " + o.distro : "", o.dir ? "--cd " 
   o.shell ? "-- " + o.shell : ""].filter(Boolean).join(" ");
 
 const kindOf = c => parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
-const KIND_LABEL = {cmd:"コマンド", ssh:"SSH", docker:"Docker", wsl:"WSL"};
+const KIND_LABEL = {cmd:T["settings.tab.command"], ssh:"SSH", docker:"Docker", wsl:"WSL"};
 const KIND_START = {cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl "};
 const COMMON_COMMANDS = [
   {label:"Claude Code", cmd:"claude",         check:"claude"},
   {label:"Codex CLI",   cmd:"codex",          check:"codex"},
   {label:"Gemini CLI",  cmd:"gemini",         check:"gemini"},
   {label:"PowerShell",  cmd:"powershell.exe", check:null},
-  {label:"コマンドプロンプト", cmd:"cmd.exe",  check:null},
+  {label:T["settings.tab.kind.cmdprompt"], cmd:"cmd.exe", check:null},
 ];
 const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 
@@ -1121,28 +1145,28 @@ function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
   nav.append(el("button", {class:"navitem" + (sel.global ? " sel" : ""),
-    onclick:() => { sel = {ws:sel.ws, tab:null, global:true}; render(); }}, "全体設定"));
+    onclick:() => { sel = {ws:sel.ws, tab:null, global:true}; render(); }}, T["settings.global"]));
 
   wss.forEach((ws, wi) => {
-    nav.append(el("div", {class:"navgroup"}, ws.name || "(名称未設定)"));
+    nav.append(el("div", {class:"navgroup"}, ws.name || T["settings.tab.unnamed"]));
     nav.append(el("button", {class:"navitem" + (!sel.global && sel.ws === wi && sel.tab === null ? " sel" : ""),
       onclick:() => { sel = {ws:wi, tab:null, global:false}; render(); }},
-      el("span", {}, "ワークスペース設定")));
+      el("span", {}, T["settings.workspace.settings"])));
     (ws.tabs || []).forEach((t, ti) => {
       const b = el("button", {class:"navitem navtab" + (t.depth ? " child" : "") +
         (!sel.global && sel.ws === wi && sel.tab === ti ? " sel" : ""),
         onclick:() => { sel = {ws:wi, tab:ti, global:false}; render(); }});
-      b.append(el("span", {}, (t.depth ? "└ " : "") + (t.name || "(無名)")));
-      b.append(el("span", {class:"sub"}, cmdToText(t.command) || "未設定"));
+      b.append(el("span", {}, (t.depth ? "└ " : "") + (t.name || T["settings.tab.unnamed"])));
+      b.append(el("span", {class:"sub"}, cmdToText(t.command) || T["automation.unset"]));
       nav.append(b);
     });
     nav.append(el("button", {class:"navitem navtab navadd",
       onclick:() => { (ws.tabs = ws.tabs || []).push(newTab());
                       sel = {ws:wi, tab:ws.tabs.length - 1, global:false}; render(); }},
-      "＋ タブを追加"));
+      T["settings.tab.add"]));
   });
   nav.append(el("div", {class:"navgroup"}, ""));
-  nav.append(el("button", {class:"navitem navadd", onclick:addWs}, "＋ ワークスペースを追加"));
+  nav.append(el("button", {class:"navitem navadd", onclick:addWs}, T["settings.workspace.add"]));
 }
 
 const newTab = (o = {}) => Object.assign(
@@ -1150,7 +1174,7 @@ const newTab = (o = {}) => Object.assign(
    cwd:"", encoding:"", scrollback:"", log:false, depth:0}, o);
 
 function addWs() {
-  wss.push({name:"新しいワークスペース", automation:"", tabs:[]});
+  wss.push({name:T["settings.workspace"], automation:"", tabs:[]});
   sel = {ws:wss.length - 1, tab:null, global:false};
   render();
 }
@@ -1172,29 +1196,29 @@ function renderDetail() {
 
 function globalPane() {
   const box = el("div");
-  box.append(card("基本",
-    row("タブバーの幅", field(current, "tab_bar_width", "自動", {type:"number", width:110, grow:false}),
-        el("span", {class:"hint"}, "空欄ならタブ名に合わせます")),
-    row("自動チェーン上限", field(current, "max_chain", "10", {type:"number", width:110, grow:false}),
-        el("span", {class:"hint"}, "AI同士の自動転送が続く回数の上限")),
-    row("コードを書くAI", aiSelect(),
+  box.append(card(T["settings.tab.basic"],
+    row(T["settings.tabbar_width"], field(current, "tab_bar_width", T["settings.tab.automation_dir.ph"], {type:"number", width:110, grow:false}),
+        el("span", {class:"hint"}, T["settings.tabbar_width.hint"])),
+    row(T["settings.max_chain"], field(current, "max_chain", "10", {type:"number", width:110, grow:false}),
+        el("span", {class:"hint"}, T["settings.max_chain.hint"])),
+    row(T["settings.ai_engine"], aiSelect(),
         el("span", {class:"hint", id:"aihint"}, ""))));
   box.append(remoteCard());
-  box.append(card("ファイル",
-    row("自動化(全体共通)", ...pathField(current, "automation", "scripts/common", "dir",
-        "自動化フォルダを選んでください"),
-        el("span", {class:"hint"}, "各タブに設定が無いときに使われます")),
+  box.append(card(T["settings.section.files"],
+    row(T["settings.automation_global"], ...pathField(current, "automation", "scripts/common", "dir",
+        T["settings.tab.automation_dir.pick"]),
+        el("span", {class:"hint"}, T["settings.automation_global.hint"])),
     row("secrets", ...pathField(current, "secrets", "secrets.json", "file",
-        "secretsファイルを選んでください"),
-        el("span", {class:"hint"}, "通知先やトークン"))));
+        T["settings.secrets"]),
+        el("span", {class:"hint"}, T["settings.secrets.hint"]))));
   return box;
 }
 // スマホから使う設定。危険性は隠さず説明したうえで、1クリックで有効にできるようにする
 function remoteCard() {
   current.remote = current.remote || {};
   const r = current.remote;
-  const box = el("div", {class:"card"}, el("h2", {}, "スマホから使う"));
-  const status = el("div", {class:"hint"}, "確認中…");
+  const box = el("div", {class:"card"}, el("h2", {}, T["settings.section.phone"]));
+  const status = el("div", {class:"hint"}, T["settings.phone.checking"]);
   const qrbox = el("div", {style:"margin:10px 0"});
 
   const onoff = el("input", {type:"checkbox"});
@@ -1206,42 +1230,39 @@ function remoteCard() {
     setTimeout(refreshRemote, 1200);
   });
   const l = el("label", {class:"check"});
-  l.append(onoff, document.createTextNode("外出先やスマホから、状況の確認と指示ができるようにする"));
+  l.append(onoff, document.createTextNode(T["settings.phone.enable.label"]));
 
-  box.append(el("div", {class:"row"}, el("label", {}, "有効にする"), l));
-  box.append(el("div", {class:"row"}, el("label", {}, "ポート"),
+  box.append(el("div", {class:"row"}, el("label", {}, T["settings.phone.enable"]), l));
+  box.append(el("div", {class:"row"}, el("label", {}, T["settings.phone.port"]),
     (() => {
       const i = el("input", {type:"number", style:"width:110px"});
       i.value = r.port || 8787;
       i.addEventListener("input", () => { r.port = Number(i.value) || 8787; });
       return i;
     })(),
-    el("span", {class:"hint"}, "ふつうは変更不要です")));
+    el("span", {class:"hint"}, T["settings.phone.port.hint"])));
   box.append(el("div", {class:"row"}, status));
   box.append(qrbox);
   box.append(el("div", {class:"hint", style:"margin-top:6px"},
-    "接続できるのは同じネットワークにいる人だけです。" +
-    "Tailscale（無料）を入れておくと、外出先からでも自分の端末だけが繋がる状態になり、" +
-    "いちばん安全に使えます。Tailscableが無い場合は家庭内LANだけで繋がります" +
-    "（同じWi-Fiにいる人がURLとトークンを知れば操作できます）。" +
-    "インターネットに直接公開する設定は、設定ファイルで明示しない限り行いません。"));
+    T["settings.phone.note"]));
 
   refreshRemote();
   async function refreshRemote() {
     let j = {};
     try { j = await (await fetch("/api/remote", {headers:{"X-Token":TOKEN}})).json(); }
     catch (e) { return; }
-    const net = j.tailscale ? "Tailscale (" + j.tailscale + ") が使えます"
-              : j.lan ? "Tailscaleは未導入。家庭内LAN (" + j.lan + ") で使えます"
-              : "接続できるネットワークが見つかりません";
-    status.textContent = (j.running ? "待ち受け中 — " : "停止中 — ") + net + (j.note ? " / " + j.note : "");
+    const net = j.tailscale ? fill(T["settings.phone.tailscale"], {ip: j.tailscale})
+              : j.lan ? fill(T["settings.phone.lan"], {ip: j.lan})
+              : T["settings.phone.none"];
+    const head = j.running ? T["settings.phone.listening"] : T["settings.phone.stopped"];
+    status.textContent = head + " — " + net + (j.note ? " / " + j.note : "");
     status.style.color = j.running ? "var(--accent)" : "var(--muted)";
     qrbox.textContent = "";
     if (j.running && j.url) {
       // 画像は fetch ではなく直接読み込まれるので、認証はURLのtokenで渡す
       const img = el("img", {src:"/api/remote/qr?token=" + encodeURIComponent(TOKEN),
         style:"width:200px;height:200px;border-radius:8px;background:#fff;padding:6px"});
-      qrbox.append(el("div", {class:"hint"}, "スマホのカメラで読み取ってください"), img,
+      qrbox.append(el("div", {class:"hint"}, T["settings.phone.scan"]), img,
         el("div", {class:"hint mono", style:"word-break:break-all"}, j.url));
     }
   }
@@ -1252,54 +1273,54 @@ function aiSelect() {
   const s = el("select", {id:"aiengine"});
   const hint = () => document.getElementById("aihint");
   if (!aiEngines.length) {
-    s.append(el("option", {value:""}, "見つかりません")); s.disabled = true;
+    s.append(el("option", {value:""}, T["settings.ai_engine.none"])); s.disabled = true;
   } else {
-    s.append(el("option", {value:""}, "自動（見つかったものを使う）"));
+    s.append(el("option", {value:""}, T["settings.ai_engine.auto"]));
     for (const e of aiEngines) s.append(el("option", {value:e.id}, e.label));
   }
   s.value = current.ai_engine || "";
   s.addEventListener("change", () => { current.ai_engine = s.value; });
   setTimeout(() => { const h = hint(); if (h) h.textContent = aiEngines.length
-    ? "" : "Claude Code / Codex CLI / Gemini CLI のいずれかを入れると使えます"; }, 0);
+    ? "" : T["settings.ai_engine.missing"]; }, 0);
   return s;
 }
 
 function wsPane(ws) {
   const box = el("div");
-  box.append(card("ワークスペース",
-    row("名前", field(ws, "name", "名前", {grow:false, width:280,
+  box.append(card(T["settings.workspace"],
+    row(T["settings.workspace.name"], field(ws, "name", T["settings.workspace.name"], {grow:false, width:280,
         onInput:() => renderNav()})),
-    ws.file ? row("定義ファイル", el("span", {class:"hint mono"}, ws.file)) : null,
-    row("自動化", ...pathField(ws, "automation", "各タブの設定を使う", "dir",
-        "自動化フォルダを選んでください"),
-        el("span", {class:"hint"}, "このワークスペース共通"))));
+    ws.file ? row(T["settings.workspace.file"], el("span", {class:"hint mono"}, ws.file)) : null,
+    row(T["settings.tab.automation"], ...pathField(ws, "automation", T["settings.workspace.automation.hint"], "dir",
+        T["settings.tab.automation_dir.pick"]),
+        el("span", {class:"hint"}, T["settings.workspace.automation.hint"]))));
 
   if (!(ws.tabs || []).length) {
     const e = el("div", {class:"empty"},
-      el("div", {class:"big"}, "タブがありません"),
-      el("div", {}, "テンプレートから作ると簡単です"));
+      el("div", {class:"big"}, T["settings.template.empty"]),
+      el("div", {}, T["settings.template.hint"]));
     const bar = el("div", {class:"row", style:"justify-content:center"});
-    for (const [k, label] of [["single","Claude 1つ"],["review","実装＋レビュー往復"],
-                              ["ssh","SSH先のAI"],["docker","Dockerの中"],["wsl","WSLの中"]])
+    for (const [k, label] of [["single",T["settings.template.single"]],["review",T["settings.template.review"]],
+                              ["ssh",T["settings.template.ssh"]],["docker",T["settings.template.docker"]],["wsl",T["settings.template.wsl"]]])
       bar.append(el("button", {onclick:() => addTemplate(k)}, label));
     e.append(bar);
     box.append(e);
   }
   box.append(el("div", {class:"row"},
     el("button", {class:"danger", onclick:() => {
-      if (confirm(`ワークスペース「${ws.name}」を削除しますか？`)) {
+      if (confirm(fill(T["settings.workspace.delete_confirm"], {name: ws.name}))) {
         wss.splice(sel.ws, 1); sel = {ws:0, tab:null, global:true}; render();
       }
-    }}, "このワークスペースを削除")));
+    }}, T["settings.workspace.delete"])));
   return box;
 }
 
 const TEMPLATES = {
   single: [ {name:"Claude", command:"claude"} ],
-  review: [ {name:"実装", command:"claude"},
-            {name:"検査", id:"reviewer", command:"codex", depth:1, locked:true} ],
-  ssh:    [ {name:"サーバー", command:"ssh user@example.com", profile:"claude", auto_restart:true} ],
-  docker: [ {name:"コンテナ", command:"docker exec -it -w /app myapp bash", profile:"claude"} ],
+  review: [ {name:T["settings.template.tab.build"], command:"claude"},
+            {name:T["settings.template.tab.review"], id:"reviewer", command:"codex", depth:1, locked:true} ],
+  ssh:    [ {name:T["settings.template.tab.server"], command:"ssh user@example.com", profile:"claude", auto_restart:true} ],
+  docker: [ {name:T["settings.template.tab.container"], command:"docker exec -it -w /app myapp bash", profile:"claude"} ],
   wsl:    [ {name:"Ubuntu", command:"wsl -d Ubuntu --cd /home/me/proj -- bash", profile:"claude"} ],
 };
 function addTemplate(kind) {
@@ -1307,7 +1328,7 @@ function addTemplate(kind) {
   ws.tabs = (ws.tabs || []).concat(TEMPLATES[kind].map(x => newTab(x)));
   sel.tab = ws.tabs.length - TEMPLATES[kind].length;
   render();
-  msg("テンプレートを追加しました");
+  msg(T["settings.template.added"]);
 }
 
 function tabPane(ws, t) {
@@ -1315,28 +1336,28 @@ function tabPane(ws, t) {
   const kind = kindOf(t.command);
 
   // 基本: 名前とIDは identity なので隣に置く
-  box.append(card("基本",
-    row("表示名", field(t, "name", "例: 実装", {grow:false, width:280,
+  box.append(card(T["settings.tab.basic"],
+    row(T["settings.tab.name"], field(t, "name", T["settings.tab.name.ph"], {grow:false, width:280,
         onInput:() => renderNav()})),
-    row("自動化での呼び名", field(t, "id", "表示名をそのまま使う", {grow:false, width:280, mono:true}),
-        el("span", {class:"hint"}, "付けると表示名を変えても自動化が壊れません"))));
+    row(T["settings.tab.id"], field(t, "id", T["settings.tab.id.ph"], {grow:false, width:280, mono:true}),
+        el("span", {class:"hint"}, T["settings.tab.id.hint"]))));
 
   // 起動するもの
   const cmdRow = el("div", {class:"row"});
-  const cmdInput = field(t, "command", "例: claude", {mono:true, onInput:() => renderNav()});
+  const cmdInput = field(t, "command", T["settings.tab.command.ph"], {mono:true, onInput:() => renderNav()});
   cmdInput.setAttribute("list", "cmdlist");
   const detailBox = el("div");
   const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild)); };
-  cmdRow.append(el("label", {}, "種類"),
+  cmdRow.append(el("label", {}, T["settings.tab.kind"]),
     choose({k:kind}, "k", Object.entries(KIND_LABEL), v => {
       t.command = KIND_START[v] || ""; cmdInput.value = t.command; rebuild(); renderNav();
     }));
   rebuild();
-  box.append(card("起動するもの", cmdRow, detailBox,
-    row("コマンド", cmdInput),
-    row("作業フォルダ", ...pathField(t, "cwd", "アプリと同じ場所", "dir",
-        "作業フォルダを選んでください"),
-        el("span", {class:"hint"}, "AIはここのプロジェクトを見ます"))));
+  box.append(card(T["settings.tab.launch"], cmdRow, detailBox,
+    row(T["settings.tab.command"], cmdInput),
+    row(T["settings.tab.cwd"], ...pathField(t, "cwd", T["settings.tab.cwd.ph"], "dir",
+        T["settings.tab.cwd.pick"]),
+        el("span", {class:"hint"}, T["settings.tab.cwd.hint"]))));
 
   // 自動化: 何が設定済みか一覧で分かるようにする
   const ev = el("div", {class:"events"});
@@ -1344,39 +1365,39 @@ function tabPane(ws, t) {
     ev.append(el("div", {class:"event"},
       el("div", {class:"name"}, label, el("div", {class:"hint"}, hint)),
       el("span", {class:"state", id:"st-" + id}, "—"),
-      el("button", {class:"quiet", onclick:() => openAuto(ws, t, id)}, "編集")));
+      el("button", {class:"quiet", onclick:() => openAuto(ws, t, id)}, T["common.edit"])));
   }
-  box.append(card("自動化", ev));
+  box.append(card(T["settings.tab.automation"], ev));
   loadAutoStates(ws, t);
 
   // 詳細: めったに触らないものは畳む
   const det = el("details");
-  det.append(el("summary", {}, "詳細設定"));
+  det.append(el("summary", {}, T["settings.tab.details"]));
   det.append(
-    row("プロファイル", field(t, "profile", "自動判別", {grow:false, width:220}),
-        el("span", {class:"hint"}, "状態の検出ルール。SSH先のAIを指定するときに使う")),
-    row("自動化フォルダ", ...pathField(t, "automation", "自動", "dir",
-        "自動化フォルダを選んでください")),
-    row("文字コード", choose(t, "encoding",
-        [["","UTF-8（標準）"],["shift_jis","Shift_JIS"],["euc-jp","EUC-JP"]])),
-    row("スクロール行数", field(t, "scrollback", "5000", {type:"number", width:120, grow:false})),
-    el("div", {class:"row"}, el("label", {}, "動作"),
-       check(t, "locked", "入力をロックする"),
-       check(t, "auto_restart", "終了したら自動で再起動"),
-       check(t, "log", "セッションログを保存")),
-    el("div", {class:"row"}, el("label", {}, "並び順"),
-       el("button", {class:"quiet", onclick:() => moveTab(ws, -1)}, "↑ 上へ"),
-       el("button", {class:"quiet", onclick:() => moveTab(ws, 1)}, "↓ 下へ"),
-       el("button", {class:"quiet", onclick:() => { t.depth = Math.min((t.depth||0)+1, sel.tab); render(); }}, "→ 子にする"),
-       el("button", {class:"quiet", onclick:() => { t.depth = Math.max((t.depth||0)-1, 0); render(); }}, "← 親に戻す")));
+    row(T["settings.tab.profile"], field(t, "profile", T["settings.tab.profile.ph"], {grow:false, width:220}),
+        el("span", {class:"hint"}, T["settings.tab.profile.hint"])),
+    row(T["settings.tab.automation_dir"], ...pathField(t, "automation", T["settings.tab.automation_dir.ph"], "dir",
+        T["settings.tab.automation_dir.pick"])),
+    row(T["settings.tab.encoding"], choose(t, "encoding",
+        [["",T["settings.tab.encoding.utf8"]],["shift_jis","Shift_JIS"],["euc-jp","EUC-JP"]])),
+    row(T["settings.tab.scrollback"], field(t, "scrollback", "5000", {type:"number", width:120, grow:false})),
+    el("div", {class:"row"}, el("label", {}, T["settings.tab.behavior"]),
+       check(t, "locked", T["settings.tab.locked"]),
+       check(t, "auto_restart", T["settings.tab.auto_restart"]),
+       check(t, "log", T["settings.tab.log"])),
+    el("div", {class:"row"}, el("label", {}, T["settings.tab.order"]),
+       el("button", {class:"quiet", onclick:() => moveTab(ws, -1)}, T["settings.tab.move_up"]),
+       el("button", {class:"quiet", onclick:() => moveTab(ws, 1)}, T["settings.tab.move_down"]),
+       el("button", {class:"quiet", onclick:() => { t.depth = Math.min((t.depth||0)+1, sel.tab); render(); }}, T["settings.tab.indent"]),
+       el("button", {class:"quiet", onclick:() => { t.depth = Math.max((t.depth||0)-1, 0); render(); }}, T["settings.tab.outdent"])));
   box.append(el("div", {class:"card"}, det));
 
   box.append(el("div", {class:"row"},
     el("button", {class:"danger", onclick:() => {
-      if (confirm(`タブ「${t.name || "(無名)"}」を削除しますか？`)) {
+      if (confirm(fill(T["settings.tab.delete_confirm"], {name: t.name || T["settings.tab.unnamed"]}))) {
         ws.tabs.splice(sel.tab, 1); sel.tab = null; render();
       }
-    }}, "このタブを削除")));
+    }}, T["settings.tab.delete"])));
   return box;
 }
 
@@ -1403,75 +1424,75 @@ function kindPanel(t, cmdInput, rebuild) {
   };
   if (ssh) {
     const upd = sync(buildSsh, ssh);
-    box.append(el("div", {class:"row"}, ...f(ssh, "host", "接続先", "example.com", upd, 240),
-      el("label", {style:"width:auto"}, "ポート"),
+    box.append(el("div", {class:"row"}, ...f(ssh, "host", T["settings.ssh.host"], "example.com", upd, 240),
+      el("label", {style:"width:auto"}, T["settings.phone.port"]),
       (() => { const i = el("input", {type:"text", class:"mono", style:"width:70px"});
                i.value = ssh.port || ""; i.placeholder = "22";
                i.addEventListener("input", () => { ssh.port = i.value.trim(); upd(); }); return i; })(),
-      el("label", {style:"width:auto"}, "ユーザー"),
+      el("label", {style:"width:auto"}, T["settings.ssh.user"]),
       (() => { const i = el("input", {type:"text", class:"mono", style:"width:130px"});
                i.value = ssh.user || ""; i.placeholder = "root";
                i.addEventListener("input", () => { ssh.user = i.value.trim(); upd(); }); return i; })()));
-    const keyIn = el("input", {type:"text", class:"mono grow", placeholder:"省略時はパスワード入力"});
+    const keyIn = el("input", {type:"text", class:"mono grow", placeholder:T["settings.ssh.key.ph"]});
     keyIn.value = ssh.key || "";
     keyIn.addEventListener("input", () => { ssh.key = keyIn.value.trim(); upd(); });
-    box.append(el("div", {class:"row"}, el("label", {}, "鍵ファイル"), keyIn,
+    box.append(el("div", {class:"row"}, el("label", {}, T["settings.ssh.key"]), keyIn,
       el("button", {class:"quiet", onclick: async () => {
-        const p = await pickPath("key", "SSH鍵ファイルを選んでください", ssh.key);
+        const p = await pickPath("key", T["settings.ssh.key.pick"], ssh.key);
         if (p !== null) { ssh.key = p; keyIn.value = p; upd(); }
-      }}, "参照…")));
-    const adv = el("details"); adv.append(el("summary", {}, "接続の詳細"));
+      }}, T["common.browse"])));
+    const adv = el("details"); adv.append(el("summary", {}, T["settings.ssh.details"]));
     const fwd = el("input", {type:"text", class:"mono grow",
-      placeholder:"例: -L 8080:localhost:80（複数はカンマ区切り）"});
+      placeholder:T["settings.ssh.forward.ph"]});
     fwd.value = (ssh.forwards || []).join(", ");
     fwd.addEventListener("input", () => {
       ssh.forwards = fwd.value.split(",").map(s => s.trim()).filter(Boolean); upd(); });
-    adv.append(el("div", {class:"row"}, el("label", {}, "ポート転送"), fwd),
-      el("div", {class:"row"}, ...f(ssh, "jump", "踏み台", "gw.example.com", upd, 200),
-        ...f(ssh, "keepalive", "接続維持(秒)", "60", upd, 80)),
-      el("div", {class:"row"}, el("label", {}, "許可"),
+    adv.append(el("div", {class:"row"}, el("label", {}, T["settings.ssh.forward"]), fwd),
+      el("div", {class:"row"}, ...f(ssh, "jump", T["settings.ssh.jump"], "gw.example.com", upd, 200),
+        ...f(ssh, "keepalive", T["settings.ssh.keepalive"], "60", upd, 80)),
+      el("div", {class:"row"}, el("label", {}, T["settings.ssh.allow"]),
         (() => { const c = el("input", {type:"checkbox"}); c.checked = ssh.agent;
           c.addEventListener("change", () => { ssh.agent = c.checked; upd(); });
-          const l = el("label", {class:"check"}); l.append(c, document.createTextNode("鍵の転送 (-A)"));
+          const l = el("label", {class:"check"}); l.append(c, document.createTextNode(T["settings.ssh.agent"]));
           return l; })(),
         (() => { const c = el("input", {type:"checkbox"}); c.checked = ssh.x11;
           c.addEventListener("change", () => { ssh.x11 = c.checked; upd(); });
-          const l = el("label", {class:"check"}); l.append(c, document.createTextNode("画面転送 (-X)"));
+          const l = el("label", {class:"check"}); l.append(c, document.createTextNode(T["settings.ssh.x11"]));
           return l; })()));
     box.append(adv);
   } else if (dk || wsl) {
     const o = dk || wsl, upd = sync(dk ? buildDocker : buildWsl, o);
     box.append(el("div", {class:"row"},
-      ...(dk ? f(o, "container", "コンテナ名", "myapp", upd, 200)
-             : f(o, "distro", "ディストリ", "Ubuntu", upd, 200)),
-      ...f(o, "dir", "中のフォルダ", "/home/me/proj", upd, 220)));
+      ...(dk ? f(o, "container", T["settings.container.name"], "myapp", upd, 200)
+             : f(o, "distro", T["settings.container.distro"], "Ubuntu", upd, 200)),
+      ...f(o, "dir", T["settings.container.dir"], "/home/me/proj", upd, 220)));
     box.append(el("div", {class:"row"},
-      ...f(o, "shell", "実行するもの", "bash / claude", upd, 220),
-      el("span", {class:"hint"}, "コンテナ/WSLの中のフォルダはここで指定します")));
+      ...f(o, "shell", T["settings.container.shell"], "bash / claude", upd, 220),
+      el("span", {class:"hint"}, T["settings.container.hint"])));
   } else {
     const s = el("select");
-    s.append(el("option", {value:""}, "よく使うものから選ぶ…"));
+    s.append(el("option", {value:""}, T["settings.tab.common.pick"]));
     for (const c of COMMON_COMMANDS) {
       const ok = c.check ? aiEngines.some(e => e.id === c.check) : true;
-      s.append(el("option", {value:c.cmd}, c.label + (c.check && !ok ? "（未インストール）" : "")));
+      s.append(el("option", {value:c.cmd}, c.label + (c.check && !ok ? T["settings.tab.common.missing"] : "")));
     }
     s.addEventListener("change", () => {
       if (!s.value) return;
       t.command = s.value; cmdInput.value = s.value; s.value = ""; renderNav();
     });
-    box.append(el("div", {class:"row"}, el("label", {}, "よく使うもの"), s));
+    box.append(el("div", {class:"row"}, el("label", {}, T["settings.tab.common"]), s));
   }
   return box;
 }
 
 // ── 自動化エディタ ───────────────────────────────────
 const EVENTS = [
-  ["on_start",    "起動したとき",           "作業フォルダへ移動して前回の続きを再開する等"],
-  ["on_done",     "応答が完了したとき",     "結果を他のタブへ渡す / 通知する"],
-  ["on_question", "確認を聞かれたとき",     "文字列を返すと自動送信、返さなければ人が判断"],
-  ["on_exit",     "終了したとき",           "切断されたら再接続する等"],
-  ["on_busy",     "応答が始まったとき",     "処理中に定期的に様子を見る（上級）"],
-  ["_shared",     "共通の下請け関数",       ""],
+  ["on_start",    T["automation.on_start"],           T["automation.on_start.hint"]],
+  ["on_done",     T["automation.on_done"],     T["automation.on_done.hint"]],
+  ["on_question", T["automation.on_question"],     T["automation.on_question.hint"]],
+  ["on_exit",     T["automation.on_exit"],           T["automation.on_exit.hint"]],
+  ["on_busy",     T["automation.on_busy"],     T["automation.on_busy.hint"]],
+  ["_shared",     T["automation._shared"],       ""],
 ];
 let autoTarget = null, autoData = {}, autoEvent = "on_done";
 
@@ -1494,14 +1515,15 @@ async function loadAutoStates(ws, t) {
     const s = document.getElementById("st-" + id);
     if (!s) continue;
     const on = (data[id] || "").trim().length > 0;
-    s.textContent = on ? "設定あり" : "未設定";
+    s.textContent = on ? T["automation.set"] : T["automation.unset"];
     s.className = "state" + (on ? " on" : "");
   }
 }
 
 async function openAuto(ws, t, event) {
   autoTarget = { ws, t, dir: autoDirOf(ws, t) };
-  document.getElementById("autotitle").textContent = "自動化 — " + (t.name || "無名タブ");
+  document.getElementById("autotitle").textContent =
+      fill(T["automation.editor.title"], {name: t.name || T["settings.tab.unnamed"]});
   document.getElementById("autopath").textContent = autoTarget.dir;
   const s = document.getElementById("autoevent");
   s.textContent = "";
@@ -1529,35 +1551,35 @@ async function saveAuto() {
   const r = await fetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
       {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
        body: JSON.stringify(autoData)});
-  if (!r.ok) return automsg("保存に失敗しました", true);
+  if (!r.ok) return automsg(T["automation.editor.save_failed"], true);
   const created = autoTarget.t.automation !== autoTarget.dir;
   autoTarget.t.automation = autoTarget.dir;
   closeAuto();
   loadAutoStates(autoTarget.ws, autoTarget.t);
-  msg(created ? "自動化を保存しました。「保存」も押してください" : "自動化を保存しました");
+  msg(created ? T["automation.editor.saved_new"] : T["automation.editor.saved"]);
 }
 
 async function askAi() {
   const want = document.getElementById("autoask").value.trim();
-  if (!want) return automsg("やりたいことを書いてください", true);
-  automsg("AIに問い合わせています…");
+  if (!want) return automsg(T["automation.editor.want"], true);
+  automsg(T["automation.editor.asking"]);
   const ws = autoTarget.ws;
   const r = await fetch("/api/generate", {method:"POST",
       headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
       body: JSON.stringify({event: autoEvent, prompt: want,
         engine: current.ai_engine || null,
-        tabs: (ws.tabs || []).map((x, i) => ({index:i+1, name:x.name || ("タブ"+(i+1)), id:x.id || ""})),
+        tabs: (ws.tabs || []).map((x, i) => ({index:i+1, name:x.name || fill(T["settings.tab.default_name"], {n: i+1}), id:x.id || ""})),
         self: (ws.tabs || []).indexOf(autoTarget.t) + 1})});
   const j = await r.json();
-  if (!j.ok) return automsg("生成できませんでした: " + j.error, true);
+  if (!j.ok) return automsg(fill(T["automation.editor.failed"], {error: j.error}), true);
   document.getElementById("aicode").textContent = j.code;
   document.getElementById("aipreview").style.display = "block";
-  automsg("内容を確認して「反映」を押してください");
+  automsg(T["automation.editor.check"]);
 }
 function applyAi() {
   document.getElementById("autocode").value = document.getElementById("aicode").textContent;
   document.getElementById("aipreview").style.display = "none";
-  automsg("反映しました（まだ保存されていません）");
+  automsg(T["automation.editor.applied"]);
 }
 function automsg(t, warn) { const m = document.getElementById("automsg");
   m.textContent = t; m.style.color = warn ? "var(--danger)" : "var(--muted)"; }
@@ -1621,7 +1643,7 @@ async function load() {
   }
   if (sel.ws >= wss.length) sel = {ws:0, tab:null, global:true};
   render();
-  msg("読み込みました");
+  msg(T["common.loaded"]);
 }
 
 async function save() {
@@ -1639,7 +1661,7 @@ async function save() {
     if (w.automation) body.automation = w.automation;
     const rf = await wsApi("POST", w.file, JSON.stringify(body, null, 2));
     const jf = await rf.json().catch(() => ({ok:false}));
-    if (!jf.ok) return msg(w.file + " の保存に失敗しました", true);
+    if (!jf.ok) return msg(fill(T["settings.file_save_failed"], {file: w.file}), true);
   }
   out.workspaces = wss.map(w => {
     const o = { name:w.name };
@@ -1649,7 +1671,7 @@ async function save() {
   });
   const r = await api("POST", JSON.stringify(out, null, 2));
   const j = await r.json();
-  msg(j.ok ? "保存しました" : "保存失敗: " + j.error, !j.ok);
+  msg(j.ok ? T["common.saved"] : fill(T["settings.save_failed"], {error: j.error}), !j.ok);
 }
 
 load();
@@ -1658,7 +1680,7 @@ load();
 
 /// マニュアル表示ページ (Markdownの必要な部分だけを描画する簡易レンダラ)
 const HELP_PAGE: &str = r##"<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><title>自動化の書き方</title>
+<html lang="{{__lang__}}"><head><meta charset="utf-8"><title>{{help.page.title}}</title>
 <style>
  :root { color-scheme: dark; }
  body { background:#05080a; color:#c8f7c0; font-family:"Consolas","Meiryo",monospace;
@@ -1729,10 +1751,39 @@ mod tests {
 
     #[test]
     fn manual_is_embedded_and_usable() {
-        // どこから起動してもAIに渡す仕様書が手に入ること
-        assert!(EMBEDDED_MANUAL.contains("shikisha.send_to_tab"));
+        // どこから起動してもAIに渡す仕様書が手に入ること (言語を問わず)
+        for (code, text) in EMBEDDED_MANUALS {
+            assert!(text.contains("shikisha.send_to_tab"), "{code} の仕様書が空");
+        }
         let m = load_manual(std::path::Path::new("/nonexistent/config.json"));
         assert!(m.contains("shikisha."), "埋め込みにフォールバックする");
+    }
+
+    /// 画面に `{{key}}` や `__DICT__` がそのまま出ていないこと。
+    /// 差し込み忘れは実行して初めて気づくので、ここで止める
+    #[test]
+    fn pages_are_fully_rendered() {
+        for (name, page) in [("PAGE", PAGE), ("HELP_PAGE", HELP_PAGE)] {
+            let html = crate::i18n::render(page)
+                .replace("__TOKEN__", "t")
+                .replace("__DICT__", "{}")
+                .replace("__MD__", "\"\"");
+            assert!(!html.contains("{{"), "{name} に未置換の {{{{key}}}} が残っている");
+            assert!(!html.contains("__"), "{name} に未置換のプレースホルダが残っている");
+            assert!(html.contains("<html lang=\"en\">"), "{name} の lang 属性");
+        }
+    }
+
+    /// JSから引くキーがすべて辞書にあること (T["..."] が undefined にならない)
+    #[test]
+    fn page_script_only_uses_known_keys() {
+        let en: serde_json::Value = serde_json::from_str(include_str!("../lang/en.json")).unwrap();
+        let mut rest = PAGE;
+        while let Some(i) = rest.find("T[\"") {
+            rest = &rest[i + 3..];
+            let key = &rest[..rest.find('"').unwrap()];
+            assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
+        }
     }
 
     #[test]
@@ -1759,7 +1810,7 @@ mod tests {
         // 名前で指示できるよう、番号と名前の対応をAIに渡す
         assert!(s.contains("1. 実装"), "{s}");
         assert!(s.contains("2. 検査"), "{s}");
-        assert!(s.contains("← このスクリプトが動くタブ"), "{s}");
+        assert!(s.contains("this script runs in"), "{s}");
         // タブ情報が無いときは何も足さない
         assert_eq!(describe_tabs(&serde_json::json!({})), "");
     }

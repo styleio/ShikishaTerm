@@ -1,195 +1,199 @@
-# 自動化リファレンス
+# Automation reference
 
-タブの状態が変わったときに、自動でなにかを実行する仕組みです。
-書き方はLuaという小さなスクリプト言語ですが、必要なのは数行だけです。
+A way to run something automatically when a tab changes state.
+It is written in Lua, a small scripting language, but a few lines is all you need.
 
-このドキュメントは**人間向けの説明**であると同時に、
-設定画面の「AIに書いてもらう」機能がAIへ渡す**仕様書**でもあります。
+This document is both an **explanation for humans** and the **specification** that the
+"let an AI write it" button in the settings screen hands to the AI.
+
+Translations live next to this file as `docs/AUTOMATION.<code>.md` (for example
+`docs/AUTOMATION.ja.md`) and are picked automatically from your language setting.
 
 ---
 
-## 1. いつ実行されるか（イベント）
+## 1. When it runs (events)
 
-自動化フォルダの中に、イベント名のファイルを置くと、その瞬間に実行されます。
-必要なものだけ置けば構いません。
+Put a file named after an event into the automation folder and it runs at that moment.
+Only add the ones you need.
 
-| ファイル名 | いつ動くか |
+| File name | When it runs |
 |---|---|
-| `on_start.lua` | タブが起動した直後 |
-| `on_done.lua` | AIの応答が完了したとき |
-| `on_question.lua` | AIが確認・選択肢を出してきたとき |
-| `on_exit.lua` | セッションが終了したとき（切断・クラッシュを含む） |
-| `on_busy.lua` | 応答が始まったとき（上級者向け） |
-| `_shared.lua` | 上記より先に読まれる。共通の下請け関数を置く場所 |
+| `on_start.lua` | Right after the tab starts |
+| `on_done.lua` | When the AI has finished answering |
+| `on_question.lua` | When the AI asks something or offers choices |
+| `on_exit.lua` | When the session ends (including disconnects and crashes) |
+| `on_busy.lua` | When an answer starts (advanced) |
+| `_shared.lua` | Loaded before all of the above. Put shared helper functions here |
 
-ファイルの中身は**処理の本体だけ**を書きます。`function ... end` は不要です。
+Write **only the body** of the work in the file. No `function ... end` wrapper.
 
 ```lua
--- on_done.lua の例
-shikisha.send_to_tab(2, "このコードをレビューして:\n" .. tab.output)
+-- example of on_done.lua
+shikisha.send_to_tab(2, "Please review this code:\n" .. tab.output)
 ```
 
 ---
 
-## 2. 使える変数
+## 2. Variables you can use
 
-どのイベントでも `tab` が使えます。
+`tab` is available in every event.
 
-| 変数 | 内容 |
+| Variable | Contents |
 |---|---|
-| `tab.index` | タブ番号（1から） |
-| `tab.name` | タブ名 |
-| `tab.output` | **直前の応答テキスト**（過去の履歴は含まれない） |
+| `tab.index` | Tab number (starting at 1) |
+| `tab.name` | Tab name |
+| `tab.output` | **The latest response text** (no earlier history) |
 | `tab.state` | `"BUSY"` / `"DONE"` / `"QUESTION"` / `"WAIT"` / `"EXIT"` |
-| `tab.profile` | 適用中のプロファイル名 |
-| `tab.chain_depth` | 自動転送が何回連鎖したか。**0なら人間が始めた会話** |
-| `tab.locked` | 入力ロック中かどうか |
+| `tab.profile` | Name of the profile in effect |
+| `tab.chain_depth` | How many times this was handed on automatically. **0 means a human started it** |
+| `tab.locked` | Whether input is locked |
 
-`on_question.lua` だけ、2つめの変数 `screen` に画面テキスト全体が入ります。
+Only `on_question.lua` gets a second variable, `screen`, holding the whole screen text.
 
 ---
 
-## 3. 使える命令
+## 3. Commands you can use
 
-### タブの指し方
+### How to point at a tab
 
-番号は**並べ替えると変わる**ので、名前で指すのが基本です。
+Numbers **change when you reorder tabs**, so pointing by name is the default.
 
 ```lua
-shikisha.send_to_tab("検査", "レビューして")   -- 推奨
-shikisha.send_to_tab(2, "レビューして")        -- 番号でも可（並べ替えで変わる）
+shikisha.send_to_tab("Review", "please review")   -- recommended
+shikisha.send_to_tab(2, "please review")          -- numbers work too (they shift on reorder)
 ```
 
-タブ名を変える予定がある場合や、**同じ名前のタブが複数ある**場合は、
-設定の「自動化での呼び名」（`id`）を付けてください。IDを付けると、
-タブ名を自由に変えても自動化は壊れません。
+If you plan to rename a tab, or if **several tabs share a name**, give it an
+"automation name" (`id`) in the settings. With an id you can rename the tab freely
+and the automation keeps working.
 
 ```jsonc
-{ "name": "検査", "id": "reviewer", "command": "codex" }
+{ "name": "Review", "id": "reviewer", "command": "codex" }
 ```
 
 ```lua
-shikisha.send_to_tab("reviewer", "レビューして")   -- 名前を変えても有効
+shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
 ```
 
-| 命令 | 説明 |
+| Command | Description |
 |---|---|
-| `shikisha.send_to_tab(タブ, "文字列")` | 他のタブへ送信して実行させる（自動チェーン+1） |
-| `shikisha.send(tab, "文字列")` | そのタブへキー入力を送る（改行は `\r`） |
-| `shikisha.wait(tab, "正規表現", ミリ秒)` | 画面にその文字が出るまで待つ。出たら `true` |
-| `shikisha.sleep(ミリ秒)` | 待つ（待っている間も他のタブは動きます） |
-| `shikisha.state(tab)` | **今の**状態を読む（ループの終了条件に使う） |
-| `shikisha.wait_state(tab, "DONE", ミリ秒)` | その状態になるまで待つ |
-| `shikisha.notify("宛先", "文字列")` | Slack / Telegram へ通知（設定済みの宛先のみ） |
-| `shikisha.restart(tab)` | そのタブを再起動する |
-| `shikisha.log("文字列")` | `logs/hooks.log` に記録 |
-| `shikisha.get_var("キー")` / `shikisha.set_var("キー", 値)` | 記憶しておける変数。ワークスペース内で共有 |
+| `shikisha.send_to_tab(tab, "text")` | Send to another tab and let it run (automatic chain +1) |
+| `shikisha.send(tab, "text")` | Send keystrokes to that tab (newline is `\r`) |
+| `shikisha.wait(tab, "pattern", ms)` | Wait until the text appears on screen; `true` if it did |
+| `shikisha.sleep(ms)` | Wait (other tabs keep running while you wait) |
+| `shikisha.state(tab)` | Read the state **right now** (use this as a loop condition) |
+| `shikisha.wait_state(tab, "DONE", ms)` | Wait until it reaches that state |
+| `shikisha.notify("target", "text")` | Notify Slack / Telegram (only configured targets) |
+| `shikisha.restart(tab)` | Restart that tab |
+| `shikisha.log("text")` | Record in `logs/hooks.log` |
+| `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared inside the workspace |
 
-`on_question.lua` で**文字列を返す**と、それが自動的に送信されます。
-`nil` を返す（または何も返さない）と、人間の判断待ちになります。
+If `on_question.lua` **returns a string**, that string is sent automatically.
+Returning `nil` (or nothing) leaves the decision to the human.
 
 ---
 
-## 4. よくある例
+## 4. Common examples
 
-### 起動しただけで前日の作業を再開する（on_start.lua）
+### Resume yesterday's work just by starting (on_start.lua)
 
 ```lua
 if not shikisha.wait(tab, "%$ $", 15000) then return end
 shikisha.send(tab, "cd /srv/myproj\r")
 shikisha.wait(tab, "%$ $", 5000)
-shikisha.send(tab, "claude --continue\r")   -- 直前の会話をそのまま再開する
+shikisha.send(tab, "claude --continue\r")   -- pick the previous conversation back up
 ```
 
-過去の会話を選んで再開したい場合は `claude --resume` を使います。
-一覧が出るので、そこから選ぶ操作も自動化できます:
+To choose which past conversation to resume, use `claude --resume`. It shows a list,
+and picking from that list can be automated too:
 
 ```lua
 shikisha.send(tab, "claude --resume\r")
 if shikisha.wait(tab, "[Ss]elect", 8000) then
-  shikisha.send(tab, "\r")     -- 一番上のセッションを選ぶ
+  shikisha.send(tab, "\r")     -- choose the topmost session
 end
 ```
 
-### 危険な確認だけ人間に回して、あとは自動で承認（on_question.lua）
+### Approve automatically, but hand risky questions to a human (on_question.lua)
 
 ```lua
-if screen:match("削除") or screen:match("rm %-rf") then
-  return nil          -- 人間に任せる
+if screen:match("delete") or screen:match("rm %-rf") then
+  return nil          -- leave it to the human
 end
-return "1\r"          -- 選択肢1を選ぶ
+return "1\r"          -- pick choice 1
 ```
 
-### AとBでレビューを往復させ、5回で打ち切る（on_done.lua）
+### Bounce a review between A and B, stopping after 5 rounds (on_done.lua)
 
 ```lua
--- 人間が直接指示したときは反応しない
+-- do nothing when a human gave the instruction directly
 if tab.chain_depth == 0 then return end
 
 local rounds = shikisha.get_var("rounds") or 0
 if tab.output:match("LGTM") or rounds >= 5 then
-  shikisha.notify("slack", "レビュー完了（" .. rounds .. "往復）")
-  return                                   -- 何もしない = ループ終了
+  shikisha.notify("slack", "Review finished (" .. rounds .. " rounds)")
+  return                                   -- doing nothing = the loop ends
 end
 shikisha.set_var("rounds", rounds + 1)
-shikisha.send_to_tab(1, "指摘を修正して:\n" .. tab.output)
+shikisha.send_to_tab(1, "Please fix these points:\n" .. tab.output)
 ```
 
-### 切断されたら自動で再接続する（on_exit.lua）
+### Reconnect automatically after a disconnect (on_exit.lua)
 
 ```lua
 local n = (shikisha.get_var("retry") or 0) + 1
 if n > 5 then
-  shikisha.notify("slack", tab.name .. " が繰り返し落ちています")
+  shikisha.notify("slack", tab.name .. " keeps dying")
   return
 end
 shikisha.set_var("retry", n)
 shikisha.sleep(2000)
-shikisha.restart(tab)      -- 再起動後は on_start がもう一度動く
+shikisha.restart(tab)      -- after the restart, on_start runs again
 ```
 
-### 定期的に様子を見る（on_busy.lua）
+### Check in periodically (on_busy.lua)
 
-`sleep` で待っている間も画面や他のタブは止まりません。間隔は自分で決められます。
+The screen and the other tabs keep running while you `sleep`. You choose the interval.
 
 ```lua
--- 処理中の間だけ、30秒おきに記録する
+-- while it is working, record every 30 seconds
 while shikisha.state(tab) == "BUSY" do
   shikisha.sleep(30000)
-  shikisha.log(tab.name .. " はまだ処理中")
+  shikisha.log(tab.name .. " is still working")
 end
 ```
 
-`tab.state` は**呼ばれた瞬間の**状態なので、ループの条件には
-`shikisha.state(tab)`（今の状態）を使ってください。
-タブが終了・再起動すると、待機中のループは自動で破棄されます。
+`tab.state` is the state **at the moment you were called**, so use
+`shikisha.state(tab)` (the state right now) as the loop condition.
+When a tab exits or restarts, waiting loops are discarded automatically.
 
-### 完了したらSlackに通知するだけ（on_done.lua）
+### Just notify Slack when it is done (on_done.lua)
 
 ```lua
-shikisha.notify("slack", tab.name .. " が完了しました:\n" .. tab.output)
+shikisha.notify("slack", tab.name .. " finished:\n" .. tab.output)
 ```
 
 ---
 
-## 5. 安全のしくみ
+## 5. Safety mechanisms
 
-自動化が暴走しないよう、いくつもの歯止めがあります。
+Several brakes keep automation from running away.
 
-- **自動チェーン上限** … AI同士の自動転送が続いた回数を数え、上限（既定10回）で止まります。
-  人間が手で入力すると0に戻ります
-- **手動操作の優先** … 人間が触った直後5秒は自動送信されません
-- **緊急停止** … `Ctrl+B x` で全自動化を即停止、`Ctrl+B a` でON/OFF
-- **入力ロック** … 中間タブを🔒にしておけば、人間が誤って指示を出せません
-- **サンドボックス** … 自動化からはファイル操作もインターネット接続も**既定ではできません**。
-  通知先も、設定に登録済みのSlack / Telegramにしか送れません
+- **Automatic chain limit** … the number of consecutive automatic hand-offs between AIs is
+  counted and stops at the limit (10 by default). Typing something yourself resets it to 0
+- **Manual work wins** … nothing is sent automatically for 5 seconds after you touch a tab
+- **Emergency stop** … `Ctrl+B x` halts all automation at once, `Ctrl+B a` toggles it
+- **Input lock** … put 🔒 on the middle tabs so nobody instructs them by mistake
+- **Sandbox** … automation can **neither touch files nor reach the internet by default**.
+  Notifications only go to the Slack / Telegram targets you registered
 
 ---
 
-## 7. ファイル・通信を使う（上級者向け・既定は無効）
+## 6. Files and network access (advanced, off by default)
 
-必要な場合だけ、`config.json` に「窓口」を登録すると使えるようになります。
-設定画面からは編集できません（影響が大きいため、ファイルを直接編集する人だけの機能です）。
+When you really need it, register a "gateway" in `config.json` and it becomes available.
+It cannot be edited from the settings screen (the impact is large, so it is only for
+people who edit the file directly).
 
 ```jsonc
 "capabilities": {
@@ -209,21 +213,22 @@ shikisha.notify("slack", tab.name .. " が完了しました:\n" .. tab.output)
 ```lua
 shikisha.write_file("reports", "review.md", tab.output)
 local prev = shikisha.read_file("reports", "review.md")
-shikisha.http("github-issue", '{"title":"指摘","body":"..."}')
+shikisha.http("github-issue", '{"title":"Findings","body":"..."}')
 ```
 
-| 命令 | 説明 |
+| Command | Description |
 |---|---|
-| `shikisha.write_file(窓口, ファイル名, 文字列)` | 登録済みフォルダへ書き込む |
-| `shikisha.read_file(窓口, ファイル名)` | 登録済みフォルダから読む |
-| `shikisha.http(窓口, 本文)` | 登録済みURLへ送信（認証はアプリが付与） |
+| `shikisha.write_file(gateway, filename, text)` | Write into a registered folder |
+| `shikisha.read_file(gateway, filename)` | Read from a registered folder |
+| `shikisha.http(gateway, body)` | Send to a registered URL (the app adds the credentials) |
 
-**この方式の安全性**: スクリプトはパスもURLも組み立てられず、登録済みの名前しか
-呼べません。認証トークンはスクリプトから見えず、アプリが付与します。
-`config.json` / `secrets.json` / `.env` / `.lua` ファイルは、許可フォルダ内にあっても
-常に読み書きできません。
+**Why this is safe**: scripts cannot assemble paths or URLs — they can only call registered
+names. Auth tokens are invisible to scripts; the app attaches them.
+`config.json`, `secrets.json`, `.env` and `.lua` files can never be read or written, even
+when they sit inside an allowed folder.
 
-さらに自由度が必要なら、生パス・生URLも使えます（**既定は空＝全拒否**）:
+If you need more freedom, raw paths and raw URLs are available too (**empty by default =
+everything denied**):
 
 ```jsonc
 "capabilities": {
@@ -237,17 +242,17 @@ shikisha.write_path("reports/a.md", "text")
 shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
 ```
 
-接続先はホスト名の**完全一致**で照合し、`https` のみ許可されます
-（`api.example.com.evil.com` のようなすり抜けは弾かれます）。
-ファイル・通信は必ず `logs/hooks.log` に記録されます。
+Hosts are matched **exactly** and only `https` is allowed
+(tricks like `api.example.com.evil.com` are rejected).
+Every file and network operation is recorded in `logs/hooks.log`.
 
 ---
 
-## 6. 書き方のこつ
+## 7. Tips for writing it
 
-- **文字の連結は `..`** です（`+` ではありません）
-- **`tab.output` は直前の応答だけ**が入ります。過去の会話は含まれません
-- **正規表現はLua独自**です。`%d`（数字）、`%s`（空白）、`.-`（最短一致）など。
-  `\d` ではなく `%d` と書きます
-- **何もしたくないときは `return`** と書けば、その場で終わります
-- 迷ったら `shikisha.log()` を仕込んで `logs/hooks.log` を見てください
+- **Join strings with `..`** (not `+`)
+- **`tab.output` holds only the latest response**, never the earlier conversation
+- **Lua patterns are their own thing**: `%d` (digit), `%s` (space), `.-` (shortest match).
+  Write `%d`, not `\d`
+- **When you want to do nothing, write `return`** and it stops right there
+- If you get lost, sprinkle `shikisha.log()` and read `logs/hooks.log`

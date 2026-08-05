@@ -73,6 +73,7 @@ workspaces/            ワークスペース定義（プロジェクト単位で
 profiles/              AIごとの状態検出ルール
 scripts/               自動化スクリプト
 logs/                  セッションログ・自動化のログ
+lang/                  表示言語のファイル (en.json が基本、ja.json などで上書き)
 docs/AUTOMATION.md     自動化の書き方
 ```
 
@@ -80,8 +81,18 @@ docs/AUTOMATION.md     自動化の書き方
 
 ## ドキュメント
 
-- [自動化リファレンス](docs/AUTOMATION.md) — 設定画面の「書き方を見る」からも開けます
+- [自動化リファレンス](docs/AUTOMATION.ja.md) — 設定画面の「書き方を見る」からも開けます
 - [設計書](DESIGN.md) — 用語・アーキテクチャ・安全設計
+- [翻訳の手引き](docs/TRANSLATING.md) — 言語を追加したい方へ
+
+## 表示言語
+
+既定ではWindowsの言語設定に従い、対応する翻訳が無ければ英語になります。
+設定画面、または `config.json` の `"language"` で切り替えられます。
+
+`lang/en.json` をコピーして `lang/<コード>.json` を作れば、それだけで新しい言語が増えます。
+訳し漏れたキーは英語で表示されるので、途中まででも動きます
+（詳しくは [docs/TRANSLATING.md](docs/TRANSLATING.md)）。
 
 ## ビルド
 

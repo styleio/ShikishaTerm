@@ -51,6 +51,9 @@ pub struct Config {
     /// スマホ等から見るリモートUI。既定は無効
     #[serde(default)]
     pub remote: RemoteSpec,
+    /// 表示言語 ("ja" 等)。省略時はOSの設定に従う
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 /// リモートUIの設定。遠隔からAIを操作できる機能なので既定はオフ

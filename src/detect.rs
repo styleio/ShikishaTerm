@@ -21,6 +21,7 @@ pub enum TabState {
 }
 
 impl TabState {
+    /// 内部用の不変な名前 (ログ・自動化・リモートUIの判定に使う)
     pub fn label(&self) -> &'static str {
         match self {
             TabState::Busy => "BUSY",
@@ -29,6 +30,17 @@ impl TabState {
             TabState::Wait => "WAIT",
             TabState::Exited => "EXIT",
         }
+    }
+
+    /// 画面に出す名前 (翻訳される)
+    pub fn display(&self) -> String {
+        crate::i18n::t(match self {
+            TabState::Busy => "state.busy",
+            TabState::Done => "state.done",
+            TabState::Question => "state.question",
+            TabState::Wait => "state.wait",
+            TabState::Exited => "state.exit",
+        })
     }
 }
 

@@ -16,6 +16,7 @@ mod config;
 mod crypto;
 mod detect;
 mod hooks;
+mod i18n;
 mod netaddr;
 mod notify;
 mod profile;
@@ -81,14 +82,19 @@ fn install_crash_log() {
 
 fn main() -> Result<()> {
     install_crash_log();
+    // 表示言語を決める (設定 → OS の順。翻訳が無ければ英語)
+    i18n::init(
+        config::load().and_then(|c| c.language).as_deref(),
+        &[config_file_dir(), std::path::PathBuf::from(".")],
+    );
     // 設定だけ開くモード (TUIを起動せずブラウザで設定を編集する)
     if std::env::args().nth(1).as_deref() == Some("--settings") {
         // 本体が動いていなくてもQRを出せる (接続先は設定から都度組み立てる)
         let info = Arc::new(Mutex::new(webui::RemoteInfo::default()));
         let web = webui::WebUi::start_with(config::config_file_path(), info)?;
-        println!("設定GUI: {}", web.url);
+        println!("{}", i18n::tp("msg.settings_opened", &[("url", &web.url)]));
         open_browser(&web.url);
-        println!("Enterキーで終了します...");
+        println!("{}", i18n::t("msg.settings_wait"));
         let mut line = String::new();
         let _ = std::io::stdin().read_line(&mut line);
         web.shutdown();
@@ -157,7 +163,7 @@ fn truncate_width(s: &str, max: u16) -> String {
 /// セッション見出しの文言と、その中で錠アイコンが始まる表示位置。
 /// 描画とクリック判定の両方で使い、位置ズレが起きないようにする
 fn session_title(t: &Tab) -> (String, String, u16) {
-    let head = format!(" SESSION :: {} ", t.title);
+    let head = format!(" {} :: {} ", i18n::t("tui.session"), t.title);
     let offset = head.width() as u16;
     let lock = if t.locked {
         "🔒 LOCKED ".to_string()
@@ -226,7 +232,7 @@ fn prompt_password(
                 ]),
                 Line::default(),
                 Line::from(Span::styled(
-                    "  Enter: 確定 / Esc: キャンセル",
+                    format!("  {}", i18n::t("prompt.password.keys")),
                     Style::default().fg(Color::DarkGray),
                 )),
             ];
@@ -261,17 +267,22 @@ fn manage_master_password(
     password: &mut Option<String>,
 ) -> Result<String> {
     let Some(path) = cfg.and_then(|c| c.secrets_path()) else {
-        return Ok(">> secretsファイルが未設定です (config.jsonの \"secrets\")".into());
+        return Ok(i18n::t("msg.password.no_secrets"));
     };
     if !path.exists() {
-        return Ok(format!(">> {} が見つかりません", path.display()));
+        return Ok(i18n::tp("msg.password.missing", &[("path", &path.display().to_string())]));
     }
     let text = std::fs::read_to_string(&path)?;
 
     if crypto::is_encrypted(&text) {
         // 変更 or 解除
-        let Some(old) = prompt_password(terminal, "現在のマスターパスワード", "変更するには現在のパスワードが必要です")? else {
-            return Ok(">> キャンセルしました".into());
+        let Some(old) = prompt_password(
+            terminal,
+            &i18n::t("prompt.password.current"),
+            &i18n::t("prompt.password.current_note"),
+        )?
+        else {
+            return Ok(i18n::t("msg.password.cancelled"));
         };
         let env: crypto::Envelope = serde_json::from_str(&text)?;
         let plain = match crypto::decrypt(&env, &old) {
@@ -280,42 +291,42 @@ fn manage_master_password(
         };
         let Some(new) = prompt_password(
             terminal,
-            "新しいマスターパスワード",
-            "空のまま Enter で暗号化を解除します (自己責任)",
+            &i18n::t("prompt.password.new"),
+            &i18n::t("prompt.password.new_note"),
         )? else {
-            return Ok(">> キャンセルしました".into());
+            return Ok(i18n::t("msg.password.cancelled"));
         };
         if new.is_empty() {
             crypto::write_atomic(&path, &plain)?;
             *password = None;
-            return Ok(">> 暗号化を解除しました (平文保存になりました)".into());
+            return Ok(i18n::t("msg.password.removed"));
         }
-        let confirm = prompt_password(terminal, "確認のためもう一度", "")?;
+        let confirm = prompt_password(terminal, &i18n::t("prompt.password.confirm"), "")?;
         if confirm.as_deref() != Some(new.as_str()) {
-            return Ok(">> パスワードが一致しません".into());
+            return Ok(i18n::t("msg.password.mismatch"));
         }
         crypto::write_atomic(&path, &serde_json::to_string_pretty(&crypto::encrypt(&plain, &new)?)?)?;
         *password = Some(new);
-        Ok(">> マスターパスワードを変更しました".into())
+        Ok(i18n::t("msg.password.changed"))
     } else {
         // 新規設定
         let Some(new) = prompt_password(
             terminal,
-            "マスターパスワードを設定",
-            "secretsファイルを暗号化します (Argon2id + AES-GCM)",
+            &i18n::t("prompt.password.set"),
+            &i18n::t("prompt.password.set_note"),
         )? else {
-            return Ok(">> キャンセルしました".into());
+            return Ok(i18n::t("msg.password.cancelled"));
         };
         if new.is_empty() {
-            return Ok(">> 空のパスワードは設定できません".into());
+            return Ok(i18n::t("msg.password.empty"));
         }
-        let confirm = prompt_password(terminal, "確認のためもう一度", "")?;
+        let confirm = prompt_password(terminal, &i18n::t("prompt.password.confirm"), "")?;
         if confirm.as_deref() != Some(new.as_str()) {
-            return Ok(">> パスワードが一致しません".into());
+            return Ok(i18n::t("msg.password.mismatch"));
         }
         crypto::encrypt_file(&path, &new)?;
         *password = Some(new);
-        Ok(">> secretsを暗号化しました".into())
+        Ok(i18n::t("msg.password.encrypted"))
     }
 }
 
@@ -391,11 +402,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         {
             for attempt in 1..=3 {
                 let note = if attempt == 1 {
-                    "secrets が暗号化されています"
+                    i18n::t("prompt.password.note")
                 } else {
-                    "パスワードが違います。もう一度入力してください"
+                    i18n::t("prompt.password.retry")
                 };
-                match prompt_password(terminal, "マスターパスワード", note)? {
+                match prompt_password(terminal, &i18n::t("prompt.password.title"), &note)? {
                     Some(pw) => {
                         let ok = std::fs::read_to_string(&path)
                             .ok()
@@ -410,7 +421,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     // キャンセル時は秘密情報なしで続行 (通知だけが使えない)
                     None => {
                         startup_errors
-                            .push("secretsを復号せずに起動しました (通知は使えません)".into());
+                            .push(i18n::t("prompt.password.skipped"));
                         break;
                     }
                 }
@@ -454,7 +465,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     // 0 = INDEX、1.. = セッション。初回はINDEX(案内のある画面)から始める
     let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
     let mut prefix_active = false;
-    let mut flash: Option<String> = startup_errors.first().map(|e| format!(">> 起動失敗 {e}"));
+    let mut flash: Option<String> = startup_errors.first().map(|e| i18n::tp("msg.startup_failed", &[("error", e)]));
     let mut last_detect = Instant::now() - Duration::from_secs(1);
     // ワークスペースは仮想デスクトップ方式: 切替=非表示であって停止ではない。
     // 各ワークスペースのタブ群を保持し、初回アクティブ化時に起動する
@@ -490,7 +501,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     .iter()
                     .position(|w| Some(&w.name) == workspaces.get(ws_index).map(|w| &w.name))
                     .unwrap_or(0);
-                let mut msg = String::from("設定を再読み込みしました");
+                let mut msg = i18n::t("msg.config_reloaded");
                 if let Some(w) = new_ws.get(target) {
                     msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors);
                     ws_index = target;
@@ -544,9 +555,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     remote_ui = start_remote(Some(&newcfg), password.as_deref(), &mut startup_errors);
                     publish_remote(&remote_info, &remote_ui);
                     remote_changed = Some(if remote_ui.is_some() {
-                        "スマホからの接続を有効にしました (INDEXの [i] でQRコード)".to_string()
+                        i18n::t("msg.remote_enabled")
                     } else {
-                        "スマホからの接続を停止しました".to_string()
+                        i18n::t("msg.remote_stopped")
                     });
                 }
                 cfg = Some(newcfg);
@@ -707,10 +718,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     eng.cancel_all();
                                 }
                             }
-                            flash = Some(
-                                if on { ">> リモートから自動化を再開しました" }
-                                else { ">> リモートから自動化を停止しました" }.to_string(),
-                            );
+                            flash = Some(i18n::t(if on {
+                                "msg.remote_auto_on"
+                            } else {
+                                "msg.remote_auto_off"
+                            }));
                         }
                     }
                 }
@@ -722,9 +734,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     match t.restart(rows, cols) {
                         Ok(()) => {
                             append_hook_log(&format!("auto-restart tab{}", i + 1));
-                            flash = Some(format!(">> {} を自動再起動しました", t.title));
+                            flash = Some(i18n::tp("msg.restarted", &[("name", &t.title)]));
                         }
-                        Err(e) => flash = Some(format!(">> 再起動失敗: {e}")),
+                        Err(e) => flash = Some(i18n::tp("msg.restart_failed", &[("error", &e.to_string())])),
                     }
                 }
             }
@@ -818,8 +830,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             }
                             if let Some(t) = session_mut(&mut tabs, active) {
                                 flash = Some(match t.restart(rows, cols) {
-                                    Ok(()) => format!(">> {} を再起動しました", t.title),
-                                    Err(e) => format!(">> 再起動失敗: {e}"),
+                                    Ok(()) => i18n::tp("msg.restarted", &[("name", &t.title)]),
+                                    Err(e) => i18n::tp("msg.restart_failed", &[("error", &e.to_string())]),
                                 });
                             }
                         }
@@ -827,14 +839,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         KeyCode::Char('l') => {
                             if let Some(t) = session_mut(&mut tabs, active) {
                                 t.locked = !t.locked;
-                                flash = Some(
-                                    if t.locked {
-                                        ">> このタブをロックしました (Ctrl+B l で解除)"
-                                    } else {
-                                        ">> ロック解除"
-                                    }
-                                    .to_string(),
-                                );
+                                flash = Some(i18n::t(if t.locked {
+                                    "msg.lock_on"
+                                } else {
+                                    "msg.lock_off"
+                                }));
                             }
                         }
                         KeyCode::Char('w') => {
@@ -867,10 +876,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         // Ctrl+B a 自動化ON/OFF、Ctrl+B x 緊急停止
                         KeyCode::Char('a') => {
                             auto_enabled = !auto_enabled;
-                            flash = Some(
-                                if auto_enabled { ">> AUTO: ON" } else { ">> AUTO: OFF" }
-                                    .to_string(),
-                            );
+                            flash = Some(i18n::t(if auto_enabled {
+                                "msg.auto_on"
+                            } else {
+                                "msg.auto_off"
+                            }));
                         }
                         KeyCode::Char('x') => {
                             auto_enabled = false;
@@ -879,14 +889,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 eng.cancel_all();
                             }
                             flash =
-                                Some(">> EMERGENCY STOP: 全自動化停止 (Ctrl+B aで再開)".to_string());
+                                Some(i18n::t("msg.emergency_stop"));
                         }
                         // Ctrl+B c で最新キャプチャ応答をクリップボードへ
                         KeyCode::Char('c') => {
                             if let Some(t) = session_mut(&mut tabs, active) {
                                 flash = Some(match &t.last_response {
                                     Some(r) if !r.trim().is_empty() => copy_to_clipboard(r),
-                                    _ => ">> NO CAPTURED RESPONSE".to_string(),
+                                    _ => i18n::t("msg.no_response"),
                                 });
                             }
                         }
@@ -922,8 +932,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 qr_open = true;
                             } else {
                                 flash = Some(
-                                    ">> リモートUIは無効です (設定の remote.enabled で有効化)"
-                                        .to_string(),
+                                    i18n::t("msg.remote_disabled"),
                                 );
                             }
                         }
@@ -941,15 +950,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 }
                             }
                             flash = Some(if msgs.is_empty() {
-                                ">> 終了しているタブはありません".to_string()
+                                i18n::t("msg.restart_none")
                             } else {
-                                format!(">> 再起動: {}", msgs.join(", "))
+                                i18n::tp("msg.restarted_list", &[("names", &msgs.join(", "))])
                             });
                         }
                         // 通知先の疎通確認 (フックを待たずに設定を検証できる)
                         KeyCode::Char('t') => {
                             flash = Some(if notifier.is_empty() {
-                                ">> 通知先が未登録です (config.jsonの notify / secrets)".to_string()
+                                i18n::t("msg.notify_none")
                             } else {
                                 notifier.send_all("ShikishaTerm-AI: テスト通知")
                             });
@@ -967,16 +976,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             flash = Some(match web.as_ref() {
                                 Some(w) => {
                                     open_browser(&w.url);
-                                    format!(">> 設定GUI: {}", w.url)
+                                    i18n::tp("msg.settings_opened", &[("url", &w.url)])
                                 }
                                 None => match webui::WebUi::start_with(config_file.clone(), Arc::clone(&remote_info)) {
                                     Ok(w) => {
                                         open_browser(&w.url);
-                                        let msg = format!(">> 設定GUIを開きました: {}", w.url);
+                                        let msg = i18n::tp("msg.settings_opened", &[("url", &w.url)]);
                                         web = Some(w);
                                         msg
                                     }
-                                    Err(e) => format!(">> 設定GUI起動失敗: {e}"),
+                                    Err(e) => i18n::tp("msg.settings_failed", &[("error", &e.to_string())]),
                                 },
                             });
                         }
@@ -1003,7 +1012,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     }
                     if locked_hit {
                         flash = Some(
-                            ">> 🔒 ロック中です (Ctrl+B l または 🔒クリックで解除)".to_string(),
+                            i18n::t("msg.locked"),
                         );
                     }
                 }
@@ -1074,8 +1083,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     }
                     MouseEventKind::Up(MouseButton::Left) if dragging_divider => {
                         dragging_divider = false;
-                        flash = Some(format!(
-                            ">> タブバー幅: {tab_w} (config.jsonの \"tab_bar_width\" で固定できます)"
+                        flash = Some(i18n::tp(
+                            "msg.tabbar_width",
+                            &[("width", &tab_w.to_string())],
                         ));
                         continue;
                     }
@@ -1290,15 +1300,15 @@ fn apply_ws_config(
     }
     *tabs = ordered;
 
-    let mut parts = vec!["設定を再読み込みしました".to_string()];
+    let mut parts = vec![i18n::t("msg.config_reloaded")];
     if added > 0 {
-        parts.push(format!("追加{added}"));
+        parts.push(i18n::tp("msg.config_added", &[("n", &added.to_string())]));
     }
     if removed > 0 {
-        parts.push(format!("終了{removed}"));
+        parts.push(i18n::tp("msg.config_removed", &[("n", &removed.to_string())]));
     }
     if staged > 0 {
-        parts.push(format!("要再起動{staged} (Ctrl+B r)"));
+        parts.push(i18n::tp("msg.config_needs_restart", &[("n", &staged.to_string())]));
     }
     parts.join(" / ")
 }
@@ -1555,16 +1565,16 @@ fn exec_commands(
             Command::Log(msg) => append_hook_log(&msg),
             Command::Restart { target } => {
                 let Some(target) = index_of(&target) else {
-                    *flash = Some(format!(">> 自動化: タブ {target:?} が見つかりません"));
+                    *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
                     continue;
                 };
                 if let Some(t) = tabs.get_mut(target.wrapping_sub(1)) {
                     match t.restart(rows, cols) {
                         Ok(()) => {
                             append_hook_log(&format!("restart tab{target} (lua)"));
-                            *flash = Some(format!(">> {} を再起動しました", t.title));
+                            *flash = Some(i18n::tp("msg.restarted", &[("name", &t.title)]));
                         }
-                        Err(e) => *flash = Some(format!(">> 再起動失敗: {e}")),
+                        Err(e) => *flash = Some(i18n::tp("msg.restart_failed", &[("error", &e.to_string())])),
                     }
                 }
             }
@@ -1577,7 +1587,7 @@ fn exec_commands(
                     continue;
                 }
                 let Some(target) = index_of(&target) else {
-                    *flash = Some(format!(">> 自動化: タブ {target:?} が見つかりません"));
+                    *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
                     continue;
                 };
                 if let Some(t) = tabs.get(target.wrapping_sub(1)) {
@@ -1596,7 +1606,7 @@ fn exec_commands(
                     continue;
                 }
                 let Some(target) = index_of(&target) else {
-                    *flash = Some(format!(">> 自動化: タブ {target:?} が見つかりません"));
+                    *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
                     append_hook_log(&format!("送信先が見つかりません: {target:?}"));
                     continue;
                 };
@@ -1606,7 +1616,7 @@ fn exec_commands(
                     .unwrap_or(0)
                     + 1;
                 if depth > max_chain {
-                    *flash = Some(format!(">> 自動チェーン上限({max_chain})に達したため停止"));
+                    *flash = Some(i18n::tp("msg.chain_limit", &[("max", &max_chain.to_string())]));
                     append_hook_log(&format!("chain limit ({max_chain}): tab{origin} -> tab{target}"));
                     continue;
                 }
@@ -1614,7 +1624,7 @@ fn exec_commands(
                     continue;
                 };
                 if now_ms.saturating_sub(t.last_manual_ms) < MANUAL_GUARD_MS {
-                    *flash = Some(">> 手動操作中のため自動送信をスキップ".to_string());
+                    *flash = Some(i18n::t("msg.manual_guard"));
                     continue;
                 }
                 t.chain_depth = depth;
@@ -1742,14 +1752,11 @@ fn handle_mouse(
                 let lo = tab_w + 1 + offset;
                 if m.column >= lo && m.column < lo + lock.width() as u16 {
                     t.locked = !t.locked;
-                    *flash = Some(
-                        if t.locked {
-                            ">> 🔒 ロックしました (もう一度クリックで解除)"
-                        } else {
-                            ">> 🔓 ロックを解除しました"
-                        }
-                        .to_string(),
-                    );
+                    *flash = Some(i18n::t(if t.locked {
+                        "msg.lock_on"
+                    } else {
+                        "msg.lock_off"
+                    }));
                     return Ok(());
                 }
             }
@@ -1768,22 +1775,19 @@ fn handle_mouse(
                 // 終了したタブは ✖ インジケータのクリックで再起動
                 if t.state == TabState::Exited && m.column < 3 {
                     *flash = Some(match t.restart(rows, cols) {
-                        Ok(()) => format!(">> {} を再起動しました", t.title),
-                        Err(e) => format!(">> 再起動失敗: {e}"),
+                        Ok(()) => i18n::tp("msg.restarted", &[("name", &t.title)]),
+                        Err(e) => i18n::tp("msg.restart_failed", &[("error", &e.to_string())]),
                     });
                     return Ok(());
                 }
                 // 行末の🔒アイコン (右端の枠線1桁を除く2桁) でロック切替
                 if m.column >= tab_w.saturating_sub(3) {
                     t.locked = !t.locked;
-                    *flash = Some(
-                        if t.locked {
-                            ">> 🔒 ロックしました"
-                        } else {
-                            ">> ロック解除"
-                        }
-                        .to_string(),
-                    );
+                    *flash = Some(i18n::t(if t.locked {
+                        "msg.lock_on"
+                    } else {
+                        "msg.lock_off"
+                    }));
                     return Ok(());
                 }
             }
@@ -1849,7 +1853,7 @@ fn handle_mouse(
         }
         // ロック中タブでも閲覧・コピーはできる (右クリックのペーストのみ抑止)
         MouseEventKind::Down(MouseButton::Right) if t.locked => {
-            *flash = Some(">> 🔒 ロック中のためペーストできません".to_string());
+            *flash = Some(i18n::t("msg.locked_paste"));
         }
         // 左クリック: コピーモード開始 + その行から選択開始
         MouseEventKind::Down(MouseButton::Left) if in_pane => {
@@ -1981,7 +1985,7 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
         } else {
             Style::default().fg(NEON_BLUE)
         };
-        lines.push(Line::from(Span::styled("[≡] 0. INDEX", index_style)));
+        lines.push(Line::from(Span::styled(format!("[≡] 0. {}", i18n::t("tui.index")), index_style)));
         for (i, t) in tabs.iter().enumerate() {
             let (ind, ind_color) = indicator(t);
             let title_style = if ui.active == i + 1 {
@@ -2060,7 +2064,7 @@ fn draw_qr(f: &mut Frame, area: Rect, url: &str) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(NEON_YELLOW))
         .title(Span::styled(
-            " スマホから接続 ",
+            format!(" {} ", i18n::t("tui.qr.title")),
             Style::default().fg(Color::Black).bg(NEON_YELLOW),
         ));
     let inner = block.inner(rect);
@@ -2076,7 +2080,7 @@ fn draw_qr(f: &mut Frame, area: Rect, url: &str) {
         Style::default().fg(NEON_BLUE),
     )));
     text.push(Line::from(Span::styled(
-        "カメラで読み取ってください（同じネットワーク内から接続できます）",
+        i18n::t("tui.qr.hint"),
         Style::default().fg(Color::DarkGray),
     )));
     f.render_widget(Paragraph::new(text), inner);
@@ -2097,33 +2101,31 @@ fn draw_help(f: &mut Frame, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(NEON_YELLOW))
         .title(Span::styled(
-            " HELP ",
+            format!(" {} ", i18n::t("tui.help.title")),
             Style::default().fg(Color::Black).bg(NEON_YELLOW),
         ));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
-    let text = vec![
-        Line::from(" Ctrl+B q      終了"),
-        Line::from(" Ctrl+B 0-9    タブ切替 (0=INDEX)   n/p 隣のタブ"),
-        Line::from(" Ctrl+B w / W  ワークスペース一覧 / 次へ"),
-        Line::from(" Ctrl+B l      入力ロック切替 (🔒クリックでも可)"),
-        Line::from(" Ctrl+B r      タブ再起動 (✖クリックでも可)"),
-        Line::from(" Ctrl+B [      コピーモード  c 最新応答をコピー"),
-        Line::from(" Ctrl+B a / x  自動化ON/OFF / 緊急停止"),
-        Line::from(" Ctrl+B b      子プロセスへ Ctrl+B を送る"),
-        Line::default(),
-        Line::from(" マウス:"),
-        Line::from("  ホイール    スクロール(コピーモード)"),
-        Line::from("  左ドラッグ  選択して離すとコピー"),
-        Line::from("  右クリック  ペースト"),
-        Line::from("  タブ名/🔒   クリックで切替 / ロック解除"),
-        Line::from("  境界線      ドラッグでタブバー幅を調整"),
-        Line::default(),
-        Line::from(Span::styled(
-            " 何かキーを押すと閉じます",
-            Style::default().fg(Color::DarkGray),
-        )),
+    let keys = [
+        "tui.help.quit", "tui.help.tabs", "tui.help.ws", "tui.help.lock",
+        "tui.help.restart", "tui.help.copy", "tui.help.auto", "tui.help.raw",
     ];
+    let mouse = [
+        "tui.help.mouse.wheel", "tui.help.mouse.drag", "tui.help.mouse.right",
+        "tui.help.mouse.tab", "tui.help.mouse.divider",
+    ];
+    let mut text: Vec<Line> = keys
+        .iter()
+        .map(|k| Line::from(format!(" {}", i18n::t(k))))
+        .collect();
+    text.push(Line::default());
+    text.push(Line::from(format!(" {}", i18n::t("tui.help.mouse"))));
+    text.extend(mouse.iter().map(|k| Line::from(format!(" {}", i18n::t(k)))));
+    text.push(Line::default());
+    text.push(Line::from(Span::styled(
+        format!(" {}", i18n::t("tui.help.close")),
+        Style::default().fg(Color::DarkGray),
+    )));
     f.render_widget(Paragraph::new(text), inner);
 }
 
@@ -2150,7 +2152,7 @@ fn draw_index(
     ui: &Ui,
 ) {
     let title = match ui.ws_names.get(ui.ws_index) {
-        Some(n) if ui.ws_names.len() > 1 => format!(" ACTIVE SESSION MAP :: {n} "),
+        Some(n) if ui.ws_names.len() > 1 => format!(" {} :: {n} ", i18n::t("tui.index")),
         _ => " ACTIVE SESSION MAP ".to_string(),
     };
     let block = Block::default()
@@ -2164,7 +2166,7 @@ fn draw_index(
     // 初回起動: 何をすればいいか分からないまま終わらせない
     if ui.first_run {
         lines.push(Line::from(Span::styled(
-            " ようこそ。まだ設定がありません。",
+            format!(" {}", i18n::t("tui.welcome.title")),
             Style::default().fg(NEON_YELLOW).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::default());
@@ -2173,20 +2175,24 @@ fn draw_index(
                 " [e] ",
                 Style::default().fg(Color::Black).bg(NEON_GREEN).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" を押すと、ブラウザで設定画面が開きます。"),
+            Span::raw(i18n::t("tui.welcome.line1")),
         ]));
-        lines.push(Line::from(
-            "     どのAIをどのフォルダで動かすかを、そこで決められます。",
-        ));
+        lines.push(Line::from(i18n::t("tui.welcome.line2")));
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
-            "     （設定せずにこのまま使うこともできます）",
+            i18n::t("tui.welcome.line3"),
             Style::default().fg(Color::DarkGray),
         )));
         lines.push(Line::default());
     }
     lines.push(Line::from(Span::styled(
-        format!(" {:<3} {:<18} {:<10} {}", "NO", "NAME", "STATE", "PROFILE"),
+        format!(
+            " {:<3} {:<18} {:<10} {}",
+            i18n::t("tui.col.no"),
+            i18n::t("tui.col.name"),
+            i18n::t("tui.col.state"),
+            i18n::t("tui.col.profile")
+        ),
         Style::default().fg(NEON_BLUE).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::default());
@@ -2205,25 +2211,25 @@ fn draw_index(
                 format!("{name:<18}"),
                 Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("{:<10}", t.state.label()), Style::default().fg(color)),
+            Span::styled(format!("{:<10}", t.state.display()), Style::default().fg(color)),
             Span::raw(t.profile_name().to_string()),
         ]));
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        " ── MENU ────────────────────────────",
+        format!(" ── {} ──────────────────────", i18n::t("tui.menu")),
         Style::default().fg(NEON_BLUE),
     )));
     let menu = [
-        ("[数字]", "タブへ切替 (タブ名クリックでも可)"),
-        ("[r]", "終了したタブを再起動"),
-        ("[w]", "ワークスペース切替"),
-        ("[t]", "通知テスト送信 (Slack/Telegram)"),
-        ("[i]", "スマホから接続 (QRコード)"),
-        ("[e]", "設定を編集 (ブラウザ)"),
-        ("[k]", "マスターパスワード変更"),
-        ("[?]", "ヘルプ / キー一覧"),
-        ("[q]", "終了"),
+        ("[1-9]", i18n::t("tui.menu.tabs")),
+        ("[r]", i18n::t("tui.menu.restart")),
+        ("[w]", i18n::t("tui.menu.workspace")),
+        ("[t]", i18n::t("tui.menu.notify")),
+        ("[i]", i18n::t("tui.menu.phone")),
+        ("[e]", i18n::t("tui.menu.settings")),
+        ("[k]", i18n::t("tui.menu.password")),
+        ("[?]", i18n::t("tui.menu.help")),
+        ("[q]", i18n::t("tui.menu.quit")),
     ];
     for (key, desc) in menu {
         lines.push(Line::from(vec![
@@ -2238,9 +2244,10 @@ fn draw_index(
 
     let status = flash.map(|m| format!(" {m}")).unwrap_or_else(|| {
         format!(
-            " {}{}INDEX | メニューはキー押下で実行 / Ctrl+B q: EXIT",
+            " {}{}{}",
             remote_label(ui.remote_on),
-            auto_label(ui.auto)
+            auto_label(ui.auto),
+            i18n::t("tui.index.hint")
         )
     });
     f.render_widget(
@@ -2335,33 +2342,43 @@ fn draw_session(
     }
 
     let status = if let Some(cs) = &t.copy {
-        let mode = if cs.anchor.is_some() { "SELECT" } else { "CURSOR" };
+        let mode = i18n::t(if cs.anchor.is_some() {
+            "tui.status.copy.select"
+        } else {
+            "tui.status.copy.cursor"
+        });
         let hist = if alt_screen {
-            " | 履歴なし(全画面アプリ)"
+            &i18n::t("tui.status.copy.nohistory")
         } else {
             ""
         };
-        format!(
-            " [COPY:{mode}] -{scrollback_offset} | 選択で自動コピー 右クリック:ペースト | v y a / Esc: LIVE{hist}"
+        i18n::tp(
+            "tui.status.copy",
+            &[
+                ("mode", &mode),
+                ("offset", &scrollback_offset.to_string()),
+                ("hist", hist),
+            ],
         )
     } else if ui.prefix_active {
-        " [PREFIX] q:終了 0-9:タブ w:WS l:ロック r:再起動 [:コピー c:応答 a/x:自動 ?:ヘルプ"
-            .to_string()
+        i18n::t("tui.status.prefix")
     } else if let Some(msg) = flash {
         format!(" {msg}")
     } else if t.needs_restart {
-        " ⟳ 設定が変わりました — Ctrl+B r で反映（実行中の作業は保持されます）".to_string()
+        format!(" {}", i18n::t("tui.status.needs_restart"))
     } else if t.state == TabState::Exited {
-        " ✖ セッションが終了しました — Ctrl+B r または左の✖クリックで再起動".to_string()
+        format!(" {}", i18n::t("tui.status.exited"))
     } else if t.locked {
-        " 🔒 LOCKED — 入力は無効です (Ctrl+B l または 🔒クリックで解除)".to_string()
+        format!(" {}", i18n::t("tui.status.locked"))
     } else {
         format!(
-            " {}{}PROFILE:{} [{}] | ドラッグ:コピー 右クリック:ペースト | Ctrl+B ?: ヘルプ",
+            " {}{}{}",
             remote_label(ui.remote_on),
             auto_label(ui.auto),
-            t.profile_name(),
-            t.state.label()
+            i18n::tp(
+                "tui.status.normal",
+                &[("profile", t.profile_name()), ("state", &t.state.display())]
+            )
         )
     };
     let status_bg = if t.copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
@@ -2374,8 +2391,8 @@ fn draw_session(
 fn copy_to_clipboard(text: &str) -> String {
     let lines = text.lines().count();
     match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())) {
-        Ok(()) => format!(">> COPIED {lines} LINES TO CLIPBOARD"),
-        Err(e) => format!(">> COPY FAILED: {e}"),
+        Ok(()) => i18n::tp("msg.copied", &[("lines", &lines.to_string())]),
+        Err(e) => i18n::tp("msg.copy_failed", &[("error", &e.to_string())]),
     }
 }
 
@@ -2396,7 +2413,7 @@ fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
             }
             Ok(None)
         }
-        Err(e) => Ok(Some(format!(">> PASTE FAILED: {e}"))),
+        Err(e) => Ok(Some(i18n::tp("msg.paste_failed", &[("error", &e.to_string())]))),
     }
 }
 
@@ -2546,8 +2563,9 @@ mod tests {
             .filter(|c| !c.is_whitespace())
             .collect();
         tabs[0].kill();
-        assert!(screen.contains("ようこそ"), "初回の案内が出る: {screen}");
-        assert!(screen.contains("設定画面が開きます"), "設定の開き方が示される");
+        // テストでは初期化していないので基準の英語が出る
+        assert!(screen.contains("Welcome"), "初回の案内が出る: {screen}");
+        assert!(screen.contains("settingsscreen"), "設定の開き方が示される");
     }
 
     #[test]
@@ -2628,7 +2646,7 @@ mod tests {
         assert!(tabs[0].locked, "ロックは再起動なしで反映される");
         assert!(!tabs[0].needs_restart, "起動条件が同じなら再起動不要");
         assert_eq!(tabs[0].signature(), one_before, "既存セッションは維持される");
-        assert!(msg.contains("追加1") && msg.contains("終了1"), "{msg}");
+        assert!(msg.contains("added 1") && msg.contains("stopped 1"), "{msg}");
 
         // 文字コードの変更は作り直しが必要なので、保留して印を付ける
         let ws2 = workspace_from(
@@ -2639,7 +2657,7 @@ mod tests {
         );
         let msg2 = apply_ws_config(&mut tabs, &ws2, 24, 80, &mut errs);
         assert!(tabs[0].needs_restart, "要再起動の印が付く");
-        assert!(msg2.contains("要再起動1"), "{msg2}");
+        assert!(msg2.contains("1 need a restart"), "{msg2}");
 
         for t in tabs.iter_mut() {
             t.kill();
