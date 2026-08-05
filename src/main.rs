@@ -20,6 +20,7 @@ mod notify;
 mod profile;
 mod session_log;
 mod tab;
+mod watch;
 mod webui;
 
 use std::time::{Duration, Instant};
@@ -348,7 +349,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 
     // Luaフックエンジンはワークスペース単位 (共有変数もその中で共有される)。
     // 未使用のワークスペースは作らず、切替時に必要なら生成する
-    let max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
+    let mut max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
     // secretsが暗号化されていれば起動時にマスターパスワードを尋ねる
     let mut password: Option<String> = None;
     if let Some(path) = cfg.as_ref().and_then(|c| c.secrets_path()) {
@@ -386,7 +387,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     }
 
     // 通知先 (Slack / Telegram)。Luaはここに登録された宛先にしか送れない
-    let notifier = match cfg.as_ref() {
+    let mut notifier = match cfg.as_ref() {
         Some(c) => {
             let (dests, err) = c.resolve_notify(password.as_deref());
             if let Some(e) = err {
@@ -397,7 +398,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         None => notify::Notifier::new(Default::default()),
     };
     // 自動化に与える能力 (既定は空)。設定ファイルにだけ書ける玄人向け機能
-    let caps: hooks::Caps = std::rc::Rc::new(match cfg.as_ref() {
+    let mut caps: hooks::Caps = std::rc::Rc::new(match cfg.as_ref() {
         Some(c) => caps::Capabilities::new(
             c.capabilities.clone(),
             config_file_dir(),
@@ -427,6 +428,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         }
         tabs = std::mem::take(&mut ws_tabs[0]);
     }
+    // 設定ファイルの変更監視 (保存したら再起動なしで反映する)
+    let mut watcher = watch::Watcher::new(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
+    let mut cfg = cfg;
+
     let mut ws_open = false;
     let mut help_open = false;
     // タブバー境界線のドラッグ中フラグ (マウスで幅を調整できる)
@@ -436,6 +441,63 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let config_file = config::config_file_path();
 
     loop {
+        // 設定が保存されたら読み直して反映する (アプリの再起動は不要)
+        if watcher.changed() {
+            if let Some(newcfg) = config::load() {
+                let (new_ws, errs) = newcfg.resolve_workspaces();
+                startup_errors.extend(errs);
+                // 表示中のワークスペースへ即反映し、他は切替時に反映する
+                let target = new_ws
+                    .iter()
+                    .position(|w| Some(&w.name) == workspaces.get(ws_index).map(|w| &w.name))
+                    .unwrap_or(0);
+                let mut msg = String::from("設定を再読み込みしました");
+                if let Some(w) = new_ws.get(target) {
+                    msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors);
+                    ws_index = target;
+                }
+                // 他のワークスペースは作り直しに任せる (裏で動いているタブは触らない)
+                ws_tabs.resize_with(new_ws.len().max(1), Vec::new);
+                workspaces = new_ws;
+                max_chain = newcfg.max_chain.unwrap_or(10);
+                if let Some(w) = newcfg.tab_bar_width {
+                    let w = w.clamp(TAB_BAR_MIN, TAB_BAR_MAX);
+                    if w != tab_w {
+                        tab_w = w;
+                        (rows, cols) = pty_dims(terminal.size()?, tab_w);
+                        for t in &tabs {
+                            let _ = t.resize(rows, cols);
+                        }
+                    }
+                }
+                // 通知先・能力・自動化スクリプトを作り直す
+                let (dests, err) = newcfg.resolve_notify(password.as_deref());
+                if let Some(e) = err {
+                    startup_errors.push(e);
+                }
+                notifier = notify::Notifier::new(dests);
+                caps = std::rc::Rc::new(caps::Capabilities::new(
+                    newcfg.capabilities.clone(),
+                    config_file_dir(),
+                    newcfg.resolve_tokens(password.as_deref()),
+                ));
+                engine = build_engine(
+                    Some(&newcfg),
+                    workspaces.get(ws_index),
+                    &mut startup_errors,
+                    &caps,
+                );
+                started_fired.clear();
+                started_fired.resize(tabs.len(), false);
+                if active > tabs.len() {
+                    active = if tabs.is_empty() { 0 } else { 1 };
+                }
+                cfg = Some(newcfg);
+                watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
+                flash = Some(format!(">> {msg}"));
+            }
+        }
+
         // 200ms毎に全タブの状態を判定 (非アクティブタブの完了もINDEXに反映される)
         if last_detect.elapsed() >= Duration::from_millis(200) {
             last_detect = Instant::now();
@@ -964,6 +1026,113 @@ fn build_engine(
     (!engine.is_empty()).then_some(engine)
 }
 
+/// タブ設定を作り直したTabOptionsに変換する
+fn tab_options(cfg: &config::TabConfig) -> tab::TabOptions {
+    tab::TabOptions {
+        scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
+        encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
+        log: cfg.log,
+    }
+}
+
+/// 設定変更を、起動中のタブ群へ反映する。
+/// 反映できるものは即座に、セッションの作り直しが要るものは保留して印を付ける
+/// (実行中のAIを勝手に切らないため)。戻り値は利用者への報告メッセージ
+fn apply_ws_config(
+    tabs: &mut Vec<Tab>,
+    ws: &config::Workspace,
+    rows: u16,
+    cols: u16,
+    errors: &mut Vec<String>,
+) -> String {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    let mut staged = 0usize;
+
+    // 設定に無くなったタブを閉じる (GUIで削除された = 明示的な指示)
+    let wanted: Vec<String> = ws
+        .tabs
+        .iter()
+        .map(|f| {
+            f.cfg
+                .name
+                .clone()
+                .unwrap_or_else(|| title_of(&f.cfg.command.argv()))
+        })
+        .collect();
+    tabs.retain_mut(|t| {
+        if wanted.contains(&t.title) {
+            true
+        } else {
+            t.kill();
+            removed += 1;
+            false
+        }
+    });
+
+    // 既存タブの更新と、新規タブの追加
+    let mut ordered: Vec<Tab> = Vec::with_capacity(ws.tabs.len());
+    for ft in &ws.tabs {
+        let argv = ft.cfg.command.argv();
+        if argv.is_empty() {
+            continue;
+        }
+        let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
+        let opts = tab_options(&ft.cfg);
+        match tabs.iter().position(|t| t.title == title) {
+            Some(i) => {
+                let mut t = tabs.remove(i);
+                t.apply_live_config(
+                    ft.cfg.profile.clone(),
+                    ft.cfg.locked,
+                    ft.cfg.auto_restart,
+                    ft.depth,
+                );
+                // コマンド・文字コード・行数の変更は作り直しが必要
+                let new_sig = format!(
+                    "{}|{}|{}",
+                    argv.join(" "),
+                    opts.encoding.map(|e| e.name()).unwrap_or("UTF-8"),
+                    opts.scrollback
+                );
+                if t.signature() != new_sig {
+                    t.stage_restart_config(argv.clone(), opts);
+                    staged += 1;
+                }
+                ordered.push(t);
+            }
+            None => match Tab::spawn(title.clone(), &argv, ft.cfg.profile.clone(), rows, cols, opts) {
+                Ok(mut t) => {
+                    t.locked = ft.cfg.locked;
+                    t.auto_restart = ft.cfg.auto_restart;
+                    t.depth = ft.depth;
+                    ordered.push(t);
+                    added += 1;
+                }
+                Err(e) => errors.push(format!("{title}: {e}")),
+            },
+        }
+    }
+    // 設定に載っていない残りは閉じる
+    for mut t in tabs.drain(..) {
+        t.kill();
+        removed += 1;
+    }
+    *tabs = ordered;
+
+    let mut parts = vec!["設定を再読み込みしました".to_string()];
+    if added > 0 {
+        parts.push(format!("追加{added}"));
+    }
+    if removed > 0 {
+        parts.push(format!("終了{removed}"));
+    }
+    if staged > 0 {
+        parts.push(format!("要再起動{staged} (Ctrl+B r)"));
+    }
+    parts.join(" / ")
+}
+
 /// ワークスペースのタブ群を起動する (初回アクティブ化時に呼ぶ)
 fn spawn_workspace(
     ws: &config::Workspace,
@@ -978,12 +1147,14 @@ fn spawn_workspace(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let opts = tab::TabOptions {
-            scrollback: ft.cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
-            encoding: tab::TabOptions::encoding_from_name(ft.cfg.encoding.as_deref()),
-            log: ft.cfg.log,
-        };
-        match Tab::spawn(title.clone(), &argv, ft.cfg.profile.clone(), rows, cols, opts) {
+        match Tab::spawn(
+            title.clone(),
+            &argv,
+            ft.cfg.profile.clone(),
+            rows,
+            cols,
+            tab_options(&ft.cfg),
+        ) {
             Ok(mut tab) => {
                 tab.locked = ft.cfg.locked;
                 tab.auto_restart = ft.cfg.auto_restart;
@@ -1547,7 +1718,13 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
                 ),
                 Span::styled(format!("{label}{}", " ".repeat(pad)), title_style),
                 Span::styled(
-                    if t.locked { "🔒" } else { "  " },
+                    if t.needs_restart {
+                        "⟳ "
+                    } else if t.locked {
+                        "🔒"
+                    } else {
+                        "  "
+                    },
                     Style::default().fg(NEON_YELLOW),
                 ),
             ]));
@@ -1808,6 +1985,8 @@ fn draw_session(
             .to_string()
     } else if let Some(msg) = flash {
         format!(" {msg}")
+    } else if t.needs_restart {
+        " ⟳ 設定が変わりました — Ctrl+B r で反映（実行中の作業は保持されます）".to_string()
     } else if t.state == TabState::Exited {
         " ✖ セッションが終了しました — Ctrl+B r または左の✖クリックで再起動".to_string()
     } else if t.locked {
@@ -1960,6 +2139,60 @@ mod tests {
             p.process(format!("line{i}\r\n").as_bytes());
         }
         p
+    }
+
+    fn workspace_from(json: &str) -> config::Workspace {
+        let cfg: config::Config = serde_json::from_str(json).unwrap();
+        cfg.resolve_workspaces().0.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn hot_reload_applies_changes_without_restarting_untouched_tabs() {
+        let ws0 = workspace_from(
+            r#"{"workspaces":[{"name":"T","tabs":[
+                {"name":"one","command":"cmd.exe"},
+                {"name":"two","command":"cmd.exe"}
+            ]}]}"#,
+        );
+        let mut tabs = Vec::new();
+        let mut errs = Vec::new();
+        spawn_workspace(&ws0, 24, 80, &mut tabs, &mut errs);
+        assert_eq!(tabs.len(), 2, "{errs:?}");
+        let one_before = tabs[0].signature();
+
+        // one: ロックを付ける(即時反映) / two: 削除 / three: 追加
+        let ws1 = workspace_from(
+            r#"{"workspaces":[{"name":"T","tabs":[
+                {"name":"one","command":"cmd.exe","locked":true},
+                {"name":"three","command":"cmd.exe"}
+            ]}]}"#,
+        );
+        let msg = apply_ws_config(&mut tabs, &ws1, 24, 80, &mut errs);
+
+        assert_eq!(
+            tabs.iter().map(|t| t.title.clone()).collect::<Vec<_>>(),
+            vec!["one", "three"],
+            "設定の順序どおりに並ぶ"
+        );
+        assert!(tabs[0].locked, "ロックは再起動なしで反映される");
+        assert!(!tabs[0].needs_restart, "起動条件が同じなら再起動不要");
+        assert_eq!(tabs[0].signature(), one_before, "既存セッションは維持される");
+        assert!(msg.contains("追加1") && msg.contains("終了1"), "{msg}");
+
+        // 文字コードの変更は作り直しが必要なので、保留して印を付ける
+        let ws2 = workspace_from(
+            r#"{"workspaces":[{"name":"T","tabs":[
+                {"name":"one","command":"cmd.exe","encoding":"shift_jis"},
+                {"name":"three","command":"cmd.exe"}
+            ]}]}"#,
+        );
+        let msg2 = apply_ws_config(&mut tabs, &ws2, 24, 80, &mut errs);
+        assert!(tabs[0].needs_restart, "要再起動の印が付く");
+        assert!(msg2.contains("要再起動1"), "{msg2}");
+
+        for t in tabs.iter_mut() {
+            t.kill();
+        }
     }
 
     #[test]

@@ -266,6 +266,9 @@ pub struct Tab {
     pub locked: bool,
     /// 子プロセス終了時に自動再起動するか
     pub auto_restart: bool,
+    /// 設定が変わったが、反映にはセッションの作り直しが必要な状態
+    /// (実行中のAIを勝手に切らないため、再起動は利用者に委ねる)
+    pub needs_restart: bool,
     /// タブバーの表示インデント段数 (0 = 親)
     pub depth: u16,
     /// 再起動用に起動条件を保持する (プロセス終了後に同じ設定で再spawnできる)
@@ -386,6 +389,7 @@ impl Tab {
             chain_depth: 0,
             locked: false,
             auto_restart: false,
+            needs_restart: false,
             depth: 0,
             argv: argv.to_vec(),
             profile_spec,
@@ -450,12 +454,41 @@ impl Tab {
         fresh.locked = self.locked;
         fresh.depth = self.depth;
         fresh.auto_restart = self.auto_restart;
+        // 作り直したので、保留していた設定変更は反映済みになる
         *self = fresh;
         Ok(())
     }
 
     pub fn profile_name(&self) -> &str {
         self.detector.profile_name()
+    }
+
+    /// 起動条件の指紋。これが変わるとセッションの作り直しが必要
+    pub fn signature(&self) -> String {
+        format!(
+            "{}|{}|{}",
+            self.argv.join(" "),
+            self.opts.encoding.map(|e| e.name()).unwrap_or("UTF-8"),
+            self.opts.scrollback
+        )
+    }
+
+    /// 再起動せずに反映できる設定を差し替える
+    pub fn apply_live_config(&mut self, profile_spec: Option<String>, locked: bool, auto_restart: bool, depth: u16) {
+        if self.profile_spec != profile_spec {
+            self.profile_spec = profile_spec;
+            self.detector = Detector::new(Self::resolve_profile(&self.argv, &self.profile_spec));
+        }
+        self.locked = locked;
+        self.auto_restart = auto_restart;
+        self.depth = depth;
+    }
+
+    /// 次回の再起動で使う起動条件を控えておく (再起動するまでは現行のまま動く)
+    pub fn stage_restart_config(&mut self, argv: Vec<String>, opts: TabOptions) {
+        self.argv = argv;
+        self.opts = opts;
+        self.needs_restart = true;
     }
 
     /// 200ms毎の状態判定 (非アクティブタブも含めて呼ぶこと)。
