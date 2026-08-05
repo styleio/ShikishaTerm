@@ -218,9 +218,15 @@ const PAGE: &str = r##"<!doctype html>
  .spacer { flex:1; }
  main { padding:12px 14px 24px; max-width:720px; margin:0 auto; }
 
- .tab { display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+ .tab { display:block; width:100%; text-align:left;
    background:var(--panel); border:1px solid var(--line); color:var(--text);
    border-radius:12px; padding:14px; margin-bottom:10px; font-size:15px; font-family:inherit; }
+ .tab .row { display:flex; align-items:center; gap:12px; }
+ /* いま画面に出ている行。長いので1行に収める */
+ .tab .now { margin-top:6px; color:var(--muted); font-size:12px;
+   font-family:ui-monospace,Consolas,monospace; white-space:nowrap;
+   overflow:hidden; text-overflow:ellipsis; }
+ .tab .now:empty { display:none; }
  .tab.sel { border-color:var(--accent); }
  .dot { width:10px; height:10px; border-radius:50%; flex:none; }
  .busy { background:var(--warn); } .done { background:var(--accent); }
@@ -262,6 +268,7 @@ const PAGE: &str = r##"<!doctype html>
       <div class="btns">
         <button class="primary" onclick="send()">{{phone.send}}</button>
         <button onclick="back()">{{phone.back}}</button>
+        <button onclick="toggleView()" id="viewbtn">{{phone.view.live}}</button>
         <span class="spacer"></span>
         <span class="hint" id="sent"></span>
       </div>
@@ -273,6 +280,22 @@ const TOKEN = "__TOKEN__";
 const api = (p, b) => fetch(p, {method: b ? "POST" : "GET",
   headers:{"X-Token":TOKEN,"Content-Type":"application/json"}, body: b});
 let snap = {tabs:[]}, sel = null, dirty = false;
+// 表示するもの: null は自動 (動いていれば今の画面、終わっていれば応答)。
+// 利用者が選んだらそちらを優先する
+let view = null, shownView = "live";
+
+// 画面の最後の「中身がある行」。空行と、入力欄の枠だけの行は飛ばす
+// (Claude Code や Codex は入力欄を画面下に描くので、素の最終行だと枠が出る)
+function lastLine(screen) {
+  // 区切り線と入力欄の枠。`-` は範囲指定と読まれないよう先に置く
+  const frame = /^[-\s=_|>+*.·─-╿]+$/;
+  const lines = (screen || "").split("\n")
+    .map(l => l.trim())
+    .filter(l => l && !frame.test(l));
+  return lines.length ? lines[lines.length - 1] : "";
+}
+
+function toggleView() { view = shownView === "live" ? "result" : "live"; render(); }
 
 const CLS = {BUSY:"busy", DONE:"done", QUESTION:"quest", WAIT:"wait", EXIT:"exit"};
 const T = __DICT__;
@@ -308,7 +331,14 @@ function render() {
       const s = document.createElement("span");
       s.className = "st";
       s.textContent = LABEL[t.state] || t.state;
-      b.append(d, n, s);
+      const head = document.createElement("div");
+      head.className = "row";
+      head.append(d, n, s);
+      // いま画面に出ている最後の行。「考え中」や実行中の操作がそのまま出る
+      const now = document.createElement("div");
+      now.className = "now";
+      now.textContent = lastLine(t.screen);
+      b.append(head, now);
       list.append(b);
     }
     return;
@@ -320,7 +350,13 @@ function render() {
     t.name + " — " + (LABEL[t.state] || t.state);
   const out = document.getElementById("out");
   const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 20;
-  const text = t.state === "QUESTION" ? (t.screen || t.output) : (t.output || t.screen);
+  // 動いている最中は最後の応答ではなく今の画面を見せる。
+  // でないと「考え中」の間ずっと1つ前の完了内容が出たままになる
+  const auto = (t.state === "BUSY" || t.state === "QUESTION" || !t.output) ? "live" : "result";
+  shownView = view || auto;
+  const text = (shownView === "live" ? (t.screen || t.output) : (t.output || t.screen)) || "";
+  document.getElementById("viewbtn").textContent =
+    shownView === "live" ? T["phone.view.result"] : T["phone.view.live"];
   if (out.textContent !== text) {
     out.textContent = text;
     if (atBottom) out.scrollTop = out.scrollHeight;
@@ -354,7 +390,8 @@ async function sendKeys(keys) {
 async function toggleAuto() {
   await api("/api/auto", JSON.stringify({on: !snap.auto_enabled}));
 }
-function back() { sel = null; render(); }
+// タブを離れたら表示の選択も戻す (次のタブでは自動判定させる)
+function back() { sel = null; view = null; render(); }
 function flash(t) {
   const s = document.getElementById("sent");
   s.textContent = t;

@@ -288,6 +288,8 @@
   "phone.instruct.ph": "指示を入力…",
   "phone.send": "送信",
   "phone.back": "一覧へ",
+  "phone.view.live": "今の画面",
+  "phone.view.result": "最後の応答",
   "phone.sent": "送信しました",
   "phone.stop": "停止",
   "phone.resume": "再開",
