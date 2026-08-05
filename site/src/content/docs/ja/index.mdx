@@ -1,0 +1,78 @@
+---
+title: ShikishaTerm-AI
+description: Claude Code / Codex / Gemini を同時に動かし、AI同士に仕事を渡させる。Windows用のポータブルなAIターミナル。
+template: splash
+head:
+  - tag: title
+    content: "ShikishaTerm-AI — Claude Code / Codex / Gemini を同時に動かす"
+hero:
+  tagline: Claude Code / Codex / Gemini を同時に動かし、AI同士に仕事を渡させる。
+  actions:
+    - text: Windows版をダウンロード
+      link: https://github.com/styleio/ShikishaTerm/releases/latest
+      icon: down-arrow
+      variant: primary
+    - text: 自動化の書き方
+      link: /ja/automation/
+      icon: right-arrow
+    - text: GitHub
+      link: https://github.com/styleio/ShikishaTerm
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+**ポータブルな単一の `.exe`。インストール不要・管理者権限不要・APIキー不要** —
+すでにログイン済みのAI CLIをそのまま動かします。
+
+## 外出先からスマホで、AIの様子を見て「続きをやっといて」
+
+QRコードを読むだけで、全タブの状況を見て指示を送れます。電車の中でも、カフェでも、ベッドからでも。
+[Tailscale](https://tailscale.com/)（無料）を入れておけば、暗号化された経路で
+**自分の端末だけ**がどこからでも繋がります。
+
+<CardGrid>
+  <Card title="信用できる状態表示" icon="approve-check">
+    各タブが**処理中**か**完了**か**あなたの返事待ち**かを表示します。
+    ベンダーのAPIではなく画面そのものから判定するので、どのCLIでも動きます。
+  </Card>
+  <Card title="AI同士の受け渡し" icon="random">
+    「これが終わったら結果を検査タブへ送る」。Luaで書くか、
+    日本語で指示して手持ちのAIに書いてもらえます。
+  </Card>
+  <Card title="効くブレーキ" icon="warning">
+    自動転送の連鎖回数の上限、緊急停止、タブ単位の入力ロック、
+    そして既定でファイルもネットワークも触れないサンドボックス。
+  </Card>
+  <Card title="本物のターミナル" icon="laptop">
+    SSH・Docker・WSL・踏み台・鍵ファイル・ポート転送・セッションログ・
+    文字コード・日本語入力・マウス操作。特定ツールのラッパーではありません。
+  </Card>
+</CardGrid>
+
+## なぜ作ったか
+
+ターミナルのAIを1つ動かすのは簡単です。**4つ**動かすと途端に破綻します。
+
+ウインドウがAIの数だけ増え、どれが自分の返事を待っているのか分からなくなり、
+結果を手でコピペして回ることになります。ShikishaTerm-AI は
+**処理中 / 完了 / 確認待ち** を区別できるターミナルで、AI同士で仕事を渡すこともできます。
+
+ターミナルで動くものなら何でも扱えるので、特定のベンダーに縛られません。
+Claude Code、Codex CLI、Gemini CLI、Ollama、Aider、SSH越しの素のシェルも同じように扱えます。
+
+## 使いはじめ
+
+1. [Releases](https://github.com/styleio/ShikishaTerm/releases/latest) からzipを落として
+   好きな場所に展開（USBメモリでも同期フォルダでも動きます）
+2. `Shikisha-Term-AI.exe` を起動
+3. `[e]` を押すとブラウザで設定画面が開くので、どのAIをどのフォルダで動かすか決める
+
+そのフォルダの外には何も書きません。
+
+:::note[向き・不向き]
+**今のところWindows専用**です（ConPTYの上に作っているため）。
+**CLIを置き換えるものではなく、動かすもの**なので、手持ちのサブスク・ログイン・設定は
+そのままで構いません。そしてIDEではなくターミナルです。
+:::

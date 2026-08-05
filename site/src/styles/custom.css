@@ -1,0 +1,21 @@
+/* 端末アプリなので、アクセントは画面のネオングリーンに合わせる */
+:root {
+  --sl-color-accent-low: #0d2818;
+  --sl-color-accent: #1f9d55;
+  --sl-color-accent-high: #7bf1a8;
+}
+:root[data-theme="light"] {
+  --sl-color-accent-low: #d7f5e3;
+  --sl-color-accent: #12805f;
+  --sl-color-accent-high: #0a3d2c;
+}
+
+/* トップの hero は文章量が多いので、行間を少しゆるめる */
+.hero .sl-markdown-content p {
+  line-height: 1.7;
+}
+
+/* 「何ができるか」を並べるカードの見出しを詰める */
+.card .title {
+  line-height: 1.3;
+}
