@@ -1043,7 +1043,8 @@ const KIND_START = {cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl "};
 // よく使うコマンド。check はインストール判定に使う名前
 const COMMON_COMMANDS = [
   {label:"Claude Code",       cmd:"claude",         check:"claude"},
-  {label:"Claude Code（続きから）", cmd:"claude --resume", check:"claude"},
+  {label:"Claude Code（前回の続き）",   cmd:"claude --continue", check:"claude"},
+  {label:"Claude Code（履歴から選ぶ）", cmd:"claude --resume",   check:"claude"},
   {label:"Codex CLI",         cmd:"codex",          check:"codex"},
   {label:"Gemini CLI",        cmd:"gemini",         check:"gemini"},
   {label:"PowerShell",        cmd:"powershell.exe", check:null},
