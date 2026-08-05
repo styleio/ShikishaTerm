@@ -4,8 +4,8 @@ import starlight from "@astrojs/starlight";
 const REPO = "https://github.com/styleio/ShikishaTerm";
 
 export default defineConfig({
-  // 独自ドメインを当てたらここを差し替える (sitemap と OGP のURLに使われる)
-  site: "https://shikishaterm.pages.dev",
+  // sitemap と OGP のURLに使われるので、公開しているドメインと一致させる
+  site: "https://shikisha-term.com",
   integrations: [
     starlight({
       title: "ShikishaTerm-AI",

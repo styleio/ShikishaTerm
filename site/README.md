@@ -49,8 +49,9 @@ The build runs `npm run sync` first, which reads `docs/` from the repository roo
 level above the root directory set above. Editing the manual therefore republishes the
 site, which is the point.
 
-After attaching a custom domain, update `site` in `astro.config.mjs` — it is used for the
-sitemap and for social preview URLs.
+The published site is <https://shikisha-term.com>. If that ever changes, update `site` in
+`astro.config.mjs` to match — it is used for the sitemap and for social preview URLs, so a
+stale value silently points search engines at the wrong host.
 
 ## Adding a language to the site
 
