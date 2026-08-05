@@ -325,6 +325,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     } else if !workspaces.is_empty() {
         spawn_workspace(&workspaces[0], rows, cols, &mut tabs, &mut startup_errors);
     }
+    // 設定がまだ無い = 初回起動。何をすればいいか分からないまま
+    // シェルが1つ開くだけ、という体験にならないよう案内する
+    let first_run = cmd_args.is_empty() && cfg.is_none();
     if tabs.is_empty() && workspaces.is_empty() {
         let argv = vec!["powershell.exe".to_string()];
         tabs.push(Tab::spawn(
@@ -413,8 +416,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut auto_enabled = true;
     let mut started_fired = vec![false; tabs.len()];
 
-    // 0 = INDEX、1.. = セッション
-    let mut active: usize = if tabs.is_empty() { 0 } else { 1 };
+    // 0 = INDEX、1.. = セッション。初回はINDEX(案内のある画面)から始める
+    let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
     let mut prefix_active = false;
     let mut flash: Option<String> = startup_errors.first().map(|e| format!(">> 起動失敗 {e}"));
     let mut last_detect = Instant::now() - Duration::from_secs(1);
@@ -591,6 +594,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 
         let ui = Ui {
             tab_w,
+            first_run,
             active,
             prefix_active,
             auto: engine.as_ref().map(|_| auto_enabled),
@@ -1665,6 +1669,8 @@ fn indicator(t: &Tab) -> (char, Color) {
 /// 描画に必要なUI状態
 struct Ui {
     tab_w: u16,
+    /// 設定がまだ無い初回起動 (INDEXに案内を出す)
+    first_run: bool,
     active: usize,
     prefix_active: bool,
     auto: Option<bool>,
@@ -1854,13 +1860,36 @@ fn draw_index(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let mut lines = vec![
-        Line::from(Span::styled(
-            format!(" {:<3} {:<18} {:<10} {}", "NO", "NAME", "STATE", "PROFILE"),
-            Style::default().fg(NEON_BLUE).add_modifier(Modifier::BOLD),
-        )),
-        Line::default(),
-    ];
+    let mut lines: Vec<Line> = Vec::new();
+    // 初回起動: 何をすればいいか分からないまま終わらせない
+    if ui.first_run {
+        lines.push(Line::from(Span::styled(
+            " ようこそ。まだ設定がありません。",
+            Style::default().fg(NEON_YELLOW).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled(
+                " [e] ",
+                Style::default().fg(Color::Black).bg(NEON_GREEN).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" を押すと、ブラウザで設定画面が開きます。"),
+        ]));
+        lines.push(Line::from(
+            "     どのAIをどのフォルダで動かすかを、そこで決められます。",
+        ));
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "     （設定せずにこのまま使うこともできます）",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::default());
+    }
+    lines.push(Line::from(Span::styled(
+        format!(" {:<3} {:<18} {:<10} {}", "NO", "NAME", "STATE", "PROFILE"),
+        Style::default().fg(NEON_BLUE).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
     for (i, t) in tabs.iter().enumerate() {
         let (ind, color) = indicator(t);
         let name = format!(
@@ -2177,6 +2206,43 @@ mod tests {
     fn workspace_from(json: &str) -> config::Workspace {
         let cfg: config::Config = serde_json::from_str(json).unwrap();
         cfg.resolve_workspaces().0.into_iter().next().unwrap()
+    }
+
+    /// 初回起動でINDEXに案内が出ること (何をすればいいか分からないまま終わらせない)
+    #[test]
+    fn first_run_shows_how_to_open_settings() {
+        use ratatui::backend::TestBackend;
+        let argv = vec!["cmd.exe".to_string()];
+        let mut tabs = vec![
+            Tab::spawn("SHELL".into(), &argv, None, 20, 100, tab::TabOptions::default()).unwrap(),
+        ];
+        let ui = Ui {
+            tab_w: 18,
+            first_run: true,
+            active: 0,
+            prefix_active: false,
+            auto: None,
+            ws_names: vec![],
+            ws_index: 0,
+            ws_open: false,
+            help_open: false,
+        };
+        let mut term = ratatui::Terminal::new(TestBackend::new(100, 24)).unwrap();
+        term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
+        // 全角文字は2セルを占め、2セル目が空になるため空白を落として比較する
+        let screen: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        tabs[0].kill();
+        assert!(screen.contains("ようこそ"), "初回の案内が出る: {screen}");
+        assert!(screen.contains("設定画面が開きます"), "設定の開き方が示される");
     }
 
     #[test]
