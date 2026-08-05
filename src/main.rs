@@ -642,6 +642,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         match new {
                             TabState::Busy if answering => eng.fire("on_busy", &ctx, None),
                             TabState::Done if answering && old == TabState::Busy => {
+                                // 一度の実行に一度の応答。次を待つには次の実行が要る
+                                tabs[idx - 1].clear_prompted();
                                 eng.fire("on_done", &ctx, None);
                             }
                             TabState::Question => {

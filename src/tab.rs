@@ -223,6 +223,33 @@ pub fn extract_text<CB: vt100::Callbacks>(
     out
 }
 
+/// この入力に「実行」が含まれるか。
+///
+/// 括弧付き貼り付けの中身は本文なので、その中の改行は実行ではない。
+/// 打っただけ・貼っただけを実行と数えると、手が止まった画面を
+/// 応答完了と読んでしまう
+pub fn contains_submit(bytes: &[u8]) -> bool {
+    const START: &[u8] = b"\x1b[200~";
+    const END: &[u8] = b"\x1b[201~";
+    let mut in_paste = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(START) {
+            in_paste = true;
+            i += START.len();
+        } else if bytes[i..].starts_with(END) {
+            in_paste = false;
+            i += END.len();
+        } else {
+            if !in_paste && matches!(bytes[i], b'\r' | b'\n') {
+                return true;
+            }
+            i += 1;
+        }
+    }
+    false
+}
+
 /// 画面を見たままのテキストにする (1画面行 = 1行)。
 ///
 /// `Screen::contents()` は折り返し扱いの行を改行なしで連結する。
@@ -274,6 +301,37 @@ mod tests {
             visible.split('\n').collect::<Vec<_>>(),
             vec!["##########", "$$$$$$$$$$", "%%%%%%%%%%", ""],
             "画面の行がそのまま残る (4行目は空行)"
+        );
+    }
+
+    /// 打っただけ・貼っただけを「実行した」と数えないこと。
+    ///
+    /// 数えてしまうと、入力しかけて手を止めた画面が静かになった瞬間に
+    /// 応答完了と読まれ、書きかけの内容が他のタブへ転送される
+    #[test]
+    fn only_a_real_enter_counts_as_submitting() {
+        use super::contains_submit;
+
+        assert!(!contains_submit(b"hello"), "打っただけ");
+        assert!(!contains_submit(b""), "空");
+        assert!(contains_submit(b"hello\r"), "改行で実行");
+        assert!(contains_submit(b"\r"), "改行だけでも実行");
+        assert!(contains_submit(b"\n"), "LFも実行として扱う");
+
+        // 括弧付き貼り付けの中身は本文。中の改行は実行ではない
+        assert!(
+            !contains_submit(b"\x1b[200~one\rtwo\x1b[201~"),
+            "貼り付けた本文の改行は実行ではない"
+        );
+        // 貼り付けたあとの改行は実行
+        assert!(
+            contains_submit(b"\x1b[200~one\rtwo\x1b[201~\r"),
+            "貼り付けを閉じたあとの改行は実行"
+        );
+        // 閉じ忘れても、中身を実行と誤認しない
+        assert!(
+            !contains_submit(b"\x1b[200~one\rtwo"),
+            "閉じられていない貼り付けの中身"
         );
     }
 
@@ -475,11 +533,11 @@ pub struct Tab {
     /// 画面は変化するので、そのまま活動と数えると BUSY→DONE を通り、
     /// 応答が来たように見えてしまう
     last_resize_ms: AtomicU64,
-    /// 人か自動化が、このタブに何か入力したか。
+    /// 実行された入力を待っているか。
     ///
-    /// 起動時のバナー出力だけでも画面は「動いて→止まる」ので、状態は必ず
-    /// DONE を通る。応答を待っている相手が居ないのに応答完了として扱うと、
-    /// 誰も聞いていない出力が自動化で転送されてしまう
+    /// 「入力された」ではなく「実行された」であることが大事。文字を打っただけ、
+    /// 貼り付けただけでも画面は動いて止まるので、入力を根拠にすると
+    /// 手が止まった瞬間を応答完了と読んでしまう
     prompted: AtomicBool,
     /// 直近の出力量の履歴 (古い→新しい)。INDEXの波形用
     activity: [u8; ACTIVITY_LEN],
@@ -630,9 +688,15 @@ impl Tab {
         })
     }
 
-    /// 誰かがこのタブに入力したか。応答完了として扱ってよいかの判定に使う
+    /// 実行された入力の応答を待っているか
     pub fn was_prompted(&self) -> bool {
         self.prompted.load(Ordering::Relaxed)
+    }
+
+    /// 応答を受け取ったので待ち状態を解く。
+    /// 次の応答には次の実行が要る (打ちかけて放置した画面を応答と読まないため)
+    pub fn clear_prompted(&self) {
+        self.prompted.store(false, Ordering::Relaxed);
     }
 
     /// 子プロセスへそのまま流すだけの入力 (マウス報告など)。
@@ -641,9 +705,11 @@ impl Tab {
         pty_write(&self.writer, bytes)
     }
 
-    /// 入力を送る。ここを通ったものは「応答を求めた」とみなす
+    /// 入力を送る。実行を含むものだけが「応答を求めた」ことになる
     pub fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
-        self.prompted.store(true, Ordering::Relaxed);
+        if contains_submit(bytes) {
+            self.prompted.store(true, Ordering::Relaxed);
+        }
         // 相手がUTF-8以外なら、送る文字も変換する
         // (制御シーケンスはASCIIなのでそのまま通る)
         if let Some(enc) = self.opts.encoding {
