@@ -856,7 +856,27 @@ const PAGE: &str = r##"<!doctype html>
    border-bottom:1px solid var(--line); }
  header h1 { font-size:15px; font-weight:600; margin:0; letter-spacing:.02em; }
  header .spacer { flex:1; }
- #msg { color:var(--muted); font-size:13px; }
+ #msg { color:var(--muted); font-size:13px; border-radius:6px; padding:4px 10px; }
+ #msg.warn { color:var(--danger); }
+ /* 同じ文言が続いても押したことが分かるよう、毎回アニメーションを流し直す */
+ #msg.flash { animation:msgflash 1.1s ease-out; }
+ @keyframes msgflash {
+   0%   { background:var(--accent); color:#08130c; }
+   60%  { background:var(--accent); color:#08130c; }
+   100% { background:transparent; color:var(--muted); }
+ }
+ button.primary:disabled { opacity:.55; cursor:default; }
+ /* 保存の結果はヘッダの小さな文字だと視線が行かないので、画面下に出す */
+ #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(16px);
+   padding:11px 20px; border-radius:9px; background:var(--accent); color:#08130c;
+   font-weight:600; font-size:13.5px; box-shadow:0 10px 30px rgba(0,0,0,.5);
+   opacity:0; pointer-events:none; z-index:50;
+   transition:opacity .18s ease, transform .18s ease; }
+ #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+ #toast.warn { background:var(--danger); color:#fff; }
+ /* 未保存の変更があるあいだは保存ボタンに印を出す。
+    押す前から「保存が要る状態か」が分かれば、押したあと不安にならない */
+ #savebtn.dirty::before { content:"● "; }
 
  .layout { display:flex; align-items:flex-start; }
  nav { width:260px; flex:none; border-right:1px solid var(--line); min-height:calc(100vh - 53px);
@@ -934,13 +954,15 @@ const PAGE: &str = r##"<!doctype html>
   <div class="spacer"></div>
   <span id="msg"></span>
   <button class="quiet" onclick="load()">{{common.reload}}</button>
-  <button class="primary" onclick="save()">{{common.save}}</button>
+  <button class="primary" id="savebtn" onclick="save()">{{common.save}}</button>
 </header>
 
 <div class="layout">
   <nav id="nav"></nav>
   <main id="detail"></main>
 </div>
+
+<div id="toast" role="status" aria-live="polite"></div>
 
 <datalist id="cmdlist"></datalist>
 
@@ -1006,8 +1028,47 @@ const el = (tag, attrs = {}, ...kids) => {
   for (const c of kids) if (c !== null && c !== undefined) n.append(c);
   return n;
 };
-const msg = (t, warn) => { const m = document.getElementById("msg");
-  m.textContent = t; m.style.color = warn ? "var(--danger)" : "var(--muted)"; };
+const msg = (t, warn) => {
+  const m = document.getElementById("msg");
+  m.textContent = t;
+  m.classList.toggle("warn", !!warn);
+  // クラスを付け直すだけでは再生されないので、一度外して強制的に再計算させる
+  m.classList.remove("flash");
+  void m.offsetWidth;
+  if (!warn) m.classList.add("flash");
+};
+
+let toastTimer = null;
+function toast(text, warn) {
+  const t = document.getElementById("toast");
+  t.textContent = (warn ? "⚠ " : "✓ ") + text;
+  t.classList.toggle("warn", !!warn);
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  // 失敗は読む時間が要るので長く出す
+  toastTimer = setTimeout(() => t.classList.remove("show"), warn ? 6000 : 2200);
+}
+
+// 操作の結果はヘッダにも残しつつ、トーストで必ず気づけるようにする
+const result = (text, warn) => { msg(text, warn); toast(text, warn); };
+
+// 未保存かどうかの判定。保存/読込した時点の内容を覚えておいて見比べる
+let savedSnapshot = "";
+// 生の入力状態ではなく「保存したら実際に何が書かれるか」を比べる。
+// 入力欄は数値を文字列にしてしまうので、10 と "10" を別物と見てしまう
+const snapshot = () => JSON.stringify(payload());
+function markClean() { savedSnapshot = snapshot(); refreshSave(); }
+function refreshSave() {
+  const b = document.getElementById("savebtn");
+  // 読み込みが終わるまでは比較対象が無い。ここで抜けないと開いた瞬間に未保存の印が出る
+  if (!b || b.disabled || savedSnapshot === "") return;
+  const dirty = snapshot() !== savedSnapshot;
+  b.classList.toggle("dirty", dirty);
+  b.title = dirty ? T["settings.unsaved"] : "";
+}
+// タブの追加・削除・並べ替えは input イベントを出さないので、
+// イベントを拾うだけでは取りこぼす。内容そのものを見比べるほうが確実
+setInterval(refreshSave, 600);
 
 // ── 部品 ─────────────────────────────────────────────
 function field(obj, key, ph, opts = {}) {
@@ -1643,10 +1704,29 @@ async function load() {
   }
   if (sel.ws >= wss.length) sel = {ws:0, tab:null, global:true};
   render();
+  markClean();
   msg(T["common.loaded"]);
 }
 
 async function save() {
+  const btn = document.getElementById("savebtn");
+  btn.disabled = true;
+  btn.classList.remove("dirty");
+  btn.textContent = T["common.saving"];
+  try {
+    await doSave();
+  } catch (e) {
+    // 通信自体が失敗した場合、今までは何も出ないまま終わっていた
+    result(fill(T["settings.save_failed"], {error: e.message || e}), true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = T["common.save"];
+    refreshSave();
+  }
+}
+
+// 書き込む内容を組み立てる。保存と未保存判定の両方がこれを使う
+function payload() {
   const out = Object.assign({}, current);
   ["tab_bar_width","max_chain"].forEach(k => {
     const v = out[k]; if (v === "" || v === null || v === undefined) delete out[k]; else out[k] = Number(v);
@@ -1655,13 +1735,13 @@ async function save() {
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
   delete out.lua; delete out.tabs;
 
+  // 別ファイルに切り出されたワークスペースは、そのファイルへ書く
+  const files = [];
   for (const w of wss) {
     if (!w.file) continue;
     const body = { name:w.name, tabs:nest(w.tabs) };
     if (w.automation) body.automation = w.automation;
-    const rf = await wsApi("POST", w.file, JSON.stringify(body, null, 2));
-    const jf = await rf.json().catch(() => ({ok:false}));
-    if (!jf.ok) return msg(fill(T["settings.file_save_failed"], {file: w.file}), true);
+    files.push({ file:w.file, body });
   }
   out.workspaces = wss.map(w => {
     const o = { name:w.name };
@@ -1669,9 +1749,21 @@ async function save() {
     else { if (w.automation) o.automation = w.automation; o.tabs = nest(w.tabs); }
     return o;
   });
+  return { out, files };
+}
+
+async function doSave() {
+  const { out, files } = payload();
+  for (const f of files) {
+    const rf = await wsApi("POST", f.file, JSON.stringify(f.body, null, 2));
+    const jf = await rf.json().catch(() => ({ok:false}));
+    if (!jf.ok) { result(fill(T["settings.file_save_failed"], {file: f.file}), true); return; }
+  }
   const r = await api("POST", JSON.stringify(out, null, 2));
   const j = await r.json();
-  msg(j.ok ? T["common.saved"] : fill(T["settings.save_failed"], {error: j.error}), !j.ok);
+  if (!j.ok) { result(fill(T["settings.save_failed"], {error: j.error}), true); return; }
+  markClean();
+  result(T["common.saved"]);
 }
 
 load();
