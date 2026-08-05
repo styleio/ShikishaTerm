@@ -81,8 +81,8 @@ shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
 
 | Command | Description |
 |---|---|
-| `shikisha.send_to_tab(tab, "text")` | Send to another tab and let it run (automatic chain +1) |
-| `shikisha.send(tab, "text")` | Send keystrokes to that tab (newline is `\r`) |
+| `shikisha.send_to_tab(tab, "text")` | **Give a tab an instruction and run it.** Works on this tab too (automatic chain +1) |
+| `shikisha.send(tab, "text")` | Send raw keystrokes (newline is `\r`). For answering prompts, not for instructions |
 | `shikisha.wait(tab, "pattern", ms)` | Wait until the text appears on screen; `true` if it did |
 | `shikisha.sleep(ms)` | Wait (other tabs keep running while you wait) |
 | `shikisha.state(tab)` | Read the state **right now** (use this as a loop condition) |
@@ -95,9 +95,40 @@ shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
 If `on_question.lua` **returns a string**, that string is sent automatically.
 Returning `nil` (or nothing) leaves the decision to the human.
 
+### Instructing an AI: use `send_to_tab`
+
+An AI CLI takes a pasted instruction and the Enter that runs it as two separate events,
+and drops the Enter if it arrives before the paste has been taken in. `send_to_tab`
+handles that for you.
+
+```lua
+-- Right. One call: the text is entered and run
+shikisha.send_to_tab(tab, "You are on Bianca's side. Argue your case.")
+
+-- Wrong. The text lands in the input box and stays there
+shikisha.send(tab, "You are on Bianca's side. Argue your case.")
+shikisha.send(tab, "\r")
+```
+
+**Do not paper over it with `sleep`.** A fixed wait is a guess about how long the other
+program takes to be ready, and that changes with the machine, the model and the length of
+the prompt — it will hold until the day it does not. `send_to_tab` waits on the actual
+event instead of on the clock.
+
+`send` remains the right tool for keystrokes an AI is already waiting for — answering a
+confirmation with `"1\r"`, or driving a shell.
+
 ---
 
 ## 4. Common examples
+
+### Give a tab its opening instruction (on_start.lua)
+
+```lua
+shikisha.send_to_tab(tab, "Summarise what changed in this project yesterday.")
+```
+
+Nothing else is needed — the hook already waits until the program is ready to be typed at.
 
 ### Resume yesterday's work just by starting (on_start.lua)
 

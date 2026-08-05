@@ -371,8 +371,11 @@ pub struct Tab {
     argv: Vec<String>,
     profile_spec: Option<String>,
     opts: TabOptions,
-    /// 最後に人間が手動入力した時刻 (相対ms)。直後の自動送信をガードする
-    pub last_manual_ms: u64,
+    /// 最後に人間が手動入力した時刻 (相対ms)。直後の自動送信をガードする。
+    ///
+    /// None は「まだ一度も触られていない」。0 で表すと、アプリ起動から
+    /// ガード時間のあいだ「たった今触った」と誤認してしまう
+    pub last_manual_ms: Option<u64>,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     child_exited: Arc<AtomicBool>,
@@ -511,7 +514,7 @@ impl Tab {
             argv: argv.to_vec(),
             profile_spec,
             opts,
-            last_manual_ms: 0,
+            last_manual_ms: None,
             master: pair.master,
             killer,
             child_exited,

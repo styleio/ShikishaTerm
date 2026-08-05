@@ -710,7 +710,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     continue;
                                 }
                                 t.chain_depth = 0;
-                                t.last_manual_ms = now_ms;
+                                t.last_manual_ms = Some(now_ms);
                                 write_prompt(t, &text);
                                 pending_submit.push((tab, now_ms + SUBMIT_DELAY_MS));
                                 append_hook_log(&format!("remote送信 tab{tab}"));
@@ -722,7 +722,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     continue;
                                 }
                                 t.chain_depth = 0;
-                                t.last_manual_ms = now_ms;
+                                t.last_manual_ms = Some(now_ms);
                                 let _ = t.write_bytes(keys.as_bytes());
                             }
                         }
@@ -1136,7 +1136,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             // 手動入力: チェーン(透明のボール)をリセットし、
                             // 直後の自動送信をガードする
                             t.chain_depth = 0;
-                            t.last_manual_ms = now_ms;
+                            t.last_manual_ms = Some(now_ms);
                             t.write_bytes(&bytes)?;
                         }
                     }
@@ -1152,7 +1152,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 if let Some(t) = session_mut(&mut tabs, active) {
                     if !t.locked {
                         t.chain_depth = 0;
-                        t.last_manual_ms = now_ms;
+                        t.last_manual_ms = Some(now_ms);
                         t.write_bytes(text.as_bytes())?;
                     }
                 }
@@ -1669,6 +1669,15 @@ fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
 /// 手動入力直後は自動送信を控える猶予 (打鍵の混線防止)
 const MANUAL_GUARD_MS: u64 = 5000;
 
+/// 人間が触った直後か。一度も触られていなければ false。
+///
+/// ここを「時刻0 = 触られた」と扱うと、アプリ起動からガード時間のあいだ
+/// 自動送信が丸ごと捨てられる (起動時の自動化が動かない原因になっていた)
+fn touched_recently(t: &Tab, now_ms: u64) -> bool {
+    t.last_manual_ms
+        .is_some_and(|m| now_ms.saturating_sub(m) < MANUAL_GUARD_MS)
+}
+
 pub fn append_hook_log(msg: &str) {
     let _ = std::fs::create_dir_all("logs");
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1731,7 +1740,7 @@ fn exec_commands(
                     continue;
                 };
                 if let Some(t) = tabs.get(target.wrapping_sub(1)) {
-                    if now_ms.saturating_sub(t.last_manual_ms) < MANUAL_GUARD_MS {
+                    if touched_recently(t, now_ms) {
                         continue;
                     }
                     let _ = t.write_bytes(keys.as_bytes());
@@ -1763,7 +1772,7 @@ fn exec_commands(
                 let Some(t) = tabs.get_mut(target.wrapping_sub(1)) else {
                     continue;
                 };
-                if now_ms.saturating_sub(t.last_manual_ms) < MANUAL_GUARD_MS {
+                if touched_recently(t, now_ms) {
                     *flash = Some(i18n::t("msg.manual_guard"));
                     continue;
                 }
@@ -1975,7 +1984,7 @@ fn handle_mouse(
                 t.parser.lock().unwrap().screen_mut().set_scrollback(0);
             }
             t.chain_depth = 0;
-            t.last_manual_ms = now_ms;
+            t.last_manual_ms = Some(now_ms);
             *flash = paste_clipboard(t)?;
         }
         _ => {}
@@ -3084,6 +3093,39 @@ mod tests {
         // 予約されていた実行が届く
         t.write_bytes(b"\r").unwrap();
         assert!(wait_for(&t, "shikisha-ok"), "実行される: {}", screen(&t));
+
+        t.kill();
+    }
+
+    /// 「人間が触った直後は自動送信しない」保護が、起動直後に誤作動しないこと。
+    ///
+    /// 触られた時刻を 0 で初期化していたため、アプリ起動からガード時間のあいだ
+    /// 「たった今触った」と誤認し、起動時の自動化が黙って捨てられていた
+    #[test]
+    fn an_untouched_tab_is_not_mistaken_for_one_just_typed_into() {
+        let argv = vec!["cmd.exe".to_string()];
+        let mut t =
+            Tab::spawn("T".into(), &argv, None, 20, 60, tab::TabOptions::default()).unwrap();
+
+        // 起動直後: まだ誰も触っていないので、いつ聞かれても保護は働かない
+        assert!(!touched_recently(&t, 0), "起動した瞬間");
+        assert!(!touched_recently(&t, 1_000), "1秒後");
+        assert!(
+            !touched_recently(&t, MANUAL_GUARD_MS - 1),
+            "ガード時間の内側でも、触られていなければ送ってよい"
+        );
+
+        // 人間が触ったらガードが効く
+        t.last_manual_ms = Some(10_000);
+        assert!(touched_recently(&t, 10_000), "触った直後");
+        assert!(
+            touched_recently(&t, 10_000 + MANUAL_GUARD_MS - 1),
+            "ガード時間内はまだ効く"
+        );
+        assert!(
+            !touched_recently(&t, 10_000 + MANUAL_GUARD_MS),
+            "時間が過ぎたら解ける"
+        );
 
         t.kill();
     }
