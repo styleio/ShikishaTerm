@@ -1048,6 +1048,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 t.copy = Some(CopyState {
                                     cursor_row: rows.saturating_sub(1),
                                     anchor: None,
+                                    dragged: false,
                                 });
                             }
                         }
@@ -1965,6 +1966,7 @@ fn handle_mouse(
                 t.copy = Some(CopyState {
                     cursor_row: row_in_pane,
                     anchor: None,
+                    dragged: false,
                 });
             }
             let mut p = t.parser.lock().unwrap();
@@ -1994,11 +1996,15 @@ fn handle_mouse(
             t.copy = Some(CopyState {
                 cursor_row: row_in_pane,
                 anchor: Some(anchor),
+                dragged: false,
             });
         }
         // ドラッグで選択範囲を拡張
         MouseEventKind::Drag(MouseButton::Left) => {
             if let Some(cs) = t.copy.as_mut() {
+                if cs.cursor_row != row_in_pane {
+                    cs.dragged = true;
+                }
                 cs.cursor_row = row_in_pane;
             }
         }
@@ -2006,7 +2012,12 @@ fn handle_mouse(
         MouseEventKind::Up(MouseButton::Left) => {
             let mut exit_copy = false;
             if let Some(cs) = t.copy.as_mut() {
-                if let Some(anchor) = cs.anchor.take() {
+                // 動かしていないなら選択ではない。置くだけのつもりのクリックで
+                // クリップボードを奪わない (貼り付ける直前に消えると実害が大きい)
+                if !cs.dragged {
+                    cs.anchor = None;
+                    exit_copy = t.parser.lock().unwrap().screen().scrollback() == 0;
+                } else if let Some(anchor) = cs.anchor.take() {
                     let mut p = t.parser.lock().unwrap();
                     let cur = p.screen().scrollback();
                     let here = abs_line(
@@ -3253,6 +3264,58 @@ mod tests {
         assert!(draw_with(&mut term, 0, Some(false)).is_some(), "停止中も押せる");
         // 自動化が無い構成では出さない
         assert!(draw_with(&mut term, 0, None).is_none(), "自動化が無ければ出さない");
+
+        for t in tabs.iter_mut() {
+            t.kill();
+        }
+    }
+
+    /// 単クリックではクリップボードを奪わないこと。
+    ///
+    /// 選択は行単位なので、クリックしただけでも「1行選んだ」形になる。
+    /// そのままコピーすると、貼り付けようとしていた中身が消える
+    /// (Codexのプロンプトをクリックしてplaceholderがコピーされていた)
+    #[test]
+    fn a_click_without_dragging_leaves_the_clipboard_alone() {
+        use ratatui::crossterm::event::MouseEvent;
+
+        let argv = vec!["cmd.exe".to_string()];
+        let mut tabs = vec![
+            Tab::spawn("T".into(), &argv, None, 20, 60, tab::TabOptions::default()).unwrap(),
+        ];
+        let mut active = 1usize;
+        let size = Size { width: 100, height: 30 };
+        let tab_w = 20u16;
+        let inner = pane_inner(size, tab_w);
+
+        let at = |kind, row: u16| MouseEvent {
+            kind,
+            column: inner.x + 3,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let mut flash = None;
+
+        // 押して、動かさずに離す
+        handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Down(MouseButton::Left), inner.y + 2),
+                     size, 0, tab_w, &mut flash).unwrap();
+        assert!(tabs[0].copy.is_some(), "押した時点では選択の準備に入る");
+        handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Up(MouseButton::Left), inner.y + 2),
+                     size, 0, tab_w, &mut flash).unwrap();
+        assert!(
+            flash.is_none(),
+            "クリックしただけでコピーしている: {flash:?}"
+        );
+        assert!(tabs[0].copy.is_none(), "クリックのあとは通常操作へ戻る");
+
+        // 押して、動かしてから離す
+        handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Down(MouseButton::Left), inner.y + 2),
+                     size, 0, tab_w, &mut flash).unwrap();
+        handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Drag(MouseButton::Left), inner.y + 5),
+                     size, 0, tab_w, &mut flash).unwrap();
+        handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Up(MouseButton::Left), inner.y + 5),
+                     size, 0, tab_w, &mut flash).unwrap();
+        assert!(flash.is_some(), "ドラッグして選んだらコピーする");
 
         for t in tabs.iter_mut() {
             t.kill();
