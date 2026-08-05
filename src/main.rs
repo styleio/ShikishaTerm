@@ -476,6 +476,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut started_fired = vec![false; tabs.len()];
     // 自動チェーンの「透明のボール」。今どのタブが仕事を持っているかを表示に使う
     let mut ball = ball::Ball::default();
+    // 送信した本文に対して、あとから実行(改行)を送る予約 (タブ番号, 送る時刻)
+    let mut pending_submit: Vec<(usize, u64)> = Vec::new();
     // INDEXで押せる場所。毎フレーム描画時に作り直す
     let mut hits: Vec<HitBox> = Vec::new();
     let mut hover: Option<Hit> = None;
@@ -661,6 +663,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         &notifier,
                         &mut flash,
                         &mut ball,
+                        &mut pending_submit,
                     );
                 }
             }
@@ -706,19 +709,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 }
                                 t.chain_depth = 0;
                                 t.last_manual_ms = now_ms;
-                                let bracketed =
-                                    t.parser.lock().unwrap().screen().bracketed_paste();
-                                let body = text.replace("\r\n", "\r").replace('\n', "\r");
-                                let mut bytes = Vec::new();
-                                if bracketed {
-                                    bytes.extend_from_slice(b"\x1b[200~");
-                                    bytes.extend_from_slice(body.as_bytes());
-                                    bytes.extend_from_slice(b"\x1b[201~");
-                                } else {
-                                    bytes.extend_from_slice(body.as_bytes());
-                                }
-                                bytes.push(b'\r');
-                                let _ = t.write_bytes(&bytes);
+                                write_prompt(t, &text);
+                                pending_submit.push((tab, now_ms + SUBMIT_DELAY_MS));
                                 append_hook_log(&format!("remote送信 tab{tab}"));
                             }
                         }
@@ -761,6 +753,20 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     }
                 }
             }
+        }
+
+        // 予約しておいた実行(改行)を、間を空けてから送る
+        if !pending_submit.is_empty() {
+            let now_ms = start.elapsed().as_millis() as u64;
+            pending_submit.retain(|&(tab, at)| {
+                if now_ms < at {
+                    return true;
+                }
+                if let Some(t) = tabs.get(tab.wrapping_sub(1)) {
+                    let _ = t.write_bytes(b"\r");
+                }
+                false
+            });
         }
 
         // 子プロセスがコンソールを崩していたら戻す。判定は GetConsoleMode 1回だけ
@@ -1200,6 +1206,29 @@ pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Com
     use std::os::windows::process::CommandExt as _;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
+/// 本文を送ってから実行(改行)を送るまでの間。
+///
+/// 1回の書き込みでまとめて送ると、AI CLIの入力欄が貼り付けを処理しきる前に
+/// 改行が届き、捨てられて「本文だけ入って実行されない」状態になる。
+/// 人が操作するときは必ず間が空くので、同じだけ待つ
+const SUBMIT_DELAY_MS: u64 = 120;
+
+/// プロンプトへ本文だけを送る。実行は呼び出し側が少し遅らせて送る
+fn write_prompt(t: &Tab, text: &str) {
+    let bracketed = t.parser.lock().unwrap().screen().bracketed_paste();
+    let body = text.replace("\r\n", "\r").replace('\n', "\r");
+    let mut bytes = Vec::new();
+    if bracketed {
+        // 括弧付き貼り付けに対応していれば、複数行でも1回の入力として渡る
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(body.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+    } else {
+        bytes.extend_from_slice(body.as_bytes());
+    }
+    let _ = t.write_bytes(&bytes);
 }
 
 fn open_browser(url: &str) {
@@ -1645,6 +1674,7 @@ fn exec_commands(
     notifier: &notify::Notifier,
     flash: &mut Option<String>,
     ball: &mut ball::Ball,
+    pending_submit: &mut Vec<(usize, u64)>,
 ) {
     // タブ名でも指定できるようにする (番号は並べ替えで変わるため)
     let keys: Vec<hooks::TabKey> = tabs.iter().map(|t| t.key()).collect();
@@ -1717,18 +1747,8 @@ fn exec_commands(
                     continue;
                 }
                 t.chain_depth = depth;
-                let bracketed = t.parser.lock().unwrap().screen().bracketed_paste();
-                let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
-                let mut bytes = Vec::new();
-                if bracketed {
-                    bytes.extend_from_slice(b"\x1b[200~");
-                    bytes.extend_from_slice(normalized.as_bytes());
-                    bytes.extend_from_slice(b"\x1b[201~");
-                } else {
-                    bytes.extend_from_slice(normalized.as_bytes());
-                }
-                bytes.push(b'\r');
-                let _ = t.write_bytes(&bytes);
+                write_prompt(t, &text);
+                pending_submit.push((target, now_ms + SUBMIT_DELAY_MS));
                 ball.throw(origin, target, depth, now_ms);
                 append_hook_log(&format!("auto-send tab{origin} -> tab{target} (depth {depth})"));
             }
@@ -2941,6 +2961,58 @@ mod tests {
             "出力があれば波形が立つ: {:?}",
             t.activity()
         );
+        t.kill();
+    }
+
+    /// 送信は「本文を入れる」と「実行する」の2段階であること。
+    ///
+    /// まとめて1回で書くと、AI CLIの入力欄が貼り付けを処理しきる前に改行が届き、
+    /// 本文だけ入って実行されない状態になる (スマホからの送信で実際に起きた)
+    #[test]
+    fn a_prompt_is_typed_first_and_submitted_after() {
+        let argv = vec!["cmd.exe".to_string()];
+        let mut t =
+            Tab::spawn("shell".into(), &argv, None, 20, 60, tab::TabOptions::default()).unwrap();
+
+        let screen = |t: &Tab| tab::visible_text(t.parser.lock().unwrap().screen());
+        let has_line = |t: &Tab, want: &str| {
+            screen(t).lines().any(|l| l.trim() == want)
+        };
+        let wait_for = |t: &Tab, want: &str| {
+            for _ in 0..60 {
+                if has_line(t, want) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            false
+        };
+
+        // プロンプトが出るまで待つ
+        for _ in 0..60 {
+            if screen(&t).contains('>') {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        write_prompt(&t, "echo shikisha-ok");
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            screen(&t).contains("echo shikisha-ok"),
+            "本文は入力欄に入る: {}",
+            screen(&t)
+        );
+        assert!(
+            !has_line(&t, "shikisha-ok"),
+            "まだ実行はされていない: {}",
+            screen(&t)
+        );
+
+        // 予約されていた実行が届く
+        t.write_bytes(b"\r").unwrap();
+        assert!(wait_for(&t, "shikisha-ok"), "実行される: {}", screen(&t));
+
         t.kill();
     }
 
