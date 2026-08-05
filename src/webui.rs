@@ -405,11 +405,14 @@ fn generate_with_local_ai(
     );
 
     let (cmd, args) = pick_local_ai(engine)?;
-    let mut child = std::process::Command::new(&cmd)
+    let mut spawner = std::process::Command::new(&cmd);
+    spawner
         .args(&args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // ここもコンソールを継承するとマウスが死ぬ (open_browser と同じ理由)
+    let mut child = crate::detach_console(&mut spawner)
         .spawn()
         .with_context(|| crate::i18n::tp("ai.err.cannot_run", &[("cmd", &cmd)]))?;
     {

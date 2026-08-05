@@ -468,6 +468,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut remote_ui = start_remote(cfg.as_ref(), password.as_deref(), &mut startup_errors);
     publish_remote(&remote_info, &remote_ui);
 
+    // マウスを有効にした直後のコンソール入力モード。
+    // 子プロセスに崩されたらこれに戻す (ensure_mouse_capture)
+    let console_mode = console_input_mode();
+
     let mut auto_enabled = true;
     let mut started_fired = vec![false; tabs.len()];
     // 自動チェーンの「透明のボール」。今どのタブが仕事を持っているかを表示に使う
@@ -753,6 +757,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 }
             }
         }
+
+        // 子プロセスがコンソールを崩していたら戻す。判定は GetConsoleMode 1回だけ
+        ensure_mouse_capture(console_mode);
 
         // 人間が入力すると chain_depth が0に戻る。ボールもそれに追従させる
         // (リセット箇所を増やさずに済むよう、持ち主の側から確認する)
@@ -1164,11 +1171,45 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 }
 
 /// 既定のブラウザでURLを開く
+/// 子プロセスに自分のコンソールを渡さない。
+///
+/// コンソールを継承した子 (特に cmd.exe) は入力モードから ENABLE_MOUSE_INPUT を
+/// 落とす。実測で 0x1f7 -> 0x1e7。こうなるとマウスが一切効かなくなり、
+/// 「設定画面を開いて戻ったらタブが押せない」という形で表面化する
+pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
 fn open_browser(url: &str) {
     // cmd の start はURL内の & を分割してしまうため、空タイトル引数の後に渡す
-    let _ = std::process::Command::new("cmd")
-        .args(["/c", "start", "", url])
-        .spawn();
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/c", "start", "", url])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _ = detach_console(&mut cmd).spawn();
+}
+
+/// コンソール入力モード。子プロセスに崩されたかの判定に使う
+fn console_input_mode() -> Option<u32> {
+    use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE};
+    unsafe {
+        let mut mode = 0u32;
+        (GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mut mode) != 0).then_some(mode)
+    }
+}
+
+/// 崩されていたら crossterm に設定し直させる。
+/// 予防 (detach_console) をすり抜ける経路が残っていても、ここで復帰できる
+fn ensure_mouse_capture(expected: Option<u32>) {
+    let (Some(want), Some(now)) = (expected, console_input_mode()) else {
+        return;
+    };
+    if want != now {
+        let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    }
 }
 
 /// Luaフックを3階層 (基本 > ワークスペース > タブ) で読み込む。
@@ -3006,3 +3047,40 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod console_mode_tests {
+    use std::process::Command;
+
+    /// コンソールが無ければ None (CIやパイプ経由では取れない)
+    fn input_mode() -> Option<u32> {
+        super::console_input_mode()
+    }
+
+    /// 子プロセスを起動してもマウス入力が生き残ること。
+    ///
+    /// コンソールを継承した cmd.exe は ENABLE_MOUSE_INPUT を落とす (実測 0x1f7 -> 0x1e7)。
+    /// これを踏むと設定画面を開いて戻った瞬間からマウスが効かなくなる。
+    ///
+    /// 注意: コンソールに繋がっていないと検証できないので、その場合は飛ばす。
+    /// 手元で確認するには、コンソールのあるウィンドウでテストバイナリを直接実行する
+    #[test]
+    fn spawning_a_child_keeps_mouse_input_alive() {
+        let Some(before) = input_mode() else {
+            eprintln!("コンソールが無いので検証を省略");
+            return;
+        };
+
+        // stdio は継承したまま試す。null にすると stdio 側だけで防げてしまい、
+        // detach_console が壊れても気づけないテストになる
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "exit"]);
+        let _ = super::detach_console(&mut cmd).spawn().unwrap().wait();
+
+        assert_eq!(
+            before,
+            input_mode().unwrap(),
+            "子プロセスの起動でコンソール入力モードが変わった (マウスが死ぬ)"
+        );
+    }
+}
