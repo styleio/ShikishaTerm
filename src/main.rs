@@ -476,8 +476,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut started_fired = vec![false; tabs.len()];
     // 自動チェーンの「透明のボール」。今どのタブが仕事を持っているかを表示に使う
     let mut ball = ball::Ball::default();
-    // 送信した本文に対して、あとから実行(改行)を送る予約 (タブ番号, 送る時刻)
-    let mut pending_submit: Vec<(usize, u64)> = Vec::new();
+    // 送信した本文に対して、あとから実行(改行)を送る予約
+    let mut pending_submit: Vec<PendingSubmit> = Vec::new();
     // INDEXで押せる場所。毎フレーム描画時に作り直す
     let mut hits: Vec<HitBox> = Vec::new();
     let mut hover: Option<Hit> = None;
@@ -635,7 +635,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         // 起動時のバナー出力だけでも画面は動いて止まるので、
                         // どのタブも必ず一度 DONE を通る。誰も何も聞いていない
                         // その出力を応答として転送しないよう、入力があった後だけ扱う
-                        let answering = tabs[idx - 1].was_prompted();
+                        // 実行(改行)がまだ届いていないタブは、貼り付けが置かれた
+                        // だけの状態。静かになっても、それは応答ではない
+                        let submitting = pending_submit.iter().any(|p| p.tab == idx);
+                        let answering = tabs[idx - 1].was_prompted() && !submitting;
                         match new {
                             TabState::Busy if answering => eng.fire("on_busy", &ctx, None),
                             TabState::Done if answering && old == TabState::Busy => {
@@ -715,8 +718,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 }
                                 t.chain_depth = 0;
                                 t.last_manual_ms = Some(now_ms);
+                                let seen = t.output_count();
                                 write_prompt(t, &text);
-                                pending_submit.push((tab, now_ms + SUBMIT_DELAY_MS));
+                                pending_submit.push(PendingSubmit::new(tab, seen, now_ms));
                                 append_hook_log(&format!("remote送信 tab{tab}"));
                             }
                         }
@@ -761,16 +765,17 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             }
         }
 
-        // 予約しておいた実行(改行)を、間を空けてから送る
+        // 予約しておいた実行(改行)を、相手が貼り付けを描いてから送る
         if !pending_submit.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
-            pending_submit.retain(|&(tab, at)| {
-                if now_ms < at {
+            pending_submit.retain(|p| {
+                let Some(t) = tabs.get(p.tab.wrapping_sub(1)) else {
+                    return false;
+                };
+                if !p.ready(t.output_count(), now_ms) {
                     return true;
                 }
-                if let Some(t) = tabs.get(tab.wrapping_sub(1)) {
-                    let _ = t.write_bytes(b"\r");
-                }
+                let _ = t.write_bytes(b"\r");
                 false
             });
         }
@@ -1233,12 +1238,47 @@ pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Com
     cmd.creation_flags(CREATE_NO_WINDOW)
 }
 
-/// 本文を送ってから実行(改行)を送るまでの間。
+/// 本文を送ってから実行(改行)を送るまでの、最低限の間。
+/// 相手が本当に処理し終える時間は機種にも負荷にも依るので、これは下限でしかない
+const SUBMIT_FLOOR_MS: u64 = 100;
+/// 相手が何も返してこないときに、それでも実行を送るまでの上限
+const SUBMIT_GIVE_UP_MS: u64 = 2_000;
+
+/// 本文を送ったあと、実行(改行)を送る予約。
 ///
-/// 1回の書き込みでまとめて送ると、AI CLIの入力欄が貼り付けを処理しきる前に
-/// 改行が届き、捨てられて「本文だけ入って実行されない」状態になる。
-/// 人が操作するときは必ず間が空くので、同じだけ待つ
-const SUBMIT_DELAY_MS: u64 = 120;
+/// まとめて1回で書くと、AI CLIが貼り付けを取り込む前に改行が届いて捨てられる。
+/// かといって固定の待ち時間にすると、それは「相手が何秒で処理するか」の当て推量で、
+/// 機種・負荷・本文の長さのどれかが変われば破綻する。
+/// 相手が貼り付けを描いた (= 出力を返した) ことを合図にする
+struct PendingSubmit {
+    tab: usize,
+    /// 送った時点の累計出力量。これを超えたら相手が反応した
+    seen: u64,
+    /// 早すぎる送信を防ぐ下限時刻
+    not_before: u64,
+    /// 反応が無くても諦めて送る時刻
+    give_up: u64,
+}
+
+impl PendingSubmit {
+    fn new(tab: usize, seen: u64, now_ms: u64) -> Self {
+        Self {
+            tab,
+            seen,
+            not_before: now_ms + SUBMIT_FLOOR_MS,
+            give_up: now_ms + SUBMIT_GIVE_UP_MS,
+        }
+    }
+
+    /// 今このタブへ実行(改行)を送ってよいか。
+    /// 相手が反応したら送る。反応が無いまま上限に達したら、それでも送る
+    fn ready(&self, output_count: u64, now_ms: u64) -> bool {
+        if now_ms < self.not_before {
+            return false;
+        }
+        output_count > self.seen || now_ms >= self.give_up
+    }
+}
 
 /// プロンプトへ本文だけを送る。実行は呼び出し側が少し遅らせて送る
 fn write_prompt(t: &Tab, text: &str) {
@@ -1708,7 +1748,7 @@ fn exec_commands(
     notifier: &notify::Notifier,
     flash: &mut Option<String>,
     ball: &mut ball::Ball,
-    pending_submit: &mut Vec<(usize, u64)>,
+    pending_submit: &mut Vec<PendingSubmit>,
 ) {
     // タブ名でも指定できるようにする (番号は並べ替えで変わるため)
     let keys: Vec<hooks::TabKey> = tabs.iter().map(|t| t.key()).collect();
@@ -1781,8 +1821,9 @@ fn exec_commands(
                     continue;
                 }
                 t.chain_depth = depth;
+                let seen = t.output_count();
                 write_prompt(t, &text);
-                pending_submit.push((target, now_ms + SUBMIT_DELAY_MS));
+                pending_submit.push(PendingSubmit::new(target, seen, now_ms));
                 ball.throw(origin, target, depth, now_ms);
                 append_hook_log(&format!("auto-send tab{origin} -> tab{target} (depth {depth})"));
             }
@@ -3133,6 +3174,42 @@ mod tests {
         );
 
         t.kill();
+    }
+
+    /// 実行(改行)は、時計ではなく相手の反応を待って送ること。
+    ///
+    /// 固定の待ち時間は「相手が何秒で貼り付けを処理するか」の当て推量で、
+    /// 短すぎれば改行が捨てられ、入力欄に貼り付けだけが積み上がる
+    #[test]
+    fn the_enter_waits_for_the_program_to_react() {
+        let p = PendingSubmit::new(1, 500, 1_000);
+
+        // 送った直後は、反応があっても早すぎる
+        assert!(!p.ready(500, 1_000), "送った瞬間");
+        assert!(
+            !p.ready(9_999, 1_000 + SUBMIT_FLOOR_MS - 1),
+            "下限より前は、反応があっても待つ"
+        );
+
+        // 下限を過ぎて反応があれば送る
+        assert!(
+            p.ready(501, 1_000 + SUBMIT_FLOOR_MS),
+            "相手が何か出力したら、それが貼り付けを描いた合図"
+        );
+        // 反応が無ければ待ち続ける
+        assert!(
+            !p.ready(500, 1_000 + SUBMIT_FLOOR_MS),
+            "無反応なら待つ"
+        );
+        assert!(
+            !p.ready(500, 1_000 + SUBMIT_GIVE_UP_MS - 1),
+            "上限までは待つ"
+        );
+        // ただし永遠には待たない
+        assert!(
+            p.ready(500, 1_000 + SUBMIT_GIVE_UP_MS),
+            "無反応のまま上限に達したら、それでも送る"
+        );
     }
 
     /// 緊急停止は、どの画面にいても同じ場所にあること。

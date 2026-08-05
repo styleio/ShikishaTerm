@@ -818,7 +818,12 @@ impl Tab {
 
     /// 子プロセスが何か出力したか (起動して動き出したかの目安)
     pub fn had_output(&self) -> bool {
-        self.bytes_out.load(Ordering::Relaxed) > 0
+        self.output_count() > 0
+    }
+
+    /// PTYから読んだ累計バイト数。ある時点からの反応の有無を見るのに使う
+    pub fn output_count(&self) -> u64 {
+        self.bytes_out.load(Ordering::Relaxed)
     }
 
     /// このセッションを作ってからの経過ミリ秒
