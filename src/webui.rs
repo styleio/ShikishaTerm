@@ -301,7 +301,9 @@ fn describe_tabs(parsed: &serde_json::Value) -> String {
     }
     let me = parsed.get("self").and_then(|v| v.as_u64()).unwrap_or(0);
     let mut s = String::from(
-        "## タブ構成 (shikisha.send_to_tab の番号はこれを使うこと)\n",
+        "## タブ構成\n\
+         送信先はタブ名で指定すること (例: shikisha.send_to_tab(\"検査\", ...))。\n\
+         番号は並べ替えで変わるため、名前の方が安全。\n",
     );
     for t in tabs {
         let i = t.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -753,7 +755,7 @@ const PAGE: &str = r##"<!doctype html>
  td button { padding:2px 8px; font-size:12px; }
  input[type=checkbox] { width:16px; height:16px; accent-color:#39ff14; }
  b { color:#00aaff; font-weight:normal; font-size:12px; }
- .tree { color:#ffea00; margin-left:4px; }
+ .tree { color:#ffea00; margin-left:4px; cursor:help; }
  .tab { border:1px solid #12261a; border-radius:4px; padding:8px 10px; margin:8px 0;
         background:#070d10; }
  .tabhead { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
@@ -957,7 +959,9 @@ function render() {
             onclick:() => { t.depth = Math.max((t.depth||0)-1, 0); render(); }}, "← 上げる")));
 
       card.append(el("div", {class:"tabhead"},
-        el("span", {class:"tree"}, "　".repeat(t.depth||0) + (t.depth ? "└" : "・")),
+        // 番号は自動化で shikisha.send_to_tab(番号, ...) と書くときに使う
+        el("span", {class:"tree", title:`自動化では shikisha.send_to_tab(${ti+1}, ...) と書きます`},
+           "　".repeat(t.depth||0) + (t.depth ? "└" : "") + `(${ti+1})`),
         input(t, "name", "タブ名 (例: A:実装)", "text"),
         cmdInput,
         el("button", {class:"ghost", onclick:() => openAuto(ws, t)}, "⚙ 自動化"),
@@ -1305,8 +1309,9 @@ function autoDirOf(ws, t) {
 
 async function openAuto(ws, t) {
   autoTarget = { ws, t, dir: autoDirOf(ws, t) };
+  const idx = (ws.tabs || []).indexOf(t) + 1;
   document.getElementById("autotitle").textContent =
-      "自動化 — " + (t.name || "(無名タブ)") + "　[" + autoTarget.dir + "]";
+      `自動化 — (${idx}) ` + (t.name || "無名タブ") + "　[" + autoTarget.dir + "]";
   const sel = document.getElementById("autoevent");
   sel.textContent = "";
   for (const [id, label] of EVENTS) sel.append(el("option", {value:id}, label));

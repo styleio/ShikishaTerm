@@ -20,21 +20,38 @@ fn lerr(e: mlua::Error) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
 
+/// タブの指定方法。番号は並べ替えで変わるので、名前で指定するのが安全
+#[derive(Debug, Clone)]
+pub enum TabRef {
+    Index(usize),
+    Name(String),
+}
+
+impl TabRef {
+    /// タブ名の一覧から実際の番号 (1始まり) を求める
+    pub fn resolve(&self, titles: &[String]) -> Option<usize> {
+        match self {
+            TabRef::Index(i) => (*i >= 1 && *i <= titles.len()).then_some(*i),
+            TabRef::Name(n) => titles.iter().position(|t| t == n).map(|i| i + 1),
+        }
+    }
+}
+
 /// フックからRust側へ依頼される操作。main側で実行される
 #[derive(Debug)]
 pub enum Command {
     /// プロンプトとして他タブへ送信 (bracketed paste + Enter、チェーン深度を継承)
     SendPrompt {
-        target: usize,
+        target: TabRef,
         text: String,
         origin: usize,
     },
     /// 生のキー列を送信 (on_questionの自動応答等。エンコードせずそのまま)
-    SendKeys { target: usize, keys: String },
+    SendKeys { target: TabRef, keys: String },
     /// 登録済み通知先への通知 (Phase 4-3でSlack/Telegram実装、現状はログ+表示)
     Notify { dest: String, text: String },
     /// タブの再起動 (SSH切断・CLI自己更新からの復帰)
-    Restart { target: usize },
+    Restart { target: TabRef },
     Log(String),
 }
 
@@ -118,8 +135,8 @@ pub struct HookEngine {
     lua: Lua,
     commands: Rc<RefCell<Vec<Command>>>,
     current_origin: Rc<Cell<usize>>,
-    /// 各タブの現在の状態 (ループ中から読めるようにする)
-    states: Rc<RefCell<Vec<String>>>,
+    /// 各タブの (名前, 現在の状態)。ループ中から読めるようにする
+    states: Rc<RefCell<Vec<(String, String)>>>,
     pending: Vec<Pending>,
     scripts: Vec<Script>,
     attach: Attach,
@@ -153,7 +170,7 @@ impl HookEngine {
 
         let commands: Rc<RefCell<Vec<Command>>> = Rc::new(RefCell::new(Vec::new()));
         let current_origin = Rc::new(Cell::new(1usize));
-        let states: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let states: Rc<RefCell<Vec<(String, String)>>> = Rc::new(RefCell::new(Vec::new()));
 
         let shikisha = lua.create_table().map_err(lerr)?;
         {
@@ -164,10 +181,12 @@ impl HookEngine {
                 .set(
                     "state",
                     lua.create_function(move |_, tab: Value| {
-                        let idx = tab_index_of(&tab)?;
-                        Ok(s.borrow()
-                            .get(idx.wrapping_sub(1))
-                            .cloned()
+                        let r = tab_ref_of(&tab)?;
+                        let states = s.borrow();
+                        let titles: Vec<String> =
+                            states.iter().map(|(n, _)| n.clone()).collect();
+                        Ok(r.resolve(&titles)
+                            .and_then(|i| states.get(i - 1).map(|(_, st)| st.clone()))
                             .unwrap_or_else(|| "EXIT".to_string()))
                     })
                     .map_err(lerr)?,
@@ -180,9 +199,9 @@ impl HookEngine {
             shikisha
                 .set(
                     "send_to_tab",
-                    lua.create_function(move |_, (target, text): (usize, String)| {
+                    lua.create_function(move |_, (target, text): (Value, String)| {
                         c.borrow_mut().push(Command::SendPrompt {
-                            target,
+                            target: tab_ref_of(&target)?,
                             text,
                             origin: o.get(),
                         });
@@ -198,8 +217,10 @@ impl HookEngine {
                 .set(
                     "send",
                     lua.create_function(move |_, (tab, keys): (Value, String)| {
-                        let target = tab_index_of(&tab)?;
-                        c.borrow_mut().push(Command::SendKeys { target, keys });
+                        c.borrow_mut().push(Command::SendKeys {
+                            target: tab_ref_of(&tab)?,
+                            keys,
+                        });
                         Ok(())
                     })
                     .map_err(lerr)?,
@@ -225,8 +246,9 @@ impl HookEngine {
                 .set(
                     "restart",
                     lua.create_function(move |_, tab: Value| {
-                        let target = tab_index_of(&tab)?;
-                        c.borrow_mut().push(Command::Restart { target });
+                        c.borrow_mut().push(Command::Restart {
+                            target: tab_ref_of(&tab)?,
+                        });
                         Ok(())
                     })
                     .map_err(lerr)?,
@@ -341,8 +363,8 @@ impl HookEngine {
         })
     }
 
-    /// 検出ティックごとに全タブの状態を反映する
-    pub fn set_states(&self, states: Vec<String>) {
+    /// 検出ティックごとに全タブの (名前, 状態) を反映する
+    pub fn set_states(&self, states: Vec<(String, String)>) {
         *self.states.borrow_mut() = states;
     }
 
@@ -566,7 +588,7 @@ impl HookEngine {
             if let Some(Value::String(s)) = vals.into_iter().next() {
                 if let Ok(keys) = s.to_str() {
                     self.commands.borrow_mut().push(Command::SendKeys {
-                        target: origin,
+                        target: TabRef::Index(origin),
                         keys: keys.to_string(),
                     });
                 }
@@ -618,11 +640,16 @@ impl HookEngine {
     }
 }
 
-fn tab_index_of(v: &Value) -> mlua::Result<usize> {
+/// タブ指定を受け取る。番号・タブ名・tabテーブルのいずれでもよい
+fn tab_ref_of(v: &Value) -> mlua::Result<TabRef> {
     match v {
-        Value::Integer(n) => Ok(*n as usize),
-        Value::Table(t) => t.get("index"),
-        _ => Err(mlua::Error::runtime("tabはインデックスかtabテーブルで指定")),
+        Value::Integer(n) => Ok(TabRef::Index(*n as usize)),
+        Value::Number(n) => Ok(TabRef::Index(*n as usize)),
+        Value::String(s) => Ok(TabRef::Name(s.to_str()?.to_string())),
+        Value::Table(t) => Ok(TabRef::Index(t.get("index")?)),
+        _ => Err(mlua::Error::runtime(
+            "タブは番号かタブ名で指定してください",
+        )),
     }
 }
 
@@ -660,7 +687,7 @@ mod tests {
         let cmds = e.drain_commands();
         assert!(matches!(
             &cmds[0],
-            Command::SendPrompt { target: 1, origin: 2, text } if text.starts_with("fix:")
+            Command::SendPrompt { origin: 2, text, .. } if text.starts_with("fix:")
         ));
     }
 
@@ -679,7 +706,7 @@ mod tests {
         let cmds = e.drain_commands();
         assert!(matches!(
             &cmds[0],
-            Command::SendKeys { target: 1, keys } if keys == "1\r"
+            Command::SendKeys { keys, .. } if keys == "1\r"
         ));
 
         e.fire("on_question", &ctx(1, ""), Some("ファイルを削除しますか?"));
@@ -710,7 +737,7 @@ mod tests {
         let cmds = e.drain_commands();
         assert!(matches!(
             &cmds[0],
-            Command::SendKeys { target: 1, keys } if keys == "cd /work\r"
+            Command::SendKeys { keys, .. } if keys == "cd /work\r"
         ));
     }
 
@@ -733,6 +760,30 @@ mod tests {
     }
 
     #[test]
+    fn tabs_can_be_addressed_by_name_so_reordering_is_safe() {
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_done(tab)
+              shikisha.send_to_tab("検査", "レビューして: " .. tab.output)
+            end
+            "#,
+        )
+        .unwrap();
+        e.fire("on_done", &ctx(1, "code"), None);
+        let cmds = e.drain_commands();
+        let Command::SendPrompt { target, .. } = &cmds[0] else {
+            panic!("送信コマンドが積まれるはず");
+        };
+        // 並べ替えても、名前が同じなら正しいタブに解決される
+        let before = vec!["実装".to_string(), "検査".to_string()];
+        let after = vec!["検査".to_string(), "実装".to_string()];
+        assert_eq!(target.resolve(&before), Some(2));
+        assert_eq!(target.resolve(&after), Some(1));
+        // 存在しない名前は解決できない (誤爆させない)
+        assert_eq!(target.resolve(&["別名".to_string()]), None);
+    }
+
+    #[test]
     fn loop_can_read_live_state_and_exit() {
         // on_tick の代わりに「開始時 + ループ + sleep」で定期処理が書けること
         let mut e = HookEngine::from_source(
@@ -747,13 +798,13 @@ mod tests {
             "#,
         )
         .unwrap();
-        e.set_states(vec!["BUSY".into()]);
+        e.set_states(vec![("tab1".into(), "BUSY".into())]);
         e.fire("on_busy", &ctx(1, ""), None);
         // 状態がBUSYの間はループが続く
         std::thread::sleep(std::time::Duration::from_millis(1100));
         e.tick_pending(&|_| None);
         // 状態が変わればループを抜ける
-        e.set_states(vec!["DONE".into()]);
+        e.set_states(vec![("tab1".into(), "DONE".into())]);
         std::thread::sleep(std::time::Duration::from_millis(1100));
         e.tick_pending(&|_| None);
         let logs: Vec<String> = e

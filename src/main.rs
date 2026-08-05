@@ -510,7 +510,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             // フック発火 → wait中コルーチン再開 → 積まれた操作の実行
             if let Some(eng) = engine.as_mut() {
                 // ループ中から現在の状態を読めるようにする (shikisha.state)
-                eng.set_states(tabs.iter().map(|t| t.state.label().to_string()).collect());
+                eng.set_states(
+                    tabs.iter()
+                        .map(|t| (t.title.clone(), t.state.label().to_string()))
+                        .collect(),
+                );
                 // 終了したタブで待機中のループは破棄する (無限ループを残さない)
                 for &(idx, old, new) in &transitions {
                     if new == TabState::Exited && old != TabState::Exited {
@@ -1280,10 +1284,17 @@ fn exec_commands(
     notifier: &notify::Notifier,
     flash: &mut Option<String>,
 ) {
+    // タブ名でも指定できるようにする (番号は並べ替えで変わるため)
+    let titles: Vec<String> = tabs.iter().map(|t| t.title.clone()).collect();
+    let index_of = |r: &hooks::TabRef| r.resolve(&titles);
     for cmd in cmds {
         match cmd {
             Command::Log(msg) => append_hook_log(&msg),
             Command::Restart { target } => {
+                let Some(target) = index_of(&target) else {
+                    *flash = Some(format!(">> 自動化: タブ {target:?} が見つかりません"));
+                    continue;
+                };
                 if let Some(t) = tabs.get_mut(target.wrapping_sub(1)) {
                     match t.restart(rows, cols) {
                         Ok(()) => {
@@ -1302,6 +1313,10 @@ fn exec_commands(
                 if !auto_enabled {
                     continue;
                 }
+                let Some(target) = index_of(&target) else {
+                    *flash = Some(format!(">> 自動化: タブ {target:?} が見つかりません"));
+                    continue;
+                };
                 if let Some(t) = tabs.get(target.wrapping_sub(1)) {
                     if now_ms.saturating_sub(t.last_manual_ms) < MANUAL_GUARD_MS {
                         continue;
@@ -1317,6 +1332,11 @@ fn exec_commands(
                 if !auto_enabled {
                     continue;
                 }
+                let Some(target) = index_of(&target) else {
+                    *flash = Some(format!(">> 自動化: タブ {target:?} が見つかりません"));
+                    append_hook_log(&format!("送信先が見つかりません: {target:?}"));
+                    continue;
+                };
                 let depth = tabs
                     .get(origin.wrapping_sub(1))
                     .map(|t| t.chain_depth)

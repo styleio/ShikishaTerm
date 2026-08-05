@@ -10,4 +10,5 @@ if tab.output:match("LGTM") or rounds >= 5 then
   return
 end
 shikisha.set_var("rounds", rounds + 1)
-shikisha.send_to_tab(1, "指摘を修正して:\n" .. tab.output)
+-- タブは名前で指定できる (並べ替えても壊れない)
+shikisha.send_to_tab("実装", "指摘を修正して:\n" .. tab.output)
