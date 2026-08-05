@@ -936,8 +936,8 @@ impl Tab {
         self.activity[ACTIVITY_LEN - 1] = level;
     }
 
-    /// DONE を確定させるまでの待ち時間 (プロファイル設定)
-    pub fn done_confirm_ms(&self) -> u64 {
+    /// このAI固有の確認時間 (プロファイルに指定があれば)
+    pub fn done_confirm_ms(&self) -> Option<u64> {
         self.detector.done_confirm_ms()
     }
 

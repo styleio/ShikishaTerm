@@ -1092,6 +1092,21 @@ function refreshSave() {
 setInterval(refreshSave, 600);
 
 // ── 部品 ─────────────────────────────────────────────
+// 中身はミリ秒で持つが、人に見せるのは秒。
+// 「10000」と書かせるより「10」のほうが、設定として素直に読める
+function secondsField(obj, key, placeholderSec) {
+  const i = el("input", {type:"number", step:"1", min:"0",
+                         placeholder:String(placeholderSec), class:"grow"});
+  i.style.maxWidth = "110px";
+  const ms = obj[key];
+  i.value = (ms === "" || ms === null || ms === undefined) ? "" : String(Number(ms) / 1000);
+  i.oninput = () => {
+    const v = i.value.trim();
+    if (v === "") delete obj[key];
+    else obj[key] = Math.round(Number(v) * 1000);
+  };
+  return i;
+}
 function field(obj, key, ph, opts = {}) {
   const i = el("input", {type: opts.type || "text", placeholder: ph,
                          class: (opts.mono ? "mono " : "") + (opts.grow === false ? "" : "grow")});
@@ -1283,6 +1298,8 @@ function globalPane() {
         el("span", {class:"hint"}, T["settings.tabbar_width.hint"])),
     row(T["settings.max_chain"], field(current, "max_chain", "10", {type:"number", width:110, grow:false}),
         el("span", {class:"hint"}, T["settings.max_chain.hint"])),
+    row(T["settings.done_confirm"], secondsField(current, "done_confirm_ms", 10),
+        el("span", {class:"hint"}, T["settings.done_confirm.hint"])),
     row(T["settings.ai_engine"], aiSelect(),
         el("span", {class:"hint", id:"aihint"}, ""))));
   box.append(remoteCard());

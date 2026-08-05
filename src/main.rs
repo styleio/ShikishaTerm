@@ -402,6 +402,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     // Luaフックエンジンはワークスペース単位 (共有変数もその中で共有される)。
     // 未使用のワークスペースは作らず、切替時に必要なら生成する
     let mut max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
+    let mut done_confirm_ms = cfg
+        .as_ref()
+        .and_then(|c| c.done_confirm_ms)
+        .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
     // secretsが暗号化されていれば起動時にマスターパスワードを尋ねる
     let mut password: Option<String> = None;
     if let Some(path) = cfg.as_ref().and_then(|c| c.secrets_path()) {
@@ -533,6 +537,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 ws_tabs.resize_with(new_ws.len().max(1), Vec::new);
                 workspaces = new_ws;
                 max_chain = newcfg.max_chain.unwrap_or(10);
+                done_confirm_ms = newcfg
+                    .done_confirm_ms
+                    .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
                 if let Some(w) = newcfg.tab_bar_width {
                     let w = w.clamp(TAB_BAR_MIN, TAB_BAR_MAX);
                     if w != tab_w {
@@ -654,7 +661,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             TabState::Done if answering && old == TabState::Busy => {
                                 // ここでは撃たない。AIの出力は途中で息継ぎをするので、
                                 // 静かになっただけでは終わったと言えない
-                                let at = now_ms + tabs[idx - 1].done_confirm_ms();
+                                // AI固有の指定があればそちら、無ければ基本設定
+                                let wait = tabs[idx - 1].done_confirm_ms().unwrap_or(done_confirm_ms);
+                                let at = now_ms + wait;
                                 pending_done.retain(|&(t, _)| t != idx);
                                 pending_done.push((idx, at));
                             }

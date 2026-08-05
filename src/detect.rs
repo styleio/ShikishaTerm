@@ -71,8 +71,8 @@ impl Detector {
         self.profile.ignore_bottom_rows
     }
 
-    /// DONE を確定させるまでの待ち時間
-    pub fn done_confirm_ms(&self) -> u64 {
+    /// このAI固有の確認時間 (指定があれば)
+    pub fn done_confirm_ms(&self) -> Option<u64> {
         self.profile.done_confirm_ms
     }
 
@@ -126,7 +126,7 @@ mod tests {
             question_patterns: vec!["Do you want".into(), "❯\\s*1\\.".into()],
             silence_ms: 2000,
             ignore_bottom_rows: 2,
-            done_confirm_ms: 3000,
+            done_confirm_ms: None,
         })
         .unwrap()
     }

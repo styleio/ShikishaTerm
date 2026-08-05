@@ -137,6 +137,8 @@
   "settings.tabbar_width.hint": "空欄ならタブ名に合わせます",
   "settings.max_chain": "自動チェーン上限",
   "settings.max_chain.hint": "AI同士の自動転送が続く回数の上限",
+  "settings.done_confirm": "完了と判断するまで",
+  "settings.done_confirm.hint": "返事が終わったと判断するまでの静止時間（秒）。短いと考えている途中で次のタブへ渡します",
   "settings.ai_engine": "コードを書くAI",
   "settings.ai_engine.auto": "自動（見つかったものを使う）",
   "settings.ai_engine.none": "見つかりません",

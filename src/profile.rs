@@ -28,9 +28,11 @@ pub struct ProfileFile {
     ///
     /// AIの出力は途中で息継ぎをするので、静かになっただけでは終わりと言えない。
     /// 画面の表示はすぐ切り替えてよい (間違っても戻るだけ) が、
-    /// 他のタブへ渡すのは取り消せないので、こちらだけ確証を待つ
-    #[serde(default = "default_done_confirm_ms")]
-    pub done_confirm_ms: u64,
+    /// 他のタブへ渡すのは取り消せないので、こちらだけ確証を待つ。
+    ///
+    /// 未指定なら基本設定の値を使う。AIごとに癖があるときだけここで上書きする
+    #[serde(default)]
+    pub done_confirm_ms: Option<u64>,
 }
 
 fn default_silence_ms() -> u64 {
@@ -41,9 +43,11 @@ fn default_ignore_bottom_rows() -> u16 {
     2
 }
 
-fn default_done_confirm_ms() -> u64 {
-    3000
-}
+/// 応答完了を確定させるまでの既定の待ち時間。
+///
+/// 待って失うのは受け渡しが数秒遅れることだけで、
+/// 早合点して途中の返事を渡してしまう損害とは釣り合わない。長めに取る
+pub const DEFAULT_DONE_CONFIRM_MS: u64 = 10_000;
 
 /// コンパイル済みプロファイル
 pub struct Profile {
@@ -52,7 +56,7 @@ pub struct Profile {
     pub question: Vec<regex::Regex>,
     pub silence_ms: u64,
     pub ignore_bottom_rows: u16,
-    pub done_confirm_ms: u64,
+    pub done_confirm_ms: Option<u64>,
 }
 
 impl Profile {
@@ -65,7 +69,7 @@ impl Profile {
             question: Vec::new(),
             silence_ms: default_silence_ms(),
             ignore_bottom_rows: default_ignore_bottom_rows(),
-            done_confirm_ms: default_done_confirm_ms(),
+            done_confirm_ms: None,
         }
     }
 

@@ -29,6 +29,9 @@ pub struct Config {
     /// 自動送信のたびに+1されてタブ間を受け継がれ、人間の手動入力で0に戻る
     #[serde(default)]
     pub max_chain: Option<u32>,
+    /// 応答が終わったと確定するまでの待ち時間 (ms)。
+    /// プロファイル側で指定があればそちらが優先される
+    pub done_confirm_ms: Option<u64>,
     /// 左タブバーの幅 (桁)。省略時はタブ名に合わせて自動調整。
     /// 実行中は境界線のドラッグでも変更できる
     #[serde(default)]
