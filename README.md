@@ -48,6 +48,23 @@ Nothing is written outside that folder. There is no installer and no runtime to 
 > It uses **your existing AI subscriptions** through their CLIs. No API keys are stored,
 > and none are needed.
 
+### About the Windows warning
+
+The first run shows **"Windows protected your PC"**. The executable is not code-signed:
+a certificate that removes that dialog immediately costs several hundred dollars a year,
+which is hard to justify for a free tool.
+
+Click **More info → Run anyway** to continue. If you would rather check first — and being
+wary of an unsigned executable from the internet is the right instinct:
+
+- Every release is built by [GitHub Actions](.github/workflows/release.yml) from this
+  source, not on anyone's laptop. The build log for your download is public
+- A `ShikishaTerm-AI.zip.sha256` is published next to the zip:
+
+  ```powershell
+  Get-FileHash ShikishaTerm-AI.zip -Algorithm SHA256
+  ```
+
 ## Quick start
 
 On the first run the screen tells you to press `[e]`, which opens the settings screen in
