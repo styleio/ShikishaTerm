@@ -482,6 +482,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut ball = ball::Ball::default();
     // 送信した本文に対して、あとから実行(改行)を送る予約
     let mut pending_submit: Vec<PendingSubmit> = Vec::new();
+    // 実行を送ったが画面が変わらないタブと、押し直す時刻
+    let mut pending_retry: Vec<(usize, u64)> = Vec::new();
     // 応答完了と見えたタブと、それを確定させる時刻。
     // 途中の息継ぎで撃たないよう、静かなまま保っていることを確かめてから撃つ
     let mut pending_done: Vec<(usize, u64)> = Vec::new();
@@ -835,6 +837,25 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     p.tab,
                     if reacted { "反応あり" } else { "無反応のまま送信" }
                 ));
+                pending_retry.push((p.tab, now_ms + SUBMIT_RETRY_MS));
+                false
+            });
+        }
+
+        // 実行が効いていなければ一度だけ押し直す。
+        // 画面が変わっていないことを確かめてから送るので、二重送信にならない
+        if !pending_retry.is_empty() {
+            let now_ms = start.elapsed().as_millis() as u64;
+            pending_retry.retain(|&(tab, at)| {
+                if now_ms < at {
+                    return true;
+                }
+                if let Some(t) = tabs.get(tab.wrapping_sub(1)) {
+                    if !t.answered_since_submit() {
+                        let _ = t.write_bytes(b"\r");
+                        append_hook_log(&format!("submit tab{tab} 効かないので押し直し"));
+                    }
+                }
                 false
             });
         }
@@ -1303,6 +1324,9 @@ pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Com
 const SUBMIT_FLOOR_MS: u64 = 100;
 /// 相手が何も返してこないときに、それでも実行を送るまでの上限
 const SUBMIT_GIVE_UP_MS: u64 = 2_000;
+/// 実行を送ったあと、画面が変わらなければ押し直すまでの間。
+/// 変わっていないことを確かめてから送るので、二重送信にはならない
+const SUBMIT_RETRY_MS: u64 = 1_500;
 
 /// 本文を送ったあと、実行(改行)を送る予約。
 ///

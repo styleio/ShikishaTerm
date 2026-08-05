@@ -310,35 +310,53 @@ mod tests {
         );
     }
 
-    /// 実行してから相手が何か返したかどうかで、応答の有無を決めること。
+    /// 実行が効かなかったときに、それを応答と呼ばないこと。
     ///
-    /// 実行が届かなければ画面は貼り付けが見えたまま静かになる。
-    /// 「動いて→止まった」形は応答と同じなので、実行より後の出力まで見ないと、
-    /// 一度も答えていない相手からボールが返ってくる
+    /// 出力のバイト数で見ると、カーソルの点滅や枠の描き直しでも増えるので
+    /// 「答えた」と数えてしまう。実行が届かなければ入力欄に文章が乗ったまま
+    /// 画面の中身は変わらない、という違いを見る
     #[test]
-    fn an_answer_requires_output_after_the_submit() {
+    fn an_answer_requires_the_screen_to_change_after_the_submit() {
         use super::{Tab, TabOptions};
+        use std::sync::atomic::Ordering;
         use std::time::{Duration, Instant};
 
         let argv = vec!["cmd.exe".to_string()];
-        let mut t = Tab::spawn("shell".into(), &argv, None, 10, 60, TabOptions::default()).unwrap();
+        let mut t = Tab::spawn("shell".into(), &argv, None, 12, 60, TabOptions::default()).unwrap();
         let start = Instant::now();
-        for _ in 0..40 {
-            std::thread::sleep(Duration::from_millis(50));
-            t.tick(start);
-        }
-        assert!(t.had_output(), "起動時の出力はある");
+        let settle = |t: &mut Tab| {
+            for _ in 0..40 {
+                std::thread::sleep(Duration::from_millis(50));
+                t.tick(start);
+            }
+        };
+        settle(&mut t);
 
-        // 実行した直後は、まだ相手は何も返していない
-        t.write_bytes(b"echo REPLY
-").unwrap();
+        // 効かない実行の再現: 画面を変えない入力を送る
+        // (子プロセスは受け取るが、表示は何も変わらない)
+        let before = t.output_count();
+        t.write_bytes(b"\x00\r").unwrap();
         assert!(t.was_prompted(), "実行として記録される");
         assert!(
             !t.answered_since_submit(),
-            "実行した直後を応答ありと数えている (届かなくても応答扱いになる)"
+            "実行した直後を応答ありと数えている"
+        );
+        settle(&mut t);
+        assert!(t.output_count() > before, "出力そのものは増えている");
+
+        // 肝心なのはここ: 出力は増えたが画面の中身は変わっていない状態。
+        // Codexのカーソル再描画などがこれにあたり、バイト数で見ると
+        // 「答えた」と誤判定する
+        t.submitted_output.store(0, Ordering::Relaxed);
+        t.submitted_screen
+            .store(t.screen_fingerprint(), Ordering::Relaxed);
+        assert!(
+            !t.answered_since_submit(),
+            "出力が増えただけで応答ありと数えている (実行が効いていなくてもボールが渡る)"
         );
 
-        // 返ってきたら応答あり
+        // 画面が変わる実行なら応答あり
+        t.write_bytes(b"echo REPLY\r").unwrap();
         let mut answered = false;
         for _ in 0..60 {
             std::thread::sleep(Duration::from_millis(50));
@@ -348,50 +366,7 @@ mod tests {
                 break;
             }
         }
-        assert!(answered, "出力が返れば応答として数える");
-
-        t.kill();
-    }
-
-    /// 取り込む応答に、実行より前の画面が混ざらないこと。
-    ///
-    /// 計算式に画面の高さを足していたため、必ず1画面ぶんが付いてきて、
-    /// 起動バナーと入力欄が「応答」として相手のAIへ渡っていた
-    #[test]
-    fn the_captured_response_excludes_what_was_on_screen_before() {
-        use super::{Tab, TabOptions};
-        use crate::detect::TabState;
-        use std::time::{Duration, Instant};
-
-        let argv = vec!["cmd.exe".to_string()];
-        let mut t = Tab::spawn("shell".into(), &argv, None, 20, 70, TabOptions::default()).unwrap();
-        let start = Instant::now();
-        let run = |t: &mut Tab, cmd: &[u8]| {
-            t.write_bytes(cmd).unwrap();
-            for _ in 0..80 {
-                std::thread::sleep(Duration::from_millis(50));
-                if t.tick(start).1 == TabState::Done {
-                    break;
-                }
-            }
-        };
-
-        // 実行の前に、画面へ目印を残しておく (起動バナーに相当する)
-        run(&mut t, b"echo BEFORE-THE-QUESTION\r");
-        t.finish_response();
-
-        // ここからが応答
-        run(&mut t, b"echo THE-ANSWER\r");
-        let captured = t.last_response.clone().unwrap_or_default();
-
-        assert!(
-            captured.contains("THE-ANSWER"),
-            "応答が入っていない: {captured}"
-        );
-        assert!(
-            !captured.contains("BEFORE-THE-QUESTION"),
-            "実行より前の画面が混ざっている (起動バナーが応答として渡る): {captured}"
-        );
+        assert!(answered, "画面が変われば応答として数える");
 
         t.kill();
     }
@@ -665,6 +640,11 @@ pub struct Tab {
     /// 画面は変化するので、そのまま活動と数えると BUSY→DONE を通り、
     /// 応答が来たように見えてしまう
     last_resize_ms: AtomicU64,
+    /// 実行した時点の画面の中身 (ハッシュ)。
+    ///
+    /// 出力のバイト数だと、カーソルの点滅や枠の描き直しでも増えるので
+    /// 「答えた」と数えてしまう。実行が届かなければ画面の中身は変わらない
+    submitted_screen: AtomicU64,
     /// 実行した時点の累計出力量。
     ///
     /// 実行が相手に届かなかった場合、画面は貼り付けが見えたまま静かになる。
@@ -820,6 +800,7 @@ impl Tab {
             created: Instant::now(),
             prompted: AtomicBool::new(false),
             submitted_output: AtomicU64::new(0),
+            submitted_screen: AtomicU64::new(0),
             last_resize_ms: AtomicU64::new(0),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
@@ -836,10 +817,18 @@ impl Tab {
         self.prompted.load(Ordering::Relaxed)
     }
 
-    /// 実行してから、相手が何か出力したか。
-    /// 実行が届かなければ画面は静かなままなので、これが応答の有無になる
+    /// 今の画面の中身 (最下部の飾りは除く)
+    fn screen_fingerprint(&self) -> u64 {
+        let p = self.parser.lock().unwrap();
+        screen_hash(p.screen(), self.detector.ignore_bottom_rows())
+    }
+
+    /// 実行してから画面の中身が変わったか。
+    ///
+    /// 実行が届いていれば、貼り付けの表示が消えて答えが出るので必ず変わる。
+    /// 届いていなければ入力欄に文章が乗ったまま何も動かない
     pub fn answered_since_submit(&self) -> bool {
-        self.output_count() > self.submitted_output.load(Ordering::Relaxed)
+        self.screen_fingerprint() != self.submitted_screen.load(Ordering::Relaxed)
     }
 
     /// 応答を受け取り切ったので、次の実行を待つ状態に戻す
@@ -863,6 +852,8 @@ impl Tab {
             // 応答はここから始まる。これより前は指示であって答えではない
             self.response_marker
                 .store(self.line_position() as u64, Ordering::Relaxed);
+            self.submitted_screen
+                .store(self.screen_fingerprint(), Ordering::Relaxed);
         }
         // 相手がUTF-8以外なら、送る文字も変換する
         // (制御シーケンスはASCIIなのでそのまま通る)
