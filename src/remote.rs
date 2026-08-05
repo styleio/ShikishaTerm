@@ -268,7 +268,6 @@ const PAGE: &str = r##"<!doctype html>
       <div class="btns">
         <button class="primary" onclick="send()">{{phone.send}}</button>
         <button onclick="back()">{{phone.back}}</button>
-        <button onclick="toggleView()" id="viewbtn">{{phone.view.live}}</button>
         <span class="spacer"></span>
         <span class="hint" id="sent"></span>
       </div>
@@ -280,9 +279,6 @@ const TOKEN = "__TOKEN__";
 const api = (p, b) => fetch(p, {method: b ? "POST" : "GET",
   headers:{"X-Token":TOKEN,"Content-Type":"application/json"}, body: b});
 let snap = {tabs:[]}, sel = null, dirty = false;
-// 表示するもの: null は自動 (動いていれば今の画面、終わっていれば応答)。
-// 利用者が選んだらそちらを優先する
-let view = null, shownView = "live";
 
 // 画面の最後の「中身がある行」。空行と、入力欄の枠だけの行は飛ばす
 // (Claude Code や Codex は入力欄を画面下に描くので、素の最終行だと枠が出る)
@@ -294,8 +290,6 @@ function lastLine(screen) {
     .filter(l => l && !frame.test(l));
   return lines.length ? lines[lines.length - 1] : "";
 }
-
-function toggleView() { view = shownView === "live" ? "result" : "live"; render(); }
 
 const CLS = {BUSY:"busy", DONE:"done", QUESTION:"quest", WAIT:"wait", EXIT:"exit"};
 const T = __DICT__;
@@ -350,13 +344,10 @@ function render() {
     t.name + " — " + (LABEL[t.state] || t.state);
   const out = document.getElementById("out");
   const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 20;
-  // 動いている最中は最後の応答ではなく今の画面を見せる。
-  // でないと「考え中」の間ずっと1つ前の完了内容が出たままになる
-  const auto = (t.state === "BUSY" || t.state === "QUESTION" || !t.output) ? "live" : "result";
-  shownView = view || auto;
-  const text = (shownView === "live" ? (t.screen || t.output) : (t.output || t.screen)) || "";
-  document.getElementById("viewbtn").textContent =
-    shownView === "live" ? T["phone.view.result"] : T["phone.view.live"];
+  // 動いている最中は今の画面、終わっていれば取り込んだ応答。
+  // last_response は DONE の瞬間に入るので、完了後に古いものが出ることはない
+  const live = t.state === "BUSY" || t.state === "QUESTION" || !t.output;
+  const text = (live ? (t.screen || t.output) : (t.output || t.screen)) || "";
   if (out.textContent !== text) {
     out.textContent = text;
     if (atBottom) out.scrollTop = out.scrollHeight;
@@ -390,8 +381,7 @@ async function sendKeys(keys) {
 async function toggleAuto() {
   await api("/api/auto", JSON.stringify({on: !snap.auto_enabled}));
 }
-// タブを離れたら表示の選択も戻す (次のタブでは自動判定させる)
-function back() { sel = null; view = null; render(); }
+function back() { sel = null; render(); }
 function flash(t) {
   const s = document.getElementById("sent");
   s.textContent = t;
