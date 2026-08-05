@@ -308,7 +308,13 @@ fn describe_tabs(parsed: &serde_json::Value) -> String {
     for t in tabs {
         let i = t.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
         let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        s.push_str(&format!("{i}. {name}"));
+        let id = t.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if id.is_empty() {
+            s.push_str(&format!("{i}. {name}"));
+        } else {
+            // IDがある場合はそちらで指させる (タブ名を変えても壊れない)
+            s.push_str(&format!("{i}. {name} → 指定は \"{id}\""));
+        }
         if i == me {
             s.push_str("  ← このスクリプトが動くタブ (tab)");
         }
@@ -873,7 +879,7 @@ const el = (tag, attrs = {}, ...kids) => {
 /// config上の入れ子(children)を、画面用のフラットな配列に変換する
 function flatten(tabs, depth, out) {
   for (const t of tabs || []) {
-    out.push({ name: t.name || "", command: cmdToText(t.command), profile: t.profile || "",
+    out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command), profile: t.profile || "",
                automation: t.automation || t.lua || "",
                locked: !!t.locked, auto_restart: !!t.auto_restart,
                cwd: t.cwd || "",
@@ -888,6 +894,7 @@ function nest(flat) {
   const roots = [], stack = [];
   for (const f of flat) {
     const node = { name: f.name, command: f.command };
+    if (f.id) node.id = f.id;
     if (f.profile) node.profile = f.profile;
     if (f.automation) node.automation = f.automation;
     if (f.locked) node.locked = true;
@@ -941,6 +948,10 @@ function render() {
           el("label", {style:"min-width:auto"}, "　スクロール行数"),
           input(t, "scrollback", "5000", "number"),
           label2(check(t, "log"), "セッションログを保存する（logs/）")),
+        el("div", {class:"row"},
+          el("label", {}, "自動化での呼び名"), input(t, "id", "タブ名をそのまま使う", "text"),
+          el("span", {class:"warn"},
+            "設定すると、タブ名を変えても自動化が壊れません（同名タブがある場合も必要）")),
         el("div", {class:"row"},
           el("label", {}, "プロファイル"), input(t, "profile", "自動判別", "text"),
           el("span", {class:"warn"}, "検出ルール。SSH先のAIを指定するときに使う")),
@@ -1239,7 +1250,7 @@ function select(obj, key, opts) {
 }
 
 const newTab = (o = {}) => Object.assign(
-  {name:"", command:"", profile:"", automation:"", locked:false, auto_restart:false,
+  {name:"", id:"", command:"", profile:"", automation:"", locked:false, auto_restart:false,
    cwd:"", encoding:"", scrollback:"", log:false, depth:0}, o);
 const label2 = (ctrl, text) => {
   const l = el("label", {style:"min-width:auto; color:#39ff14; cursor:pointer"});
@@ -1363,7 +1374,8 @@ async function askAi() {
       body: JSON.stringify({event: autoEvent, prompt: want,
                             engine: document.getElementById("aiengine").value || null,
                             tabs: (autoTarget.ws.tabs || []).map((x, i) =>
-                                    ({index: i + 1, name: x.name || ("タブ" + (i + 1))})),
+                                    ({index: i + 1, name: x.name || ("タブ" + (i + 1)),
+                                      id: x.id || ""})),
                             self: (autoTarget.ws.tabs || []).indexOf(autoTarget.t) + 1})});
   const j = await r.json();
   if (!j.ok) return automsg("生成できませんでした: " + j.error, "#ff4646");

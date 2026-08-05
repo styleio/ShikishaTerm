@@ -512,7 +512,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 // ループ中から現在の状態を読めるようにする (shikisha.state)
                 eng.set_states(
                     tabs.iter()
-                        .map(|t| (t.title.clone(), t.state.label().to_string()))
+                        .map(|t| (t.key(), t.state.label().to_string()))
                         .collect(),
                 );
                 // 終了したタブで待機中のループは破棄する (無限ループを残さない)
@@ -1113,6 +1113,7 @@ fn apply_ws_config(
                     t.locked = ft.cfg.locked;
                     t.auto_restart = ft.cfg.auto_restart;
                     t.depth = ft.depth;
+                    t.id = ft.cfg.id.clone();
                     ordered.push(t);
                     added += 1;
                 }
@@ -1148,6 +1149,14 @@ fn spawn_workspace(
     tabs: &mut Vec<Tab>,
     errors: &mut Vec<String>,
 ) {
+    // 呼び名が重複していると自動化の送信先が定まらないので知らせる
+    let dups = config::duplicate_keys(ws);
+    if !dups.is_empty() {
+        errors.push(format!(
+            "タブ名が重複しています ({}) — 自動化から指すにはIDを設定してください",
+            dups.join(", ")
+        ));
+    }
     for ft in &ws.tabs {
         let argv = ft.cfg.command.argv();
         if argv.is_empty() {
@@ -1166,6 +1175,7 @@ fn spawn_workspace(
                 tab.locked = ft.cfg.locked;
                 tab.auto_restart = ft.cfg.auto_restart;
                 tab.depth = ft.depth;
+                tab.id = ft.cfg.id.clone();
                 tabs.push(tab);
             }
             Err(e) => errors.push(format!("{title}: {e}")),
@@ -1285,8 +1295,8 @@ fn exec_commands(
     flash: &mut Option<String>,
 ) {
     // タブ名でも指定できるようにする (番号は並べ替えで変わるため)
-    let titles: Vec<String> = tabs.iter().map(|t| t.title.clone()).collect();
-    let index_of = |r: &hooks::TabRef| r.resolve(&titles);
+    let keys: Vec<hooks::TabKey> = tabs.iter().map(|t| t.key()).collect();
+    let index_of = |r: &hooks::TabRef| r.resolve(&keys);
     for cmd in cmds {
         match cmd {
             Command::Log(msg) => append_hook_log(&msg),

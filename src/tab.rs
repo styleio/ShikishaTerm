@@ -271,6 +271,8 @@ pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
 
 pub struct Tab {
     pub title: String,
+    /// 自動化から指すID (任意)。未設定ならタブ名で指す
+    pub id: Option<String>,
     pub parser: SharedParser,
     pub writer: PtyWriter,
     pub state: TabState,
@@ -405,6 +407,7 @@ impl Tab {
 
         Ok(Self {
             title,
+            id: None,
             parser,
             writer,
             state: TabState::Wait,
@@ -478,6 +481,7 @@ impl Tab {
         fresh.locked = self.locked;
         fresh.depth = self.depth;
         fresh.auto_restart = self.auto_restart;
+        fresh.id = self.id.clone();
         // 作り直したので、保留していた設定変更は反映済みになる
         *self = fresh;
         Ok(())
@@ -490,6 +494,14 @@ impl Tab {
     /// 起動条件の指紋。これが変わるとセッションの作り直しが必要
     pub fn signature(&self) -> String {
         signature_of(&self.argv, &self.opts)
+    }
+
+    /// 自動化から見たこのタブの見分け方
+    pub fn key(&self) -> crate::hooks::TabKey {
+        crate::hooks::TabKey {
+            id: self.id.clone(),
+            name: self.title.clone(),
+        }
     }
 
     /// 再起動せずに反映できる設定を差し替える

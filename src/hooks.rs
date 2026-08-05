@@ -27,12 +27,34 @@ pub enum TabRef {
     Name(String),
 }
 
+/// 自動化から見たタブの見分け方 (ID優先、無ければタブ名)
+#[derive(Debug, Clone, Default)]
+pub struct TabKey {
+    pub id: Option<String>,
+    pub name: String,
+}
+
+impl TabKey {
+    fn matches(&self, s: &str) -> bool {
+        // IDが設定されていればIDで、無ければ名前で照合する
+        match &self.id {
+            Some(id) => id == s,
+            None => self.name == s,
+        }
+    }
+}
+
 impl TabRef {
-    /// タブ名の一覧から実際の番号 (1始まり) を求める
-    pub fn resolve(&self, titles: &[String]) -> Option<usize> {
+    /// タブ一覧から実際の番号 (1始まり) を求める。
+    /// 文字列指定は ID → タブ名 の順に探す
+    pub fn resolve(&self, keys: &[TabKey]) -> Option<usize> {
         match self {
-            TabRef::Index(i) => (*i >= 1 && *i <= titles.len()).then_some(*i),
-            TabRef::Name(n) => titles.iter().position(|t| t == n).map(|i| i + 1),
+            TabRef::Index(i) => (*i >= 1 && *i <= keys.len()).then_some(*i),
+            TabRef::Name(s) => keys
+                .iter()
+                .position(|k| k.matches(s))
+                .or_else(|| keys.iter().position(|k| &k.name == s))
+                .map(|i| i + 1),
         }
     }
 }
@@ -135,8 +157,8 @@ pub struct HookEngine {
     lua: Lua,
     commands: Rc<RefCell<Vec<Command>>>,
     current_origin: Rc<Cell<usize>>,
-    /// 各タブの (名前, 現在の状態)。ループ中から読めるようにする
-    states: Rc<RefCell<Vec<(String, String)>>>,
+    /// 各タブの (見分け方, 現在の状態)。ループ中から読めるようにする
+    states: Rc<RefCell<Vec<(TabKey, String)>>>,
     pending: Vec<Pending>,
     scripts: Vec<Script>,
     attach: Attach,
@@ -170,7 +192,7 @@ impl HookEngine {
 
         let commands: Rc<RefCell<Vec<Command>>> = Rc::new(RefCell::new(Vec::new()));
         let current_origin = Rc::new(Cell::new(1usize));
-        let states: Rc<RefCell<Vec<(String, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let states: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
 
         let shikisha = lua.create_table().map_err(lerr)?;
         {
@@ -183,9 +205,8 @@ impl HookEngine {
                     lua.create_function(move |_, tab: Value| {
                         let r = tab_ref_of(&tab)?;
                         let states = s.borrow();
-                        let titles: Vec<String> =
-                            states.iter().map(|(n, _)| n.clone()).collect();
-                        Ok(r.resolve(&titles)
+                        let keys: Vec<TabKey> = states.iter().map(|(k, _)| k.clone()).collect();
+                        Ok(r.resolve(&keys)
                             .and_then(|i| states.get(i - 1).map(|(_, st)| st.clone()))
                             .unwrap_or_else(|| "EXIT".to_string()))
                     })
@@ -363,8 +384,8 @@ impl HookEngine {
         })
     }
 
-    /// 検出ティックごとに全タブの (名前, 状態) を反映する
-    pub fn set_states(&self, states: Vec<(String, String)>) {
+    /// 検出ティックごとに全タブの (見分け方, 状態) を反映する
+    pub fn set_states(&self, states: Vec<(TabKey, String)>) {
         *self.states.borrow_mut() = states;
     }
 
@@ -775,12 +796,34 @@ mod tests {
             panic!("送信コマンドが積まれるはず");
         };
         // 並べ替えても、名前が同じなら正しいタブに解決される
-        let before = vec!["実装".to_string(), "検査".to_string()];
-        let after = vec!["検査".to_string(), "実装".to_string()];
-        assert_eq!(target.resolve(&before), Some(2));
-        assert_eq!(target.resolve(&after), Some(1));
+        let key = |n: &str| TabKey { id: None, name: n.to_string() };
+        assert_eq!(target.resolve(&[key("実装"), key("検査")]), Some(2));
+        assert_eq!(target.resolve(&[key("検査"), key("実装")]), Some(1));
         // 存在しない名前は解決できない (誤爆させない)
-        assert_eq!(target.resolve(&["別名".to_string()]), None);
+        assert_eq!(target.resolve(&[key("別名")]), None);
+    }
+
+    #[test]
+    fn explicit_id_survives_renaming_the_tab() {
+        let r = TabRef::Name("reviewer".into());
+        let with_id = |id: &str, name: &str| TabKey {
+            id: Some(id.to_string()),
+            name: name.to_string(),
+        };
+        let plain = |name: &str| TabKey {
+            id: None,
+            name: name.to_string(),
+        };
+        // IDを付けておけば、タブ名を変えても指し続けられる
+        assert_eq!(r.resolve(&[plain("実装"), with_id("reviewer", "検査")]), Some(2));
+        assert_eq!(
+            r.resolve(&[plain("実装"), with_id("reviewer", "レビュー担当")]),
+            Some(2),
+            "タブ名を変えても壊れない"
+        );
+        // 同名タブがあってもIDで区別できる
+        let dup = [with_id("a", "claude"), with_id("b", "claude")];
+        assert_eq!(TabRef::Name("b".into()).resolve(&dup), Some(2));
     }
 
     #[test]
@@ -798,13 +841,13 @@ mod tests {
             "#,
         )
         .unwrap();
-        e.set_states(vec![("tab1".into(), "BUSY".into())]);
+        e.set_states(vec![(TabKey { id: None, name: "tab1".into() }, "BUSY".into())]);
         e.fire("on_busy", &ctx(1, ""), None);
         // 状態がBUSYの間はループが続く
         std::thread::sleep(std::time::Duration::from_millis(1100));
         e.tick_pending(&|_| None);
         // 状態が変わればループを抜ける
-        e.set_states(vec![("tab1".into(), "DONE".into())]);
+        e.set_states(vec![(TabKey { id: None, name: "tab1".into() }, "DONE".into())]);
         std::thread::sleep(std::time::Duration::from_millis(1100));
         e.tick_pending(&|_| None);
         let logs: Vec<String> = e

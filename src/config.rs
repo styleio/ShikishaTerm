@@ -140,6 +140,10 @@ pub struct WorkspaceFile {
 pub struct TabConfig {
     /// タブ名 (省略時はコマンド名から生成)
     pub name: Option<String>,
+    /// 自動化から指す名前 (任意)。設定すると、タブ名を変えても
+    /// スクリプトが壊れない。省略時はタブ名で指せる
+    #[serde(default)]
+    pub id: Option<String>,
     /// 起動コマンド: "ssh user@host" または ["ssh", "user@host"]
     pub command: CommandSpec,
     /// 検出プロファイルの明示指定 (省略時はコマンド名から自動選択)
@@ -220,6 +224,31 @@ pub struct FlatTab {
     pub cfg: TabConfig,
     /// 表示インデント段数 (0 = 親)
     pub depth: u16,
+}
+
+/// 自動化から一意に指せるかを確認する。
+/// 同じ呼び名が複数あると送信先が定まらないため、起動時に知らせる
+pub fn duplicate_keys(ws: &Workspace) -> Vec<String> {
+    let mut seen: std::collections::HashMap<String, usize> = Default::default();
+    for t in &ws.tabs {
+        let key = t
+            .cfg
+            .id
+            .clone()
+            .or_else(|| t.cfg.name.clone())
+            .unwrap_or_default();
+        if key.is_empty() {
+            continue;
+        }
+        *seen.entry(key).or_insert(0) += 1;
+    }
+    let mut dups: Vec<String> = seen
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(k, _)| k)
+        .collect();
+    dups.sort();
+    dups
 }
 
 /// children を深さ優先で平坦化する (表示順とタブ番号を一致させる)
