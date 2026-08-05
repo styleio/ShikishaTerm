@@ -173,6 +173,79 @@ fn load_manual(config_path: &std::path::Path) -> String {
     EMBEDDED_MANUAL.to_string()
 }
 
+/// 自プロセスのダイアログが現れたら前面に持ち上げる。
+/// Windowsはバックグラウンドのプロセスが勝手に前面へ出るのを禁じているため、
+/// 最前面属性を付けてブラウザの後ろに隠れないようにする
+#[cfg(windows)]
+fn raise_own_dialog() {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    type BOOL = i32;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible,
+        SetForegroundWindow, SetWindowPos, SwitchToThisWindow, HWND_TOPMOST, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+
+    struct Found {
+        pid: u32,
+        hwnd: HWND,
+    }
+
+    unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let found = unsafe { &mut *(lparam as *mut Found) };
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        if pid != found.pid || unsafe { IsWindowVisible(hwnd) } == 0 {
+            return 1;
+        }
+        // 標準のダイアログはクラス名 "#32770"。コンソールは対象外
+        let mut buf = [0u16; 64];
+        let n = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+        if class == "#32770" {
+            found.hwnd = hwnd;
+            return 0;
+        }
+        1
+    }
+
+    let pid = std::process::id();
+    std::thread::spawn(move || {
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut found = Found {
+                pid,
+                hwnd: std::ptr::null_mut(),
+            };
+            unsafe { EnumWindows(Some(cb), &mut found as *mut Found as LPARAM) };
+            if !found.hwnd.is_null() {
+                unsafe {
+                    // 最前面属性は付けたままにする。閉じるまでの間だけなので、
+                    // これを外すとブラウザの後ろに隠れてしまう
+                    SetWindowPos(
+                        found.hwnd,
+                        HWND_TOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                    );
+                    BringWindowToTop(found.hwnd);
+                    // 前面化はバックグラウンドプロセスだと拒否されることがあるため、
+                    // Alt+Tab相当の切り替えも併用する
+                    SwitchToThisWindow(found.hwnd, 1);
+                    SetForegroundWindow(found.hwnd);
+                }
+                break;
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn raise_own_dialog() {}
+
 /// 選ばれたパスを設定に書く形にする。
 /// 設定フォルダ配下なら相対パスにして、フォルダごと持ち運べる状態を保つ
 fn display_path(path: &std::path::Path, config_path: &std::path::Path) -> String {
@@ -513,6 +586,9 @@ fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -
                 .filter(|p| p.exists())
                 .or_else(|| default_pick_dir(kind, config_path));
 
+            // ダイアログは開いた直後に前面へ出す
+            // (バックグラウンドのプロセスは自力で前面に立てないため)
+            raise_own_dialog();
             let mut dlg = rfd::FileDialog::new().set_title(title);
             if let Some(d) = start {
                 dlg = dlg.set_directory(d);
@@ -686,6 +762,7 @@ const PAGE: &str = r##"<!doctype html>
    <span class="warn" id="aihint"></span></div>
 </fieldset>
 
+<datalist id="cmdlist"></datalist>
 <fieldset><legend>ワークスペースとタブ</legend>
  <div id="wslist"></div>
  <button class="ghost" onclick="addWs()">＋ ワークスペースを追加</button>
@@ -818,6 +895,8 @@ function render() {
     (ws.tabs || []).forEach((t, ti) => {
       const card = el("div", {class:"tab"});
       const cmdInput = input(t, "command", "動かすもの (例: claude / ssh user@host)", "text");
+      // 入力欄からも候補を選べるようにする (詳細を開かなくてよい)
+      cmdInput.setAttribute("list", "cmdlist");
       const detail = el("div", {class:"detail", style:"display:none"},
         sshPanel(t, cmdInput),
         el("div", {class:"row"},
@@ -961,6 +1040,16 @@ const buildWsl = o => ["wsl", o.distro ? "-d " + o.distro : "",
 
 const KIND_START = {cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl "};
 
+// よく使うコマンド。check はインストール判定に使う名前
+const COMMON_COMMANDS = [
+  {label:"Claude Code",       cmd:"claude",         check:"claude"},
+  {label:"Claude Code（続きから）", cmd:"claude --resume", check:"claude"},
+  {label:"Codex CLI",         cmd:"codex",          check:"codex"},
+  {label:"Gemini CLI",        cmd:"gemini",         check:"gemini"},
+  {label:"PowerShell",        cmd:"powershell.exe", check:null},
+  {label:"コマンドプロンプト", cmd:"cmd.exe",        check:null},
+];
+
 function sshPanel(t, cmdInput) {
   const box = el("div");
   const build = () => {
@@ -985,6 +1074,24 @@ function sshPanel(t, cmdInput) {
         });
         return s;
       })());
+    // 「コマンドを実行」のときは、よく使うものを選ぶだけで入力できるようにする
+    // (AI用ターミナルなので、AIの名前が並んでいるのが自然)
+    if (kind === "cmd") {
+      const s = el("select", {style:"width:230px"});
+      s.append(el("option", {value:""}, "選んで入力…"));
+      for (const c of COMMON_COMMANDS) {
+        const installed = c.check ? aiEngines.some(e => e.id === c.check) : true;
+        s.append(el("option", {value:c.cmd},
+          c.label + (c.check ? (installed ? "（利用できます）" : "（未インストール）") : "")));
+      }
+      s.addEventListener("change", () => {
+        if (!s.value) return;
+        t.command = s.value;
+        if (cmdInput) cmdInput.value = t.command;
+        s.value = "";
+      });
+      head.append(el("label", {style:"min-width:auto"}, "よく使うもの"), s);
+    }
     box.append(head);
 
     // Docker / WSL は「中のフォルダ」をコマンドで指定する (作業フォルダ欄はWindows側)
@@ -1258,6 +1365,10 @@ async function loadAi() {
   hint.textContent = aiEngines.length > 1
       ? "複数見つかりました。使いたいものを選べます"
       : "検出: " + aiEngines[0].label;
+  // コマンド入力欄の候補も用意する
+  const dl = document.getElementById("cmdlist");
+  dl.textContent = "";
+  for (const c of COMMON_COMMANDS) dl.append(el("option", {value:c.cmd}, c.label));
 }
 
 async function load() {
