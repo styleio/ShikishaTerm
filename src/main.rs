@@ -673,6 +673,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         .map(|w| w.name.clone())
                         .unwrap_or_default(),
                     auto_enabled,
+                    cols,
                     tabs: tabs
                         .iter()
                         .enumerate()

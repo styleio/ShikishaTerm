@@ -36,6 +36,9 @@ pub struct Snapshot {
     pub workspace: String,
     pub tabs: Vec<RemoteTab>,
     pub auto_enabled: bool,
+    /// 端末の桁数。画面はこの幅で描かれているので、
+    /// スマホ側はこれを使って「折り返さずに収める」文字サイズを決める
+    pub cols: u16,
 }
 
 /// リモートから届く操作。本体のループで実行される
@@ -236,9 +239,13 @@ const PAGE: &str = r##"<!doctype html>
  .name { font-weight:600; }
 
  .out { background:var(--panel); border:1px solid var(--line); border-radius:12px;
-   padding:12px 14px; margin:12px 0; white-space:pre-wrap; word-break:break-word;
-   font-family:ui-monospace,Consolas,monospace; font-size:12.5px; color:#cfd6e0;
-   max-height:46vh; overflow:auto; }
+   padding:12px 14px; margin:12px 0; color:#cfd6e0; max-height:46vh; overflow:auto;
+   /* 折り返すとアスキーアートが崩れる。PCの桁数で描かれた絵は再構成できないので、
+      折り返さずに縮めるか横へ流すかしかない */
+   white-space:pre; font-size:12.5px; line-height:1.35;
+   font-family:ui-monospace,"SF Mono","Menlo","Roboto Mono","Noto Sans Mono","DejaVu Sans Mono",monospace;
+   font-variant-ligatures:none; font-feature-settings:"liga" 0, "calt" 0;
+   -webkit-text-size-adjust:none; text-size-adjust:none; }
  .composer { position:sticky; bottom:0; background:linear-gradient(transparent,var(--bg) 22%);
    padding:10px 0 4px; }
  textarea { width:100%; background:var(--panel2); color:var(--text); border:1px solid var(--line);
@@ -352,6 +359,7 @@ function render() {
     out.textContent = text;
     if (atBottom) out.scrollTop = out.scrollHeight;
   }
+  fitScreen(out, snap.cols);
   // 確認待ちのときだけ、よく使う返答を出す
   const q = document.getElementById("quick");
   q.textContent = "";
@@ -382,6 +390,34 @@ async function toggleAuto() {
   await api("/api/auto", JSON.stringify({on: !snap.auto_enabled}));
 }
 function back() { sel = null; render(); }
+
+// 端末の桁数がちょうど収まる文字サイズを決める。
+// 折り返さない代わりに縮めるので、アスキーアートが崩れない。
+// 縮めすぎると読めないので下限で止め、そこから先は横スクロールに任せる
+const MIN_PX = 7;
+let fitted = { cols: 0, width: 0 };
+function fitScreen(el, cols) {
+  if (!cols) return;
+  const avail = el.clientWidth - 28; // padding 14px * 2
+  if (fitted.cols === cols && Math.abs(fitted.width - avail) < 2) return;
+  fitted = { cols, width: avail };
+
+  el.style.fontSize = "";
+  const base = parseFloat(getComputedStyle(el).fontSize);
+  // 1文字の幅はフォント任せなので実測する (端末や機種で違う)
+  const probe = document.createElement("span");
+  probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+  probe.textContent = "0".repeat(100);
+  el.appendChild(probe);
+  const per = probe.getBoundingClientRect().width / 100;
+  probe.remove();
+
+  const need = per * cols;
+  if (need > avail) {
+    el.style.fontSize = Math.max(MIN_PX, base * avail / need).toFixed(2) + "px";
+  }
+}
+addEventListener("resize", () => { fitted = { cols: 0, width: 0 }; render(); });
 function flash(t) {
   const s = document.getElementById("sent");
   s.textContent = t;
