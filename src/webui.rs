@@ -733,137 +733,163 @@ fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -
     Ok(())
 }
 
-// 色指定の "#..." が終端と衝突しないよう r##"..."## で囲む
+// 設定画面。本体のサイバー調とは別に、読みやすさを優先した静かなUIにしている
+// (サイドバー + 詳細ペイン。一覧は「何があるか」だけを見せ、編集は1つに集中させる)
 const PAGE: &str = r##"<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
 <title>ShikishaTerm-AI 設定</title>
 <style>
- :root { color-scheme: dark; }
- body { background:#05080a; color:#39ff14; font-family: "Consolas","Meiryo",monospace;
-        margin:0; padding:24px; }
- h1 { font-size:18px; letter-spacing:2px; border-bottom:1px solid #39ff14; padding-bottom:8px; }
- .row { margin:14px 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
- label { color:#00aaff; min-width:130px; }
- input, textarea { background:#0a1014; color:#39ff14; border:1px solid #1f4d2a;
-        padding:6px 8px; font-family:inherit; font-size:13px; border-radius:3px; }
- input[type=text], input[type=number] { width:220px; }
- textarea { width:100%; min-height:340px; }
- button { background:#39ff14; color:#05080a; border:0; padding:8px 18px; font-weight:bold;
-        cursor:pointer; border-radius:3px; font-family:inherit; }
- button.ghost { background:transparent; color:#39ff14; border:1px solid #39ff14; }
- #msg { margin-left:12px; }
- .warn { color:#ffea00; font-size:12px; margin-top:6px; }
- fieldset { border:1px solid #1f4d2a; margin:18px 0; padding:12px 16px; }
- legend { color:#ffea00; padding:0 6px; }
- table { border-collapse:collapse; width:100%; margin:10px 0; }
- td { padding:4px 6px; border-bottom:1px solid #12261a; vertical-align:middle; }
- td input[type=text] { width:100%; min-width:90px; }
- td button { padding:2px 8px; font-size:12px; }
- input[type=checkbox] { width:16px; height:16px; accent-color:#39ff14; }
- b { color:#00aaff; font-weight:normal; font-size:12px; }
- .tree { color:#ffea00; margin-left:4px; cursor:help; }
- .tab { border:1px solid #12261a; border-radius:4px; padding:8px 10px; margin:8px 0;
-        background:#070d10; }
- .tabhead { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
- .tabhead input[type=text] { width:190px; }
- .detail { margin-top:10px; padding-top:8px; border-top:1px dashed #1f4d2a; }
- .modal { position:fixed; inset:0; background:rgba(0,0,0,.75); display:flex;
-          align-items:center; justify-content:center; z-index:10; }
- .modal-inner { background:#05080a; border:1px solid #39ff14; border-radius:4px;
-        padding:20px 24px; width:min(900px, 92vw); max-height:88vh; overflow:auto; }
- h2 { font-size:15px; color:#ffea00; margin:0 0 12px; }
- select { background:#0a1014; color:#39ff14; border:1px solid #1f4d2a; padding:6px;
-        font-family:inherit; }
- pre { background:#0a1014; border:1px solid #1f4d2a; padding:10px; overflow:auto;
-        max-height:240px; color:#39ff14; }
- #autocode { min-height:200px; }
-</style></head><body>
-<h1>SHIKISHA-TERM-AI :: CONFIG</h1>
+ :root {
+   --bg:#0f1115; --panel:#161a20; --panel2:#1b2027; --line:#262d37;
+   --text:#e6e9ef; --muted:#8b95a5; --accent:#35c46a; --danger:#e5534b;
+   color-scheme: dark;
+ }
+ * { box-sizing:border-box; }
+ body { margin:0; background:var(--bg); color:var(--text); font-size:14px; line-height:1.6;
+   font-family:system-ui,"Segoe UI","Yu Gothic UI","Hiragino Sans",sans-serif; }
+ code, .mono, input.mono { font-family:ui-monospace,Consolas,"Courier New",monospace; }
 
-<fieldset><legend>基本設定</legend>
- <div class="row"><label>タブバー幅</label>
-   <input type="number" id="tabw" min="10" max="40" placeholder="自動">
-   <span class="warn">空にするとタブ名に合わせて自動調整</span></div>
- <div class="row"><label>自動チェーン上限</label>
-   <input type="number" id="chain" min="1" max="100">
-   <span class="warn">AI同士の自動転送が何回続いたら止めるか</span></div>
- <div class="row"><label>自動化(全体共通)</label>
-   <input type="text" id="lua" placeholder="scripts/common">
-   <button class="ghost" onclick="pickInto('lua','dir','自動化フォルダを選んでください')">参照…</button>
-   <span class="warn">各タブに設定が無いときに使われます</span></div>
- <div class="row"><label>secretsファイル</label>
-   <input type="text" id="secrets" placeholder="secrets.json">
-   <button class="ghost" onclick="pickInto('secrets','file','secretsファイルを選んでください')">参照…</button></div>
- <div class="row"><label>コードを書くAI</label>
-   <select id="aiengine"></select>
-   <span class="warn" id="aihint"></span></div>
-</fieldset>
+ header { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:12px;
+   padding:12px 20px; background:rgba(15,17,21,.9); backdrop-filter:blur(8px);
+   border-bottom:1px solid var(--line); }
+ header h1 { font-size:15px; font-weight:600; margin:0; letter-spacing:.02em; }
+ header .spacer { flex:1; }
+ #msg { color:var(--muted); font-size:13px; }
+
+ .layout { display:flex; align-items:flex-start; }
+ nav { width:260px; flex:none; border-right:1px solid var(--line); min-height:calc(100vh - 53px);
+   padding:12px 10px; position:sticky; top:53px; max-height:calc(100vh - 53px); overflow:auto; }
+ main { flex:1; padding:24px 28px; max-width:820px; }
+
+ .navitem { display:block; width:100%; text-align:left; border:0; background:none; color:var(--text);
+   padding:7px 10px; border-radius:7px; cursor:pointer; font-size:13.5px; font-family:inherit; }
+ .navitem:hover { background:var(--panel); }
+ .navitem.sel { background:var(--panel2); }
+ .navitem .sub { display:block; color:var(--muted); font-size:11.5px; margin-top:1px;
+   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+ .navgroup { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+   margin:14px 10px 4px; }
+ .navtab { padding-left:18px; }
+ .navtab.child { padding-left:34px; }
+ .navadd { color:var(--muted); }
+
+ .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+   padding:6px 18px 14px; margin-bottom:18px; }
+ .card h2 { font-size:12px; color:var(--muted); font-weight:600; letter-spacing:.06em;
+   margin:14px 0 10px; text-transform:uppercase; }
+ .row { display:flex; align-items:center; gap:12px; padding:7px 0; flex-wrap:wrap; }
+ .row > label:first-child { width:150px; flex:none; color:var(--muted); font-size:13px; }
+ .hint { color:var(--muted); font-size:12px; }
+ .grow { flex:1; min-width:180px; }
+
+ input[type=text], input[type=number], select, textarea {
+   background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:7px;
+   padding:7px 10px; font-size:13.5px; font-family:inherit; outline:none; }
+ input:focus, select:focus, textarea:focus { border-color:var(--accent); }
+ input[type=text]::placeholder, textarea::placeholder { color:#5d6773; }
+ input[type=checkbox] { width:16px; height:16px; accent-color:var(--accent); margin:0; }
+ label.check { display:flex; align-items:center; gap:8px; width:auto; color:var(--text);
+   font-size:13.5px; cursor:pointer; }
+ textarea { width:100%; min-height:220px; line-height:1.55; resize:vertical; }
+
+ button { font-family:inherit; font-size:13px; border-radius:7px; cursor:pointer; padding:7px 14px;
+   border:1px solid var(--line); background:var(--panel2); color:var(--text); }
+ button:hover { border-color:#39424f; }
+ button.primary { background:var(--accent); border-color:var(--accent); color:#08130c; font-weight:600; }
+ button.quiet { background:none; border-color:transparent; color:var(--muted); padding:6px 8px; }
+ button.quiet:hover { color:var(--text); background:var(--panel2); }
+ button.danger { color:var(--danger); background:none; border-color:transparent; }
+ button.danger:hover { background:rgba(229,83,75,.1); }
+
+ details { border-top:1px solid var(--line); margin-top:6px; }
+ details > summary { cursor:pointer; color:var(--muted); font-size:13px; padding:12px 0 4px;
+   list-style:none; }
+ details > summary::before { content:"▸ "; }
+ details[open] > summary::before { content:"▾ "; }
+
+ .events { display:flex; flex-direction:column; }
+ .event { display:flex; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid var(--line); }
+ .event:last-child { border-bottom:0; }
+ .event .name { flex:1; }
+ .event .state { color:var(--muted); font-size:12px; }
+ .event .state.on { color:var(--accent); }
+
+ .empty { color:var(--muted); text-align:center; padding:40px 20px; }
+ .empty .big { font-size:15px; color:var(--text); margin-bottom:6px; }
+
+ .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center;
+   justify-content:center; z-index:20; }
+ .modal-inner { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+   width:min(880px,92vw); max-height:88vh; overflow:auto; padding:20px 24px; }
+ .modal-inner h2 { text-transform:none; font-size:15px; color:var(--text); margin:0 0 4px; }
+ pre { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:12px;
+   overflow:auto; max-height:240px; font-size:12.5px; }
+ a { color:var(--accent); }
+</style></head><body>
+
+<header>
+  <h1>ShikishaTerm-AI 設定</h1>
+  <div class="spacer"></div>
+  <span id="msg"></span>
+  <button class="quiet" onclick="load()">再読込</button>
+  <button class="primary" onclick="save()">保存</button>
+</header>
+
+<div class="layout">
+  <nav id="nav"></nav>
+  <main id="detail"></main>
+</div>
 
 <datalist id="cmdlist"></datalist>
-<fieldset><legend>ワークスペースとタブ</legend>
- <div id="wslist"></div>
- <button class="ghost" onclick="addWs()">＋ ワークスペースを追加</button>
- <span class="warn">　テンプレートから作る:</span>
- <button class="ghost" onclick="addTemplate('single')">Claude 1つ</button>
- <button class="ghost" onclick="addTemplate('review')">実装＋レビュー往復</button>
- <button class="ghost" onclick="addTemplate('ssh')">SSH先のAI</button>
- <button class="ghost" onclick="addTemplate('docker')">Dockerの中</button>
- <button class="ghost" onclick="addTemplate('wsl')">WSLの中</button>
-</fieldset>
 
-<!-- 自動化エディタ (タブの [⚙自動化] で開く) -->
 <div id="autobox" class="modal" style="display:none">
- <div class="modal-inner">
-   <h2 id="autotitle">自動化</h2>
-   <div class="row">
-     <label>いつ動かすか</label>
-     <select id="autoevent" onchange="switchEvent()"></select>
-     <span class="warn" id="autohint"></span>
-   </div>
-   <textarea id="autocode" spellcheck="false" placeholder="ここに処理を書きます。空にすると「何もしない」になります"></textarea>
-   <div class="row" id="airow">
-     <label>AIに書いてもらう</label>
-     <input type="text" id="autoask" placeholder="例: 完了したらタブ2にレビューさせて。5往復したら止めて"
-            style="flex:1; min-width:320px">
-     <button class="ghost" onclick="askAi()">生成</button>
-   </div>
-   <div class="row" id="ainone" style="display:none">
-     <span class="warn">日本語で指示してコードを書いてもらう機能は、
-       Claude Code / Codex CLI / Gemini CLI のいずれかを入れると使えます。</span>
-   </div>
-   <div id="aipreview" style="display:none">
-     <div class="warn">生成されたコード（内容を確認してから反映してください）</div>
-     <pre id="aicode"></pre>
-     <button onclick="applyAi()">この内容を反映</button>
-     <button class="ghost" onclick="document.getElementById('aipreview').style.display='none'">破棄</button>
-   </div>
-   <div class="row">
-     <button onclick="saveAuto()">保存して閉じる</button>
-     <button class="ghost" onclick="closeAuto()">キャンセル</button>
-     <span id="automsg"></span>
-   </div>
-   <p class="warn">
-     <a href="/help?token=__TOKEN__" target="_blank" style="color:#00aaff">📖 書き方を見る（変数・命令の一覧と例）</a>
-     　自動化からファイル操作やインターネット接続はできません（サンドボックス）。</p>
- </div>
+  <div class="modal-inner">
+    <h2 id="autotitle">自動化</h2>
+    <div class="hint" id="autopath"></div>
+    <div class="row" style="margin-top:12px">
+      <label>タイミング</label>
+      <select id="autoevent" onchange="switchEvent()"></select>
+      <span class="hint" id="autohint"></span>
+    </div>
+    <textarea id="autocode" spellcheck="false"
+      placeholder="ここに処理を書きます。空にすると「何もしない」になります"></textarea>
+    <div class="row" id="airow">
+      <label>AIに書いてもらう</label>
+      <input type="text" id="autoask" class="grow"
+             placeholder="例: 完了したら検査タブに送ってレビューさせて">
+      <button onclick="askAi()">生成</button>
+    </div>
+    <div class="row" id="ainone" style="display:none">
+      <span class="hint">Claude Code / Codex CLI / Gemini CLI のいずれかを入れると、
+        日本語で指示してコードを書いてもらえます。</span>
+    </div>
+    <div id="aipreview" style="display:none">
+      <div class="hint">生成されたコード（確認してから反映してください）</div>
+      <pre id="aicode"></pre>
+      <button class="primary" onclick="applyAi()">反映</button>
+      <button class="quiet" onclick="document.getElementById('aipreview').style.display='none'">破棄</button>
+    </div>
+    <div class="row" style="border-top:1px solid var(--line); margin-top:12px; padding-top:14px">
+      <button class="primary" onclick="saveAuto()">保存して閉じる</button>
+      <button class="quiet" onclick="closeAuto()">キャンセル</button>
+      <span class="spacer" style="flex:1"></span>
+      <a href="/help?token=__TOKEN__" target="_blank">書き方を見る</a>
+      <span id="automsg" class="hint"></span>
+    </div>
+  </div>
 </div>
-
-<div class="row">
-  <button onclick="save()">保存</button>
-  <button class="ghost" onclick="load()">再読込</button>
-  <span id="msg"></span>
-</div>
-<p class="warn">接続先・文字コード・スクロール行数を変えたタブには「⟳」が付きます。
-実行中の作業を切らないよう、本体で Ctrl+B r を押したときに切り替わります。</p>
 
 <script>
 const TOKEN = "__TOKEN__";
 const api = (m, b) => fetch("/api/config", {
    method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
+const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(file), {
+   method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
 
-// 画面の状態。JSONは触らせず、この配列を編集して保存時に組み立てる
-let current = {};
-let wss = [];   // [{name, file, tabs:[{name,command,profile,lua,locked,auto_restart,depth}]}]
+let current = {};        // config.json の中身 (基本設定の保持用)
+let wss = [];            // ワークスペースとタブ
+let sel = {ws:0, tab:null, global:true};
+let aiEngines = [];
 
 const el = (tag, attrs = {}, ...kids) => {
   const n = document.createElement(tag);
@@ -872,132 +898,57 @@ const el = (tag, attrs = {}, ...kids) => {
     else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
     else if (v !== null && v !== undefined) n.setAttribute(k, v);
   }
-  for (const c of kids) n.append(c);
+  for (const c of kids) if (c !== null && c !== undefined) n.append(c);
   return n;
 };
+const msg = (t, warn) => { const m = document.getElementById("msg");
+  m.textContent = t; m.style.color = warn ? "var(--danger)" : "var(--muted)"; };
 
-/// config上の入れ子(children)を、画面用のフラットな配列に変換する
-function flatten(tabs, depth, out) {
-  for (const t of tabs || []) {
-    out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command), profile: t.profile || "",
-               automation: t.automation || t.lua || "",
-               locked: !!t.locked, auto_restart: !!t.auto_restart,
-               cwd: t.cwd || "",
-               encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
-               depth });
-    flatten(t.children, depth + 1, out);
-  }
-  return out;
+// ── 部品 ─────────────────────────────────────────────
+function field(obj, key, ph, opts = {}) {
+  const i = el("input", {type: opts.type || "text", placeholder: ph,
+                         class: (opts.mono ? "mono " : "") + (opts.grow === false ? "" : "grow")});
+  if (opts.width) i.style.width = opts.width + "px";
+  i.value = obj[key] ?? "";
+  i.addEventListener("input", () => { obj[key] = i.value; if (opts.onInput) opts.onInput(i.value); });
+  return i;
 }
-/// フラットな配列を depth に従って children へ組み直す
-function nest(flat) {
-  const roots = [], stack = [];
-  for (const f of flat) {
-    const node = { name: f.name, command: f.command };
-    if (f.id) node.id = f.id;
-    if (f.profile) node.profile = f.profile;
-    if (f.automation) node.automation = f.automation;
-    if (f.locked) node.locked = true;
-    if (f.auto_restart) node.auto_restart = true;
-    if (f.cwd) node.cwd = f.cwd;
-    if (f.encoding) node.encoding = f.encoding;
-    if (f.scrollback) node.scrollback = Number(f.scrollback);
-    if (f.log) node.log = true;
-    const d = Math.min(f.depth, stack.length);
-    if (d === 0) roots.push(node);
-    else {
-      const parent = stack[d - 1];
-      (parent.children = parent.children || []).push(node);
-    }
-    stack[d] = node; stack.length = d + 1;
-  }
-  return roots;
+function check(obj, key, label) {
+  const i = el("input", {type:"checkbox"});
+  i.checked = !!obj[key];
+  i.addEventListener("change", () => { obj[key] = i.checked; });
+  const l = el("label", {class:"check"}); l.append(i, document.createTextNode(label));
+  return l;
 }
-const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
-
-// 普段使う3つ (タブ名 / 動かすもの / 自動化) だけを見せ、残りは [詳細] に畳む
-function render() {
-  const box = document.getElementById("wslist");
-  box.textContent = "";
-  wss.forEach((ws, wi) => {
-    const head = el("div", {class:"row"},
-      el("label", {}, "ワークスペース名"),
-      input(ws, "name", "名前", "text"),
-      el("button", {class:"ghost", onclick:() => { moveWs(wi,-1); }}, "↑"),
-      el("button", {class:"ghost", onclick:() => { moveWs(wi, 1); }}, "↓"),
-      el("button", {class:"ghost", onclick:() => {
-        if (confirm(`ワークスペース「${ws.name}」を削除しますか？`)) { wss.splice(wi,1); render(); }
-      }}, "削除"));
-
-    const list = el("div");
-    (ws.tabs || []).forEach((t, ti) => {
-      const card = el("div", {class:"tab"});
-      const cmdInput = input(t, "command", "動かすもの (例: claude / ssh user@host)", "text");
-      // 入力欄からも候補を選べるようにする (詳細を開かなくてよい)
-      cmdInput.setAttribute("list", "cmdlist");
-      const detail = el("div", {class:"detail", style:"display:none"},
-        sshPanel(t, cmdInput),
-        el("div", {class:"row"},
-          el("label", {}, "作業フォルダ"),
-          ...pathField(t, "cwd", "アプリと同じ場所", "dir", "作業フォルダを選んでください", 300),
-          el("span", {class:"warn"},
-            "AIはここのプロジェクトを見ます（Docker/WSLの中は上の欄で指定します）")),
-        el("div", {class:"row"},
-          el("label", {}, "文字コード"), select(t, "encoding",
-            [["","UTF-8（標準）"],["shift_jis","Shift_JIS"],["euc-jp","EUC-JP"]]),
-          el("label", {style:"min-width:auto"}, "　スクロール行数"),
-          input(t, "scrollback", "5000", "number"),
-          label2(check(t, "log"), "セッションログを保存する（logs/）")),
-        el("div", {class:"row"},
-          el("label", {}, "自動化での呼び名"), input(t, "id", "タブ名をそのまま使う", "text"),
-          el("span", {class:"warn"},
-            "設定すると、タブ名を変えても自動化が壊れません（同名タブがある場合も必要）")),
-        el("div", {class:"row"},
-          el("label", {}, "プロファイル"), input(t, "profile", "自動判別", "text"),
-          el("span", {class:"warn"}, "検出ルール。SSH先のAIを指定するときに使う")),
-        el("div", {class:"row"},
-          el("label", {}, "自動化フォルダ"),
-          ...pathField(t, "automation", "自動", "dir", "自動化フォルダを選んでください", 260),
-          el("span", {class:"warn"}, "空欄なら自動で決まります。他のタブと同じ場所を指定すると共有できます")),
-        el("div", {class:"row"},
-          label2(check(t, "locked"), "入力をロックする（人間の誤操作を防ぐ）"),
-          label2(check(t, "auto_restart"), "終了したら自動で再起動する")),
-        el("div", {class:"row"},
-          el("label", {}, "表示の階層"),
-          el("button", {class:"ghost", title:"1段下げる (上のタブの子にする)",
-            onclick:() => { t.depth = Math.min((t.depth||0)+1, ti); render(); }}, "→ 下げる"),
-          el("button", {class:"ghost", title:"1段上げる",
-            onclick:() => { t.depth = Math.max((t.depth||0)-1, 0); render(); }}, "← 上げる")));
-
-      card.append(el("div", {class:"tabhead"},
-        // 番号は自動化で shikisha.send_to_tab(番号, ...) と書くときに使う
-        el("span", {class:"tree", title:`自動化では shikisha.send_to_tab(${ti+1}, ...) と書きます`},
-           "　".repeat(t.depth||0) + (t.depth ? "└" : "") + `(${ti+1})`),
-        input(t, "name", "タブ名 (例: A:実装)", "text"),
-        cmdInput,
-        el("button", {class:"ghost", onclick:() => openAuto(ws, t)}, "⚙ 自動化"),
-        el("button", {class:"ghost", onclick:(e) => {
-          const d = detail.style.display === "none";
-          detail.style.display = d ? "block" : "none";
-          e.target.textContent = d ? "詳細 ▴" : "詳細 ▾";
-        }}, "詳細 ▾"),
-        el("button", {class:"ghost", onclick:() => { moveTab(ws, ti,-1); }}, "↑"),
-        el("button", {class:"ghost", onclick:() => { moveTab(ws, ti, 1); }}, "↓"),
-        el("button", {class:"ghost", onclick:() => {
-          if (confirm(`タブ「${t.name || "(無名)"}」を削除しますか？`)) { ws.tabs.splice(ti,1); render(); }
-        }}, "削除")), detail);
-      list.append(card);
-    });
-
-    box.append(el("fieldset", {}, el("legend", {}, ws.name || "(名称未設定)"), head, list,
-      el("button", {class:"ghost", onclick:() => {
-        (ws.tabs = ws.tabs || []).push(newTab());
-        render();
-      }}, "＋ タブを追加")));
-  });
+function choose(obj, key, opts, onChange) {
+  const s = el("select");
+  for (const [v, label] of opts) s.append(el("option", {value:v}, label));
+  s.value = obj[key] || "";
+  s.addEventListener("change", () => { obj[key] = s.value; if (onChange) onChange(s.value); });
+  return s;
 }
-// ── SSH接続の入力補助 (PuTTYの設定画面に相当。コマンドを知らなくても繋げる) ──
-// 実体はコマンド文字列なので、玄人はそのまま上の欄に書いてもよい
+function row(label, ...kids) { return el("div", {class:"row"}, el("label", {}, label), ...kids); }
+function card(title, ...kids) { return el("div", {class:"card"}, el("h2", {}, title), ...kids); }
+
+async function pickPath(kind, title, start) {
+  try {
+    const r = await fetch("/api/pick", {method:"POST",
+        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+        body: JSON.stringify({kind, title, start: start || ""})});
+    const j = await r.json();
+    return j.ok ? j.path : null;
+  } catch (e) { return null; }
+}
+function pathField(obj, key, ph, kind, title) {
+  const i = field(obj, key, ph, {mono:true});
+  const b = el("button", {class:"quiet", onclick: async () => {
+    const p = await pickPath(kind, title, obj[key]);
+    if (p !== null) { obj[key] = p; i.value = p; }
+  }}, "参照…");
+  return [i, b];
+}
+
+// ── コマンドの組み立て (SSH / Docker / WSL) ───────────
 function parseSsh(cmd) {
   const t = (cmd || "").trim().split(/\s+/);
   if (t[0] !== "ssh") return null;
@@ -1038,308 +989,392 @@ function buildSsh(o) {
   if (o.host) p.push((o.user ? o.user + "@" : "") + o.host);
   return p.join(" ");
 }
-
-// cmdInput は上段の「動かすもの」欄。ここを書き換えても再描画せず値だけ同期する
-// (入力のたびに再描画すると詳細が閉じたりフォーカスが飛んだりするため)
-// Docker: docker exec -it -w /app <コンテナ> bash
 function parseDocker(cmd) {
   const t = (cmd || "").trim().split(/\s+/);
   if (t[0] !== "docker" || t[1] !== "exec") return null;
-  const o = {container:"", dir:"", shell:""};
-  const rest = [];
+  const o = {container:"", dir:"", shell:""}; const rest = [];
   for (let i = 2; i < t.length; i++) {
     const a = t[i];
     if (a === "-w") o.dir = t[++i] || "";
     else if (a === "-it" || a === "-i" || a === "-t") continue;
-    else if (a.startsWith("-")) { rest.push(a); }
+    else if (a.startsWith("-")) rest.push(a);
     else if (!o.container) o.container = a;
     else rest.push(a);
   }
   o.shell = rest.join(" ");
   return o;
 }
-const buildDocker = o => ["docker exec -it",
-  o.dir ? "-w " + o.dir : "", o.container, o.shell || "bash"]
-  .filter(Boolean).join(" ");
-
-// WSL: wsl -d Ubuntu --cd /home/me/proj -- claude
+const buildDocker = o => ["docker exec -it", o.dir ? "-w " + o.dir : "", o.container,
+  o.shell || "bash"].filter(Boolean).join(" ");
 function parseWsl(cmd) {
   const t = (cmd || "").trim().split(/\s+/);
   if (t[0] !== "wsl") return null;
-  const o = {distro:"", dir:"", shell:""};
-  const rest = [];
+  const o = {distro:"", dir:"", shell:""}; const rest = [];
   for (let i = 1; i < t.length; i++) {
     const a = t[i];
     if (a === "-d" || a === "--distribution") o.distro = t[++i] || "";
     else if (a === "--cd") o.dir = t[++i] || "";
-    else if (a === "--") rest.push(...t.slice(i + 1)), i = t.length;
+    else if (a === "--") { rest.push(...t.slice(i + 1)); i = t.length; }
     else rest.push(a);
   }
   o.shell = rest.join(" ");
   return o;
 }
-const buildWsl = o => ["wsl", o.distro ? "-d " + o.distro : "",
-  o.dir ? "--cd " + o.dir : "", o.shell ? "-- " + o.shell : ""]
-  .filter(Boolean).join(" ");
+const buildWsl = o => ["wsl", o.distro ? "-d " + o.distro : "", o.dir ? "--cd " + o.dir : "",
+  o.shell ? "-- " + o.shell : ""].filter(Boolean).join(" ");
 
+const kindOf = c => parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
+const KIND_LABEL = {cmd:"コマンド", ssh:"SSH", docker:"Docker", wsl:"WSL"};
 const KIND_START = {cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl "};
-
-// よく使うコマンド。check はインストール判定に使う名前
 const COMMON_COMMANDS = [
-  {label:"Claude Code",       cmd:"claude",         check:"claude"},
-  {label:"Codex CLI",         cmd:"codex",          check:"codex"},
-  {label:"Gemini CLI",        cmd:"gemini",         check:"gemini"},
-  {label:"PowerShell",        cmd:"powershell.exe", check:null},
-  {label:"コマンドプロンプト", cmd:"cmd.exe",        check:null},
+  {label:"Claude Code", cmd:"claude",         check:"claude"},
+  {label:"Codex CLI",   cmd:"codex",          check:"codex"},
+  {label:"Gemini CLI",  cmd:"gemini",         check:"gemini"},
+  {label:"PowerShell",  cmd:"powershell.exe", check:null},
+  {label:"コマンドプロンプト", cmd:"cmd.exe",  check:null},
 ];
+const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 
-function sshPanel(t, cmdInput) {
-  const box = el("div");
-  const build = () => {
-    box.textContent = "";
-    const ssh = parseSsh(t.command);
-    const dk = parseDocker(t.command);
-    const wsl = parseWsl(t.command);
-    const kind = ssh ? "ssh" : dk ? "docker" : wsl ? "wsl" : "cmd";
-    const head = el("div", {class:"row"},
-      el("label", {}, "接続の種類"),
-      (() => {
-        const s = el("select");
-        s.append(el("option", {value:"cmd"}, "コマンドを実行"),
-                 el("option", {value:"ssh"}, "SSH接続（サーバーに繋ぐ）"),
-                 el("option", {value:"docker"}, "Dockerコンテナの中"),
-                 el("option", {value:"wsl"}, "WSL（Windows上のLinux）の中"));
-        s.value = kind;
-        s.addEventListener("change", () => {
-          t.command = KIND_START[s.value] || "";
-          if (cmdInput) cmdInput.value = t.command;
-          build();
-        });
-        return s;
-      })());
-    // 「コマンドを実行」のときは、よく使うものを選ぶだけで入力できるようにする
-    // (AI用ターミナルなので、AIの名前が並んでいるのが自然)
-    if (kind === "cmd") {
-      const s = el("select", {style:"width:230px"});
-      s.append(el("option", {value:""}, "選んで入力…"));
-      for (const c of COMMON_COMMANDS) {
-        const installed = c.check ? aiEngines.some(e => e.id === c.check) : true;
-        s.append(el("option", {value:c.cmd},
-          c.label + (c.check ? (installed ? "（利用できます）" : "（未インストール）") : "")));
-      }
-      s.addEventListener("change", () => {
-        if (!s.value) return;
-        t.command = s.value;
-        if (cmdInput) cmdInput.value = t.command;
-        s.value = "";
-      });
-      head.append(el("label", {style:"min-width:auto"}, "よく使うもの"), s);
-    }
-    box.append(head);
+// ── サイドバー ───────────────────────────────────────
+function renderNav() {
+  const nav = document.getElementById("nav");
+  nav.textContent = "";
+  nav.append(el("button", {class:"navitem" + (sel.global ? " sel" : ""),
+    onclick:() => { sel = {ws:sel.ws, tab:null, global:true}; render(); }}, "全体設定"));
 
-    // Docker / WSL は「中のフォルダ」をコマンドで指定する (作業フォルダ欄はWindows側)
-    if (dk || wsl) {
-      const o = dk || wsl;
-      const preview = el("span", {class:"warn"}, "");
-      const upd = () => {
-        t.command = dk ? buildDocker(o) : buildWsl(o);
-        if (cmdInput) cmdInput.value = t.command;
-        preview.textContent = "実行されるコマンド: " + t.command;
-      };
-      const f = (label, key, ph, w) => {
-        const i = el("input", {type:"text", placeholder:ph, style:`width:${w||180}px`});
-        i.value = o[key] || "";
-        i.addEventListener("change", () => { o[key] = i.value.trim(); upd(); });
-        return [el("label", {style:"min-width:auto"}, label), i];
-      };
-      box.append(el("div", {class:"row"},
-        ...(dk ? f("コンテナ名", "container", "myapp", 200)
-               : f("ディストリ", "distro", "Ubuntu（既定なら空欄）", 200)),
-        ...f("中のフォルダ", "dir", "/home/me/proj", 220),
-        ...f("実行するもの", "shell", dk ? "bash / claude" : "bash / claude", 180)));
-      upd();
-      box.append(el("div", {class:"row"}, preview));
-      return;
-    }
-    if (!ssh) return;
-
-    const preview = el("span", {class:"warn"}, "");
-    const upd = () => {
-      t.command = buildSsh(ssh);
-      if (cmdInput) cmdInput.value = t.command;
-      preview.textContent = "実行されるコマンド: " + t.command;
-    };
-    const f = (label, key, ph, w) => {
-      const i = el("input", {type:"text", placeholder:ph, style:`width:${w||150}px`});
-      i.value = ssh[key] || "";
-      i.addEventListener("change", () => { ssh[key] = i.value.trim(); upd(); });
-      return [el("label", {style:"min-width:auto"}, label), i];
-    };
-    const cb = (label, key) => {
-      const i = el("input", {type:"checkbox"});
-      i.checked = !!ssh[key];
-      i.addEventListener("change", () => { ssh[key] = i.checked; upd(); });
-      return label2(i, label);
-    };
-    box.append(el("div", {class:"row"},
-      ...f("接続先", "host", "example.com", 200),
-      ...f("ポート", "port", "22", 70),
-      ...f("ユーザー名", "user", "root", 120)));
-    const keyRow = f("鍵ファイル", "key", "省略時はパスワード入力", 300);
-    box.append(el("div", {class:"row"},
-      ...keyRow,
-      el("button", {class:"ghost", onclick: async () => {
-        const p = await pickPath("key", "SSH鍵ファイルを選んでください", ssh.key);
-        if (p !== null) { ssh.key = p; keyRow[1].value = p; upd(); }
-      }}, "参照…"),
-      cb("鍵の転送を許可 (-A)", "agent"),
-      cb("画面転送 (-X)", "x11")));
-    const fwd = el("input", {type:"text", style:"width:340px",
-        placeholder:"例: -L 8080:localhost:80 （複数はカンマ区切り）"});
-    fwd.value = (ssh.forwards || []).join(", ");
-    fwd.addEventListener("change", () => {
-      ssh.forwards = fwd.value.split(",").map(s => s.trim()).filter(Boolean); upd();
+  wss.forEach((ws, wi) => {
+    nav.append(el("div", {class:"navgroup"}, ws.name || "(名称未設定)"));
+    nav.append(el("button", {class:"navitem" + (!sel.global && sel.ws === wi && sel.tab === null ? " sel" : ""),
+      onclick:() => { sel = {ws:wi, tab:null, global:false}; render(); }},
+      el("span", {}, "ワークスペース設定")));
+    (ws.tabs || []).forEach((t, ti) => {
+      const b = el("button", {class:"navitem navtab" + (t.depth ? " child" : "") +
+        (!sel.global && sel.ws === wi && sel.tab === ti ? " sel" : ""),
+        onclick:() => { sel = {ws:wi, tab:ti, global:false}; render(); }});
+      b.append(el("span", {}, (t.depth ? "└ " : "") + (t.name || "(無名)")));
+      b.append(el("span", {class:"sub"}, cmdToText(t.command) || "未設定"));
+      nav.append(b);
     });
-    box.append(el("div", {class:"row"},
-      el("label", {style:"min-width:auto"}, "ポート転送"), fwd,
-      ...f("踏み台", "jump", "gw.example.com", 180),
-      ...f("接続維持(秒)", "keepalive", "60", 70)));
-    preview.textContent = "実行されるコマンド: " + t.command;
-    box.append(el("div", {class:"row"}, preview));
-  };
-  build();
-  return box;
-}
-
-// Windows標準のファイル選択ダイアログを開いてもらう (手打ち不要)
-async function pickPath(kind, title, start) {
-  try {
-    const r = await fetch("/api/pick", {method:"POST",
-        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-        body: JSON.stringify({kind, title, start: start || ""})});
-    const j = await r.json();
-    return j.ok ? j.path : null;
-  } catch (e) { return null; }
-}
-
-// 基本設定の入力欄へ、選んだパスを入れる
-async function pickInto(id, kind, title) {
-  const i = document.getElementById(id);
-  const p = await pickPath(kind, title, i.value);
-  if (p !== null) i.value = p;
-}
-
-/// 入力欄と「参照…」ボタンの組
-function pathField(obj, key, ph, kind, title, width) {
-  const i = el("input", {type:"text", placeholder:ph, style:`width:${width||220}px`});
-  i.value = obj[key] ?? "";
-  i.addEventListener("input", () => { obj[key] = i.value; });
-  const b = el("button", {class:"ghost", onclick: async () => {
-    const p = await pickPath(kind, title, obj[key]);
-    if (p !== null) { obj[key] = p; i.value = p; }
-  }}, "参照…");
-  return [i, b];
-}
-
-function select(obj, key, opts) {
-  const s = el("select");
-  for (const [v, label] of opts) s.append(el("option", {value:v}, label));
-  s.value = obj[key] || "";
-  s.addEventListener("change", () => { obj[key] = s.value; });
-  return s;
+    nav.append(el("button", {class:"navitem navtab navadd",
+      onclick:() => { (ws.tabs = ws.tabs || []).push(newTab());
+                      sel = {ws:wi, tab:ws.tabs.length - 1, global:false}; render(); }},
+      "＋ タブを追加"));
+  });
+  nav.append(el("div", {class:"navgroup"}, ""));
+  nav.append(el("button", {class:"navitem navadd", onclick:addWs}, "＋ ワークスペースを追加"));
 }
 
 const newTab = (o = {}) => Object.assign(
   {name:"", id:"", command:"", profile:"", automation:"", locked:false, auto_restart:false,
    cwd:"", encoding:"", scrollback:"", log:false, depth:0}, o);
-const label2 = (ctrl, text) => {
-  const l = el("label", {style:"min-width:auto; color:#39ff14; cursor:pointer"});
-  l.append(ctrl, document.createTextNode(" " + text));
-  return l;
-};
-function input(obj, key, ph, type) {
-  const i = el("input", {type, placeholder: ph});
-  i.value = obj[key] ?? "";
-  i.addEventListener("input", () => { obj[key] = i.value; });
-  return i;
-}
-function check(obj, key) {
-  const i = el("input", {type:"checkbox"});
-  i.checked = !!obj[key];
-  i.addEventListener("change", () => { obj[key] = i.checked; });
-  return i;
-}
-function moveWs(i, d) { const j=i+d; if(j<0||j>=wss.length) return;
-  [wss[i],wss[j]]=[wss[j],wss[i]]; render(); }
-function moveTab(ws, i, d) { const j=i+d; if(j<0||j>=ws.tabs.length) return;
-  [ws.tabs[i],ws.tabs[j]]=[ws.tabs[j],ws.tabs[i]]; render(); }
-function addWs() { wss.push({name:"新しいワークスペース", automation:"", tabs:[]}); render(); }
 
-// 白紙から始めさせないためのテンプレート
+function addWs() {
+  wss.push({name:"新しいワークスペース", automation:"", tabs:[]});
+  sel = {ws:wss.length - 1, tab:null, global:false};
+  render();
+}
+
+// ── 詳細ペイン ───────────────────────────────────────
+function render() { renderNav(); renderDetail(); }
+
+function renderDetail() {
+  const d = document.getElementById("detail");
+  d.textContent = "";
+  if (sel.global) return d.append(globalPane());
+  const ws = wss[sel.ws];
+  if (!ws) return;
+  if (sel.tab === null) return d.append(wsPane(ws));
+  const t = ws.tabs[sel.tab];
+  if (!t) { sel.tab = null; return renderDetail(); }
+  d.append(tabPane(ws, t));
+}
+
+function globalPane() {
+  const box = el("div");
+  box.append(card("基本",
+    row("タブバーの幅", field(current, "tab_bar_width", "自動", {type:"number", width:110, grow:false}),
+        el("span", {class:"hint"}, "空欄ならタブ名に合わせます")),
+    row("自動チェーン上限", field(current, "max_chain", "10", {type:"number", width:110, grow:false}),
+        el("span", {class:"hint"}, "AI同士の自動転送が続く回数の上限")),
+    row("コードを書くAI", aiSelect(),
+        el("span", {class:"hint", id:"aihint"}, ""))));
+  box.append(card("ファイル",
+    row("自動化(全体共通)", ...pathField(current, "automation", "scripts/common", "dir",
+        "自動化フォルダを選んでください"),
+        el("span", {class:"hint"}, "各タブに設定が無いときに使われます")),
+    row("secrets", ...pathField(current, "secrets", "secrets.json", "file",
+        "secretsファイルを選んでください"),
+        el("span", {class:"hint"}, "通知先やトークン"))));
+  return box;
+}
+function aiSelect() {
+  const s = el("select", {id:"aiengine"});
+  const hint = () => document.getElementById("aihint");
+  if (!aiEngines.length) {
+    s.append(el("option", {value:""}, "見つかりません")); s.disabled = true;
+  } else {
+    s.append(el("option", {value:""}, "自動（見つかったものを使う）"));
+    for (const e of aiEngines) s.append(el("option", {value:e.id}, e.label));
+  }
+  s.value = current.ai_engine || "";
+  s.addEventListener("change", () => { current.ai_engine = s.value; });
+  setTimeout(() => { const h = hint(); if (h) h.textContent = aiEngines.length
+    ? "" : "Claude Code / Codex CLI / Gemini CLI のいずれかを入れると使えます"; }, 0);
+  return s;
+}
+
+function wsPane(ws) {
+  const box = el("div");
+  box.append(card("ワークスペース",
+    row("名前", field(ws, "name", "名前", {grow:false, width:280,
+        onInput:() => renderNav()})),
+    ws.file ? row("定義ファイル", el("span", {class:"hint mono"}, ws.file)) : null,
+    row("自動化", ...pathField(ws, "automation", "各タブの設定を使う", "dir",
+        "自動化フォルダを選んでください"),
+        el("span", {class:"hint"}, "このワークスペース共通"))));
+
+  if (!(ws.tabs || []).length) {
+    const e = el("div", {class:"empty"},
+      el("div", {class:"big"}, "タブがありません"),
+      el("div", {}, "テンプレートから作ると簡単です"));
+    const bar = el("div", {class:"row", style:"justify-content:center"});
+    for (const [k, label] of [["single","Claude 1つ"],["review","実装＋レビュー往復"],
+                              ["ssh","SSH先のAI"],["docker","Dockerの中"],["wsl","WSLの中"]])
+      bar.append(el("button", {onclick:() => addTemplate(k)}, label));
+    e.append(bar);
+    box.append(e);
+  }
+  box.append(el("div", {class:"row"},
+    el("button", {class:"danger", onclick:() => {
+      if (confirm(`ワークスペース「${ws.name}」を削除しますか？`)) {
+        wss.splice(sel.ws, 1); sel = {ws:0, tab:null, global:true}; render();
+      }
+    }}, "このワークスペースを削除")));
+  return box;
+}
+
 const TEMPLATES = {
-  single: { name:"マイAI", tabs:[ newTab({name:"Claude", command:"claude"}) ] },
-  review: { name:"実装＋レビュー", tabs:[
-      newTab({name:"A:実装", command:"claude"}),
-      newTab({name:"B:レビュー", command:"codex", depth:1, locked:true}) ] },
-  ssh:    { name:"リモート作業", tabs:[
-      newTab({name:"サーバー", command:"ssh user@example.com", profile:"claude",
-              auto_restart:true}) ] },
-  docker: { name:"コンテナ作業", tabs:[
-      newTab({name:"コンテナ", command:"docker exec -it -w /app myapp bash",
-              profile:"claude"}) ] },
-  wsl:    { name:"WSL作業", tabs:[
-      newTab({name:"Ubuntu", command:"wsl -d Ubuntu --cd /home/me/proj -- bash",
-              profile:"claude"}) ] },
+  single: [ {name:"Claude", command:"claude"} ],
+  review: [ {name:"実装", command:"claude"},
+            {name:"検査", id:"reviewer", command:"codex", depth:1, locked:true} ],
+  ssh:    [ {name:"サーバー", command:"ssh user@example.com", profile:"claude", auto_restart:true} ],
+  docker: [ {name:"コンテナ", command:"docker exec -it -w /app myapp bash", profile:"claude"} ],
+  wsl:    [ {name:"Ubuntu", command:"wsl -d Ubuntu --cd /home/me/proj -- bash", profile:"claude"} ],
 };
 function addTemplate(kind) {
-  const t = TEMPLATES[kind];
-  wss.push({ name: t.name, automation:"", tabs: t.tabs.map(x => newTab(x)) });
+  const ws = wss[sel.ws];
+  ws.tabs = (ws.tabs || []).concat(TEMPLATES[kind].map(x => newTab(x)));
+  sel.tab = ws.tabs.length - TEMPLATES[kind].length;
   render();
-  msg("テンプレートを追加しました。名前とコマンドを調整して保存してください", "#39ff14");
+  msg("テンプレートを追加しました");
 }
 
-// ── 自動化エディタ ─────────────────────────────────────────────
+function tabPane(ws, t) {
+  const box = el("div");
+  const kind = kindOf(t.command);
+
+  // 基本: 名前とIDは identity なので隣に置く
+  box.append(card("基本",
+    row("表示名", field(t, "name", "例: 実装", {grow:false, width:280,
+        onInput:() => renderNav()})),
+    row("自動化での呼び名", field(t, "id", "表示名をそのまま使う", {grow:false, width:280, mono:true}),
+        el("span", {class:"hint"}, "付けると表示名を変えても自動化が壊れません"))));
+
+  // 起動するもの
+  const cmdRow = el("div", {class:"row"});
+  const cmdInput = field(t, "command", "例: claude", {mono:true, onInput:() => renderNav()});
+  cmdInput.setAttribute("list", "cmdlist");
+  const detailBox = el("div");
+  const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild)); };
+  cmdRow.append(el("label", {}, "種類"),
+    choose({k:kind}, "k", Object.entries(KIND_LABEL), v => {
+      t.command = KIND_START[v] || ""; cmdInput.value = t.command; rebuild(); renderNav();
+    }));
+  rebuild();
+  box.append(card("起動するもの", cmdRow, detailBox,
+    row("コマンド", cmdInput),
+    row("作業フォルダ", ...pathField(t, "cwd", "アプリと同じ場所", "dir",
+        "作業フォルダを選んでください"),
+        el("span", {class:"hint"}, "AIはここのプロジェクトを見ます"))));
+
+  // 自動化: 何が設定済みか一覧で分かるようにする
+  const ev = el("div", {class:"events"});
+  for (const [id, label, hint] of EVENTS.filter(e => e[0] !== "_shared")) {
+    ev.append(el("div", {class:"event"},
+      el("div", {class:"name"}, label, el("div", {class:"hint"}, hint)),
+      el("span", {class:"state", id:"st-" + id}, "—"),
+      el("button", {class:"quiet", onclick:() => openAuto(ws, t, id)}, "編集")));
+  }
+  box.append(card("自動化", ev));
+  loadAutoStates(ws, t);
+
+  // 詳細: めったに触らないものは畳む
+  const det = el("details");
+  det.append(el("summary", {}, "詳細設定"));
+  det.append(
+    row("プロファイル", field(t, "profile", "自動判別", {grow:false, width:220}),
+        el("span", {class:"hint"}, "状態の検出ルール。SSH先のAIを指定するときに使う")),
+    row("自動化フォルダ", ...pathField(t, "automation", "自動", "dir",
+        "自動化フォルダを選んでください")),
+    row("文字コード", choose(t, "encoding",
+        [["","UTF-8（標準）"],["shift_jis","Shift_JIS"],["euc-jp","EUC-JP"]])),
+    row("スクロール行数", field(t, "scrollback", "5000", {type:"number", width:120, grow:false})),
+    el("div", {class:"row"}, el("label", {}, "動作"),
+       check(t, "locked", "入力をロックする"),
+       check(t, "auto_restart", "終了したら自動で再起動"),
+       check(t, "log", "セッションログを保存")),
+    el("div", {class:"row"}, el("label", {}, "並び順"),
+       el("button", {class:"quiet", onclick:() => moveTab(ws, -1)}, "↑ 上へ"),
+       el("button", {class:"quiet", onclick:() => moveTab(ws, 1)}, "↓ 下へ"),
+       el("button", {class:"quiet", onclick:() => { t.depth = Math.min((t.depth||0)+1, sel.tab); render(); }}, "→ 子にする"),
+       el("button", {class:"quiet", onclick:() => { t.depth = Math.max((t.depth||0)-1, 0); render(); }}, "← 親に戻す")));
+  box.append(el("div", {class:"card"}, det));
+
+  box.append(el("div", {class:"row"},
+    el("button", {class:"danger", onclick:() => {
+      if (confirm(`タブ「${t.name || "(無名)"}」を削除しますか？`)) {
+        ws.tabs.splice(sel.tab, 1); sel.tab = null; render();
+      }
+    }}, "このタブを削除")));
+  return box;
+}
+
+function moveTab(ws, d) {
+  const i = sel.tab, j = i + d;
+  if (j < 0 || j >= ws.tabs.length) return;
+  [ws.tabs[i], ws.tabs[j]] = [ws.tabs[j], ws.tabs[i]];
+  sel.tab = j; render();
+}
+
+/// 種類ごとの入力補助 (SSH / Docker / WSL)
+function kindPanel(t, cmdInput, rebuild) {
+  const box = el("div");
+  const ssh = parseSsh(t.command), dk = parseDocker(t.command), wsl = parseWsl(t.command);
+  const sync = (build, o) => () => {
+    t.command = build(o); cmdInput.value = t.command; renderNav();
+  };
+  const f = (obj, key, label, ph, upd, w) => {
+    const i = el("input", {type:"text", placeholder:ph, class:"mono"});
+    if (w) i.style.width = w + "px";
+    i.value = obj[key] || "";
+    i.addEventListener("input", () => { obj[key] = i.value.trim(); upd(); });
+    return [el("label", {}, label), i];
+  };
+  if (ssh) {
+    const upd = sync(buildSsh, ssh);
+    box.append(el("div", {class:"row"}, ...f(ssh, "host", "接続先", "example.com", upd, 240),
+      el("label", {style:"width:auto"}, "ポート"),
+      (() => { const i = el("input", {type:"text", class:"mono", style:"width:70px"});
+               i.value = ssh.port || ""; i.placeholder = "22";
+               i.addEventListener("input", () => { ssh.port = i.value.trim(); upd(); }); return i; })(),
+      el("label", {style:"width:auto"}, "ユーザー"),
+      (() => { const i = el("input", {type:"text", class:"mono", style:"width:130px"});
+               i.value = ssh.user || ""; i.placeholder = "root";
+               i.addEventListener("input", () => { ssh.user = i.value.trim(); upd(); }); return i; })()));
+    const keyIn = el("input", {type:"text", class:"mono grow", placeholder:"省略時はパスワード入力"});
+    keyIn.value = ssh.key || "";
+    keyIn.addEventListener("input", () => { ssh.key = keyIn.value.trim(); upd(); });
+    box.append(el("div", {class:"row"}, el("label", {}, "鍵ファイル"), keyIn,
+      el("button", {class:"quiet", onclick: async () => {
+        const p = await pickPath("key", "SSH鍵ファイルを選んでください", ssh.key);
+        if (p !== null) { ssh.key = p; keyIn.value = p; upd(); }
+      }}, "参照…")));
+    const adv = el("details"); adv.append(el("summary", {}, "接続の詳細"));
+    const fwd = el("input", {type:"text", class:"mono grow",
+      placeholder:"例: -L 8080:localhost:80（複数はカンマ区切り）"});
+    fwd.value = (ssh.forwards || []).join(", ");
+    fwd.addEventListener("input", () => {
+      ssh.forwards = fwd.value.split(",").map(s => s.trim()).filter(Boolean); upd(); });
+    adv.append(el("div", {class:"row"}, el("label", {}, "ポート転送"), fwd),
+      el("div", {class:"row"}, ...f(ssh, "jump", "踏み台", "gw.example.com", upd, 200),
+        ...f(ssh, "keepalive", "接続維持(秒)", "60", upd, 80)),
+      el("div", {class:"row"}, el("label", {}, "許可"),
+        (() => { const c = el("input", {type:"checkbox"}); c.checked = ssh.agent;
+          c.addEventListener("change", () => { ssh.agent = c.checked; upd(); });
+          const l = el("label", {class:"check"}); l.append(c, document.createTextNode("鍵の転送 (-A)"));
+          return l; })(),
+        (() => { const c = el("input", {type:"checkbox"}); c.checked = ssh.x11;
+          c.addEventListener("change", () => { ssh.x11 = c.checked; upd(); });
+          const l = el("label", {class:"check"}); l.append(c, document.createTextNode("画面転送 (-X)"));
+          return l; })()));
+    box.append(adv);
+  } else if (dk || wsl) {
+    const o = dk || wsl, upd = sync(dk ? buildDocker : buildWsl, o);
+    box.append(el("div", {class:"row"},
+      ...(dk ? f(o, "container", "コンテナ名", "myapp", upd, 200)
+             : f(o, "distro", "ディストリ", "Ubuntu", upd, 200)),
+      ...f(o, "dir", "中のフォルダ", "/home/me/proj", upd, 220)));
+    box.append(el("div", {class:"row"},
+      ...f(o, "shell", "実行するもの", "bash / claude", upd, 220),
+      el("span", {class:"hint"}, "コンテナ/WSLの中のフォルダはここで指定します")));
+  } else {
+    const s = el("select");
+    s.append(el("option", {value:""}, "よく使うものから選ぶ…"));
+    for (const c of COMMON_COMMANDS) {
+      const ok = c.check ? aiEngines.some(e => e.id === c.check) : true;
+      s.append(el("option", {value:c.cmd}, c.label + (c.check && !ok ? "（未インストール）" : "")));
+    }
+    s.addEventListener("change", () => {
+      if (!s.value) return;
+      t.command = s.value; cmdInput.value = s.value; s.value = ""; renderNav();
+    });
+    box.append(el("div", {class:"row"}, el("label", {}, "よく使うもの"), s));
+  }
+  return box;
+}
+
+// ── 自動化エディタ ───────────────────────────────────
 const EVENTS = [
-  ["on_start",    "起動したとき",           "例: 作業フォルダへ移動して前回の続きを再開する"],
-  ["on_done",     "応答が完了したとき",     "例: 結果を他のタブへ渡す / Slackに通知する"],
-  ["on_question", "確認を聞かれたとき",     "文字列を返すと自動で送信、返さなければ人間の判断待ち"],
-  ["on_exit",     "セッションが終了したとき", "例: 切断されたら再接続する"],
-  ["on_busy",     "応答が始まったとき（上級）",
-   "例: 処理中に定期的に様子を見る (while shikisha.state(tab)==\"BUSY\" do ... end)"],
-  ["_shared",     "共通の下請け関数",       "他のイベントから呼べる関数を定義しておく場所"],
+  ["on_start",    "起動したとき",           "作業フォルダへ移動して前回の続きを再開する等"],
+  ["on_done",     "応答が完了したとき",     "結果を他のタブへ渡す / 通知する"],
+  ["on_question", "確認を聞かれたとき",     "文字列を返すと自動送信、返さなければ人が判断"],
+  ["on_exit",     "終了したとき",           "切断されたら再接続する等"],
+  ["on_busy",     "応答が始まったとき",     "処理中に定期的に様子を見る（上級）"],
+  ["_shared",     "共通の下請け関数",       ""],
 ];
 let autoTarget = null, autoData = {}, autoEvent = "on_done";
 
 function autoDirOf(ws, t) {
   if (t.automation) return t.automation;
-  // 規約で自動命名し、以後は設定に保存される（リネームしても壊れない）
   const slug = s => (s || "").replace(/[^A-Za-z0-9_-]/g, "").toLowerCase();
   const wi = wss.indexOf(ws) + 1, ti = (ws.tabs || []).indexOf(t) + 1;
-  return "scripts/" + (slug(ws.name) || ("ws" + wi)) + "/" + (slug(t.name) || ("tab" + ti));
+  return "scripts/" + (slug(ws.name) || ("ws" + wi)) + "/" + (slug(t.id) || slug(t.name) || ("tab" + ti));
 }
 
-async function openAuto(ws, t) {
-  autoTarget = { ws, t, dir: autoDirOf(ws, t) };
-  const idx = (ws.tabs || []).indexOf(t) + 1;
-  document.getElementById("autotitle").textContent =
-      `自動化 — (${idx}) ` + (t.name || "無名タブ") + "　[" + autoTarget.dir + "]";
-  const sel = document.getElementById("autoevent");
-  sel.textContent = "";
-  for (const [id, label] of EVENTS) sel.append(el("option", {value:id}, label));
+async function fetchAuto(dir) {
   try {
-    autoData = await (await fetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
+    return await (await fetch("/api/automation?dir=" + encodeURIComponent(dir),
         {headers:{"X-Token":TOKEN}})).json();
-  } catch (e) { autoData = {}; }
-  autoEvent = "on_done"; sel.value = autoEvent;
+  } catch (e) { return {}; }
+}
+async function loadAutoStates(ws, t) {
+  const data = await fetchAuto(autoDirOf(ws, t));
+  for (const [id] of EVENTS) {
+    const s = document.getElementById("st-" + id);
+    if (!s) continue;
+    const on = (data[id] || "").trim().length > 0;
+    s.textContent = on ? "設定あり" : "未設定";
+    s.className = "state" + (on ? " on" : "");
+  }
+}
+
+async function openAuto(ws, t, event) {
+  autoTarget = { ws, t, dir: autoDirOf(ws, t) };
+  document.getElementById("autotitle").textContent = "自動化 — " + (t.name || "無名タブ");
+  document.getElementById("autopath").textContent = autoTarget.dir;
+  const s = document.getElementById("autoevent");
+  s.textContent = "";
+  for (const [id, label] of EVENTS) s.append(el("option", {value:id}, label));
+  autoData = await fetchAuto(autoTarget.dir);
+  autoEvent = event || "on_done"; s.value = autoEvent;
   switchEvent();
-  // AIが1つも無ければ、その機能だけ隠して案内を出す
   document.getElementById("airow").style.display = aiEngines.length ? "flex" : "none";
   document.getElementById("ainone").style.display = aiEngines.length ? "none" : "flex";
   document.getElementById("aipreview").style.display = "none";
+  automsg("");
   document.getElementById("autobox").style.display = "flex";
 }
 function switchEvent() {
-  // 表示を切り替える前に、今の内容を控えておく
   autoData[autoEvent] = document.getElementById("autocode").value;
   autoEvent = document.getElementById("autoevent").value;
   document.getElementById("autocode").value = autoData[autoEvent] || "";
@@ -1353,69 +1388,74 @@ async function saveAuto() {
   const r = await fetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
       {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
        body: JSON.stringify(autoData)});
-  if (!r.ok) return automsg("保存に失敗しました", "#ff4646");
-  // 使ったフォルダを設定にも記録する（以後リネームしても壊れない）。
-  // 新しく割り当てた場合だけ、設定側の保存が別途必要になる
+  if (!r.ok) return automsg("保存に失敗しました", true);
   const created = autoTarget.t.automation !== autoTarget.dir;
   autoTarget.t.automation = autoTarget.dir;
-  closeAuto(); render();
-  msg(created ? "自動化を保存しました。下の「保存」も押してください" : "自動化を保存しました",
-      "#39ff14");
+  closeAuto();
+  loadAutoStates(autoTarget.ws, autoTarget.t);
+  msg(created ? "自動化を保存しました。「保存」も押してください" : "自動化を保存しました");
 }
 
 async function askAi() {
   const want = document.getElementById("autoask").value.trim();
-  if (!want) return automsg("やりたいことを書いてください", "#ff4646");
-  automsg("AIに問い合わせています（数十秒かかることがあります）…", "#ffea00");
+  if (!want) return automsg("やりたいことを書いてください", true);
+  automsg("AIに問い合わせています…");
+  const ws = autoTarget.ws;
   const r = await fetch("/api/generate", {method:"POST",
       headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-      // タブ構成も渡す。これが無いと「検査タブへ送って」と書いても
-      // AIは送信先の番号が分からない
       body: JSON.stringify({event: autoEvent, prompt: want,
-                            engine: document.getElementById("aiengine").value || null,
-                            tabs: (autoTarget.ws.tabs || []).map((x, i) =>
-                                    ({index: i + 1, name: x.name || ("タブ" + (i + 1)),
-                                      id: x.id || ""})),
-                            self: (autoTarget.ws.tabs || []).indexOf(autoTarget.t) + 1})});
+        engine: current.ai_engine || null,
+        tabs: (ws.tabs || []).map((x, i) => ({index:i+1, name:x.name || ("タブ"+(i+1)), id:x.id || ""})),
+        self: (ws.tabs || []).indexOf(autoTarget.t) + 1})});
   const j = await r.json();
-  if (!j.ok) return automsg("生成できませんでした: " + j.error, "#ff4646");
+  if (!j.ok) return automsg("生成できませんでした: " + j.error, true);
   document.getElementById("aicode").textContent = j.code;
   document.getElementById("aipreview").style.display = "block";
-  automsg("内容を確認して「反映」を押してください", "#39ff14");
+  automsg("内容を確認して「反映」を押してください");
 }
 function applyAi() {
   document.getElementById("autocode").value = document.getElementById("aicode").textContent;
   document.getElementById("aipreview").style.display = "none";
-  automsg("反映しました（まだ保存されていません）", "#39ff14");
+  automsg("反映しました（まだ保存されていません）");
 }
-function automsg(t, c) { const m = document.getElementById("automsg");
-  m.textContent = t; m.style.color = c; }
+function automsg(t, warn) { const m = document.getElementById("automsg");
+  m.textContent = t; m.style.color = warn ? "var(--danger)" : "var(--muted)"; }
 
-// 外部ファイル参照のワークスペース定義を読み書きする
-const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(file), {
-   method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
+// ── 読み込み / 保存 ──────────────────────────────────
+function flatten(tabs, depth, out) {
+  for (const t of tabs || []) {
+    out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command),
+               profile: t.profile || "", automation: t.automation || t.lua || "",
+               locked: !!t.locked, auto_restart: !!t.auto_restart, cwd: t.cwd || "",
+               encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log, depth });
+    flatten(t.children, depth + 1, out);
+  }
+  return out;
+}
+function nest(flat) {
+  const roots = [], stack = [];
+  for (const f of flat) {
+    const node = { name: f.name, command: f.command };
+    if (f.id) node.id = f.id;
+    if (f.profile) node.profile = f.profile;
+    if (f.automation) node.automation = f.automation;
+    if (f.locked) node.locked = true;
+    if (f.auto_restart) node.auto_restart = true;
+    if (f.cwd) node.cwd = f.cwd;
+    if (f.encoding) node.encoding = f.encoding;
+    if (f.scrollback) node.scrollback = Number(f.scrollback);
+    if (f.log) node.log = true;
+    const d = Math.min(f.depth, stack.length);
+    if (d === 0) roots.push(node);
+    else (stack[d - 1].children = stack[d - 1].children || []).push(node);
+    stack[d] = node; stack.length = d + 1;
+  }
+  return roots;
+}
 
-// 使えるAIコマンドを調べて、基本設定の選択肢を作る
-let aiEngines = [];
 async function loadAi() {
   try { aiEngines = (await (await fetch("/api/ai", {headers:{"X-Token":TOKEN}})).json()).engines || []; }
   catch (e) { aiEngines = []; }
-  const sel = document.getElementById("aiengine");
-  sel.textContent = "";
-  const hint = document.getElementById("aihint");
-  if (!aiEngines.length) {
-    sel.append(el("option", {value:""}, "（見つかりません）"));
-    sel.disabled = true;
-    hint.textContent = "Claude Code / Codex CLI / Gemini CLI のいずれかを入れると、日本語で指示してコードを書いてもらえます";
-    return;
-  }
-  sel.disabled = false;
-  sel.append(el("option", {value:""}, "自動（見つかったものを使う）"));
-  for (const e of aiEngines) sel.append(el("option", {value:e.id}, e.label));
-  hint.textContent = aiEngines.length > 1
-      ? "複数見つかりました。使いたいものを選べます"
-      : "検出: " + aiEngines[0].label;
-  // コマンド入力欄の候補も用意する
   const dl = document.getElementById("cmdlist");
   dl.textContent = "";
   for (const c of COMMON_COMMANDS) dl.append(el("option", {value:c.cmd}, c.label));
@@ -1424,75 +1464,52 @@ async function loadAi() {
 async function load() {
   await loadAi();
   current = await (await api("GET")).json();
-  document.getElementById("aiengine").value = current.ai_engine ?? "";
-  document.getElementById("tabw").value    = current.tab_bar_width ?? "";
-  document.getElementById("chain").value   = current.max_chain ?? "";
-  document.getElementById("lua").value     = current.automation ?? current.lua ?? "";
-  document.getElementById("secrets").value = current.secrets ?? "";
   const list = (Array.isArray(current.workspaces) && current.workspaces.length)
       ? current.workspaces
-      : [{ name: "DEFAULT", tabs: current.tabs || [] }];
+      : [{ name:"DEFAULT", tabs: current.tabs || [] }];
   wss = [];
   for (const w of list) {
-    const ws = { name: w.name || "", file: w.file || null,
-                 automation: w.automation || w.lua || "", tabs: [] };
+    const ws = { name:w.name || "", file:w.file || null,
+                 automation:w.automation || w.lua || "", tabs:[] };
     if (ws.file) {
-      // 定義ファイルの中身も読み込み、GUIから編集できるようにする
-      try {
-        const f = await (await wsApi("GET", ws.file)).json();
-        ws.tabs = flatten(f.tabs, 0, []);
-        if (!ws.automation) ws.automation = f.automation || f.lua || "";
-      } catch (e) { ws.loadError = String(e); }
-    } else {
-      ws.tabs = flatten(w.tabs, 0, []);
-    }
+      const f = await (await wsApi("GET", ws.file)).json().catch(() => ({}));
+      ws.tabs = flatten(f.tabs, 0, []);
+      if (!ws.automation) ws.automation = f.automation || f.lua || "";
+    } else ws.tabs = flatten(w.tabs, 0, []);
     wss.push(ws);
   }
+  if (sel.ws >= wss.length) sel = {ws:0, tab:null, global:true};
   render();
-  msg("読み込みました", "#39ff14");
+  msg("読み込みました");
 }
 
 async function save() {
   const out = Object.assign({}, current);
-  const tabw  = document.getElementById("tabw").value;
-  const chain = document.getElementById("chain").value;
-  const lua   = document.getElementById("lua").value.trim();
-  const sec   = document.getElementById("secrets").value.trim();
-  tabw  ? out.tab_bar_width = Number(tabw) : delete out.tab_bar_width;
-  chain ? out.max_chain     = Number(chain) : delete out.max_chain;
-  lua   ? out.automation    = lua : delete out.automation;
-  sec   ? out.secrets       = sec : delete out.secrets;
-  const eng = document.getElementById("aiengine").value;
-  eng   ? out.ai_engine     = eng : delete out.ai_engine;
-  delete out.lua;
+  ["tab_bar_width","max_chain"].forEach(k => {
+    const v = out[k]; if (v === "" || v === null || v === undefined) delete out[k]; else out[k] = Number(v);
+  });
+  ["automation","secrets","ai_engine"].forEach(k => { if (!out[k]) delete out[k]; });
+  delete out.lua; delete out.tabs;
 
-  delete out.tabs;
-  // 外部ファイル参照のワークスペースは、その定義ファイル側に中身を書き戻す
   for (const w of wss) {
     if (!w.file) continue;
-    const body = { name: w.name, tabs: nest(w.tabs) };
+    const body = { name:w.name, tabs:nest(w.tabs) };
     if (w.automation) body.automation = w.automation;
     const rf = await wsApi("POST", w.file, JSON.stringify(body, null, 2));
-    const jf = await rf.json().catch(() => ({ok:false, error:"保存に失敗"}));
-    if (!jf.ok) return msg(w.file + " の保存に失敗: " + (jf.error || ""), "#ff4646");
+    const jf = await rf.json().catch(() => ({ok:false}));
+    if (!jf.ok) return msg(w.file + " の保存に失敗しました", true);
   }
   out.workspaces = wss.map(w => {
-    const o = { name: w.name };
-    // 定義ファイル側にluaを書いたので、config側は参照だけにする
+    const o = { name:w.name };
     if (w.file) o.file = w.file;
-    else {
-      if (w.automation) o.automation = w.automation;
-      o.tabs = nest(w.tabs);
-    }
+    else { if (w.automation) o.automation = w.automation; o.tabs = nest(w.tabs); }
     return o;
   });
   const r = await api("POST", JSON.stringify(out, null, 2));
   const j = await r.json();
-  msg(j.ok ? "保存しました" : "保存失敗: " + j.error,
-      j.ok ? "#39ff14" : "#ff4646");
+  msg(j.ok ? "保存しました" : "保存失敗: " + j.error, !j.ok);
 }
 
-function msg(t, c) { const m = document.getElementById("msg"); m.textContent = t; m.style.color = c; }
 load();
 </script></body></html>
 "##;
