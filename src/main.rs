@@ -686,8 +686,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 &t.last_response.clone().unwrap_or_default(),
                                 200,
                             ),
+                            // 見た目を運ぶので contents() ではなく行単位で取る
                             screen: trim_for_phone(
-                                &t.parser.lock().unwrap().screen().contents(),
+                                &tab::visible_text(t.parser.lock().unwrap().screen()),
                                 200,
                             ),
                         })
@@ -3271,3 +3272,4 @@ mod console_mode_tests {
         );
     }
 }
+

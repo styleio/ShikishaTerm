@@ -223,6 +223,21 @@ pub fn extract_text<CB: vt100::Callbacks>(
     out
 }
 
+/// 画面を見たままのテキストにする (1画面行 = 1行)。
+///
+/// `Screen::contents()` は折り返し扱いの行を改行なしで連結する。
+/// テキストとしては正しいが、行末いっぱいまで描くアスキーアートは
+/// 全行が折り返し扱いになり、画面全体が1行に潰れてしまう。
+/// 見た目を運ぶ用途では行を保つ必要がある
+pub fn visible_text(screen: &vt100::Screen) -> String {
+    let (_, cols) = screen.size();
+    screen
+        .rows(0, cols)
+        .map(|l| l.trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// 画面内容のハッシュ。最下部 ignore_bottom 行は判定から除外する
 /// (byobu/tmux等のステータスバーは時計が毎秒更新され、
 ///  生の出力活動を見ると永遠にBUSYになってしまうため)
@@ -240,6 +255,27 @@ pub fn screen_hash(screen: &vt100::Screen, ignore_bottom: u16) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::screen_hash;
+
+    /// 画面いっぱいに描かれた行が1行に潰れないこと。
+    /// contents() は折り返し行を連結するので、アスキーアートが
+    /// 全部つながって「改行されていない」表示になる (実際に起きた)
+    #[test]
+    fn full_width_rows_keep_their_line_breaks() {
+        let mut p = vt100::Parser::new(4, 10, 0);
+        // 10桁ちょうどの行を3つ。端末はこれを折り返しとして記録する
+        p.process(b"##########$$$$$$$$$$%%%%%%%%%%");
+
+        assert!(
+            !p.screen().contents().contains('\n'),
+            "contents() は改行を落とす (この前提が崩れたら本関数は不要)"
+        );
+        let visible = super::visible_text(p.screen());
+        assert_eq!(
+            visible.split('\n').collect::<Vec<_>>(),
+            vec!["##########", "$$$$$$$$$$", "%%%%%%%%%%", ""],
+            "画面の行がそのまま残る (4行目は空行)"
+        );
+    }
 
     #[test]
     fn bottom_status_rows_are_ignored() {
@@ -636,3 +672,4 @@ impl Tab {
         extract_text(&mut p, 0, new_lines + rows.saturating_sub(1) as usize, cols)
     }
 }
+
