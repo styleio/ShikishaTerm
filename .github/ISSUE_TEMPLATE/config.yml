@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/styleio/ShikishaTerm/security/advisories/new
+    about: Please report security problems privately, not as a public issue.
+  - name: How to write automations
+    url: https://github.com/styleio/ShikishaTerm/blob/main/docs/AUTOMATION.md
+    about: Events, variables, commands and worked examples.
+  - name: How to add a language
+    url: https://github.com/styleio/ShikishaTerm/blob/main/docs/TRANSLATING.md
+    about: Copy lang/en.json, translate the values, open a PR.

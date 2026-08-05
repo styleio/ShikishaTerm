@@ -1,0 +1,78 @@
+name: Release
+
+# タグを打つと配布用の zip を作って Releases に添付する。
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (for a dry run)"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      # 展開してすぐ動く形にまとめる。設定ファイルは example のみ同梱する
+      # (利用者の config.json / secrets.json を上書きしないため)
+      - name: Stage the portable folder
+        shell: pwsh
+        run: |
+          $dir = "dist/ShikishaTerm-AI"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item "target/release/Shikisha-Term-AI.exe" $dir
+          Copy-Item "Settings.cmd"                        $dir
+          Copy-Item "README.md", "README.ja.md", "LICENSE", "SECURITY.md" $dir
+          Copy-Item "config.example.json", "secrets.example.json"         $dir
+          Copy-Item -Recurse "lang", "profiles", "scripts", "workspaces"  $dir
+          New-Item -ItemType Directory -Force "$dir/docs" | Out-Null
+          Copy-Item "docs/AUTOMATION.md", "docs/AUTOMATION.ja.md" "$dir/docs"
+          # logs/ は初回書き込み時に本体が作るので同梱しない
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path "dist/ShikishaTerm-AI" -DestinationPath "ShikishaTerm-AI.zip"
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          (Get-FileHash "ShikishaTerm-AI.zip" -Algorithm SHA256).Hash.ToLower() +
+            "  ShikishaTerm-AI.zip" | Set-Content "ShikishaTerm-AI.zip.sha256"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            ShikishaTerm-AI.zip
+            ShikishaTerm-AI.zip.sha256
+          body: |
+            ## Install
+
+            1. Download `ShikishaTerm-AI.zip` below and unzip it anywhere
+            2. Run `Shikisha-Term-AI.exe`
+
+            No installer, no admin rights, no API keys. Windows 10/11.
+
+            Verify the download with `ShikishaTerm-AI.zip.sha256` if you like.

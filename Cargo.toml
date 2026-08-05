@@ -2,6 +2,16 @@
 name = "shikisha-term-ai"
 version = "0.1.0"
 edition = "2024"
+description = "Run Claude Code, Codex and Gemini side by side and let them hand work to each other. A portable terminal for orchestrating AI CLIs on Windows."
+authors = ["styleio"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/styleio/ShikishaTerm"
+homepage = "https://github.com/styleio/ShikishaTerm"
+keywords = ["terminal", "tui", "ai", "agents", "automation"]
+categories = ["command-line-utilities"]
+# 配布物に含めないもの (crates.io に出す場合の保険)
+exclude = ["logs/", "target/", "docs/demo.gif"]
 
 [[bin]]
 name = "Shikisha-Term-AI"

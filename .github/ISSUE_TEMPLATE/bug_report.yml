@@ -1,0 +1,57 @@
+name: Bug report
+description: Something does not work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Terminal emulation has endless edge cases and a good
+        report is genuinely the hard part of fixing one.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, and what did you see instead of what you expected?
+      placeholder: |
+        I opened a tab running `claude` over SSH and the screen stayed blank.
+    validations:
+      required: true
+
+  - type: input
+    id: command
+    attributes:
+      label: What was the tab running
+      description: The command from the settings screen, with anything private removed.
+      placeholder: "ssh user@example.com  /  claude  /  docker exec -it myapp bash"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in the release you downloaded, or the commit you built.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 23H2
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Anything from logs/
+      description: |
+        `logs/hooks.log` for automation problems, the session log for display problems.
+        **Please remove hostnames, IP addresses and anything else private first** — these
+        logs record whatever was on screen.
+      render: text
+    validations:
+      required: false

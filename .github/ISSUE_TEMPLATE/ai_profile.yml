@@ -1,0 +1,41 @@
+name: AI CLI not detected properly
+description: A terminal AI whose status is read wrong (stuck on working, never asks, ...)
+labels: [profile, good first issue]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The app decides whether a tab is working, finished or waiting for you by looking at
+        the screen — the rules live in `profiles/*.json`. If your CLI is read wrong, a new
+        profile is a small JSON file; see `profiles/claude.json` for the shape.
+
+  - type: input
+    id: cli
+    attributes:
+      label: Which CLI
+      placeholder: "aider 0.60 / ollama run llama3 / something else"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: What goes wrong
+      options:
+        - Stays "working" forever
+        - Says "done" while it is still working
+        - Questions are not recognised as questions
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: screen
+    attributes:
+      label: What the screen looks like at that moment
+      description: |
+        A copy of the relevant lines is the most useful thing here — that is exactly what
+        the detection rules match against. Remove anything private first.
+      render: text
+    validations:
+      required: true

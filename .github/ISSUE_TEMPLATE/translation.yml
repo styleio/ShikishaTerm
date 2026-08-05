@@ -1,0 +1,45 @@
+name: Translation
+description: Offer a language, or report wording that reads badly
+labels: [i18n, good first issue]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Translating is the easiest way to contribute here and needs no Rust at all.
+
+        The whole process: copy `lang/en.json` to `lang/<code>.json`, translate the values,
+        open a pull request. Keys you leave out fall back to English, so a partial
+        translation still works. Details in [docs/TRANSLATING.md](../blob/main/docs/TRANSLATING.md).
+
+        Open this issue if you want to claim a language before starting (so two people do
+        not translate the same one), or if some existing wording is wrong or awkward.
+
+  - type: input
+    id: language
+    attributes:
+      label: Language
+      placeholder: "Korean (ko)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is this about
+      options:
+        - I would like to translate this language
+        - Existing wording is wrong or awkward
+        - A string is missing / cannot be translated
+    validations:
+      required: true
+
+  - type: textarea
+    id: detail
+    attributes:
+      label: Details
+      description: For wording problems, the key and what it should say.
+      placeholder: |
+        Key: settings.phone.note
+        The current text reads oddly because ...
+    validations:
+      required: false
