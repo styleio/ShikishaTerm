@@ -18,12 +18,16 @@ Only add the ones you need.
 
 | File name | When it runs |
 |---|---|
-| `on_start.lua` | Right after the tab starts |
+| `on_start.lua` | Once the tab has started and settled (see below) |
 | `on_done.lua` | When the AI has finished answering |
 | `on_question.lua` | When the AI asks something or offers choices |
 | `on_exit.lua` | When the session ends (including disconnects and crashes) |
 | `on_busy.lua` | When an answer starts (advanced) |
 | `_shared.lua` | Loaded before all of the above. Put shared helper functions here |
+
+`on_start.lua` does not run the instant the tab appears. An AI CLI ignores input until
+it has drawn its own prompt, so it runs once the program has produced output and the
+screen has stopped changing — usually a second or two. You do not have to wait yourself.
 
 Write **only the body** of the work in the file. No `function ... end` wrapper.
 

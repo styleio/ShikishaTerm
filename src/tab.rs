@@ -277,6 +277,44 @@ mod tests {
         );
     }
 
+    /// 起動直後の自動化は、プログラムが入力を受け取れるようになるまで待つこと。
+    ///
+    /// AI CLIは起動して入力欄を描き終わるまで入力を捨てる。
+    /// すぐ流し込むと、設定した文章がどこにも入らない (実際に起きた)
+    #[test]
+    fn the_startup_hook_waits_until_the_program_settles() {
+        use super::{Tab, TabOptions};
+        use std::time::{Duration, Instant};
+
+        let argv = vec!["cmd.exe".to_string()];
+        let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
+
+        // まだ何も出ていない = 起動途中なので流し込まない
+        assert!(!t.had_output(), "起動直後は無出力");
+        assert!(!t.ready_for_startup_hook(), "無出力のうちは待つ");
+
+        // 出力が出て画面が落ち着いたら準備完了
+        let start = Instant::now();
+        let mut became_ready = false;
+        for _ in 0..120 {
+            std::thread::sleep(Duration::from_millis(50));
+            t.tick(start);
+            if t.ready_for_startup_hook() {
+                became_ready = true;
+                break;
+            }
+        }
+        assert!(became_ready, "落ち着いたら準備完了になる");
+        assert!(t.had_output(), "出力が出たことを根拠にしている");
+        assert!(
+            t.age_ms() < 15_000,
+            "時間切れではなく、落ち着いたことで判定できている ({}ms)",
+            t.age_ms()
+        );
+
+        t.kill();
+    }
+
     #[test]
     fn bottom_status_rows_are_ignored() {
         let mut p = vt100::Parser::new(5, 20, 0);
@@ -341,6 +379,8 @@ pub struct Tab {
     bell_count: Arc<AtomicU64>,
     /// PTYから読んだ累計バイト数 (読み取りスレッドが加算する)
     bytes_out: Arc<AtomicU64>,
+    /// このセッションを作った時刻。起動直後かどうかの判定に使う
+    created: Instant,
     /// 直近の出力量の履歴 (古い→新しい)。INDEXの波形用
     activity: [u8; ACTIVITY_LEN],
     /// 前回サンプル時点の累計バイト数
@@ -477,6 +517,7 @@ impl Tab {
             child_exited,
             bell_count,
             bytes_out,
+            created: Instant::now(),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
             last_hash: 0,
@@ -643,6 +684,26 @@ impl Tab {
     /// 直近の出力量 (古い→新しい、各 0..=7)
     pub fn activity(&self) -> &[u8] {
         &self.activity
+    }
+
+    /// 子プロセスが何か出力したか (起動して動き出したかの目安)
+    pub fn had_output(&self) -> bool {
+        self.bytes_out.load(Ordering::Relaxed) > 0
+    }
+
+    /// このセッションを作ってからの経過ミリ秒
+    pub fn age_ms(&self) -> u64 {
+        self.created.elapsed().as_millis() as u64
+    }
+
+    /// 起動直後の自動化 (on_start) を流し込んでよい状態か。
+    ///
+    /// AI CLIは起動して入力欄を描き終わるまで入力を受け取らない。
+    /// 出力が出て、かつ画面が落ち着いたところを「準備できた」とみなす。
+    /// 何も出力しないプログラムのために時間切れも設ける
+    pub fn ready_for_startup_hook(&self) -> bool {
+        const GIVE_UP_MS: u64 = 15_000;
+        (self.had_output() && self.state != TabState::Busy) || self.age_ms() > GIVE_UP_MS
     }
 
     /// 現在のスクロールバック蓄積行数 (表示位置は変更しない)

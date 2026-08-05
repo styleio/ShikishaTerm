@@ -614,7 +614,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 }
                 if auto_enabled {
                     for (i, fired) in started_fired.iter_mut().enumerate() {
-                        if !*fired {
+                        // 起動直後に送ると、AI CLIが入力欄を描く前なので捨てられる。
+                        // 準備できるまで待ってから流し込む
+                        if !*fired && tabs[i].ready_for_startup_hook() {
                             *fired = true;
                             eng.fire("on_start", &tab_ctx(&tabs[i], i + 1), None);
                         }
