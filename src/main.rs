@@ -693,6 +693,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             t.finish_response();
                         }
                         let ctx = tab_ctx(&tabs[idx - 1], idx);
+                        append_hook_log(&format!(
+                            "on_done tab{idx}: 応答 {}文字: {}",
+                            ctx.output.chars().count(),
+                            log_excerpt(&ctx.output, 100)
+                        ));
                         eng.fire("on_done", &ctx, None);
                     }
 

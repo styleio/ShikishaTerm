@@ -353,52 +353,41 @@ mod tests {
         t.kill();
     }
 
-    /// 応答の途中で出力が止まっても、応答の始まりを取り直さないこと。
+    /// 応答の始まりが「実行した瞬間」に決まること。
     ///
-    /// 息継ぎのたびに取り直すと、取り込まれる応答が最後の一片だけになり、
-    /// 途切れた文章が相手のAIへ渡る。
-    /// 取り込んだ本文で確かめようとすると、画面に残っている限り前半も
-    /// 拾えてしまい差が出ないので、開始位置そのものを見る
+    /// 「最初に画面が動いた位置」にすると、貼り付けの表示や入力欄の描き直しも
+    /// 画面を動かすので、答えではなく枠を掴む (実際にそうなっていた)
     #[test]
-    fn a_pause_mid_answer_does_not_move_the_start_of_the_response() {
+    fn a_response_starts_where_the_instruction_was_submitted() {
         use super::{Tab, TabOptions};
-        use crate::detect::TabState;
+        use std::sync::atomic::Ordering;
         use std::time::{Duration, Instant};
 
         let argv = vec!["cmd.exe".to_string()];
-        let mut t = Tab::spawn("shell".into(), &argv, None, 8, 60, TabOptions::default()).unwrap();
+        let mut t = Tab::spawn("shell".into(), &argv, None, 10, 60, TabOptions::default()).unwrap();
         let start = Instant::now();
-        let drive_until = |t: &mut Tab, want: TabState| {
-            for _ in 0..100 {
-                std::thread::sleep(Duration::from_millis(60));
-                if t.tick(start).1 == want {
-                    return true;
-                }
-            }
-            false
-        };
+        let marker = |t: &Tab| t.response_marker.load(Ordering::Relaxed);
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(50));
+            t.tick(start);
+        }
+        assert_eq!(marker(&t), u64::MAX, "実行していないうちは始まりが無い");
 
-        // 最初の実行 -> 応答が始まる
-        t.write_bytes(b"echo FIRST\r").unwrap();
-        assert!(drive_until(&mut t, TabState::Busy), "応答が始まる");
-        let began = t.response_marker;
-        assert!(began.is_some(), "応答の始まりが記録される");
+        // 実行した時点で決まる (画面が動くのを待たない)
+        t.write_bytes(b"echo ONE\r").unwrap();
+        let began = marker(&t);
+        assert_ne!(began, u64::MAX, "実行した瞬間に始まりが決まる");
 
-        // 息継ぎ (いったん静かになる)
-        assert!(drive_until(&mut t, TabState::Done), "いったん止まって見える");
-        assert_eq!(t.response_marker, began, "止まっただけでは始まりは動かない");
+        // そのあと画面がどれだけ動いても取り直さない
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(50));
+            t.tick(start);
+        }
+        assert_eq!(marker(&t), began, "画面が動いても始まりは動かない");
 
-        // 続きが出る。まだ応答は終わっていない (finish_response していない)
-        t.write_bytes(b"echo SECOND\r").unwrap();
-        assert!(drive_until(&mut t, TabState::Busy), "続きが始まる");
-        assert_eq!(
-            t.response_marker, began,
-            "息継ぎのあとに再開しても、始まりを取り直さない"
-        );
-
-        // 受け取り切ったら、次は新しく取り直す
+        // 受け取り切ったら次の実行を待つ
         t.finish_response();
-        assert!(t.response_marker.is_none(), "次の応答は新しく取り直す");
+        assert_eq!(marker(&t), u64::MAX, "次の応答は新しく取り直す");
         assert!(!t.was_prompted(), "次の実行を待つ状態に戻る");
 
         t.kill();
@@ -653,8 +642,12 @@ pub struct Tab {
     last_change_ms: u64,
     /// 最新応答のキャプチャ (DESIGN 7.3: 送信境界マーカー方式)
     pub last_response: Option<String>,
-    /// BUSY遷移時のスクロールバック蓄積量 (応答の開始境界)
-    response_marker: Option<usize>,
+    /// 応答の開始位置 (スクロールバック蓄積量)。u64::MAX = 未設定。
+    ///
+    /// 「最初に画面が動いた位置」ではなく「実行した位置」であることが大事。
+    /// 貼り付けの表示や入力欄の描き直しも画面を動かすので、動いた位置から
+    /// 取ると、答えではなく枠を掴む
+    response_marker: AtomicU64,
     detector: Detector,
 }
 
@@ -790,7 +783,7 @@ impl Tab {
             last_hash: 0,
             last_change_ms: 0,
             last_response: None,
-            response_marker: None,
+            response_marker: AtomicU64::new(u64::MAX),
             detector: Detector::new(profile),
         })
     }
@@ -809,7 +802,7 @@ impl Tab {
     /// 応答を受け取り切ったので、次の実行を待つ状態に戻す
     pub fn finish_response(&mut self) {
         self.prompted.store(false, Ordering::Relaxed);
-        self.response_marker = None;
+        self.response_marker.store(u64::MAX, Ordering::Relaxed);
     }
 
     /// 子プロセスへそのまま流すだけの入力 (マウス報告など)。
@@ -824,6 +817,9 @@ impl Tab {
             self.prompted.store(true, Ordering::Relaxed);
             self.submitted_output
                 .store(self.output_count(), Ordering::Relaxed);
+            // 応答はここから始まる。これより前は指示であって答えではない
+            self.response_marker
+                .store(self.scrollback_len() as u64, Ordering::Relaxed);
         }
         // 相手がUTF-8以外なら、送る文字も変換する
         // (制御シーケンスはASCIIなのでそのまま通る)
@@ -962,11 +958,6 @@ impl Tab {
         // 応答キャプチャ (送信境界マーカー方式):
         // BUSY開始時点のスクロールバック蓄積量を境界として記録し、
         // DONEでその境界以降だけを抽出する (過去の応答は混ざらない)
-        // 応答の始まりは、実行してから最初に動き出した位置。
-        // 途中の息継ぎで動き出すたびに更新すると、最後の一片しか残らない
-        if self.state == TabState::Busy && self.response_marker.is_none() {
-            self.response_marker = Some(self.scrollback_len());
-        }
         if old_state == TabState::Busy && self.state == TabState::Done {
             self.last_response = Some(self.capture_since_marker());
         }
@@ -1030,7 +1021,7 @@ impl Tab {
     }
 
     /// 現在のスクロールバック蓄積行数 (表示位置は変更しない)
-    fn scrollback_len(&self) -> usize {
+    pub fn scrollback_len(&self) -> usize {
         let mut p = self.parser.lock().unwrap();
         let saved = p.screen().scrollback();
         p.screen_mut().set_scrollback(usize::MAX / 2);
@@ -1051,7 +1042,12 @@ impl Tab {
         p.screen_mut().set_scrollback(usize::MAX / 2);
         let now_len = p.screen().scrollback();
         p.screen_mut().set_scrollback(saved);
-        let marker = self.response_marker.unwrap_or(now_len);
+        let stored = self.response_marker.load(Ordering::Relaxed);
+        let marker = if stored == u64::MAX {
+            now_len
+        } else {
+            stored as usize
+        };
         let new_lines = now_len.saturating_sub(marker);
         extract_text(&mut p, 0, new_lines + rows.saturating_sub(1) as usize, cols)
     }
