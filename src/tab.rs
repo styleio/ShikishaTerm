@@ -277,6 +277,52 @@ mod tests {
         );
     }
 
+    /// 画面の大きさを変えただけで「応答が来た」ことにならないこと。
+    ///
+    /// 子プロセスは端末が変わると画面を描き直す。中身は同じでも画面は動くので、
+    /// 活動と数えると BUSY→DONE を通り、再描画が新しい応答として
+    /// 他のタブへ転送されてしまう
+    #[test]
+    fn resizing_the_window_is_not_a_new_answer() {
+        use super::{Tab, TabOptions};
+        use crate::detect::TabState;
+        use std::time::{Duration, Instant};
+
+        let argv = vec!["cmd.exe".to_string()];
+        let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
+        let start = Instant::now();
+
+        // 起動後、落ち着くまで進める
+        let settle = |t: &mut Tab| {
+            for _ in 0..120 {
+                std::thread::sleep(Duration::from_millis(50));
+                if t.tick(start).1 != TabState::Busy {
+                    return t.state;
+                }
+            }
+            t.state
+        };
+        let calm = settle(&mut t);
+        assert_ne!(calm, TabState::Busy, "まず落ち着かせる");
+
+        // 大きさを変える。子プロセスは描き直すが、応答ではない
+        t.resize(30, 100).unwrap();
+        let mut went_busy = false;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(50));
+            if t.tick(start).1 == TabState::Busy {
+                went_busy = true;
+                break;
+            }
+        }
+        assert!(
+            !went_busy,
+            "描き直しを処理中と見なしている (このあと DONE になり応答として転送される)"
+        );
+
+        t.kill();
+    }
+
     /// 起動時の出力だけで DONE になること、そしてそれを応答扱いしないこと。
     ///
     /// どんなプログラムも起動時に何か出力するので、画面は「動いて→止まる」を
@@ -423,6 +469,12 @@ pub struct Tab {
     bytes_out: Arc<AtomicU64>,
     /// このセッションを作った時刻。起動直後かどうかの判定に使う
     created: Instant,
+    /// 直近でリサイズした時刻 (生成からの経過ms)。
+    ///
+    /// 端末の大きさが変わると子プロセスは画面を描き直す。中身は同じでも
+    /// 画面は変化するので、そのまま活動と数えると BUSY→DONE を通り、
+    /// 応答が来たように見えてしまう
+    last_resize_ms: AtomicU64,
     /// 人か自動化が、このタブに何か入力したか。
     ///
     /// 起動時のバナー出力だけでも画面は「動いて→止まる」ので、状態は必ず
@@ -567,6 +619,7 @@ impl Tab {
             bytes_out,
             created: Instant::now(),
             prompted: AtomicBool::new(false),
+            last_resize_ms: AtomicU64::new(0),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
             last_hash: 0,
@@ -602,7 +655,19 @@ impl Tab {
         pty_write(&self.writer, bytes)
     }
 
+    /// 再描画が届いているあいだか。
+    ///
+    /// 待つのは再描画そのものが終わるまでで、落ち着くまでではない。
+    /// 長く止めると本物の応答の始まりを取りこぼす
+    fn redrawing(&self) -> bool {
+        const REDRAW_MS: u64 = 800;
+        self.age_ms()
+            .saturating_sub(self.last_resize_ms.load(Ordering::Relaxed))
+            < REDRAW_MS
+    }
+
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        self.last_resize_ms.store(self.age_ms(), Ordering::Relaxed);
         self.master.resize(PtySize {
             rows,
             cols,
@@ -698,7 +763,10 @@ impl Tab {
         let now = start.elapsed().as_millis() as u64;
         if hash != self.last_hash {
             self.last_hash = hash;
-            self.last_change_ms = now;
+            // リサイズ後の描き直しは新しい出力ではないので、活動と数えない
+            if !self.redrawing() {
+                self.last_change_ms = now;
+            }
         }
         let since = now.saturating_sub(self.last_change_ms);
         let old_state = self.state;
