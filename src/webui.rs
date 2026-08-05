@@ -950,6 +950,20 @@ const PAGE: &str = r##"<!doctype html>
  pre { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:12px;
    overflow:auto; max-height:240px; font-size:12.5px; }
  a { color:var(--accent); }
+ /* AIの生成は数十秒かかることがある。止まっていないと一目で分かるように、
+    回るもの・伸びるもの・進む数字を揃える */
+ #aibusy { flex-direction:column; gap:9px; margin-top:10px; padding:12px 14px;
+   background:var(--panel2); border:1px solid var(--accent); border-radius:9px; }
+ #aibusy .head { display:flex; align-items:center; gap:10px; }
+ #aibusytext { color:var(--accent); font-weight:600; }
+ .spin { width:16px; height:16px; flex:none; border-radius:50%;
+   border:2px solid var(--line); border-top-color:var(--accent);
+   animation:spin .8s linear infinite; }
+ @keyframes spin { to { transform:rotate(360deg); } }
+ .bar { height:4px; border-radius:2px; background:var(--line); overflow:hidden; }
+ .bar > i { display:block; height:100%; width:35%; border-radius:2px;
+   background:var(--accent); animation:slide 1.3s ease-in-out infinite; }
+ @keyframes slide { from { margin-left:-35%; } to { margin-left:100%; } }
 </style></head><body>
 
 <header>
@@ -984,7 +998,11 @@ const PAGE: &str = r##"<!doctype html>
       <label>{{automation.editor.ask}}</label>
       <input type="text" id="autoask" class="grow"
              placeholder="{{automation.editor.ask.ph}}">
-      <button onclick="askAi()">{{automation.editor.generate}}</button>
+      <button onclick="askAi()" id="aibtn">{{automation.editor.generate}}</button>
+    </div>
+    <div id="aibusy" style="display:none">
+      <div class="head"><span class="spin"></span><span id="aibusytext"></span></div>
+      <div class="bar"><i></i></div>
     </div>
     <div class="row" id="ainone" style="display:none">
       <span class="hint">{{automation.editor.no_ai}}</span>
@@ -1593,17 +1611,30 @@ async function openAuto(ws, t, event) {
   s.textContent = "";
   for (const [id, label] of EVENTS) s.append(el("option", {value:id}, label));
   autoData = await fetchAuto(autoTarget.dir);
-  autoEvent = event || "on_done"; s.value = autoEvent;
-  switchEvent();
+  // showEvent を使う (switchEvent だと、まだ前のタブの内容が入っている
+  // テキストエリアを新しいタブのデータとして取り込んでしまう)
+  showEvent(event || "on_done");
   document.getElementById("airow").style.display = aiEngines.length ? "flex" : "none";
   document.getElementById("ainone").style.display = aiEngines.length ? "none" : "flex";
   document.getElementById("aipreview").style.display = "none";
+  // AIへの依頼文と生成結果も前のタブのものを残さない
+  document.getElementById("autoask").value = "";
+  document.getElementById("aicode").textContent = "";
+  aiBusy(false);
   automsg("");
   document.getElementById("autobox").style.display = "flex";
 }
+// イベントを切り替える。今表示している内容は失わないよう先に退避する
 function switchEvent() {
   autoData[autoEvent] = document.getElementById("autocode").value;
-  autoEvent = document.getElementById("autoevent").value;
+  showEvent(document.getElementById("autoevent").value);
+}
+
+// 退避せずに表示だけ差し替える。
+// 開いた直後は前のタブの内容が残っているので、退避してはいけない
+function showEvent(id) {
+  autoEvent = id;
+  document.getElementById("autoevent").value = id;
   document.getElementById("autocode").value = autoData[autoEvent] || "";
   const e = EVENTS.find(x => x[0] === autoEvent);
   document.getElementById("autohint").textContent = e ? e[2] : "";
@@ -1623,22 +1654,50 @@ async function saveAuto() {
   msg(created ? T["automation.editor.saved_new"] : T["automation.editor.saved"]);
 }
 
+// 生成中の見た目。経過秒を出すのは、止まっているのか考えているのかの差が
+// 待つ側にとっていちばん重要だから
+let aiTimer = null;
+function aiBusy(on) {
+  clearInterval(aiTimer);
+  const btn = document.getElementById("aibtn");
+  btn.disabled = on;
+  btn.textContent = T[on ? "automation.editor.generating" : "automation.editor.generate"];
+  document.getElementById("autoask").disabled = on;
+  document.getElementById("aibusy").style.display = on ? "flex" : "none";
+  if (!on) return;
+  const started = Date.now();
+  const tick = () => {
+    document.getElementById("aibusytext").textContent =
+      fill(T["automation.editor.thinking"], {sec: Math.round((Date.now() - started) / 1000)});
+  };
+  tick();
+  aiTimer = setInterval(tick, 1000);
+}
+
 async function askAi() {
   const want = document.getElementById("autoask").value.trim();
   if (!want) return automsg(T["automation.editor.want"], true);
-  automsg(T["automation.editor.asking"]);
   const ws = autoTarget.ws;
-  const r = await fetch("/api/generate", {method:"POST",
-      headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-      body: JSON.stringify({event: autoEvent, prompt: want,
-        engine: current.ai_engine || null,
-        tabs: (ws.tabs || []).map((x, i) => ({index:i+1, name:x.name || fill(T["settings.tab.default_name"], {n: i+1}), id:x.id || ""})),
-        self: (ws.tabs || []).indexOf(autoTarget.t) + 1})});
-  const j = await r.json();
-  if (!j.ok) return automsg(fill(T["automation.editor.failed"], {error: j.error}), true);
-  document.getElementById("aicode").textContent = j.code;
-  document.getElementById("aipreview").style.display = "block";
-  automsg(T["automation.editor.check"]);
+  automsg("");
+  aiBusy(true);
+  try {
+    const r = await fetch("/api/generate", {method:"POST",
+        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+        body: JSON.stringify({event: autoEvent, prompt: want,
+          engine: current.ai_engine || null,
+          tabs: (ws.tabs || []).map((x, i) => ({index:i+1, name:x.name || fill(T["settings.tab.default_name"], {n: i+1}), id:x.id || ""})),
+          self: (ws.tabs || []).indexOf(autoTarget.t) + 1})});
+    const j = await r.json();
+    if (!j.ok) return automsg(fill(T["automation.editor.failed"], {error: j.error}), true);
+    document.getElementById("aicode").textContent = j.code;
+    document.getElementById("aipreview").style.display = "block";
+    automsg(T["automation.editor.check"]);
+  } catch (e) {
+    // 通信ごと失敗した場合、今までは黙って終わっていた
+    automsg(fill(T["automation.editor.failed"], {error: e.message || e}), true);
+  } finally {
+    aiBusy(false);
+  }
 }
 function applyAi() {
   document.getElementById("autocode").value = document.getElementById("aicode").textContent;
