@@ -173,6 +173,31 @@ fn load_manual(config_path: &std::path::Path) -> String {
     EMBEDDED_MANUAL.to_string()
 }
 
+/// 選ばれたパスを設定に書く形にする。
+/// 設定フォルダ配下なら相対パスにして、フォルダごと持ち運べる状態を保つ
+fn display_path(path: &std::path::Path, config_path: &std::path::Path) -> String {
+    config_path
+        .parent()
+        .and_then(|base| path.strip_prefix(base).ok())
+        .map(|rel| rel.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+        .replace('\\', "/")
+}
+
+/// 最初に開く場所。鍵なら ~/.ssh、フォルダなら設定のある場所
+fn default_pick_dir(kind: &str, config_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    if kind == "key" {
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            let ssh = std::path::PathBuf::from(&home).join(".ssh");
+            if ssh.is_dir() {
+                return Some(ssh);
+            }
+            return Some(std::path::PathBuf::from(home));
+        }
+    }
+    config_path.parent().map(std::path::Path::to_path_buf)
+}
+
 const EVENT_FILES: [&str; 6] = [
     "on_start",
     "on_done",
@@ -471,6 +496,48 @@ fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -
             }
             req.respond(Response::from_string(r#"{"ok":true}"#))?;
         }
+        // Windows標準のファイル選択ダイアログを開く。
+        // ブラウザは安全のため実ファイルパスを渡せないため、こちら側で開く
+        ("POST", "/api/pick") => {
+            let mut req = req;
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body)?;
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("file");
+            let title = p.get("title").and_then(|v| v.as_str()).unwrap_or("選択");
+            let start = p
+                .get("start")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from)
+                .filter(|p| p.exists())
+                .or_else(|| default_pick_dir(kind, config_path));
+
+            let mut dlg = rfd::FileDialog::new().set_title(title);
+            if let Some(d) = start {
+                dlg = dlg.set_directory(d);
+            }
+            let picked = if kind == "dir" {
+                dlg.pick_folder()
+            } else {
+                dlg.pick_file()
+            };
+            let resp = match picked {
+                Some(path) => {
+                    serde_json::json!({ "ok": true, "path": display_path(&path, config_path) })
+                }
+                None => serde_json::json!({ "ok": false }),
+            };
+            req.respond(
+                Response::from_string(resp.to_string()).with_header(
+                    Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/json; charset=utf-8"[..],
+                    )
+                    .unwrap(),
+                ),
+            )?;
+        }
         // 使えるAI CLIを調べる (画面を出す前に判定し、無ければ機能ごと隠す)
         ("GET", "/api/ai") => {
             let list: Vec<serde_json::Value> = AI_ENGINES
@@ -609,9 +676,11 @@ const PAGE: &str = r##"<!doctype html>
    <span class="warn">AI同士の自動転送が何回続いたら止めるか</span></div>
  <div class="row"><label>自動化(全体共通)</label>
    <input type="text" id="lua" placeholder="scripts/common">
+   <button class="ghost" onclick="pickInto('lua','dir','自動化フォルダを選んでください')">参照…</button>
    <span class="warn">各タブに設定が無いときに使われます</span></div>
  <div class="row"><label>secretsファイル</label>
-   <input type="text" id="secrets" placeholder="secrets.json"></div>
+   <input type="text" id="secrets" placeholder="secrets.json">
+   <button class="ghost" onclick="pickInto('secrets','file','secretsファイルを選んでください')">参照…</button></div>
  <div class="row"><label>コードを書くAI</label>
    <select id="aiengine"></select>
    <span class="warn" id="aihint"></span></div>
@@ -757,7 +826,8 @@ function render() {
           el("label", {}, "プロファイル"), input(t, "profile", "自動判別", "text"),
           el("span", {class:"warn"}, "検出ルール。SSH先のAIを指定するときに使う")),
         el("div", {class:"row"},
-          el("label", {}, "自動化フォルダ"), input(t, "automation", "自動", "text"),
+          el("label", {}, "自動化フォルダ"),
+          ...pathField(t, "automation", "自動", "dir", "自動化フォルダを選んでください", 260),
           el("span", {class:"warn"}, "空欄なら自動で決まります。他のタブと同じ場所を指定すると共有できます")),
         el("div", {class:"row"},
           label2(check(t, "locked"), "入力をロックする（人間の誤操作を防ぐ）"),
@@ -883,8 +953,13 @@ function sshPanel(t, cmdInput) {
       ...f("接続先", "host", "example.com", 200),
       ...f("ポート", "port", "22", 70),
       ...f("ユーザー名", "user", "root", 120)));
+    const keyRow = f("鍵ファイル", "key", "省略時はパスワード入力", 300);
     box.append(el("div", {class:"row"},
-      ...f("鍵ファイル", "key", "省略時はパスワード入力", 300),
+      ...keyRow,
+      el("button", {class:"ghost", onclick: async () => {
+        const p = await pickPath("key", "SSH鍵ファイルを選んでください", ssh.key);
+        if (p !== null) { ssh.key = p; keyRow[1].value = p; upd(); }
+      }}, "参照…"),
       cb("鍵の転送を許可 (-A)", "agent"),
       cb("画面転送 (-X)", "x11")));
     const fwd = el("input", {type:"text", style:"width:340px",
@@ -902,6 +977,36 @@ function sshPanel(t, cmdInput) {
   };
   build();
   return box;
+}
+
+// Windows標準のファイル選択ダイアログを開いてもらう (手打ち不要)
+async function pickPath(kind, title, start) {
+  try {
+    const r = await fetch("/api/pick", {method:"POST",
+        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+        body: JSON.stringify({kind, title, start: start || ""})});
+    const j = await r.json();
+    return j.ok ? j.path : null;
+  } catch (e) { return null; }
+}
+
+// 基本設定の入力欄へ、選んだパスを入れる
+async function pickInto(id, kind, title) {
+  const i = document.getElementById(id);
+  const p = await pickPath(kind, title, i.value);
+  if (p !== null) i.value = p;
+}
+
+/// 入力欄と「参照…」ボタンの組
+function pathField(obj, key, ph, kind, title, width) {
+  const i = el("input", {type:"text", placeholder:ph, style:`width:${width||220}px`});
+  i.value = obj[key] ?? "";
+  i.addEventListener("input", () => { obj[key] = i.value; });
+  const b = el("button", {class:"ghost", onclick: async () => {
+    const p = await pickPath(kind, title, obj[key]);
+    if (p !== null) { obj[key] = p; i.value = p; }
+  }}, "参照…");
+  return [i, b];
 }
 
 function select(obj, key, opts) {
@@ -1249,6 +1354,21 @@ mod tests {
         );
         // 会話文だけならエラーにして、保存させない
         assert!(extract_lua("どのような自動化を作りますか？").is_err());
+    }
+
+    #[test]
+    fn picked_paths_stay_portable_when_inside_the_config_folder() {
+        let cfg = std::path::Path::new("D:/app/config.json");
+        // 設定フォルダ配下は相対パスにする (フォルダごと持ち運べる)
+        assert_eq!(
+            display_path(std::path::Path::new("D:/app/scripts/reviewer"), cfg),
+            "scripts/reviewer"
+        );
+        // 外にあるものは絶対パスのまま、区切りだけ揃える
+        assert_eq!(
+            display_path(std::path::Path::new("C:\\Users\\me\\.ssh\\id_ed25519"), cfg),
+            "C:/Users/me/.ssh/id_ed25519"
+        );
     }
 
     #[test]
