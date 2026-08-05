@@ -159,9 +159,20 @@ fn handle(
             let html = crate::i18n::render(PAGE)
                 .replace("__TOKEN__", token)
                 .replace("__DICT__", &crate::i18n::dict_json());
-            req.respond(Response::from_string(html).with_header(
-                Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
-            ))?;
+            req.respond(
+                Response::from_string(html)
+                    .with_header(
+                        Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"text/html; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    )
+                    // 更新したのに古い画面が出る、を起こさない
+                    .with_header(
+                        Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
+                    ),
+            )?;
         }
         ("GET", "/api/state") => {
             let snap = snapshot.lock().unwrap().clone();
@@ -351,10 +362,10 @@ function render() {
     t.name + " — " + (LABEL[t.state] || t.state);
   const out = document.getElementById("out");
   const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 20;
-  // 動いている最中は今の画面、終わっていれば取り込んだ応答。
-  // last_response は DONE の瞬間に入るので、完了後に古いものが出ることはない
-  const live = t.state === "BUSY" || t.state === "QUESTION" || !t.output;
-  const text = (live ? (t.screen || t.output) : (t.output || t.screen)) || "";
+  // 常に画面そのものを見せる。
+  // 取り込んだ応答は折り返した行を1行に連結するので (自動化へ渡す文章としては
+  // それが正しい)、枠や図が潰れる。スマホは見た目を見る場所なので画面を使う
+  const text = t.screen || t.output || "";
   if (out.textContent !== text) {
     out.textContent = text;
     if (atBottom) out.scrollTop = out.scrollHeight;
