@@ -478,6 +478,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut ball = ball::Ball::default();
     // 送信した本文に対して、あとから実行(改行)を送る予約
     let mut pending_submit: Vec<PendingSubmit> = Vec::new();
+    // 応答完了と見えたタブと、それを確定させる時刻。
+    // 途中の息継ぎで撃たないよう、静かなまま保っていることを確かめてから撃つ
+    let mut pending_done: Vec<(usize, u64)> = Vec::new();
     // INDEXで押せる場所。毎フレーム描画時に作り直す
     let mut hits: Vec<HitBox> = Vec::new();
     let mut hover: Option<Hit> = None;
@@ -612,6 +615,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         eng.cancel_tab(idx);
                     }
                 }
+                let now_ms = start.elapsed().as_millis() as u64;
                 if auto_enabled {
                     for (i, fired) in started_fired.iter_mut().enumerate() {
                         // 起動直後に送ると、AI CLIが入力欄を描く前なので捨てられる。
@@ -619,6 +623,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         if !*fired && tabs[i].ready_for_startup_hook() {
                             *fired = true;
                             eng.fire("on_start", &tab_ctx(&tabs[i], i + 1), None);
+                        }
+                    }
+                    // 続きが始まったら、完了の確定待ちは取り消す
+                    for &(idx, _, new) in &transitions {
+                        if new == TabState::Busy || new == TabState::Exited {
+                            pending_done.retain(|&(t, _)| t != idx);
                         }
                     }
                     for &(idx, old, new) in &transitions {
@@ -642,9 +652,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         match new {
                             TabState::Busy if answering => eng.fire("on_busy", &ctx, None),
                             TabState::Done if answering && old == TabState::Busy => {
-                                // 一度の実行に一度の応答。次を待つには次の実行が要る
-                                tabs[idx - 1].clear_prompted();
-                                eng.fire("on_done", &ctx, None);
+                                // ここでは撃たない。AIの出力は途中で息継ぎをするので、
+                                // 静かになっただけでは終わったと言えない
+                                let at = now_ms + tabs[idx - 1].done_confirm_ms();
+                                pending_done.retain(|&(t, _)| t != idx);
+                                pending_done.push((idx, at));
                             }
                             TabState::Question => {
                                 let screen =
@@ -655,6 +667,22 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             _ => {}
                         }
                     }
+                    // 静かなまま保ったものだけを、本当の完了として撃つ
+                    let (ready, waiting): (Vec<_>, Vec<_>) =
+                        pending_done.iter().partition(|&&(_, at)| now_ms >= at);
+                    pending_done = waiting;
+                    for (idx, _) in ready {
+                        if let Some(t) = tabs.get_mut(idx.wrapping_sub(1)) {
+                            if t.state != TabState::Done {
+                                continue;
+                            }
+                            // 一度の実行に一度の応答。次を待つには次の実行が要る
+                            t.finish_response();
+                        }
+                        let ctx = tab_ctx(&tabs[idx - 1], idx);
+                        eng.fire("on_done", &ctx, None);
+                    }
+
                     eng.tick_pending(&|idx| {
                         tabs.get(idx.wrapping_sub(1))
                             .map(|t| t.parser.lock().unwrap().screen().contents())

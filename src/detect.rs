@@ -71,6 +71,11 @@ impl Detector {
         self.profile.ignore_bottom_rows
     }
 
+    /// DONE を確定させるまでの待ち時間
+    pub fn done_confirm_ms(&self) -> u64 {
+        self.profile.done_confirm_ms
+    }
+
     /// 定期実行 (200ms毎目安)。
     /// 優先度: QUESTION > BUSY(パターン) > ベル完了 > 活動タイマー > 沈黙タイマー
     pub fn tick(&mut self, screen_text: &str, ms_since_output: u64, bell_count: u64) -> TabState {
@@ -121,6 +126,7 @@ mod tests {
             question_patterns: vec!["Do you want".into(), "❯\\s*1\\.".into()],
             silence_ms: 2000,
             ignore_bottom_rows: 2,
+            done_confirm_ms: 3000,
         })
         .unwrap()
     }

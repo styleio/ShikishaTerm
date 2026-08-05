@@ -310,6 +310,57 @@ mod tests {
         );
     }
 
+    /// 応答の途中で出力が止まっても、応答の始まりを取り直さないこと。
+    ///
+    /// 息継ぎのたびに取り直すと、取り込まれる応答が最後の一片だけになり、
+    /// 途切れた文章が相手のAIへ渡る。
+    /// 取り込んだ本文で確かめようとすると、画面に残っている限り前半も
+    /// 拾えてしまい差が出ないので、開始位置そのものを見る
+    #[test]
+    fn a_pause_mid_answer_does_not_move_the_start_of_the_response() {
+        use super::{Tab, TabOptions};
+        use crate::detect::TabState;
+        use std::time::{Duration, Instant};
+
+        let argv = vec!["cmd.exe".to_string()];
+        let mut t = Tab::spawn("shell".into(), &argv, None, 8, 60, TabOptions::default()).unwrap();
+        let start = Instant::now();
+        let drive_until = |t: &mut Tab, want: TabState| {
+            for _ in 0..100 {
+                std::thread::sleep(Duration::from_millis(60));
+                if t.tick(start).1 == want {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // 最初の実行 -> 応答が始まる
+        t.write_bytes(b"echo FIRST\r").unwrap();
+        assert!(drive_until(&mut t, TabState::Busy), "応答が始まる");
+        let began = t.response_marker;
+        assert!(began.is_some(), "応答の始まりが記録される");
+
+        // 息継ぎ (いったん静かになる)
+        assert!(drive_until(&mut t, TabState::Done), "いったん止まって見える");
+        assert_eq!(t.response_marker, began, "止まっただけでは始まりは動かない");
+
+        // 続きが出る。まだ応答は終わっていない (finish_response していない)
+        t.write_bytes(b"echo SECOND\r").unwrap();
+        assert!(drive_until(&mut t, TabState::Busy), "続きが始まる");
+        assert_eq!(
+            t.response_marker, began,
+            "息継ぎのあとに再開しても、始まりを取り直さない"
+        );
+
+        // 受け取り切ったら、次は新しく取り直す
+        t.finish_response();
+        assert!(t.response_marker.is_none(), "次の応答は新しく取り直す");
+        assert!(!t.was_prompted(), "次の実行を待つ状態に戻る");
+
+        t.kill();
+    }
+
     /// 打っただけ・貼っただけを「実行した」と数えないこと。
     ///
     /// 数えてしまうと、入力しかけて手を止めた画面が静かになった瞬間に
@@ -699,10 +750,10 @@ impl Tab {
         self.prompted.load(Ordering::Relaxed)
     }
 
-    /// 応答を受け取ったので待ち状態を解く。
-    /// 次の応答には次の実行が要る (打ちかけて放置した画面を応答と読まないため)
-    pub fn clear_prompted(&self) {
+    /// 応答を受け取り切ったので、次の実行を待つ状態に戻す
+    pub fn finish_response(&mut self) {
         self.prompted.store(false, Ordering::Relaxed);
+        self.response_marker = None;
     }
 
     /// 子プロセスへそのまま流すだけの入力 (マウス報告など)。
@@ -853,7 +904,9 @@ impl Tab {
         // 応答キャプチャ (送信境界マーカー方式):
         // BUSY開始時点のスクロールバック蓄積量を境界として記録し、
         // DONEでその境界以降だけを抽出する (過去の応答は混ざらない)
-        if self.state == TabState::Busy && old_state != TabState::Busy {
+        // 応答の始まりは、実行してから最初に動き出した位置。
+        // 途中の息継ぎで動き出すたびに更新すると、最後の一片しか残らない
+        if self.state == TabState::Busy && self.response_marker.is_none() {
             self.response_marker = Some(self.scrollback_len());
         }
         if old_state == TabState::Busy && self.state == TabState::Done {
@@ -881,6 +934,11 @@ impl Tab {
         };
         self.activity.rotate_left(1);
         self.activity[ACTIVITY_LEN - 1] = level;
+    }
+
+    /// DONE を確定させるまでの待ち時間 (プロファイル設定)
+    pub fn done_confirm_ms(&self) -> u64 {
+        self.detector.done_confirm_ms()
     }
 
     /// 直近の出力量 (古い→新しい、各 0..=7)
