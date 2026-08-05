@@ -668,10 +668,8 @@ const PAGE: &str = r##"<!doctype html>
   <button class="ghost" onclick="load()">再読込</button>
   <span id="msg"></span>
 </div>
-<p class="warn">保存すると本体へすぐ反映されます。
-接続先・文字コード・スクロール行数を変えた場合だけ、実行中のセッションを守るため
-そのタブに「⟳」が付きます（本体で Ctrl+B r を押すと反映）。
-このページはこのセッション限りのトークンで保護されています。</p>
+<p class="warn">接続先・文字コード・スクロール行数を変えたタブには「⟳」が付きます。
+実行中の作業を切らないよう、本体で Ctrl+B r を押したときに切り替わります。</p>
 
 <script>
 const TOKEN = "__TOKEN__";
@@ -1012,10 +1010,13 @@ async function saveAuto() {
       {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
        body: JSON.stringify(autoData)});
   if (!r.ok) return automsg("保存に失敗しました", "#ff4646");
-  // 使ったフォルダを設定にも記録する（以後リネームしても壊れない）
+  // 使ったフォルダを設定にも記録する（以後リネームしても壊れない）。
+  // 新しく割り当てた場合だけ、設定側の保存が別途必要になる
+  const created = autoTarget.t.automation !== autoTarget.dir;
   autoTarget.t.automation = autoTarget.dir;
   closeAuto(); render();
-  msg("自動化を保存しました（すぐに反映されます）。フォルダを新しく作った場合は「保存」も押してください", "#39ff14");
+  msg(created ? "自動化を保存しました。下の「保存」も押してください" : "自動化を保存しました",
+      "#39ff14");
 }
 
 async function askAi() {
@@ -1133,7 +1134,7 @@ async function save() {
   });
   const r = await api("POST", JSON.stringify(out, null, 2));
   const j = await r.json();
-  msg(j.ok ? "保存しました（すぐに反映されます）" : "保存失敗: " + j.error,
+  msg(j.ok ? "保存しました" : "保存失敗: " + j.error,
       j.ok ? "#39ff14" : "#ff4646");
 }
 
