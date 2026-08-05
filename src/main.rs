@@ -25,6 +25,7 @@ mod tab;
 mod watch;
 mod webui;
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -82,7 +83,9 @@ fn main() -> Result<()> {
     install_crash_log();
     // 設定だけ開くモード (TUIを起動せずブラウザで設定を編集する)
     if std::env::args().nth(1).as_deref() == Some("--settings") {
-        let web = webui::WebUi::start(config::config_file_path())?;
+        // 本体が動いていなくてもQRを出せる (接続先は設定から都度組み立てる)
+        let info = Arc::new(Mutex::new(webui::RemoteInfo::default()));
+        let web = webui::WebUi::start_with(config::config_file_path(), info)?;
         println!("設定GUI: {}", web.url);
         open_browser(&web.url);
         println!("Enterキーで終了します...");
@@ -439,28 +442,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     engines[0] = build_engine(cfg.as_ref(), workspaces.first(), &mut startup_errors, &caps);
     let mut engine = engines[0].take();
 
-    // リモートUI (スマホ等から監視・指示する)。設定で有効にしたときだけ待ち受ける
-    let mut remote_ui: Option<remote::RemoteUi> = None;
-    if let Some(c) = cfg.as_ref().filter(|c| c.remote.enabled) {
-        match netaddr::resolve_bind(&c.remote.bind, c.remote.allow_public) {
-            Ok((ip, note)) => {
-                let token = c
-                    .remote_token(password.as_deref())
-                    .unwrap_or_else(|| random_hex(24));
-                match remote::RemoteUi::start(ip, c.remote.port, token) {
-                    Ok(mut r) => {
-                        r.note = note;
-                        if let Some(n) = &r.note {
-                            startup_errors.push(n.clone());
-                        }
-                        remote_ui = Some(r);
-                    }
-                    Err(e) => startup_errors.push(format!("リモートUI: {e}")),
-                }
-            }
-            Err(e) => startup_errors.push(format!("リモートUI: {e}")),
-        }
-    }
+    // リモートUI (スマホ等から監視・指示する)。設定で有効にしたときだけ待ち受ける。
+    // 状況は設定画面にも渡し、QRコードをブラウザで見られるようにする
+    let remote_info: Arc<Mutex<webui::RemoteInfo>> = Arc::new(Mutex::new(Default::default()));
+    let mut remote_ui = start_remote(cfg.as_ref(), password.as_deref(), &mut startup_errors);
+    publish_remote(&remote_info, &remote_ui);
 
     let mut auto_enabled = true;
     let mut started_fired = vec![false; tabs.len()];
@@ -545,9 +531,30 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 if active > tabs.len() {
                     active = if tabs.is_empty() { 0 } else { 1 };
                 }
+                // リモートUIの設定変更を反映する (有効化/無効化もここで効く)
+                let mut remote_changed: Option<String> = None;
+                let want = newcfg.remote.clone();
+                let now = cfg.as_ref().map(|c| c.remote.clone()).unwrap_or_default();
+                if (want.enabled, &want.bind, want.port, want.allow_public)
+                    != (now.enabled, &now.bind, now.port, now.allow_public)
+                {
+                    if let Some(r) = &remote_ui {
+                        r.shutdown();
+                    }
+                    remote_ui = start_remote(Some(&newcfg), password.as_deref(), &mut startup_errors);
+                    publish_remote(&remote_info, &remote_ui);
+                    remote_changed = Some(if remote_ui.is_some() {
+                        "スマホからの接続を有効にしました (INDEXの [i] でQRコード)".to_string()
+                    } else {
+                        "スマホからの接続を停止しました".to_string()
+                    });
+                }
                 cfg = Some(newcfg);
                 watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
-                flash = Some(format!(">> {msg}"));
+                flash = Some(match remote_changed {
+                    Some(m) => format!(">> {m}"),
+                    None => format!(">> {msg}"),
+                });
             }
         }
 
@@ -962,7 +969,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     open_browser(&w.url);
                                     format!(">> 設定GUI: {}", w.url)
                                 }
-                                None => match webui::WebUi::start(config_file.clone()) {
+                                None => match webui::WebUi::start_with(config_file.clone(), Arc::clone(&remote_info)) {
                                     Ok(w) => {
                                         open_browser(&w.url);
                                         let msg = format!(">> 設定GUIを開きました: {}", w.url);
@@ -1402,6 +1409,69 @@ fn trim_for_phone(s: &str, max_lines: usize) -> String {
         .map(|l| l.trim_end())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// リモートUIのトークンを決める。
+/// secretsにあればそれを使い、無ければ .remote-token に保存して使い回す
+/// (毎回変わるとスマホを繋ぎ直すことになり、QRも設定画面から出せない)
+pub fn remote_token(cfg: &config::Config, password: Option<&str>) -> String {
+    if let Some(t) = cfg.remote_token(password) {
+        return t;
+    }
+    let path = config_file_dir().join(".remote-token");
+    if let Ok(t) = std::fs::read_to_string(&path) {
+        let t = t.trim().to_string();
+        if t.len() >= 16 {
+            return t;
+        }
+    }
+    let t = random_hex(24);
+    let _ = crypto::write_atomic(&path, &t);
+    t
+}
+
+/// 設定に従ってリモートUIを開始する (無効なら None)
+fn start_remote(
+    cfg: Option<&config::Config>,
+    password: Option<&str>,
+    errors: &mut Vec<String>,
+) -> Option<remote::RemoteUi> {
+    let c = cfg.filter(|c| c.remote.enabled)?;
+    match netaddr::resolve_bind(&c.remote.bind, c.remote.allow_public) {
+        Ok((ip, note)) => {
+            let token = remote_token(c, password);
+            match remote::RemoteUi::start(ip, c.remote.port, token) {
+                Ok(mut r) => {
+                    if let Some(n) = &note {
+                        errors.push(n.clone());
+                    }
+                    r.note = note;
+                    Some(r)
+                }
+                Err(e) => {
+                    errors.push(format!("リモートUI: {e}"));
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            errors.push(format!("リモートUI: {e}"));
+            None
+        }
+    }
+}
+
+/// 設定画面がQRコードを出せるよう、現在の待ち受け状況を渡す
+fn publish_remote(info: &Arc<Mutex<webui::RemoteInfo>>, ui: &Option<remote::RemoteUi>) {
+    let mut i = info.lock().unwrap();
+    match ui {
+        Some(r) => {
+            i.running = true;
+            i.url = r.url.clone();
+            i.note = r.note.clone().unwrap_or_default();
+        }
+        None => *i = Default::default(),
+    }
 }
 
 /// 16進のランダム文字列 (リモートUIのトークン用)

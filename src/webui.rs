@@ -16,6 +16,15 @@ use anyhow::{Context as _, Result};
 use rand::TryRng as _;
 use tiny_http::{Header, Response, Server};
 
+/// 設定画面へ渡すリモートUIの状況 (本体が更新する)
+#[derive(Default, Clone)]
+pub struct RemoteInfo {
+    pub running: bool,
+    pub url: String,
+    /// 有効にできない・注意が要る場合の説明
+    pub note: String,
+}
+
 pub struct WebUi {
     pub url: String,
     stop: Arc<AtomicBool>,
@@ -24,7 +33,10 @@ pub struct WebUi {
 impl WebUi {
     /// 設定ファイルを編集するローカルサーバーを起動する。
     /// config_path は編集対象 (通常 config.json)
-    pub fn start(config_path: std::path::PathBuf) -> Result<Self> {
+    pub fn start_with(
+        config_path: std::path::PathBuf,
+        remote: Arc<std::sync::Mutex<RemoteInfo>>,
+    ) -> Result<Self> {
         let token = random_token()?;
         let server = Server::http("127.0.0.1:0")
             .map_err(|e| anyhow::anyhow!("ローカルサーバーを起動できません: {e}"))?;
@@ -43,7 +55,7 @@ impl WebUi {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
-                    if let Err(e) = handle(req, &token, &config_path) {
+                    if let Err(e) = handle(req, &token, &config_path, &remote) {
                         crate::append_hook_log(&format!("WebUI: {e}"));
                     }
                 }
@@ -171,6 +183,35 @@ fn load_manual(config_path: &std::path::Path) -> String {
         }
     }
     EMBEDDED_MANUAL.to_string()
+}
+
+/// 表示すべきリモートUIの状況を求める。
+/// 本体が待ち受け中ならその情報を、そうでなければ設定から接続先を組み立てる
+/// (設定だけを開いた場合や、有効にした直後でもQRを出せるようにするため)
+fn effective_remote(shared: &Arc<std::sync::Mutex<RemoteInfo>>) -> RemoteInfo {
+    let info = shared.lock().unwrap().clone();
+    if info.running && !info.url.is_empty() {
+        return info;
+    }
+    let Some(c) = crate::config::load().filter(|c| c.remote.enabled) else {
+        return RemoteInfo::default();
+    };
+    match crate::netaddr::resolve_bind(&c.remote.bind, c.remote.allow_public) {
+        Ok((ip, _)) => RemoteInfo {
+            running: true,
+            url: format!(
+                "http://{ip}:{}/?t={}",
+                c.remote.port,
+                crate::remote_token(&c, None)
+            ),
+            note: "本体を起動している間だけ繋がります".into(),
+        },
+        Err(e) => RemoteInfo {
+            running: false,
+            url: String::new(),
+            note: e,
+        },
+    }
 }
 
 /// 自プロセスのダイアログが現れたら前面に持ち上げる。
@@ -473,7 +514,12 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -> Result<()> {
+fn handle(
+    req: tiny_http::Request,
+    token: &str,
+    config_path: &std::path::Path,
+    remote: &Arc<std::sync::Mutex<RemoteInfo>>,
+) -> Result<()> {
     // DNS rebinding対策: Hostは必ずループバックであること
     let host = header_value(&req, "Host");
     let host_ok = host.starts_with("127.0.0.1:") || host.starts_with("localhost:");
@@ -648,6 +694,41 @@ fn handle(req: tiny_http::Request, token: &str, config_path: &std::path::Path) -
                     .unwrap(),
                 ),
             )?;
+        }
+        // スマホから使う機能の状況 (どのネットワークが使えるかも返す)
+        ("GET", "/api/remote") => {
+            let info = effective_remote(remote);
+            let ts = crate::netaddr::tailscale_ip().map(|i| i.to_string());
+            let lan = crate::netaddr::lan_ip().map(|i| i.to_string());
+            let resp = serde_json::json!({
+                "running": info.running,
+                "url": info.url,
+                "note": info.note,
+                "tailscale": ts,
+                "lan": lan,
+            });
+            req.respond(
+                Response::from_string(resp.to_string()).with_header(
+                    Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/json; charset=utf-8"[..],
+                    )
+                    .unwrap(),
+                ),
+            )?;
+        }
+        // 接続用QRコード (URLとトークンを手入力させない)
+        ("GET", "/api/remote/qr") => {
+            let url = effective_remote(remote).url;
+            let svg = if url.is_empty() {
+                String::new()
+            } else {
+                crate::netaddr::qr_svg(&url, 6)
+            };
+            req.respond(Response::from_string(svg).with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"image/svg+xml; charset=utf-8"[..])
+                    .unwrap(),
+            ))?;
         }
         // 使えるAI CLIを調べる (画面を出す前に判定し、無ければ機能ごと隠す)
         ("GET", "/api/ai") => {
@@ -1098,6 +1179,7 @@ function globalPane() {
         el("span", {class:"hint"}, "AI同士の自動転送が続く回数の上限")),
     row("コードを書くAI", aiSelect(),
         el("span", {class:"hint", id:"aihint"}, ""))));
+  box.append(remoteCard());
   box.append(card("ファイル",
     row("自動化(全体共通)", ...pathField(current, "automation", "scripts/common", "dir",
         "自動化フォルダを選んでください"),
@@ -1107,6 +1189,65 @@ function globalPane() {
         el("span", {class:"hint"}, "通知先やトークン"))));
   return box;
 }
+// スマホから使う設定。危険性は隠さず説明したうえで、1クリックで有効にできるようにする
+function remoteCard() {
+  current.remote = current.remote || {};
+  const r = current.remote;
+  const box = el("div", {class:"card"}, el("h2", {}, "スマホから使う"));
+  const status = el("div", {class:"hint"}, "確認中…");
+  const qrbox = el("div", {style:"margin:10px 0"});
+
+  const onoff = el("input", {type:"checkbox"});
+  onoff.checked = !!r.enabled;
+  onoff.addEventListener("change", async () => {
+    r.enabled = onoff.checked;
+    if (r.enabled) { if (!r.bind) r.bind = "auto"; if (!r.port) r.port = 8787; }
+    await save();          // 保存すると本体がすぐ待ち受けを開始/停止する
+    setTimeout(refreshRemote, 1200);
+  });
+  const l = el("label", {class:"check"});
+  l.append(onoff, document.createTextNode("外出先やスマホから、状況の確認と指示ができるようにする"));
+
+  box.append(el("div", {class:"row"}, el("label", {}, "有効にする"), l));
+  box.append(el("div", {class:"row"}, el("label", {}, "ポート"),
+    (() => {
+      const i = el("input", {type:"number", style:"width:110px"});
+      i.value = r.port || 8787;
+      i.addEventListener("input", () => { r.port = Number(i.value) || 8787; });
+      return i;
+    })(),
+    el("span", {class:"hint"}, "ふつうは変更不要です")));
+  box.append(el("div", {class:"row"}, status));
+  box.append(qrbox);
+  box.append(el("div", {class:"hint", style:"margin-top:6px"},
+    "接続できるのは同じネットワークにいる人だけです。" +
+    "Tailscale（無料）を入れておくと、外出先からでも自分の端末だけが繋がる状態になり、" +
+    "いちばん安全に使えます。Tailscableが無い場合は家庭内LANだけで繋がります" +
+    "（同じWi-Fiにいる人がURLとトークンを知れば操作できます）。" +
+    "インターネットに直接公開する設定は、設定ファイルで明示しない限り行いません。"));
+
+  refreshRemote();
+  async function refreshRemote() {
+    let j = {};
+    try { j = await (await fetch("/api/remote", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    const net = j.tailscale ? "Tailscale (" + j.tailscale + ") が使えます"
+              : j.lan ? "Tailscaleは未導入。家庭内LAN (" + j.lan + ") で使えます"
+              : "接続できるネットワークが見つかりません";
+    status.textContent = (j.running ? "待ち受け中 — " : "停止中 — ") + net + (j.note ? " / " + j.note : "");
+    status.style.color = j.running ? "var(--accent)" : "var(--muted)";
+    qrbox.textContent = "";
+    if (j.running && j.url) {
+      // 画像は fetch ではなく直接読み込まれるので、認証はURLのtokenで渡す
+      const img = el("img", {src:"/api/remote/qr?token=" + encodeURIComponent(TOKEN),
+        style:"width:200px;height:200px;border-radius:8px;background:#fff;padding:6px"});
+      qrbox.append(el("div", {class:"hint"}, "スマホのカメラで読み取ってください"), img,
+        el("div", {class:"hint mono", style:"word-break:break-all"}, j.url));
+    }
+  }
+  return box;
+}
+
 function aiSelect() {
   const s = el("select", {id:"aiengine"});
   const hint = () => document.getElementById("aihint");
@@ -1489,6 +1630,7 @@ async function save() {
     const v = out[k]; if (v === "" || v === null || v === undefined) delete out[k]; else out[k] = Number(v);
   });
   ["automation","secrets","ai_engine"].forEach(k => { if (!out[k]) delete out[k]; });
+  if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
   delete out.lua; delete out.tabs;
 
   for (const w of wss) {
@@ -1682,7 +1824,9 @@ mod tests {
         let cfg = dir.join("config.json");
         std::fs::write(&cfg, r#"{"max_chain":10}"#).unwrap();
 
-        let ui = WebUi::start(cfg.clone()).unwrap();
+        let ui =
+            WebUi::start_with(cfg.clone(), Arc::new(std::sync::Mutex::new(RemoteInfo::default())))
+                .unwrap();
         let token = ui.url.split("token=").nth(1).unwrap().to_string();
         let base = ui.url.split("/?").next().unwrap().to_string();
         let agent = ureq::Agent::new_with_defaults();

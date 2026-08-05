@@ -10,3 +10,4 @@ logs/
 # Added by cargo
 
 /target
+.remote-token

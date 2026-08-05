@@ -76,6 +76,38 @@ pub fn resolve_bind(spec: &str, allow_public: bool) -> Result<(Ipv4Addr, Option<
     Ok((ip, None))
 }
 
+/// 設定画面に表示するQRコード (SVG)。スマホのカメラで読ませる
+pub fn qr_svg(text: &str, scale: u32) -> String {
+    use qrcode::{EcLevel, QrCode};
+    let Ok(code) = QrCode::with_error_correction_level(text.as_bytes(), EcLevel::L) else {
+        return String::new();
+    };
+    let w = code.width() as u32;
+    let quiet = 4;
+    let size = (w + quiet * 2) * scale;
+    let dark: Vec<bool> = code
+        .into_colors()
+        .iter()
+        .map(|c| *c == qrcode::Color::Dark)
+        .collect();
+    let mut rects = String::new();
+    for y in 0..w {
+        for x in 0..w {
+            if dark[(y * w + x) as usize] {
+                let px = (x + quiet) * scale;
+                let py = (y + quiet) * scale;
+                rects.push_str(&format!(
+                    r#"<rect x="{px}" y="{py}" width="{scale}" height="{scale}"/>"#
+                ));
+            }
+        }
+    }
+    // 色指定の "#..." が終端と衝突しないよう r##"..."## で囲む
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 {size} {size}"><rect width="{size}" height="{size}" fill="#fff"/><g fill="#000">{rects}</g></svg>"##
+    )
+}
+
 /// 端末に表示するQRコード (半ブロック文字で2行分を1行にまとめる)
 pub fn qr_lines(text: &str) -> Vec<String> {
     use qrcode::{EcLevel, QrCode};
@@ -151,6 +183,14 @@ mod tests {
                 assert!(note.is_none(), "Tailscaleなら注意書きは不要");
             }
         }
+    }
+
+    #[test]
+    fn qr_svg_is_scannable_markup() {
+        let svg = qr_svg("http://100.64.0.1:8787/?t=abc", 6);
+        assert!(svg.starts_with("<svg"), "SVGとして返す");
+        assert!(svg.contains("<rect"), "モジュールが描かれている");
+        assert!(svg.matches("<rect").count() > 50, "十分な数のモジュール");
     }
 
     #[test]
