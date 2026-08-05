@@ -353,6 +353,49 @@ mod tests {
         t.kill();
     }
 
+    /// 取り込む応答に、実行より前の画面が混ざらないこと。
+    ///
+    /// 計算式に画面の高さを足していたため、必ず1画面ぶんが付いてきて、
+    /// 起動バナーと入力欄が「応答」として相手のAIへ渡っていた
+    #[test]
+    fn the_captured_response_excludes_what_was_on_screen_before() {
+        use super::{Tab, TabOptions};
+        use crate::detect::TabState;
+        use std::time::{Duration, Instant};
+
+        let argv = vec!["cmd.exe".to_string()];
+        let mut t = Tab::spawn("shell".into(), &argv, None, 20, 70, TabOptions::default()).unwrap();
+        let start = Instant::now();
+        let run = |t: &mut Tab, cmd: &[u8]| {
+            t.write_bytes(cmd).unwrap();
+            for _ in 0..80 {
+                std::thread::sleep(Duration::from_millis(50));
+                if t.tick(start).1 == TabState::Done {
+                    break;
+                }
+            }
+        };
+
+        // 実行の前に、画面へ目印を残しておく (起動バナーに相当する)
+        run(&mut t, b"echo BEFORE-THE-QUESTION\r");
+        t.finish_response();
+
+        // ここからが応答
+        run(&mut t, b"echo THE-ANSWER\r");
+        let captured = t.last_response.clone().unwrap_or_default();
+
+        assert!(
+            captured.contains("THE-ANSWER"),
+            "応答が入っていない: {captured}"
+        );
+        assert!(
+            !captured.contains("BEFORE-THE-QUESTION"),
+            "実行より前の画面が混ざっている (起動バナーが応答として渡る): {captured}"
+        );
+
+        t.kill();
+    }
+
     /// 応答の始まりが「実行した瞬間」に決まること。
     ///
     /// 「最初に画面が動いた位置」にすると、貼り付けの表示や入力欄の描き直しも
@@ -819,7 +862,7 @@ impl Tab {
                 .store(self.output_count(), Ordering::Relaxed);
             // 応答はここから始まる。これより前は指示であって答えではない
             self.response_marker
-                .store(self.scrollback_len() as u64, Ordering::Relaxed);
+                .store(self.line_position() as u64, Ordering::Relaxed);
         }
         // 相手がUTF-8以外なら、送る文字も変換する
         // (制御シーケンスはASCIIなのでそのまま通る)
@@ -1020,14 +1063,19 @@ impl Tab {
         (self.had_output() && self.state != TabState::Busy) || self.age_ms() > GIVE_UP_MS
     }
 
-    /// 現在のスクロールバック蓄積行数 (表示位置は変更しない)
-    pub fn scrollback_len(&self) -> usize {
+    /// これまでに書かれた行数の目安。
+    ///
+    /// 流れて消えた行数だけでは、画面に収まっている間ずっと 0 のままで
+    /// 「どこから書かれたか」が分からない。画面内のカーソル位置を足して、
+    /// 出力が進むほど増える値にする
+    pub fn line_position(&self) -> usize {
         let mut p = self.parser.lock().unwrap();
         let saved = p.screen().scrollback();
         p.screen_mut().set_scrollback(usize::MAX / 2);
-        let max = p.screen().scrollback();
+        let scrolled = p.screen().scrollback();
         p.screen_mut().set_scrollback(saved);
-        max
+        let (row, _) = p.screen().cursor_position();
+        scrolled + row as usize
     }
 
     /// マーカー以降の新規出力をテキスト化する
@@ -1038,18 +1086,25 @@ impl Tab {
             // 全画面TUIはスクロールしないため可視画面のスナップショットで代替
             return extract_text(&mut p, 0, rows.saturating_sub(1) as usize, cols);
         }
-        let saved = p.screen().scrollback();
-        p.screen_mut().set_scrollback(usize::MAX / 2);
-        let now_len = p.screen().scrollback();
-        p.screen_mut().set_scrollback(saved);
+        // 書き込み位置は上から数え、取り出しは下から数える。
+        // カーソルより下の空白ぶんを足さないと、空行だけを取ってしまう
+        let (cursor_row, _) = p.screen().cursor_position();
+        let below = rows.saturating_sub(1).saturating_sub(cursor_row) as usize;
+        drop(p);
+
+        // 実行してから書かれた行だけを取る。
+        // ここに画面の高さを足すと、必ず1画面ぶん (起動バナーや入力欄) が
+        // 混ざり、答えの代わりに枠を渡すことになる
         let stored = self.response_marker.load(Ordering::Relaxed);
-        let marker = if stored == u64::MAX {
-            now_len
+        let since = if stored == u64::MAX {
+            rows.saturating_sub(1) as usize
         } else {
-            stored as usize
+            self.line_position().saturating_sub(stored as usize)
         };
-        let new_lines = now_len.saturating_sub(marker);
-        extract_text(&mut p, 0, new_lines + rows.saturating_sub(1) as usize, cols)
+        let mut p = self.parser.lock().unwrap();
+        let text = extract_text(&mut p, 0, below + since, cols);
+        text.trim_end().to_string()
     }
 }
+
 
