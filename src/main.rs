@@ -476,6 +476,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut started_fired = vec![false; tabs.len()];
     // 自動チェーンの「透明のボール」。今どのタブが仕事を持っているかを表示に使う
     let mut ball = ball::Ball::default();
+    // INDEXで押せる場所。毎フレーム描画時に作り直す
+    let mut hits: Vec<HitRow> = Vec::new();
+    let mut hover: Option<IndexHit> = None;
 
     // 0 = INDEX、1.. = セッション。初回はINDEX(案内のある画面)から始める
     let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
@@ -788,13 +791,43 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             ball,
             max_chain,
             now_ms: start.elapsed().as_millis() as u64,
+            hover,
         };
-        terminal.draw(|f| draw(f, &tabs, &ui, flash.as_deref()))?;
+        terminal.draw(|f| draw(f, &tabs, &ui, flash.as_deref(), &mut hits))?;
 
         if !event::poll(Duration::from_millis(16))? {
             continue;
         }
-        match event::read()? {
+        let ev = event::read()?;
+
+        // マウスが乗っている行を覚えて、押せる場所が見て分かるようにする
+        if let Event::Mouse(m) = &ev {
+            hover = hit_at(&hits, m.row, m.column);
+        } else if matches!(ev, Event::Key(_)) {
+            hover = None;
+        }
+
+        // INDEXのメニューはクリックでもキーと同じ動作にする。
+        // 分岐を増やすとキー操作と挙動がずれていくので、キー入力に翻訳して合流させる
+        let ev = match &ev {
+            Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) => {
+                match hit_at(&hits, m.row, m.column) {
+                    Some(IndexHit::Key(c)) => {
+                        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                    }
+                    Some(IndexHit::Tab(n)) => {
+                        if n <= tabs.len() {
+                            active = n;
+                        }
+                        continue;
+                    }
+                    None => ev,
+                }
+            }
+            _ => ev,
+        };
+
+        match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 flash = None;
                 // オーバーレイ (ヘルプ / QR / ワークスペース一覧) が最優先
@@ -1989,6 +2022,31 @@ fn indicator(t: &Tab) -> (char, Color) {
     }
 }
 
+/// INDEXで押せる場所。描画時に記録し、クリック判定はこれだけを見る。
+/// レイアウトを二重に計算しないので、表示とクリック位置がずれない
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum IndexHit {
+    /// そのタブへ切り替える (1始まり)
+    Tab(usize),
+    /// メニュー行。同じ文字のキーを押したのと同じ扱いにする
+    Key(char),
+}
+
+/// 押せる行の位置 (画面上の絶対座標)
+struct HitRow {
+    y: u16,
+    x0: u16,
+    x1: u16,
+    hit: IndexHit,
+}
+
+/// その座標にある押せる行を探す
+fn hit_at(hits: &[HitRow], row: u16, col: u16) -> Option<IndexHit> {
+    hits.iter()
+        .find(|h| h.y == row && col >= h.x0 && col < h.x1)
+        .map(|h| h.hit)
+}
+
 /// ボールのレーンが使う幅 (記号1桁 + 余白1桁)
 const LANE_W: u16 = 2;
 /// 自動チェーンのボール。状態インジケータの `●` と紛れないよう別の字にする
@@ -2126,9 +2184,12 @@ struct Ui {
     max_chain: u32,
     /// 描画時刻 (相対ms)。ボールのアニメ進行に使う
     now_ms: u64,
+    /// マウスが乗っているINDEXの行 (押せる場所が分かるように色を変える)
+    hover: Option<IndexHit>,
 }
 
-fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
+fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>, hits: &mut Vec<HitRow>) {
+    hits.clear();
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(STATUS_BAR_HEIGHT)])
@@ -2235,7 +2296,7 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>) {
     f.render_widget(tabs_widget, main[0]);
 
     if ui.active == 0 {
-        draw_index(f, tabs, main[1], outer[1], flash, ui);
+        draw_index(f, tabs, main[1], outer[1], flash, ui, hits);
     } else if let Some(t) = tabs.get(ui.active - 1) {
         draw_session(f, t, main[1], outer[1], flash, ui);
     }
@@ -2351,6 +2412,7 @@ fn draw_index(
     status_area: Rect,
     flash: Option<&str>,
     ui: &Ui,
+    hits: &mut Vec<HitRow>,
 ) {
     let title = match ui.ws_names.get(ui.ws_index) {
         Some(n) if ui.ws_names.len() > 1 => format!(" {} :: {n} ", i18n::t("tui.index")),
@@ -2410,15 +2472,24 @@ fn draw_index(
             if t.locked { " 🔒" } else { "" }
         );
         let wave: String = t.activity().iter().map(|l| spark(*l)).collect();
+        let hit = IndexHit::Tab(i + 1);
+        hits.push(HitRow {
+            y: inner.y + lines.len() as u16,
+            x0: inner.x,
+            x1: inner.x + inner.width,
+            hit,
+        });
+        let name_style = if ui.hover == Some(hit) {
+            Style::default().fg(Color::Black).bg(NEON_GREEN).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD)
+        };
         lines.push(Line::from(vec![
             lane_cell(ui, i + 1),
             Span::styled("▌", Style::default().fg(color)),
             Span::styled(format!("{ind} "), Style::default().fg(color)),
             Span::raw(format!("{:<3}", format!("{}.", i + 1))),
-            Span::styled(
-                pad_width(&name, 16),
-                Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(pad_width(&name, 16), name_style),
             Span::styled(pad_width(&t.state.display(), 10), Style::default().fg(color)),
             Span::raw(pad_width(t.profile_name(), 10)),
             Span::styled(wave, Style::default().fg(color)),
@@ -2444,13 +2515,31 @@ fn draw_index(
         ("[q]", i18n::t("tui.menu.quit")),
     ];
     for (key, desc) in menu {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {key:<7}"),
-                Style::default().fg(NEON_YELLOW).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(desc),
-        ]));
+        // "[r]" のように1文字のものだけ押せる ("[1-9]" は説明であって行き先が無い)
+        let hit = key
+            .strip_prefix('[')
+            .and_then(|k| k.strip_suffix(']'))
+            .filter(|k| k.chars().count() == 1)
+            .and_then(|k| k.chars().next())
+            .map(IndexHit::Key);
+        let y = inner.y + lines.len() as u16;
+        if let Some(hit) = hit {
+            hits.push(HitRow { y, x0: inner.x, x1: inner.x + inner.width, hit });
+        }
+        if hit.is_some() && ui.hover == hit {
+            lines.push(Line::from(Span::styled(
+                pad_width(&format!(" {key:<7}{desc}"), inner.width),
+                Style::default().fg(Color::Black).bg(NEON_YELLOW).add_modifier(Modifier::BOLD),
+            )));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {key:<7}"),
+                    Style::default().fg(NEON_YELLOW).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(desc),
+            ]));
+        }
     }
     f.render_widget(Paragraph::new(lines), inner);
 
@@ -2769,6 +2858,7 @@ mod tests {
             ball,
             max_chain: 10,
             now_ms,
+            hover: None,
         }
     }
 
@@ -2787,7 +2877,7 @@ mod tests {
 
         // 誰も自動で動いていないうちはボールを出さない (常時ちらつかせない)
         let ui = test_ui(0, ball::Ball::default(), 0);
-        term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
+        term.draw(|f| draw(f, &tabs, &ui, None, &mut Vec::new())).unwrap();
         let idle = screen_text(&term);
         assert!(!idle.contains(BALL), "静止中はボールを出さない: {idle}");
         assert!(idle.contains("—/10"), "連鎖していないことが分かる: {idle}");
@@ -2796,7 +2886,7 @@ mod tests {
         let mut b = ball::Ball::default();
         b.throw(1, 3, 2, 1_000);
         let ui = test_ui(0, b, 1_050);
-        term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
+        term.draw(|f| draw(f, &tabs, &ui, None, &mut Vec::new())).unwrap();
         let flying = screen_text(&term);
         assert!(flying.contains(BALL), "ボールが見える: {flying}");
         assert!(flying.contains('│'), "経路が線で残る: {flying}");
@@ -2804,7 +2894,7 @@ mod tests {
 
         // 着弾後は持ち主のところに落ち着く
         let ui = test_ui(0, b, 1_000 + 2_000);
-        term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
+        term.draw(|f| draw(f, &tabs, &ui, None, &mut Vec::new())).unwrap();
         assert!(screen_text(&term).contains(BALL), "保持中も見える");
 
         for t in tabs.iter_mut() {
@@ -2839,6 +2929,59 @@ mod tests {
         t.kill();
     }
 
+    /// INDEXの各行がクリックできること。
+    /// 描画時に記録した位置をそのまま使うので、表示とクリック位置がずれない
+    #[test]
+    fn index_rows_are_clickable_where_they_are_drawn() {
+        use ratatui::backend::TestBackend;
+        let argv = vec!["cmd.exe".to_string()];
+        let mut tabs: Vec<Tab> = (1..=2)
+            .map(|i| {
+                Tab::spawn(format!("T{i}"), &argv, None, 20, 100, tab::TabOptions::default()).unwrap()
+            })
+            .collect();
+        let mut hits: Vec<HitRow> = Vec::new();
+        let ui = test_ui(0, ball::Ball::default(), 0);
+        let mut term = ratatui::Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| draw(f, &tabs, &ui, None, &mut hits)).unwrap();
+
+        // タブ2行 + 押せるメニュー (1文字キーのものだけ)
+        let tab_hits: Vec<_> = hits.iter().filter(|h| matches!(h.hit, IndexHit::Tab(_))).collect();
+        assert_eq!(tab_hits.len(), 2, "タブの数だけ押せる行がある");
+        for key in ['r', 'w', 't', 'i', 'e', 'k', '?', 'q'] {
+            assert!(
+                hits.iter().any(|h| h.hit == IndexHit::Key(key)),
+                "[{key}] が押せない"
+            );
+        }
+        // "[1-9]" は行き先が無いので押せる場所にしない
+        assert!(
+            !hits.iter().any(|h| matches!(h.hit, IndexHit::Key(c) if c.is_ascii_digit())),
+            "説明だけの行は押せないままにする"
+        );
+
+        // 記録された座標を引くと、その行が返る
+        let q = hits.iter().find(|h| h.hit == IndexHit::Key('q')).unwrap();
+        assert_eq!(hit_at(&hits, q.y, q.x0), Some(IndexHit::Key('q')));
+        assert_eq!(hit_at(&hits, q.y, q.x1 - 1), Some(IndexHit::Key('q')), "行の右端まで押せる");
+        assert_eq!(hit_at(&hits, q.y, q.x0.saturating_sub(1)), None, "枠の外は押せない");
+        assert_eq!(hit_at(&hits, q.y + 100, q.x0), None, "別の行は反応しない");
+
+        // ホバー中の行は見た目が変わる (押せることが分かるように)
+        let ui = test_ui(0, ball::Ball::default(), 0);
+        let plain = { term.draw(|f| draw(f, &tabs, &ui, None, &mut hits)).unwrap(); screen_text(&term) };
+        let mut ui2 = test_ui(0, ball::Ball::default(), 0);
+        ui2.hover = Some(IndexHit::Key('q'));
+        let hovered = { term.draw(|f| draw(f, &tabs, &ui2, None, &mut hits)).unwrap(); screen_text(&term) };
+        assert_eq!(plain, hovered, "文字は変えず色だけ変える");
+        let styled = term.backend().buffer().content().iter().any(|c| c.bg != ratatui::style::Color::Reset);
+        assert!(styled, "ホバー行に背景色が付く");
+
+        for t in tabs.iter_mut() {
+            t.kill();
+        }
+    }
+
     /// 目視確認用 (cargo test preview_ops_board -- --nocapture --ignored)
     #[test]
     #[ignore]
@@ -2858,15 +3001,23 @@ mod tests {
         }
         let mut b = ball::Ball::default();
         b.throw(1, 2, 3, 1_000);
-        for (title, now) in [("--- 飛行中 ---", 1_150u64), ("--- 保持中 ---", 3_000)] {
-            let ui = test_ui(0, b, now);
+        for (title, now, hover) in [
+            ("--- 飛行中 ---", 1_150u64, None),
+            ("--- メニューにホバー ---", 3_000, Some(IndexHit::Key('e'))),
+            ("--- タブ行にホバー ---", 3_000, Some(IndexHit::Tab(2))),
+        ] {
+            let mut ui = test_ui(0, b, now);
+            ui.hover = hover;
             let mut term = ratatui::Terminal::new(TestBackend::new(96, 26)).unwrap();
-            term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
+            term.draw(|f| draw(f, &tabs, &ui, None, &mut Vec::new())).unwrap();
             println!("{title}");
             let buf = term.backend().buffer();
             for y in 0..buf.area.height {
                 let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
-                println!("|{}|", row.trim_end());
+                // 反転表示は文字ダンプに出ないので、背景色が付いた行に印を出す
+                let lit = (0..buf.area.width)
+                    .any(|x| buf[(x, y)].bg != ratatui::style::Color::Reset);
+                println!("{}|{}|", if lit { "*" } else { " " }, row.trim_end());
             }
         }
         for t in tabs.iter_mut() { t.kill(); }
@@ -2895,9 +3046,10 @@ mod tests {
             ball: ball::Ball::default(),
             max_chain: 10,
             now_ms: 0,
+            hover: None,
         };
         let mut term = ratatui::Terminal::new(TestBackend::new(100, 24)).unwrap();
-        term.draw(|f| draw(f, &tabs, &ui, None)).unwrap();
+        term.draw(|f| draw(f, &tabs, &ui, None, &mut Vec::new())).unwrap();
         // 全角文字は2セルを占め、2セル目が空になるため空白を落として比較する
         let screen: String = term
             .backend()
