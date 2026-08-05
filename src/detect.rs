@@ -54,6 +54,8 @@ pub struct Detector {
     /// 画面が動いたかどうかとは別物。貼り付けが表示されても画面は動くが、
     /// AIは何もしていない。実際に働き始めた証拠はこちら
     working_shown: bool,
+    /// 実際にマッチした文字列 (誤検出を追うため)
+    working_matched: Option<String>,
     last_bell: u64,
 }
 
@@ -64,6 +66,7 @@ impl Detector {
             state: TabState::Wait,
             was_active: false,
             working_shown: false,
+            working_matched: None,
             last_bell: 0,
         }
     }
@@ -80,6 +83,11 @@ impl Detector {
     /// 直近のtickで「作業中」の表示が出ていたか
     pub fn working_shown(&self) -> bool {
         self.working_shown
+    }
+
+    /// 「作業中」と判定させた文字列 (誤検出を追うため)
+    pub fn working_matched(&self) -> Option<&str> {
+        self.working_matched.as_deref()
     }
 
     /// このAIは「作業中」を画面に出すか (プロファイルに指定があるか)
@@ -102,7 +110,12 @@ impl Detector {
             self.state = TabState::Question;
             return self.state;
         }
-        self.working_shown = self.profile.busy.iter().any(|r| r.is_match(screen_text));
+        self.working_matched = self
+            .profile
+            .busy
+            .iter()
+            .find_map(|r| r.find(screen_text).map(|m| m.as_str().to_string()));
+        self.working_shown = self.working_matched.is_some();
         if self.working_shown {
             self.was_active = true;
             self.state = TabState::Busy;
@@ -219,3 +232,4 @@ mod tests {
         assert_eq!(d.tick("anything", 3000, 0), TabState::Done);
     }
 }
+

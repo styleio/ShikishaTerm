@@ -662,7 +662,20 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             && tabs[idx - 1].answered_since_submit();
                         match new {
                             TabState::Busy if answering => eng.fire("on_busy", &ctx, None),
+                            TabState::Done if old == TabState::Busy && !answering => {
+                                append_hook_log(&format!(
+                                    "done無視 tab{idx} [{}] prompted={} submitting={} answered={}",
+                                    tabs[idx - 1].profile_name(),
+                                    tabs[idx - 1].was_prompted(),
+                                    submitting,
+                                    tabs[idx - 1].answered_since_submit()
+                                ));
+                            }
                             TabState::Done if answering && old == TabState::Busy => {
+                                append_hook_log(&format!(
+                                    "done確認待ち tab{idx} [{}]",
+                                    tabs[idx - 1].profile_name()
+                                ));
                                 // ここでは撃たない。AIの出力は途中で息継ぎをするので、
                                 // 静かになっただけでは終わったと言えない
                                 // AI固有の指定があればそちら、無ければ基本設定

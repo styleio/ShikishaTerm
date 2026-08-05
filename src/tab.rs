@@ -999,7 +999,15 @@ impl Tab {
             self.spinner_idx = self.spinner_idx.wrapping_add(1);
         }
         if self.detector.working_shown() {
-            self.saw_working.store(true, Ordering::Relaxed);
+            if !self.saw_working.swap(true, Ordering::Relaxed) {
+                // 何を根拠に「働き始めた」と見たのかを残す。
+                // 画面の飾りを拾っていた場合、ここに出る
+                crate::append_hook_log(&format!(
+                    "working tab? [{}] マッチ: {:?}",
+                    self.detector.profile_name(),
+                    self.detector.working_matched()
+                ));
+            }
         }
         self.sample_activity();
 
