@@ -28,13 +28,19 @@ you ran, the terminal output, and what you expected is valuable even without a f
 ## Building
 
 ```
-cargo build            # debug
-cargo test             # 73 tests, all offline
-cargo build --release  # single portable exe
+Dev.cmd                # build, stage into run\, and launch from there
+Dev.cmd release        # same, from the release build
+cargo test             # all offline, no PTY-less environment needed
 ```
 
 Rust with the MSVC toolchain on Windows. There is nothing else to install — Lua is vendored
 and built from source.
+
+**Launch through `Dev.cmd` rather than running `target\debug\...` directly.** Config and
+scripts live beside the executable, so the two build outputs each end up with their own
+settings — an automation deleted in one is still live in the other, which is confusing to
+diagnose. `Dev.cmd` keeps a single `run\` folder (gitignored) and refreshes only the
+application files into it, so your config, scripts and secrets are never overwritten.
 
 ## Layout
 
