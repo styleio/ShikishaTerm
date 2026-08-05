@@ -477,8 +477,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     // 自動チェーンの「透明のボール」。今どのタブが仕事を持っているかを表示に使う
     let mut ball = ball::Ball::default();
     // INDEXで押せる場所。毎フレーム描画時に作り直す
-    let mut hits: Vec<HitRow> = Vec::new();
-    let mut hover: Option<IndexHit> = None;
+    let mut hits: Vec<HitBox> = Vec::new();
+    let mut hover: Option<Hit> = None;
 
     // 0 = INDEX、1.. = セッション。初回はINDEX(案内のある画面)から始める
     let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
@@ -812,16 +812,50 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         let ev = match &ev {
             Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) => {
                 match hit_at(&hits, m.row, m.column) {
-                    Some(IndexHit::Key(c)) => {
+                    // メニューはキー入力に翻訳して、キー操作と処理を共有する
+                    Some(Hit::Key(c)) => {
                         Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
                     }
-                    Some(IndexHit::Tab(n)) => {
+                    Some(Hit::Tab(n)) => {
                         if n <= tabs.len() {
                             active = n;
                         }
                         continue;
                     }
-                    None => ev,
+                    Some(Hit::Index) => {
+                        active = 0;
+                        continue;
+                    }
+                    Some(Hit::Lock(n)) => {
+                        if let Some(t) = tabs.get_mut(n - 1) {
+                            t.locked = !t.locked;
+                            flash = Some(i18n::t(if t.locked { "msg.lock_on" } else { "msg.lock_off" }));
+                        }
+                        continue;
+                    }
+                    Some(Hit::Restart(n)) => {
+                        if let Some(t) = tabs.get_mut(n - 1) {
+                            flash = Some(match t.restart(rows, cols) {
+                                Ok(()) => i18n::tp("msg.restarted", &[("name", &t.title)]),
+                                Err(e) => i18n::tp("msg.restart_failed", &[("error", &e.to_string())]),
+                            });
+                        }
+                        continue;
+                    }
+                    Some(Hit::Workspace) => {
+                        ws_open = !ws_open;
+                        continue;
+                    }
+                    Some(Hit::WorkspaceItem(n)) => {
+                        switch_workspace(
+                            n, &mut ws_index, &mut tabs, &mut ws_tabs, &workspaces,
+                            &mut active, rows, cols, &mut startup_errors,
+                            &mut started_fired, cfg.as_ref(), &mut engine, &mut engines, &caps,
+                        );
+                        ws_open = false;
+                        continue;
+                    }
+                    Some(Hit::Divider) | None => ev,
                 }
             }
             _ => ev,
@@ -1103,34 +1137,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     }
                     continue;
                 }
-                // ワークスペースのドロップダウン (左バー最上部)
-                if ws_open {
-                    if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-                        if m.column < tab_w && m.row >= 1 {
-                            let n = (m.row - 1) as usize;
-                            if n < workspaces.len() {
-                                switch_workspace(
-                                    n,
-                                    &mut ws_index,
-                                    &mut tabs,
-                                    &mut ws_tabs,
-                                    &workspaces,
-                                    &mut active,
-                                    rows,
-                                    cols,
-                                    &mut startup_errors,
-                                    &mut started_fired,
-                                    cfg.as_ref(),
-                                    &mut engine,
-                                    &mut engines,
-                                    &caps,
-                                );
-                            }
-                        }
-                        ws_open = false;
-                    }
-                    continue;
-                }
                 // タブバーの境界線をドラッグして幅を調整する
                 match m.kind {
                     MouseEventKind::Down(MouseButton::Left) if m.column == tab_w - 1 => {
@@ -1158,28 +1164,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     }
                     _ => {}
                 }
-                // 左バー最上部のワークスペース名クリックで一覧を開く
-                if workspaces.len() > 1
-                    && matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
-                    && m.column < tab_w
-                    && m.row == 0
-                {
-                    ws_open = true;
-                    continue;
-                }
-                let ws_offset = if workspaces.len() > 1 { 1 } else { 0 };
-                handle_mouse(
-                    &mut tabs,
-                    &mut active,
-                    m,
-                    size,
-                    now_ms,
-                    ws_offset,
-                    tab_w,
-                    rows,
-                    cols,
-                    &mut flash,
-                )?;
+                handle_mouse(&mut tabs, &mut active, m, size, now_ms, tab_w, &mut flash)?;
             }
             Event::Resize(width, height) => {
                 (rows, cols) = pty_dims(Size { width, height }, tab_w);
@@ -1841,66 +1826,9 @@ fn handle_mouse(
     m: MouseEvent,
     size: Size,
     now_ms: u64,
-    ws_offset: u16,
     tab_w: u16,
-    rows: u16,
-    cols: u16,
     flash: &mut Option<String>,
 ) -> Result<()> {
-    // セッション見出しの錠アイコン (枠の上辺) クリックでロック切替
-    if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-        if m.row == 0 && m.column >= tab_w {
-            if let Some(t) = session_mut(tabs, *active) {
-                let (_, lock, offset) = session_title(t);
-                let lo = tab_w + 1 + offset;
-                if m.column >= lo && m.column < lo + lock.width() as u16 {
-                    t.locked = !t.locked;
-                    *flash = Some(i18n::t(if t.locked {
-                        "msg.lock_on"
-                    } else {
-                        "msg.lock_off"
-                    }));
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    // タブバークリックで切替 (ws_offset行目=INDEX、以降=セッション)
-    if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-        if m.column < tab_w {
-            if m.row < ws_offset {
-                return Ok(());
-            }
-            let r = (m.row - ws_offset) as usize;
-            if r >= 1 && r <= tabs.len() {
-                let t = &mut tabs[r - 1];
-                // 終了したタブは ✖ インジケータのクリックで再起動
-                if t.state == TabState::Exited && m.column < 3 {
-                    *flash = Some(match t.restart(rows, cols) {
-                        Ok(()) => i18n::tp("msg.restarted", &[("name", &t.title)]),
-                        Err(e) => i18n::tp("msg.restart_failed", &[("error", &e.to_string())]),
-                    });
-                    return Ok(());
-                }
-                // 行末の🔒アイコン (右端の枠線1桁を除く2桁) でロック切替
-                if m.column >= tab_w.saturating_sub(3) {
-                    t.locked = !t.locked;
-                    *flash = Some(i18n::t(if t.locked {
-                        "msg.lock_on"
-                    } else {
-                        "msg.lock_off"
-                    }));
-                    return Ok(());
-                }
-            }
-            if r <= tabs.len() {
-                *active = r;
-            }
-            return Ok(());
-        }
-    }
-
     let inner = pane_inner(size, tab_w);
     let in_pane = in_rect(inner, m.column, m.row);
     let Some(t) = session_mut(tabs, *active) else {
@@ -2025,24 +1953,38 @@ fn indicator(t: &Tab) -> (char, Color) {
 /// INDEXで押せる場所。描画時に記録し、クリック判定はこれだけを見る。
 /// レイアウトを二重に計算しないので、表示とクリック位置がずれない
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum IndexHit {
+enum Hit {
     /// そのタブへ切り替える (1始まり)
     Tab(usize),
-    /// メニュー行。同じ文字のキーを押したのと同じ扱いにする
+    /// INDEXへ戻る
+    Index,
+    /// INDEXのメニュー行。同じ文字のキーを押したのと同じ扱いにする
     Key(char),
+    /// 錠アイコン: 入力ロックの切替
+    Lock(usize),
+    /// ✖ / ⟳ アイコン: セッションの再起動
+    Restart(usize),
+    /// 左バー最上部のワークスペース名: 一覧を開く
+    Workspace,
+    /// ワークスペース一覧の項目
+    WorkspaceItem(usize),
+    /// タブバーの幅を変える境界線
+    Divider,
 }
 
-/// 押せる行の位置 (画面上の絶対座標)
-struct HitRow {
+/// 押せる場所 (画面上の絶対座標)。描画しながら記録する
+struct HitBox {
     y: u16,
     x0: u16,
     x1: u16,
-    hit: IndexHit,
+    hit: Hit,
 }
 
-/// その座標にある押せる行を探す
-fn hit_at(hits: &[HitRow], row: u16, col: u16) -> Option<IndexHit> {
+/// その座標にある押せる場所を探す。
+/// 後から記録したものを優先する (錠アイコンはタブ行の上に重なっているため)
+fn hit_at(hits: &[HitBox], row: u16, col: u16) -> Option<Hit> {
     hits.iter()
+        .rev()
         .find(|h| h.y == row && col >= h.x0 && col < h.x1)
         .map(|h| h.hit)
 }
@@ -2185,10 +2127,10 @@ struct Ui {
     /// 描画時刻 (相対ms)。ボールのアニメ進行に使う
     now_ms: u64,
     /// マウスが乗っているINDEXの行 (押せる場所が分かるように色を変える)
-    hover: Option<IndexHit>,
+    hover: Option<Hit>,
 }
 
-fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>, hits: &mut Vec<HitRow>) {
+fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>, hits: &mut Vec<HitBox>) {
     hits.clear();
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -2209,25 +2151,31 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>, hits: &mut Ve
             .get(ui.ws_index)
             .map(String::as_str)
             .unwrap_or("-");
+        hits.push(HitBox { y: main[0].y, x0: 0, x1: ui.tab_w - 1, hit: Hit::Workspace });
+        let bg = if ui.hover == Some(Hit::Workspace) { NEON_GREEN } else { NEON_YELLOW };
         lines.push(Line::from(Span::styled(
-            format!("[▼] {name}"),
-            Style::default()
-                .fg(Color::Black)
-                .bg(NEON_YELLOW)
-                .add_modifier(Modifier::BOLD),
+            pad_width(&format!("[▼] {name}"), ui.tab_w - 1),
+            Style::default().fg(Color::Black).bg(bg).add_modifier(Modifier::BOLD),
         )));
     }
 
     if ui.ws_open {
         // ドロップダウン展開中はタブ一覧の代わりにワークスペース一覧を出す
         for (i, name) in ui.ws_names.iter().enumerate() {
-            let style = if i == ui.ws_index {
+            let hit = Hit::WorkspaceItem(i);
+            hits.push(HitBox {
+                y: main[0].y + lines.len() as u16,
+                x0: 0,
+                x1: ui.tab_w - 1,
+                hit,
+            });
+            let style = if i == ui.ws_index || ui.hover == Some(hit) {
                 Style::default().fg(Color::Black).bg(NEON_YELLOW)
             } else {
                 Style::default().fg(NEON_YELLOW)
             };
             lines.push(Line::from(Span::styled(
-                format!(" {}. {name}", i + 1),
+                pad_width(&format!(" {}. {name}", i + 1), ui.tab_w - 1),
                 style,
             )));
         }
@@ -2242,6 +2190,17 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>, hits: &mut Ve
         if let Some(line) = chain_gauge_line(ui, ui.tab_w) {
             lines.push(line);
         }
+        hits.push(HitBox {
+            y: main[0].y + lines.len() as u16,
+            x0: 0,
+            x1: ui.tab_w - 1,
+            hit: Hit::Index,
+        });
+        let index_style = if ui.hover == Some(Hit::Index) && ui.active != 0 {
+            Style::default().fg(Color::Black).bg(NEON_BLUE)
+        } else {
+            index_style
+        };
         lines.push(Line::from(vec![
             lane_cell(ui, 0),
             Span::styled(format!("[≡] 0. {}", i18n::t("tui.index")), index_style),
@@ -2268,37 +2227,79 @@ fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>, hits: &mut Ve
             let avail = ui.tab_w.saturating_sub(1 + LANE_W + 4 + LOCK_W).max(1);
             let label = truncate_width(&format!("{prefix}{}. {}", i + 1, t.title), avail);
             let pad = avail as usize - label.width();
+
+            // 押せる場所を、実際に描く位置から作る。
+            // 手計算した固定値にすると、レーンを足したときのように黙ってずれる
+            let y = main[0].y + lines.len() as u16;
+            let ind_x = LANE_W;
+            let icon_x = ui.tab_w - 1 - LOCK_W;
+            hits.push(HitBox { y, x0: 0, x1: ui.tab_w - 1, hit: Hit::Tab(i + 1) });
+            // 終了・要再起動のときだけ、インジケータが再起動ボタンになる
+            let restartable = t.state == TabState::Exited || t.needs_restart;
+            if restartable {
+                hits.push(HitBox {
+                    y,
+                    x0: ind_x,
+                    x1: ind_x + 4,
+                    hit: Hit::Restart(i + 1),
+                });
+            }
+            hits.push(HitBox {
+                y,
+                x0: icon_x,
+                x1: icon_x + LOCK_W,
+                hit: Hit::Lock(i + 1),
+            });
+
+            let hovered_row = ui.hover == Some(Hit::Tab(i + 1));
+            let title_style = if hovered_row && ui.active != i + 1 {
+                Style::default().fg(Color::Black).bg(NEON_GREEN).add_modifier(Modifier::BOLD)
+            } else {
+                title_style
+            };
+            let ind_style = if ui.hover == Some(Hit::Restart(i + 1)) {
+                Style::default().fg(Color::Black).bg(ind_color).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(ind_color).add_modifier(Modifier::BOLD)
+            };
+            let icon = if t.needs_restart {
+                "⟳ "
+            } else if t.locked {
+                "🔒"
+            } else if hovered_row || ui.hover == Some(Hit::Lock(i + 1)) {
+                // 何も無い所は押せると分からないので、マウスが来たら鍵を出す
+                "🔓"
+            } else {
+                "  "
+            };
+            let icon_style = if ui.hover == Some(Hit::Lock(i + 1)) {
+                Style::default().fg(Color::Black).bg(NEON_YELLOW).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(NEON_YELLOW)
+            };
             lines.push(Line::from(vec![
                 lane_cell(ui, i + 1),
-                Span::styled(
-                    format!("[{ind}] "),
-                    Style::default().fg(ind_color).add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(format!("[{ind}] "), ind_style),
                 Span::styled(format!("{label}{}", " ".repeat(pad)), title_style),
-                Span::styled(
-                    if t.needs_restart {
-                        "⟳ "
-                    } else if t.locked {
-                        "🔒"
-                    } else {
-                        "  "
-                    },
-                    Style::default().fg(NEON_YELLOW),
-                ),
+                Span::styled(icon, icon_style),
             ]));
         }
     }
+    for y in main[0].y..main[0].y + main[0].height {
+        hits.push(HitBox { y, x0: ui.tab_w - 1, x1: ui.tab_w, hit: Hit::Divider });
+    }
+    let border = if ui.hover == Some(Hit::Divider) { NEON_YELLOW } else { NEON_GREEN };
     let tabs_widget = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::RIGHT)
-            .border_style(Style::default().fg(NEON_GREEN)),
+            .border_style(Style::default().fg(border)),
     );
     f.render_widget(tabs_widget, main[0]);
 
     if ui.active == 0 {
         draw_index(f, tabs, main[1], outer[1], flash, ui, hits);
     } else if let Some(t) = tabs.get(ui.active - 1) {
-        draw_session(f, t, main[1], outer[1], flash, ui);
+        draw_session(f, t, main[1], outer[1], flash, ui, hits);
     }
 
     if ui.help_open {
@@ -2412,7 +2413,7 @@ fn draw_index(
     status_area: Rect,
     flash: Option<&str>,
     ui: &Ui,
-    hits: &mut Vec<HitRow>,
+    hits: &mut Vec<HitBox>,
 ) {
     let title = match ui.ws_names.get(ui.ws_index) {
         Some(n) if ui.ws_names.len() > 1 => format!(" {} :: {n} ", i18n::t("tui.index")),
@@ -2472,8 +2473,8 @@ fn draw_index(
             if t.locked { " 🔒" } else { "" }
         );
         let wave: String = t.activity().iter().map(|l| spark(*l)).collect();
-        let hit = IndexHit::Tab(i + 1);
-        hits.push(HitRow {
+        let hit = Hit::Tab(i + 1);
+        hits.push(HitBox {
             y: inner.y + lines.len() as u16,
             x0: inner.x,
             x1: inner.x + inner.width,
@@ -2521,10 +2522,10 @@ fn draw_index(
             .and_then(|k| k.strip_suffix(']'))
             .filter(|k| k.chars().count() == 1)
             .and_then(|k| k.chars().next())
-            .map(IndexHit::Key);
+            .map(Hit::Key);
         let y = inner.y + lines.len() as u16;
         if let Some(hit) = hit {
-            hits.push(HitRow { y, x0: inner.x, x1: inner.x + inner.width, hit });
+            hits.push(HitBox { y, x0: inner.x, x1: inner.x + inner.width, hit });
         }
         if hit.is_some() && ui.hover == hit {
             lines.push(Line::from(Span::styled(
@@ -2565,6 +2566,7 @@ fn draw_session(
     status_area: Rect,
     flash: Option<&str>,
     ui: &Ui,
+    hits: &mut Vec<HitBox>,
 ) {
     let border_color = if t.copy.is_some() {
         NEON_YELLOW
@@ -2574,7 +2576,21 @@ fn draw_session(
         NEON_GREEN
     };
     // 見出しの錠アイコンはクリックでロック切替できる (マウスだけで操作可能)
-    let (head, lock, _) = session_title(t);
+    let (head, lock, offset) = session_title(t);
+    let lock_x = area.x + 1 + offset;
+    hits.push(HitBox {
+        y: area.y,
+        x0: lock_x,
+        x1: lock_x + lock.width() as u16,
+        hit: Hit::Lock(ui.active),
+    });
+    let lock_bg = if ui.hover == Some(Hit::Lock(ui.active)) {
+        NEON_YELLOW
+    } else if t.locked {
+        NEON_BLUE
+    } else {
+        NEON_GREEN
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
@@ -2582,10 +2598,7 @@ fn draw_session(
             Span::styled(head, Style::default().fg(NEON_YELLOW)),
             Span::styled(
                 lock,
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(if t.locked { NEON_BLUE } else { NEON_GREEN })
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Black).bg(lock_bg).add_modifier(Modifier::BOLD),
             ),
         ]));
     let inner = block.inner(area);
@@ -2929,10 +2942,10 @@ mod tests {
         t.kill();
     }
 
-    /// INDEXの各行がクリックできること。
-    /// 描画時に記録した位置をそのまま使うので、表示とクリック位置がずれない
+    /// 押せる場所が、実際に描いた位置に記録されること。
+    /// 座標を別に計算し直すとレイアウト変更で黙ってずれる (レーン追加で実際にずれた)
     #[test]
-    fn index_rows_are_clickable_where_they_are_drawn() {
+    fn clickable_regions_follow_what_was_drawn() {
         use ratatui::backend::TestBackend;
         let argv = vec!["cmd.exe".to_string()];
         let mut tabs: Vec<Tab> = (1..=2)
@@ -2940,42 +2953,63 @@ mod tests {
                 Tab::spawn(format!("T{i}"), &argv, None, 20, 100, tab::TabOptions::default()).unwrap()
             })
             .collect();
-        let mut hits: Vec<HitRow> = Vec::new();
+        let mut hits: Vec<HitBox> = Vec::new();
         let ui = test_ui(0, ball::Ball::default(), 0);
         let mut term = ratatui::Terminal::new(TestBackend::new(100, 30)).unwrap();
         term.draw(|f| draw(f, &tabs, &ui, None, &mut hits)).unwrap();
 
-        // タブ2行 + 押せるメニュー (1文字キーのものだけ)
-        let tab_hits: Vec<_> = hits.iter().filter(|h| matches!(h.hit, IndexHit::Tab(_))).collect();
-        assert_eq!(tab_hits.len(), 2, "タブの数だけ押せる行がある");
-        for key in ['r', 'w', 't', 'i', 'e', 'k', '?', 'q'] {
-            assert!(
-                hits.iter().any(|h| h.hit == IndexHit::Key(key)),
-                "[{key}] が押せない"
+        let find = |hit: Hit| hits.iter().find(|h| h.hit == hit);
+        let all = |hit: Hit| hits.iter().filter(|h| h.hit == hit).count();
+
+        assert!(find(Hit::Index).is_some(), "INDEXへ戻る行が押せる");
+        for n in 1..=2 {
+            // 左バーとINDEXの一覧、どちらからでもタブへ行ける
+            assert_eq!(all(Hit::Tab(n)), 2, "タブ{n}は2箇所から押せる");
+            let lock = find(Hit::Lock(n)).expect("錠アイコンが押せる");
+            assert_eq!(
+                lock.x1,
+                ui.tab_w - 1,
+                "錠アイコンは枠線のすぐ左に来る (描画位置と一致していること)"
             );
         }
-        // "[1-9]" は行き先が無いので押せる場所にしない
+        for key in ['r', 'w', 't', 'i', 'e', 'k', '?', 'q'] {
+            assert!(find(Hit::Key(key)).is_some(), "[{key}] が押せない");
+        }
         assert!(
-            !hits.iter().any(|h| matches!(h.hit, IndexHit::Key(c) if c.is_ascii_digit())),
-            "説明だけの行は押せないままにする"
+            !hits.iter().any(|h| matches!(h.hit, Hit::Key(c) if c.is_ascii_digit())),
+            "説明だけの行 ([1-9]) は押せないままにする"
         );
 
-        // 記録された座標を引くと、その行が返る
-        let q = hits.iter().find(|h| h.hit == IndexHit::Key('q')).unwrap();
-        assert_eq!(hit_at(&hits, q.y, q.x0), Some(IndexHit::Key('q')));
-        assert_eq!(hit_at(&hits, q.y, q.x1 - 1), Some(IndexHit::Key('q')), "行の右端まで押せる");
+        // 動いているタブに再起動ボタンは出さない (押せてしまうと事故になる)
+        assert!(find(Hit::Restart(1)).is_none(), "動作中は再起動ボタンを出さない");
+        tabs[0].needs_restart = true;
+        term.draw(|f| draw(f, &tabs, &ui, None, &mut hits)).unwrap();
+        let restart = hits
+            .iter()
+            .find(|h| h.hit == Hit::Restart(1))
+            .expect("要再起動なら押せる");
+        assert!(restart.x0 >= LANE_W, "ボールのレーンの右側にある");
+
+        // 座標の引き当て
+        let q = hits.iter().find(|h| h.hit == Hit::Key('q')).unwrap();
+        assert_eq!(hit_at(&hits, q.y, q.x0), Some(Hit::Key('q')));
+        assert_eq!(hit_at(&hits, q.y, q.x1 - 1), Some(Hit::Key('q')), "行の右端まで押せる");
         assert_eq!(hit_at(&hits, q.y, q.x0.saturating_sub(1)), None, "枠の外は押せない");
         assert_eq!(hit_at(&hits, q.y + 100, q.x0), None, "別の行は反応しない");
+        // 錠アイコンはタブ行に重なっている。狭い方が勝たないと押せない
+        let lock = hits.iter().find(|h| h.hit == Hit::Lock(2)).unwrap();
+        assert_eq!(hit_at(&hits, lock.y, lock.x0), Some(Hit::Lock(2)), "重なりは錠が優先");
 
-        // ホバー中の行は見た目が変わる (押せることが分かるように)
-        let ui = test_ui(0, ball::Ball::default(), 0);
+        // ホバーは色だけ変える
         let plain = { term.draw(|f| draw(f, &tabs, &ui, None, &mut hits)).unwrap(); screen_text(&term) };
         let mut ui2 = test_ui(0, ball::Ball::default(), 0);
-        ui2.hover = Some(IndexHit::Key('q'));
+        ui2.hover = Some(Hit::Key('q'));
         let hovered = { term.draw(|f| draw(f, &tabs, &ui2, None, &mut hits)).unwrap(); screen_text(&term) };
         assert_eq!(plain, hovered, "文字は変えず色だけ変える");
-        let styled = term.backend().buffer().content().iter().any(|c| c.bg != ratatui::style::Color::Reset);
-        assert!(styled, "ホバー行に背景色が付く");
+        assert!(
+            term.backend().buffer().content().iter().any(|c| c.bg != ratatui::style::Color::Reset),
+            "ホバー行に背景色が付く"
+        );
 
         for t in tabs.iter_mut() {
             t.kill();
@@ -3002,9 +3036,9 @@ mod tests {
         let mut b = ball::Ball::default();
         b.throw(1, 2, 3, 1_000);
         for (title, now, hover) in [
-            ("--- 飛行中 ---", 1_150u64, None),
-            ("--- メニューにホバー ---", 3_000, Some(IndexHit::Key('e'))),
-            ("--- タブ行にホバー ---", 3_000, Some(IndexHit::Tab(2))),
+            ("--- 左バーのタブにホバー ---", 3_000u64, Some(Hit::Tab(1))),
+            ("--- 錠アイコンにホバー ---", 3_000, Some(Hit::Lock(2))),
+            ("--- INDEX行にホバー ---", 3_000, Some(Hit::Index)),
         ] {
             let mut ui = test_ui(0, b, now);
             ui.hover = hover;

@@ -168,7 +168,10 @@ mod tests {
     #[test]
     fn shipped_translations_use_known_keys() {
         let en = parse(EN);
-        for entry in std::fs::read_dir("lang").expect("langフォルダ") {
+        // 相対パスにすると、カレントディレクトリを変える別のテストと
+        // 並列に走ったときに読めなくなる (実際に落ちた)
+        let lang_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lang");
+        for entry in std::fs::read_dir(&lang_dir).expect("langフォルダ") {
             let path = entry.unwrap().path();
             if path.file_name().unwrap() == "en.json" {
                 continue;
