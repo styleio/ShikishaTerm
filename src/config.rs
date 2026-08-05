@@ -152,6 +152,10 @@ pub struct TabConfig {
     /// SSH切断や、CLIツールの自己更新後の復帰に使う
     #[serde(default)]
     pub auto_restart: bool,
+    /// 起動時の作業フォルダ。相対パスは設定ファイルの場所が基準。
+    /// Docker/WSLの中のフォルダはこれでは指定できない (コマンド側の -w / --cd を使う)
+    #[serde(default)]
+    pub cwd: Option<String>,
     /// スクロールバック行数 (省略時5000)
     #[serde(default)]
     pub scrollback: Option<usize>,

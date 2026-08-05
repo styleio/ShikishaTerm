@@ -693,6 +693,8 @@ const PAGE: &str = r##"<!doctype html>
  <button class="ghost" onclick="addTemplate('single')">Claude 1つ</button>
  <button class="ghost" onclick="addTemplate('review')">実装＋レビュー往復</button>
  <button class="ghost" onclick="addTemplate('ssh')">SSH先のAI</button>
+ <button class="ghost" onclick="addTemplate('docker')">Dockerの中</button>
+ <button class="ghost" onclick="addTemplate('wsl')">WSLの中</button>
 </fieldset>
 
 <!-- 自動化エディタ (タブの [⚙自動化] で開く) -->
@@ -766,6 +768,7 @@ function flatten(tabs, depth, out) {
     out.push({ name: t.name || "", command: cmdToText(t.command), profile: t.profile || "",
                automation: t.automation || t.lua || "",
                locked: !!t.locked, auto_restart: !!t.auto_restart,
+               cwd: t.cwd || "",
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
                depth });
     flatten(t.children, depth + 1, out);
@@ -781,6 +784,7 @@ function nest(flat) {
     if (f.automation) node.automation = f.automation;
     if (f.locked) node.locked = true;
     if (f.auto_restart) node.auto_restart = true;
+    if (f.cwd) node.cwd = f.cwd;
     if (f.encoding) node.encoding = f.encoding;
     if (f.scrollback) node.scrollback = Number(f.scrollback);
     if (f.log) node.log = true;
@@ -816,6 +820,11 @@ function render() {
       const cmdInput = input(t, "command", "動かすもの (例: claude / ssh user@host)", "text");
       const detail = el("div", {class:"detail", style:"display:none"},
         sshPanel(t, cmdInput),
+        el("div", {class:"row"},
+          el("label", {}, "作業フォルダ"),
+          ...pathField(t, "cwd", "アプリと同じ場所", "dir", "作業フォルダを選んでください", 300),
+          el("span", {class:"warn"},
+            "AIはここのプロジェクトを見ます（Docker/WSLの中は上の欄で指定します）")),
         el("div", {class:"row"},
           el("label", {}, "文字コード"), select(t, "encoding",
             [["","UTF-8（標準）"],["shift_jis","Shift_JIS"],["euc-jp","EUC-JP"]]),
@@ -909,26 +918,99 @@ function buildSsh(o) {
 
 // cmdInput は上段の「動かすもの」欄。ここを書き換えても再描画せず値だけ同期する
 // (入力のたびに再描画すると詳細が閉じたりフォーカスが飛んだりするため)
+// Docker: docker exec -it -w /app <コンテナ> bash
+function parseDocker(cmd) {
+  const t = (cmd || "").trim().split(/\s+/);
+  if (t[0] !== "docker" || t[1] !== "exec") return null;
+  const o = {container:"", dir:"", shell:""};
+  const rest = [];
+  for (let i = 2; i < t.length; i++) {
+    const a = t[i];
+    if (a === "-w") o.dir = t[++i] || "";
+    else if (a === "-it" || a === "-i" || a === "-t") continue;
+    else if (a.startsWith("-")) { rest.push(a); }
+    else if (!o.container) o.container = a;
+    else rest.push(a);
+  }
+  o.shell = rest.join(" ");
+  return o;
+}
+const buildDocker = o => ["docker exec -it",
+  o.dir ? "-w " + o.dir : "", o.container, o.shell || "bash"]
+  .filter(Boolean).join(" ");
+
+// WSL: wsl -d Ubuntu --cd /home/me/proj -- claude
+function parseWsl(cmd) {
+  const t = (cmd || "").trim().split(/\s+/);
+  if (t[0] !== "wsl") return null;
+  const o = {distro:"", dir:"", shell:""};
+  const rest = [];
+  for (let i = 1; i < t.length; i++) {
+    const a = t[i];
+    if (a === "-d" || a === "--distribution") o.distro = t[++i] || "";
+    else if (a === "--cd") o.dir = t[++i] || "";
+    else if (a === "--") rest.push(...t.slice(i + 1)), i = t.length;
+    else rest.push(a);
+  }
+  o.shell = rest.join(" ");
+  return o;
+}
+const buildWsl = o => ["wsl", o.distro ? "-d " + o.distro : "",
+  o.dir ? "--cd " + o.dir : "", o.shell ? "-- " + o.shell : ""]
+  .filter(Boolean).join(" ");
+
+const KIND_START = {cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl "};
+
 function sshPanel(t, cmdInput) {
   const box = el("div");
   const build = () => {
     box.textContent = "";
     const ssh = parseSsh(t.command);
+    const dk = parseDocker(t.command);
+    const wsl = parseWsl(t.command);
+    const kind = ssh ? "ssh" : dk ? "docker" : wsl ? "wsl" : "cmd";
     const head = el("div", {class:"row"},
       el("label", {}, "接続の種類"),
       (() => {
         const s = el("select");
         s.append(el("option", {value:"cmd"}, "コマンドを実行"),
-                 el("option", {value:"ssh"}, "SSH接続（サーバーに繋ぐ）"));
-        s.value = ssh ? "ssh" : "cmd";
+                 el("option", {value:"ssh"}, "SSH接続（サーバーに繋ぐ）"),
+                 el("option", {value:"docker"}, "Dockerコンテナの中"),
+                 el("option", {value:"wsl"}, "WSL（Windows上のLinux）の中"));
+        s.value = kind;
         s.addEventListener("change", () => {
-          t.command = s.value === "ssh" ? "ssh " : "";
+          t.command = KIND_START[s.value] || "";
           if (cmdInput) cmdInput.value = t.command;
           build();
         });
         return s;
       })());
     box.append(head);
+
+    // Docker / WSL は「中のフォルダ」をコマンドで指定する (作業フォルダ欄はWindows側)
+    if (dk || wsl) {
+      const o = dk || wsl;
+      const preview = el("span", {class:"warn"}, "");
+      const upd = () => {
+        t.command = dk ? buildDocker(o) : buildWsl(o);
+        if (cmdInput) cmdInput.value = t.command;
+        preview.textContent = "実行されるコマンド: " + t.command;
+      };
+      const f = (label, key, ph, w) => {
+        const i = el("input", {type:"text", placeholder:ph, style:`width:${w||180}px`});
+        i.value = o[key] || "";
+        i.addEventListener("change", () => { o[key] = i.value.trim(); upd(); });
+        return [el("label", {style:"min-width:auto"}, label), i];
+      };
+      box.append(el("div", {class:"row"},
+        ...(dk ? f("コンテナ名", "container", "myapp", 200)
+               : f("ディストリ", "distro", "Ubuntu（既定なら空欄）", 200)),
+        ...f("中のフォルダ", "dir", "/home/me/proj", 220),
+        ...f("実行するもの", "shell", dk ? "bash / claude" : "bash / claude", 180)));
+      upd();
+      box.append(el("div", {class:"row"}, preview));
+      return;
+    }
     if (!ssh) return;
 
     const preview = el("span", {class:"warn"}, "");
@@ -1019,7 +1101,7 @@ function select(obj, key, opts) {
 
 const newTab = (o = {}) => Object.assign(
   {name:"", command:"", profile:"", automation:"", locked:false, auto_restart:false,
-   encoding:"", scrollback:"", log:false, depth:0}, o);
+   cwd:"", encoding:"", scrollback:"", log:false, depth:0}, o);
 const label2 = (ctrl, text) => {
   const l = el("label", {style:"min-width:auto; color:#39ff14; cursor:pointer"});
   l.append(ctrl, document.createTextNode(" " + text));
@@ -1052,6 +1134,12 @@ const TEMPLATES = {
   ssh:    { name:"リモート作業", tabs:[
       newTab({name:"サーバー", command:"ssh user@example.com", profile:"claude",
               auto_restart:true}) ] },
+  docker: { name:"コンテナ作業", tabs:[
+      newTab({name:"コンテナ", command:"docker exec -it -w /app myapp bash",
+              profile:"claude"}) ] },
+  wsl:    { name:"WSL作業", tabs:[
+      newTab({name:"Ubuntu", command:"wsl -d Ubuntu --cd /home/me/proj -- bash",
+              profile:"claude"}) ] },
 };
 function addTemplate(kind) {
   const t = TEMPLATES[kind];

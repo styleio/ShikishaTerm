@@ -16,6 +16,8 @@ pub const SCROLLBACK_LINES: usize = 5000;
 /// タブごとの端末設定 (PuTTYのセッション設定に相当するもの)
 #[derive(Clone)]
 pub struct TabOptions {
+    /// 起動時の作業フォルダ (AI CLIはここのプロジェクトを見る)
+    pub cwd: Option<std::path::PathBuf>,
     /// スクロールバック行数
     pub scrollback: usize,
     /// 文字コード ("utf-8" / "shift_jis" / "euc-jp" 等)。既定はUTF-8
@@ -27,6 +29,7 @@ pub struct TabOptions {
 impl Default for TabOptions {
     fn default() -> Self {
         Self {
+            cwd: None,
             scrollback: SCROLLBACK_LINES,
             encoding: None,
             log: false,
@@ -252,6 +255,20 @@ mod tests {
     }
 }
 
+/// 起動条件の指紋。これが変われば新しいセッションを作らないと反映できない
+pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        argv.join(" "),
+        opts.encoding.map(|e| e.name()).unwrap_or("UTF-8"),
+        opts.scrollback,
+        opts.cwd
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    )
+}
+
 pub struct Tab {
     pub title: String,
     pub parser: SharedParser,
@@ -317,7 +334,14 @@ impl Tab {
             pixel_height: 0,
         })?;
         let mut cmd = build_command(argv);
-        cmd.cwd(std::env::current_dir()?);
+        // 指定が無い/存在しない場合はアプリのフォルダで起動する
+        // (存在しないフォルダを渡すと起動そのものが失敗するため)
+        let cwd = opts
+            .cwd
+            .clone()
+            .filter(|p| p.is_dir())
+            .unwrap_or(std::env::current_dir()?);
+        cmd.cwd(cwd);
         let mut child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
         let killer = child.clone_killer();
@@ -465,12 +489,7 @@ impl Tab {
 
     /// 起動条件の指紋。これが変わるとセッションの作り直しが必要
     pub fn signature(&self) -> String {
-        format!(
-            "{}|{}|{}",
-            self.argv.join(" "),
-            self.opts.encoding.map(|e| e.name()).unwrap_or("UTF-8"),
-            self.opts.scrollback
-        )
+        signature_of(&self.argv, &self.opts)
     }
 
     /// 再起動せずに反映できる設定を差し替える

@@ -6,6 +6,8 @@
     {
       "name": "A:実装",
       "command": "claude",
+      "//cwd": "AIが見るプロジェクトの場所。省略するとアプリと同じ場所",
+      "cwd": "D:/work/myproject",
       "children": [
         {
           "name": "B:レビュー",

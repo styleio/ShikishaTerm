@@ -1029,6 +1029,15 @@ fn build_engine(
 /// タブ設定を作り直したTabOptionsに変換する
 fn tab_options(cfg: &config::TabConfig) -> tab::TabOptions {
     tab::TabOptions {
+        // 相対指定は設定ファイルの場所を基準にする (フォルダごと持ち運べる)
+        cwd: cfg.cwd.as_ref().map(|c| {
+            let p = std::path::PathBuf::from(c);
+            if p.is_absolute() {
+                p
+            } else {
+                config_file_dir().join(p)
+            }
+        }),
         scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
@@ -1089,13 +1098,7 @@ fn apply_ws_config(
                     ft.depth,
                 );
                 // コマンド・文字コード・行数の変更は作り直しが必要
-                let new_sig = format!(
-                    "{}|{}|{}",
-                    argv.join(" "),
-                    opts.encoding.map(|e| e.name()).unwrap_or("UTF-8"),
-                    opts.scrollback
-                );
-                if t.signature() != new_sig {
+                if t.signature() != tab::signature_of(&argv, &opts) {
                     t.stage_restart_config(argv.clone(), opts);
                     staged += 1;
                 }
@@ -2144,6 +2147,40 @@ mod tests {
     fn workspace_from(json: &str) -> config::Workspace {
         let cfg: config::Config = serde_json::from_str(json).unwrap();
         cfg.resolve_workspaces().0.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn tab_starts_in_the_configured_folder() {
+        let dir = std::env::temp_dir().join("shikisha-cwd-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let opts = tab::TabOptions {
+            cwd: Some(dir.clone()),
+            ..Default::default()
+        };
+        let argv = vec!["cmd.exe".to_string(), "/c".into(), "cd".into()];
+        let mut t = Tab::spawn("cwd".into(), &argv, None, 10, 60, opts).unwrap();
+        // cmd の "cd" は現在のフォルダを表示する
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        let screen = t.parser.lock().unwrap().screen().contents();
+        t.kill();
+        assert!(
+            screen.contains("shikisha-cwd-test"),
+            "指定した作業フォルダで起動する: {screen}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_folder_falls_back_instead_of_failing_to_start() {
+        let opts = tab::TabOptions {
+            cwd: Some(std::path::PathBuf::from("Z:/does/not/exist")),
+            ..Default::default()
+        };
+        let argv = vec!["cmd.exe".to_string()];
+        // 存在しないフォルダでもセッションは起動する (起動失敗より復帰しやすい)
+        let mut t = Tab::spawn("fallback".into(), &argv, None, 10, 60, opts)
+            .expect("存在しないフォルダでも起動できる");
+        t.kill();
     }
 
     #[test]
