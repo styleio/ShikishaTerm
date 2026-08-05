@@ -31,17 +31,32 @@ npm run build    # output in dist/
 
 ## Deploying to Cloudflare Pages
 
-Connect the repository once, then every push to `main` publishes:
+Deployment runs from GitHub Actions (`.github/workflows/site.yml`) on every push to `main`
+that touches `site/` or `docs/` — `docs/` matters because the pages are generated from it.
 
-| Setting | Value |
-|---|---|
-| Framework preset | Astro |
-| Root directory | `site` |
-| Build command | `npm run build` |
-| Build output directory | `dist` |
+### One-time setup
+
+1. Create a Pages project in the Cloudflare dashboard (Workers &amp; Pages → Create →
+   Pages → **Direct Upload**). The workflow pushes the built site to it; it does not need
+   Cloudflare's Git integration. Note the project name.
+2. Create an API token at <https://dash.cloudflare.com/profile/api-tokens> →
+   **Create Custom Token**, with just **Account / Cloudflare Pages / Edit**.
+3. Add these under Settings → Secrets and variables → Actions:
+
+   | Kind | Name | Value |
+   |---|---|---|
+   | Secret | `CLOUDFLARE_API_TOKEN` | the token from step 2 |
+   | Secret | `CLOUDFLARE_ACCOUNT_ID` | shown in the Cloudflare sidebar |
+   | Variable | `CLOUDFLARE_PROJECT_NAME` | the project name from step 1 (defaults to `shikishaterm`) |
 
 After attaching a custom domain, update `site` in `astro.config.mjs` — it is used for the
 sitemap and for social preview URLs.
+
+### Or skip the workflow entirely
+
+Cloudflare's own Git integration needs no tokens: connect the repository in the dashboard
+with root directory `site`, build command `npm run build`, output directory `dist`. Delete
+`.github/workflows/site.yml` if you go that way, so the site is not deployed twice.
 
 ## Adding a language to the site
 
