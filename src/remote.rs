@@ -269,9 +269,9 @@ const PAGE: &str = r##"<!doctype html>
   </div>
 </main>
 <script>
-const T = "__TOKEN__";
+const TOKEN = "__TOKEN__";
 const api = (p, b) => fetch(p, {method: b ? "POST" : "GET",
-  headers:{"X-Token":T,"Content-Type":"application/json"}, body: b});
+  headers:{"X-Token":TOKEN,"Content-Type":"application/json"}, body: b});
 let snap = {tabs:[]}, sel = null, dirty = false;
 
 const CLS = {BUSY:"busy", DONE:"done", QUESTION:"quest", WAIT:"wait", EXIT:"exit"};
@@ -372,6 +372,29 @@ poll();
 mod tests {
     use super::*;
 
+
+    /// トップレベルの const/let が重複していないこと。
+    /// 重複すると SyntaxError でスクリプト全体が動かず、静的なHTMLだけが残る。
+    /// 画面は出ているのに何も動かないという、原因の分かりにくい壊れ方をする
+    fn top_level_bindings(page: &str) -> Vec<String> {
+        page.lines()
+            .filter_map(|l| l.strip_prefix("const ").or_else(|| l.strip_prefix("let ")))
+            .filter_map(|rest| rest.split(|c: char| !(c.is_alphanumeric() || c == '_')).next())
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+    
+    fn assert_no_duplicate_bindings(name: &str, page: &str) {
+        let names = top_level_bindings(page);
+        for (i, n) in names.iter().enumerate() {
+            assert!(
+                !names[..i].contains(n),
+                "{name}: `{n}` がトップレベルで二重宣言されている (JS全体が動かなくなる)"
+            );
+        }
+    }
+
     /// スマホ画面に `{{key}}` や `__DICT__` がそのまま出ていないこと
     #[test]
     fn page_is_fully_rendered_and_uses_known_keys() {
@@ -380,6 +403,8 @@ mod tests {
             .replace("__DICT__", "{}");
         assert!(!html.contains("{{"), "未置換の {{{{key}}}} が残っている");
         assert!(!html.contains("__"), "未置換のプレースホルダが残っている");
+
+        assert_no_duplicate_bindings("remote PAGE", PAGE);
 
         let en: serde_json::Value = serde_json::from_str(include_str!("../lang/en.json")).unwrap();
         let mut rest = PAGE;

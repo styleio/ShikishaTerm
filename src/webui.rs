@@ -1851,11 +1851,35 @@ mod tests {
         assert!(m.contains("shikisha."), "埋め込みにフォールバックする");
     }
 
+
+    /// トップレベルの const/let が重複していないこと。
+    /// 重複すると SyntaxError でスクリプト全体が動かず、静的なHTMLだけが残る。
+    /// 画面は出ているのに何も動かないという、原因の分かりにくい壊れ方をする
+    fn top_level_bindings(page: &str) -> Vec<String> {
+        page.lines()
+            .filter_map(|l| l.strip_prefix("const ").or_else(|| l.strip_prefix("let ")))
+            .filter_map(|rest| rest.split(|c: char| !(c.is_alphanumeric() || c == '_')).next())
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+    
+    fn assert_no_duplicate_bindings(name: &str, page: &str) {
+        let names = top_level_bindings(page);
+        for (i, n) in names.iter().enumerate() {
+            assert!(
+                !names[..i].contains(n),
+                "{name}: `{n}` がトップレベルで二重宣言されている (JS全体が動かなくなる)"
+            );
+        }
+    }
+
     /// 画面に `{{key}}` や `__DICT__` がそのまま出ていないこと。
     /// 差し込み忘れは実行して初めて気づくので、ここで止める
     #[test]
     fn pages_are_fully_rendered() {
         for (name, page) in [("PAGE", PAGE), ("HELP_PAGE", HELP_PAGE)] {
+            assert_no_duplicate_bindings(name, page);
             let html = crate::i18n::render(page)
                 .replace("__TOKEN__", "t")
                 .replace("__DICT__", "{}")
