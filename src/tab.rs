@@ -312,61 +312,57 @@ mod tests {
 
     /// 実行が効かなかったときに、それを応答と呼ばないこと。
     ///
-    /// 出力のバイト数で見ると、カーソルの点滅や枠の描き直しでも増えるので
-    /// 「答えた」と数えてしまう。実行が届かなければ入力欄に文章が乗ったまま
-    /// 画面の中身は変わらない、という違いを見る
+    /// 貼り付けが `[Pasted Content …]` の形に描き変わるだけでも、出力は増え
+    /// 画面も動く。そこを応答の合図にすると、実行が届いていなくてもボールが渡る。
+    /// AIが働き始めた表示が出たかどうかで見る
     #[test]
-    fn an_answer_requires_the_screen_to_change_after_the_submit() {
+    fn an_answer_requires_the_ai_to_have_started_working() {
         use super::{Tab, TabOptions};
         use std::sync::atomic::Ordering;
         use std::time::{Duration, Instant};
 
+        // 作業中の表示を持つプロファイルを当てる
         let argv = vec!["cmd.exe".to_string()];
-        let mut t = Tab::spawn("shell".into(), &argv, None, 12, 60, TabOptions::default()).unwrap();
+        let mut t = Tab::spawn(
+            "shell".into(),
+            &argv,
+            Some("claude".into()),
+            12,
+            60,
+            TabOptions::default(),
+        )
+        .unwrap();
         let start = Instant::now();
-        let settle = |t: &mut Tab| {
-            for _ in 0..40 {
-                std::thread::sleep(Duration::from_millis(50));
-                t.tick(start);
-            }
-        };
-        settle(&mut t);
-
-        // 効かない実行の再現: 画面を変えない入力を送る
-        // (子プロセスは受け取るが、表示は何も変わらない)
-        let before = t.output_count();
-        t.write_bytes(b"\x00\r").unwrap();
-        assert!(t.was_prompted(), "実行として記録される");
-        assert!(
-            !t.answered_since_submit(),
-            "実行した直後を応答ありと数えている"
-        );
-        settle(&mut t);
-        assert!(t.output_count() > before, "出力そのものは増えている");
-
-        // 肝心なのはここ: 出力は増えたが画面の中身は変わっていない状態。
-        // Codexのカーソル再描画などがこれにあたり、バイト数で見ると
-        // 「答えた」と誤判定する
-        t.submitted_output.store(0, Ordering::Relaxed);
-        t.submitted_screen
-            .store(t.screen_fingerprint(), Ordering::Relaxed);
-        assert!(
-            !t.answered_since_submit(),
-            "出力が増えただけで応答ありと数えている (実行が効いていなくてもボールが渡る)"
-        );
-
-        // 画面が変わる実行なら応答あり
-        t.write_bytes(b"echo REPLY\r").unwrap();
-        let mut answered = false;
-        for _ in 0..60 {
+        for _ in 0..40 {
             std::thread::sleep(Duration::from_millis(50));
             t.tick(start);
-            if t.answered_since_submit() {
-                answered = true;
-                break;
-            }
         }
-        assert!(answered, "画面が変われば応答として数える");
+
+        t.write_bytes(b"echo REPLY\r").unwrap();
+        assert!(t.was_prompted(), "実行として記録される");
+        assert!(!t.answered_since_submit(), "実行した直後はまだ応答が無い");
+
+        // 出力も画面も動いたが、AIは働いていない状態 (貼り付けの描き変わり)
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(50));
+            t.tick(start);
+        }
+        assert!(t.output_count() > 0 && t.had_output(), "出力そのものは動いている");
+        assert!(
+            !t.answered_since_submit(),
+            "画面が動いただけで応答ありと数えている (実行が効いていなくてもボールが渡る)"
+        );
+
+        // 働き始めた表示を見たら応答
+        t.saw_working.store(true, Ordering::Relaxed);
+        assert!(t.answered_since_submit(), "働き始めたら応答として数える");
+
+        // 次の実行で、また待つ状態に戻る
+        t.write_bytes(b"echo AGAIN\r").unwrap();
+        assert!(
+            !t.answered_since_submit(),
+            "実行のたびに数え直す (前の応答が残らない)"
+        );
 
         t.kill();
     }
@@ -640,6 +636,11 @@ pub struct Tab {
     /// 画面は変化するので、そのまま活動と数えると BUSY→DONE を通り、
     /// 応答が来たように見えてしまう
     last_resize_ms: AtomicU64,
+    /// 実行してから「作業中」の表示を見たか。
+    ///
+    /// 画面が変わったかどうかでは足りない。貼り付けが `[Pasted Content …]`
+    /// の形に描き変わるだけでも画面は変わるが、AIは何もしていない
+    saw_working: AtomicBool,
     /// 実行した時点の画面の中身 (ハッシュ)。
     ///
     /// 出力のバイト数だと、カーソルの点滅や枠の描き直しでも増えるので
@@ -801,6 +802,7 @@ impl Tab {
             prompted: AtomicBool::new(false),
             submitted_output: AtomicU64::new(0),
             submitted_screen: AtomicU64::new(0),
+            saw_working: AtomicBool::new(false),
             last_resize_ms: AtomicU64::new(0),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
@@ -823,12 +825,20 @@ impl Tab {
         screen_hash(p.screen(), self.detector.ignore_bottom_rows())
     }
 
-    /// 実行してから画面の中身が変わったか。
+    /// 実行が相手に届き、実際に応答が始まったか。
     ///
-    /// 実行が届いていれば、貼り付けの表示が消えて答えが出るので必ず変わる。
-    /// 届いていなければ入力欄に文章が乗ったまま何も動かない
+    /// AI CLIは働いている間それを画面に出す (「esc to interrupt」など)。
+    /// 実行が届かなければ、貼り付けが入力欄に乗ったままで、その表示は出ない。
+    /// 画面が変わったかどうかでは足りない ——
+    /// 貼り付けが `[Pasted Content …]` に描き変わるだけでも画面は変わる。
+    ///
+    /// 作業中の表示を持たない相手 (素のシェル等) は、画面の変化で代用する
     pub fn answered_since_submit(&self) -> bool {
-        self.screen_fingerprint() != self.submitted_screen.load(Ordering::Relaxed)
+        if self.detector.shows_working() {
+            self.saw_working.load(Ordering::Relaxed)
+        } else {
+            self.screen_fingerprint() != self.submitted_screen.load(Ordering::Relaxed)
+        }
     }
 
     /// 応答を受け取り切ったので、次の実行を待つ状態に戻す
@@ -854,6 +864,7 @@ impl Tab {
                 .store(self.line_position() as u64, Ordering::Relaxed);
             self.submitted_screen
                 .store(self.screen_fingerprint(), Ordering::Relaxed);
+            self.saw_working.store(false, Ordering::Relaxed);
         }
         // 相手がUTF-8以外なら、送る文字も変換する
         // (制御シーケンスはASCIIなのでそのまま通る)
@@ -986,6 +997,9 @@ impl Tab {
             .tick(&screen_text, since, self.bell_count.load(Ordering::Relaxed));
         if self.state == TabState::Busy {
             self.spinner_idx = self.spinner_idx.wrapping_add(1);
+        }
+        if self.detector.working_shown() {
+            self.saw_working.store(true, Ordering::Relaxed);
         }
         self.sample_activity();
 

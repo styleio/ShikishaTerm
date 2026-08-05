@@ -49,6 +49,11 @@ pub struct Detector {
     state: TabState,
     /// 直近に「動作」があったか (Done判定は動作→沈黙の遷移でのみ発火)
     was_active: bool,
+    /// 直近のtickで「作業中」の表示が画面に出ていたか。
+    ///
+    /// 画面が動いたかどうかとは別物。貼り付けが表示されても画面は動くが、
+    /// AIは何もしていない。実際に働き始めた証拠はこちら
+    working_shown: bool,
     last_bell: u64,
 }
 
@@ -58,6 +63,7 @@ impl Detector {
             profile,
             state: TabState::Wait,
             was_active: false,
+            working_shown: false,
             last_bell: 0,
         }
     }
@@ -69,6 +75,16 @@ impl Detector {
     /// 画面変化判定から除外する最下部行数 (byobu等のステータスバー対策)
     pub fn ignore_bottom_rows(&self) -> u16 {
         self.profile.ignore_bottom_rows
+    }
+
+    /// 直近のtickで「作業中」の表示が出ていたか
+    pub fn working_shown(&self) -> bool {
+        self.working_shown
+    }
+
+    /// このAIは「作業中」を画面に出すか (プロファイルに指定があるか)
+    pub fn shows_working(&self) -> bool {
+        !self.profile.busy.is_empty()
     }
 
     /// このAI固有の確認時間 (指定があれば)
@@ -86,7 +102,8 @@ impl Detector {
             self.state = TabState::Question;
             return self.state;
         }
-        if self.profile.busy.iter().any(|r| r.is_match(screen_text)) {
+        self.working_shown = self.profile.busy.iter().any(|r| r.is_match(screen_text));
+        if self.working_shown {
             self.was_active = true;
             self.state = TabState::Busy;
             return self.state;
@@ -129,6 +146,33 @@ mod tests {
             done_confirm_ms: None,
         })
         .unwrap()
+    }
+
+    /// 画面が動いたことと、AIが働き始めたことを混同しないこと。
+    ///
+    /// 貼り付けが `[Pasted Content …]` の形に描き変わるだけでも画面は動く。
+    /// それを応答の始まりと数えると、実行が届いていなくてもボールが渡る
+    #[test]
+    fn a_redrawn_paste_is_not_the_ai_starting_work() {
+        let mut d = Detector::new(claude_like());
+
+        // 貼り付けが描き変わっただけ。作業中の表示は無い
+        d.tick("> [Pasted Content 1917 chars]", 0, 0);
+        assert!(
+            !d.working_shown(),
+            "貼り付けの描き変わりを「働き始めた」と数えている"
+        );
+
+        // 実際に働き始めたら表示が出る
+        d.tick("Thinking… (12s · esc to interrupt)", 0, 0);
+        assert!(d.working_shown(), "作業中の表示を見落としている");
+
+        // 表示が消えたら、また働いていない状態
+        d.tick("> [Pasted Content 1917 chars]", 3000, 0);
+        assert!(!d.working_shown(), "表示が消えたら働いていない");
+
+        // 作業中の表示を持つプロファイルかどうかも分かること
+        assert!(d.shows_working(), "このAIは作業中を画面に出す");
     }
 
     #[test]
