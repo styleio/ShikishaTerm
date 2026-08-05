@@ -632,9 +632,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             }
                         }
                         let ctx = tab_ctx(&tabs[idx - 1], idx);
+                        // 起動時のバナー出力だけでも画面は動いて止まるので、
+                        // どのタブも必ず一度 DONE を通る。誰も何も聞いていない
+                        // その出力を応答として転送しないよう、入力があった後だけ扱う
+                        let answering = tabs[idx - 1].was_prompted();
                         match new {
-                            TabState::Busy => eng.fire("on_busy", &ctx, None),
-                            TabState::Done if old == TabState::Busy => {
+                            TabState::Busy if answering => eng.fire("on_busy", &ctx, None),
+                            TabState::Done if answering && old == TabState::Busy => {
                                 eng.fire("on_done", &ctx, None);
                             }
                             TabState::Question => {
@@ -1904,7 +1908,8 @@ fn handle_mouse(
         };
         if !matches!(mode, vt100::MouseProtocolMode::None) {
             if let Some(bytes) = mouse_to_child_bytes(&m, inner, mode, enc) {
-                t.write_bytes(&bytes)?;
+                // マウス報告は応答を求める入力ではない
+                t.write_passthrough(&bytes)?;
             }
             return Ok(());
         }

@@ -277,6 +277,45 @@ mod tests {
         );
     }
 
+    /// 起動時の出力だけで DONE になること、そしてそれを応答扱いしないこと。
+    ///
+    /// どんなプログラムも起動時に何か出力するので、画面は「動いて→止まる」を
+    /// 通り、状態は必ず DONE になる。ここを応答完了として扱うと、
+    /// 誰も聞いていないバナーが自動化で他のタブへ転送されてしまう
+    #[test]
+    fn startup_output_reaches_done_but_is_not_an_answer() {
+        use super::{Tab, TabOptions};
+        use crate::detect::TabState;
+        use std::time::{Duration, Instant};
+
+        let argv = vec!["cmd.exe".to_string()];
+        let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
+
+        // 起動時の出力だけで DONE まで行くことを確かめる (前提の確認)
+        let start = Instant::now();
+        let mut saw_done = false;
+        for _ in 0..120 {
+            std::thread::sleep(Duration::from_millis(50));
+            if t.tick(start).1 == TabState::Done {
+                saw_done = true;
+                break;
+            }
+        }
+        assert!(saw_done, "起動しただけで DONE になる");
+
+        // 誰も入力していないので、応答として扱ってはいけない
+        assert!(
+            !t.was_prompted(),
+            "何も聞いていないのに応答完了として扱われている"
+        );
+
+        // 入力したあとの DONE は本物の応答
+        t.write_bytes(b"echo hi\r").unwrap();
+        assert!(t.was_prompted(), "入力したら応答を待つ状態になる");
+
+        t.kill();
+    }
+
     /// 起動直後の自動化は、プログラムが入力を受け取れるようになるまで待つこと。
     ///
     /// AI CLIは起動して入力欄を描き終わるまで入力を捨てる。
@@ -384,6 +423,12 @@ pub struct Tab {
     bytes_out: Arc<AtomicU64>,
     /// このセッションを作った時刻。起動直後かどうかの判定に使う
     created: Instant,
+    /// 人か自動化が、このタブに何か入力したか。
+    ///
+    /// 起動時のバナー出力だけでも画面は「動いて→止まる」ので、状態は必ず
+    /// DONE を通る。応答を待っている相手が居ないのに応答完了として扱うと、
+    /// 誰も聞いていない出力が自動化で転送されてしまう
+    prompted: AtomicBool,
     /// 直近の出力量の履歴 (古い→新しい)。INDEXの波形用
     activity: [u8; ACTIVITY_LEN],
     /// 前回サンプル時点の累計バイト数
@@ -521,6 +566,7 @@ impl Tab {
             bell_count,
             bytes_out,
             created: Instant::now(),
+            prompted: AtomicBool::new(false),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
             last_hash: 0,
@@ -531,7 +577,20 @@ impl Tab {
         })
     }
 
+    /// 誰かがこのタブに入力したか。応答完了として扱ってよいかの判定に使う
+    pub fn was_prompted(&self) -> bool {
+        self.prompted.load(Ordering::Relaxed)
+    }
+
+    /// 子プロセスへそのまま流すだけの入力 (マウス報告など)。
+    /// 応答を求める入力ではないので prompted は立てない
+    pub fn write_passthrough(&self, bytes: &[u8]) -> Result<()> {
+        pty_write(&self.writer, bytes)
+    }
+
+    /// 入力を送る。ここを通ったものは「応答を求めた」とみなす
     pub fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
+        self.prompted.store(true, Ordering::Relaxed);
         // 相手がUTF-8以外なら、送る文字も変換する
         // (制御シーケンスはASCIIなのでそのまま通る)
         if let Some(enc) = self.opts.encoding {

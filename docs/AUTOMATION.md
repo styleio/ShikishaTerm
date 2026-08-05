@@ -19,11 +19,15 @@ Only add the ones you need.
 | File name | When it runs |
 |---|---|
 | `on_start.lua` | Once the tab has started and settled (see below) |
-| `on_done.lua` | When the AI has finished answering |
+| `on_done.lua` | When the AI has finished answering something it was asked |
 | `on_question.lua` | When the AI asks something or offers choices |
 | `on_exit.lua` | When the session ends (including disconnects and crashes) |
 | `on_busy.lua` | When an answer starts (advanced) |
 | `_shared.lua` | Loaded before all of the above. Put shared helper functions here |
+
+`on_done.lua` and `on_busy.lua` only run once something has been sent to the tab. Every
+program prints something as it starts, which makes the screen move and then stop — the same
+shape as an answer — so without this a banner would be forwarded as if it were a reply.
 
 `on_start.lua` does not run the instant the tab appears. An AI CLI ignores input until
 it has drawn its own prompt, so it runs once the program has produced output and the
