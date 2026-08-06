@@ -2770,6 +2770,37 @@ fn remote_label(on: bool) -> &'static str {
 }
 
 /// INDEX = ホーム画面: セッション一覧 + メニュー
+/// ブロック文字のワードマーク (3行)。1文字ぶんの幅は不揃いなので、
+/// 右端の余白まで含めて数えず、実際の文字幅で測る
+const WORDMARK: [&str; 3] = [
+    "█▀▀ █ █ █ █ █ █ █▀▀ █ █ █▀█ ▀█▀ █▀▀ █▀█ █▄█",
+    "▀▀█ █▀█ █ █▀▄ █ ▀▀█ █▀█ █▀█  █  █▀▀ █▀▄ █ █",
+    "▀▀▀ ▀ ▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀ ▀ ▀  ▀  ▀▀▀ ▀ ▀ ▀ ▀",
+];
+
+/// 1行に落としたときの表記
+const WORDMARK_SMALL: &str = "◢◤ ShikishaTerm";
+
+/// 名前をどう出すか。画面に入らないなら小さくし、それも入らないなら出さない。
+///
+/// 入らないものを無理に描くと折り返して崩れ、名前どころか画面が壊れて見える。
+/// 縦も見るのは、タブが多いときに名前で一覧を押し出さないため
+pub fn wordmark_lines(width: u16, height: u16) -> Vec<String> {
+    let need = WORDMARK
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0) as u16;
+    // 左の余白1桁ぶんを足して測る。ぴったりだと枠に触れて窮屈に見える
+    if width >= need + 2 && height >= 12 {
+        return WORDMARK.iter().map(|l| format!(" {l}")).collect();
+    }
+    if width >= WORDMARK_SMALL.chars().count() as u16 + 2 {
+        return vec![format!(" {WORDMARK_SMALL}")];
+    }
+    Vec::new()
+}
+
 fn draw_index(
     f: &mut Frame,
     tabs: &[Tab],
@@ -2791,6 +2822,20 @@ fn draw_index(
     f.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
+    // 名前を画面の中に置く。ターミナルのタイトルバーは
+    // フォーカスモードでも切り抜きでも消えるので、あてにしない
+    let mark = wordmark_lines(inner.width, inner.height);
+    if !mark.is_empty() {
+        // 枠に触れさせない。詰まっていると窮屈に見える
+        lines.push(Line::default());
+        for l in mark {
+            lines.push(Line::from(Span::styled(
+                l,
+                Style::default().fg(NEON_BLUE).add_modifier(Modifier::BOLD),
+            )));
+        }
+        lines.push(Line::default());
+    }
     // 初回起動: 何をすればいいか分からないまま終わらせない
     if ui.first_run {
         lines.push(Line::from(Span::styled(
@@ -3663,6 +3708,48 @@ mod tests {
     }
 
     /// 初回起動でINDEXに案内が出ること (何をすればいいか分からないまま終わらせない)
+    /// 名前は画面に入るときだけ出すこと。
+    ///
+    /// TUI はターミナルの中で動くので、ウィンドウのタイトルは
+    /// フォーカスモードにすれば消えるし、切り抜かれても消える。
+    /// 画面の中に無いと、GIF が README から離れた時点で
+    /// 何のソフトか分からなくなる
+    #[test]
+    fn the_name_shrinks_rather_than_breaking_the_layout() {
+        let wide = wordmark_lines(100, 30);
+        assert_eq!(wide.len(), 3, "広ければワードマーク");
+        for l in &wide {
+            assert!(
+                l.chars().count() <= 100,
+                "枠からはみ出している: {} 桁",
+                l.chars().count()
+            );
+        }
+
+        // 幅が足りなければ1行に落とす (折り返して崩れるより小さく出す)
+        let narrow = wordmark_lines(30, 30);
+        assert_eq!(narrow.len(), 1);
+        assert!(narrow[0].contains("ShikishaTerm"));
+
+        // 縦が足りないときも1行。タブの一覧を名前で押し出さない
+        let short = wordmark_lines(100, 8);
+        assert_eq!(short.len(), 1, "低い画面では一覧を優先する");
+
+        // どちらも足りなければ出さない
+        assert!(wordmark_lines(10, 30).is_empty());
+        assert!(wordmark_lines(0, 0).is_empty());
+    }
+
+    /// ワードマークの3行は同じ幅であること (揃っていないと文字が崩れて見える)
+    #[test]
+    fn the_wordmark_rows_line_up() {
+        let w: Vec<usize> = WORDMARK.iter().map(|l| l.chars().count()).collect();
+        assert!(
+            w.iter().all(|n| *n == w[0]),
+            "行ごとに幅が違う: {w:?}"
+        );
+    }
+
     #[test]
     fn first_run_shows_how_to_open_settings() {
         use ratatui::backend::TestBackend;
