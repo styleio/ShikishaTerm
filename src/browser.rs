@@ -121,13 +121,29 @@ const INIT_JS: &str = r#"
 
   window.__shikisha = true;
 
-  // 「準備できた」は文書が解析できてから。この初期化スクリプト自体は
-  // 解析前に走るので、ここで名乗ると body すら無い時点の合図になる
-  const announce = () => send({ kind: "ready", url: location.href });
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", announce, { once: true });
+  // 「読み込み終わった」は load まで待つ。DOMContentLoaded の時点では
+  // 画像もCSSも来ておらず、JSが後から作る中身も入っていない。
+  //
+  // ただし広告のページは外部の計測タグを待つので、load が数秒遅れる、
+  // 来ないことがある。待ち切れなければDOMだけの時点で名乗り、
+  // どちらだったかを complete に入れる。当てにいって外すより正直
+  let told = false;
+  const announce = complete => {
+    if (told) return;
+    told = true;
+    send({ kind: "ready", url: location.href, complete: !!complete });
+  };
+  const SETTLE_MS = 8000;
+  if (document.readyState === "complete") {
+    announce(true);
   } else {
-    announce();
+    addEventListener("load", () => announce(true), { once: true });
+    const armFallback = () => setTimeout(() => announce(false), SETTLE_MS);
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", armFallback, { once: true });
+    } else {
+      armFallback();
+    }
   }
 })();
 "#;
@@ -176,6 +192,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
     Some(match v.get("kind").and_then(|k| k.as_str()) {
         Some("ready") => Ev::Ready {
             from: None,
+            complete: v
+                .get("complete")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(true),
             url: v
                 .get("url")
                 .and_then(|u| u.as_str())
@@ -247,7 +267,13 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
 pub enum Ev {
     /// 文書が読み込まれた (遷移のたびに来る)。
     /// `from` は読み込んだページの名前 (None は主画面)
-    Ready { from: Option<String>, url: String },
+    Ready {
+        from: Option<String>,
+        url: String,
+        /// 参照しているものまで揃ったか。
+        /// false は「load が来ないので、DOMだけの時点で名乗った」
+        complete: bool,
+    },
     /// `Eval` の結果。`value` はJSON
     Result { id: u64, ok: bool, value: String },
     /// 帯のボタンが押された = 人が自分の番を終えた。
@@ -377,7 +403,7 @@ impl Browser {
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| anyhow!("ページが用意できません"))?;
             match self.events.recv_timeout(left) {
-                Ok(Ev::Ready { from, url }) => {
+                Ok(Ev::Ready { from, url, .. }) => {
                     self.reask(from.as_deref());
                     return Ok(url);
                 }
@@ -820,9 +846,10 @@ fn run_window(
                                 Ev::Button { .. } => Ev::Button {
                                     from: Some(who.clone()),
                                 },
-                                Ev::Ready { url, .. } => Ev::Ready {
+                                Ev::Ready { url, complete, .. } => Ev::Ready {
                                     from: Some(who.clone()),
                                     url,
+                                    complete,
                                 },
                                 other => other,
                             };

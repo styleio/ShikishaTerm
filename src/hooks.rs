@@ -132,6 +132,21 @@ pub enum Command {
     Log(String),
 }
 
+/// ブラウザのフックへ渡すページの様子
+#[derive(Clone)]
+pub struct PageCtx {
+    /// 画面の番号 (人が押す番号と同じ)
+    pub index: usize,
+    /// 自動化から指す呼び名
+    pub id: String,
+    /// 人が読む名前
+    pub name: String,
+    pub url: String,
+    /// 参照しているものまで揃ったか。
+    /// false は「load が来ないので、DOMだけの時点で来た」
+    pub complete: bool,
+}
+
 /// フック発火時にLuaへ渡すタブ情報のスナップショット
 #[derive(Clone)]
 pub struct TabCtx {
@@ -244,6 +259,12 @@ pub struct HookEngine {
 }
 
 const HOOK_NAMES: [&str; 5] = ["on_start", "on_question", "on_busy", "on_done", "on_exit"];
+
+/// ブラウザのタブで使えるフック。
+///
+/// セッションの状態はページには当てはまらないので、言葉を分ける。
+/// 増やすのは、増やす理由が出てからでいい
+pub const PAGE_HOOK_NAMES: [&str; 2] = ["on_load", "on_press"];
 
 impl HookEngine {
     /// スクリプトを1本だけ読み込んで基本設定に紐づける (テスト・単純構成用)
@@ -737,6 +758,17 @@ impl HookEngine {
             source.push_str(&format!("function {hook}(tab, screen)\n{body}\nend\n"));
             found = true;
         }
+        // ブラウザのフックは、受け取るものが tab ではなく page
+        for hook in PAGE_HOOK_NAMES {
+            let f = dir.join(format!("{hook}.lua"));
+            if !f.is_file() {
+                continue;
+            }
+            let body = std::fs::read_to_string(&f)
+                .with_context(|| format!("読めません: {}", f.display()))?;
+            source.push_str(&format!("function {hook}(page)\n{body}\nend\n"));
+            found = true;
+        }
         if !found && source.is_empty() {
             anyhow::bail!(
                 "{key} にイベントファイル (on_done.lua 等) がありません"
@@ -760,8 +792,9 @@ impl HookEngine {
             .map_err(|e| anyhow::anyhow!("{path}: Luaスクリプトの実行に失敗: {e}"))?;
 
         let mut defined = HashSet::new();
-        for name in HOOK_NAMES {
-            if env.get::<mlua::Function>(name).is_ok() {
+        // セッションのフックと、ブラウザのフックの両方を見る
+        for name in HOOK_NAMES.iter().chain(PAGE_HOOK_NAMES.iter()) {
+            if env.get::<mlua::Function>(*name).is_ok() {
                 defined.insert(name.to_string());
             }
         }
@@ -821,6 +854,33 @@ impl HookEngine {
                 None => MultiValue::from_vec(vec![Value::Table(tbl)]),
             };
             self.resume_thread(thread, hook, ctx.index, args);
+            Ok(())
+        })();
+        if let Err(e) = result {
+            self.push_log(format!("Luaエラー({hook}): {e}"));
+        }
+    }
+
+    /// ブラウザのフックを呼ぶ。
+    ///
+    /// 渡すのは page で、tab ではない。ページには状態も出力も無い。
+    /// 無いものを埋めて似せると、書く人が別のものと取り違える
+    pub fn fire_page(&mut self, hook: &str, page: &PageCtx) {
+        let Some(id) = self.resolve(hook, page.index) else {
+            return;
+        };
+        self.current_origin.set(page.index);
+        let result = (|| -> mlua::Result<()> {
+            let func: mlua::Function = self.scripts[id].env.get(hook)?;
+            let thread = self.lua.create_thread(func)?;
+            let tbl = self.lua.create_table()?;
+            tbl.set("index", page.index)?;
+            tbl.set("id", page.id.clone())?;
+            tbl.set("name", page.name.clone())?;
+            tbl.set("url", page.url.clone())?;
+            tbl.set("complete", page.complete)?;
+            let args = MultiValue::from_vec(vec![Value::Table(tbl)]);
+            self.resume_thread(thread, hook, page.index, args);
             Ok(())
         })();
         if let Err(e) = result {

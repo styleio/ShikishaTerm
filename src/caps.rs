@@ -415,9 +415,20 @@ impl Capabilities {
     }
 
     /// 帯のボタンが押されたことを預かる。
-    /// 窓の中に置いた分は、本体のループが報告を受け取るのでそこから届く
-    pub fn note_press(&self, name: &str) {
-        self.pressed.borrow_mut().insert(name.to_string(), true);
+    /// 窓の中に置いた分は、本体のループが報告を受け取るのでそこから届く。
+    /// 受け取る名前は窓の中での名前 (ワークスペース番号付き)
+    pub fn note_press(&self, child: &str) {
+        self.pressed.borrow_mut().insert(child.to_string(), true);
+    }
+
+    /// 窓の中での名前を、人が使う呼び名へ戻す。
+    ///
+    /// いま見ているワークスペースのものでなければ None。
+    /// 別のワークスペースのページの出来事で、こちらのフックを
+    /// 動かすわけにはいかない
+    pub fn name_of_child(&self, child: &str) -> Option<String> {
+        let head = format!("{}/", self.ws.get());
+        child.strip_prefix(&head).map(str::to_string)
     }
 
     pub fn browser_find(&self, name: &str, sel: &crate::browser::Sel) -> Result<&'static str> {
@@ -447,18 +458,24 @@ impl Capabilities {
 
     /// 人へ呼びかける帯を出す
     pub fn browser_ask(&self, name: &str, text: &str, label: &str) -> Result<()> {
-        self.pressed.borrow_mut().remove(name);
+        self.forget_press(name);
         self.with(name, |b, to| b.ask(to, text, label))
     }
 
     /// 帯のボタンが押されたか。押されていたら下ろして true を返す
     pub fn browser_pressed(&self, name: &str) -> Result<bool> {
         self.with(name, |_, _| Ok(()))?;
-        Ok(self.pressed.borrow_mut().remove(name).unwrap_or(false))
+        Ok(self.forget_press(name))
+    }
+
+    /// 押された記録を下ろす。鍵は窓の中での名前
+    fn forget_press(&self, name: &str) -> bool {
+        let key = Self::key(self.ws.get(), name);
+        self.pressed.borrow_mut().remove(&key).unwrap_or(false)
     }
 
     pub fn browser_unask(&self, name: &str) -> Result<()> {
-        self.pressed.borrow_mut().remove(name);
+        self.forget_press(name);
         self.with(name, |b, to| b.unask(to))
     }
 

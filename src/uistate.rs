@@ -104,11 +104,11 @@ impl TabState {
     ///
     /// セッションではないので、状態も出力量も無い。
     /// 無いものを埋めて似せるより、無いまま出す方が読める
-    pub fn browser(index: usize, name: &str) -> Self {
+    pub fn browser(index: usize, key: &str, name: &str) -> Self {
         Self {
             index,
             name: name.to_string(),
-            id: Some(name.to_string()),
+            id: Some(key.to_string()),
             state: "WEB".into(),
             state_label: crate::i18n::t("tui.state.web"),
             profile: String::new(),
@@ -121,14 +121,7 @@ impl TabState {
 }
 
 impl BallState {
-    ///  はセッションの番号を画面の番号に直す。
-    /// ボールはセッションの番号で動くが、見えている並びは設定の順
-    pub fn of(
-        b: &crate::ball::Ball,
-        max: u32,
-        now_ms: u64,
-        pane: impl Fn(usize) -> usize,
-    ) -> Self {
+    pub fn of(b: &crate::ball::Ball, max: u32, now_ms: u64) -> Self {
         use crate::ball::Phase;
         let (phase, progress) = match b.phase(now_ms) {
             Phase::Idle => ("idle", 0.0),
@@ -137,8 +130,8 @@ impl BallState {
             Phase::Held { .. } => ("held", 1.0),
         };
         Self {
-            holder: if b.holder == 0 { 0 } else { pane(b.holder) },
-            from: if b.from == 0 { 0 } else { pane(b.from) },
+            holder: b.holder,
+            from: b.from,
             depth: b.depth,
             max,
             phase: phase.into(),
@@ -164,15 +157,13 @@ mod tests {
     /// 番号が続いていないと、人が押す番号と中身がずれる
     #[test]
     fn a_browser_takes_the_next_tab_number() {
-        let a = TabState::browser(3, "shop");
-        let b = TabState::browser(4, "mail");
+        let a = TabState::browser(3, "shop", "通販サイト");
+        let b = TabState::browser(4, "mail", "メール");
         assert_eq!((a.index, b.index), (3, 4));
         assert_eq!(a.kind, "browser", "セッションと同じ見せ方になっている");
-        assert_eq!(
-            a.id.as_deref(),
-            Some("shop"),
-            "自動化から指す名前が、タブの名前と違う"
-        );
+        assert_eq!(a.id.as_deref(), Some("shop"), "自動化から指す名前が違う");
+        // 人が読む名前と、自動化から指す名前は別のもの
+        assert_eq!(a.name, "通販サイト", "設定した表示名が出ていない");
         // セッションではないので、埋めて似せない
         assert!(a.activity.is_empty() && a.profile.is_empty() && a.depth == 0);
         assert!(!a.locked);

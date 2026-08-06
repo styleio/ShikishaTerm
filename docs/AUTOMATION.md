@@ -296,6 +296,23 @@ numbered after the sessions — `Ctrl+B` and its number switches to it like any 
 }
 ```
 
+### Hooks on a browser
+
+A page has its own vocabulary. Session states — working, done, asking — say nothing
+about a document, so browsers get their own names.
+
+| File | When |
+|---|---|
+| `on_load.lua` | the page finished loading (**on every navigation**) |
+| `on_press.lua` | the human pressed the banner button |
+
+What arrives is `page`, not `tab`: `page.index` (the number on screen), `page.id` (the
+name automation points at), `page.name` (what a person reads), `page.url`, and
+`page.complete` — false means `load` never came and this fired at DOM-ready instead.
+
+`draft_to_tab` and `send_to_tab` wait until the other side can actually take input, so
+handing work to a CLI that has not finished starting does not silently vanish.
+
 Then drive it from automation:
 
 ```lua

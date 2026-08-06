@@ -236,6 +236,8 @@ struct WinSurface {
     pending: std::collections::VecDeque<Event>,
     /// 置いたページの帯で、人が「終わった」を押したもの
     presses: Vec<String>,
+    /// 読み込みが終わったページ (呼び名, URL, 参照先まで揃ったか)
+    loads: Vec<(String, String, bool)>,
 }
 
 impl WinSurface {
@@ -249,6 +251,11 @@ impl WinSurface {
     /// 窓の報告は1本しかないので、受けるのはここだけにする
     fn take_presses(&mut self) -> Vec<String> {
         std::mem::take(&mut self.presses)
+    }
+
+    /// 読み込みが終わったページを引き取る (呼び名, URL, 揃ったか)
+    fn take_loads(&mut self) -> Vec<(String, String, bool)> {
+        std::mem::take(&mut self.loads)
     }
 
     fn take_events(&mut self, active_tab: Option<&Tab>) {
@@ -267,6 +274,12 @@ impl WinSurface {
                 // 置いたページの帯が押された = 人が自分の番を終えた。
                 // 誰が押したかは、報告に付いてくる名前でしか分からない
                 Ev::Button { from: Some(name) } => self.presses.push(name),
+                // 置いたページの読み込みが終わった (移動のたびに来る)
+                Ev::Ready {
+                    from: Some(name),
+                    url,
+                    complete,
+                } => self.loads.push((name, url, complete)),
                 // クリップボードは端末側と同じ扱いにする
                 Ev::Copy { text } => {
                     if let Ok(mut c) = arboard::Clipboard::new() {
@@ -433,6 +446,7 @@ fn run_in_window() -> Result<()> {
         area: (0, 0, 0, 0),
         pending: std::collections::VecDeque::new(),
         presses: Vec::new(),
+        loads: Vec::new(),
     })
 }
 
@@ -459,16 +473,13 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
             .enumerate()
             .filter_map(|(i, p)| match p {
                 Pane::Session(s) => tabs.get(*s).map(|t| crate::uistate::TabState::of(i + 1, t)),
-                Pane::Browser(name) => Some(crate::uistate::TabState::browser(i + 1, name)),
+                Pane::Browser { key, name } => {
+                    Some(crate::uistate::TabState::browser(i + 1, key, name))
+                }
             })
             .collect(),
         // ボールはセッションの番号で動く。見せるのは画面の番号
-        ball: crate::uistate::BallState::of(
-            &ui.ball,
-            ui.max_chain,
-            ui.now_ms,
-            |s| pane_at(&ui.panes, s),
-        ),
+        ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
         flash: flash.map(str::to_string),
         help_open: ui.help_open,
         ws_open: ui.ws_open,
@@ -727,6 +738,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut started_fired = vec![false; tabs.len()];
     // 自動チェーンの「透明のボール」。今どのタブが仕事を持っているかを表示に使う
     let mut ball = ball::Ball::default();
+    // 相手がまだ受け取れない受け渡しを預かる場所
+    let mut waiting: Vec<Waiting> = Vec::new();
     // 送信した本文に対して、あとから実行(改行)を送る予約
     let mut pending_submit: Vec<PendingSubmit> = Vec::new();
     // 応答完了と見えたタブと、それを確定させる時刻。
@@ -877,7 +890,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // 終了したタブで待機中のループは破棄する (無限ループを残さない)
                 for &(idx, old, new) in &transitions {
                     if new == TabState::Exited && old != TabState::Exited {
-                        eng.cancel_tab(idx);
+                        eng.cancel_tab(pane_at(&layout, idx));
                     }
                 }
                 let now_ms = start.elapsed().as_millis() as u64;
@@ -887,7 +900,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // 準備できるまで待ってから流し込む
                         if !*fired && tabs[i].ready_for_startup_hook() {
                             *fired = true;
-                            eng.fire("on_start", &tab_ctx(&tabs[i], i + 1), None);
+                            eng.fire(
+                                "on_start",
+                                &tab_ctx(&tabs[i], pane_at(&layout, i + 1)),
+                                None,
+                            );
                         }
                     }
                     for &(idx, old, new) in &transitions {
@@ -923,7 +940,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 *f = false;
                             }
                         }
-                        let ctx = tab_ctx(&tabs[idx - 1], idx);
+                        let ctx = tab_ctx(&tabs[idx - 1], pane_at(&layout, idx));
                         // 起動時のバナー出力だけでも画面は動いて止まるので、
                         // どのタブも必ず一度 DONE を通る。誰も何も聞いていない
                         // その出力を応答として転送しないよう、入力があった後だけ扱う
@@ -980,7 +997,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             // 一度の実行に一度の応答。次を待つには次の実行が要る
                             t.finish_response();
                         }
-                        let ctx = tab_ctx(&tabs[idx - 1], idx);
+                        let ctx = tab_ctx(&tabs[idx - 1], pane_at(&layout, idx));
                         // 幅を狭めると vt100 が各行をその幅で切り捨てるので、
                         // 応答を待つ間に狭めていると文章が欠けている。
                         // 戻せないが、黙って欠けたものを渡すよりは残す
@@ -998,8 +1015,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         eng.fire("on_done", &ctx, None);
                     }
 
-                    eng.tick_pending(&|idx| {
-                        tabs.get(idx.wrapping_sub(1))
+                    // 自動化が指すのは画面の番号。中身はセッションが持っている
+                    eng.tick_pending(&|pane| {
+                        session_at(&layout, pane)
+                            .and_then(|i| tabs.get(i))
                             .map(|t| t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents())
                     });
                 }
@@ -1009,6 +1028,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     exec_commands(
                         cmds,
                         &mut tabs,
+                        &layout,
                         max_chain,
                         auto_enabled,
                         now_ms,
@@ -1018,6 +1038,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         &mut flash,
                         &mut ball,
                         &mut pending_submit,
+                        &mut waiting,
                     );
                 }
             }
@@ -1066,8 +1087,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     match cmd {
                         // 遠隔からの入力は人間の操作として扱う
                         // (自動チェーンをリセットし、ロック中は拒否する)
+                        // スマホが指すのも画面の番号。ブラウザなら送り先が無い
                         remote::RemoteCmd::Send { tab, text } => {
-                            if let Some(t) = tabs.get_mut(tab.wrapping_sub(1)) {
+                            if let Some(t) =
+                                session_at(&layout, tab).and_then(|i| tabs.get_mut(i))
+                            {
                                 if t.locked {
                                     continue;
                                 }
@@ -1083,7 +1107,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                         }
                         remote::RemoteCmd::Keys { tab, keys } => {
-                            if let Some(t) = tabs.get_mut(tab.wrapping_sub(1)) {
+                            if let Some(t) =
+                                session_at(&layout, tab).and_then(|i| tabs.get_mut(i))
+                            {
                                 if t.locked {
                                     continue;
                                 }
@@ -1130,11 +1156,58 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
+        // 預かっている受け渡しを、相手が受け取れるようになったら流す。
+        // 諦めた分も黙って消さない。消えたことが見えないのが一番困る
+        if !waiting.is_empty() {
+            let now_ms = start.elapsed().as_millis() as u64;
+            let keys = pane_keys(&layout, &tabs);
+            let mut ready: Vec<Command> = Vec::new();
+            let mut keep: Vec<Waiting> = Vec::new();
+            for w in std::mem::take(&mut waiting) {
+                let can = target_of(&w.cmd)
+                    .and_then(|r| r.resolve(&keys))
+                    .and_then(|p| session_at(&layout, p))
+                    .and_then(|i| tabs.get(i))
+                    .map(ready_to_receive)
+                    .unwrap_or(false);
+                if can {
+                    ready.push(w.cmd);
+                } else if now_ms >= w.give_up_ms {
+                    let to = target_of(&w.cmd);
+                    append_hook_log(&format!("受け取れないまま時間切れ: {to:?}"));
+                    flash = Some(i18n::tp(
+                        "msg.handoff_timeout",
+                        &[("target", &format!("{to:?}"))],
+                    ));
+                } else {
+                    keep.push(w);
+                }
+            }
+            waiting = keep;
+            if !ready.is_empty() {
+                exec_commands(
+                    ready,
+                    &mut tabs,
+                    &layout,
+                    max_chain,
+                    auto_enabled,
+                    now_ms,
+                    rows,
+                    cols,
+                    &notifier,
+                    &mut flash,
+                    &mut ball,
+                    &mut pending_submit,
+                    &mut waiting,
+                );
+            }
+        }
+
         // 予約しておいた実行(改行)を、相手が貼り付けを描いてから送る
         if !pending_submit.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
             pending_submit.retain_mut(|p| {
-                let Some(t) = tabs.get(p.tab.wrapping_sub(1)) else {
+                let Some(t) = session_at(&layout, p.tab).and_then(|i| tabs.get(i)) else {
                     return false;
                 };
                 if !p.ready(t.output_count(), now_ms) {
@@ -1182,14 +1255,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // 仕事は holder にある。人が触ったら touched 側で消える
         if ball.holder > 0
             && !ball.awaiting_human
-            && !tabs
-                .get(ball.holder - 1)
+            && !session_at(&layout, ball.holder)
+                .and_then(|i| tabs.get(i))
                 .map(|t| t.chain_depth > 0)
                 .unwrap_or(false)
         {
             ball.reset();
         }
-        ball.clamp_to(tabs.len());
+        ball.clamp_to(layout.len());
 
         let ui = Ui {
             first_run,
@@ -1213,13 +1286,41 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // 選ばれている1枚だけを、ターミナルの中身の位置に置く。
         // 所有関係で最小化と重なり順はOSが見てくれるが、位置だけは追う必要がある
         caps.show_only(match layout.get(active.wrapping_sub(1)) {
-            Some(Pane::Browser(name)) => Some(name.as_str()),
+            Some(Pane::Browser { key, .. }) => Some(key.as_str()),
             _ => None,
         });
         // 帯のボタンが押されたことを預ける。
         // 窓の報告を受けられるのは本体だけなので、ここを通す
-        for name in surface.take_presses() {
-            caps.note_press(&name);
+        for child in surface.take_presses() {
+            caps.note_press(&child);
+            // 窓の中での名前を呼び名へ戻す。戻せないのは別のワークスペースの分
+            let Some(name) = caps.name_of_child(&child) else {
+                continue;
+            };
+            if auto_enabled {
+                if let (Some(eng), Some(page)) =
+                    (engine.as_mut(), page_ctx(&layout, &name, String::new(), true))
+                {
+                    eng.fire_page("on_press", &page);
+                }
+            }
+        }
+        // 読み込みが終わったページ。移動のたびに来る
+        for (child, url, complete) in surface.take_loads() {
+            let Some(name) = caps.name_of_child(&child) else {
+                continue;
+            };
+            append_hook_log(&format!(
+                "読み込み {name}: {url} ({})",
+                if complete { "全部" } else { "DOMまで" }
+            ));
+            if auto_enabled {
+                if let (Some(eng), Some(page)) =
+                    (engine.as_mut(), page_ctx(&layout, &name, url, complete))
+                {
+                    eng.fire_page("on_load", &page);
+                }
+            }
         }
 
         let Some(ev) = surface.poll(
@@ -1298,9 +1399,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // Ctrl+B r このタブを再起動 (終了・切断からの復帰)
                         KeyCode::Char('r') => {
                             if let Some(eng) = engine.as_mut() {
-                                if let Some(s) = session_at(&layout, active) {
-                                    eng.cancel_tab(s + 1);
-                                }
+                                eng.cancel_tab(active);
                             }
                             if let Some(t) = session_mut(&mut tabs, &layout, active) {
                                 flash = Some(match t.restart(rows, cols) {
@@ -1678,23 +1777,24 @@ fn ensure_mouse_capture(expected: Option<u32>) {
 /// Luaフックを3階層 (基本 > ワークスペース > タブ) で読み込む。
 /// フックの引き当ては「より具体的な方が勝つ」ので、タブ用スクリプトが
 /// 定義していないフックだけがワークスペース・基本へフォールバックする
-/// タブごとの自動化を、セッションの番号で並べる。
+/// タブごとの自動化を、画面の番号で並べる。
 ///
-/// フックはセッションの番号で飛んでくる。設定の並びで数えると、
-/// 子プロセスを持たないもの (ブラウザ、コマンドが空の行) の分だけずれ、
-/// あるタブのフックが隣のタブの置き場を見ることになる
-fn automation_by_session(ws: &config::Workspace) -> Vec<(usize, String)> {
-    let mut session = 0;
+/// 番号は画面に出ているものと同じにする。人が押す番号、スクリプトが
+/// 指す番号、ボールが飛ぶ番号が別々だと、誰にも追えなくなる。
+///
+/// 並べ替えられても、設定を読み直せば付け直される。
+/// どこにも覚えさせないので、ずれたままにならない
+fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, String)> {
+    let mut pane = 0;
     let mut out = Vec::new();
     for t in &ws.tabs {
-        let argv = t.cfg.command.argv();
-        // spawn_workspace が立てないものは、番号を持たない
-        if argv.is_empty() || config::browser_url_of(&argv).is_some() {
+        // コマンドが空の行は、画面にも並ばない
+        if t.cfg.command.argv().is_empty() {
             continue;
         }
-        session += 1;
+        pane += 1;
         if let Some(p) = t.cfg.automation_path() {
-            out.push((session, p));
+            out.push((pane, p));
         }
     }
     out
@@ -1708,7 +1808,7 @@ fn build_engine(
 ) -> Option<HookEngine> {
     let base = cfg.and_then(|c| c.automation_path());
     let ws_lua = ws.and_then(|w| w.automation.clone());
-    let tab_luas: Vec<(usize, String)> = ws.map(automation_by_session).unwrap_or_default();
+    let tab_luas: Vec<(usize, String)> = ws.map(automation_by_pane).unwrap_or_default();
     if base.is_none() && ws_lua.is_none() && tab_luas.is_empty() {
         return None;
     }
@@ -1987,8 +2087,13 @@ fn switch_workspace(
 enum Pane {
     /// tabs の何番目か (0始まり)
     Session(usize),
-    /// 窓の中に置いたページの呼び名
-    Browser(String),
+    /// 窓の中に置いたページ
+    Browser {
+        /// 自動化から指す名前 (ID、無ければ表示名)。窓に置くときの名前でもある
+        key: String,
+        /// 人が読む名前
+        name: String,
+    },
 }
 
 /// 設定に書いた順で、画面に並ぶものを組み立てる。
@@ -2006,17 +2111,19 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
                 continue;
             }
             if config::browser_url_of(&argv).is_some() {
-                let name = ft
+            let key = ft
                     .cfg
                     .id
                     .clone()
                     .or_else(|| ft.cfg.name.clone())
                     .unwrap_or_else(|| "browser".into());
-                // まだ開けていないものは並べない (押しても何も無い番号になる)
-                if let Some(h) = hosted.iter().find(|h| **h == name) {
+                // 開けていなくても位置は持つ。開いた順で番号が動くと、
+                // スクリプトの指す先が走るたびに変わる
+                if let Some(h) = hosted.iter().find(|h| **h == key) {
                     used_web.push(h);
-                    out.push(Pane::Browser(name));
                 }
+                let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
+                out.push(Pane::Browser { key, name });
                 continue;
             }
             let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
@@ -2038,9 +2145,13 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
             out.push(Pane::Session(i));
         }
     }
+    // 設定に無いもの (自動化が後から開いた分、設定画面など) は名前がそれだけ
     for h in hosted {
         if !used_web.iter().any(|u| u == h) {
-            out.push(Pane::Browser(h.clone()));
+            out.push(Pane::Browser {
+                key: h.clone(),
+                name: h.clone(),
+            });
         }
     }
     out
@@ -2050,7 +2161,7 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
 fn session_at(panes: &[Pane], active: usize) -> Option<usize> {
     match panes.get(active.checked_sub(1)?)? {
         Pane::Session(i) => Some(*i),
-        Pane::Browser(_) => None,
+        Pane::Browser { .. } => None,
     }
 }
 
@@ -2183,6 +2294,26 @@ fn resolve_data_path(p: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(p)
 }
 
+/// 置いたページの様子を、画面の並びから組み立てる。
+/// 並びに無いページ (閉じた後など) には None
+fn page_ctx(
+    panes: &[Pane],
+    key: &str,
+    url: String,
+    complete: bool,
+) -> Option<hooks::PageCtx> {
+    panes.iter().enumerate().find_map(|(i, p)| match p {
+        Pane::Browser { key: k, name } if k == key => Some(hooks::PageCtx {
+            index: i + 1,
+            id: k.clone(),
+            name: name.clone(),
+            url: url.clone(),
+            complete,
+        }),
+        _ => None,
+    })
+}
+
 fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
     TabCtx {
         index,
@@ -2266,12 +2397,67 @@ pub fn append_hook_log(msg: &str) {
     }
 }
 
+/// 画面の並びどおりの呼び名の一覧。
+///
+/// 指す先は画面の並びで数える。名前でも番号でも同じものを指す
+/// (番号は並べ替えで変わるので、書くときは名前を勧める)
+fn pane_keys(panes: &[Pane], tabs: &[Tab]) -> Vec<hooks::TabKey> {
+    panes
+        .iter()
+        .map(|p| match p {
+            Pane::Session(i) => tabs.get(*i).map(|t| t.key()).unwrap_or_default(),
+            // ブラウザも呼び名 (ID) が先。表示名でも引けるようにする
+            Pane::Browser { key, name } => hooks::TabKey {
+                id: Some(key.clone()),
+                name: name.clone(),
+            },
+        })
+        .collect()
+}
+
+/// まだ渡せない受け渡し。相手が入力を受け取れるようになったら実行する。
+///
+/// 渡す先が起動しきっていないことは珍しくない。捨てられたことは
+/// 誰にも見えないので、こちらで持っておく
+struct Waiting {
+    cmd: Command,
+    /// これを過ぎたら諦める。持ち続けても、いつか誰も覚えていない
+    give_up_ms: u64,
+}
+
+/// 相手が受け取れるようになるまで待てる受け渡しか。
+///
+/// 待てるのは「渡す」ものだけ。再起動や通知は相手の準備と関係がない
+fn can_wait(cmd: &Command) -> bool {
+    matches!(
+        cmd,
+        Command::SendPrompt { .. } | Command::DraftPrompt { .. }
+    )
+}
+
+/// その受け渡しの宛先
+fn target_of(cmd: &Command) -> Option<&hooks::TabRef> {
+    match cmd {
+        Command::SendPrompt { target, .. } | Command::DraftPrompt { target, .. } => Some(target),
+        _ => None,
+    }
+}
+
+/// 渡す相手が入力を受け取れる状態か
+fn ready_to_receive(t: &Tab) -> bool {
+    t.ready_for_startup_hook()
+}
+
+/// 諦めるまでの間。これより長く持っていても、書いた人はもう見ていない
+const WAIT_FOR_TAB_MS: u64 = 30_000;
+
 /// Luaフックが積んだ操作依頼を実行する。
 /// 自動送信はチェーン深度 (透明のボール) を継承し、上限で止める
 #[allow(clippy::too_many_arguments)]
 fn exec_commands(
     cmds: Vec<Command>,
     tabs: &mut [Tab],
+    panes: &[Pane],
     max_chain: u32,
     auto_enabled: bool,
     now_ms: u64,
@@ -2281,11 +2467,33 @@ fn exec_commands(
     flash: &mut Option<String>,
     ball: &mut ball::Ball,
     pending_submit: &mut Vec<PendingSubmit>,
+    waiting: &mut Vec<Waiting>,
 ) {
-    // タブ名でも指定できるようにする (番号は並べ替えで変わるため)
-    let keys: Vec<hooks::TabKey> = tabs.iter().map(|t| t.key()).collect();
+    let keys = pane_keys(panes, tabs);
     let index_of = |r: &hooks::TabRef| r.resolve(&keys);
+    // 画面の番号から、タブ配列の居場所へ。ブラウザなら None
+    let session_of = |pane: usize| session_at(panes, pane);
     for cmd in cmds {
+        // 渡す相手がまだ入力を受け取れないなら、預かって後で渡す。
+        // ここで流すと黙って捨てられ、書いた人には何も見えない
+        if can_wait(&cmd) {
+            let not_yet = target_of(&cmd)
+                .and_then(index_of)
+                .and_then(session_of)
+                .and_then(|i| tabs.get(i))
+                .map(|t| !ready_to_receive(t))
+                .unwrap_or(false);
+            if not_yet {
+                if let Some(t) = target_of(&cmd) {
+                    append_hook_log(&format!("受け取れるまで待つ: {t:?}"));
+                }
+                waiting.push(Waiting {
+                    cmd,
+                    give_up_ms: now_ms + WAIT_FOR_TAB_MS,
+                });
+                continue;
+            }
+        }
         match cmd {
             Command::Log(msg) => append_hook_log(&msg),
             Command::Restart { target } => {
@@ -2293,7 +2501,7 @@ fn exec_commands(
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
                     continue;
                 };
-                if let Some(t) = tabs.get_mut(target.wrapping_sub(1)) {
+                if let Some(t) = session_of(target).and_then(|i| tabs.get_mut(i)) {
                     match t.restart(rows, cols) {
                         Ok(()) => {
                             append_hook_log(&format!("restart tab{target} (lua)"));
@@ -2315,7 +2523,7 @@ fn exec_commands(
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
                     continue;
                 };
-                if let Some(t) = tabs.get(target.wrapping_sub(1)) {
+                if let Some(t) = session_of(target).and_then(|i| tabs.get(i)) {
                     if touched_recently(t, now_ms) {
                         continue;
                     }
@@ -2334,8 +2542,8 @@ fn exec_commands(
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
                     continue;
                 };
-                let depth = tabs
-                    .get(origin.wrapping_sub(1))
+                let depth = session_of(origin)
+                    .and_then(|i| tabs.get(i))
                     .map(|t| t.chain_depth)
                     .unwrap_or(0)
                     + 1;
@@ -2346,7 +2554,7 @@ fn exec_commands(
                     ));
                     continue;
                 }
-                if let Some(t) = tabs.get_mut(idx.wrapping_sub(1)) {
+                if let Some(t) = session_of(idx).and_then(|i| tabs.get_mut(i)) {
                     if touched_recently(t, now_ms) {
                         continue;
                     }
@@ -2388,8 +2596,8 @@ fn exec_commands(
                     append_hook_log(&format!("送信先が見つかりません: {target:?}"));
                     continue;
                 };
-                let depth = tabs
-                    .get(origin.wrapping_sub(1))
+                let depth = session_of(origin)
+                    .and_then(|i| tabs.get(i))
                     .map(|t| t.chain_depth)
                     .unwrap_or(0)
                     + 1;
@@ -2398,7 +2606,7 @@ fn exec_commands(
                     append_hook_log(&format!("chain limit ({max_chain}): tab{origin} -> tab{target}"));
                     continue;
                 }
-                let Some(t) = tabs.get_mut(target.wrapping_sub(1)) else {
+                let Some(t) = session_of(target).and_then(|i| tabs.get_mut(i)) else {
                     continue;
                 };
                 if touched_recently(t, now_ms) {
@@ -2733,14 +2941,67 @@ mod tests {
         }
     }
 
-    /// 自動化の割り当てが、セッションの番号で並ぶこと。
+    /// 渡す相手が受け取れないとき、預かること。
     ///
-    /// フックはセッションの番号で飛んでくる。設定の並びで数えると、
-    /// 子プロセスを持たないもの (ブラウザ、空のコマンド) の分だけずれる。
-    /// 実際そうなっていて、AIタブの on_start が、
-    /// 1つ手前のブラウザタブの置き場を見ていた
+    /// AI CLI は起動してすぐ入力欄を描かない。その前に流し込むと
+    /// 黙って捨てられ、書いた人には「動いていない」としか見えない。
+    ///
+    /// 待てるのは「渡す」ものだけ。再起動や通知は相手の準備と関係がない
     #[test]
-    fn the_scripts_are_numbered_by_session_not_by_the_settings() {
+    fn only_a_handoff_waits_for_the_other_side() {
+        use hooks::{Command, TabRef};
+        let draft = Command::DraftPrompt {
+            target: TabRef::Name("ai".into()),
+            text: "x".into(),
+            origin: 1,
+        };
+        let send = Command::SendPrompt {
+            target: TabRef::Name("ai".into()),
+            text: "x".into(),
+            origin: 1,
+        };
+        assert!(can_wait(&draft) && can_wait(&send), "渡すものが待てない");
+        assert_eq!(target_of(&draft).map(|t| format!("{t:?}")).as_deref(),
+                   Some("Name(\"ai\")"));
+
+        for other in [
+            Command::Restart { target: TabRef::Index(1) },
+            Command::Notify { dest: "slack".into(), text: "x".into() },
+            Command::Log("x".into()),
+            Command::SendKeys { target: TabRef::Index(1), keys: "y".into() },
+        ] {
+            assert!(!can_wait(&other), "待つ必要のないものを預かっている: {other:?}");
+        }
+    }
+
+    /// ブラウザのフックへ渡す様子が、画面の並びから作られること。
+    ///
+    /// 番号は人が押す番号と同じ。名前は人が読む方で、
+    /// 自動化から指す呼び名とは別
+    #[test]
+    fn a_page_knows_its_number_and_both_of_its_names() {
+        let layout = vec![
+            Pane::Browser { key: "html".into(), name: "HTML解析".into() },
+            Pane::Session(0),
+        ];
+        let page = page_ctx(&layout, "html", "https://example.com/".into(), true)
+            .expect("並びにあるのに見つからない");
+        assert_eq!(page.index, 1, "画面の番号と違う");
+        assert_eq!(page.id, "html", "自動化から指す呼び名が違う");
+        assert_eq!(page.name, "HTML解析", "人が読む名前が出ていない");
+        assert!(page.complete);
+
+        // 並びに無いページ (閉じた後など) には渡さない
+        assert!(page_ctx(&layout, "shop", String::new(), true).is_none());
+    }
+
+    /// 自動化の割り当てが、画面の番号で並ぶこと。
+    ///
+    /// 人が押す番号、スクリプトが指す番号、ボールが飛ぶ番号は
+    /// 同じでなければ追えない。番号はどこにも覚えさせず、
+    /// 設定を読むたびに付け直す (並べ替えられても、ずれたままにならない)
+    #[test]
+    fn the_scripts_are_numbered_the_way_the_screen_is() {
         let ws = ws_from(&[
             ("HTML解析", "html", "browser https://example.com/"),
             ("エンジニア", "ai", "claude"),
@@ -2749,9 +3010,13 @@ mod tests {
         ws.tabs[0].cfg.automation = Some("scripts/html".into());
         ws.tabs[1].cfg.automation = Some("scripts/ai".into());
 
-        let got = automation_by_session(&ws);
-        // ブラウザは番号を持たない。claude が1番目のセッション
-        assert_eq!(got, vec![(1, "scripts/ai".to_string())], "割り当てがずれている");
+        let got = automation_by_pane(&ws);
+        // 画面の番号で並ぶ。ブラウザが1番、claude が2番
+        assert_eq!(
+            got,
+            vec![(1, "scripts/html".to_string()), (2, "scripts/ai".to_string())],
+            "割り当てがずれている"
+        );
     }
 
     /// 画面の並びが、設定に書いた順であること。
@@ -2771,7 +3036,7 @@ mod tests {
         let panes = panes_of(Some(&ws), &tabs, &hosted);
         assert_eq!(
             panes,
-            vec![Pane::Browser("html".into()), Pane::Session(0)],
+            vec![Pane::Browser { key: "html".into(), name: "HTML解析".into() }, Pane::Session(0)],
             "設定の順に並んでいない"
         );
         // 画面の番号から、セッションを引き当てられること
@@ -2781,8 +3046,6 @@ mod tests {
         assert_eq!(pane_at(&panes, 1), 2);
     }
 
-    /// まだ開けていないブラウザは並べないこと。
-    /// 並べると、押しても何も無い番号ができる
     fn ws_from(rows: &[(&str, &str, &str)]) -> config::Workspace {
         let tabs = rows
             .iter()
@@ -2806,15 +3069,23 @@ mod tests {
         }
     }
 
+    /// まだ開けていないブラウザも、設定に書いた位置を保つこと。
+    ///
+    /// 開いた順で番号が動くと、スクリプトが指す先が走るたびに変わる。
+    /// 開けなかったことは状態で見せればいい
     #[test]
-    fn a_browser_that_is_not_open_yet_takes_no_number() {
+    fn a_browser_keeps_its_place_even_before_it_opens() {
         let ws = ws_from(&[
             ("HTML解析", "html", "browser https://example.com/"),
             ("エンジニア", "ai", "claude"),
         ]);
         let tabs = ["エンジニア"];
         let panes = panes_of(Some(&ws), &tabs, &[]);
-        assert_eq!(panes, vec![Pane::Session(0)], "開いていないものが並んでいる");
+        assert_eq!(
+            panes,
+            vec![Pane::Browser { key: "html".into(), name: "HTML解析".into() }, Pane::Session(0)],
+            "開く前だと番号がずれる"
+        );
     }
 
     /// 設定に書いていないものは後ろに付くこと。
@@ -2830,7 +3101,7 @@ mod tests {
             vec![
                 Pane::Session(0),
                 Pane::Session(1),
-                Pane::Browser("settings".into())
+                Pane::Browser { key: "settings".into(), name: "settings".into() }
             ]
         );
     }

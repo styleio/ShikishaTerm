@@ -289,6 +289,44 @@ shikisha.draft_to_tab("ai", "lp.html を読んでください。
 }
 ```
 
+### ブラウザのフック
+
+ブラウザには**ブラウザの言葉**があります。セッションの状態（実行中・完了・質問）は
+ページには当てはまらないので、別の名前を使います。
+
+| ファイル | いつ呼ばれるか |
+|---|---|
+| `on_load.lua` | ページの読み込みが終わった（**移動のたび**） |
+| `on_press.lua` | 人が帯のボタンを押した |
+
+受け取るのは `tab` ではなく `page` です。
+
+| | 中身 |
+|---|---|
+| `page.index` | 画面の番号（人が押す番号と同じ） |
+| `page.id` | 自動化から指す呼び名 |
+| `page.name` | 人が読む名前 |
+| `page.url` | いま開いているURL |
+| `page.complete` | 参照しているものまで揃ったか |
+
+```lua
+-- scripts/lp/on_load.lua
+if shikisha.get_var("saved") == page.url then return end   -- 移動のたびに来る
+shikisha.set_var("saved", page.url)
+
+local name = shikisha.now() .. ".html"
+shikisha.write_file("tmp", name, shikisha.browser_html(page.id))
+shikisha.draft_to_tab("ai", "tmp/" .. name .. " を読んでください。\n\n")
+```
+
+**`page.complete` が false のとき**は、`load` が来ないので読み込み途中で呼ばれています。
+広告のページでは外部の計測タグが終わらないことがあり、そのまま待つと永久に来ません。
+中身が要るなら `browser_wait` でセレクタを待ってください。
+
+**渡す相手が起動しきっていなくても構いません。** `draft_to_tab` と `send_to_tab` は、
+相手が入力を受け取れるようになるまで待ってから渡します。捨てられて消える、
+ということは起きません（30秒待って駄目なら、その旨を知らせます）。
+
 あとは自動化から動かします。
 
 ```lua
