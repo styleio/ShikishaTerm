@@ -903,7 +903,35 @@ impl Tab {
                             if let Some(l) = log.as_mut() {
                                 l.write(chunk);
                             }
-                            parser.lock().unwrap().process(chunk);
+                            // vt100 は幅を狭めた後の全角の扱いで落ちることがある
+                            // (実測: 右端が全角のまま縮めて半角を書くと unwrap)。
+                            // 落ちたら解析器を作り直して読み取りを続ける。
+                            // ここで諦めると、そのタブは以後何も映さなくなる
+                            let hit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                || {
+                                    parser
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .process(chunk);
+                                },
+                            ));
+                            if hit.is_err() {
+                                // 壊れた状態のまま読み続けると、次の1文字でまた落ちる。
+                                // 端末の完全リセットを流して、既知の状態へ戻す
+                                let reset = std::panic::catch_unwind(
+                                    std::panic::AssertUnwindSafe(|| {
+                                        parser
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .process(b"\x1bc");
+                                    }),
+                                );
+                                crate::append_hook_log(if reset.is_ok() {
+                                    "画面の解析が壊れたので作り直しました (幅の変更と全角文字)"
+                                } else {
+                                    "画面の解析が壊れ、作り直しにも失敗しました"
+                                });
+                            }
                         }
                     }
                 }
@@ -965,7 +993,7 @@ impl Tab {
 
     /// 今の画面の中身 (最下部の飾りは除く)
     fn screen_fingerprint(&self) -> u64 {
-        let p = self.parser.lock().unwrap();
+        let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
         screen_hash(p.screen(), self.detector.ignore_bottom_rows())
     }
 
@@ -1059,7 +1087,7 @@ impl Tab {
     /// 申告していない相手 (素のシェル) に目印付きで送ると、目印は無視され、
     /// 中の改行がそのまま実行になる。推測ではなく、この申告で判断する
     pub fn accepts_bracketed_paste(&self) -> bool {
-        self.parser.lock().unwrap().screen().bracketed_paste()
+        self.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste()
     }
 
     /// 応答を待つ間に幅が狭まったか (文章が欠けている恐れがある)
@@ -1069,7 +1097,7 @@ impl Tab {
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
         let narrower = {
-            let p = self.parser.lock().unwrap();
+            let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
             let (_, old_cols) = p.screen().size();
             cols < old_cols
         };
@@ -1084,7 +1112,7 @@ impl Tab {
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        self.parser.lock().unwrap().screen_mut().set_size(rows, cols);
+        self.parser.lock().unwrap_or_else(|e| e.into_inner()).screen_mut().set_size(rows, cols);
         Ok(())
     }
 
@@ -1163,7 +1191,7 @@ impl Tab {
             return (old, self.state);
         }
         let (screen_text, hash) = {
-            let p = self.parser.lock().unwrap();
+            let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
             let screen = p.screen();
             (
                 screen.contents(),
@@ -1270,7 +1298,7 @@ impl Tab {
     /// 「どこから書かれたか」が分からない。画面内のカーソル位置を足して、
     /// 出力が進むほど増える値にする
     pub fn line_position(&self) -> usize {
-        let mut p = self.parser.lock().unwrap();
+        let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
         let saved = p.screen().scrollback();
         p.screen_mut().set_scrollback(usize::MAX / 2);
         let scrolled = p.screen().scrollback();
@@ -1288,7 +1316,7 @@ impl Tab {
 
     /// 今の可視画面を、上から順に1行ずつ
     fn visible_rows(&self) -> Vec<String> {
-        let p = self.parser.lock().unwrap();
+        let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
         let screen = p.screen();
         let (rows, cols) = screen.size();
         screen.rows(0, cols).take(rows as usize).collect()
@@ -1333,7 +1361,7 @@ impl Tab {
     fn pinned_rows(&self, rows: u16, cols: u16, cursor_row: u16, floor: usize) -> usize {
         let keep = (rows as usize).saturating_sub(floor);
         let mut now: Vec<String> = {
-            let p = self.parser.lock().unwrap();
+            let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
             p.screen().rows(0, cols).take(keep).collect()
         };
         let mut before = self.submitted_rows.lock().unwrap().clone();
@@ -1350,7 +1378,7 @@ impl Tab {
     }
 
     fn capture_since_marker(&self) -> String {
-        let p = self.parser.lock().unwrap();
+        let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
         let (rows, cols) = p.screen().size();
         // カーソルは入力欄の中にある。その下にあるのは、答えではなく枠。
         // ヒント行 ("Use /skills to list available skills") や
@@ -1372,7 +1400,7 @@ impl Tab {
             if lo > hi {
                 return String::new();
             }
-            let mut p = self.parser.lock().unwrap();
+            let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
             let text = extract_text(&mut p, lo, hi, cols);
             return text.trim_end().to_string();
         }
@@ -1393,7 +1421,7 @@ impl Tab {
         if lo > hi {
             return String::new();
         }
-        let mut p = self.parser.lock().unwrap();
+        let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
         let text = extract_text(&mut p, lo, hi, cols);
         text.trim_end().to_string()
     }
@@ -1431,7 +1459,7 @@ mod real_codex_probe {
 
         let snap = |t: &mut Tab, log: &mut std::fs::File, phase: &str| {
             let (old, new) = t.tick(start);
-            let screen = super::visible_text(t.parser.lock().unwrap().screen());
+            let screen = super::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen());
             let tail: Vec<&str> = screen
                 .lines()
                 .filter(|l| !l.trim().is_empty())
@@ -1458,7 +1486,7 @@ mod real_codex_probe {
         for _ in 0..80 {
             std::thread::sleep(Duration::from_millis(200));
             snap(&mut t, &mut log, "起動中");
-            let screen = super::visible_text(t.parser.lock().unwrap().screen());
+            let screen = super::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen());
             if !trusted && screen.contains("Do you trust") {
                 let _ = writeln!(log, "=== 信頼確認に 1 を返す ===");
                 t.write_bytes(b"1\r").unwrap();
@@ -1474,14 +1502,14 @@ mod real_codex_probe {
             snap(&mut t, &mut log, "待機中");
         }
         let _ = writeln!(log, "=== 待機時の画面全体 ===\n{}",
-                         super::visible_text(t.parser.lock().unwrap().screen()));
+                         super::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()));
 
         // 利用者の事例と同じくらいの長さを貼り付ける
         let body = format!(
             "これはテストです。返事は OK の一言だけにしてください。{}",
             "あ".repeat(1900)
         );
-        let bracketed = t.parser.lock().unwrap().screen().bracketed_paste();
+        let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
         let _ = writeln!(log, "=== 貼り付け ({}文字) 括弧付き貼り付け={} ===", body.chars().count(), bracketed);
         let mut bytes = Vec::new();
         if bracketed {
@@ -1521,7 +1549,7 @@ mod real_codex_probe {
             snap(&mut t, &mut log, "実行後");
         }
 
-        let _ = writeln!(log, "=== 最終画面 ===\n{}", super::visible_text(t.parser.lock().unwrap().screen()));
+        let _ = writeln!(log, "=== 最終画面 ===\n{}", super::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()));
         let _ = writeln!(log, "=== 取り込んだ応答 ===\n{:?}", t.last_response);
         t.kill();
         println!("書き出し: {}", out_path.display());
@@ -1573,7 +1601,7 @@ mod layout_probe {
                 }
             }
 
-            let p = tab.parser.lock().unwrap();
+            let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
             let screen = p.screen();
             let (rows, cols) = screen.size();
             let (cur_row, cur_col) = screen.cursor_position();
@@ -1643,7 +1671,7 @@ mod capture_probe {
 
         println!("=== 実行の直前 ===");
         {
-            let p = tab.parser.lock().unwrap();
+            let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
             let (rows, _) = p.screen().size();
             let (cur, _) = p.screen().cursor_position();
             println!("rows={rows} cursor_row={cur} below={}", rows - 1 - cur);
@@ -1655,7 +1683,7 @@ mod capture_probe {
 
         println!("=== 実行の直後 ===");
         {
-            let p = tab.parser.lock().unwrap();
+            let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
             let (rows, _) = p.screen().size();
             let (cur, _) = p.screen().cursor_position();
             println!("rows={rows} cursor_row={cur} below={}", rows - 1 - cur);
@@ -1798,7 +1826,7 @@ mod paste_no_submit_probe {
             !tab.prompted.load(Ordering::Relaxed),
             "括弧貼り付けだけで送信扱いになっている"
         );
-        let p = tab.parser.lock().unwrap();
+        let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
         let (rows, cols) = p.screen().size();
         println!("--- 下から8行 ---");
         for r in rows.saturating_sub(8)..rows {
@@ -1871,6 +1899,84 @@ mod draft_target_tests {
         assert!(
             tab.accepts_bracketed_paste(),
             "AI CLI が下書きを受け取れないことになっている"
+        );
+    }
+}
+
+#[cfg(test)]
+mod resize_survival_tests {
+    use super::{Tab, TabOptions};
+    use std::time::{Duration, Instant};
+
+    fn settle(tab: &Tab, ms: u64) {
+        let start = Instant::now();
+        let (mut last, mut quiet) = (0u64, Instant::now());
+        while start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(60));
+            let n = tab.output_count();
+            if n != last {
+                last = n;
+                quiet = Instant::now();
+            } else if last > 0 && quiet.elapsed() > Duration::from_millis(ms) {
+                return;
+            }
+        }
+    }
+
+    /// 幅を狭めても、画面が死なないこと。
+    ///
+    /// vt100 0.16.2 は「全角があるなら次のマスもある」と仮定して
+    /// unwrap しており、右端が全角のまま狭めて半角を書くと落ちる
+    /// (総当たりで 848 通り中 24 通り)。窓の幅を追いかける以上、
+    /// 日本語を出しながら枠を引けば必ず通る道になる。
+    ///
+    /// 落ちた解析器は完全リセットで立て直す。錠前が毒されても
+    /// 連鎖して死なない (毒された側を取り出して続ける)
+    #[test]
+    fn narrowing_the_window_does_not_kill_the_screen() {
+        let tab = Tab::spawn(
+            "cmd".into(),
+            &["cmd.exe".to_string()],
+            None,
+            8,
+            40,
+            TabOptions::default(),
+        )
+        .expect("起動");
+        settle(&tab, 500);
+
+        for to in [20u16, 7, 5, 11, 60] {
+            // 右端まで全角で埋める
+            tab.write_passthrough("あいうえおかきくけこさしすせそたちつてと".as_bytes())
+                .unwrap();
+            settle(&tab, 300);
+            tab.resize(8, to).unwrap();
+            // 狭めた直後の半角文字が、落とす引き金だった。
+            // 改行まで送って行を片付ける (残すと次のコマンドとくっつく)
+            tab.write_passthrough(b"x\r").unwrap();
+            settle(&tab, 300);
+
+            // 生きていれば画面が読める (毒された錠前でも取り出せる)
+            let text = {
+                let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
+                crate::tab::visible_text(p.screen())
+            };
+            assert!(
+                text.lines().count() > 0,
+                "幅 {to} で画面が読めなくなった"
+            );
+        }
+
+        // 最後まで出力を受け取り続けていること
+        tab.write_passthrough(b"echo ALIVE\r").unwrap();
+        settle(&tab, 500);
+        let text = {
+            let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
+            crate::tab::visible_text(p.screen())
+        };
+        assert!(
+            text.contains("ALIVE"),
+            "縮めた後に読み取りが止まっている: {text:?}"
         );
     }
 }

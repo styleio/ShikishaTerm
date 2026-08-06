@@ -316,7 +316,7 @@ pub fn run(cmd: &[String]) -> Result<()> {
         if last_draw.elapsed() >= Duration::from_millis(33) {
             last_draw = Instant::now();
             let (now, cur_row, cur_col, cur_on) = {
-                let p = tab.parser.lock().unwrap();
+                let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
                 let s = p.screen();
                 let (r, c) = s.cursor_position();
                 (

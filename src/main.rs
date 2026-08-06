@@ -761,7 +761,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             }
                             TabState::Question => {
                                 let screen =
-                                    tabs[idx - 1].parser.lock().unwrap().screen().contents();
+                                    tabs[idx - 1].parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
                                 eng.fire("on_question", &ctx, Some(&screen));
                             }
                             TabState::Exited => eng.fire("on_exit", &ctx, None),
@@ -800,7 +800,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 
                     eng.tick_pending(&|idx| {
                         tabs.get(idx.wrapping_sub(1))
-                            .map(|t| t.parser.lock().unwrap().screen().contents())
+                            .map(|t| t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents())
                     });
                 }
                 let cmds = eng.drain_commands();
@@ -845,7 +845,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             ),
                             // 見た目を運ぶので contents() ではなく行単位で取る
                             screen: trim_for_phone(
-                                &tab::visible_text(t.parser.lock().unwrap().screen()),
+                                &tab::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()),
                                 200,
                             ),
                         })
@@ -1511,7 +1511,7 @@ impl PendingSubmit {
 
 /// プロンプトへ本文だけを送る。実行は呼び出し側が少し遅らせて送る
 fn write_prompt(t: &Tab, text: &str) {
-    let bracketed = t.parser.lock().unwrap().screen().bracketed_paste();
+    let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
     let body = text.replace("\r\n", "\r").replace('\n', "\r");
     let mut bytes = Vec::new();
     if bracketed {
@@ -2212,7 +2212,7 @@ fn handle_copy_key(
     let Some(mut cs) = t.copy.take() else {
         return Ok(());
     };
-    let mut p = t.parser.lock().unwrap();
+    let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
     let cur = p.screen().scrollback();
     let mut keep = true;
     match key.code {
@@ -2310,7 +2310,7 @@ fn handle_mouse(
     // Shift押下時は透過せず、常にこちらのコピー/ペースト操作を優先する
     if t.copy.is_none() && !m.modifiers.contains(KeyModifiers::SHIFT) {
         let (mode, enc) = {
-            let p = t.parser.lock().unwrap();
+            let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
             (
                 p.screen().mouse_protocol_mode(),
                 p.screen().mouse_protocol_encoding(),
@@ -2335,13 +2335,13 @@ fn handle_mouse(
                     dragged: false,
                 });
             }
-            let mut p = t.parser.lock().unwrap();
+            let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
             let cur = p.screen().scrollback();
             p.screen_mut().set_scrollback(cur + 3);
         }
         // ホイール下: 最下端まで戻ったら (未選択なら) ライブへ自動復帰
         MouseEventKind::ScrollDown if t.copy.is_some() => {
-            let mut p = t.parser.lock().unwrap();
+            let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
             let cur = p.screen().scrollback();
             let next = cur.saturating_sub(3);
             p.screen_mut().set_scrollback(next);
@@ -2357,7 +2357,7 @@ fn handle_mouse(
         // 左クリック: コピーモード開始 + その行から選択開始
         MouseEventKind::Down(MouseButton::Left) if in_pane => {
             *flash = None;
-            let offset = t.parser.lock().unwrap().screen().scrollback();
+            let offset = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().scrollback();
             let anchor = abs_line(offset, inner.height, row_in_pane);
             t.copy = Some(CopyState {
                 cursor_row: row_in_pane,
@@ -2382,9 +2382,9 @@ fn handle_mouse(
                 // クリップボードを奪わない (貼り付ける直前に消えると実害が大きい)
                 if !cs.dragged {
                     cs.anchor = None;
-                    exit_copy = t.parser.lock().unwrap().screen().scrollback() == 0;
+                    exit_copy = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().scrollback() == 0;
                 } else if let Some(anchor) = cs.anchor.take() {
-                    let mut p = t.parser.lock().unwrap();
+                    let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
                     let cur = p.screen().scrollback();
                     let here = abs_line(
                         cur,
@@ -2406,7 +2406,7 @@ fn handle_mouse(
         // 右クリック: クリップボードの内容をペースト (PuTTY流)
         MouseEventKind::Down(MouseButton::Right) => {
             if t.copy.take().is_some() {
-                t.parser.lock().unwrap().screen_mut().set_scrollback(0);
+                t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen_mut().set_scrollback(0);
             }
             t.chain_depth = 0;
             t.last_manual_ms = Some(now_ms);
@@ -3187,7 +3187,7 @@ fn draw_session(
     let scrollback_offset;
     let alt_screen;
     {
-        let parser = t.parser.lock().unwrap();
+        let parser = t.parser.lock().unwrap_or_else(|e| e.into_inner());
         let screen = parser.screen();
         scrollback_offset = screen.scrollback();
         alt_screen = screen.alternate_screen();
@@ -3292,7 +3292,7 @@ fn copy_to_clipboard(text: &str) -> String {
 fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
     match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
         Ok(text) => {
-            let bracketed = t.parser.lock().unwrap().screen().bracketed_paste();
+            let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
             let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
             if bracketed {
                 let mut bytes = b"\x1b[200~".to_vec();
@@ -3529,7 +3529,7 @@ mod tests {
         let mut t =
             Tab::spawn("shell".into(), &argv, None, 20, 60, tab::TabOptions::default()).unwrap();
 
-        let screen = |t: &Tab| tab::visible_text(t.parser.lock().unwrap().screen());
+        let screen = |t: &Tab| tab::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen());
         let has_line = |t: &Tab, want: &str| {
             screen(t).lines().any(|l| l.trim() == want)
         };
@@ -4027,7 +4027,7 @@ mod tests {
         let mut t = Tab::spawn("cwd".into(), &argv, None, 10, 60, opts).unwrap();
         // cmd の "cd" は現在のフォルダを表示する
         std::thread::sleep(std::time::Duration::from_millis(1200));
-        let screen = t.parser.lock().unwrap().screen().contents();
+        let screen = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
         t.kill();
         assert!(
             screen.contains("shikisha-cwd-test"),
