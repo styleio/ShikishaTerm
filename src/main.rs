@@ -859,19 +859,19 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         // 予約しておいた実行(改行)を、相手が貼り付けを描いてから送る
         if !pending_submit.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
-            pending_submit.retain(|p| {
+            pending_submit.retain_mut(|p| {
                 let Some(t) = tabs.get(p.tab.wrapping_sub(1)) else {
                     return false;
                 };
                 if !p.ready(t.output_count(), now_ms) {
                     return true;
                 }
-                let reacted = t.output_count() > p.seen;
+                let settled = now_ms < p.give_up;
                 let _ = t.write_bytes(b"\r");
                 append_hook_log(&format!(
                     "submit tab{} ({})",
                     p.tab,
-                    if reacted { "反応あり" } else { "無反応のまま送信" }
+                    if settled { "取り込み完了後" } else { "落ち着かないまま送信" }
                 ));
                 false
             });
@@ -1339,8 +1339,14 @@ pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Com
 /// 本文を送ってから実行(改行)を送るまでの、最低限の間。
 /// 相手が本当に処理し終える時間は機種にも負荷にも依るので、これは下限でしかない
 const SUBMIT_FLOOR_MS: u64 = 100;
-/// 相手が何も返してこないときに、それでも実行を送るまでの上限
-const SUBMIT_GIVE_UP_MS: u64 = 2_000;
+/// 貼り付けの取り込みが終わったとみなす無出力時間。
+///
+/// 「反応が始まった」ではなく「終わった」を待つ。長い貼り付けは描画が
+/// 何往復も続くので、始まった時点で改行を送ると取り込み中に届いて捨てられる
+/// (実測: 約600文字なら通り、約1900文字で落ちる)
+const SUBMIT_QUIET_MS: u64 = 400;
+/// 相手が返し続けて落ち着かないときに、それでも実行を送るまでの上限
+const SUBMIT_GIVE_UP_MS: u64 = 8_000;
 
 /// 本文を送ったあと、実行(改行)を送る予約。
 ///
@@ -1350,8 +1356,10 @@ const SUBMIT_GIVE_UP_MS: u64 = 2_000;
 /// 相手が貼り付けを描いた (= 出力を返した) ことを合図にする
 struct PendingSubmit {
     tab: usize,
-    /// 送った時点の累計出力量。これを超えたら相手が反応した
+    /// 最後に見た累計出力量。増えている間は、まだ取り込み中
     seen: u64,
+    /// 出力が止まってからの起点 (None = まだ止まっていない)
+    quiet_since: Option<u64>,
     /// 早すぎる送信を防ぐ下限時刻
     not_before: u64,
     /// 落ち着かないときに諦めて送る時刻
@@ -1363,17 +1371,32 @@ impl PendingSubmit {
         Self {
             tab,
             seen,
+            quiet_since: None,
             not_before: now_ms + SUBMIT_FLOOR_MS,
             give_up: now_ms + SUBMIT_GIVE_UP_MS,
         }
     }
 
-    /// 今このタブへ実行(改行)を送ってよいか
-    fn ready(&self, output_count: u64, now_ms: u64) -> bool {
+    /// 今このタブへ実行(改行)を送ってよいか。
+    ///
+    /// 待つのは「反応が始まった」ではなく「取り込みが終わった」。
+    /// 長い貼り付けは描画が何往復も続くので、始まった時点で送ると
+    /// 取り込み中に届いて捨てられる (実測: 約600文字は通り、約1900文字で落ちた)
+    fn ready(&mut self, output_count: u64, now_ms: u64) -> bool {
+        if output_count != self.seen {
+            // まだ取り込み中。止まってからの計測はやり直す
+            self.seen = output_count;
+            self.quiet_since = None;
+        } else if self.quiet_since.is_none() {
+            self.quiet_since = Some(now_ms);
+        }
         if now_ms < self.not_before {
             return false;
         }
-        output_count > self.seen || now_ms >= self.give_up
+        let settled = self
+            .quiet_since
+            .is_some_and(|q| now_ms.saturating_sub(q) >= SUBMIT_QUIET_MS);
+        settled || now_ms >= self.give_up
     }
 }
 
@@ -3301,15 +3324,43 @@ mod tests {
         t.kill();
     }
 
-    /// 実行(改行)は、時計ではなく相手の反応を待って送ること。
+    /// 実行(改行)は、貼り付けの取り込みが「終わって」から送ること。
+    ///
+    /// 「始まった」時点で送ると、長い貼り付けでは取り込み中に届いて捨てられる。
+    /// 実測では約600文字なら通り、約1900文字で落ちた
     #[test]
-    fn the_enter_waits_for_the_program_to_react() {
-        let p = PendingSubmit::new(1, 500, 1_000);
-        assert!(!p.ready(500, 1_000), "送った瞬間");
-        assert!(!p.ready(9_999, 1_000 + SUBMIT_FLOOR_MS - 1), "下限より前は待つ");
-        assert!(p.ready(501, 1_000 + SUBMIT_FLOOR_MS), "反応があれば送る");
-        assert!(!p.ready(500, 1_000 + SUBMIT_FLOOR_MS), "無反応なら待つ");
-        assert!(p.ready(500, 1_000 + SUBMIT_GIVE_UP_MS), "上限に達したら送る");
+    fn the_enter_waits_for_the_paste_to_finish_being_taken_in() {
+        let mut p = PendingSubmit::new(1, 100, 1_000);
+
+        // 出力が動いている間は、いくら経っても送らない
+        assert!(!p.ready(100, 1_000), "送った瞬間");
+        assert!(!p.ready(200, 1_100), "反応が始まっただけでは送らない");
+        assert!(!p.ready(300, 2_000), "まだ増えている");
+        assert!(!p.ready(400, 3_000), "まだ増えている");
+
+        // 止まってから、静かな時間が続いて初めて送る
+        assert!(!p.ready(400, 3_100), "止まった直後はまだ");
+        assert!(!p.ready(400, 3_100 + SUBMIT_QUIET_MS - 1), "静かな時間が足りない");
+        assert!(p.ready(400, 3_100 + SUBMIT_QUIET_MS), "落ち着いたら送る");
+
+        // 途中で再開したら測り直す。
+        // 静止の起点は「止まった瞬間」ではなく「止まっていると最初に気づいた時刻」
+        let mut p = PendingSubmit::new(1, 0, 0);
+        assert!(!p.ready(0, 100), "静かだがまだ足りない");
+        assert!(!p.ready(50, 200), "再開したので測り直す");
+        assert!(!p.ready(50, 300), "ここで改めて静止を観測");
+        assert!(!p.ready(50, 300 + SUBMIT_QUIET_MS - 1), "測り直し中");
+        assert!(p.ready(50, 300 + SUBMIT_QUIET_MS), "改めて落ち着いた");
+
+        // 落ち着かないままでも、上限に達したら送る
+        let mut p = PendingSubmit::new(1, 0, 0);
+        let mut out = 0;
+        for t in (100..SUBMIT_GIVE_UP_MS).step_by(100) {
+            out += 1;
+            assert!(!p.ready(out, t), "増え続けている間は待つ ({t}ms)");
+        }
+        out += 1;
+        assert!(p.ready(out, SUBMIT_GIVE_UP_MS), "上限に達したら送る");
     }
 
     /// 緊急停止は、どの画面にいても同じ場所にあること。
