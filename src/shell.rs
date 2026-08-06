@@ -121,6 +121,10 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   /* 覆いかぶさる画面。押せる場所を見失わないよう、外は暗くする */
   #veil { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:center; justify-content:center; z-index:50; }
+  /* hidden は既定で display:none にするが、自分で display を書くと
+     そちらが勝つ。書いた以上、消す指定も自分で持つ */
+  #veil[hidden] { display:none; }
+
   #veil .box { background:var(--panel); border:1px solid var(--brand);
     border-radius:12px; padding:20px 24px; max-width:min(760px,86vw);
     max-height:84vh; overflow:auto; }
@@ -558,6 +562,49 @@ mod tests {
         assert!(!p.contains("{{"), "差し込み先が残っている");
         assert!(p.contains("const T = {"), "訳語が入っていない");
         assert!(p.contains("const BUILD = \""), "ビルド刻印が入っていない");
+    }
+
+
+    /// hidden を付けた要素が、本当に隠れること。
+    ///
+    /// HTMLの hidden は既定で display:none にする規則だが、
+    /// 自分で display を書くとそちらが勝ち、隠れなくなる。
+    /// 覆いが出っぱなしになり、画面が暗いまま何も押せなくなった。
+    ///
+    /// 書き方の問題なので、見た目を確かめないと気づけない。
+    /// だからここで押さえる
+    #[test]
+    fn things_marked_hidden_are_actually_hidden() {
+        // markup で hidden を付けている id を拾う
+        let mut ids: Vec<String> = Vec::new();
+        for line in PAGE.lines() {
+            let t = line.trim();
+            if !t.contains("hidden") || !t.contains("id=\"") {
+                continue;
+            }
+            if let Some(rest) = t.split("id=\"").nth(1) {
+                if let Some(id) = rest.split('"').next() {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+        assert!(!ids.is_empty(), "hidden を使っている要素が見つからない");
+
+        for id in ids {
+            // その id に display を指定しているか
+            let sets_display = PAGE.lines().any(|l| {
+                let t = l.trim_start();
+                t.starts_with(&format!("#{id} "))
+                    && !t.contains("[hidden]")
+                    && t.contains("display:")
+            });
+            if sets_display {
+                assert!(
+                    PAGE.contains(&format!("#{id}[hidden]")),
+                    "#{id} は display を書いているのに、hidden で消す指定が無い"
+                );
+            }
+        }
     }
 
     /// 同じ名前を2回宣言していないこと。
