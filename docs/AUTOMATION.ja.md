@@ -299,6 +299,22 @@ shikisha.draft_to_tab("ai", "lp.html を読んでください。
 | `on_load.lua` | ページの読み込みが終わった（**移動のたび**） |
 | `on_press.lua` | 人が帯のボタンを押した |
 
+**帯は放っておいても出ません。** `shikisha.browser_ask` を呼んだときだけ、
+ページの最下部に出ます（左に文言、右にボタン）。押されると `on_press` が呼ばれます。
+出しっぱなしにしておけば、人がいつ押しても受け取れます。
+
+```lua
+-- scripts/lp/on_load.lua
+shikisha.browser_ask(page.id, "ログインが終わったら押してください", "できました")
+```
+```lua
+-- scripts/lp/on_press.lua — 押されたら続きをやる
+shikisha.browser_unask(page.id)
+shikisha.draft_to_tab("ai", shikisha.browser_html(page.id))
+```
+
+帯はページ側のCSSの影響を受けません（Shadow DOM に入れてあります）。
+
 受け取るのは `tab` ではなく `page` です。
 
 | | 中身 |

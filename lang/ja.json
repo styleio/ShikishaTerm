@@ -295,7 +295,7 @@
   "automation.on_load": "ページが読み込まれたとき",
   "automation.on_load.hint": "HTMLを控える / AIへ渡す（移動のたびに呼ばれます）",
   "automation.on_press": "人が帯のボタンを押したとき",
-  "automation.on_press.hint": "ログインや操作を人にしてもらってから続ける",
+  "automation.on_press.hint": "shikisha.browser_ask で帯を出している間だけ押せます（ログイン待ちなど）",
   "automation.on_start": "起動したとき",
   "automation.on_start.hint": "作業フォルダへ移動して前回の続きを再開する等",
   "automation.on_done": "応答が完了したとき",

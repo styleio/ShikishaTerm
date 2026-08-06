@@ -306,6 +306,10 @@ about a document, so browsers get their own names.
 | `on_load.lua` | the page finished loading (**on every navigation**) |
 | `on_press.lua` | the human pressed the banner button |
 
+The banner does not appear on its own. `shikisha.browser_ask` puts it along the bottom
+of the page — your words on the left, the button on the right — and pressing it calls
+`on_press`. It is immune to the site's own CSS (it lives in a shadow root).
+
 What arrives is `page`, not `tab`: `page.index` (the number on screen), `page.id` (the
 name automation points at), `page.name` (what a person reads), `page.url`, and
 `page.complete` — false means `load` never came and this fired at DOM-ready instead.
