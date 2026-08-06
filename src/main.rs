@@ -101,11 +101,11 @@ fn main() -> Result<()> {
         config::load().and_then(|c| c.language).as_deref(),
         &[config_file_dir(), std::path::PathBuf::from(".")],
     );
-    // 窓モードの試作。自前の窓にターミナルを描く。
-    // 確かめたいのは日本語入力と描画速度で、そこが通らなければこの道は選べない
+    // 自前の窓で、同じループを回す。
+    // タブもワークスペースも自動化もボールも、持っているのは同じループ。
+    // 窓は描画先と入力元が変わるだけで、機能は1つも作り直していない
     if std::env::args().nth(1).as_deref() == Some("--window") {
-        let rest: Vec<String> = std::env::args().skip(2).collect();
-        return winmode::run(&rest);
+        return run_in_window();
     }
     // 設定だけ開くモード (TUIを起動せずブラウザで設定を編集する)
     if std::env::args().nth(1).as_deref() == Some("--settings") {
@@ -133,7 +133,7 @@ fn main() -> Result<()> {
         ))
     );
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
-    let res = run(&mut terminal);
+    let res = run(Surface::Term(&mut terminal));
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     res
@@ -368,6 +368,169 @@ fn manage_master_password(
     }
 }
 
+/// 自前の窓へ描くときの持ち物
+struct WinSurface {
+    win: crate::browser::Browser,
+    rows: u16,
+    cols: u16,
+    /// 直前に送った状態。変わったときだけ送る
+    last: Option<crate::uistate::UiState>,
+    last_screen: String,
+    /// 窓から来た意図を、ループが読む形に直したもの。
+    /// ループは端末のキー操作しか知らないので、そこへ寄せる
+    pending: std::collections::VecDeque<Event>,
+}
+
+impl WinSurface {
+    /// Ctrl+B に続けて1文字、という形に直す
+    fn prefixed(&mut self, c: char) {
+        self.pending.push_back(Event::Key(KeyEvent::new(
+            KeyCode::Char('b'),
+            KeyModifiers::CONTROL,
+        )));
+        self.pending
+            .push_back(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)));
+    }
+
+    fn take_events(&mut self, tabs: &[Tab], active: usize) {
+        use crate::browser::Ev;
+        for ev in self.win.drain() {
+            match ev {
+                Ev::Resize { rows, cols } => {
+                    self.rows = rows;
+                    self.cols = cols;
+                    self.pending.push_back(Event::Resize(cols, rows));
+                }
+                // 「このタブを見たい」は Ctrl+B の数字と同じこと
+                Ev::Select { tab } if tab <= 9 => {
+                    self.prefixed(char::from_digit(tab as u32, 10).unwrap_or('0'))
+                }
+                Ev::Menu { key } => {
+                    if let Some(c) = key.chars().next() {
+                        self.prefixed(c);
+                    }
+                }
+                Ev::Stop => self.prefixed('x'),
+                Ev::Key { text, named, ctrl } => {
+                    if let Some(n) = named {
+                        if let Some(code) = named_key(&n) {
+                            self.pending
+                                .push_back(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+                        }
+                    } else if let Some(c) = ctrl.and_then(|s| s.chars().next()) {
+                        self.pending.push_back(Event::Key(KeyEvent::new(
+                            KeyCode::Char(c),
+                            KeyModifiers::CONTROL,
+                        )));
+                    } else if let Some(t) = text {
+                        for c in t.chars() {
+                            self.pending.push_back(Event::Key(KeyEvent::new(
+                                KeyCode::Char(c),
+                                KeyModifiers::NONE,
+                            )));
+                        }
+                    }
+                }
+                // クリップボードは端末側と同じ扱いにする
+                Ev::Copy { text } => {
+                    if let Ok(mut c) = arboard::Clipboard::new() {
+                        let _ = c.set_text(text);
+                    }
+                }
+                Ev::Paste => {
+                    if let Some(t) = tabs.get(active.wrapping_sub(1)) {
+                        let _ = paste_clipboard(t);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// 名前で送られてきた制御キーを、端末のキー種別に直す
+fn named_key(n: &str) -> Option<KeyCode> {
+    Some(match n {
+        "enter" => KeyCode::Enter,
+        "bs" => KeyCode::Backspace,
+        "tab" => KeyCode::Tab,
+        "esc" => KeyCode::Esc,
+        "del" => KeyCode::Delete,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "right" => KeyCode::Right,
+        "left" => KeyCode::Left,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pgup" => KeyCode::PageUp,
+        "pgdn" => KeyCode::PageDown,
+        _ => {
+            let f = n.strip_prefix('f')?.parse::<u8>().ok()?;
+            (1..=12).contains(&f).then_some(KeyCode::F(f))?
+        }
+    })
+}
+
+/// 自前の窓を開いて、同じループをその上で回す
+fn run_in_window() -> Result<()> {
+    // 外皮を配る。file:// は wry のIPCで落ちるので、ローカルHTTPで出す
+    let server = tiny_http::Server::http("127.0.0.1:0")
+        .map_err(|e| anyhow::anyhow!("ローカルサーバーを開けません: {e}"))?;
+    let port = server
+        .server_addr()
+        .to_ip()
+        .ok_or_else(|| anyhow::anyhow!("ポートが取れません"))?
+        .port();
+    let page = shell::page();
+    std::thread::spawn(move || {
+        for req in server.incoming_requests() {
+            let r = tiny_http::Response::from_string(page.clone()).with_header(
+                tiny_http::Header::from_bytes(
+                    &b"Content-Type"[..],
+                    &b"text/html; charset=utf-8"[..],
+                )
+                .expect("header"),
+            );
+            let _ = req.respond(r);
+        }
+    });
+
+    let win = browser::Browser::spawn(&format!("http://127.0.0.1:{port}/"), "SHIKISHA-TERM")?;
+    run(Surface::Window(Box::new(WinSurface {
+        win,
+        rows: 40,
+        cols: 120,
+        last: None,
+        last_screen: String::new(),
+        pending: std::collections::VecDeque::new(),
+    })))
+}
+
+/// 今の状態を、見た目を持たない形にまとめる
+fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
+    crate::uistate::UiState {
+        workspace: ui
+            .ws_names
+            .get(ui.ws_index)
+            .cloned()
+            .unwrap_or_default(),
+        workspaces: ui.ws_names.clone(),
+        ws_index: ui.ws_index,
+        active: ui.active,
+        auto_enabled: ui.auto.unwrap_or(true),
+        remote_on: ui.remote_on,
+        first_run: ui.first_run,
+        tabs: tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| crate::uistate::TabState::of(i + 1, t))
+            .collect(),
+        ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
+        flash: flash.map(str::to_string),
+        build: format!("build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
+    }
+}
+
 /// 描画先。ターミナルにも、自前の窓にも描ける。
 ///
 /// ループの側は「どちらに描いているか」を知らない。
@@ -375,12 +538,36 @@ fn manage_master_password(
 enum Surface<'a> {
     /// 今までどおり、動かしている端末へ描く
     Term(&'a mut ratatui::DefaultTerminal),
+    /// 自前の窓へ描く
+    Window(Box<WinSurface>),
 }
 
 impl Surface<'_> {
     fn size(&self) -> Result<ratatui::layout::Size> {
         match self {
             Surface::Term(t) => Ok(t.size()?),
+            Surface::Window(w) => Ok(ratatui::layout::Size::new(w.cols, w.rows)),
+        }
+    }
+
+    /// 次の操作を待つ。端末からでも窓からでも、同じ形で返る
+    fn poll(&mut self, timeout: Duration, tabs: &[Tab], active: usize) -> Result<Option<Event>> {
+        match self {
+            Surface::Term(_) => {
+                if event::poll(timeout)? {
+                    Ok(Some(event::read()?))
+                } else {
+                    Ok(None)
+                }
+            }
+            Surface::Window(w) => {
+                w.take_events(tabs, active);
+                if let Some(e) = w.pending.pop_front() {
+                    return Ok(Some(e));
+                }
+                std::thread::sleep(timeout);
+                Ok(None)
+            }
         }
     }
 
@@ -391,6 +578,7 @@ impl Surface<'_> {
     fn term_mut(&mut self) -> Option<&mut ratatui::DefaultTerminal> {
         match self {
             Surface::Term(t) => Some(t),
+            Surface::Window(_) => None,
         }
     }
 
@@ -406,16 +594,50 @@ impl Surface<'_> {
                 t.draw(|f| draw(f, tabs, ui, flash, hits))?;
                 Ok(())
             }
+            Surface::Window(w) => {
+                let state = ui_state_of(tabs, ui, flash);
+                if w.last.as_ref() != Some(&state) {
+                    let json = serde_json::to_string(&state).unwrap_or_default();
+                    let _ = w.win.eval(&format!(
+                        "return window.__state({});",
+                        serde_json::to_string(&json).unwrap_or_default()
+                    ));
+                    w.last = Some(state);
+                }
+                // ターミナルの中身は、見ているタブのぶんだけ送る
+                if let Some(t) = tabs.get(ui.active.wrapping_sub(1)) {
+                    let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                    let s = p.screen();
+                    let html = crate::winmode::screen_html(s);
+                    if html != w.last_screen {
+                        w.last_screen = html.clone();
+                        let _ = w.win.eval(&format!(
+                            "return window.__screen({});",
+                            serde_json::to_string(&html).unwrap_or_default()
+                        ));
+                    }
+                    let (r, c) = s.cursor_position();
+                    let on = !s.hide_cursor();
+                    let _ = w
+                        .win
+                        .eval(&format!("return window.__cursor({r},{c},{on});"));
+                }
+                Ok(())
+            }
         }
     }
 }
 
-fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
-    let cmd_args: Vec<String> = std::env::args().skip(1).collect();
+fn run(mut surface: Surface) -> Result<()> {
+    // モード指定は起動するコマンドではない。
+    // 外すのを忘れると `--window` という名前のプログラムを探しに行く
+    let cmd_args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| !matches!(a.as_str(), "--window" | "--settings"))
+        .collect();
     let start = Instant::now();
     // 幅はconfig指定 → 無ければタブ名から自動算出 (タブ起動後に確定)
     let mut tab_w = 18u16;
-    let mut surface = Surface::Term(terminal);
     let (mut rows, mut cols) = pty_dims(surface.size()?, tab_w);
 
     // タブ構成: CLI引数 (デバッグ用) > config.json > 既定 (PowerShell 1タブ)
@@ -1046,10 +1268,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             caps.browsers_fit(true);
         }
 
-        if !event::poll(Duration::from_millis(16))? {
+        let Some(ev) = surface.poll(Duration::from_millis(16), &tabs, active)? else {
             continue;
-        }
-        let ev = event::read()?;
+        };
 
         // マウスが乗っている行を覚えて、押せる場所が見て分かるようにする
         if let Event::Mouse(m) = &ev {

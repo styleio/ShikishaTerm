@@ -265,7 +265,7 @@ fn esc_into(out: &mut String, s: &str) {
 ///
 /// 同じ見た目が続く間は1つのまとまりにまとめる。1マスずつ要素にすると
 /// 50行×180桁で9000要素になり、毎フレームの書き換えが重くなる
-fn screen_html(screen: &vt100::Screen) -> String {
+pub fn screen_html(screen: &vt100::Screen) -> String {
     const FG: &str = "#e8eef4";
     const BG: &str = "transparent";
     let (rows, cols) = screen.size();
