@@ -33,8 +33,9 @@ being handed to the review tab automatically.
 Running one terminal AI is easy. Running **four** is not.
 
 You end up with a window per agent, no idea which one is waiting for you, and a lot of
-copy-pasting between them. SHIKISHA-TERM is a terminal that knows the difference between
-*working*, *finished* and *waiting for a human* — and can move work between agents on its own.
+copy-pasting between them. SHIKISHA-TERM puts them in one window and knows the difference
+between *working*, *finished* and *waiting for a human* — and can move work between agents
+on its own.
 
 It talks to whatever runs in a terminal, so it is not tied to one vendor: Claude Code,
 Codex CLI, Gemini CLI, Ollama, Aider, or a plain shell over SSH.
@@ -44,6 +45,9 @@ Codex CLI, Gemini CLI, Ollama, Aider, or a plain shell over SSH.
 1. Download `SHIKISHA-TERM.zip` from [Releases](https://github.com/styleio/ShikishaTerm/releases/latest)
 2. Unzip it anywhere — a USB stick and a synced folder both work
 3. Run `SHIKISHA-TERM.exe`
+
+It opens a window of its own. Nothing needs to be running it — no terminal to set up, no
+font or colour scheme to get right first.
 
 Nothing is written outside that folder. There is no installer and no runtime to install.
 
