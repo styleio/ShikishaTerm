@@ -117,12 +117,21 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
     }
   });
 
-  // 選択しているときはフォーカスを奪わない。
-  // 押すたびに入力欄へ戻していたので、ドラッグ選択が成立しなかった
+  // PuTTY と同じ作法: 選んだ時点でコピーされる。Ctrl+C は要らない。
+  // 選択が残っている間はフォーカスを奪わない (奪うと選択が消える)
   const focus = () => kbd.focus();
   document.addEventListener("mouseup", () => {
     const s = window.getSelection();
-    if (!s || s.isCollapsed) focus();
+    const t = s ? s.toString() : "";
+    if (t) { send({ kind:"copy", text:t }); return; }
+    focus();
+  });
+
+  // 右クリックで貼り付け。ブラウザの右クリックメニューは出さない
+  document.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    send({ kind:"paste" });
+    focus();
   });
   window.addEventListener("focus", focus);
   // 選択した文字は、そのままコピーできる (ブラウザの機能をそのまま使う)
@@ -204,6 +213,16 @@ pub fn run(cmd: &[String]) -> Result<()> {
         for ev in win.drain() {
             match ev {
                 Ev::Closed => return Ok(()),
+                // 選んだ時点でコピーする (PuTTY と同じ)
+                Ev::Copy { text } => {
+                    if let Ok(mut c) = arboard::Clipboard::new() {
+                        let _ = c.set_text(text);
+                    }
+                }
+                // 右クリックで貼り付け。括弧貼り付けの判定は既存の処理が持っている
+                Ev::Paste => {
+                    let _ = crate::paste_clipboard(&tab);
+                }
                 Ev::Key { text, named, ctrl } => {
                     if let Some(n) = named {
                         let _ = tab.write_passthrough(named_bytes(&n));

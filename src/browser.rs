@@ -160,6 +160,10 @@ pub enum Ev {
     Result { id: u64, ok: bool, value: String },
     /// 帯のボタンが押された = 人が自分の番を終えた
     Button,
+    /// 選択された文字 (PuTTY と同じで、選んだ時点でコピーする)
+    Copy { text: String },
+    /// 貼り付けの要求 (右クリック)
+    Paste,
     /// 窓モードでの打鍵。確定した文字、名前付きの制御キー、Ctrl+文字のいずれか
     Key {
         text: Option<String>,
@@ -561,6 +565,14 @@ fn run_window(
                         .to_string(),
                 },
                 Some("button") => Ev::Button,
+                Some("copy") => Ev::Copy {
+                    text: v
+                        .get("text")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                },
+                Some("paste") => Ev::Paste,
                 Some("key") => Ev::Key {
                     text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
                     named: v.get("named").and_then(|x| x.as_str()).map(str::to_string),
