@@ -1678,6 +1678,28 @@ fn ensure_mouse_capture(expected: Option<u32>) {
 /// Luaフックを3階層 (基本 > ワークスペース > タブ) で読み込む。
 /// フックの引き当ては「より具体的な方が勝つ」ので、タブ用スクリプトが
 /// 定義していないフックだけがワークスペース・基本へフォールバックする
+/// タブごとの自動化を、セッションの番号で並べる。
+///
+/// フックはセッションの番号で飛んでくる。設定の並びで数えると、
+/// 子プロセスを持たないもの (ブラウザ、コマンドが空の行) の分だけずれ、
+/// あるタブのフックが隣のタブの置き場を見ることになる
+fn automation_by_session(ws: &config::Workspace) -> Vec<(usize, String)> {
+    let mut session = 0;
+    let mut out = Vec::new();
+    for t in &ws.tabs {
+        let argv = t.cfg.command.argv();
+        // spawn_workspace が立てないものは、番号を持たない
+        if argv.is_empty() || config::browser_url_of(&argv).is_some() {
+            continue;
+        }
+        session += 1;
+        if let Some(p) = t.cfg.automation_path() {
+            out.push((session, p));
+        }
+    }
+    out
+}
+
 fn build_engine(
     cfg: Option<&config::Config>,
     ws: Option<&config::Workspace>,
@@ -1686,15 +1708,7 @@ fn build_engine(
 ) -> Option<HookEngine> {
     let base = cfg.and_then(|c| c.automation_path());
     let ws_lua = ws.and_then(|w| w.automation.clone());
-    let tab_luas: Vec<(usize, String)> = ws
-        .map(|w| {
-            w.tabs
-                .iter()
-                .enumerate()
-                .filter_map(|(i, t)| t.cfg.automation_path().map(|p| (i + 1, p)))
-                .collect()
-        })
-        .unwrap_or_default();
+    let tab_luas: Vec<(usize, String)> = ws.map(automation_by_session).unwrap_or_default();
     if base.is_none() && ws_lua.is_none() && tab_luas.is_empty() {
         return None;
     }
@@ -2717,6 +2731,27 @@ mod tests {
                 k.modifiers
             );
         }
+    }
+
+    /// 自動化の割り当てが、セッションの番号で並ぶこと。
+    ///
+    /// フックはセッションの番号で飛んでくる。設定の並びで数えると、
+    /// 子プロセスを持たないもの (ブラウザ、空のコマンド) の分だけずれる。
+    /// 実際そうなっていて、AIタブの on_start が、
+    /// 1つ手前のブラウザタブの置き場を見ていた
+    #[test]
+    fn the_scripts_are_numbered_by_session_not_by_the_settings() {
+        let ws = ws_from(&[
+            ("HTML解析", "html", "browser https://example.com/"),
+            ("エンジニア", "ai", "claude"),
+        ]);
+        let mut ws = ws;
+        ws.tabs[0].cfg.automation = Some("scripts/html".into());
+        ws.tabs[1].cfg.automation = Some("scripts/ai".into());
+
+        let got = automation_by_session(&ws);
+        // ブラウザは番号を持たない。claude が1番目のセッション
+        assert_eq!(got, vec![(1, "scripts/ai".to_string())], "割り当てがずれている");
     }
 
     /// 画面の並びが、設定に書いた順であること。

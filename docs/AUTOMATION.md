@@ -382,6 +382,7 @@ shikisha.http("github-issue", '{"title":"Findings","body":"..."}')
 
 | Command | Description |
 |---|---|
+| `shikisha.now([format])` | The local date and time as text |
 | `shikisha.write_file(gateway, filename, text)` | Write into a registered folder |
 | `shikisha.read_file(gateway, filename)` | Read from a registered folder |
 | `shikisha.http(gateway, body)` | Send to a registered URL (the app adds the credentials) |

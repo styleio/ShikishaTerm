@@ -15,6 +15,55 @@ use anyhow::{Context as _, Result};
 use mlua::thread::ThreadStatus;
 use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib, Table, Thread, Value};
 
+/// いまの日時を、渡された書き方で返す (手元の時計)。
+///
+/// 綴りは `os.date` と同じにする。Lua を書く人は既にそれを知っているので、
+/// 覚え直すものを増やさない。使えるのは日時に要るものだけ:
+///
+/// | 綴り | 中身            | 例       |
+/// |------|-----------------|----------|
+/// | `%Y` | 年 (4桁)        | `2026`   |
+/// | `%y` | 年 (下2桁)      | `26`     |
+/// | `%m` | 月              | `08`     |
+/// | `%d` | 日              | `07`     |
+/// | `%H` | 時 (24)         | `01`     |
+/// | `%M` | 分              | `05`     |
+/// | `%S` | 秒              | `09`     |
+/// | `%%` | `%` そのもの    | `%`      |
+///
+/// 知らない綴りは、そのまま残す。黙って消すと、書いたつもりのものが
+/// 消えたことに気づけない
+fn local_stamp(fmt: &str) -> String {
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+    let mut t = unsafe { std::mem::zeroed() };
+    unsafe { GetLocalTime(&mut t) };
+    let mut out = String::with_capacity(fmt.len() + 8);
+    let mut it = fmt.chars();
+    while let Some(c) = it.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('Y') => out.push_str(&format!("{:04}", t.wYear)),
+            Some('y') => out.push_str(&format!("{:02}", t.wYear % 100)),
+            Some('m') => out.push_str(&format!("{:02}", t.wMonth)),
+            Some('d') => out.push_str(&format!("{:02}", t.wDay)),
+            Some('H') => out.push_str(&format!("{:02}", t.wHour)),
+            Some('M') => out.push_str(&format!("{:02}", t.wMinute)),
+            Some('S') => out.push_str(&format!("{:02}", t.wSecond)),
+            Some('%') => out.push('%'),
+            // 知らない綴りは残す。消すと、書いたものが消えたと気づけない
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
+}
+
 /// mluaのエラーはSend+Syncでないためanyhowへ文字列で変換する
 fn lerr(e: mlua::Error) -> anyhow::Error {
     anyhow::anyhow!("{e}")
@@ -499,6 +548,20 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // 日時。ファイル名に使うのはごく普通の用なので、ここだけ出す。
+            // os を丸ごと渡すと、プロセスを起こす道具も一緒に渡ることになる。
+            // 書き方は呼ぶ側が決める。既定は並べ替えで時間順になる形
+            shikisha
+                .set(
+                    "now",
+                    lua.create_function(|_, fmt: Option<String>| {
+                        Ok(local_stamp(fmt.as_deref().unwrap_or("%Y%m%d%H%M%S")))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             let c = Rc::clone(&commands);
             shikisha
                 .set(
@@ -893,6 +956,40 @@ fn tab_ref_of(v: &Value) -> mlua::Result<TabRef> {
         _ => Err(mlua::Error::runtime(
             "タブは番号かタブ名で指定してください",
         )),
+    }
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    /// 日時が、並べ替えで時間順になる形であること。
+    ///
+    /// ファイル名に使うので、桁が揺れると並びが崩れる。
+    /// Lua には os を渡していないので、ここが唯一の出どころ
+    /// 渡した書き方のとおりに返ること
+    #[test]
+    fn the_shape_is_the_caller_s_to_choose() {
+        let ymd = super::local_stamp("%Y-%m-%d");
+        assert_eq!(ymd.len(), 10, "{ymd}");
+        assert_eq!(&ymd[4..5], "-");
+        assert_eq!(&ymd[7..8], "-");
+        assert_eq!(super::local_stamp("%y").len(), 2);
+        // 綴りでないものは、そのまま出る
+        assert_eq!(super::local_stamp("報告_%%.html"), "報告_%.html");
+        // 知らない綴りは残す。黙って消えると、消えたことに気づけない
+        assert_eq!(super::local_stamp("%Q"), "%Q");
+        assert_eq!(super::local_stamp(""), "");
+    }
+
+    #[test]
+    fn the_stamp_sorts_by_time() {
+        let s = super::local_stamp("%Y%m%d%H%M%S");
+        assert_eq!(s.len(), 14, "桁が違う: {s}");
+        assert!(s.chars().all(|c| c.is_ascii_digit()), "数字以外がある: {s}");
+        let year: u32 = s[..4].parse().expect("年が読めない");
+        assert!((2020..2200).contains(&year), "年がおかしい: {s}");
+        let month: u32 = s[4..6].parse().unwrap();
+        let day: u32 = s[6..8].parse().unwrap();
+        assert!((1..=12).contains(&month) && (1..=31).contains(&day), "{s}");
     }
 }
 
