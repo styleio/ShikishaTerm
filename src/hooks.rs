@@ -985,6 +985,78 @@ mod tests {
         assert_eq!(logs, vec!["n=1"], "別ファイルでも共有変数は共有される");
     }
 
+
+    /// 時計を持たないまま、時刻入りのファイル名を受け渡せること。
+    ///
+    /// サンドボックスに os は無い (意図的に外してある) ので、Lua 側で
+    /// 日時を作ることはできない。時計を持っているのはシェルなので、
+    /// 名前はシェルに作らせ、その出力から読み取る。
+    ///
+    /// 読み取った名前は set_var で他のスクリプトからも使える
+    #[test]
+    fn a_name_made_by_the_shell_can_be_carried_into_the_prompt() {
+        let mut e = HookEngine::new().unwrap();
+        let fetch = e
+            .load_source(
+                "fetch",
+                r#"
+function on_done(t)
+  local path = t.output:match("SAVED (%S+%.html)")
+  if not path then shikisha.log("保存先が読み取れません") return end
+  shikisha.set_var("lp_path", path)
+  shikisha.draft_to_tab("ai", path .. " を読んでください。\n\n")
+end"#,
+            )
+            .unwrap();
+        // 別ファイルからでも同じ名前を参照できる
+        let other = e
+            .load_source(
+                "other",
+                r#"function on_done(t) shikisha.log("覚えている: " .. tostring(shikisha.get_var("lp_path"))) end"#,
+            )
+            .unwrap();
+        e.set_tab(1, fetch);
+        e.set_tab(2, other);
+
+        // シェルが実際に吐く形 (打ち込んだ行は切り出しに含まれない)
+        let shell_output = "\r\nSAVED tmp/LP20260806154212.html\r\nD:\\Test>";
+        e.fire("on_done", &ctx(1, shell_output), None);
+        e.fire("on_done", &ctx(2, ""), None);
+
+        let cmds = e.drain_commands();
+        let drafted: Vec<&String> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                Command::DraftPrompt { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drafted.len(), 1, "下書きが1つだけ出るはず: {cmds:?}");
+        assert!(
+            drafted[0].starts_with("tmp/LP20260806154212.html を読んでください。"),
+            "名前が渡っていない: {:?}",
+            drafted[0]
+        );
+        assert!(
+            drafted[0].ends_with("\n\n"),
+            "人が書き足すための空行が無い: {:?}",
+            drafted[0]
+        );
+
+        let logs: Vec<&String> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                Command::Log(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            logs,
+            vec!["覚えている: tmp/LP20260806154212.html"],
+            "別ファイルへ名前が渡っていない"
+        );
+    }
+
     #[test]
     fn sandbox_has_no_io_os() {
         let e = HookEngine::from_source("x = 1");
