@@ -450,9 +450,8 @@ mod tests {
     /// 画面には何も出ないまま原因が見えない
     #[test]
     fn the_page_has_nothing_left_to_fill_in() {
-        crate::i18n::init(Some("ja"), &[std::path::PathBuf::from(
-            env!("CARGO_MANIFEST_DIR"),
-        )]);
+        // 言語は初期化しない。ここで init すると、並行して走る
+        // 他の試験の言語まで変わる (盤面の試験が CHAIN を探して落ちた)
         let p = super::page();
         assert!(!p.contains("{{"), "差し込み先が残っている");
         assert!(p.contains("const T = {"), "訳語が入っていない");
