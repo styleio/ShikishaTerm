@@ -33,6 +33,7 @@ mod tab;
 mod uistate;
 mod watch;
 mod webui;
+mod wspack;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

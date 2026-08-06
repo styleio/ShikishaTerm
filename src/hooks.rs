@@ -33,7 +33,7 @@ use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib, Table, Thread, Valu
 ///
 /// 知らない綴りは、そのまま残す。黙って消すと、書いたつもりのものが
 /// 消えたことに気づけない
-fn local_stamp(fmt: &str) -> String {
+pub fn local_stamp(fmt: &str) -> String {
     use windows_sys::Win32::System::SystemInformation::GetLocalTime;
     let mut t = unsafe { std::mem::zeroed() };
     unsafe { GetLocalTime(&mut t) };

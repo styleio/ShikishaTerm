@@ -629,6 +629,86 @@ fn handle(
                 }
             }
         }
+        // ワークスペース1つを、スクリプトごと1枚のファイルに書き出す。
+        // 番号で指すのは保存済みの設定。画面の編集中の姿ではない
+        ("POST", "/api/workspace/export") => {
+            let mut req = req;
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body)?;
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let index = p.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let resp = match crate::wspack::pack(config_path, index) {
+                Ok((name, text)) => {
+                    raise_own_dialog();
+                    let picked = rfd::FileDialog::new()
+                        .set_title(crate::i18n::t("settings.ws.export.title"))
+                        .set_file_name(&name)
+                        .add_filter(crate::i18n::t("settings.ws.file_kind"), &["json"])
+                        .set_directory(
+                            config_path.parent().unwrap_or(std::path::Path::new(".")),
+                        )
+                        .save_file();
+                    match picked {
+                        // 選ばれた場所へ書く。ここは利用者が指した先なので設定フォルダの外でよい
+                        Some(path) => match crate::crypto::write_atomic(&path, &text) {
+                            Ok(()) => serde_json::json!({
+                                "ok": true,
+                                "path": path.display().to_string(),
+                            }),
+                            Err(e) => {
+                                serde_json::json!({ "ok": false, "error": e.to_string() })
+                            }
+                        },
+                        None => serde_json::json!({ "ok": false, "cancelled": true }),
+                    }
+                }
+                Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+            };
+            req.respond(
+                Response::from_string(resp.to_string()).with_header(
+                    Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/json; charset=utf-8"[..],
+                    )
+                    .unwrap(),
+                ),
+            )?;
+        }
+        // 書き出したファイルを取り込む。設定にワークスペースが1つ増える
+        ("POST", "/api/workspace/import") => {
+            raise_own_dialog();
+            let picked = rfd::FileDialog::new()
+                .set_title(crate::i18n::t("settings.ws.import.title"))
+                .add_filter(crate::i18n::t("settings.ws.file_kind"), &["json"])
+                .set_directory(config_path.parent().unwrap_or(std::path::Path::new(".")))
+                .pick_file();
+            let resp = match picked {
+                Some(path) => match std::fs::read_to_string(&path)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|t| crate::wspack::unpack(config_path, &t))
+                {
+                    Ok(placed) => serde_json::json!({
+                        "ok": true,
+                        "name": placed.name,
+                        "files": placed.files,
+                        "moved": placed.moved.iter()
+                            .map(|(f, t)| serde_json::json!([f, t]))
+                            .collect::<Vec<_>>(),
+                    }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                },
+                None => serde_json::json!({ "ok": false, "cancelled": true }),
+            };
+            req.respond(
+                Response::from_string(resp.to_string()).with_header(
+                    Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/json; charset=utf-8"[..],
+                    )
+                    .unwrap(),
+                ),
+            )?;
+        }
         // 自動化 (イベント別ファイル) の読み書き
         ("GET", "/api/automation") => {
             let Some(dir) = safe_dir_path(req.url(), config_path) else {
@@ -1291,6 +1371,7 @@ function renderNav() {
   });
   nav.append(el("div", {class:"navgroup"}, ""));
   nav.append(el("button", {class:"navitem navadd", onclick:addWs}, T["settings.workspace.add"]));
+  nav.append(el("button", {class:"navitem navadd", onclick:importWs}, T["settings.ws.import.nav"]));
 }
 
 const newTab = (o = {}) => Object.assign(
@@ -1436,6 +1517,12 @@ function wsPane(ws) {
     e.append(bar);
     box.append(e);
   }
+  box.append(card(T["settings.ws.share"],
+    el("div", {class:"row"},
+      el("button", {onclick:() => exportWs(sel.ws)}, T["settings.ws.export"]),
+      el("button", {onclick:importWs}, T["settings.ws.import"])),
+    el("div", {class:"hint"}, T["settings.ws.share.hint"])));
+
   box.append(el("div", {class:"row"},
     el("button", {class:"danger", onclick:() => {
       if (confirm(fill(T["settings.workspace.delete_confirm"], {name: ws.name}))) {
@@ -1443,6 +1530,40 @@ function wsPane(ws) {
       }
     }}, T["settings.workspace.delete"])));
   return box;
+}
+
+// 書き出しも取り込みも、ディスクにある設定が相手。
+// 編集中の姿を書き出すと、渡した相手だけが持っている設定ができてしまう
+function savedAlready() {
+  if (snapshot() === savedSnapshot) return true;
+  result(T["settings.ws.save_first"], true);
+  return false;
+}
+
+const wsShare = (path, body) => fetch(path, {method:"POST",
+  headers:{"Content-Type":"application/json", "X-Token":TOKEN}, body})
+  .then(r => r.json()).catch(e => ({ok:false, error:e.message || e}));
+
+async function exportWs(i) {
+  if (!savedAlready()) return;
+  const j = await wsShare("/api/workspace/export", JSON.stringify({index:i}));
+  if (j.cancelled) return;
+  if (!j.ok) return result(fill(T["settings.ws.export_failed"], {error:j.error || ""}), true);
+  result(fill(T["settings.ws.exported"], {path:j.path}));
+}
+
+async function importWs() {
+  if (!savedAlready()) return;
+  const j = await wsShare("/api/workspace/import", null);
+  if (j.cancelled) return;
+  if (!j.ok) return result(fill(T["settings.ws.import_failed"], {error:j.error || ""}), true);
+  // 設定はサーバ側で書き換わっている。画面はそれを読み直す
+  await load();
+  sel = {ws:wss.length - 1, tab:null, global:false};
+  render();
+  const moved = (j.moved || []).map(m => m[0] + " → " + m[1]).join(" / ");
+  result(fill(T["settings.ws.imported"], {name:j.name, files:j.files})
+    + (moved ? "  " + fill(T["settings.ws.imported.moved"], {moved}) : ""));
 }
 
 const TEMPLATES = {
@@ -1834,7 +1955,9 @@ async function load() {
   wss = [];
   for (const w of list) {
     const ws = { name:w.name || "", file:w.file || null,
-                 automation:w.automation || w.lua || "", tabs:[] };
+                 automation:w.automation || w.lua || "", tabs:[],
+                 // 画面では触らないが、保存で消さないために持っておく
+                 browsers:w.browsers || null };
     if (ws.file) {
       const f = await (await wsApi("GET", ws.file)).json().catch(() => ({}));
       ws.tabs = flatten(f.tabs, 0, []);
@@ -1887,6 +2010,8 @@ function payload() {
     const o = { name:w.name };
     if (w.file) o.file = w.file;
     else { if (w.automation) o.automation = w.automation; o.tabs = nest(w.tabs); }
+    // 画面に無い設定を、画面から保存しただけで失わない
+    if (w.browsers) o.browsers = w.browsers;
     return o;
   });
   return { out, files };

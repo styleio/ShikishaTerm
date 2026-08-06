@@ -84,7 +84,8 @@ starting), double-click **`Settings.cmd`**.
 
 - **Tabs with real status** — every tab shows whether it is working, done, or waiting for
   you, detected from the screen itself rather than from any vendor API
-- **Workspaces** — swap the whole tab layout per project, like virtual desktops
+- **Workspaces** — swap the whole tab layout per project, like virtual desktops. Export one
+  to a single file, automation scripts included, and hand it to another machine or person
 - **Automation** — "when this finishes, hand the result to the review tab", "answer this
   confirmation automatically". Written in Lua, or described in plain language and written
   for you by an AI you already have installed

@@ -3,6 +3,8 @@ config.json
 secrets.json
 workspaces/*.json
 !workspaces/*.example.json
+# 持ち出したワークスペース (接続先や作業フォルダがそのまま入っている)
+*.stws.json
 projects/
 logs/
 
