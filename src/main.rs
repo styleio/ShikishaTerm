@@ -484,7 +484,7 @@ fn run_in_window() -> Result<()> {
         .to_ip()
         .ok_or_else(|| anyhow::anyhow!("ポートが取れません"))?
         .port();
-    let page = shell::page();
+    let page = shell::page("");
     std::thread::spawn(move || {
         for req in server.incoming_requests() {
             let r = tiny_http::Response::from_string(page.clone()).with_header(
@@ -833,6 +833,8 @@ fn run(mut surface: Surface) -> Result<()> {
     // 0 = INDEX、1.. = セッション。初回はINDEX(案内のある画面)から始める
     let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
     let mut prefix_active = false;
+    // 直前に描いた状態。スマホへはこれを渡す (組み立てる場所を1つに保つ)
+    let mut last_ui_state: Option<crate::uistate::UiState> = None;
     // 重ねたブラウザを今見せているか。出しっぱなしだと
     // ターミナルがずっと隠れてしまうので、既定は隠す
     let mut browser_shown = false;
@@ -1115,6 +1117,16 @@ fn run(mut surface: Surface) -> Result<()> {
             // リモートUIへ現在の状況を渡し、届いた操作を実行する
             if let Some(r) = remote_ui.as_ref() {
                 *r.snapshot.lock().unwrap() = remote::Snapshot {
+                    // 描画のときに作ったものを渡す。ここでは ui がまだ無く、
+                    // 作り直すと「状態を組み立てる場所」が2つになる
+                    ui: last_ui_state.clone(),
+                    screen_html: tabs
+                        .get(active.wrapping_sub(1))
+                        .map(|t| {
+                            let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                            winmode::screen_html(p.screen())
+                        })
+                        .unwrap_or_default(),
                     workspace: workspaces
                         .get(ws_index)
                         .map(|w| w.name.clone())
@@ -1281,6 +1293,7 @@ fn run(mut surface: Surface) -> Result<()> {
             now_ms: start.elapsed().as_millis() as u64,
             hover,
         };
+        last_ui_state = Some(ui_state_of(&tabs, &ui, flash.as_deref()));
         surface.draw(&tabs, &ui, flash.as_deref(), &mut hits)?;
         // 重ねているブラウザを、ターミナルの動きに付いていかせる。
         // 所有関係で最小化と重なり順はOSが見てくれるが、位置だけは追う必要がある

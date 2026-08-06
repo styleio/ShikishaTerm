@@ -138,7 +138,14 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
 <script>
 const T = {{DICT}};
 const BUILD = {{BUILD}};
-const send = o => window.ipc.postMessage(JSON.stringify(o));
+const TOKEN = {{TOKEN}};
+// 窓の中なら直に渡せる。スマホからはHTTPで届ける。
+// ページは同じものを使う (見た目を2回書かないため)
+const REMOTE = !window.ipc;
+const send = REMOTE
+  ? (o => fetch("api/intent?t=" + encodeURIComponent(TOKEN),
+      {method:"POST", body:JSON.stringify(o)}).catch(() => {}))
+  : (o => window.ipc.postMessage(JSON.stringify(o)));
 const el = (t, a, ...kids) => {
   const n = document.createElement(t);
   for (const k in (a||{})) {
@@ -427,13 +434,33 @@ focus();
 measure();
 report();
 
+// スマホからは押しに行く。窓へは向こうから届く
+if (REMOTE) {
+  const pull = async () => {
+    try {
+      const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN),
+        {cache:"no-store"});
+      const d = await r.json();
+      if (d.ui) window.__state(JSON.stringify(d.ui));
+      if (d.screen_html) window.__screen(d.screen_html);
+    } catch (e) {}
+  };
+  pull();
+  setInterval(pull, 900);
+}
+
 send({kind:"ready"});
 </script></body></html>"####;
 
 /// 訳語とビルド刻印を埋めて、配れる形にする
-pub fn page() -> String {
+pub fn page(token: &str) -> String {
     let dict = crate::i18n::dict_json();
-    PAGE.replace("{{DICT}}", &dict).replace(
+    PAGE.replace("{{DICT}}", &dict)
+        .replace(
+            "{{TOKEN}}",
+            &serde_json::to_string(token).unwrap_or_else(|_| "\"\"".into()),
+        )
+        .replace(
         "{{BUILD}}",
         &serde_json::to_string(&format!(
             "build {}  ({})",
@@ -457,7 +484,7 @@ mod tests {
     fn the_page_has_nothing_left_to_fill_in() {
         // 言語は初期化しない。ここで init すると、並行して走る
         // 他の試験の言語まで変わる (盤面の試験が CHAIN を探して落ちた)
-        let p = super::page();
+        let p = super::page("");
         assert!(!p.contains("{{"), "差し込み先が残っている");
         assert!(p.contains("const T = {"), "訳語が入っていない");
         assert!(p.contains("const BUILD = \""), "ビルド刻印が入っていない");

@@ -33,6 +33,12 @@ pub struct RemoteTab {
 
 #[derive(Clone, Serialize, Default)]
 pub struct Snapshot {
+    /// 窓と同じ状態。スマホも同じページで描く
+    #[serde(default)]
+    pub ui: Option<crate::uistate::UiState>,
+    /// 見ているタブの画面 (色付きのHTML)
+    #[serde(default)]
+    pub screen_html: String,
     pub workspace: String,
     pub tabs: Vec<RemoteTab>,
     pub auto_enabled: bool,
@@ -169,6 +175,22 @@ fn handle(
                         .unwrap(),
                     )
                     // 更新したのに古い画面が出る、を起こさない
+                    .with_header(
+                        Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
+                    ),
+            )?;
+        }
+        // 窓と同じ外皮。見た目を2回書かないための入口
+        ("GET", "/shell") => {
+            req.respond(
+                Response::from_string(crate::shell::page(token))
+                    .with_header(
+                        Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"text/html; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    )
                     .with_header(
                         Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
                     ),
