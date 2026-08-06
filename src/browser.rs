@@ -55,8 +55,80 @@ const INIT_JS: &str = r#"
     if (host) host.remove();
   };
 
+  // セレクタは {css:"..."} か {xpath:"..."}。
+  // XPath は「『氏名』というラベルの右隣のセル」のように、
+  // CSSでは書けない探し方ができるので両方持つ
+  window.__shikisha_q = function (sel) {
+    if (sel && sel.xpath) {
+      return document.evaluate(sel.xpath, document, null, 9, null).singleNodeValue;
+    }
+    return document.querySelector(sel.css);
+  };
+
+  // 「DOMに無い」と「あるが画面外」を分ける。
+  // 同じ失敗で潰すと、セレクタを疑うべきか待ちを疑うべきか分からない
+  window.__shikisha_state = function (sel) {
+    const el = window.__shikisha_q(sel);
+    if (!el) return "not_found";
+    const r = el.getBoundingClientRect();
+    const on =
+      r.width > 0 && r.height > 0 &&
+      r.bottom > 0 && r.right > 0 &&
+      r.top < innerHeight && r.left < innerWidth;
+    return on ? "visible" : "off_screen";
+  };
+
+  window.__shikisha_text = function (sel) {
+    const el = window.__shikisha_q(sel);
+    return el ? (el.value !== undefined ? el.value : el.innerText) : null;
+  };
+
+  window.__shikisha_click = function (sel) {
+    const el = window.__shikisha_q(sel);
+    if (!el) return "not_found";
+    el.scrollIntoView({ block: "center" });
+    el.click();
+    // 触れた以上、届いていた。判定の語彙は find と揃える
+    return "visible";
+  };
+
+  window.__shikisha_fill = function (sel, value) {
+    const el = window.__shikisha_q(sel);
+    if (!el) return "not_found";
+    el.scrollIntoView({ block: "center" });
+    el.focus();
+    if (el.isContentEditable) {
+      el.textContent = value;
+    } else {
+      // React などは value を直接書いても気づかない。
+      // 元の setter を通してから input を投げると、枠組み側の状態も動く
+      const proto =
+        el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value");
+      if (setter && setter.set) setter.set.call(el, value);
+      else el.value = value;
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return "visible";
+  };
+
+  window.__shikisha_html = function () {
+    return document.documentElement.outerHTML;
+  };
+
   window.__shikisha = true;
-  send({ kind: "ready", url: location.href });
+
+  // 「準備できた」は文書が解析できてから。この初期化スクリプト自体は
+  // 解析前に走るので、ここで名乗ると body すら無い時点の合図になる
+  const announce = () => send({ kind: "ready", url: location.href });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", announce, { once: true });
+  } else {
+    announce();
+  }
 })();
 "#;
 
@@ -145,12 +217,37 @@ impl Browser {
             .recv_timeout(std::time::Duration::from_secs(20))
             .map_err(|_| anyhow!("ブラウザの起動が終わりません (WebView2 が無い可能性)"))?;
 
-        Ok(Self {
+        let me = Self {
             proxy,
             events: ev_rx,
             next_id: AtomicU64::new(1),
             pending_ask: std::sync::Mutex::new(None),
-        })
+        };
+        // 文書が用意できるまで返さない。窓ができた時点で返すと、
+        // 呼んだ側は空の文書を触ることになり、
+        // 「セレクタが違う」のか「まだ来ていない」のか区別がつかない
+        me.wait_ready(std::time::Duration::from_secs(30))?;
+        Ok(me)
+    }
+
+    /// 次の文書が用意できるまで待ち、そのURLを返す。
+    /// 遷移のたびに1回来るので、`open` の後にも使う
+    pub fn wait_ready(&self, timeout: std::time::Duration) -> Result<String> {
+        let until = std::time::Instant::now() + timeout;
+        loop {
+            let left = until
+                .checked_duration_since(std::time::Instant::now())
+                .ok_or_else(|| anyhow!("ページが用意できません"))?;
+            match self.events.recv_timeout(left) {
+                Ok(Ev::Ready { url }) => {
+                    self.reask();
+                    return Ok(url);
+                }
+                Ok(Ev::Closed) => return Err(anyhow!("ブラウザが閉じました")),
+                Ok(_) => continue,
+                Err(_) => return Err(anyhow!("ページが用意できません")),
+            }
+        }
     }
 
     fn send(&self, cmd: Cmd) -> Result<()> {
@@ -191,6 +288,51 @@ impl Browser {
 
     pub fn close(&self) -> Result<()> {
         self.send(Cmd::Close)
+    }
+
+    /// JSを1回呼んで、結果が返るまで待つ
+    fn call(&self, func: &str, args: &[serde_json::Value], timeout_ms: u64) -> Result<String> {
+        let id = self.eval(&call_js(func, args))?;
+        self.wait_result(id, std::time::Duration::from_millis(timeout_ms))
+    }
+
+    /// その要素が今どこにいるか
+    pub fn find(&self, sel: &Sel, timeout_ms: u64) -> Result<Found> {
+        Ok(Found::parse(&self.call(
+            "__shikisha_state",
+            &[sel.json()],
+            timeout_ms,
+        )?))
+    }
+
+    /// 文字を読む (入力欄なら中身、それ以外は表示文字列)
+    pub fn text(&self, sel: &Sel, timeout_ms: u64) -> Result<Option<String>> {
+        let v = self.call("__shikisha_text", &[sel.json()], timeout_ms)?;
+        Ok(serde_json::from_str::<Option<String>>(&v).unwrap_or(None))
+    }
+
+    /// 押す
+    pub fn click(&self, sel: &Sel, timeout_ms: u64) -> Result<Found> {
+        Ok(Found::parse(&self.call(
+            "__shikisha_click",
+            &[sel.json()],
+            timeout_ms,
+        )?))
+    }
+
+    /// 入力欄に値を入れる
+    pub fn fill(&self, sel: &Sel, value: &str, timeout_ms: u64) -> Result<Found> {
+        Ok(Found::parse(&self.call(
+            "__shikisha_fill",
+            &[sel.json(), serde_json::Value::String(value.to_string())],
+            timeout_ms,
+        )?))
+    }
+
+    /// 解釈済みのHTML全文
+    pub fn html(&self, timeout_ms: u64) -> Result<String> {
+        let v = self.call("__shikisha_html", &[], timeout_ms)?;
+        Ok(serde_json::from_str::<String>(&v).unwrap_or(v))
     }
 
     /// 溜まっている報告を取り出す (待たない)。
@@ -251,6 +393,66 @@ fn wrap_eval(id: u64, js: &str) -> String {
   }}
 }})();"#
     )
+}
+
+/// ページを探す指定。CSS か XPath
+#[derive(Debug, Clone)]
+pub enum Sel {
+    Css(String),
+    Xpath(String),
+}
+
+impl Sel {
+    fn json(&self) -> serde_json::Value {
+        match self {
+            Sel::Css(s) => serde_json::json!({ "css": s }),
+            Sel::Xpath(s) => serde_json::json!({ "xpath": s }),
+        }
+    }
+}
+
+/// 要素の居場所。押す・入れるも同じ語彙で返す
+/// (触れたなら届いていたので `Visible`)。
+///
+/// 「DOMに無い」と「あるが画面外」を分けるのが肝心で、
+/// 前者はセレクタを、後者は待ちやスクロールを疑う。
+/// 同じ「失敗」に潰すと、直す場所が分からなくなる
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Found {
+    /// 画面に見えている
+    Visible,
+    /// DOMにはあるが画面の外
+    OffScreen,
+    /// DOMに無い
+    NotFound,
+}
+
+impl Found {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Found::Visible => "visible",
+            Found::OffScreen => "off_screen",
+            Found::NotFound => "not_found",
+        }
+    }
+
+    fn parse(json: &str) -> Self {
+        match json.trim_matches('"') {
+            "visible" => Found::Visible,
+            "off_screen" => Found::OffScreen,
+            _ => Found::NotFound,
+        }
+    }
+}
+
+/// JSの呼び出しを組み立てる。
+///
+/// **引数は必ずここを通す。** すべて `serde_json` で書き出すので、
+/// 引用符も改行も外れず、渡した値がコードとして解釈されない。
+/// AIの出力やページから読んだ文章をそのまま入れても、値のまま届く
+fn call_js(func: &str, args: &[serde_json::Value]) -> String {
+    let list: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    format!("return window.{func}({});", list.join(","))
 }
 
 fn ask_js(text: &str, label: &str) -> String {
@@ -358,6 +560,131 @@ fn run_window(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+
+    /// 試験用のページを 127.0.0.1 で配る。
+    /// file:/// は wry のIPCで落ちるので、本番と同じ http にする
+    fn serve(body: &'static str) -> String {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let _ = req.respond(
+                    tiny_http::Response::from_string(body).with_header(
+                        tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"text/html; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    ),
+                );
+            }
+        });
+        format!("http://127.0.0.1:{port}/")
+    }
+
+    const PAGE: &str = r#"<!doctype html><meta charset=utf-8><body>
+<div id=here>ここにいる</div>
+<input id=q value="">
+<textarea id=multi></textarea>
+<button id=go onclick="document.getElementById('log').textContent='pushed'">押す</button>
+<div id=log></div>
+<table><tr><td>氏名</td><td id=name>山田</td></tr></table>
+<div style="height:4000px"></div>
+<div id=far>ずっと下</div>
+<script>
+  var fired = 0;
+  document.getElementById('q').addEventListener('input', function(){ fired++; });
+</script>"#;
+
+    /// 探して、押して、入れて、読めること。
+    ///
+    ///   cargo test browser_page_ops -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn browser_page_ops() {
+        let b = Browser::spawn(&serve(PAGE), "SHIKISHA-TERM ops probe").expect("窓が開かない");
+        let t = 20_000;
+
+        // 「DOMに無い」と「あるが画面外」を分けること。
+        // 同じ失敗にすると、セレクタを疑うのか待ちを疑うのか分からなくなる
+        assert_eq!(b.find(&Sel::Css("#here".into()), t).unwrap(), Found::Visible);
+        assert_eq!(b.find(&Sel::Css("#far".into()), t).unwrap(), Found::OffScreen);
+        assert_eq!(b.find(&Sel::Css("#nope".into()), t).unwrap(), Found::NotFound);
+
+        // XPath: CSSでは書けない探し方 (ラベルの隣のセル)
+        let name = b
+            .text(&Sel::Xpath("//td[text()='氏名']/following-sibling::td".into()), t)
+            .unwrap();
+        assert_eq!(name.as_deref(), Some("山田"), "XPathで隣のセルが取れない");
+
+        // 押す
+        assert_eq!(b.click(&Sel::Css("#go".into()), t).unwrap(), Found::Visible);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(
+            b.text(&Sel::Css("#log".into()), t).unwrap().as_deref(),
+            Some("pushed"),
+            "押した結果がページに出ていない"
+        );
+
+        // 入れる。値を書くだけでなく input が飛ぶこと
+        // (Reactなどは飛ばさないと状態が動かない)
+        assert_eq!(
+            b.fill(&Sel::Css("#q".into()), "ふつうの値", t).unwrap(),
+            Found::Visible
+        );
+        assert_eq!(
+            b.text(&Sel::Css("#q".into()), t).unwrap().as_deref(),
+            Some("ふつうの値")
+        );
+        let id = b.eval("return fired;").unwrap();
+        assert_eq!(
+            b.wait_result(id, std::time::Duration::from_millis(t)).unwrap(),
+            "1",
+            "input イベントが飛んでいない"
+        );
+
+        // ここが肝心: 値はコードにならないこと。
+        // AIの出力やページから読んだ文章をそのまま入れても、値のまま届く
+        let nasty = "'; window.__pwned = 1; //\"</script><img src=x onerror=alert(1)>\\";
+        assert_eq!(
+            b.fill(&Sel::Css("#q".into()), nasty, t).unwrap(),
+            Found::Visible
+        );
+        assert_eq!(
+            b.text(&Sel::Css("#q".into()), t).unwrap().as_deref(),
+            Some(nasty),
+            "値が一字一句そのまま入っていない"
+        );
+
+        // 改行を含む値。1行の input は改行を落とす (HTMLの仕様) ので、
+        // 複数行を渡すなら textarea でなければならない。
+        // 値が壊れたのではなく、入れ物が保持できないだけ
+        let multi = format!("1行目\n2行目\t{nasty}");
+        assert_eq!(
+            b.fill(&Sel::Css("#multi".into()), &multi, t).unwrap(),
+            Found::Visible
+        );
+        assert_eq!(
+            b.text(&Sel::Css("#multi".into()), t).unwrap().as_deref(),
+            Some(multi.as_str()),
+            "改行やタブを含む値が崩れている"
+        );
+        let id = b.eval("return typeof window.__pwned;").unwrap();
+        assert_eq!(
+            b.wait_result(id, std::time::Duration::from_millis(t)).unwrap(),
+            "\"undefined\"",
+            "渡した値がコードとして実行された"
+        );
+
+        // 解釈済みのHTML全文
+        let html = b.html(t).unwrap();
+        assert!(html.contains("ここにいる"), "HTMLが取れていない");
+        assert!(html.len() > 200, "HTMLが短すぎる: {}", html.len());
+        println!("HTML {} 文字 / すべて通過", html.chars().count());
+
+        b.close().unwrap();
+    }
 
     /// 開けないURLは入口で止めること。
     ///
