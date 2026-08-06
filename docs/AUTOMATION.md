@@ -246,6 +246,32 @@ pull you away from something you are reading.
 
 ---
 
+### Leaving a draft for a person to finish
+
+`send_to_tab` types and submits. To leave something in the box for a person to add to,
+send it as a paste and never send the newline:
+
+```lua
+local seed = "Read lp.html.
+
+"
+shikisha.send("ai", "[200~" .. seed .. "[201~")
+```
+
+`[200~` and `[201~` bracket a paste. Newlines between them are characters rather
+than a keypress, which is how a terminal keeps a pasted script from running itself line
+by line as it arrives. The AI CLIs honour it, and so does this program — the tab is not
+marked as waiting for a reply, so `on_done` will not fire on it.
+
+**A plain shell does not honour it.** Measured against `cmd.exe`: the markers are
+ignored outright and a carriage return between them runs the command. Use this to draft
+into an AI CLI, never to stage a command in a shell.
+
+Keep the draft short. A long paste is collapsed to `[Pasted text #1 +N lines]`, and the
+person cannot read what they are about to send.
+
+---
+
 ## 5. Safety mechanisms
 
 Several brakes keep automation from running away.

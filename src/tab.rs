@@ -1745,3 +1745,56 @@ mod turns_probe {
         }
     }
 }
+
+#[cfg(test)]
+mod paste_no_submit_probe {
+    use super::{Tab, TabOptions};
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    /// 括弧貼り付けだけを送ると、入力欄に入って止まること。
+    ///
+    /// 自動化から「下書きだけ入れて、送信は人が決める」を作るための土台。
+    /// 実測: 短い本文はそのまま見え、長いと [Pasted text #1 +N lines] に畳まれる
+    ///
+    ///   cargo test paste_no_submit -- --ignored --nocapture
+    ///
+    /// APIは呼ばれないので消費はない。貼るだけで止まるかを実機で見る
+    #[test]
+    #[ignore]
+    fn probe_paste_without_enter_stays_unsent() {
+        let tab = Tab::spawn("claude".into(), &["claude".to_string()], None, 24, 100,
+                             TabOptions::default()).expect("起動");
+        let settle = |ms: u64, cap: u64| {
+            let start = Instant::now();
+            let (mut last, mut quiet) = (0u64, Instant::now());
+            while start.elapsed() < Duration::from_secs(cap) {
+                std::thread::sleep(Duration::from_millis(200));
+                let n = tab.output_count();
+                if n != last { last = n; quiet = Instant::now(); }
+                else if last > 0 && quiet.elapsed() > Duration::from_millis(ms) { return; }
+            }
+        };
+        settle(3000, 60);
+
+        // Lua から作られるのと同じ形: ESC[200~ 本文 ESC[201~
+        let body = "lp.html を読んでください。\n\n";
+        let payload = format!("\x1b[200~{body}\x1b[201~");
+        tab.write_bytes(payload.as_bytes()).unwrap();
+        settle(1500, 20);
+
+        // これが true になると、送っていないのに応答待ちが始まり、
+        // on_done が空振りで撃たれる
+        assert!(
+            !tab.prompted.load(Ordering::Relaxed),
+            "括弧貼り付けだけで送信扱いになっている"
+        );
+        let p = tab.parser.lock().unwrap();
+        let (rows, cols) = p.screen().size();
+        println!("--- 下から8行 ---");
+        for r in rows.saturating_sub(8)..rows {
+            let l = p.screen().rows(0, cols).nth(r as usize).unwrap_or_default();
+            println!("| {}", l.trim_end());
+        }
+    }
+}
