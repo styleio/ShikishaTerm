@@ -34,12 +34,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ratatui::crossterm::event::{
+use crossterm::event::{
     EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
 };
-use ratatui::crossterm::execute;
-use ratatui::layout::{Rect, Size};
+use crossterm::execute;
+
 
 use detect::TabState;
 use hooks::{Command, HookEngine, TabCtx};
@@ -97,6 +97,22 @@ fn main() -> Result<()> {
 
     // 叩いたら窓が出る。ランチャを挟むのは、挟む理由があるときだけでいい
     run_in_window()
+}
+
+/// 画面の大きさ。幅と高さだけあればいい
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Size {
+    pub width: u16,
+    pub height: u16,
+}
+
+/// 画面上の矩形
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rect {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
 }
 
 /// タブバー・枠線・ステータスバーを除いた、PTYに渡す端末サイズ (rows, cols)
@@ -439,8 +455,8 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
 }
 
 impl WinSurface {
-    fn size(&self) -> Result<ratatui::layout::Size> {
-        Ok(ratatui::layout::Size::new(self.cols, self.rows))
+    fn size(&self) -> Result<Size> {
+        Ok(Size { width: self.cols, height: self.rows })
     }
 
     /// 次の操作を待つ。窓からの意図は、ループが既に知っている
@@ -2713,18 +2729,6 @@ mod tests {
         cfg.resolve_workspaces().0.into_iter().next().unwrap()
     }
 
-    /// 画面に出た文字を1つの文字列にする (空白は落として位置ずれの影響を消す)
-    fn screen_text(term: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
-        term.backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect::<String>()
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect()
-    }
 
     fn test_ui(active: usize, ball: ball::Ball, now_ms: u64) -> Ui {
         Ui {
@@ -2926,7 +2930,7 @@ mod tests {
     /// (Codexのプロンプトをクリックしてplaceholderがコピーされていた)
     #[test]
     fn a_click_without_dragging_leaves_the_clipboard_alone() {
-        use ratatui::crossterm::event::MouseEvent;
+        use crossterm::event::MouseEvent;
 
         let argv = vec!["cmd.exe".to_string()];
         let mut tabs = vec![
