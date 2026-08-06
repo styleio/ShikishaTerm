@@ -156,6 +156,14 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   <div id="status"></div>
 </div>
 <script>
+// 画面の中で失敗したら知らせる。黙って止まると、外からは
+// 「出るはずのものが出ない」としか見えない
+window.onerror = function (msg, src, line, col) {
+  try {
+    window.ipc.postMessage(JSON.stringify(
+      {kind:"jserror", msg:String(msg) + " @" + line + ":" + col}));
+  } catch (e) {}
+};
 const T = {{DICT}};
 const BUILD = {{BUILD}};
 const TOKEN = {{TOKEN}};

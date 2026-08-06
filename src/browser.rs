@@ -188,6 +188,8 @@ pub enum Ev {
     Stop,
     /// パスワードの入力結果 (None = 取り消し)
     Password { text: Option<String> },
+    /// 画面の中で失敗した
+    JsError { msg: String },
     /// 選択された文字 (PuTTY と同じで、選んだ時点でコピーする)
     Copy { text: String },
     /// 貼り付けの要求 (右クリック)
@@ -676,6 +678,13 @@ fn run_window(
                         .to_string(),
                 },
                 Some("stop") => Ev::Stop,
+                Some("jserror") => Ev::JsError {
+                    msg: v
+                        .get("msg")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                },
                 Some("password") => Ev::Password {
                     text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
                 },

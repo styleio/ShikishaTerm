@@ -408,6 +408,9 @@ impl WinSurface {
                     }
                 }
                 Ev::Stop => self.prefixed('x'),
+                Ev::JsError { msg } => {
+                    crate::append_hook_log(&format!("画面の失敗: {msg}"));
+                }
                 Ev::Key { text, named, ctrl } => {
                     if let Some(n) = named {
                         if let Some(code) = named_key(&n) {
@@ -668,6 +671,14 @@ impl Surface<'_> {
                 let state = ui_state_of(tabs, ui, flash);
                 if w.last.as_ref() != Some(&state) {
                     let json = serde_json::to_string(&state).unwrap_or_default();
+                    if w.last.is_none() {
+                        crate::append_hook_log(&format!(
+                            "状態を送る: タブ{} 「{}」 {}文字",
+                            state.tabs.len(),
+                            state.workspace,
+                            json.len()
+                        ));
+                    }
                     let _ = w.win.eval(&format!(
                         "return window.__state({});",
                         serde_json::to_string(&json).unwrap_or_default()
