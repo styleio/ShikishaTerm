@@ -28,10 +28,13 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
     font-family:"Cascadia Mono","Consolas","Meiryo",monospace; }
   #scr { margin:0; padding:8px; white-space:pre; font-size:14px; line-height:1.25;
     tab-size:8; }
-  /* 入力を受ける場所。見えないが focus は当てる。
-     IME の候補窓はこの位置に出るので、画面外へ飛ばさない */
-  #kbd { position:fixed; left:8px; top:8px; width:1px; height:1em;
-    opacity:0; border:0; padding:0; background:transparent; color:transparent; }
+  /* 入力を受ける場所。カーソルの上に重ねる。
+     IMEの候補窓はこの要素の位置に出るので、置き場所がそのまま候補の位置になる。
+     変換中の文字はブラウザが下線付きで描くので、こちらでは描かない */
+  #kbd { position:absolute; border:0; padding:0; margin:0; outline:none;
+    background:transparent; color:#e8eef4; caret-color:transparent;
+    overflow:hidden; resize:none; white-space:pre;
+    font:inherit; line-height:inherit; width:1px; }
   #stat { position:fixed; right:8px; bottom:6px; font-size:11px; color:#5a6a78; }
   /* カーソル。文字の上に重ねるので、下の文字は読めるまま残す */
   #cur { position:absolute; background:#00aaff; opacity:.75; pointer-events:none;
@@ -64,15 +67,25 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
   window.addEventListener("resize", measure);
 
   let frames = 0, bytes = 0, t0 = performance.now();
+  let curX = 8, curY = 8;
   window.__cursor = function (row, col, shown) {
-    if (!shown || !cellW) { cur.hidden = true; return; }
+    if (!cellW) measure();
     const pad = parseFloat(getComputedStyle(scr).paddingLeft) || 0;
     const padT = parseFloat(getComputedStyle(scr).paddingTop) || 0;
-    cur.hidden = false;
-    cur.style.left = (pad + col * cellW) + "px";
-    cur.style.top = (padT + row * cellH) + "px";
-    cur.style.width = cellW + "px";
-    cur.style.height = cellH + "px";
+    curX = pad + col * cellW;
+    curY = padT + row * cellH;
+    // 入力欄をカーソルへ動かす。候補窓はこの要素に付いてくる
+    kbd.style.left = curX + "px";
+    kbd.style.top = curY + "px";
+    kbd.style.height = cellH + "px";
+    // 変換中は、ブラウザが描く未確定文字とぶつかるので四角は出さない
+    cur.hidden = !shown || composing;
+    if (!cur.hidden) {
+      cur.style.left = curX + "px";
+      cur.style.top = curY + "px";
+      cur.style.width = cellW + "px";
+      cur.style.height = cellH + "px";
+    }
   };
 
   window.__screen = function (text) {
@@ -88,10 +101,21 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
 
   // 変換中は送らない。確定した文字だけを送る
   let composing = false;
-  kbd.addEventListener("compositionstart", () => { composing = true; });
+  // 変換中の文字が入る幅を持たせる。1pxのままだと未確定文字が見えない
+  const widen = s => {
+    const w = Math.max(1, [...(s || "")].length);
+    kbd.style.width = (w * cellW * 1.9 + cellW) + "px";
+  };
+  kbd.addEventListener("compositionstart", () => {
+    composing = true;
+    cur.hidden = true;
+    widen("");
+  });
+  kbd.addEventListener("compositionupdate", e => widen(e.data));
   kbd.addEventListener("compositionend", e => {
     composing = false;
     kbd.value = "";
+    kbd.style.width = "1px";
     if (e.data) send({ kind: "key", text: e.data });
   });
   kbd.addEventListener("input", e => {
