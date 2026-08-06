@@ -101,13 +101,7 @@ fn main() -> Result<()> {
         config::load().and_then(|c| c.language).as_deref(),
         &[config_file_dir(), std::path::PathBuf::from(".")],
     );
-    // 自前の窓で、同じループを回す。
-    // タブもワークスペースも自動化もボールも、持っているのは同じループ。
-    // 窓は描画先と入力元が変わるだけで、機能は1つも作り直していない
-    if std::env::args().nth(1).as_deref() == Some("--window") {
-        return run_in_window();
-    }
-    // 設定だけ開くモード (TUIを起動せずブラウザで設定を編集する)
+    // 設定だけ開くモード (本体を起動せずブラウザで設定を編集する)
     if std::env::args().nth(1).as_deref() == Some("--settings") {
         // 本体が動いていなくてもQRを出せる (接続先は設定から都度組み立てる)
         let info = Arc::new(Mutex::new(webui::RemoteInfo::default()));
@@ -121,22 +115,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut terminal = ratatui::init();
-    // どのビルドを動かしているかを常に見えるようにする。
-    // 「直したのに直らない」の原因が古い実行ファイルだったことが何度かあった
-    let _ = execute!(
-        std::io::stdout(),
-        ratatui::crossterm::terminal::SetTitle(format!(
-            "SHIKISHA-TERM  build {}  ({})",
-            env!("BUILD_TIME"),
-            env!("BUILD_REV")
-        ))
-    );
-    let _ = execute!(std::io::stdout(), EnableMouseCapture);
-    let res = run(Surface::Term(&mut terminal));
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
-    ratatui::restore();
-    res
+    // 叩いたら窓が出る。ランチャを挟むのは、挟む理由があるときだけでいい
+    run_in_window()
 }
 
 /// タブバー・枠線・ステータスバーを除いた、PTYに渡す端末サイズ (rows, cols)
@@ -714,7 +694,7 @@ fn run(mut surface: Surface) -> Result<()> {
     // 外すのを忘れると `--window` という名前のプログラムを探しに行く
     let cmd_args: Vec<String> = std::env::args()
         .skip(1)
-        .filter(|a| !matches!(a.as_str(), "--window" | "--settings"))
+        .filter(|a| !matches!(a.as_str(), "--settings"))
         .collect();
     let start = Instant::now();
     // 幅はconfig指定 → 無ければタブ名から自動算出 (タブ起動後に確定)
