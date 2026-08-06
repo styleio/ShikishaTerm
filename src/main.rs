@@ -34,17 +34,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ratatui::Frame;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+    MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
-use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
-use tui_term::widget::PseudoTerminal;
+use ratatui::layout::{Rect, Size};
 
 use detect::TabState;
 use hooks::{Command, HookEngine, TabCtx};
@@ -700,8 +695,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // 追従で切り替えた先。同じ場所へ何度も飛ばさないために覚えておく
     let mut followed: usize = 0;
     // INDEXで押せる場所。毎フレーム描画時に作り直す
-    let mut hits: Vec<HitBox> = Vec::new();
-    let mut hover: Option<Hit> = None;
 
     // 0 = INDEX、1.. = セッション。初回はINDEX(案内のある画面)から始める
     let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
@@ -1150,10 +1143,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
         ball.clamp_to(tabs.len());
 
         let ui = Ui {
-            tab_w,
             first_run,
             active,
-            prefix_active,
             auto: engine.as_ref().map(|_| auto_enabled),
             ws_names: workspaces.iter().map(|w| w.name.clone()).collect(),
             ws_index,
@@ -1164,7 +1155,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
             ball,
             max_chain,
             now_ms: start.elapsed().as_millis() as u64,
-            hover,
         };
         last_ui_state = Some(ui_state_of(&tabs, &ui, flash.as_deref()));
         surface.draw(&tabs, &ui, flash.as_deref())?;
@@ -1176,86 +1166,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
         let Some(ev) = surface.poll(Duration::from_millis(16), &tabs, active)? else {
             continue;
-        };
-
-        // マウスが乗っている行を覚えて、押せる場所が見て分かるようにする
-        if let Event::Mouse(m) = &ev {
-            hover = hit_at(&hits, m.row, m.column);
-        } else if matches!(ev, Event::Key(_)) {
-            hover = None;
-        }
-
-        // INDEXのメニューはクリックでもキーと同じ動作にする。
-        // 分岐を増やすとキー操作と挙動がずれていくので、キー入力に翻訳して合流させる
-        let ev = match &ev {
-            Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) => {
-                match hit_at(&hits, m.row, m.column) {
-                    // メニューはキー入力に翻訳して、キー操作と処理を共有する
-                    Some(Hit::Key(c)) => {
-                        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
-                    }
-                    Some(Hit::Tab(n)) => {
-                        if n <= tabs.len() {
-                            active = n;
-                            view_touched_ms = start.elapsed().as_millis() as u64;
-                        }
-                        continue;
-                    }
-                    Some(Hit::Index) => {
-                        active = 0;
-                        view_touched_ms = start.elapsed().as_millis() as u64;
-                        continue;
-                    }
-                    Some(Hit::Lock(n)) => {
-                        if let Some(t) = tabs.get_mut(n - 1) {
-                            t.locked = !t.locked;
-                            flash = Some(i18n::t(if t.locked { "msg.lock_on" } else { "msg.lock_off" }));
-                        }
-                        continue;
-                    }
-                    Some(Hit::Restart(n)) => {
-                        if let Some(t) = tabs.get_mut(n - 1) {
-                            flash = Some(match t.restart(rows, cols) {
-                                Ok(()) => i18n::tp("msg.restarted", &[("name", &t.title)]),
-                                Err(e) => i18n::tp("msg.restart_failed", &[("error", &e.to_string())]),
-                            });
-                        }
-                        continue;
-                    }
-                    Some(Hit::Workspace) => {
-                        ws_open = !ws_open;
-                        continue;
-                    }
-                    Some(Hit::WorkspaceItem(n)) => {
-                        switch_workspace(
-                            n, &mut ws_index, &mut tabs, &mut ws_tabs, &workspaces,
-                            &mut active, rows, cols, &mut startup_errors,
-                            &mut started_fired, cfg.as_ref(), &mut engine, &mut engines, &caps,
-                        );
-                        ws_open = false;
-                        continue;
-                    }
-                    Some(Hit::EmergencyStop) => {
-                        auto_enabled = !auto_enabled;
-                        if !auto_enabled {
-                            // 送信予約が残っていると、止めた後に改行だけ届いてしまう
-                            pending_submit.clear();
-                            // 待機中のループも破棄する (Ctrl+B x と同じ)
-                            if let Some(e) = engine.as_mut() {
-                                e.cancel_all();
-                            }
-                        }
-                        flash = Some(i18n::t(if auto_enabled {
-                            "msg.auto_on"
-                        } else {
-                            "msg.emergency_stop"
-                        }));
-                        continue;
-                    }
-                    Some(Hit::Divider) | None => ev,
-                }
-            }
-            _ => ev,
         };
 
         match ev {
@@ -1584,7 +1494,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                     _ => {}
                 }
-                handle_mouse(&mut tabs, &mut active, m, size, now_ms, tab_w, &mut flash)?;
+                handle_mouse(&mut tabs, &mut active, m, size, tab_w, now_ms, &mut flash)?;
             }
             Event::Resize(width, height) => {
                 (rows, cols) = pty_dims(Size { width, height }, tab_w);
@@ -2466,8 +2376,8 @@ fn handle_mouse(
     active: &mut usize,
     m: MouseEvent,
     size: Size,
-    now_ms: u64,
     tab_w: u16,
+    now_ms: u64,
     flash: &mut Option<String>,
 ) -> Result<()> {
     let inner = pane_inner(size, tab_w);
@@ -2593,46 +2503,8 @@ fn handle_mouse(
 }
 
 
-/// INDEXで押せる場所。描画時に記録し、クリック判定はこれだけを見る。
-/// レイアウトを二重に計算しないので、表示とクリック位置がずれない
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Hit {
-    /// そのタブへ切り替える (1始まり)
-    Tab(usize),
-    /// INDEXへ戻る
-    Index,
-    /// INDEXのメニュー行。同じ文字のキーを押したのと同じ扱いにする
-    Key(char),
-    /// 錠アイコン: 入力ロックの切替
-    Lock(usize),
-    /// ✖ / ⟳ アイコン: セッションの再起動
-    Restart(usize),
-    /// 左バー最上部のワークスペース名: 一覧を開く
-    Workspace,
-    /// ワークスペース一覧の項目
-    WorkspaceItem(usize),
-    /// タブバーの幅を変える境界線
-    Divider,
-    /// 全自動化の緊急停止 / 再開 (ステータス行の右端に常設)
-    EmergencyStop,
-}
 
-/// 押せる場所 (画面上の絶対座標)。描画しながら記録する
-struct HitBox {
-    y: u16,
-    x0: u16,
-    x1: u16,
-    hit: Hit,
-}
 
-/// その座標にある押せる場所を探す。
-/// 後から記録したものを優先する (錠アイコンはタブ行の上に重なっているため)
-fn hit_at(hits: &[HitBox], row: u16, col: u16) -> Option<Hit> {
-    hits.iter()
-        .rev()
-        .find(|h| h.y == row && col >= h.x0 && col < h.x1)
-        .map(|h| h.hit)
-}
 
 
 
@@ -2644,11 +2516,9 @@ fn hit_at(hits: &[HitBox], row: u16, col: u16) -> Option<Hit> {
 
 /// 描画に必要なUI状態
 struct Ui {
-    tab_w: u16,
     /// 設定がまだ無い初回起動 (INDEXに案内を出す)
     first_run: bool,
     active: usize,
-    prefix_active: bool,
     auto: Option<bool>,
     ws_names: Vec<String>,
     ws_index: usize,
@@ -2664,8 +2534,6 @@ struct Ui {
     max_chain: u32,
     /// 描画時刻 (相対ms)。ボールのアニメ進行に使う
     now_ms: u64,
-    /// マウスが乗っているINDEXの行 (押せる場所が分かるように色を変える)
-    hover: Option<Hit>,
 }
 
 
@@ -2860,10 +2728,8 @@ mod tests {
 
     fn test_ui(active: usize, ball: ball::Ball, now_ms: u64) -> Ui {
         Ui {
-            tab_w: 22,
             first_run: false,
             active,
-            prefix_active: false,
             auto: Some(true),
             ws_names: vec![],
             ws_index: 0,
@@ -2874,7 +2740,6 @@ mod tests {
             ball,
             max_chain: 10,
             now_ms,
-            hover: None,
         }
     }
 
@@ -3082,10 +2947,10 @@ mod tests {
 
         // 押して、動かさずに離す
         handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Down(MouseButton::Left), inner.y + 2),
-                     size, 0, tab_w, &mut flash).unwrap();
+                     size, tab_w, 0, &mut flash).unwrap();
         assert!(tabs[0].copy.is_some(), "押した時点では選択の準備に入る");
         handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Up(MouseButton::Left), inner.y + 2),
-                     size, 0, tab_w, &mut flash).unwrap();
+                     size, tab_w, 0, &mut flash).unwrap();
         assert!(
             flash.is_none(),
             "クリックしただけでコピーしている: {flash:?}"
@@ -3094,11 +2959,11 @@ mod tests {
 
         // 押して、動かしてから離す
         handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Down(MouseButton::Left), inner.y + 2),
-                     size, 0, tab_w, &mut flash).unwrap();
+                     size, tab_w, 0, &mut flash).unwrap();
         handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Drag(MouseButton::Left), inner.y + 5),
-                     size, 0, tab_w, &mut flash).unwrap();
+                     size, tab_w, 0, &mut flash).unwrap();
         handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Up(MouseButton::Left), inner.y + 5),
-                     size, 0, tab_w, &mut flash).unwrap();
+                     size, tab_w, 0, &mut flash).unwrap();
         assert!(flash.is_some(), "ドラッグして選んだらコピーする");
 
         for t in tabs.iter_mut() {

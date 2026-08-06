@@ -110,6 +110,11 @@ pub struct Capabilities {
     host: std::cell::RefCell<Option<std::rc::Rc<crate::browser::Browser>>>,
     /// 窓の中で、ブラウザを置く領域
     area: std::cell::Cell<(i32, i32, i32, i32)>,
+    /// 窓の中に置いたページの名前。
+    ///
+    /// 覚えないと、位置を直す先も閉じる先も分からない。
+    /// 開いた場所に置きっぱなしになり、窓を動かしても付いてこなかった
+    hosted: std::cell::RefCell<Vec<String>>,
 }
 
 /// ページを触るときの既定の待ち時間。
@@ -129,6 +134,7 @@ impl Capabilities {
             overlay: true,
             host: std::cell::RefCell::new(None),
             area: std::cell::Cell::new((0, 0, 0, 0)),
+            hosted: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -195,6 +201,7 @@ impl Capabilities {
             overlay,
             host: std::cell::RefCell::new(None),
             area: std::cell::Cell::new((0, 0, 0, 0)),
+            hosted: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -311,6 +318,10 @@ impl Capabilities {
         // 窓があるなら、その中に置く。別窓にすると位置も重なり順も自前になる
         if let Some(h) = self.host.borrow().as_ref() {
             h.open_child(name, url, self.area.get())?;
+            let mut hosted = self.hosted.borrow_mut();
+            if !hosted.iter().any(|x| x == name) {
+                hosted.push(name.to_string());
+            }
             crate::append_hook_log(&format!("ブラウザ {name} (窓の中): {url}"));
             return Ok(());
         }
@@ -338,7 +349,7 @@ impl Capabilities {
         // 窓の中に置いているなら、領域を渡すだけ
         if let Some(h) = self.host.borrow().as_ref() {
             let r = if show { self.area.get() } else { (0, 0, 0, 0) };
-            for name in self.browsers.borrow().keys() {
+            for name in self.hosted.borrow().iter() {
                 let _ = h.child_bounds(name, r);
             }
             return;
@@ -359,7 +370,7 @@ impl Capabilities {
 
     /// 開いているブラウザがあるか
     pub fn has_browser(&self) -> bool {
-        !self.browsers.borrow().is_empty()
+        !self.browsers.borrow().is_empty() || !self.hosted.borrow().is_empty()
     }
 
     fn with<T>(
@@ -423,6 +434,11 @@ impl Capabilities {
     }
 
     pub fn browser_close(&self, name: &str) -> Result<()> {
+        if let Some(h) = self.host.borrow().as_ref() {
+            h.close_child(name)?;
+            self.hosted.borrow_mut().retain(|x| x != name);
+            return Ok(());
+        }
         if let Some(b) = self.browsers.borrow_mut().remove(name) {
             let _ = b.unask();
             b.close()?;
