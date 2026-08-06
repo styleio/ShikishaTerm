@@ -78,7 +78,7 @@
   "msg.paste_failed": ">> ペーストに失敗: {error}",
   "msg.no_response": ">> まだ応答が記録されていません",
   "msg.auto_on": ">> 自動化: ON",
-  "msg.browser_shown": "ブラウザを表示 (Ctrl+B w で隠す)",
+  "msg.browser_shown": "ブラウザを表示 (Ctrl+B o で隠す)",
   "msg.browser_hidden": "ブラウザを隠しました",
   "msg.auto_off": ">> 自動化: OFF",
   "msg.emergency_stop": ">> 緊急停止: 全自動化を止めました（Ctrl+B a で再開）",

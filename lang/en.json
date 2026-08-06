@@ -78,7 +78,7 @@
   "msg.paste_failed": ">> Paste failed: {error}",
   "msg.no_response": ">> No captured response yet",
   "msg.auto_on": ">> Automation: ON",
-  "msg.browser_shown": "Browser shown (Ctrl+B w to hide)",
+  "msg.browser_shown": "Browser shown (Ctrl+B o to hide)",
   "msg.browser_hidden": "Browser hidden",
   "msg.auto_off": ">> Automation: OFF",
   "msg.emergency_stop": ">> EMERGENCY STOP: all automation halted (Ctrl+B a to resume)",

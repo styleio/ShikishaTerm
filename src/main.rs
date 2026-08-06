@@ -26,6 +26,7 @@ mod remote;
 mod session_log;
 mod tab;
 mod watch;
+mod winmode;
 mod webui;
 
 use std::sync::{Arc, Mutex};
@@ -98,6 +99,12 @@ fn main() -> Result<()> {
         config::load().and_then(|c| c.language).as_deref(),
         &[config_file_dir(), std::path::PathBuf::from(".")],
     );
+    // 窓モードの試作。自前の窓にターミナルを描く。
+    // 確かめたいのは日本語入力と描画速度で、そこが通らなければこの道は選べない
+    if std::env::args().nth(1).as_deref() == Some("--window") {
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        return winmode::run(&rest);
+    }
     // 設定だけ開くモード (TUIを起動せずブラウザで設定を編集する)
     if std::env::args().nth(1).as_deref() == Some("--settings") {
         // 本体が動いていなくてもQRを出せる (接続先は設定から都度組み立てる)
@@ -1191,8 +1198,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                 );
                             }
                         }
-                        // Ctrl+B w 重ねたブラウザの出し入れ
-                        KeyCode::Char('w') if caps.has_browser() => {
+                        // Ctrl+B o 重ねたブラウザの出し入れ。
+                        // w も b も既に埋まっている (数えて選んだ)
+                        KeyCode::Char('o') if caps.has_browser() => {
                             browser_shown = !browser_shown;
                             caps.browsers_fit(browser_shown);
                             flash = Some(i18n::t(if browser_shown {

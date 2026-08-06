@@ -160,6 +160,12 @@ pub enum Ev {
     Result { id: u64, ok: bool, value: String },
     /// 帯のボタンが押された = 人が自分の番を終えた
     Button,
+    /// 窓モードでの打鍵。確定した文字、名前付きの制御キー、Ctrl+文字のいずれか
+    Key {
+        text: Option<String>,
+        named: Option<String>,
+        ctrl: Option<String>,
+    },
     /// 窓が閉じられた
     Closed,
 }
@@ -555,6 +561,11 @@ fn run_window(
                         .to_string(),
                 },
                 Some("button") => Ev::Button,
+                Some("key") => Ev::Key {
+                    text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
+                    named: v.get("named").and_then(|x| x.as_str()).map(str::to_string),
+                    ctrl: v.get("ctrl").and_then(|x| x.as_str()).map(str::to_string),
+                },
                 Some("result") => Ev::Result {
                     id: v.get("id").and_then(|i| i.as_u64()).unwrap_or(0),
                     ok: v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false),
@@ -860,10 +871,6 @@ pub fn host_client_rect() -> Option<(i32, i32, i32, i32)> {
 /// (実測: 隠し窓は pid が自分側、辿った先は WindowsTerminal の pid)
 pub struct HostWindow {
     pub hwnd: isize,
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
 }
 
 /// ターミナルの窓を探す。見つからなければ重ねない (そのまま別窓で出す)
@@ -891,6 +898,6 @@ pub fn host_window() -> Option<HostWindow> {
         if w <= 0 || h <= 0 {
             return None;
         }
-        Some(HostWindow { hwnd: host as isize, x: r.left, y: r.top, w, h })
+        Some(HostWindow { hwnd: host as isize })
     }
 }
