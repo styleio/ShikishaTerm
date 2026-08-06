@@ -767,3 +767,45 @@ mod tests {
         println!("閉じてもここまで来た (プロセスは生きている)");
     }
 }
+
+/// 自分を映しているターミナルの窓と、その位置・大きさ。
+///
+/// ConPTY 配下では `GetConsoleWindow` が大きさ0の隠し窓を返す。
+/// そこから `GA_ROOTOWNER` を辿ると本物の枠に出る
+/// (実測: 隠し窓は pid が自分側、辿った先は WindowsTerminal の pid)
+pub struct HostWindow {
+    pub hwnd: isize,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// ターミナルの窓を探す。見つからなければ重ねない (そのまま別窓で出す)
+pub fn host_window() -> Option<HostWindow> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GA_ROOTOWNER, GetAncestor, GetWindowRect, IsWindowVisible,
+    };
+    unsafe {
+        let console = GetConsoleWindow();
+        if console.is_null() {
+            return None;
+        }
+        let host = GetAncestor(console, GA_ROOTOWNER);
+        if host.is_null() || host == console || IsWindowVisible(host) == 0 {
+            return None;
+        }
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetWindowRect(host, &mut r) == 0 {
+            return None;
+        }
+        // 大きさ0は隠し窓。本物の枠ではない
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        Some(HostWindow { hwnd: host as isize, x: r.left, y: r.top, w, h })
+    }
+}
