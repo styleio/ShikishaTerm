@@ -186,6 +186,11 @@ pub struct Browser {
     /// ログインはSSOで2〜3回飛ぶのが普通で、
     /// 入れ直さないと「最初だけ出て途中で消える」ことになる
     pending_ask: std::sync::Mutex<Option<(String, String)>>,
+    /// 何かを待っている間に届いた、別の合図。
+    ///
+    /// 読み飛ばして捨てると、待ちの前に送られたものが永久に消える。
+    /// 実際それで、窓の桁数が一度も届かなかった
+    spare: std::sync::Mutex<Vec<Ev>>,
 }
 
 /// 開けるURLか。http/https だけを通す。
@@ -250,6 +255,7 @@ impl Browser {
             events: ev_rx,
             next_id: AtomicU64::new(1),
             pending_ask: std::sync::Mutex::new(None),
+            spare: std::sync::Mutex::new(Vec::new()),
         };
         // 文書が用意できるまで返さない。窓ができた時点で返すと、
         // 呼んだ側は空の文書を触ることになり、
@@ -272,7 +278,10 @@ impl Browser {
                     return Ok(url);
                 }
                 Ok(Ev::Closed) => return Err(anyhow!("ブラウザが閉じました")),
-                Ok(_) => continue,
+                Ok(other) => {
+                    self.spare.lock().unwrap().push(other);
+                    continue;
+                }
                 Err(_) => return Err(anyhow!("ページが用意できません")),
             }
         }
@@ -376,7 +385,9 @@ impl Browser {
     /// 溜まっている報告を取り出す (待たない)。
     /// 新しい文書に移っていたら、出しておくべき帯を出し直す
     pub fn drain(&self) -> Vec<Ev> {
-        let evs: Vec<Ev> = self.events.try_iter().collect();
+        // 待っている間に来たものを先に返す (届いた順を保つ)
+        let mut evs: Vec<Ev> = std::mem::take(&mut *self.spare.lock().unwrap());
+        evs.extend(self.events.try_iter());
         if evs.iter().any(|e| matches!(e, Ev::Ready { .. })) {
             self.reask();
         }
@@ -410,7 +421,10 @@ impl Browser {
                     self.reask();
                     continue;
                 }
-                Ok(_) => continue,
+                Ok(other) => {
+                    self.spare.lock().unwrap().push(other);
+                    continue;
+                }
                 Err(_) => return Err(anyhow!("結果が返りません")),
             }
         }

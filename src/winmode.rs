@@ -290,6 +290,7 @@ pub fn run(cmd: &[String]) -> Result<()> {
                 // 窓に合わせてPTYの大きさを直す。
                 // これを伝えないと、相手は古い桁数のまま折り返す
                 Ev::Resize { rows, cols } => {
+                    crate::append_hook_log(&format!("窓 {rows}行 {cols}桁"));
                     let _ = tab.resize(rows, cols);
                 }
                 // 選んだ時点でコピーする (PuTTY と同じ)
