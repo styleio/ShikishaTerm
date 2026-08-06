@@ -368,12 +368,55 @@ fn manage_master_password(
     }
 }
 
+/// 描画先。ターミナルにも、自前の窓にも描ける。
+///
+/// ループの側は「どちらに描いているか」を知らない。
+/// 知らせると、片方だけの分岐がループ中に増えていく
+enum Surface<'a> {
+    /// 今までどおり、動かしている端末へ描く
+    Term(&'a mut ratatui::DefaultTerminal),
+}
+
+impl Surface<'_> {
+    fn size(&self) -> Result<ratatui::layout::Size> {
+        match self {
+            Surface::Term(t) => Ok(t.size()?),
+        }
+    }
+
+    /// 端末そのものを要る処理のための取り出し口 (パスワード入力など)。
+    ///
+    /// 窓では別の出し方が要るので、そのとき None になる。
+    /// そうしておけば「ここは別の道が必要」がコンパイラから見える
+    fn term_mut(&mut self) -> Option<&mut ratatui::DefaultTerminal> {
+        match self {
+            Surface::Term(t) => Some(t),
+        }
+    }
+
+    fn draw(
+        &mut self,
+        tabs: &[Tab],
+        ui: &Ui,
+        flash: Option<&str>,
+        hits: &mut Vec<HitBox>,
+    ) -> Result<()> {
+        match self {
+            Surface::Term(t) => {
+                t.draw(|f| draw(f, tabs, ui, flash, hits))?;
+                Ok(())
+            }
+        }
+    }
+}
+
 fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let cmd_args: Vec<String> = std::env::args().skip(1).collect();
     let start = Instant::now();
     // 幅はconfig指定 → 無ければタブ名から自動算出 (タブ起動後に確定)
     let mut tab_w = 18u16;
-    let (mut rows, mut cols) = pty_dims(terminal.size()?, tab_w);
+    let mut surface = Surface::Term(terminal);
+    let (mut rows, mut cols) = pty_dims(surface.size()?, tab_w);
 
     // タブ構成: CLI引数 (デバッグ用) > config.json > 既定 (PowerShell 1タブ)
     let cfg = if cmd_args.is_empty() {
@@ -439,7 +482,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         Some(w) => w.clamp(TAB_BAR_MIN, TAB_BAR_MAX),
         None => auto_tab_width(&tabs),
     };
-    (rows, cols) = pty_dims(terminal.size()?, tab_w);
+    (rows, cols) = pty_dims(surface.size()?, tab_w);
     for t in &tabs {
         let _ = t.resize(rows, cols);
     }
@@ -464,7 +507,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 } else {
                     i18n::t("prompt.password.retry")
                 };
-                match prompt_password(terminal, &i18n::t("prompt.password.title"), &note)? {
+                let Some(term) = surface.term_mut() else {
+                    break;
+                };
+                match prompt_password(term, &i18n::t("prompt.password.title"), &note)? {
                     Some(pw) => {
                         let ok = std::fs::read_to_string(&path)
                             .ok()
@@ -603,7 +649,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     let w = w.clamp(TAB_BAR_MIN, TAB_BAR_MAX);
                     if w != tab_w {
                         tab_w = w;
-                        (rows, cols) = pty_dims(terminal.size()?, tab_w);
+                        (rows, cols) = pty_dims(surface.size()?, tab_w);
                         for t in &tabs {
                             let _ = t.resize(rows, cols);
                         }
@@ -993,7 +1039,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             now_ms: start.elapsed().as_millis() as u64,
             hover,
         };
-        terminal.draw(|f| draw(f, &tabs, &ui, flash.as_deref(), &mut hits))?;
+        surface.draw(&tabs, &ui, flash.as_deref(), &mut hits)?;
         // 重ねているブラウザを、ターミナルの動きに付いていかせる。
         // 所有関係で最小化と重なり順はOSが見てくれるが、位置だけは追う必要がある
         if browser_shown {
@@ -1243,7 +1289,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         }
                         // Ctrl+B [ でコピーモード (tmuxのコピーモード風)
                         KeyCode::Char('[') => {
-                            let rows = pty_dims(terminal.size()?, tab_w).0;
+                            let rows = pty_dims(surface.size()?, tab_w).0;
                             if let Some(t) = session_mut(&mut tabs, active) {
                                 t.copy = Some(CopyState {
                                     cursor_row: rows.saturating_sub(1),
@@ -1307,8 +1353,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         }
                         // マスターパスワードの設定・変更・解除 (TUI内で完結)
                         KeyCode::Char('k') => {
+                            let Some(term) = surface.term_mut() else {
+                                continue;
+                            };
                             flash = Some(manage_master_password(
-                                terminal,
+                                term,
                                 cfg.as_ref(),
                                 &mut password,
                             )?);
@@ -1335,7 +1384,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         _ => {}
                     }
                 } else {
-                    let size = terminal.size()?;
+                    let size = surface.size()?;
                     let now_ms = start.elapsed().as_millis() as u64;
                     let mut locked_hit = false;
                     if let Some(t) = session_mut(&mut tabs, active) {
@@ -1376,7 +1425,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 }
             }
             Event::Mouse(m) => {
-                let size = terminal.size()?;
+                let size = surface.size()?;
                 let now_ms = start.elapsed().as_millis() as u64;
                 if help_open {
                     if matches!(m.kind, MouseEventKind::Down(_)) {
@@ -1394,7 +1443,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         let new_w = (m.column + 1).clamp(TAB_BAR_MIN, TAB_BAR_MAX);
                         if new_w != tab_w {
                             tab_w = new_w;
-                            (rows, cols) = pty_dims(terminal.size()?, tab_w);
+                            (rows, cols) = pty_dims(surface.size()?, tab_w);
                             for t in &tabs {
                                 let _ = t.resize(rows, cols);
                             }
