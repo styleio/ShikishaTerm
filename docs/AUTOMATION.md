@@ -227,6 +227,11 @@ screen before the reply existed is not part of the reply. A CLI can reword or
 translate its status line and this keeps working, and a reply can contain any wording
 at all without risk of being eaten.
 
+The instruction itself is not sent back either. A reply begins on the line *after* the
+one that was submitted, which matters when the instruction was long enough to wrap: the
+second half of it used to arrive at the top of the answer, on its own, looking like
+something the other side had said.
+
 One thing is beyond reach: **narrowing the window while a reply is arriving truncates
 it**, because the terminal clips every stored row to the new width and the discarded
 text is gone. Widening and height changes are harmless. A narrowing mid-reply is

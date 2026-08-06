@@ -1018,9 +1018,13 @@ impl Tab {
             self.prompted.store(true, Ordering::Relaxed);
             self.submitted_output
                 .store(self.output_count(), Ordering::Relaxed);
-            // 応答はここから始まる。これより前は指示であって答えではない
+            // 応答はここから始まる。これより前は指示であって答えではない。
+            //
+            // +1 は、実行がまさに今の行を書き終える動作だから。
+            // カーソル行そのものを起点にすると、打ち込んだ指示の
+            // 最後の1行 (折り返していればその後半だけ) を答えに含めてしまう
             self.response_marker
-                .store(self.line_position() as u64, Ordering::Relaxed);
+                .store(self.line_position() as u64 + 1, Ordering::Relaxed);
             self.submitted_screen
                 .store(self.screen_fingerprint(), Ordering::Relaxed);
             self.saw_working.store(false, Ordering::Relaxed);
@@ -1309,8 +1313,35 @@ impl Tab {
         (head, now.len().saturating_sub(tail).max(head))
     }
 
+    /// 実行の瞬間から動いていない「貼り付いた枠」が、下端に何行あるか。
+    ///
+    /// カーソルより下は位置だけで枠と分かる。その内側は実行前の画面と
+    /// 見比べる。入力欄そのもの (カーソル行) は実行で中身が消えるため
+    /// 必ず食い違うが、これは答えではないので走査を止めさせない。
+    ///
+    /// Codex は例文をカーソル行に出す ("Implement {feature}")。
+    /// スクロールする相手でも枠は貼り付いたままなので、同じ理屈で外せる
+    fn pinned_rows(&self, rows: u16, cols: u16, cursor_row: u16, floor: usize) -> usize {
+        let keep = (rows as usize).saturating_sub(floor);
+        let mut now: Vec<String> = {
+            let p = self.parser.lock().unwrap();
+            p.screen().rows(0, cols).take(keep).collect()
+        };
+        let mut before = self.submitted_rows.lock().unwrap().clone();
+        before.truncate(keep);
+        if let (Some(a), Some(b)) = (
+            now.get_mut(cursor_row as usize),
+            before.get(cursor_row as usize),
+        ) {
+            *a = b.clone();
+        }
+        let (_, end) = Self::changed_span(&before, &now);
+        // end = 変わった行の下端。そこから下は貼り付いた枠
+        (rows as usize).saturating_sub(end).max(floor)
+    }
+
     fn capture_since_marker(&self) -> String {
-        let mut p = self.parser.lock().unwrap();
+        let p = self.parser.lock().unwrap();
         let (rows, cols) = p.screen().size();
         // カーソルは入力欄の中にある。その下にあるのは、答えではなく枠。
         // ヒント行 ("Use /skills to list available skills") や
@@ -1320,29 +1351,19 @@ impl Tab {
             // 全画面TUIはスクロールしないため可視画面のスナップショットで代替。
             // ただし実行前から出ていたもの (起動バナー等) は答えではない
             let (floor, _) = capture_range(rows, cursor_row, 0);
-            // カーソルより下は位置だけで枠と分かる。見比べる前に外しておく。
-            // ヒント行は文言が入れ替わる ("manual mode on" -> "... ? for shortcuts")
-            // ので、残したままだと必ず食い違い、そこで走査が止まってしまう
             let keep = (rows as usize).saturating_sub(floor);
-            let mut now: Vec<String> = p.screen().rows(0, cols).take(keep).collect();
+            let now: Vec<String> = p.screen().rows(0, cols).take(keep).collect();
             let mut before = self.submitted_rows.lock().unwrap().clone();
             before.truncate(keep);
-            // カーソルのいる行は入力欄そのもの。実行で中身が消えるため必ず
-            // 食い違うが、これは答えではない。ここで走査を止めさせない
-            if let (Some(a), Some(b)) = (now.get_mut(cursor_row as usize), before.get(cursor_row as usize)) {
-                *a = b.clone();
-            }
-            let (start, end) = Self::changed_span(&before, &now);
-            if end <= start {
-                return String::new();
-            }
-            // 上からの行番号を、下端からの深さに直す
+            // 上端は実行前から出ていたもの (起動バナー) を外す
+            let (start, _) = Self::changed_span(&before, &now);
+            drop(p);
+            let lo = self.pinned_rows(rows, cols, cursor_row, floor);
             let hi = (rows as usize).saturating_sub(1).saturating_sub(start);
-            // カーソルより下は無条件に枠なので、そこは必ず外す
-            let lo = (rows as usize).saturating_sub(end).max(floor);
             if lo > hi {
                 return String::new();
             }
+            let mut p = self.parser.lock().unwrap();
             let text = extract_text(&mut p, lo, hi, cols);
             return text.trim_end().to_string();
         }
@@ -1357,8 +1378,13 @@ impl Tab {
         } else {
             self.line_position().saturating_sub(stored as usize)
         };
+        let (floor, hi) = capture_range(rows, cursor_row, since);
+        // 下端の枠は、スクロールしても貼り付いたまま残る
+        let lo = self.pinned_rows(rows, cols, cursor_row, floor);
+        if lo > hi {
+            return String::new();
+        }
         let mut p = self.parser.lock().unwrap();
-        let (lo, hi) = capture_range(rows, cursor_row, since);
         let text = extract_text(&mut p, lo, hi, cols);
         text.trim_end().to_string()
     }
@@ -1545,8 +1571,8 @@ mod layout_probe {
             println!("画面 {rows}行 x {cols}桁 / カーソル row={cur_row} col={cur_col}");
             println!("alternate_screen = {}", screen.alternate_screen());
             println!("カーソルより下: {} 行", rows - 1 - cur_row);
-            println!("--- 下から10行 (深さ: 内容) ---");
-            for r in (rows.saturating_sub(10)..rows).rev() {
+            println!("--- 全 {rows} 行 (深さ: 内容) ---");
+            for r in (0..rows).rev() {
                 let line = screen.rows(0, cols).nth(r as usize).unwrap_or_default();
                 let depth = rows - 1 - r;
                 let mark = if r == cur_row { " <== カーソル" } else { "" };
@@ -1570,7 +1596,7 @@ mod capture_probe {
     #[test]
     #[ignore]
     fn probe_what_the_capture_actually_grabs() {
-        let mut tab = Tab::spawn(
+        let tab = Tab::spawn(
             "claude".into(),
             &["claude".to_string()],
             None,
@@ -1635,5 +1661,87 @@ mod capture_probe {
         println!("=== ここまで ===");
         println!("AAA を含む: {}", got.contains("AAA"));
         println!("CCC を含む: {}", got.contains("CCC"));
+    }
+}
+
+#[cfg(test)]
+mod turns_probe {
+    use super::{Tab, TabOptions};
+    use std::time::{Duration, Instant};
+
+    /// 答えとして渡すのは、答えだけであること。本物の端末で確かめる。
+    ///
+    /// 利用者が見たのは、相手へ渡した文章の先頭に
+    /// 「派閥として相手を１００文字以内で論破してください」だけが
+    /// ぽつんと付いてくる現象。折り返した指示の後半だった。
+    ///
+    /// 実行はその行を書き終える動作なので、カーソル行を起点にすると
+    /// 指示の最後の1行を巻き込む。2往復目以降でしか出ないので、
+    /// 1回きりの試験では捕まらない
+    #[test]
+    fn the_instruction_is_not_sent_back_as_part_of_the_answer() {
+        let mut tab = Tab::spawn(
+            "cmd".into(),
+            &["cmd.exe".to_string()],
+            None,
+            24,
+            100,
+            TabOptions::default(),
+        )
+        .expect("起動");
+
+        let settle = |tab: &Tab| {
+            let start = Instant::now();
+            let mut last = 0u64;
+            let mut quiet = Instant::now();
+            while start.elapsed() < Duration::from_secs(20) {
+                std::thread::sleep(Duration::from_millis(100));
+                let now = tab.output_count();
+                if now != last {
+                    last = now;
+                    quiet = Instant::now();
+                } else if last > 0 && quiet.elapsed() > Duration::from_millis(700) {
+                    return;
+                }
+            }
+        };
+        settle(&tab);
+
+        // 100桁を超えて折り返す長さにする (利用者のプロンプトと同じ性質)
+        let long = |n: usize| {
+            format!(
+                "echo TURN{n}-ドラクエ５のビアンカを妻にすべきかフローラを妻にすべきか議論をしてもらいますあなたはビアンカ派閥として相手を１００文字以内で論破してください-END{n}"
+            )
+        };
+
+        for turn in 1..=3 {
+            let text = long(turn);
+            tab.write_passthrough(b"\x1b[200~").unwrap();
+            tab.write_passthrough(text.as_bytes()).unwrap();
+            tab.write_passthrough(b"\x1b[201~").unwrap();
+            settle(&tab);
+
+            let marker_before = tab.line_position();
+            tab.write_bytes(b"\r").unwrap();
+            settle(&tab);
+
+            let got = tab.capture_for_probe();
+            let _ = marker_before;
+            assert!(
+                got.contains(&format!("TURN{turn}-")) && got.contains(&format!("END{turn}")),
+                "{turn}回目の答えが丸ごと入っていない: {got:?}"
+            );
+            assert!(
+                got.trim_start().starts_with(&format!("TURN{turn}-")),
+                "指示の折り返しの後半が頭に付いている: {got:?}"
+            );
+            for prev in 1..turn {
+                assert!(
+                    !got.contains(&format!("END{prev}")),
+                    "{prev}回目の残りを拾っている: {got:?}"
+                );
+            }
+            tab.finish_response();
+        }
     }
 }
