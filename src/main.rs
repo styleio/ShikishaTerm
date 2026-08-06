@@ -370,12 +370,14 @@ fn manage_master_password(
 
 /// 自前の窓へ描くときの持ち物
 struct WinSurface {
-    win: crate::browser::Browser,
+    win: std::rc::Rc<crate::browser::Browser>,
     rows: u16,
     cols: u16,
     /// 直前に送った状態。変わったときだけ送る
     last: Option<crate::uistate::UiState>,
     last_screen: String,
+    /// 中身の領域 (x, y, 幅, 高さ)。ブラウザを置く場所
+    area: (i32, i32, i32, i32),
     /// 窓から来た意図を、ループが読む形に直したもの。
     /// ループは端末のキー操作しか知らないので、そこへ寄せる
     pending: std::collections::VecDeque<Event>,
@@ -396,9 +398,10 @@ impl WinSurface {
         use crate::browser::Ev;
         for ev in self.win.drain() {
             match ev {
-                Ev::Resize { rows, cols } => {
+                Ev::Resize { rows, cols, area } => {
                     self.rows = rows;
                     self.cols = cols;
+                    self.area = area;
                     self.pending.push_back(Event::Resize(cols, rows));
                 }
                 // 「このタブを見たい」は Ctrl+B の数字と同じこと
@@ -495,13 +498,17 @@ fn run_in_window() -> Result<()> {
         }
     });
 
-    let win = browser::Browser::spawn(&format!("http://127.0.0.1:{port}/"), "SHIKISHA-TERM")?;
+    let win = std::rc::Rc::new(browser::Browser::spawn(
+        &format!("http://127.0.0.1:{port}/"),
+        "SHIKISHA-TERM",
+    )?);
     run(Surface::Window(Box::new(WinSurface {
         win,
         rows: 40,
         cols: 120,
         last: None,
         last_screen: String::new(),
+        area: (0, 0, 0, 0),
         pending: std::collections::VecDeque::new(),
     })))
 }
@@ -575,6 +582,15 @@ impl Surface<'_> {
     ///
     /// 窓では別の出し方が要るので、そのとき None になる。
     /// そうしておけば「ここは別の道が必要」がコンパイラから見える
+    /// 窓を持っているなら、その取っ手と中身の領域。
+    /// ブラウザはここに置く (別窓にすると位置も重なり順も自前で持つことになる)
+    fn host(&self) -> Option<(std::rc::Rc<crate::browser::Browser>, (i32, i32, i32, i32))> {
+        match self {
+            Surface::Term(_) => None,
+            Surface::Window(w) => Some((std::rc::Rc::clone(&w.win), w.area)),
+        }
+    }
+
     fn term_mut(&mut self) -> Option<&mut ratatui::DefaultTerminal> {
         match self {
             Surface::Term(t) => Some(t),
@@ -777,6 +793,8 @@ fn run(mut surface: Surface) -> Result<()> {
         None => caps::Capabilities::disabled(),
     });
     let mut engines: Vec<Option<HookEngine>> = (0..workspaces.len().max(1)).map(|_| None).collect();
+    // 窓を持っているなら、ブラウザはその中に置く
+    caps.set_host(surface.host());
     engines[0] = build_engine(cfg.as_ref(), workspaces.first(), &mut startup_errors, &caps);
     if let Some(w) = workspaces.first() {
         open_declared_browsers(w, &caps, &mut startup_errors);
@@ -889,6 +907,8 @@ fn run(mut surface: Surface) -> Result<()> {
                     newcfg.resolve_tokens(password.as_deref()),
                     newcfg.browser_overlay.unwrap_or(true),
                 ));
+                // 設定を読み直すと能力ごと作り直されるので、置き先も渡し直す
+                caps.set_host(surface.host());
                 engine = build_engine(
                     Some(&newcfg),
                     workspaces.get(ws_index),

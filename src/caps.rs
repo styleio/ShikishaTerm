@@ -106,6 +106,10 @@ pub struct Capabilities {
     pressed: std::cell::RefCell<HashMap<String, bool>>,
     /// ターミナルに重ねるか
     overlay: bool,
+    /// 窓を持っているなら、その取っ手。ここに置くと別窓にならない
+    host: std::cell::RefCell<Option<std::rc::Rc<crate::browser::Browser>>>,
+    /// 窓の中で、ブラウザを置く領域
+    area: std::cell::Cell<(i32, i32, i32, i32)>,
 }
 
 /// ページを触るときの既定の待ち時間。
@@ -123,6 +127,8 @@ impl Capabilities {
             browsers: std::cell::RefCell::new(HashMap::new()),
             pressed: std::cell::RefCell::new(HashMap::new()),
             overlay: true,
+            host: std::cell::RefCell::new(None),
+            area: std::cell::Cell::new((0, 0, 0, 0)),
         }
     }
 
@@ -187,6 +193,8 @@ impl Capabilities {
             browsers: std::cell::RefCell::new(HashMap::new()),
             pressed: std::cell::RefCell::new(HashMap::new()),
             overlay,
+            host: std::cell::RefCell::new(None),
+            area: std::cell::Cell::new((0, 0, 0, 0)),
         }
     }
 
@@ -284,8 +292,28 @@ impl Capabilities {
         })
     }
 
+    /// 窓の中に置く先を教える。設定を読み直すたびに設定し直す
+    pub fn set_host(
+        &self,
+        host: Option<(std::rc::Rc<crate::browser::Browser>, (i32, i32, i32, i32))>,
+    ) {
+        match host {
+            Some((h, area)) => {
+                *self.host.borrow_mut() = Some(h);
+                self.area.set(area);
+            }
+            None => *self.host.borrow_mut() = None,
+        }
+    }
+
     /// ブラウザを開く (同じ名前があれば、そこで移動する)
     pub fn browser_open(&self, name: &str, url: &str) -> Result<()> {
+        // 窓があるなら、その中に置く。別窓にすると位置も重なり順も自前になる
+        if let Some(h) = self.host.borrow().as_ref() {
+            h.open_child(name, url, self.area.get())?;
+            crate::append_hook_log(&format!("ブラウザ {name} (窓の中): {url}"));
+            return Ok(());
+        }
         let mut all = self.browsers.borrow_mut();
         match all.get(name) {
             Some(b) => {
@@ -307,6 +335,14 @@ impl Capabilities {
 
     /// 重ねているブラウザを、ターミナルの中身の範囲に合わせる
     pub fn browsers_fit(&self, show: bool) {
+        // 窓の中に置いているなら、領域を渡すだけ
+        if let Some(h) = self.host.borrow().as_ref() {
+            let r = if show { self.area.get() } else { (0, 0, 0, 0) };
+            for name in self.browsers.borrow().keys() {
+                let _ = h.child_bounds(name, r);
+            }
+            return;
+        }
         let rect = crate::browser::host_client_rect();
         for b in self.browsers.borrow().values() {
             match (show, rect) {

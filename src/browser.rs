@@ -174,7 +174,12 @@ pub enum Ev {
     /// 帯のボタンが押された = 人が自分の番を終えた
     Button,
     /// 窓の大きさが変わった (何行何桁入るか)
-    Resize { rows: u16, cols: u16 },
+    Resize {
+        rows: u16,
+        cols: u16,
+        /// 中身の領域 (x, y, 幅, 高さ)。ブラウザはここに置く
+        area: (i32, i32, i32, i32),
+    },
     /// このタブを見たい (0 = 稼働盤)
     Select { tab: usize },
     /// 稼働盤のメニューが押された
@@ -649,10 +654,19 @@ fn run_window(
                         .to_string(),
                 },
                 Some("stop") => Ev::Stop,
-                Some("resize") => Ev::Resize {
-                    rows: v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
-                    cols: v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,
-                },
+                Some("resize") => {
+                    let a = v.get("area").and_then(|x| x.as_array());
+                    let num = |i: usize| {
+                        a.and_then(|a| a.get(i))
+                            .and_then(|x| x.as_i64())
+                            .unwrap_or(0) as i32
+                    };
+                    Ev::Resize {
+                        rows: v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
+                        cols: v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,
+                        area: (num(0), num(1), num(2), num(3)),
+                    }
+                }
                 Some("copy") => Ev::Copy {
                     text: v
                         .get("text")

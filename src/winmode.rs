@@ -516,7 +516,7 @@ pub fn run(cmd: &[String]) -> Result<()> {
                 Ev::Closed => return Ok(()),
                 // 窓に合わせてPTYの大きさを直す。
                 // これを伝えないと、相手は古い桁数のまま折り返す
-                Ev::Resize { rows, cols } => {
+                Ev::Resize { rows, cols, .. } => {
                     crate::append_hook_log(&format!("窓 {rows}行 {cols}桁"));
                     let _ = tab.resize(rows, cols);
                 }

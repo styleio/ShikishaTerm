@@ -331,10 +331,15 @@ function report() {
   const pad = (parseFloat(getComputedStyle(scr).paddingLeft) || 0) * 2;
   const cols = Math.max(20, Math.floor((box.width - pad) / cellW));
   const rows = Math.max(5, Math.floor((box.height - pad) / cellH));
-  const key = rows + "x" + cols;
+  // ブラウザを置く場所。外皮のCSSを変えても、知っているのは
+  // ページなので、Rust側で座標を推測させない
+  const key = rows + "x" + cols + "@" + Math.round(box.left) + "," +
+    Math.round(box.top) + "," + Math.round(box.width) + "," + Math.round(box.height);
   if (key === lastRC) return;
   lastRC = key;
-  send({kind:"resize", rows:rows, cols:cols});
+  send({kind:"resize", rows:rows, cols:cols,
+    area:[Math.round(box.left), Math.round(box.top),
+          Math.round(box.width), Math.round(box.height)]});
 }
 let rt = 0;
 window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(report, 80); });
