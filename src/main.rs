@@ -11,6 +11,10 @@
 //!   Ctrl+B [      コピーモード / Ctrl+B b 素のCtrl+Bを送信
 //! マウス: ホイール=スクロール(コピーモード) / 左ドラッグ=選択即コピー / 右クリック=ペースト
 
+// 画面は自前の窓に描く。黒いコンソールは要らないので、Windowsに用意させない。
+// (端末で使う --settings だけは、そのとき自分で1つ開く)
+#![windows_subsystem = "windows"]
+
 mod ball;
 mod browser;
 mod caps;
@@ -34,10 +38,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{
-    EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-};
-use crossterm::execute;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 
 use detect::TabState;
@@ -82,6 +83,8 @@ fn main() -> Result<()> {
     );
     // 設定だけ開くモード (本体を起動せずブラウザで設定を編集する)
     if std::env::args().nth(1).as_deref() == Some("--settings") {
+        // ここは文字で話すモードなので、話す場所を確保する
+        open_console();
         // 本体が動いていなくてもQRを出せる (接続先は設定から都度組み立てる)
         let info = Arc::new(Mutex::new(webui::RemoteInfo::default()));
         let web = webui::WebUi::start_with(config::config_file_path(), info)?;
@@ -730,10 +733,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut remote_ui = start_remote(cfg.as_ref(), password.as_deref(), &mut startup_errors);
     publish_remote(&remote_info, &remote_ui);
 
-    // マウスを有効にした直後のコンソール入力モード。
-    // 子プロセスに崩されたらこれに戻す (ensure_mouse_capture)
-    let console_mode = console_input_mode();
-
     let mut auto_enabled = true;
     let mut started_fired = vec![false; tabs.len()];
     // 自動チェーンの「透明のボール」。今どのタブが仕事を持っているかを表示に使う
@@ -1224,9 +1223,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
             });
         }
 
-        // 子プロセスがコンソールを崩していたら戻す。判定は GetConsoleMode 1回だけ
-        ensure_mouse_capture(console_mode);
-
         // ボールが渡った先へ画面を移す。
         // 人が画面を触った直後は従わない (読んでいる最中に飛ばされないように)
         {
@@ -1648,12 +1644,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     Ok(())
 }
 
-/// 既定のブラウザでURLを開く
-/// 子プロセスに自分のコンソールを渡さない。
+/// 子プロセスに窓を出させない。
 ///
-/// コンソールを継承した子 (特に cmd.exe) は入力モードから ENABLE_MOUSE_INPUT を
-/// 落とす。実測で 0x1f7 -> 0x1e7。こうなるとマウスが一切効かなくなり、
-/// 「設定画面を開いて戻ったらタブが押せない」という形で表面化する
+/// cmd.exe のようなコンソールのアプリは、黙って起動すると黒い窓を出す。
+/// ブラウザを開くたびに一瞬ちらつくので、最初から出させない
 pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
     use std::os::windows::process::CommandExt as _;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -1754,23 +1748,19 @@ fn open_browser(url: &str) {
     let _ = detach_console(&mut cmd).spawn();
 }
 
-/// コンソール入力モード。子プロセスに崩されたかの判定に使う
-fn console_input_mode() -> Option<u32> {
-    use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE};
-    unsafe {
-        let mut mode = 0u32;
-        (GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mut mode) != 0).then_some(mode)
-    }
-}
-
-/// 崩されていたら crossterm に設定し直させる。
-/// 予防 (detach_console) をすり抜ける経路が残っていても、ここで復帰できる
-fn ensure_mouse_capture(expected: Option<u32>) {
-    let (Some(want), Some(now)) = (expected, console_input_mode()) else {
-        return;
+/// 文字で話す場所を用意する。
+///
+/// この実行ファイルは窓のアプリなので、Windowsはコンソールを付けてくれない。
+/// 呼んだ相手が端末なら、そこへお邪魔する。そうでなければ自分で1つ開く。
+/// 既に繋がっているなら何もしない (どちらも失敗するだけで済む)
+fn open_console() {
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole,
     };
-    if want != now {
-        let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    unsafe {
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            AllocConsole();
+        }
     }
 }
 
@@ -3106,25 +3096,6 @@ mod tests {
         );
     }
 
-    fn test_ui(active: usize, ball: ball::Ball, now_ms: u64) -> Ui {
-        Ui {
-            first_run: false,
-            active,
-            auto: Some(true),
-            ws_names: vec![],
-            ws_index: 0,
-            ws_open: false,
-            help_open: false,
-            qr: None,
-            remote_on: false,
-            ball,
-            max_chain: 10,
-            now_ms,
-            panes: Vec::new(),
-        }
-    }
-
-
     /// 波形は飾りではなく出力量なので、何も出ていなければ底ばいであること
     #[test]
     fn activity_wave_reflects_real_output() {
@@ -3489,38 +3460,17 @@ mod tests {
 
 
 #[cfg(test)]
-mod console_mode_tests {
-    use std::process::Command;
-
-    /// コンソールが無ければ None (CIやパイプ経由では取れない)
-    fn input_mode() -> Option<u32> {
-        super::console_input_mode()
-    }
-
-    /// 子プロセスを起動してもマウス入力が生き残ること。
+mod console_tests {
+    /// 窓のアプリとして作られていること。
     ///
-    /// コンソールを継承した cmd.exe は ENABLE_MOUSE_INPUT を落とす (実測 0x1f7 -> 0x1e7)。
-    /// これを踏むと設定画面を開いて戻った瞬間からマウスが効かなくなる。
-    ///
-    /// 注意: コンソールに繋がっていないと検証できないので、その場合は飛ばす。
-    /// 手元で確認するには、コンソールのあるウィンドウでテストバイナリを直接実行する
+    /// これが無いと Windows が黒いコンソールを一緒に開く。
+    /// 画面は自前の窓に描いているので、その窓には何も映らない
     #[test]
-    fn spawning_a_child_keeps_mouse_input_alive() {
-        let Some(before) = input_mode() else {
-            eprintln!("コンソールが無いので検証を省略");
-            return;
-        };
-
-        // stdio は継承したまま試す。null にすると stdio 側だけで防げてしまい、
-        // detach_console が壊れても気づけないテストになる
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/c", "exit"]);
-        let _ = super::detach_console(&mut cmd).spawn().unwrap().wait();
-
-        assert_eq!(
-            before,
-            input_mode().unwrap(),
-            "子プロセスの起動でコンソール入力モードが変わった (マウスが死ぬ)"
+    fn the_exe_asks_windows_for_no_console() {
+        let src = include_str!("main.rs");
+        assert!(
+            src.contains("#![windows_subsystem = \"windows\"]"),
+            "コンソールが付いてくる"
         );
     }
 }
