@@ -98,13 +98,22 @@ pub struct RemoteUi {
 
 impl RemoteUi {
     pub fn start(bind: std::net::Ipv4Addr, port: u16, token: String) -> Result<Self> {
-        let server = Server::http((bind, port))
-            .map_err(|e| {
+        let server = Server::http((bind, port)).map_err(|e| {
+            let addr = format!("{bind}:{port}");
+            // 「使用中」はOSの原文が長いわりに何をすればいいか言わない。
+            // 相手は大抵、前に起動したままの自分自身
+            let in_use = e
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse);
+            if in_use {
+                anyhow::anyhow!(crate::i18n::tp("remote.err.in_use", &[("addr", &addr)]))
+            } else {
                 anyhow::anyhow!(crate::i18n::tp(
                     "remote.err.start",
-                    &[("addr", &format!("{bind}:{port}")), ("error", &e.to_string())]
+                    &[("addr", &addr), ("error", &e.to_string())]
                 ))
-            })?;
+            }
+        })?;
         let real_port = server
             .server_addr()
             .to_ip()

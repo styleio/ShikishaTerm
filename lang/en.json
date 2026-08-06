@@ -326,6 +326,7 @@
   "remote.err.public": "{ip} is reachable from outside. If you really need this, set remote.allow_public to true (note that this lets anyone with the token run commands through your AI)",
   "remote.err.bad_address": "The listening address is invalid: {addr}",
   "remote.err.start": "Could not start the phone feature ({addr}): {error}",
+  "remote.err.in_use": "{addr} is already taken by another process. Check whether an earlier SHIKISHA-TERM is still running",
   "ai.prompt": "You are a converter that writes automation scripts for SHIKISHA-TERM.\nWrite the contents of `{event}.lua` so that it does the following.\n\n## Output rules (strict)\n- Always start with <<<LUA and end with >>>; write only Lua code in between\n- No greetings, explanations, confirmations, questions or code fences\n- Do not wrap it in function ... end (write only the body)\n- Do not use functions or libraries that are absent from the specification\n- No need to look up or check files; finish from these instructions alone\n\n## What is wanted\n{want}\n\n{layout}\n## Specification\n{manual}\n\nNow begin with <<<LUA.\n",
   "ai.tabs.header": "## Tab layout\nName the destination tab (e.g. shikisha.send_to_tab(\"Review\", ...)).\nNumbers change when tabs are reordered, so names are safer.",
   "ai.tabs.id": " → refer to it as \"{id}\"",

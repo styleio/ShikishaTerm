@@ -241,6 +241,8 @@ struct WinSurface {
     presses: Vec<String>,
     /// 読み込みが終わったページ (呼び名, URL, 参照先まで揃ったか)
     loads: Vec<(String, String, bool)>,
+    /// 窓が閉じた。描く先が無くなったので、ループは畳むしかない
+    closed: bool,
 }
 
 impl WinSurface {
@@ -274,6 +276,9 @@ impl WinSurface {
                 Ev::JsError { msg } => {
                     crate::append_hook_log(&format!("画面の失敗: {msg}"));
                 }
+                // 窓が閉じた。ここで畳まないと、描く先を失ったまま
+                // 誰にも見えないプロセスが残り、待ち受けの口を握り続ける
+                Ev::Closed => self.closed = true,
                 // 置いたページの帯が押された = 人が自分の番を終えた。
                 // 誰が押したかは、報告に付いてくる名前でしか分からない
                 Ev::Button { from: Some(name) } => self.presses.push(name),
@@ -450,6 +455,7 @@ fn run_in_window() -> Result<()> {
         pending: std::collections::VecDeque::new(),
         presses: Vec::new(),
         loads: Vec::new(),
+        closed: false,
     })
 }
 
@@ -500,6 +506,9 @@ impl WinSurface {
     /// キー操作に直して渡してある
     fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> Result<Option<Event>> {
         self.take_events(active_tab);
+        if self.closed {
+            return Ok(None);
+        }
         if let Some(e) = self.pending.pop_front() {
             return Ok(Some(e));
         }
@@ -1319,10 +1328,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
-        let Some(ev) = surface.poll(
+        let polled = surface.poll(
             Duration::from_millis(16),
             session_at(&layout, active).and_then(|i| tabs.get(i)),
-        )? else {
+        )?;
+        // 窓が無くなったら、Ctrl+B q と同じところへ落ちる。
+        // 片付けは1か所だけにしておきたい
+        if surface.closed {
+            break;
+        }
+        let Some(ev) = polled else {
             continue;
         };
 
@@ -3460,7 +3475,7 @@ mod tests {
 
 
 #[cfg(test)]
-mod console_tests {
+mod shutdown_tests {
     /// 窓のアプリとして作られていること。
     ///
     /// これが無いと Windows が黒いコンソールを一緒に開く。
@@ -3471,6 +3486,34 @@ mod console_tests {
         assert!(
             src.contains("#![windows_subsystem = \"windows\"]"),
             "コンソールが付いてくる"
+        );
+    }
+
+    /// 窓が閉じたら終わること。
+    ///
+    /// 閉じても回り続けると、誰にも見えないプロセスが残る。
+    /// それが待ち受けの口を握ったままなので、次の起動が
+    /// 「アドレスは既に使用中」で失敗する。
+    ///
+    /// 打鍵に直せない報告は keys_for が捨てるので、閉じたことは
+    /// そこを通せない。ループが直に見るしかない
+    #[test]
+    fn closing_the_window_ends_the_run() {
+        use crate::browser::Ev;
+        assert!(
+            super::keys_for(&Ev::Closed).is_empty(),
+            "閉じたことを打鍵として扱っている"
+        );
+        let src = include_str!("main.rs");
+        assert!(
+            src.contains("Ev::Closed => self.closed = true"),
+            "窓が閉じた報告を受けていない"
+        );
+        // 改行の書き方は環境で変わるので、行ごとに見る
+        let mut lines = src.lines().map(str::trim);
+        assert!(
+            lines.any(|l| l == "if surface.closed {") && lines.next() == Some("break;"),
+            "閉じてもループが終わらない"
         );
     }
 }
