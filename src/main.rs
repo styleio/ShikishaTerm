@@ -324,7 +324,9 @@ fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
         Ev::Select { tab } if *tab <= 9 => {
             prefixed(char::from_digit(*tab as u32, 10).unwrap_or('0'))
         }
-        Ev::Menu { key } => key.chars().next().map(prefixed).unwrap_or_default(),
+        // 盤面のメニューは INDEX を見ているときの素の打鍵。
+        // 前置キーを付けると、同じ文字が両方にあるものだけが効く
+        Ev::Menu { key } => key.chars().next().map(plain).map(|k| vec![k]).unwrap_or_default(),
         Ev::Stop => prefixed('x'),
         Ev::Key { text, named, ctrl } => {
             if let Some(n) = named {
@@ -1400,7 +1402,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 {
                     prefix_active = true;
                 } else if active == 0 {
-                    // INDEX = ホーム画面: 数字でタブ切替、英字でメニュー実行
+                    // INDEX = ホーム画面: 数字でタブ切替、英字でメニュー実行。
+                    // ここで受ける文字は MENU_KEYS と揃っている必要がある
+                    // (盤面が出しているのに、押しても何も起きない、を防ぐ)
                     match key.code {
                         KeyCode::Char(c @ '0'..='9') => {
                             let n = c as usize - '0' as usize;
@@ -1494,6 +1498,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         KeyCode::Char('q') => break,
                         _ => {}
                     }
+                    // INDEX-ここまで (盤面が出すキーを、ここが受けているか試験が見る)
                 } else {
                     let size = surface.size()?;
                     let now_ms = start.elapsed().as_millis() as u64;
@@ -2800,6 +2805,58 @@ mod tests {
         cfg.resolve_workspaces().0.into_iter().next().unwrap()
     }
 
+
+    /// 盤面が出しているメニューのキーを、INDEX が全部受けること。
+    ///
+    /// 出しているのに受け手が無いと、押しても何も起きない。
+    /// 落ちも警告も出ないので、押した人が気づくしかない。
+    ///
+    /// 実際に `e`(設定) `i`(QR) `t`(通知) がそうだった。
+    /// 前置キー付きで送っていたため、たまたま両方に同じ文字がある
+    /// `?` `w` `r` だけが効き、半分動くので原因が見えなかった
+    #[test]
+    fn every_key_the_board_offers_is_answered_on_index() {
+        let src = include_str!("main.rs");
+        // INDEX の分岐だけを切り出す
+        let head = "// INDEX = ホーム画面";
+        let from = src.find(head).expect("INDEX の分岐が見つからない");
+        // 分岐の終わりは、印を置いてある。
+        // 文字数で切ると足りず、括弧で探すと途中の入れ子に当たる
+        let len = src[from..]
+            .find("INDEX-ここまで")
+            .expect("INDEX の分岐の終わりの印が無い");
+        let body = &src[from..from + len];
+
+        for (key, _) in crate::shell::MENU {
+            let want = format!("KeyCode::Char('{key}')");
+            assert!(
+                body.contains(&want),
+                "盤面は {key} を出しているのに、INDEX に受け手が無い"
+            );
+        }
+    }
+
+    /// 盤面のメニューは、前置キーの付かない打鍵として届くこと。
+    ///
+    /// Ctrl+B を付けると、前置キー側の表に同じ文字があるものだけが効く
+    #[test]
+    fn a_menu_press_arrives_as_a_plain_key() {
+        for (key, _) in crate::shell::MENU {
+            let evs = super::keys_for(&crate::browser::Ev::Menu {
+                key: key.to_string(),
+            });
+            assert_eq!(evs.len(), 1, "{key}: 打鍵が1つでない");
+            let Event::Key(k) = &evs[0] else {
+                panic!("{key}: 打鍵になっていない")
+            };
+            assert_eq!(k.code, KeyCode::Char(key.chars().next().unwrap()));
+            assert!(
+                k.modifiers.is_empty(),
+                "{key}: 前置キーが付いている ({:?})",
+                k.modifiers
+            );
+        }
+    }
 
     fn test_ui(active: usize, ball: ball::Ball, now_ms: u64) -> Ui {
         Ui {

@@ -77,6 +77,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   .mi { display:flex; gap:9px; align-items:center; padding:7px 9px; border-radius:7px;
     cursor:pointer; }
   .mi:hover { background:#161c23; }
+  .row.dim { color:var(--dim); margin-top:8px; }
   .key { font-size:11px; color:#04121c; background:var(--brand); border-radius:4px;
     padding:1px 6px; font-weight:700; }
 
@@ -167,6 +168,9 @@ window.onerror = function (msg, src, line, col) {
 };
 const T = {{DICT}};
 const BUILD = {{BUILD}};
+// 盤面が出すメニュー。押されたら、その文字がそのまま INDEX に届く
+const MENU_KEYS = {{MENU_KEYS}};
+const MENU_WORDS = {{MENU_WORDS}};
 const TOKEN = {{TOKEN}};
 // 窓の中なら直に渡せる。スマホからはHTTPで届ける。
 // ページは同じものを使う (見た目を2回書かないため)
@@ -274,12 +278,8 @@ function drawBoard() {
   }
   b.append(el("div", {class:"card"}, el("h2", {}, "SESSIONS"), rows));
 
-  // メニュー
-  const items = [
-    ["e", T["tui.menu.settings"]], ["i", T["tui.menu.phone"]],
-    ["r", T["tui.menu.restart"]], ["w", T["tui.menu.workspace"]],
-    ["t", T["tui.menu.notify"]], ["?", T["tui.menu.help"]],
-  ];
+  // メニュー。並びは MENU_KEYS が決める (受け手と突き合わせるため)
+  const items = MENU_KEYS.map(k => [k, T[MENU_WORDS[k]]]);
   const m = el("div", {class:"menu"});
   for (const [k, label] of items) {
     if (!label) continue;
@@ -316,7 +316,9 @@ function lanes() {
 function drawStatus() {
   const s = document.getElementById("status");
   s.textContent = "";
-  s.append(
+  // append に null を渡すと、DOMは文字列 "null" にして並べる。
+  // el() の中では弾いているが、ここは素の append なので自分で弾く
+  [
     el("span", {}, S.workspace || ""),
     el("span", {class:"pill " + (S.auto_enabled ? "on" : "off")},
       "AUTO " + (S.auto_enabled ? "ON" : "OFF")),
@@ -324,7 +326,8 @@ function drawStatus() {
     el("span", {class:"grow"}),
     el("span", {}, BUILD),
     el("span", {id:"stop", onclick:() => send({kind:"stop"})},
-      T["tui.stop"] || "STOP"));
+      T["tui.stop"] || "STOP"),
+  ].forEach(x => { if (x) s.append(x); });
 }
 
 // ── 受け口 ──────────────────────────────────
@@ -349,10 +352,14 @@ function drawVeil() {
     const img = el("img", {class:"qr", src:"qr.svg?u=" + encodeURIComponent(S.qr)});
     box.append(img, el("div", {class:"url"}, S.qr));
   } else {
-    box.append(el("h3", {}, T["tui.menu.help"] || "HELP"));
-    for (const line of (T["tui.help.body"] || "").split("\n")) {
-      box.append(el("div", {class:"row"}, line));
+    box.append(el("h3", {}, T["tui.help.title"] || "HELP"));
+    // 訳語は1行ずつ別のキーで持っている。並べる順はここで決める
+    for (const k of ["quit", "tabs", "ws", "lock", "restart", "copy", "auto", "raw",
+                     "mouse", "mouse.wheel", "mouse.drag", "mouse.right",
+                     "mouse.tab", "mouse.divider"]) {
+      box.append(el("div", {class:"row"}, T["tui.help." + k]));
     }
+    box.append(el("div", {class:"row dim"}, T["tui.help.close"]));
   }
   v.onclick = () => send({kind:"key", named:"esc"});
   v.append(box);
@@ -686,9 +693,33 @@ fn flush_run(out: &mut String, style: &str, run: &str) {
 }
 
 /// 訳語とビルド刻印を埋めて、配れる形にする
+/// 盤面が出すメニュー (押す文字, 訳語のキー)。
+///
+/// 押された文字は、INDEX を見ているときの打鍵としてそのまま届く。
+/// 受け手 (INDEX の分岐) が知らない文字をここに足すと、
+/// 「出ているのに押しても何も起きない」ができあがる
+pub const MENU: [(&str, &str); 6] = [
+    ("e", "tui.menu.settings"),
+    ("i", "tui.menu.phone"),
+    ("r", "tui.menu.restart"),
+    ("w", "tui.menu.workspace"),
+    ("t", "tui.menu.notify"),
+    ("?", "tui.menu.help"),
+];
+
 pub fn page(token: &str) -> String {
     let dict = crate::i18n::dict_json();
-    PAGE.replace("{{DICT}}", &dict)
+    let keys: Vec<&str> = MENU.iter().map(|(k, _)| *k).collect();
+    let words: std::collections::BTreeMap<&str, &str> = MENU.iter().copied().collect();
+    PAGE.replace(
+        "{{MENU_KEYS}}",
+        &serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()),
+    )
+    .replace(
+        "{{MENU_WORDS}}",
+        &serde_json::to_string(&words).unwrap_or_else(|_| "{}".into()),
+    )
+    .replace("{{DICT}}", &dict)
         .replace(
             "{{TOKEN}}",
             &serde_json::to_string(token).unwrap_or_else(|_| "\"\"".into()),
@@ -708,6 +739,48 @@ pub fn page(token: &str) -> String {
 mod tests {
     use super::PAGE;
 
+
+    /// ページが読む訳語のキーが、辞書にあること。
+    ///
+    /// 無いキーは空文字になる。落ちも警告も出ないので、
+    /// 「押したのに何も出ない」という形でしか気づけない。
+    /// 実際、ヘルプは tui.help.body という無いキーを読んでいて、
+    /// 題名だけの空の箱が出ていた。押しても効いていないように見える。
+    ///
+    /// これを見ていた試験は前にもあったが、
+    /// 古いスマホ用ページを消したときに一緒に消えてしまった
+    #[test]
+    fn every_word_the_page_asks_for_is_in_the_dictionary() {
+        let en: serde_json::Value =
+            serde_json::from_str(include_str!("../lang/en.json")).unwrap();
+        let p = super::page("");
+        let mut rest = p.as_str();
+        let mut checked = 0;
+        // T["..."] の形で読んでいるものを拾う
+        while let Some(i) = rest.find("T[\"") {
+            rest = &rest[i + 3..];
+            let key = &rest[..rest.find('"').expect("閉じていない")];
+            // 末尾が点なら組み立てて読む形 (T["tui.help." + k])。下で見る
+            if key.ends_with('.') {
+                continue;
+            }
+            assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
+            checked += 1;
+        }
+        // 組み立てて読む分 (T["tui.help." + k]) も、並べた名前ごと見る
+        let head = "T[\"tui.help.\" + k]";
+        if p.contains(head) {
+            for k in [
+                "quit", "tabs", "ws", "lock", "restart", "copy", "auto", "raw", "mouse",
+                "mouse.wheel", "mouse.drag", "mouse.right", "mouse.tab", "mouse.divider",
+            ] {
+                let key = format!("tui.help.{k}");
+                assert!(en.get(&key).is_some(), "lang/en.json に無いキー: {key}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 20, "訳語をほとんど読んでいない ({checked}件)");
+    }
 
     /// 押している間は、盤面を作り直さないこと。
     ///
