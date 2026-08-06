@@ -24,6 +24,21 @@ fn main() {
         .map(|s| !s.is_empty())
         .unwrap_or(false);
 
+    // ダウンロードした人が最初に見るのは Explorer のアイコン。
+    // 汎用のコンソールアイコンのままだと、そこで「拾い物」に見える
+    if std::env::var("CARGO_CFG_WINDOWS").is_ok() {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/icon.ico");
+        res.set("FileDescription", "SHIKISHA-TERM — conductor AI terminal");
+        res.set("ProductName", "SHIKISHA-TERM");
+        res.set("CompanyName", "SHIKISHA-TERM");
+        res.set("LegalCopyright", "MIT License");
+        if let Err(e) = res.compile() {
+            // アイコンが無くてもソフトは動く。ビルドごと止める理由にはならない
+            println!("cargo:warning=アイコンを埋め込めませんでした: {e}");
+        }
+    }
+
     println!("cargo:rustc-env=BUILD_TIME={built}");
     println!(
         "cargo:rustc-env=BUILD_REV={}{}",
@@ -32,5 +47,6 @@ fn main() {
     );
     // ビルドのたびに日時を入れ直す
     println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=.git/HEAD");
 }

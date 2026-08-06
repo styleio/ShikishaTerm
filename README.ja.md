@@ -1,4 +1,4 @@
-<h1 align="center">ShikishaTerm-AI</h1>
+<h1 align="center">SHIKISHA-TERM</h1>
 
 <p align="center">
   <b>Claude Code / Codex / Gemini を同時に動かし、AI同士に仕事を渡させる。</b><br>
@@ -21,7 +21,7 @@
 ターミナルのAIを1つ動かすのは簡単です。**4つ**動かすと途端に破綻します。
 
 ウインドウがAIの数だけ増え、どれが自分の返事を待っているのか分からなくなり、
-結果を手でコピペして回ることになります。ShikishaTerm-AI は
+結果を手でコピペして回ることになります。SHIKISHA-TERM は
 **処理中 / 完了 / 確認待ち** を区別できるターミナルで、AI同士で仕事を渡すこともできます。
 
 ターミナルで動くものなら何でも扱えるので、特定のベンダーに縛られません。
@@ -29,9 +29,9 @@ Claude Code、Codex CLI、Gemini CLI、Ollama、Aider、SSH越しの素のシェ
 
 ## 導入
 
-1. [Releases](https://github.com/styleio/ShikishaTerm/releases/latest) から `ShikishaTerm-AI.zip` を落とす
+1. [Releases](https://github.com/styleio/ShikishaTerm/releases/latest) から `SHIKISHA-TERM.zip` を落とす
 2. 好きな場所に展開する（USBメモリでも同期フォルダでも動きます）
-3. `Shikisha-Term-AI.exe` を起動する
+3. `SHIKISHA-TERM.exe` を起動する
 
 そのフォルダの外には何も書きません。インストーラも追加ランタイムも不要です。
 
@@ -48,10 +48,10 @@ Claude Code、Codex CLI、Gemini CLI、Ollama、Aider、SSH越しの素のシェ
 
 - リリースはすべて[GitHub Actions](.github/workflows/release.yml)がこのソースから
   ビルドしています。誰かの手元のPCで作ったものではなく、**ビルドログは公開されています**
-- zipの隣に `ShikishaTerm-AI.zip.sha256` を置いてあります:
+- zipの隣に `SHIKISHA-TERM.zip.sha256` を置いてあります:
 
   ```powershell
-  Get-FileHash ShikishaTerm-AI.zip -Algorithm SHA256
+  Get-FileHash SHIKISHA-TERM.zip -Algorithm SHA256
   ```
 
 ## 使いはじめ
@@ -136,7 +136,7 @@ shikisha.send_to_tab("reviewer", "指摘を修正して:\n" .. tab.output)
 ## フォルダ構成
 
 ```
-Shikisha-Term-AI.exe   アプリ本体
+SHIKISHA-TERM.exe   アプリ本体
 Settings.cmd           設定画面だけを開く
 config.json            全体設定 + ワークスペース一覧
 secrets.json           通知先やトークン（暗号化可・共有厳禁）

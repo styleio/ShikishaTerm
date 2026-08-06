@@ -1,10 +1,10 @@
-//! ShikishaTerm-AI: ポータブル・マルチセッションAIオーケストレーションTUI
+//! SHIKISHA-TERM: ポータブル・マルチセッションAIオーケストレーションTUI
 //!
 //! Phase 3: マルチタブ + INDEXダッシュボード + config.json
 //!
 //! 起動:
-//!   Shikisha-Term-AI.exe                 # config.jsonのタブ構成 (無ければPowerShell 1タブ)
-//!   Shikisha-Term-AI.exe claude          # デバッグ用: 引数のコマンドを1タブで起動
+//!   SHIKISHA-TERM.exe                 # config.jsonのタブ構成 (無ければPowerShell 1タブ)
+//!   SHIKISHA-TERM.exe claude          # デバッグ用: 引数のコマンドを1タブで起動
 //!
 //! 操作 (プレフィックスキー Ctrl+B):
 //!   Ctrl+B q      終了 / Ctrl+B 0-9 タブ切替 (0=INDEX) / Ctrl+B n/p 隣のタブ
@@ -108,7 +108,7 @@ fn main() -> Result<()> {
     let _ = execute!(
         std::io::stdout(),
         ratatui::crossterm::terminal::SetTitle(format!(
-            "ShikishaTerm-AI  build {}  ({})",
+            "SHIKISHA-TERM  build {}  ({})",
             env!("BUILD_TIME"),
             env!("BUILD_REV")
         ))
@@ -1237,7 +1237,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             flash = Some(if notifier.is_empty() {
                                 i18n::t("msg.notify_none")
                             } else {
-                                notifier.send_all("ShikishaTerm-AI: テスト通知")
+                                notifier.send_all("SHIKISHA-TERM: テスト通知")
                             });
                         }
                         // マスターパスワードの設定・変更・解除 (TUI内で完結)
@@ -2773,13 +2773,13 @@ fn remote_label(on: bool) -> &'static str {
 /// ブロック文字のワードマーク (3行)。1文字ぶんの幅は不揃いなので、
 /// 右端の余白まで含めて数えず、実際の文字幅で測る
 const WORDMARK: [&str; 3] = [
-    "█▀▀ █ █ █ █ █ █ █▀▀ █ █ █▀█ ▀█▀ █▀▀ █▀█ █▄█",
-    "▀▀█ █▀█ █ █▀▄ █ ▀▀█ █▀█ █▀█  █  █▀▀ █▀▄ █ █",
-    "▀▀▀ ▀ ▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀ ▀ ▀  ▀  ▀▀▀ ▀ ▀ ▀ ▀",
+    "█▀▀ █ █ █ █ █ █ █▀▀ █ █ █▀█    ▀█▀ █▀▀ █▀█ █▄█",
+    "▀▀█ █▀█ █ █▀▄ █ ▀▀█ █▀█ █▀█ ▀▀  █  █▀▀ █▀▄ █ █",
+    "▀▀▀ ▀ ▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀ ▀ ▀     ▀  ▀▀▀ ▀ ▀ ▀ ▀",
 ];
 
 /// 1行に落としたときの表記
-const WORDMARK_SMALL: &str = "◢◤ ShikishaTerm";
+const WORDMARK_SMALL: &str = "◢◤ SHIKISHA-TERM";
 
 /// 名前をどう出すか。画面に入らないなら小さくし、それも入らないなら出さない。
 ///
@@ -3729,7 +3729,7 @@ mod tests {
         // 幅が足りなければ1行に落とす (折り返して崩れるより小さく出す)
         let narrow = wordmark_lines(30, 30);
         assert_eq!(narrow.len(), 1);
-        assert!(narrow[0].contains("ShikishaTerm"));
+        assert!(narrow[0].contains("SHIKISHA-TERM"));
 
         // 縦が足りないときも1行。タブの一覧を名前で押し出さない
         let short = wordmark_lines(100, 8);

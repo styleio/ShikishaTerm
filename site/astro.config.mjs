@@ -8,7 +8,7 @@ export default defineConfig({
   site: "https://shikisha-term.com",
   integrations: [
     starlight({
-      title: "ShikishaTerm-AI",
+      title: "SHIKISHA-TERM",
       description:
         "Run Claude Code, Codex and Gemini side by side — and let them hand work to each other.",
       // 英語を根っこに置き、日本語を /ja/ に置く。lang/ の構成と同じ考え方

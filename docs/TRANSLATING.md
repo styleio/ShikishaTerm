@@ -1,4 +1,4 @@
-# Translating ShikishaTerm-AI
+# Translating SHIKISHA-TERM
 
 English is the base language. Every other language is a JSON file that overlays it,
 so a translation never has to be complete: any key you leave out falls back to English.

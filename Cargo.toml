@@ -1,5 +1,5 @@
 [package]
-name = "shikisha-term-ai"
+name = "shikisha-term"
 version = "0.1.0"
 edition = "2024"
 description = "Run Claude Code, Codex and Gemini side by side and let them hand work to each other. A portable terminal for orchestrating AI CLIs on Windows."
@@ -14,7 +14,7 @@ categories = ["command-line-utilities"]
 exclude = ["logs/", "target/", "docs/demo.gif"]
 
 [[bin]]
-name = "Shikisha-Term-AI"
+name = "SHIKISHA-TERM"
 path = "src/main.rs"
 
 [profile.release]
@@ -44,3 +44,6 @@ ureq = { version = "3.3.0", default-features = false, features = ["rustls", "jso
 vt100 = "0.16"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
 zeroize = "1.9.0"
+
+[build-dependencies]
+winresource = "0.1.31"

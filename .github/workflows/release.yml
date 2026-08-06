@@ -37,9 +37,9 @@ jobs:
       - name: Stage the portable folder
         shell: pwsh
         run: |
-          $dir = "dist/ShikishaTerm-AI"
+          $dir = "dist/SHIKISHA-TERM"
           New-Item -ItemType Directory -Force $dir | Out-Null
-          Copy-Item "target/release/Shikisha-Term-AI.exe" $dir
+          Copy-Item "target/release/SHIKISHA-TERM.exe" $dir
           Copy-Item "Settings.cmd"                        $dir
           Copy-Item "README.md", "README.ja.md", "LICENSE", "SECURITY.md" $dir
           Copy-Item "config.example.json", "secrets.example.json"         $dir
@@ -50,23 +50,23 @@ jobs:
 
       - name: Zip
         shell: pwsh
-        run: Compress-Archive -Path "dist/ShikishaTerm-AI" -DestinationPath "ShikishaTerm-AI.zip"
+        run: Compress-Archive -Path "dist/SHIKISHA-TERM" -DestinationPath "SHIKISHA-TERM.zip"
 
       - name: Checksum
         shell: pwsh
         run: |
-          (Get-FileHash "ShikishaTerm-AI.zip" -Algorithm SHA256).Hash.ToLower() +
-            "  ShikishaTerm-AI.zip" | Set-Content "ShikishaTerm-AI.zip.sha256"
+          (Get-FileHash "SHIKISHA-TERM.zip" -Algorithm SHA256).Hash.ToLower() +
+            "  SHIKISHA-TERM.zip" | Set-Content "SHIKISHA-TERM.zip.sha256"
 
       # 空撃ち: リリースを作らず、中身を確認できる形で置いておく
       - name: Upload as an artifact (dry run)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: ShikishaTerm-AI-dryrun
+          name: SHIKISHA-TERM-dryrun
           path: |
-            ShikishaTerm-AI.zip
-            ShikishaTerm-AI.zip.sha256
+            SHIKISHA-TERM.zip
+            SHIKISHA-TERM.zip.sha256
           retention-days: 7
 
       - name: Publish
@@ -76,14 +76,14 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
-            ShikishaTerm-AI.zip
-            ShikishaTerm-AI.zip.sha256
+            SHIKISHA-TERM.zip
+            SHIKISHA-TERM.zip.sha256
           body: |
             ## Install
 
-            1. Download `ShikishaTerm-AI.zip` below and unzip it anywhere
-            2. Run `Shikisha-Term-AI.exe`
+            1. Download `SHIKISHA-TERM.zip` below and unzip it anywhere
+            2. Run `SHIKISHA-TERM.exe`
 
             No installer, no admin rights, no API keys. Windows 10/11.
 
-            Verify the download with `ShikishaTerm-AI.zip.sha256` if you like.
+            Verify the download with `SHIKISHA-TERM.zip.sha256` if you like.

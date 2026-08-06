@@ -65,7 +65,7 @@ if exist "target\debug\workspaces" xcopy /y /e /i /q "target\debug\workspaces" "
 :have_run
 rem Application files are refreshed every time, so a change you just made is
 rem certain to be the one running.
-copy /y "target\%PROFILE%\Shikisha-Term-AI.exe" "run\" >nul
+copy /y "target\%PROFILE%\SHIKISHA-TERM.exe" "run\" >nul
 if errorlevel 1 (
   echo Executable not found: target\%PROFILE%
   exit /b 1
@@ -84,4 +84,4 @@ if defined SETUPONLY (
 )
 
 cd run
-Shikisha-Term-AI.exe%ARGS%
+SHIKISHA-TERM.exe%ARGS%

@@ -1,4 +1,4 @@
-# ShikishaTerm-AI 設計書
+# SHIKISHA-TERM 設計書
 
 コンセプト: ポータブル・マルチセッションAIオーケストレーションTUI —「高性能AI用のPuTTY」
 
@@ -34,7 +34,7 @@ config.json の `workspaces` は**ワークスペースの一覧（目次）**�
 | 項目 | 内容 |
 |---|---|
 | 対応OS | Windows 10 (1809以降) / 11 (64bit) ※ConPTY要件 |
-| 配布形態 | 単一実行ファイル `Shikisha-Term-AI.exe` ＋ 設定・スクリプトフォルダ |
+| 配布形態 | 単一実行ファイル `SHIKISHA-TERM.exe` ＋ 設定・スクリプトフォルダ |
 | 実行要件 | インストール不要・管理者権限不要・ランタイム依存なし |
 | ポータブル要件 | exeからの相対パスのみ使用、データはフォルダ内で完結 |
 | 前提 | ラップ対象のCLIエージェント（Claude Code等）は各PCにインストール済みであること（PuTTYにとってのSSHサーバーと同じ位置づけ） |
@@ -540,8 +540,8 @@ WebSocketも端末エミュレータも要らない。
 ## 13. ディレクトリ構成
 
 ```
-[ShikishaTerm-AI Directory]
- ├── Shikisha-Term-AI.exe   # アプリ本体（単一バイナリ）
+[SHIKISHA-TERM Directory]
+ ├── SHIKISHA-TERM.exe   # アプリ本体（単一バイナリ）
  ├── config.json            # 全体設定 + ワークスペース一覧（相対パス）
  ├── secrets.json           # 資格情報（暗号化可・共有厳禁）
  ├── workspaces/            # ワークスペース定義ファイル（プロジェクト毎に配布可）

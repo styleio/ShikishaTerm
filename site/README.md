@@ -1,6 +1,6 @@
 # Website
 
-The landing page and documentation for ShikishaTerm-AI, built with
+The landing page and documentation for SHIKISHA-TERM, built with
 [Astro Starlight](https://starlight.astro.build/) and hosted on Cloudflare Pages.
 
 ## The point of this setup

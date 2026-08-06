@@ -1,4 +1,4 @@
-<h1 align="center">ShikishaTerm-AI</h1>
+<h1 align="center">SHIKISHA-TERM</h1>
 
 <p align="center">
   <b>Run Claude Code, Codex and Gemini side by side — and let them hand work to each other.</b><br>
@@ -23,7 +23,7 @@ TODO before launch: record a 15s demo and drop it at docs/demo.gif, then uncomme
 It should show three tabs working, a status going BUSY -> DONE, and the result
 being handed to the review tab automatically.
 
-<p align="center"><img src="docs/demo.gif" alt="ShikishaTerm-AI in action" width="800"></p>
+<p align="center"><img src="docs/demo.gif" alt="SHIKISHA-TERM in action" width="800"></p>
 -->
 
 ## Why
@@ -31,7 +31,7 @@ being handed to the review tab automatically.
 Running one terminal AI is easy. Running **four** is not.
 
 You end up with a window per agent, no idea which one is waiting for you, and a lot of
-copy-pasting between them. ShikishaTerm-AI is a terminal that knows the difference between
+copy-pasting between them. SHIKISHA-TERM is a terminal that knows the difference between
 *working*, *finished* and *waiting for a human* — and can move work between agents on its own.
 
 It talks to whatever runs in a terminal, so it is not tied to one vendor: Claude Code,
@@ -39,9 +39,9 @@ Codex CLI, Gemini CLI, Ollama, Aider, or a plain shell over SSH.
 
 ## Install
 
-1. Download `ShikishaTerm-AI.zip` from [Releases](https://github.com/styleio/ShikishaTerm/releases/latest)
+1. Download `SHIKISHA-TERM.zip` from [Releases](https://github.com/styleio/ShikishaTerm/releases/latest)
 2. Unzip it anywhere — a USB stick and a synced folder both work
-3. Run `Shikisha-Term-AI.exe`
+3. Run `SHIKISHA-TERM.exe`
 
 Nothing is written outside that folder. There is no installer and no runtime to install.
 
@@ -59,10 +59,10 @@ wary of an unsigned executable from the internet is the right instinct:
 
 - Every release is built by [GitHub Actions](.github/workflows/release.yml) from this
   source, not on anyone's laptop. The build log for your download is public
-- A `ShikishaTerm-AI.zip.sha256` is published next to the zip:
+- A `SHIKISHA-TERM.zip.sha256` is published next to the zip:
 
   ```powershell
-  Get-FileHash ShikishaTerm-AI.zip -Algorithm SHA256
+  Get-FileHash SHIKISHA-TERM.zip -Algorithm SHA256
   ```
 
 ## Quick start
@@ -150,7 +150,7 @@ settings screen.
 ## Folder layout
 
 ```
-Shikisha-Term-AI.exe   the app
+SHIKISHA-TERM.exe   the app
 Settings.cmd           opens only the settings screen
 config.json            general settings + the list of workspaces
 secrets.json           notification targets and tokens (encryptable, never share)

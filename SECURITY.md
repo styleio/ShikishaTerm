@@ -1,6 +1,6 @@
 # Security
 
-ShikishaTerm-AI starts programs on your machine, and — if you turn it on — lets a phone
+SHIKISHA-TERM starts programs on your machine, and — if you turn it on — lets a phone
 send instructions to them. That is the whole point of the tool, so it is worth being
 precise about what is and is not exposed.
 
