@@ -12,6 +12,7 @@
 //! マウス: ホイール=スクロール(コピーモード) / 左ドラッグ=選択即コピー / 右クリック=ペースト
 
 mod ball;
+mod browser;
 mod caps;
 mod config;
 mod crypto;
