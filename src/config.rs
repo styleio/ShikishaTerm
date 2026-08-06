@@ -33,6 +33,9 @@ pub struct Config {
     pub follow_ball: Option<bool>,
     /// 最後に開いていたワークスペースから始めるか (既定: する)
     pub restore_workspace: Option<bool>,
+    /// ブラウザをターミナルに重ねるか (既定: 重ねる)。
+    /// 切ると独立した窓になり、自分で動かせる代わりにタブらしくはならない
+    pub browser_overlay: Option<bool>,
     /// 応答が終わったと確定するまでの待ち時間 (ms)。
     /// プロファイル側で指定があればそちらが優先される
     pub done_confirm_ms: Option<u64>,

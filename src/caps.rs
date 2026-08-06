@@ -104,6 +104,8 @@ pub struct Capabilities {
     browsers: std::cell::RefCell<HashMap<String, crate::browser::Browser>>,
     /// 帯のボタンが押されたか (名前ごと)。読んだら下ろす
     pressed: std::cell::RefCell<HashMap<String, bool>>,
+    /// ターミナルに重ねるか
+    overlay: bool,
 }
 
 /// ページを触るときの既定の待ち時間。
@@ -120,10 +122,16 @@ impl Capabilities {
             tx: None,
             browsers: std::cell::RefCell::new(HashMap::new()),
             pressed: std::cell::RefCell::new(HashMap::new()),
+            overlay: true,
         }
     }
 
-    pub fn new(spec: CapabilitySpec, base: PathBuf, tokens: HashMap<String, String>) -> Self {
+    pub fn new(
+        spec: CapabilitySpec,
+        base: PathBuf,
+        tokens: HashMap<String, String>,
+        overlay: bool,
+    ) -> Self {
         // 通信はUIをブロックしないよう専用スレッドで行う
         let tx = if spec.http.is_empty() && spec.allow_hosts.is_empty() {
             None
@@ -178,6 +186,7 @@ impl Capabilities {
             tx,
             browsers: std::cell::RefCell::new(HashMap::new()),
             pressed: std::cell::RefCell::new(HashMap::new()),
+            overlay,
         }
     }
 
@@ -284,12 +293,37 @@ impl Capabilities {
                 b.wait_ready(std::time::Duration::from_millis(30_000))?;
             }
             None => {
-                let b = crate::browser::Browser::spawn(url, &format!("{name} — SHIKISHA-TERM"))?;
+                let b = crate::browser::Browser::spawn_with(
+                    url,
+                    &format!("{name} — SHIKISHA-TERM"),
+                    self.overlay,
+                )?;
                 all.insert(name.to_string(), b);
             }
         }
         crate::append_hook_log(&format!("ブラウザ {name}: {url}"));
         Ok(())
+    }
+
+    /// 重ねているブラウザを、ターミナルの中身の範囲に合わせる
+    pub fn browsers_fit(&self, show: bool) {
+        let rect = crate::browser::host_client_rect();
+        for b in self.browsers.borrow().values() {
+            match (show, rect) {
+                (true, Some((x, y, w, h))) => {
+                    let _ = b.fit(x, y, w, h);
+                    let _ = b.show(true);
+                }
+                _ => {
+                    let _ = b.show(false);
+                }
+            }
+        }
+    }
+
+    /// 開いているブラウザがあるか
+    pub fn has_browser(&self) -> bool {
+        !self.browsers.borrow().is_empty()
     }
 
     fn with<T>(
@@ -403,7 +437,7 @@ mod tests {
     use super::*;
 
     fn caps(spec: CapabilitySpec, base: PathBuf) -> Capabilities {
-        Capabilities::new(spec, base, HashMap::new())
+        Capabilities::new(spec, base, HashMap::new(), true)
     }
 
     #[test]

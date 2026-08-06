@@ -143,6 +143,10 @@ pub enum Cmd {
     Ask { text: String, label: String },
     /// 帯を消す
     Unask,
+    /// ターミナルに重ねる (位置と大きさを合わせる)
+    Fit { x: i32, y: i32, w: i32, h: i32 },
+    /// 見せる / 隠す
+    Show(bool),
     /// 窓を閉じる
     Close,
 }
@@ -194,10 +198,22 @@ pub fn is_openable(url: &str) -> bool {
 
 impl Browser {
     /// 窓を開いて、指示を受け付ける状態にする
+    /// `overlay` = ターミナルに重ねる。枠を付けず、位置はこちらが決める
+    pub fn spawn_with(url: &str, title: &str, overlay: bool) -> Result<Self> {
+        if !is_openable(url) {
+            return Err(anyhow!("開けないURLです: {url}"));
+        }
+        Self::start(url, title, overlay)
+    }
+
     pub fn spawn(url: &str, title: &str) -> Result<Self> {
         if !is_openable(url) {
             return Err(anyhow!("開けないURLです: {url}"));
         }
+        Self::start(url, title, false)
+    }
+
+    fn start(url: &str, title: &str, overlay: bool) -> Result<Self> {
         let (proxy_tx, proxy_rx) = channel();
         let (ev_tx, ev_rx) = channel();
         let url = url.to_string();
@@ -206,7 +222,7 @@ impl Browser {
         std::thread::Builder::new()
             .name("shikisha-browser".into())
             .spawn(move || {
-                if let Err(e) = run_window(&url, &title, proxy_tx, ev_tx.clone()) {
+                if let Err(e) = run_window(&url, &title, overlay, proxy_tx, ev_tx.clone()) {
                     crate::append_hook_log(&format!("ブラウザを開けません: {e}"));
                     let _ = ev_tx.send(Ev::Closed);
                 }
@@ -288,6 +304,16 @@ impl Browser {
 
     pub fn close(&self) -> Result<()> {
         self.send(Cmd::Close)
+    }
+
+    /// ターミナルの上にぴったり重ねる
+    pub fn fit(&self, x: i32, y: i32, w: i32, h: i32) -> Result<()> {
+        self.send(Cmd::Fit { x, y, w, h })
+    }
+
+    /// 見せる / 隠す (他のタブを見ている間は隠す)
+    pub fn show(&self, on: bool) -> Result<()> {
+        self.send(Cmd::Show(on))
     }
 
     /// JSを1回呼んで、結果が返るまで待つ
@@ -474,6 +500,7 @@ fn ask_js(text: &str, label: &str) -> String {
 fn run_window(
     url: &str,
     title: &str,
+    overlay: bool,
     proxy_tx: Sender<tao::event_loop::EventLoopProxy<Cmd>>,
     ev_tx: Sender<Ev>,
 ) -> Result<()> {
@@ -492,10 +519,23 @@ fn run_window(
         .send(ev_loop.create_proxy())
         .map_err(|_| anyhow!("指揮者との接続に失敗"))?;
 
-    let window = WindowBuilder::new()
+    let mut wb = WindowBuilder::new()
         .with_title(title)
-        .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0))
-        .build(&ev_loop)?;
+        .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0));
+    if overlay {
+        // 枠を付けない。閉じるボタンがあると、アプリが開いていると
+        // 思っているのに窓が無い状態を作れてしまう。
+        // タブに従うのだから、独立に動かす手段は無い方がいい
+        wb = wb.with_decorations(false).with_visible(false);
+    }
+    let window = wb.build(&ev_loop)?;
+    if overlay {
+        // ターミナルに「所有される窓」にする。
+        // これだけで最小化・復元・重なり順をOSが面倒を見てくれる
+        if let Some(h) = host_window() {
+            set_owner(&window, h.hwnd);
+        }
+    }
 
     let ipc = ev_tx.clone();
     let webview = WebViewBuilder::new()
@@ -546,6 +586,11 @@ fn run_window(
                     let _ = webview
                         .evaluate_script("window.__shikisha_unask&&window.__shikisha_unask();");
                 }
+                Cmd::Fit { x, y, w, h } => {
+                    window.set_outer_position(tao::dpi::PhysicalPosition::new(x, y));
+                    window.set_inner_size(tao::dpi::PhysicalSize::new(w.max(1), h.max(1)));
+                }
+                Cmd::Show(on) => window.set_visible(on),
                 Cmd::Close => {
                     *control = ControlFlow::Exit;
                 }
@@ -765,6 +810,46 @@ mod tests {
         b.close().unwrap();
         std::thread::sleep(Duration::from_millis(600));
         println!("閉じてもここまで来た (プロセスは生きている)");
+    }
+}
+
+/// 窓を、ターミナルの「所有される窓」にする。
+///
+/// 最小化・復元・重なり順は、これだけでOSが面倒を見る。
+/// 自前で追いかけると、隠し忘れや前後の入れ替わりが必ずどこかで漏れる
+fn set_owner(window: &tao::window::Window, owner: isize) {
+    use tao::platform::windows::WindowExtWindows;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GWLP_HWNDPARENT, SetWindowLongPtrW};
+    let hwnd = window.hwnd() as HWND;
+    if hwnd.is_null() {
+        return;
+    }
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner);
+    }
+}
+
+/// ターミナルの中身が描かれている範囲 (枠と題字を除く)。
+///
+/// 枠ごと覆うと、最小化・最大化・閉じるボタンまで隠れてしまう
+pub fn host_client_rect() -> Option<(i32, i32, i32, i32)> {
+    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
+    let h = host_window()?;
+    unsafe {
+        let hwnd = h.hwnd as HWND;
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetClientRect(hwnd, &mut r) == 0 {
+            return None;
+        }
+        let mut p = POINT { x: r.left, y: r.top };
+        if ClientToScreen(hwnd, &mut p) == 0 {
+            return None;
+        }
+        let (w, hh) = (r.right - r.left, r.bottom - r.top);
+        (w > 0 && hh > 0).then_some((p.x, p.y, w, hh))
     }
 }
 

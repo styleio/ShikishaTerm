@@ -495,6 +495,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             c.capabilities.clone(),
             config_file_dir(),
             c.resolve_tokens(password.as_deref()),
+            c.browser_overlay.unwrap_or(true),
         ),
         None => caps::Capabilities::disabled(),
     });
@@ -537,6 +538,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     // 0 = INDEX、1.. = セッション。初回はINDEX(案内のある画面)から始める
     let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
     let mut prefix_active = false;
+    // 重ねたブラウザを今見せているか。出しっぱなしだと
+    // ターミナルがずっと隠れてしまうので、既定は隠す
+    let mut browser_shown = false;
     let mut flash: Option<String> = startup_errors.first().map(|e| i18n::tp("msg.startup_failed", &[("error", e)]));
     let mut last_detect = Instant::now() - Duration::from_secs(1);
     // ワークスペースは仮想デスクトップ方式: 切替=非表示であって停止ではない。
@@ -606,6 +610,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     newcfg.capabilities.clone(),
                     config_file_dir(),
                     newcfg.resolve_tokens(password.as_deref()),
+                    newcfg.browser_overlay.unwrap_or(true),
                 ));
                 engine = build_engine(
                     Some(&newcfg),
@@ -980,6 +985,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             hover,
         };
         terminal.draw(|f| draw(f, &tabs, &ui, flash.as_deref(), &mut hits))?;
+        // 重ねているブラウザを、ターミナルの動きに付いていかせる。
+        // 所有関係で最小化と重なり順はOSが見てくれるが、位置だけは追う必要がある
+        if browser_shown {
+            caps.browsers_fit(true);
+        }
 
         if !event::poll(Duration::from_millis(16))? {
             continue;
@@ -1180,6 +1190,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                                     &caps,
                                 );
                             }
+                        }
+                        // Ctrl+B w 重ねたブラウザの出し入れ
+                        KeyCode::Char('w') if caps.has_browser() => {
+                            browser_shown = !browser_shown;
+                            caps.browsers_fit(browser_shown);
+                            flash = Some(i18n::t(if browser_shown {
+                                "msg.browser_shown"
+                            } else {
+                                "msg.browser_hidden"
+                            }));
                         }
                         KeyCode::Char('?') => help_open = true,
                         // Ctrl+B a 自動化ON/OFF、Ctrl+B x 緊急停止
