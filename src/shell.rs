@@ -18,7 +18,9 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   :root {
     --bg:#0a0c0e; --panel:#11151a; --line:#1d2630; --text:#e8eef4;
     --dim:#7a8896; --brand:#00aaff; --live:#4ade80; --warn:#ffc857; --stop:#ff6b6b;
-    --mono:"Cascadia Mono","Consolas","Meiryo",monospace;
+    /* 罫線と記号を1マスで描けるものを先に。
+       日本語は等幅の MS ゴシックへ回す (Meiryo は等幅ではない) */
+    --mono:"Cascadia Mono","Consolas","MS Gothic","MS ゴシック",monospace;
   }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; overflow:hidden;
@@ -48,8 +50,11 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
 
   /* ── 中身 ───────────────────────────────── */
   #main { position:relative; overflow:hidden; }
+  /* font-family を書くのは飾りではない。<pre> にはブラウザ自身が
+     monospace を当てていて、それは body から受け継ぐ指定より強い。
+     書かないと、選んだフォントは端末の中身にだけ効かない */
   #screen { position:absolute; inset:0; margin:0; padding:8px; white-space:pre;
-    overflow:auto; line-height:1.25; }
+    overflow:auto; line-height:1.25; font-family:var(--mono); }
   /* ここだけ選べる。タブバーや枠は選択に混ざらない */
   #screen { user-select:text; }
 
@@ -117,8 +122,9 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #cur { position:absolute; background:var(--brand); opacity:.75;
     pointer-events:none; animation:blink 1.06s step-end infinite; }
   @keyframes blink { 0%,50% { opacity:.75 } 50.01%,100% { opacity:0 } }
+  /* 測る側も同じ理由で書く。測るものと描くものが違っては話にならない */
   #probe, #tprobe { position:absolute; visibility:hidden; white-space:pre;
-    left:0; top:0; margin:0; }
+    left:0; top:0; margin:0; font-family:var(--mono); }
   /* 覆いかぶさる画面。押せる場所を見失わないよう、外は暗くする */
   .dot.WEB { background:var(--brand); }
   #veil { position:fixed; inset:0; background:#00000099; display:flex;
@@ -464,13 +470,19 @@ window.__cursor = function (row, col, shown) {
   if (!cellW) measure();
   const pad = parseFloat(getComputedStyle(scr).paddingLeft) || 0;
   const padT = parseFloat(getComputedStyle(scr).paddingTop) || 0;
+  // #cur も #kbd も #main の中にある。left/top は #main からの距離なので、
+  // 画面全体の座標を入れるとタブバーの幅だけ右へずれる
+  const frame = document.getElementById("main").getBoundingClientRect();
   const box = scr.getBoundingClientRect();
-  curX = box.left + pad + col * cellW;
-  curY = box.top + padT + row * cellH;
+  // 中身は動かせる。動いた分だけ、文字も一緒に動いている
+  curX = (box.left - frame.left) + pad + col * cellW - scr.scrollLeft;
+  curY = (box.top - frame.top) + padT + row * cellH - scr.scrollTop;
   kbd.style.left = curX + "px";
   kbd.style.top = curY + "px";
   kbd.style.height = cellH + "px";
-  cur.hidden = !shown || composing || S === null || S.active === 0;
+  // 端末を見ていないときは出さない。盤面やブラウザの上に
+  // 前のカーソルが残ると、そこに何かあるように見える
+  cur.hidden = !shown || composing || S === null || scr.hidden;
   if (!cur.hidden) {
     cur.style.left = curX + "px";
     cur.style.top = curY + "px";
@@ -485,12 +497,14 @@ function widen(s) {
   copyFont(tprobe);
   tprobe.textContent = s || "";
   const need = tprobe.getBoundingClientRect().width + cellW * 2;
+  // 幅も #main の中で数える。はみ出すなら左へ寄せる
+  const room0 = document.getElementById("main").clientWidth;
   let left = curX;
-  if (curX + need > window.innerWidth - 8) {
-    left = Math.max(0, window.innerWidth - need - 8);
+  if (curX + need > room0 - 8) {
+    left = Math.max(0, room0 - need - 8);
   }
   kbd.style.left = left + "px";
-  const room = Math.max(cellW, window.innerWidth - left - 8);
+  const room = Math.max(cellW, room0 - left - 8);
   kbd.style.width = Math.max(need, room) + "px";
 }
 kbd.addEventListener("compositionstart", () => { composing = true; cur.hidden = true; widen(""); });
@@ -623,6 +637,8 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
     for r in 0..rows {
         let mut open: Option<String> = None;
         let mut run = String::new();
+        // その区間が何マス分か。字送りではなく、これで場所が決まる
+        let mut span = 0usize;
         for c in 0..cols {
             let Some(cell) = screen.cell(r, c) else { continue };
             if cell.is_wide_continuation() {
@@ -656,12 +672,14 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
             // 見た目が変わったところで区切る
             if open.as_deref() != Some(style.as_str()) {
                 if let Some(prev) = open.take() {
-                    flush_run(&mut out, &prev, &run);
+                    flush_run(&mut out, &prev, &run, span);
                     run.clear();
+                    span = 0;
                 }
                 open = Some(style);
             }
             let ch = cell.contents();
+            span += if cell.is_wide() { 2 } else { 1 };
             if ch.is_empty() {
                 run.push(' ');
             } else {
@@ -669,27 +687,33 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
             }
         }
         if let Some(prev) = open.take() {
-            flush_run(&mut out, &prev, &run);
+            flush_run(&mut out, &prev, &run, span);
         }
         out.push('\n');
     }
     out
 }
 
-fn flush_run(out: &mut String, style: &str, run: &str) {
-    if run.trim_end().is_empty() && style.is_empty() {
+/// 1区間を書き出す。`span` はその区間が占めるマス数。
+///
+/// 幅を書いておかないと、字送りの合わないフォントが1文字混ざるだけで
+/// その行の残り全部がずれる。罫線も日本語もそれに当たる
+fn flush_run(out: &mut String, style: &str, run: &str, span: usize) {
+    if run.is_empty() {
+        return;
+    }
+    // 行末の空白は場所を決める必要がない (後ろに何も無い)
+    if style.is_empty() && run.trim_end().is_empty() {
         out.push_str(run);
         return;
     }
-    if style.is_empty() {
-        out.push_str(run);
-    } else {
-        out.push_str("<span style=\"");
-        out.push_str(style);
-        out.push_str("\">");
-        out.push_str(run);
-        out.push_str("</span>");
-    }
+    out.push_str("<span style=\"display:inline-block;vertical-align:top;width:");
+    out.push_str(&span.to_string());
+    out.push_str("ch;");
+    out.push_str(style);
+    out.push_str("\">");
+    out.push_str(run);
+    out.push_str("</span>");
 }
 
 /// 訳語とビルド刻印を埋めて、配れる形にする
@@ -953,6 +977,51 @@ mod color_tests {
         let mut p: vt100::Parser = vt100::Parser::new(3, 40, 0);
         p.process(input.as_bytes());
         screen_html(p.screen())
+    }
+
+    /// どの区間も、自分が何マス分かを持っていること。
+    ///
+    /// 端末はマスで桁を数え、ブラウザは字送りで並べる。この2つが
+    /// 一致するフォントは無い。Cascadia Mono の英字は 0.586em、
+    /// 全角は 1.0em で、倍にならない。罫線を1マスで描くフォントに
+    /// 替えても、日本語が並べばずれる。
+    ///
+    /// 幅を書いておけば、字送りが何であっても次の区間は正しい場所から
+    /// 始まる。フォントは見た目だけの話になる
+    #[test]
+    fn every_run_carries_its_own_width() {
+        // 全角・罫線・英字が混ざった行
+        let html = render("\u{1b}[31mあ\u{1b}[0m\u{2502}ab");
+        for piece in html.split("<span").skip(1) {
+            assert!(
+                piece.contains("width:") && piece.contains("ch;"),
+                "マス数を持たない区間がある: {piece}"
+            );
+        }
+        // 全角は2マス
+        assert!(html.contains("width:2ch;"), "全角が2マスになっていない: {html}");
+        // 半角3文字の区間は3マス
+        let three = render("\u{1b}[31mabc\u{1b}[0m");
+        assert!(
+            three.contains("width:3ch;"),
+            "半角3文字が3マスになっていない: {three}"
+        );
+        // 罫線も1マス。端末がそう数えているので、描く側も合わせる
+        let line = render("\u{1b}[31m\u{2502}\u{1b}[0m");
+        assert!(line.contains("width:1ch;"), "罫線が1マスになっていない: {line}");
+    }
+
+    /// 行末の空白は場所を決めなくてよいこと。
+    /// 後ろに何も無いので、40桁ぶんの箱を毎行置く意味がない
+    #[test]
+    fn the_blank_tail_of_a_line_needs_no_box() {
+        let html = render("ab");
+        let first = html.lines().next().unwrap_or_default();
+        assert!(first.starts_with("<span"), "{first}");
+        assert!(
+            first.trim_end().ends_with("</span>") || first.ends_with(' '),
+            "行末の空白まで箱に入れている: {first:?}"
+        );
     }
 
     /// プログラムが出す色を、そのまま描くこと。
