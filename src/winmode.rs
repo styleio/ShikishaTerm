@@ -76,7 +76,12 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
     cellH = parseFloat(getComputedStyle(scr).lineHeight) || r.height;
   }
   // 窓に何行何桁入るかを知らせる。
-  // 相手はこの数を信じて折り返すので、食い違うと画面の外へ書き続ける
+  // 相手はこの数を信じて折り返すので、食い違うと画面の外へ書き続ける。
+  //
+  // 測って確かめてある (1280px / 余白8px / 1マス7px → 180桁。
+  // 181桁だと 1283px で入らない)。桁数の計算は合っている。
+  // 窓を広げたときに古い行の折り返しが狭いままなのは別の話で、
+  // vt100 が既存の行を組み直さないため
   let lastRC = "";
   function report() {
     measure();
