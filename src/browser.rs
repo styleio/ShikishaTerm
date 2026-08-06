@@ -160,6 +160,8 @@ pub enum Ev {
     Result { id: u64, ok: bool, value: String },
     /// 帯のボタンが押された = 人が自分の番を終えた
     Button,
+    /// 窓の大きさが変わった (何行何桁入るか)
+    Resize { rows: u16, cols: u16 },
     /// 選択された文字 (PuTTY と同じで、選んだ時点でコピーする)
     Copy { text: String },
     /// 貼り付けの要求 (右クリック)
@@ -565,6 +567,10 @@ fn run_window(
                         .to_string(),
                 },
                 Some("button") => Ev::Button,
+                Some("resize") => Ev::Resize {
+                    rows: v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
+                    cols: v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,
+                },
                 Some("copy") => Ev::Copy {
                     text: v
                         .get("text")

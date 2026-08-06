@@ -75,7 +75,26 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
     cellW = r.width / 10;
     cellH = parseFloat(getComputedStyle(scr).lineHeight) || r.height;
   }
-  window.addEventListener("resize", measure);
+  // 窓に何行何桁入るかを知らせる。
+  // 相手はこの数を信じて折り返すので、食い違うと画面の外へ書き続ける
+  let lastRC = "";
+  function report() {
+    measure();
+    if (!cellW || !cellH) return;
+    const pad = (parseFloat(getComputedStyle(scr).paddingLeft) || 0) * 2;
+    const padV = (parseFloat(getComputedStyle(scr).paddingTop) || 0) * 2;
+    const cols = Math.max(20, Math.floor((window.innerWidth - pad) / cellW));
+    const rows = Math.max(5, Math.floor((window.innerHeight - padV) / cellH));
+    const key = rows + "x" + cols;
+    if (key === lastRC) return;
+    lastRC = key;
+    send({ kind: "resize", rows: rows, cols: cols });
+  }
+  let rt = 0;
+  window.addEventListener("resize", () => {
+    clearTimeout(rt);
+    rt = setTimeout(report, 80);
+  });
 
   let frames = 0, bytes = 0, t0 = performance.now();
   let curX = 8, curY = 8;
@@ -186,6 +205,7 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
   // 選択した文字は、そのままコピーできる (ブラウザの機能をそのまま使う)
   focus();
   measure();
+  report();
   send({ kind:"ready", url: location.href });
 </script></body></html>"#;
 
@@ -262,6 +282,11 @@ pub fn run(cmd: &[String]) -> Result<()> {
         for ev in win.drain() {
             match ev {
                 Ev::Closed => return Ok(()),
+                // 窓に合わせてPTYの大きさを直す。
+                // これを伝えないと、相手は古い桁数のまま折り返す
+                Ev::Resize { rows, cols } => {
+                    let _ = tab.resize(rows, cols);
+                }
                 // 選んだ時点でコピーする (PuTTY と同じ)
                 Ev::Copy { text } => {
                     if let Ok(mut c) = arboard::Clipboard::new() {
