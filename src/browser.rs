@@ -162,6 +162,12 @@ pub enum Ev {
     Button,
     /// 窓の大きさが変わった (何行何桁入るか)
     Resize { rows: u16, cols: u16 },
+    /// このタブを見たい (0 = 稼働盤)
+    Select { tab: usize },
+    /// 稼働盤のメニューが押された
+    Menu { key: String },
+    /// 緊急停止
+    Stop,
     /// 選択された文字 (PuTTY と同じで、選んだ時点でコピーする)
     Copy { text: String },
     /// 貼り付けの要求 (右クリック)
@@ -581,6 +587,17 @@ fn run_window(
                         .to_string(),
                 },
                 Some("button") => Ev::Button,
+                Some("select") => Ev::Select {
+                    tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                },
+                Some("menu") => Ev::Menu {
+                    key: v
+                        .get("key")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                },
+                Some("stop") => Ev::Stop,
                 Some("resize") => Ev::Resize {
                     rows: v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
                     cols: v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,

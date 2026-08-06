@@ -106,6 +106,18 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #stop { cursor:pointer; color:var(--stop); border:1px solid #3d2020;
     padding:2px 10px; border-radius:7px; font-weight:700; }
   #stop:hover { background:var(--stop); color:#0a0c0e; }
+  /* 入力を受ける場所。カーソルに重ねる。
+     IMEの候補窓はこの要素に付いてくるので、置き場所がそのまま候補の位置になる。
+     変換中の文字はブラウザが下線付きで描くので、こちらでは描かない */
+  #kbd { position:absolute; border:0; padding:0; margin:0; outline:none;
+    background:transparent; color:var(--text); caret-color:transparent;
+    overflow:hidden; resize:none; white-space:pre; font:inherit;
+    line-height:inherit; width:1px; }
+  #cur { position:absolute; background:var(--brand); opacity:.75;
+    pointer-events:none; animation:blink 1.06s step-end infinite; }
+  @keyframes blink { 0%,50% { opacity:.75 } 50.01%,100% { opacity:0 } }
+  #probe, #tprobe { position:absolute; visibility:hidden; white-space:pre;
+    left:0; top:0; margin:0; }
   #flash { position:absolute; left:50%; bottom:52px; transform:translateX(-50%);
     background:#16202b; border:1px solid var(--brand); color:var(--text);
     padding:8px 16px; border-radius:8px; font-size:13px; }
@@ -115,6 +127,10 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   <div id="main">
     <div id="board" hidden></div>
     <pre id="screen" hidden></pre>
+    <div id="cur" hidden></div>
+    <textarea id="kbd" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+    <pre id="probe">MMMMMMMMMM</pre>
+    <pre id="tprobe"></pre>
     <div id="flash" hidden></div>
   </div>
   <div id="status"></div>
@@ -280,12 +296,168 @@ window.__screen = function (html) {
   document.getElementById("screen").innerHTML = html;
 };
 
+// ── ここから入力 ────────────────────────────
+// ターミネルの中身だけがマス目なので、測るのも重ねるのもここに限る
+const scr = document.getElementById("screen");
+const kbd = document.getElementById("kbd");
+const cur = document.getElementById("cur");
+const probe = document.getElementById("probe");
+const tprobe = document.getElementById("tprobe");
+let cellW = 0, cellH = 0, curX = 8, curY = 8, composing = false;
+
+// font の一括指定は、直せない組み合わせだと空文字になる。
+// 空を代入しても何も起きず、別のフォントで測ることになるので個別に写す
+function copyFont(el2) {
+  const c = getComputedStyle(scr);
+  el2.style.fontFamily = c.fontFamily;
+  el2.style.fontSize = c.fontSize;
+  el2.style.fontWeight = c.fontWeight;
+  el2.style.letterSpacing = c.letterSpacing;
+}
+function measure() {
+  copyFont(probe);
+  const r = probe.getBoundingClientRect();
+  cellW = r.width / 10;
+  cellH = parseFloat(getComputedStyle(scr).lineHeight) || r.height;
+}
+
+// 窓に何行何桁入るかを知らせる。
+// 相手はこの数を信じて折り返すので、食い違うと画面の外へ書き続ける
+let lastRC = "";
+function report() {
+  measure();
+  if (!cellW || !cellH) return;
+  const box = document.getElementById("main").getBoundingClientRect();
+  const pad = (parseFloat(getComputedStyle(scr).paddingLeft) || 0) * 2;
+  const cols = Math.max(20, Math.floor((box.width - pad) / cellW));
+  const rows = Math.max(5, Math.floor((box.height - pad) / cellH));
+  const key = rows + "x" + cols;
+  if (key === lastRC) return;
+  lastRC = key;
+  send({kind:"resize", rows:rows, cols:cols});
+}
+let rt = 0;
+window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(report, 80); });
+
+window.__cursor = function (row, col, shown) {
+  if (!cellW) measure();
+  const pad = parseFloat(getComputedStyle(scr).paddingLeft) || 0;
+  const padT = parseFloat(getComputedStyle(scr).paddingTop) || 0;
+  const box = scr.getBoundingClientRect();
+  curX = box.left + pad + col * cellW;
+  curY = box.top + padT + row * cellH;
+  kbd.style.left = curX + "px";
+  kbd.style.top = curY + "px";
+  kbd.style.height = cellH + "px";
+  cur.hidden = !shown || composing || S === null || S.active === 0;
+  if (!cur.hidden) {
+    cur.style.left = curX + "px";
+    cur.style.top = curY + "px";
+    cur.style.width = cellW + "px";
+    cur.style.height = cellH + "px";
+  }
+};
+
+// 変換中は送らない。確定した文字だけを送る。
+// 幅は文字数から見積もらず実際に描いて測る (全角と半角が混ざると必ず外れる)
+function widen(s) {
+  copyFont(tprobe);
+  tprobe.textContent = s || "";
+  const need = tprobe.getBoundingClientRect().width + cellW * 2;
+  let left = curX;
+  if (curX + need > window.innerWidth - 8) {
+    left = Math.max(0, window.innerWidth - need - 8);
+  }
+  kbd.style.left = left + "px";
+  const room = Math.max(cellW, window.innerWidth - left - 8);
+  kbd.style.width = Math.max(need, room) + "px";
+}
+kbd.addEventListener("compositionstart", () => { composing = true; cur.hidden = true; widen(""); });
+kbd.addEventListener("compositionupdate", e => widen(e.data));
+kbd.addEventListener("compositionend", e => {
+  composing = false;
+  kbd.value = "";
+  kbd.style.width = "1px";
+  if (e.data) send({kind:"key", text:e.data});
+});
+kbd.addEventListener("input", e => {
+  if (composing || e.isComposing) return;
+  const v = kbd.value;
+  kbd.value = "";
+  if (v) send({kind:"key", text:v});
+});
+
+const NAMED = {
+  Enter:"enter", Backspace:"bs", Tab:"tab", Escape:"esc", Delete:"del",
+  ArrowUp:"up", ArrowDown:"down", ArrowRight:"right", ArrowLeft:"left",
+  Home:"home", End:"end", PageUp:"pgup", PageDown:"pgdn",
+  F1:"f1", F2:"f2", F3:"f3", F4:"f4", F5:"f5", F6:"f6",
+  F7:"f7", F8:"f8", F9:"f9", F10:"f10", F11:"f11", F12:"f12",
+};
+kbd.addEventListener("keydown", e => {
+  if (e.isComposing) return;
+  const nm = NAMED[e.key];
+  if (nm) { e.preventDefault(); send({kind:"key", named:nm}); return; }
+  if (e.ctrlKey && e.key.length === 1) {
+    e.preventDefault();
+    send({kind:"key", ctrl:e.key.toLowerCase()});
+  }
+});
+
+// PuTTY と同じ作法: 選んだ時点でコピーされる。右クリックで貼り付け
+const focus = () => kbd.focus();
+document.addEventListener("mouseup", () => {
+  const s = window.getSelection();
+  const t = s ? s.toString() : "";
+  if (t) { send({kind:"copy", text:t}); return; }
+  focus();
+});
+document.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  send({kind:"paste"});
+  focus();
+});
+window.addEventListener("focus", focus);
+focus();
+measure();
+report();
+
 send({kind:"ready"});
 </script></body></html>"####;
+
+/// 訳語とビルド刻印を埋めて、配れる形にする
+pub fn page() -> String {
+    let dict = crate::i18n::dict_json();
+    PAGE.replace("{{DICT}}", &dict).replace(
+        "{{BUILD}}",
+        &serde_json::to_string(&format!(
+            "build {}  ({})",
+            env!("BUILD_TIME"),
+            env!("BUILD_REV")
+        ))
+        .unwrap_or_else(|_| "\"\"".into()),
+    )
+}
 
 #[cfg(test)]
 mod tests {
     use super::PAGE;
+
+
+    /// 配る形に、埋め忘れが残っていないこと。
+    ///
+    /// 差し込み先が残ったままだと、ページ全体がSyntaxErrorになり、
+    /// 画面には何も出ないまま原因が見えない
+    #[test]
+    fn the_page_has_nothing_left_to_fill_in() {
+        crate::i18n::init(Some("ja"), &[std::path::PathBuf::from(
+            env!("CARGO_MANIFEST_DIR"),
+        )]);
+        let p = super::page();
+        assert!(!p.contains("{{"), "差し込み先が残っている");
+        assert!(p.contains("const T = {"), "訳語が入っていない");
+        assert!(p.contains("const BUILD = \""), "ビルド刻印が入っていない");
+    }
 
     /// 同じ名前を2回宣言していないこと。
     ///
