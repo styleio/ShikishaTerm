@@ -60,8 +60,17 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
   const probe = document.getElementById("probe");
   const cur = document.getElementById("cur");
   let cellW = 0, cellH = 0;
+  // font の一括指定は、直せない組み合わせだと空文字になる。
+  // 空を代入しても何も起きず、別のフォントで測ることになるので個別に写す
+  function copyFont(el) {
+    const c = getComputedStyle(scr);
+    el.style.fontFamily = c.fontFamily;
+    el.style.fontSize = c.fontSize;
+    el.style.fontWeight = c.fontWeight;
+    el.style.letterSpacing = c.letterSpacing;
+  }
   function measure() {
-    probe.style.font = getComputedStyle(scr).font;
+    copyFont(probe);
     const r = probe.getBoundingClientRect();
     cellW = r.width / 10;
     cellH = parseFloat(getComputedStyle(scr).lineHeight) || r.height;
@@ -108,17 +117,19 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
   // 足りないと左へスクロールして先頭が切れるので、実際に描いて測る
   const tprobe = document.getElementById("tprobe");
   const widen = s => {
-    tprobe.style.font = getComputedStyle(scr).font;
+    copyFont(tprobe);
     tprobe.textContent = s || "";
     const need = tprobe.getBoundingClientRect().width + cellW * 2;
-    // 窓からはみ出すなら、はみ出さない位置まで左へ寄せる
-    const room = window.innerWidth - curX - 8;
-    if (need > room) {
-      kbd.style.left = Math.max(0, window.innerWidth - need - 8) + "px";
-    } else {
-      kbd.style.left = curX + "px";
+    // 窓からはみ出すなら、収まる位置まで左へ寄せる
+    let left = curX;
+    if (curX + need > window.innerWidth - 8) {
+      left = Math.max(0, window.innerWidth - need - 8);
     }
-    kbd.style.width = Math.max(cellW, need) + "px";
+    kbd.style.left = left + "px";
+    // 下限は「そこから窓の右端まで」。測り違えても、
+    // 画面に収まる長さならスクロールしない
+    const room = Math.max(cellW, window.innerWidth - left - 8);
+    kbd.style.width = Math.max(need, room) + "px";
   };
   kbd.addEventListener("compositionstart", () => {
     composing = true;
