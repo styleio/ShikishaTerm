@@ -91,6 +91,7 @@
   "msg.restart_none": ">> 終了しているタブはありません",
   "msg.restarted_list": ">> 再起動: {names}",
   "msg.tabbar_width": ">> タブバー幅: {width}（config.json の \"tab_bar_width\" で固定できます）",
+  "msg.settings_here": "設定をこの窓の中に開きました (Ctrl+B o で隠す)",
   "msg.settings_opened": ">> 設定画面: {url}",
   "msg.settings_failed": ">> 設定画面を開けません: {error}",
   "msg.settings_wait": "Enterキーで終了します...",

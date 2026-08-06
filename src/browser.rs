@@ -164,6 +164,80 @@ pub enum Cmd {
     Close,
 }
 
+/// 画面からの意図をひとつ読む。
+///
+/// 窓 (ipc) からもスマホ (HTTP) からも同じ形で届く。読み方が2か所にあると、
+/// 同じ押下が2通りに解釈される日が来るので、ここだけに置く。
+/// 知らない `kind` は `None`。黙って捨てるのが正しい
+pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
+    Some(match v.get("kind").and_then(|k| k.as_str()) {
+        Some("ready") => Ev::Ready {
+            url: v
+                .get("url")
+                .and_then(|u| u.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        },
+        Some("button") => Ev::Button,
+        Some("select") => Ev::Select {
+            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        },
+        Some("menu") => Ev::Menu {
+            key: v
+                .get("key")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        },
+        Some("stop") => Ev::Stop,
+        Some("jserror") => Ev::JsError {
+            msg: v
+                .get("msg")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        },
+        Some("password") => Ev::Password {
+            text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
+        },
+        Some("resize") => {
+            let a = v.get("area").and_then(|x| x.as_array());
+            let num = |i: usize| {
+                a.and_then(|a| a.get(i))
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0) as i32
+            };
+            Ev::Resize {
+                rows: v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
+                cols: v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,
+                area: (num(0), num(1), num(2), num(3)),
+            }
+        }
+        Some("copy") => Ev::Copy {
+            text: v
+                .get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        },
+        Some("paste") => Ev::Paste,
+        Some("key") => Ev::Key {
+            text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
+            named: v.get("named").and_then(|x| x.as_str()).map(str::to_string),
+            ctrl: v.get("ctrl").and_then(|x| x.as_str()).map(str::to_string),
+        },
+        Some("result") => Ev::Result {
+            id: v.get("id").and_then(|i| i.as_u64()).unwrap_or(0),
+            ok: v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false),
+            value: v
+                .get("value")
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "null".into()),
+        },
+    _ => return None,
+    })
+}
+
 /// ブラウザから指揮者への報告
 #[derive(Debug, Clone)]
 pub enum Ev {
@@ -658,71 +732,8 @@ fn run_window(
             let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
                 return;
             };
-            let ev = match v.get("kind").and_then(|k| k.as_str()) {
-                Some("ready") => Ev::Ready {
-                    url: v
-                        .get("url")
-                        .and_then(|u| u.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                },
-                Some("button") => Ev::Button,
-                Some("select") => Ev::Select {
-                    tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-                },
-                Some("menu") => Ev::Menu {
-                    key: v
-                        .get("key")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                },
-                Some("stop") => Ev::Stop,
-                Some("jserror") => Ev::JsError {
-                    msg: v
-                        .get("msg")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                },
-                Some("password") => Ev::Password {
-                    text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
-                },
-                Some("resize") => {
-                    let a = v.get("area").and_then(|x| x.as_array());
-                    let num = |i: usize| {
-                        a.and_then(|a| a.get(i))
-                            .and_then(|x| x.as_i64())
-                            .unwrap_or(0) as i32
-                    };
-                    Ev::Resize {
-                        rows: v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
-                        cols: v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,
-                        area: (num(0), num(1), num(2), num(3)),
-                    }
-                }
-                Some("copy") => Ev::Copy {
-                    text: v
-                        .get("text")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                },
-                Some("paste") => Ev::Paste,
-                Some("key") => Ev::Key {
-                    text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
-                    named: v.get("named").and_then(|x| x.as_str()).map(str::to_string),
-                    ctrl: v.get("ctrl").and_then(|x| x.as_str()).map(str::to_string),
-                },
-                Some("result") => Ev::Result {
-                    id: v.get("id").and_then(|i| i.as_u64()).unwrap_or(0),
-                    ok: v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false),
-                    value: v
-                        .get("value")
-                        .map(|x| x.to_string())
-                        .unwrap_or_else(|| "null".into()),
-                },
-                _ => return,
+            let Some(ev) = parse_intent(&v) else {
+                return;
             };
             let _ = ipc.send(ev);
         })

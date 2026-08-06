@@ -187,6 +187,21 @@ const el = (t, a, ...kids) => {
 
 let S = null;   // 直近の状態
 
+// 押している間は作り直さない。
+// click は「同じ要素で始まって終わる」ことで成立する。押し下げと押し上げの
+// 間に盤面を作り直すと、押した要素はもう無く、その押下はどこにも届かない。
+// 活動グラフは絶えず動くので、これは稀な事故ではなく既定の動作だった。
+let holding = false, queued = null;
+const release = () => {
+  holding = false;
+  if (queued !== null) { const j = queued; queued = null; window.__state(j); }
+};
+addEventListener("pointerdown", () => { holding = true; }, true);
+addEventListener("pointerup", release, true);
+addEventListener("pointercancel", release, true);
+// 窓の外で離された時のために。押しっぱなしのまま固まる方が困る
+addEventListener("blur", release, true);
+
 // ── 左のタブバー ────────────────────────────
 function drawTabs() {
   const nav = document.getElementById("tabs");
@@ -366,6 +381,7 @@ window.__password = function (title, note) {
 };
 
 window.__state = function (json) {
+  if (holding) { queued = json; return; }
   S = JSON.parse(json);
   drawTabs();
   drawStatus();
@@ -688,6 +704,38 @@ pub fn page(token: &str) -> String {
 mod tests {
     use super::PAGE;
 
+
+    /// 押している間は、盤面を作り直さないこと。
+    ///
+    /// click は「押し下げと押し上げが同じ要素で起きる」ことで成立する。
+    /// 状態が届くたびに盤面を全部作り直していたので、押している最中に
+    /// 作り直されると、押した要素はもう無く、押下はどこにも届かなかった。
+    /// 活動グラフは絶えず動くため、これは稀な事故ではなく既定の動作で、
+    /// INDEXのメニューはマウスでは押せなかった。
+    ///
+    /// 見た目を確かめないと気づけない類なので、ここで押さえる
+    #[test]
+    fn a_press_is_not_interrupted_by_a_redraw() {
+        let p = super::page("");
+        // 描き直しの入口に、押している間の預かりがあること
+        let at = p.find("window.__state = function").expect("状態の入口が無い");
+        let head = &p[at..at + 200];
+        assert!(
+            head.contains("holding") && head.contains("queued"),
+            "状態が届いたら、押している最中でも作り直してしまう"
+        );
+        // 離したら、預かった分を必ず流すこと (押した後に画面が止まらない)
+        assert!(
+            p.contains("addEventListener(\"pointerup\", release"),
+            "離したときに、預かった描き直しを流していない"
+        );
+        // 窓の外で離された場合の逃げ道。無いと押しっぱなしのまま固まる
+        assert!(
+            p.contains("addEventListener(\"pointercancel\", release")
+                && p.contains("addEventListener(\"blur\", release"),
+            "押しっぱなしのまま画面が止まる道が残っている"
+        );
+    }
 
     /// 配る形に、埋め忘れが残っていないこと。
     ///

@@ -91,6 +91,7 @@
   "msg.restart_none": ">> No stopped tabs",
   "msg.restarted_list": ">> Restarted: {names}",
   "msg.tabbar_width": ">> Tab bar width: {width} (you can fix it with \"tab_bar_width\" in config.json)",
+  "msg.settings_here": "Settings opened in this window (Ctrl+B o to hide)",
   "msg.settings_opened": ">> Settings opened: {url}",
   "msg.settings_failed": ">> Could not open settings: {error}",
   "msg.settings_wait": "Press Enter to quit…",

@@ -56,6 +56,36 @@ pub enum RemoteCmd {
     Keys { tab: usize, keys: String },
     /// 自動化の緊急停止 / 再開
     SetAuto(bool),
+    /// 画面からの操作 (タブの切り替え・メニュー・打鍵)。
+    /// 窓から来たものと同じ扱いで、同じ列に入る
+    Ui(crate::browser::Ev),
+}
+
+/// スマホから受け付ける操作かどうか。
+///
+/// 同じページを配っている以上、送れる意図は窓と同じだけある。
+/// だが窓の前にいないと意味が無いもの、窓を止めてしまうものがある。
+/// 通すものを数え上げる側で書く。増やすのは、理由を書いてからでいい
+fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
+    use crate::browser::Ev;
+    match ev {
+        // 見たいタブを選ぶ・打つ・止める。遠隔操作の本体
+        Ev::Select { .. } | Ev::Key { .. } | Ev::Stop => true,
+        // 選んだ文字を控える。窓と同じ作法 (PuTTY と同じ) を保つ
+        Ev::Copy { .. } => true,
+        Ev::Menu { key } => !matches!(
+            key.as_str(),
+            // 設定とブラウザは窓の中に出る。手元では何も起きない
+            "e" | "o"
+            // マスターパスワードは窓に尋ねる。
+            // 遠くから呼ぶと、窓の前の人が答えるまで本体が止まる
+            | "k"
+        ),
+        // 大きさは窓が決める。手元の画面に合わせて
+        // 相手のターミナルを畳んでしまう理由が無い。
+        // 貼り付けも同じで、長押しひとつでAIの入力欄に流れ込む
+        _ => false,
+    }
 }
 
 pub struct RemoteUi {
@@ -161,27 +191,8 @@ fn handle(
     let method = req.method().as_str().to_string();
     let path = req.url().split('?').next().unwrap_or("/").to_string();
     match (method.as_str(), path.as_str()) {
-        ("GET", "/") => {
-            let html = crate::i18n::render(PAGE)
-                .replace("__TOKEN__", token)
-                .replace("__DICT__", &crate::i18n::dict_json());
-            req.respond(
-                Response::from_string(html)
-                    .with_header(
-                        Header::from_bytes(
-                            &b"Content-Type"[..],
-                            &b"text/html; charset=utf-8"[..],
-                        )
-                        .unwrap(),
-                    )
-                    // 更新したのに古い画面が出る、を起こさない
-                    .with_header(
-                        Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
-                    ),
-            )?;
-        }
         // 窓と同じ外皮。見た目を2回書かないための入口
-        ("GET", "/shell") => {
+        ("GET", "/") | ("GET", "/shell") => {
             req.respond(
                 Response::from_string(crate::shell::page(token))
                     .with_header(
@@ -191,6 +202,7 @@ fn handle(
                         )
                         .unwrap(),
                     )
+                    // 更新したのに古い画面が出る、を起こさない
                     .with_header(
                         Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
                     ),
@@ -219,6 +231,21 @@ fn handle(
             }
             req.respond(json_response(serde_json::json!({"ok": true})))?;
         }
+        // 画面からの操作。窓と同じ意図を、同じ言葉で受ける
+        ("POST", "/api/intent") => {
+            let mut req = req;
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body)?;
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let mut took = false;
+            if let Some(ev) = crate::browser::parse_intent(&v) {
+                if allowed_from_afar(&ev) {
+                    let _ = tx.send(RemoteCmd::Ui(ev));
+                    took = true;
+                }
+            }
+            req.respond(json_response(serde_json::json!({"ok": took})))?;
+        }
         ("POST", "/api/auto") => {
             let mut req = req;
             let mut body = String::new();
@@ -235,280 +262,39 @@ fn handle(
     Ok(())
 }
 
-const PAGE: &str = r##"<!doctype html>
-<html lang="{{__lang__}}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0f1115">
-<title>{{app.title}}</title>
-<style>
- :root { --bg:#0f1115; --panel:#161a20; --panel2:#1b2027; --line:#262d37;
-   --text:#e6e9ef; --muted:#8b95a5; --accent:#00aaff; --warn:#ffc857; --danger:#ff6b6b;
-   color-scheme: dark; }
- * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
- body { margin:0; background:var(--bg); color:var(--text); font-size:15px; line-height:1.6;
-   font-family:system-ui,-apple-system,"Segoe UI","Hiragino Sans",sans-serif;
-   padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
- header { position:sticky; top:0; z-index:3; display:flex; align-items:center; gap:10px;
-   padding:12px 16px; background:rgba(15,17,21,.95); border-bottom:1px solid var(--line); }
- header b { font-size:15px; font-weight:600; }
- .spacer { flex:1; }
- main { padding:12px 14px 24px; max-width:720px; margin:0 auto; }
-
- .tab { display:block; width:100%; text-align:left;
-   background:var(--panel); border:1px solid var(--line); color:var(--text);
-   border-radius:12px; padding:14px; margin-bottom:10px; font-size:15px; font-family:inherit; }
- .tab .row { display:flex; align-items:center; gap:12px; }
- /* いま画面に出ている行。長いので1行に収める */
- .tab .now { margin-top:6px; color:var(--muted); font-size:12px;
-   font-family:ui-monospace,Consolas,monospace; white-space:nowrap;
-   overflow:hidden; text-overflow:ellipsis; }
- .tab .now:empty { display:none; }
- .tab.sel { border-color:var(--accent); }
- .dot { width:10px; height:10px; border-radius:50%; flex:none; }
- .busy { background:var(--warn); } .done { background:var(--accent); }
- .quest { background:#4ec9ff; } .wait { background:#4ec9ff; opacity:.5; }
- .exit { background:var(--danger); }
- .tab .st { color:var(--muted); font-size:12.5px; margin-left:auto; }
- .name { font-weight:600; }
-
- .out { background:var(--panel); border:1px solid var(--line); border-radius:12px;
-   padding:12px 14px; margin:12px 0; color:#cfd6e0; max-height:46vh; overflow:auto;
-   /* 折り返すとアスキーアートが崩れる。PCの桁数で描かれた絵は再構成できないので、
-      折り返さずに縮めるか横へ流すかしかない */
-   white-space:pre; font-size:12.5px; line-height:1.35;
-   font-family:ui-monospace,"SF Mono","Menlo","Roboto Mono","Noto Sans Mono","DejaVu Sans Mono",monospace;
-   font-variant-ligatures:none; font-feature-settings:"liga" 0, "calt" 0;
-   -webkit-text-size-adjust:none; text-size-adjust:none; }
- .composer { position:sticky; bottom:0; background:linear-gradient(transparent,var(--bg) 22%);
-   padding:10px 0 4px; }
- textarea { width:100%; background:var(--panel2); color:var(--text); border:1px solid var(--line);
-   border-radius:12px; padding:12px; font-size:16px; font-family:inherit; resize:none; }
- .btns { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
- button { font-family:inherit; font-size:15px; border-radius:10px; padding:11px 16px;
-   border:1px solid var(--line); background:var(--panel2); color:var(--text); }
- button.primary { background:var(--accent); border-color:var(--accent); color:#04121c; font-weight:700; }
- button.stop { color:var(--danger); }
- .quick button { padding:9px 14px; }
- .hint { color:var(--muted); font-size:12.5px; }
-</style></head><body>
-<header>
-  <b id="ws">{{app.title}}</b>
-  <span class="spacer"></span>
-  <span class="hint" id="autost"></span>
-  <button class="stop" onclick="toggleAuto()" id="autobtn">{{phone.stop}}</button>
-</header>
-<main>
-  <div id="list"></div>
-  <div id="detail" style="display:none">
-    <div class="hint" id="dname"></div>
-    <div class="out" id="out"></div>
-    <div class="quick btns" id="quick"></div>
-    <div class="composer">
-      <textarea id="msg" rows="3" placeholder="{{phone.instruct.ph}}"></textarea>
-      <div class="btns">
-        <button class="primary" onclick="send()">{{phone.send}}</button>
-        <button onclick="back()">{{phone.back}}</button>
-        <span class="spacer"></span>
-        <span class="hint" id="sent"></span>
-      </div>
-    </div>
-  </div>
-</main>
-<script>
-const TOKEN = "__TOKEN__";
-const api = (p, b) => fetch(p, {method: b ? "POST" : "GET",
-  headers:{"X-Token":TOKEN,"Content-Type":"application/json"}, body: b});
-let snap = {tabs:[]}, sel = null, dirty = false;
-
-// 画面の最後の「中身がある行」。空行と、入力欄の枠だけの行は飛ばす
-// (Claude Code や Codex は入力欄を画面下に描くので、素の最終行だと枠が出る)
-function lastLine(screen) {
-  // 区切り線と入力欄の枠。`-` は範囲指定と読まれないよう先に置く
-  const frame = /^[-\s=_|>+*.·─-╿]+$/;
-  const lines = (screen || "").split("\n")
-    .map(l => l.trim())
-    .filter(l => l && !frame.test(l));
-  return lines.length ? lines[lines.length - 1] : "";
-}
-
-const CLS = {BUSY:"busy", DONE:"done", QUESTION:"quest", WAIT:"wait", EXIT:"exit"};
-const T = __DICT__;
-const LABEL = {BUSY:T["state.busy"], DONE:T["state.done"], QUESTION:T["state.question"],
-               WAIT:T["state.wait"], EXIT:T["state.exit"]};
-
-async function poll() {
-  try {
-    snap = await (await api("/api/state")).json();
-    render();
-  } catch (e) {}
-  setTimeout(poll, 700);
-}
-
-function render() {
-  document.getElementById("ws").textContent = snap.workspace || T["app.title"];
-  document.getElementById("autost").textContent = snap.auto_enabled ? T["phone.automation_on"] : T["phone.automation_off"];
-  document.getElementById("autobtn").textContent = snap.auto_enabled ? T["phone.stop"] : T["phone.resume"];
-  const list = document.getElementById("list");
-  const detail = document.getElementById("detail");
-  if (sel === null) {
-    list.style.display = ""; detail.style.display = "none";
-    list.textContent = "";
-    for (const t of snap.tabs) {
-      const b = document.createElement("button");
-      b.className = "tab";
-      b.onclick = () => { sel = t.index; render(); };
-      const d = document.createElement("span");
-      d.className = "dot " + (CLS[t.state] || "wait");
-      const n = document.createElement("span");
-      n.className = "name";
-      n.textContent = (t.locked ? "🔒 " : "") + t.name;
-      const s = document.createElement("span");
-      s.className = "st";
-      s.textContent = LABEL[t.state] || t.state;
-      const head = document.createElement("div");
-      head.className = "row";
-      head.append(d, n, s);
-      // いま画面に出ている最後の行。「考え中」や実行中の操作がそのまま出る
-      const now = document.createElement("div");
-      now.className = "now";
-      now.textContent = lastLine(t.screen);
-      b.append(head, now);
-      list.append(b);
-    }
-    return;
-  }
-  const t = snap.tabs.find(x => x.index === sel);
-  if (!t) { sel = null; return render(); }
-  list.style.display = "none"; detail.style.display = "";
-  document.getElementById("dname").textContent =
-    t.name + " — " + (LABEL[t.state] || t.state);
-  const out = document.getElementById("out");
-  const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 20;
-  // 常に画面そのものを見せる。
-  // 取り込んだ応答は折り返した行を1行に連結するので (自動化へ渡す文章としては
-  // それが正しい)、枠や図が潰れる。スマホは見た目を見る場所なので画面を使う
-  const text = t.screen || t.output || "";
-  if (out.textContent !== text) {
-    out.textContent = text;
-    if (atBottom) out.scrollTop = out.scrollHeight;
-  }
-  fitScreen(out, snap.cols);
-  // 確認待ちのときだけ、よく使う返答を出す
-  const q = document.getElementById("quick");
-  q.textContent = "";
-  if (t.state === "QUESTION") {
-    for (const [label, keys] of [["1","1\r"],["2","2\r"],[T["phone.answer.yes"],"y\r"],
-                                 [T["phone.answer.no"],"n\r"],["Enter","\r"]]) {
-      const b = document.createElement("button");
-      b.textContent = label;
-      b.onclick = () => sendKeys(keys);
-      q.append(b);
-    }
-  }
-}
-
-async function send() {
-  const box = document.getElementById("msg");
-  const text = box.value.trim();
-  if (!text || sel === null) return;
-  await api("/api/send", JSON.stringify({tab: sel, text}));
-  box.value = "";
-  flash(T["phone.sent"]);
-}
-async function sendKeys(keys) {
-  await api("/api/send", JSON.stringify({tab: sel, keys}));
-  flash(T["phone.sent"]);
-}
-async function toggleAuto() {
-  await api("/api/auto", JSON.stringify({on: !snap.auto_enabled}));
-}
-function back() { sel = null; render(); }
-
-// 端末の桁数がちょうど収まる文字サイズを決める。
-// 折り返さない代わりに縮めるので、アスキーアートが崩れない。
-// 縮めすぎると読めないので下限で止め、そこから先は横スクロールに任せる
-const MIN_PX = 7;
-let fitted = { cols: 0, width: 0 };
-function fitScreen(el, cols) {
-  if (!cols) return;
-  const avail = el.clientWidth - 28; // padding 14px * 2
-  if (fitted.cols === cols && Math.abs(fitted.width - avail) < 2) return;
-  fitted = { cols, width: avail };
-
-  el.style.fontSize = "";
-  const base = parseFloat(getComputedStyle(el).fontSize);
-  // 1文字の幅はフォント任せなので実測する (端末や機種で違う)
-  const probe = document.createElement("span");
-  probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
-  probe.textContent = "0".repeat(100);
-  el.appendChild(probe);
-  const per = probe.getBoundingClientRect().width / 100;
-  probe.remove();
-
-  const need = per * cols;
-  if (need > avail) {
-    el.style.fontSize = Math.max(MIN_PX, base * avail / need).toFixed(2) + "px";
-  }
-}
-addEventListener("resize", () => { fitted = { cols: 0, width: 0 }; render(); });
-function flash(t) {
-  const s = document.getElementById("sent");
-  s.textContent = t;
-  setTimeout(() => { s.textContent = ""; }, 1500);
-}
-document.getElementById("msg").addEventListener("keydown", e => {
-  // スマホでは改行を優先。Ctrl/⌘+Enterで送信
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); }
-});
-poll();
-</script></body></html>
-"##;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
 
-    /// トップレベルの const/let が重複していないこと。
-    /// 重複すると SyntaxError でスクリプト全体が動かず、静的なHTMLだけが残る。
-    /// 画面は出ているのに何も動かないという、原因の分かりにくい壊れ方をする
-    fn top_level_bindings(page: &str) -> Vec<String> {
-        page.lines()
-            .filter_map(|l| l.strip_prefix("const ").or_else(|| l.strip_prefix("let ")))
-            .filter_map(|rest| rest.split(|c: char| !(c.is_alphanumeric() || c == '_')).next())
-            .filter(|n| !n.is_empty())
-            .map(str::to_string)
-            .collect()
-    }
-    
-    fn assert_no_duplicate_bindings(name: &str, page: &str) {
-        let names = top_level_bindings(page);
-        for (i, n) in names.iter().enumerate() {
-            assert!(
-                !names[..i].contains(n),
-                "{name}: `{n}` がトップレベルで二重宣言されている (JS全体が動かなくなる)"
-            );
-        }
-    }
-
-    /// スマホ画面に `{{key}}` や `__DICT__` がそのまま出ていないこと
+    /// 遠くから送れる操作を、通す側で数えていること。
+    ///
+    /// 同じページを配る以上、送れる意図は窓と同じだけある。
+    /// だが大きさは窓が決めるものだし、マスターパスワードを遠くから呼ぶと
+    /// 窓の前の人が答えるまで本体が止まる
     #[test]
-    fn page_is_fully_rendered_and_uses_known_keys() {
-        let html = crate::i18n::render(PAGE)
-            .replace("__TOKEN__", "t")
-            .replace("__DICT__", "{}");
-        assert!(!html.contains("{{"), "未置換の {{{{key}}}} が残っている");
-        assert!(!html.contains("__"), "未置換のプレースホルダが残っている");
+    fn the_phone_cannot_reach_what_only_the_window_can_answer() {
+        use crate::browser::Ev;
+        let menu = |k: &str| super::allowed_from_afar(&Ev::Menu { key: k.into() });
+        assert!(super::allowed_from_afar(&Ev::Select { tab: 2 }));
+        assert!(super::allowed_from_afar(&Ev::Stop));
+        assert!(menu("a") && menu("?") && menu("w"), "普通の操作が通らない");
 
-        assert_no_duplicate_bindings("remote PAGE", PAGE);
-
-        let en: serde_json::Value = serde_json::from_str(include_str!("../lang/en.json")).unwrap();
-        let mut rest = PAGE;
-        while let Some(i) = rest.find("T[\"") {
-            rest = &rest[i + 3..];
-            let key = &rest[..rest.find('"').unwrap()];
-            assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
-        }
+        assert!(!menu("k"), "マスターパスワードを遠くから呼べてしまう");
+        assert!(!menu("e") && !menu("o"), "窓の中にしか出ないものを呼べる");
+        assert!(
+            !super::allowed_from_afar(&Ev::Resize {
+                rows: 10,
+                cols: 20,
+                area: (0, 0, 0, 0)
+            }),
+            "手元の画面に合わせて相手のターミナルを畳めてしまう"
+        );
+        assert!(
+            !super::allowed_from_afar(&Ev::Paste),
+            "長押しひとつでAIの入力欄に流れ込む"
+        );
     }
 
     #[test]
@@ -561,6 +347,50 @@ mod tests {
                 assert_eq!((tab, text.as_str()), (1, "続けて"));
             }
             other => panic!("想定外: {other:?}"),
+        }
+
+        // 入口が窓と同じ外皮を配っていること。
+        // 以前はスマホ用の古いページを別に持っていて、直しても
+        // スマホ側には一度も出ないままだった
+        for entry in ["/", "/shell"] {
+            let page = agent
+                .get(&format!("{base}{entry}?t=tok123456789012"))
+                .call()
+                .unwrap()
+                .body_mut()
+                .read_to_string()
+                .unwrap();
+            assert!(
+                page.contains("api/intent") && page.contains("window.__state"),
+                "{entry} が窓と同じ外皮を配っていない"
+            );
+        }
+
+        // 画面からの操作が本体へ届くこと
+        agent
+            .post(&format!("{base}/api/intent?t=tok123456789012"))
+            .send(r#"{"kind":"select","tab":2}"#)
+            .unwrap();
+        match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
+            RemoteCmd::Ui(crate::browser::Ev::Select { tab }) => assert_eq!(tab, 2),
+            other => panic!("想定外: {other:?}"),
+        }
+
+        // 窓にしか答えられないものは、受け取った時点で止める。
+        // 通らなかったことは、次の受信で分かる (select が先に出てくる)
+        agent
+            .post(&format!("{base}/api/intent?t=tok123456789012"))
+            .send(r#"{"kind":"menu","key":"k"}"#)
+            .unwrap();
+        agent
+            .post(&format!("{base}/api/intent?t=tok123456789012"))
+            .send(r#"{"kind":"select","tab":3}"#)
+            .unwrap();
+        match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
+            RemoteCmd::Ui(crate::browser::Ev::Select { tab }) => {
+                assert_eq!(tab, 3, "止めたはずの操作が先に届いた")
+            }
+            other => panic!("窓にしか答えられないものが通った: {other:?}"),
         }
         ui.shutdown();
     }

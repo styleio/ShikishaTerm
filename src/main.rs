@@ -253,14 +253,10 @@ struct WinSurface {
 }
 
 impl WinSurface {
-    /// Ctrl+B に続けて1文字、という形に直す
-    fn prefixed(&mut self, c: char) {
-        self.pending.push_back(Event::Key(KeyEvent::new(
-            KeyCode::Char('b'),
-            KeyModifiers::CONTROL,
-        )));
-        self.pending
-            .push_back(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)));
+    /// 外から届いた操作を、窓の打鍵と同じ列に入れる。
+    /// スマホから来ても、ループから見れば区別が無い
+    fn inject(&mut self, ev: Event) {
+        self.pending.push_back(ev);
     }
 
     fn take_events(&mut self, tabs: &[Tab], active: usize) {
@@ -273,38 +269,8 @@ impl WinSurface {
                     self.area = area;
                     self.pending.push_back(Event::Resize(cols, rows));
                 }
-                // 「このタブを見たい」は Ctrl+B の数字と同じこと
-                Ev::Select { tab } if tab <= 9 => {
-                    self.prefixed(char::from_digit(tab as u32, 10).unwrap_or('0'))
-                }
-                Ev::Menu { key } => {
-                    if let Some(c) = key.chars().next() {
-                        self.prefixed(c);
-                    }
-                }
-                Ev::Stop => self.prefixed('x'),
                 Ev::JsError { msg } => {
                     crate::append_hook_log(&format!("画面の失敗: {msg}"));
-                }
-                Ev::Key { text, named, ctrl } => {
-                    if let Some(n) = named {
-                        if let Some(code) = named_key(&n) {
-                            self.pending
-                                .push_back(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
-                        }
-                    } else if let Some(c) = ctrl.and_then(|s| s.chars().next()) {
-                        self.pending.push_back(Event::Key(KeyEvent::new(
-                            KeyCode::Char(c),
-                            KeyModifiers::CONTROL,
-                        )));
-                    } else if let Some(t) = text {
-                        for c in t.chars() {
-                            self.pending.push_back(Event::Key(KeyEvent::new(
-                                KeyCode::Char(c),
-                                KeyModifiers::NONE,
-                            )));
-                        }
-                    }
                 }
                 // クリップボードは端末側と同じ扱いにする
                 Ev::Copy { text } => {
@@ -317,9 +283,55 @@ impl WinSurface {
                         let _ = paste_clipboard(t);
                     }
                 }
-                _ => {}
+                // 残りは打鍵に直せるもの。直し方は keys_for に1つだけ置く
+                other => {
+                    for e in keys_for(&other) {
+                        self.pending.push_back(e);
+                    }
+                }
             }
         }
+    }
+}
+
+/// 画面からの意図を、ループが既に知っている打鍵に直す。
+///
+/// 窓もスマホも同じページを使う。直し方が2か所にあると、
+/// 同じ押下がどちらから来たかで別の意味になる日が来る。
+/// 打鍵に直せない意図 (読み込み完了・大きさの変更など) は空を返す
+fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
+    use crate::browser::Ev;
+    let plain = |c: char| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    let prefixed = |c: char| {
+        vec![
+            Event::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL)),
+            plain(c),
+        ]
+    };
+    match ev {
+        // 「このタブを見たい」は Ctrl+B の数字と同じこと
+        Ev::Select { tab } if *tab <= 9 => {
+            prefixed(char::from_digit(*tab as u32, 10).unwrap_or('0'))
+        }
+        Ev::Menu { key } => key.chars().next().map(prefixed).unwrap_or_default(),
+        Ev::Stop => prefixed('x'),
+        Ev::Key { text, named, ctrl } => {
+            if let Some(n) = named {
+                named_key(n)
+                    .map(|code| vec![Event::Key(KeyEvent::new(code, KeyModifiers::NONE))])
+                    .unwrap_or_default()
+            } else if let Some(c) = ctrl.as_ref().and_then(|s| s.chars().next()) {
+                vec![Event::Key(KeyEvent::new(
+                    KeyCode::Char(c),
+                    KeyModifiers::CONTROL,
+                ))]
+            } else if let Some(t) = text {
+                t.chars().map(plain).collect()
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -1066,6 +1078,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 let _ = t.write_bytes(keys.as_bytes());
                             }
                         }
+                        // 画面からの操作。窓から来たものと区別しない。
+                        // ここで別扱いを始めると、同じ押下が2通りの意味を持つ
+                        remote::RemoteCmd::Ui(ev) => {
+                            for e in keys_for(&ev) {
+                                surface.inject(e);
+                            }
+                        }
                         remote::RemoteCmd::SetAuto(on) => {
                             auto_enabled = on;
                             if !on {
@@ -1412,23 +1431,35 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 &mut password,
                             )?);
                         }
-                        // 設定GUI: ローカルWebサーバーを起動してブラウザで開く
+                        // 設定: 自分の窓の中で開く。
+                        // 外のブラウザに投げると、どの窓が誰のものか分からなくなる
                         KeyCode::Char('e') => {
-                            flash = Some(match web.as_ref() {
-                                Some(w) => {
-                                    open_browser(&w.url);
-                                    i18n::tp("msg.settings_opened", &[("url", &w.url)])
-                                }
-                                None => match webui::WebUi::start_with(config_file.clone(), Arc::clone(&remote_info)) {
-                                    Ok(w) => {
-                                        open_browser(&w.url);
-                                        let msg = i18n::tp("msg.settings_opened", &[("url", &w.url)]);
-                                        web = Some(w);
-                                        msg
+                            // 立ち上げるのは1度だけ。2度目からは同じ場所へ戻る
+                            let url = match web.as_ref() {
+                                Some(w) => Ok(w.url.clone()),
+                                None => webui::WebUi::start_with(
+                                    config_file.clone(),
+                                    Arc::clone(&remote_info),
+                                )
+                                .map(|w| {
+                                    let u = w.url.clone();
+                                    web = Some(w);
+                                    u
+                                }),
+                            };
+                            flash = Some(
+                                match url.and_then(|u| caps.browser_open(SETTINGS_TAB, &u)) {
+                                    Ok(()) => {
+                                        browser_shown = true;
+                                        caps.browsers_fit(true);
+                                        i18n::t("msg.settings_here")
                                     }
-                                    Err(e) => i18n::tp("msg.settings_failed", &[("error", &e.to_string())]),
+                                    Err(e) => i18n::tp(
+                                        "msg.settings_failed",
+                                        &[("error", &e.to_string())],
+                                    ),
                                 },
-                            });
+                            );
                         }
                         KeyCode::Char('q') => break,
                         _ => {}
@@ -1625,6 +1656,10 @@ fn write_prompt(t: &Tab, text: &str) {
     }
     let _ = t.write_bytes(&bytes);
 }
+
+/// 設定画面を窓の中に置くときの名前。
+/// 綴りがずれると別のブラウザとして扱われ、2枚目が開く
+const SETTINGS_TAB: &str = "settings";
 
 fn open_browser(url: &str) {
     // cmd の start はURL内の & を分割してしまうため、空タイトル引数の後に渡す
