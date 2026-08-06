@@ -147,6 +147,19 @@ pub enum Cmd {
     Fit { x: i32, y: i32, w: i32, h: i32 },
     /// 見せる / 隠す
     Show(bool),
+    /// 同じ窓の中に、名前を付けてページを置く
+    AddChild {
+        name: String,
+        url: String,
+        rect: (i32, i32, i32, i32),
+    },
+    /// 置いたページの場所と大きさを決める。幅か高さが0なら隠す
+    ChildBounds {
+        name: String,
+        rect: (i32, i32, i32, i32),
+    },
+    /// 置いたページを取り除く
+    RemoveChild { name: String },
     /// 窓を閉じる
     Close,
 }
@@ -331,6 +344,36 @@ impl Browser {
 
     pub fn close(&self) -> Result<()> {
         self.send(Cmd::Close)
+    }
+
+    /// 同じ窓の中にページを置く。
+    ///
+    /// 別窓にすると、所有関係も位置の追従も、
+    /// Windows Terminal のタブ切替での露出も、全部こちらの持ち物になる。
+    /// 同じ窓に入れれば、どれも起きない
+    pub fn open_child(&self, name: &str, url: &str, rect: (i32, i32, i32, i32)) -> Result<()> {
+        if !is_openable(url) {
+            return Err(anyhow!("開けないURLです: {url}"));
+        }
+        self.send(Cmd::AddChild {
+            name: name.to_string(),
+            url: url.to_string(),
+            rect,
+        })
+    }
+
+    /// 置いたページの場所と大きさ。幅か高さを0にすると隠れる
+    pub fn child_bounds(&self, name: &str, rect: (i32, i32, i32, i32)) -> Result<()> {
+        self.send(Cmd::ChildBounds {
+            name: name.to_string(),
+            rect,
+        })
+    }
+
+    pub fn close_child(&self, name: &str) -> Result<()> {
+        self.send(Cmd::RemoveChild {
+            name: name.to_string(),
+        })
     }
 
     /// ターミナルの上にぴったり重ねる
@@ -521,6 +564,14 @@ fn call_js(func: &str, args: &[serde_json::Value]) -> String {
     format!("return window.{func}({});", list.join(","))
 }
 
+/// 場所と大きさを wry の形に直す
+fn to_rect((x, y, w, h): (i32, i32, i32, i32)) -> wry::Rect {
+    wry::Rect {
+        position: wry::dpi::LogicalPosition::new(x, y).into(),
+        size: wry::dpi::LogicalSize::new(w.max(0), h.max(0)).into(),
+    }
+}
+
 fn ask_js(text: &str, label: &str) -> String {
     format!(
         "window.__shikisha_ask({}, {});",
@@ -629,6 +680,10 @@ fn run_window(
         })
         .build(&window)?;
 
+    // 同じ窓に置いたページたち。名前で引く
+    let mut children: std::collections::HashMap<String, wry::WebView> =
+        std::collections::HashMap::new();
+
     ev_loop.run_return(move |event, _, control| {
         *control = ControlFlow::Wait;
         match event {
@@ -651,6 +706,29 @@ fn run_window(
                     window.set_inner_size(tao::dpi::PhysicalSize::new(w.max(1), h.max(1)));
                 }
                 Cmd::Show(on) => window.set_visible(on),
+                Cmd::AddChild { name, url, rect } => {
+                    let bounds = to_rect(rect);
+                    match WebViewBuilder::new()
+                        .with_url(&url)
+                        .with_bounds(bounds)
+                        .build_as_child(&window)
+                    {
+                        Ok(v) => {
+                            children.insert(name, v);
+                        }
+                        Err(e) => {
+                            crate::append_hook_log(&format!("ページを置けません {name}: {e}"))
+                        }
+                    }
+                }
+                Cmd::ChildBounds { name, rect } => {
+                    if let Some(v) = children.get(&name) {
+                        let _ = v.set_bounds(to_rect(rect));
+                    }
+                }
+                Cmd::RemoveChild { name } => {
+                    children.remove(&name);
+                }
                 Cmd::Close => {
                     *control = ControlFlow::Exit;
                 }
@@ -796,6 +874,39 @@ mod tests {
         assert!(html.len() > 200, "HTMLが短すぎる: {}", html.len());
         println!("HTML {} 文字 / すべて通過", html.chars().count());
 
+        b.close().unwrap();
+    }
+
+
+    /// 同じ窓の中にページを置けること。
+    ///
+    ///   cargo test child_view -- --ignored --nocapture
+    ///
+    /// 別窓だと、所有関係も位置の追従も、Windows Terminal の
+    /// タブ切替での露出も、全部こちらの持ち物になっていた
+    #[test]
+    #[ignore]
+    fn a_page_can_sit_inside_the_window() {
+        let b = Browser::spawn(&serve(PAGE), "child probe").expect("窓が開かない");
+        b.open_child("side", "https://example.com/", (400, 0, 400, 500))
+            .expect("置けない");
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        // 場所を変えられる
+        b.child_bounds("side", (200, 0, 600, 500)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        // 幅0で隠れる
+        b.child_bounds("side", (0, 0, 0, 0)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        b.close_child("side").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        // 外皮のほうは生きたまま
+        let id = b.eval("return 1+1;").unwrap();
+        assert_eq!(
+            b.wait_result(id, std::time::Duration::from_secs(10)).unwrap(),
+            "2",
+            "子を置いたら外皮が動かなくなった"
+        );
+        println!("子ページの出し入れ: 通過");
         b.close().unwrap();
     }
 
