@@ -33,8 +33,16 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
   #kbd { position:fixed; left:8px; top:8px; width:1px; height:1em;
     opacity:0; border:0; padding:0; background:transparent; color:transparent; }
   #stat { position:fixed; right:8px; bottom:6px; font-size:11px; color:#5a6a78; }
+  /* カーソル。文字の上に重ねるので、下の文字は読めるまま残す */
+  #cur { position:absolute; background:#00aaff; opacity:.75; pointer-events:none;
+    animation:blink 1.06s step-end infinite; }
+  @keyframes blink { 0%,50% { opacity:.75 } 50.01%,100% { opacity:0 } }
+  /* 大きさを測るための見えない文字 */
+  #probe { position:absolute; visibility:hidden; white-space:pre; }
 </style></head><body>
 <pre id="scr"></pre>
+<div id="cur" hidden></div>
+<pre id="probe">MMMMMMMMMM</pre>
 <textarea id="kbd" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
 <div id="stat"></div>
 <script>
@@ -43,9 +51,33 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
   const kbd = document.getElementById("kbd");
   const stat = document.getElementById("stat");
 
+  // 1マスの大きさは環境で変わるので、実際に描いて測る
+  const probe = document.getElementById("probe");
+  const cur = document.getElementById("cur");
+  let cellW = 0, cellH = 0;
+  function measure() {
+    probe.style.font = getComputedStyle(scr).font;
+    const r = probe.getBoundingClientRect();
+    cellW = r.width / 10;
+    cellH = parseFloat(getComputedStyle(scr).lineHeight) || r.height;
+  }
+  window.addEventListener("resize", measure);
+
   let frames = 0, bytes = 0, t0 = performance.now();
+  window.__cursor = function (row, col, shown) {
+    if (!shown || !cellW) { cur.hidden = true; return; }
+    const pad = parseFloat(getComputedStyle(scr).paddingLeft) || 0;
+    const padT = parseFloat(getComputedStyle(scr).paddingTop) || 0;
+    cur.hidden = false;
+    cur.style.left = (pad + col * cellW) + "px";
+    cur.style.top = (padT + row * cellH) + "px";
+    cur.style.width = cellW + "px";
+    cur.style.height = cellH + "px";
+  };
+
   window.__screen = function (text) {
     scr.textContent = text;
+    if (!cellW) measure();
     frames++; bytes += text.length;
     const s = (performance.now() - t0) / 1000;
     if (s >= 1) {
@@ -85,11 +117,17 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
     }
   });
 
-  // どこを押しても入力は受け続ける
+  // 選択しているときはフォーカスを奪わない。
+  // 押すたびに入力欄へ戻していたので、ドラッグ選択が成立しなかった
   const focus = () => kbd.focus();
-  document.addEventListener("mousedown", e => { setTimeout(focus, 0); });
+  document.addEventListener("mouseup", () => {
+    const s = window.getSelection();
+    if (!s || s.isCollapsed) focus();
+  });
   window.addEventListener("focus", focus);
+  // 選択した文字は、そのままコピーできる (ブラウザの機能をそのまま使う)
   focus();
+  measure();
   send({ kind:"ready", url: location.href });
 </script></body></html>"#;
 
@@ -160,6 +198,7 @@ pub fn run(cmd: &[String]) -> Result<()> {
     let win = Browser::spawn(&format!("http://127.0.0.1:{port}/"), "SHIKISHA-TERM")?;
 
     let mut last = String::new();
+    let mut last_cursor = (u16::MAX, u16::MAX, false);
     let mut last_draw = Instant::now();
     loop {
         for ev in win.drain() {
@@ -183,17 +222,31 @@ pub fn run(cmd: &[String]) -> Result<()> {
         // 毎回送ると、動いていない画面でもCPUを食う
         if last_draw.elapsed() >= Duration::from_millis(33) {
             last_draw = Instant::now();
-            let now = {
+            let (now, cur_row, cur_col, cur_on) = {
                 let p = tab.parser.lock().unwrap();
-                crate::tab::visible_text(p.screen())
+                let s = p.screen();
+                let (r, c) = s.cursor_position();
+                (
+                    crate::tab::visible_text(s),
+                    r,
+                    c,
+                    !s.hide_cursor(),
+                )
             };
-            if now != last {
-                last = now;
-                let js = format!(
-                    "return window.__screen({});",
-                    serde_json::to_string(&last).unwrap_or_else(|_| "\"\"".into())
-                );
-                let _ = win.eval(&js);
+            let cursor = (cur_row, cur_col, cur_on);
+            if now != last || cursor != last_cursor {
+                last_cursor = cursor;
+                if now != last {
+                    last = now;
+                    let js = format!(
+                        "return window.__screen({});",
+                        serde_json::to_string(&last).unwrap_or_else(|_| "\"\"".into())
+                    );
+                    let _ = win.eval(&js);
+                }
+                let _ = win.eval(&format!(
+                    "return window.__cursor({cur_row},{cur_col},{cur_on});"
+                ));
             }
         }
         std::thread::sleep(Duration::from_millis(8));
