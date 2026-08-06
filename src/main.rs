@@ -474,6 +474,39 @@ fn named_key(n: &str) -> Option<KeyCode> {
     })
 }
 
+/// URLに載っている文字を戻す (%xx と +)。
+/// 小さな用途なので、依存を増やさずここで解く
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                    Ok(v) => {
+                        out.push(v);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(b[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// 自前の窓を開いて、同じループをその上で回す
 fn run_in_window() -> Result<()> {
     // 外皮を配る。file:// は wry のIPCで落ちるので、ローカルHTTPで出す
@@ -487,12 +520,20 @@ fn run_in_window() -> Result<()> {
     let page = shell::page("");
     std::thread::spawn(move || {
         for req in server.incoming_requests() {
-            let r = tiny_http::Response::from_string(page.clone()).with_header(
-                tiny_http::Header::from_bytes(
-                    &b"Content-Type"[..],
-                    &b"text/html; charset=utf-8"[..],
-                )
-                .expect("header"),
+            let url = req.url().to_string();
+            // QRの絵は netaddr が作る。ページ側で作り直さない
+            let (body, mime) = if url.starts_with("/qr.svg") {
+                let want = url
+                    .split_once("u=")
+                    .map(|(_, v)| percent_decode(v))
+                    .unwrap_or_default();
+                (netaddr::qr_svg(&want, 6), "image/svg+xml")
+            } else {
+                (page.clone(), "text/html; charset=utf-8")
+            };
+            let r = tiny_http::Response::from_string(body).with_header(
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], mime.as_bytes())
+                    .expect("header"),
             );
             let _ = req.respond(r);
         }
@@ -534,6 +575,9 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
             .collect(),
         ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
         flash: flash.map(str::to_string),
+        help_open: ui.help_open,
+        ws_open: ui.ws_open,
+        qr: ui.qr.clone(),
         build: format!("build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
     }
 }

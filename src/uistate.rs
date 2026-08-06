@@ -71,6 +71,12 @@ pub struct UiState {
     pub ball: BallState,
     /// 一時的な通知 (保存しました、緊急停止、等)
     pub flash: Option<String>,
+    /// ヘルプを出している
+    pub help_open: bool,
+    /// ワークスペースの選択を出している
+    pub ws_open: bool,
+    /// スマホ接続のQRを出しているなら、その接続先
+    pub qr: Option<String>,
     /// どのビルドか (古い実行ファイルを掴んでいないか確かめられる)
     pub build: String,
 }

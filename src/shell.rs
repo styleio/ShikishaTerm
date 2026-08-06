@@ -118,6 +118,21 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   @keyframes blink { 0%,50% { opacity:.75 } 50.01%,100% { opacity:0 } }
   #probe, #tprobe { position:absolute; visibility:hidden; white-space:pre;
     left:0; top:0; margin:0; }
+  /* 覆いかぶさる画面。押せる場所を見失わないよう、外は暗くする */
+  #veil { position:fixed; inset:0; background:#00000099; display:flex;
+    align-items:center; justify-content:center; z-index:50; }
+  #veil .box { background:var(--panel); border:1px solid var(--brand);
+    border-radius:12px; padding:20px 24px; max-width:min(760px,86vw);
+    max-height:84vh; overflow:auto; }
+  #veil h3 { margin:0 0 12px; font-size:13px; color:var(--brand);
+    letter-spacing:1px; text-transform:uppercase; }
+  #veil .row { display:flex; gap:10px; align-items:center; padding:5px 0;
+    font-size:13px; }
+  #veil .pick { cursor:pointer; padding:7px 10px; border-radius:7px; }
+  #veil .pick:hover { background:#16202b; }
+  #veil .qr { background:#fff; padding:12px; border-radius:8px; }
+  #veil .url { font-size:12px; color:var(--dim); margin-top:10px;
+    word-break:break-all; user-select:text; }
   #flash { position:absolute; left:50%; bottom:52px; transform:translateX(-50%);
     background:#16202b; border:1px solid var(--brand); color:var(--text);
     padding:8px 16px; border-radius:8px; font-size:13px; }
@@ -133,6 +148,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     <pre id="tprobe"></pre>
     <div id="flash" hidden></div>
   </div>
+  <div id="veil" hidden></div>
   <div id="status"></div>
 </div>
 <script>
@@ -284,6 +300,36 @@ function drawStatus() {
 }
 
 // ── 受け口 ──────────────────────────────────
+// 覆いかぶさる画面。閉じるのは Esc かどこかを押すこと
+function drawVeil() {
+  const v = document.getElementById("veil");
+  const shown = S.help_open || S.ws_open || !!S.qr;
+  v.hidden = !shown;
+  if (!shown) return;
+  v.textContent = "";
+  const box = el("div", {class:"box"});
+  if (S.ws_open) {
+    box.append(el("h3", {}, T["tui.workspace"] || "WORKSPACE"));
+    S.workspaces.forEach((w, i) => {
+      box.append(el("div", {class:"pick" + (i === S.ws_index ? " sel" : ""),
+        onclick:() => send({kind:"menu", key:String(i + 1)})},
+        (i + 1) + ".  " + w));
+    });
+  } else if (S.qr) {
+    box.append(el("h3", {}, T["tui.menu.phone"] || "PHONE"));
+    // QRはRust側が作った画像をそのまま出す (作り方を2箇所に持たない)
+    const img = el("img", {class:"qr", src:"qr.svg?u=" + encodeURIComponent(S.qr)});
+    box.append(img, el("div", {class:"url"}, S.qr));
+  } else {
+    box.append(el("h3", {}, T["tui.menu.help"] || "HELP"));
+    for (const line of (T["tui.help.body"] || "").split("\n")) {
+      box.append(el("div", {class:"row"}, line));
+    }
+  }
+  v.onclick = () => send({kind:"key", named:"esc"});
+  v.append(box);
+}
+
 window.__state = function (json) {
   S = JSON.parse(json);
   drawTabs();
@@ -293,6 +339,7 @@ window.__state = function (json) {
   board.hidden = S.active !== 0;
   screen.hidden = S.active === 0;
   if (S.active === 0) drawBoard();
+  drawVeil();
   const f = document.getElementById("flash");
   f.hidden = !S.flash;
   if (S.flash) f.textContent = S.flash;
