@@ -182,6 +182,7 @@
   "settings.tab.kind": "種類",
   "settings.tab.kind.cmd": "コマンドを実行",
   "settings.tab.kind.cmdprompt": "コマンドプロンプト",
+  "settings.tab.kind.browser": "ブラウザ（Webページ）",
   "settings.tab.kind.ssh": "SSH接続（サーバーに繋ぐ）",
   "settings.tab.kind.docker": "Dockerコンテナの中",
   "settings.tab.kind.wsl": "WSL（Windows上のLinux）の中",

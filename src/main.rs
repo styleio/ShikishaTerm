@@ -1645,6 +1645,11 @@ fn apply_ws_config(
         if argv.is_empty() {
             continue;
         }
+        // ブラウザは子プロセスではないので、ここでは立てない
+        // (open_declared_browsers が窓を開く)
+        if config::browser_url_of(&argv).is_some() {
+            continue;
+        }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
         let opts = tab_options(&ft.cfg);
         match tabs.iter().position(|t| t.title == title) {
@@ -1705,6 +1710,23 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
     for b in &ws.browsers {
         if let Err(e) = caps.browser_open(&b.id, &b.url) {
             errors.push(format!("ブラウザ {}: {e:#}", b.id));
+        }
+    }
+    // タブとして「browser https://...」と書かれたものも同じ扱い。
+    // 自動化から指す名前は、そのタブのID (無ければ表示名)
+    for ft in &ws.tabs {
+        let argv = ft.cfg.command.argv();
+        let Some(url) = config::browser_url_of(&argv) else {
+            continue;
+        };
+        let name = ft
+            .cfg
+            .id
+            .clone()
+            .or_else(|| ft.cfg.name.clone())
+            .unwrap_or_else(|| "browser".into());
+        if let Err(e) = caps.browser_open(&name, &url) {
+            errors.push(format!("ブラウザ {name}: {e:#}"));
         }
     }
 }

@@ -182,6 +182,7 @@
   "settings.tab.kind": "Kind",
   "settings.tab.kind.cmd": "Run a command",
   "settings.tab.kind.cmdprompt": "Command Prompt",
+  "settings.tab.kind.browser": "Browser (a web page)",
   "settings.tab.kind.ssh": "SSH (connect to a server)",
   "settings.tab.kind.docker": "Inside a Docker container",
   "settings.tab.kind.wsl": "Inside WSL (Linux on Windows)",

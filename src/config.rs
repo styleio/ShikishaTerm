@@ -280,6 +280,19 @@ pub struct Workspace {
     pub browsers: Vec<BrowserConfig>,
 }
 
+/// このタブはブラウザか。そうならURLを返す。
+///
+/// ssh/docker/wsl と同じで、コマンド文字列の頭で見分ける。
+/// 設定画面の「種類」もこの規則を見ている
+pub fn browser_url_of(argv: &[String]) -> Option<String> {
+    let (head, rest) = argv.split_first()?;
+    if !head.eq_ignore_ascii_case("browser") && !head.eq_ignore_ascii_case("web") {
+        return None;
+    }
+    let url = rest.first()?.trim().to_string();
+    (!url.is_empty()).then_some(url)
+}
+
 impl TabConfig {
     /// automation を優先し、旧称 lua にフォールバックする
     pub fn automation_path(&self) -> Option<String> {
@@ -548,5 +561,45 @@ mod tests {
         let (ws, errs) = cfg.resolve_workspaces();
         assert_eq!(ws.len(), 1, "壊れた定義は飛ばして続行");
         assert_eq!(errs.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod browser_kind_tests {
+    use super::browser_url_of;
+
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// 「種類=ブラウザ」を、設定画面と本体が同じ規則で見分けること。
+    ///
+    /// 判定が2箇所に分かれると、画面ではブラウザに見えるのに
+    /// 起動するとシェルが立つ、という食い違いが起きる
+    #[test]
+    fn a_browser_tab_is_told_apart_by_its_command() {
+        assert_eq!(
+            browser_url_of(&v(&["browser", "https://example.com/"])).as_deref(),
+            Some("https://example.com/")
+        );
+        assert_eq!(
+            browser_url_of(&v(&["web", "http://127.0.0.1:8080/"])).as_deref(),
+            Some("http://127.0.0.1:8080/"),
+            "web という綴りも通す"
+        );
+        assert_eq!(
+            browser_url_of(&v(&["BROWSER", "https://a.example/"])).as_deref(),
+            Some("https://a.example/"),
+            "大文字小文字は問わない"
+        );
+
+        // ブラウザではないもの
+        assert!(browser_url_of(&v(&["cmd.exe"])).is_none());
+        assert!(browser_url_of(&v(&["claude"])).is_none());
+        assert!(browser_url_of(&v(&["browser"])).is_none(), "URLが無い");
+        assert!(browser_url_of(&v(&["browser", "  "])).is_none(), "空白だけ");
+        assert!(browser_url_of(&[]).is_none());
+        // 「browser」で始まる別のコマンドを巻き込まない
+        assert!(browser_url_of(&v(&["browserify", "x"])).is_none());
     }
 }

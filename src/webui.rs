@@ -1236,15 +1236,20 @@ function parseWsl(cmd) {
 const buildWsl = o => ["wsl", o.distro ? "-d " + o.distro : "", o.dir ? "--cd " + o.dir : "",
   o.shell ? "-- " + o.shell : ""].filter(Boolean).join(" ");
 
-const kindOf = c => parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
-const KIND_LABEL = {cmd:T["settings.tab.command"], ssh:"SSH", docker:"Docker", wsl:"WSL"};
-const KIND_START = {cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl "};
+const parseBrowser = c => /^\s*(browser|web)\s+\S/i.test(cmdToText(c));
+const kindOf = c => parseBrowser(c) ? "browser"
+  : parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
+const KIND_LABEL = {cmd:T["settings.tab.command"], ssh:"SSH", docker:"Docker", wsl:"WSL",
+  browser:T["settings.tab.kind.browser"]};
+const KIND_START = {cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl ",
+  browser:"browser https://"};
 const COMMON_COMMANDS = [
   {label:"Claude Code", cmd:"claude",         check:"claude"},
   {label:"Codex CLI",   cmd:"codex",          check:"codex"},
   {label:"Gemini CLI",  cmd:"gemini",         check:"gemini"},
   {label:"PowerShell",  cmd:"powershell.exe", check:null},
   {label:T["settings.tab.kind.cmdprompt"], cmd:"cmd.exe", check:null},
+  {label:T["settings.tab.kind.browser"], cmd:"browser https://example.com/", check:null},
 ];
 const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 
