@@ -1,4 +1,6 @@
-<h1 align="center">SHIKISHA-TERM</h1>
+<p align="center">
+  <img src="assets/banner.png" alt="SHIKISHA-TERM — Run Claude Code, Codex and Gemini side by side" width="820">
+</p>
 
 <p align="center">
   <b>Run Claude Code, Codex and Gemini side by side — and let them hand work to each other.</b><br>

@@ -1,4 +1,6 @@
-<h1 align="center">SHIKISHA-TERM</h1>
+<p align="center">
+  <img src="assets/banner.png" alt="SHIKISHA-TERM — 複数のAI CLIを並べて動かし、仕事を渡し合わせる" width="820">
+</p>
 
 <p align="center">
   <b>Claude Code / Codex / Gemini を同時に動かし、AI同士に仕事を渡させる。</b><br>
