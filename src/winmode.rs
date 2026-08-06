@@ -342,6 +342,105 @@ fn flush_run(out: &mut String, style: &str, run: &str) {
     }
 }
 
+
+/// ratatui の色をCSSに直す。端末の16色と同じ配色表を使う
+fn ui_color(c: ratatui::style::Color, fallback: &str) -> String {
+    use ratatui::style::Color as C;
+    match c {
+        C::Reset => fallback.to_string(),
+        C::Black => PALETTE[0].into(),
+        C::Red => PALETTE[1].into(),
+        C::Green => PALETTE[2].into(),
+        C::Yellow => PALETTE[3].into(),
+        C::Blue => PALETTE[4].into(),
+        C::Magenta => PALETTE[5].into(),
+        C::Cyan => PALETTE[6].into(),
+        C::Gray => PALETTE[7].into(),
+        C::DarkGray => PALETTE[8].into(),
+        C::LightRed => PALETTE[9].into(),
+        C::LightGreen => PALETTE[10].into(),
+        C::LightYellow => PALETTE[11].into(),
+        C::LightBlue => PALETTE[12].into(),
+        C::LightMagenta => PALETTE[13].into(),
+        C::LightCyan => PALETTE[14].into(),
+        C::White => PALETTE[15].into(),
+        C::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        C::Indexed(i) => color_css(vt100::Color::Idx(i), ""),
+    }
+}
+
+/// 画面のマス目をHTMLにする。
+///
+/// 中身は `draw()` が作ったものをそのまま使う。書き直さないので、
+/// INDEXもボールも稼働盤も、足した機能は自動で付いてくる
+pub fn buffer_html(buf: &ratatui::buffer::Buffer) -> String {
+    use ratatui::style::Modifier;
+    const FG: &str = "#e8eef4";
+    const BG: &str = "transparent";
+    let area = buf.area;
+    let mut out = String::with_capacity(area.width as usize * area.height as usize * 2);
+    for y in 0..area.height {
+        let mut open: Option<String> = None;
+        let mut run = String::new();
+        let mut skip = 0u16;
+        for x in 0..area.width {
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            let cell = &buf[(x, y)];
+            let m = cell.modifier;
+            let (mut fg, mut bg) = (cell.fg, cell.bg);
+            if m.contains(Modifier::REVERSED) {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+            let mut style = String::new();
+            let f = ui_color(fg, if m.contains(Modifier::REVERSED) { BG } else { FG });
+            if f != FG {
+                style.push_str(&format!("color:{f};"));
+            }
+            let b = ui_color(bg, if m.contains(Modifier::REVERSED) { FG } else { BG });
+            if b != BG {
+                style.push_str(&format!("background:{b};"));
+            }
+            if m.contains(Modifier::BOLD) {
+                style.push_str("font-weight:700;");
+            }
+            if m.contains(Modifier::DIM) {
+                style.push_str("opacity:.6;");
+            }
+            if m.contains(Modifier::ITALIC) {
+                style.push_str("font-style:italic;");
+            }
+            if m.contains(Modifier::UNDERLINED) {
+                style.push_str("text-decoration:underline;");
+            }
+            if open.as_deref() != Some(style.as_str()) {
+                if let Some(prev) = open.take() {
+                    flush_run(&mut out, &prev, &run);
+                    run.clear();
+                }
+                open = Some(style);
+            }
+            let sym = cell.symbol();
+            if sym.is_empty() {
+                run.push(' ');
+            } else {
+                esc_into(&mut run, sym);
+                // 全角は2マスを占める。次のマスは飛ばさないと二重に出る
+                if unicode_width::UnicodeWidthStr::width(sym) > 1 {
+                    skip = 1;
+                }
+            }
+        }
+        if let Some(prev) = open.take() {
+            flush_run(&mut out, &prev, &run);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// 制御キーの名前を、端末のバイト列に直す
 fn named_bytes(name: &str) -> &'static [u8] {
     match name {

@@ -3959,6 +3959,35 @@ mod tests {
         );
     }
 
+
+    /// 稼働盤が、書き直さずに窓へ出せること。
+    ///
+    /// INDEXもタブバーもボールも draw() の中にある。HTMLで書き直すと
+    /// 以後すべての変更を2回書くことになる (スマホ表示で一度そうなり、
+    /// 片方だけ壊れた)。出力を変換すれば、足した機能は自動で付いてくる
+    #[test]
+    fn the_board_renders_into_the_window_without_rewriting_it() {
+        use ratatui::backend::TestBackend;
+        let mut b = crate::ball::Ball::default();
+        b.throw(1, 2, 3, 1_000);
+        let ui = test_ui(0, b, 3_000);
+        let mut term = ratatui::Terminal::new(TestBackend::new(96, 26)).unwrap();
+        term.draw(|f| draw(f, &[], &ui, None, &mut Vec::new())).unwrap();
+
+        let html = crate::winmode::buffer_html(term.backend().buffer());
+
+        // ワードマークも枠も、そのまま出ている
+        assert!(html.contains("█"), "ワードマークが出ていない");
+        assert!(html.contains("CHAIN"), "連鎖の表示が出ていない");
+        // 色が付いている (灰色一色ではない)
+        assert!(html.contains("color:#"), "色が付いていない");
+        assert!(html.matches("<span").count() > 5, "まとまりが少なすぎる");
+        // 26行ぶんある
+        assert_eq!(html.lines().count(), 26, "行数が合わない");
+        // 画面の中身がHTMLとして解釈されない
+        assert!(!html.contains("<script>"), "生のタグが混ざっている");
+    }
+
     #[test]
     fn first_run_shows_how_to_open_settings() {
         use ratatui::backend::TestBackend;
