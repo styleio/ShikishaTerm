@@ -330,6 +330,29 @@ function drawVeil() {
   v.append(box);
 }
 
+// パスワードを聞く。スマホには出さない。
+// 使う場面が無いうえ、同じページを配っているので、
+// 出せば公開設定を開けた人のところにも出てしまう
+window.__password = function (title, note) {
+  if (REMOTE) { send({kind:"password"}); return; }
+  const v = document.getElementById("veil");
+  v.hidden = false;
+  v.textContent = "";
+  const box = el("div", {class:"box"});
+  const inp = el("input", {type:"password", autocomplete:"off"});
+  inp.style.cssText = "font:inherit;background:#0a0c0e;color:var(--text);" +
+    "border:1px solid var(--line);border-radius:6px;padding:8px 10px;width:320px";
+  const done = t => { v.hidden = true; v.onclick = null; send({kind:"password", text:t}); };
+  inp.onkeydown = e => {
+    if (e.key === "Enter") { e.preventDefault(); done(inp.value); }
+    if (e.key === "Escape") { e.preventDefault(); done(null); }
+  };
+  box.append(el("h3", {}, title), note ? el("div", {class:"row"}, note) : null, inp);
+  v.onclick = e => { if (e.target === v) done(null); };
+  v.append(box);
+  inp.focus();
+};
+
 window.__state = function (json) {
   S = JSON.parse(json);
   drawTabs();

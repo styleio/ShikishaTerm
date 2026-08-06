@@ -300,7 +300,7 @@ fn prompt_password(
 
 /// マスターパスワードの設定・変更・解除 (INDEXメニュー [k])
 fn manage_master_password(
-    terminal: &mut ratatui::DefaultTerminal,
+    surface: &mut Surface,
     cfg: Option<&config::Config>,
     password: &mut Option<String>,
 ) -> Result<String> {
@@ -314,9 +314,7 @@ fn manage_master_password(
 
     if crypto::is_encrypted(&text) {
         // 変更 or 解除
-        let Some(old) = prompt_password(
-            terminal,
-            &i18n::t("prompt.password.current"),
+        let Some(old) = surface.ask_password(&i18n::t("prompt.password.current"),
             &i18n::t("prompt.password.current_note"),
         )?
         else {
@@ -327,9 +325,7 @@ fn manage_master_password(
             Ok(p) => p,
             Err(e) => return Ok(format!(">> {e}")),
         };
-        let Some(new) = prompt_password(
-            terminal,
-            &i18n::t("prompt.password.new"),
+        let Some(new) = surface.ask_password(&i18n::t("prompt.password.new"),
             &i18n::t("prompt.password.new_note"),
         )? else {
             return Ok(i18n::t("msg.password.cancelled"));
@@ -339,7 +335,7 @@ fn manage_master_password(
             *password = None;
             return Ok(i18n::t("msg.password.removed"));
         }
-        let confirm = prompt_password(terminal, &i18n::t("prompt.password.confirm"), "")?;
+        let confirm = surface.ask_password(&i18n::t("prompt.password.confirm"), "")?;
         if confirm.as_deref() != Some(new.as_str()) {
             return Ok(i18n::t("msg.password.mismatch"));
         }
@@ -348,9 +344,7 @@ fn manage_master_password(
         Ok(i18n::t("msg.password.changed"))
     } else {
         // 新規設定
-        let Some(new) = prompt_password(
-            terminal,
-            &i18n::t("prompt.password.set"),
+        let Some(new) = surface.ask_password(&i18n::t("prompt.password.set"),
             &i18n::t("prompt.password.set_note"),
         )? else {
             return Ok(i18n::t("msg.password.cancelled"));
@@ -358,7 +352,7 @@ fn manage_master_password(
         if new.is_empty() {
             return Ok(i18n::t("msg.password.empty"));
         }
-        let confirm = prompt_password(terminal, &i18n::t("prompt.password.confirm"), "")?;
+        let confirm = surface.ask_password(&i18n::t("prompt.password.confirm"), "")?;
         if confirm.as_deref() != Some(new.as_str()) {
             return Ok(i18n::t("msg.password.mismatch"));
         }
@@ -635,6 +629,22 @@ impl Surface<'_> {
         }
     }
 
+    /// パスワードを聞く。端末でも窓でも、呼ぶ側は同じ
+    fn ask_password(&mut self, title: &str, note: &str) -> Result<Option<String>> {
+        match self {
+            Surface::Term(t) => prompt_password(t, title, note),
+            Surface::Window(w) => {
+                let _ = w.win.eval(&format!(
+                    "return window.__password({},{});",
+                    serde_json::to_string(title).unwrap_or_default(),
+                    serde_json::to_string(note).unwrap_or_default()
+                ));
+                // 人が入力し終えるまで待つ。急かす理由がない
+                w.win.wait_password(Duration::from_secs(600))
+            }
+        }
+    }
+
     fn term_mut(&mut self) -> Option<&mut ratatui::DefaultTerminal> {
         match self {
             Surface::Term(t) => Some(t),
@@ -789,10 +799,7 @@ fn run(mut surface: Surface) -> Result<()> {
                 } else {
                     i18n::t("prompt.password.retry")
                 };
-                let Some(term) = surface.term_mut() else {
-                    break;
-                };
-                match prompt_password(term, &i18n::t("prompt.password.title"), &note)? {
+                match surface.ask_password(&i18n::t("prompt.password.title"), &note)? {
                     Some(pw) => {
                         let ok = std::fs::read_to_string(&path)
                             .ok()
@@ -1651,11 +1658,8 @@ fn run(mut surface: Surface) -> Result<()> {
                         }
                         // マスターパスワードの設定・変更・解除 (TUI内で完結)
                         KeyCode::Char('k') => {
-                            let Some(term) = surface.term_mut() else {
-                                continue;
-                            };
                             flash = Some(manage_master_password(
-                                term,
+                                &mut surface,
                                 cfg.as_ref(),
                                 &mut password,
                             )?);

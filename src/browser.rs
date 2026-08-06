@@ -186,6 +186,8 @@ pub enum Ev {
     Menu { key: String },
     /// 緊急停止
     Stop,
+    /// パスワードの入力結果 (None = 取り消し)
+    Password { text: Option<String> },
     /// 選択された文字 (PuTTY と同じで、選んだ時点でコピーする)
     Copy { text: String },
     /// 貼り付けの要求 (右クリック)
@@ -456,6 +458,26 @@ impl Browser {
         }
     }
 
+    /// パスワードが入力されるまで待つ。
+    /// 待っている間に来た他の合図は取っておく (捨てると永久に消える)
+    pub fn wait_password(&self, timeout: std::time::Duration) -> Result<Option<String>> {
+        let until = std::time::Instant::now() + timeout;
+        loop {
+            let left = until
+                .checked_duration_since(std::time::Instant::now())
+                .ok_or_else(|| anyhow!("入力がありません"))?;
+            match self.events.recv_timeout(left) {
+                Ok(Ev::Password { text }) => return Ok(text),
+                Ok(Ev::Closed) => return Err(anyhow!("窓が閉じました")),
+                Ok(other) => {
+                    self.spare.lock().unwrap().push(other);
+                    continue;
+                }
+                Err(_) => return Err(anyhow!("入力がありません")),
+            }
+        }
+    }
+
     /// 特定の評価の結果が届くまで待つ
     pub fn wait_result(&self, id: u64, timeout: std::time::Duration) -> Result<String> {
         let until = std::time::Instant::now() + timeout;
@@ -654,6 +676,9 @@ fn run_window(
                         .to_string(),
                 },
                 Some("stop") => Ev::Stop,
+                Some("password") => Ev::Password {
+                    text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
+                },
                 Some("resize") => {
                     let a = v.get("area").and_then(|x| x.as_array());
                     let num = |i: usize| {
