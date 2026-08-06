@@ -1240,7 +1240,15 @@ function parseWsl(cmd) {
 const buildWsl = o => ["wsl", o.distro ? "-d " + o.distro : "", o.dir ? "--cd " + o.dir : "",
   o.shell ? "-- " + o.shell : ""].filter(Boolean).join(" ");
 
-const parseBrowser = c => /^\s*(browser|web)\s+\S/i.test(cmdToText(c));
+// ブラウザのコマンドを読む。持ち物はURLひとつ。
+// 頭の語 (browser / web) は書いた人のものなので、そのまま残す
+function parseBrowser(c) {
+  const m = /^\s*(browser|web)\s+(\S.*)$/i.exec(cmdToText(c));
+  return m ? {head: m[1], url: m[2].trim()} : null;
+}
+const buildBrowser = o => (o.head || "browser") + " " + (o.url || "");
+/// 窓の中に置けるURLか。file: や data: は開けない
+const openableUrl = u => /^https?:\/\/\S/i.test((u || "").trim());
 const kindOf = c => parseBrowser(c) ? "browser"
   : parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
 const KIND_LABEL = {cmd:T["settings.tab.command"], ssh:"SSH", docker:"Docker", wsl:"WSL",
@@ -1534,6 +1542,7 @@ function moveTab(ws, d) {
 function kindPanel(t, cmdInput, rebuild) {
   const box = el("div");
   const ssh = parseSsh(t.command), dk = parseDocker(t.command), wsl = parseWsl(t.command);
+  const web = parseBrowser(t.command);
   const sync = (build, o) => () => {
     t.command = build(o); cmdInput.value = t.command; renderNav();
   };
@@ -1582,6 +1591,22 @@ function kindPanel(t, cmdInput, rebuild) {
           const l = el("label", {class:"check"}); l.append(c, document.createTextNode(T["settings.ssh.x11"]));
           return l; })()));
     box.append(adv);
+  } else if (web) {
+    const upd = sync(buildBrowser, web);
+    const u = el("input", {type:"text", class:"mono grow",
+      placeholder:"https://example.com/"});
+    u.value = web.url || "";
+    // 開けないURLは、開いてから気づくより、書いている最中に言う方がいい
+    const note = el("span", {class:"hint"});
+    const check = () => {
+      const bad = web.url && !openableUrl(web.url);
+      note.textContent = bad ? T["settings.browser.url.bad"] : T["settings.browser.url.hint"];
+      note.style.color = bad ? "var(--danger)" : "";
+    };
+    u.addEventListener("input", () => { web.url = u.value.trim(); check(); upd(); });
+    check();
+    box.append(el("div", {class:"row"}, el("label", {}, T["settings.browser.url"]), u));
+    box.append(el("div", {class:"row"}, el("label", {}, ""), note));
   } else if (dk || wsl) {
     const o = dk || wsl, upd = sync(dk ? buildDocker : buildWsl, o);
     box.append(el("div", {class:"row"},
