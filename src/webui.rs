@@ -2116,6 +2116,27 @@ mod tests {
         assert!(m.contains("shikisha."), "埋め込みにフォールバックする");
     }
 
+    /// 仕様書が、画面で選べるイベントを全部説明していること。
+    ///
+    /// この仕様書はAIへそのまま渡している。載っていないイベントを頼むと、
+    /// AIは嘘をつかずに「仕様に無いので何もしません」と正しく答えてしまう。
+    /// 機能を足したのに書き足し忘れると、その機能はAIから見えないまま残る
+    #[test]
+    fn the_manual_covers_every_event_the_screen_offers() {
+        for (code, text) in EMBEDDED_MANUALS {
+            for event in EVENT_FILES {
+                // _shared はイベントではなく、共通の置き場
+                if event == "_shared" {
+                    continue;
+                }
+                assert!(
+                    text.contains(event),
+                    "{code} の仕様書に {event} の説明が無い (AIはこのイベントを知らないまま書く)"
+                );
+            }
+        }
+    }
+
 
     /// トップレベルの const/let が重複していないこと。
     /// 重複すると SyntaxError でスクリプト全体が動かず、静的なHTMLだけが残る。

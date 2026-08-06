@@ -41,7 +41,11 @@ fn main() {
 
     // 訳語は exe の隣の lang/ から読む。手で置いたままだと、
     // 直しても動かしたものには届かない (「あなた」が YOU のままだった)
-    copy_lang();
+    copy_beside_exe("lang", "json");
+    // 書き方の説明も同じ。こちらは人が読むだけでなく、
+    // 自動化を書かせるAIへそのまま渡している。古いものが隣に残っていると、
+    // AIは「その機能は仕様に無い」と正しく答えてしまう
+    copy_beside_exe("docs", "md");
 
     println!("cargo:rustc-env=BUILD_TIME={built}");
     println!(
@@ -54,13 +58,17 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=lang");
+    println!("cargo:rerun-if-changed=docs");
 }
 
-/// lang/*.json を exe の隣へ置く。
+/// リポジトリのフォルダを、そのまま exe の隣へ置く。
+///
+/// 隣に置かれたものは埋め込みより優先される。置きっぱなしにすると、
+/// 直したはずのものが動かしたものへ届かない
 ///
 /// OUT_DIR は target/<profile>/build/<pkg>-<hash>/out なので、
 /// 3つ上が exe の置き場になる
-fn copy_lang() {
+fn copy_beside_exe(dir_name: &str, ext: &str) {
     let Ok(out) = std::env::var("OUT_DIR") else {
         return;
     };
@@ -68,20 +76,20 @@ fn copy_lang() {
     for _ in 0..3 {
         dir.pop();
     }
-    let dest = dir.join("lang");
+    let dest = dir.join(dir_name);
     if std::fs::create_dir_all(&dest).is_err() {
         return;
     }
-    let Ok(entries) = std::fs::read_dir("lang") else {
+    let Ok(entries) = std::fs::read_dir(dir_name) else {
         return;
     };
     for e in entries.flatten() {
         let from = e.path();
-        if from.extension().is_some_and(|x| x == "json") {
+        if from.extension().is_some_and(|x| x == ext) {
             if let Some(name) = from.file_name() {
-                // 配れなくても止めない。英語のまま動く
+                // 配れなくても止めない。埋め込んだもので動く
                 if let Err(err) = std::fs::copy(&from, dest.join(name)) {
-                    println!("cargo:warning=訳語を配れませんでした {name:?}: {err}");
+                    println!("cargo:warning={dir_name} を配れませんでした {name:?}: {err}");
                 }
             }
         }
