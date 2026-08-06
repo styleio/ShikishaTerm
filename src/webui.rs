@@ -328,12 +328,16 @@ fn default_pick_dir(kind: &str, config_path: &std::path::Path) -> Option<std::pa
     config_path.parent().map(std::path::Path::to_path_buf)
 }
 
-const EVENT_FILES: [&str; 6] = [
+/// 設定画面から読み書きするイベントファイル。
+/// セッションのものと、ブラウザのものの両方
+const EVENT_FILES: [&str; 8] = [
     "on_start",
     "on_done",
     "on_question",
     "on_exit",
     "on_busy",
+    "on_load",
+    "on_press",
     "_shared",
 ];
 
@@ -1479,7 +1483,7 @@ function tabPane(ws, t) {
 
   // 自動化: 何が設定済みか一覧で分かるようにする
   const ev = el("div", {class:"events"});
-  for (const [id, label, hint] of EVENTS.filter(e => e[0] !== "_shared")) {
+  for (const [id, label, hint] of eventsFor(t).filter(e => e[0] !== "_shared")) {
     ev.append(el("div", {class:"event"},
       el("div", {class:"name"}, label, el("div", {class:"hint"}, hint)),
       el("span", {class:"state", id:"st-" + id}, "—"),
@@ -1604,7 +1608,8 @@ function kindPanel(t, cmdInput, rebuild) {
 }
 
 // ── 自動化エディタ ───────────────────────────────────
-const EVENTS = [
+// セッションのフック。ブラウザには一つも飛ばない
+const TAB_EVENTS = [
   ["on_start",    T["automation.on_start"],           T["automation.on_start.hint"]],
   ["on_done",     T["automation.on_done"],     T["automation.on_done.hint"]],
   ["on_question", T["automation.on_question"],     T["automation.on_question.hint"]],
@@ -1612,6 +1617,15 @@ const EVENTS = [
   ["on_busy",     T["automation.on_busy"],     T["automation.on_busy.hint"]],
   ["_shared",     T["automation._shared"],       ""],
 ];
+// ブラウザのフック。ページには状態が無いので、言葉が違う
+const PAGE_EVENTS = [
+  ["on_load",     T["automation.on_load"],     T["automation.on_load.hint"]],
+  ["on_press",    T["automation.on_press"],    T["automation.on_press.hint"]],
+  ["_shared",     T["automation._shared"],       ""],
+];
+// そのタブで本当に飛ぶものだけを並べる。
+// 書ける場所があるのに動かないのは、無いより悪い
+const eventsFor = t => kindOf(t.command) === "browser" ? PAGE_EVENTS : TAB_EVENTS;
 let autoTarget = null, autoData = {}, autoEvent = "on_done";
 
 function autoDirOf(ws, t) {
@@ -1629,7 +1643,7 @@ async function fetchAuto(dir) {
 }
 async function loadAutoStates(ws, t) {
   const data = await fetchAuto(autoDirOf(ws, t));
-  for (const [id] of EVENTS) {
+  for (const [id] of eventsFor(t)) {
     const s = document.getElementById("st-" + id);
     if (!s) continue;
     const on = (data[id] || "").trim().length > 0;
@@ -1645,11 +1659,13 @@ async function openAuto(ws, t, event) {
   document.getElementById("autopath").textContent = autoTarget.dir;
   const s = document.getElementById("autoevent");
   s.textContent = "";
-  for (const [id, label] of EVENTS) s.append(el("option", {value:id}, label));
+  const events = eventsFor(t);
+  for (const [id, label] of events) s.append(el("option", {value:id}, label));
   autoData = await fetchAuto(autoTarget.dir);
   // showEvent を使う (switchEvent だと、まだ前のタブの内容が入っている
   // テキストエリアを新しいタブのデータとして取り込んでしまう)
-  showEvent(event || "on_done");
+  // 既定は、そのタブで最初に並ぶもの (ブラウザなら on_load)
+  showEvent(event || events[0][0]);
   document.getElementById("airow").style.display = aiEngines.length ? "flex" : "none";
   document.getElementById("ainone").style.display = aiEngines.length ? "none" : "flex";
   document.getElementById("aipreview").style.display = "none";
@@ -1672,7 +1688,8 @@ function showEvent(id) {
   autoEvent = id;
   document.getElementById("autoevent").value = id;
   document.getElementById("autocode").value = autoData[autoEvent] || "";
-  const e = EVENTS.find(x => x[0] === autoEvent);
+  const list = autoTarget ? eventsFor(autoTarget.t) : TAB_EVENTS;
+  const e = list.find(x => x[0] === autoEvent);
   document.getElementById("autohint").textContent = e ? e[2] : "";
 }
 function closeAuto() { document.getElementById("autobox").style.display = "none"; }
