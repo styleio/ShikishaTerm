@@ -119,6 +119,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #probe, #tprobe { position:absolute; visibility:hidden; white-space:pre;
     left:0; top:0; margin:0; }
   /* 覆いかぶさる画面。押せる場所を見失わないよう、外は暗くする */
+  .dot.WEB { background:var(--brand); }
   #veil { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:center; justify-content:center; z-index:50; }
   /* hidden は既定で display:none にするが、自分で display を書くと
@@ -387,8 +388,11 @@ window.__state = function (json) {
   drawStatus();
   const board = document.getElementById("board");
   const screen = document.getElementById("screen");
+  // ブラウザのタブを見ているときは、置いたページが同じ場所を覆う。
+  // 端末の中身を残しておくと、切り替えた瞬間だけ前のタブが見える
+  const web = S.tabs.some(t => t.index === S.active && t.kind === "browser");
   board.hidden = S.active !== 0;
-  screen.hidden = S.active === 0;
+  screen.hidden = S.active === 0 || web;
   if (S.active === 0) drawBoard();
   drawVeil();
   const f = document.getElementById("flash");

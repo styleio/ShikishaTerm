@@ -73,8 +73,9 @@ wary of an unsigned executable from the internet is the right instinct:
 
 ## Quick start
 
-On the first run the screen tells you to press `[e]`, which opens the settings screen in
-your browser. There you pick which AI runs in which folder — no JSON editing required.
+On the first run the screen tells you to press `[e]`, which opens the settings screen
+inside the same window. There you pick which AI runs in which folder — no JSON editing
+required.
 
 To open just the settings (also the way back in if a broken config stops the app from
 starting), double-click **`Settings.cmd`**.

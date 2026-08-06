@@ -22,3 +22,10 @@ _material
 
 # 起動ランチャは exe と同じ場所にだけ置く (ルートに置くと何も起動しない)
 Window.cmd
+
+#デバッグ用
+/screenshot
+Take-Screenshot.ps1
+
+#AI
+.claude

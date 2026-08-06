@@ -285,7 +285,8 @@ person cannot read what they are about to send.
 A browser can join the orchestra. Windows already carries the engine, so nothing is
 downloaded and nothing is installed.
 
-Declare one alongside the tabs of a workspace:
+Declare one alongside the tabs of a workspace. A browser you declare becomes a tab,
+numbered after the sessions — `Ctrl+B` and its number switches to it like any other.
 
 ```json
 {

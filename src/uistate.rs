@@ -99,6 +99,25 @@ impl TabState {
             kind: "pty".into(),
         }
     }
+
+    /// 窓の中に置いたブラウザから作る。
+    ///
+    /// セッションではないので、状態も出力量も無い。
+    /// 無いものを埋めて似せるより、無いまま出す方が読める
+    pub fn browser(index: usize, name: &str) -> Self {
+        Self {
+            index,
+            name: name.to_string(),
+            id: Some(name.to_string()),
+            state: "WEB".into(),
+            state_label: crate::i18n::t("tui.state.web"),
+            profile: String::new(),
+            locked: false,
+            depth: 0,
+            activity: Vec::new(),
+            kind: "browser".into(),
+        }
+    }
 }
 
 impl BallState {
@@ -128,6 +147,30 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 窓の中に置いたブラウザが、セッションの続きの番号で並ぶこと。
+    ///
+    /// 以前は一覧にも盤面にも行が無く、切り替えられなかった。
+    /// 出し入れは Ctrl+B o という別の操作で、「タブの一部」と
+    /// 言いながらタブではなかった。
+    ///
+    /// 番号が続いていないと、人が押す番号と中身がずれる
+    #[test]
+    fn a_browser_takes_the_next_tab_number() {
+        let a = TabState::browser(3, "shop");
+        let b = TabState::browser(4, "mail");
+        assert_eq!((a.index, b.index), (3, 4));
+        assert_eq!(a.kind, "browser", "セッションと同じ見せ方になっている");
+        assert_eq!(
+            a.id.as_deref(),
+            Some("shop"),
+            "自動化から指す名前が、タブの名前と違う"
+        );
+        // セッションではないので、埋めて似せない
+        assert!(a.activity.is_empty() && a.profile.is_empty() && a.depth == 0);
+        assert!(!a.locked);
+    }
+
 
     fn tab(index: usize, name: &str) -> TabState {
         TabState {

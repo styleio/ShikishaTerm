@@ -135,18 +135,21 @@ const INIT_JS: &str = r#"
 /// 指揮者からブラウザへの指示
 #[derive(Debug, Clone)]
 pub enum Cmd {
-    /// このURLを開く
-    Open(String),
-    /// JSを評価して結果を返す (`id` で対応づける)
-    Eval { id: u64, js: String },
+    /// JSを評価して結果を返す (`id` で対応づける)。
+    /// `to` は宛先のページ名。None は主画面
+    Eval {
+        id: u64,
+        to: Option<String>,
+        js: String,
+    },
     /// 人へ呼びかける帯を出す
-    Ask { text: String, label: String },
+    Ask {
+        to: Option<String>,
+        text: String,
+        label: String,
+    },
     /// 帯を消す
-    Unask,
-    /// ターミナルに重ねる (位置と大きさを合わせる)
-    Fit { x: i32, y: i32, w: i32, h: i32 },
-    /// 見せる / 隠す
-    Show(bool),
+    Unask { to: Option<String> },
     /// 同じ窓の中に、名前を付けてページを置く
     AddChild {
         name: String,
@@ -160,7 +163,7 @@ pub enum Cmd {
     },
     /// 置いたページを取り除く
     RemoveChild { name: String },
-    /// 窓を閉じる
+    /// 窓を閉じる (指揮者がいなくなったとき)
     Close,
 }
 
@@ -172,13 +175,14 @@ pub enum Cmd {
 pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
     Some(match v.get("kind").and_then(|k| k.as_str()) {
         Some("ready") => Ev::Ready {
+            from: None,
             url: v
                 .get("url")
                 .and_then(|u| u.as_str())
                 .unwrap_or_default()
                 .to_string(),
         },
-        Some("button") => Ev::Button,
+        Some("button") => Ev::Button { from: None },
         Some("select") => Ev::Select {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },
@@ -241,12 +245,16 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
 /// ブラウザから指揮者への報告
 #[derive(Debug, Clone)]
 pub enum Ev {
-    /// 文書が読み込まれた (遷移のたびに来る)
-    Ready { url: String },
+    /// 文書が読み込まれた (遷移のたびに来る)。
+    /// `from` は読み込んだページの名前 (None は主画面)
+    Ready { from: Option<String>, url: String },
     /// `Eval` の結果。`value` はJSON
     Result { id: u64, ok: bool, value: String },
-    /// 帯のボタンが押された = 人が自分の番を終えた
-    Button,
+    /// 帯のボタンが押された = 人が自分の番を終えた。
+    /// `from` は押されたページの名前 (None は主画面)。
+    /// 何枚も置ける以上、どれで押されたかを持っていないと
+    /// 隣のブラウザの番が終わったことにできてしまう
+    Button { from: Option<String> },
     /// 窓の大きさが変わった (何行何桁入るか)
     Resize {
         rows: u16,
@@ -287,7 +295,9 @@ pub struct Browser {
     /// 新しい文書が用意できるたびに出し直す。
     /// ログインはSSOで2〜3回飛ぶのが普通で、
     /// 入れ直さないと「最初だけ出て途中で消える」ことになる
-    pending_ask: std::sync::Mutex<Option<(String, String)>>,
+    /// 出しっぱなしにしておく帯。ページごとに1つ。
+    /// 鍵の None は主画面
+    pending_ask: std::sync::Mutex<std::collections::HashMap<Option<String>, (String, String)>>,
     /// 何かを待っている間に届いた、別の合図。
     ///
     /// 読み飛ばして捨てると、待ちの前に送られたものが永久に消える。
@@ -317,22 +327,14 @@ pub fn is_openable(url: &str) -> bool {
 
 impl Browser {
     /// 窓を開いて、指示を受け付ける状態にする
-    /// `overlay` = ターミナルに重ねる。枠を付けず、位置はこちらが決める
-    pub fn spawn_with(url: &str, title: &str, overlay: bool) -> Result<Self> {
-        if !is_openable(url) {
-            return Err(anyhow!("開けないURLです: {url}"));
-        }
-        Self::start(url, title, overlay)
-    }
-
     pub fn spawn(url: &str, title: &str) -> Result<Self> {
         if !is_openable(url) {
             return Err(anyhow!("開けないURLです: {url}"));
         }
-        Self::start(url, title, false)
+        Self::start(url, title)
     }
 
-    fn start(url: &str, title: &str, overlay: bool) -> Result<Self> {
+    fn start(url: &str, title: &str) -> Result<Self> {
         let (proxy_tx, proxy_rx) = channel();
         let (ev_tx, ev_rx) = channel();
         let url = url.to_string();
@@ -341,7 +343,7 @@ impl Browser {
         std::thread::Builder::new()
             .name("shikisha-browser".into())
             .spawn(move || {
-                if let Err(e) = run_window(&url, &title, overlay, proxy_tx, ev_tx.clone()) {
+                if let Err(e) = run_window(&url, &title, proxy_tx, ev_tx.clone()) {
                     crate::append_hook_log(&format!("ブラウザを開けません: {e}"));
                     let _ = ev_tx.send(Ev::Closed);
                 }
@@ -356,7 +358,7 @@ impl Browser {
             proxy,
             events: ev_rx,
             next_id: AtomicU64::new(1),
-            pending_ask: std::sync::Mutex::new(None),
+            pending_ask: std::sync::Mutex::new(std::collections::HashMap::new()),
             spare: std::sync::Mutex::new(Vec::new()),
         };
         // 文書が用意できるまで返さない。窓ができた時点で返すと、
@@ -375,8 +377,8 @@ impl Browser {
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| anyhow!("ページが用意できません"))?;
             match self.events.recv_timeout(left) {
-                Ok(Ev::Ready { url }) => {
-                    self.reask();
+                Ok(Ev::Ready { from, url }) => {
+                    self.reask(from.as_deref());
                     return Ok(url);
                 }
                 Ok(Ev::Closed) => return Err(anyhow!("ブラウザが閉じました")),
@@ -395,39 +397,44 @@ impl Browser {
             .map_err(|_| anyhow!("ブラウザが閉じています"))
     }
 
-    pub fn open(&self, url: &str) -> Result<()> {
-        if !is_openable(url) {
-            return Err(anyhow!("開けないURLです: {url}"));
-        }
-        self.send(Cmd::Open(url.to_string()))
-    }
-
     /// JSを評価する。結果は `Ev::Result` で後から届く
     pub fn eval(&self, js: &str) -> Result<u64> {
+        self.eval_in(None, js)
+    }
+
+    /// 宛先を指してJSを評価する。None は主画面
+    pub fn eval_in(&self, to: Option<&str>, js: &str) -> Result<u64> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.send(Cmd::Eval {
             id,
+            to: to.map(str::to_string),
             js: js.to_string(),
         })?;
         Ok(id)
     }
 
-    pub fn ask(&self, text: &str, label: &str) -> Result<()> {
-        *self.pending_ask.lock().unwrap() = Some((text.to_string(), label.to_string()));
+    pub fn ask(&self, to: Option<&str>, text: &str, label: &str) -> Result<()> {
+        self.pending_ask.lock().unwrap().insert(
+            to.map(str::to_string),
+            (text.to_string(), label.to_string()),
+        );
         self.send(Cmd::Ask {
+            to: to.map(str::to_string),
             text: text.to_string(),
             label: label.to_string(),
         })
     }
 
-    pub fn unask(&self) -> Result<()> {
-        *self.pending_ask.lock().unwrap() = None;
-        self.send(Cmd::Unask)
+    pub fn unask(&self, to: Option<&str>) -> Result<()> {
+        self.pending_ask
+            .lock()
+            .unwrap()
+            .remove(&to.map(str::to_string));
+        self.send(Cmd::Unask {
+            to: to.map(str::to_string),
+        })
     }
 
-    pub fn close(&self) -> Result<()> {
-        self.send(Cmd::Close)
-    }
 
     /// 同じ窓の中にページを置く。
     ///
@@ -459,25 +466,22 @@ impl Browser {
         })
     }
 
-    /// ターミナルの上にぴったり重ねる
-    pub fn fit(&self, x: i32, y: i32, w: i32, h: i32) -> Result<()> {
-        self.send(Cmd::Fit { x, y, w, h })
-    }
-
-    /// 見せる / 隠す (他のタブを見ている間は隠す)
-    pub fn show(&self, on: bool) -> Result<()> {
-        self.send(Cmd::Show(on))
-    }
-
     /// JSを1回呼んで、結果が返るまで待つ
-    fn call(&self, func: &str, args: &[serde_json::Value], timeout_ms: u64) -> Result<String> {
-        let id = self.eval(&call_js(func, args))?;
+    fn call(
+        &self,
+        to: Option<&str>,
+        func: &str,
+        args: &[serde_json::Value],
+        timeout_ms: u64,
+    ) -> Result<String> {
+        let id = self.eval_in(to, &call_js(func, args))?;
         self.wait_result(id, std::time::Duration::from_millis(timeout_ms))
     }
 
     /// その要素が今どこにいるか
-    pub fn find(&self, sel: &Sel, timeout_ms: u64) -> Result<Found> {
+    pub fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {
         Ok(Found::parse(&self.call(
+            to,
             "__shikisha_state",
             &[sel.json()],
             timeout_ms,
@@ -485,14 +489,15 @@ impl Browser {
     }
 
     /// 文字を読む (入力欄なら中身、それ以外は表示文字列)
-    pub fn text(&self, sel: &Sel, timeout_ms: u64) -> Result<Option<String>> {
-        let v = self.call("__shikisha_text", &[sel.json()], timeout_ms)?;
+    pub fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Option<String>> {
+        let v = self.call(to, "__shikisha_text", &[sel.json()], timeout_ms)?;
         Ok(serde_json::from_str::<Option<String>>(&v).unwrap_or(None))
     }
 
     /// 押す
-    pub fn click(&self, sel: &Sel, timeout_ms: u64) -> Result<Found> {
+    pub fn click(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {
         Ok(Found::parse(&self.call(
+            to,
             "__shikisha_click",
             &[sel.json()],
             timeout_ms,
@@ -500,8 +505,15 @@ impl Browser {
     }
 
     /// 入力欄に値を入れる
-    pub fn fill(&self, sel: &Sel, value: &str, timeout_ms: u64) -> Result<Found> {
+    pub fn fill(
+        &self,
+        to: Option<&str>,
+        sel: &Sel,
+        value: &str,
+        timeout_ms: u64,
+    ) -> Result<Found> {
         Ok(Found::parse(&self.call(
+            to,
             "__shikisha_fill",
             &[sel.json(), serde_json::Value::String(value.to_string())],
             timeout_ms,
@@ -509,8 +521,8 @@ impl Browser {
     }
 
     /// 解釈済みのHTML全文
-    pub fn html(&self, timeout_ms: u64) -> Result<String> {
-        let v = self.call("__shikisha_html", &[], timeout_ms)?;
+    pub fn html(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> {
+        let v = self.call(to, "__shikisha_html", &[], timeout_ms)?;
         Ok(serde_json::from_str::<String>(&v).unwrap_or(v))
     }
 
@@ -520,17 +532,24 @@ impl Browser {
         // 待っている間に来たものを先に返す (届いた順を保つ)
         let mut evs: Vec<Ev> = std::mem::take(&mut *self.spare.lock().unwrap());
         evs.extend(self.events.try_iter());
-        if evs.iter().any(|e| matches!(e, Ev::Ready { .. })) {
-            self.reask();
+        for e in &evs {
+            if let Ev::Ready { from, .. } = e {
+                self.reask(from.as_deref());
+            }
         }
         evs
     }
 
-    /// 遷移で消えた帯を出し直す
-    fn reask(&self) {
-        let want = self.pending_ask.lock().unwrap().clone();
+    /// 遷移で消えた帯を出し直す。出し直すのは、遷移したページの分だけ
+    fn reask(&self, to: Option<&str>) {
+        let key = to.map(str::to_string);
+        let want = self.pending_ask.lock().unwrap().get(&key).cloned();
         if let Some((t, l)) = want {
-            let _ = self.send(Cmd::Ask { text: t, label: l });
+            let _ = self.send(Cmd::Ask {
+                to: key,
+                text: t,
+                label: l,
+            });
         }
     }
 
@@ -569,8 +588,8 @@ impl Browser {
                         Err(anyhow!("JSの評価に失敗: {value}"))
                     };
                 }
-                Ok(Ev::Ready { .. }) => {
-                    self.reask();
+                Ok(Ev::Ready { from, .. }) => {
+                    self.reask(from.as_deref());
                     continue;
                 }
                 Ok(other) => {
@@ -657,6 +676,20 @@ impl Found {
     }
 }
 
+/// 指示の宛先を解く。None は主画面、名前はそのページ。
+/// 名前があるのに見つからないときは None を返す。
+/// 主画面に落とすと、サイト向けのJSが自分の画面に対して走る
+fn target<'a>(
+    main: &'a wry::WebView,
+    children: &'a std::collections::HashMap<String, wry::WebView>,
+    to: &Option<String>,
+) -> Option<&'a wry::WebView> {
+    match to {
+        None => Some(main),
+        Some(name) => children.get(name),
+    }
+}
+
 /// JSの呼び出しを組み立てる。
 ///
 /// **引数は必ずここを通す。** すべて `serde_json` で書き出すので、
@@ -686,7 +719,6 @@ fn ask_js(text: &str, label: &str) -> String {
 fn run_window(
     url: &str,
     title: &str,
-    overlay: bool,
     proxy_tx: Sender<tao::event_loop::EventLoopProxy<Cmd>>,
     ev_tx: Sender<Ev>,
 ) -> Result<()> {
@@ -705,23 +737,10 @@ fn run_window(
         .send(ev_loop.create_proxy())
         .map_err(|_| anyhow!("指揮者との接続に失敗"))?;
 
-    let mut wb = WindowBuilder::new()
+    let window = WindowBuilder::new()
         .with_title(title)
-        .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0));
-    if overlay {
-        // 枠を付けない。閉じるボタンがあると、アプリが開いていると
-        // 思っているのに窓が無い状態を作れてしまう。
-        // タブに従うのだから、独立に動かす手段は無い方がいい
-        wb = wb.with_decorations(false).with_visible(false);
-    }
-    let window = wb.build(&ev_loop)?;
-    if overlay {
-        // ターミナルに「所有される窓」にする。
-        // これだけで最小化・復元・重なり順をOSが面倒を見てくれる
-        if let Some(h) = host_window() {
-            set_owner(&window, h.hwnd);
-        }
-    }
+        .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0))
+        .build(&ev_loop)?;
 
     let ipc = ev_tx.clone();
     let webview = WebViewBuilder::new()
@@ -743,33 +762,72 @@ fn run_window(
     let mut children: std::collections::HashMap<String, wry::WebView> =
         std::collections::HashMap::new();
 
+    // ループの中でも報告を送るので、閉じたことを伝える分を先に取っておく
+    let closed_tx = ev_tx.clone();
     ev_loop.run_return(move |event, _, control| {
         *control = ControlFlow::Wait;
         match event {
             Event::UserEvent(cmd) => match cmd {
-                Cmd::Open(u) => {
-                    let _ = webview.load_url(&u);
+                Cmd::Eval { id, to, js } => {
+                    // 宛先が見つからないとき、主画面には落とさない。
+                    // サイト向けのJSが自分の画面に対して走ってしまう
+                    if let Some(v) = target(&webview, &children, &to) {
+                        let _ = v.evaluate_script(&wrap_eval(id, &js));
+                    } else {
+                        let _ = ev_tx.send(Ev::Result {
+                            id,
+                            ok: false,
+                            value: serde_json::Value::String(format!(
+                                "ページ '{}' は置かれていません",
+                                to.unwrap_or_default()
+                            ))
+                            .to_string(),
+                        });
+                    }
                 }
-                Cmd::Eval { id, js } => {
-                    let _ = webview.evaluate_script(&wrap_eval(id, &js));
+                Cmd::Ask { to, text, label } => {
+                    if let Some(v) = target(&webview, &children, &to) {
+                        let _ = v.evaluate_script(&ask_js(&text, &label));
+                    }
                 }
-                Cmd::Ask { text, label } => {
-                    let _ = webview.evaluate_script(&ask_js(&text, &label));
+                Cmd::Unask { to } => {
+                    if let Some(v) = target(&webview, &children, &to) {
+                        let _ = v.evaluate_script(
+                            "window.__shikisha_unask&&window.__shikisha_unask();",
+                        );
+                    }
                 }
-                Cmd::Unask => {
-                    let _ = webview
-                        .evaluate_script("window.__shikisha_unask&&window.__shikisha_unask();");
-                }
-                Cmd::Fit { x, y, w, h } => {
-                    window.set_outer_position(tao::dpi::PhysicalPosition::new(x, y));
-                    window.set_inner_size(tao::dpi::PhysicalSize::new(w.max(1), h.max(1)));
-                }
-                Cmd::Show(on) => window.set_visible(on),
                 Cmd::AddChild { name, url, rect } => {
                     let bounds = to_rect(rect);
+                    // 子にも主画面と同じ道具を積む。
+                    // 積まないと、置いたページは映っているだけになる
+                    let ipc = ev_tx.clone();
+                    let who = name.clone();
                     match WebViewBuilder::new()
                         .with_url(&url)
                         .with_bounds(bounds)
+                        .with_initialization_script(INIT_JS)
+                        .with_ipc_handler(move |req| {
+                            let body: &str = req.body();
+                            let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+                                return;
+                            };
+                            let Some(ev) = parse_intent(&v) else {
+                                return;
+                            };
+                            // 誰が押したのかを、ここでしか知りようがない
+                            let ev = match ev {
+                                Ev::Button { .. } => Ev::Button {
+                                    from: Some(who.clone()),
+                                },
+                                Ev::Ready { url, .. } => Ev::Ready {
+                                    from: Some(who.clone()),
+                                    url,
+                                },
+                                other => other,
+                            };
+                            let _ = ipc.send(ev);
+                        })
                         .build_as_child(&window)
                     {
                         Ok(v) => {
@@ -802,7 +860,7 @@ fn run_window(
         }
     });
 
-    let _ = ev_tx.send(Ev::Closed);
+    let _ = closed_tx.send(Ev::Closed);
     Ok(())
 }
 
@@ -858,21 +916,21 @@ mod tests {
 
         // 「DOMに無い」と「あるが画面外」を分けること。
         // 同じ失敗にすると、セレクタを疑うのか待ちを疑うのか分からなくなる
-        assert_eq!(b.find(&Sel::Css("#here".into()), t).unwrap(), Found::Visible);
-        assert_eq!(b.find(&Sel::Css("#far".into()), t).unwrap(), Found::OffScreen);
-        assert_eq!(b.find(&Sel::Css("#nope".into()), t).unwrap(), Found::NotFound);
+        assert_eq!(b.find(None, &Sel::Css("#here".into()), t).unwrap(), Found::Visible);
+        assert_eq!(b.find(None, &Sel::Css("#far".into()), t).unwrap(), Found::OffScreen);
+        assert_eq!(b.find(None, &Sel::Css("#nope".into()), t).unwrap(), Found::NotFound);
 
         // XPath: CSSでは書けない探し方 (ラベルの隣のセル)
         let name = b
-            .text(&Sel::Xpath("//td[text()='氏名']/following-sibling::td".into()), t)
+            .text(None, &Sel::Xpath("//td[text()='氏名']/following-sibling::td".into()), t)
             .unwrap();
         assert_eq!(name.as_deref(), Some("山田"), "XPathで隣のセルが取れない");
 
         // 押す
-        assert_eq!(b.click(&Sel::Css("#go".into()), t).unwrap(), Found::Visible);
+        assert_eq!(b.click(None, &Sel::Css("#go".into()), t).unwrap(), Found::Visible);
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert_eq!(
-            b.text(&Sel::Css("#log".into()), t).unwrap().as_deref(),
+            b.text(None, &Sel::Css("#log".into()), t).unwrap().as_deref(),
             Some("pushed"),
             "押した結果がページに出ていない"
         );
@@ -880,11 +938,11 @@ mod tests {
         // 入れる。値を書くだけでなく input が飛ぶこと
         // (Reactなどは飛ばさないと状態が動かない)
         assert_eq!(
-            b.fill(&Sel::Css("#q".into()), "ふつうの値", t).unwrap(),
+            b.fill(None, &Sel::Css("#q".into()), "ふつうの値", t).unwrap(),
             Found::Visible
         );
         assert_eq!(
-            b.text(&Sel::Css("#q".into()), t).unwrap().as_deref(),
+            b.text(None, &Sel::Css("#q".into()), t).unwrap().as_deref(),
             Some("ふつうの値")
         );
         let id = b.eval("return fired;").unwrap();
@@ -898,11 +956,11 @@ mod tests {
         // AIの出力やページから読んだ文章をそのまま入れても、値のまま届く
         let nasty = "'; window.__pwned = 1; //\"</script><img src=x onerror=alert(1)>\\";
         assert_eq!(
-            b.fill(&Sel::Css("#q".into()), nasty, t).unwrap(),
+            b.fill(None, &Sel::Css("#q".into()), nasty, t).unwrap(),
             Found::Visible
         );
         assert_eq!(
-            b.text(&Sel::Css("#q".into()), t).unwrap().as_deref(),
+            b.text(None, &Sel::Css("#q".into()), t).unwrap().as_deref(),
             Some(nasty),
             "値が一字一句そのまま入っていない"
         );
@@ -912,11 +970,11 @@ mod tests {
         // 値が壊れたのではなく、入れ物が保持できないだけ
         let multi = format!("1行目\n2行目\t{nasty}");
         assert_eq!(
-            b.fill(&Sel::Css("#multi".into()), &multi, t).unwrap(),
+            b.fill(None, &Sel::Css("#multi".into()), &multi, t).unwrap(),
             Found::Visible
         );
         assert_eq!(
-            b.text(&Sel::Css("#multi".into()), t).unwrap().as_deref(),
+            b.text(None, &Sel::Css("#multi".into()), t).unwrap().as_deref(),
             Some(multi.as_str()),
             "改行やタブを含む値が崩れている"
         );
@@ -928,12 +986,12 @@ mod tests {
         );
 
         // 解釈済みのHTML全文
-        let html = b.html(t).unwrap();
+        let html = b.html(None, t).unwrap();
         assert!(html.contains("ここにいる"), "HTMLが取れていない");
         assert!(html.len() > 200, "HTMLが短すぎる: {}", html.len());
         println!("HTML {} 文字 / すべて通過", html.chars().count());
 
-        b.close().unwrap();
+        drop(b);
     }
 
 
@@ -966,7 +1024,7 @@ mod tests {
             "子を置いたら外皮が動かなくなった"
         );
         println!("子ページの出し入れ: 通過");
-        b.close().unwrap();
+        drop(b);
     }
 
     /// 開けないURLは入口で止めること。
@@ -1030,93 +1088,15 @@ mod tests {
         let id = b.eval("return document.documentElement.outerHTML.length;").unwrap();
         println!("HTML長 = {}", b.wait_result(id, Duration::from_secs(20)).unwrap());
 
-        b.ask("ログインしてください", "できました").unwrap();
+        b.ask(None, "ログインしてください", "できました").unwrap();
         std::thread::sleep(Duration::from_millis(800));
         let id = b.eval("return !!document.getElementById('__shikisha_bar');").unwrap();
         let v = b.wait_result(id, Duration::from_secs(20)).unwrap();
         println!("帯が出ているか = {v}");
         assert_eq!(v, "true", "呼びかけの帯が出ていない");
 
-        b.close().unwrap();
+        drop(b);
         std::thread::sleep(Duration::from_millis(600));
         println!("閉じてもここまで来た (プロセスは生きている)");
-    }
-}
-
-/// 窓を、ターミナルの「所有される窓」にする。
-///
-/// 最小化・復元・重なり順は、これだけでOSが面倒を見る。
-/// 自前で追いかけると、隠し忘れや前後の入れ替わりが必ずどこかで漏れる
-fn set_owner(window: &tao::window::Window, owner: isize) {
-    use tao::platform::windows::WindowExtWindows;
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GWLP_HWNDPARENT, SetWindowLongPtrW};
-    let hwnd = window.hwnd() as HWND;
-    if hwnd.is_null() {
-        return;
-    }
-    unsafe {
-        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner);
-    }
-}
-
-/// ターミナルの中身が描かれている範囲 (枠と題字を除く)。
-///
-/// 枠ごと覆うと、最小化・最大化・閉じるボタンまで隠れてしまう
-pub fn host_client_rect() -> Option<(i32, i32, i32, i32)> {
-    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
-    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
-    let h = host_window()?;
-    unsafe {
-        let hwnd = h.hwnd as HWND;
-        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        if GetClientRect(hwnd, &mut r) == 0 {
-            return None;
-        }
-        let mut p = POINT { x: r.left, y: r.top };
-        if ClientToScreen(hwnd, &mut p) == 0 {
-            return None;
-        }
-        let (w, hh) = (r.right - r.left, r.bottom - r.top);
-        (w > 0 && hh > 0).then_some((p.x, p.y, w, hh))
-    }
-}
-
-/// 自分を映しているターミナルの窓と、その位置・大きさ。
-///
-/// ConPTY 配下では `GetConsoleWindow` が大きさ0の隠し窓を返す。
-/// そこから `GA_ROOTOWNER` を辿ると本物の枠に出る
-/// (実測: 隠し窓は pid が自分側、辿った先は WindowsTerminal の pid)
-pub struct HostWindow {
-    pub hwnd: isize,
-}
-
-/// ターミナルの窓を探す。見つからなければ重ねない (そのまま別窓で出す)
-pub fn host_window() -> Option<HostWindow> {
-    use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::System::Console::GetConsoleWindow;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GA_ROOTOWNER, GetAncestor, GetWindowRect, IsWindowVisible,
-    };
-    unsafe {
-        let console = GetConsoleWindow();
-        if console.is_null() {
-            return None;
-        }
-        let host = GetAncestor(console, GA_ROOTOWNER);
-        if host.is_null() || host == console || IsWindowVisible(host) == 0 {
-            return None;
-        }
-        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        if GetWindowRect(host, &mut r) == 0 {
-            return None;
-        }
-        // 大きさ0は隠し窓。本物の枠ではない
-        let (w, h) = (r.right - r.left, r.bottom - r.top);
-        if w <= 0 || h <= 0 {
-            return None;
-        }
-        Some(HostWindow { hwnd: host as isize })
     }
 }

@@ -250,6 +250,8 @@ struct WinSurface {
     /// 窓から来た意図を、ループが読む形に直したもの。
     /// ループは端末のキー操作しか知らないので、そこへ寄せる
     pending: std::collections::VecDeque<Event>,
+    /// 置いたページの帯で、人が「終わった」を押したもの
+    presses: Vec<String>,
 }
 
 impl WinSurface {
@@ -257,6 +259,12 @@ impl WinSurface {
     /// スマホから来ても、ループから見れば区別が無い
     fn inject(&mut self, ev: Event) {
         self.pending.push_back(ev);
+    }
+
+    /// 帯のボタンが押されたページの名前を引き取る。
+    /// 窓の報告は1本しかないので、受けるのはここだけにする
+    fn take_presses(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.presses)
     }
 
     fn take_events(&mut self, tabs: &[Tab], active: usize) {
@@ -272,6 +280,9 @@ impl WinSurface {
                 Ev::JsError { msg } => {
                     crate::append_hook_log(&format!("画面の失敗: {msg}"));
                 }
+                // 置いたページの帯が押された = 人が自分の番を終えた。
+                // 誰が押したかは、報告に付いてくる名前でしか分からない
+                Ev::Button { from: Some(name) } => self.presses.push(name),
                 // クリップボードは端末側と同じ扱いにする
                 Ev::Copy { text } => {
                     if let Ok(mut c) = arboard::Clipboard::new() {
@@ -435,6 +446,7 @@ fn run_in_window() -> Result<()> {
         last_screen: String::new(),
         area: (0, 0, 0, 0),
         pending: std::collections::VecDeque::new(),
+        presses: Vec::new(),
     })
 }
 
@@ -456,6 +468,14 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
             .iter()
             .enumerate()
             .map(|(i, t)| crate::uistate::TabState::of(i + 1, t))
+            // 置いてあるブラウザは、セッションの続きの番号で並ぶ。
+            // 別枠にすると「タブの一部」と言えなくなる
+            .chain(
+                ui.browsers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| crate::uistate::TabState::browser(tabs.len() + i + 1, name)),
+            )
             .collect(),
         ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
         flash: flash.map(str::to_string),
@@ -596,8 +616,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
             cols,
             tab::TabOptions::default(),
         )?);
-    } else if !workspaces.is_empty() {
-        spawn_workspace(&workspaces[0], rows, cols, &mut tabs, &mut startup_errors);
+    } else if let Some(w) = workspaces.get(ws_index) {
+        // 前回の続きから始めるなら、起動するのもそのワークスペース。
+        // ここを先頭に決め打つと、名前だけ復元されて中身が違う画面になる
+        spawn_workspace(w, rows, cols, &mut tabs, &mut startup_errors);
     }
     // 設定がまだ無い = 初回起動。何をすればいいか分からないまま
     // シェルが1つ開くだけ、という体験にならないよう案内する
@@ -684,18 +706,21 @@ fn run(mut surface: WinSurface) -> Result<()> {
             c.capabilities.clone(),
             config_file_dir(),
             c.resolve_tokens(password.as_deref()),
-            c.browser_overlay.unwrap_or(true),
         ),
         None => caps::Capabilities::disabled(),
     });
     let mut engines: Vec<Option<HookEngine>> = (0..workspaces.len().max(1)).map(|_| None).collect();
     // 窓を持っているなら、ブラウザはその中に置く
     caps.set_host(surface.host());
-    engines[0] = build_engine(cfg.as_ref(), workspaces.first(), &mut startup_errors, &caps);
-    if let Some(w) = workspaces.first() {
+    caps.set_workspace(ws_index);
+    if let Some(w) = workspaces.get(ws_index) {
+        engines[ws_index] = build_engine(cfg.as_ref(), Some(w), &mut startup_errors, &caps);
         open_declared_browsers(w, &caps, &mut startup_errors);
+    } else {
+        engines[0] = build_engine(cfg.as_ref(), None, &mut startup_errors, &caps);
     }
-    let mut engine = engines[0].take();
+    let slot = ws_index.min(engines.len().saturating_sub(1));
+    let mut engine = engines[slot].take();
 
     // リモートUI (スマホ等から監視・指示する)。設定で有効にしたときだけ待ち受ける。
     // 状況は設定画面にも渡し、QRコードをブラウザで見られるようにする
@@ -731,19 +756,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut last_ui_state: Option<crate::uistate::UiState> = None;
     // 重ねたブラウザを今見せているか。出しっぱなしだと
     // ターミナルがずっと隠れてしまうので、既定は隠す
-    let mut browser_shown = false;
     let mut flash: Option<String> = startup_errors.first().map(|e| i18n::tp("msg.startup_failed", &[("error", e)]));
     let mut last_detect = Instant::now() - Duration::from_secs(1);
     // ワークスペースは仮想デスクトップ方式: 切替=非表示であって停止ではない。
     // 各ワークスペースのタブ群を保持し、初回アクティブ化時に起動する
+    // 起動した分は tabs が持っている。棚は残りのワークスペースの数だけ空けておく
     let mut ws_tabs: Vec<Vec<Tab>> = Vec::new();
-    if !workspaces.is_empty() {
-        ws_tabs.push(std::mem::take(&mut tabs));
-        for _ in 1..workspaces.len() {
-            ws_tabs.push(Vec::new());
-        }
-        tabs = std::mem::take(&mut ws_tabs[0]);
-    }
+    ws_tabs.resize_with(workspaces.len(), Vec::new);
     // 設定ファイルの変更監視 (保存したら再起動なしで反映する)
     let mut watcher = watch::Watcher::new(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
     let mut cfg = cfg;
@@ -801,7 +820,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     newcfg.capabilities.clone(),
                     config_file_dir(),
                     newcfg.resolve_tokens(password.as_deref()),
-                    newcfg.browser_overlay.unwrap_or(true),
                 ));
                 // 設定を読み直すと能力ごと作り直されるので、置き先も渡し直す
                 caps.set_host(surface.host());
@@ -1177,6 +1195,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         ball.clamp_to(tabs.len());
 
+        // 窓の中に置いてあるブラウザ。セッションの続きの番号でタブになる。
+        // 押せる番号の上限は、セッションだけでは足りない
+        let hosted = caps.hosted_names();
+        let panes = tabs.len() + hosted.len();
+
         let ui = Ui {
             first_run,
             active,
@@ -1190,13 +1213,24 @@ fn run(mut surface: WinSurface) -> Result<()> {
             ball,
             max_chain,
             now_ms: start.elapsed().as_millis() as u64,
+            browsers: hosted.clone(),
         };
         last_ui_state = Some(ui_state_of(&tabs, &ui, flash.as_deref()));
         surface.draw(&tabs, &ui, flash.as_deref())?;
-        // 重ねているブラウザを、ターミナルの動きに付いていかせる。
+        // 窓の大きさは変わる。渡し直さないと、置いたページは前の大きさのまま
+        caps.set_area(surface.area);
+        // 選ばれている1枚だけを、ターミナルの中身の位置に置く。
         // 所有関係で最小化と重なり順はOSが見てくれるが、位置だけは追う必要がある
-        if browser_shown {
-            caps.browsers_fit(true);
+        caps.show_only(
+            active
+                .checked_sub(tabs.len() + 1)
+                .and_then(|i| hosted.get(i))
+                .map(String::as_str),
+        );
+        // 帯のボタンが押されたことを預ける。
+        // 窓の報告を受けられるのは本体だけなので、ここを通す
+        for name in surface.take_presses() {
+            caps.note_press(&name);
         }
 
         let Some(ev) = surface.poll(Duration::from_millis(16), &tabs, active)? else {
@@ -1250,17 +1284,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         KeyCode::Char('q') => break,
                         KeyCode::Char(c @ '0'..='9') => {
                             let n = c as usize - '0' as usize;
-                            if n <= tabs.len() {
+                            if n <= panes {
                                 active = n;
                                 view_touched_ms = start.elapsed().as_millis() as u64;
                             }
                         }
                         KeyCode::Char('n') => {
-                            active = if active >= tabs.len() { 0 } else { active + 1 };
+                            active = if active >= panes { 0 } else { active + 1 };
                             view_touched_ms = start.elapsed().as_millis() as u64;
                         }
                         KeyCode::Char('p') => {
-                            active = if active == 0 { tabs.len() } else { active - 1 };
+                            active = if active == 0 { panes } else { active - 1 };
                             view_touched_ms = start.elapsed().as_millis() as u64;
                         }
                         // Ctrl+B b で子プロセスに素のCtrl+Bを送る
@@ -1318,17 +1352,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 );
                             }
                         }
-                        // Ctrl+B o 重ねたブラウザの出し入れ。
-                        // w も b も既に埋まっている (数えて選んだ)
-                        KeyCode::Char('o') if caps.has_browser() => {
-                            browser_shown = !browser_shown;
-                            caps.browsers_fit(browser_shown);
-                            flash = Some(i18n::t(if browser_shown {
-                                "msg.browser_shown"
-                            } else {
-                                "msg.browser_hidden"
-                            }));
-                        }
                         KeyCode::Char('?') => help_open = true,
                         // Ctrl+B a 自動化ON/OFF、Ctrl+B x 緊急停止
                         KeyCode::Char('a') => {
@@ -1381,7 +1404,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     match key.code {
                         KeyCode::Char(c @ '0'..='9') => {
                             let n = c as usize - '0' as usize;
-                            if n <= tabs.len() {
+                            if n <= panes {
                                 active = n;
                             }
                         }
@@ -1450,8 +1473,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             flash = Some(
                                 match url.and_then(|u| caps.browser_open(SETTINGS_TAB, &u)) {
                                     Ok(()) => {
-                                        browser_shown = true;
-                                        caps.browsers_fit(true);
+                                        // 開いたら、そのタブへ移る。
+                                        // 出したのに見えていない状態を作らない
+                                        if let Some(i) = caps
+                                            .hosted_names()
+                                            .iter()
+                                            .position(|x| x == SETTINGS_TAB)
+                                        {
+                                            active = tabs.len() + 1 + i;
+                                        }
                                         i18n::t("msg.settings_here")
                                     }
                                     Err(e) => i18n::tp(
@@ -1963,6 +1993,9 @@ fn switch_workspace(
     // Lua環境はワークスペース毎に保持する (共有変数が切替で失われない)
     engines[*ws_index] = engine.take();
     *ws_index = to;
+    // 呼び名はワークスペースの中でだけ通じる。
+    // 置いたページも、いま見ている分だけがタブに並ぶ
+    caps.set_workspace(to);
     config::save_last_workspace(&workspaces[to].name);
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {
@@ -2585,6 +2618,9 @@ struct Ui {
     max_chain: u32,
     /// 描画時刻 (相対ms)。ボールのアニメ進行に使う
     now_ms: u64,
+    /// 窓の中に置いてあるブラウザの名前 (置いた順)。
+    /// セッションの続きの番号でタブになる
+    browsers: Vec<String>,
 }
 
 
@@ -2779,6 +2815,7 @@ mod tests {
             ball,
             max_chain: 10,
             now_ms,
+            browsers: Vec::new(),
         }
     }
 

@@ -101,11 +101,9 @@ pub struct Capabilities {
     tokens: HashMap<String, String>,
     tx: Option<mpsc::Sender<HttpJob>>,
     /// 名前で引くブラウザ。フックは単一スレッドで回るので Rc/RefCell でよい
-    browsers: std::cell::RefCell<HashMap<String, crate::browser::Browser>>,
     /// 帯のボタンが押されたか (名前ごと)。読んだら下ろす
     pressed: std::cell::RefCell<HashMap<String, bool>>,
     /// ターミナルに重ねるか
-    overlay: bool,
     /// 窓を持っているなら、その取っ手。ここに置くと別窓にならない
     host: std::cell::RefCell<Option<std::rc::Rc<crate::browser::Browser>>>,
     /// 窓の中で、ブラウザを置く領域
@@ -114,7 +112,13 @@ pub struct Capabilities {
     ///
     /// 覚えないと、位置を直す先も閉じる先も分からない。
     /// 開いた場所に置きっぱなしになり、窓を動かしても付いてこなかった
-    hosted: std::cell::RefCell<Vec<String>>,
+    /// 窓の中に置いたページ (持ち主のワークスペース, 呼び名)。
+    /// 置いた順を保つので Vec
+    hosted: std::cell::RefCell<Vec<(usize, String)>>,
+    /// いま見ているワークスペース。呼び名はこの中でだけ通じる
+    ws: std::cell::Cell<usize>,
+    /// 今どれを、どの領域に出しているか。同じなら送り直さない
+    shown: std::cell::RefCell<(Option<String>, (i32, i32, i32, i32))>,
 }
 
 /// ページを触るときの既定の待ち時間。
@@ -129,21 +133,16 @@ impl Capabilities {
             base: PathBuf::from("."),
             tokens: HashMap::new(),
             tx: None,
-            browsers: std::cell::RefCell::new(HashMap::new()),
             pressed: std::cell::RefCell::new(HashMap::new()),
-            overlay: true,
             host: std::cell::RefCell::new(None),
             area: std::cell::Cell::new((0, 0, 0, 0)),
             hosted: std::cell::RefCell::new(Vec::new()),
+            ws: std::cell::Cell::new(0),
+            shown: std::cell::RefCell::new((None, (0, 0, 0, 0))),
         }
     }
 
-    pub fn new(
-        spec: CapabilitySpec,
-        base: PathBuf,
-        tokens: HashMap<String, String>,
-        overlay: bool,
-    ) -> Self {
+    pub fn new(spec: CapabilitySpec, base: PathBuf, tokens: HashMap<String, String>) -> Self {
         // 通信はUIをブロックしないよう専用スレッドで行う
         let tx = if spec.http.is_empty() && spec.allow_hosts.is_empty() {
             None
@@ -196,12 +195,12 @@ impl Capabilities {
             base,
             tokens,
             tx,
-            browsers: std::cell::RefCell::new(HashMap::new()),
             pressed: std::cell::RefCell::new(HashMap::new()),
-            overlay,
             host: std::cell::RefCell::new(None),
             area: std::cell::Cell::new((0, 0, 0, 0)),
             hosted: std::cell::RefCell::new(Vec::new()),
+            ws: std::cell::Cell::new(0),
+            shown: std::cell::RefCell::new((None, (0, 0, 0, 0))),
         }
     }
 
@@ -316,87 +315,117 @@ impl Capabilities {
     /// ブラウザを開く (同じ名前があれば、そこで移動する)
     pub fn browser_open(&self, name: &str, url: &str) -> Result<()> {
         // 窓があるなら、その中に置く。別窓にすると位置も重なり順も自前になる
-        if let Some(h) = self.host.borrow().as_ref() {
-            h.open_child(name, url, self.area.get())?;
-            let mut hosted = self.hosted.borrow_mut();
-            if !hosted.iter().any(|x| x == name) {
-                hosted.push(name.to_string());
-            }
-            crate::append_hook_log(&format!("ブラウザ {name} (窓の中): {url}"));
-            return Ok(());
+        let host = self
+            .host
+            .borrow()
+            .as_ref()
+            .map(std::rc::Rc::clone)
+            .ok_or_else(|| anyhow::anyhow!("ブラウザを置く窓がありません"))?;
+        let ws = self.ws.get();
+        host.open_child(&Self::key(ws, name), url, self.area.get())?;
+        let mut hosted = self.hosted.borrow_mut();
+        if !hosted.iter().any(|(w, x)| *w == ws && x == name) {
+            hosted.push((ws, name.to_string()));
         }
-        let mut all = self.browsers.borrow_mut();
-        match all.get(name) {
-            Some(b) => {
-                b.open(url)?;
-                b.wait_ready(std::time::Duration::from_millis(30_000))?;
-            }
-            None => {
-                let b = crate::browser::Browser::spawn_with(
-                    url,
-                    &format!("{name} — SHIKISHA-TERM"),
-                    self.overlay,
-                )?;
-                all.insert(name.to_string(), b);
-            }
-        }
+        // 新しく置いた分は、次の描画で場所を決め直す
+        *self.shown.borrow_mut() = (None, (0, 0, 0, 0));
         crate::append_hook_log(&format!("ブラウザ {name}: {url}"));
         Ok(())
     }
 
-    /// 重ねているブラウザを、ターミナルの中身の範囲に合わせる
-    pub fn browsers_fit(&self, show: bool) {
-        // 窓の中に置いているなら、領域を渡すだけ
-        if let Some(h) = self.host.borrow().as_ref() {
-            let r = if show { self.area.get() } else { (0, 0, 0, 0) };
-            for name in self.hosted.borrow().iter() {
-                let _ = h.child_bounds(name, r);
-            }
+    /// 窓の中に置いてあるページの名前 (置いた順)。
+    /// そのままタブの並びになる
+    pub fn hosted_names(&self) -> Vec<String> {
+        let ws = self.ws.get();
+        self.hosted
+            .borrow()
+            .iter()
+            .filter(|(w, _)| *w == ws)
+            .map(|(_, n)| n.clone())
+            .collect()
+    }
+
+    /// いま見ているワークスペースを教える。切り替えのたびに呼ぶ
+    pub fn set_workspace(&self, ws: usize) {
+        self.ws.set(ws);
+    }
+
+    /// 窓に置くときの実際の名前。
+    /// ワークスペースが違えば、同じ呼び名でも別のページ
+    fn key(ws: usize, name: &str) -> String {
+        format!("{ws}/{name}")
+    }
+
+    /// 中身の領域を教える。窓の大きさが変わるたびに呼ぶ
+    pub fn set_area(&self, area: (i32, i32, i32, i32)) {
+        self.area.set(area);
+    }
+
+    /// 1枚だけを見せて、残りは畳む。
+    ///
+    /// タブなのだから、見えているのは常に1枚でいい。
+    /// 畳むのは幅と高さを0にすること。取り除くと読み込み直しになる。
+    ///
+    /// 描画は1秒に60回来る。変わっていないなら何も送らない
+    pub fn show_only(&self, name: Option<&str>) {
+        let want = (name.map(str::to_string), self.area.get());
+        if *self.shown.borrow() == want {
             return;
         }
-        let rect = crate::browser::host_client_rect();
-        for b in self.browsers.borrow().values() {
-            match (show, rect) {
-                (true, Some((x, y, w, h))) => {
-                    let _ = b.fit(x, y, w, h);
-                    let _ = b.show(true);
-                }
-                _ => {
-                    let _ = b.show(false);
-                }
-            }
+        let Some(h) = self.host.borrow().as_ref().map(std::rc::Rc::clone) else {
+            return;
+        };
+        let ws = self.ws.get();
+        for (w, held) in self.hosted.borrow().iter() {
+            // 他のワークスペースの分は、生かしたまま畳んでおく
+            let r = if *w == ws && Some(held.as_str()) == name {
+                want.1
+            } else {
+                (0, 0, 0, 0)
+            };
+            let _ = h.child_bounds(&Self::key(*w, held), r);
         }
+        *self.shown.borrow_mut() = want;
     }
 
-    /// 開いているブラウザがあるか
-    pub fn has_browser(&self) -> bool {
-        !self.browsers.borrow().is_empty() || !self.hosted.borrow().is_empty()
-    }
-
+    /// 名前で1枚を引き当てて、操作を渡す。
+    ///
+    /// ページは窓の中に置いてある。窓に「このページ宛に」と頼む形になる。
+    ///
+    /// ここで窓の報告を読んではいけない。報告の線は1本で、
+    /// 画面の操作も同じ線に乗っている。横から取ると打鍵やタブの
+    /// 切り替えが消える。押された帯は本体のループが受け取り、
+    /// note_press で預けてくる
     fn with<T>(
         &self,
         name: &str,
-        f: impl FnOnce(&crate::browser::Browser) -> Result<T>,
+        f: impl FnOnce(&crate::browser::Browser, Option<&str>) -> Result<T>,
     ) -> Result<T> {
-        let all = self.browsers.borrow();
-        let b = all
-            .get(name)
-            .ok_or_else(|| anyhow::anyhow!("ブラウザ '{name}' は開いていません"))?;
-        // 押されたボタンを拾っておく。読み取りは Lua 側の browser_pressed
-        for e in b.drain() {
-            if matches!(e, crate::browser::Ev::Button) {
-                self.pressed.borrow_mut().insert(name.to_string(), true);
-            }
+        let ws = self.ws.get();
+        if !self.hosted.borrow().iter().any(|(w, x)| *w == ws && x == name) {
+            return Err(anyhow::anyhow!("ブラウザ '{name}' は開いていません"));
         }
-        f(b)
+        let host = self
+            .host
+            .borrow()
+            .as_ref()
+            .map(std::rc::Rc::clone)
+            .ok_or_else(|| anyhow::anyhow!("ブラウザを置く窓がありません"))?;
+        f(&host, Some(&Self::key(ws, name)))
+    }
+
+    /// 帯のボタンが押されたことを預かる。
+    /// 窓の中に置いた分は、本体のループが報告を受け取るのでそこから届く
+    pub fn note_press(&self, name: &str) {
+        self.pressed.borrow_mut().insert(name.to_string(), true);
     }
 
     pub fn browser_find(&self, name: &str, sel: &crate::browser::Sel) -> Result<&'static str> {
-        self.with(name, |b| Ok(b.find(sel, OP_MS)?.as_str()))
+        self.with(name, |b, to| Ok(b.find(to, sel, OP_MS)?.as_str()))
     }
 
     pub fn browser_click(&self, name: &str, sel: &crate::browser::Sel) -> Result<&'static str> {
-        self.with(name, |b| Ok(b.click(sel, OP_MS)?.as_str()))
+        self.with(name, |b, to| Ok(b.click(to, sel, OP_MS)?.as_str()))
     }
 
     pub fn browser_fill(
@@ -405,44 +434,44 @@ impl Capabilities {
         sel: &crate::browser::Sel,
         value: &str,
     ) -> Result<&'static str> {
-        self.with(name, |b| Ok(b.fill(sel, value, OP_MS)?.as_str()))
+        self.with(name, |b, to| Ok(b.fill(to, sel, value, OP_MS)?.as_str()))
     }
 
     pub fn browser_text(&self, name: &str, sel: &crate::browser::Sel) -> Result<Option<String>> {
-        self.with(name, |b| b.text(sel, OP_MS))
+        self.with(name, |b, to| b.text(to, sel, OP_MS))
     }
 
     pub fn browser_html(&self, name: &str) -> Result<String> {
-        self.with(name, |b| b.html(30_000))
+        self.with(name, |b, to| b.html(to, 30_000))
     }
 
     /// 人へ呼びかける帯を出す
     pub fn browser_ask(&self, name: &str, text: &str, label: &str) -> Result<()> {
         self.pressed.borrow_mut().remove(name);
-        self.with(name, |b| b.ask(text, label))
+        self.with(name, |b, to| b.ask(to, text, label))
     }
 
     /// 帯のボタンが押されたか。押されていたら下ろして true を返す
     pub fn browser_pressed(&self, name: &str) -> Result<bool> {
-        self.with(name, |_| Ok(()))?;
+        self.with(name, |_, _| Ok(()))?;
         Ok(self.pressed.borrow_mut().remove(name).unwrap_or(false))
     }
 
     pub fn browser_unask(&self, name: &str) -> Result<()> {
         self.pressed.borrow_mut().remove(name);
-        self.with(name, |b| b.unask())
+        self.with(name, |b, to| b.unask(to))
     }
 
     pub fn browser_close(&self, name: &str) -> Result<()> {
+        let ws = self.ws.get();
+        let key = Self::key(ws, name);
         if let Some(h) = self.host.borrow().as_ref() {
-            h.close_child(name)?;
-            self.hosted.borrow_mut().retain(|x| x != name);
-            return Ok(());
+            let _ = h.unask(Some(&key));
+            h.close_child(&key)?;
         }
-        if let Some(b) = self.browsers.borrow_mut().remove(name) {
-            let _ = b.unask();
-            b.close()?;
-        }
+        self.hosted.borrow_mut().retain(|(w, x)| !(*w == ws && x == name));
+        self.pressed.borrow_mut().remove(&key);
+        *self.shown.borrow_mut() = (None, (0, 0, 0, 0));
         Ok(())
     }
 
@@ -489,7 +518,7 @@ mod tests {
     use super::*;
 
     fn caps(spec: CapabilitySpec, base: PathBuf) -> Capabilities {
-        Capabilities::new(spec, base, HashMap::new(), true)
+        Capabilities::new(spec, base, HashMap::new())
     }
 
     #[test]
