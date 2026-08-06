@@ -41,11 +41,13 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
     animation:blink 1.06s step-end infinite; }
   @keyframes blink { 0%,50% { opacity:.75 } 50.01%,100% { opacity:0 } }
   /* 大きさを測るための見えない文字 */
-  #probe { position:absolute; visibility:hidden; white-space:pre; }
+  #probe, #tprobe { position:absolute; visibility:hidden; white-space:pre;
+    left:0; top:0; }
 </style></head><body>
 <pre id="scr"></pre>
 <div id="cur" hidden></div>
 <pre id="probe">MMMMMMMMMM</pre>
+<pre id="tprobe"></pre>
 <textarea id="kbd" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
 <div id="stat"></div>
 <script>
@@ -101,10 +103,22 @@ const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
 
   // 変換中は送らない。確定した文字だけを送る
   let composing = false;
-  // 変換中の文字が入る幅を持たせる。1pxのままだと未確定文字が見えない
+  // 変換中の文字が入る幅を持たせる。1pxのままだと未確定文字が見えない。
+  // 文字数からの見積もりは、全角と半角が混ざると必ず外れる。
+  // 足りないと左へスクロールして先頭が切れるので、実際に描いて測る
+  const tprobe = document.getElementById("tprobe");
   const widen = s => {
-    const w = Math.max(1, [...(s || "")].length);
-    kbd.style.width = (w * cellW * 1.9 + cellW) + "px";
+    tprobe.style.font = getComputedStyle(scr).font;
+    tprobe.textContent = s || "";
+    const need = tprobe.getBoundingClientRect().width + cellW * 2;
+    // 窓からはみ出すなら、はみ出さない位置まで左へ寄せる
+    const room = window.innerWidth - curX - 8;
+    if (need > room) {
+      kbd.style.left = Math.max(0, window.innerWidth - need - 8) + "px";
+    } else {
+      kbd.style.left = curX + "px";
+    }
+    kbd.style.width = Math.max(cellW, need) + "px";
   };
   kbd.addEventListener("compositionstart", () => {
     composing = true;
