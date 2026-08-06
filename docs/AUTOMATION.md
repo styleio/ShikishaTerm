@@ -214,6 +214,24 @@ shikisha.notify("slack", tab.name .. " finished:\n" .. tab.output)
 
 ---
 
+### What gets passed on
+
+Only the reply is forwarded — not the terminal furniture around it. Startup banners,
+input-box borders, and the hint and status lines a CLI keeps at the bottom
+(`? for shortcuts`, the model and directory readout) are dropped.
+
+They are found by **position and by change, never by matching their text**. Rows below
+the cursor belong to the input box whatever they say; everything else is compared
+against a snapshot taken the instant the prompt was submitted, so anything already on
+screen before the reply existed is not part of the reply. A CLI can reword or
+translate its status line and this keeps working, and a reply can contain any wording
+at all without risk of being eaten.
+
+One thing is beyond reach: **narrowing the window while a reply is arriving truncates
+it**, because the terminal clips every stored row to the new width and the discarded
+text is gone. Widening and height changes are harmless. A narrowing mid-reply is
+recorded in `logs/hooks.log` so a short answer is not a mystery.
+
 ### Watching it happen
 
 The view follows the ball: when one tab hands work to another, the screen switches to

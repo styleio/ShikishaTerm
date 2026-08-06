@@ -194,6 +194,17 @@ fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
     std::env::split_paths(&path_var).find_map(|dir| try_base(dir.join(prog)))
 }
 
+/// 答えとして取り出す範囲を、画面下端からの深さで返す (深さ0 = 最下行)。
+///
+/// カーソルは入力欄の中にいる。その下にあるのは答えではなく枠なので、
+/// 数え始めをカーソル行に合わせる。文字を見ないので、答えの文面が
+/// たまたま枠の文言と一致しても巻き込まれない
+pub fn capture_range(rows: u16, cursor_row: u16, since: usize) -> (usize, usize) {
+    let below = rows.saturating_sub(1).saturating_sub(cursor_row) as usize;
+    // below を足すのは目的の行まで届くため。届いたら下駄は履いたままにしない
+    (below, below.saturating_add(since))
+}
+
 /// スクロールバック内の行範囲 (画面最下行からの行数 lo..=hi) をテキスト化する。
 /// 折返し行は連結し、行末の空白は除去する。
 pub fn extract_text<CB: vt100::Callbacks>(
@@ -283,6 +294,124 @@ pub fn screen_hash(screen: &vt100::Screen, ignore_bottom: u16) -> u64 {
         line.hash(&mut h);
     }
     h.finish()
+}
+
+#[cfg(test)]
+mod changed_span_tests {
+    use super::Tab;
+
+    fn rows(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// 全画面TUIでは、実行前から出ていたものを答えに含めないこと。
+    ///
+    /// Claude Code はスクロールしないので「実行してから書かれた行」が
+    /// 数えられず、可視画面を丸ごと取っていた。その結果、起動バナーと
+    /// 入力欄の枠まで相手のAIへ送っていた
+    #[test]
+    fn what_was_already_on_screen_is_not_the_answer() {
+        let before = rows(&[
+            "  Claude Code v2.1.223", // 起動バナー
+            "  D:\\project",
+            "",
+            "────────",             // 枠の上辺
+            "> 質問",
+            "────────",             // 枠の下辺
+            "  ? for shortcuts",
+        ]);
+        let now = rows(&[
+            "  Claude Code v2.1.223", // 変わらない
+            "  D:\\project",
+            "",
+            "答えの1行目", // ここから変わった
+            "答えの2行目",
+            "────────", // また変わらない (枠に戻った)
+            "  ? for shortcuts",
+        ]);
+        assert_eq!(
+            Tab::changed_span(&before, &now),
+            (3, 5),
+            "バナーと枠を外し、変わった2行だけを残す"
+        );
+    }
+
+    /// 答えが届いていなければ、何も渡さないこと
+    #[test]
+    fn an_unchanged_screen_yields_nothing() {
+        let same = rows(&["a", "b", "c"]);
+        assert_eq!(Tab::changed_span(&same, &same), (0, 0));
+    }
+
+    /// 端だけを削り、真ん中は触らないこと。
+    ///
+    /// 答えの途中にたまたま実行前と同じ行があっても、そこで切ってはいけない
+    #[test]
+    fn a_coincidence_in_the_middle_does_not_split_the_answer() {
+        let before = rows(&["枠", "x", "同じ行", "y", "枠"]);
+        let now = rows(&["枠", "答え1", "同じ行", "答え2", "枠"]);
+        assert_eq!(
+            Tab::changed_span(&before, &now),
+            (1, 4),
+            "真ん中の一致では切らない"
+        );
+    }
+
+    /// 行数が変わっていたら、下端どうしは対応しないので上端だけで判断すること
+    #[test]
+    fn a_resized_screen_falls_back_to_the_top_edge() {
+        let before = rows(&["枠", "x"]);
+        let now = rows(&["枠", "答え", "増えた行"]);
+        assert_eq!(Tab::changed_span(&before, &now), (1, 3));
+    }
+
+    /// 実行前の画面を撮れていなければ、削らないこと (安全側に倒す)
+    #[test]
+    fn without_a_snapshot_nothing_is_removed() {
+        let now = rows(&["a", "b", "c"]);
+        assert_eq!(Tab::changed_span(&[], &now), (0, 3));
+    }
+}
+
+#[cfg(test)]
+mod capture_range_tests {
+    use super::capture_range;
+
+    /// 入力欄の下にあるものは、答えとして渡さないこと。
+    ///
+    /// 利用者が見たのは 'Use /skills to list available skills' と
+    /// 'gpt-5.5 medium  D:\\Test' が相手に転送される現象。どちらも
+    /// カーソルより下に描かれる枠で、答えではない。
+    ///
+    /// 文字ではなく位置で切る。答えの文面がたまたま枠の文言と一致しても
+    /// 巻き込まれないし、CLI が文言を変えても壊れない
+    #[test]
+    fn the_frame_below_the_cursor_is_not_part_of_the_answer() {
+        // 24行の画面、カーソルは入力欄 (下から4行目) にいる。
+        // その下の3行はヒント行とステータス行
+        let (lo, hi) = capture_range(24, 20, 10);
+        assert_eq!(lo, 3, "カーソルより下の3行を飛ばして数え始める");
+        assert_eq!(hi, 13, "実行してから書かれた10行ぶんを取る");
+
+        // 素のシェル: カーソルは最下行のプロンプトにいる
+        let (lo, hi) = capture_range(24, 23, 5);
+        assert_eq!((lo, hi), (0, 5), "下に枠がなければ最下行から数える");
+
+        // 何も書かれていなければ、何も取らない (lo == hi で1行だが、
+        // それはカーソル行そのもの = 入力欄なので trim で落ちる)
+        let (lo, hi) = capture_range(24, 20, 0);
+        assert_eq!(lo, hi, "実行後に何も書かれていなければ範囲は空に近い");
+    }
+
+    /// 画面が壊れた値でも、範囲計算だけは破綻しないこと
+    #[test]
+    fn a_broken_screen_size_does_not_panic() {
+        assert_eq!(capture_range(0, 0, 0), (0, 0), "高さ0");
+        assert_eq!(capture_range(1, 5, 3), (0, 3), "カーソルが画面外");
+        let (lo, hi) = capture_range(24, 0, usize::MAX);
+        assert_eq!(lo, 23);
+        assert_eq!(hi, usize::MAX, "足し算が溢れない");
+    }
 }
 
 #[cfg(test)]
@@ -672,6 +801,19 @@ pub struct Tab {
     /// 貼り付けの表示や入力欄の描き直しも画面を動かすので、動いた位置から
     /// 取ると、答えではなく枠を掴む
     response_marker: AtomicU64,
+    /// 応答を待っている間に画面の幅が狭まったか。
+    ///
+    /// 行番号は大きさを変えても動かないので、切り出す範囲は保てる。
+    /// だが幅を狭めると vt100 が各行をその幅で切り捨てるため、
+    /// 文章そのものが欠ける。こちらでは戻せないので、
+    /// せめて欠けたかもしれないことが分かるようにしておく
+    resized_while_waiting: AtomicBool,
+    /// 実行した瞬間の可視画面 (上から順の各行)。
+    ///
+    /// 全画面TUI (Claude Code 等) はスクロールしないので行番号が進まず、
+    /// 「実行してから書かれた行」を数えられない。代わりに実行前の画面と
+    /// 見比べて、当時から同じ場所にあったもの (起動バナー、枠) を外す
+    submitted_rows: Mutex<Vec<String>>,
     detector: Detector,
 }
 
@@ -810,6 +952,8 @@ impl Tab {
             last_change_ms: 0,
             last_response: None,
             response_marker: AtomicU64::new(u64::MAX),
+            resized_while_waiting: AtomicBool::new(false),
+            submitted_rows: Mutex::new(Vec::new()),
             detector: Detector::new(profile),
         })
     }
@@ -880,6 +1024,8 @@ impl Tab {
             self.submitted_screen
                 .store(self.screen_fingerprint(), Ordering::Relaxed);
             self.saw_working.store(false, Ordering::Relaxed);
+            self.resized_while_waiting.store(false, Ordering::Relaxed);
+            *self.submitted_rows.lock().unwrap() = self.visible_rows();
         }
         // 相手がUTF-8以外なら、送る文字も変換する
         // (制御シーケンスはASCIIなのでそのまま通る)
@@ -903,7 +1049,21 @@ impl Tab {
             < REDRAW_MS
     }
 
+    /// 応答を待つ間に幅が狭まったか (文章が欠けている恐れがある)
+    pub fn resized_while_waiting(&self) -> bool {
+        self.resized_while_waiting.load(Ordering::Relaxed)
+    }
+
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        let narrower = {
+            let p = self.parser.lock().unwrap();
+            let (_, old_cols) = p.screen().size();
+            cols < old_cols
+        };
+        // 中身が失われるのは幅が狭まったときだけ。高さは行番号にも中身にも触らない
+        if narrower && self.prompted.load(Ordering::Relaxed) {
+            self.resized_while_waiting.store(true, Ordering::Relaxed);
+        }
         self.last_resize_ms.store(self.age_ms(), Ordering::Relaxed);
         self.master.resize(PtySize {
             rows,
@@ -1107,17 +1267,85 @@ impl Tab {
     }
 
     /// マーカー以降の新規出力をテキスト化する
+    /// 試験から切り出しをそのまま覗くための入口
+    #[cfg(test)]
+    pub fn capture_for_probe(&self) -> String {
+        self.capture_since_marker()
+    }
+
+    /// 今の可視画面を、上から順に1行ずつ
+    fn visible_rows(&self) -> Vec<String> {
+        let p = self.parser.lock().unwrap();
+        let screen = p.screen();
+        let (rows, cols) = screen.size();
+        screen.rows(0, cols).take(rows as usize).collect()
+    }
+
+    /// 実行してから変わった行の範囲を返す (上からの行番号で lo..hi)。
+    ///
+    /// 見比べるのは実行の瞬間に自分で撮った画面なので、文言を決め打ちしない。
+    /// CLI が見た目を変えても、日本語でも英語でも、そのまま効く。
+    /// 上端は起動バナー、下端は入力欄の枠が外れる。
+    ///
+    /// 端から順に、食い違ったところで止める。真ん中は触らないので、
+    /// 答えの中にたまたま実行前と同じ行があっても穴は空かない
+    pub fn changed_span(before: &[String], now: &[String]) -> (usize, usize) {
+        let same = |a: &String, b: &String| a.trim_end() == b.trim_end();
+        let head = now.iter().zip(before).take_while(|(a, b)| same(a, b)).count();
+        if head >= now.len() {
+            // 何ひとつ変わっていない = 答えは届いていない
+            return (0, 0);
+        }
+        // 行数が違うと下端どうしが対応しないので、そのときは上端だけで判断する
+        let tail = if before.len() == now.len() {
+            now.iter()
+                .rev()
+                .zip(before.iter().rev())
+                .take_while(|(a, b)| same(a, b))
+                .count()
+        } else {
+            0
+        };
+        (head, now.len().saturating_sub(tail).max(head))
+    }
+
     fn capture_since_marker(&self) -> String {
         let mut p = self.parser.lock().unwrap();
         let (rows, cols) = p.screen().size();
-        if p.screen().alternate_screen() {
-            // 全画面TUIはスクロールしないため可視画面のスナップショットで代替
-            return extract_text(&mut p, 0, rows.saturating_sub(1) as usize, cols);
-        }
-        // 書き込み位置は上から数え、取り出しは下から数える。
-        // カーソルより下の空白ぶんを足さないと、空行だけを取ってしまう
+        // カーソルは入力欄の中にある。その下にあるのは、答えではなく枠。
+        // ヒント行 ("Use /skills to list available skills") や
+        // ステータス行 ("gpt-5.5 medium  D:\\Test") がここに住んでいる
         let (cursor_row, _) = p.screen().cursor_position();
-        let below = rows.saturating_sub(1).saturating_sub(cursor_row) as usize;
+        if p.screen().alternate_screen() {
+            // 全画面TUIはスクロールしないため可視画面のスナップショットで代替。
+            // ただし実行前から出ていたもの (起動バナー等) は答えではない
+            let (floor, _) = capture_range(rows, cursor_row, 0);
+            // カーソルより下は位置だけで枠と分かる。見比べる前に外しておく。
+            // ヒント行は文言が入れ替わる ("manual mode on" -> "... ? for shortcuts")
+            // ので、残したままだと必ず食い違い、そこで走査が止まってしまう
+            let keep = (rows as usize).saturating_sub(floor);
+            let mut now: Vec<String> = p.screen().rows(0, cols).take(keep).collect();
+            let mut before = self.submitted_rows.lock().unwrap().clone();
+            before.truncate(keep);
+            // カーソルのいる行は入力欄そのもの。実行で中身が消えるため必ず
+            // 食い違うが、これは答えではない。ここで走査を止めさせない
+            if let (Some(a), Some(b)) = (now.get_mut(cursor_row as usize), before.get(cursor_row as usize)) {
+                *a = b.clone();
+            }
+            let (start, end) = Self::changed_span(&before, &now);
+            if end <= start {
+                return String::new();
+            }
+            // 上からの行番号を、下端からの深さに直す
+            let hi = (rows as usize).saturating_sub(1).saturating_sub(start);
+            // カーソルより下は無条件に枠なので、そこは必ず外す
+            let lo = (rows as usize).saturating_sub(end).max(floor);
+            if lo > hi {
+                return String::new();
+            }
+            let text = extract_text(&mut p, lo, hi, cols);
+            return text.trim_end().to_string();
+        }
         drop(p);
 
         // 実行してから書かれた行だけを取る。
@@ -1130,7 +1358,8 @@ impl Tab {
             self.line_position().saturating_sub(stored as usize)
         };
         let mut p = self.parser.lock().unwrap();
-        let text = extract_text(&mut p, 0, below + since, cols);
+        let (lo, hi) = capture_range(rows, cursor_row, since);
+        let text = extract_text(&mut p, lo, hi, cols);
         text.trim_end().to_string()
     }
 }
@@ -1141,7 +1370,6 @@ impl Tab {
 mod real_codex_probe {
     use super::{Tab, TabOptions};
     use std::io::Write as _;
-    use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
     /// 本物の Codex に貼り付けて実行し、何が起きるかを全部書き出す。
@@ -1262,5 +1490,150 @@ mod real_codex_probe {
         let _ = writeln!(log, "=== 取り込んだ応答 ===\n{:?}", t.last_response);
         t.kill();
         println!("書き出し: {}", out_path.display());
+    }
+}
+
+#[cfg(test)]
+mod layout_probe {
+    use super::{Tab, TabOptions};
+    use std::time::{Duration, Instant};
+
+    /// 起動直後の入力欄の形を、行番号とカーソル位置つきで書き出す。
+    ///
+    ///   cargo test layout_probe -- --ignored --nocapture
+    ///
+    /// 「カーソルより下を外す」で足りるのか、枠の上辺が残るのかを
+    /// 本物で確かめる。推測で足すと、また効かない調整をすることになる
+    #[test]
+    #[ignore]
+    fn probe_real_input_box_layout() {
+        for cmd in ["codex", "claude"] {
+            println!("\n================ {cmd} ================");
+            let tab = match Tab::spawn(
+                cmd.to_string(),
+                &[cmd.to_string()],
+                None,
+                24,
+                100,
+                TabOptions::default(),
+            ) {
+                Ok(t) => t,
+                Err(e) => {
+                    println!("起動できず: {e}");
+                    continue;
+                }
+            };
+            // 枠を描き終えるまで待つ (出力が止まったら描き終わり)
+            let start = Instant::now();
+            let mut last = 0u64;
+            let mut quiet = Instant::now();
+            while start.elapsed() < Duration::from_secs(40) {
+                std::thread::sleep(Duration::from_millis(200));
+                let now = tab.output_count();
+                if now != last {
+                    last = now;
+                    quiet = Instant::now();
+                } else if last > 0 && quiet.elapsed() > Duration::from_secs(3) {
+                    break;
+                }
+            }
+
+            let p = tab.parser.lock().unwrap();
+            let screen = p.screen();
+            let (rows, cols) = screen.size();
+            let (cur_row, cur_col) = screen.cursor_position();
+            println!("画面 {rows}行 x {cols}桁 / カーソル row={cur_row} col={cur_col}");
+            println!("alternate_screen = {}", screen.alternate_screen());
+            println!("カーソルより下: {} 行", rows - 1 - cur_row);
+            println!("--- 下から10行 (深さ: 内容) ---");
+            for r in (rows.saturating_sub(10)..rows).rev() {
+                let line = screen.rows(0, cols).nth(r as usize).unwrap_or_default();
+                let depth = rows - 1 - r;
+                let mark = if r == cur_row { " <== カーソル" } else { "" };
+                println!("深さ{depth:>2} | {}{mark}", line.trim_end());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod capture_probe {
+    use super::{Tab, TabOptions};
+    use std::time::{Duration, Instant};
+
+    /// 本物に短い質問をして、切り出し結果を一字一句そのまま書き出す。
+    ///
+    ///   cargo test capture_probe -- --ignored --nocapture
+    ///
+    /// 知りたいのは「答えの本文が、範囲のどこから始まるか」。
+    /// 枠の高さぶん頭が欠けているなら、下端を削るだけでは足りない
+    #[test]
+    #[ignore]
+    fn probe_what_the_capture_actually_grabs() {
+        let mut tab = Tab::spawn(
+            "claude".into(),
+            &["claude".to_string()],
+            None,
+            24,
+            100,
+            TabOptions::default(),
+        )
+        .expect("起動");
+
+        // 枠を描き終えるまで待つ
+        let quiet_for = |tab: &Tab, ms: u64, cap: u64| {
+            let start = Instant::now();
+            let mut last = 0u64;
+            let mut quiet = Instant::now();
+            while start.elapsed() < Duration::from_secs(cap) {
+                std::thread::sleep(Duration::from_millis(200));
+                let now = tab.output_count();
+                if now != last {
+                    last = now;
+                    quiet = Instant::now();
+                } else if last > 0 && quiet.elapsed() > Duration::from_millis(ms) {
+                    return true;
+                }
+            }
+            false
+        };
+        assert!(quiet_for(&tab, 3000, 60), "起動しない");
+
+        // 括弧貼り付けで入れて、落ち着いてから実行 (本番と同じ順序)
+        let q = "Reply with exactly three lines: AAA then BBB then CCC. Nothing else.";
+        tab.write_passthrough(b"\x1b[200~").unwrap();
+        tab.write_passthrough(q.as_bytes()).unwrap();
+        tab.write_passthrough(b"\x1b[201~").unwrap();
+        assert!(quiet_for(&tab, 600, 20), "貼り付けが落ち着かない");
+
+        println!("=== 実行の直前 ===");
+        {
+            let p = tab.parser.lock().unwrap();
+            let (rows, _) = p.screen().size();
+            let (cur, _) = p.screen().cursor_position();
+            println!("rows={rows} cursor_row={cur} below={}", rows - 1 - cur);
+        }
+        println!("line_position = {}", tab.line_position());
+
+        tab.write_bytes(b"\r").unwrap();
+        assert!(quiet_for(&tab, 5000, 120), "答えが返らない");
+
+        println!("=== 実行の直後 ===");
+        {
+            let p = tab.parser.lock().unwrap();
+            let (rows, _) = p.screen().size();
+            let (cur, _) = p.screen().cursor_position();
+            println!("rows={rows} cursor_row={cur} below={}", rows - 1 - cur);
+        }
+        println!("line_position = {}", tab.line_position());
+
+        let got = tab.capture_for_probe();
+        println!("\n=== 切り出し結果 ({} 行) ===", got.lines().count());
+        for (i, l) in got.lines().enumerate() {
+            println!("{i:>2} | {l}");
+        }
+        println!("=== ここまで ===");
+        println!("AAA を含む: {}", got.contains("AAA"));
+        println!("CCC を含む: {}", got.contains("CCC"));
     }
 }

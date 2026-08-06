@@ -740,6 +740,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             t.finish_response();
                         }
                         let ctx = tab_ctx(&tabs[idx - 1], idx);
+                        // 幅を狭めると vt100 が各行をその幅で切り捨てるので、
+                        // 応答を待つ間に狭めていると文章が欠けている。
+                        // 戻せないが、黙って欠けたものを渡すよりは残す
+                        if tabs[idx - 1].resized_while_waiting() {
+                            append_hook_log(&format!(
+                                "警告 tab{idx}: 応答中に画面幅が狭まりました。\
+                                 端末が行を切り詰めるため、応答が欠けている恐れがあります"
+                            ));
+                        }
                         append_hook_log(&format!(
                             "on_done発火 tab{idx}: 応答 {}文字: {}",
                             ctx.output.chars().count(),
