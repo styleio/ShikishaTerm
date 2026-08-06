@@ -1994,6 +1994,39 @@ fn exec_commands(
                     let _ = t.write_bytes(keys.as_bytes());
                 }
             }
+            Command::DraftPrompt { target, text } => {
+                if !auto_enabled {
+                    continue;
+                }
+                let Some(idx) = index_of(&target) else {
+                    *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
+                    continue;
+                };
+                if let Some(t) = tabs.get(idx.wrapping_sub(1)) {
+                    if touched_recently(t, now_ms) {
+                        continue;
+                    }
+                    // 目印を理解しない相手 (素のシェル) に同じものを送ると、
+                    // 目印は無視され、中の改行がそのまま実行になる。
+                    // 黙って改行を落とすより、断って理由を残す方がいい
+                    if !t.accepts_bracketed_paste() {
+                        let msg = i18n::tp("msg.draft_unsupported", &[("tab", &t.title)]);
+                        append_hook_log(&msg);
+                        *flash = Some(msg);
+                        continue;
+                    }
+                    // 実行(改行)は送らない。人が書き足して自分で送る
+                    let mut bytes = Vec::with_capacity(text.len() + 12);
+                    bytes.extend_from_slice(b"\x1b[200~");
+                    bytes.extend_from_slice(text.as_bytes());
+                    bytes.extend_from_slice(b"\x1b[201~");
+                    let _ = t.write_bytes(&bytes);
+                    append_hook_log(&format!(
+                        "下書き tab{idx}: {}",
+                        log_excerpt(&text, 60)
+                    ));
+                }
+            }
             Command::SendPrompt {
                 target,
                 text,

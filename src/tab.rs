@@ -1053,6 +1053,15 @@ impl Tab {
             < REDRAW_MS
     }
 
+    /// 相手が括弧貼り付けを理解すると宣言しているか。
+    ///
+    /// 端末の規格では、対応するアプリが自分で ESC[?2004h を送って申告する。
+    /// 申告していない相手 (素のシェル) に目印付きで送ると、目印は無視され、
+    /// 中の改行がそのまま実行になる。推測ではなく、この申告で判断する
+    pub fn accepts_bracketed_paste(&self) -> bool {
+        self.parser.lock().unwrap().screen().bracketed_paste()
+    }
+
     /// 応答を待つ間に幅が狭まったか (文章が欠けている恐れがある)
     pub fn resized_while_waiting(&self) -> bool {
         self.resized_while_waiting.load(Ordering::Relaxed)
@@ -1796,5 +1805,72 @@ mod paste_no_submit_probe {
             let l = p.screen().rows(0, cols).nth(r as usize).unwrap_or_default();
             println!("| {}", l.trim_end());
         }
+    }
+}
+
+#[cfg(test)]
+mod draft_target_tests {
+    use super::{Tab, TabOptions};
+    use std::time::{Duration, Instant};
+
+    fn settle(tab: &Tab, quiet_ms: u64, cap_s: u64) {
+        let start = Instant::now();
+        let (mut last, mut quiet) = (0u64, Instant::now());
+        while start.elapsed() < Duration::from_secs(cap_s) {
+            std::thread::sleep(Duration::from_millis(150));
+            let n = tab.output_count();
+            if n != last {
+                last = n;
+                quiet = Instant::now();
+            } else if last > 0 && quiet.elapsed() > Duration::from_millis(quiet_ms) {
+                return;
+            }
+        }
+    }
+
+    fn spawn(cmd: &str) -> Tab {
+        Tab::spawn(
+            cmd.into(),
+            &[cmd.to_string()],
+            None,
+            24,
+            100,
+            TabOptions::default(),
+        )
+        .expect("起動")
+    }
+
+    /// 下書きをシェルへ置かないこと。
+    ///
+    /// 目印を理解しない相手に送ると、目印は無視され、中の改行が
+    /// そのまま実行になる。実測 (cmd.exe): 目印で囲んだ `echo HELLO` に
+    /// 復帰を付けたら、そのまま実行された。
+    ///
+    /// 見た目やプロファイル名で決めてはいけない。規格では、対応する
+    /// アプリが自分で ESC[?2004h と申告する。それを読む
+    #[test]
+    fn a_shell_is_never_given_a_draft() {
+        let tab = spawn("cmd.exe");
+        settle(&tab, 700, 15);
+        assert!(
+            !tab.accepts_bracketed_paste(),
+            "シェルを下書きの宛先と見なしている"
+        );
+    }
+
+    /// AI CLI には置けること。
+    ///
+    ///   cargo test a_draft_reaches -- --ignored
+    ///
+    /// 実測: cmd.exe = false / powershell.exe = false / claude = true
+    #[test]
+    #[ignore]
+    fn a_draft_reaches_an_ai_cli() {
+        let tab = spawn("claude");
+        settle(&tab, 2500, 60);
+        assert!(
+            tab.accepts_bracketed_paste(),
+            "AI CLI が下書きを受け取れないことになっている"
+        );
     }
 }

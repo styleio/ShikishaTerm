@@ -105,6 +105,7 @@
   "msg.config_needs_restart": "{n} need a restart (Ctrl+B r)",
   "msg.duplicate_names": "Tab names are duplicated ({names}) — give them an id so automation can tell them apart",
   "msg.tab_not_found": ">> Automation: tab {target} not found",
+  "msg.draft_unsupported": "Tab {tab} does not accept pasted drafts, so nothing was placed. Only AI CLIs can hold a draft; a plain shell would run it.",
   "msg.chain_limit": ">> Stopped: the automatic chain reached its limit ({max})",
   "msg.manual_guard": ">> Skipped an automatic message because you are typing",
   "msg.password.no_secrets": ">> No secrets file is configured (\"secrets\" in config.json)",

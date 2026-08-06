@@ -252,20 +252,21 @@ pull you away from something you are reading.
 send it as a paste and never send the newline:
 
 ```lua
-local seed = "Read lp.html.
+shikisha.draft_to_tab("ai", "Read lp.html.
 
-"
-shikisha.send("ai", "[200~" .. seed .. "[201~")
+")
 ```
 
-`[200~` and `[201~` bracket a paste. Newlines between them are characters rather
-than a keypress, which is how a terminal keeps a pasted script from running itself line
-by line as it arrives. The AI CLIs honour it, and so does this program — the tab is not
-marked as waiting for a reply, so `on_done` will not fire on it.
+The text lands in the input box and stays there. The newlines are characters, not
+keypresses, so nothing is sent and the person can add their own instructions before
+pressing Enter. This program does not count it as a submission either, so `on_done`
+will not fire on that tab.
 
-**A plain shell does not honour it.** Measured against `cmd.exe`: the markers are
-ignored outright and a carriage return between them runs the command. Use this to draft
-into an AI CLI, never to stage a command in a shell.
+**It refuses to draft into a shell**, and says so in `logs/hooks.log`. A terminal
+program declares whether it understands pasted text; a shell does not, and the same
+bytes there would run as a command. Measured: `cmd.exe` and `powershell.exe` do not
+declare it, Claude Code does. The check reads that declaration rather than guessing
+from the command name.
 
 Keep the draft short. A long paste is collapsed to `[Pasted text #1 +N lines]`, and the
 person cannot read what they are about to send.
