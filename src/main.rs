@@ -25,6 +25,7 @@ mod profile;
 mod remote;
 mod session_log;
 mod tab;
+mod uistate;
 mod watch;
 mod winmode;
 mod webui;
