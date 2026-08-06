@@ -110,11 +110,18 @@ impl Detector {
             self.state = TabState::Question;
             return self.state;
         }
-        self.working_matched = self
-            .profile
-            .busy
-            .iter()
-            .find_map(|r| r.find(screen_text).map(|m| m.as_str().to_string()));
+        // 何にマッチしたかだけでなく、その行ごと残す。
+        // 単語だけ見ても、飾りを拾ったのか本物かが分からない
+        self.working_matched = self.profile.busy.iter().find_map(|r| {
+            r.find(screen_text).map(|m| {
+                let head = screen_text[..m.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let tail = screen_text[m.end()..]
+                    .find('\n')
+                    .map(|i| m.end() + i)
+                    .unwrap_or(screen_text.len());
+                screen_text[head..tail].trim().to_string()
+            })
+        });
         self.working_shown = self.working_matched.is_some();
         if self.working_shown {
             self.was_active = true;

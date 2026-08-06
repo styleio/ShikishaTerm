@@ -103,6 +103,16 @@ fn main() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
+    // どのビルドを動かしているかを常に見えるようにする。
+    // 「直したのに直らない」の原因が古い実行ファイルだったことが何度かあった
+    let _ = execute!(
+        std::io::stdout(),
+        ratatui::crossterm::terminal::SetTitle(format!(
+            "ShikishaTerm-AI  build {}  ({})",
+            env!("BUILD_TIME"),
+            env!("BUILD_REV")
+        ))
+    );
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
     let res = run(&mut terminal);
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
@@ -632,6 +642,23 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             eng.fire("on_start", &tab_ctx(&tabs[i], i + 1), None);
                         }
                     }
+                    for &(idx, old, new) in &transitions {
+                        if old == new {
+                            continue;
+                        }
+                        let t = &tabs[idx - 1];
+                        append_hook_log(&format!(
+                            "状態 tab{idx} {}->{} [{}] prompted={} working={} 応答あり={} 実行待ち={}",
+                            old.label(),
+                            new.label(),
+                            t.profile_name(),
+                            t.was_prompted(),
+                            t.saw_working_flag(),
+                            t.answered_since_submit(),
+                            pending_submit.iter().any(|p| p.tab == idx)
+                        ));
+                    }
+
                     // 続きが始まったら、完了の確定待ちは取り消す
                     for &(idx, _, new) in &transitions {
                         if new == TabState::Busy || new == TabState::Exited {
@@ -707,7 +734,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                         }
                         let ctx = tab_ctx(&tabs[idx - 1], idx);
                         append_hook_log(&format!(
-                            "on_done tab{idx}: 応答 {}文字: {}",
+                            "on_done発火 tab{idx}: 応答 {}文字: {}",
                             ctx.output.chars().count(),
                             log_excerpt(&ctx.output, 100)
                         ));
@@ -839,8 +866,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 if !p.ready(t.output_count(), now_ms) {
                     return true;
                 }
-                // 反応を待って送ったのか、待ちきれずに送ったのかを残す。
-                // 実行が届かない事故はここの区別が手掛かりになる
                 let reacted = t.output_count() > p.seen;
                 let _ = t.write_bytes(b"\r");
                 append_hook_log(&format!(
@@ -1329,7 +1354,7 @@ struct PendingSubmit {
     seen: u64,
     /// 早すぎる送信を防ぐ下限時刻
     not_before: u64,
-    /// 反応が無くても諦めて送る時刻
+    /// 落ち着かないときに諦めて送る時刻
     give_up: u64,
 }
 
@@ -1343,8 +1368,7 @@ impl PendingSubmit {
         }
     }
 
-    /// 今このタブへ実行(改行)を送ってよいか。
-    /// 相手が反応したら送る。反応が無いまま上限に達したら、それでも送る
+    /// 今このタブへ実行(改行)を送ってよいか
     fn ready(&self, output_count: u64, now_ms: u64) -> bool {
         if now_ms < self.not_before {
             return false;
@@ -1907,6 +1931,7 @@ fn exec_commands(
                 let seen = t.output_count();
                 write_prompt(t, &text);
                 pending_submit.push(PendingSubmit::new(target, seen, now_ms));
+                append_hook_log(&format!("貼り付け tab{target} ({}文字)", text.chars().count()));
                 ball.throw(origin, target, depth, now_ms);
                 append_hook_log(&format!(
                     "auto-send tab{origin} -> tab{target} (depth {depth}): {}",
@@ -2702,6 +2727,10 @@ fn draw_index(
     }
     // 稼働盤: 何が動いていて、誰が仕事を持っているかを一望する。
     // 光っているものは全部実データ (状態・出力量・連鎖の深さ) にしてある
+    lines.push(Line::from(Span::styled(
+        format!(" build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
+        Style::default().fg(Color::DarkGray),
+    )));
     lines.push(chain_header(ui, inner.width));
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
@@ -3273,39 +3302,14 @@ mod tests {
     }
 
     /// 実行(改行)は、時計ではなく相手の反応を待って送ること。
-    ///
-    /// 固定の待ち時間は「相手が何秒で貼り付けを処理するか」の当て推量で、
-    /// 短すぎれば改行が捨てられ、入力欄に貼り付けだけが積み上がる
     #[test]
     fn the_enter_waits_for_the_program_to_react() {
         let p = PendingSubmit::new(1, 500, 1_000);
-
-        // 送った直後は、反応があっても早すぎる
         assert!(!p.ready(500, 1_000), "送った瞬間");
-        assert!(
-            !p.ready(9_999, 1_000 + SUBMIT_FLOOR_MS - 1),
-            "下限より前は、反応があっても待つ"
-        );
-
-        // 下限を過ぎて反応があれば送る
-        assert!(
-            p.ready(501, 1_000 + SUBMIT_FLOOR_MS),
-            "相手が何か出力したら、それが貼り付けを描いた合図"
-        );
-        // 反応が無ければ待ち続ける
-        assert!(
-            !p.ready(500, 1_000 + SUBMIT_FLOOR_MS),
-            "無反応なら待つ"
-        );
-        assert!(
-            !p.ready(500, 1_000 + SUBMIT_GIVE_UP_MS - 1),
-            "上限までは待つ"
-        );
-        // ただし永遠には待たない
-        assert!(
-            p.ready(500, 1_000 + SUBMIT_GIVE_UP_MS),
-            "無反応のまま上限に達したら、それでも送る"
-        );
+        assert!(!p.ready(9_999, 1_000 + SUBMIT_FLOOR_MS - 1), "下限より前は待つ");
+        assert!(p.ready(501, 1_000 + SUBMIT_FLOOR_MS), "反応があれば送る");
+        assert!(!p.ready(500, 1_000 + SUBMIT_FLOOR_MS), "無反応なら待つ");
+        assert!(p.ready(500, 1_000 + SUBMIT_GIVE_UP_MS), "上限に達したら送る");
     }
 
     /// 緊急停止は、どの画面にいても同じ場所にあること。

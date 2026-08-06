@@ -825,6 +825,11 @@ impl Tab {
         screen_hash(p.screen(), self.detector.ignore_bottom_rows())
     }
 
+    /// 「働き始めた表示を見たか」の生の値 (ログ用)
+    pub fn saw_working_flag(&self) -> bool {
+        self.saw_working.load(Ordering::Relaxed)
+    }
+
     /// 実行が相手に届き、実際に応答が始まったか。
     ///
     /// AI CLIは働いている間それを画面に出す (「esc to interrupt」など)。
@@ -1121,3 +1126,131 @@ impl Tab {
 }
 
 
+
+#[cfg(test)]
+mod real_codex_probe {
+    use super::{Tab, TabOptions};
+    use std::io::Write as _;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    /// 本物の Codex に貼り付けて実行し、何が起きるかを全部書き出す。
+    ///
+    ///   cargo test probe_real_codex -- --ignored --nocapture
+    ///
+    /// 偽物で代用すると「こちらが思う振る舞い」しか確かめられないので、
+    /// 実機で観測する
+    #[test]
+    #[ignore]
+    fn probe_real_codex() {
+        let dir = std::env::temp_dir().join("shikisha-codex-probe");
+        let _ = std::fs::create_dir_all(&dir);
+        let out_path = dir.join("probe.txt");
+        let mut log = std::fs::File::create(&out_path).unwrap();
+
+        let argv = vec!["codex".to_string()];
+        let opts = TabOptions {
+            cwd: Some(dir.clone()),
+            ..TabOptions::default()
+        };
+        let mut t = Tab::spawn("codex".into(), &argv, Some("codex".into()), 30, 100, opts).unwrap();
+        let start = Instant::now();
+
+        let snap = |t: &mut Tab, log: &mut std::fs::File, phase: &str| {
+            let (old, new) = t.tick(start);
+            let screen = super::visible_text(t.parser.lock().unwrap().screen());
+            let tail: Vec<&str> = screen
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .rev()
+                .take(6)
+                .collect();
+            let _ = writeln!(
+                log,
+                "[{:>6}ms] {phase} 状態={}->{} prompted={} working見た={} マッチ={:?} 応答あり={} 出力={}\n    画面末尾: {:?}",
+                start.elapsed().as_millis(),
+                old.label(),
+                new.label(),
+                t.was_prompted(),
+                t.saw_working_flag(),
+                t.detector.working_matched(),
+                t.answered_since_submit(),
+                t.output_count(),
+                tail
+            );
+        };
+
+        // 起動を待つ。信頼確認が出たら答える
+        let mut trusted = false;
+        for _ in 0..80 {
+            std::thread::sleep(Duration::from_millis(200));
+            snap(&mut t, &mut log, "起動中");
+            let screen = super::visible_text(t.parser.lock().unwrap().screen());
+            if !trusted && screen.contains("Do you trust") {
+                let _ = writeln!(log, "=== 信頼確認に 1 を返す ===");
+                t.write_bytes(b"1\r").unwrap();
+                trusted = true;
+            }
+            if trusted && screen.contains("Pasted") {
+                break;
+            }
+        }
+        // 落ち着くまで待つ
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(200));
+            snap(&mut t, &mut log, "待機中");
+        }
+        let _ = writeln!(log, "=== 待機時の画面全体 ===\n{}",
+                         super::visible_text(t.parser.lock().unwrap().screen()));
+
+        // 利用者の事例と同じくらいの長さを貼り付ける
+        let body = format!(
+            "これはテストです。返事は OK の一言だけにしてください。{}",
+            "あ".repeat(1900)
+        );
+        let bracketed = t.parser.lock().unwrap().screen().bracketed_paste();
+        let _ = writeln!(log, "=== 貼り付け ({}文字) 括弧付き貼り付け={} ===", body.chars().count(), bracketed);
+        let mut bytes = Vec::new();
+        if bracketed {
+            bytes.extend_from_slice(b"\x1b[200~");
+            bytes.extend_from_slice(body.as_bytes());
+            bytes.extend_from_slice(b"\x1b[201~");
+        } else {
+            bytes.extend_from_slice(body.as_bytes());
+        }
+        t.write_bytes(&bytes).unwrap();
+
+        // 貼り付けの取り込みが「終わる」まで待つ (始まるまで、ではない)
+        let mut last = t.output_count();
+        let mut quiet = 0;
+        for _ in 0..100 {
+            std::thread::sleep(Duration::from_millis(100));
+            snap(&mut t, &mut log, "貼付後");
+            let now = t.output_count();
+            if now == last {
+                quiet += 1;
+                if quiet >= 4 {
+                    break;
+                }
+            } else {
+                quiet = 0;
+                last = now;
+            }
+        }
+        let _ = writeln!(log, "=== 貼り付けの取り込みが落ち着いた (出力={}) ===", t.output_count());
+
+        let _ = writeln!(log, "=== 実行 (Enter) ===");
+        t.write_bytes(b"\r").unwrap();
+
+        // 実行後の様子を長めに追う
+        for _ in 0..150 {
+            std::thread::sleep(Duration::from_millis(200));
+            snap(&mut t, &mut log, "実行後");
+        }
+
+        let _ = writeln!(log, "=== 最終画面 ===\n{}", super::visible_text(t.parser.lock().unwrap().screen()));
+        let _ = writeln!(log, "=== 取り込んだ応答 ===\n{:?}", t.last_response);
+        t.kill();
+        println!("書き出し: {}", out_path.display());
+    }
+}
