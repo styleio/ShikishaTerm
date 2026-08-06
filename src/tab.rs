@@ -636,14 +636,6 @@ pub struct Tab {
     /// 画面は変化するので、そのまま活動と数えると BUSY→DONE を通り、
     /// 応答が来たように見えてしまう
     last_resize_ms: AtomicU64,
-    /// 実行後の描き直しが落ち着いたか。
-    ///
-    /// 実行の直後は貼り付けの描き直しが続く。そこを基準にすると
-    /// 描き直しそのものを応答と読んでしまうので、落ち着くまで基準を更新し、
-    /// 落ち着いてからの変化だけを応答として数える
-    submit_settled: AtomicBool,
-    /// 画面が変わらないまま続いたtick数 (落ち着き判定用)
-    settle_ticks: AtomicU64,
     /// 実行してから「作業中」の表示を見たか。
     ///
     /// 画面が変わったかどうかでは足りない。貼り付けが `[Pasted Content …]`
@@ -811,8 +803,6 @@ impl Tab {
             submitted_output: AtomicU64::new(0),
             submitted_screen: AtomicU64::new(0),
             saw_working: AtomicBool::new(false),
-            submit_settled: AtomicBool::new(false),
-            settle_ticks: AtomicU64::new(0),
             last_resize_ms: AtomicU64::new(0),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
@@ -854,11 +844,16 @@ impl Tab {
     /// 以前は未設定なら判定が丸ごと弱くなり、貼り付けの描き直しだけで
     /// 「答えた」ことになっていた
     pub fn answered_since_submit(&self) -> bool {
-        if self.detector.shows_working() && self.saw_working.load(Ordering::Relaxed) {
-            return true;
+        if self.detector.shows_working() {
+            // 作業中を画面に出す相手なら、それが出たかどうかで判断する。
+            // 画面が動いたかどうかより確かで、描き直しに騙されない
+            return self.saw_working.load(Ordering::Relaxed);
         }
-        self.submit_settled.load(Ordering::Relaxed)
-            && self.screen_fingerprint() != self.submitted_screen.load(Ordering::Relaxed)
+        // 出さない相手 (素のシェル、プロファイル未設定) は画面の変化で代用する。
+        // 基準は実行を送った瞬間の画面で、実行は貼り付けの取り込みが
+        // 終わってから送るので、この時点の画面は既に落ち着いている。
+        // 届かなければ何も動かず、届けば答えが現れる
+        self.screen_fingerprint() != self.submitted_screen.load(Ordering::Relaxed)
     }
 
     /// 応答を受け取り切ったので、次の実行を待つ状態に戻す
@@ -885,8 +880,6 @@ impl Tab {
             self.submitted_screen
                 .store(self.screen_fingerprint(), Ordering::Relaxed);
             self.saw_working.store(false, Ordering::Relaxed);
-            self.submit_settled.store(false, Ordering::Relaxed);
-            self.settle_ticks.store(0, Ordering::Relaxed);
         }
         // 相手がUTF-8以外なら、送る文字も変換する
         // (制御シーケンスはASCIIなのでそのまま通る)
@@ -1019,19 +1012,6 @@ impl Tab {
             .tick(&screen_text, since, self.bell_count.load(Ordering::Relaxed));
         if self.state == TabState::Busy {
             self.spinner_idx = self.spinner_idx.wrapping_add(1);
-        }
-        // 実行後の描き直しが続いている間は、比較の基準を更新し続ける
-        if self.prompted.load(Ordering::Relaxed) && !self.submit_settled.load(Ordering::Relaxed) {
-            const SETTLE_TICKS: u64 = 4; // tickは約200ms間隔
-            let now = self.screen_fingerprint();
-            if now == self.submitted_screen.load(Ordering::Relaxed) {
-                if self.settle_ticks.fetch_add(1, Ordering::Relaxed) + 1 >= SETTLE_TICKS {
-                    self.submit_settled.store(true, Ordering::Relaxed);
-                }
-            } else {
-                self.submitted_screen.store(now, Ordering::Relaxed);
-                self.settle_ticks.store(0, Ordering::Relaxed);
-            }
         }
         if self.detector.working_shown() {
             if !self.saw_working.swap(true, Ordering::Relaxed) {

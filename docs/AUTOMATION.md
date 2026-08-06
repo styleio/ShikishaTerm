@@ -214,6 +214,15 @@ shikisha.notify("slack", tab.name .. " finished:\n" .. tab.output)
 
 ---
 
+### Watching it happen
+
+The view follows the ball: when one tab hands work to another, the screen switches to
+whichever tab was just given it. Turn it off in the general settings if you would rather
+stay put. It holds off for a few seconds after you move around yourself, so it will not
+pull you away from something you are reading.
+
+---
+
 ## 5. Safety mechanisms
 
 Several brakes keep automation from running away.
@@ -221,7 +230,8 @@ Several brakes keep automation from running away.
 - **Automatic chain limit** … the number of consecutive automatic hand-offs between AIs is
   counted and stops at the limit (10 by default). Typing something yourself resets it to 0
 - **Manual work wins** … nothing is sent automatically for 5 seconds after you touch a tab
-- **Emergency stop** … `Ctrl+B x` halts all automation at once, `Ctrl+B a` toggles it
+- **Emergency stop** … `Ctrl+B x` halts all automation at once, `Ctrl+B a` toggles it.
+  The status bar carries the same button, in the same corner on every screen
 - **Input lock** … put 🔒 on the middle tabs so nobody instructs them by mistake
 - **Sandbox** … automation can **neither touch files nor reach the internet by default**.
   Notifications only go to the Slack / Telegram targets you registered

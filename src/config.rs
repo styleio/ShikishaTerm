@@ -29,6 +29,8 @@ pub struct Config {
     /// 自動送信のたびに+1されてタブ間を受け継がれ、人間の手動入力で0に戻る
     #[serde(default)]
     pub max_chain: Option<u32>,
+    /// ボールが渡った先へ自動で画面を切り替えるか (既定: する)
+    pub follow_ball: Option<bool>,
     /// 応答が終わったと確定するまでの待ち時間 (ms)。
     /// プロファイル側で指定があればそちらが優先される
     pub done_confirm_ms: Option<u64>,

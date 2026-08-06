@@ -1122,6 +1122,17 @@ function check(obj, key, label) {
   const l = el("label", {class:"check"}); l.append(i, document.createTextNode(label));
   return l;
 }
+// 既定がオンの項目。未設定とオンを見分けず、外したときだけ false を持つ
+function checkDefaultOn(obj, key, label) {
+  const i = el("input", {type:"checkbox"});
+  i.checked = obj[key] !== false;
+  i.addEventListener("change", () => {
+    if (i.checked) delete obj[key];
+    else obj[key] = false;
+  });
+  const l = el("label", {class:"check"}); l.append(i, document.createTextNode(label));
+  return l;
+}
 function choose(obj, key, opts, onChange) {
   const s = el("select");
   for (const [v, label] of opts) s.append(el("option", {value:v}, label));
@@ -1300,6 +1311,8 @@ function globalPane() {
         el("span", {class:"hint"}, T["settings.max_chain.hint"])),
     row(T["settings.done_confirm"], secondsField(current, "done_confirm_ms", 10),
         el("span", {class:"hint"}, T["settings.done_confirm.hint"])),
+    row(T["settings.follow"], checkDefaultOn(current, "follow_ball", T["settings.follow.label"]),
+        el("span", {class:"hint"}, T["settings.follow.hint"])),
     row(T["settings.ai_engine"], aiSelect(),
         el("span", {class:"hint", id:"aihint"}, ""))));
   box.append(remoteCard());

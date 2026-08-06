@@ -495,6 +495,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     // 応答完了と見えたタブと、それを確定させる時刻。
     // 途中の息継ぎで撃たないよう、静かなまま保っていることを確かめてから撃つ
     let mut pending_done: Vec<(usize, u64)> = Vec::new();
+    // ボールを追って画面を切り替えるか
+    let mut follow_ball = cfg.as_ref().and_then(|c| c.follow_ball).unwrap_or(true);
+    // 人が最後に画面を触った時刻。直後は追従しない
+    let mut view_touched_ms: u64 = 0;
+    // 追従で切り替えた先。同じ場所へ何度も飛ばさないために覚えておく
+    let mut followed: usize = 0;
     // INDEXで押せる場所。毎フレーム描画時に作り直す
     let mut hits: Vec<HitBox> = Vec::new();
     let mut hover: Option<Hit> = None;
@@ -547,6 +553,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                 ws_tabs.resize_with(new_ws.len().max(1), Vec::new);
                 workspaces = new_ws;
                 max_chain = newcfg.max_chain.unwrap_or(10);
+                follow_ball = newcfg.follow_ball.unwrap_or(true);
                 done_confirm_ms = newcfg
                     .done_confirm_ms
                     .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
@@ -880,6 +887,25 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         // 子プロセスがコンソールを崩していたら戻す。判定は GetConsoleMode 1回だけ
         ensure_mouse_capture(console_mode);
 
+        // ボールが渡った先へ画面を移す。
+        // 人が画面を触った直後は従わない (読んでいる最中に飛ばされないように)
+        {
+            let now_ms = start.elapsed().as_millis() as u64;
+            if let Some(to) = follow_target(
+                follow_ball,
+                ball.holder,
+                followed,
+                tabs.len(),
+                now_ms,
+                view_touched_ms,
+            ) {
+                followed = to;
+                if active != to {
+                    active = to;
+                }
+            }
+        }
+
         // 人間が入力すると chain_depth が0に戻る。ボールもそれに追従させる
         // (リセット箇所を増やさずに済むよう、持ち主の側から確認する)
         if ball.holder > 0
@@ -935,11 +961,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                     Some(Hit::Tab(n)) => {
                         if n <= tabs.len() {
                             active = n;
+                            view_touched_ms = start.elapsed().as_millis() as u64;
                         }
                         continue;
                     }
                     Some(Hit::Index) => {
                         active = 0;
+                        view_touched_ms = start.elapsed().as_millis() as u64;
                         continue;
                     }
                     Some(Hit::Lock(n)) => {
@@ -1043,13 +1071,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             let n = c as usize - '0' as usize;
                             if n <= tabs.len() {
                                 active = n;
+                                view_touched_ms = start.elapsed().as_millis() as u64;
                             }
                         }
                         KeyCode::Char('n') => {
                             active = if active >= tabs.len() { 0 } else { active + 1 };
+                            view_touched_ms = start.elapsed().as_millis() as u64;
                         }
                         KeyCode::Char('p') => {
                             active = if active == 0 { tabs.len() } else { active - 1 };
+                            view_touched_ms = start.elapsed().as_millis() as u64;
                         }
                         // Ctrl+B b で子プロセスに素のCtrl+Bを送る
                         KeyCode::Char('b') => {
@@ -1244,6 +1275,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             // 直後の自動送信をガードする
                             t.chain_depth = 0;
                             t.last_manual_ms = Some(now_ms);
+                            view_touched_ms = now_ms;
                             t.write_bytes(&bytes)?;
                         }
                     }
@@ -1832,6 +1864,30 @@ fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
 
 /// 手動入力直後は自動送信を控える猶予 (打鍵の混線防止)
 const MANUAL_GUARD_MS: u64 = 5000;
+
+/// ボールを追って移るべき画面。移らないなら None。
+///
+/// 人が画面を触った直後は従わない。読んでいる最中に飛ばされるのが
+/// いちばん困るので、手を出したらしばらく黙る
+fn follow_target(
+    enabled: bool,
+    holder: usize,
+    already: usize,
+    tab_count: usize,
+    now_ms: u64,
+    view_touched_ms: u64,
+) -> Option<usize> {
+    if !enabled || holder == 0 || holder == already || holder > tab_count {
+        return None;
+    }
+    (now_ms.saturating_sub(view_touched_ms) >= FOLLOW_GUARD_MS).then_some(holder)
+}
+
+/// 人が画面を触ってから、自動追従を再開するまでの間。
+///
+/// 読んでいる最中に勝手に飛ばされるのが一番困るので、
+/// 手を出したらしばらく黙って従う
+const FOLLOW_GUARD_MS: u64 = 8_000;
 
 /// 人間が触った直後か。一度も触られていなければ false。
 ///
@@ -3361,6 +3417,29 @@ mod tests {
         }
         out += 1;
         assert!(p.ready(out, SUBMIT_GIVE_UP_MS), "上限に達したら送る");
+    }
+
+    /// ボールを追って画面が移ること、そして人の操作を邪魔しないこと。
+    #[test]
+    fn the_view_follows_the_ball_but_yields_to_the_person() {
+        let g = FOLLOW_GUARD_MS;
+
+        // ボールが渡った先へ移る
+        assert_eq!(follow_target(true, 2, 1, 3, g, 0), Some(2));
+        // 同じ場所へは何度も飛ばさない
+        assert_eq!(follow_target(true, 2, 2, 3, g, 0), None);
+        // 誰も持っていなければ動かない
+        assert_eq!(follow_target(true, 0, 1, 3, g, 0), None);
+        // 居ないタブへは行かない (ワークスペース切替の直後など)
+        assert_eq!(follow_target(true, 5, 1, 3, g, 0), None);
+        // 設定で切っていれば動かない
+        assert_eq!(follow_target(false, 2, 1, 3, g, 0), None);
+
+        // 人が画面を触った直後は従わない (読んでいる最中に飛ばさない)
+        assert_eq!(follow_target(true, 2, 1, 3, 1_000, 1_000), None);
+        assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g - 1, 1_000), None);
+        // 時間が経てば再び従う
+        assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g, 1_000), Some(2));
     }
 
     /// 緊急停止は、どの画面にいても同じ場所にあること。
