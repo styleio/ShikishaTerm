@@ -100,7 +100,15 @@ pub struct Capabilities {
     base: PathBuf,
     tokens: HashMap<String, String>,
     tx: Option<mpsc::Sender<HttpJob>>,
+    /// 名前で引くブラウザ。フックは単一スレッドで回るので Rc/RefCell でよい
+    browsers: std::cell::RefCell<HashMap<String, crate::browser::Browser>>,
+    /// 帯のボタンが押されたか (名前ごと)。読んだら下ろす
+    pressed: std::cell::RefCell<HashMap<String, bool>>,
 }
+
+/// ページを触るときの既定の待ち時間。
+/// 要素の有無を見るだけなので、長くする意味がない
+const OP_MS: u64 = 5_000;
 
 impl Capabilities {
     /// 何も許可しない状態 (既定)
@@ -110,6 +118,8 @@ impl Capabilities {
             base: PathBuf::from("."),
             tokens: HashMap::new(),
             tx: None,
+            browsers: std::cell::RefCell::new(HashMap::new()),
+            pressed: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -166,6 +176,8 @@ impl Capabilities {
             base,
             tokens,
             tx,
+            browsers: std::cell::RefCell::new(HashMap::new()),
+            pressed: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -261,6 +273,91 @@ impl Capabilities {
             body: body.to_string(),
             auth,
         })
+    }
+
+    /// ブラウザを開く (同じ名前があれば、そこで移動する)
+    pub fn browser_open(&self, name: &str, url: &str) -> Result<()> {
+        let mut all = self.browsers.borrow_mut();
+        match all.get(name) {
+            Some(b) => {
+                b.open(url)?;
+                b.wait_ready(std::time::Duration::from_millis(30_000))?;
+            }
+            None => {
+                let b = crate::browser::Browser::spawn(url, &format!("{name} — SHIKISHA-TERM"))?;
+                all.insert(name.to_string(), b);
+            }
+        }
+        crate::append_hook_log(&format!("ブラウザ {name}: {url}"));
+        Ok(())
+    }
+
+    fn with<T>(
+        &self,
+        name: &str,
+        f: impl FnOnce(&crate::browser::Browser) -> Result<T>,
+    ) -> Result<T> {
+        let all = self.browsers.borrow();
+        let b = all
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("ブラウザ '{name}' は開いていません"))?;
+        // 押されたボタンを拾っておく。読み取りは Lua 側の browser_pressed
+        for e in b.drain() {
+            if matches!(e, crate::browser::Ev::Button) {
+                self.pressed.borrow_mut().insert(name.to_string(), true);
+            }
+        }
+        f(b)
+    }
+
+    pub fn browser_find(&self, name: &str, sel: &crate::browser::Sel) -> Result<&'static str> {
+        self.with(name, |b| Ok(b.find(sel, OP_MS)?.as_str()))
+    }
+
+    pub fn browser_click(&self, name: &str, sel: &crate::browser::Sel) -> Result<&'static str> {
+        self.with(name, |b| Ok(b.click(sel, OP_MS)?.as_str()))
+    }
+
+    pub fn browser_fill(
+        &self,
+        name: &str,
+        sel: &crate::browser::Sel,
+        value: &str,
+    ) -> Result<&'static str> {
+        self.with(name, |b| Ok(b.fill(sel, value, OP_MS)?.as_str()))
+    }
+
+    pub fn browser_text(&self, name: &str, sel: &crate::browser::Sel) -> Result<Option<String>> {
+        self.with(name, |b| b.text(sel, OP_MS))
+    }
+
+    pub fn browser_html(&self, name: &str) -> Result<String> {
+        self.with(name, |b| b.html(30_000))
+    }
+
+    /// 人へ呼びかける帯を出す
+    pub fn browser_ask(&self, name: &str, text: &str, label: &str) -> Result<()> {
+        self.pressed.borrow_mut().remove(name);
+        self.with(name, |b| b.ask(text, label))
+    }
+
+    /// 帯のボタンが押されたか。押されていたら下ろして true を返す
+    pub fn browser_pressed(&self, name: &str) -> Result<bool> {
+        self.with(name, |_| Ok(()))?;
+        Ok(self.pressed.borrow_mut().remove(name).unwrap_or(false))
+    }
+
+    pub fn browser_unask(&self, name: &str) -> Result<()> {
+        self.pressed.borrow_mut().remove(name);
+        self.with(name, |b| b.unask())
+    }
+
+    pub fn browser_close(&self, name: &str) -> Result<()> {
+        if let Some(b) = self.browsers.borrow_mut().remove(name) {
+            let _ = b.unask();
+            b.close()?;
+        }
+        Ok(())
     }
 
     /// 生URL (allow_hosts に完全一致するホストのみ)

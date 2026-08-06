@@ -129,6 +129,30 @@ function shikisha.wait_state(tab, want, timeout_ms)
   end
   return false
 end
+-- ページの状態か、人のボタンか、時間切れか。先に来た方で抜ける。
+-- ボタンは常に出しておく: セレクタが外れたときに詰まないように
+function shikisha.browser_wait(name, opts)
+  opts = opts or {}
+  local left = opts.timeout_ms or 300000
+  local step = 300
+  if opts.ask then
+    shikisha.browser_ask(name, opts.ask, opts.label or "できました")
+  end
+  while left > 0 do
+    if opts.selector and shikisha.browser_find(name, opts.selector) == "visible" then
+      if opts.ask then shikisha.browser_unask(name) end
+      return "selector"
+    end
+    if opts.ask and shikisha.browser_pressed(name) then
+      shikisha.browser_unask(name)
+      return "button"
+    end
+    shikisha.sleep(step)
+    left = left - step
+  end
+  if opts.ask then shikisha.browser_unask(name) end
+  return "timeout"
+end
 function shikisha.wait(tab, pattern, timeout_ms)
   local idx = (type(tab) == "table") and tab.index or tab
   return coroutine.yield({ op = "wait", tab = idx, pattern = pattern, timeout_ms = timeout_ms or 10000 })
@@ -233,6 +257,180 @@ impl HookEngine {
                             origin: o.get(),
                         });
                         Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        // ── ブラウザ ──────────────────────────────
+        // セレクタは "#id" (CSS) か { xpath = "..." }
+        fn sel_of(v: &Value) -> mlua::Result<crate::browser::Sel> {
+            match v {
+                Value::String(s) => Ok(crate::browser::Sel::Css(s.to_str()?.to_string())),
+                Value::Table(t) => {
+                    if let Ok(x) = t.get::<String>("xpath") {
+                        Ok(crate::browser::Sel::Xpath(x))
+                    } else if let Ok(x) = t.get::<String>("css") {
+                        Ok(crate::browser::Sel::Css(x))
+                    } else {
+                        Err(mlua::Error::runtime("セレクタは \"#id\" か { xpath = ... }"))
+                    }
+                }
+                _ => Err(mlua::Error::runtime("セレクタは \"#id\" か { xpath = ... }")),
+            }
+        }
+
+        /// 見つからなかったときに止めるか進むか。
+        /// その場でしか判断できないので、呼び出しごとに選べる
+        fn missing_ok(opts: &Option<Table>) -> bool {
+            opts.as_ref()
+                .and_then(|t| t.get::<String>("on_missing").ok())
+                .is_some_and(|s| s == "continue")
+        }
+
+        fn check(what: &str, state: &str, opts: &Option<Table>) -> mlua::Result<String> {
+            if state == "not_found" && !missing_ok(opts) {
+                return Err(mlua::Error::runtime(format!(
+                    "{what}: 要素が見つかりません (進めたいなら on_missing=\"continue\")"
+                )));
+            }
+            Ok(state.to_string())
+        }
+
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_open",
+                    lua.create_function(move |_, (name, url): (String, String)| {
+                        c.browser_open(&name, &url)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_find",
+                    lua.create_function(move |_, (name, sel): (String, Value)| {
+                        c.browser_find(&name, &sel_of(&sel)?)
+                            .map(|s| s.to_string())
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_click",
+                    lua.create_function(
+                        move |_, (name, sel, opts): (String, Value, Option<Table>)| {
+                            let st = c
+                                .browser_click(&name, &sel_of(&sel)?)
+                                .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                            check("browser_click", st, &opts)
+                        },
+                    )
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_fill",
+                    lua.create_function(
+                        move |_, (name, sel, value, opts): (String, Value, String, Option<Table>)| {
+                            let st = c
+                                .browser_fill(&name, &sel_of(&sel)?, &value)
+                                .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                            check("browser_fill", st, &opts)
+                        },
+                    )
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_text",
+                    lua.create_function(move |_, (name, sel): (String, Value)| {
+                        c.browser_text(&name, &sel_of(&sel)?)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_html",
+                    lua.create_function(move |_, name: String| {
+                        c.browser_html(&name)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_ask",
+                    lua.create_function(move |_, (name, text, label): (String, String, Option<String>)| {
+                        c.browser_ask(&name, &text, label.as_deref().unwrap_or("OK"))
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_unask",
+                    lua.create_function(move |_, name: String| {
+                        c.browser_unask(&name)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_pressed",
+                    lua.create_function(move |_, name: String| {
+                        c.browser_pressed(&name)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_close",
+                    lua.create_function(move |_, name: String| {
+                        c.browser_close(&name)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,
                 )
@@ -1061,6 +1259,96 @@ end"#,
             vec!["覚えている: tmp/LP20260806154212.html"],
             "別ファイルへ名前が渡っていない"
         );
+    }
+
+
+    /// Lua から実際のページを触れること。
+    ///
+    ///   cargo test lua_drives_a_real_page -- --ignored --nocapture
+    ///
+    /// 途中の層だけを試しても「繋がっている」ことは分からないので、
+    /// Lua の文字列から本物のページまで通す
+    #[test]
+    #[ignore]
+    fn lua_drives_a_real_page() {
+        const PAGE: &str = r#"<!doctype html><meta charset=utf-8><body>
+<input id=q value="">
+<button id=go onclick="document.getElementById('out').textContent='押された:'+document.getElementById('q').value">送信</button>
+<div id=out></div>
+<table><tr><td>氏名</td><td id=name>山田</td></tr></table>"#;
+
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let _ = req.respond(
+                    tiny_http::Response::from_string(PAGE).with_header(
+                        tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"text/html; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    ),
+                );
+            }
+        });
+
+        let mut e = HookEngine::new().unwrap();
+        let src = format!(
+            r##"
+function on_done(t)
+  shikisha.browser_open("br", "http://127.0.0.1:{port}/")
+
+  -- 見つかる / 画面外でない / 無い を区別できること
+  shikisha.log("find=" .. shikisha.browser_find("br", "#q"))
+  shikisha.log("none=" .. shikisha.browser_find("br", "#nope", nil))
+
+  -- XPath: CSSでは書けない探し方
+  shikisha.log("xpath=" .. tostring(
+    shikisha.browser_text("br", {{ xpath = "//td[text()='氏名']/following-sibling::td" }})))
+
+  -- AIの答えを欄に入れて送る。引用符を含む値でも壊れない
+  shikisha.browser_fill("br", "#q", [[それは"良い"案です']])
+  shikisha.browser_click("br", "#go")
+  shikisha.log("out=" .. tostring(shikisha.browser_text("br", "#out")))
+
+  -- 見つからないときの方針を呼び出しごとに選べること
+  local ok, err = pcall(function() shikisha.browser_click("br", "#nope") end)
+  shikisha.log("raise=" .. tostring(ok))
+  shikisha.log("continue=" .. shikisha.browser_click("br", "#nope", {{ on_missing = "continue" }}))
+
+  shikisha.log("html=" .. tostring(#shikisha.browser_html("br") > 100))
+  shikisha.browser_close("br")
+end"##
+        );
+        let a = e.load_source("a", &src).unwrap();
+        e.set_tab(1, a);
+        e.fire("on_done", &ctx(1, ""), None);
+
+        let logs: Vec<String> = e
+            .drain_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Log(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        for l in &logs {
+            println!("[lua] {l}");
+        }
+        assert!(logs.contains(&"find=visible".to_string()), "{logs:?}");
+        assert!(logs.contains(&"none=not_found".to_string()), "{logs:?}");
+        assert!(logs.contains(&"xpath=山田".to_string()), "XPathが効いていない: {logs:?}");
+        assert!(
+            logs.contains(&"out=押された:それは\"良い\"案です'".to_string()),
+            "値が崩れているか、押せていない: {logs:?}"
+        );
+        assert!(logs.contains(&"raise=false".to_string()), "既定で止まっていない: {logs:?}");
+        assert!(
+            logs.contains(&"continue=not_found".to_string()),
+            "on_missing=continue で進めていない: {logs:?}"
+        );
+        assert!(logs.contains(&"html=true".to_string()), "{logs:?}");
     }
 
     #[test]
