@@ -24,6 +24,7 @@ mod notify;
 mod profile;
 mod remote;
 mod session_log;
+mod shell;
 mod tab;
 mod uistate;
 mod watch;
