@@ -1249,7 +1249,6 @@ const COMMON_COMMANDS = [
   {label:"Gemini CLI",  cmd:"gemini",         check:"gemini"},
   {label:"PowerShell",  cmd:"powershell.exe", check:null},
   {label:T["settings.tab.kind.cmdprompt"], cmd:"cmd.exe", check:null},
-  {label:T["settings.tab.kind.browser"], cmd:"browser https://example.com/", check:null},
 ];
 const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 
