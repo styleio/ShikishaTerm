@@ -100,6 +100,10 @@ fn candidate_dirs() -> Vec<std::path::PathBuf> {
     {
         dirs.push(d);
     }
+    // 設定ファイルの隣も見る (exeとデータの置き場が違う構成でも見つかるように)
+    if let Some(d) = crate::config::config_file_path().parent() {
+        dirs.push(d.join("profiles"));
+    }
     dirs.push(std::path::PathBuf::from("profiles"));
     dirs
 }
