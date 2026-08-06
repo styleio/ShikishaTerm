@@ -28,7 +28,6 @@ mod shell;
 mod tab;
 mod uistate;
 mod watch;
-mod winmode;
 mod webui;
 
 use std::sync::{Arc, Mutex};
@@ -55,21 +54,7 @@ use unicode_width::UnicodeWidthStr as _;
 const TAB_BAR_MIN: u16 = 10;
 const TAB_BAR_MAX: u16 = 40;
 const STATUS_BAR_HEIGHT: u16 = 1;
-const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-// 黒地に彩度100%の純色を並べると、道具ではなく「侵入されている画面」に見える。
-// 彩度を落として少し温度を持たせると、同じ配置のまま印象が変わる。
-//
-// 青だけは動かさない。ロゴの #00AAFF と同じ値で、枠も見出しもワードマークも
-// ロゴと地続きになる
-/// 動いているもの (実行中のタブ、選択中の行)
-const NEON_GREEN: Color = Color::Rgb(74, 222, 128);
-/// 目を向けてほしいもの (見出し、注意書き)
-const NEON_YELLOW: Color = Color::Rgb(255, 200, 87);
-/// 枠と見出し。ロゴと同じ青
-const NEON_BLUE: Color = Color::Rgb(0, 170, 255);
-/// 止まっている・失敗している
-const NEON_RED: Color = Color::Rgb(255, 107, 107);
 
 /// 異常終了の理由を残す。TUIは画面を占有するため、
 /// パニックメッセージが見えないまま消えてしまうのを防ぐ
@@ -155,41 +140,8 @@ fn in_rect(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
-/// 表示幅 (全角=2桁) で切り詰める。日本語タブ名がはみ出さないように
-/// 表示幅で右詰めする。`format!("{:<n}")` は文字数で数えるため、
-/// 日本語のように1文字が2桁を占める名前が入るとカラムがずれる
-fn pad_width(s: &str, w: u16) -> String {
-    let t = truncate_width(s, w);
-    let pad = (w as usize).saturating_sub(t.width());
-    format!("{t}{}", " ".repeat(pad))
-}
 
-fn truncate_width(s: &str, max: u16) -> String {
-    let mut out = String::new();
-    let mut w = 0usize;
-    for ch in s.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if w + cw > max as usize {
-            break;
-        }
-        out.push(ch);
-        w += cw;
-    }
-    out
-}
 
-/// セッション見出しの文言と、その中で錠アイコンが始まる表示位置。
-/// 描画とクリック判定の両方で使い、位置ズレが起きないようにする
-fn session_title(t: &Tab) -> (String, String, u16) {
-    let head = format!(" {} :: {} ", i18n::t("tui.session"), t.title);
-    let offset = head.width() as u16;
-    let lock = if t.locked {
-        "🔒 LOCKED ".to_string()
-    } else {
-        "🔓 UNLOCK ".to_string()
-    };
-    (head, lock, offset)
-}
 
 /// 画面最下行から数えた絶対行位置
 fn abs_line(offset: usize, rows: u16, cursor_row: u16) -> usize {
@@ -209,78 +161,10 @@ fn title_of(argv: &[String]) -> String {
         .unwrap_or_else(|| "SHELL".into())
 }
 
-/// マスターパスワードの入力モーダル。入力は伏字表示。
-/// Escでキャンセル (None)。パスワードはTUI内で完結させ、ブラウザには出さない
-fn prompt_password(
-    terminal: &mut ratatui::DefaultTerminal,
-    title: &str,
-    note: &str,
-) -> Result<Option<String>> {
-    let mut input = String::new();
-    loop {
-        terminal.draw(|f| {
-            let area = f.area();
-            let w = 56.min(area.width.saturating_sub(4));
-            let rect = Rect {
-                x: area.x + (area.width.saturating_sub(w)) / 2,
-                y: area.y + area.height / 3,
-                width: w,
-                height: 7,
-            };
-            f.render_widget(ratatui::widgets::Clear, rect);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(NEON_YELLOW))
-                .title(Span::styled(
-                    format!(" {title} "),
-                    Style::default().fg(Color::Black).bg(NEON_YELLOW),
-                ));
-            let inner = block.inner(rect);
-            f.render_widget(block, rect);
-            let text = vec![
-                Line::from(Span::styled(note, Style::default().fg(Color::DarkGray))),
-                Line::default(),
-                Line::from(vec![
-                    Span::styled("  > ", Style::default().fg(NEON_GREEN)),
-                    Span::styled(
-                        "*".repeat(input.chars().count()),
-                        Style::default().fg(NEON_GREEN),
-                    ),
-                    Span::styled("_", Style::default().fg(NEON_GREEN)),
-                ]),
-                Line::default(),
-                Line::from(Span::styled(
-                    format!("  {}", i18n::t("prompt.password.keys")),
-                    Style::default().fg(Color::DarkGray),
-                )),
-            ];
-            f.render_widget(Paragraph::new(text), inner);
-        })?;
-
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Release {
-                continue;
-            }
-            match key.code {
-                KeyCode::Enter => return Ok(Some(input)),
-                KeyCode::Esc => return Ok(None),
-                KeyCode::Backspace => {
-                    input.pop();
-                }
-                KeyCode::Char(c) => {
-                    if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                        input.push(c);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
 
 /// マスターパスワードの設定・変更・解除 (INDEXメニュー [k])
 fn manage_master_password(
-    surface: &mut Surface,
+    surface: &mut WinSurface,
     cfg: Option<&config::Config>,
     password: &mut Option<String>,
 ) -> Result<String> {
@@ -520,7 +404,7 @@ fn run_in_window() -> Result<()> {
         &format!("http://127.0.0.1:{port}/"),
         "SHIKISHA-TERM",
     )?);
-    run(Surface::Window(Box::new(WinSurface {
+    run(WinSurface {
         win,
         rows: 40,
         cols: 120,
@@ -528,7 +412,7 @@ fn run_in_window() -> Result<()> {
         last_screen: String::new(),
         area: (0, 0, 0, 0),
         pending: std::collections::VecDeque::new(),
-    })))
+    })
 }
 
 /// 今の状態を、見た目を持たない形にまとめる
@@ -559,95 +443,42 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
     }
 }
 
-/// 描画先。ターミナルにも、自前の窓にも描ける。
-///
-/// ループの側は「どちらに描いているか」を知らない。
-/// 知らせると、片方だけの分岐がループ中に増えていく
-enum Surface<'a> {
-    /// 今までどおり、動かしている端末へ描く
-    Term(&'a mut ratatui::DefaultTerminal),
-    /// 自前の窓へ描く
-    Window(Box<WinSurface>),
-}
-
-impl Surface<'_> {
+impl WinSurface {
     fn size(&self) -> Result<ratatui::layout::Size> {
-        match self {
-            Surface::Term(t) => Ok(t.size()?),
-            Surface::Window(w) => Ok(ratatui::layout::Size::new(w.cols, w.rows)),
-        }
+        Ok(ratatui::layout::Size::new(self.cols, self.rows))
     }
 
-    /// 次の操作を待つ。端末からでも窓からでも、同じ形で返る
+    /// 次の操作を待つ。窓からの意図は、ループが既に知っている
+    /// キー操作に直して渡してある
     fn poll(&mut self, timeout: Duration, tabs: &[Tab], active: usize) -> Result<Option<Event>> {
-        match self {
-            Surface::Term(_) => {
-                if event::poll(timeout)? {
-                    Ok(Some(event::read()?))
-                } else {
-                    Ok(None)
-                }
-            }
-            Surface::Window(w) => {
-                w.take_events(tabs, active);
-                if let Some(e) = w.pending.pop_front() {
-                    return Ok(Some(e));
-                }
-                std::thread::sleep(timeout);
-                Ok(None)
-            }
+        self.take_events(tabs, active);
+        if let Some(e) = self.pending.pop_front() {
+            return Ok(Some(e));
         }
+        std::thread::sleep(timeout);
+        Ok(None)
     }
 
-    /// 端末そのものを要る処理のための取り出し口 (パスワード入力など)。
-    ///
-    /// 窓では別の出し方が要るので、そのとき None になる。
-    /// そうしておけば「ここは別の道が必要」がコンパイラから見える
-    /// 窓を持っているなら、その取っ手と中身の領域。
-    /// ブラウザはここに置く (別窓にすると位置も重なり順も自前で持つことになる)
+    /// ブラウザを置く先。窓の中に置くと、位置も重なり順もOSが見てくれる
     fn host(&self) -> Option<(std::rc::Rc<crate::browser::Browser>, (i32, i32, i32, i32))> {
-        match self {
-            Surface::Term(_) => None,
-            Surface::Window(w) => Some((std::rc::Rc::clone(&w.win), w.area)),
-        }
+        Some((std::rc::Rc::clone(&self.win), self.area))
     }
 
-    /// パスワードを聞く。端末でも窓でも、呼ぶ側は同じ
+    /// パスワードを聞く。スマホには出さない (ページ側が出さない)
     fn ask_password(&mut self, title: &str, note: &str) -> Result<Option<String>> {
-        match self {
-            Surface::Term(t) => prompt_password(t, title, note),
-            Surface::Window(w) => {
-                let _ = w.win.eval(&format!(
-                    "return window.__password({},{});",
-                    serde_json::to_string(title).unwrap_or_default(),
-                    serde_json::to_string(note).unwrap_or_default()
-                ));
-                // 人が入力し終えるまで待つ。急かす理由がない
-                w.win.wait_password(Duration::from_secs(600))
-            }
-        }
+        let _ = self.win.eval(&format!(
+            "return window.__password({},{});",
+            serde_json::to_string(title).unwrap_or_default(),
+            serde_json::to_string(note).unwrap_or_default()
+        ));
+        // 人が入力し終えるまで待つ。急かす理由がない
+        self.win.wait_password(Duration::from_secs(600))
     }
 
-    fn term_mut(&mut self) -> Option<&mut ratatui::DefaultTerminal> {
-        match self {
-            Surface::Term(t) => Some(t),
-            Surface::Window(_) => None,
-        }
-    }
-
-    fn draw(
-        &mut self,
-        tabs: &[Tab],
-        ui: &Ui,
-        flash: Option<&str>,
-        hits: &mut Vec<HitBox>,
-    ) -> Result<()> {
-        match self {
-            Surface::Term(t) => {
-                t.draw(|f| draw(f, tabs, ui, flash, hits))?;
-                Ok(())
-            }
-            Surface::Window(w) => {
+    fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> Result<()> {
+        {
+            {
+                let w = &mut *self;
                 let state = ui_state_of(tabs, ui, flash);
                 if w.last.as_ref() != Some(&state) {
                     let json = serde_json::to_string(&state).unwrap_or_default();
@@ -669,7 +500,7 @@ impl Surface<'_> {
                 if let Some(t) = tabs.get(ui.active.wrapping_sub(1)) {
                     let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
                     let s = p.screen();
-                    let html = crate::winmode::screen_html(s);
+                    let html = crate::shell::screen_html(s);
                     if html != w.last_screen {
                         w.last_screen = html.clone();
                         let _ = w.win.eval(&format!(
@@ -689,7 +520,7 @@ impl Surface<'_> {
     }
 }
 
-fn run(mut surface: Surface) -> Result<()> {
+fn run(mut surface: WinSurface) -> Result<()> {
     // モード指定は起動するコマンドではない。
     // 外すのを忘れると `--window` という名前のプログラムを探しに行く
     let cmd_args: Vec<String> = std::env::args()
@@ -1166,7 +997,7 @@ fn run(mut surface: Surface) -> Result<()> {
                         .get(active.wrapping_sub(1))
                         .map(|t| {
                             let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-                            winmode::screen_html(p.screen())
+                            shell::screen_html(p.screen())
                         })
                         .unwrap_or_default(),
                     workspace: workspaces
@@ -1336,7 +1167,7 @@ fn run(mut surface: Surface) -> Result<()> {
             hover,
         };
         last_ui_state = Some(ui_state_of(&tabs, &ui, flash.as_deref()));
-        surface.draw(&tabs, &ui, flash.as_deref(), &mut hits)?;
+        surface.draw(&tabs, &ui, flash.as_deref())?;
         // 重ねているブラウザを、ターミナルの動きに付いていかせる。
         // 所有関係で最小化と重なり順はOSが見てくれるが、位置だけは追う必要がある
         if browser_shown {
@@ -2761,15 +2592,6 @@ fn handle_mouse(
     Ok(())
 }
 
-fn indicator(t: &Tab) -> (char, Color) {
-    match t.state {
-        TabState::Busy => (SPINNER[t.spinner_idx % SPINNER.len()], NEON_YELLOW),
-        TabState::Done => ('●', NEON_GREEN),
-        TabState::Question => ('?', NEON_BLUE),
-        TabState::Wait => ('●', NEON_BLUE),
-        TabState::Exited => ('✖', NEON_RED),
-    }
-}
 
 /// INDEXで押せる場所。描画時に記録し、クリック判定はこれだけを見る。
 /// レイアウトを二重に計算しないので、表示とクリック位置がずれない
@@ -2812,175 +2634,13 @@ fn hit_at(hits: &[HitBox], row: u16, col: u16) -> Option<Hit> {
         .map(|h| h.hit)
 }
 
-/// ボールのレーンが使う幅 (記号1桁 + 余白1桁)
-const LANE_W: u16 = 2;
-/// 自動チェーンのボール。状態インジケータの `●` と紛れないよう別の字にする
-const BALL: char = '◉';
 
-/// 連鎖の深さを色にする。上限に近づくほど熱くなる
-fn heat_color(heat: f32) -> Color {
-    if heat >= 0.8 {
-        NEON_RED
-    } else if heat >= 0.5 {
-        NEON_YELLOW
-    } else {
-        NEON_GREEN
-    }
-}
 
-/// 左バーのレーンに描く1コマ。`row` は 0=INDEX(人間)、1.. はタブ番号。
-/// 飛行中は経路を線で残すので、静止画でも「どこからどこへ」が読める
-fn lane_cell(ui: &Ui, row: usize) -> Span<'static> {
-    let blank = Span::raw("  ");
-    let hot = heat_color(ui.ball.heat(ui.max_chain));
-    let glyph = |c: char, style: Style| Span::styled(format!("{c} "), style);
-    match ui.ball.phase(ui.now_ms) {
-        ball::Phase::Idle => blank,
-        ball::Phase::Held { at } if at == row => glyph(BALL, Style::default().fg(hot)),
-        ball::Phase::Caught { at } if at == row => glyph(
-            BALL,
-            Style::default().fg(Color::Black).bg(hot).add_modifier(Modifier::BOLD),
-        ),
-        ball::Phase::Flying { from, to, progress } => {
-            let pos = from as f32 + (to as f32 - from as f32) * progress;
-            if pos.round() as usize == row {
-                return glyph(BALL, Style::default().fg(hot).add_modifier(Modifier::BOLD));
-            }
-            if row == to {
-                let head = if to > from { '▼' } else { '▲' };
-                return glyph(head, Style::default().fg(hot));
-            }
-            let (lo, hi) = if from < to { (from, to) } else { (to, from) };
-            if row >= lo && row <= hi {
-                return glyph('│', Style::default().fg(Color::DarkGray));
-            }
-            blank
-        }
-        _ => blank,
-    }
-}
 
-/// 左バー上部の連鎖カウンタ。自動チェーンが動いている間だけ出す。
-/// バーはINDEX側にあるので、狭い左バーでは数字だけにする
-fn chain_gauge_line(ui: &Ui, width: u16) -> Option<Line<'static>> {
-    if ui.ball.phase(ui.now_ms) == ball::Phase::Idle {
-        return None;
-    }
-    let hot = heat_color(ui.ball.heat(ui.max_chain));
-    let text = format!(" ⟲ {} {}/{}", i18n::t("tui.chain"), ui.ball.depth, ui.max_chain);
-    Some(Line::from(Span::styled(
-        pad_width(&text, width.saturating_sub(1)),
-        Style::default().fg(hot).add_modifier(Modifier::BOLD),
-    )))
-}
 
-/// INDEX上部の1行。連鎖ゲージと自動化の状態を並べる。
-/// チェーンが動いていないときは、動いていないと分かる形で出す
-fn chain_header(ui: &Ui, width: u16) -> Line<'static> {
-    let heat = ui.ball.heat(ui.max_chain);
-    let running = ui.ball.phase(ui.now_ms) != ball::Phase::Idle;
-    let hot = if running { heat_color(heat) } else { Color::DarkGray };
-    let label = i18n::t("tui.chain");
-    let count = if running {
-        format!("{}/{}", ui.ball.depth, ui.max_chain)
-    } else {
-        format!("—/{}", ui.max_chain)
-    };
-    // 区切りの "|" はステータス行用なので、ここでは落として並べる
-    let auto = format!(
-        "  {}{}",
-        auto_label(ui.auto).trim_end_matches(['|', ' ']),
-        if ui.remote_on { "  REMOTE:ON" } else { "" }
-    );
-    // 残った幅をゲージに使う。" ⟲ " と数字の前後の空白まで数に入れないと枠からはみ出す
-    let fixed = format!(" ⟲ {label}  {count}{auto}").width();
-    let bar_w = (width as usize).saturating_sub(fixed);
-    let filled = if running { (bar_w as f32 * heat).round() as usize } else { 0 };
-    Line::from(vec![
-        Span::styled(format!(" ⟲ {label} "), Style::default().fg(hot).add_modifier(Modifier::BOLD)),
-        Span::styled("━".repeat(filled), Style::default().fg(hot)),
-        Span::styled(
-            "━".repeat(bar_w.saturating_sub(filled)),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(format!(" {count}"), Style::default().fg(hot).add_modifier(Modifier::BOLD)),
-        Span::styled(auto, Style::default().fg(NEON_BLUE)),
-    ])
-}
 
-/// ステータス行を描く。右端に緊急停止ボタンを常設する。
-///
-/// INDEXでもセッション画面でも同じ位置にあることが大事で、
-/// 慌てているときに探させない。連鎖ゲージの隣に置く案もあったが、
-/// あれは連鎖中しか出ないので、いざという時に無いことがある
-fn draw_status(
-    f: &mut Frame,
-    area: Rect,
-    text: &str,
-    bg: Color,
-    ui: &Ui,
-    hits: &mut Vec<HitBox>,
-) {
-    // 自動化そのものが無い構成では出さない (押しても意味が無いため)
-    let Some(on) = ui.auto else {
-        f.render_widget(
-            Paragraph::new(text.to_string()).style(Style::default().fg(Color::Black).bg(bg)),
-            area,
-        );
-        return;
-    };
 
-    let label = if on {
-        format!(" ■ {} ", i18n::t("tui.stop"))
-    } else {
-        format!(" ▶ {} ", i18n::t("tui.resume"))
-    };
-    let btn_w = label.width() as u16;
-    let left_w = area.width.saturating_sub(btn_w);
-    hits.push(HitBox {
-        y: area.y,
-        x0: area.x + left_w,
-        x1: area.x + area.width,
-        hit: Hit::EmergencyStop,
-    });
 
-    // 止められる状態のときだけ赤くする。停止中は静かに再開ボタンとして残す
-    let btn_style = if !on {
-        Style::default().fg(Color::Black).bg(Color::DarkGray).add_modifier(Modifier::BOLD)
-    } else if ui.hover == Some(Hit::EmergencyStop) {
-        Style::default().fg(NEON_YELLOW).bg(NEON_RED).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Black).bg(NEON_RED).add_modifier(Modifier::BOLD)
-    };
-    f.render_widget(
-        Paragraph::new(pad_width(text, left_w))
-            .style(Style::default().fg(Color::Black).bg(bg)),
-        Rect { width: left_w, ..area },
-    );
-    f.render_widget(
-        Paragraph::new(label).style(btn_style),
-        Rect { x: area.x + left_w, width: btn_w, ..area },
-    );
-}
-
-/// 出力量 0..=7 を波形の1文字にする
-fn spark(level: u8) -> char {
-    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    BARS[(level as usize).min(7)]
-}
-
-/// INDEXのカード間のすき間に描く連結線。`below` の行の下のすき間を表す
-fn lane_gap(ui: &Ui, below: usize) -> Span<'static> {
-    if let ball::Phase::Flying { from, to, .. } = ui.ball.phase(ui.now_ms) {
-        let (lo, hi) = if from < to { (from, to) } else { (to, from) };
-        if below >= lo && below < hi {
-            let hot = heat_color(ui.ball.heat(ui.max_chain));
-            let c = if to > from { '│' } else { '│' };
-            return Span::styled(format!("{c} "), Style::default().fg(hot));
-        }
-    }
-    Span::raw("  ")
-}
 
 /// 描画に必要なUI状態
 struct Ui {
@@ -3008,280 +2668,10 @@ struct Ui {
     hover: Option<Hit>,
 }
 
-fn draw(f: &mut Frame, tabs: &[Tab], ui: &Ui, flash: Option<&str>, hits: &mut Vec<HitBox>) {
-    hits.clear();
-    let outer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(STATUS_BAR_HEIGHT)])
-        .split(f.area());
-    let main = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(ui.tab_w), Constraint::Min(1)])
-        .split(outer[0]);
 
-    let mut lines: Vec<Line> = Vec::new();
-    let multi_ws = ui.ws_names.len() > 1;
-    // ワークスペースが複数ある時だけ、左バー最上部に現在地を出す
-    // (高さは1行のみ消費。クリックでドロップダウン)
-    if multi_ws {
-        let name = ui
-            .ws_names
-            .get(ui.ws_index)
-            .map(String::as_str)
-            .unwrap_or("-");
-        hits.push(HitBox { y: main[0].y, x0: 0, x1: ui.tab_w - 1, hit: Hit::Workspace });
-        let bg = if ui.hover == Some(Hit::Workspace) { NEON_GREEN } else { NEON_YELLOW };
-        lines.push(Line::from(Span::styled(
-            pad_width(&format!("[▼] {name}"), ui.tab_w - 1),
-            Style::default().fg(Color::Black).bg(bg).add_modifier(Modifier::BOLD),
-        )));
-    }
 
-    if ui.ws_open {
-        // ドロップダウン展開中はタブ一覧の代わりにワークスペース一覧を出す
-        for (i, name) in ui.ws_names.iter().enumerate() {
-            let hit = Hit::WorkspaceItem(i);
-            hits.push(HitBox {
-                y: main[0].y + lines.len() as u16,
-                x0: 0,
-                x1: ui.tab_w - 1,
-                hit,
-            });
-            let style = if i == ui.ws_index || ui.hover == Some(hit) {
-                Style::default().fg(Color::Black).bg(NEON_YELLOW)
-            } else {
-                Style::default().fg(NEON_YELLOW)
-            };
-            lines.push(Line::from(Span::styled(
-                pad_width(&format!(" {}. {name}", i + 1), ui.tab_w - 1),
-                style,
-            )));
-        }
-    } else {
-        let index_style = if ui.active == 0 {
-            Style::default().fg(Color::Black).bg(NEON_BLUE)
-        } else {
-            Style::default().fg(NEON_BLUE)
-        };
-        // 自動チェーンが動いている間だけ、上部に連鎖の深さを出す
-        // (上限に近づくと色が変わるので、暴走対策が効いている様子が見える)
-        if let Some(line) = chain_gauge_line(ui, ui.tab_w) {
-            lines.push(line);
-        }
-        hits.push(HitBox {
-            y: main[0].y + lines.len() as u16,
-            x0: 0,
-            x1: ui.tab_w - 1,
-            hit: Hit::Index,
-        });
-        let index_style = if ui.hover == Some(Hit::Index) && ui.active != 0 {
-            Style::default().fg(Color::Black).bg(NEON_BLUE)
-        } else {
-            index_style
-        };
-        lines.push(Line::from(vec![
-            lane_cell(ui, 0),
-            Span::styled(format!("[≡] 0. {}", i18n::t("tui.index")), index_style),
-        ]));
-        for (i, t) in tabs.iter().enumerate() {
-            let (ind, ind_color) = indicator(t);
-            let title_style = if ui.active == i + 1 {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(NEON_GREEN)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD)
-            };
-            // 子タブは "└" とインデントで階層表示 (転送関係はLuaが決める)
-            let prefix = if t.depth > 0 {
-                format!("{}└", " ".repeat(t.depth as usize - 1))
-            } else {
-                String::new()
-            };
-            // 右端1桁は枠線。錠アイコン(全角2桁)・インジケータ4桁・
-            // ボールのレーンを除いた幅に収める
-            const LOCK_W: u16 = 2;
-            let avail = ui.tab_w.saturating_sub(1 + LANE_W + 4 + LOCK_W).max(1);
-            let label = truncate_width(&format!("{prefix}{}. {}", i + 1, t.title), avail);
-            let pad = avail as usize - label.width();
 
-            // 押せる場所を、実際に描く位置から作る。
-            // 手計算した固定値にすると、レーンを足したときのように黙ってずれる
-            let y = main[0].y + lines.len() as u16;
-            let ind_x = LANE_W;
-            let icon_x = ui.tab_w - 1 - LOCK_W;
-            hits.push(HitBox { y, x0: 0, x1: ui.tab_w - 1, hit: Hit::Tab(i + 1) });
-            // 終了・要再起動のときだけ、インジケータが再起動ボタンになる
-            let restartable = t.state == TabState::Exited || t.needs_restart;
-            if restartable {
-                hits.push(HitBox {
-                    y,
-                    x0: ind_x,
-                    x1: ind_x + 4,
-                    hit: Hit::Restart(i + 1),
-                });
-            }
-            hits.push(HitBox {
-                y,
-                x0: icon_x,
-                x1: icon_x + LOCK_W,
-                hit: Hit::Lock(i + 1),
-            });
 
-            let hovered_row = ui.hover == Some(Hit::Tab(i + 1));
-            let title_style = if hovered_row && ui.active != i + 1 {
-                Style::default().fg(Color::Black).bg(NEON_GREEN).add_modifier(Modifier::BOLD)
-            } else {
-                title_style
-            };
-            let ind_style = if ui.hover == Some(Hit::Restart(i + 1)) {
-                Style::default().fg(Color::Black).bg(ind_color).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(ind_color).add_modifier(Modifier::BOLD)
-            };
-            let icon = if t.needs_restart {
-                "⟳ "
-            } else if t.locked {
-                "🔒"
-            } else if hovered_row || ui.hover == Some(Hit::Lock(i + 1)) {
-                // 何も無い所は押せると分からないので、マウスが来たら鍵を出す
-                "🔓"
-            } else {
-                "  "
-            };
-            let icon_style = if ui.hover == Some(Hit::Lock(i + 1)) {
-                Style::default().fg(Color::Black).bg(NEON_YELLOW).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(NEON_YELLOW)
-            };
-            lines.push(Line::from(vec![
-                lane_cell(ui, i + 1),
-                Span::styled(format!("[{ind}] "), ind_style),
-                Span::styled(format!("{label}{}", " ".repeat(pad)), title_style),
-                Span::styled(icon, icon_style),
-            ]));
-        }
-    }
-    for y in main[0].y..main[0].y + main[0].height {
-        hits.push(HitBox { y, x0: ui.tab_w - 1, x1: ui.tab_w, hit: Hit::Divider });
-    }
-    let border = if ui.hover == Some(Hit::Divider) { NEON_YELLOW } else { NEON_GREEN };
-    let tabs_widget = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::RIGHT)
-            .border_style(Style::default().fg(border)),
-    );
-    f.render_widget(tabs_widget, main[0]);
-
-    if ui.active == 0 {
-        draw_index(f, tabs, main[1], outer[1], flash, ui, hits);
-    } else if let Some(t) = tabs.get(ui.active - 1) {
-        draw_session(f, t, main[1], outer[1], flash, ui, hits);
-    }
-
-    if ui.help_open {
-        draw_help(f, f.area());
-    }
-    if let Some(url) = &ui.qr {
-        draw_qr(f, f.area(), url);
-    }
-}
-
-/// スマホから繋ぐためのQRコード。URLを手入力させないための表示
-fn draw_qr(f: &mut Frame, area: Rect, url: &str) {
-    let lines = netaddr::qr_lines(url);
-    let w = (lines.first().map(|l| l.chars().count()).unwrap_or(30) as u16 + 4)
-        .min(area.width.saturating_sub(2));
-    let h = (lines.len() as u16 + 6).min(area.height.saturating_sub(2));
-    let rect = Rect {
-        x: area.x + (area.width.saturating_sub(w)) / 2,
-        y: area.y + (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
-    f.render_widget(ratatui::widgets::Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(NEON_YELLOW))
-        .title(Span::styled(
-            format!(" {} ", i18n::t("tui.qr.title")),
-            Style::default().fg(Color::Black).bg(NEON_YELLOW),
-        ));
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-
-    let mut text: Vec<Line> = lines
-        .into_iter()
-        .map(|l| Line::from(Span::styled(l, Style::default().fg(Color::White))))
-        .collect();
-    text.push(Line::default());
-    text.push(Line::from(Span::styled(
-        url.to_string(),
-        Style::default().fg(NEON_BLUE),
-    )));
-    text.push(Line::from(Span::styled(
-        i18n::t("tui.qr.hint"),
-        Style::default().fg(Color::DarkGray),
-    )));
-    f.render_widget(Paragraph::new(text), inner);
-}
-
-/// ヘルプオーバーレイ (どこからでも Ctrl+B ? / INDEXで ?)
-fn draw_help(f: &mut Frame, area: Rect) {
-    let w = 62.min(area.width.saturating_sub(4));
-    let h = 18.min(area.height.saturating_sub(2));
-    let rect = Rect {
-        x: area.x + (area.width - w) / 2,
-        y: area.y + (area.height - h) / 2,
-        width: w,
-        height: h,
-    };
-    f.render_widget(ratatui::widgets::Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(NEON_YELLOW))
-        .title(Span::styled(
-            format!(" {} ", i18n::t("tui.help.title")),
-            Style::default().fg(Color::Black).bg(NEON_YELLOW),
-        ));
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-    let keys = [
-        "tui.help.quit", "tui.help.tabs", "tui.help.ws", "tui.help.lock",
-        "tui.help.restart", "tui.help.copy", "tui.help.auto", "tui.help.raw",
-    ];
-    let mouse = [
-        "tui.help.mouse.wheel", "tui.help.mouse.drag", "tui.help.mouse.right",
-        "tui.help.mouse.tab", "tui.help.mouse.divider",
-    ];
-    let mut text: Vec<Line> = keys
-        .iter()
-        .map(|k| Line::from(format!(" {}", i18n::t(k))))
-        .collect();
-    text.push(Line::default());
-    text.push(Line::from(format!(" {}", i18n::t("tui.help.mouse"))));
-    text.extend(mouse.iter().map(|k| Line::from(format!(" {}", i18n::t(k)))));
-    text.push(Line::default());
-    text.push(Line::from(Span::styled(
-        format!(" {}", i18n::t("tui.help.close")),
-        Style::default().fg(Color::DarkGray),
-    )));
-    f.render_widget(Paragraph::new(text), inner);
-}
-
-fn auto_label(auto: Option<bool>) -> &'static str {
-    match auto {
-        Some(true) => "AUTO:ON | ",
-        Some(false) => "AUTO:OFF | ",
-        None => "",
-    }
-}
-
-/// 遠隔操作を受け付けている間は、忘れないよう常に表示する
-fn remote_label(on: bool) -> &'static str {
-    if on { "REMOTE:ON | " } else { "" }
-}
 
 /// INDEX = ホーム画面: セッション一覧 + メニュー
 /// ブロック文字のワードマーク (3行)。1文字ぶんの幅は不揃いなので、
@@ -3313,314 +2703,6 @@ pub fn wordmark_lines(width: u16, height: u16) -> Vec<String> {
         return vec![format!(" {WORDMARK_SMALL}")];
     }
     Vec::new()
-}
-
-fn draw_index(
-    f: &mut Frame,
-    tabs: &[Tab],
-    area: Rect,
-    status_area: Rect,
-    flash: Option<&str>,
-    ui: &Ui,
-    hits: &mut Vec<HitBox>,
-) {
-    let title = match ui.ws_names.get(ui.ws_index) {
-        Some(n) if ui.ws_names.len() > 1 => format!(" {} :: {n} ", i18n::t("tui.index")),
-        _ => " ACTIVE SESSION MAP ".to_string(),
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(NEON_BLUE))
-        .title(Span::styled(title, Style::default().fg(NEON_YELLOW)));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let mut lines: Vec<Line> = Vec::new();
-    // 名前を画面の中に置く。ターミナルのタイトルバーは
-    // フォーカスモードでも切り抜きでも消えるので、あてにしない
-    let mark = wordmark_lines(inner.width, inner.height);
-    if !mark.is_empty() {
-        // 枠に触れさせない。詰まっていると窮屈に見える
-        lines.push(Line::default());
-        for l in mark {
-            lines.push(Line::from(Span::styled(
-                l,
-                Style::default().fg(NEON_BLUE).add_modifier(Modifier::BOLD),
-            )));
-        }
-        lines.push(Line::default());
-    }
-    // 初回起動: 何をすればいいか分からないまま終わらせない
-    if ui.first_run {
-        lines.push(Line::from(Span::styled(
-            format!(" {}", i18n::t("tui.welcome.title")),
-            Style::default().fg(NEON_YELLOW).add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled(
-                " [e] ",
-                Style::default().fg(Color::Black).bg(NEON_GREEN).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(i18n::t("tui.welcome.line1")),
-        ]));
-        lines.push(Line::from(i18n::t("tui.welcome.line2")));
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            i18n::t("tui.welcome.line3"),
-            Style::default().fg(Color::DarkGray),
-        )));
-        lines.push(Line::default());
-    }
-    // 稼働盤: 何が動いていて、誰が仕事を持っているかを一望する。
-    // 光っているものは全部実データ (状態・出力量・連鎖の深さ) にしてある
-    lines.push(Line::from(Span::styled(
-        format!(" build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
-        Style::default().fg(Color::DarkGray),
-    )));
-    lines.push(chain_header(ui, inner.width));
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        format!(
-            "    {:<3} {:<16} {:<10} {:<10} {}",  // 見出しは半角のみなので固定幅でよい
-            i18n::t("tui.col.no"),
-            i18n::t("tui.col.name"),
-            i18n::t("tui.col.state"),
-            i18n::t("tui.col.profile"),
-            i18n::t("tui.col.activity")
-        ),
-        Style::default().fg(NEON_BLUE).add_modifier(Modifier::BOLD),
-    )));
-    for (i, t) in tabs.iter().enumerate() {
-        let (ind, color) = indicator(t);
-        let name = format!(
-            "{}{}{}",
-            "  ".repeat(t.depth as usize),
-            t.title,
-            if t.locked { " 🔒" } else { "" }
-        );
-        let wave: String = t.activity().iter().map(|l| spark(*l)).collect();
-        let hit = Hit::Tab(i + 1);
-        hits.push(HitBox {
-            y: inner.y + lines.len() as u16,
-            x0: inner.x,
-            x1: inner.x + inner.width,
-            hit,
-        });
-        let name_style = if ui.hover == Some(hit) {
-            Style::default().fg(Color::Black).bg(NEON_GREEN).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(NEON_GREEN).add_modifier(Modifier::BOLD)
-        };
-        lines.push(Line::from(vec![
-            lane_cell(ui, i + 1),
-            Span::styled("▌", Style::default().fg(color)),
-            Span::styled(format!("{ind} "), Style::default().fg(color)),
-            Span::raw(format!("{:<3}", format!("{}.", i + 1))),
-            Span::styled(pad_width(&name, 16), name_style),
-            Span::styled(pad_width(&t.state.display(), 10), Style::default().fg(color)),
-            Span::raw(pad_width(t.profile_name(), 10)),
-            Span::styled(wave, Style::default().fg(color)),
-        ]));
-        if i + 1 < tabs.len() {
-            lines.push(Line::from(lane_gap(ui, i + 1)));
-        }
-    }
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        format!(" ── {} ──────────────────────", i18n::t("tui.menu")),
-        Style::default().fg(NEON_BLUE),
-    )));
-    let menu = [
-        ("[1-9]", i18n::t("tui.menu.tabs")),
-        ("[r]", i18n::t("tui.menu.restart")),
-        ("[w]", i18n::t("tui.menu.workspace")),
-        ("[t]", i18n::t("tui.menu.notify")),
-        ("[i]", i18n::t("tui.menu.phone")),
-        ("[e]", i18n::t("tui.menu.settings")),
-        ("[k]", i18n::t("tui.menu.password")),
-        ("[?]", i18n::t("tui.menu.help")),
-        ("[q]", i18n::t("tui.menu.quit")),
-    ];
-    for (key, desc) in menu {
-        // "[r]" のように1文字のものだけ押せる ("[1-9]" は説明であって行き先が無い)
-        let hit = key
-            .strip_prefix('[')
-            .and_then(|k| k.strip_suffix(']'))
-            .filter(|k| k.chars().count() == 1)
-            .and_then(|k| k.chars().next())
-            .map(Hit::Key);
-        let y = inner.y + lines.len() as u16;
-        if let Some(hit) = hit {
-            hits.push(HitBox { y, x0: inner.x, x1: inner.x + inner.width, hit });
-        }
-        if hit.is_some() && ui.hover == hit {
-            lines.push(Line::from(Span::styled(
-                pad_width(&format!(" {key:<7}{desc}"), inner.width),
-                Style::default().fg(Color::Black).bg(NEON_YELLOW).add_modifier(Modifier::BOLD),
-            )));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" {key:<7}"),
-                    Style::default().fg(NEON_YELLOW).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(desc),
-            ]));
-        }
-    }
-    f.render_widget(Paragraph::new(lines), inner);
-
-    let status = flash.map(|m| format!(" {m}")).unwrap_or_else(|| {
-        format!(
-            " {}{}{}",
-            remote_label(ui.remote_on),
-            auto_label(ui.auto),
-            i18n::t("tui.index.hint")
-        )
-    });
-    draw_status(f, status_area, &status, NEON_BLUE, ui, hits);
-}
-
-/// セッションペイン: 子端末の描画 + コピーモードハイライト + IMEカーソル + ステータス
-fn draw_session(
-    f: &mut Frame,
-    t: &Tab,
-    area: Rect,
-    status_area: Rect,
-    flash: Option<&str>,
-    ui: &Ui,
-    hits: &mut Vec<HitBox>,
-) {
-    let border_color = if t.copy.is_some() {
-        NEON_YELLOW
-    } else if t.locked {
-        NEON_BLUE
-    } else {
-        NEON_GREEN
-    };
-    // 見出しの錠アイコンはクリックでロック切替できる (マウスだけで操作可能)
-    let (head, lock, offset) = session_title(t);
-    let lock_x = area.x + 1 + offset;
-    hits.push(HitBox {
-        y: area.y,
-        x0: lock_x,
-        x1: lock_x + lock.width() as u16,
-        hit: Hit::Lock(ui.active),
-    });
-    let lock_bg = if ui.hover == Some(Hit::Lock(ui.active)) {
-        NEON_YELLOW
-    } else if t.locked {
-        NEON_BLUE
-    } else {
-        NEON_GREEN
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .title(Line::from(vec![
-            Span::styled(head, Style::default().fg(NEON_YELLOW)),
-            Span::styled(
-                lock,
-                Style::default().fg(Color::Black).bg(lock_bg).add_modifier(Modifier::BOLD),
-            ),
-        ]));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let scrollback_offset;
-    let alt_screen;
-    {
-        let parser = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-        let screen = parser.screen();
-        scrollback_offset = screen.scrollback();
-        alt_screen = screen.alternate_screen();
-        f.render_widget(PseudoTerminal::new(screen), inner);
-
-        // IMEの変換ウィンドウ・未確定文字列はホスト端末の実カーソル位置に
-        // 表示されるため、子端末のカーソル位置に実カーソルを重ねておく。
-        // これが無いと日本語入力の変換候補が画面のあちこちに飛ぶ
-        if t.copy.is_none() && scrollback_offset == 0 && !screen.hide_cursor() {
-            let (crow, ccol) = screen.cursor_position();
-            if crow < inner.height && ccol < inner.width {
-                f.set_cursor_position((inner.x + ccol, inner.y + crow));
-            }
-        }
-    }
-
-    // コピーモード: カーソル行と選択範囲をハイライト
-    if let Some(cs) = &t.copy {
-        let rows_v = inner.height;
-        let cursor_row = cs.cursor_row.min(rows_v.saturating_sub(1));
-        let here = abs_line(scrollback_offset, rows_v, cursor_row);
-        for r in 0..rows_v {
-            let d = abs_line(scrollback_offset, rows_v, r);
-            let in_selection = cs
-                .anchor
-                .is_some_and(|a| d >= a.min(here) && d <= a.max(here));
-            let style = if r == cursor_row {
-                Some(Style::default().bg(NEON_GREEN).fg(Color::Black))
-            } else if in_selection {
-                Some(Style::default().bg(Color::Rgb(0, 80, 40)))
-            } else {
-                None
-            };
-            if let Some(style) = style {
-                f.buffer_mut().set_style(
-                    Rect {
-                        x: inner.x,
-                        y: inner.y + r,
-                        width: inner.width,
-                        height: 1,
-                    },
-                    style,
-                );
-            }
-        }
-    }
-
-    let status = if let Some(cs) = &t.copy {
-        let mode = i18n::t(if cs.anchor.is_some() {
-            "tui.status.copy.select"
-        } else {
-            "tui.status.copy.cursor"
-        });
-        let hist = if alt_screen {
-            &i18n::t("tui.status.copy.nohistory")
-        } else {
-            ""
-        };
-        i18n::tp(
-            "tui.status.copy",
-            &[
-                ("mode", &mode),
-                ("offset", &scrollback_offset.to_string()),
-                ("hist", hist),
-            ],
-        )
-    } else if ui.prefix_active {
-        i18n::t("tui.status.prefix")
-    } else if let Some(msg) = flash {
-        format!(" {msg}")
-    } else if t.needs_restart {
-        format!(" {}", i18n::t("tui.status.needs_restart"))
-    } else if t.state == TabState::Exited {
-        format!(" {}", i18n::t("tui.status.exited"))
-    } else if t.locked {
-        format!(" {}", i18n::t("tui.status.locked"))
-    } else {
-        format!(
-            " {}{}{}",
-            remote_label(ui.remote_on),
-            auto_label(ui.auto),
-            i18n::tp(
-                "tui.status.normal",
-                &[("profile", t.profile_name()), ("state", &t.state.display())]
-            )
-        )
-    };
-    let status_bg = if t.copy.is_some() { NEON_YELLOW } else { NEON_GREEN };
-    draw_status(f, status_area, &status, status_bg, ui, hits);
 }
 
 fn copy_to_clipboard(text: &str) -> String {
@@ -3796,45 +2878,6 @@ mod tests {
         }
     }
 
-    /// ボールが「今どのタブにあるか」と「どこから飛んできたか」が画面に出ること。
-    /// 静止画でも経路が読めることが狙いなので、飛行中の連結線も確認する
-    #[test]
-    fn the_chain_ball_is_visible_and_shows_its_path() {
-        use ratatui::backend::TestBackend;
-        let argv = vec!["cmd.exe".to_string()];
-        let mut tabs: Vec<Tab> = (1..=3)
-            .map(|i| {
-                Tab::spawn(format!("T{i}"), &argv, None, 20, 100, tab::TabOptions::default()).unwrap()
-            })
-            .collect();
-        let mut term = ratatui::Terminal::new(TestBackend::new(100, 30)).unwrap();
-
-        // 誰も自動で動いていないうちはボールを出さない (常時ちらつかせない)
-        let ui = test_ui(0, ball::Ball::default(), 0);
-        term.draw(|f| draw(f, &tabs, &ui, None, &mut Vec::new())).unwrap();
-        let idle = screen_text(&term);
-        assert!(!idle.contains(BALL), "静止中はボールを出さない: {idle}");
-        assert!(idle.contains("—/10"), "連鎖していないことが分かる: {idle}");
-
-        // タブ1がタブ3へ投げた直後: 飛行中の経路が見える
-        let mut b = ball::Ball::default();
-        b.throw(1, 3, 2, 1_000);
-        let ui = test_ui(0, b, 1_050);
-        term.draw(|f| draw(f, &tabs, &ui, None, &mut Vec::new())).unwrap();
-        let flying = screen_text(&term);
-        assert!(flying.contains(BALL), "ボールが見える: {flying}");
-        assert!(flying.contains('│'), "経路が線で残る: {flying}");
-        assert!(flying.contains("2/10"), "連鎖の深さが出る: {flying}");
-
-        // 着弾後は持ち主のところに落ち着く
-        let ui = test_ui(0, b, 1_000 + 2_000);
-        term.draw(|f| draw(f, &tabs, &ui, None, &mut Vec::new())).unwrap();
-        assert!(screen_text(&term).contains(BALL), "保持中も見える");
-
-        for t in tabs.iter_mut() {
-            t.kill();
-        }
-    }
 
     /// 波形は飾りではなく出力量なので、何も出ていなければ底ばいであること
     #[test]
@@ -4010,50 +3053,6 @@ mod tests {
         assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g, 1_000), Some(2));
     }
 
-    /// 緊急停止は、どの画面にいても同じ場所にあること。
-    /// 慌てているときに探させないのが目的なので、位置が動いたら意味が無い
-    #[test]
-    fn the_emergency_stop_is_always_in_the_same_corner() {
-        use ratatui::backend::TestBackend;
-        let argv = vec!["cmd.exe".to_string()];
-        let mut tabs = vec![
-            Tab::spawn("T1".into(), &argv, None, 20, 100, tab::TabOptions::default()).unwrap(),
-        ];
-        let mut term = ratatui::Terminal::new(TestBackend::new(100, 30)).unwrap();
-
-        let draw_with = |term: &mut ratatui::Terminal<TestBackend>, active, auto| {
-            let mut hits: Vec<HitBox> = Vec::new();
-            let mut ui = test_ui(active, ball::Ball::default(), 0);
-            ui.auto = auto;
-            term.draw(|f| draw(f, &tabs, &ui, None, &mut hits)).unwrap();
-            hits.into_iter().find(|h| h.hit == Hit::EmergencyStop)
-        };
-
-        // INDEXでもセッション画面でも、右下の同じ位置に出る
-        let on_index = draw_with(&mut term, 0, Some(true)).expect("INDEXに出る");
-        let on_session = draw_with(&mut term, 1, Some(true)).expect("セッション画面にも出る");
-        assert_eq!(
-            (on_index.y, on_index.x0, on_index.x1),
-            (on_session.y, on_session.x0, on_session.x1),
-            "画面が変わっても位置は動かない"
-        );
-        assert_eq!(on_index.x1, 100, "右端まで届く");
-        assert_eq!(on_index.y, 29, "最下行にある");
-        assert_eq!(
-            hit_at(&[on_index], 29, 99),
-            Some(Hit::EmergencyStop),
-            "右下の隅を押せる"
-        );
-
-        // 停止中は再開ボタンとして残る (戻り方が分からなくならないように)
-        assert!(draw_with(&mut term, 0, Some(false)).is_some(), "停止中も押せる");
-        // 自動化が無い構成では出さない
-        assert!(draw_with(&mut term, 0, None).is_none(), "自動化が無ければ出さない");
-
-        for t in tabs.iter_mut() {
-            t.kill();
-        }
-    }
 
     /// 単クリックではクリップボードを奪わないこと。
     ///
@@ -4107,119 +3106,7 @@ mod tests {
         }
     }
 
-    /// 押せる場所が、実際に描いた位置に記録されること。
-    /// 座標を別に計算し直すとレイアウト変更で黙ってずれる (レーン追加で実際にずれた)
-    #[test]
-    fn clickable_regions_follow_what_was_drawn() {
-        use ratatui::backend::TestBackend;
-        let argv = vec!["cmd.exe".to_string()];
-        let mut tabs: Vec<Tab> = (1..=2)
-            .map(|i| {
-                Tab::spawn(format!("T{i}"), &argv, None, 20, 100, tab::TabOptions::default()).unwrap()
-            })
-            .collect();
-        let mut hits: Vec<HitBox> = Vec::new();
-        let ui = test_ui(0, ball::Ball::default(), 0);
-        let mut term = ratatui::Terminal::new(TestBackend::new(100, 30)).unwrap();
-        term.draw(|f| draw(f, &tabs, &ui, None, &mut hits)).unwrap();
 
-        let find = |hit: Hit| hits.iter().find(|h| h.hit == hit);
-        let all = |hit: Hit| hits.iter().filter(|h| h.hit == hit).count();
-
-        assert!(find(Hit::Index).is_some(), "INDEXへ戻る行が押せる");
-        for n in 1..=2 {
-            // 左バーとINDEXの一覧、どちらからでもタブへ行ける
-            assert_eq!(all(Hit::Tab(n)), 2, "タブ{n}は2箇所から押せる");
-            let lock = find(Hit::Lock(n)).expect("錠アイコンが押せる");
-            assert_eq!(
-                lock.x1,
-                ui.tab_w - 1,
-                "錠アイコンは枠線のすぐ左に来る (描画位置と一致していること)"
-            );
-        }
-        for key in ['r', 'w', 't', 'i', 'e', 'k', '?', 'q'] {
-            assert!(find(Hit::Key(key)).is_some(), "[{key}] が押せない");
-        }
-        assert!(
-            !hits.iter().any(|h| matches!(h.hit, Hit::Key(c) if c.is_ascii_digit())),
-            "説明だけの行 ([1-9]) は押せないままにする"
-        );
-
-        // 動いているタブに再起動ボタンは出さない (押せてしまうと事故になる)
-        assert!(find(Hit::Restart(1)).is_none(), "動作中は再起動ボタンを出さない");
-        tabs[0].needs_restart = true;
-        term.draw(|f| draw(f, &tabs, &ui, None, &mut hits)).unwrap();
-        let restart = hits
-            .iter()
-            .find(|h| h.hit == Hit::Restart(1))
-            .expect("要再起動なら押せる");
-        assert!(restart.x0 >= LANE_W, "ボールのレーンの右側にある");
-
-        // 座標の引き当て
-        let q = hits.iter().find(|h| h.hit == Hit::Key('q')).unwrap();
-        assert_eq!(hit_at(&hits, q.y, q.x0), Some(Hit::Key('q')));
-        assert_eq!(hit_at(&hits, q.y, q.x1 - 1), Some(Hit::Key('q')), "行の右端まで押せる");
-        assert_eq!(hit_at(&hits, q.y, q.x0.saturating_sub(1)), None, "枠の外は押せない");
-        assert_eq!(hit_at(&hits, q.y + 100, q.x0), None, "別の行は反応しない");
-        // 錠アイコンはタブ行に重なっている。狭い方が勝たないと押せない
-        let lock = hits.iter().find(|h| h.hit == Hit::Lock(2)).unwrap();
-        assert_eq!(hit_at(&hits, lock.y, lock.x0), Some(Hit::Lock(2)), "重なりは錠が優先");
-
-        // ホバーは色だけ変える
-        let plain = { term.draw(|f| draw(f, &tabs, &ui, None, &mut hits)).unwrap(); screen_text(&term) };
-        let mut ui2 = test_ui(0, ball::Ball::default(), 0);
-        ui2.hover = Some(Hit::Key('q'));
-        let hovered = { term.draw(|f| draw(f, &tabs, &ui2, None, &mut hits)).unwrap(); screen_text(&term) };
-        assert_eq!(plain, hovered, "文字は変えず色だけ変える");
-        assert!(
-            term.backend().buffer().content().iter().any(|c| c.bg != ratatui::style::Color::Reset),
-            "ホバー行に背景色が付く"
-        );
-
-        for t in tabs.iter_mut() {
-            t.kill();
-        }
-    }
-
-    /// 目視確認用 (cargo test preview_ops_board -- --nocapture --ignored)
-    #[test]
-    #[ignore]
-    fn preview_ops_board() {
-        use ratatui::backend::TestBackend;
-        let argv = vec!["cmd.exe".to_string()];
-        let names = ["実装", "検査", "サーバー"];
-        let mut tabs: Vec<Tab> = names
-            .iter()
-            .map(|n| Tab::spawn(n.to_string(), &argv, None, 20, 100, tab::TabOptions::default()).unwrap())
-            .collect();
-        tabs[2].locked = true;
-        let start = Instant::now();
-        for _ in 0..12 {
-            std::thread::sleep(Duration::from_millis(40));
-            for t in tabs.iter_mut() { t.tick(start); }
-        }
-        let mut b = ball::Ball::default();
-        b.throw(1, 2, 3, 1_000);
-        for (title, now, hover) in [
-            ("--- 停止ボタン (通常) ---", 3_000u64, None),
-            ("--- 停止ボタン (ホバー) ---", 3_000, Some(Hit::EmergencyStop)),
-        ] {
-            let mut ui = test_ui(0, b, now);
-            ui.hover = hover;
-            let mut term = ratatui::Terminal::new(TestBackend::new(96, 26)).unwrap();
-            term.draw(|f| draw(f, &tabs, &ui, None, &mut Vec::new())).unwrap();
-            println!("{title}");
-            let buf = term.backend().buffer();
-            for y in 0..buf.area.height {
-                let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
-                // 反転表示は文字ダンプに出ないので、背景色が付いた行に印を出す
-                let lit = (0..buf.area.width)
-                    .any(|x| buf[(x, y)].bg != ratatui::style::Color::Reset);
-                println!("{}|{}|", if lit { "*" } else { " " }, row.trim_end());
-            }
-        }
-        for t in tabs.iter_mut() { t.kill(); }
-    }
 
     /// 初回起動でINDEXに案内が出ること (何をすればいいか分からないまま終わらせない)
     /// 起動したら、前に開いていたワークスペースから始めること。
@@ -4261,37 +3148,6 @@ mod tests {
         assert_eq!(starting_workspace(true, Some("指揮者"), &[]), 0, "空でも落ちない");
     }
 
-    /// 名前は画面に入るときだけ出すこと。
-    ///
-    /// TUI はターミナルの中で動くので、ウィンドウのタイトルは
-    /// フォーカスモードにすれば消えるし、切り抜かれても消える。
-    /// 画面の中に無いと、GIF が README から離れた時点で
-    /// 何のソフトか分からなくなる
-    #[test]
-    fn the_name_shrinks_rather_than_breaking_the_layout() {
-        let wide = wordmark_lines(100, 30);
-        assert_eq!(wide.len(), 3, "広ければワードマーク");
-        for l in &wide {
-            assert!(
-                l.chars().count() <= 100,
-                "枠からはみ出している: {} 桁",
-                l.chars().count()
-            );
-        }
-
-        // 幅が足りなければ1行に落とす (折り返して崩れるより小さく出す)
-        let narrow = wordmark_lines(30, 30);
-        assert_eq!(narrow.len(), 1);
-        assert!(narrow[0].contains("SHIKISHA-TERM"));
-
-        // 縦が足りないときも1行。タブの一覧を名前で押し出さない
-        let short = wordmark_lines(100, 8);
-        assert_eq!(short.len(), 1, "低い画面では一覧を優先する");
-
-        // どちらも足りなければ出さない
-        assert!(wordmark_lines(10, 30).is_empty());
-        assert!(wordmark_lines(0, 0).is_empty());
-    }
 
     /// ワードマークの3行は同じ幅であること (揃っていないと文字が崩れて見える)
     #[test]
@@ -4304,76 +3160,6 @@ mod tests {
     }
 
 
-    /// 稼働盤が、書き直さずに窓へ出せること。
-    ///
-    /// INDEXもタブバーもボールも draw() の中にある。HTMLで書き直すと
-    /// 以後すべての変更を2回書くことになる (スマホ表示で一度そうなり、
-    /// 片方だけ壊れた)。出力を変換すれば、足した機能は自動で付いてくる
-    #[test]
-    fn the_board_renders_into_the_window_without_rewriting_it() {
-        use ratatui::backend::TestBackend;
-        let mut b = crate::ball::Ball::default();
-        b.throw(1, 2, 3, 1_000);
-        let ui = test_ui(0, b, 3_000);
-        let mut term = ratatui::Terminal::new(TestBackend::new(96, 26)).unwrap();
-        term.draw(|f| draw(f, &[], &ui, None, &mut Vec::new())).unwrap();
-
-        let html = crate::winmode::buffer_html(term.backend().buffer());
-
-        // ワードマークも枠も、そのまま出ている
-        assert!(html.contains("█"), "ワードマークが出ていない");
-        assert!(html.contains("CHAIN"), "連鎖の表示が出ていない");
-        // 色が付いている (灰色一色ではない)
-        assert!(html.contains("color:#"), "色が付いていない");
-        assert!(html.matches("<span").count() > 5, "まとまりが少なすぎる");
-        // 26行ぶんある
-        assert_eq!(html.lines().count(), 26, "行数が合わない");
-        // 画面の中身がHTMLとして解釈されない
-        assert!(!html.contains("<script>"), "生のタグが混ざっている");
-    }
-
-    #[test]
-    fn first_run_shows_how_to_open_settings() {
-        use ratatui::backend::TestBackend;
-        let argv = vec!["cmd.exe".to_string()];
-        let mut tabs = vec![
-            Tab::spawn("SHELL".into(), &argv, None, 20, 100, tab::TabOptions::default()).unwrap(),
-        ];
-        let ui = Ui {
-            tab_w: 18,
-            first_run: true,
-            active: 0,
-            prefix_active: false,
-            auto: None,
-            ws_names: vec![],
-            ws_index: 0,
-            ws_open: false,
-            help_open: false,
-            qr: None,
-            remote_on: false,
-            ball: ball::Ball::default(),
-            max_chain: 10,
-            now_ms: 0,
-            hover: None,
-        };
-        let mut term = ratatui::Terminal::new(TestBackend::new(100, 24)).unwrap();
-        term.draw(|f| draw(f, &tabs, &ui, None, &mut Vec::new())).unwrap();
-        // 全角文字は2セルを占め、2セル目が空になるため空白を落として比較する
-        let screen: String = term
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect::<String>()
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        tabs[0].kill();
-        // テストでは初期化していないので基準の英語が出る
-        assert!(screen.contains("Welcome"), "初回の案内が出る: {screen}");
-        assert!(screen.contains("settingsscreen"), "設定の開き方が示される");
-    }
 
     #[test]
     fn phone_view_drops_trailing_blank_lines() {

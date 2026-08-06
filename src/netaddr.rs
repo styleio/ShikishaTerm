@@ -93,38 +93,6 @@ pub fn qr_svg(text: &str, scale: u32) -> String {
     )
 }
 
-/// 端末に表示するQRコード (半ブロック文字で2行分を1行にまとめる)
-pub fn qr_lines(text: &str) -> Vec<String> {
-    use qrcode::{EcLevel, QrCode};
-    let Ok(code) = QrCode::with_error_correction_level(text.as_bytes(), EcLevel::L) else {
-        return vec!["QRコードを作れませんでした".into()];
-    };
-    let w = code.width();
-    let dark: Vec<bool> = code.into_colors().iter().map(|c| *c == qrcode::Color::Dark).collect();
-    let at = |x: usize, y: usize| -> bool { y < w && x < w && dark[y * w + x] };
-    // 見やすいよう周囲に余白を4つ分取る
-    let quiet = 4;
-    let size = w + quiet * 2;
-    let mut out = Vec::new();
-    let mut y = 0;
-    while y < size {
-        let mut line = String::new();
-        for x in 0..size {
-            let up = x >= quiet && y >= quiet && at(x - quiet, y - quiet);
-            let dn = x >= quiet && (y + 1) >= quiet && at(x - quiet, y + 1 - quiet);
-            // 端末は背景が暗いので、明るいセルをブロックで描く
-            line.push(match (up, dn) {
-                (true, true) => ' ',
-                (true, false) => '▄',
-                (false, true) => '▀',
-                (false, false) => '█',
-            });
-        }
-        out.push(line);
-        y += 2;
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {
@@ -178,11 +146,5 @@ mod tests {
         assert!(svg.matches("<rect").count() > 50, "十分な数のモジュール");
     }
 
-    #[test]
-    fn qr_is_rendered_as_lines() {
-        let lines = qr_lines("http://100.64.0.1:8787/?t=abc");
-        assert!(lines.len() > 10, "QRの行数");
-        assert!(lines.iter().all(|l| l.chars().count() == lines[0].chars().count()),
-                "各行の幅が揃っている");
-    }
+
 }

@@ -534,6 +534,137 @@ if (REMOTE) {
 send({kind:"ready"});
 </script></body></html>"####;
 
+// ── ターミナルの中身 ────────────────────────────
+// ここだけはマス目のままでいい。あれは本当にマス目だから。
+// 外皮 (タブバー・盤面) は本物のHTMLで書いてある
+
+/// 端末の16色。既定はロゴの青に寄せた落ち着いた配色にする。
+/// 黒地に彩度100%の純色を並べると、道具ではなく侵入された画面に見える
+const PALETTE: [&str; 16] = [
+    "#1b2027", "#ff6b6b", "#4ade80", "#ffc857", "#00aaff", "#c792ea", "#4ec9ff", "#c8d2dc",
+    "#3a4552", "#ff8f8f", "#7ceaa4", "#ffd88a", "#5cc4ff", "#dcb0ff", "#8fe0ff", "#eef3f8",
+];
+
+/// 色番号をCSSの色に直す。
+///
+/// 0-15 は配色表、16-231 は6段階の立方体、232-255 は灰色の階段。
+/// この並びは端末の決まりごとなので、こちらで変えられない
+fn color_css(c: vt100::Color, fallback: &'static str) -> String {
+    match c {
+        vt100::Color::Default => fallback.to_string(),
+        vt100::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        vt100::Color::Idx(i) => match i {
+            0..=15 => PALETTE[i as usize].to_string(),
+            16..=231 => {
+                let i = i - 16;
+                let step = |v: u8| if v == 0 { 0u8 } else { 55 + v * 40 };
+                format!(
+                    "#{:02x}{:02x}{:02x}",
+                    step(i / 36),
+                    step((i / 6) % 6),
+                    step(i % 6)
+                )
+            }
+            _ => {
+                let v = 8 + (i - 232) * 10;
+                format!("#{v:02x}{v:02x}{v:02x}")
+            }
+        },
+    }
+}
+
+fn esc_into(out: &mut String, s: &str) {
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+/// 画面をHTMLにする。
+///
+/// 同じ見た目が続く間は1つのまとまりにまとめる。1マスずつ要素にすると
+/// 50行×180桁で9000要素になり、毎フレームの書き換えが重くなる
+pub fn screen_html(screen: &vt100::Screen) -> String {
+    const FG: &str = "#e8eef4";
+    const BG: &str = "transparent";
+    let (rows, cols) = screen.size();
+    let mut out = String::with_capacity(rows as usize * cols as usize * 2);
+    for r in 0..rows {
+        let mut open: Option<String> = None;
+        let mut run = String::new();
+        for c in 0..cols {
+            let Some(cell) = screen.cell(r, c) else { continue };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let (mut fg, mut bg) = (cell.fgcolor(), cell.bgcolor());
+            if cell.inverse() {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+            let mut style = String::new();
+            let fgc = color_css(fg, if cell.inverse() { BG } else { FG });
+            if fgc != FG {
+                style.push_str(&format!("color:{fgc};"));
+            }
+            let bgc = color_css(bg, if cell.inverse() { FG } else { BG });
+            if bgc != BG {
+                style.push_str(&format!("background:{bgc};"));
+            }
+            if cell.bold() {
+                style.push_str("font-weight:700;");
+            }
+            if cell.dim() {
+                style.push_str("opacity:.6;");
+            }
+            if cell.italic() {
+                style.push_str("font-style:italic;");
+            }
+            if cell.underline() {
+                style.push_str("text-decoration:underline;");
+            }
+            // 見た目が変わったところで区切る
+            if open.as_deref() != Some(style.as_str()) {
+                if let Some(prev) = open.take() {
+                    flush_run(&mut out, &prev, &run);
+                    run.clear();
+                }
+                open = Some(style);
+            }
+            let ch = cell.contents();
+            if ch.is_empty() {
+                run.push(' ');
+            } else {
+                esc_into(&mut run, ch);
+            }
+        }
+        if let Some(prev) = open.take() {
+            flush_run(&mut out, &prev, &run);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn flush_run(out: &mut String, style: &str, run: &str) {
+    if run.trim_end().is_empty() && style.is_empty() {
+        out.push_str(run);
+        return;
+    }
+    if style.is_empty() {
+        out.push_str(run);
+    } else {
+        out.push_str("<span style=\"");
+        out.push_str(style);
+        out.push_str("\">");
+        out.push_str(run);
+        out.push_str("</span>");
+    }
+}
+
 /// 訳語とビルド刻印を埋めて、配れる形にする
 pub fn page(token: &str) -> String {
     let dict = crate::i18n::dict_json();
@@ -686,5 +817,69 @@ mod tests {
         assert!(PAGE.contains("#ball"), "ボールの要素が無い");
         assert!(PAGE.contains("transition:left"), "動かない");
         assert!(!PAGE.contains("\u{25CF}"), "文字の●で描いている");
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::screen_html;
+
+    fn render(input: &str) -> String {
+        let mut p: vt100::Parser = vt100::Parser::new(3, 40, 0);
+        p.process(input.as_bytes());
+        screen_html(p.screen())
+    }
+
+    /// プログラムが出す色を、そのまま描くこと。
+    ///
+    /// ここまでは文字だけを送っていたので、ビルドの警告もgitの差分も
+    /// AIの強調も、全部同じ灰色に見えていた
+    #[test]
+    fn colours_reach_the_screen() {
+        let h = render("\x1b[31mred\x1b[0m plain");
+        assert!(h.contains("color:#ff6b6b"), "前景色が出ていない: {h}");
+        assert!(h.contains(">red<"), "色の中身が入っていない: {h}");
+        assert!(h.contains("plain"), "色なしの部分が消えている: {h}");
+
+        // 背景・太字・下線
+        assert!(render("\x1b[44mx").contains("background:#00aaff"), "背景色");
+        assert!(render("\x1b[1mx").contains("font-weight:700"), "太字");
+        assert!(render("\x1b[4mx").contains("text-decoration:underline"), "下線");
+
+        // 反転は前景と背景を入れ替える
+        let inv = render("\x1b[7mx");
+        assert!(inv.contains("background:") && inv.contains("color:"), "反転: {inv}");
+
+        // 256色の立方体と灰色の階段
+        assert!(render("\x1b[38;5;196mx").contains("color:#ff0000"), "立方体の赤");
+        assert!(render("\x1b[38;5;232mx").contains("color:#080808"), "灰色の下端");
+        // 24bit
+        assert!(render("\x1b[38;2;18;52;86mx").contains("color:#123456"), "24bit色");
+    }
+
+    /// 画面の文字がHTMLとして解釈されないこと。
+    ///
+    /// プログラムの出力に `<script>` が現れるのは、ごく普通にある
+    /// (HTMLを cat する、grep の結果、AIの回答)
+    #[test]
+    fn output_is_never_treated_as_markup() {
+        let h = render("<script>alert(1)</script> & <b>");
+        assert!(!h.contains("<script>"), "生のタグが残っている: {h}");
+        assert!(h.contains("&lt;script&gt;"), "エスケープされていない: {h}");
+        assert!(h.contains("&amp;"), "アンパサンドが素通り: {h}");
+    }
+
+    /// 同じ見た目は1つのまとまりにすること。
+    ///
+    /// 1マス1要素にすると 50行×180桁で9000要素になり、
+    /// 書き換えのたびに重くなる
+    #[test]
+    fn runs_of_the_same_look_are_merged() {
+        let h = render("\x1b[31maaaaaaaaaa");
+        assert_eq!(h.matches("<span").count(), 1, "文字ごとに分かれている: {h}");
+
+        // 見た目が変われば分かれる
+        let h = render("\x1b[31ma\x1b[32mb\x1b[31mc");
+        assert_eq!(h.matches("<span").count(), 3, "{h}");
     }
 }
