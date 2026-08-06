@@ -22,8 +22,10 @@ pub struct TabState {
     pub name: String,
     /// 自動化から指す名前
     pub id: Option<String>,
-    /// WAIT / BUSY / DONE / ASK / EXIT
+    /// WAIT / BUSY / DONE / ASK / EXIT。見た目の出し分けに使う
     pub state: String,
+    /// 人が読む状態名 (翻訳される)。表示はこちらを使う
+    pub state_label: String,
     /// 検出プロファイル名 (Codex CLI 等)。合っているか目で確かめられる
     pub profile: String,
     pub locked: bool,
@@ -89,6 +91,7 @@ impl TabState {
             name: t.title.clone(),
             id: t.id.clone(),
             state: t.state.label().to_string(),
+            state_label: t.state.display(),
             profile: t.profile_name().to_string(),
             locked: t.locked,
             depth: t.chain_depth,
@@ -120,19 +123,6 @@ impl BallState {
 }
 
 impl UiState {
-    /// 押せるタブ番号か
-    pub fn has_tab(&self, index: usize) -> bool {
-        index >= 1 && index <= self.tabs.len()
-    }
-
-    /// 連鎖が上限にどれだけ近いか (0.0..=1.0)。
-    /// 暴走対策が効いている様子を、そのまま出すためのもの
-    pub fn heat(&self) -> f32 {
-        if self.ball.max == 0 {
-            return 0.0;
-        }
-        (self.ball.depth as f32 / self.ball.max as f32).clamp(0.0, 1.0)
-    }
 }
 
 #[cfg(test)]
@@ -145,6 +135,7 @@ mod tests {
             name: name.into(),
             id: None,
             state: "WAIT".into(),
+            state_label: "WAIT".into(),
             profile: "GENERIC".into(),
             locked: false,
             depth: 0,
@@ -173,36 +164,7 @@ mod tests {
         }
     }
 
-    /// 押せる番号かどうかを、受け取る側が判断できること
-    #[test]
-    fn tab_numbers_are_checked_against_what_exists() {
-        let s = UiState {
-            tabs: vec![tab(1, "a"), tab(2, "b")],
-            ..Default::default()
-        };
-        assert!(!s.has_tab(0), "0 は INDEX であってタブではない");
-        assert!(s.has_tab(1));
-        assert!(s.has_tab(2));
-        assert!(!s.has_tab(3), "無いタブを押せることになっている");
-    }
 
-    /// 連鎖の熱が、上限との比で出ること。
-    /// 上限を超えても 1.0 で止まる (色が振り切れて壊れないように)
-    #[test]
-    fn the_heat_shows_how_close_the_chain_is_to_its_limit() {
-        let mut s = UiState::default();
-        assert_eq!(s.heat(), 0.0, "上限0で割らない");
-
-        s.ball.max = 10;
-        s.ball.depth = 0;
-        assert_eq!(s.heat(), 0.0);
-        s.ball.depth = 5;
-        assert_eq!(s.heat(), 0.5);
-        s.ball.depth = 10;
-        assert_eq!(s.heat(), 1.0);
-        s.ball.depth = 40;
-        assert_eq!(s.heat(), 1.0, "上限を超えても振り切れない");
-    }
 
     /// 同じ状態なら同じもの、と判定できること。
     ///

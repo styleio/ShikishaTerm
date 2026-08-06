@@ -252,7 +252,7 @@ function drawBoard() {
     rows.append(el("tr", {onclick:() => send({kind:"select", tab:t.index})},
       el("td", {}, String(t.index)),
       el("td", {}, t.name),
-      el("td", {}, el("span", {class:"dot " + t.state}), " " + t.state),
+      el("td", {}, el("span", {class:"dot " + t.state}), " " + (t.state_label || t.state)),
       el("td", {}, t.profile),
       el("td", {}, spark(t.activity))));
   }

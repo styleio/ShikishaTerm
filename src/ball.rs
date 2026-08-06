@@ -91,14 +91,6 @@ impl Ball {
         Phase::Held { at: self.holder }
     }
 
-    /// 上限に対する余裕。0.0 = まだ余裕、1.0 = 上限
-    pub fn heat(&self, max_chain: u32) -> f32 {
-        if max_chain == 0 {
-            return 0.0;
-        }
-        (self.depth as f32 / max_chain as f32).clamp(0.0, 1.0)
-    }
-
     /// タブが消えた/並び替わったときに、指しているタブが居なくなっていたら手放す
     pub fn clamp_to(&mut self, tab_count: usize) {
         if self.holder > tab_count || self.from > tab_count {
@@ -178,17 +170,6 @@ mod tests {
         assert_eq!(b.depth, 0);
     }
 
-    #[test]
-    fn heat_reaches_one_at_the_limit() {
-        let mut b = Ball::default();
-        b.throw(1, 2, 5, 0);
-        assert!((b.heat(10) - 0.5).abs() < 0.01);
-        b.throw(2, 1, 10, 0);
-        assert_eq!(b.heat(10), 1.0, "上限で振り切れる");
-        b.throw(1, 2, 99, 0);
-        assert_eq!(b.heat(10), 1.0, "上限を超えても1.0で頭打ち");
-        assert_eq!(b.heat(0), 0.0, "上限0でも壊れない");
-    }
 
     #[test]
     fn a_vanished_tab_drops_the_ball() {
