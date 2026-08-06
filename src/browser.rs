@@ -379,6 +379,14 @@ impl Browser {
     }
 }
 
+impl Drop for Browser {
+    /// 指揮者がいなくなった窓を残さない。
+    /// 閉じられなくても構わない (相手が先に死んでいるだけなので)
+    fn drop(&mut self) {
+        let _ = self.proxy.send_event(Cmd::Close);
+    }
+}
+
 /// 評価式を、結果がIPCで返る形に包む
 fn wrap_eval(id: u64, js: &str) -> String {
     format!(

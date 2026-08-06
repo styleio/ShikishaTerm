@@ -177,6 +177,9 @@ pub struct WorkspaceSpec {
     /// このワークスペース共通の自動化 (タブ指定が無い場合に使われる)
     #[serde(default)]
     pub automation: Option<String>,
+    /// 一緒に開くブラウザ。自動化からは id で指す
+    #[serde(default)]
+    pub browsers: Vec<BrowserConfig>,
     #[serde(default)]
     pub lua: Option<String>,
 }
@@ -193,6 +196,15 @@ pub struct WorkspaceFile {
     pub automation: Option<String>,
     #[serde(default)]
     pub lua: Option<String>,
+}
+
+/// 一緒に開くブラウザ1台
+#[derive(Debug, Clone, Deserialize)]
+pub struct BrowserConfig {
+    /// 自動化から指す名前 (例: "br")
+    pub id: String,
+    /// 最初に開くURL。http/https のみ
+    pub url: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -264,6 +276,8 @@ pub struct Workspace {
     pub tabs: Vec<FlatTab>,
     /// ワークスペース階層の自動化
     pub automation: Option<String>,
+    /// 一緒に開くブラウザ
+    pub browsers: Vec<BrowserConfig>,
 }
 
 impl TabConfig {
@@ -369,6 +383,7 @@ impl Config {
                     name: "DEFAULT".into(),
                     tabs,
                     automation: None,
+                    browsers: Vec::new(),
                 });
             }
             return (out, errors);
@@ -397,6 +412,7 @@ impl Config {
                 tabs,
                 // config側の指定を優先し、無ければ定義ファイル側を使う
                 automation: ws.automation.clone().or_else(|| ws.lua.clone()).or(file_lua),
+                browsers: ws.browsers.clone(),
             });
         }
         (out, errors)

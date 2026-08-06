@@ -280,6 +280,63 @@ person cannot read what they are about to send.
 
 ---
 
+### Driving a browser
+
+A browser can join the orchestra. Windows already carries the engine, so nothing is
+downloaded and nothing is installed.
+
+Declare one alongside the tabs of a workspace:
+
+```json
+{
+  "name": "LP review",
+  "browsers": [{ "id": "br", "url": "https://example.com/login" }],
+  "tabs": [{ "name": "Claude", "id": "ai", "command": "claude" }]
+}
+```
+
+Then drive it from automation:
+
+```lua
+-- Let a person log in. The bar appears across the bottom of the page.
+local why = shikisha.browser_wait("br", {
+  selector = "#dashboard",            -- reaching this ends the wait
+  ask      = "Please sign in",        -- so does pressing the button
+  timeout_ms = 300000,
+})
+shikisha.log("ended by: " .. why)     -- selector / button / timeout
+
+shikisha.browser_fill("br", "#title", answer)
+shikisha.browser_click("br", { xpath = '//button[text()="Save"]' })
+local html = shikisha.browser_html("br")
+```
+
+A selector is either `"#id"` (CSS) or `{ xpath = "..." }`. XPath earns its place on
+forms and admin pages, where "the cell beside the label that reads 名前" has no CSS
+spelling.
+
+Looking for an element answers with three states — `visible`, `off_screen`,
+`not_found` — because which one it is decides whether to doubt the selector or the
+waiting.
+
+**Whether a missing element stops the script is chosen per call.** The default raises;
+`{ on_missing = "continue" }` returns the state instead. A cookie banner that is
+sometimes absent is not a failure, and only the caller knows that.
+
+**The button is offered for the whole wait, even when a selector is given.** A
+condition that stops matching after a site redesign should cost a click, not a hang.
+And since the wait reports which of the three ended it, a selector that has quietly
+stopped working shows up as every wait ending on the button.
+
+**Values are never spliced into code.** Everything handed to `fill` goes to the page
+as data, so an answer full of quotes and angle brackets arrives intact and stays
+inert. There is deliberately no way to hand raw JavaScript to a page.
+
+Only `http` and `https` pages open. A single-line `<input>` cannot hold a newline —
+that is HTML, not this program — so multi-line values need a `textarea`.
+
+---
+
 ## 5. Safety mechanisms
 
 Several brakes keep automation from running away.

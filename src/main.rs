@@ -500,6 +500,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     });
     let mut engines: Vec<Option<HookEngine>> = (0..workspaces.len().max(1)).map(|_| None).collect();
     engines[0] = build_engine(cfg.as_ref(), workspaces.first(), &mut startup_errors, &caps);
+    if let Some(w) = workspaces.first() {
+        open_declared_browsers(w, &caps, &mut startup_errors);
+    }
     let mut engine = engines[0].take();
 
     // リモートUI (スマホ等から監視・指示する)。設定で有効にしたときだけ待ち受ける。
@@ -1694,6 +1697,18 @@ fn apply_ws_config(
 }
 
 /// ワークスペースのタブ群を起動する (初回アクティブ化時に呼ぶ)
+/// 設定で宣言されたブラウザを開く。
+///
+/// 1台開けなくても他は動かす。ブラウザが立たないことは、
+/// ワークスペース全体を止める理由にならない
+fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &mut Vec<String>) {
+    for b in &ws.browsers {
+        if let Err(e) = caps.browser_open(&b.id, &b.url) {
+            errors.push(format!("ブラウザ {}: {e:#}", b.id));
+        }
+    }
+}
+
 fn spawn_workspace(
     ws: &config::Workspace,
     rows: u16,
@@ -1766,6 +1781,7 @@ fn switch_workspace(
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {
         spawn_workspace(&workspaces[to], rows, cols, tabs, errors);
+        open_declared_browsers(&workspaces[to], caps, errors);
     }
     *engine = match engines[to].take() {
         Some(e) => Some(e),
