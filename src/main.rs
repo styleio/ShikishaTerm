@@ -380,7 +380,23 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     }
 
     let mut tabs: Vec<Tab> = Vec::new();
-    let mut ws_index = 0usize;
+    let remembered = config::load_last_workspace();
+    let mut ws_index = starting_workspace(
+        cfg.as_ref().and_then(|c| c.restore_workspace).unwrap_or(true),
+        remembered.as_deref(),
+        &workspaces.iter().map(|w| w.name.clone()).collect::<Vec<_>>(),
+    );
+    if let Some(w) = workspaces.get(ws_index) {
+        // どこから始まったかは、あとで「なぜこの画面なのか」を追う手がかりになる
+        append_hook_log(&format!(
+            "起動: ワークスペース「{}」({})",
+            w.name,
+            match remembered.as_deref() {
+                Some(r) if r == w.name => "前回の続き",
+                _ => "先頭",
+            }
+        ));
+    }
     if !cmd_args.is_empty() {
         tabs.push(Tab::spawn(
             title_of(&cmd_args),
@@ -1745,6 +1761,7 @@ fn switch_workspace(
     // Lua環境はワークスペース毎に保持する (共有変数が切替で失われない)
     engines[*ws_index] = engine.take();
     *ws_index = to;
+    config::save_last_workspace(&workspaces[to].name);
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {
         spawn_workspace(&workspaces[to], rows, cols, tabs, errors);
@@ -1898,6 +1915,19 @@ const MANUAL_GUARD_MS: u64 = 5000;
 ///
 /// 人が画面を触った直後は従わない。読んでいる最中に飛ばされるのが
 /// いちばん困るので、手を出したらしばらく黙る
+/// どのワークスペースから始めるか。
+///
+/// 覚えるのは番号ではなく名前。番号は並べ替えや追加でずれるので、
+/// 「昨日の続き」のつもりが別のものになる。
+/// 見つからなければ先頭に落とす (消した・改名した場合)
+fn starting_workspace(enabled: bool, last: Option<&str>, names: &[String]) -> usize {
+    if !enabled {
+        return 0;
+    }
+    last.and_then(|want| names.iter().position(|n| n == want))
+        .unwrap_or(0)
+}
+
 fn follow_target(
     enabled: bool,
     holder: usize,
@@ -3781,6 +3811,45 @@ mod tests {
     }
 
     /// 初回起動でINDEXに案内が出ること (何をすればいいか分からないまま終わらせない)
+    /// 起動したら、前に開いていたワークスペースから始めること。
+    ///
+    /// 毎回先頭から始まると、試したいものが2つ目にあるだけで、
+    /// 起動のたびに切り替える手間が要る。デバッグ中はそれを何十回も繰り返す
+    #[test]
+    fn it_opens_where_you_left_off() {
+        let names: Vec<String> = ["指揮者", "たまごカート編集部", "検証"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        assert_eq!(
+            starting_workspace(true, Some("たまごカート編集部"), &names),
+            1,
+            "前に開いていたものに戻らない"
+        );
+
+        // 番号ではなく名前で覚えるので、並べ替えても追いかける
+        let reordered: Vec<String> = ["検証", "たまごカート編集部", "指揮者"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            starting_workspace(true, Some("たまごカート編集部"), &reordered),
+            1
+        );
+        assert_eq!(
+            starting_workspace(true, Some("指揮者"), &reordered),
+            2,
+            "並べ替えで別のワークスペースを開いている"
+        );
+
+        // 消した・改名した・記憶が無い・切ってある → 先頭
+        assert_eq!(starting_workspace(true, Some("消えた"), &names), 0);
+        assert_eq!(starting_workspace(true, None, &names), 0);
+        assert_eq!(starting_workspace(false, Some("検証"), &names), 0, "切ってある");
+        assert_eq!(starting_workspace(true, Some("指揮者"), &[]), 0, "空でも落ちない");
+    }
+
     /// 名前は画面に入るときだけ出すこと。
     ///
     /// TUI はターミナルの中で動くので、ウィンドウのタイトルは

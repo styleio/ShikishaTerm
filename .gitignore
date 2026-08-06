@@ -17,3 +17,5 @@ run/
 
 
 _material
+# 最後に開いていたワークスペース (利用者ごとの状態)
+.last-workspace

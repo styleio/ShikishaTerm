@@ -1313,6 +1313,8 @@ function globalPane() {
         el("span", {class:"hint"}, T["settings.done_confirm.hint"])),
     row(T["settings.follow"], checkDefaultOn(current, "follow_ball", T["settings.follow.label"]),
         el("span", {class:"hint"}, T["settings.follow.hint"])),
+    row(T["settings.restore_ws"], checkDefaultOn(current, "restore_workspace", T["settings.restore_ws.label"]),
+        el("span", {class:"hint"}, T["settings.restore_ws.hint"])),
     row(T["settings.ai_engine"], aiSelect(),
         el("span", {class:"hint", id:"aihint"}, ""))));
   box.append(remoteCard());

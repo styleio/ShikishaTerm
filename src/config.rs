@@ -31,6 +31,8 @@ pub struct Config {
     pub max_chain: Option<u32>,
     /// ボールが渡った先へ自動で画面を切り替えるか (既定: する)
     pub follow_ball: Option<bool>,
+    /// 最後に開いていたワークスペースから始めるか (既定: する)
+    pub restore_workspace: Option<bool>,
     /// 応答が終わったと確定するまでの待ち時間 (ms)。
     /// プロファイル側で指定があればそちらが優先される
     pub done_confirm_ms: Option<u64>,
@@ -416,6 +418,29 @@ fn config_candidates() -> Vec<std::path::PathBuf> {
 
 /// Web GUIの編集対象となる設定ファイルのパス。
 /// 既存ファイルがあればそれを、無ければexe隣に新規作成する想定のパスを返す
+/// 最後に開いていたワークスペース名の置き場。
+///
+/// config.json には書き戻さない。利用者が編集している最中に割り込むし、
+/// 変更監視が自分の書き込みに反応して読み直しが走る
+fn last_workspace_path() -> std::path::PathBuf {
+    let mut p = config_file_path();
+    p.set_file_name(".last-workspace");
+    p
+}
+
+/// 最後に開いていたワークスペース名
+pub fn load_last_workspace() -> Option<String> {
+    let s = std::fs::read_to_string(last_workspace_path()).ok()?;
+    let s = s.trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// 開いているワークスペース名を覚える。失敗しても黙って諦める
+/// (覚えられないことは、動かない理由にはならない)
+pub fn save_last_workspace(name: &str) {
+    let _ = crate::crypto::write_atomic(&last_workspace_path(), name);
+}
+
 pub fn config_file_path() -> std::path::PathBuf {
     let candidates = config_candidates();
     candidates
