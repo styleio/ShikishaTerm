@@ -262,6 +262,13 @@ keypresses, so nothing is sent and the person can add their own instructions bef
 pressing Enter. This program does not count it as a submission either, so `on_done`
 will not fire on that tab.
 
+**A draft does not end the chain — it puts a person in it.** The ball moves to that
+tab and waits there, carrying its depth, and the view follows so you arrive where you
+are needed. Typing there does not break the chain the way typing into any other tab
+does; you are taking your turn, not taking over. When you send, the count continues
+from where it was, and the chain limit still applies — a loop with a person in it is
+still a loop.
+
 **It refuses to draft into a shell**, and says so in `logs/hooks.log`. A terminal
 program declares whether it understands pasted text; a shell does not, and the same
 bytes there would run as a command. Measured: `cmd.exe` and `powershell.exe` do not

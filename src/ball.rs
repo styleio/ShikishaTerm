@@ -26,6 +26,11 @@ pub struct Ball {
     pub depth: u32,
     /// 投げられた時刻 (相対ms)。アニメの進行に使う
     pub thrown_ms: u64,
+    /// 下書きを置いて、人が書き足すのを待っている状態。
+    ///
+    /// 連鎖が終わったわけではない。人も輪の一部で、書き足せばまた回り出す。
+    /// 深さは引き継いだまま、次に動くのが人だということだけを表す
+    pub awaiting_human: bool,
 }
 
 /// 表示上の状態。main.rs はこれを見て描き分ける
@@ -44,10 +49,23 @@ pub enum Phase {
 impl Ball {
     /// 自動送信が起きた: `from` から `to` へ、深さ `depth` で渡った
     pub fn throw(&mut self, from: usize, to: usize, depth: u32, now_ms: u64) {
+        self.awaiting_human = false;
         self.from = from;
         self.holder = to;
         self.depth = depth;
         self.thrown_ms = now_ms;
+    }
+
+    /// 下書きを置いた: 仕事は to にあり、次に動くのは人。
+    ///
+    /// 深さは自動送信と同じに数える。人が書き足して流せば連鎖は続くので、
+    /// ここで0に戻すと、そこから先が何連鎖目なのか分からなくなる
+    pub fn draft(&mut self, from: usize, to: usize, depth: u32, now_ms: u64) {
+        self.from = from;
+        self.holder = to;
+        self.depth = depth;
+        self.thrown_ms = now_ms;
+        self.awaiting_human = true;
     }
 
     /// 人間が手で入力した: 連鎖は切れ、ボールは手元に戻る
@@ -91,6 +109,35 @@ impl Ball {
 
 #[cfg(test)]
 mod tests {
+
+    /// 下書きを置いたら、ボールはそこで人を待つこと。
+    ///
+    /// 人も輪の一部で、書き足せばまた回り出す。だから深さは引き継ぐ。
+    /// 0に戻すと、そこから先が何連鎖目なのか分からなくなり、
+    /// 暴走対策の数え上げも人のところで途切れてしまう
+    #[test]
+    fn a_draft_leaves_the_ball_waiting_for_a_person() {
+        let mut b = Ball::default();
+        b.throw(0, 1, 1, 0);
+        assert_eq!(b.holder, 1);
+        assert!(!b.awaiting_human, "自動送信は人待ちではない");
+
+        b.draft(1, 2, 2, 100);
+        assert_eq!(b.holder, 2, "仕事は渡した先にある");
+        assert_eq!(b.from, 1, "どこから来たかは残る");
+        assert_eq!(b.depth, 2, "人も輪の一部。連鎖はここで途切れない");
+        assert!(b.awaiting_human, "人待ちになっていない");
+
+        // 次に自動送信が起きたら人待ちは解ける
+        b.throw(2, 3, 1, 200);
+        assert!(!b.awaiting_human, "自動送信で人待ちが解けていない");
+
+        // 人が手で入力したら、ボールは手元へ戻る
+        b.draft(1, 2, 3, 300);
+        b.reset();
+        assert_eq!(b.holder, 0);
+        assert!(!b.awaiting_human, "リセットで人待ちが残っている");
+    }
     use super::*;
 
     #[test]

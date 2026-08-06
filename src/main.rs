@@ -919,6 +919,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             ) {
                 followed = to;
                 if active != to {
+                    // 「渡ったのに画面が動かない」を追えるようにしておく。
+                    // 一度これを整理で消して、まさにその調査で困った
+                    append_hook_log(&format!("追従 tab{active} -> tab{to}"));
                     active = to;
                 }
             }
@@ -926,7 +929,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 
         // 人間が入力すると chain_depth が0に戻る。ボールもそれに追従させる
         // (リセット箇所を増やさずに済むよう、持ち主の側から確認する)
+        // 人待ちのボールはここで消さない。連鎖は終わっていても
+        // 仕事は holder にある。人が触ったら touched 側で消える
         if ball.holder > 0
+            && !ball.awaiting_human
             && !tabs
                 .get(ball.holder - 1)
                 .map(|t| t.chain_depth > 0)
@@ -1289,9 +1295,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
                             // ソフトロック: 閲覧・コピーはできるが入力は無視
                             locked_hit = true;
                         } else if let Some(bytes) = key_to_bytes(&key) {
-                            // 手動入力: チェーン(透明のボール)をリセットし、
-                            // 直後の自動送信をガードする
-                            t.chain_depth = 0;
+                            // 手動入力は連鎖を切る。ただし下書きを受け取った
+                            // タブへの入力だけは切らない。あれは乗っ取りではなく
+                            // 参加で、書き足して流すところまでが一連の流れ
+                            if ball.awaiting_human && ball.holder == active {
+                                ball.awaiting_human = false;
+                            } else {
+                                t.chain_depth = 0;
+                            }
                             t.last_manual_ms = Some(now_ms);
                             view_touched_ms = now_ms;
                             t.write_bytes(&bytes)?;
@@ -1994,7 +2005,11 @@ fn exec_commands(
                     let _ = t.write_bytes(keys.as_bytes());
                 }
             }
-            Command::DraftPrompt { target, text } => {
+            Command::DraftPrompt {
+                target,
+                text,
+                origin,
+            } => {
                 if !auto_enabled {
                     continue;
                 }
@@ -2002,7 +2017,19 @@ fn exec_commands(
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
                     continue;
                 };
-                if let Some(t) = tabs.get(idx.wrapping_sub(1)) {
+                let depth = tabs
+                    .get(origin.wrapping_sub(1))
+                    .map(|t| t.chain_depth)
+                    .unwrap_or(0)
+                    + 1;
+                if depth > max_chain {
+                    *flash = Some(i18n::t("msg.chain_limit"));
+                    append_hook_log(&format!(
+                        "chain limit ({max_chain}): 下書き tab{origin} -> tab{idx}"
+                    ));
+                    continue;
+                }
+                if let Some(t) = tabs.get_mut(idx.wrapping_sub(1)) {
                     if touched_recently(t, now_ms) {
                         continue;
                     }
@@ -2021,8 +2048,12 @@ fn exec_commands(
                     bytes.extend_from_slice(text.as_bytes());
                     bytes.extend_from_slice(b"\x1b[201~");
                     let _ = t.write_bytes(&bytes);
+                    // 人も輪の一部。書き足して流せば連鎖は続くので、
+                    // 深さは自動送信と同じに数える
+                    t.chain_depth = depth;
+                    ball.draft(origin, idx, depth, now_ms);
                     append_hook_log(&format!(
-                        "下書き tab{idx}: {}",
+                        "下書き tab{origin} -> tab{idx} (depth {depth}): {}",
                         log_excerpt(&text, 60)
                     ));
                 }

@@ -71,7 +71,11 @@ pub enum Command {
     /// 生のキー列を送信 (on_questionの自動応答等。エンコードせずそのまま)
     SendKeys { target: TabRef, keys: String },
     /// 送らずに入力欄へ置くだけ (人が書き足して自分で送る)
-    DraftPrompt { target: TabRef, text: String },
+    DraftPrompt {
+        target: TabRef,
+        text: String,
+        origin: usize,
+    },
     /// 登録済み通知先への通知 (Phase 4-3でSlack/Telegram実装、現状はログ+表示)
     Notify { dest: String, text: String },
     /// タブの再起動 (SSH切断・CLI自己更新からの復帰)
@@ -236,6 +240,7 @@ impl HookEngine {
         }
         {
             let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
             shikisha
                 .set(
                     "draft_to_tab",
@@ -243,6 +248,7 @@ impl HookEngine {
                         c.borrow_mut().push(Command::DraftPrompt {
                             target: tab_ref_of(&target)?,
                             text,
+                            origin: o.get(),
                         });
                         Ok(())
                     })
