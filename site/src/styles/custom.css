@@ -1,13 +1,14 @@
-/* 端末アプリなので、アクセントは画面のネオングリーンに合わせる */
+/* アクセントはロゴの #00AAFF に合わせる。
+   アプリの枠と見出しも同じ色なので、サイトから画面まで地続きになる */
 :root {
-  --sl-color-accent-low: #0d2818;
-  --sl-color-accent: #1f9d55;
-  --sl-color-accent-high: #7bf1a8;
+  --sl-color-accent-low: #06283d;
+  --sl-color-accent: #0090dd;
+  --sl-color-accent-high: #a9dfff;
 }
 :root[data-theme="light"] {
-  --sl-color-accent-low: #d7f5e3;
-  --sl-color-accent: #12805f;
-  --sl-color-accent-high: #0a3d2c;
+  --sl-color-accent-low: #d6eeff;
+  --sl-color-accent: #0071b8;
+  --sl-color-accent-high: #06344f;
 }
 
 /* トップの hero は文章量が多いので、行間を少しゆるめる */

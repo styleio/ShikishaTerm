@@ -53,10 +53,19 @@ const TAB_BAR_MAX: u16 = 40;
 const STATUS_BAR_HEIGHT: u16 = 1;
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-const NEON_GREEN: Color = Color::Rgb(57, 255, 20);
-const NEON_YELLOW: Color = Color::Rgb(255, 234, 0);
+// 黒地に彩度100%の純色を並べると、道具ではなく「侵入されている画面」に見える。
+// 彩度を落として少し温度を持たせると、同じ配置のまま印象が変わる。
+//
+// 青だけは動かさない。ロゴの #00AAFF と同じ値で、枠も見出しもワードマークも
+// ロゴと地続きになる
+/// 動いているもの (実行中のタブ、選択中の行)
+const NEON_GREEN: Color = Color::Rgb(74, 222, 128);
+/// 目を向けてほしいもの (見出し、注意書き)
+const NEON_YELLOW: Color = Color::Rgb(255, 200, 87);
+/// 枠と見出し。ロゴと同じ青
 const NEON_BLUE: Color = Color::Rgb(0, 170, 255);
-const NEON_RED: Color = Color::Rgb(255, 70, 70);
+/// 止まっている・失敗している
+const NEON_RED: Color = Color::Rgb(255, 107, 107);
 
 /// 異常終了の理由を残す。TUIは画面を占有するため、
 /// パニックメッセージが見えないまま消えてしまうのを防ぐ

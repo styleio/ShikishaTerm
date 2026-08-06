@@ -846,7 +846,7 @@ const PAGE: &str = r##"<!doctype html>
 <style>
  :root {
    --bg:#0f1115; --panel:#161a20; --panel2:#1b2027; --line:#262d37;
-   --text:#e6e9ef; --muted:#8b95a5; --accent:#35c46a; --danger:#e5534b;
+   --text:#e6e9ef; --muted:#8b95a5; --accent:#00aaff; --danger:#ff6b6b;
    color-scheme: dark;
  }
  * { box-sizing:border-box; }
@@ -864,14 +864,14 @@ const PAGE: &str = r##"<!doctype html>
  /* 同じ文言が続いても押したことが分かるよう、毎回アニメーションを流し直す */
  #msg.flash { animation:msgflash 1.1s ease-out; }
  @keyframes msgflash {
-   0%   { background:var(--accent); color:#08130c; }
-   60%  { background:var(--accent); color:#08130c; }
+   0%   { background:var(--accent); color:#04121c; }
+   60%  { background:var(--accent); color:#04121c; }
    100% { background:transparent; color:var(--muted); }
  }
  button.primary:disabled { opacity:.55; cursor:default; }
  /* 保存の結果はヘッダの小さな文字だと視線が行かないので、画面下に出す */
  #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(16px);
-   padding:11px 20px; border-radius:9px; background:var(--accent); color:#08130c;
+   padding:11px 20px; border-radius:9px; background:var(--accent); color:#04121c;
    font-weight:600; font-size:13.5px; box-shadow:0 10px 30px rgba(0,0,0,.5);
    opacity:0; pointer-events:none; z-index:50;
    transition:opacity .18s ease, transform .18s ease; }
@@ -920,7 +920,7 @@ const PAGE: &str = r##"<!doctype html>
  button { font-family:inherit; font-size:13px; border-radius:7px; cursor:pointer; padding:7px 14px;
    border:1px solid var(--line); background:var(--panel2); color:var(--text); }
  button:hover { border-color:#39424f; }
- button.primary { background:var(--accent); border-color:var(--accent); color:#08130c; font-weight:600; }
+ button.primary { background:var(--accent); border-color:var(--accent); color:#04121c; font-weight:600; }
  button.quiet { background:none; border-color:transparent; color:var(--muted); padding:6px 8px; }
  button.quiet:hover { color:var(--text); background:var(--panel2); }
  button.danger { color:var(--danger); background:none; border-color:transparent; }
@@ -1867,17 +1867,17 @@ const HELP_PAGE: &str = r##"<!doctype html>
 <html lang="{{__lang__}}"><head><meta charset="utf-8"><title>{{help.page.title}}</title>
 <style>
  :root { color-scheme: dark; }
- body { background:#05080a; color:#c8f7c0; font-family:"Consolas","Meiryo",monospace;
+ body { background:#05080c; color:#d3e6f5; font-family:"Consolas","Meiryo",monospace;
         margin:0; padding:24px 32px; line-height:1.7; }
- h1,h2,h3 { color:#39ff14; border-bottom:1px solid #1f4d2a; padding-bottom:6px; }
+ h1,h2,h3 { color:#4ec9ff; border-bottom:1px solid #1d3a4d; padding-bottom:6px; }
  h1 { font-size:20px; } h2 { font-size:17px; margin-top:32px; } h3 { font-size:15px; }
- code { background:#0a1014; color:#ffea00; padding:1px 5px; border-radius:3px; }
- pre { background:#0a1014; border:1px solid #1f4d2a; padding:12px; overflow:auto; }
- pre code { color:#39ff14; background:none; padding:0; }
+ code { background:#0a1014; color:#ffc857; padding:1px 5px; border-radius:3px; }
+ pre { background:#0a1014; border:1px solid #1d3a4d; padding:12px; overflow:auto; }
+ pre code { color:#4ec9ff; background:none; padding:0; }
  table { border-collapse:collapse; margin:12px 0; }
- th,td { border:1px solid #1f4d2a; padding:5px 10px; text-align:left; }
+ th,td { border:1px solid #1d3a4d; padding:5px 10px; text-align:left; }
  th { color:#00aaff; }
- hr { border:0; border-top:1px solid #1f4d2a; margin:28px 0; }
+ hr { border:0; border-top:1px solid #1d3a4d; margin:28px 0; }
  a { color:#00aaff; }
 </style></head><body><div id="doc"></div>
 <script>

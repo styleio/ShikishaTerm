@@ -220,7 +220,7 @@ const PAGE: &str = r##"<!doctype html>
 <title>{{app.title}}</title>
 <style>
  :root { --bg:#0f1115; --panel:#161a20; --panel2:#1b2027; --line:#262d37;
-   --text:#e6e9ef; --muted:#8b95a5; --accent:#35c46a; --warn:#e3b341; --danger:#e5534b;
+   --text:#e6e9ef; --muted:#8b95a5; --accent:#00aaff; --warn:#ffc857; --danger:#ff6b6b;
    color-scheme: dark; }
  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
  body { margin:0; background:var(--bg); color:var(--text); font-size:15px; line-height:1.6;
@@ -244,7 +244,7 @@ const PAGE: &str = r##"<!doctype html>
  .tab.sel { border-color:var(--accent); }
  .dot { width:10px; height:10px; border-radius:50%; flex:none; }
  .busy { background:var(--warn); } .done { background:var(--accent); }
- .quest { background:#4aa3ff; } .wait { background:#4aa3ff; opacity:.5; }
+ .quest { background:#4ec9ff; } .wait { background:#4ec9ff; opacity:.5; }
  .exit { background:var(--danger); }
  .tab .st { color:var(--muted); font-size:12.5px; margin-left:auto; }
  .name { font-weight:600; }
@@ -264,7 +264,7 @@ const PAGE: &str = r##"<!doctype html>
  .btns { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
  button { font-family:inherit; font-size:15px; border-radius:10px; padding:11px 16px;
    border:1px solid var(--line); background:var(--panel2); color:var(--text); }
- button.primary { background:var(--accent); border-color:var(--accent); color:#08130c; font-weight:700; }
+ button.primary { background:var(--accent); border-color:var(--accent); color:#04121c; font-weight:700; }
  button.stop { color:var(--danger); }
  .quick button { padding:9px 14px; }
  .hint { color:var(--muted); font-size:12.5px; }
