@@ -121,7 +121,14 @@ impl TabState {
 }
 
 impl BallState {
-    pub fn of(b: &crate::ball::Ball, max: u32, now_ms: u64) -> Self {
+    ///  はセッションの番号を画面の番号に直す。
+    /// ボールはセッションの番号で動くが、見えている並びは設定の順
+    pub fn of(
+        b: &crate::ball::Ball,
+        max: u32,
+        now_ms: u64,
+        pane: impl Fn(usize) -> usize,
+    ) -> Self {
         use crate::ball::Phase;
         let (phase, progress) = match b.phase(now_ms) {
             Phase::Idle => ("idle", 0.0),
@@ -130,8 +137,8 @@ impl BallState {
             Phase::Held { .. } => ("held", 1.0),
         };
         Self {
-            holder: b.holder,
-            from: b.from,
+            holder: if b.holder == 0 { 0 } else { pane(b.holder) },
+            from: if b.from == 0 { 0 } else { pane(b.from) },
             depth: b.depth,
             max,
             phase: phase.into(),

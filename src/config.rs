@@ -210,7 +210,7 @@ pub struct BrowserConfig {
     pub url: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct TabConfig {
     /// タブ名 (省略時はコマンド名から生成)
     pub name: Option<String>,
@@ -260,6 +260,13 @@ pub struct TabConfig {
 pub enum CommandSpec {
     Line(String),
     Argv(Vec<String>),
+}
+
+impl Default for CommandSpec {
+    /// 何も書かれていない状態。argv は空になる
+    fn default() -> Self {
+        CommandSpec::Argv(Vec::new())
+    }
 }
 
 impl CommandSpec {

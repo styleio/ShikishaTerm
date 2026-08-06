@@ -35,8 +35,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
-    EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
-    MouseEvent, MouseEventKind,
+    EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
 
@@ -122,17 +121,6 @@ fn pty_dims(size: Size, tab_w: u16) -> (u16, u16) {
     (rows, cols)
 }
 
-/// ターミナルペインの内側 (枠線の内側) の矩形。pty_dimsと整合させること
-fn pane_inner(size: Size, tab_w: u16) -> Rect {
-    let (rows, cols) = pty_dims(size, tab_w);
-    Rect {
-        x: tab_w + 1,
-        y: 1,
-        width: cols,
-        height: rows,
-    }
-}
-
 /// タブ名に合わせたタブバー幅の自動算出。
 /// "[x] 12. タブ名 🔒" が収まる幅 (全角考慮) を求め、範囲内に収める
 fn auto_tab_width(tabs: &[Tab]) -> u16 {
@@ -145,10 +133,6 @@ fn auto_tab_width(tabs: &[Tab]) -> u16 {
         .max()
         .unwrap_or(TAB_BAR_MIN);
     longest.clamp(TAB_BAR_MIN, TAB_BAR_MAX)
-}
-
-fn in_rect(rect: Rect, col: u16, row: u16) -> bool {
-    col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
 
@@ -267,7 +251,7 @@ impl WinSurface {
         std::mem::take(&mut self.presses)
     }
 
-    fn take_events(&mut self, tabs: &[Tab], active: usize) {
+    fn take_events(&mut self, active_tab: Option<&Tab>) {
         use crate::browser::Ev;
         for ev in self.win.drain() {
             match ev {
@@ -290,7 +274,7 @@ impl WinSurface {
                     }
                 }
                 Ev::Paste => {
-                    if let Some(t) = tabs.get(active.wrapping_sub(1)) {
+                    if let Some(t) = active_tab {
                         let _ = paste_clipboard(t);
                     }
                 }
@@ -466,20 +450,25 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         auto_enabled: ui.auto.unwrap_or(true),
         remote_on: ui.remote_on,
         first_run: ui.first_run,
-        tabs: tabs
+        // 設定に書いた順のまま並べる。
+        // セッションとブラウザを分けて並べると、1番目に書いたブラウザが
+        // 後ろに回る
+        tabs: ui
+            .panes
             .iter()
             .enumerate()
-            .map(|(i, t)| crate::uistate::TabState::of(i + 1, t))
-            // 置いてあるブラウザは、セッションの続きの番号で並ぶ。
-            // 別枠にすると「タブの一部」と言えなくなる
-            .chain(
-                ui.browsers
-                    .iter()
-                    .enumerate()
-                    .map(|(i, name)| crate::uistate::TabState::browser(tabs.len() + i + 1, name)),
-            )
+            .filter_map(|(i, p)| match p {
+                Pane::Session(s) => tabs.get(*s).map(|t| crate::uistate::TabState::of(i + 1, t)),
+                Pane::Browser(name) => Some(crate::uistate::TabState::browser(i + 1, name)),
+            })
             .collect(),
-        ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
+        // ボールはセッションの番号で動く。見せるのは画面の番号
+        ball: crate::uistate::BallState::of(
+            &ui.ball,
+            ui.max_chain,
+            ui.now_ms,
+            |s| pane_at(&ui.panes, s),
+        ),
         flash: flash.map(str::to_string),
         help_open: ui.help_open,
         ws_open: ui.ws_open,
@@ -495,8 +484,8 @@ impl WinSurface {
 
     /// 次の操作を待つ。窓からの意図は、ループが既に知っている
     /// キー操作に直して渡してある
-    fn poll(&mut self, timeout: Duration, tabs: &[Tab], active: usize) -> Result<Option<Event>> {
-        self.take_events(tabs, active);
+    fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> Result<Option<Event>> {
+        self.take_events(active_tab);
         if let Some(e) = self.pending.pop_front() {
             return Ok(Some(e));
         }
@@ -542,7 +531,7 @@ impl WinSurface {
                     w.last = Some(state);
                 }
                 // ターミナルの中身は、見ているタブのぶんだけ送る
-                if let Some(t) = tabs.get(ui.active.wrapping_sub(1)) {
+                if let Some(t) = session_at(&ui.panes, ui.active).and_then(|i| tabs.get(i)) {
                     let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
                     let s = p.screen();
                     let html = crate::shell::screen_html(s);
@@ -773,12 +762,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut help_open = false;
     let mut qr_open = false;
     // タブバー境界線のドラッグ中フラグ (マウスで幅を調整できる)
-    let mut dragging_divider = false;
     // 設定Web GUI (INDEXの [e] で起動、アプリ終了時に停止)
     let mut web: Option<webui::WebUi> = None;
     let config_file = config::config_file_path();
 
     loop {
+        // 画面に並ぶもの。設定に書いた順。
+        // 押せる番号の上限は、セッションの数だけでは足りない
+        let hosted = caps.hosted_names();
+        let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
+        let layout = panes_of(workspaces.get(ws_index), &titles, &hosted);
+        let panes = layout.len();
         // 設定が保存されたら読み直して反映する (アプリの再起動は不要)
         if watcher.changed() {
             if let Some(newcfg) = config::load() {
@@ -1035,7 +1029,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // 作り直すと「状態を組み立てる場所」が2つになる
                     ui: last_ui_state.clone(),
                     screen_html: tabs
-                        .get(active.wrapping_sub(1))
+                        .get(session_at(&layout, active).unwrap_or(usize::MAX))
                         .map(|t| {
                             let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
                             shell::screen_html(p.screen())
@@ -1197,11 +1191,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         ball.clamp_to(tabs.len());
 
-        // 窓の中に置いてあるブラウザ。セッションの続きの番号でタブになる。
-        // 押せる番号の上限は、セッションだけでは足りない
-        let hosted = caps.hosted_names();
-        let panes = tabs.len() + hosted.len();
-
         let ui = Ui {
             first_run,
             active,
@@ -1215,7 +1204,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             ball,
             max_chain,
             now_ms: start.elapsed().as_millis() as u64,
-            browsers: hosted.clone(),
+            panes: layout.clone(),
         };
         last_ui_state = Some(ui_state_of(&tabs, &ui, flash.as_deref()));
         surface.draw(&tabs, &ui, flash.as_deref())?;
@@ -1223,19 +1212,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
         caps.set_area(surface.area);
         // 選ばれている1枚だけを、ターミナルの中身の位置に置く。
         // 所有関係で最小化と重なり順はOSが見てくれるが、位置だけは追う必要がある
-        caps.show_only(
-            active
-                .checked_sub(tabs.len() + 1)
-                .and_then(|i| hosted.get(i))
-                .map(String::as_str),
-        );
+        caps.show_only(match layout.get(active.wrapping_sub(1)) {
+            Some(Pane::Browser(name)) => Some(name.as_str()),
+            _ => None,
+        });
         // 帯のボタンが押されたことを預ける。
         // 窓の報告を受けられるのは本体だけなので、ここを通す
         for name in surface.take_presses() {
             caps.note_press(&name);
         }
 
-        let Some(ev) = surface.poll(Duration::from_millis(16), &tabs, active)? else {
+        let Some(ev) = surface.poll(
+            Duration::from_millis(16),
+            session_at(&layout, active).and_then(|i| tabs.get(i)),
+        )? else {
             continue;
         };
 
@@ -1301,16 +1291,18 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         // Ctrl+B b で子プロセスに素のCtrl+Bを送る
                         KeyCode::Char('b') => {
-                            if let Some(t) = session_mut(&mut tabs, active) {
+                            if let Some(t) = session_mut(&mut tabs, &layout, active) {
                                 t.write_bytes(&[0x02])?;
                             }
                         }
                         // Ctrl+B r このタブを再起動 (終了・切断からの復帰)
                         KeyCode::Char('r') => {
                             if let Some(eng) = engine.as_mut() {
-                                eng.cancel_tab(active);
+                                if let Some(s) = session_at(&layout, active) {
+                                    eng.cancel_tab(s + 1);
+                                }
                             }
-                            if let Some(t) = session_mut(&mut tabs, active) {
+                            if let Some(t) = session_mut(&mut tabs, &layout, active) {
                                 flash = Some(match t.restart(rows, cols) {
                                     Ok(()) => i18n::tp("msg.restarted", &[("name", &t.title)]),
                                     Err(e) => i18n::tp("msg.restart_failed", &[("error", &e.to_string())]),
@@ -1319,7 +1311,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         // Ctrl+B l 入力ロック切替 / w ワークスペース一覧 / ? ヘルプ
                         KeyCode::Char('l') => {
-                            if let Some(t) = session_mut(&mut tabs, active) {
+                            if let Some(t) = session_mut(&mut tabs, &layout, active) {
                                 t.locked = !t.locked;
                                 flash = Some(i18n::t(if t.locked {
                                     "msg.lock_on"
@@ -1377,7 +1369,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         // Ctrl+B c で最新キャプチャ応答をクリップボードへ
                         KeyCode::Char('c') => {
-                            if let Some(t) = session_mut(&mut tabs, active) {
+                            if let Some(t) = session_mut(&mut tabs, &layout, active) {
                                 flash = Some(match &t.last_response {
                                     Some(r) if !r.trim().is_empty() => copy_to_clipboard(r),
                                     _ => i18n::t("msg.no_response"),
@@ -1387,11 +1379,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // Ctrl+B [ でコピーモード (tmuxのコピーモード風)
                         KeyCode::Char('[') => {
                             let rows = pty_dims(surface.size()?, tab_w).0;
-                            if let Some(t) = session_mut(&mut tabs, active) {
+                            if let Some(t) = session_mut(&mut tabs, &layout, active) {
                                 t.copy = Some(CopyState {
                                     cursor_row: rows.saturating_sub(1),
                                     anchor: None,
-                                    dragged: false,
                                 });
                             }
                         }
@@ -1479,13 +1470,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     Ok(()) => {
                                         // 開いたら、そのタブへ移る。
                                         // 出したのに見えていない状態を作らない
-                                        if let Some(i) = caps
-                                            .hosted_names()
-                                            .iter()
-                                            .position(|x| x == SETTINGS_TAB)
-                                        {
-                                            active = tabs.len() + 1 + i;
-                                        }
+                                        // 並びは次の描画で組み直される。
+                                        // ここでは今の並びの後ろに付く分を指す
+                                        active = layout.len() + 1;
                                         i18n::t("msg.settings_here")
                                     }
                                     Err(e) => i18n::tp(
@@ -1503,7 +1490,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     let size = surface.size()?;
                     let now_ms = start.elapsed().as_millis() as u64;
                     let mut locked_hit = false;
-                    if let Some(t) = session_mut(&mut tabs, active) {
+                    if let Some(t) = session_mut(&mut tabs, &layout, active) {
                         if t.copy.is_some() {
                             handle_copy_key(t, &key, size, tab_w, &mut flash)?;
                         } else if t.locked {
@@ -1532,51 +1519,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             Event::Paste(text) => {
                 let now_ms = start.elapsed().as_millis() as u64;
-                if let Some(t) = session_mut(&mut tabs, active) {
+                if let Some(t) = session_mut(&mut tabs, &layout, active) {
                     if !t.locked {
                         t.chain_depth = 0;
                         t.last_manual_ms = Some(now_ms);
                         t.write_bytes(text.as_bytes())?;
                     }
                 }
-            }
-            Event::Mouse(m) => {
-                let size = surface.size()?;
-                let now_ms = start.elapsed().as_millis() as u64;
-                if help_open {
-                    if matches!(m.kind, MouseEventKind::Down(_)) {
-                        help_open = false;
-                    }
-                    continue;
-                }
-                // タブバーの境界線をドラッグして幅を調整する
-                match m.kind {
-                    MouseEventKind::Down(MouseButton::Left) if m.column == tab_w - 1 => {
-                        dragging_divider = true;
-                        continue;
-                    }
-                    MouseEventKind::Drag(MouseButton::Left) if dragging_divider => {
-                        let new_w = (m.column + 1).clamp(TAB_BAR_MIN, TAB_BAR_MAX);
-                        if new_w != tab_w {
-                            tab_w = new_w;
-                            (rows, cols) = pty_dims(surface.size()?, tab_w);
-                            for t in &tabs {
-                                let _ = t.resize(rows, cols);
-                            }
-                        }
-                        continue;
-                    }
-                    MouseEventKind::Up(MouseButton::Left) if dragging_divider => {
-                        dragging_divider = false;
-                        flash = Some(i18n::tp(
-                            "msg.tabbar_width",
-                            &[("width", &tab_w.to_string())],
-                        ));
-                        continue;
-                    }
-                    _ => {}
-                }
-                handle_mouse(&mut tabs, &mut active, m, size, tab_w, now_ms, &mut flash)?;
             }
             Event::Resize(width, height) => {
                 (rows, cols) = pty_dims(Size { width, height }, tab_w);
@@ -2016,12 +1965,95 @@ fn switch_workspace(
     *active = if tabs.is_empty() { 0 } else { 1 };
 }
 
-fn session_mut(tabs: &mut [Tab], active: usize) -> Option<&mut Tab> {
-    if active == 0 {
-        None
-    } else {
-        tabs.get_mut(active - 1)
+/// 画面に並ぶもの。設定に書いた順のまま。
+///
+/// セッションとブラウザを別々に持っているのは中の都合で、
+/// 設定を書いた人には関係がない
+#[derive(Clone, Debug, PartialEq)]
+enum Pane {
+    /// tabs の何番目か (0始まり)
+    Session(usize),
+    /// 窓の中に置いたページの呼び名
+    Browser(String),
+}
+
+/// 設定に書いた順で、画面に並ぶものを組み立てる。
+///
+/// 設定に無いもの (自動化が後から開いたブラウザ、引数で立てたタブ) は
+/// 後ろに付ける。書いていないものの位置は決めようがない
+fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) -> Vec<Pane> {
+    let mut out: Vec<Pane> = Vec::new();
+    let mut used_tabs = vec![false; titles.len()];
+    let mut used_web: Vec<&str> = Vec::new();
+    if let Some(ws) = ws {
+        for ft in &ws.tabs {
+            let argv = ft.cfg.command.argv();
+            if argv.is_empty() {
+                continue;
+            }
+            if config::browser_url_of(&argv).is_some() {
+                let name = ft
+                    .cfg
+                    .id
+                    .clone()
+                    .or_else(|| ft.cfg.name.clone())
+                    .unwrap_or_else(|| "browser".into());
+                // まだ開けていないものは並べない (押しても何も無い番号になる)
+                if let Some(h) = hosted.iter().find(|h| **h == name) {
+                    used_web.push(h);
+                    out.push(Pane::Browser(name));
+                }
+                continue;
+            }
+            let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
+            // 同じ名前が並んでいても、書いた順に1つずつ対応させる
+            let found = titles
+                .iter()
+                .enumerate()
+                .find(|(i, t)| **t == title && !used_tabs[*i])
+                .map(|(i, _)| i);
+            if let Some(i) = found {
+                used_tabs[i] = true;
+                out.push(Pane::Session(i));
+            }
+        }
     }
+    // 設定に書かれていないもの
+    for (i, used) in used_tabs.iter().enumerate() {
+        if !used {
+            out.push(Pane::Session(i));
+        }
+    }
+    for h in hosted {
+        if !used_web.iter().any(|u| u == h) {
+            out.push(Pane::Browser(h.clone()));
+        }
+    }
+    out
+}
+
+/// 画面の番号 (1始まり) から、セッションの居場所を引く
+fn session_at(panes: &[Pane], active: usize) -> Option<usize> {
+    match panes.get(active.checked_sub(1)?)? {
+        Pane::Session(i) => Some(*i),
+        Pane::Browser(_) => None,
+    }
+}
+
+/// セッションの居場所から、画面の番号 (1始まり) を引く。
+/// ボールはセッションの番号で動くので、見せるときにここを通す
+fn pane_at(panes: &[Pane], session: usize) -> usize {
+    panes
+        .iter()
+        .position(|p| *p == Pane::Session(session.wrapping_sub(1)))
+        .map(|i| i + 1)
+        .unwrap_or(0)
+}
+
+/// いま見ているセッション。ブラウザを見ているなら None
+fn session_mut<'a>(tabs: &'a mut [Tab], panes: &[Pane], active: usize) -> Option<&'a mut Tab> {
+    let i = session_at(panes, active)?;
+    tabs.get_mut(i)
 }
 
 /// スマホへ送る画面テキストを整える。
@@ -2460,137 +2492,6 @@ fn handle_copy_key(
 
 /// マウス操作: タブバークリック切替 / ホイールスクロール / 選択即コピー / 右クリックペースト
 #[allow(clippy::too_many_arguments)]
-fn handle_mouse(
-    tabs: &mut [Tab],
-    active: &mut usize,
-    m: MouseEvent,
-    size: Size,
-    tab_w: u16,
-    now_ms: u64,
-    flash: &mut Option<String>,
-) -> Result<()> {
-    let inner = pane_inner(size, tab_w);
-    let in_pane = in_rect(inner, m.column, m.row);
-    let Some(t) = session_mut(tabs, *active) else {
-        return Ok(());
-    };
-    let row_in_pane = m
-        .row
-        .saturating_sub(inner.y)
-        .min(inner.height.saturating_sub(1));
-
-    // コピーモード外で子プロセスがマウスを要求していれば透過する
-    // (リモートのTUIアプリが自前でホイールスクロール等を処理できる)
-    // Shift押下時は透過せず、常にこちらのコピー/ペースト操作を優先する
-    if t.copy.is_none() && !m.modifiers.contains(KeyModifiers::SHIFT) {
-        let (mode, enc) = {
-            let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                p.screen().mouse_protocol_mode(),
-                p.screen().mouse_protocol_encoding(),
-            )
-        };
-        if !matches!(mode, vt100::MouseProtocolMode::None) {
-            if let Some(bytes) = mouse_to_child_bytes(&m, inner, mode, enc) {
-                // マウス報告は応答を求める入力ではない
-                t.write_passthrough(&bytes)?;
-            }
-            return Ok(());
-        }
-    }
-
-    match m.kind {
-        // ホイール上: コピーモードへ入り過去へスクロール
-        MouseEventKind::ScrollUp if in_pane || t.copy.is_some() => {
-            if t.copy.is_none() {
-                t.copy = Some(CopyState {
-                    cursor_row: row_in_pane,
-                    anchor: None,
-                    dragged: false,
-                });
-            }
-            let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-            let cur = p.screen().scrollback();
-            p.screen_mut().set_scrollback(cur + 3);
-        }
-        // ホイール下: 最下端まで戻ったら (未選択なら) ライブへ自動復帰
-        MouseEventKind::ScrollDown if t.copy.is_some() => {
-            let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-            let cur = p.screen().scrollback();
-            let next = cur.saturating_sub(3);
-            p.screen_mut().set_scrollback(next);
-            drop(p);
-            if next == 0 && t.copy.as_ref().is_some_and(|c| c.anchor.is_none()) {
-                t.copy = None;
-            }
-        }
-        // ロック中タブでも閲覧・コピーはできる (右クリックのペーストのみ抑止)
-        MouseEventKind::Down(MouseButton::Right) if t.locked => {
-            *flash = Some(i18n::t("msg.locked_paste"));
-        }
-        // 左クリック: コピーモード開始 + その行から選択開始
-        MouseEventKind::Down(MouseButton::Left) if in_pane => {
-            *flash = None;
-            let offset = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().scrollback();
-            let anchor = abs_line(offset, inner.height, row_in_pane);
-            t.copy = Some(CopyState {
-                cursor_row: row_in_pane,
-                anchor: Some(anchor),
-                dragged: false,
-            });
-        }
-        // ドラッグで選択範囲を拡張
-        MouseEventKind::Drag(MouseButton::Left) => {
-            if let Some(cs) = t.copy.as_mut() {
-                if cs.cursor_row != row_in_pane {
-                    cs.dragged = true;
-                }
-                cs.cursor_row = row_in_pane;
-            }
-        }
-        // 左ボタン解放: 選択範囲を即クリップボードへ (PuTTY流の選択即コピー)
-        MouseEventKind::Up(MouseButton::Left) => {
-            let mut exit_copy = false;
-            if let Some(cs) = t.copy.as_mut() {
-                // 動かしていないなら選択ではない。置くだけのつもりのクリックで
-                // クリップボードを奪わない (貼り付ける直前に消えると実害が大きい)
-                if !cs.dragged {
-                    cs.anchor = None;
-                    exit_copy = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().scrollback() == 0;
-                } else if let Some(anchor) = cs.anchor.take() {
-                    let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-                    let cur = p.screen().scrollback();
-                    let here = abs_line(
-                        cur,
-                        inner.height,
-                        cs.cursor_row.min(inner.height.saturating_sub(1)),
-                    );
-                    let (lo, hi) = (anchor.min(here), anchor.max(here));
-                    let text = extract_text(&mut p, lo, hi, inner.width);
-                    drop(p);
-                    *flash = Some(copy_to_clipboard(&text));
-                    // ライブ位置での選択なら、そのまま通常操作へ戻る
-                    exit_copy = cur == 0;
-                }
-            }
-            if exit_copy {
-                t.copy = None;
-            }
-        }
-        // 右クリック: クリップボードの内容をペースト (PuTTY流)
-        MouseEventKind::Down(MouseButton::Right) => {
-            if t.copy.take().is_some() {
-                t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen_mut().set_scrollback(0);
-            }
-            t.chain_depth = 0;
-            t.last_manual_ms = Some(now_ms);
-            *flash = paste_clipboard(t)?;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 
 
 
@@ -2623,9 +2524,8 @@ struct Ui {
     max_chain: u32,
     /// 描画時刻 (相対ms)。ボールのアニメ進行に使う
     now_ms: u64,
-    /// 窓の中に置いてあるブラウザの名前 (置いた順)。
-    /// セッションの続きの番号でタブになる
-    browsers: Vec<String>,
+    /// 画面に並ぶもの。設定に書いた順
+    panes: Vec<Pane>,
 }
 
 
@@ -2749,45 +2649,6 @@ fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-fn button_code(b: MouseButton) -> u16 {
-    match b {
-        MouseButton::Left => 0,
-        MouseButton::Middle => 1,
-        MouseButton::Right => 2,
-    }
-}
-
-/// 子プロセスがマウスレポートを要求している場合のイベント透過 (SGRエンコードのみ対応)
-fn mouse_to_child_bytes(
-    m: &MouseEvent,
-    inner: Rect,
-    mode: vt100::MouseProtocolMode,
-    enc: vt100::MouseProtocolEncoding,
-) -> Option<Vec<u8>> {
-    use vt100::MouseProtocolMode as M;
-    if matches!(mode, M::None) || !matches!(enc, vt100::MouseProtocolEncoding::Sgr) {
-        return None;
-    }
-    if !in_rect(inner, m.column, m.row) {
-        return None;
-    }
-    let x = m.column - inner.x + 1;
-    let y = m.row - inner.y + 1;
-    let (btn, press) = match m.kind {
-        MouseEventKind::Down(b) => (button_code(b), true),
-        MouseEventKind::Up(b) if !matches!(mode, M::Press) => (button_code(b), false),
-        MouseEventKind::Drag(b) if matches!(mode, M::ButtonMotion | M::AnyMotion) => {
-            (button_code(b) + 32, true)
-        }
-        MouseEventKind::Moved if matches!(mode, M::AnyMotion) => (32 + 3, true),
-        MouseEventKind::ScrollUp => (64, true),
-        MouseEventKind::ScrollDown => (65, true),
-        _ => return None,
-    };
-    let suffix = if press { 'M' } else { 'm' };
-    Some(format!("\x1b[<{btn};{x};{y}{suffix}").into_bytes())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2858,6 +2719,87 @@ mod tests {
         }
     }
 
+    /// 画面の並びが、設定に書いた順であること。
+    ///
+    /// セッションとブラウザは別々に持っている。並べるときにその都合を
+    /// 出すと、1番目に書いたブラウザが後ろに回る。実際そうなっていて、
+    /// 「順番的にはHTMLが1番なのになんで2番目になっているの？」となった
+    #[test]
+    fn the_order_on_screen_is_the_order_in_the_settings() {
+        let ws = ws_from(&[
+            ("HTML解析", "html", "browser https://example.com/"),
+            ("エンジニア", "ai", "claude"),
+        ]);
+        let tabs = ["エンジニア"];
+        let hosted = vec!["html".to_string()];
+
+        let panes = panes_of(Some(&ws), &tabs, &hosted);
+        assert_eq!(
+            panes,
+            vec![Pane::Browser("html".into()), Pane::Session(0)],
+            "設定の順に並んでいない"
+        );
+        // 画面の番号から、セッションを引き当てられること
+        assert_eq!(session_at(&panes, 1), None, "1番はブラウザのはず");
+        assert_eq!(session_at(&panes, 2), Some(0));
+        // ボールはセッションの番号で動く。見せるのは画面の番号
+        assert_eq!(pane_at(&panes, 1), 2);
+    }
+
+    /// まだ開けていないブラウザは並べないこと。
+    /// 並べると、押しても何も無い番号ができる
+    fn ws_from(rows: &[(&str, &str, &str)]) -> config::Workspace {
+        let tabs = rows
+            .iter()
+            .map(|(name, id, cmd)| {
+                config::FlatTab {
+                    cfg: config::TabConfig {
+                        name: Some(name.to_string()),
+                        id: Some(id.to_string()),
+                        command: config::CommandSpec::Line(cmd.to_string()),
+                        ..Default::default()
+                    },
+                    depth: 0,
+                }
+            })
+            .collect();
+        config::Workspace {
+            name: "試験".into(),
+            tabs,
+            automation: None,
+            browsers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_browser_that_is_not_open_yet_takes_no_number() {
+        let ws = ws_from(&[
+            ("HTML解析", "html", "browser https://example.com/"),
+            ("エンジニア", "ai", "claude"),
+        ]);
+        let tabs = ["エンジニア"];
+        let panes = panes_of(Some(&ws), &tabs, &[]);
+        assert_eq!(panes, vec![Pane::Session(0)], "開いていないものが並んでいる");
+    }
+
+    /// 設定に書いていないものは後ろに付くこと。
+    /// 自動化が後から開いたブラウザや、引数で立てたタブの居場所は決めようがない
+    #[test]
+    fn what_the_settings_do_not_mention_goes_last() {
+        let ws = ws_from(&[("エンジニア", "ai", "claude")]);
+        let tabs = ["エンジニア", "あとから"];
+        let hosted = vec!["settings".to_string()];
+        let panes = panes_of(Some(&ws), &tabs, &hosted);
+        assert_eq!(
+            panes,
+            vec![
+                Pane::Session(0),
+                Pane::Session(1),
+                Pane::Browser("settings".into())
+            ]
+        );
+    }
+
     fn test_ui(active: usize, ball: ball::Ball, now_ms: u64) -> Ui {
         Ui {
             first_run: false,
@@ -2872,7 +2814,7 @@ mod tests {
             ball,
             max_chain: 10,
             now_ms,
-            browsers: Vec::new(),
+            panes: Vec::new(),
         }
     }
 
@@ -3051,58 +2993,6 @@ mod tests {
         assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g, 1_000), Some(2));
     }
 
-
-    /// 単クリックではクリップボードを奪わないこと。
-    ///
-    /// 選択は行単位なので、クリックしただけでも「1行選んだ」形になる。
-    /// そのままコピーすると、貼り付けようとしていた中身が消える
-    /// (Codexのプロンプトをクリックしてplaceholderがコピーされていた)
-    #[test]
-    fn a_click_without_dragging_leaves_the_clipboard_alone() {
-        use crossterm::event::MouseEvent;
-
-        let argv = vec!["cmd.exe".to_string()];
-        let mut tabs = vec![
-            Tab::spawn("T".into(), &argv, None, 20, 60, tab::TabOptions::default()).unwrap(),
-        ];
-        let mut active = 1usize;
-        let size = Size { width: 100, height: 30 };
-        let tab_w = 20u16;
-        let inner = pane_inner(size, tab_w);
-
-        let at = |kind, row: u16| MouseEvent {
-            kind,
-            column: inner.x + 3,
-            row,
-            modifiers: KeyModifiers::NONE,
-        };
-        let mut flash = None;
-
-        // 押して、動かさずに離す
-        handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Down(MouseButton::Left), inner.y + 2),
-                     size, tab_w, 0, &mut flash).unwrap();
-        assert!(tabs[0].copy.is_some(), "押した時点では選択の準備に入る");
-        handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Up(MouseButton::Left), inner.y + 2),
-                     size, tab_w, 0, &mut flash).unwrap();
-        assert!(
-            flash.is_none(),
-            "クリックしただけでコピーしている: {flash:?}"
-        );
-        assert!(tabs[0].copy.is_none(), "クリックのあとは通常操作へ戻る");
-
-        // 押して、動かしてから離す
-        handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Down(MouseButton::Left), inner.y + 2),
-                     size, tab_w, 0, &mut flash).unwrap();
-        handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Drag(MouseButton::Left), inner.y + 5),
-                     size, tab_w, 0, &mut flash).unwrap();
-        handle_mouse(&mut tabs, &mut active, at(MouseEventKind::Up(MouseButton::Left), inner.y + 5),
-                     size, tab_w, 0, &mut flash).unwrap();
-        assert!(flash.is_some(), "ドラッグして選んだらコピーする");
-
-        for t in tabs.iter_mut() {
-            t.kill();
-        }
-    }
 
 
 

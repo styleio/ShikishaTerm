@@ -58,12 +58,6 @@ pub struct CopyState {
     pub cursor_row: u16,
     /// 選択開始位置 (画面最下行から数えた行数)。None = 未選択
     pub anchor: Option<usize>,
-    /// 押してから離すまでにマウスが動いたか。
-    ///
-    /// 選択は行単位なので、単クリックでも「1行選択した」形になる。
-    /// 動いたかどうかを見ないと、置くだけのつもりのクリックで
-    /// クリップボードが書き換わり、貼り付けようとしていた中身が消える
-    pub dragged: bool,
 }
 
 /// 子プロセスからの端末照会 (DSR/DA) への応答係。
@@ -1034,13 +1028,15 @@ impl Tab {
         self.response_marker.store(u64::MAX, Ordering::Relaxed);
     }
 
-    /// 子プロセスへそのまま流すだけの入力 (マウス報告など)。
+    /// 入力を送る。実行を含むものだけが「応答を求めた」ことになる
+    /// 子プロセスへそのまま流すだけの入力。
     /// 応答を求める入力ではないので prompted は立てない
+    /// (使うのは実機の検証だけ。ふだんの経路は write_bytes)
+    #[cfg(test)]
     pub fn write_passthrough(&self, bytes: &[u8]) -> Result<()> {
         pty_write(&self.writer, bytes)
     }
 
-    /// 入力を送る。実行を含むものだけが「応答を求めた」ことになる
     pub fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
         if contains_submit(bytes) {
             self.prompted.store(true, Ordering::Relaxed);

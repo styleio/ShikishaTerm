@@ -39,6 +39,10 @@ fn main() {
         }
     }
 
+    // 訳語は exe の隣の lang/ から読む。手で置いたままだと、
+    // 直しても動かしたものには届かない (「あなた」が YOU のままだった)
+    copy_lang();
+
     println!("cargo:rustc-env=BUILD_TIME={built}");
     println!(
         "cargo:rustc-env=BUILD_REV={}{}",
@@ -49,4 +53,37 @@ fn main() {
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=lang");
+}
+
+/// lang/*.json を exe の隣へ置く。
+///
+/// OUT_DIR は target/<profile>/build/<pkg>-<hash>/out なので、
+/// 3つ上が exe の置き場になる
+fn copy_lang() {
+    let Ok(out) = std::env::var("OUT_DIR") else {
+        return;
+    };
+    let mut dir = std::path::PathBuf::from(out);
+    for _ in 0..3 {
+        dir.pop();
+    }
+    let dest = dir.join("lang");
+    if std::fs::create_dir_all(&dest).is_err() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir("lang") else {
+        return;
+    };
+    for e in entries.flatten() {
+        let from = e.path();
+        if from.extension().is_some_and(|x| x == "json") {
+            if let Some(name) = from.file_name() {
+                // 配れなくても止めない。英語のまま動く
+                if let Err(err) = std::fs::copy(&from, dest.join(name)) {
+                    println!("cargo:warning=訳語を配れませんでした {name:?}: {err}");
+                }
+            }
+        }
+    }
 }
