@@ -840,9 +840,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 if let Some(w) = new_ws.get(target) {
                     msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors);
                     ws_index = target;
-                    // バーと帯は開き直さないと出ない、では設定を触った意味がない。
-                    // 開いてあるページに対して、その場で出し直す
-                    apply_browser_chrome(w, &caps);
+                    // ブラウザも設定に揃える。足したものは開き、消したものは閉じ、
+                    // バーと帯は出し直す。開き直さないと反映されない、では
+                    // 設定を触った意味がない (既に開いてあるページには触らない)
+                    open_declared_browsers(w, &caps, &mut startup_errors);
                 }
                 // 他のワークスペースは作り直しに任せる (裏で動いているタブは触らない)
                 ws_tabs.resize_with(new_ws.len().max(1), Vec::new);
@@ -2106,9 +2107,18 @@ fn apply_ws_config(
 /// 1台開けなくても他は動かす。ブラウザが立たないことは、
 /// ワークスペース全体を止める理由にならない
 fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &mut Vec<String>) {
+    // 既に開いてあるものは触らない。開き直すと読み込みからやり直しになり、
+    // 設定を保存するたびに見ていたページが消える
+    let open_now = caps.hosted_names();
+    let already = |name: &str| open_now.iter().any(|n| n == name);
     for b in &ws.browsers {
-        if let Err(e) = caps.browser_open(&b.id, &b.url) {
-            errors.push(format!("ブラウザ {}: {e:#}", b.id));
+        if already(&b.id) {
+            caps.note_declared(&b.id);
+            continue;
+        }
+        match caps.browser_open(&b.id, &b.url) {
+            Ok(()) => caps.note_declared(&b.id),
+            Err(e) => errors.push(format!("ブラウザ {}: {e:#}", b.id)),
         }
     }
     // タブとして「browser https://...」と書かれたものも同じ扱い。
@@ -2124,10 +2134,13 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             .clone()
             .or_else(|| ft.cfg.name.clone())
             .unwrap_or_else(|| "browser".into());
-        if let Err(e) = caps.browser_open(&name, &url) {
-            errors.push(format!("ブラウザ {name}: {e:#}"));
-            continue;
+        if !already(&name) {
+            if let Err(e) = caps.browser_open(&name, &url) {
+                errors.push(format!("ブラウザ {name}: {e:#}"));
+                continue;
+            }
         }
+        caps.note_declared(&name);
     }
     apply_browser_chrome(ws, caps);
 }
@@ -2137,6 +2150,28 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
 /// 開いたときだけでなく、設定を読み直したときにも通る。
 /// ここを通さないと、チェックを入れても再起動するまで出てこない
 fn apply_browser_chrome(ws: &config::Workspace, caps: &hooks::Caps) {
+    // 設定から消えたブラウザは閉じる。置いたままにすると、
+    // 「設定に無いページ」として一覧の後ろに現れ直す
+    let declared: Vec<String> = ws
+        .browsers
+        .iter()
+        .map(|b| b.id.clone())
+        .chain(ws.tabs.iter().filter_map(|ft| {
+            let argv = ft.cfg.command.argv();
+            config::browser_url_of(&argv)?;
+            Some(
+                ft.cfg
+                    .id
+                    .clone()
+                    .or_else(|| ft.cfg.name.clone())
+                    .unwrap_or_else(|| "browser".into()),
+            )
+        }))
+        .collect();
+    for gone in caps.keep_only_declared(&declared) {
+        append_hook_log(&format!("設定から消えたので閉じました: {gone}"));
+    }
+
     for ft in &ws.tabs {
         let argv = ft.cfg.command.argv();
         if config::browser_url_of(&argv).is_none() {

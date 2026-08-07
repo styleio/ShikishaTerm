@@ -798,15 +798,34 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
                     run.clear();
                     span = 0;
                 }
-                open = Some(style);
+                open = Some(style.clone());
             }
             let ch = cell.contents();
-            span += if cell.is_wide() { 2 } else { 1 };
-            if ch.is_empty() {
-                run.push(' ');
-            } else {
-                esc_into(&mut run, ch);
+            let wide = cell.is_wide();
+            // 素の英数字だけをまとめる。
+            //
+            // マスの幅は英数字を測って決めているので、英数字は箱にぴったり入る。
+            // それ以外は別のフォントから来ることがあり、字送りがマスと合わない。
+            // 日本語は1文字あたり2マスより狭く出るので、まとめると足りない分が
+            // 区間の末尾に溜まる。40文字も打てば、文字列の終わりとカーソルの間に
+            // マス10個ぶんの隙間ができていた。1文字ずつ箱に入れれば、
+            // 足りない分は文字と文字の間に均され、どこにも溜まらない
+            if !wide && (ch.is_empty() || ch.chars().all(|c| c.is_ascii())) {
+                span += 1;
+                if ch.is_empty() {
+                    run.push(' ');
+                } else {
+                    esc_into(&mut run, ch);
+                }
+                continue;
             }
+            // まとめられないものは、その1文字だけで1つの箱に入れる
+            flush_run(&mut out, style.as_str(), &run, span);
+            run.clear();
+            span = 0;
+            let mut one = String::new();
+            esc_into(&mut one, ch);
+            flush_cell(&mut out, style.as_str(), &one, if wide { 2 } else { 1 });
         }
         if let Some(prev) = open.take() {
             flush_run(&mut out, &prev, &run, span);
@@ -832,12 +851,30 @@ fn flush_run(out: &mut String, style: &str, run: &str, span: usize) {
     // マスの幅は、画面が測ってCSS変数に入れてくれる。
     // ch (フォントが言う「0」の送り) で置くと、カーソルを置く数と
     // 別の数になり、桁が進むほど離れていく
+    box_of(out, style, run, span, false);
+}
+
+/// 1マス (全角なら2マス) を、その1文字だけで書き出す。
+///
+/// 字送りがマスに満たない文字は、真ん中に置く。左に寄せると
+/// 文字の右側にだけ隙間が並び、揃っていないように見える
+fn flush_cell(out: &mut String, style: &str, ch: &str, span: usize) {
+    box_of(out, style, ch, span, true);
+}
+
+fn box_of(out: &mut String, style: &str, body: &str, span: usize, center: bool) {
+    // マスの幅は、画面が測ってCSS変数に入れてくれる。
+    // ch (フォントが言う「0」の送り) で置くと、カーソルを置く数と
+    // 別の数になり、桁が進むほど離れていく
     out.push_str("<span style=\"display:inline-block;vertical-align:top;width:calc(var(--cw)*");
     out.push_str(&span.to_string());
     out.push_str(");");
+    if center {
+        out.push_str("text-align:center;overflow:hidden;");
+    }
     out.push_str(style);
     out.push_str("\">");
-    out.push_str(run);
+    out.push_str(body);
     out.push_str("</span>");
 }
 
@@ -1174,6 +1211,30 @@ mod color_tests {
         assert!(
             line.contains("width:calc(var(--cw)*1)"),
             "罫線が1マスになっていない: {line}"
+        );
+    }
+
+    /// 字送りがマスに合わない文字は、1文字ずつ箱に入れること。
+    ///
+    /// 日本語の字送りは2マスより狭い (別のフォントから来るので合わない)。
+    /// まとめて1つの箱に入れると、足りない分が区間の末尾に溜まる。
+    /// 40文字で、文字列の終わりとカーソルの間にマス10個ぶんの隙間ができていた
+    #[test]
+    fn a_letter_that_does_not_fill_its_cell_gets_a_box_of_its_own() {
+        let html = render("あいう");
+        assert_eq!(
+            html.matches("width:calc(var(--cw)*2)").count(),
+            3,
+            "全角がまとめられている: {html}"
+        );
+        assert!(html.contains("text-align:center;"), "マスの中で寄っている: {html}");
+
+        // 英数字はマスにぴったり入るので、まとめてよい (要素を増やさない)
+        let ascii = render("\u{1b}[31mabcdef\u{1b}[0m");
+        assert_eq!(
+            ascii.matches("width:calc(var(--cw)*").count(),
+            1,
+            "英数字まで1文字ずつ切っている: {ascii}"
         );
     }
 

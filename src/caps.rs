@@ -126,6 +126,11 @@ pub struct Capabilities {
     /// 空いた場所にアプリが描く。だから覚えるのもこちら側で、
     /// 遷移しても消えない
     nav: std::cell::RefCell<HashMap<String, crate::config::NavSpec>>,
+    /// 設定に書かれていたから開いたページ (窓の中での名前)。
+    ///
+    /// 自動化が自分で開いた分や設定画面と区別が要る。設定から消えたときに
+    /// 閉じてよいのは、設定が開けたものだけ
+    declared: std::cell::RefCell<std::collections::HashSet<String>>,
 }
 
 /// ページを触るときの既定の待ち時間。
@@ -147,6 +152,7 @@ impl Capabilities {
             ws: std::cell::Cell::new(0),
             shown: std::cell::RefCell::new((None, (0, 0, 0, 0))),
             nav: std::cell::RefCell::new(HashMap::new()),
+            declared: std::cell::RefCell::new(std::collections::HashSet::new()),
         }
     }
 
@@ -530,6 +536,42 @@ impl Capabilities {
         self.with(name, |b, to| b.ask_where(to))
     }
 
+    /// 設定に書かれたページを、設定のとおりに揃える。
+    ///
+    /// 設定から消したページは閉じる。閉じないと、置いたままのページが
+    /// 「設定に無いブラウザ」として一覧の後ろに居座り、消したのに
+    /// 別の場所に現れる (再起動するまで消えない) ことになる。
+    /// 自動化が自分で開いた分と設定画面は、ここでは触らない
+    pub fn keep_only_declared(&self, names: &[String]) -> Vec<String> {
+        let ws = self.ws.get();
+        let want: std::collections::HashSet<String> =
+            names.iter().map(|n| Self::key(ws, n)).collect();
+        let stale: Vec<String> = self
+            .declared
+            .borrow()
+            .iter()
+            .filter(|k| k.starts_with(&format!("{ws}/")) && !want.contains(*k))
+            .cloned()
+            .collect();
+        let mut closed = Vec::new();
+        for key in stale {
+            self.declared.borrow_mut().remove(&key);
+            if let Some(name) = self.name_of_child(&key) {
+                if self.browser_close(&name).is_ok() {
+                    closed.push(name);
+                }
+            }
+        }
+        closed
+    }
+
+    /// 設定が開けたページとして控える
+    pub fn note_declared(&self, name: &str) {
+        self.declared
+            .borrow_mut()
+            .insert(Self::key(self.ws.get(), name));
+    }
+
     /// 何を出すか (画面を描くループが使う)。
     /// 受けるのは人が使う呼び名。窓の中での名前に直すのはこちらの仕事
     pub fn nav_of(&self, name: &str) -> Option<crate::config::NavSpec> {
@@ -549,6 +591,7 @@ impl Capabilities {
         self.hosted.borrow_mut().retain(|(w, x)| !(*w == ws && x == name));
         self.pressed.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
+        self.declared.borrow_mut().remove(&key);
         *self.shown.borrow_mut() = (None, (0, 0, 0, 0));
         Ok(())
     }
@@ -604,6 +647,29 @@ mod reload_tests {
         assert_eq!(c.hosted_names(), vec!["settings".to_string()], "置いたページを忘れた");
         assert!(c.nav_of("html").is_some(), "上のバーを忘れた");
         assert!(c.forget_press("html"), "押された帯を忘れた");
+    }
+
+    /// 設定から消したブラウザは閉じること。
+    ///
+    /// 置いたままにすると「設定に無いページ」として一覧の後ろに並び直し、
+    /// 消したはずのタブが別の場所に現れる (再起動するまで消えない)
+    #[test]
+    fn a_browser_removed_from_the_settings_does_not_come_back() {
+        let c = Capabilities::disabled();
+        for n in ["ai", "html"] {
+            c.hosted.borrow_mut().push((0, n.to_string()));
+            c.note_declared(n);
+        }
+        // 自動化が自分で開いた分は、設定に無くても閉じない
+        c.hosted.borrow_mut().push((0, "調べ物".into()));
+
+        let closed = c.keep_only_declared(&["ai".to_string()]);
+        assert_eq!(closed, vec!["html".to_string()], "消したものが閉じていない");
+        assert_eq!(
+            c.hosted_names(),
+            vec!["ai".to_string(), "調べ物".to_string()],
+            "設定が開けていないページまで閉じた"
+        );
     }
 
     /// 設定から来るものは、ちゃんと入れ替わること
