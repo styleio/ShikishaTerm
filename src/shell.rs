@@ -58,6 +58,26 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   /* ここだけ選べる。タブバーや枠は選択に混ざらない */
   #screen { user-select:text; }
 
+  /* ── ブラウザの上のバー ──────────────────
+     ページの中には描かない。ページを一段下げて、空いた場所に描く。
+     中に描くと相手のCSSと喧嘩し、遷移のたびに消え、
+     サイト自身の固定ヘッダーを上から覆ってしまう */
+  #nav { position:absolute; left:0; right:0; top:0; height:36px; z-index:5;
+    display:flex; align-items:center; gap:6px; padding:0 8px;
+    border-bottom:1px solid var(--line); background:var(--panel); }
+  #nav[hidden] { display:none; }
+  #nav button { font:inherit; font-size:13px; color:var(--text); cursor:pointer;
+    background:transparent; border:1px solid var(--line); border-radius:6px;
+    width:28px; height:24px; line-height:1; padding:0; flex:none; }
+  #nav button:hover:not(:disabled) { background:#16202b; border-color:var(--brand); }
+  #nav button:disabled { color:#2b3540; cursor:default; }
+  #nav input { flex:1; min-width:60px; font:inherit; font-size:12px;
+    color:var(--text); background:#0a0c0e; border:1px solid var(--line);
+    border-radius:6px; padding:3px 8px; outline:none; }
+  #nav input:focus { border-color:var(--brand); }
+  /* ページを置く場所。バーを出したぶんだけ下がる */
+  #page { position:absolute; inset:0; pointer-events:none; }
+
   /* ── 稼働盤 ─────────────────────────────── */
   #board { position:absolute; inset:0; overflow:auto; padding:22px 26px; }
   .mark { color:var(--brand); font-weight:700; letter-spacing:.5px;
@@ -152,6 +172,8 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
 <div id="app">
   <nav id="tabs"></nav>
   <div id="main">
+    <div id="nav" hidden></div>
+    <div id="page"></div>
     <div id="board" hidden></div>
     <pre id="screen" hidden></pre>
     <div id="cur" hidden></div>
@@ -394,11 +416,65 @@ window.__password = function (title, note) {
   inp.focus();
 };
 
+// 上のバー。押した先はRustが決める (出ているバーは常に1枚なので、
+// どのページ宛かをこちらから言う必要がない)
+const goTo = () => {
+  const inp = document.querySelector("#nav input");
+  if (inp && inp.value.trim()) send({kind:"go", what:"to", url:inp.value});
+};
+function drawNav() {
+  const n = document.getElementById("nav");
+  const want = S && S.nav;
+  n.hidden = !want;
+  if (!want) { n.textContent = ""; layout(); return; }
+  // 打っている途中に組み直すと、1文字ごとに書きかけが消える
+  const inp = n.querySelector("input");
+  const typing = inp && document.activeElement === inp;
+  if (!typing) {
+    n.textContent = "";
+    const btn = (mark, word, what, on) => {
+      const b = el("button", {title:T[word]}, mark);
+      b.disabled = !on;
+      b.onclick = () => send({kind:"go", what:what});
+      return b;
+    };
+    if (want.back) n.append(btn("←", "tui.nav.back", "back", want.can_back));
+    if (want.forward) n.append(btn("→", "tui.nav.forward", "forward", want.can_forward));
+    if (want.reload) n.append(btn("⟳", "tui.nav.reload", "reload", true));
+    if (want.edit) {
+      const box = el("input", {type:"text", spellcheck:"false",
+        title:T["tui.nav.url"], placeholder:T["tui.nav.url"], value:want.at || ""});
+      box.onkeydown = e => {
+        if (e.key === "Enter") { e.preventDefault(); goTo(); }
+        // 打鍵は端末へ流さない。ここはページの行き先を書く場所
+        e.stopPropagation();
+      };
+      box.onfocus = () => box.select();
+      n.append(box);
+    }
+  } else if (want.edit) {
+    // 打っていないボタンだけは、押せるかどうかを直す
+    const bs = n.querySelectorAll("button");
+    let i = 0;
+    if (want.back && bs[i]) bs[i++].disabled = !want.can_back;
+    if (want.forward && bs[i]) bs[i++].disabled = !want.can_forward;
+  }
+  layout();
+}
+
+// ページを置く場所を、バーのぶんだけ下げる
+function layout() {
+  const n = document.getElementById("nav");
+  document.getElementById("page").style.top = n.hidden ? "0" : "36px";
+  report();
+}
+
 window.__state = function (json) {
   if (holding) { queued = json; return; }
   S = JSON.parse(json);
   drawTabs();
   drawStatus();
+  drawNav();
   const board = document.getElementById("board");
   const screen = document.getElementById("screen");
   // ブラウザのタブを見ているときは、置いたページが同じ場所を覆う。
@@ -453,15 +529,19 @@ function report() {
   const pad = (parseFloat(getComputedStyle(scr).paddingLeft) || 0) * 2;
   const cols = Math.max(20, Math.floor((box.width - pad) / cellW));
   const rows = Math.max(5, Math.floor((box.height - pad) / cellH));
+  // 行桁は #main から、ブラウザの置き場所は #page から取る。
+  // 1つの矩形から両方出すと、上のバーを出しただけで端末まで縮み、
+  // ブラウザのタブへ切り替えただけでAIの画面が折り返し直される
+  const area = document.getElementById("page").getBoundingClientRect();
   // ブラウザを置く場所。外皮のCSSを変えても、知っているのは
   // ページなので、Rust側で座標を推測させない
-  const key = rows + "x" + cols + "@" + Math.round(box.left) + "," +
-    Math.round(box.top) + "," + Math.round(box.width) + "," + Math.round(box.height);
+  const key = rows + "x" + cols + "@" + Math.round(area.left) + "," +
+    Math.round(area.top) + "," + Math.round(area.width) + "," + Math.round(area.height);
   if (key === lastRC) return;
   lastRC = key;
   send({kind:"resize", rows:rows, cols:cols,
-    area:[Math.round(box.left), Math.round(box.top),
-          Math.round(box.width), Math.round(box.height)]});
+    area:[Math.round(area.left), Math.round(area.top),
+          Math.round(area.width), Math.round(area.height)]});
 }
 let rt = 0;
 window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(report, 80); });
@@ -540,14 +620,24 @@ kbd.addEventListener("keydown", e => {
 });
 
 // PuTTY と同じ作法: 選んだ時点でコピーされる。右クリックで貼り付け
-const focus = () => kbd.focus();
-document.addEventListener("mouseup", () => {
+// ただしURL欄を打っている最中は奪わない。奪うと1文字も入らない
+const focus = () => {
+  const a = document.activeElement;
+  if (a && a.closest && a.closest("#nav")) return;
+  kbd.focus();
+};
+// 上のバーは普通の入力欄として振る舞わせる。選んだだけで写し取られたり、
+// 右クリックが端末への貼り付けになったりしては、URLを直せない
+const inBar = e => e.target && e.target.closest && e.target.closest("#nav");
+document.addEventListener("mouseup", e => {
+  if (inBar(e)) return;
   const s = window.getSelection();
   const t = s ? s.toString() : "";
   if (t) { send({kind:"copy", text:t}); return; }
   focus();
 });
 document.addEventListener("contextmenu", e => {
+  if (inBar(e)) return;
   e.preventDefault();
   send({kind:"paste"});
   focus();
@@ -956,6 +1046,41 @@ mod tests {
             PAGE.contains(".tab") && PAGE.contains("user-select:none"),
             "タブバーが選択に混ざる"
         );
+    }
+
+    /// 上のバーは、ページの中ではなく外皮に描くこと。
+    ///
+    /// ページの中に差し込むと、相手のCSSと喧嘩し、遷移のたびに消え、
+    /// サイト自身の固定ヘッダーを上から覆う。ページを一段下げて
+    /// 空いた場所に描けば、どれも起きない
+    #[test]
+    fn the_bar_is_drawn_by_the_app_not_injected_into_the_page() {
+        assert!(PAGE.contains("id=\"nav\""), "バーの置き場所が無い");
+        assert!(PAGE.contains("id=\"page\""), "ページを置く場所が無い");
+        // 置き場所はバーのぶんだけ下がる
+        assert!(
+            PAGE.contains("getElementById(\"page\").style.top = n.hidden ? \"0\" : \"36px\""),
+            "バーを出してもページが下がらない"
+        );
+        // 行桁は #main、ブラウザの置き場所は #page。
+        // 1つの矩形から両方出すと、バーを出しただけで端末まで縮む
+        assert!(
+            PAGE.contains("document.getElementById(\"page\").getBoundingClientRect()"),
+            "置き場所を #page から取っていない"
+        );
+    }
+
+    /// URL欄を打っている間は、打鍵が端末へ流れないこと。
+    /// 流れると、行き先を書いているつもりでAIに文字を送ることになる
+    #[test]
+    fn typing_an_address_does_not_reach_the_terminal() {
+        assert!(PAGE.contains("e.stopPropagation();"), "打鍵を止めていない");
+        // 選択やクリックで入力欄から焦点を奪わない
+        assert!(
+            PAGE.contains("if (a && a.closest && a.closest(\"#nav\")) return;"),
+            "入力中に焦点を奪っている"
+        );
+        assert!(PAGE.contains("if (inBar(e)) return;"), "バーの中で端末の作法が働く");
     }
 
     /// ボールが文字ではなく、動く要素であること。

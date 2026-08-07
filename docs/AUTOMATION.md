@@ -310,6 +310,25 @@ The banner does not appear on its own. `shikisha.browser_ask` puts it along the 
 of the page — your words on the left, the button on the right — and pressing it calls
 `on_press`. It is immune to the site's own CSS (it lives in a shadow root).
 
+To let a person choose the page before handing it over, `shikisha.browser_nav` puts
+back / forward / reload / an address box in a row above it. Unlike the banner this is
+**not** injected into the page: the page moves down and the app draws in the gap, so it
+survives navigation and never covers the site's own sticky header.
+
+```lua
+shikisha.browser_nav(page.id)                                 -- all of them
+shikisha.browser_nav(page.id, { reload = true, url = true })  -- pick some
+shikisha.browser_unnav(page.id)                               -- take it away
+```
+
+Back and forward grey out when there is nowhere to go. The address box only opens
+http/https. The same four checkboxes live in the settings screen for a browser tab, so
+this works with no Lua at all; a call from Lua wins over the setting.
+
+Typing an address still fires `on_load`, so if you only want the page handed over when
+a person says so, leave `on_load.lua` empty and write `on_press.lua`. None of this
+touches the chain depth — that only counts handoffs to another tab.
+
 What arrives is `page`, not `tab`: `page.index` (the number on screen), `page.id` (the
 name automation points at), `page.name` (what a person reads), `page.url`, and
 `page.complete` — false means `load` never came and this fired at DOM-ready instead.

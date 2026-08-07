@@ -242,6 +242,10 @@ struct WinSurface {
     presses: Vec<String>,
     /// 読み込みが終わったページ (呼び名, URL, 参照先まで揃ったか)
     loads: Vec<(String, String, bool)>,
+    /// 上のバーで頼まれた移動
+    gos: Vec<crate::browser::Go>,
+    /// 聞いておいた居場所の答え (窓の中での名前, URL, 戻れる, 進める)
+    wheres: Vec<(String, String, bool, bool)>,
     /// 窓が閉じた。描く先が無くなったので、ループは畳むしかない
     closed: bool,
 }
@@ -264,6 +268,16 @@ impl WinSurface {
         std::mem::take(&mut self.loads)
     }
 
+    /// 上のバーで頼まれた移動を引き取る
+    fn take_gos(&mut self) -> Vec<crate::browser::Go> {
+        std::mem::take(&mut self.gos)
+    }
+
+    /// 居場所の答えを引き取る
+    fn take_wheres(&mut self) -> Vec<(String, String, bool, bool)> {
+        std::mem::take(&mut self.wheres)
+    }
+
     fn take_events(&mut self, active_tab: Option<&Tab>) {
         use crate::browser::Ev;
         for ev in self.win.drain() {
@@ -280,6 +294,15 @@ impl WinSurface {
                 // 窓が閉じた。ここで畳まないと、描く先を失ったまま
                 // 誰にも見えないプロセスが残り、待ち受けの口を握り続ける
                 Ev::Closed => self.closed = true,
+                // 上のバーが押された。宛先は「今見ているページ」なので
+                // ループが決める (バーは1枚しか出ていない)
+                Ev::Go { go } => self.gos.push(go),
+                Ev::Where {
+                    from: Some(name),
+                    url,
+                    can_back,
+                    can_forward,
+                } => self.wheres.push((name, url, can_back, can_forward)),
                 // 置いたページの帯が押された = 人が自分の番を終えた。
                 // 誰が押したかは、報告に付いてくる名前でしか分からない
                 Ev::Button { from: Some(name) } => self.presses.push(name),
@@ -456,6 +479,8 @@ fn run_in_window() -> Result<()> {
         pending: std::collections::VecDeque::new(),
         presses: Vec::new(),
         loads: Vec::new(),
+        gos: Vec::new(),
+        wheres: Vec::new(),
         closed: false,
     })
 }
@@ -494,6 +519,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         help_open: ui.help_open,
         ws_open: ui.ws_open,
         qr: ui.qr.clone(),
+        nav: ui.nav.clone(),
         build: format!("build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
     }
 }
@@ -742,6 +768,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let remote_info: Arc<Mutex<webui::RemoteInfo>> = Arc::new(Mutex::new(Default::default()));
     let mut remote_ui = start_remote(cfg.as_ref(), password.as_deref(), &mut startup_errors);
     publish_remote(&remote_info, &remote_ui);
+
+    // 見ているページの居場所 (窓の中での名前, URL, 戻れるか, 進めるか)。
+    // 窓しか知らないので、聞いて控える
+    let mut where_now: Option<(String, String, bool, bool)> = None;
+    let mut asked_where_ms: u64 = 0;
 
     let mut auto_enabled = true;
     let mut started_fired = vec![false; tabs.len()];
@@ -1270,6 +1301,39 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         ball.clamp_to(layout.len());
 
+        // 見ているブラウザの上に出す操作。
+        //
+        // 出す・出さないは設定かLuaが決め、押せる・押せないは窓が答える。
+        // 答えは遅れて届くので、届くまでは押せない顔で出しておく
+        let drawn_ms = start.elapsed().as_millis() as u64;
+        let showing = match layout.get(active.wrapping_sub(1)) {
+            Some(Pane::Browser { key, .. }) => Some(key.clone()),
+            _ => None,
+        };
+        let nav = showing.as_deref().and_then(|key| {
+            let spec = caps.nav_of(key)?;
+            let w = where_now.as_ref().filter(|w| w.0 == key);
+            Some(crate::uistate::NavState {
+                back: spec.back,
+                forward: spec.forward,
+                reload: spec.reload,
+                edit: spec.url,
+                can_back: w.is_some_and(|w| w.2),
+                can_forward: w.is_some_and(|w| w.3),
+                at: w.map(|w| w.1.clone()).unwrap_or_default(),
+            })
+        });
+        // 居場所は窓しか知らない。出しているときだけ、ほどよい間隔で聞く。
+        // 履歴から戻ったページは読み込みを名乗らないことがあるので、
+        // 「読み込んだら聞く」だけでは戻るボタンが古いままになる
+        if let (Some(key), true) = (
+            &showing,
+            nav.is_some() && drawn_ms.saturating_sub(asked_where_ms) >= WHERE_EVERY_MS,
+        ) {
+            asked_where_ms = drawn_ms;
+            let _ = caps.browser_where(key);
+        }
+
         let ui = Ui {
             first_run,
             active,
@@ -1280,6 +1344,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             help_open,
             qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
             remote_on: remote_ui.is_some(),
+            nav,
             ball,
             max_chain,
             now_ms: start.elapsed().as_millis() as u64,
@@ -1311,6 +1376,49 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 }
             }
         }
+        // 上のバーが押された。宛先は今見ているページ (バーは1枚しか出ていない)。
+        // 連鎖の深さには触らない。数えるのは他のタブへ渡ったときだけ
+        for go in surface.take_gos() {
+            let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) else {
+                continue;
+            };
+            // 出していない操作は受け付けない。画面に無いものが効くのはおかしい
+            let Some(spec) = caps.nav_of(key) else {
+                continue;
+            };
+            use crate::browser::Go;
+            let allowed = match &go {
+                Go::Back => spec.back,
+                Go::Forward => spec.forward,
+                Go::Reload => spec.reload,
+                Go::To(_) => spec.url,
+            };
+            if !allowed {
+                continue;
+            }
+            // 人が打った文字は、開いてよい行き先かを見てから渡す
+            let go = match go {
+                Go::To(raw) => match crate::browser::openable(&raw) {
+                    Some(u) => Go::To(u),
+                    None => {
+                        flash = Some(i18n::tp("msg.nav.bad_url", &[("url", raw.trim())]));
+                        continue;
+                    }
+                },
+                other => other,
+            };
+            append_hook_log(&format!("移動 {key}: {go:?}"));
+            let _ = caps.browser_go(key, go);
+            // 動いた直後は居場所が変わる。次の描画で聞き直させる
+            asked_where_ms = 0;
+        }
+        // 答えは窓の中での名前で返る。人の呼び名に戻してから控える
+        for (child, url, can_back, can_forward) in surface.take_wheres() {
+            if let Some(name) = caps.name_of_child(&child) {
+                where_now = Some((name, url, can_back, can_forward));
+            }
+        }
+
         // 読み込みが終わったページ。移動のたびに来る
         for (child, url, complete) in surface.take_loads() {
             let Some(name) = caps.name_of_child(&child) else {
@@ -1754,6 +1862,12 @@ fn write_prompt(t: &Tab, text: &str) {
 /// 綴りがずれると別のブラウザとして扱われ、2枚目が開く
 const SETTINGS_TAB: &str = "settings";
 
+/// 「今どこに居るか」を窓に聞く間隔。
+///
+/// 押せる・押せないの見た目がこれだけ遅れる。毎フレーム聞くほどの
+/// ものではなく、人が気づくほど遅れてもいけない
+const WHERE_EVERY_MS: u64 = 400;
+
 fn open_browser(url: &str) {
     // cmd の start はURL内の & を分割してしまうため、空タイトル引数の後に渡す
     let mut cmd = std::process::Command::new("cmd");
@@ -1995,6 +2109,11 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             .unwrap_or_else(|| "browser".into());
         if let Err(e) = caps.browser_open(&name, &url) {
             errors.push(format!("ブラウザ {name}: {e:#}"));
+            continue;
+        }
+        // 上に出す操作。設定に書いてあれば、Luaを書かなくても出る
+        if let Some(nav) = ft.cfg.nav {
+            let _ = caps.browser_nav(&name, nav);
         }
     }
 }
@@ -2017,6 +2136,13 @@ fn spawn_workspace(
     for ft in &ws.tabs {
         let argv = ft.cfg.command.argv();
         if argv.is_empty() {
+            continue;
+        }
+        // ブラウザは子プロセスではない。窓の中にページを置くだけなので、
+        // ここで立てようとすると「browser という名前の実行ファイルが無い」と
+        // 言われて、起動のたびに身に覚えのない失敗が出る
+        // (open_declared_browsers が開く)
+        if config::browser_url_of(&argv).is_some() {
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
@@ -2754,6 +2880,8 @@ struct Ui {
     now_ms: u64,
     /// 画面に並ぶもの。設定に書いた順
     panes: Vec<Pane>,
+    /// 見ているブラウザの上に出す操作 (None = 出さない)
+    nav: Option<crate::uistate::NavState>,
 }
 
 

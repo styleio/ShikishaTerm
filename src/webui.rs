@@ -1728,6 +1728,24 @@ function kindPanel(t, cmdInput, rebuild) {
     check();
     box.append(el("div", {class:"row"}, el("label", {}, T["settings.browser.url"]), u));
     box.append(el("div", {class:"row"}, el("label", {}, ""), note));
+
+    // ページの上に出す操作。出したものだけが効く
+    t.nav = t.nav || {};
+    const part = (key, label) => {
+      const c = el("input", {type:"checkbox"});
+      c.checked = !!t.nav[key];
+      c.addEventListener("change", () => { t.nav[key] = c.checked; });
+      const l = el("label", {class:"check"});
+      l.append(c, document.createTextNode(label));
+      return l;
+    };
+    box.append(el("div", {class:"row"}, el("label", {}, T["settings.browser.nav"]),
+      part("back", T["tui.nav.back"]),
+      part("forward", T["tui.nav.forward"]),
+      part("reload", T["tui.nav.reload"]),
+      part("url", T["tui.nav.url"])));
+    box.append(el("div", {class:"row"}, el("label", {}, ""),
+      el("span", {class:"hint"}, T["settings.browser.nav.hint"])));
   } else if (dk || wsl) {
     const o = dk || wsl, upd = sync(dk ? buildDocker : buildWsl, o);
     box.append(el("div", {class:"row"},
@@ -1912,7 +1930,8 @@ function flatten(tabs, depth, out) {
     out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command),
                profile: t.profile || "", automation: t.automation || t.lua || "",
                locked: !!t.locked, auto_restart: !!t.auto_restart, cwd: t.cwd || "",
-               encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log, depth });
+               encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
+               nav: t.nav || null, depth });
     flatten(t.children, depth + 1, out);
   }
   return out;
@@ -1930,6 +1949,12 @@ function nest(flat) {
     if (f.encoding) node.encoding = f.encoding;
     if (f.scrollback) node.scrollback = Number(f.scrollback);
     if (f.log) node.log = true;
+    // 1つも出さないなら書かない。false ばかりの塊を残しても読みにくいだけ
+    if (f.nav && Object.values(f.nav).some(Boolean)) {
+      node.nav = {};
+      for (const k of ["back", "forward", "reload", "url"])
+        if (f.nav[k]) node.nav[k] = true;
+    }
     const d = Math.min(f.depth, stack.length);
     if (d === 0) roots.push(node);
     else (stack[d - 1].children = stack[d - 1].children || []).push(node);

@@ -54,6 +54,23 @@ pub struct BallState {
     pub awaiting_human: bool,
 }
 
+/// ブラウザの上に出す操作の並び。
+///
+/// 出す・出さないは設定かLuaが決め、押せる・押せないはブラウザが答える。
+/// 戻れないのに押せる顔で出ていると、押した人は壊れたのかと思う
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct NavState {
+    pub back: bool,
+    pub forward: bool,
+    pub reload: bool,
+    /// URL欄 (人が任意のページへ移る手段)
+    pub edit: bool,
+    pub can_back: bool,
+    pub can_forward: bool,
+    /// いま開いている場所
+    pub at: String,
+}
+
 /// 画面に出す状態のすべて。
 ///
 /// 見た目に関する語 (色・幅・記号) はここに入れない。
@@ -79,6 +96,8 @@ pub struct UiState {
     pub ws_open: bool,
     /// スマホ接続のQRを出しているなら、その接続先
     pub qr: Option<String>,
+    /// 見ているブラウザの上に出す操作 (None = 出さない)
+    pub nav: Option<NavState>,
     /// どのビルドか (古い実行ファイルを掴んでいないか確かめられる)
     pub build: String,
 }

@@ -179,8 +179,26 @@ pub enum Cmd {
     },
     /// 置いたページを取り除く
     RemoveChild { name: String },
+    /// 置いたページを動かす (人が上のバーを押した)
+    Move { to: Option<String>, go: Go },
+    /// 今どこに居るか、戻れるか進めるかを聞く。
+    /// 答えは `Ev::Where` で返る
+    Where { to: Option<String> },
     /// 窓を閉じる (指揮者がいなくなったとき)
     Close,
+}
+
+/// ブラウザに頼む移動。
+///
+/// ページに `history.back()` をやらせる手もあるが、それだと
+/// 「もう戻れない」が分からず、押せないボタンを押せる顔で出すことになる。
+/// 窓の側は戻れるかを知っているので、そちらに頼む
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Go {
+    Back,
+    Forward,
+    Reload,
+    To(String),
 }
 
 /// 画面からの意図をひとつ読む。
@@ -214,6 +232,21 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .to_string(),
         },
         Some("stop") => Ev::Stop,
+        // 上のバー。行き先は人が打った文字なので、ここで型を絞る
+        Some("go") => Ev::Go {
+            go: match v.get("what").and_then(|x| x.as_str()) {
+                Some("back") => Go::Back,
+                Some("forward") => Go::Forward,
+                Some("reload") => Go::Reload,
+                Some("to") => Go::To(
+                    v.get("url")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                ),
+                _ => return None,
+            },
+        },
         Some("jserror") => Ev::JsError {
             msg: v
                 .get("msg")
@@ -298,6 +331,16 @@ pub enum Ev {
     Password { text: Option<String> },
     /// 画面の中で失敗した
     JsError { msg: String },
+    /// 上のバーが押された。宛先は「今見ているブラウザ」なので、
+    /// どれ宛かは指揮者が決める (バーは1枚しか出ていない)
+    Go { go: Go },
+    /// `Cmd::Where` の答え
+    Where {
+        from: Option<String>,
+        url: String,
+        can_back: bool,
+        can_forward: bool,
+    },
     /// 選択された文字 (PuTTY と同じで、選んだ時点でコピーする)
     Copy { text: String },
     /// 貼り付けの要求 (右クリック)
@@ -448,6 +491,21 @@ impl Browser {
             to: to.map(str::to_string),
             text: text.to_string(),
             label: label.to_string(),
+        })
+    }
+
+    /// 置いたページを動かす
+    pub fn go(&self, to: Option<&str>, go: Go) -> Result<()> {
+        self.send(Cmd::Move {
+            to: to.map(str::to_string),
+            go,
+        })
+    }
+
+    /// 今どこに居るかを聞く (答えは報告として届く)
+    pub fn ask_where(&self, to: Option<&str>) -> Result<()> {
+        self.send(Cmd::Where {
+            to: to.map(str::to_string),
         })
     }
 
@@ -734,6 +792,29 @@ fn to_rect((x, y, w, h): (i32, i32, i32, i32)) -> wry::Rect {
     }
 }
 
+/// 人が打った文字を、開いてよい行き先に直す。
+///
+/// 綴りを省いたときだけ補う (`example.com` → `https://example.com`)。
+/// それ以外は書いたとおりに扱い、http/https でなければ開かない。
+/// `file:` は手元のファイルを、`javascript:` は今のページを乗っ取れるので、
+/// URL欄という「どこへでも行ける口」から届かせるわけにいかない
+pub fn openable(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // 綴りが無いものは全部「相手先」として扱う。`javascript:alert(1)` は
+    // https://javascript:alert(1) という壊れた行き先になって開けずに終わる。
+    // 綴りかどうかを当てにいくより、当たらなくても危なくない方を選ぶ
+    let with_scheme = if s.contains("://") {
+        s.to_string()
+    } else {
+        format!("https://{s}")
+    };
+    let low = with_scheme.to_ascii_lowercase();
+    (low.starts_with("http://") || low.starts_with("https://")).then_some(with_scheme)
+}
+
 fn ask_js(text: &str, label: &str) -> String {
     format!(
         "window.__shikisha_ask({}, {});",
@@ -790,6 +871,8 @@ fn run_window(
 
     // ループの中でも報告を送るので、閉じたことを伝える分を先に取っておく
     let closed_tx = ev_tx.clone();
+    // 「今どこに居るか」の答えを返す線。窓の中でしか分からないので、ここから返す
+    let where_tx = ev_tx.clone();
     ev_loop.run_return(move |event, _, control| {
         *control = ControlFlow::Wait;
         match event {
@@ -873,6 +956,30 @@ fn run_window(
                 Cmd::RemoveChild { name } => {
                     children.remove(&name);
                 }
+                Cmd::Move { to, go } => match target(&webview, &children, &to) {
+                    Some(v) => {
+                        let r = match &go {
+                            Go::Back => v.go_back(),
+                            Go::Forward => v.go_forward(),
+                            Go::Reload => v.reload(),
+                            Go::To(u) => v.load_url(u),
+                        };
+                        if let Err(e) = r {
+                            crate::append_hook_log(&format!("移動できません {go:?}: {e}"));
+                        }
+                    }
+                    None => crate::append_hook_log(&format!("移動先のページがありません: {to:?}")),
+                },
+                Cmd::Where { to } => {
+                    if let Some(v) = target(&webview, &children, &to) {
+                        let _ = where_tx.send(Ev::Where {
+                            from: to,
+                            url: v.url().unwrap_or_default(),
+                            can_back: v.can_go_back().unwrap_or(false),
+                            can_forward: v.can_go_forward().unwrap_or(false),
+                        });
+                    }
+                }
                 Cmd::Close => {
                     *control = ControlFlow::Exit;
                 }
@@ -889,6 +996,63 @@ fn run_window(
 
     let _ = closed_tx.send(Ev::Closed);
     Ok(())
+}
+
+#[cfg(test)]
+mod nav_tests {
+    use super::*;
+
+    /// 綴りを省いたら補い、http/https 以外へは行かせないこと。
+    ///
+    /// URL欄は「どこへでも行ける口」なので、`file:` で手元のファイルを、
+    /// `javascript:` で今のページを開かれると、そこから先は
+    /// 自動化の目に触れる。行き先はここで絞る
+    #[test]
+    fn the_address_box_only_opens_web_pages() {
+        assert_eq!(openable("example.com").as_deref(), Some("https://example.com"));
+        assert_eq!(
+            openable("  https://a.example/x?y=1  ").as_deref(),
+            Some("https://a.example/x?y=1"),
+            "前後の空白は落とす"
+        );
+        assert_eq!(
+            openable("http://127.0.0.1:8080/").as_deref(),
+            Some("http://127.0.0.1:8080/")
+        );
+        for bad in ["", "   ", "file:///C:/secret.txt", "ftp://x/y"] {
+            assert!(openable(bad).is_none(), "開けてしまう: {bad}");
+        }
+        // 綴りとして扱わないので、壊れた行き先になって開けずに終わる
+        let js = openable("javascript:alert(1)").unwrap_or_default();
+        assert!(
+            js.starts_with("https://"),
+            "そのままの綴りで渡している: {js}"
+        );
+    }
+
+    /// 画面からの合図が、そのまま移動の指示になること
+    #[test]
+    fn the_bar_speaks_the_same_words_as_the_loop() {
+        let read = |s: &str| {
+            let v: serde_json::Value = serde_json::from_str(s).unwrap();
+            parse_intent(&v)
+        };
+        assert!(matches!(
+            read(r#"{"kind":"go","what":"back"}"#),
+            Some(Ev::Go { go: Go::Back })
+        ));
+        assert!(matches!(
+            read(r#"{"kind":"go","what":"reload"}"#),
+            Some(Ev::Go { go: Go::Reload })
+        ));
+        match read(r#"{"kind":"go","what":"to","url":"example.com"}"#) {
+            Some(Ev::Go { go: Go::To(u) }) => assert_eq!(u, "example.com"),
+            other => panic!("行き先が読めていない: {other:?}"),
+        }
+        // 知らない指示は捨てる。黙って別の動きをするより何もしない方がいい
+        assert!(read(r#"{"kind":"go","what":"quit"}"#).is_none());
+        assert!(read(r#"{"kind":"go"}"#).is_none());
+    }
 }
 
 #[cfg(test)]

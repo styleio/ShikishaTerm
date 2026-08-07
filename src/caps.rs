@@ -119,6 +119,12 @@ pub struct Capabilities {
     ws: std::cell::Cell<usize>,
     /// 今どれを、どの領域に出しているか。同じなら送り直さない
     shown: std::cell::RefCell<(Option<String>, (i32, i32, i32, i32))>,
+    /// ページの上に出す操作 (名前ごと)。
+    ///
+    /// 帯と違ってページの中には描かない。ページを一段下げて、
+    /// 空いた場所にアプリが描く。だから覚えるのもこちら側で、
+    /// 遷移しても消えない
+    nav: std::cell::RefCell<HashMap<String, crate::config::NavSpec>>,
 }
 
 /// ページを触るときの既定の待ち時間。
@@ -139,6 +145,7 @@ impl Capabilities {
             hosted: std::cell::RefCell::new(Vec::new()),
             ws: std::cell::Cell::new(0),
             shown: std::cell::RefCell::new((None, (0, 0, 0, 0))),
+            nav: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -201,6 +208,7 @@ impl Capabilities {
             hosted: std::cell::RefCell::new(Vec::new()),
             ws: std::cell::Cell::new(0),
             shown: std::cell::RefCell::new((None, (0, 0, 0, 0))),
+            nav: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -479,6 +487,45 @@ impl Capabilities {
         self.with(name, |b, to| b.unask(to))
     }
 
+    /// ページの上に操作を出す。出すものが1つも無ければ、出さないのと同じ
+    pub fn browser_nav(&self, name: &str, spec: crate::config::NavSpec) -> Result<()> {
+        // 開いていないページに出すことはできない。ここで断る
+        self.with(name, |_, _| Ok(()))?;
+        let key = Self::key(self.ws.get(), name);
+        if spec.is_empty() {
+            self.nav.borrow_mut().remove(&key);
+        } else {
+            self.nav.borrow_mut().insert(key, spec);
+        }
+        Ok(())
+    }
+
+    pub fn browser_unnav(&self, name: &str) -> Result<()> {
+        self.with(name, |_, _| Ok(()))?;
+        self.nav.borrow_mut().remove(&Self::key(self.ws.get(), name));
+        Ok(())
+    }
+
+    /// ページを動かす。呼び名から窓の中の名前に直すのはこちら側の仕事。
+    /// 呼ぶ側に直させると、直し忘れが「何も起きない」として現れる
+    pub fn browser_go(&self, name: &str, go: crate::browser::Go) -> Result<()> {
+        self.with(name, |b, to| b.go(to, go))
+    }
+
+    /// 今どこに居るかを聞く (答えは報告として届く)
+    pub fn browser_where(&self, name: &str) -> Result<()> {
+        self.with(name, |b, to| b.ask_where(to))
+    }
+
+    /// 何を出すか (画面を描くループが使う)。
+    /// 受けるのは人が使う呼び名。窓の中での名前に直すのはこちらの仕事
+    pub fn nav_of(&self, name: &str) -> Option<crate::config::NavSpec> {
+        self.nav
+            .borrow()
+            .get(&Self::key(self.ws.get(), name))
+            .copied()
+    }
+
     pub fn browser_close(&self, name: &str) -> Result<()> {
         let ws = self.ws.get();
         let key = Self::key(ws, name);
@@ -488,6 +535,7 @@ impl Capabilities {
         }
         self.hosted.borrow_mut().retain(|(w, x)| !(*w == ws && x == name));
         self.pressed.borrow_mut().remove(&key);
+        self.nav.borrow_mut().remove(&key);
         *self.shown.borrow_mut() = (None, (0, 0, 0, 0));
         Ok(())
     }

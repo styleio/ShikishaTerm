@@ -484,6 +484,46 @@ impl HookEngine {
             let c = Caps::clone(&caps);
             shikisha
                 .set(
+                    "browser_nav",
+                    lua.create_function(move |_, (name, opts): (String, Option<mlua::Table>)| {
+                        // 何も渡さなければ全部出す。1つずつ選ぶのは、
+                        // 選びたい人だけがやればいい
+                        let spec = match opts {
+                            None => crate::config::NavSpec::all(),
+                            Some(t) => {
+                                let get = |k: &str| t.get::<Option<bool>>(k).ok().flatten().unwrap_or(false);
+                                crate::config::NavSpec {
+                                    back: get("back"),
+                                    forward: get("forward"),
+                                    reload: get("reload"),
+                                    url: get("url"),
+                                }
+                            }
+                        };
+                        c.browser_nav(&name, spec)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_unnav",
+                    lua.create_function(move |_, name: String| {
+                        c.browser_unnav(&name)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
                     "browser_pressed",
                     lua.create_function(move |_, name: String| {
                         c.browser_pressed(&name)

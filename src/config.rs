@@ -201,6 +201,35 @@ pub struct WorkspaceFile {
     pub lua: Option<String>,
 }
 
+/// ブラウザの上に出す操作。どれを出すかだけを持つ。
+///
+/// 既定はすべて false = 何も出さない。要らないプロジェクトの画面を
+/// 勝手に狭めない。使う人が1つずつ選ぶ
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+pub struct NavSpec {
+    #[serde(default)]
+    pub back: bool,
+    #[serde(default)]
+    pub forward: bool,
+    #[serde(default)]
+    pub reload: bool,
+    /// URL欄。人が任意のページへ移る手段
+    #[serde(default)]
+    pub url: bool,
+}
+
+impl NavSpec {
+    /// 1つも出さないなら、バーそのものが要らない
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// 全部出す。`browser_nav(id)` のように指定を省いたとき用
+    pub fn all() -> Self {
+        Self { back: true, forward: true, reload: true, url: true }
+    }
+}
+
 /// 一緒に開くブラウザ1台
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserConfig {
@@ -250,6 +279,10 @@ pub struct TabConfig {
     /// 旧称。automation が無いときに使われる
     #[serde(default)]
     pub lua: Option<String>,
+    /// ブラウザのタブに出す操作 (戻る/進む/更新/URL欄)。
+    /// 端末のタブでは意味がないので読まれない
+    #[serde(default)]
+    pub nav: Option<NavSpec>,
     /// 表示上の子タブ (転送関係はLuaが決める。ここでは階層表示のみ)
     #[serde(default)]
     pub children: Vec<TabConfig>,
