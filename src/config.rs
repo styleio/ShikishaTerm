@@ -1,13 +1,13 @@
-//! config.json: ワークスペース / タブ構成の定義。DESIGN.md 7.4章。
-//! exe隣 (ポータブル配置) → カレント直下の順で探す。
+//! config/config.json: ワークスペース / タブ構成の定義。DESIGN.md 7.4章。
+//! exe隣の config フォルダ → カレントの config フォルダの順で探す。
 //!
 //! 用語: 「ワークスペース」= 切り替える単位 (仮想デスクトップ相当)。
 //!       その中身を外部化したものが「ワークスペース定義ファイル」。
 //!
-//! 設定は役割で3種に分ける:
-//!   config.json       … 全体設定 + ワークスペース一覧 (滅多に変えない)
-//!   workspaces/*.json … ワークスペース定義ファイル (コピー・共有できる単位)
-//!   secrets.json      … 資格情報 (暗号化可、共有厳禁)
+//! 設定は役割で3種に分ける (利用者の持ち物は config フォルダにまとめる):
+//!   config/config.json  … 全体設定 + ワークスペース一覧 (滅多に変えない)
+//!   workspaces/*.json   … ワークスペース定義ファイル (コピー・共有できる単位)
+//!   config/secrets.json … 資格情報 (暗号化可、共有厳禁)
 
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
@@ -124,8 +124,7 @@ impl Config {
     ) {
         let mut map = self.notify.clone();
         let mut err = None;
-        if let Some(path) = &self.secrets {
-            let path = resolve_data_path(path);
+        if let Some(path) = self.secrets_path() {
             match crate::crypto::read_maybe_encrypted(&path, password)
                 .and_then(|t| serde_json::from_str::<Secrets>(&t).context("secretsのJSONが不正"))
             {
@@ -136,9 +135,16 @@ impl Config {
         (map, err)
     }
 
-    /// secretsファイルのパス (存在すれば)
+    /// secretsファイルのパス (存在すれば)。
+    /// 相対パスは config.json の隣として解決する ("secrets.json" → config/secrets.json)
     pub fn secrets_path(&self) -> Option<std::path::PathBuf> {
-        self.secrets.as_deref().map(resolve_data_path)
+        let p = self.secrets.as_deref()?;
+        if std::path::Path::new(p).is_absolute() {
+            return Some(std::path::PathBuf::from(p));
+        }
+        let mut c = config_file_path();
+        c.set_file_name(p);
+        Some(c)
     }
 
     /// リモートUIのトークン (secretsに書かれていれば使う)
@@ -492,37 +498,44 @@ impl Config {
     }
 }
 
-/// 設定ファイルの探索順 (exe隣 → カレント)
+/// 設定ファイルの探索順 (exe隣の config フォルダ → カレントの config フォルダ)。
+/// ルートには exe 以外のファイルを置かない (利用者の持ち物は config フォルダへ)
 fn config_candidates() -> Vec<std::path::PathBuf> {
     let mut v = Vec::new();
     if let Some(p) = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("config.json")))
+        .and_then(|p| p.parent().map(|d| d.join("config").join("config.json")))
     {
         v.push(p);
     }
-    v.push(std::path::PathBuf::from("config.json"));
+    v.push(std::path::PathBuf::from("config/config.json"));
     v
+}
+
+/// ポータブル配置のルート (exe と各フォルダが並ぶ場所)。
+/// config/config.json の2つ上がルート
+pub fn root_dir() -> std::path::PathBuf {
+    config_file_path()
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
 /// Web GUIの編集対象となる設定ファイルのパス。
 /// 既存ファイルがあればそれを、無ければexe隣に新規作成する想定のパスを返す
-/// 状態ファイル (人が編集しないもの) の置き場。config.json の隣の data フォルダに
-/// まとめ、ルートのファイルは exe と、利用者が扱う config.json / secrets.json
-/// だけになるようにする (フォルダは lang / data / logs / workspaces / scripts)
+/// 状態ファイル (人が編集しないもの) の置き場。ルートの data フォルダにまとめる。
+/// ルートのファイルは exe だけ (フォルダは config / data / logs / lang / workspaces / scripts)
 pub fn state_path(name: &str) -> std::path::PathBuf {
-    let mut p = config_file_path();
-    p.set_file_name("data");
+    let p = root_dir().join("data");
     let _ = std::fs::create_dir_all(&p);
-    p.push(name);
-    p
+    p.join(name)
 }
 
-/// ログの置き場。カレントディレクトリではなく config.json の隣に固定する
+/// ログの置き場。カレントディレクトリではなくルートの logs フォルダに固定する
 /// (起動のしかたでログの行き先が変わると、クラッシュの記録が迷子になる)
 pub fn logs_dir() -> std::path::PathBuf {
-    let mut p = config_file_path();
-    p.set_file_name("logs");
+    let p = root_dir().join("logs");
     let _ = std::fs::create_dir_all(&p);
     p
 }

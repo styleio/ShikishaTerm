@@ -2645,12 +2645,9 @@ fn random_hex(bytes: usize) -> String {
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// 設定ファイルのあるフォルダ (相対パスの基準)
+/// ポータブル配置のルート (相対パスの基準。exe と各フォルダが並ぶ場所)
 fn config_file_dir() -> std::path::PathBuf {
-    config::config_file_path()
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
+    config::root_dir()
 }
 
 /// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する
