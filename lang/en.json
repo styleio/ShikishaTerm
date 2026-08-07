@@ -65,6 +65,7 @@
   "tui.help.mouse.tab": "  tab name/🔒 Click to switch / unlock",
   "tui.help.mouse.divider": "  divider     Drag to resize the tab bar",
   "tui.help.close": "Press any key to close",
+  "tui.scrolled": "▲ {lines} lines back — click to return",
   "tui.qr.title": "Connect from your phone",
   "tui.qr.hint": "Scan with your camera (works from the same network)",
   "tui.status.copy": "[COPY:{mode}] -{offset} | select to copy, right click to paste | v y a / Esc: live{hist}",

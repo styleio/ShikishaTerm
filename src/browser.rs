@@ -241,6 +241,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .to_string(),
         },
         Some("stop") => Ev::Stop,
+        Some("scroll") => Ev::Scroll {
+            // 目盛りは人の指の数。桁外れの数が来ても意味がない
+            by: v.get("by").and_then(|x| x.as_i64()).unwrap_or(0).clamp(-64, 64) as i32,
+            row: v.get("row").and_then(|x| x.as_u64()).unwrap_or(0).min(9999) as u16,
+            col: v.get("col").and_then(|x| x.as_u64()).unwrap_or(0).min(9999) as u16,
+        },
         // 上のバー。行き先は人が打った文字なので、ここで型を絞る
         Some("go") => Ev::Go {
             go: match v.get("what").and_then(|x| x.as_str()) {
@@ -336,6 +342,9 @@ pub enum Ev {
     Menu { key: String },
     /// 緊急停止
     Stop,
+    /// ホイールを回した (正 = 遡る、負 = 戻る)。数は目盛りの数。
+    /// `row`/`col` は指していたマス (全画面のプログラムへ渡すのに要る)
+    Scroll { by: i32, row: u16, col: u16 },
     /// パスワードの入力結果 (None = 取り消し)
     Password { text: Option<String> },
     /// 画面の中で失敗した
@@ -1037,6 +1046,31 @@ mod nav_tests {
             js.starts_with("https://"),
             "そのままの綴りで渡している: {js}"
         );
+    }
+
+    /// ホイールの合図が、遡る量として読めること。
+    /// 上へ回したら過去へ (正)、下へ回したら今へ (負)
+    #[test]
+    fn the_wheel_asks_to_go_back_through_the_log() {
+        let read = |s: &str| {
+            let v: serde_json::Value = serde_json::from_str(s).unwrap();
+            parse_intent(&v)
+        };
+        assert!(matches!(
+            read(r#"{"kind":"scroll","by":3,"row":4,"col":9}"#),
+            Some(Ev::Scroll { by: 3, row: 4, col: 9 })
+        ));
+        assert!(matches!(
+            read(r#"{"kind":"scroll","by":-3,"row":0,"col":0}"#),
+            Some(Ev::Scroll { by: -3, .. })
+        ));
+        // 量が無ければ動かない (0 は「何もしない」であって捨てない)
+        assert!(matches!(read(r#"{"kind":"scroll"}"#), Some(Ev::Scroll { by: 0, .. })));
+        // 指の数として意味のない量は抑える
+        assert!(matches!(
+            read(r#"{"kind":"scroll","by":999999}"#),
+            Some(Ev::Scroll { by: 64, .. })
+        ));
     }
 
     /// 画面からの合図が、そのまま移動の指示になること

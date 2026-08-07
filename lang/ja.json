@@ -65,6 +65,7 @@
   "tui.help.mouse.tab": "  タブ名/🔒   クリックで切替 / ロック解除",
   "tui.help.mouse.divider": "  境界線      ドラッグでタブバー幅を調整",
   "tui.help.close": "何かキーを押すと閉じます",
+  "tui.scrolled": "▲ {lines}行前を見ています — 押すと今へ",
   "tui.qr.title": "スマホから接続",
   "tui.qr.hint": "カメラで読み取ってください（同じネットワーク内から接続できます）",
   "tui.status.copy": "[コピー:{mode}] -{offset} | 選択で自動コピー 右クリック:ペースト | v y a / Esc: 最新へ{hist}",

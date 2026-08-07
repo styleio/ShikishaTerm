@@ -166,6 +166,11 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #veil .qr { background:#fff; padding:12px; border-radius:8px; }
   #veil .url { font-size:12px; color:var(--dim); margin-top:10px;
     word-break:break-all; user-select:text; }
+  /* 過去を見ている印。出ていないと、出力が止まったように見える */
+  #back { position:absolute; right:14px; top:10px; z-index:6;
+    background:#16202b; border:1px solid var(--brand); color:var(--text);
+    padding:4px 12px; border-radius:14px; font-size:12px; cursor:pointer; }
+  #back:hover { background:var(--brand); color:#04121c; }
   #flash { position:absolute; left:50%; bottom:52px; transform:translateX(-50%);
     background:#16202b; border:1px solid var(--brand); color:var(--text);
     padding:8px 16px; border-radius:8px; font-size:13px; }
@@ -181,6 +186,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     <textarea id="kbd" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
     <pre id="probe">MMMMMMMMMM</pre>
     <pre id="tprobe"></pre>
+    <div id="back" hidden></div>
     <div id="flash" hidden></div>
   </div>
   <div id="veil" hidden></div>
@@ -494,6 +500,14 @@ window.__state = function (json) {
   screen.hidden = S.active === 0 || web;
   if (S.active === 0) drawBoard();
   drawVeil();
+  // 遡っているあいだは、そう言っておく。押せば今へ戻る
+  const b = document.getElementById("back");
+  const away = !screen.hidden && S.scrolled > 0;
+  b.hidden = !away;
+  if (away) {
+    b.textContent = (T["tui.scrolled"] || "").replace("{lines}", S.scrolled);
+    b.onclick = () => send({kind:"scroll", by: -1000000});
+  }
   const f = document.getElementById("flash");
   f.hidden = !S.flash;
   if (S.flash) f.textContent = S.flash;
@@ -658,6 +672,25 @@ const focus = () => {
   if (a && a.closest && a.closest("#nav")) return;
   kbd.focus();
 };
+// ホイールで過去を遡る。
+//
+// 端末に見えているのは今の1画面だけで、続きは向こうが持っている。
+// ここで巻き戻す量を伝え、どこを見せるかは持っている側が決める
+scr.addEventListener("wheel", e => {
+  if (!S || S.active === 0 || scr.hidden) return;
+  e.preventDefault();
+  if (!cellW || !cellH) measure();
+  // 全画面のプログラムは自分で巻き戻す。どのマスの上かを一緒に渡す
+  const pad = parseFloat(getComputedStyle(scr).paddingLeft) || 0;
+  const padT = parseFloat(getComputedStyle(scr).paddingTop) || 0;
+  const box = scr.getBoundingClientRect();
+  const col = Math.max(0, Math.floor((e.clientX - box.left - pad) / cellW));
+  const row = Math.max(0, Math.floor((e.clientY - box.top - padT + scr.scrollTop) / cellH));
+  // 上へ回す (deltaY < 0) = 遡る。1目盛りを1つと数える
+  const n = Math.max(1, Math.round(Math.abs(e.deltaY) / 100));
+  send({kind:"scroll", by: e.deltaY < 0 ? n : -n, row: row, col: col});
+}, {passive:false});
+
 // 上のバーは普通の入力欄として振る舞わせる。選んだだけで写し取られたり、
 // 右クリックが端末への貼り付けになったりしては、URLを直せない
 const inBar = e => e.target && e.target.closest && e.target.closest("#nav");

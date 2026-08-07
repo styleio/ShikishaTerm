@@ -98,6 +98,9 @@ pub struct UiState {
     pub qr: Option<String>,
     /// 見ているブラウザの上に出す操作 (None = 出さない)
     pub nav: Option<NavState>,
+    /// 今の画面から何行遡って見ているか (0 = 今)。
+    /// 遡っていることが分からないと、出力が止まったように見える
+    pub scrolled: usize,
     /// どのビルドか (古い実行ファイルを掴んでいないか確かめられる)
     pub build: String,
 }

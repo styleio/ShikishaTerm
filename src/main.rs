@@ -242,6 +242,8 @@ struct WinSurface {
     presses: Vec<String>,
     /// 読み込みが終わったページ (呼び名, URL, 参照先まで揃ったか)
     loads: Vec<(String, String, bool)>,
+    /// ホイールで頼まれた遡り (正 = 過去へ)
+    scrolls: Vec<(i32, u16, u16)>,
     /// 上のバーで頼まれた移動
     gos: Vec<crate::browser::Go>,
     /// 聞いておいた居場所の答え (窓の中での名前, URL, 戻れる, 進める)
@@ -273,6 +275,11 @@ impl WinSurface {
         std::mem::take(&mut self.gos)
     }
 
+    /// ホイールの合図を引き取る (目盛りの数, 指していた行, 桁)
+    fn take_scrolls(&mut self) -> Vec<(i32, u16, u16)> {
+        std::mem::take(&mut self.scrolls)
+    }
+
     /// 居場所の答えを引き取る
     fn take_wheres(&mut self) -> Vec<(String, String, bool, bool)> {
         std::mem::take(&mut self.wheres)
@@ -297,6 +304,7 @@ impl WinSurface {
                 // 上のバーが押された。宛先は「今見ているページ」なので
                 // ループが決める (バーは1枚しか出ていない)
                 Ev::Go { go } => self.gos.push(go),
+                Ev::Scroll { by, row, col } => self.scrolls.push((by, row, col)),
                 Ev::Where {
                     from: Some(name),
                     url,
@@ -479,6 +487,7 @@ fn run_in_window() -> Result<()> {
         pending: std::collections::VecDeque::new(),
         presses: Vec::new(),
         loads: Vec::new(),
+        scrolls: Vec::new(),
         gos: Vec::new(),
         wheres: Vec::new(),
         closed: false,
@@ -520,6 +529,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         ws_open: ui.ws_open,
         qr: ui.qr.clone(),
         nav: ui.nav.clone(),
+        scrolled: ui.scrolled,
         build: format!("build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
     }
 }
@@ -1352,6 +1362,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
             qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
             remote_on: remote_ui.is_some(),
             nav,
+            scrolled: session_at(&layout, active)
+                .and_then(|i| tabs.get(i))
+                .map(|t| {
+                    t.parser
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .screen()
+                        .scrollback()
+                })
+                .unwrap_or(0),
             ball,
             max_chain,
             now_ms: start.elapsed().as_millis() as u64,
@@ -1394,6 +1414,18 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             eng.fire_page("on_press", &page);
         }
+        // ホイールを回した。見えているタブだけが動く
+        for (by, row, col) in surface.take_scrolls() {
+            if by == 0 {
+                continue;
+            }
+            if let Some(t) = session_at(&layout, active).and_then(|i| tabs.get(i)) {
+                scroll_by(t, by, row, col);
+                // 遡っている間に画面が飛ぶと、読んでいるものを見失う
+                view_touched_ms = start.elapsed().as_millis() as u64;
+            }
+        }
+
         // 上のバーが押された。宛先は今見ているページ (バーは1枚しか出ていない)。
         // 連鎖の深さには触らない。数えるのは他のタブへ渡ったときだけ
         for go in surface.take_gos() {
@@ -1744,6 +1776,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                             t.last_manual_ms = Some(now_ms);
                             view_touched_ms = now_ms;
+                            // 打った文字は一番下に出る。遡ったままだと見えない
+                            to_live(t);
                             t.write_bytes(&bytes)?;
                         }
                     }
@@ -1760,6 +1794,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     if !t.locked {
                         t.chain_depth = 0;
                         t.last_manual_ms = Some(now_ms);
+                        to_live(t);
                         t.write_bytes(text.as_bytes())?;
                     }
                 }
@@ -1879,6 +1914,86 @@ fn write_prompt(t: &Tab, text: &str) {
 /// 設定画面を窓の中に置くときの名前。
 /// 綴りがずれると別のブラウザとして扱われ、2枚目が開く
 const SETTINGS_TAB: &str = "settings";
+
+/// ホイール1目盛りぶんの合図を、端末の作法で書き出す。
+///
+/// 全画面のプログラムは自分の中身を自分で巻き戻すので、こちらが
+/// 履歴を持っていても意味がない。回したことを伝えるのが正しい。
+/// 番号は決まりごと: 64 が上、65 が下
+fn wheel_bytes(up: bool, row: u16, col: u16, enc: vt100::MouseProtocolEncoding) -> Vec<u8> {
+    let button = if up { 64 } else { 65 };
+    // 画面の左上は 1,1 (0始まりではない)
+    let (x, y) = (col.saturating_add(1), row.saturating_add(1));
+    match enc {
+        vt100::MouseProtocolEncoding::Sgr => {
+            format!("\x1b[<{button};{x};{y}M").into_bytes()
+        }
+        vt100::MouseProtocolEncoding::Utf8 => {
+            let mut out = b"\x1b[M".to_vec();
+            for v in [button + 32, x + 32, y + 32] {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(
+                    char::from_u32(v as u32).unwrap_or(' ').encode_utf8(&mut buf).as_bytes(),
+                );
+            }
+            out
+        }
+        // 昔の書き方は1バイトずつ。223 より先は表せない
+        _ => {
+            let b = |v: u16| (v.min(223) as u8).saturating_add(32);
+            vec![0x1b, b'[', b'M', b(button), b(x), b(y)]
+        }
+    }
+}
+
+/// 遡った先。正が過去。0 より手前 (未来) は無い
+fn scrolled_to(cur: usize, by: i32) -> usize {
+    if by > 0 {
+        cur.saturating_add(by as usize)
+    } else {
+        cur.saturating_sub(by.unsigned_abs() as usize)
+    }
+}
+
+/// ホイールを回した。
+///
+/// 相手がマウスを見ているなら、回したことをそのまま渡す。全画面の
+/// プログラムは自分の中身を自分で巻き戻すので、こちらの履歴には何も無い。
+/// 見ていないなら (素のシェル等)、こちらが持っている履歴を遡る。
+/// `by` は目盛りの数で、正が過去
+fn scroll_by(t: &Tab, by: i32, row: u16, col: u16) {
+    let (wants_mouse, enc) = {
+        let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let s = p.screen();
+        (
+            s.mouse_protocol_mode() != vt100::MouseProtocolMode::None,
+            s.mouse_protocol_encoding(),
+        )
+    };
+    if wants_mouse {
+        let mut bytes = Vec::new();
+        for _ in 0..by.unsigned_abs().min(16) {
+            bytes.extend_from_slice(&wheel_bytes(by > 0, row, col, enc));
+        }
+        let _ = t.write_bytes(&bytes);
+        return;
+    }
+    // 1目盛りで3行。端末の作法に合わせる
+    let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let next = scrolled_to(p.screen().scrollback(), by.saturating_mul(3));
+    p.screen_mut().set_scrollback(next);
+}
+
+/// 今の画面へ戻す。
+///
+/// 打った文字は画面の一番下に出る。遡ったまま打つと、
+/// 自分が打っているところが見えない
+fn to_live(t: &Tab) {
+    let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+    if p.screen().scrollback() != 0 {
+        p.screen_mut().set_scrollback(0);
+    }
+}
 
 /// 「今どこに居るか」を窓に聞く間隔。
 ///
@@ -2973,6 +3088,8 @@ struct Ui {
     panes: Vec<Pane>,
     /// 見ているブラウザの上に出す操作 (None = 出さない)
     nav: Option<crate::uistate::NavState>,
+    /// 今の画面から何行遡って見ているか (0 = 今)
+    scrolled: usize,
 }
 
 
@@ -3503,6 +3620,47 @@ mod tests {
         assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g - 1, 1_000), None);
         // 時間が経てば再び従う
         assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g, 1_000), Some(2));
+    }
+
+    /// ホイールで遡り、打てば今へ戻ること。
+    ///
+    /// 遡ったまま打つと、打った文字は画面の一番下に出るので見えない。
+    /// 「打ったのに何も出ない」に見える
+    #[test]
+    fn the_wheel_goes_back_and_typing_comes_home() {
+        assert_eq!(scrolled_to(0, 3), 3, "遡れていない");
+        assert_eq!(scrolled_to(3, -1), 2);
+        // 行き過ぎても今より先へは行かない
+        assert_eq!(scrolled_to(2, -100), 0);
+        assert_eq!(scrolled_to(0, -1), 0);
+        // 一番奥へ (実際に持っている量は端末側が抑える)
+        assert_eq!(scrolled_to(5, i32::MAX), 5 + i32::MAX as usize);
+
+        // 打ったら今へ戻る。遡ったままだと、打った文字は
+        // 画面の一番下に出るので見えない
+        let mut p = vt100::Parser::new(3, 20, 100);
+        p.process(b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n");
+        p.screen_mut().set_scrollback(2);
+        assert_eq!(p.screen().scrollback(), 2);
+        p.screen_mut().set_scrollback(scrolled_to(2, i32::MIN));
+        assert_eq!(p.screen().scrollback(), 0, "今へ戻らない");
+    }
+
+    /// 全画面のプログラムには、回したことをそのまま渡すこと。
+    ///
+    /// あちらは自分の中身を自分で巻き戻すので、こちらが履歴を持っていても
+    /// 何も無い (代替画面には遡る先が無い)。Claude Code がこれに当たる
+    #[test]
+    fn a_full_screen_program_is_told_that_the_wheel_turned() {
+        use vt100::MouseProtocolEncoding as E;
+        // 今どきの書き方。64が上、65が下、位置は1始まり
+        assert_eq!(wheel_bytes(true, 0, 0, E::Sgr), b"\x1b[<64;1;1M".to_vec());
+        assert_eq!(wheel_bytes(false, 4, 9, E::Sgr), b"\x1b[<65;10;5M".to_vec());
+        // 昔の書き方は1バイトずつ (32を足す)
+        assert_eq!(
+            wheel_bytes(true, 0, 0, E::Default),
+            vec![0x1b, b'[', b'M', 96, 33, 33]
+        );
     }
 
     /// ブラウザを挟んだ並びでも、ボールを追えること。
