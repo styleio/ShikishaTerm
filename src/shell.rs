@@ -53,8 +53,9 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   /* font-family を書くのは飾りではない。<pre> にはブラウザ自身が
      monospace を当てていて、それは body から受け継ぐ指定より強い。
      書かないと、選んだフォントは端末の中身にだけ効かない */
+  /* --cw はマス1つの幅。画面が測って入れる (中身とカーソルを同じ数で置く) */
   #screen { position:absolute; inset:0; margin:0; padding:8px; white-space:pre;
-    overflow:auto; line-height:1.25; font-family:var(--mono); }
+    overflow:auto; line-height:1.25; font-family:var(--mono); --cw:1ch; }
   /* ここだけ選べる。タブバーや枠は選択に混ざらない */
   #screen { user-select:text; }
 
@@ -224,12 +225,21 @@ let S = null;   // 直近の状態
 // click は「同じ要素で始まって終わる」ことで成立する。押し下げと押し上げの
 // 間に盤面を作り直すと、押した要素はもう無く、その押下はどこにも届かない。
 // 活動グラフは絶えず動くので、これは稀な事故ではなく既定の動作だった。
-let holding = false, queued = null;
+let holding = false, queued = null, holdTimer = 0;
 const release = () => {
   holding = false;
+  clearTimeout(holdTimer);
   if (queued !== null) { const j = queued; queued = null; window.__state(j); }
 };
-addEventListener("pointerdown", () => { holding = true; }, true);
+addEventListener("pointerdown", () => {
+  holding = true;
+  // 離した合図が届かないことがある。重ねたページの上で指を離すと、
+  // こちらには pointerup が来ない。そのまま押しっぱなし扱いになると
+  // 画面が二度と描き直されず、タブを押しても効かないように見える。
+  // 押下を守るのに1秒あれば足りる
+  clearTimeout(holdTimer);
+  holdTimer = setTimeout(release, 1000);
+}, true);
 addEventListener("pointerup", release, true);
 addEventListener("pointercancel", release, true);
 // 窓の外で離された時のために。押しっぱなしのまま固まる方が困る
@@ -502,6 +512,8 @@ const cur = document.getElementById("cur");
 const probe = document.getElementById("probe");
 const tprobe = document.getElementById("tprobe");
 let cellW = 0, cellH = 0, curX = 8, curY = 8, composing = false;
+// 最後に言われたカーソルの居場所。測り直したら、ここへ置き直す
+let lastCur = null;
 
 // font の一括指定は、直せない組み合わせだと空文字になる。
 // 空を代入しても何も起きず、別のフォントで測ることになるので個別に写す
@@ -517,6 +529,25 @@ function measure() {
   const r = probe.getBoundingClientRect();
   cellW = r.width / 10;
   cellH = parseFloat(getComputedStyle(scr).lineHeight) || r.height;
+  // 中身の桁もカーソルも、この1つの数から置く。
+  //
+  // 以前は中身が ch (フォントが言う「0」の送り)、カーソルが測った値、と
+  // 別々の数で並んでいた。2つが少しでも違うと、桁が進むほど差が積もり、
+  // 打つほどカーソルが右へ離れていった。どちらが正しいかではなく、
+  // 同じ数で置くことが要る
+  scr.style.setProperty("--cw", cellW + "px");
+}
+
+// フォントは後から届く。届く前に測ると、代役の字幅で桁が決まってしまう。
+// 届いたら測り直して、置き直す
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(() => {
+    cellW = 0;
+    measure();
+    lastRC = "";
+    report();
+    if (lastCur) window.__cursor(lastCur[0], lastCur[1], lastCur[2]);
+  });
 }
 
 // 窓に何行何桁入るかを知らせる。
@@ -547,6 +578,7 @@ let rt = 0;
 window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(report, 80); });
 
 window.__cursor = function (row, col, shown) {
+  lastCur = [row, col, shown];
   if (!cellW) measure();
   const pad = parseFloat(getComputedStyle(scr).paddingLeft) || 0;
   const padT = parseFloat(getComputedStyle(scr).paddingTop) || 0;
@@ -797,9 +829,12 @@ fn flush_run(out: &mut String, style: &str, run: &str, span: usize) {
         out.push_str(run);
         return;
     }
-    out.push_str("<span style=\"display:inline-block;vertical-align:top;width:");
+    // マスの幅は、画面が測ってCSS変数に入れてくれる。
+    // ch (フォントが言う「0」の送り) で置くと、カーソルを置く数と
+    // 別の数になり、桁が進むほど離れていく
+    out.push_str("<span style=\"display:inline-block;vertical-align:top;width:calc(var(--cw)*");
     out.push_str(&span.to_string());
-    out.push_str("ch;");
+    out.push_str(");");
     out.push_str(style);
     out.push_str("\">");
     out.push_str(run);
@@ -1096,7 +1131,7 @@ mod tests {
 
 #[cfg(test)]
 mod color_tests {
-    use super::screen_html;
+    use super::{PAGE, screen_html};
 
     fn render(input: &str) -> String {
         let mut p: vt100::Parser = vt100::Parser::new(3, 40, 0);
@@ -1111,7 +1146,7 @@ mod color_tests {
     /// 全角は 1.0em で、倍にならない。罫線を1マスで描くフォントに
     /// 替えても、日本語が並べばずれる。
     ///
-    /// 幅を書いておけば、字送りが何であっても次の区間は正しい場所から
+    /// マス数を書いておけば、字送りが何であっても次の区間は正しい場所から
     /// 始まる。フォントは見た目だけの話になる
     #[test]
     fn every_run_carries_its_own_width() {
@@ -1119,21 +1154,45 @@ mod color_tests {
         let html = render("\u{1b}[31mあ\u{1b}[0m\u{2502}ab");
         for piece in html.split("<span").skip(1) {
             assert!(
-                piece.contains("width:") && piece.contains("ch;"),
+                piece.contains("width:calc(var(--cw)*"),
                 "マス数を持たない区間がある: {piece}"
             );
         }
         // 全角は2マス
-        assert!(html.contains("width:2ch;"), "全角が2マスになっていない: {html}");
+        assert!(
+            html.contains("width:calc(var(--cw)*2)"),
+            "全角が2マスになっていない: {html}"
+        );
         // 半角3文字の区間は3マス
         let three = render("\u{1b}[31mabc\u{1b}[0m");
         assert!(
-            three.contains("width:3ch;"),
+            three.contains("width:calc(var(--cw)*3)"),
             "半角3文字が3マスになっていない: {three}"
         );
         // 罫線も1マス。端末がそう数えているので、描く側も合わせる
         let line = render("\u{1b}[31m\u{2502}\u{1b}[0m");
-        assert!(line.contains("width:1ch;"), "罫線が1マスになっていない: {line}");
+        assert!(
+            line.contains("width:calc(var(--cw)*1)"),
+            "罫線が1マスになっていない: {line}"
+        );
+    }
+
+    /// 中身とカーソルが、同じ1つの数で置かれること。
+    ///
+    /// 別々の数 (中身は ch、カーソルは測った値) にすると、
+    /// その差が桁ごとに積もる。打つほどカーソルが右へ離れていった
+    #[test]
+    fn the_text_and_the_cursor_share_one_cell_width() {
+        assert!(
+            !render("ab").contains("ch;"),
+            "フォントが言う字送りで桁を置いている"
+        );
+        assert!(
+            PAGE.contains("scr.style.setProperty(\"--cw\", cellW + \"px\")"),
+            "測った幅を中身へ渡していない"
+        );
+        // カーソルも同じ cellW から置く
+        assert!(PAGE.contains("col * cellW"), "カーソルが別の数で置かれている");
     }
 
     /// 行末の空白は場所を決めなくてよいこと。
