@@ -779,6 +779,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut remote_ui = start_remote(cfg.as_ref(), password.as_deref(), &mut startup_errors);
     publish_remote(&remote_info, &remote_ui);
 
+    // 今どこへ焦点を移してあるか。None = まだ一度も移していない
+    let mut focused: Option<Option<String>> = None;
+
     // 見ているページの居場所 (窓の中での名前, URL, 戻れるか, 進めるか)。
     // 窓しか知らないので、聞いて控える
     let mut where_now: Option<(String, String, bool, bool)> = None;
@@ -1383,6 +1386,29 @@ fn run(mut surface: WinSurface) -> Result<()> {
         caps.set_area(surface.area);
         // 選ばれている1枚だけを、ターミナルの中身の位置に置く。
         // 所有関係で最小化と重なり順はOSが見てくれるが、位置だけは追う必要がある
+        // キーボードの焦点を、見えているものへ移す。
+        //
+        // ページの中の焦点 (activeElement) と、OSが見ている焦点は別物。
+        // 窓ができた直後はOS側が定まっておらず、打鍵は届くのに
+        // 日本語の変換窓だけが画面の隅に出た (窓を少しでも動かすと直る、が目印)。
+        // 見ているものが変わるたびに、こちらから移し直す
+        {
+            let want = match layout.get(active.wrapping_sub(1)) {
+                Some(Pane::Browser { key, .. }) => Some(key.clone()),
+                _ => None,
+            };
+            if focused.as_ref() != Some(&want) {
+                focused = Some(want.clone());
+                match &want {
+                    Some(name) => {
+                        let _ = caps.browser_focus(name);
+                    }
+                    None => {
+                        let _ = surface.win.focus(None);
+                    }
+                }
+            }
+        }
         caps.show_only(match layout.get(active.wrapping_sub(1)) {
             Some(Pane::Browser { key, .. }) => Some(key.as_str()),
             _ => None,

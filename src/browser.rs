@@ -188,6 +188,12 @@ pub enum Cmd {
     },
     /// 置いたページを取り除く
     RemoveChild { name: String },
+    /// キーボードの焦点をこのページへ移す。`to` が None なら主画面。
+    ///
+    /// ページの中の焦点 (activeElement) と、OSが見ている焦点は別物。
+    /// 重ねたページを出し入れするとOS側だけが余所へ残り、
+    /// 打鍵は届くのに日本語の変換窓だけが画面の隅に出る、という形で現れる
+    Focus { to: Option<String> },
     /// 置いたページを動かす (人が上のバーを押した)
     Move { to: Option<String>, go: Go },
     /// 今どこに居るか、戻れるか進めるかを聞く。
@@ -517,6 +523,13 @@ impl Browser {
         self.send(Cmd::Move {
             to: to.map(str::to_string),
             go,
+        })
+    }
+
+    /// キーボードの焦点を移す (None = 主画面)
+    pub fn focus(&self, to: Option<&str>) -> Result<()> {
+        self.send(Cmd::Focus {
+            to: to.map(str::to_string),
         })
     }
 
@@ -973,6 +986,13 @@ fn run_window(
                 }
                 Cmd::RemoveChild { name } => {
                     children.remove(&name);
+                }
+                Cmd::Focus { to } => {
+                    if let Some(v) = target(&webview, &children, &to) {
+                        if let Err(e) = v.focus() {
+                            crate::append_hook_log(&format!("焦点を移せません {to:?}: {e}"));
+                        }
+                    }
                 }
                 Cmd::Move { to, go } => match target(&webview, &children, &to) {
                     Some(v) => {

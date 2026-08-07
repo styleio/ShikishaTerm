@@ -536,6 +536,11 @@ impl Capabilities {
         self.with(name, |b, to| b.ask_where(to))
     }
 
+    /// キーボードの焦点をこのページへ移す
+    pub fn browser_focus(&self, name: &str) -> Result<()> {
+        self.with(name, |b, to| b.focus(to))
+    }
+
     /// 設定に書かれたページを、設定のとおりに揃える。
     ///
     /// 設定から消したページは閉じる。閉じないと、置いたままのページが
