@@ -12,15 +12,15 @@ logs/
 # Added by cargo
 
 /target
-.remote-token
+
+# 状態ファイル置き場 (トークンや既読などの利用者ごとの状態)
+/data/
 
 # 開発中の実行フォルダ (Dev.cmd が作る。利用者の設定が入る)
 run/
 
 
 _material
-# 最後に開いていたワークスペース (利用者ごとの状態)
-.last-workspace
 
 # 起動ランチャは exe と同じ場所にだけ置く (ルートに置くと何も起動しない)
 Window.cmd
@@ -31,3 +31,6 @@ Take-Screenshot.ps1
 
 #AI
 .claude
+
+# 実用テスト機への配置 (このマシン固有のパスを含むため git 管理外)
+Deploy.cmd

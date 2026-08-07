@@ -31,6 +31,7 @@ mod session_log;
 mod shell;
 mod tab;
 mod uistate;
+mod update;
 mod watch;
 mod webui;
 mod wspack;
@@ -822,6 +823,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
     ws_tabs.resize_with(workspaces.len(), Vec::new);
     // 設定ファイルの変更監視 (保存したら再起動なしで反映する)
     let mut watcher = watch::Watcher::new(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
+    // 新しい版が出ていないか裏で一度だけ確かめる (知らせるだけで、更新はしない)
+    let update_rx = update::spawn_check();
     let mut cfg = cfg;
 
     let mut ws_open = false;
@@ -924,6 +927,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     Some(m) => format!(">> {m}"),
                     None => format!(">> {msg}"),
                 });
+            }
+        }
+
+        // 更新の知らせ。他の表示を潰さないよう、画面が空いたときに出す
+        if flash.is_none() {
+            if let Ok(v) = update_rx.try_recv() {
+                flash = Some(i18n::tp("msg.update_available", &[("version", &v)]));
             }
         }
 
@@ -2564,13 +2574,13 @@ fn trim_for_phone(s: &str, max_lines: usize) -> String {
 }
 
 /// リモートUIのトークンを決める。
-/// secretsにあればそれを使い、無ければ .remote-token に保存して使い回す
+/// secretsにあればそれを使い、無ければ data\remote-token に保存して使い回す
 /// (毎回変わるとスマホを繋ぎ直すことになり、QRも設定画面から出せない)
 pub fn remote_token(cfg: &config::Config, password: Option<&str>) -> String {
     if let Some(t) = cfg.remote_token(password) {
         return t;
     }
-    let path = config_file_dir().join(".remote-token");
+    let path = config::state_path("remote-token");
     if let Ok(t) = std::fs::read_to_string(&path) {
         let t = t.trim().to_string();
         if t.len() >= 16 {

@@ -507,14 +507,22 @@ fn config_candidates() -> Vec<std::path::PathBuf> {
 
 /// Web GUIの編集対象となる設定ファイルのパス。
 /// 既存ファイルがあればそれを、無ければexe隣に新規作成する想定のパスを返す
+/// 状態ファイル (人が編集しないもの) の置き場。config.json の隣の data フォルダに
+/// まとめ、ルートには exe と config.json だけが並ぶようにする
+pub fn state_path(name: &str) -> std::path::PathBuf {
+    let mut p = config_file_path();
+    p.set_file_name("data");
+    let _ = std::fs::create_dir_all(&p);
+    p.push(name);
+    p
+}
+
 /// 最後に開いていたワークスペース名の置き場。
 ///
 /// config.json には書き戻さない。利用者が編集している最中に割り込むし、
 /// 変更監視が自分の書き込みに反応して読み直しが走る
 fn last_workspace_path() -> std::path::PathBuf {
-    let mut p = config_file_path();
-    p.set_file_name(".last-workspace");
-    p
+    state_path("last-workspace")
 }
 
 /// 最後に開いていたワークスペース名
