@@ -508,7 +508,8 @@ fn config_candidates() -> Vec<std::path::PathBuf> {
 /// Web GUIの編集対象となる設定ファイルのパス。
 /// 既存ファイルがあればそれを、無ければexe隣に新規作成する想定のパスを返す
 /// 状態ファイル (人が編集しないもの) の置き場。config.json の隣の data フォルダに
-/// まとめ、ルートには exe と config.json だけが並ぶようにする
+/// まとめ、ルートのファイルは exe と、利用者が扱う config.json / secrets.json
+/// だけになるようにする (フォルダは lang / data / logs / workspaces / scripts)
 pub fn state_path(name: &str) -> std::path::PathBuf {
     let mut p = config_file_path();
     p.set_file_name("data");
