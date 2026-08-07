@@ -840,6 +840,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 if let Some(w) = new_ws.get(target) {
                     msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors);
                     ws_index = target;
+                    // バーと帯は開き直さないと出ない、では設定を触った意味がない。
+                    // 開いてあるページに対して、その場で出し直す
+                    apply_browser_chrome(w, &caps);
                 }
                 // 他のワークスペースは作り直しに任せる (裏で動いているタブは触らない)
                 ws_tabs.resize_with(new_ws.len().max(1), Vec::new);
@@ -1272,7 +1275,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 follow_ball,
                 ball.holder,
                 followed,
-                tabs.len(),
+                // 数えるのは画面に並んでいる数。セッションの数で数えると、
+                // ブラウザを挟んだ分だけ後ろのタブが「無い番号」に見え、
+                // そこへ渡ったボールに永久に追従しない
+                layout.len(),
                 now_ms,
                 view_touched_ms,
             ) {
@@ -1368,13 +1374,24 @@ fn run(mut surface: WinSurface) -> Result<()> {
             let Some(name) = caps.name_of_child(&child) else {
                 continue;
             };
-            if auto_enabled {
-                if let (Some(eng), Some(page)) =
-                    (engine.as_mut(), page_ctx(&layout, &name, String::new(), true))
-                {
-                    eng.fire_page("on_press", &page);
-                }
+            append_hook_log(&format!("帯を押した {name}"));
+            if !auto_enabled {
+                flash = Some(i18n::t("msg.press_auto_off"));
+                continue;
             }
+            let Some((eng, page)) = engine
+                .as_mut()
+                .zip(page_ctx(&layout, &name, String::new(), true))
+            else {
+                continue;
+            };
+            // 受ける先が無いのに押せる顔で出ていると、壊れたようにしか見えない
+            if !eng.has_page_hook("on_press", page.index) {
+                flash = Some(i18n::tp("msg.press_nowhere", &[("name", &page.name)]));
+                append_hook_log("on_press が書かれていないので何もしない");
+                continue;
+            }
+            eng.fire_page("on_press", &page);
         }
         // 上のバーが押された。宛先は今見ているページ (バーは1枚しか出ていない)。
         // 連鎖の深さには触らない。数えるのは他のタブへ渡ったときだけ
@@ -2111,18 +2128,48 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             errors.push(format!("ブラウザ {name}: {e:#}"));
             continue;
         }
-        // 上に出す操作と下の帯。設定に書いてあれば、Luaを書かなくても出る。
-        // Luaから呼べばそちらが後から上書きする
-        if let Some(nav) = ft.cfg.nav {
-            let _ = caps.browser_nav(&name, nav);
+    }
+    apply_browser_chrome(ws, caps);
+}
+
+/// ページの上のバーと下の帯を、設定のとおりに出し直す。
+///
+/// 開いたときだけでなく、設定を読み直したときにも通る。
+/// ここを通さないと、チェックを入れても再起動するまで出てこない
+fn apply_browser_chrome(ws: &config::Workspace, caps: &hooks::Caps) {
+    for ft in &ws.tabs {
+        let argv = ft.cfg.command.argv();
+        if config::browser_url_of(&argv).is_none() {
+            continue;
         }
-        if let Some(ask) = &ft.cfg.ask {
-            let label = if ask.label.trim().is_empty() {
-                i18n::t("tui.ask.label")
-            } else {
-                ask.label.clone()
-            };
-            let _ = caps.browser_ask(&name, &ask.text, &label);
+        let name = ft
+            .cfg
+            .id
+            .clone()
+            .or_else(|| ft.cfg.name.clone())
+            .unwrap_or_else(|| "browser".into());
+        // 外したなら消す。設定を戻したのに残っていては直せない。
+        // Luaから出したものも、設定を保存した時点の指定に揃える
+        match ft.cfg.nav {
+            Some(nav) => {
+                let _ = caps.browser_nav(&name, nav);
+            }
+            None => {
+                let _ = caps.browser_unnav(&name);
+            }
+        }
+        match &ft.cfg.ask {
+            Some(ask) => {
+                let label = if ask.label.trim().is_empty() {
+                    i18n::t("tui.ask.label")
+                } else {
+                    ask.label.clone()
+                };
+                let _ = caps.browser_ask(&name, &ask.text, &label);
+            }
+            None => {
+                let _ = caps.browser_unask(&name);
+            }
         }
     }
 }
@@ -3421,6 +3468,26 @@ mod tests {
         assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g - 1, 1_000), None);
         // 時間が経てば再び従う
         assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g, 1_000), Some(2));
+    }
+
+    /// ブラウザを挟んだ並びでも、ボールを追えること。
+    ///
+    /// ボールは画面の番号で動く。数える方をセッションの数にすると、
+    /// ブラウザの枚数だけ後ろの番号が「無いタブ」に見えて、
+    /// そこへ渡ったボールには二度と追従しない。
+    /// (解析=1 ブラウザ / AI=2 セッション の並びで、AIへ渡しても画面が動かなかった)
+    #[test]
+    fn a_browser_in_the_row_does_not_hide_the_tabs_behind_it() {
+        let panes = vec![
+            Pane::Browser { key: "html".into(), name: "解析".into() },
+            Pane::Session(0),
+        ];
+        // セッションは1つだけ。数える先を間違えると 2 > 1 で弾かれる
+        assert_eq!(
+            follow_target(true, 2, 0, panes.len(), FOLLOW_GUARD_MS, 0),
+            Some(2),
+            "ブラウザの後ろのタブへ追従できていない"
+        );
     }
 
 

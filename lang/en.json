@@ -357,6 +357,8 @@
   "remote.err.start": "Could not start the phone feature ({addr}): {error}",
   "remote.err.in_use": "{addr} is already taken by another process. Check whether an earlier SHIKISHA-TERM is still running",
   "msg.nav.bad_url": "Cannot go there: {url} (only http:// and https:// pages open here)",
+  "msg.press_nowhere": ">> The banner on \"{name}\" was pressed, but nothing is written in on_press (the settings screen has a slot for it)",
+  "msg.press_auto_off": ">> Automation is off, so the banner button does nothing (Ctrl+B a turns it back on)",
   "ai.prompt": "You are a converter that writes automation scripts for SHIKISHA-TERM.\nWrite the contents of `{event}.lua` so that it does the following.\n\n## Output rules (strict)\n- Always start with <<<LUA and end with >>>; write only Lua code in between\n- No greetings, explanations, confirmations, questions or code fences\n- Do not wrap it in function ... end (write only the body)\n- Do not use functions or libraries that are absent from the specification\n- No need to look up or check files; finish from these instructions alone\n\n## What is wanted\n{want}\n\n{layout}\n## Specification\n{manual}\n\nNow begin with <<<LUA.\n",
   "ai.tabs.header": "## Tab layout\nName the destination tab (e.g. shikisha.send_to_tab(\"Review\", ...)).\nNumbers change when tabs are reordered, so names are safer.",
   "ai.tabs.id": " → refer to it as \"{id}\"",

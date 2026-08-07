@@ -357,6 +357,8 @@
   "remote.err.start": "リモートUIを開始できません（{addr}）: {error}",
   "remote.err.in_use": "{addr} は別のプロセスが使っています。前に起動したSHIKISHA-TERMがまだ残っていないか確かめてください",
   "msg.nav.bad_url": "そこへは移動できません: {url}（http:// か https:// のページだけ開けます）",
+  "msg.press_nowhere": ">> 「{name}」の帯を押しましたが、on_press に何も書かれていません（設定画面の「押されたとき」で書けます）",
+  "msg.press_auto_off": ">> 自動化がOFFなので、帯を押しても何もしません（Ctrl+B a で戻せます）",
   "ai.prompt": "あなたはSHIKISHA-TERMの自動化スクリプトを書く変換器です。\n次の「やりたいこと」を満たす `{event}.lua` の中身を書いてください。\n\n## 出力の決まり (厳守)\n- 必ず <<<LUA で始めて >>> で終わる。その間にLuaコードだけを書く\n- 挨拶・説明・確認・質問・コードフェンスは一切書かない\n- function ... end で包まない (処理の本体だけを書く)\n- 仕様書に載っていない関数やライブラリは使わない\n- ファイルの探索や確認は不要。この指示だけで完結させる\n\n## やりたいこと\n{want}\n\n{layout}\n## 仕様書\n{manual}\n\nでは <<<LUA から始めてください。\n",
   "ai.tabs.header": "## タブ構成\n送信先はタブ名で指定すること (例: shikisha.send_to_tab(\"検査\", ...))。\n番号は並べ替えで変わるため、名前の方が安全。",
   "ai.tabs.id": " → 指定は \"{id}\"",

@@ -47,7 +47,16 @@ const INIT_JS: &str = r#"
     host.shadowRoot.querySelector("span").textContent = text;
     const b = host.shadowRoot.querySelector("button");
     b.textContent = label;
-    b.onclick = () => send({ kind: "button" });
+    // 押したことがその場で分かるようにする。手応えが無いと、
+    // 押せたのか、押せていないのか、何も起きない仕事なのかが区別できない。
+    // 二度押しも防げる (受け取る側は1回しか来ないと思っている)
+    b.onclick = () => {
+      if (b.disabled) return;
+      b.disabled = true;
+      b.style.opacity = ".45";
+      b.style.cursor = "default";
+      send({ kind: "button" });
+    };
   };
 
   window.__shikisha_unask = function () {

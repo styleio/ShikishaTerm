@@ -905,6 +905,14 @@ impl HookEngine {
     ///
     /// 渡すのは page で、tab ではない。ページには状態も出力も無い。
     /// 無いものを埋めて似せると、書く人が別のものと取り違える
+    /// そのページに、そのフックの引き当て先があるか。
+    ///
+    /// 押しても受ける先が無い帯は、壊れたボタンにしか見えない。
+    /// 出す前に、あるいは押された時点で、そう言えるようにしておく
+    pub fn has_page_hook(&self, hook: &str, index: usize) -> bool {
+        self.resolve(hook, index).is_some()
+    }
+
     pub fn fire_page(&mut self, hook: &str, page: &PageCtx) {
         let Some(id) = self.resolve(hook, page.index) else {
             return;
