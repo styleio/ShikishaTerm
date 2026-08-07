@@ -338,6 +338,14 @@ shikisha.browser_unnav(page.id)                      -- 引っ込める
 **設定画面のブラウザタブでも同じことを選べます。** そちらで選んでおけば、
 `on_load` に何も書かなくても最初から出ます。Luaから呼べば設定より優先されます。
 
+**帯も同じです。** 設定画面の「帯（ボタン）」に文言とボタンの字を書けば、
+開いた時点から出ます。そうすると書くのは `on_press.lua` の1枚だけになります。
+
+```lua
+-- scripts/lp/on_press.lua — これだけで「人が選んで、押したら渡る」
+shikisha.draft_to_tab("ai", shikisha.browser_html(page.id))
+```
+
 **URLを打っても `on_load` が焚かれます。** 移動のたびに解析させたくなければ、
 `on_load.lua` は空のままにして `on_press.lua` にだけ書いてください。
 それで「人が選んで、押したときだけ渡る」になります。

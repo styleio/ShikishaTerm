@@ -96,10 +96,11 @@ struct HttpJob {
 }
 
 pub struct Capabilities {
-    spec: CapabilitySpec,
+    /// 設定から来るもの。読み直しで差し替わる
+    spec: std::cell::RefCell<CapabilitySpec>,
     base: PathBuf,
-    tokens: HashMap<String, String>,
-    tx: Option<mpsc::Sender<HttpJob>>,
+    tokens: std::cell::RefCell<HashMap<String, String>>,
+    tx: std::cell::RefCell<Option<mpsc::Sender<HttpJob>>>,
     /// 名前で引くブラウザ。フックは単一スレッドで回るので Rc/RefCell でよい
     /// 帯のボタンが押されたか (名前ごと)。読んだら下ろす
     pressed: std::cell::RefCell<HashMap<String, bool>>,
@@ -135,10 +136,10 @@ impl Capabilities {
     /// 何も許可しない状態 (既定)
     pub fn disabled() -> Self {
         Self {
-            spec: CapabilitySpec::default(),
+            spec: std::cell::RefCell::new(CapabilitySpec::default()),
             base: PathBuf::from("."),
-            tokens: HashMap::new(),
-            tx: None,
+            tokens: std::cell::RefCell::new(HashMap::new()),
+            tx: std::cell::RefCell::new(None),
             pressed: std::cell::RefCell::new(HashMap::new()),
             host: std::cell::RefCell::new(None),
             area: std::cell::Cell::new((0, 0, 0, 0)),
@@ -150,10 +151,31 @@ impl Capabilities {
     }
 
     pub fn new(spec: CapabilitySpec, base: PathBuf, tokens: HashMap<String, String>) -> Self {
-        // 通信はUIをブロックしないよう専用スレッドで行う
-        let tx = if spec.http.is_empty() && spec.allow_hosts.is_empty() {
-            None
-        } else {
+        let me = Self {
+            base,
+            ..Self::disabled()
+        };
+        me.set_config(spec, tokens);
+        me
+    }
+
+    /// 設定から来るものだけを入れ替える。
+    ///
+    /// 置いたページ・帯・バーは持ち越す。設定を読み直しただけで
+    /// 画面から物が消えたり、消えないまま残ったりしてはいけない
+    pub fn set_config(&self, spec: CapabilitySpec, tokens: HashMap<String, String>) {
+        let wants_http = !spec.http.is_empty() || !spec.allow_hosts.is_empty();
+        *self.spec.borrow_mut() = spec;
+        *self.tokens.borrow_mut() = tokens;
+        if !wants_http || self.tx.borrow().is_some() {
+            return;
+        }
+        *self.tx.borrow_mut() = Some(Self::start_sender());
+    }
+
+    /// 通信はUIをブロックしないよう専用スレッドで行う
+    fn start_sender() -> mpsc::Sender<HttpJob> {
+        {
             let (tx, rx) = mpsc::channel::<HttpJob>();
             std::thread::spawn(move || {
                 let agent = ureq::Agent::config_builder()
@@ -195,26 +217,14 @@ impl Capabilities {
                     }
                 }
             });
-            Some(tx)
-        };
-        Self {
-            spec,
-            base,
-            tokens,
-            tx,
-            pressed: std::cell::RefCell::new(HashMap::new()),
-            host: std::cell::RefCell::new(None),
-            area: std::cell::Cell::new((0, 0, 0, 0)),
-            hosted: std::cell::RefCell::new(Vec::new()),
-            ws: std::cell::Cell::new(0),
-            shown: std::cell::RefCell::new((None, (0, 0, 0, 0))),
-            nav: std::cell::RefCell::new(HashMap::new()),
+            tx
         }
     }
 
     /// 名前付き窓口のパスを解決する
     fn named_path(&self, name: &str, rel: &str, want_write: bool) -> Result<PathBuf> {
-        let Some(cap) = self.spec.files.get(name) else {
+        let spec = self.spec.borrow();
+        let Some(cap) = spec.files.get(name) else {
             bail!("ファイル窓口 '{name}' は未登録です (config.json の capabilities.files)");
         };
         if want_write && !cap.write {
@@ -235,7 +245,8 @@ impl Capabilities {
 
     /// 生パス (allow_dirs 内に限る)
     fn raw_path(&self, p: &str) -> Result<PathBuf> {
-        if self.spec.allow_dirs.is_empty() {
+        let spec = self.spec.borrow();
+        if spec.allow_dirs.is_empty() {
             bail!("生パスの利用は許可されていません (capabilities.allow_dirs が空)");
         }
         let target = self.base.join(p);
@@ -243,7 +254,7 @@ impl Capabilities {
         let canon_parent = parent
             .canonicalize()
             .map_err(|_| anyhow::anyhow!("フォルダが存在しません: {}", parent.display()))?;
-        let ok = self.spec.allow_dirs.iter().any(|d| {
+        let ok = spec.allow_dirs.iter().any(|d| {
             self.base
                 .join(d)
                 .canonicalize()
@@ -290,11 +301,13 @@ impl Capabilities {
 
     /// 名前付きHTTP窓口へ送信する (送りっぱなし。応答はログに残す)
     pub fn http(&self, name: &str, body: &str) -> Result<()> {
-        let Some(cap) = self.spec.http.get(name) else {
+        let spec = self.spec.borrow();
+        let Some(cap) = spec.http.get(name) else {
             bail!("HTTP窓口 '{name}' は未登録です (config.json の capabilities.http)");
         };
         let auth = cap.auth_from_secrets.as_ref().and_then(|key| {
             self.tokens
+                .borrow()
                 .get(key)
                 .map(|v| (cap.auth_header.clone(), v.clone()))
         });
@@ -546,7 +559,7 @@ impl Capabilities {
         if !url.starts_with("https://") {
             bail!("https:// のみ許可されています");
         }
-        if !self.spec.allow_hosts.iter().any(|h| h == &host) {
+        if !self.spec.borrow().allow_hosts.iter().any(|h| h == &host) {
             bail!("許可されていない接続先です: {host}");
         }
         self.dispatch(HttpJob {
@@ -558,11 +571,59 @@ impl Capabilities {
     }
 
     fn dispatch(&self, job: HttpJob) -> Result<()> {
-        let Some(tx) = &self.tx else {
+        let tx = self.tx.borrow();
+        let Some(tx) = tx.as_ref() else {
             bail!("HTTPは有効化されていません");
         };
         tx.send(job)
             .map_err(|_| anyhow::anyhow!("送信キューが閉じています"))
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    /// 設定を読み直しても、窓の中に置いたページを忘れないこと。
+    ///
+    /// 忘れると、そのページは誰にも動かせないまま画面の上に残る。
+    /// 設定画面を保存した瞬間にそれが起き、タブを押しても
+    /// 何も変わらないように見えた
+    #[test]
+    fn reloading_the_settings_does_not_lose_the_pages_on_screen() {
+        let c = Capabilities::disabled();
+        // 窓の代わりは無いので、置いた記録だけを直に作る
+        c.hosted.borrow_mut().push((0, "settings".into()));
+        c.nav
+            .borrow_mut()
+            .insert("0/html".into(), crate::config::NavSpec::all());
+        c.note_press("0/html");
+
+        c.set_config(CapabilitySpec::default(), HashMap::new());
+
+        assert_eq!(c.hosted_names(), vec!["settings".to_string()], "置いたページを忘れた");
+        assert!(c.nav_of("html").is_some(), "上のバーを忘れた");
+        assert!(c.forget_press("html"), "押された帯を忘れた");
+    }
+
+    /// 設定から来るものは、ちゃんと入れ替わること
+    #[test]
+    fn the_settings_themselves_are_replaced() {
+        let c = Capabilities::disabled();
+        assert!(c.read("tmp", "x.txt").is_err(), "何も許していないはず");
+
+        let mut files = HashMap::new();
+        files.insert(
+            "tmp".to_string(),
+            FileCap { dir: ".".into(), read: true, write: false },
+        );
+        c.set_config(
+            CapabilitySpec { files, ..Default::default() },
+            HashMap::new(),
+        );
+        // 窓口は登録された (ファイルが無いので読み込み自体は失敗する)
+        let err = c.read("tmp", "居ないファイル.txt").unwrap_err().to_string();
+        assert!(!err.contains("未登録"), "窓口が入れ替わっていない: {err}");
     }
 }
 

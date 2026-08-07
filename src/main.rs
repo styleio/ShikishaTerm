@@ -742,7 +742,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         None => notify::Notifier::new(Default::default()),
     };
     // 自動化に与える能力 (既定は空)。設定ファイルにだけ書ける玄人向け機能
-    let mut caps: hooks::Caps = std::rc::Rc::new(match cfg.as_ref() {
+    let caps: hooks::Caps = std::rc::Rc::new(match cfg.as_ref() {
         Some(c) => caps::Capabilities::new(
             c.capabilities.clone(),
             config_file_dir(),
@@ -865,13 +865,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     startup_errors.push(e);
                 }
                 notifier = notify::Notifier::new(dests);
-                caps = std::rc::Rc::new(caps::Capabilities::new(
+                // 設定から来るものだけを差し替える。作り直すと、窓の中に
+                // 置いたページを誰も知らなくなり、消せないまま画面に残る
+                // (設定を保存した瞬間に設定画面が居座り、タブが効かなくなった)
+                caps.set_config(
                     newcfg.capabilities.clone(),
-                    config_file_dir(),
                     newcfg.resolve_tokens(password.as_deref()),
-                ));
-                // 設定を読み直すと能力ごと作り直されるので、置き先も渡し直す
-                caps.set_host(surface.host());
+                );
                 engine = build_engine(
                     Some(&newcfg),
                     workspaces.get(ws_index),
@@ -2111,9 +2111,18 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             errors.push(format!("ブラウザ {name}: {e:#}"));
             continue;
         }
-        // 上に出す操作。設定に書いてあれば、Luaを書かなくても出る
+        // 上に出す操作と下の帯。設定に書いてあれば、Luaを書かなくても出る。
+        // Luaから呼べばそちらが後から上書きする
         if let Some(nav) = ft.cfg.nav {
             let _ = caps.browser_nav(&name, nav);
+        }
+        if let Some(ask) = &ft.cfg.ask {
+            let label = if ask.label.trim().is_empty() {
+                i18n::t("tui.ask.label")
+            } else {
+                ask.label.clone()
+            };
+            let _ = caps.browser_ask(&name, &ask.text, &label);
         }
     }
 }

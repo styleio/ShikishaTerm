@@ -1055,6 +1055,7 @@ const PAGE: &str = r##"<!doctype html>
   <div class="spacer"></div>
   <span id="msg"></span>
   <button class="quiet" onclick="load()">{{common.reload}}</button>
+  <button class="quiet" id="backbtn" onclick="backToIndex()">{{settings.back}}</button>
   <button class="primary" id="savebtn" onclick="save()">{{common.save}}</button>
 </header>
 
@@ -1746,6 +1747,32 @@ function kindPanel(t, cmdInput, rebuild) {
       part("url", T["tui.nav.url"])));
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.browser.nav.hint"])));
+
+    // 下に出す帯。チェック1つでは足りない (文言とボタンの字が要る) ので、
+    // 「出す」を入れたときだけ中身の欄を出す
+    const askOn = el("input", {type:"checkbox"});
+    askOn.checked = !!t.ask;
+    const askLabel = el("label", {class:"check"});
+    askLabel.append(askOn, document.createTextNode(T["settings.browser.ask.on"]));
+    const askBody = el("div");
+    const drawAsk = () => {
+      askBody.textContent = "";
+      if (!t.ask) return;
+      askBody.append(
+        el("div", {class:"row"}, el("label", {}, T["settings.browser.ask.text"]),
+          field(t.ask, "text", T["settings.browser.ask.text.ph"])),
+        el("div", {class:"row"}, el("label", {}, T["settings.browser.ask.label"]),
+          field(t.ask, "label", T["tui.ask.label"], {grow:false, width:200})));
+    };
+    askOn.addEventListener("change", () => {
+      t.ask = askOn.checked ? (t.ask || {text:"", label:""}) : null;
+      drawAsk();
+    });
+    drawAsk();
+    box.append(el("div", {class:"row"}, el("label", {}, T["settings.browser.ask"]), askLabel));
+    box.append(askBody);
+    box.append(el("div", {class:"row"}, el("label", {}, ""),
+      el("span", {class:"hint"}, T["settings.browser.ask.hint"])));
   } else if (dk || wsl) {
     const o = dk || wsl, upd = sync(dk ? buildDocker : buildWsl, o);
     box.append(el("div", {class:"row"},
@@ -1931,7 +1958,7 @@ function flatten(tabs, depth, out) {
                profile: t.profile || "", automation: t.automation || t.lua || "",
                locked: !!t.locked, auto_restart: !!t.auto_restart, cwd: t.cwd || "",
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
-               nav: t.nav || null, depth });
+               nav: t.nav || null, ask: t.ask || null, depth });
     flatten(t.children, depth + 1, out);
   }
   return out;
@@ -1954,6 +1981,12 @@ function nest(flat) {
       node.nav = {};
       for (const k of ["back", "forward", "reload", "url"])
         if (f.nav[k]) node.nav[k] = true;
+    }
+    // 帯は書いてあること自体が「出す」の意味。空欄は書かない
+    if (f.ask) {
+      node.ask = {};
+      if (f.ask.text) node.ask.text = f.ask.text;
+      if (f.ask.label) node.ask.label = f.ask.label;
     }
     const d = Math.min(f.depth, stack.length);
     if (d === 0) roots.push(node);
@@ -2054,6 +2087,21 @@ async function doSave() {
   if (!j.ok) { result(fill(T["settings.save_failed"], {error: j.error}), true); return; }
   markClean();
   result(T["common.saved"]);
+  // 保存したら用は済んでいる。開いたままだと盤面へ戻る道が
+  // 「別のタブを押す」しかなく、設定画面が居座っているように見える
+  goIndex();
+}
+
+// この画面は窓の中に置かれたページなので、本体へ直接ものが言える。
+// 外のブラウザで開いているときは window.ipc が無いだけ (何も起きない)
+function goIndex() {
+  try { window.ipc.postMessage(JSON.stringify({kind:"select", tab:0})); } catch (e) {}
+}
+
+// 何もせずに戻る。未保存なら、消えることを先に伝える
+function backToIndex() {
+  if (snapshot() !== savedSnapshot && !confirm(T["settings.back.confirm"])) return;
+  goIndex();
 }
 
 load();

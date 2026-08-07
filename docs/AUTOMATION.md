@@ -325,6 +325,14 @@ Back and forward grey out when there is nowhere to go. The address box only open
 http/https. The same four checkboxes live in the settings screen for a browser tab, so
 this works with no Lua at all; a call from Lua wins over the setting.
 
+The banner works the same way: fill in its words and button text under "Banner" in the
+settings and it is there from the moment the page opens. Then the only file you write is
+
+```lua
+-- scripts/lp/on_press.lua
+shikisha.draft_to_tab("ai", shikisha.browser_html(page.id))
+```
+
 Typing an address still fires `on_load`, so if you only want the page handed over when
 a person says so, leave `on_load.lua` empty and write `on_press.lua`. None of this
 touches the chain depth — that only counts handoffs to another tab.

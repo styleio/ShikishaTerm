@@ -230,6 +230,20 @@ impl NavSpec {
     }
 }
 
+/// ページの下に出す帯。
+///
+/// 書いてあること自体が「出す」の意味。バーと違って文言が要るので、
+/// 出す・出さないをまとめた真偽値では足りない
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct AskSpec {
+    /// 帯の左に出る文言
+    #[serde(default)]
+    pub text: String,
+    /// ボタンの字。空なら既定の言葉を使う
+    #[serde(default)]
+    pub label: String,
+}
+
 /// 一緒に開くブラウザ1台
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserConfig {
@@ -283,6 +297,9 @@ pub struct TabConfig {
     /// 端末のタブでは意味がないので読まれない
     #[serde(default)]
     pub nav: Option<NavSpec>,
+    /// ブラウザのタブの下に出す帯 (文言とボタンの字)
+    #[serde(default)]
+    pub ask: Option<AskSpec>,
     /// 表示上の子タブ (転送関係はLuaが決める。ここでは階層表示のみ)
     #[serde(default)]
     pub children: Vec<TabConfig>,
@@ -644,5 +661,36 @@ mod browser_kind_tests {
         assert!(browser_url_of(&[]).is_none());
         // 「browser」で始まる別のコマンドを巻き込まない
         assert!(browser_url_of(&v(&["browserify", "x"])).is_none());
+    }
+
+    /// ブラウザの見た目を、Luaを書かずに設定だけで決められること。
+    ///
+    /// 書いてある項目だけが出る。書いていないものは既定 (出さない) になる
+    #[test]
+    fn a_browser_tab_can_be_dressed_from_the_settings_alone() {
+        let t: super::TabConfig = serde_json::from_str(
+            r#"{
+                "name": "解析",
+                "command": "browser https://example.com/",
+                "nav": { "reload": true, "url": true },
+                "ask": { "text": "読み終わったら押してください", "label": "解析する" }
+            }"#,
+        )
+        .unwrap();
+        let nav = t.nav.expect("上のバーが読めていない");
+        assert!(nav.reload && nav.url, "書いたものが出ない");
+        assert!(!nav.back && !nav.forward, "書いていないものまで出る");
+        let ask = t.ask.expect("帯が読めていない");
+        assert_eq!(ask.label, "解析する");
+
+        // 何も書かなければ、どちらも出さない
+        let bare: super::TabConfig =
+            serde_json::from_str(r#"{"command": "browser https://example.com/"}"#).unwrap();
+        assert!(bare.nav.is_none() && bare.ask.is_none());
+
+        // 帯は書いてあること自体が「出す」の意味。中身が空でも出す
+        let empty: super::TabConfig =
+            serde_json::from_str(r#"{"command": "browser https://x/", "ask": {}}"#).unwrap();
+        assert!(empty.ask.is_some(), "空の帯を無かったことにしている");
     }
 }
