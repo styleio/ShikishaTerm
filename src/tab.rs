@@ -874,7 +874,7 @@ impl Tab {
             let enc = opts.encoding;
             let mut log = opts
                 .log
-                .then(|| crate::session_log::SessionLog::open(std::path::Path::new("logs"), &title));
+                .then(|| crate::session_log::SessionLog::open(&crate::config::logs_dir(), &title));
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 let mut decoder = enc.map(|e| e.new_decoder());

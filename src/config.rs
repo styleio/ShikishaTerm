@@ -517,6 +517,15 @@ pub fn state_path(name: &str) -> std::path::PathBuf {
     p
 }
 
+/// ログの置き場。カレントディレクトリではなく config.json の隣に固定する
+/// (起動のしかたでログの行き先が変わると、クラッシュの記録が迷子になる)
+pub fn logs_dir() -> std::path::PathBuf {
+    let mut p = config_file_path();
+    p.set_file_name("logs");
+    let _ = std::fs::create_dir_all(&p);
+    p
+}
+
 /// 最後に開いていたワークスペース名の置き場。
 ///
 /// config.json には書き戻さない。利用者が編集している最中に割り込むし、

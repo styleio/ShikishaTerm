@@ -63,11 +63,10 @@ fn install_crash_log() {
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_default();
         append_hook_log(&format!("!!! 異常終了 {where_}: {info}"));
-        let _ = std::fs::create_dir_all("logs");
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open("logs/crash.log")
+            .open(config::logs_dir().join("crash.log"))
         {
             use std::io::Write as _;
             let _ = writeln!(f, "{where_}: {info}");
@@ -2760,11 +2759,10 @@ fn log_excerpt(text: &str, max: usize) -> String {
 }
 
 pub fn append_hook_log(msg: &str) {
-    let _ = std::fs::create_dir_all("logs");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("logs/hooks.log")
+        .open(config::logs_dir().join("hooks.log"))
     {
         use std::io::Write as _;
         let _ = writeln!(f, "{msg}");
