@@ -88,12 +88,18 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
     }
 }
 
+/// 中継フレームの配信先 (接続中のWSクライアントごとに1本)。
+/// 送れなくなった線は次のフレームで掃除する
+type FrameClients = Arc<Mutex<Vec<Sender<Vec<u8>>>>>;
+
 pub struct RemoteUi {
     pub url: String,
     pub note: Option<String>,
     pub snapshot: Arc<Mutex<Snapshot>>,
     pub rx: Receiver<RemoteCmd>,
     stop: Arc<AtomicBool>,
+    /// 中継フレームの配信先。ブラウザから届いたJPEGをここへ流す
+    frame_clients: FrameClients,
 }
 
 impl RemoteUi {
@@ -123,16 +129,18 @@ impl RemoteUi {
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let (tx, rx) = channel::<RemoteCmd>();
         let stop = Arc::new(AtomicBool::new(false));
+        let frame_clients: FrameClients = Arc::new(Mutex::new(Vec::new()));
 
         {
             let snapshot = Arc::clone(&snapshot);
             let stop = Arc::clone(&stop);
+            let clients = Arc::clone(&frame_clients);
             std::thread::spawn(move || {
                 for req in server.incoming_requests() {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
-                    if let Err(e) = handle(req, &token, &snapshot, &tx) {
+                    if let Err(e) = handle(req, &token, &snapshot, &tx, &clients) {
                         crate::append_hook_log(&format!("リモートUI: {e}"));
                     }
                 }
@@ -144,7 +152,20 @@ impl RemoteUi {
             snapshot,
             rx,
             stop,
+            frame_clients,
         })
+    }
+
+    /// 中継フレーム (JPEGのバイト列) を、接続中のWSクライアント全員へ配る。
+    /// 受け取れない線は捨てる (相手が閉じた・詰まった)
+    pub fn push_frame(&self, jpeg: Vec<u8>) {
+        let mut clients = self.frame_clients.lock().unwrap();
+        clients.retain(|tx| tx.send(jpeg.clone()).is_ok());
+    }
+
+    /// 中継を見ているクライアントが1人でもいるか (誰も見ていなければ中継を止められる)
+    pub fn has_frame_clients(&self) -> bool {
+        !self.frame_clients.lock().unwrap().is_empty()
     }
 
     pub fn shutdown(&self) {
@@ -177,6 +198,7 @@ fn handle(
     token: &str,
     snapshot: &Arc<Mutex<Snapshot>>,
     tx: &Sender<RemoteCmd>,
+    frame_clients: &FrameClients,
 ) -> Result<()> {
     let supplied = {
         let h = req
@@ -220,6 +242,37 @@ fn handle(
         ("GET", "/api/state") => {
             let snap = snapshot.lock().unwrap().clone();
             req.respond(json_response(serde_json::to_value(snap)?))?;
+        }
+        // 画面中継の受け口。握手してWebSocketへ格上げし、以後はこの線へ
+        // JPEGフレームを流す (下り専用。ソケットは書き込みスレッドが持つ)
+        ("GET", "/ws") => {
+            let key = req
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("Sec-WebSocket-Key"))
+                .map(|h| h.value.as_str().to_string())
+                .unwrap_or_default();
+            if key.is_empty() {
+                return req
+                    .respond(Response::from_string("expected websocket").with_status_code(400))
+                    .map_err(Into::into);
+            }
+            let accept = crate::ws::accept_key(&key);
+            let resp = Response::empty(101).with_header(
+                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
+            );
+            let stream = req.upgrade("websocket", resp);
+            let (ftx, frx) = channel::<Vec<u8>>();
+            frame_clients.lock().unwrap().push(ftx);
+            std::thread::spawn(move || {
+                let mut w = crate::ws::WsWriter::new(stream);
+                while let Ok(jpeg) = frx.recv() {
+                    if w.send_binary(&jpeg).is_err() {
+                        break;
+                    }
+                }
+                let _ = w.send_close();
+            });
         }
         ("POST", "/api/send") => {
             let mut req = req;
@@ -401,6 +454,65 @@ mod tests {
             }
             other => panic!("窓にしか答えられないものが通った: {other:?}"),
         }
+        ui.shutdown();
+    }
+
+    /// /ws が握手し、push_frame で流したJPEGがWSのバイナリフレームで届くこと。
+    /// 生のTCPと自作の ws モジュールだけで端から端まで確かめる (電話も外部ツールも不要)
+    #[test]
+    fn ws_upgrades_and_delivers_a_frame() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into()).unwrap();
+        let hostport = ui
+            .url
+            .trim_start_matches("http://")
+            .split("/?")
+            .next()
+            .unwrap()
+            .to_string();
+
+        let mut sock = TcpStream::connect(&hostport).unwrap();
+        // RFC 6455 の例と同じキー (accept は s3pP... になる)
+        let req = "GET /ws?t=tok123456789012 HTTP/1.1\r\n\
+             Host: localhost\r\n\
+             Upgrade: websocket\r\n\
+             Connection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n";
+        sock.write_all(req.as_bytes()).unwrap();
+
+        // 応答ヘッダを \r\n\r\n まで読む
+        let mut buf = Vec::new();
+        let mut one = [0u8; 1];
+        loop {
+            sock.read_exact(&mut one).unwrap();
+            buf.push(one[0]);
+            if buf.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = String::from_utf8_lossy(&buf);
+        assert!(head.contains("101"), "101 で格上げされていない: {head}");
+        assert!(
+            head.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+            "Sec-WebSocket-Accept が違う: {head}"
+        );
+
+        // 登録が済むまでの隙をおいてからフレームを流す
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        ui.push_frame(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+
+        // サーバー→クライアントのフレームはマスク無し。ここで直接ほどく
+        let mut hdr = [0u8; 2];
+        sock.read_exact(&mut hdr).unwrap();
+        assert_eq!(hdr[0] & 0x0F, 0x2, "バイナリフレームでない");
+        let len = (hdr[1] & 0x7F) as usize;
+        assert_eq!(hdr[1] & 0x80, 0, "サーバーフレームにマスクが付いている");
+        let mut payload = vec![0u8; len];
+        sock.read_exact(&mut payload).unwrap();
+        assert_eq!(payload, vec![0xDE, 0xAD, 0xBE, 0xEF]);
         ui.shutdown();
     }
 }
