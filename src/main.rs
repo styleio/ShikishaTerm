@@ -98,9 +98,70 @@ fn main() -> Result<()> {
         web.shutdown();
         return Ok(());
     }
+    // 画面中継の自己検証: ブラウザを開き、CDPのフレームを1枚保存して終わる。
+    // 保存した画像を見れば、非表示のWebViewでもフレームが出るかが分かる
+    if std::env::args().nth(1).as_deref() == Some("--cast-test") {
+        open_console();
+        let url = std::env::args().nth(2).unwrap_or_else(|| "https://example.com/".into());
+        return cast_test(&url);
+    }
 
     // 叩いたら窓が出る。ランチャを挟むのは、挟む理由があるときだけでいい
     run_in_window()
+}
+
+/// `--cast-test <url>`: ブラウザを開いて画面中継を始め、最初のフレームを
+/// logs/cast-test.jpg に保存して終わる。人の目が要らない自己検証用
+fn cast_test(url: &str) -> Result<()> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+
+    println!("開いています: {url}");
+    let browser = browser::Browser::spawn(url, "cast-test")?;
+    browser.screencast(None, true)?;
+    println!("中継開始。フレームを待っています (最長20秒)...");
+
+    let status = config::logs_dir().join("cast-test.txt");
+    // 最初のフレームは描画前で真っ白になりがち。数秒ためて「最後の1枚」を保存する
+    let settle = Instant::now() + Duration::from_secs(5);
+    let mut last: Option<(Vec<u8>, u32, u32)> = None;
+    let mut count = 0u32;
+    loop {
+        for ev in browser.drain() {
+            if let browser::Ev::Frame { data, w, h, .. } = ev {
+                let bytes = b64
+                    .decode(data.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("フレームのbase64が不正: {e}"))?;
+                last = Some((bytes, w, h));
+                count += 1;
+            }
+        }
+        if Instant::now() >= settle {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    match last {
+        Some((bytes, w, h)) => {
+            let path = config::logs_dir().join("cast-test.jpg");
+            std::fs::write(&path, &bytes)?;
+            let msg = format!(
+                "OK: {} ({}x{}, {} bytes, {} frames)\n",
+                path.display(),
+                w,
+                h,
+                bytes.len(),
+                count
+            );
+            let _ = std::fs::write(&status, &msg);
+            print!("保存: {msg}");
+        }
+        None => {
+            let _ = std::fs::write(&status, "TIMEOUT: no frame in 5s\n");
+            println!("フレームが来ませんでした (非表示WebViewでは中継が止まる可能性)");
+        }
+    }
+    Ok(())
 }
 
 /// 画面の大きさ。幅と高さだけあればいい
