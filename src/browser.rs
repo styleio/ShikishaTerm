@@ -239,6 +239,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("select") => Ev::Select {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },
+        Some("addtab") => Ev::AddTab,
         Some("menu") => Ev::Menu {
             key: v
                 .get("key")
@@ -344,6 +345,8 @@ pub enum Ev {
     },
     /// このタブを見たい (0 = 稼働盤)
     Select { tab: usize },
+    /// タブバーの + が押された (設定画面をタブ追加の状態で開く)
+    AddTab,
     /// 稼働盤のメニューが押された
     Menu { key: String },
     /// 緊急停止

@@ -25,6 +25,7 @@
   "tui.human": "あなた",
   "tui.workspace": "ワークスペース",
   "tui.index": "INDEX",
+  "tui.tab.add": "タブを追加",
   "tui.session": "SESSION",
   "tui.welcome.title": "ようこそ。まだ設定がありません。",
   "tui.welcome.line1": " を押すと、ブラウザで設定画面が開きます。",

@@ -361,6 +361,8 @@ fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
         Ev::Select { tab } if *tab <= 9 => {
             prefixed(char::from_digit(*tab as u32, 10).unwrap_or('0'))
         }
+        // タブバーの + は、どのタブを見ていても効くよう前置キー付きにする
+        Ev::AddTab => prefixed('t'),
         // 盤面のメニューは INDEX を見ているときの素の打鍵。
         // 前置キーを付けると、同じ文字が両方にあるものだけが効く
         Ev::Menu { key } => key.chars().next().map(plain).map(|k| vec![k]).unwrap_or_default(),
@@ -1651,6 +1653,32 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                         }
                         KeyCode::Char('?') => help_open = true,
+                        // Ctrl+B t 設定画面を「タブ追加」の状態で開く (タブバーの + が送る)。
+                        // nonce を変えないと、2度目の押下で同じURLに戻れず何も起きない
+                        KeyCode::Char('t') => {
+                            let query = format!(
+                                "&addtab={ws_index}&nonce={}",
+                                start.elapsed().as_millis()
+                            );
+                            flash = Some(
+                                match open_settings(
+                                    &mut web,
+                                    &config_file,
+                                    &remote_info,
+                                    &caps,
+                                    &query,
+                                ) {
+                                    Ok(()) => {
+                                        active = layout.len() + 1;
+                                        i18n::t("msg.settings_here")
+                                    }
+                                    Err(e) => i18n::tp(
+                                        "msg.settings_failed",
+                                        &[("error", &e.to_string())],
+                                    ),
+                                },
+                            );
+                        }
                         // Ctrl+B a 自動化ON/OFF、Ctrl+B x 緊急停止
                         KeyCode::Char('a') => {
                             auto_enabled = !auto_enabled;
@@ -1756,21 +1784,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // 設定: 自分の窓の中で開く。
                         // 外のブラウザに投げると、どの窓が誰のものか分からなくなる
                         KeyCode::Char('e') => {
-                            // 立ち上げるのは1度だけ。2度目からは同じ場所へ戻る
-                            let url = match web.as_ref() {
-                                Some(w) => Ok(w.url.clone()),
-                                None => webui::WebUi::start_with(
-                                    config_file.clone(),
-                                    Arc::clone(&remote_info),
-                                )
-                                .map(|w| {
-                                    let u = w.url.clone();
-                                    web = Some(w);
-                                    u
-                                }),
-                            };
                             flash = Some(
-                                match url.and_then(|u| caps.browser_open(SETTINGS_TAB, &u)) {
+                                match open_settings(&mut web, &config_file, &remote_info, &caps, "")
+                                {
                                     Ok(()) => {
                                         // 開いたら、そのタブへ移る。
                                         // 出したのに見えていない状態を作らない
@@ -2650,6 +2666,27 @@ fn config_file_dir() -> std::path::PathBuf {
     config::root_dir()
 }
 
+/// 設定画面を自分の窓の中に開く。立ち上げるのは1度だけで、2度目からは同じ場所へ戻る。
+/// `query` はURLに付け足す追加の指示 ("&addtab=0" など。無指定は "")
+fn open_settings(
+    web: &mut Option<webui::WebUi>,
+    config_file: &std::path::Path,
+    remote_info: &Arc<Mutex<webui::RemoteInfo>>,
+    caps: &hooks::Caps,
+    query: &str,
+) -> Result<()> {
+    let url = match web.as_ref() {
+        Some(w) => w.url.clone(),
+        None => {
+            let w = webui::WebUi::start_with(config_file.to_path_buf(), Arc::clone(remote_info))?;
+            let u = w.url.clone();
+            *web = Some(w);
+            u
+        }
+    };
+    caps.browser_open(SETTINGS_TAB, &format!("{url}{query}"))
+}
+
 /// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する
 fn resolve_data_path(p: &str) -> std::path::PathBuf {
     if let Some(dir) = std::env::current_exe()
@@ -3290,6 +3327,19 @@ mod tests {
                 "盤面は {key} を出しているのに、INDEX に受け手が無い"
             );
         }
+    }
+
+    /// タブバーの + は、どのタブを見ていても効くよう前置キー付きで届くこと
+    #[test]
+    fn the_add_tab_button_arrives_prefixed() {
+        let evs = super::keys_for(&crate::browser::Ev::AddTab);
+        assert_eq!(evs.len(), 2, "前置キー + 本体の2打鍵");
+        let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
+        assert_eq!(k.code, KeyCode::Char('b'));
+        assert!(k.modifiers.contains(KeyModifiers::CONTROL));
+        let Event::Key(k) = &evs[1] else { panic!("本体が打鍵でない") };
+        assert_eq!(k.code, KeyCode::Char('t'));
+        assert!(k.modifiers.is_empty());
     }
 
     /// 盤面のメニューは、前置キーの付かない打鍵として届くこと。

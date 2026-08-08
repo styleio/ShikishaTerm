@@ -44,6 +44,9 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   .num { color:var(--dim); font-size:12px; min-width:14px; }
   .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .lock { color:var(--warn); font-size:11px; }
+  /* 「+」は普段は控えめに。触れたときだけ普通の濃さになる */
+  .tab.addtab { color:var(--dim); }
+  .tab.addtab:hover { color:inherit; }
   /* 出力量。文字ではなく本物の棒 */
   .spark { display:flex; align-items:flex-end; gap:1px; height:14px; flex:none; }
   .spark i { width:2px; background:var(--brand); opacity:.75; }
@@ -268,6 +271,10 @@ function drawTabs() {
       t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
       spark(t.activity)));
   }
+  // 一覧の最後に「+」。設定画面をタブ追加の状態で開く
+  nav.append(el("div", {class:"tab addtab", onclick:() => send({kind:"addtab"})},
+    el("span", {class:"num"}, "+"),
+    el("span", {class:"nm"}, T["tui.tab.add"] || "ADD TAB")));
 }
 
 // 出力量を本物の棒で描く。文字の ▁▄█ ではない

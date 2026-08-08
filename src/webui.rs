@@ -2104,7 +2104,17 @@ function backToIndex() {
   goIndex();
 }
 
-load();
+// URLに addtab=<ワークスペース番号> が付いていたら、読み込み後に
+// そのワークスペースへタブを1つ足した状態で始める (タブバーの + から来る)
+load().then(() => {
+  const wi = Number(new URLSearchParams(location.search).get("addtab"));
+  if (!Number.isInteger(wi) || !wss[wi]) return;
+  (wss[wi].tabs = wss[wi].tabs || []).push(newTab());
+  sel = {ws:wi, tab:wss[wi].tabs.length - 1, global:false};
+  render();
+  const s = document.querySelector(".navitem.sel");
+  if (s) s.scrollIntoView({block:"center"});
+});
 </script></body></html>
 "##;
 
