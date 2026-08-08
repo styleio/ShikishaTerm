@@ -101,7 +101,7 @@
   "msg.notify_none": ">> No notification targets configured (see notify / secrets in config.json)",
   "msg.startup_failed": ">> Failed to start {error}",
   "msg.update_available": ">> A new version v{version} is available (get it from GitHub Releases)",
-  "msg.remote_disabled": ">> The phone feature is off (turn it on in the settings screen)",
+  "msg.remote_disabled": ">> The phone feature is off (press e for Settings -> \"Global\" -> \"Use from your phone\")",
   "msg.remote_enabled": ">> Phone access is on (press [i] on INDEX for the QR code)",
   "msg.remote_stopped": ">> Phone access stopped",
   "msg.remote_auto_on": ">> Automation resumed from your phone",
