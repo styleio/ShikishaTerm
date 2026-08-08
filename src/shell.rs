@@ -59,6 +59,11 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   /* --cw はマス1つの幅。画面が測って入れる (中身とカーソルを同じ数で置く) */
   #screen { position:absolute; inset:0; margin:0; padding:8px; white-space:pre;
     overflow:auto; line-height:1.25; font-family:var(--mono); --cw:1ch; }
+  /* 画面中継。ブラウザタブを見ているとき、端末の代わりにここへ映す。
+     縦横比は保ちつつ枠に収める。touch-action:none で既定のスクロールを止め、
+     指の動きを軌跡としてそのまま送る */
+  #cast { position:absolute; inset:0; width:100%; height:100%;
+    object-fit:contain; background:#000; touch-action:none; }
   /* ここだけ選べる。タブバーや枠は選択に混ざらない */
   #screen { user-select:text; }
 
@@ -185,6 +190,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     <div id="page"></div>
     <div id="board" hidden></div>
     <pre id="screen" hidden></pre>
+    <canvas id="cast" hidden></canvas>
     <div id="cur" hidden></div>
     <textarea id="kbd" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
     <pre id="probe">MMMMMMMMMM</pre>
@@ -505,6 +511,11 @@ window.__state = function (json) {
   const web = S.tabs.some(t => t.index === S.active && t.kind === "browser");
   board.hidden = S.active !== 0;
   screen.hidden = S.active === 0 || web;
+  // ブラウザタブを見ているとき、スマホでは中継画面 (canvas) を出す。
+  // 窓 (PC) は今までどおり本物のページを重ねるので中継は使わない
+  const cast = document.getElementById("cast");
+  cast.hidden = !(web && REMOTE);
+  if (web && REMOTE) castStart(); else castStop();
   if (S.active === 0) drawBoard();
   drawVeil();
   // 遡っているあいだは、そう言っておく。押せば今へ戻る
@@ -732,6 +743,81 @@ if (REMOTE) {
   };
   pull();
   setInterval(pull, 900);
+}
+
+// ── 画面中継 (ブラウザタブをスマホから見る・触る) ──────────────
+// フレームは /ws で下り、指の操作は /ws-in で上り。別々の単方向WSにして
+// どちらも詰まらせない。座標は 0..1 の割合で送り、端末の大きさに依らせない
+let castWs = null, castIn = null, castCtx = null, castBound = false;
+function castStart() {
+  if (!REMOTE || castWs) return;
+  const cv = document.getElementById("cast");
+  castCtx = cv.getContext("2d");
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const base = proto + "//" + location.host;
+  const tok = encodeURIComponent(TOKEN);
+  castWs = new WebSocket(base + "/ws?t=" + tok);
+  castWs.binaryType = "blob";
+  castWs.onmessage = async (e) => {
+    try {
+      const bmp = await createImageBitmap(e.data);
+      if (cv.width !== bmp.width || cv.height !== bmp.height) {
+        cv.width = bmp.width; cv.height = bmp.height;
+      }
+      castCtx.drawImage(bmp, 0, 0);
+      if (bmp.close) bmp.close();
+    } catch (err) {}
+  };
+  castWs.onclose = () => { castWs = null; };
+  castIn = new WebSocket(base + "/ws-in?t=" + tok);
+  castIn.onclose = () => { castIn = null; };
+  bindCastInput(cv);
+}
+function castStop() {
+  if (castWs) { castWs.close(); castWs = null; }
+  if (castIn) { castIn.close(); castIn = null; }
+}
+function sendIn(o) {
+  if (castIn && castIn.readyState === 1) castIn.send(JSON.stringify(o));
+}
+// object-fit:contain で中身が収まる矩形を求め、ポインタを 0..1 に直す。
+// レターボックス (余白) の中は inside=false にして送らない
+function castRatio(cv, clientX, clientY) {
+  const r = cv.getBoundingClientRect();
+  const cw = cv.width || 1, ch = cv.height || 1;
+  const scale = Math.min(r.width / cw, r.height / ch);
+  const dw = cw * scale, dh = ch * scale;
+  const ox = r.left + (r.width - dw) / 2, oy = r.top + (r.height - dh) / 2;
+  const x = (clientX - ox) / dw, y = (clientY - oy) / dh;
+  return { x, y, inside: x >= 0 && x <= 1 && y >= 0 && y <= 1 };
+}
+function bindCastInput(cv) {
+  if (castBound) return; castBound = true;
+  let down = false;
+  cv.addEventListener("pointerdown", (e) => {
+    const p = castRatio(cv, e.clientX, e.clientY); if (!p.inside) return;
+    down = true; try { cv.setPointerCapture(e.pointerId); } catch (x) {}
+    sendIn({kind:"inject", what:"mouse", phase:"pressed", x:p.x, y:p.y, down:true});
+    e.preventDefault();
+  });
+  cv.addEventListener("pointermove", (e) => {
+    const p = castRatio(cv, e.clientX, e.clientY);
+    sendIn({kind:"inject", what:"mouse", phase:"moved", x:p.x, y:p.y, down});
+    e.preventDefault();
+  });
+  const up = (e) => {
+    if (!down) return; down = false;
+    const p = castRatio(cv, e.clientX, e.clientY);
+    sendIn({kind:"inject", what:"mouse", phase:"released", x:p.x, y:p.y, down:false});
+    e.preventDefault();
+  };
+  cv.addEventListener("pointerup", up);
+  cv.addEventListener("pointercancel", up);
+  cv.addEventListener("wheel", (e) => {
+    const p = castRatio(cv, e.clientX, e.clientY); if (!p.inside) return;
+    sendIn({kind:"inject", what:"wheel", x:p.x, y:p.y, dx:e.deltaX, dy:e.deltaY});
+    e.preventDefault();
+  }, {passive:false});
 }
 
 send({kind:"ready"});

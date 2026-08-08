@@ -541,6 +541,16 @@ impl Capabilities {
         self.with(name, |b, to| b.focus(to))
     }
 
+    /// このページの画面中継を始める/止める (フレームは本体のループへ報告で届く)
+    pub fn browser_screencast(&self, name: &str, on: bool) -> Result<()> {
+        self.with(name, |b, to| b.screencast(to, on))
+    }
+
+    /// 中継画面へ入力を注入する (指の軌跡・スワイプ・文字)
+    pub fn browser_inject(&self, name: &str, input: crate::browser::Input) -> Result<()> {
+        self.with(name, |b, to| b.inject(to, input))
+    }
+
     /// 設定に書かれたページを、設定のとおりに揃える。
     ///
     /// 設定から消したページは閉じる。閉じないと、置いたままのページが

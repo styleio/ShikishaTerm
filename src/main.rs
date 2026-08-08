@@ -310,6 +310,8 @@ struct WinSurface {
     gos: Vec<crate::browser::Go>,
     /// 聞いておいた居場所の答え (窓の中での名前, URL, 戻れる, 進める)
     wheres: Vec<(String, String, bool, bool)>,
+    /// 中継画面のフレーム (JPEGのバイト列)。ループがスマホへ配る
+    frames: Vec<Vec<u8>>,
     /// 窓が閉じた。描く先が無くなったので、ループは畳むしかない
     closed: bool,
 }
@@ -345,6 +347,11 @@ impl WinSurface {
     /// 居場所の答えを引き取る
     fn take_wheres(&mut self) -> Vec<(String, String, bool, bool)> {
         std::mem::take(&mut self.wheres)
+    }
+
+    /// たまった中継フレームを引き取る (ループがスマホへ配る)
+    fn take_frames(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.frames)
     }
 
     fn take_events(&mut self, active_tab: Option<&Tab>) {
@@ -391,6 +398,15 @@ impl WinSurface {
                 Ev::Paste => {
                     if let Some(t) = active_tab {
                         let _ = paste_clipboard(t);
+                    }
+                }
+                // 中継フレーム。base64をほどいてバイト列で溜め、ループがスマホへ配る
+                Ev::Frame { data, .. } => {
+                    use base64::Engine as _;
+                    if let Ok(bytes) =
+                        base64::engine::general_purpose::STANDARD.decode(data.as_bytes())
+                    {
+                        self.frames.push(bytes);
                     }
                 }
                 // 残りは打鍵に直せるもの。直し方は keys_for に1つだけ置く
@@ -554,6 +570,7 @@ fn run_in_window() -> Result<()> {
         scrolls: Vec::new(),
         gos: Vec::new(),
         wheres: Vec::new(),
+        frames: Vec::new(),
         closed: false,
     })
 }
@@ -879,6 +896,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // ターミナルがずっと隠れてしまうので、既定は隠す
     let mut flash: Option<String> = startup_errors.first().map(|e| i18n::tp("msg.startup_failed", &[("error", e)]));
     let mut last_detect = Instant::now() - Duration::from_secs(1);
+    // いま画面中継しているブラウザ (見ている人がいる間だけ流す)
+    let mut casting: Option<String> = None;
     // ワークスペースは仮想デスクトップ方式: 切替=非表示であって停止ではない。
     // 各ワークスペースのタブ群を保持し、初回アクティブ化時に起動する
     // 起動した分は tabs が持っている。棚は残りのワークスペースの数だけ空けておく
@@ -1212,64 +1231,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         })
                         .collect(),
                 };
-                let now_ms = start.elapsed().as_millis() as u64;
-                while let Ok(cmd) = r.rx.try_recv() {
-                    match cmd {
-                        // 遠隔からの入力は人間の操作として扱う
-                        // (自動チェーンをリセットし、ロック中は拒否する)
-                        // スマホが指すのも画面の番号。ブラウザなら送り先が無い
-                        remote::RemoteCmd::Send { tab, text } => {
-                            if let Some(t) =
-                                session_at(&layout, tab).and_then(|i| tabs.get_mut(i))
-                            {
-                                if t.locked {
-                                    continue;
-                                }
-                                t.chain_depth = 0;
-                                t.last_manual_ms = Some(now_ms);
-                                let seen = t.output_count();
-                                write_prompt(t, &text);
-                                pending_submit.push(PendingSubmit::new(tab, seen, now_ms));
-                                append_hook_log(&format!(
-                                    "remote送信 tab{tab}: {}",
-                                    log_excerpt(&text, 120)
-                                ));
-                            }
-                        }
-                        remote::RemoteCmd::Keys { tab, keys } => {
-                            if let Some(t) =
-                                session_at(&layout, tab).and_then(|i| tabs.get_mut(i))
-                            {
-                                if t.locked {
-                                    continue;
-                                }
-                                t.chain_depth = 0;
-                                t.last_manual_ms = Some(now_ms);
-                                let _ = t.write_bytes(keys.as_bytes());
-                            }
-                        }
-                        // 画面からの操作。窓から来たものと区別しない。
-                        // ここで別扱いを始めると、同じ押下が2通りの意味を持つ
-                        remote::RemoteCmd::Ui(ev) => {
-                            for e in keys_for(&ev) {
-                                surface.inject(e);
-                            }
-                        }
-                        remote::RemoteCmd::SetAuto(on) => {
-                            auto_enabled = on;
-                            if !on {
-                                if let Some(eng) = engine.as_mut() {
-                                    eng.cancel_all();
-                                }
-                            }
-                            flash = Some(i18n::t(if on {
-                                "msg.remote_auto_on"
-                            } else {
-                                "msg.remote_auto_off"
-                            }));
-                        }
-                    }
-                }
             }
 
             // auto_restart: 終了したタブを自動で復帰させる
@@ -1283,6 +1244,93 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         Err(e) => flash = Some(i18n::tp("msg.restart_failed", &[("error", &e.to_string())])),
                     }
                 }
+            }
+        }
+
+        // リモート操作とフレーム配信は毎イテレーション処理する (200ms待つと
+        // 指の軌跡が固まって届き、スワイプの再現が壊れる)
+        if let Some(r) = remote_ui.as_ref() {
+            let now_ms = start.elapsed().as_millis() as u64;
+            // いま見ているブラウザ (Injectの宛先・中継の対象)
+            let shown_browser = match layout.get(active.wrapping_sub(1)) {
+                Some(Pane::Browser { key, .. }) => Some(key.clone()),
+                _ => None,
+            };
+            while let Ok(cmd) = r.rx.try_recv() {
+                match cmd {
+                    // 遠隔からの入力は人間の操作として扱う
+                    // (自動チェーンをリセットし、ロック中は拒否する)
+                    remote::RemoteCmd::Send { tab, text } => {
+                        if let Some(t) = session_at(&layout, tab).and_then(|i| tabs.get_mut(i)) {
+                            if t.locked {
+                                continue;
+                            }
+                            t.chain_depth = 0;
+                            t.last_manual_ms = Some(now_ms);
+                            let seen = t.output_count();
+                            write_prompt(t, &text);
+                            pending_submit.push(PendingSubmit::new(tab, seen, now_ms));
+                            append_hook_log(&format!(
+                                "remote送信 tab{tab}: {}",
+                                log_excerpt(&text, 120)
+                            ));
+                        }
+                    }
+                    remote::RemoteCmd::Keys { tab, keys } => {
+                        if let Some(t) = session_at(&layout, tab).and_then(|i| tabs.get_mut(i)) {
+                            if t.locked {
+                                continue;
+                            }
+                            t.chain_depth = 0;
+                            t.last_manual_ms = Some(now_ms);
+                            let _ = t.write_bytes(keys.as_bytes());
+                        }
+                    }
+                    // 中継画面への入力は、見ているブラウザへ本物の入力として注入する
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Inject { input, .. }) => {
+                        if let Some(key) = &shown_browser {
+                            let _ = caps.browser_inject(key, input);
+                        }
+                    }
+                    // その他の画面操作は、窓から来たものと同じ打鍵に直す
+                    remote::RemoteCmd::Ui(ev) => {
+                        for e in keys_for(&ev) {
+                            surface.inject(e);
+                        }
+                    }
+                    remote::RemoteCmd::SetAuto(on) => {
+                        auto_enabled = on;
+                        if !on {
+                            if let Some(eng) = engine.as_mut() {
+                                eng.cancel_all();
+                            }
+                        }
+                        flash = Some(i18n::t(if on {
+                            "msg.remote_auto_on"
+                        } else {
+                            "msg.remote_auto_off"
+                        }));
+                    }
+                }
+            }
+            // 溜まった中継フレームをスマホへ配る
+            for jpeg in surface.take_frames() {
+                r.push_frame(jpeg);
+            }
+            // 見ているブラウザに視聴者がいれば中継、いなければ止める
+            let want = if r.has_frame_clients() {
+                shown_browser
+            } else {
+                None
+            };
+            if want != casting {
+                if let Some(old) = &casting {
+                    let _ = caps.browser_screencast(old, false);
+                }
+                if let Some(new) = &want {
+                    let _ = caps.browser_screencast(new, true);
+                }
+                casting = want;
             }
         }
 
