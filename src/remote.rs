@@ -102,6 +102,9 @@ pub struct RemoteUi {
     stop: Arc<AtomicBool>,
     /// 中継フレームの配信先。ブラウザから届いたJPEGをここへ流す
     frame_clients: FrameClients,
+    /// 新しい視聴者が入った。本体は次の機会に今の画面を1枚出す
+    /// (静止ページだと変化待ちのまま空になるのを防ぐ)
+    keyframe_wanted: Arc<AtomicBool>,
 }
 
 impl RemoteUi {
@@ -132,17 +135,19 @@ impl RemoteUi {
         let (tx, rx) = channel::<RemoteCmd>();
         let stop = Arc::new(AtomicBool::new(false));
         let frame_clients: FrameClients = Arc::new(Mutex::new(Vec::new()));
+        let keyframe_wanted = Arc::new(AtomicBool::new(false));
 
         {
             let snapshot = Arc::clone(&snapshot);
             let stop = Arc::clone(&stop);
             let clients = Arc::clone(&frame_clients);
+            let kf = Arc::clone(&keyframe_wanted);
             std::thread::spawn(move || {
                 for req in server.incoming_requests() {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
-                    if let Err(e) = handle(req, &token, &snapshot, &tx, &clients) {
+                    if let Err(e) = handle(req, &token, &snapshot, &tx, &clients, &kf) {
                         crate::append_hook_log(&format!("リモートUI: {e}"));
                     }
                 }
@@ -155,7 +160,13 @@ impl RemoteUi {
             rx,
             stop,
             frame_clients,
+            keyframe_wanted,
         })
+    }
+
+    /// 新しい視聴者が入ったので今の画面を1枚出すべきか (立っていたら降ろして返す)
+    pub fn take_keyframe_request(&self) -> bool {
+        self.keyframe_wanted.swap(false, Ordering::SeqCst)
     }
 
     /// 中継フレーム (JPEGのバイト列) を、接続中のWSクライアント全員へ配る。
@@ -201,6 +212,7 @@ fn handle(
     snapshot: &Arc<Mutex<Snapshot>>,
     tx: &Sender<RemoteCmd>,
     frame_clients: &FrameClients,
+    keyframe_wanted: &Arc<AtomicBool>,
 ) -> Result<()> {
     let supplied = {
         let h = req
@@ -266,6 +278,8 @@ fn handle(
             let stream = req.upgrade("websocket", resp);
             let (ftx, frx) = channel::<Vec<u8>>();
             frame_clients.lock().unwrap().push(ftx);
+            // 新しい視聴者。本体に「今の画面を1枚出して」と伝える
+            keyframe_wanted.store(true, Ordering::SeqCst);
             std::thread::spawn(move || {
                 let mut w = crate::ws::WsWriter::new(stream);
                 while let Ok(jpeg) = frx.recv() {

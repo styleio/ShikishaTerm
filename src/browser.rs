@@ -1135,7 +1135,12 @@ fn run_window(
                 Cmd::Screencast { to, on } => {
                     if on {
                         if casts.contains_key(&to) {
-                            // 既に流している。二重登録しない
+                            // 既に流している。二重登録はしないが、startScreencast を
+                            // 打ち直して今の画面を1枚出す (新しい視聴者が入ったとき、
+                            // ページが静止しているといつまでも空のままになるため)
+                            if let Some(view) = target(&webview, &children, &to) {
+                                cdp::kick(&cdp::webview_of(view));
+                            }
                         } else if let Some(view) = target(&webview, &children, &to) {
                             let wv = cdp::webview_of(view);
                             let tx = ev_tx.clone();
@@ -1345,6 +1350,16 @@ mod cdp {
                 webview: webview.clone(),
             })
         }
+    }
+
+    /// 今の画面を1枚出させる (startScreencast を打ち直す)。
+    /// 新しい視聴者が入ったが、ページが静止していて次の変化が来ないときに使う
+    pub fn kick(webview: &ICoreWebView2) {
+        call(
+            webview,
+            "Page.startScreencast",
+            "{\"format\":\"jpeg\",\"quality\":60,\"maxWidth\":1600,\"maxHeight\":1200,\"everyNthFrame\":1}",
+        );
     }
 
     /// 中継を止め、通知の登録も外す

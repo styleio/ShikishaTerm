@@ -1313,8 +1313,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                 }
             }
-            // 溜まった中継フレームをスマホへ配る
-            for jpeg in surface.take_frames() {
+            // 溜まった中継フレームは最新の1枚だけ配る (古いものは捨てる)。
+            // 送り手が速いときに回線とスマホを溢れさせない。常に一番新しい絵を見せる
+            if let Some(jpeg) = surface.take_frames().pop() {
                 r.push_frame(jpeg);
             }
             // 見ているブラウザに視聴者がいれば中継、いなければ止める
@@ -1331,6 +1332,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     let _ = caps.browser_screencast(new, true);
                 }
                 casting = want;
+            } else if let Some(key) = &casting {
+                // 対象は同じでも、新しい視聴者が入ったら今の画面を1枚出す。
+                // 静止したページだと、変化待ちのままいつまでも空になるため
+                if r.take_keyframe_request() {
+                    let _ = caps.browser_screencast(key, true);
+                }
             }
         }
 
