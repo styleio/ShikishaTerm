@@ -33,6 +33,7 @@ mod tab;
 mod uistate;
 mod update;
 mod watch;
+mod ws;
 mod webui;
 mod wspack;
 
