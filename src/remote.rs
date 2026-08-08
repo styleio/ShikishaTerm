@@ -71,6 +71,8 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
     match ev {
         // 見たいタブを選ぶ・打つ・止める。遠隔操作の本体
         Ev::Select { .. } | Ev::Key { .. } | Ev::Stop => true,
+        // 中継画面への入力 (指の軌跡・スワイプ・文字)。遠隔操作の要なので通す
+        Ev::Inject { .. } => true,
         // 選んだ文字を控える。窓と同じ作法 (PuTTY と同じ) を保つ
         Ev::Copy { .. } => true,
         Ev::Menu { key } => !matches!(
@@ -272,6 +274,48 @@ fn handle(
                     }
                 }
                 let _ = w.send_close();
+            });
+        }
+        // 入力の上り。指の軌跡を低遅延で運ぶため、下りとは別の単方向WSにする
+        // (同じソケットを読み書きで分けずに済み、各線が1スレッドで完結する)
+        ("GET", "/ws-in") => {
+            let key = req
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("Sec-WebSocket-Key"))
+                .map(|h| h.value.as_str().to_string())
+                .unwrap_or_default();
+            if key.is_empty() {
+                return req
+                    .respond(Response::from_string("expected websocket").with_status_code(400))
+                    .map_err(Into::into);
+            }
+            let accept = crate::ws::accept_key(&key);
+            let resp = Response::empty(101).with_header(
+                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
+            );
+            let mut stream = req.upgrade("websocket", resp);
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                loop {
+                    match crate::ws::read_frame(&mut stream) {
+                        Ok((crate::ws::Op::Text, payload)) => {
+                            let Ok(text) = String::from_utf8(payload) else {
+                                continue;
+                            };
+                            let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+                                continue;
+                            };
+                            if let Some(ev) = crate::browser::parse_intent(&v) {
+                                if allowed_from_afar(&ev) {
+                                    let _ = tx.send(RemoteCmd::Ui(ev));
+                                }
+                            }
+                        }
+                        Ok((crate::ws::Op::Close, _)) | Err(_) => break,
+                        Ok(_) => {} // ping/pong/binary は無視
+                    }
+                }
             });
         }
         ("POST", "/api/send") => {
@@ -514,5 +558,69 @@ mod tests {
         sock.read_exact(&mut payload).unwrap();
         assert_eq!(payload, vec![0xDE, 0xAD, 0xBE, 0xEF]);
         ui.shutdown();
+    }
+
+    /// /ws-in が握手し、送った入力意図 (指の軌跡) が本体へ届くこと
+    #[test]
+    fn ws_in_forwards_injected_input() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into()).unwrap();
+        let hostport = ui
+            .url
+            .trim_start_matches("http://")
+            .split("/?")
+            .next()
+            .unwrap()
+            .to_string();
+
+        let mut sock = TcpStream::connect(&hostport).unwrap();
+        let req = "GET /ws-in?t=tok123456789012 HTTP/1.1\r\n\
+             Host: localhost\r\n\
+             Upgrade: websocket\r\n\
+             Connection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n";
+        sock.write_all(req.as_bytes()).unwrap();
+        let mut buf = Vec::new();
+        let mut one = [0u8; 1];
+        loop {
+            sock.read_exact(&mut one).unwrap();
+            buf.push(one[0]);
+            if buf.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        assert!(String::from_utf8_lossy(&buf).contains("101"));
+
+        // クライアント→サーバーのフレームはマスク必須。テキストで意図を送る
+        let intent = r#"{"kind":"inject","what":"mouse","phase":"pressed","x":0.5,"y":0.25}"#;
+        sock.write_all(&mask_text_frame(intent)).unwrap();
+
+        match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
+            RemoteCmd::Ui(crate::browser::Ev::Inject {
+                input: crate::browser::Input::Mouse { phase, x, y, .. },
+                ..
+            }) => {
+                assert_eq!(phase, "pressed");
+                assert!((x - 0.5).abs() < 1e-9 && (y - 0.25).abs() < 1e-9);
+            }
+            other => panic!("軌跡が届いていない: {other:?}"),
+        }
+        ui.shutdown();
+    }
+
+    /// テスト用: クライアントの作法 (マスク必須) でテキストフレームを組む
+    fn mask_text_frame(s: &str) -> Vec<u8> {
+        let payload = s.as_bytes();
+        let mut out = vec![0x81u8]; // FIN + text
+        let mask = [0xA1u8, 0xB2, 0xC3, 0xD4];
+        let len = payload.len();
+        assert!(len < 126, "テストの本文は126バイト未満");
+        out.push(0x80 | len as u8);
+        out.extend_from_slice(&mask);
+        out.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
+        out
     }
 }
