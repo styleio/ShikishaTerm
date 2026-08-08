@@ -43,6 +43,9 @@ unicode-width = "0.2.2"
 ureq = { version = "3.3.0", default-features = false, features = ["rustls", "json"] }
 vt100 = "0.16"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Console", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+# wry と同じ版に揃える (ICoreWebView2 の型が一致しないと CDP を呼べない)
+webview2-com = "0.38.2"
+windows = { version = "0.61.3", features = ["Win32_Foundation"] }
 wry = "0.56.0"
 zeroize = "1.9.0"
 

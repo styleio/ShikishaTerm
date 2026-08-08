@@ -199,8 +199,41 @@ pub enum Cmd {
     /// 今どこに居るか、戻れるか進めるかを聞く。
     /// 答えは `Ev::Where` で返る
     Where { to: Option<String> },
+    /// 画面の中継 (VNC相当) を始める/止める。
+    /// 始めると変化のたびに `Ev::Frame` が届く。`to` は対象ページ (None は主画面)
+    Screencast {
+        to: Option<String>,
+        on: bool,
+    },
+    /// 中継中の画面へ、実際の入力を注入する (CDP経由。合成ではなく本物の入力扱い)。
+    /// 人の指の軌跡もCAPTCHAのスワイプも、届いた点をそのまま再生する
+    Inject {
+        to: Option<String>,
+        input: Input,
+    },
     /// 窓を閉じる (指揮者がいなくなったとき)
     Close,
+}
+
+/// 中継画面への入力ひとつ。座標は中継フレーム上の割合 (0.0〜1.0) で受け取り、
+/// 実ピクセルへ直す。端末の大きさやDPRが送り手と違っても、同じ場所を指せる
+#[derive(Debug, Clone)]
+pub enum Input {
+    /// マウスの押下/移動/解放。ドラッグは move を連ねて表す
+    Mouse {
+        /// "pressed" / "released" / "moved"
+        phase: String,
+        x: f64,
+        y: f64,
+        /// 押している間の移動なら true (ドラッグの再生に要る)
+        down: bool,
+    },
+    /// ホイール。dx/dy はピクセル
+    Wheel { x: f64, y: f64, dx: f64, dy: f64 },
+    /// 確定済みの文字列を今の焦点へ挿入する (IME変換は送り手側で済ませる)
+    Text { text: String },
+    /// 名前付きの制御キー (Enter / Backspace / Tab など)
+    Key { named: String },
 }
 
 /// ブラウザに頼む移動。
@@ -300,6 +333,33 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .to_string(),
         },
         Some("paste") => Ev::Paste,
+        // 中継画面の上でのタッチ/マウス。座標は割合 (0..1) で来る
+        Some("inject") => {
+            let f = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let what = v.get("what").and_then(|x| x.as_str()).unwrap_or("");
+            let input = match what {
+                "mouse" => Input::Mouse {
+                    phase: v.get("phase").and_then(|x| x.as_str()).unwrap_or("moved").to_string(),
+                    x: f("x").clamp(0.0, 1.0),
+                    y: f("y").clamp(0.0, 1.0),
+                    down: v.get("down").and_then(|x| x.as_bool()).unwrap_or(false),
+                },
+                "wheel" => Input::Wheel {
+                    x: f("x").clamp(0.0, 1.0),
+                    y: f("y").clamp(0.0, 1.0),
+                    dx: f("dx"),
+                    dy: f("dy"),
+                },
+                "text" => Input::Text {
+                    text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                },
+                "key" => Input::Key {
+                    named: v.get("named").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                },
+                _ => return None,
+            };
+            Ev::Inject { to: None, input }
+        }
         Some("key") => Ev::Key {
             text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
             named: v.get("named").and_then(|x| x.as_str()).map(str::to_string),
@@ -368,10 +428,20 @@ pub enum Ev {
         can_back: bool,
         can_forward: bool,
     },
+    /// 中継画面の1フレーム。base64のJPEG (そのまま data URL にできる)。
+    /// `from` は送り元ページ。`w`/`h` はフレームの実ピクセル寸法
+    Frame {
+        from: Option<String>,
+        data: String,
+        w: u32,
+        h: u32,
+    },
     /// 選択された文字 (PuTTY と同じで、選んだ時点でコピーする)
     Copy { text: String },
     /// 貼り付けの要求 (右クリック)
     Paste,
+    /// 中継画面への入力要求 (クライアントから届き、指揮者が Cmd::Inject に直す)
+    Inject { to: Option<String>, input: Input },
     /// 窓モードでの打鍵。確定した文字、名前付きの制御キー、Ctrl+文字のいずれか
     Key {
         text: Option<String>,
@@ -526,6 +596,22 @@ impl Browser {
         self.send(Cmd::Move {
             to: to.map(str::to_string),
             go,
+        })
+    }
+
+    /// 画面の中継 (VNC相当) を始める/止める。始めると `Ev::Frame` が届く
+    pub fn screencast(&self, to: Option<&str>, on: bool) -> Result<()> {
+        self.send(Cmd::Screencast {
+            to: to.map(str::to_string),
+            on,
+        })
+    }
+
+    /// 中継画面へ入力を注入する (人の指の軌跡・スワイプ・文字)
+    pub fn inject(&self, to: Option<&str>, input: Input) -> Result<()> {
+        self.send(Cmd::Inject {
+            to: to.map(str::to_string),
+            input,
         })
     }
 
@@ -797,6 +883,22 @@ impl Found {
 /// 指示の宛先を解く。None は主画面、名前はそのページ。
 /// 名前があるのに見つからないときは None を返す。
 /// 主画面に落とすと、サイト向けのJSが自分の画面に対して走る
+/// 中継画面へ送る制御キーの名前を、CDP が要る (key名, Windows仮想キーコード) に直す
+fn named_vk(named: &str) -> Option<(&'static str, u32)> {
+    Some(match named {
+        "enter" => ("Enter", 13),
+        "backspace" => ("Backspace", 8),
+        "tab" => ("Tab", 9),
+        "escape" | "esc" => ("Escape", 27),
+        "delete" => ("Delete", 46),
+        "up" => ("ArrowUp", 38),
+        "down" => ("ArrowDown", 40),
+        "left" => ("ArrowLeft", 37),
+        "right" => ("ArrowRight", 39),
+        _ => return None,
+    })
+}
+
 fn target<'a>(
     main: &'a wry::WebView,
     children: &'a std::collections::HashMap<String, wry::WebView>,
@@ -902,6 +1004,15 @@ fn run_window(
     // 同じ窓に置いたページたち。名前で引く
     let mut children: std::collections::HashMap<String, wry::WebView> =
         std::collections::HashMap::new();
+
+    // 画面中継。対象ごとに1つ。持っている間だけフレームが届く
+    let mut casts: std::collections::HashMap<Option<String>, cdp::Cast> =
+        std::collections::HashMap::new();
+    // 直近フレームのCSSピクセル寸法 (入力注入の座標変換に使う)。
+    // フレーム通知と入力注入は同じスレッドなので Rc<Cell> で足りる
+    let cast_dims = std::rc::Rc::new(std::cell::Cell::new((0.0f64, 0.0f64)));
+    // ドラッグ判定用: 今ボタンを押し下げているか
+    let mut mouse_down = false;
 
     // ループの中でも報告を送るので、閉じたことを伝える分を先に取っておく
     let closed_tx = ev_tx.clone();
@@ -1021,6 +1132,86 @@ fn run_window(
                         });
                     }
                 }
+                Cmd::Screencast { to, on } => {
+                    if on {
+                        if casts.contains_key(&to) {
+                            // 既に流している。二重登録しない
+                        } else if let Some(view) = target(&webview, &children, &to) {
+                            let wv = cdp::webview_of(view);
+                            let tx = ev_tx.clone();
+                            let from = to.clone();
+                            let dims = cast_dims.clone();
+                            if let Some(cast) = cdp::start(&wv, move |data, w, h| {
+                                dims.set((w, h));
+                                let _ = tx.send(Ev::Frame {
+                                    from: from.clone(),
+                                    data,
+                                    w: w as u32,
+                                    h: h as u32,
+                                });
+                            }) {
+                                casts.insert(to.clone(), cast);
+                            } else {
+                                crate::append_hook_log("画面中継を開始できません (CDP)");
+                            }
+                        }
+                    } else if let Some(cast) = casts.remove(&to) {
+                        cdp::stop(cast);
+                    }
+                }
+                Cmd::Inject { to, input } => {
+                    if let Some(view) = target(&webview, &children, &to) {
+                        let wv = cdp::webview_of(view);
+                        let (cw, ch) = cast_dims.get();
+                        match input {
+                            Input::Mouse { phase, x, y, down } => {
+                                let (px, py) = (x * cw, y * ch);
+                                let (kind, buttons) = match phase.as_str() {
+                                    "pressed" => {
+                                        mouse_down = true;
+                                        ("mousePressed", 1)
+                                    }
+                                    "released" => {
+                                        mouse_down = false;
+                                        ("mouseReleased", 0)
+                                    }
+                                    _ => ("mouseMoved", if down || mouse_down { 1 } else { 0 }),
+                                };
+                                let params = serde_json::json!({
+                                    "type": kind, "x": px, "y": py,
+                                    "button": "left", "buttons": buttons, "clickCount": 1,
+                                })
+                                .to_string();
+                                cdp::call(&wv, "Input.dispatchMouseEvent", &params);
+                            }
+                            Input::Wheel { x, y, dx, dy } => {
+                                let params = serde_json::json!({
+                                    "type": "mouseWheel", "x": x * cw, "y": y * ch,
+                                    "deltaX": dx, "deltaY": dy,
+                                })
+                                .to_string();
+                                cdp::call(&wv, "Input.dispatchMouseEvent", &params);
+                            }
+                            Input::Text { text } => {
+                                let params = serde_json::json!({ "text": text }).to_string();
+                                cdp::call(&wv, "Input.insertText", &params);
+                            }
+                            Input::Key { named } => {
+                                if let Some((key, vk)) = named_vk(&named) {
+                                    for kind in ["keyDown", "keyUp"] {
+                                        let params = serde_json::json!({
+                                            "type": kind, "key": key,
+                                            "windowsVirtualKeyCode": vk,
+                                            "nativeVirtualKeyCode": vk,
+                                        })
+                                        .to_string();
+                                        cdp::call(&wv, "Input.dispatchKeyEvent", &params);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 Cmd::Close => {
                     *control = ControlFlow::Exit;
                 }
@@ -1037,6 +1228,134 @@ fn run_window(
 
     let _ = closed_tx.send(Ev::Closed);
     Ok(())
+}
+
+/// CDP (Chrome DevTools Protocol) 越しの画面中継と入力注入。
+///
+/// WebView2 は中身が Chromium なので、開発者ツール用のプロトコルを話せる。
+/// これを使うと「変化したところだけ」をJPEGフレームで受け取れ (VNCより軽い)、
+/// マウス・ホイール・文字を**本物の入力として**注入できる (合成イベントではない)。
+///
+/// COMのオブジェクトはスレッドに縛られるので、呼び出しは必ず窓のイベントループ
+/// スレッド (run_window の中) から行う。フレーム通知も同じスレッドに届く。
+mod cdp {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2, ICoreWebView2DevToolsProtocolEventReceivedEventArgs,
+        ICoreWebView2DevToolsProtocolEventReceiver,
+    };
+    use webview2_com::{
+        CallDevToolsProtocolMethodCompletedHandler, DevToolsProtocolEventReceivedEventHandler,
+    };
+    use windows::core::{HSTRING, PCWSTR};
+
+    /// 中継の後始末に要るもの (これを持っている間だけ通知が届く)
+    pub struct Cast {
+        pub receiver: ICoreWebView2DevToolsProtocolEventReceiver,
+        pub token: i64,
+        pub webview: ICoreWebView2,
+    }
+
+    /// CDPのメソッドを1つ呼ぶ (結果は捨てる)。params_json は "{}" でよい
+    pub fn call(webview: &ICoreWebView2, method: &str, params_json: &str) {
+        let method = HSTRING::from(method);
+        let params = HSTRING::from(params_json);
+        let handler =
+            CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_hr, _json| Ok(())));
+        unsafe {
+            let _ = webview.CallDevToolsProtocolMethod(
+                PCWSTR(method.as_ptr()),
+                PCWSTR(params.as_ptr()),
+                &handler,
+            );
+        }
+    }
+
+    /// wry の WebView から下の ICoreWebView2 を取り出す
+    pub fn webview_of(view: &wry::WebView) -> ICoreWebView2 {
+        use wry::WebViewExtWindows;
+        view.webview()
+    }
+
+    /// 画面中継を始める。フレームが来るたびに `on_frame(base64_jpeg, css_w, css_h)` を呼ぶ。
+    /// フレームの ack もここで自動的に返す (返さないと次が来ない)
+    pub fn start<F>(webview: &ICoreWebView2, on_frame: F) -> Option<Cast>
+    where
+        F: FnMut(String, f64, f64) + 'static,
+    {
+        let cb = std::rc::Rc::new(std::cell::RefCell::new(on_frame));
+        let wv = webview.clone();
+        let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(
+            move |_sender, args: Option<ICoreWebView2DevToolsProtocolEventReceivedEventArgs>| {
+                if let Some(args) = args {
+                    let mut raw = windows::core::PWSTR::null();
+                    unsafe {
+                        if args.ParameterObjectAsJson(&mut raw).is_ok() {
+                            let json = webview2_com::take_pwstr(raw);
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+                                let data = v
+                                    .get("data")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                let meta = v.get("metadata");
+                                let w = meta
+                                    .and_then(|m| m.get("deviceWidth"))
+                                    .and_then(|x| x.as_f64())
+                                    .unwrap_or(0.0);
+                                let h = meta
+                                    .and_then(|m| m.get("deviceHeight"))
+                                    .and_then(|x| x.as_f64())
+                                    .unwrap_or(0.0);
+                                let sid = v.get("sessionId").and_then(|x| x.as_i64()).unwrap_or(0);
+                                // 先に ack を返してから届ける (詰まらせない)
+                                call(
+                                    &wv,
+                                    "Page.screencastFrameAck",
+                                    &format!("{{\"sessionId\":{sid}}}"),
+                                );
+                                if !data.is_empty() {
+                                    (cb.borrow_mut())(data, w, h);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            },
+        ));
+
+        let name = HSTRING::from("Page.screencastFrame");
+        let mut token = 0i64;
+        unsafe {
+            let receiver = webview
+                .GetDevToolsProtocolEventReceiver(PCWSTR(name.as_ptr()))
+                .ok()?;
+            receiver
+                .add_DevToolsProtocolEventReceived(&handler, &mut token)
+                .ok()?;
+            call(webview, "Page.enable", "{}");
+            call(
+                webview,
+                "Page.startScreencast",
+                "{\"format\":\"jpeg\",\"quality\":60,\"maxWidth\":1600,\"maxHeight\":1200,\"everyNthFrame\":1}",
+            );
+            Some(Cast {
+                receiver,
+                token,
+                webview: webview.clone(),
+            })
+        }
+    }
+
+    /// 中継を止め、通知の登録も外す
+    pub fn stop(cast: Cast) {
+        unsafe {
+            call(&cast.webview, "Page.stopScreencast", "{}");
+            let _ = cast
+                .receiver
+                .remove_DevToolsProtocolEventReceived(cast.token);
+        }
+    }
 }
 
 #[cfg(test)]
