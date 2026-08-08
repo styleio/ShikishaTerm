@@ -498,28 +498,50 @@ impl Config {
     }
 }
 
-/// 設定ファイルの探索順 (exe隣の config フォルダ → カレントの config フォルダ)。
-/// ルートには exe 以外のファイルを置かない (利用者の持ち物は config フォルダへ)
-fn config_candidates() -> Vec<std::path::PathBuf> {
-    let mut v = Vec::new();
-    if let Some(p) = std::env::current_exe()
+/// ポータブル配置のルート (exe と各フォルダが並ぶ場所)。
+/// data / logs / config はここの下に置く
+pub fn root_dir() -> std::path::PathBuf {
+    std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("config").join("config.json")))
-    {
-        v.push(p);
-    }
-    v.push(std::path::PathBuf::from("config/config.json"));
-    v
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// ポータブル配置のルート (exe と各フォルダが並ぶ場所)。
-/// config/config.json の2つ上がルート
-pub fn root_dir() -> std::path::PathBuf {
-    config_file_path()
-        .parent()
-        .and_then(std::path::Path::parent)
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
+/// 設定ファイルの探索順。新配置 (config フォルダ) を優先し、
+/// 旧配置 (ルート直下の config.json) も読める。カレント基準も後ろに足す
+fn config_candidates() -> Vec<std::path::PathBuf> {
+    let root = root_dir();
+    vec![
+        root.join("config").join("config.json"), // 新: exe隣の config フォルダ
+        root.join("config.json"),                // 旧: exe隣の直下 (移行対象)
+        std::path::PathBuf::from("config/config.json"), // 新: カレント
+        std::path::PathBuf::from("config.json"),        // 旧: カレント
+    ]
+}
+
+/// 旧配置 (ルート直下の config.json / secrets.json) を新しい config フォルダへ移す。
+/// 一度だけ。移せなくても読み込みは旧配置にフォールバックするので致命ではない
+pub fn migrate_legacy_config() {
+    let root = root_dir();
+    let new_cfg = root.join("config").join("config.json");
+    let old_cfg = root.join("config.json");
+    if new_cfg.exists() || !old_cfg.exists() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(new_cfg.parent().unwrap());
+    // 同一ボリュームなら rename、駄目ならコピーして消す
+    if std::fs::rename(&old_cfg, &new_cfg).is_err()
+        && std::fs::copy(&old_cfg, &new_cfg).is_ok()
+    {
+        let _ = std::fs::remove_file(&old_cfg);
+    }
+    // secrets.json も隣にあれば一緒に移す
+    let (old_s, new_s) = (root.join("secrets.json"), root.join("config").join("secrets.json"));
+    if old_s.exists() && !new_s.exists() {
+        if std::fs::rename(&old_s, &new_s).is_err() && std::fs::copy(&old_s, &new_s).is_ok() {
+            let _ = std::fs::remove_file(&old_s);
+        }
+    }
 }
 
 /// Web GUIの編集対象となる設定ファイルのパス。

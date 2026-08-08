@@ -123,6 +123,14 @@ pub fn encrypt_file(path: &std::path::Path, password: &str) -> Result<()> {
 
 /// 一時ファイル→リネームで書き込む (Google Drive同期との競合対策。DESIGN 11章)
 pub fn write_atomic(path: &std::path::Path, content: &str) -> Result<()> {
+    // 置き場のフォルダ (config/ など) が無ければ作る。無いまま書くと
+    // 一時ファイルの作成で失敗し、保存が「空の応答」で黙って落ちる
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("フォルダを作れません: {}", dir.display()))?;
+        }
+    }
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, content).with_context(|| format!("書き込めません: {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("置換できません: {}", path.display()))?;
