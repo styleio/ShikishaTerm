@@ -51,6 +51,28 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   .spark { display:flex; align-items:flex-end; gap:1px; height:14px; flex:none; }
   .spark i { width:2px; background:var(--brand); opacity:.75; }
 
+  /* ハンバーガーと幕。広い画面では出さない (サイドバー常時表示のまま) */
+  #hamburger { display:none; position:fixed; top:6px; left:6px; z-index:40;
+    width:34px; height:30px; align-items:center; justify-content:center;
+    background:var(--panel); border:1px solid var(--line); border-radius:6px;
+    color:var(--text); font-size:16px; cursor:pointer; }
+  #backdrop { display:none; }
+
+  /* 狭い画面・縦長では、左タブバーを引き出し式にして全幅を使う。
+     PCの広い窓は今までどおりサイドバー常時表示 (同じ1枚で両対応) */
+  @media (max-width:700px), (max-aspect-ratio:1/1) {
+    #app { grid-template-columns:1fr; }
+    #tabs { position:fixed; top:0; left:0; bottom:0; z-index:30; width:240px;
+      transform:translateX(-100%); transition:transform .2s ease;
+      box-shadow:2px 0 14px rgba(0,0,0,.5); }
+    #app.drawer #tabs { transform:none; }
+    #hamburger { display:flex; }
+    #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
+      background:rgba(0,0,0,.45); }
+    /* 引き出しボタンに隠れないよう、上の余白を少しあける */
+    #board, #screen, #cast { top:0; }
+  }
+
   /* ── 中身 ───────────────────────────────── */
   #main { position:relative; overflow:hidden; }
   /* font-family を書くのは飾りではない。<pre> にはブラウザ自身が
@@ -63,7 +85,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
      縦横比は保ちつつ枠に収める。touch-action:none で既定のスクロールを止め、
      指の動きを軌跡としてそのまま送る */
   #cast { position:absolute; inset:0; width:100%; height:100%;
-    object-fit:contain; background:#000; touch-action:none; }
+    object-fit:contain; object-position:top center; background:#000; touch-action:none; }
   /* ここだけ選べる。タブバーや枠は選択に混ざらない */
   #screen { user-select:text; }
 
@@ -184,6 +206,8 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     padding:8px 16px; border-radius:8px; font-size:13px; }
 </style></head><body>
 <div id="app">
+  <div id="hamburger">&#9776;</div>
+  <div id="backdrop"></div>
   <nav id="tabs"></nav>
   <div id="main">
     <div id="nav" hidden></div>
@@ -259,6 +283,18 @@ addEventListener("pointerup", release, true);
 addEventListener("pointercancel", release, true);
 // 窓の外で離された時のために。押しっぱなしのまま固まる方が困る
 addEventListener("blur", release, true);
+
+// 引き出し式タブバー (狭い画面・縦長)。広い画面では常時表示なので効かない
+{
+  const app = document.getElementById("app");
+  const ham = document.getElementById("hamburger");
+  const bd = document.getElementById("backdrop");
+  if (ham) ham.onclick = () => app.classList.toggle("drawer");
+  if (bd) bd.onclick = () => app.classList.remove("drawer");
+  // タブを選んだら畳んで全幅へ戻す
+  const tabs = document.getElementById("tabs");
+  if (tabs) tabs.addEventListener("click", () => app.classList.remove("drawer"));
+}
 
 // ── 左のタブバー ────────────────────────────
 function drawTabs() {
