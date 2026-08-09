@@ -81,14 +81,11 @@ fn main() -> Result<()> {
     // 旧配置 (ルート直下の config.json) を config フォルダへ移す (一度だけ)。
     // 読み込みより前に済ませないと、移行前の空設定で起動してしまう
     config::migrate_legacy_config();
-    // WebView2 のユーザーデータ (Cookie・キャッシュ等) をルートではなく data\ に置く。
-    // 既定は exe 隣に「SHIKISHA-TERM.exe.WebView2」を作るが、ルートには exe だけを
-    // 並べたい。最初のWebViewが作られる前に env で置き場を指定する
+    // WebView2 のユーザーデータ (Cookie・キャッシュ等) の置き場を設定から決める。
+    // 既定はローカル (%LOCALAPPDATA%) — Drive同期フォルダに置くとキャッシュが
+    // 延々と同期され通知や衝突を招くため。最初のWebViewが作られる前に指定する
     unsafe {
-        std::env::set_var(
-            "WEBVIEW2_USER_DATA_FOLDER",
-            config::root_dir().join("data").join("webview2"),
-        );
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", config::browser_data_dir());
     }
     // 表示言語を決める (設定 → OS の順。翻訳が無ければ英語)
     i18n::init(

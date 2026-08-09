@@ -64,6 +64,31 @@ pub struct Config {
     /// 表示言語 ("ja" 等)。省略時はOSの設定に従う
     #[serde(default)]
     pub language: Option<String>,
+    /// ブラウザ (WebView2) のデータ置き場。キャッシュとログイン状態が入る。
+    ///   "local" (既定) … 各PCの %LOCALAPPDATA% (Drive同期しない・軽い)
+    ///   "portable"      … アプリ隣の data\webview2 (Driveで全PC共有・ログインも共有)
+    ///   その他          … その文字列を絶対パスとして使う
+    #[serde(default)]
+    pub browser_data: Option<String>,
+}
+
+/// WebView2 のデータ置き場を設定から決める。DriveのキャッシュチャーンやEBWebView
+/// の同期通知を避けるため、既定は同期されないローカル (%LOCALAPPDATA%)
+pub fn browser_data_dir() -> std::path::PathBuf {
+    let mode = load()
+        .and_then(|c| c.browser_data)
+        .unwrap_or_default();
+    match mode.trim() {
+        "portable" => root_dir().join("data").join("webview2"),
+        "" | "local" => local_appdata().join("ShikishaTerm").join("webview2"),
+        other => std::path::PathBuf::from(other),
+    }
+}
+
+fn local_appdata() -> std::path::PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| root_dir().join("data"))
 }
 
 /// リモートUIの設定。遠隔からAIを操作できる機能なので既定はオフ
