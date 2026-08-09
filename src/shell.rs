@@ -72,6 +72,15 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
      指の動きを軌跡としてそのまま送る */
   #cast { position:absolute; inset:0; width:100%; height:100%;
     object-fit:contain; object-position:top center; background:#000; touch-action:none; }
+  /* トラックパッド式の合成カーソル (指で隠れないよう小さめの輪) */
+  #castcursor { position:fixed; width:18px; height:18px; margin:-9px 0 0 -9px;
+    border:2px solid #fff; border-radius:50%; background:rgba(0,170,255,.35);
+    box-shadow:0 0 8px rgba(0,0,0,.7); pointer-events:none; z-index:15; display:none; }
+  /* 操作モード中の表示 (タップで解除) */
+  #castmode { position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
+    background:#16202b; border:1px solid var(--brand); color:var(--text);
+    padding:6px 14px; border-radius:16px; font-size:12px; z-index:16;
+    display:none; cursor:pointer; }
   /* ここだけ選べる。タブバーや枠は選択に混ざらない */
   #screen { user-select:text; }
 
@@ -327,6 +336,9 @@ addEventListener("blur", release, true);
   // タブを選んだら畳んで全幅へ戻す
   const tabs = document.getElementById("tabs");
   if (tabs) tabs.addEventListener("click", () => app.classList.remove("drawer"));
+  // 上のバー (キャストの外) を押したら操作モードを抜ける
+  const st = document.getElementById("status");
+  if (st) st.addEventListener("pointerdown", () => { if (typeof exitCast === "function") exitCast(); });
 }
 
 // ── 左のタブバー ────────────────────────────
@@ -848,46 +860,91 @@ function castStart() {
 function castStop() {
   if (castWs) { castWs.close(); castWs = null; }
   if (castIn) { castIn.close(); castIn = null; }
+  exitCast();
 }
 function sendIn(o) {
   if (castIn && castIn.readyState === 1) castIn.send(JSON.stringify(o));
 }
-// object-fit:contain で中身が収まる矩形を求め、ポインタを 0..1 に直す。
-// レターボックス (余白) の中は inside=false にして送らない
-function castRatio(cv, clientX, clientY) {
+// 中身 (object-fit:contain のレターボックス) の矩形を client 座標で返す
+function castRect(cv) {
   const r = cv.getBoundingClientRect();
   const cw = cv.width || 1, ch = cv.height || 1;
-  const scale = Math.min(r.width / cw, r.height / ch);
-  const dw = cw * scale, dh = ch * scale;
-  const ox = r.left + (r.width - dw) / 2, oy = r.top + (r.height - dh) / 2;
-  const x = (clientX - ox) / dw, y = (clientY - oy) / dh;
-  return { x, y, inside: x >= 0 && x <= 1 && y >= 0 && y <= 1 };
+  const s = Math.min(r.width / cw, r.height / ch);
+  const dw = cw * s, dh = ch * s;
+  return { ox: r.left + (r.width - dw) / 2, oy: r.top + (r.height - dh) / 2, dw, dh };
 }
+
+// トラックパッド式カーソル。
+//   1) キャストをタップ → 操作モードに入りカーソルが出る (この時はクリックしない)
+//   2) ドラッグ → カーソルが相対移動 (指で対象が隠れないので小さい的も狙える)
+//   3) タップ → カーソル位置をクリック
+//   4) 素早く2度目タップして動かす → 掴んでドラッグ (CAPTCHAのスライダー等)
+//   5) 2本指ドラッグ → スクロール
+//   6) 上のバーや操作中バッジをタップ → 解除
+let castMode = false, cx = 0.5, cy = 0.5, cursorEl = null, modeEl = null, dragging = false;
+const CURSOR_ACCEL = 1.25;
+function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+function ensureCursor() {
+  if (!cursorEl) { cursorEl = el("div", {id:"castcursor"}); document.getElementById("main").append(cursorEl); }
+  if (!modeEl) {
+    modeEl = el("div", {id:"castmode"}, T["tui.cast.control"] || "操作中 — ここをタップで解除");
+    modeEl.onclick = exitCast;
+    document.getElementById("main").append(modeEl);
+  }
+}
+function posCursor() {
+  const r = castRect(document.getElementById("cast"));
+  cursorEl.style.left = (r.ox + cx * r.dw) + "px";
+  cursorEl.style.top = (r.oy + cy * r.dh) + "px";
+}
+function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; posCursor(); }
+function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; }
+const click = () => {
+  sendIn({kind:"inject", what:"mouse", phase:"pressed",  x:cx, y:cy, down:true});
+  sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false});
+};
 function bindCastInput(cv) {
   if (castBound) return; castBound = true;
-  let down = false;
+  const pts = new Map(); let lastTapT = 0, moved = false, startT = 0;
   cv.addEventListener("pointerdown", (e) => {
-    const p = castRatio(cv, e.clientX, e.clientY); if (!p.inside) return;
-    down = true; try { cv.setPointerCapture(e.pointerId); } catch (x) {}
-    sendIn({kind:"inject", what:"mouse", phase:"pressed", x:p.x, y:p.y, down:true});
+    pts.set(e.pointerId, 1); try { cv.setPointerCapture(e.pointerId); } catch (x) {}
     e.preventDefault();
+    if (!castMode) { enterCast(); return; }   // 最初のタップは入場だけ
+    if (pts.size >= 2) return;                 // 2本指はスクロール
+    startT = Date.now(); moved = false;
+    if (Date.now() - lastTapT < 300) {         // タップ&ドラッグ = 掴む
+      dragging = true;
+      sendIn({kind:"inject", what:"mouse", phase:"pressed", x:cx, y:cy, down:true});
+    }
   });
   cv.addEventListener("pointermove", (e) => {
-    const p = castRatio(cv, e.clientX, e.clientY);
-    sendIn({kind:"inject", what:"mouse", phase:"moved", x:p.x, y:p.y, down});
-    e.preventDefault();
+    if (!castMode) return; e.preventDefault();
+    if (pts.size >= 2) {                        // 2本指: 縦の動きをホイールに
+      const dy = e.movementY || 0;
+      if (dy) sendIn({kind:"inject", what:"wheel", x:cx, y:cy, dx:0, dy:-dy * 3});
+      return;
+    }
+    const mx = e.movementX || 0, my = e.movementY || 0;
+    if (Math.abs(mx) + Math.abs(my) > 2) moved = true;
+    const r = castRect(cv);
+    cx = clamp01(cx + mx * CURSOR_ACCEL / r.dw);
+    cy = clamp01(cy + my * CURSOR_ACCEL / r.dh);
+    posCursor();
+    sendIn({kind:"inject", what:"mouse", phase:"moved", x:cx, y:cy, down:dragging});
   });
   const up = (e) => {
-    if (!down) return; down = false;
-    const p = castRatio(cv, e.clientX, e.clientY);
-    sendIn({kind:"inject", what:"mouse", phase:"released", x:p.x, y:p.y, down:false});
-    e.preventDefault();
+    pts.delete(e.pointerId);
+    if (!castMode) return; e.preventDefault();
+    if (pts.size >= 1) return;                  // まだ指が残っている
+    if (dragging) { sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false}); dragging = false; return; }
+    if (!moved && Date.now() - startT < 300) { click(); lastTapT = Date.now(); }
   };
   cv.addEventListener("pointerup", up);
   cv.addEventListener("pointercancel", up);
+  // PCブラウザでの確認用にマウスホイールも通す
   cv.addEventListener("wheel", (e) => {
-    const p = castRatio(cv, e.clientX, e.clientY); if (!p.inside) return;
-    sendIn({kind:"inject", what:"wheel", x:p.x, y:p.y, dx:e.deltaX, dy:e.deltaY});
+    if (!castMode) return;
+    sendIn({kind:"inject", what:"wheel", x:cx, y:cy, dx:e.deltaX, dy:e.deltaY});
     e.preventDefault();
   }, {passive:false});
 }
