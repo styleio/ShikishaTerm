@@ -69,6 +69,9 @@ pub struct NavState {
     pub can_forward: bool,
     /// いま開いている場所
     pub at: String,
+    /// 読み込み中か (本フレームの遷移のみ。SPA内の遷移では立たない)
+    #[serde(default)]
+    pub loading: bool,
 }
 
 /// 画面に出す状態のすべて。

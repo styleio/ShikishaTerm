@@ -139,6 +139,13 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     color:var(--text); background:#0a0c0e; border:1px solid var(--line);
     border-radius:6px; padding:3px 8px; outline:none; }
   #nav input:focus { border-color:var(--brand); }
+  /* 読み込み中の帯。バーの下端を左から右へ光が流れる。
+     本フレームの遷移でしか灯らないので、点きっぱなしにはならない */
+  #nav.loading::after { content:""; position:absolute; left:0; right:0; bottom:-1px;
+    height:2px; background:linear-gradient(90deg,transparent,var(--brand),transparent);
+    background-size:40% 100%; background-repeat:no-repeat;
+    animation:navload 1s linear infinite; }
+  @keyframes navload { from { background-position:-40% 0 } to { background-position:140% 0 } }
   /* ページを置く場所。バーを出したぶんだけ下がる */
   #page { position:absolute; inset:0; pointer-events:none; }
 
@@ -580,6 +587,7 @@ function drawNav() {
   const n = document.getElementById("nav");
   const want = S && S.nav;
   n.hidden = !want;
+  n.classList.toggle("loading", !!(want && want.loading));   // 通信中の帯
   if (!want) { n.textContent = ""; layout(); return; }
   // 打っている途中に組み直すと、1文字ごとに書きかけが消える
   const inp = n.querySelector("input");

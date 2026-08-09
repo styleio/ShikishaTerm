@@ -319,6 +319,9 @@ struct WinSurface {
     gos: Vec<crate::browser::Go>,
     /// 聞いておいた居場所の答え (窓の中での名前, URL, 戻れる, 進める)
     wheres: Vec<(String, String, bool, bool)>,
+    /// ブラウザごとの「通信中か」。読み込み開始で真、終了で偽。
+    /// 上のバーの進捗表示に使う (呼び名 = 見せているブラウザの鍵)
+    loading: std::collections::HashMap<String, bool>,
     /// 中継画面のフレーム (JPEGのバイト列)。ループがスマホへ配る
     frames: Vec<Vec<u8>>,
     /// 窓が閉じた。描く先が無くなったので、ループは畳むしかない
@@ -356,6 +359,10 @@ impl WinSurface {
     /// 居場所の答えを引き取る
     fn take_wheres(&mut self) -> Vec<(String, String, bool, bool)> {
         std::mem::take(&mut self.wheres)
+    }
+    /// 今そのブラウザが読み込み中か。分からなければ (静止していれば) 偽
+    fn loading_of(&self, key: &str) -> bool {
+        self.loading.get(key).copied().unwrap_or(false)
     }
 
     /// たまった中継フレームを引き取る (ループがスマホへ配る)
@@ -398,6 +405,13 @@ impl WinSurface {
                     url,
                     complete,
                 } => self.loads.push((name, url, complete)),
+                // ブラウザが読み込みを始めた/終えた。見せている側の進捗表示に使う
+                Ev::Loading {
+                    from: Some(name),
+                    busy,
+                } => {
+                    self.loading.insert(name, busy);
+                }
                 // クリップボードは端末側と同じ扱いにする
                 Ev::Copy { text } => {
                     if let Ok(mut c) = arboard::Clipboard::new() {
@@ -579,6 +593,7 @@ fn run_in_window() -> Result<()> {
         scrolls: Vec::new(),
         gos: Vec::new(),
         wheres: Vec::new(),
+        loading: std::collections::HashMap::new(),
         frames: Vec::new(),
         closed: false,
     })
@@ -1478,6 +1493,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 can_back: w.is_some_and(|w| w.2),
                 can_forward: w.is_some_and(|w| w.3),
                 at: w.map(|w| w.1.clone()).unwrap_or_default(),
+                loading: surface.loading_of(key),
             })
         });
         // 居場所は窓しか知らない。出しているときだけ、ほどよい間隔で聞く。

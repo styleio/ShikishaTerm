@@ -26,6 +26,11 @@ const INIT_JS: &str = r#"
   if (window.__shikisha) return;
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
 
+  // このスクリプトは新しい文書が作られるたびに走る。走った=読み込みが
+  // 始まった、なので「通信中」を灯す。終わりは announce() で消す。
+  // 本フレームだけ (iframe は chrome.webview に触れない) なので誤検知しにくい
+  send({ kind: "loading", busy: true });
+
   // 人への呼びかけ。ページのCSSと喧嘩しないよう影の中に閉じる
   window.__shikisha_ask = function (text, label) {
     let host = document.getElementById("__shikisha_bar");
@@ -140,6 +145,7 @@ const INIT_JS: &str = r#"
   const announce = complete => {
     if (told) return;
     told = true;
+    send({ kind: "loading", busy: false });   // 読み込み終わり = 通信中を消す
     send({ kind: "ready", url: location.href, complete: !!complete });
   };
   const SETTLE_MS = 8000;
@@ -268,6 +274,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .and_then(|u| u.as_str())
                 .unwrap_or_default()
                 .to_string(),
+        },
+        Some("loading") => Ev::Loading {
+            from: None,
+            busy: v.get("busy").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("button") => Ev::Button { from: None },
         Some("select") => Ev::Select {
@@ -439,6 +449,10 @@ pub enum Ev {
         w: u32,
         h: u32,
     },
+    /// ページの読み込みが始まった/終わった (上のバーに通信中を出す)。
+    /// 本フレームの文書生成と load でしか動かないので、SPA内の遷移や
+    /// 裏の常時接続では灯らない (誤検知より正直さを採る)
+    Loading { from: Option<String>, busy: bool },
     /// 選択された文字 (PuTTY と同じで、選んだ時点でコピーする)
     Copy { text: String },
     /// 貼り付けの要求 (右クリック)
@@ -1098,6 +1112,10 @@ fn run_window(
                                     from: Some(who.clone()),
                                     url,
                                     complete,
+                                },
+                                Ev::Loading { busy, .. } => Ev::Loading {
+                                    from: Some(who.clone()),
+                                    busy,
                                 },
                                 other => other,
                             };

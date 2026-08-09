@@ -73,6 +73,9 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         Ev::Select { .. } | Ev::Key { .. } | Ev::Stop => true,
         // 中継画面への入力 (指の軌跡・スワイプ・文字)。遠隔操作の要なので通す
         Ev::Inject { .. } => true,
+        // 戻る/進む/更新/URL移動。ブラウザを遠隔操作する以上、上のバーの
+        // ボタンも効かないと片手落ち。行き先を変えるだけで窓は止めない
+        Ev::Go { .. } => true,
         // 選んだ文字を控える。窓と同じ作法 (PuTTY と同じ) を保つ
         Ev::Copy { .. } => true,
         Ev::Menu { key } => !matches!(
@@ -399,6 +402,11 @@ mod tests {
         let menu = |k: &str| super::allowed_from_afar(&Ev::Menu { key: k.into() });
         assert!(super::allowed_from_afar(&Ev::Select { tab: 2 }));
         assert!(super::allowed_from_afar(&Ev::Stop));
+        // 戻る/進む/更新/URL移動は遠隔から効かないと、上のバーが飾りになる
+        assert!(super::allowed_from_afar(&Ev::Go { go: crate::browser::Go::Back }));
+        assert!(super::allowed_from_afar(&Ev::Go {
+            go: crate::browser::Go::To("example.com".into())
+        }));
         assert!(menu("a") && menu("?") && menu("w"), "普通の操作が通らない");
 
         assert!(!menu("k"), "マスターパスワードを遠くから呼べてしまう");
