@@ -78,6 +78,17 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     pointer-events:none; z-index:15; display:none;
     filter:drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
   #castcursor svg { display:block; }
+  /* クリックの波紋 (押せたことのフィードバック) */
+  .ripple { position:absolute; width:10px; height:10px; margin:-5px 0 0 -5px;
+    border-radius:50%; border:2px solid var(--brand); pointer-events:none; z-index:14;
+    animation:rip .48s ease-out forwards; }
+  @keyframes rip { from { transform:scale(.4); opacity:.9 } to { transform:scale(4.5); opacity:0 } }
+  /* キャスト用の隠しキーボード入力 (画面外に置いてフォーカスだけ取る) */
+  #castkbd { position:absolute; left:-9999px; top:0; width:1px; height:1px;
+    opacity:0; border:0; padding:0; }
+  /* 操作中バッジの ⌨ ボタン */
+  #castmode .kbtn { display:inline-block; margin-right:10px; padding:1px 7px;
+    border:1px solid var(--brand); border-radius:6px; cursor:pointer; }
   /* 操作モード中の表示 (タップで解除) */
   #castmode { position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
     background:#16202b; border:1px solid var(--brand); color:var(--text);
@@ -902,11 +913,54 @@ function ensureCursor() {
     document.getElementById("main").append(cursorEl);
   }
   if (!modeEl) {
-    modeEl = el("div", {id:"castmode"}, T["tui.cast.control"] || "操作中 — ここをタップで解除");
+    // ⌨ ボタン (キーボードを出す) と、解除の案内。バッジをタップで解除、
+    // ⌨ だけは伝播を止めて解除させない
+    const kb = el("span", {class:"kbtn", onclick:(ev)=>{ ev.stopPropagation(); openKbd(); }}, "⌨");
+    const lbl = el("span", {}, T["tui.cast.control"] || "操作中 — タップで解除");
+    modeEl = el("div", {id:"castmode"}, kb, lbl);
     modeEl.onclick = exitCast;
     document.getElementById("main").append(modeEl);
   }
 }
+// クリックした場所に波紋を出す (押せたことが分かるように)
+function spawnRipple() {
+  const cv = document.getElementById("cast");
+  const cw = cv.width || 1, ch = cv.height || 1, mw = cv.clientWidth, mh = cv.clientHeight;
+  const s = Math.min(mw / cw, mh / ch), dw = cw * s, dh = ch * s, ox = (mw - dw) / 2;
+  const r = el("div", {class:"ripple"});
+  r.style.left = (ox + cx * dw) + "px";
+  r.style.top = (cy * dh) + "px";
+  document.getElementById("main").append(r);
+  setTimeout(() => r.remove(), 480);
+}
+// スマホのキーボードから文字を送る。IME変換は端末側で終わらせ、確定した
+// 文字列だけを insertText で送る (1打鍵ずつ送ると日本語変換が壊れる)
+let castKbd = null;
+function ensureKbd() {
+  if (castKbd) return;
+  castKbd = el("input", {id:"castkbd", autocomplete:"off", autocorrect:"off",
+    autocapitalize:"off", spellcheck:"false"});
+  document.getElementById("main").append(castKbd);
+  let composing = false;
+  castKbd.addEventListener("compositionstart", () => composing = true);
+  castKbd.addEventListener("compositionend", (e) => {
+    composing = false;
+    if (e.data) sendIn({kind:"inject", what:"text", text:e.data});
+    castKbd.value = "";
+  });
+  castKbd.addEventListener("input", (e) => {
+    if (composing) return;                       // 変換中は compositionend で送る
+    if (e.data && e.inputType === "insertText") sendIn({kind:"inject", what:"text", text:e.data});
+    else if (e.inputType === "deleteContentBackward") sendIn({kind:"inject", what:"key", named:"backspace"});
+    castKbd.value = "";
+  });
+  castKbd.addEventListener("keydown", (e) => {
+    if (e.isComposing) return;
+    if (e.key === "Enter") { sendIn({kind:"inject", what:"key", named:"enter"}); e.preventDefault(); }
+    else if (e.key === "Backspace" && !castKbd.value) { sendIn({kind:"inject", what:"key", named:"backspace"}); }
+  });
+}
+function openKbd() { ensureKbd(); castKbd.value = ""; castKbd.focus(); }
 // カーソルは #main 内の絶対配置。#cast の中身 (contain・上詰め) の位置を
 // #main 基準で求める。ビューポートや上部バーの高さに依存させない
 function posCursor() {
@@ -920,10 +974,11 @@ function posCursor() {
   cursorEl.style.top = (cy * dh) + "px";   // 縦は上詰め (oy=0)
 }
 function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; posCursor(); }
-function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; }
+function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; if (castKbd) castKbd.blur(); }
 const click = () => {
   sendIn({kind:"inject", what:"mouse", phase:"pressed",  x:cx, y:cy, down:true});
   sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false});
+  spawnRipple();
 };
 function bindCastInput(cv) {
   if (castBound) return; castBound = true;
