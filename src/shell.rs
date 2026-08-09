@@ -13,6 +13,7 @@
 
 /// 外皮のページ。`{{DICT}}` に訳語、`{{BUILD}}` にビルド刻印が入る
 pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SHIKISHA-TERM</title>
 <style>
   :root {
@@ -57,21 +58,6 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     background:var(--panel); border:1px solid var(--line); border-radius:6px;
     color:var(--text); font-size:16px; cursor:pointer; }
   #backdrop { display:none; }
-
-  /* 狭い画面・縦長では、左タブバーを引き出し式にして全幅を使う。
-     PCの広い窓は今までどおりサイドバー常時表示 (同じ1枚で両対応) */
-  @media (max-width:700px), (max-aspect-ratio:1/1) {
-    #app { grid-template-columns:1fr; }
-    #tabs { position:fixed; top:0; left:0; bottom:0; z-index:30; width:240px;
-      transform:translateX(-100%); transition:transform .2s ease;
-      box-shadow:2px 0 14px rgba(0,0,0,.5); }
-    #app.drawer #tabs { transform:none; }
-    #hamburger { display:flex; }
-    #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
-      background:rgba(0,0,0,.45); }
-    /* 引き出しボタンに隠れないよう、上の余白を少しあける */
-    #board, #screen, #cast { top:0; }
-  }
 
   /* ── 中身 ───────────────────────────────── */
   #main { position:relative; overflow:hidden; }
@@ -153,10 +139,14 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     font-size:10px; color:var(--dim); font-weight:400; white-space:nowrap; }
 
   /* ── ステータス ─────────────────────────── */
-  #status { grid-column:2; display:flex; align-items:center; gap:14px;
+  #status { grid-column:2; display:flex; align-items:center; gap:12px;
     padding:5px 12px; border-top:1px solid var(--line); background:var(--panel);
-    font-size:12px; color:var(--dim); }
+    font-size:12px; color:var(--dim); flex-wrap:nowrap; }
   #status .grow { flex:1; }
+  /* ワークスペース名だけは詰まったら省略。ピルや STOP は縮めない */
+  #status > span:first-child { min-width:0; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  #status .pill, #status .build, #stop { flex:none; white-space:nowrap; }
   .pill { padding:1px 8px; border-radius:9px; border:1px solid var(--line); }
   .pill.on { color:var(--live); border-color:#1f3d2b; }
   .pill.off { color:var(--dim); }
@@ -204,6 +194,40 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #flash { position:absolute; left:50%; bottom:52px; transform:translateX(-50%);
     background:#16202b; border:1px solid var(--brand); color:var(--text);
     padding:8px 16px; border-radius:8px; font-size:13px; }
+
+  /* ── 狭い画面・縦長のレスポンシブ (スマホ・小型PC・縦長ディスプレイ) ──
+     必ず全ての基本ルールの後ろに置く。前に置くと、後で定義された基本ルールが
+     同じ詳細度で後勝ちして上書きが効かない */
+  @media (max-width:700px), (max-aspect-ratio:1/1) {
+    /* 何があっても横スクロール (謎の右空間) を出さない。
+       これが無いと、幅を超えた表や長い文言でページ全体が横に伸び、
+       ステータスの STOP まで画面外へ押し出される */
+    html, body, #app { max-width:100vw; overflow-x:hidden; }
+    /* グリッドの列指定が「幻の2列目」を生むので、狭い画面では flex の縦積みに */
+    #app { display:flex; flex-direction:column; }
+    #main { flex:1; min-height:0; }
+    /* ステータスはビューポート幅ちょうどに。STOP を必ず画面内へ */
+    #status { width:100vw; box-sizing:border-box; gap:8px; }
+    /* 幅を超える表はページではなくカードの中でスクロールさせる */
+    .card { overflow-x:auto; }
+    /* メニューは1列に積む (横に溢れさせない) */
+    .menu { grid-template-columns:1fr; }
+    #tabs { position:fixed; top:0; left:0; bottom:0; z-index:30; width:240px;
+      transform:translateX(-100%); transition:transform .2s ease;
+      box-shadow:2px 0 14px rgba(0,0,0,.5); }
+    #app.drawer #tabs { transform:none; }
+    #hamburger { display:flex; }
+    #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
+      background:rgba(0,0,0,.45); }
+    /* 幅が足りないときは build 表示を落として STOP を確実に残す */
+    #status .build { display:none; }
+    /* ハンバーガー(左上)に文字が重ならないよう上を空け、左右も詰める */
+    #board { padding:48px 12px 22px; }
+    #screen { padding-top:44px; }
+    /* ワードマークが横にはみ出して崩れないよう、幅に合わせて縮める。
+       ブロック文字が全角幅で描かれても収まるよう小さめに。はみ出しは内側で抑える */
+    .mark { font-size:min(13px, 1.9vw); overflow:hidden; }
+  }
 </style></head><body>
 <div id="app">
   <div id="hamburger">&#9776;</div>
@@ -417,7 +441,7 @@ function drawStatus() {
       "AUTO " + (S.auto_enabled ? "ON" : "OFF")),
     S.remote_on ? el("span", {class:"pill on"}, "REMOTE") : null,
     el("span", {class:"grow"}),
-    el("span", {}, BUILD),
+    el("span", {class:"build"}, BUILD),
     el("span", {id:"stop", onclick:() => send({kind:"stop"})},
       T["tui.stop"] || "STOP"),
   ].forEach(x => { if (x) s.append(x); });

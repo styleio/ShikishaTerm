@@ -926,6 +926,7 @@ fn handle(
 // (サイドバー + 詳細ペイン。一覧は「何があるか」だけを見せ、編集は1つに集中させる)
 const PAGE: &str = r##"<!doctype html>
 <html lang="{{__lang__}}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{settings.title}}</title>
 <style>
  :root {
@@ -2120,7 +2121,8 @@ load().then(() => {
 
 /// マニュアル表示ページ (Markdownの必要な部分だけを描画する簡易レンダラ)
 const HELP_PAGE: &str = r##"<!doctype html>
-<html lang="{{__lang__}}"><head><meta charset="utf-8"><title>{{help.page.title}}</title>
+<html lang="{{__lang__}}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{{help.page.title}}</title>
 <style>
  :root { color-scheme: dark; }
  body { background:#05080c; color:#d3e6f5; font-family:"Consolas","Meiryo",monospace;
