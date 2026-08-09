@@ -140,12 +140,15 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     border-radius:6px; padding:3px 8px; outline:none; }
   #nav input:focus { border-color:var(--brand); }
   /* 読み込み中の帯。バーの下端を左から右へ光が流れる。
-     本フレームの遷移でしか灯らないので、点きっぱなしにはならない */
-  #nav.loading::after { content:""; position:absolute; left:0; right:0; bottom:-1px;
-    height:2px; background:linear-gradient(90deg,transparent,var(--brand),transparent);
+     下端(-1px)だと中継キャンバスに隠れるので、バーの内側(bottom:0)に置く */
+  #nav.loading::after { content:""; position:absolute; left:0; right:0; bottom:0;
+    height:3px; background:linear-gradient(90deg,transparent,var(--brand),transparent);
     background-size:40% 100%; background-repeat:no-repeat;
     animation:navload 1s linear infinite; }
   @keyframes navload { from { background-position:-40% 0 } to { background-position:140% 0 } }
+  /* 更新アイコンを回して「読み込み中」を分かりやすく (スマホでも目立つ) */
+  #nav button.spin .ico { display:inline-block; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg) } }
   /* ページを置く場所。バーを出したぶんだけ下がる */
   #page { position:absolute; inset:0; pointer-events:none; }
 
@@ -602,7 +605,13 @@ function drawNav() {
     };
     if (want.back) n.append(btn("←", "tui.nav.back", "back", want.can_back));
     if (want.forward) n.append(btn("→", "tui.nav.forward", "forward", want.can_forward));
-    if (want.reload) n.append(btn("⟳", "tui.nav.reload", "reload", true));
+    if (want.reload) {
+      // 更新アイコンは span に包んで、読み込み中だけ回す
+      const rb = el("button", {title:T["tui.nav.reload"], onclick:() => send({kind:"go", what:"reload"})},
+        el("span", {class:"ico"}, "⟳"));
+      if (want.loading) rb.classList.add("spin");
+      n.append(rb);
+    }
     if (want.edit) {
       const box = el("input", {type:"text", spellcheck:"false",
         title:T["tui.nav.url"], placeholder:T["tui.nav.url"], value:want.at || ""});

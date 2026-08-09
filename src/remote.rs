@@ -504,6 +504,19 @@ mod tests {
             other => panic!("想定外: {other:?}"),
         }
 
+        // 上のバーの「戻る」も本体まで届くこと (許可リストと経路の両方)。
+        // 以前は許可リストで止まり、その後は keys_for で黙って捨てられていた
+        agent
+            .post(&format!("{base}/api/intent?t=tok123456789012"))
+            .send(r#"{"kind":"go","what":"back"}"#)
+            .unwrap();
+        match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
+            RemoteCmd::Ui(crate::browser::Ev::Go {
+                go: crate::browser::Go::Back,
+            }) => {}
+            other => panic!("戻るが本体まで届かない: {other:?}"),
+        }
+
         // 窓にしか答えられないものは、受け取った時点で止める。
         // 通らなかったことは、次の受信で分かる (select が先に出てくる)
         agent

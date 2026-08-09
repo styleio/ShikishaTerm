@@ -1316,6 +1316,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             let _ = caps.browser_inject(key, input);
                         }
                     }
+                    // 上のバー (戻る/進む/更新/URL) は端末の打鍵に化けない。
+                    // 窓と同じく gos に積んで、下の共通処理でブラウザへ渡す。
+                    // keys_for に通すと Go は該当なしで黙って捨てられていた
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Go { go }) => {
+                        surface.gos.push(go);
+                    }
                     // その他の画面操作は、窓から来たものと同じ打鍵に直す
                     remote::RemoteCmd::Ui(ev) => {
                         for e in keys_for(&ev) {
