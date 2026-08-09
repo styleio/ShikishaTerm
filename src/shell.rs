@@ -798,7 +798,9 @@ const onCast = () => REMOTE && S && S.tabs &&
 const focus = () => {
   const a = document.activeElement;
   if (a && a.closest && a.closest("#nav")) return;
-  if (a === castInput) return;      // 入力バーに乗っているフォーカスは奪わない
+  // 入力バーに乗っているフォーカスは奪わない。castInput は後で let 宣言される
+  // ので、起動時に評価しても TDZ で落ちないよう id で見る
+  if (a && a.id === "castinput") return;
   if (onCast()) return;             // 中継画面ではターミナルのキーボードを出さない
   kbd.focus();
 };
