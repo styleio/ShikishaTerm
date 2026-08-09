@@ -70,6 +70,35 @@ pub struct Config {
     ///   その他          … その文字列を絶対パスとして使う
     #[serde(default)]
     pub browser_data: Option<String>,
+    /// 中継画面 (スマホ操縦) の補助キー列。左から順に並ぶ。
+    /// 使える名前: esc tab space enter backspace delete
+    ///   left up down right home end pageup pagedown
+    ///   f1〜f12 ctrl alt (ctrl/alt は固定トグル)。
+    /// 省略時は cast_keys_default() を使う
+    #[serde(default)]
+    pub cast_keys: Option<Vec<String>>,
+}
+
+/// 補助キー列の既定の並び。よく使う Enter/Space/⌫ と矢印を前に、
+/// F1〜F12 や Ctrl/Alt は後ろへ (横スクロールで届く)。
+/// 使う人が config の cast_keys で自由に差し替えられる
+pub fn cast_keys_default() -> Vec<String> {
+    [
+        "esc", "tab", "left", "up", "down", "right", "space", "enter", "backspace", "ctrl", "alt",
+        "home", "end", "pageup", "pagedown", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9",
+        "f10", "f11", "f12",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// 補助キー列の並びを設定から得る (未設定なら既定)。中継画面のクライアントへ渡す
+pub fn cast_keys() -> Vec<String> {
+    load()
+        .and_then(|c| c.cast_keys)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(cast_keys_default)
 }
 
 /// WebView2 のデータ置き場を設定から決める。DriveのキャッシュチャーンやEBWebView

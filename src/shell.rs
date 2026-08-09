@@ -84,8 +84,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     animation:rip .48s ease-out forwards; }
   @keyframes rip { from { transform:scale(.4); opacity:.9 } to { transform:scale(4.5); opacity:0 } }
   /* 文字入力バー (画面下部の変換プレビュー付き入力欄) */
-  #castbar { position:absolute; left:0; right:0; bottom:0; z-index:18;
-    display:none; align-items:center; gap:6px; padding:6px 8px;
+  #castbar { display:flex; align-items:center; gap:6px; padding:6px 8px;
     background:var(--panel); border-top:1px solid var(--brand); }
   #castinput { flex:1; min-width:0; font-size:16px; padding:8px 10px;
     background:var(--bg); color:var(--text); border:1px solid var(--line);
@@ -94,14 +93,32 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     background:var(--brand); color:#04121c; font-weight:700; cursor:pointer; }
   #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);
     border-radius:8px; background:var(--bg); color:var(--text); cursor:pointer; }
-  /* 操作中バッジの ⌨ ボタン */
-  #castmode .kbtn { display:inline-block; margin-right:10px; padding:1px 7px;
-    border:1px solid var(--brand); border-radius:6px; cursor:pointer; }
   /* 操作モード中の表示 (タップで解除) */
   #castmode { position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
     background:#16202b; border:1px solid var(--brand); color:var(--text);
     padding:6px 14px; border-radius:16px; font-size:12px; z-index:16;
     display:none; cursor:pointer; }
+  /* ⌨ 独立フローティングボタン (解除とは別物)。右下に浮かせ、押すと
+     補助キー列＋文字入力バーを出す。操作モード中だけ現れる */
+  #castfab { position:absolute; right:14px; bottom:14px; z-index:17;
+    width:46px; height:46px; border-radius:50%; display:none;
+    align-items:center; justify-content:center; font-size:20px; cursor:pointer;
+    background:var(--brand); color:#04121c; border:0;
+    box-shadow:0 2px 8px rgba(0,0,0,.4); }
+  /* 補助キー列＋文字入力バーをまとめた下部ドック。visualViewport で
+     キーボードの上へ持ち上げる。列は横スクロール、入力は下段 */
+  #castdock { position:absolute; left:0; right:0; bottom:0; z-index:18;
+    display:none; flex-direction:column; }
+  #castkeys { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
+    padding:6px 8px; background:var(--panel); border-top:1px solid var(--line);
+    -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+  #castkeys::-webkit-scrollbar { display:none; }
+  .castkey { flex:0 0 auto; min-width:40px; padding:8px 10px; font-size:14px;
+    border:1px solid var(--line); border-radius:8px; background:var(--bg);
+    color:var(--text); cursor:pointer; user-select:none; }
+  .castkey:active { background:var(--brand); color:#04121c; }
+  /* Ctrl/Alt は固定トグル。押している間は光らせて次の一打を待つ */
+  .castkey.mod.on { background:var(--brand); color:#04121c; border-color:var(--brand); }
   /* ここだけ選べる。タブバーや枠は選択に混ざらない */
   #screen { user-select:text; }
 
@@ -303,6 +320,8 @@ const BUILD = {{BUILD}};
 // 盤面が出すメニュー。押されたら、その文字がそのまま INDEX に届く
 const MENU_KEYS = {{MENU_KEYS}};
 const MENU_WORDS = {{MENU_WORDS}};
+// 中継画面の補助キー列の並び (configでカスタマイズ可)
+const CAST_KEYS = {{CAST_KEYS}};
 const TOKEN = {{TOKEN}};
 // 窓の中なら直に渡せる。スマホからはHTTPで届ける。
 // ページは同じものを使う (見た目を2回書かないため)
@@ -919,6 +938,7 @@ function castRect(cv) {
 //   5) 2本指ドラッグ → スクロール
 //   6) 上のバーや操作中バッジをタップ → 解除
 let castMode = false, cx = 0.5, cy = 0.5, cursorEl = null, modeEl = null, dragging = false;
+let fabEl = null, modCtrl = false, modAlt = false;   // ⌨FAB と Ctrl/Alt 固定トグル
 const CURSOR_ACCEL = 1.25;
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 function ensureCursor() {
@@ -932,13 +952,19 @@ function ensureCursor() {
     document.getElementById("main").append(cursorEl);
   }
   if (!modeEl) {
-    // ⌨ ボタン (キーボードを出す) と、解除の案内。バッジをタップで解除、
-    // ⌨ だけは伝播を止めて解除させない
-    const kb = el("span", {class:"kbtn", onclick:(ev)=>{ ev.stopPropagation(); openKbd(); }}, "⌨");
+    // 解除の案内 (タップで操作モードを抜ける)。キーボードは別のFABに分離した
     const lbl = el("span", {}, T["tui.cast.control"] || "操作中 — タップで解除");
-    modeEl = el("div", {id:"castmode"}, kb, lbl);
+    modeEl = el("div", {id:"castmode"}, lbl);
     modeEl.onclick = exitCast;
     document.getElementById("main").append(modeEl);
+  }
+  if (!fabEl) {
+    // ⌨ 独立ボタン。開いていれば閉じ、閉じていれば開く (トグル)
+    fabEl = el("button", {id:"castfab", onclick:(ev)=>{
+      ev.stopPropagation();
+      if (castDock && castDock.style.display === "flex") closeBar(); else openKbd();
+    }}, "⌨");
+    document.getElementById("main").append(fabEl);
   }
 }
 // クリックした場所に波紋を出す (押せたことが分かるように)
@@ -957,33 +983,75 @@ function spawnRipple() {
 //   - 変換の途中経過が自分の欄で見える (漢字に直してから送れる)
 //   - 中継画面はバーの上にそのまま見えるので、入力先を見失わない
 //   - キーボードはバーの下に出る (visualViewport でバーを鍵盤の上へ)
-let castBar = null, castInput = null;
+// 補助キーの表示名。無い名前はそのまま大文字化して出す
+const CAST_LABEL = {
+  esc:"Esc", tab:"Tab", space:"Space", enter:"⏎", backspace:"⌫", delete:"Del",
+  left:"←", up:"↑", down:"↓", right:"→",
+  home:"Home", end:"End", pageup:"PgUp", pagedown:"PgDn", ctrl:"Ctrl", alt:"Alt" };
+function castKeyLabel(name) { return CAST_LABEL[name] || name.toUpperCase(); }
+// 補助キーを一発送る。Ctrl/Alt が固定トグル中なら合成し、送ったら解除する
+function sendCastKey(name) {
+  sendIn({kind:"inject", what:"key", named:name, ctrl:modCtrl, alt:modAlt});
+  if (modCtrl || modAlt) { modCtrl = false; modAlt = false; refreshMods(); }
+}
+// 固定トグルの見た目を今の状態に合わせる
+function refreshMods() {
+  if (!castKeysEl) return;
+  castKeysEl.querySelectorAll(".castkey.mod").forEach(b => {
+    const on = (b.dataset.k === "ctrl" && modCtrl) || (b.dataset.k === "alt" && modAlt);
+    b.classList.toggle("on", on);
+  });
+}
+function buildCastKeys() {
+  const row = el("div", {id:"castkeys"});
+  const keys = (CAST_KEYS && CAST_KEYS.length) ? CAST_KEYS
+    : ["esc","tab","left","up","down","right","space","enter","backspace"];
+  keys.forEach(name => {
+    const isMod = (name === "ctrl" || name === "alt");
+    const b = el("button", {class:"castkey" + (isMod ? " mod" : ""), "data-k":name}, castKeyLabel(name));
+    // 入力欄のフォーカス(＝キーボード)を保つため、押下で既定動作を止める
+    b.addEventListener("pointerdown", (e) => e.preventDefault());
+    b.onclick = (e) => {
+      e.stopPropagation();
+      if (isMod) {
+        if (name === "ctrl") modCtrl = !modCtrl; else modAlt = !modAlt;
+        refreshMods();
+      } else { sendCastKey(name); }
+    };
+    row.append(b);
+  });
+  return row;
+}
+let castDock = null, castBar = null, castInput = null, castKeysEl = null;
 function ensureBar() {
-  if (castBar) return;
+  if (castDock) return;
   castInput = el("input", {id:"castinput", autocomplete:"off", autocorrect:"off",
     autocapitalize:"off", spellcheck:"false",
     placeholder: T["tui.cast.type.ph"] || "ここで入力して送信 (日本語は変換してから)"});
   const send = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "送信");
-  const bs = el("button", {class:"castbtn", onclick:() => sendIn({kind:"inject", what:"key", named:"backspace"})}, "⌫");
+  const bs = el("button", {class:"castbtn", onclick:() => sendCastKey("backspace")}, "⌫");
   const close = el("button", {class:"castbtn", onclick:closeBar}, "✕");
   castBar = el("div", {id:"castbar"}, bs, castInput, send, close);
-  document.getElementById("main").append(castBar);
+  castKeysEl = buildCastKeys();
+  // 上段=補助キー列、下段=文字入力バー。まとめてキーボードの上へ持ち上げる
+  castDock = el("div", {id:"castdock"}, castKeysEl, castBar);
+  document.getElementById("main").append(castDock);
   castInput.addEventListener("keydown", (e) => {
     if (e.isComposing) return;
     if (e.key === "Enter") { sendBar(); e.preventDefault(); }
   });
-  // キーボードの高さぶんバーを持ち上げる (鍵盤に隠れないように)
+  // キーボードの高さぶんドックを持ち上げる (鍵盤に隠れないように)
   if (window.visualViewport) {
     const fit = () => {
       const gap = window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop;
-      castBar.style.bottom = Math.max(0, gap) + "px";
+      castDock.style.bottom = Math.max(0, gap) + "px";
     };
     window.visualViewport.addEventListener("resize", fit);
     window.visualViewport.addEventListener("scroll", fit);
   }
 }
-function openBar() { ensureBar(); castBar.style.display = "flex"; castInput.value = ""; castInput.focus(); }
-function closeBar() { if (castBar) castBar.style.display = "none"; if (castInput) castInput.blur(); }
+function openBar() { ensureBar(); castDock.style.display = "flex"; castInput.value = ""; castInput.focus(); }
+function closeBar() { if (castDock) castDock.style.display = "none"; if (castInput) castInput.blur(); }
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
@@ -1004,8 +1072,8 @@ function posCursor() {
   cursorEl.style.left = (ox + cx * dw) + "px";
   cursorEl.style.top = (cy * dh) + "px";   // 縦は上詰め (oy=0)
 }
-function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; posCursor(); }
-function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; closeBar(); }
+function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; fabEl.style.display = "flex"; posCursor(); }
+function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; if (fabEl) fabEl.style.display = "none"; closeBar(); }
 const click = () => {
   sendIn({kind:"inject", what:"mouse", phase:"pressed",  x:cx, y:cy, down:true});
   sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false});
@@ -1269,6 +1337,10 @@ pub fn page(token: &str) -> String {
         &serde_json::to_string(&words).unwrap_or_else(|_| "{}".into()),
     )
     .replace("{{DICT}}", &dict)
+        .replace(
+            "{{CAST_KEYS}}",
+            &serde_json::to_string(&crate::config::cast_keys()).unwrap_or_else(|_| "[]".into()),
+        )
         .replace(
             "{{TOKEN}}",
             &serde_json::to_string(token).unwrap_or_else(|_| "\"\"".into()),

@@ -232,8 +232,9 @@ pub enum Input {
     Wheel { x: f64, y: f64, dx: f64, dy: f64 },
     /// 確定済みの文字列を今の焦点へ挿入する (IME変換は送り手側で済ませる)
     Text { text: String },
-    /// 名前付きの制御キー (Enter / Backspace / Tab など)
-    Key { named: String },
+    /// 名前付きの制御キー (Enter / Backspace / Tab / F1〜F12 など)。
+    /// ctrl/alt は補助キー列の固定トグルから合成できる (Ctrl+C など)
+    Key { named: String, ctrl: bool, alt: bool },
 }
 
 /// ブラウザに頼む移動。
@@ -355,6 +356,8 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 },
                 "key" => Input::Key {
                     named: v.get("named").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                    ctrl: v.get("ctrl").and_then(|x| x.as_bool()).unwrap_or(false),
+                    alt: v.get("alt").and_then(|x| x.as_bool()).unwrap_or(false),
                 },
                 _ => return None,
             };
@@ -895,6 +898,23 @@ fn named_vk(named: &str) -> Option<(&'static str, u32)> {
         "down" => ("ArrowDown", 40),
         "left" => ("ArrowLeft", 37),
         "right" => ("ArrowRight", 39),
+        "space" => (" ", 32),
+        "home" => ("Home", 36),
+        "end" => ("End", 35),
+        "pageup" => ("PageUp", 33),
+        "pagedown" => ("PageDown", 34),
+        "f1" => ("F1", 112),
+        "f2" => ("F2", 113),
+        "f3" => ("F3", 114),
+        "f4" => ("F4", 115),
+        "f5" => ("F5", 116),
+        "f6" => ("F6", 117),
+        "f7" => ("F7", 118),
+        "f8" => ("F8", 119),
+        "f9" => ("F9", 120),
+        "f10" => ("F10", 121),
+        "f11" => ("F11", 122),
+        "f12" => ("F12", 123),
         _ => return None,
     })
 }
@@ -1210,16 +1230,23 @@ fn run_window(
                                     cdp::call(&wv, "Input.dispatchKeyEvent", &params);
                                 }
                             }
-                            Input::Key { named } => {
+                            Input::Key { named, ctrl, alt } => {
                                 if let Some((key, vk)) = named_vk(&named) {
+                                    // CDP の修飾ビット: Alt=1, Ctrl=2, Meta=4, Shift=8
+                                    let mods = (if alt { 1 } else { 0 }) | (if ctrl { 2 } else { 0 });
                                     for kind in ["keyDown", "keyUp"] {
-                                        let params = serde_json::json!({
+                                        let mut ev = serde_json::json!({
                                             "type": kind, "key": key,
                                             "windowsVirtualKeyCode": vk,
                                             "nativeVirtualKeyCode": vk,
-                                        })
-                                        .to_string();
-                                        cdp::call(&wv, "Input.dispatchKeyEvent", &params);
+                                            "modifiers": mods,
+                                        });
+                                        // スペースは text を添えないと入力欄に文字が入らない。
+                                        // 修飾キー併用時 (Ctrl+Space 等) はショートカット扱いにする
+                                        if kind == "keyDown" && named == "space" && mods == 0 {
+                                            ev["text"] = serde_json::Value::from(" ");
+                                        }
+                                        cdp::call(&wv, "Input.dispatchKeyEvent", &ev.to_string());
                                     }
                                 }
                             }
