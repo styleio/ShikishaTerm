@@ -790,9 +790,16 @@ kbd.addEventListener("keydown", e => {
 
 // PuTTY と同じ作法: 選んだ時点でコピーされる。右クリックで貼り付け
 // ただしURL欄を打っている最中は奪わない。奪うと1文字も入らない
+// いまブラウザの中継画面を見ているか (スマホ)。この時はターミナル用の
+// 隠しキーボード #kbd を出さない — 補助窓なしの素のキーボードが勝手に出て
+// しまい、⌨ ボタンや入力バーと二重になるため
+const onCast = () => REMOTE && S && S.tabs &&
+  S.tabs.some(t => t.index === S.active && t.kind === "browser");
 const focus = () => {
   const a = document.activeElement;
   if (a && a.closest && a.closest("#nav")) return;
+  if (a === castInput) return;      // 入力バーに乗っているフォーカスは奪わない
+  if (onCast()) return;             // 中継画面ではターミナルのキーボードを出さない
   kbd.focus();
 };
 // ホイールで過去を遡る。
