@@ -83,9 +83,17 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     border-radius:50%; border:2px solid var(--brand); pointer-events:none; z-index:14;
     animation:rip .48s ease-out forwards; }
   @keyframes rip { from { transform:scale(.4); opacity:.9 } to { transform:scale(4.5); opacity:0 } }
-  /* キャスト用の隠しキーボード入力 (画面外に置いてフォーカスだけ取る) */
-  #castkbd { position:absolute; left:-9999px; top:0; width:1px; height:1px;
-    opacity:0; border:0; padding:0; }
+  /* 文字入力バー (画面下部の変換プレビュー付き入力欄) */
+  #castbar { position:absolute; left:0; right:0; bottom:0; z-index:18;
+    display:none; align-items:center; gap:6px; padding:6px 8px;
+    background:var(--panel); border-top:1px solid var(--brand); }
+  #castinput { flex:1; min-width:0; font-size:16px; padding:8px 10px;
+    background:var(--bg); color:var(--text); border:1px solid var(--line);
+    border-radius:8px; outline:none; }
+  #castbar .castsend { padding:8px 14px; border:0; border-radius:8px;
+    background:var(--brand); color:#04121c; font-weight:700; cursor:pointer; }
+  #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);
+    border-radius:8px; background:var(--bg); color:var(--text); cursor:pointer; }
   /* 操作中バッジの ⌨ ボタン */
   #castmode .kbtn { display:inline-block; margin-right:10px; padding:1px 7px;
     border:1px solid var(--brand); border-radius:6px; cursor:pointer; }
@@ -933,34 +941,46 @@ function spawnRipple() {
   document.getElementById("main").append(r);
   setTimeout(() => r.remove(), 480);
 }
-// スマホのキーボードから文字を送る。IME変換は端末側で終わらせ、確定した
-// 文字列だけを insertText で送る (1打鍵ずつ送ると日本語変換が壊れる)
-let castKbd = null;
-function ensureKbd() {
-  if (castKbd) return;
-  castKbd = el("input", {id:"castkbd", autocomplete:"off", autocorrect:"off",
-    autocapitalize:"off", spellcheck:"false"});
-  document.getElementById("main").append(castKbd);
-  let composing = false;
-  castKbd.addEventListener("compositionstart", () => composing = true);
-  castKbd.addEventListener("compositionend", (e) => {
-    composing = false;
-    if (e.data) sendIn({kind:"inject", what:"text", text:e.data});
-    castKbd.value = "";
-  });
-  castKbd.addEventListener("input", (e) => {
-    if (composing) return;                       // 変換中は compositionend で送る
-    if (e.data && e.inputType === "insertText") sendIn({kind:"inject", what:"text", text:e.data});
-    else if (e.inputType === "deleteContentBackward") sendIn({kind:"inject", what:"key", named:"backspace"});
-    castKbd.value = "";
-  });
-  castKbd.addEventListener("keydown", (e) => {
+// 文字入力バー。画面下部にプレビュー入力欄を出し、そこで日本語変換を
+// 見ながら打ち、確定してから「送信」でまとめて送る。こうすると:
+//   - 変換の途中経過が自分の欄で見える (漢字に直してから送れる)
+//   - 中継画面はバーの上にそのまま見えるので、入力先を見失わない
+//   - キーボードはバーの下に出る (visualViewport でバーを鍵盤の上へ)
+let castBar = null, castInput = null;
+function ensureBar() {
+  if (castBar) return;
+  castInput = el("input", {id:"castinput", autocomplete:"off", autocorrect:"off",
+    autocapitalize:"off", spellcheck:"false",
+    placeholder: T["tui.cast.type.ph"] || "ここで入力して送信 (日本語は変換してから)"});
+  const send = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "送信");
+  const bs = el("button", {class:"castbtn", onclick:() => sendIn({kind:"inject", what:"key", named:"backspace"})}, "⌫");
+  const close = el("button", {class:"castbtn", onclick:closeBar}, "✕");
+  castBar = el("div", {id:"castbar"}, bs, castInput, send, close);
+  document.getElementById("main").append(castBar);
+  castInput.addEventListener("keydown", (e) => {
     if (e.isComposing) return;
-    if (e.key === "Enter") { sendIn({kind:"inject", what:"key", named:"enter"}); e.preventDefault(); }
-    else if (e.key === "Backspace" && !castKbd.value) { sendIn({kind:"inject", what:"key", named:"backspace"}); }
+    if (e.key === "Enter") { sendBar(); e.preventDefault(); }
   });
+  // キーボードの高さぶんバーを持ち上げる (鍵盤に隠れないように)
+  if (window.visualViewport) {
+    const fit = () => {
+      const gap = window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop;
+      castBar.style.bottom = Math.max(0, gap) + "px";
+    };
+    window.visualViewport.addEventListener("resize", fit);
+    window.visualViewport.addEventListener("scroll", fit);
+  }
 }
-function openKbd() { ensureKbd(); castKbd.value = ""; castKbd.focus(); }
+function openBar() { ensureBar(); castBar.style.display = "flex"; castInput.value = ""; castInput.focus(); }
+function closeBar() { if (castBar) castBar.style.display = "none"; if (castInput) castInput.blur(); }
+function sendBar() {
+  if (!castInput) return;
+  const t = castInput.value;
+  if (t) sendIn({kind:"inject", what:"text", text:t});   // 確定済みの文字列をまとめて送る
+  castInput.value = "";
+  castInput.focus();
+}
+function openKbd() { openBar(); }
 // カーソルは #main 内の絶対配置。#cast の中身 (contain・上詰め) の位置を
 // #main 基準で求める。ビューポートや上部バーの高さに依存させない
 function posCursor() {
@@ -974,7 +994,7 @@ function posCursor() {
   cursorEl.style.top = (cy * dh) + "px";   // 縦は上詰め (oy=0)
 }
 function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; posCursor(); }
-function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; if (castKbd) castKbd.blur(); }
+function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; closeBar(); }
 const click = () => {
   sendIn({kind:"inject", what:"mouse", phase:"pressed",  x:cx, y:cy, down:true});
   sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false});

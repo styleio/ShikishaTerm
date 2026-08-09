@@ -1198,8 +1198,17 @@ fn run_window(
                                 cdp::call(&wv, "Input.dispatchMouseEvent", &params);
                             }
                             Input::Text { text } => {
-                                let params = serde_json::json!({ "text": text }).to_string();
-                                cdp::call(&wv, "Input.insertText", &params);
+                                // insertText は Google など一部サイトの入力欄に入らない
+                                // (input イベントを無視する)。1文字ずつ char キーイベント
+                                // として送ると、実際の打鍵として扱われ広く通る。
+                                // IME変換は送り手側で済んでいるので確定文字をそのまま流す
+                                for ch in text.chars() {
+                                    let mut buf = [0u8; 4];
+                                    let s: &str = ch.encode_utf8(&mut buf);
+                                    let params =
+                                        serde_json::json!({ "type": "char", "text": s }).to_string();
+                                    cdp::call(&wv, "Input.dispatchKeyEvent", &params);
+                                }
                             }
                             Input::Key { named } => {
                                 if let Some((key, vk)) = named_vk(&named) {

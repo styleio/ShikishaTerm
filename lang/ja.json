@@ -27,6 +27,8 @@
   "tui.index": "INDEX",
   "tui.tab.add": "タブを追加",
   "tui.cast.control": "操作中 — ここをタップで解除",
+  "tui.cast.type.ph": "ここで入力して送信 (日本語は変換してから)",
+  "tui.cast.send": "送信",
   "tui.session": "SESSION",
   "tui.welcome.title": "ようこそ。まだ設定がありません。",
   "tui.welcome.line1": " を押すと、ブラウザで設定画面が開きます。",

@@ -27,6 +27,8 @@
   "tui.index": "INDEX",
   "tui.tab.add": "Add a tab",
   "tui.cast.control": "Controlling — tap here to release",
+  "tui.cast.type.ph": "Type here, then send",
+  "tui.cast.send": "Send",
   "tui.session": "SESSION",
   "tui.welcome.title": "Welcome. Nothing is set up yet.",
   "tui.welcome.line1": " to open the settings screen in your browser.",
