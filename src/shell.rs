@@ -72,10 +72,12 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
      指の動きを軌跡としてそのまま送る */
   #cast { position:absolute; inset:0; width:100%; height:100%;
     object-fit:contain; object-position:top center; background:#000; touch-action:none; }
-  /* トラックパッド式の合成カーソル (指で隠れないよう小さめの輪) */
-  #castcursor { position:fixed; width:18px; height:18px; margin:-9px 0 0 -9px;
-    border:2px solid #fff; border-radius:50%; background:rgba(0,170,255,.35);
-    box-shadow:0 0 8px rgba(0,0,0,.7); pointer-events:none; z-index:15; display:none; }
+  /* トラックパッド式の合成カーソル。Windows風の矢印で、先端がクリック点。
+     負マージンで矢印の先端 (SVG座標 2,1) を left/top にぴったり合わせる */
+  #castcursor { position:absolute; width:19px; height:30px; margin:-2px 0 0 -2px;
+    pointer-events:none; z-index:15; display:none;
+    filter:drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
+  #castcursor svg { display:block; }
   /* 操作モード中の表示 (タップで解除) */
   #castmode { position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
     background:#16202b; border:1px solid var(--brand); color:var(--text);
@@ -847,6 +849,9 @@ function castStart() {
       const bmp = await createImageBitmap(e.data);
       if (cv.width !== bmp.width || cv.height !== bmp.height) {
         cv.width = bmp.width; cv.height = bmp.height;
+        // フレームでキャンバス寸法が変わったら、カーソルの位置も計算し直す
+        // (最初のフレーム前は 300x150 の既定寸法でズレるため)
+        if (castMode) posCursor();
       }
       castCtx.drawImage(bmp, 0, 0);
       if (bmp.close) bmp.close();
@@ -865,13 +870,15 @@ function castStop() {
 function sendIn(o) {
   if (castIn && castIn.readyState === 1) castIn.send(JSON.stringify(o));
 }
-// 中身 (object-fit:contain のレターボックス) の矩形を client 座標で返す
+// 中身 (object-fit:contain のレターボックス) の矩形を client 座標で返す。
+// 画像は object-position:top center で置いているので、横は中央・縦は上詰め。
+// ここを中央計算のままにすると、カーソルとクリック位置が縦にずれる
 function castRect(cv) {
   const r = cv.getBoundingClientRect();
   const cw = cv.width || 1, ch = cv.height || 1;
   const s = Math.min(r.width / cw, r.height / ch);
   const dw = cw * s, dh = ch * s;
-  return { ox: r.left + (r.width - dw) / 2, oy: r.top + (r.height - dh) / 2, dw, dh };
+  return { ox: r.left + (r.width - dw) / 2, oy: r.top, dw, dh };
 }
 
 // トラックパッド式カーソル。
@@ -885,17 +892,32 @@ let castMode = false, cx = 0.5, cy = 0.5, cursorEl = null, modeEl = null, draggi
 const CURSOR_ACCEL = 1.25;
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 function ensureCursor() {
-  if (!cursorEl) { cursorEl = el("div", {id:"castcursor"}); document.getElementById("main").append(cursorEl); }
+  if (!cursorEl) {
+    cursorEl = el("div", {id:"castcursor"});
+    // Windows標準に似た矢印。先端 (viewBox の 1,1) がクリック点。
+    // CSSの負マージンで先端を left/top にぴったり合わせる
+    cursorEl.innerHTML = '<svg width="19" height="30" viewBox="0 0 12 19">' +
+      '<path d="M1 1 L1 15 L4.5 11.5 L7 17 L9 16 L6.5 10.5 L11 10.5 Z" ' +
+      'fill="#000" stroke="#fff" stroke-width="1" stroke-linejoin="round"/></svg>';
+    document.getElementById("main").append(cursorEl);
+  }
   if (!modeEl) {
     modeEl = el("div", {id:"castmode"}, T["tui.cast.control"] || "操作中 — ここをタップで解除");
     modeEl.onclick = exitCast;
     document.getElementById("main").append(modeEl);
   }
 }
+// カーソルは #main 内の絶対配置。#cast の中身 (contain・上詰め) の位置を
+// #main 基準で求める。ビューポートや上部バーの高さに依存させない
 function posCursor() {
-  const r = castRect(document.getElementById("cast"));
-  cursorEl.style.left = (r.ox + cx * r.dw) + "px";
-  cursorEl.style.top = (r.oy + cy * r.dh) + "px";
+  const cv = document.getElementById("cast");
+  const cw = cv.width || 1, ch = cv.height || 1;
+  const mw = cv.clientWidth, mh = cv.clientHeight;
+  const s = Math.min(mw / cw, mh / ch);
+  const dw = cw * s, dh = ch * s;
+  const ox = (mw - dw) / 2;   // 横は中央
+  cursorEl.style.left = (ox + cx * dw) + "px";
+  cursorEl.style.top = (cy * dh) + "px";   // 縦は上詰め (oy=0)
 }
 function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; posCursor(); }
 function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; }
