@@ -99,6 +99,9 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #board { position:absolute; inset:0; overflow:auto; padding:22px 26px; }
   .mark { color:var(--brand); font-weight:700; letter-spacing:.5px;
     font-size:13px; line-height:1.15; white-space:pre; }
+  /* 狭い画面用の素直なタイトル (既定は隠す) */
+  .mark-lite { display:none; color:var(--brand); font-weight:700;
+    font-size:22px; letter-spacing:2px; }
   .sub { color:var(--dim); font-size:12px; margin-top:4px; }
   .card { margin-top:20px; border:1px solid var(--line); border-radius:10px;
     background:var(--panel); padding:14px 16px; }
@@ -199,34 +202,40 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
      必ず全ての基本ルールの後ろに置く。前に置くと、後で定義された基本ルールが
      同じ詳細度で後勝ちして上書きが効かない */
   @media (max-width:700px), (max-aspect-ratio:1/1) {
-    /* 何があっても横スクロール (謎の右空間) を出さない。
-       これが無いと、幅を超えた表や長い文言でページ全体が横に伸び、
-       ステータスの STOP まで画面外へ押し出される */
+    /* 何があっても横スクロール (謎の右空間) を出さない */
     html, body, #app { max-width:100vw; overflow-x:hidden; }
-    /* グリッドの列指定が「幻の2列目」を生むので、狭い画面では flex の縦積みに */
+    /* グリッドの「幻の2列目」を避けるため flex の縦積みに */
     #app { display:flex; flex-direction:column; }
     #main { flex:1; min-height:0; }
-    /* ステータスはビューポート幅ちょうどに。STOP を必ず画面内へ */
-    #status { width:100vw; box-sizing:border-box; gap:8px; }
-    /* 幅を超える表はページではなくカードの中でスクロールさせる */
-    .card { overflow-x:auto; }
-    /* メニューは1列に積む (横に溢れさせない) */
-    .menu { grid-template-columns:1fr; }
+
+    /* フッターを上部バーに回す。ハンバーガーはこのバーの中に収まるので、
+       本文のどの要素にも重ならない (position:fixed の ☰ がバー左の余白に載る) */
+    #status { order:-1; width:100vw; box-sizing:border-box; gap:8px;
+      min-height:42px; padding-left:48px;
+      border-top:none; border-bottom:1px solid var(--line); }
+    /* ☰ は上部バーの左に載せる (バーと同じ高さで中央に) */
+    #hamburger { display:flex; top:6px; left:8px; }
+    /* 緊急停止は横幅節約のため赤い ■ だけにする (■ は世界共通の停止記号) */
+    #stop { font-size:0; padding:2px 9px; }
+    #stop::after { content:"\25A0"; font-size:13px; }
+    /* build 刻印は場所を取るので隠す (STOP を確実に残す) */
+    #status .build { display:none; }
+
+    /* 引き出し式タブバー */
     #tabs { position:fixed; top:0; left:0; bottom:0; z-index:30; width:240px;
       transform:translateX(-100%); transition:transform .2s ease;
       box-shadow:2px 0 14px rgba(0,0,0,.5); }
     #app.drawer #tabs { transform:none; }
-    #hamburger { display:flex; }
     #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
       background:rgba(0,0,0,.45); }
-    /* 幅が足りないときは build 表示を落として STOP を確実に残す */
-    #status .build { display:none; }
-    /* ハンバーガー(左上)に文字が重ならないよう上を空け、左右も詰める */
-    #board { padding:48px 12px 22px; }
-    #screen { padding-top:44px; }
-    /* ワードマークが横にはみ出して崩れないよう、幅に合わせて縮める。
-       ブロック文字が全角幅で描かれても収まるよう小さめに。はみ出しは内側で抑える */
-    .mark { font-size:min(13px, 1.9vw); overflow:hidden; }
+
+    /* 本文は上部バーの下に来るので、もう ☰ 用の余白は要らない */
+    #board { padding:16px 12px; }
+    .card { overflow-x:auto; }          /* 幅超えの表はカード内でスクロール */
+    .menu { grid-template-columns:1fr; } /* メニューは1列 */
+    /* アスキーのワードマークは崩れるので、素直なテキスト側に切り替える */
+    .mark { display:none; }
+    .mark-lite { display:block; }
   }
 </style></head><body>
 <div id="app">
@@ -364,7 +373,10 @@ const WORDMARK = [
 function drawBoard() {
   const b = document.getElementById("board");
   b.textContent = "";
+  // 広い画面はアスキーアートのワードマーク。狭い画面は崩れるので
+  // 素直な太字テキストに切り替える (CSS のメディアクエリで出し分け)
   b.append(el("div", {class:"mark"}, WORDMARK.join("\n")),
+           el("div", {class:"mark-lite"}, "SHIKISHA-TERM"),
            el("div", {class:"sub"}, (S.workspace || "") + "   " + BUILD));
 
   // 連鎖
