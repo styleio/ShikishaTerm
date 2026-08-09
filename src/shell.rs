@@ -254,7 +254,8 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     /* 引き出し式タブバー */
     #tabs { position:fixed; top:0; left:0; bottom:0; z-index:30; width:240px;
       transform:translateX(-100%); transition:transform .2s ease;
-      box-shadow:2px 0 14px rgba(0,0,0,.5); }
+      box-shadow:2px 0 14px rgba(0,0,0,.5);
+      padding-top:46px; }   /* 先頭の項目がハンバーガーに隠れないよう空ける */
     #app.drawer #tabs { transform:none; }
     #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
       background:rgba(0,0,0,.45); }
@@ -790,18 +791,19 @@ kbd.addEventListener("keydown", e => {
 
 // PuTTY と同じ作法: 選んだ時点でコピーされる。右クリックで貼り付け
 // ただしURL欄を打っている最中は奪わない。奪うと1文字も入らない
-// いまブラウザの中継画面を見ているか (スマホ)。この時はターミナル用の
-// 隠しキーボード #kbd を出さない — 補助窓なしの素のキーボードが勝手に出て
-// しまい、⌨ ボタンや入力バーと二重になるため
-const onCast = () => REMOTE && S && S.tabs &&
-  S.tabs.some(t => t.index === S.active && t.kind === "browser");
+// 端末タブ (セッション) を見ているか。INDEX(0)・ブラウザ・状態不明は false
+const onTerminal = () => S && S.active !== 0 && S.tabs &&
+  S.tabs.some(t => t.index === S.active && t.kind !== "browser");
 const focus = () => {
   const a = document.activeElement;
   if (a && a.closest && a.closest("#nav")) return;
-  // 入力バーに乗っているフォーカスは奪わない。castInput は後で let 宣言される
-  // ので、起動時に評価しても TDZ で落ちないよう id で見る
+  // 入力バーに乗っているフォーカスは奪わない (castInput は後で let 宣言される
+  // ので起動時に評価しても TDZ で落ちないよう id で見る)
   if (a && a.id === "castinput") return;
-  if (onCast()) return;             // 中継画面ではターミナルのキーボードを出さない
+  // スマホは端末タブのときだけキーボードを出す。読み込み直後(S未取得)や
+  // INDEX・ブラウザでは出さない — 勝手に鍵盤が立ち上がって邪魔になるため。
+  // 窓 (PC) は従来どおり (メニューのキー操作に #kbd が要る)
+  if (REMOTE && !onTerminal()) return;
   kbd.focus();
 };
 // ホイールで過去を遡る。
