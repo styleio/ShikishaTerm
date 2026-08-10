@@ -1076,7 +1076,11 @@ function closeBar() { if (castDock) castDock.style.display = "none"; if (castInp
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
-  if (t) sendIn({kind:"inject", what:"text", text:t});   // 確定済みの文字列をまとめて送る
+  if (t) {
+    sendIn({kind:"inject", what:"text", text:t});   // 確定済みの文字列をまとめて送る
+  } else {
+    sendCastKey("enter");   // 空のまま送信 = Enter (検索確定・フォーム送信など)
+  }
   castInput.value = "";
   castInput.focus();
 }
@@ -1095,7 +1099,26 @@ function posCursor() {
 }
 function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; fabEl.style.display = "flex"; posCursor(); }
 function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; if (fabEl) fabEl.style.display = "none"; closeBar(); }
+// 矢印の先端の真下にある要素。自前の矢印と波紋は pointer-events:none なので
+// 透けて、その下の本物 (バーのボタン/URL欄、または中継キャンバス) が返る
+function underCursor() {
+  if (!cursorEl) return null;
+  const m = document.getElementById("main").getBoundingClientRect();
+  const x = m.left + (parseFloat(cursorEl.style.left) || 0);
+  const y = m.top + (parseFloat(cursorEl.style.top) || 0);
+  return document.elementFromPoint(x, y);
+}
 const click = () => {
+  // 矢印が自前のバー (戻る/進む/更新/URL) の上にあるなら、ブラウザへ注入せず
+  // そのUIを直接操作する。直タップと同じ挙動をカーソルでも得られる
+  const hit = underCursor();
+  if (hit && hit.closest && hit.closest("#nav")) {
+    const b = hit.closest("button");
+    if (b) { b.click(); spawnRipple(); return; }
+    const inp = hit.closest("input");
+    if (inp) { inp.focus(); if (inp.select) inp.select(); spawnRipple(); return; }
+    return;   // バーの余白 — 誤ってページを押さないよう何もしない
+  }
   sendIn({kind:"inject", what:"mouse", phase:"pressed",  x:cx, y:cy, down:true});
   sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false});
   spawnRipple();
