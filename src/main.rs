@@ -322,6 +322,9 @@ struct WinSurface {
     /// ブラウザごとの「通信中か」。読み込み開始で真、終了で偽。
     /// 上のバーの進捗表示に使う (呼び名 = 見せているブラウザの鍵)
     loading: std::collections::HashMap<String, bool>,
+    /// 直近で読み込みが始まった時刻。一瞬で終わる通信も見えるよう、
+    /// ここから最低時間はインジケータを点けたままにする
+    loading_since: std::collections::HashMap<String, std::time::Instant>,
     /// 中継画面のフレーム (JPEGのバイト列)。ループがスマホへ配る
     frames: Vec<Vec<u8>>,
     /// 窓が閉じた。描く先が無くなったので、ループは畳むしかない
@@ -360,9 +363,15 @@ impl WinSurface {
     fn take_wheres(&mut self) -> Vec<(String, String, bool, bool)> {
         std::mem::take(&mut self.wheres)
     }
-    /// 今そのブラウザが読み込み中か。分からなければ (静止していれば) 偽
+    /// 今そのブラウザが読み込み中か。実際に読み込み中なら真。
+    /// 終わっていても、始まりから最低時間 (MIN) は真を返す。
+    /// そうしないと一瞬で終わる通信は状態に乗る前に消えてしまう
     fn loading_of(&self, key: &str) -> bool {
-        self.loading.get(key).copied().unwrap_or(false)
+        const MIN: std::time::Duration = std::time::Duration::from_millis(500);
+        if self.loading.get(key).copied().unwrap_or(false) {
+            return true;
+        }
+        self.loading_since.get(key).is_some_and(|t| t.elapsed() < MIN)
     }
 
     /// たまった中継フレームを引き取る (ループがスマホへ配る)
@@ -405,11 +414,15 @@ impl WinSurface {
                     url,
                     complete,
                 } => self.loads.push((name, url, complete)),
-                // ブラウザが読み込みを始めた/終えた。見せている側の進捗表示に使う
+                // ブラウザが読み込みを始めた/終えた。見せている側の進捗表示に使う。
+                // 始まりの時刻を控えて、一瞬で終わっても最低時間は点けておく
                 Ev::Loading {
                     from: Some(name),
                     busy,
                 } => {
+                    if busy {
+                        self.loading_since.insert(name.clone(), std::time::Instant::now());
+                    }
                     self.loading.insert(name, busy);
                 }
                 // クリップボードは端末側と同じ扱いにする
@@ -594,6 +607,7 @@ fn run_in_window() -> Result<()> {
         gos: Vec::new(),
         wheres: Vec::new(),
         loading: std::collections::HashMap::new(),
+        loading_since: std::collections::HashMap::new(),
         frames: Vec::new(),
         closed: false,
     })

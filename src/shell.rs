@@ -128,7 +128,8 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
      サイト自身の固定ヘッダーを上から覆ってしまう */
   #nav { position:absolute; left:0; right:0; top:0; height:36px; z-index:5;
     display:flex; align-items:center; gap:6px; padding:0 8px;
-    border-bottom:1px solid var(--line); background:var(--panel); }
+    border-bottom:1px solid var(--line); background:var(--panel);
+    transition:background .15s, border-color .15s; }
   #nav[hidden] { display:none; }
   #nav button { font:inherit; font-size:13px; color:var(--text); cursor:pointer;
     background:transparent; border:1px solid var(--line); border-radius:6px;
@@ -139,14 +140,17 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     color:var(--text); background:#0a0c0e; border:1px solid var(--line);
     border-radius:6px; padding:3px 8px; outline:none; }
   #nav input:focus { border-color:var(--brand); }
-  /* 読み込み中の帯。バーの下端を左から右へ光が流れる。
-     下端(-1px)だと中継キャンバスに隠れるので、バーの内側(bottom:0)に置く */
+  /* 読み込み中はバー全体を青く染めて、一目で通信中と分かるようにする。
+     一瞬の通信でも見えるよう、本体側で最低0.5秒は点けたままにしている */
+  #nav.loading { background:#0d2a3a; border-bottom-color:var(--brand); }
+  /* さらに下端を光が流れる帯 (動きの手がかり) */
   #nav.loading::after { content:""; position:absolute; left:0; right:0; bottom:0;
     height:3px; background:linear-gradient(90deg,transparent,var(--brand),transparent);
     background-size:40% 100%; background-repeat:no-repeat;
     animation:navload 1s linear infinite; }
   @keyframes navload { from { background-position:-40% 0 } to { background-position:140% 0 } }
-  /* 更新アイコンを回して「読み込み中」を分かりやすく (スマホでも目立つ) */
+  /* 更新ボタンは青く光らせて回す (どこを見ればいいか分かりやすい) */
+  #nav button.spin { color:var(--brand); border-color:var(--brand); background:#0a1f2b; }
   #nav button.spin .ico { display:inline-block; animation:spin .8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg) } }
   /* ページを置く場所。バーを出したぶんだけ下がる */
