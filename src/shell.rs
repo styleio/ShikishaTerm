@@ -94,17 +94,12 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);
     border-radius:8px; background:var(--bg); color:var(--text); cursor:pointer; }
   /* 操作モード中の表示 (タップで解除) */
-  #castmode { position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
+  /* 下 (bottom) だとキーボードで隠れるので画面の上に置く。
+     ナビバー (上端36px) を避けて少し下げた位置に浮かせる */
+  #castmode { position:absolute; left:50%; top:42px; transform:translateX(-50%);
     background:#16202b; border:1px solid var(--brand); color:var(--text);
-    padding:6px 14px; border-radius:16px; font-size:12px; z-index:16;
+    padding:6px 14px; border-radius:16px; font-size:12px; z-index:19;
     display:none; cursor:pointer; }
-  /* ⌨ 独立フローティングボタン (解除とは別物)。右下に浮かせ、押すと
-     補助キー列＋文字入力バーを出す。操作モード中だけ現れる */
-  #castfab { position:absolute; right:14px; bottom:14px; z-index:17;
-    width:46px; height:46px; border-radius:50%; display:none;
-    align-items:center; justify-content:center; font-size:20px; cursor:pointer;
-    background:var(--brand); color:#04121c; border:0;
-    box-shadow:0 2px 8px rgba(0,0,0,.4); }
   /* 補助キー列＋文字入力バーをまとめた下部ドック。visualViewport で
      キーボードの上へ持ち上げる。列は横スクロール、入力は下段 */
   #castdock { position:absolute; left:0; right:0; bottom:0; z-index:18;
@@ -963,7 +958,7 @@ function castRect(cv) {
 //   5) 2本指ドラッグ → スクロール
 //   6) 上のバーや操作中バッジをタップ → 解除
 let castMode = false, cx = 0.5, cy = 0.5, cursorEl = null, modeEl = null, dragging = false;
-let fabEl = null, modCtrl = false, modAlt = false;   // ⌨FAB と Ctrl/Alt 固定トグル
+let modCtrl = false, modAlt = false;   // Ctrl/Alt 固定トグル
 const CURSOR_ACCEL = 1.25;
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 function ensureCursor() {
@@ -977,19 +972,12 @@ function ensureCursor() {
     document.getElementById("main").append(cursorEl);
   }
   if (!modeEl) {
-    // 解除の案内 (タップで操作モードを抜ける)。キーボードは別のFABに分離した
+    // 解除の案内 (タップで操作モードを抜ける)。下だとキーボードに隠れるので
+    // 画面の上に置く。キーボードは下から出るので、上なら常に押せる
     const lbl = el("span", {}, T["tui.cast.control"] || "操作中 — タップで解除");
     modeEl = el("div", {id:"castmode"}, lbl);
     modeEl.onclick = exitCast;
     document.getElementById("main").append(modeEl);
-  }
-  if (!fabEl) {
-    // ⌨ 独立ボタン。開いていれば閉じ、閉じていれば開く (トグル)
-    fabEl = el("button", {id:"castfab", onclick:(ev)=>{
-      ev.stopPropagation();
-      if (castDock && castDock.style.display === "flex") closeBar(); else openKbd();
-    }}, "⌨");
-    document.getElementById("main").append(fabEl);
   }
 }
 // クリックした場所に波紋を出す (押せたことが分かるように)
@@ -1055,7 +1043,8 @@ function ensureBar() {
     placeholder: T["tui.cast.type.ph"] || "ここで入力して送信 (日本語は変換してから)"});
   const send = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "送信");
   const bs = el("button", {class:"castbtn", onclick:() => sendCastKey("backspace")}, "⌫");
-  const close = el("button", {class:"castbtn", onclick:closeBar}, "✕");
+  // ✕ はキーボードを下げるだけ (サブ入力欄は操作モード中ずっと出しておく)
+  const close = el("button", {class:"castbtn", onclick:() => { if (castInput) castInput.blur(); }}, "✕");
   castBar = el("div", {id:"castbar"}, bs, castInput, send, close);
   castKeysEl = buildCastKeys();
   // 上段=補助キー列、下段=文字入力バー。まとめてキーボードの上へ持ち上げる
@@ -1075,7 +1064,9 @@ function ensureBar() {
     window.visualViewport.addEventListener("scroll", fit);
   }
 }
-function openBar() { ensureBar(); castDock.style.display = "flex"; castInput.value = ""; castInput.focus(); }
+// サブ入力欄 (補助キー列＋入力欄) を出す。フォーカスはしない=キーボードは
+// 勝手に出さない。ユーザーが入力欄をタップしたときだけ鍵盤が上がる
+function showDock() { ensureBar(); castDock.style.display = "flex"; }
 function closeBar() { if (castDock) castDock.style.display = "none"; if (castInput) castInput.blur(); }
 function sendBar() {
   if (!castInput) return;
@@ -1088,7 +1079,6 @@ function sendBar() {
   castInput.value = "";
   castInput.focus();
 }
-function openKbd() { openBar(); }
 // カーソルは #main 内の絶対配置。#cast の中身 (contain・上詰め) の位置を
 // #main 基準で求める。ビューポートや上部バーの高さに依存させない
 function posCursor() {
@@ -1102,8 +1092,9 @@ function posCursor() {
   cursorEl.style.left = (cv.offsetLeft + ox + cx * dw) + "px";
   cursorEl.style.top = (cv.offsetTop + cy * dh) + "px";   // 縦は上詰め (oy=0)
 }
-function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; fabEl.style.display = "flex"; posCursor(); }
-function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; if (fabEl) fabEl.style.display = "none"; closeBar(); }
+// 操作モードに入ったら、サブ入力欄を常時出す (ボタンを押さなくても補助キーが使える)
+function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; showDock(); posCursor(); }
+function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; closeBar(); }
 // 矢印の先端の真下にある要素。自前の矢印と波紋は pointer-events:none なので
 // 透けて、その下の本物 (バーのボタン/URL欄、または中継キャンバス) が返る
 function underCursor() {
