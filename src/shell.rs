@@ -94,12 +94,12 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);
     border-radius:8px; background:var(--bg); color:var(--text); cursor:pointer; }
   /* 操作モード中の表示 (タップで解除) */
-  /* 下 (bottom) だとキーボードで隠れるので画面の上に置く。
-     ナビバー (上端36px) を避けて少し下げた位置に浮かせる */
-  #castmode { position:absolute; left:50%; top:42px; transform:translateX(-50%);
-    background:#16202b; border:1px solid var(--brand); color:var(--text);
-    padding:6px 14px; border-radius:16px; font-size:12px; z-index:19;
-    display:none; cursor:pointer; }
+  /* 解除の帯。ドックの最上段に入れて、補助窓・キーボードと一緒に上下する。
+     下固定だと鍵盤に隠れ、上固定だと画面上部で邪魔になるのを両方避ける */
+  #castmode { background:#16202b; border-top:1px solid var(--brand);
+    color:var(--text); padding:8px 14px; font-size:13px; text-align:center;
+    cursor:pointer; user-select:none; }
+  #castmode:active { background:#1d2a38; }
   /* 補助キー列＋文字入力バーをまとめた下部ドック。visualViewport で
      キーボードの上へ持ち上げる。列は横スクロール、入力は下段 */
   #castdock { position:absolute; left:0; right:0; bottom:0; z-index:18;
@@ -971,14 +971,6 @@ function ensureCursor() {
       'fill="#000" stroke="#fff" stroke-width="1" stroke-linejoin="round"/></svg>';
     document.getElementById("main").append(cursorEl);
   }
-  if (!modeEl) {
-    // 解除の案内 (タップで操作モードを抜ける)。下だとキーボードに隠れるので
-    // 画面の上に置く。キーボードは下から出るので、上なら常に押せる
-    const lbl = el("span", {}, T["tui.cast.control"] || "操作中 — タップで解除");
-    modeEl = el("div", {id:"castmode"}, lbl);
-    modeEl.onclick = exitCast;
-    document.getElementById("main").append(modeEl);
-  }
 }
 // クリックした場所に波紋を出す (押せたことが分かるように)
 function spawnRipple() {
@@ -1045,10 +1037,18 @@ function ensureBar() {
   const bs = el("button", {class:"castbtn", onclick:() => sendCastKey("backspace")}, "⌫");
   // ✕ はキーボードを下げるだけ (サブ入力欄は操作モード中ずっと出しておく)
   const close = el("button", {class:"castbtn", onclick:() => { if (castInput) castInput.blur(); }}, "✕");
+  // ⌫ と 送信 は入力欄のフォーカス(=キーボード)を保つ。押下の既定動作を
+  // 止めないと、ボタンに焦点が移って鍵盤が閉じ、続けて打てなくなる。
+  // ✕ はわざと閉じたいので対象外
+  [bs, send].forEach(b => b.addEventListener("pointerdown", (e) => e.preventDefault()));
   castBar = el("div", {id:"castbar"}, bs, castInput, send, close);
   castKeysEl = buildCastKeys();
-  // 上段=補助キー列、下段=文字入力バー。まとめてキーボードの上へ持ち上げる
-  castDock = el("div", {id:"castdock"}, castKeysEl, castBar);
+  // 解除の帯。補助窓のすぐ上に置き、キーボードが出たらドックごと一緒に
+  // 上へずれる (下固定だと鍵盤に隠れ、上固定だと画面上部で邪魔になる)
+  modeEl = el("div", {id:"castmode"}, el("span", {}, T["tui.cast.control"] || "操作中 — タップで解除"));
+  modeEl.onclick = exitCast;
+  // 最上段=解除、中段=補助キー列、下段=文字入力バー。まとめて持ち上げる
+  castDock = el("div", {id:"castdock"}, modeEl, castKeysEl, castBar);
   document.getElementById("main").append(castDock);
   castInput.addEventListener("keydown", (e) => {
     if (e.isComposing) return;
@@ -1093,8 +1093,8 @@ function posCursor() {
   cursorEl.style.top = (cv.offsetTop + cy * dh) + "px";   // 縦は上詰め (oy=0)
 }
 // 操作モードに入ったら、サブ入力欄を常時出す (ボタンを押さなくても補助キーが使える)
-function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; showDock(); posCursor(); }
-function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; closeBar(); }
+function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; showDock(); posCursor(); }
+function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; closeBar(); }
 // 矢印の先端の真下にある要素。自前の矢印と波紋は pointer-events:none なので
 // 透けて、その下の本物 (バーのボタン/URL欄、または中継キャンバス) が返る
 function underCursor() {
