@@ -26,11 +26,6 @@ const INIT_JS: &str = r#"
   if (window.__shikisha) return;
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
 
-  // このスクリプトは新しい文書が作られるたびに走る。走った=読み込みが
-  // 始まった、なので「通信中」を灯す。終わりは announce() で消す。
-  // 本フレームだけ (iframe は chrome.webview に触れない) なので誤検知しにくい
-  send({ kind: "loading", busy: true });
-
   // 人への呼びかけ。ページのCSSと喧嘩しないよう影の中に閉じる
   window.__shikisha_ask = function (text, label) {
     let host = document.getElementById("__shikisha_bar");
@@ -1091,10 +1086,27 @@ fn run_window(
                     // 積まないと、置いたページは映っているだけになる
                     let ipc = ev_tx.clone();
                     let who = name.clone();
+                    // 「通信中」は、ページ内スクリプト (文書生成時) では遅い。
+                    // サーバが遅いと文書は応答が返るまで作られず、待っている間が
+                    // 消えたままになる。ナビゲーション開始 (押した瞬間・応答前) で
+                    // 点け、読み込み完了で消す。これで待ち時間ずっと点灯する
+                    let nav_tx = ev_tx.clone();
+                    let nav_who = name.clone();
+                    let fin_tx = ev_tx.clone();
+                    let fin_who = name.clone();
                     match WebViewBuilder::new()
                         .with_url(&url)
                         .with_bounds(bounds)
                         .with_initialization_script(INIT_JS)
+                        .with_navigation_handler(move |_url| {
+                            let _ = nav_tx.send(Ev::Loading { from: Some(nav_who.clone()), busy: true });
+                            true // 移動は止めない。ここは合図を出すだけ
+                        })
+                        .with_on_page_load_handler(move |e, _url| {
+                            if matches!(e, wry::PageLoadEvent::Finished) {
+                                let _ = fin_tx.send(Ev::Loading { from: Some(fin_who.clone()), busy: false });
+                            }
+                        })
                         .with_ipc_handler(move |req| {
                             let body: &str = req.body();
                             let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
