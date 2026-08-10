@@ -637,10 +637,14 @@ function drawNav() {
   layout();
 }
 
-// ページを置く場所を、バーのぶんだけ下げる
+// ページを置く場所を、バーのぶんだけ下げる。
+// 中継キャンバスも同じだけ下げないと、ブラウザ上端 (ログイン等がよくある)
+// がバーの裏に隠れてしまう。カーソル座標はキャンバスの位置から測るので追従する
 function layout() {
   const n = document.getElementById("nav");
-  document.getElementById("page").style.top = n.hidden ? "0" : "36px";
+  const top = n.hidden ? "0" : "36px";
+  document.getElementById("page").style.top = top;
+  document.getElementById("cast").style.top = top;
   report();
 }
 
@@ -994,8 +998,8 @@ function spawnRipple() {
   const cw = cv.width || 1, ch = cv.height || 1, mw = cv.clientWidth, mh = cv.clientHeight;
   const s = Math.min(mw / cw, mh / ch), dw = cw * s, dh = ch * s, ox = (mw - dw) / 2;
   const r = el("div", {class:"ripple"});
-  r.style.left = (ox + cx * dw) + "px";
-  r.style.top = (cy * dh) + "px";
+  r.style.left = (cv.offsetLeft + ox + cx * dw) + "px";
+  r.style.top = (cv.offsetTop + cy * dh) + "px";
   document.getElementById("main").append(r);
   setTimeout(() => r.remove(), 480);
 }
@@ -1094,8 +1098,9 @@ function posCursor() {
   const s = Math.min(mw / cw, mh / ch);
   const dw = cw * s, dh = ch * s;
   const ox = (mw - dw) / 2;   // 横は中央
-  cursorEl.style.left = (ox + cx * dw) + "px";
-  cursorEl.style.top = (cy * dh) + "px";   // 縦は上詰め (oy=0)
+  // キャンバス自身の位置 (バーのぶん下がっている) を足して #main 基準に直す
+  cursorEl.style.left = (cv.offsetLeft + ox + cx * dw) + "px";
+  cursorEl.style.top = (cv.offsetTop + cy * dh) + "px";   // 縦は上詰め (oy=0)
 }
 function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; modeEl.style.display = "block"; fabEl.style.display = "flex"; posCursor(); }
 function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; if (modeEl) modeEl.style.display = "none"; if (fabEl) fabEl.style.display = "none"; closeBar(); }
@@ -1610,8 +1615,14 @@ mod tests {
         assert!(PAGE.contains("id=\"page\""), "ページを置く場所が無い");
         // 置き場所はバーのぶんだけ下がる
         assert!(
-            PAGE.contains("getElementById(\"page\").style.top = n.hidden ? \"0\" : \"36px\""),
+            PAGE.contains("const top = n.hidden ? \"0\" : \"36px\"")
+                && PAGE.contains("getElementById(\"page\").style.top = top"),
             "バーを出してもページが下がらない"
+        );
+        // 中継キャンバスも同じだけ下げる (下げないとブラウザ上端がバーに隠れる)
+        assert!(
+            PAGE.contains("getElementById(\"cast\").style.top = top"),
+            "バーを出しても中継キャンバスが下がらず、ブラウザ上端が隠れる"
         );
         // 行桁は #main、ブラウザの置き場所は #page。
         // 1つの矩形から両方出すと、バーを出しただけで端末まで縮む
