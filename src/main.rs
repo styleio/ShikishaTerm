@@ -319,12 +319,10 @@ struct WinSurface {
     gos: Vec<crate::browser::Go>,
     /// 聞いておいた居場所の答え (窓の中での名前, URL, 戻れる, 進める)
     wheres: Vec<(String, String, bool, bool)>,
-    /// ブラウザごとの「通信中か」。読み込み開始で真、終了で偽。
-    /// 上のバーの進捗表示に使う (呼び名 = 見せているブラウザの鍵)
-    loading: std::collections::HashMap<String, bool>,
-    /// 直近で読み込みが始まった時刻。一瞬で終わる通信も見えるよう、
-    /// ここから最低時間はインジケータを点けたままにする
-    loading_since: std::collections::HashMap<String, std::time::Instant>,
+    /// ブラウザの読み込み開始/終了の報せ (窓の中での名前, 読み込み中か)。
+    /// 名前は "{ws}/{呼び名}" の形。呼び名への変換はループ側で行う
+    /// (WinSurface は caps を知らない)。wheres と同じ作法
+    loading: Vec<(String, bool)>,
     /// 中継画面のフレーム (JPEGのバイト列)。ループがスマホへ配る
     frames: Vec<Vec<u8>>,
     /// 窓が閉じた。描く先が無くなったので、ループは畳むしかない
@@ -363,15 +361,8 @@ impl WinSurface {
     fn take_wheres(&mut self) -> Vec<(String, String, bool, bool)> {
         std::mem::take(&mut self.wheres)
     }
-    /// 今そのブラウザが読み込み中か。実際に読み込み中なら真。
-    /// 終わっていても、始まりから最低時間 (MIN) は真を返す。
-    /// そうしないと一瞬で終わる通信は状態に乗る前に消えてしまう
-    fn loading_of(&self, key: &str) -> bool {
-        const MIN: std::time::Duration = std::time::Duration::from_millis(500);
-        if self.loading.get(key).copied().unwrap_or(false) {
-            return true;
-        }
-        self.loading_since.get(key).is_some_and(|t| t.elapsed() < MIN)
+    fn take_loading(&mut self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.loading)
     }
 
     /// たまった中継フレームを引き取る (ループがスマホへ配る)
@@ -414,17 +405,12 @@ impl WinSurface {
                     url,
                     complete,
                 } => self.loads.push((name, url, complete)),
-                // ブラウザが読み込みを始めた/終えた。見せている側の進捗表示に使う。
-                // 始まりの時刻を控えて、一瞬で終わっても最低時間は点けておく
+                // ブラウザが読み込みを始めた/終えた。呼び名への変換はループ側。
+                // ここで表示名にすると WinSurface が caps を知る羽目になる
                 Ev::Loading {
                     from: Some(name),
                     busy,
-                } => {
-                    if busy {
-                        self.loading_since.insert(name.clone(), std::time::Instant::now());
-                    }
-                    self.loading.insert(name, busy);
-                }
+                } => self.loading.push((name, busy)),
                 // クリップボードは端末側と同じ扱いにする
                 Ev::Copy { text } => {
                     if let Ok(mut c) = arboard::Clipboard::new() {
@@ -606,8 +592,7 @@ fn run_in_window() -> Result<()> {
         scrolls: Vec::new(),
         gos: Vec::new(),
         wheres: Vec::new(),
-        loading: std::collections::HashMap::new(),
-        loading_since: std::collections::HashMap::new(),
+        loading: Vec::new(),
         frames: Vec::new(),
         closed: false,
     })
@@ -904,6 +889,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // 見ているページの居場所 (窓の中での名前, URL, 戻れるか, 進めるか)。
     // 窓しか知らないので、聞いて控える
     let mut where_now: Option<(String, String, bool, bool)> = None;
+    // 呼び名ごとの読み込み状態 (読み込み中か, 直近で始まった時刻)。
+    // 一瞬で終わる通信も見えるよう、始まりから最低時間はインジケータを点ける
+    let mut loading_now: std::collections::HashMap<String, (bool, std::time::Instant)> =
+        std::collections::HashMap::new();
     let mut asked_where_ms: u64 = 0;
 
     let mut auto_enabled = true;
@@ -1513,7 +1502,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 can_back: w.is_some_and(|w| w.2),
                 can_forward: w.is_some_and(|w| w.3),
                 at: w.map(|w| w.1.clone()).unwrap_or_default(),
-                loading: surface.loading_of(key),
+                // 読み込み中、または始まりから0.5秒未満なら点灯 (一瞬の通信対策)
+                loading: loading_now.get(key).is_some_and(|(busy, since)| {
+                    *busy || since.elapsed() < std::time::Duration::from_millis(500)
+                }),
             })
         });
         // 居場所は窓しか知らない。出しているときだけ、ほどよい間隔で聞く。
@@ -1665,6 +1657,18 @@ fn run(mut surface: WinSurface) -> Result<()> {
         for (child, url, can_back, can_forward) in surface.take_wheres() {
             if let Some(name) = caps.name_of_child(&child) {
                 where_now = Some((name, url, can_back, can_forward));
+            }
+        }
+        // 読み込みの開始/終了も、同じく呼び名へ直して控える。
+        // 始まりの時刻を更新し、上のバーの通信中表示に使う
+        for (child, busy) in surface.take_loading() {
+            if let Some(name) = caps.name_of_child(&child) {
+                let now = std::time::Instant::now();
+                let e = loading_now.entry(name).or_insert((false, now));
+                if busy {
+                    e.1 = now;
+                }
+                e.0 = busy;
             }
         }
 
