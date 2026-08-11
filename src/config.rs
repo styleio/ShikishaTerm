@@ -361,6 +361,12 @@ pub struct WorkspaceSpec {
     pub browsers: Vec<BrowserConfig>,
     #[serde(default)]
     pub lua: Option<String>,
+    /// このワークスペースのラリーが使ってよい秘密のキー (既定は空 = 全拒否)
+    #[serde(default)]
+    pub secrets_allow: Vec<String>,
+    /// 危険承知で全ての秘密を許可する
+    #[serde(default)]
+    pub secrets_allow_all: bool,
 }
 
 /// ワークスペース定義ファイル (workspaces/*.json) の中身
@@ -375,6 +381,10 @@ pub struct WorkspaceFile {
     pub automation: Option<String>,
     #[serde(default)]
     pub lua: Option<String>,
+    #[serde(default)]
+    pub secrets_allow: Vec<String>,
+    #[serde(default)]
+    pub secrets_allow_all: bool,
 }
 
 /// ブラウザの上に出す操作。どれを出すかだけを持つ。
@@ -514,6 +524,10 @@ pub struct Workspace {
     pub automation: Option<String>,
     /// 一緒に開くブラウザ
     pub browsers: Vec<BrowserConfig>,
+    /// このワークスペースのラリーが使ってよい秘密のキー (既定は空 = 全拒否)
+    pub secrets_allow: Vec<String>,
+    /// 危険承知で全ての秘密を許可する
+    pub secrets_allow_all: bool,
 }
 
 /// このタブはブラウザか。そうならURLを返す。
@@ -633,22 +647,34 @@ impl Config {
                     tabs,
                     automation: None,
                     browsers: Vec::new(),
+                    secrets_allow: Vec::new(),
+                    secrets_allow_all: false,
                 });
             }
             return (out, errors);
         }
         for ws in &self.workspaces {
-            let (tab_defs, file_name, file_lua): (Vec<TabConfig>, Option<String>, Option<String>) =
-                match &ws.file {
-                    Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
-                        Ok(p) => (p.tabs, p.name, p.automation.or(p.lua)),
-                        Err(e) => {
-                            errors.push(format!("{}: {e:#}", ws.name));
-                            continue;
-                        }
-                    },
-                    None => (ws.tabs.clone(), None, None),
-                };
+            #[allow(clippy::type_complexity)]
+            let (tab_defs, file_name, file_lua, file_secrets): (
+                Vec<TabConfig>,
+                Option<String>,
+                Option<String>,
+                (Vec<String>, bool),
+            ) = match &ws.file {
+                Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
+                    Ok(p) => (
+                        p.tabs,
+                        p.name,
+                        p.automation.or(p.lua),
+                        (p.secrets_allow, p.secrets_allow_all),
+                    ),
+                    Err(e) => {
+                        errors.push(format!("{}: {e:#}", ws.name));
+                        continue;
+                    }
+                },
+                None => (ws.tabs.clone(), None, None, (Vec::new(), false)),
+            };
             let mut tabs = Vec::new();
             flatten(&tab_defs, 0, &mut tabs);
             out.push(Workspace {
@@ -662,6 +688,13 @@ impl Config {
                 // config側の指定を優先し、無ければ定義ファイル側を使う
                 automation: ws.automation.clone().or_else(|| ws.lua.clone()).or(file_lua),
                 browsers: ws.browsers.clone(),
+                // config側の指定を優先し、無ければ定義ファイル側を使う
+                secrets_allow: if ws.secrets_allow.is_empty() {
+                    file_secrets.0
+                } else {
+                    ws.secrets_allow.clone()
+                },
+                secrets_allow_all: ws.secrets_allow_all || file_secrets.1,
             });
         }
         (out, errors)

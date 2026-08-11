@@ -131,6 +131,11 @@ pub struct Capabilities {
     /// 自動化が自分で開いた分や設定画面と区別が要る。設定から消えたときに
     /// 閉じてよいのは、設定が開けたものだけ
     declared: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// このワークスペースで使ってよい秘密のキー (既定は空 = 全拒否)。
+    /// ラリー(AI製Lua)が別用途の鍵を流用できないよう、ここで絞る
+    secret_allow: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// 危険承知で全ての秘密を許可する (ワークスペースのトグル)
+    secret_allow_all: std::cell::Cell<bool>,
 }
 
 /// ページを触るときの既定の待ち時間。
@@ -153,6 +158,8 @@ impl Capabilities {
             shown: std::cell::RefCell::new((None, (0, 0, 0, 0))),
             nav: std::cell::RefCell::new(HashMap::new()),
             declared: std::cell::RefCell::new(std::collections::HashSet::new()),
+            secret_allow: std::cell::RefCell::new(std::collections::HashSet::new()),
+            secret_allow_all: std::cell::Cell::new(false),
         }
     }
 
@@ -340,6 +347,29 @@ impl Capabilities {
             }
         }
         out
+    }
+
+    /// このワークスペースで使ってよい秘密を教える (切り替えのたびに呼ぶ)。
+    /// 既定は全拒否。all=true は危険承知の全許可トグル
+    pub fn set_secret_allow(&self, keys: Vec<String>, all: bool) {
+        *self.secret_allow.borrow_mut() = keys.into_iter().collect();
+        self.secret_allow_all.set(all);
+    }
+
+    /// 秘密の生値を取り出す (Rust内部専用。Luaには決して返さない)。
+    ///
+    /// 許可リストに無いキーは拒否する。ラリーが別用途の鍵を流用しようとしても、
+    /// ここで止まる。値そのものは呼び出し側 (browser_fill_secret 等) が
+    /// 認証やフィルに使うだけで、AIの世界には出さない
+    pub fn secret_value(&self, key: &str) -> Result<String> {
+        if !self.secret_allow_all.get() && !self.secret_allow.borrow().contains(key) {
+            bail!("秘密 '{key}' はこのワークスペースで許可されていません");
+        }
+        self.tokens
+            .borrow()
+            .get(key)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("秘密 '{key}' は未登録です (設定の「秘密」で登録)"))
     }
 
     /// 窓の中に置く先を教える。設定を読み直すたびに設定し直す
@@ -762,6 +792,25 @@ mod tests {
         assert!(masked.contains("••••"));
         // 短すぎる値は普通の語を壊すので対象外
         assert_eq!(c.redact("ab cd ab"), "ab cd ab");
+    }
+
+    #[test]
+    fn secret_value_respects_the_allowlist_and_default_denies() {
+        let mut tokens = HashMap::new();
+        tokens.insert("diary".to_string(), "hunter2secret".to_string());
+        tokens.insert("github".to_string(), "ghp_xxx".to_string());
+        let c = Capabilities::new(CapabilitySpec::default(), PathBuf::from("."), tokens);
+        // 既定は全拒否 (許可リストが空)
+        assert!(c.secret_value("diary").is_err(), "既定は全拒否のはず");
+        // 許可した鍵だけ取れる
+        c.set_secret_allow(vec!["diary".to_string()], false);
+        assert_eq!(c.secret_value("diary").unwrap(), "hunter2secret");
+        assert!(c.secret_value("github").is_err(), "別用途の鍵は流用できない");
+        // 危険承知の全許可トグル
+        c.set_secret_allow(vec![], true);
+        assert_eq!(c.secret_value("github").unwrap(), "ghp_xxx");
+        // 全許可でも、未登録キーは取れない
+        assert!(c.secret_value("nope").is_err(), "未登録は取れない");
     }
 
     #[test]

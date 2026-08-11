@@ -226,6 +226,17 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
         check("browser_fill", st, &opts)
     });
+    // 秘密の値を欄に入れる。値は名前で参照し、Rustが解決して入れる。
+    // AIには値が渡らない (返るのは状態だけ)。許可リストに無い鍵は secret_value が弾く
+    bind!("browser_fill_secret", (String, Value, String), |lua_, c, al, (name, sel, secret_key)| {
+        guard(&name, &al)?;
+        let value = c
+            .secret_value(&secret_key)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        c.browser_fill(&name, &sel_of(&sel)?, &value)
+            .map(|s| s.to_string())
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
     bind!("browser_text", (String, Value), |lua_, c, al, (name, sel)| {
         guard(&name, &al)?;
         // 読み取り結果はAIへ渡るので、既知の秘密値を伏字にする
@@ -678,6 +689,25 @@ impl HookEngine {
                             check("browser_fill", st, &opts)
                         },
                     )
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // 秘密の値を欄に入れる。名前で参照し、Rustが解決して入れるので
+            // 値はLua/AIに渡らない。記録に残るのも鍵名だけ (貼れば再生できる)
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_fill_secret",
+                    lua.create_function(move |_, (name, sel, key): (String, Value, String)| {
+                        let value = c
+                            .secret_value(&key)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        c.browser_fill(&name, &sel_of(&sel)?, &value)
+                            .map(|s| s.to_string())
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;

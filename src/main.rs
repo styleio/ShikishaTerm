@@ -847,6 +847,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
     caps.set_host(surface.host());
     caps.set_workspace(ws_index);
     if let Some(w) = workspaces.get(ws_index) {
+        // このワークスペースが使ってよい秘密を絞る (既定は全拒否)
+        caps.set_secret_allow(w.secrets_allow.clone(), w.secrets_allow_all);
         engines[ws_index] = build_engine(cfg.as_ref(), Some(w), &mut startup_errors, &caps);
         open_declared_browsers(w, &caps, &mut startup_errors);
     } else {
@@ -2625,6 +2627,10 @@ fn switch_workspace(
     // 呼び名はワークスペースの中でだけ通じる。
     // 置いたページも、いま見ている分だけがタブに並ぶ
     caps.set_workspace(to);
+    caps.set_secret_allow(
+        workspaces[to].secrets_allow.clone(),
+        workspaces[to].secrets_allow_all,
+    );
     config::save_last_workspace(&workspaces[to].name);
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {
@@ -3698,6 +3704,8 @@ mod tests {
             tabs,
             automation: None,
             browsers: Vec::new(),
+            secrets_allow: Vec::new(),
+            secrets_allow_all: false,
         }
     }
 
