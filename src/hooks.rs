@@ -111,6 +111,18 @@ fn sel_of(v: &Value) -> mlua::Result<crate::browser::Sel> {
     }
 }
 
+/// browser_go の指定を解く (back / forward / reload / to(URL))
+fn go_of(what: &str, url: Option<String>) -> mlua::Result<crate::browser::Go> {
+    use crate::browser::Go;
+    Ok(match what {
+        "back" => Go::Back,
+        "forward" => Go::Forward,
+        "reload" => Go::Reload,
+        "to" => Go::To(url.unwrap_or_default()),
+        _ => return Err(mlua::Error::runtime("browser_go は back/forward/reload/to のいずれか")),
+    })
+}
+
 /// 見つからなかったときに止めるか進むか (呼び出しごとに選べる)
 fn missing_ok(opts: &Option<Table>) -> bool {
     opts.as_ref()
@@ -206,6 +218,11 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
         c.browser_open(&name, &url)
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
+    bind!("browser_go", (String, String, Option<String>), |lua_, c, al, (name, what, url)| {
+        guard(&name, &al)?;
+        c.browser_go(&name, go_of(&what, url)?)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
     bind!("browser_find", (String, Value), |lua_, c, al, (name, sel)| {
         guard(&name, &al)?;
         c.browser_find(&name, &sel_of(&sel)?)
@@ -235,6 +252,12 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
         c.browser_fill(&name, &sel_of(&sel)?, &value)
             .map(|s| s.to_string())
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    // ベーシック認証を仕込む (資格情報は許可リスト内の秘密から。値はAIに渡らない)
+    bind!("browser_auth", (String, String), |lua_, c, al, (name, secret_key)| {
+        guard(&name, &al)?;
+        c.browser_auth(&name, &secret_key)
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
     bind!("browser_text", (String, Value), |lua_, c, al, (name, sel)| {
@@ -646,6 +669,22 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // 今のタブをその場で動かす: back / forward / reload / to(URL)。
+            // browser_open と違い webview を作り直さないので、仕込んだ認証も残る
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_go",
+                    lua.create_function(move |_, (name, what, url): (String, String, Option<String>)| {
+                        let go = go_of(&what, url)?;
+                        c.browser_go(&name, go)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             let c = Caps::clone(&caps);
             shikisha
                 .set(
@@ -706,6 +745,21 @@ impl HookEngine {
                             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
                         c.browser_fill(&name, &sel_of(&sel)?, &value)
                             .map(|s| s.to_string())
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // ベーシック認証を仕込む。資格情報は秘密 (許可リスト内) から解決。
+            // 呼んでから保護ページへ移動/再読込すると、401 に自動で答える
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_auth",
+                    lua.create_function(move |_, (name, key): (String, String)| {
+                        c.browser_auth(&name, &key)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,

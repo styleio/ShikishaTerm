@@ -603,6 +603,16 @@ impl Capabilities {
         self.with(name, |b, to| b.inject(to, input))
     }
 
+    /// ベーシック認証を仕込む。資格情報は秘密 (許可リスト内) から `user:pass` で解決する。
+    /// 値はここで解いて CDP に渡すだけで、Lua/AI には一切出さない
+    pub fn browser_auth(&self, name: &str, secret_key: &str) -> Result<()> {
+        let val = self.secret_value(secret_key)?;
+        let (user, pass) = val
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("秘密 '{secret_key}' は user:pass の形式で登録してください"))?;
+        self.with(name, |b, to| b.basic_auth(to, user, pass))
+    }
+
     /// 設定に書かれたページを、設定のとおりに揃える。
     ///
     /// 設定から消したページは閉じる。閉じないと、置いたままのページが

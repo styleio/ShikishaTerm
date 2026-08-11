@@ -239,6 +239,14 @@ pub enum Cmd {
         to: Option<String>,
         input: Input,
     },
+    /// ベーシック認証を仕込む。以後この页の 401 チャレンジに、
+    /// CDP (Fetch.authRequired → continueWithAuth) で資格情報を返す。
+    /// user/pass は秘密から解決済みで、AI/Luaには渡っていない
+    BasicAuth {
+        to: Option<String>,
+        user: String,
+        pass: String,
+    },
     /// 窓を閉じる (指揮者がいなくなったとき)
     Close,
 }
@@ -655,6 +663,16 @@ impl Browser {
         self.send(Cmd::Inject {
             to: to.map(str::to_string),
             input,
+        })
+    }
+
+    /// ベーシック認証を仕込む。以後この页の 401 に資格情報を返す。
+    /// user/pass は秘密から解決済み (呼ぶ側でしか触らない)
+    pub fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> Result<()> {
+        self.send(Cmd::BasicAuth {
+            to: to.map(str::to_string),
+            user: user.to_string(),
+            pass: pass.to_string(),
         })
     }
 
@@ -1088,6 +1106,9 @@ fn run_window(
     // 画面中継。対象ごとに1つ。持っている間だけフレームが届く
     let mut casts: std::collections::HashMap<Option<String>, cdp::Cast> =
         std::collections::HashMap::new();
+    // ベーシック認証の仕込み。対象ごとに1つ。持っている間だけ 401 に答える
+    let mut auths: std::collections::HashMap<Option<String>, cdp::AuthArm> =
+        std::collections::HashMap::new();
     // 直近フレームのCSSピクセル寸法 (入力注入の座標変換に使う)。
     // フレーム通知と入力注入は同じスレッドなので Rc<Cell> で足りる
     let cast_dims = std::rc::Rc::new(std::cell::Cell::new((0.0f64, 0.0f64)));
@@ -1117,6 +1138,20 @@ fn run_window(
                             ))
                             .to_string(),
                         });
+                    }
+                }
+                Cmd::BasicAuth { to, user, pass } => {
+                    // 資格情報は既に仕込んであれば差し替え、無ければ Fetch を有効化して仕込む
+                    if let Some(arm) = auths.get(&to) {
+                        *arm.creds.borrow_mut() = (user, pass);
+                    } else if let Some(v) = target(&webview, &children, &to) {
+                        let wv = cdp::webview_of(v);
+                        match cdp::arm_basic_auth(&wv, &user, &pass) {
+                            Some(arm) => {
+                                auths.insert(to.clone(), arm);
+                            }
+                            None => crate::append_hook_log("ベーシック認証を仕込めません (CDP)"),
+                        }
                     }
                 }
                 Cmd::Ask { to, text, label } => {
@@ -1467,6 +1502,102 @@ mod cdp {
                 webview: webview.clone(),
             })
         }
+    }
+
+    /// ベーシック認証の仕込み (これを持っている間だけ 401 に答え続ける)。
+    ///
+    /// 認証チャレンジ (authRequired) を受けるにはリクエストを横取りする必要が
+    /// あるので、全リクエストを Fetch で掴む。掴んだ通常リクエストは
+    /// そのまま continueRequest で流し (掴みっぱなしだとページが止まる)、
+    /// 認証だけ continueWithAuth で資格情報を返す
+    pub struct AuthArm {
+        pub receivers: Vec<(ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
+        pub webview: ICoreWebView2,
+        /// 返す資格情報 (user, pass)。差し替えられるよう共有で持つ
+        pub creds: std::rc::Rc<std::cell::RefCell<(String, String)>>,
+    }
+
+    /// 1つのCDPイベントを購読する。JSONを受け取って `on` を呼ぶ
+    fn subscribe<F>(
+        webview: &ICoreWebView2,
+        event: &str,
+        on: F,
+    ) -> Option<(ICoreWebView2DevToolsProtocolEventReceiver, i64)>
+    where
+        F: Fn(&serde_json::Value) + 'static,
+    {
+        let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(
+            move |_sender, args: Option<ICoreWebView2DevToolsProtocolEventReceivedEventArgs>| {
+                if let Some(args) = args {
+                    let mut raw = windows::core::PWSTR::null();
+                    unsafe {
+                        if args.ParameterObjectAsJson(&mut raw).is_ok() {
+                            let json = webview2_com::take_pwstr(raw);
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+                                on(&v);
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            },
+        ));
+        let name = HSTRING::from(event);
+        let mut token = 0i64;
+        unsafe {
+            let receiver = webview
+                .GetDevToolsProtocolEventReceiver(PCWSTR(name.as_ptr()))
+                .ok()?;
+            receiver
+                .add_DevToolsProtocolEventReceived(&handler, &mut token)
+                .ok()?;
+            Some((receiver, token))
+        }
+    }
+
+    pub fn arm_basic_auth(webview: &ICoreWebView2, user: &str, pass: &str) -> Option<AuthArm> {
+        let creds = std::rc::Rc::new(std::cell::RefCell::new((user.to_string(), pass.to_string())));
+
+        // 掴んだ通常リクエストはそのまま流す (継続しないとページが止まる)
+        let wv_req = webview.clone();
+        let paused = subscribe(webview, "Fetch.requestPaused", move |v| {
+            if let Some(id) = v.get("requestId").and_then(|x| x.as_str()) {
+                call(&wv_req, "Fetch.continueRequest", &format!("{{\"requestId\":\"{id}\"}}"));
+            }
+        })?;
+
+        // 認証チャレンジには資格情報を返す
+        let wv_auth = webview.clone();
+        let creds_h = std::rc::Rc::clone(&creds);
+        let required = subscribe(webview, "Fetch.authRequired", move |v| {
+            let id = v.get("requestId").and_then(|x| x.as_str()).unwrap_or_default();
+            let (u, p) = {
+                let c = creds_h.borrow();
+                (c.0.clone(), c.1.clone())
+            };
+            let params = serde_json::json!({
+                "requestId": id,
+                "authChallengeResponse": {
+                    "response": "ProvideCredentials",
+                    "username": u,
+                    "password": p,
+                }
+            })
+            .to_string();
+            call(&wv_auth, "Fetch.continueWithAuth", &params);
+        })?;
+
+        // 全リクエストを掴む + 認証も掴む
+        call(
+            webview,
+            "Fetch.enable",
+            r#"{"patterns":[{"urlPattern":"*"}],"handleAuthRequests":true}"#,
+        );
+        Some(AuthArm {
+            receivers: vec![paused, required],
+            webview: webview.clone(),
+            creds,
+        })
     }
 
     /// 今の画面を1枚出させる (startScreencast を打ち直す)。

@@ -192,10 +192,13 @@ impl Config {
         (map, err)
     }
 
-    /// secretsファイルのパス (存在すれば)。
-    /// 相対パスは config.json の隣として解決する ("secrets.json" → config/secrets.json)
+    /// secretsファイルのパス。相対パスは config.json の隣として解決する。
+    ///
+    /// 明示指定が無ければ既定で config/secrets.json を指す。こうしないと、
+    /// 設定GUIが既定の場所に作った秘密を本体が読み込めない (登録したのに
+    /// 使えない) ことになる。ファイルが無ければ読み手側が空として扱う
     pub fn secrets_path(&self) -> Option<std::path::PathBuf> {
-        let p = self.secrets.as_deref()?;
+        let p = self.secrets.as_deref().unwrap_or("secrets.json");
         if std::path::Path::new(p).is_absolute() {
             return Some(std::path::PathBuf::from(p));
         }
