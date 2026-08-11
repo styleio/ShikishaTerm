@@ -32,10 +32,13 @@ pub struct WebUi {
 
 impl WebUi {
     /// 設定ファイルを編集するローカルサーバーを起動する。
-    /// config_path は編集対象 (通常 config.json)
+    /// config_path は編集対象 (通常 config.json)。
+    /// password は本体が握っているマスターパスワードの共有 (秘密の暗号化に使う)。
+    /// **ページにもネットワークにも出さない**。同一プロセスのサーバ側でだけ使う
     pub fn start_with(
         config_path: std::path::PathBuf,
         remote: Arc<std::sync::Mutex<RemoteInfo>>,
+        password: Arc<std::sync::Mutex<Option<String>>>,
     ) -> Result<Self> {
         let token = random_token()?;
         let server = Server::http("127.0.0.1:0")
@@ -55,7 +58,7 @@ impl WebUi {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
-                    if let Err(e) = handle(req, &token, &config_path, &remote) {
+                    if let Err(e) = handle(req, &token, &config_path, &remote, &password) {
                         crate::append_hook_log(&format!("WebUI: {e}"));
                     }
                 }
@@ -538,11 +541,30 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// JSONで応答する
+fn json_resp(v: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
+    Response::from_string(v.to_string()).with_header(
+        Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
+    )
+}
+
+/// 秘密ファイルのパス。設定に指定があればそれ、無ければ config.json の隣の secrets.json
+fn secrets_file(config_path: &std::path::Path) -> std::path::PathBuf {
+    crate::config::load()
+        .and_then(|c| c.secrets_path())
+        .unwrap_or_else(|| {
+            let mut p = config_path.to_path_buf();
+            p.set_file_name("secrets.json");
+            p
+        })
+}
+
 fn handle(
     req: tiny_http::Request,
     token: &str,
     config_path: &std::path::Path,
     remote: &Arc<std::sync::Mutex<RemoteInfo>>,
+    password: &Arc<std::sync::Mutex<Option<String>>>,
 ) -> Result<()> {
     // DNS rebinding対策: Hostは必ずループバックであること
     let host = header_value(&req, "Host");
@@ -628,6 +650,70 @@ fn handle(
                     req.respond(Response::from_string(msg.to_string()).with_status_code(400))?;
                 }
             }
+        }
+        // ── 秘密 (GitHub Secrets 相当) ────────────────────
+        // マスターパスワードはページにもネットワークにも出さない。
+        // 一覧はキーと説明だけを返し、値は決して返さない
+        ("GET", "/api/secrets") => {
+            let path = secrets_file(config_path);
+            let pw = password.lock().unwrap().clone();
+            let encrypted = std::fs::read_to_string(&path)
+                .map(|t| crate::crypto::is_encrypted(&t))
+                .unwrap_or(false);
+            let (mode, items): (&str, Vec<serde_json::Value>) = if !path.exists() {
+                ("empty", Vec::new())
+            } else if encrypted && pw.is_none() {
+                // 暗号化されていてパスワードが無ければ、一覧すら出せない
+                ("locked", Vec::new())
+            } else {
+                match crate::config::list_secrets(&path, pw.as_deref()) {
+                    Ok(list) => (
+                        if encrypted { "encrypted" } else { "plaintext" },
+                        list.into_iter()
+                            .map(|(k, d)| serde_json::json!({ "key": k, "description": d }))
+                            .collect(),
+                    ),
+                    Err(_) => ("locked", Vec::new()),
+                }
+            };
+            req.respond(json_resp(serde_json::json!({
+                "mode": mode,
+                "has_password": pw.is_some(),
+                "secrets": items,
+            })))?;
+        }
+        ("POST", "/api/secrets/set") => {
+            let mut req = req;
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body)?;
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let s = |k| p.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            let (key, desc, value) = (s("key").trim(), s("description"), s("value"));
+            let path = secrets_file(config_path);
+            let pw = password.lock().unwrap().clone();
+            let resp = if value.is_empty() {
+                serde_json::json!({ "ok": false, "error": "値が空です" })
+            } else {
+                match crate::config::upsert_secret(&path, pw.as_deref(), key, desc, value) {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
+        ("POST", "/api/secrets/delete") => {
+            let mut req = req;
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body)?;
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let key = p.get("key").and_then(|v| v.as_str()).unwrap_or("");
+            let path = secrets_file(config_path);
+            let pw = password.lock().unwrap().clone();
+            let resp = match crate::config::delete_secret(&path, pw.as_deref(), key) {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+            };
+            req.respond(json_resp(resp))?;
         }
         // ワークスペース1つを、スクリプトごと1枚のファイルに書き出す。
         // 番号で指すのは保存済みの設定。画面の編集中の姿ではない
@@ -1446,7 +1532,73 @@ function globalPane() {
     row("secrets", ...pathField(current, "secrets", "secrets.json", "file",
         T["settings.secrets"]),
         el("span", {class:"hint"}, T["settings.secrets.hint"]))));
+  box.append(secretsCard());
   return box;
+}
+
+// 秘密 (GitHub Secrets 相当)。キーで参照し、値は保存したら二度と表示されない。
+// マスターパスワードがあれば暗号化、無ければ平文 (自己責任) — どちらも同じUIで扱う
+function secretsCard() {
+  const status = el("div", {class:"hint", id:"secretsmode"});
+  const listBox = el("div", {id:"secretslist"}, el("div", {class:"hint"}, T["common.reload"] ? "…" : "…"));
+  const keyIn = el("input", {class:"mono", placeholder:"キー 例: diary_saas", style:"width:200px"});
+  const descIn = el("input", {placeholder:"説明 例: 日記SaaSのログイン", style:"flex:1;min-width:160px"});
+  const valIn = el("input", {type:"password", placeholder:"値（保存後は二度と表示されません）", style:"flex:1;min-width:160px"});
+  const addBtn = el("button", {class:"primary", onclick: async () => {
+    const key = keyIn.value.trim();
+    if (!key) { toast("キーを入れてください", true); return; }
+    if (!valIn.value) { toast("値を入れてください", true); return; }
+    const r = await fetch("/api/secrets/set", {method:"POST",
+      headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+      body: JSON.stringify({key, description: descIn.value, value: valIn.value})}).then(r=>r.json());
+    if (r.ok) { toast("保存しました: " + key); keyIn.value=""; descIn.value=""; valIn.value=""; loadSecrets(); }
+    else toast(r.error || "保存に失敗", true);
+  }}, "＋ 登録 / 更新");
+  const form = el("div", {class:"row", style:"flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center"},
+    keyIn, descIn, valIn, addBtn);
+  const c = card("秘密 (Secrets)", status, listBox, form);
+  // カードがDOMに入ってから読み込む (getElementById が効くように)
+  setTimeout(loadSecrets, 0);
+  return c;
+}
+
+async function loadSecrets() {
+  const listBox = document.getElementById("secretslist");
+  const status = document.getElementById("secretsmode");
+  if (!listBox) return;
+  let j;
+  try { j = await fetch("/api/secrets", {headers:{"X-Token":TOKEN}}).then(r=>r.json()); }
+  catch (e) { listBox.textContent=""; listBox.append(el("div",{class:"hint warn"},"読み込み失敗")); return; }
+  const modes = {
+    plaintext: "🔓 平文で保存中（マスターパスワード未設定）。より安全にするには INDEX の [k] で設定できます",
+    encrypted: "🔒 暗号化して保存中（マスターパスワード設定済み）",
+    locked: "🔒 暗号化されています。編集にはアプリ側でマスターパスワードの入力が必要です",
+    empty: "🔓 まだ何も登録されていません（登録すると secrets.json が作られます）",
+  };
+  status.textContent = modes[j.mode] || "";
+  status.classList.toggle("warn", j.mode === "locked");
+  listBox.textContent = "";
+  if (!j.secrets || !j.secrets.length) {
+    if (j.mode !== "empty" && j.mode !== "locked")
+      listBox.append(el("div", {class:"hint"}, "登録された秘密はありません"));
+    return;
+  }
+  for (const s of j.secrets) {
+    const del = el("button", {class:"quiet", onclick: async () => {
+      if (!confirm(s.key + " を削除しますか？")) return;
+      const r = await fetch("/api/secrets/delete", {method:"POST",
+        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+        body: JSON.stringify({key: s.key})}).then(r=>r.json());
+      if (r.ok) { toast("削除しました: " + s.key); loadSecrets(); }
+      else toast(r.error || "削除に失敗", true);
+    }}, "削除");
+    listBox.append(el("div", {class:"row",
+      style:"align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)"},
+      el("span", {class:"mono", style:"min-width:180px;color:var(--text)"}, s.key),
+      el("span", {class:"hint", style:"flex:1"}, s.description || "(説明なし)"),
+      el("span", {class:"hint mono", title:"値は表示されません"}, "••••"),
+      del));
+  }
 }
 // スマホから使う設定。危険性は隠さず説明したうえで、1クリックで有効にできるようにする
 function remoteCard() {
@@ -2384,9 +2536,12 @@ mod tests {
         let cfg = dir.join("config.json");
         std::fs::write(&cfg, r#"{"max_chain":10}"#).unwrap();
 
-        let ui =
-            WebUi::start_with(cfg.clone(), Arc::new(std::sync::Mutex::new(RemoteInfo::default())))
-                .unwrap();
+        let ui = WebUi::start_with(
+            cfg.clone(),
+            Arc::new(std::sync::Mutex::new(RemoteInfo::default())),
+            Arc::new(std::sync::Mutex::new(None)),
+        )
+        .unwrap();
         let token = ui.url.split("token=").nth(1).unwrap().to_string();
         let base = ui.url.split("/?").next().unwrap().to_string();
         let agent = ureq::Agent::new_with_defaults();

@@ -98,7 +98,10 @@ fn main() -> Result<()> {
         open_console();
         // 本体が動いていなくてもQRを出せる (接続先は設定から都度組み立てる)
         let info = Arc::new(Mutex::new(webui::RemoteInfo::default()));
-        let web = webui::WebUi::start_with(config::config_file_path(), info)?;
+        // 単体の設定モードは本体が動いていないのでマスターパスワードを持たない。
+        // 暗号化済みの秘密は編集できず、一覧は locked と表示される
+        let pw = Arc::new(Mutex::new(None));
+        let web = webui::WebUi::start_with(config::config_file_path(), info, pw)?;
         println!("{}", i18n::tp("msg.settings_opened", &[("url", &web.url)]));
         open_browser(&web.url);
         println!("{}", i18n::t("msg.settings_wait"));
@@ -917,6 +920,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // タブバー境界線のドラッグ中フラグ (マウスで幅を調整できる)
     // 設定Web GUI (INDEXの [e] で起動、アプリ終了時に停止)
     let mut web: Option<webui::WebUi> = None;
+    // 本体が握るマスターパスワードを設定GUIと共有する (秘密の暗号化に使う)。
+    // ページには出さず、同一プロセスのサーバ側でだけ読む。変更時に反映する
+    let web_password: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(password.clone()));
     let config_file = config::config_file_path();
 
     loop {
@@ -1816,6 +1822,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     &mut web,
                                     &config_file,
                                     &remote_info,
+                                    &web_password,
                                     &caps,
                                     &query,
                                 ) {
@@ -1931,12 +1938,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 cfg.as_ref(),
                                 &mut password,
                             )?);
+                            // 変更を設定GUIの暗号化にも反映する
+                            *web_password.lock().unwrap() = password.clone();
                         }
                         // 設定: 自分の窓の中で開く。
                         // 外のブラウザに投げると、どの窓が誰のものか分からなくなる
                         KeyCode::Char('e') => {
                             flash = Some(
-                                match open_settings(&mut web, &config_file, &remote_info, &caps, "")
+                                match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, "")
                                 {
                                     Ok(()) => {
                                         // 開いたら、そのタブへ移る。
@@ -2835,13 +2844,18 @@ fn open_settings(
     web: &mut Option<webui::WebUi>,
     config_file: &std::path::Path,
     remote_info: &Arc<Mutex<webui::RemoteInfo>>,
+    web_password: &Arc<Mutex<Option<String>>>,
     caps: &hooks::Caps,
     query: &str,
 ) -> Result<()> {
     let url = match web.as_ref() {
         Some(w) => w.url.clone(),
         None => {
-            let w = webui::WebUi::start_with(config_file.to_path_buf(), Arc::clone(remote_info))?;
+            let w = webui::WebUi::start_with(
+                config_file.to_path_buf(),
+                Arc::clone(remote_info),
+                Arc::clone(web_password),
+            )?;
             let u = w.url.clone();
             *web = Some(w);
             u
