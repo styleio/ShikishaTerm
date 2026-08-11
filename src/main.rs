@@ -327,6 +327,8 @@ struct WinSurface {
     frames: Vec<Vec<u8>>,
     /// 窓が閉じた。描く先が無くなったので、ループは畳むしかない
     closed: bool,
+    /// 設定ページの「設定を閉じる」が押された。ループが設定タブを畳む
+    close_settings: bool,
 }
 
 impl WinSurface {
@@ -340,6 +342,11 @@ impl WinSurface {
     /// 窓の報告は1本しかないので、受けるのはここだけにする
     fn take_presses(&mut self) -> Vec<String> {
         std::mem::take(&mut self.presses)
+    }
+
+    /// 「設定を閉じる」が押されていたら true (押されていたら下ろす)
+    fn take_close_settings(&mut self) -> bool {
+        std::mem::take(&mut self.close_settings)
     }
 
     /// 読み込みが終わったページを引き取る (呼び名, URL, 揃ったか)
@@ -386,6 +393,9 @@ impl WinSurface {
                 // 窓が閉じた。ここで畳まないと、描く先を失ったまま
                 // 誰にも見えないプロセスが残り、待ち受けの口を握り続ける
                 Ev::Closed => self.closed = true,
+                // 設定ページの「設定を閉じる」。畳む先 (caps・active) は
+                // ここでは触れないので、ループに預ける
+                Ev::CloseSettings => self.close_settings = true,
                 // 上のバーが押された。宛先は「今見ているページ」なので
                 // ループが決める (バーは1枚しか出ていない)
                 Ev::Go { go } => self.gos.push(go),
@@ -595,6 +605,7 @@ fn run_in_window() -> Result<()> {
         loading: Vec::new(),
         frames: Vec::new(),
         closed: false,
+        close_settings: false,
     })
 }
 
@@ -1617,6 +1628,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
+        // 設定ページの「設定を閉じる」。設定タブを畳んで稼働盤 (INDEX) へ戻す。
+        // 左の一覧から設定が消えるのは、hosted から外れて次の描画で並びが
+        // 組み直されるため
+        if surface.take_close_settings() {
+            let _ = caps.browser_close(SETTINGS_TAB);
+            active = 0;
+        }
+
         // 上のバーが押された。宛先は今見ているページ (バーは1枚しか出ていない)。
         // 連鎖の深さには触らない。数えるのは他のタブへ渡ったときだけ
         for go in surface.take_gos() {
@@ -1835,7 +1854,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     &query,
                                 ) {
                                     Ok(()) => {
-                                        active = layout.len() + 1;
+                                        active = settings_active(&layout);
                                         i18n::t("msg.settings_here")
                                     }
                                     Err(e) => i18n::tp(
@@ -1955,10 +1974,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 {
                                     Ok(()) => {
                                         // 開いたら、そのタブへ移る。
-                                        // 出したのに見えていない状態を作らない
-                                        // 並びは次の描画で組み直される。
-                                        // ここでは今の並びの後ろに付く分を指す
-                                        active = layout.len() + 1;
+                                        // 出したのに見えていない状態を作らない。
+                                        // 既に開いていれば、その居場所へ移る
+                                        active = settings_active(&layout);
                                         i18n::t("msg.settings_here")
                                     }
                                     Err(e) => i18n::tp(
@@ -2131,6 +2149,19 @@ fn write_prompt(t: &Tab, text: &str) {
 /// 設定画面を窓の中に置くときの名前。
 /// 綴りがずれると別のブラウザとして扱われ、2枚目が開く
 const SETTINGS_TAB: &str = "settings";
+
+/// 設定タブへ移るときの画面番号 (1始まり)。
+///
+/// 既に開いているなら、その居場所へ。まだ無いなら、末尾の次に付く分を指す。
+/// 開いている最中に `layout.len() + 1` を使うと、設定タブは既に並びに
+/// 入っているので1つ先の空席を指してしまい、画面が真っ黒になっていた
+fn settings_active(layout: &[Pane]) -> usize {
+    layout
+        .iter()
+        .position(|p| matches!(p, Pane::Browser { key, .. } if key == SETTINGS_TAB))
+        .map(|i| i + 1)
+        .unwrap_or(layout.len() + 1)
+}
 
 /// ホイール1目盛りぶんの合図を、端末の作法で書き出す。
 ///
@@ -3693,6 +3724,26 @@ mod tests {
                 Pane::Browser { key: "settings".into(), name: "settings".into() }
             ]
         );
+    }
+
+    /// 設定タブへ移る番号は、既に開いていればその居場所を指すこと。
+    ///
+    /// `layout.len() + 1` を使うと、設定が既に並びに入っているぶん
+    /// 1つ先の空席を指し、押しても真っ黒な画面になっていた
+    /// (設定を開いた状態で「タブを追加」を押したとき)
+    #[test]
+    fn settings_active_points_at_the_open_settings_tab() {
+        // まだ開いていない: 末尾の次に付く分を指す
+        let before = vec![Pane::Session(0), Pane::Session(1)];
+        assert_eq!(settings_active(&before), 3, "開く前は末尾の次");
+
+        // 既に開いている: その居場所 (末尾) を指す。1つ先ではない
+        let after = vec![
+            Pane::Session(0),
+            Pane::Session(1),
+            Pane::Browser { key: "settings".into(), name: "settings".into() },
+        ];
+        assert_eq!(settings_active(&after), 3, "開いていればその場所");
     }
 
     /// 波形は飾りではなく出力量なので、何も出ていなければ底ばいであること

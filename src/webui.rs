@@ -1056,7 +1056,7 @@ const PAGE: &str = r##"<!doctype html>
   <div class="spacer"></div>
   <span id="msg"></span>
   <button class="quiet" onclick="load()">{{common.reload}}</button>
-  <button class="quiet" id="backbtn" onclick="backToIndex()">{{settings.back}}</button>
+  <button class="quiet" id="backbtn" onclick="closeSettings()">{{settings.close}}</button>
   <button class="primary" id="savebtn" onclick="save()">{{common.save}}</button>
 </header>
 
@@ -1367,8 +1367,7 @@ function renderNav() {
       nav.append(b);
     });
     nav.append(el("button", {class:"navitem navtab navadd",
-      onclick:() => { (ws.tabs = ws.tabs || []).push(newTab());
-                      sel = {ws:wi, tab:ws.tabs.length - 1, global:false}; render(); }},
+      onclick:() => { sel = {ws:wi, tab:addTabTo(ws), global:false}; render(); }},
       T["settings.tab.add"]));
   });
   nav.append(el("div", {class:"navgroup"}, ""));
@@ -1379,6 +1378,23 @@ function renderNav() {
 const newTab = (o = {}) => Object.assign(
   {name:"", id:"", command:"", profile:"", automation:"", locked:false, auto_restart:false,
    cwd:"", encoding:"", scrollback:"", log:false, depth:0}, o);
+
+// 名前もコマンドも空のタブ (作りかけ) の番号。無ければ -1。
+// 「タブを追加」を連打しても、まだ何も書いていないタブがあれば
+// そこへ移るだけにして、空のタブが積み上がらないようにする
+function firstEmptyTab(ws) {
+  return (ws.tabs || []).findIndex(t =>
+    !(t.name || "").trim() && !(t.command || "").trim() && !(t.id || "").trim());
+}
+
+// タブを1つ増やす。ただし作りかけの空タブがあるなら、それを選ぶだけ。
+// 増やした(または見つけた)タブの番号を返す
+function addTabTo(ws) {
+  ws.tabs = ws.tabs || [];
+  let i = firstEmptyTab(ws);
+  if (i < 0) { ws.tabs.push(newTab()); i = ws.tabs.length - 1; }
+  return i;
+}
 
 function addWs() {
   wss.push({name:T["settings.workspace"], automation:"", tabs:[]});
@@ -2105,10 +2121,11 @@ function goIndex() {
   try { window.ipc.postMessage(JSON.stringify({kind:"select", tab:0})); } catch (e) {}
 }
 
-// 何もせずに戻る。未保存なら、消えることを先に伝える
-function backToIndex() {
+// 設定を閉じる。稼働盤(INDEX)へ戻り、設定タブごと畳んで左の一覧からも消す。
+// 未保存なら、消えることを先に伝える
+function closeSettings() {
   if (snapshot() !== savedSnapshot && !confirm(T["settings.back.confirm"])) return;
-  goIndex();
+  try { window.ipc.postMessage(JSON.stringify({kind:"closesettings"})); } catch (e) { goIndex(); }
 }
 
 // URLに addtab=<ワークスペース番号> が付いていたら、読み込み後に
@@ -2116,8 +2133,7 @@ function backToIndex() {
 load().then(() => {
   const wi = Number(new URLSearchParams(location.search).get("addtab"));
   if (!Number.isInteger(wi) || !wss[wi]) return;
-  (wss[wi].tabs = wss[wi].tabs || []).push(newTab());
-  sel = {ws:wi, tab:wss[wi].tabs.length - 1, global:false};
+  sel = {ws:wi, tab:addTabTo(wss[wi]), global:false};
   render();
   const s = document.querySelector(".navitem.sel");
   if (s) s.scrollIntoView({block:"center"});

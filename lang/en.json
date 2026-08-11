@@ -189,6 +189,7 @@
   "tui.nav.url": "Address",
   "settings.browser.nav.hint": "Shown in a row above the page. Use it when a person picks the page first and then hands it over with the banner button. Turn them all off if you don't need them — the page gets that space back",
   "settings.back": "Back to INDEX",
+  "settings.close": "Close settings",
   "settings.back.confirm": "There are unsaved changes. Discard them and go back?",
   "settings.browser.ask": "Banner (button)",
   "settings.browser.ask.on": "Show it",
