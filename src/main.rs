@@ -1190,6 +1190,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         &mut ball,
                         &mut pending_submit,
                         &mut waiting,
+                        &mut active,
                     );
                 }
             }
@@ -1392,6 +1393,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     &mut ball,
                     &mut pending_submit,
                     &mut waiting,
+                    &mut active,
                 );
             }
         }
@@ -3035,6 +3037,7 @@ fn exec_commands(
     ball: &mut ball::Ball,
     pending_submit: &mut Vec<PendingSubmit>,
     waiting: &mut Vec<Waiting>,
+    active: &mut usize,
 ) {
     let keys = pane_keys(panes, tabs);
     let index_of = |r: &hooks::TabRef| r.resolve(&keys);
@@ -3063,6 +3066,17 @@ fn exec_commands(
         }
         match cmd {
             Command::Log(msg) => append_hook_log(&msg),
+            // 表示タブの切替 (観戦モード)。0 は稼働盤 (INDEX)。
+            // 相手はセッションでもブラウザでも、画面の番号で指せる
+            Command::ShowTab { target } => {
+                if matches!(target, hooks::TabRef::Index(0)) {
+                    *active = 0;
+                } else if let Some(pane) = index_of(&target) {
+                    *active = pane;
+                } else {
+                    *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
+                }
+            }
             Command::Restart { target } => {
                 let Some(target) = index_of(&target) else {
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));

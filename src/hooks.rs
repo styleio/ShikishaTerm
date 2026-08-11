@@ -125,6 +125,9 @@ pub enum Command {
         text: String,
         origin: usize,
     },
+    /// 表示するタブを切り替える (観戦モード: AI↔ブラウザの手番を人が目視できる)。
+    /// 0 = 稼働盤 (INDEX)
+    ShowTab { target: TabRef },
     /// 登録済み通知先への通知 (Phase 4-3でSlack/Telegram実装、現状はログ+表示)
     Notify { dest: String, text: String },
     /// タブの再起動 (SSH切断・CLI自己更新からの復帰)
@@ -325,6 +328,23 @@ impl HookEngine {
                             target: tab_ref_of(&target)?,
                             text,
                             origin: o.get(),
+                        });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // 表示タブを切り替える。観戦モードの要 (手番ごとに見える画面を動かす)。
+            // 相手はセッションでもブラウザでもよい (番号・名前・id・tab表で指せる)
+            let c = Rc::clone(&commands);
+            shikisha
+                .set(
+                    "show",
+                    lua.create_function(move |_, target: Value| {
+                        c.borrow_mut().push(Command::ShowTab {
+                            target: tab_ref_of(&target)?,
                         });
                         Ok(())
                     })
@@ -1228,6 +1248,34 @@ mod tests {
         assert_eq!(target.resolve(&[key("検査"), key("実装")]), Some(1));
         // 存在しない名前は解決できない (誤爆させない)
         assert_eq!(target.resolve(&[key("別名")]), None);
+    }
+
+    #[test]
+    fn show_switches_the_visible_tab_for_spectating() {
+        // 観戦モード: 手番ごとに見える画面を動かす。相手はブラウザでもINDEXでも指せる
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_done(tab)
+              shikisha.show("ブラウザ")   -- ブラウザタブへ切替
+              shikisha.show(0)            -- 稼働盤(INDEX)へ
+            end
+            "#,
+        )
+        .unwrap();
+        e.fire("on_done", &ctx(1, ""), None);
+        let cmds = e.drain_commands();
+        assert_eq!(cmds.len(), 2, "show 2回ぶん積まれる");
+        let Command::ShowTab { target } = &cmds[0] else {
+            panic!("ShowTabが積まれるはず");
+        };
+        // 名前は画面の番号 (セッションもブラウザも並ぶ) に解決される
+        let key = |n: &str| TabKey { id: None, name: n.to_string() };
+        assert_eq!(target.resolve(&[key("AI"), key("ブラウザ")]), Some(2));
+        // 0 は稼働盤 (INDEX)。resolveでは拾わず、main側が特別扱いする
+        assert!(
+            matches!(&cmds[1], Command::ShowTab { target: TabRef::Index(0) }),
+            "show(0) は INDEX"
+        );
     }
 
     #[test]
