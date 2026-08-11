@@ -94,6 +94,184 @@ fn rally_record_append(text: &str) -> std::io::Result<()> {
     writeln!(f, "{}", text.trim_end())
 }
 
+/// セレクタの指定を解く。"#id" (CSS) か { xpath = "..." } / { css = "..." }
+fn sel_of(v: &Value) -> mlua::Result<crate::browser::Sel> {
+    match v {
+        Value::String(s) => Ok(crate::browser::Sel::Css(s.to_str()?.to_string())),
+        Value::Table(t) => {
+            if let Ok(x) = t.get::<String>("xpath") {
+                Ok(crate::browser::Sel::Xpath(x))
+            } else if let Ok(x) = t.get::<String>("css") {
+                Ok(crate::browser::Sel::Css(x))
+            } else {
+                Err(mlua::Error::runtime("セレクタは \"#id\" か { xpath = ... }"))
+            }
+        }
+        _ => Err(mlua::Error::runtime("セレクタは \"#id\" か { xpath = ... }")),
+    }
+}
+
+/// 見つからなかったときに止めるか進むか (呼び出しごとに選べる)
+fn missing_ok(opts: &Option<Table>) -> bool {
+    opts.as_ref()
+        .and_then(|t| t.get::<String>("on_missing").ok())
+        .is_some_and(|s| s == "continue")
+}
+
+fn check(what: &str, state: &str, opts: &Option<Table>) -> mlua::Result<String> {
+    if state == "not_found" && !missing_ok(opts) {
+        return Err(mlua::Error::runtime(format!(
+            "{what}: 要素が見つかりません (進めたいなら on_missing=\"continue\")"
+        )));
+    }
+    Ok(state.to_string())
+}
+
+/// browser_fetch の opts (Luaテーブル) を JSON に直す
+fn fetch_opts_json(opts: &Option<Table>) -> serde_json::Value {
+    let mut o = serde_json::Map::new();
+    if let Some(t) = opts {
+        if let Ok(Some(m)) = t.get::<Option<String>>("method") {
+            o.insert("method".into(), m.into());
+        }
+        if let Ok(Some(b)) = t.get::<Option<String>>("body") {
+            o.insert("body".into(), b.into());
+        }
+        if let Ok(Some(h)) = t.get::<Option<Table>>("headers") {
+            let mut hm = serde_json::Map::new();
+            for pair in h.pairs::<String, String>().flatten() {
+                hm.insert(pair.0, pair.1.into());
+            }
+            o.insert("headers".into(), serde_json::Value::Object(hm));
+        }
+    }
+    serde_json::Value::Object(o)
+}
+
+/// AIが書いたLuaを、限定した環境で実行する (P3 サンドボックス)。
+///
+/// 見せるのは browser 系 (許可された1タブに限る) と log だけ。
+/// file/http/os/io/load/require/debug/coroutine、記録・送信・秘密の生値、
+/// そして他のブラウザには一切触れさせない。触ろうとしても、その名前が
+/// 環境に無いので nil で弾かれる (`_ENV` を差し替え、グローバルへの __index も張らない)。
+/// 成功なら nil、失敗ならエラー文字列を返す (司令塔がAIへ返せるように)
+fn run_scoped(lua: &mlua::Lua, caps: &Caps, browser: &str, code: &str) -> mlua::Result<Value> {
+    let env = build_sandbox_env(lua, caps, browser)?;
+    match lua.load(code).set_name("ai-lua").set_environment(env).exec() {
+        Ok(()) => Ok(Value::Nil),
+        Err(e) => Ok(Value::String(lua.create_string(e.to_string())?)),
+    }
+}
+
+/// サンドボックスの `_ENV` を組む。安全な標準機能と、限定した shikisha だけを入れる
+fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Result<Table> {
+    let env = lua.create_table()?;
+    // 安全な標準機能だけを移す。load/require/os/io/debug/coroutine/getmetatable 等は入れない
+    let g = lua.globals();
+    for name in [
+        "assert", "error", "ipairs", "pairs", "next", "pcall", "xpcall", "select", "tonumber",
+        "tostring", "type", "string", "table", "math",
+    ] {
+        if let Ok(v) = g.get::<Value>(name) {
+            env.set(name, v)?;
+        }
+    }
+    let sh = lua.create_table()?;
+    let allowed = browser.to_string();
+    // 呼ばれたブラウザ名が、このラリーで許された1つと一致するか
+    fn guard(name: &str, allowed: &str) -> mlua::Result<()> {
+        if name == allowed {
+            Ok(())
+        } else {
+            Err(mlua::Error::runtime(format!(
+                "許可されていないブラウザ: {name} (このラリーは {allowed} のみ)"
+            )))
+        }
+    }
+    macro_rules! bind {
+        ($n:literal, $args:ty, |$lua:ident, $c:ident, $a:ident, $p:pat_param| $body:expr) => {{
+            let $c = Caps::clone(caps);
+            let $a = allowed.clone();
+            sh.set(
+                $n,
+                lua.create_function(move |$lua, $p: $args| {
+                    let _ = &$lua;
+                    $body
+                })?,
+            )?;
+        }};
+    }
+    bind!("browser_open", (String, String), |lua_, c, al, (name, url)| {
+        guard(&name, &al)?;
+        c.browser_open(&name, &url)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    bind!("browser_find", (String, Value), |lua_, c, al, (name, sel)| {
+        guard(&name, &al)?;
+        c.browser_find(&name, &sel_of(&sel)?)
+            .map(|s| s.to_string())
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    bind!("browser_click", (String, Value, Option<Table>), |lua_, c, al, (name, sel, opts)| {
+        guard(&name, &al)?;
+        let st = c
+            .browser_click(&name, &sel_of(&sel)?)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        check("browser_click", st, &opts)
+    });
+    bind!("browser_fill", (String, Value, String, Option<Table>), |lua_, c, al, (name, sel, value, opts)| {
+        guard(&name, &al)?;
+        let st = c
+            .browser_fill(&name, &sel_of(&sel)?, &value)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        check("browser_fill", st, &opts)
+    });
+    bind!("browser_text", (String, Value), |lua_, c, al, (name, sel)| {
+        guard(&name, &al)?;
+        c.browser_text(&name, &sel_of(&sel)?)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    bind!("browser_html", String, |lua_, c, al, name| {
+        guard(&name, &al)?;
+        c.browser_html(&name)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    bind!("browser_fetch", (String, String, Option<Table>), |lua_, c, al, (name, url, opts)| {
+        guard(&name, &al)?;
+        let json = c
+            .browser_fetch(&name, &url, &fetch_opts_json(&opts))
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&json).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        json_to_lua(lua_, &v)
+    });
+    bind!("browser_ask", (String, String, Option<String>), |lua_, c, al, (name, text, label)| {
+        guard(&name, &al)?;
+        c.browser_ask(&name, &text, label.as_deref().unwrap_or("OK"))
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    bind!("browser_unask", String, |lua_, c, al, name| {
+        guard(&name, &al)?;
+        c.browser_unask(&name)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    bind!("browser_pressed", String, |lua_, c, al, name| {
+        guard(&name, &al)?;
+        c.browser_pressed(&name)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    // ログだけは許す (AIが自分の手を説明できる)。ほかの副作用は無い
+    sh.set(
+        "log",
+        lua.create_function(|_, text: String| {
+            crate::append_hook_log(&format!("[ai] {text}"));
+            Ok(())
+        })?,
+    )?;
+    env.set("shikisha", sh)?;
+    Ok(env)
+}
+
 /// JSONの値をそのままLuaの値へ写す (browser_fetch の結果をテーブルで返すため)。
 /// オブジェクトはキー付きテーブル、配列は1始まりの並び
 fn json_to_lua(lua: &mlua::Lua, v: &serde_json::Value) -> mlua::Result<Value> {
@@ -432,40 +610,8 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         // ── ブラウザ ──────────────────────────────
-        // セレクタは "#id" (CSS) か { xpath = "..." }
-        fn sel_of(v: &Value) -> mlua::Result<crate::browser::Sel> {
-            match v {
-                Value::String(s) => Ok(crate::browser::Sel::Css(s.to_str()?.to_string())),
-                Value::Table(t) => {
-                    if let Ok(x) = t.get::<String>("xpath") {
-                        Ok(crate::browser::Sel::Xpath(x))
-                    } else if let Ok(x) = t.get::<String>("css") {
-                        Ok(crate::browser::Sel::Css(x))
-                    } else {
-                        Err(mlua::Error::runtime("セレクタは \"#id\" か { xpath = ... }"))
-                    }
-                }
-                _ => Err(mlua::Error::runtime("セレクタは \"#id\" か { xpath = ... }")),
-            }
-        }
-
-        /// 見つからなかったときに止めるか進むか。
-        /// その場でしか判断できないので、呼び出しごとに選べる
-        fn missing_ok(opts: &Option<Table>) -> bool {
-            opts.as_ref()
-                .and_then(|t| t.get::<String>("on_missing").ok())
-                .is_some_and(|s| s == "continue")
-        }
-
-        fn check(what: &str, state: &str, opts: &Option<Table>) -> mlua::Result<String> {
-            if state == "not_found" && !missing_ok(opts) {
-                return Err(mlua::Error::runtime(format!(
-                    "{what}: 要素が見つかりません (進めたいなら on_missing=\"continue\")"
-                )));
-            }
-            Ok(state.to_string())
-        }
-
+        // セレクタ・on_missing の解釈はモジュール関数 sel_of / check にある
+        // (サンドボックス run_scoped からも同じものを使う)
         {
             let c = Caps::clone(&caps);
             shikisha
@@ -869,6 +1015,21 @@ impl HookEngine {
                     "record",
                     lua.create_function(|_, text: String| {
                         rally_record_append(&text).map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // AIが書いたLuaを、限定した環境で実行する (browser系だけ・許可された1タブだけ)。
+            // 司令塔が受け取った危険入力 (Webの内容から生成されたLua) を、
+            // file/http/秘密の生値/他タブに触れさせずに走らせるための境界
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "run_scoped",
+                    lua.create_function(move |lua, (browser, code): (String, String)| {
+                        run_scoped(lua, &c, &browser, &code)
                     })
                     .map_err(lerr)?,
                 )
@@ -1479,6 +1640,43 @@ mod tests {
             }
             other => panic!("SetResultが積まれるはず: {other:?}"),
         }
+    }
+
+    #[test]
+    fn sandbox_blocks_dangerous_access_and_other_tabs() {
+        // run_scoped は AI製Luaを browser系＋許可された1タブに限定する。
+        // os/io/load/require、shikisha.write_file/http、他タブへは触れさせない
+        let mut e = HookEngine::from_source(
+            r##"
+            function on_done(t)
+              shikisha.log("os=" .. tostring(shikisha.run_scoped("br", "return os.time()")))
+              shikisha.log("write=" .. tostring(shikisha.run_scoped("br", "shikisha.write_file('a','b','c')")))
+              shikisha.log("load=" .. tostring(shikisha.run_scoped("br", "load('return 1')")))
+              shikisha.log("wrong=" .. tostring(shikisha.run_scoped("br", "shikisha.browser_click('evil', '#x')")))
+              shikisha.log("hasclick=" .. tostring(shikisha.run_scoped("br", "assert(type(shikisha.browser_click)=='function')")))
+            end
+            "##,
+        )
+        .unwrap();
+        e.fire("on_done", &ctx(1, ""), None);
+        let logs: Vec<String> = e
+            .drain_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Log(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        let find = |k: &str| logs.iter().find(|l| l.starts_with(k)).cloned().unwrap_or_default();
+        assert!(find("os=").contains("os"), "os が露出している: {:?}", find("os="));
+        assert!(find("write=").contains("write_file"), "write_file が使えてしまう: {:?}", find("write="));
+        assert!(find("load=").contains("load"), "load が使えてしまう: {:?}", find("load="));
+        assert!(
+            find("wrong=").contains("許可されていないブラウザ"),
+            "他タブを操作できてしまう: {:?}",
+            find("wrong=")
+        );
+        assert_eq!(find("hasclick="), "hasclick=nil", "browser_click は使えるはず");
     }
 
     #[test]
