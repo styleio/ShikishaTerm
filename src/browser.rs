@@ -128,6 +128,33 @@ const INIT_JS: &str = r#"
     return document.documentElement.outerHTML;
   };
 
+  // ページの中から通信する。ステータス/本文/ヘッダを取れる (WebViewは生の
+  // HTTPを直接は見せないので、ページ自身に叩かせて返す)。ログイン済みの
+  // クッキーを使うため credentials:"include"。失敗は投げずに表として返す
+  window.__shikisha_fetch = async function (url, opts) {
+    const o = opts || {};
+    try {
+      const r = await fetch(url, {
+        method: o.method || "GET",
+        headers: o.headers || undefined,
+        body: o.body,
+        credentials: "include",
+        redirect: "follow",
+      });
+      let body = "";
+      try { body = await r.text(); } catch (e) {}
+      const MAX = 200000;
+      let truncated = false;
+      if (body.length > MAX) { body = body.slice(0, MAX); truncated = true; }
+      const headers = {};
+      r.headers.forEach(function (v, k) { headers[k] = v; });
+      return { ok: r.ok, status: r.status, url: r.url, redirected: r.redirected,
+               truncated: truncated, headers: headers, body: body };
+    } catch (e) {
+      return { ok: false, status: 0, error: String(e && e.message || e) };
+    }
+  };
+
   window.__shikisha = true;
 
   // 「読み込み終わった」は load まで待つ。DOMContentLoaded の時点では
@@ -746,6 +773,23 @@ impl Browser {
         Ok(serde_json::from_str::<String>(&v).unwrap_or(v))
     }
 
+    /// ページの中から通信する。返りは `{status,ok,url,headers,body,...}` のJSON文字列。
+    /// `opts` は `{method,headers,body}` (省略可)
+    pub fn fetch(
+        &self,
+        to: Option<&str>,
+        url: &str,
+        opts: &serde_json::Value,
+        timeout_ms: u64,
+    ) -> Result<String> {
+        self.call(
+            to,
+            "__shikisha_fetch",
+            &[serde_json::Value::String(url.to_string()), opts.clone()],
+            timeout_ms,
+        )
+    }
+
     /// 溜まっている報告を取り出す (待たない)。
     /// 新しい文書に移っていたら、出しておくべき帯を出し直す
     pub fn drain(&self) -> Vec<Ev> {
@@ -830,12 +874,15 @@ impl Drop for Browser {
     }
 }
 
-/// 評価式を、結果がIPCで返る形に包む
+/// 評価式を、結果がIPCで返る形に包む。
+///
+/// async にして await するので、`fetch` のような非同期の値も解決してから返せる。
+/// 同期の値を await しても素通りなので、既存の DOM 系呼び出しはそのまま動く
 fn wrap_eval(id: u64, js: &str) -> String {
     format!(
-        r#"(function(){{
+        r#"(async function(){{
   try {{
-    var v = (function(){{ {js} }})();
+    var v = await (async function(){{ {js} }})();
     window.ipc.postMessage(JSON.stringify({{kind:"result",id:{id},ok:true,
       value: v === undefined ? null : v}}));
   }} catch (e) {{

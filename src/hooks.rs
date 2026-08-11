@@ -69,6 +69,34 @@ fn lerr(e: mlua::Error) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
 
+/// JSONの値をそのままLuaの値へ写す (browser_fetch の結果をテーブルで返すため)。
+/// オブジェクトはキー付きテーブル、配列は1始まりの並び
+fn json_to_lua(lua: &mlua::Lua, v: &serde_json::Value) -> mlua::Result<Value> {
+    Ok(match v {
+        serde_json::Value::Null => Value::Nil,
+        serde_json::Value::Bool(b) => Value::Boolean(*b),
+        serde_json::Value::Number(n) => match n.as_i64() {
+            Some(i) => Value::Integer(i),
+            None => Value::Number(n.as_f64().unwrap_or(0.0)),
+        },
+        serde_json::Value::String(s) => Value::String(lua.create_string(s)?),
+        serde_json::Value::Array(a) => {
+            let t = lua.create_table()?;
+            for (i, e) in a.iter().enumerate() {
+                t.set(i + 1, json_to_lua(lua, e)?)?;
+            }
+            Value::Table(t)
+        }
+        serde_json::Value::Object(m) => {
+            let t = lua.create_table()?;
+            for (k, e) in m {
+                t.set(k.as_str(), json_to_lua(lua, e)?)?;
+            }
+            Value::Table(t)
+        }
+    })
+}
+
 /// タブの指定方法。番号は並べ替えで変わるので、名前で指定するのが安全
 #[derive(Debug, Clone)]
 pub enum TabRef {
@@ -470,6 +498,43 @@ impl HookEngine {
                         c.browser_html(&name)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // ページの中から通信する。返りは {status,ok,url,headers,body} のテーブル。
+            // opts は {method=..,headers={..},body=..}（省略可）
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_fetch",
+                    lua.create_function(
+                        move |lua, (name, url, opts): (String, String, Option<Table>)| {
+                            let mut o = serde_json::Map::new();
+                            if let Some(t) = &opts {
+                                if let Ok(Some(m)) = t.get::<Option<String>>("method") {
+                                    o.insert("method".into(), m.into());
+                                }
+                                if let Ok(Some(b)) = t.get::<Option<String>>("body") {
+                                    o.insert("body".into(), b.into());
+                                }
+                                if let Ok(Some(h)) = t.get::<Option<Table>>("headers") {
+                                    let mut hm = serde_json::Map::new();
+                                    for pair in h.pairs::<String, String>().flatten() {
+                                        hm.insert(pair.0, pair.1.into());
+                                    }
+                                    o.insert("headers".into(), serde_json::Value::Object(hm));
+                                }
+                            }
+                            let json = c
+                                .browser_fetch(&name, &url, &serde_json::Value::Object(o))
+                                .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                            let v: serde_json::Value = serde_json::from_str(&json)
+                                .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                            json_to_lua(lua, &v)
+                        },
+                    )
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
@@ -1276,6 +1341,26 @@ mod tests {
             matches!(&cmds[1], Command::ShowTab { target: TabRef::Index(0) }),
             "show(0) は INDEX"
         );
+    }
+
+    #[test]
+    fn fetch_result_json_becomes_a_lua_table() {
+        // browser_fetch はJSON文字列で返る結果を、Luaのテーブルに写して渡す。
+        // status/ok/body/headers/配列が素直に引けること
+        let lua = mlua::Lua::new();
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"ok":true,"status":200,"headers":{"content-type":"text/html"},"body":"hi","nums":[1,2,3]}"#,
+        )
+        .unwrap();
+        let val = super::json_to_lua(&lua, &v).unwrap();
+        lua.globals().set("r", val).unwrap();
+        let out: String = lua
+            .load(
+                r#"return tostring(r.ok)..","..r.status..","..r.headers["content-type"]..","..r.body..","..r.nums[3]"#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(out, "true,200,text/html,hi,3");
     }
 
     #[test]

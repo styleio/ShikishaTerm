@@ -483,6 +483,11 @@ impl Capabilities {
         self.with(name, |b, to| b.html(to, 30_000))
     }
 
+    /// ページの中から通信し、`{status,ok,url,headers,body}` のJSON文字列を返す
+    pub fn browser_fetch(&self, name: &str, url: &str, opts: &serde_json::Value) -> Result<String> {
+        self.with(name, |b, to| b.fetch(to, url, opts, 30_000))
+    }
+
     /// 人へ呼びかける帯を出す
     pub fn browser_ask(&self, name: &str, text: &str, label: &str) -> Result<()> {
         self.forget_press(name);
