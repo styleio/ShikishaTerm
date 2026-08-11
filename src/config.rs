@@ -161,6 +161,9 @@ pub struct Secrets {
     /// HTTP窓口が使う認証情報 (スクリプトからは読めない)
     #[serde(default)]
     pub tokens: std::collections::HashMap<String, String>,
+    /// 各トークンの説明 (GUIの一覧に出す。値そのものは出さない)
+    #[serde(default)]
+    pub descriptions: std::collections::HashMap<String, String>,
     /// リモートUIのトークン。設定するとURLが固定され、再ペアリングが不要になる
     #[serde(default)]
     pub remote_token: Option<String>,
@@ -225,6 +228,119 @@ impl Config {
             .map(|s| s.tokens)
             .unwrap_or_default()
     }
+}
+
+// ── 秘密ストア (GitHub Secrets 相当) ─────────────────────────
+// キー名で参照し、値そのものは決して返さない。書けば暗号化 (パスワードがあれば)。
+// notify や remote_token など他の項目を壊さないよう、丸ごとの JSON を読み書きする
+
+/// secrets ファイルを JSON として読む (無ければ空)
+fn read_secrets_value(
+    path: &std::path::Path,
+    password: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let text = crate::crypto::read_maybe_encrypted(path, password)?;
+    Ok(serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({})))
+}
+
+/// secrets ファイルを書き戻す (パスワードがあれば暗号化)
+fn write_secrets_value(
+    path: &std::path::Path,
+    password: Option<&str>,
+    root: &serde_json::Value,
+) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let json = serde_json::to_string_pretty(root)?;
+    match password {
+        Some(pw) if !pw.is_empty() => {
+            let env = crate::crypto::encrypt(&json, pw)?;
+            crate::crypto::write_atomic(path, &serde_json::to_string_pretty(&env)?)
+        }
+        _ => crate::crypto::write_atomic(path, &json),
+    }
+}
+
+/// キー名として妥当か (英数字と _ - . のみ)。すり替えや変な文字を弾く
+pub fn valid_secret_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// 秘密の一覧 (キーと説明のみ)。**値は決して返さない**
+pub fn list_secrets(
+    path: &std::path::Path,
+    password: Option<&str>,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let root = read_secrets_value(path, password)?;
+    let descs = root.get("descriptions").and_then(|v| v.as_object());
+    let mut out: Vec<(String, String)> = root
+        .get("tokens")
+        .and_then(|v| v.as_object())
+        .map(|t| {
+            t.keys()
+                .map(|k| {
+                    let d = descs
+                        .and_then(|d| d.get(k))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    (k.clone(), d)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+/// 秘密を追加/更新する (write-only。保存したら値は読み戻せない)
+pub fn upsert_secret(
+    path: &std::path::Path,
+    password: Option<&str>,
+    key: &str,
+    desc: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    if !valid_secret_key(key) {
+        anyhow::bail!("キーは英数字と _ - . のみ使えます");
+    }
+    let mut root = read_secrets_value(path, password)?;
+    if !root.get("tokens").map(|v| v.is_object()).unwrap_or(false) {
+        root["tokens"] = serde_json::json!({});
+    }
+    root["tokens"][key] = serde_json::json!(value);
+    if !root
+        .get("descriptions")
+        .map(|v| v.is_object())
+        .unwrap_or(false)
+    {
+        root["descriptions"] = serde_json::json!({});
+    }
+    root["descriptions"][key] = serde_json::json!(desc);
+    write_secrets_value(path, password, &root)
+}
+
+/// 秘密を削除する
+pub fn delete_secret(
+    path: &std::path::Path,
+    password: Option<&str>,
+    key: &str,
+) -> anyhow::Result<()> {
+    let mut root = read_secrets_value(path, password)?;
+    if let Some(t) = root.get_mut("tokens").and_then(|v| v.as_object_mut()) {
+        t.remove(key);
+    }
+    if let Some(d) = root.get_mut("descriptions").and_then(|v| v.as_object_mut()) {
+        d.remove(key);
+    }
+    write_secrets_value(path, password, &root)
 }
 
 /// config.json 内のワークスペース項目。tabs直書き or 定義ファイル参照
@@ -662,6 +778,47 @@ pub fn load() -> Option<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_store_roundtrips_and_never_reveals_values() {
+        let dir = std::env::temp_dir().join("shikisha-secrets-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("secrets.json");
+
+        // 平文で登録 → 一覧はキーと説明だけ (値は出ない)
+        upsert_secret(&path, None, "diary_saas", "日記SaaSのログイン", "hunter2秘密").unwrap();
+        let list = list_secrets(&path, None).unwrap();
+        assert_eq!(list, vec![("diary_saas".into(), "日記SaaSのログイン".into())]);
+        // 実際に値は保存されている (resolve_tokens 経由で取れる)
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("hunter2秘密"), "値が保存されていない");
+        // だが一覧APIには値が一切現れない
+        assert!(!format!("{list:?}").contains("hunter2"), "一覧に値が漏れている");
+
+        // 更新・追加
+        upsert_secret(&path, None, "diary_saas", "説明更新", "newpass").unwrap();
+        upsert_secret(&path, None, "github", "PAT", "ghp_xxx").unwrap();
+        let keys: Vec<String> = list_secrets(&path, None).unwrap().into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, vec!["diary_saas".to_string(), "github".to_string()], "整列済み");
+
+        // 削除
+        delete_secret(&path, None, "github").unwrap();
+        let keys: Vec<String> = list_secrets(&path, None).unwrap().into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, vec!["diary_saas".to_string()]);
+
+        // マスターパスワードありなら暗号化されて保存される
+        upsert_secret(&path, Some("master"), "enc_key", "暗号化テスト", "topsecret").unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(crate::crypto::is_encrypted(&raw), "パスワードありなら暗号化される");
+        assert!(!raw.contains("topsecret"), "暗号化後は生値が見えない");
+        // 正しいパスワードなら一覧が読め、値はやはり出ない
+        let list = list_secrets(&path, Some("master")).unwrap();
+        assert!(list.iter().any(|(k, _)| k == "enc_key"));
+        // 不正なキーは弾く
+        assert!(upsert_secret(&path, None, "../evil", "x", "y").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn children_flatten_with_depth() {
