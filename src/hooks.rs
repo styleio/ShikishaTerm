@@ -228,12 +228,15 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
     });
     bind!("browser_text", (String, Value), |lua_, c, al, (name, sel)| {
         guard(&name, &al)?;
+        // 読み取り結果はAIへ渡るので、既知の秘密値を伏字にする
         c.browser_text(&name, &sel_of(&sel)?)
+            .map(|o| o.map(|s| c.redact(&s)))
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
     bind!("browser_html", String, |lua_, c, al, name| {
         guard(&name, &al)?;
         c.browser_html(&name)
+            .map(|h| c.redact(&h))
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
     bind!("browser_fetch", (String, String, Option<Table>), |lua_, c, al, (name, url, opts)| {
@@ -241,6 +244,8 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
         let json = c
             .browser_fetch(&name, &url, &fetch_opts_json(&opts))
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        // 本文・ヘッダに秘密が載っていても、AIへ渡る前に伏字にする
+        let json = c.redact(&json);
         let v: serde_json::Value =
             serde_json::from_str(&json).map_err(|e| mlua::Error::runtime(e.to_string()))?;
         json_to_lua(lua_, &v)
@@ -260,14 +265,18 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
         c.browser_pressed(&name)
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
-    // ログだけは許す (AIが自分の手を説明できる)。ほかの副作用は無い
-    sh.set(
-        "log",
-        lua.create_function(|_, text: String| {
-            crate::append_hook_log(&format!("[ai] {text}"));
-            Ok(())
-        })?,
-    )?;
+    // ログだけは許す (AIが自分の手を説明できる)。ほかの副作用は無い。
+    // AIが秘密値をログに書こうとしても、ここで伏字にする
+    {
+        let c = Caps::clone(caps);
+        sh.set(
+            "log",
+            lua.create_function(move |_, text: String| {
+                crate::append_hook_log(&format!("[ai] {}", c.redact(&text)));
+                Ok(())
+            })?,
+        )?;
+    }
     env.set("shikisha", sh)?;
     Ok(env)
 }

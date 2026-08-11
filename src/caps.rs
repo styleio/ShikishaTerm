@@ -325,6 +325,23 @@ impl Capabilities {
         })
     }
 
+    /// AIへ渡す文字列から、既知の秘密値を伏字にする (GitHub流のマスク)。
+    ///
+    /// サンドボックスは秘密の生値を「読む」関数を持たないが、フォームに
+    /// 入れた値がDOM経由で読み戻される等の抜け道に備え、AIへ向かうテキスト
+    /// (browser の読み取り結果・AIのログ) はここを通してからにする。
+    /// 短すぎる値は普通の語まで消してしまうので対象外 (4文字以上)
+    pub fn redact(&self, text: &str) -> String {
+        let tokens = self.tokens.borrow();
+        let mut out = text.to_string();
+        for v in tokens.values() {
+            if v.trim().chars().count() >= 4 && out.contains(v.as_str()) {
+                out = out.replace(v.as_str(), "••••");
+            }
+        }
+        out
+    }
+
     /// 窓の中に置く先を教える。設定を読み直すたびに設定し直す
     pub fn set_host(
         &self,
@@ -731,6 +748,20 @@ mod tests {
 
     fn caps(spec: CapabilitySpec, base: PathBuf) -> Capabilities {
         Capabilities::new(spec, base, HashMap::new())
+    }
+
+    #[test]
+    fn redact_masks_known_secret_values_only_when_long_enough() {
+        let mut tokens = HashMap::new();
+        tokens.insert("diary".to_string(), "hunter2secret".to_string());
+        tokens.insert("short".to_string(), "ab".to_string());
+        let c = Capabilities::new(CapabilitySpec::default(), PathBuf::from("."), tokens);
+        // 既知の秘密値は伏字になる
+        let masked = c.redact("Authorization: hunter2secret\n本文");
+        assert!(!masked.contains("hunter2secret"), "秘密値が残っている: {masked}");
+        assert!(masked.contains("••••"));
+        // 短すぎる値は普通の語を壊すので対象外
+        assert_eq!(c.redact("ab cd ab"), "ab cd ab");
     }
 
     #[test]
