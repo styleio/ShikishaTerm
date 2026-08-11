@@ -539,9 +539,11 @@ function drawVeil() {
     });
   } else if (S.qr) {
     box.append(el("h3", {}, T["tui.menu.phone"] || "PHONE"));
-    // QRはRust側が作った画像をそのまま出す (作り方を2箇所に持たない)
-    const img = el("img", {class:"qr", src:"qr.svg?u=" + encodeURIComponent(S.qr)});
-    box.append(img, el("div", {class:"url"}, S.qr));
+    // QRの絵はstate(S.qr_svg)に載って届く。別リクエストの画像にすると、
+    // 同じ画面を配る窓とスマホのうち片方でしか出ずリンク切れになっていた
+    const qr = el("div", {class:"qr"});
+    qr.innerHTML = S.qr_svg || "";
+    box.append(qr, el("div", {class:"url"}, S.qr));
   } else {
     box.append(el("h3", {}, T["tui.help.title"] || "HELP"));
     // 訳語は1行ずつ別のキーで持っている。並べる順はここで決める

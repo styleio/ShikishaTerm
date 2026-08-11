@@ -99,6 +99,12 @@ pub struct UiState {
     pub ws_open: bool,
     /// スマホ接続のQRを出しているなら、その接続先
     pub qr: Option<String>,
+    /// QRの絵そのもの (インラインSVG)。別リクエストの画像にすると、
+    /// 同じ画面を配る2つのサーバ (窓とスマホ) のうち片方でしか絵が出ず、
+    /// スマホから開くとリンク切れになっていた。state に載せれば
+    /// どちらから配っても同じに描け、二次リクエストも要らない
+    #[serde(default)]
+    pub qr_svg: Option<String>,
     /// 見ているブラウザの上に出す操作 (None = 出さない)
     pub nav: Option<NavState>,
     /// 今の画面から何行遡って見ているか (0 = 今)。
