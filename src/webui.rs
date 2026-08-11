@@ -1693,6 +1693,8 @@ function wsPane(ws) {
     e.append(bar);
     box.append(e);
   }
+  box.append(wsSecretsCard(ws));
+
   box.append(card(T["settings.ws.share"],
     el("div", {class:"row"},
       el("button", {onclick:() => exportWs(sel.ws)}, T["settings.ws.export"]),
@@ -1706,6 +1708,62 @@ function wsPane(ws) {
       }
     }}, T["settings.workspace.delete"])));
   return box;
+}
+
+// このワークスペースのラリー(AI)が使ってよい秘密を絞る。既定は全拒否。
+// 別用途の鍵の流用を防ぐ。値は出さず、キー名の許可だけを扱う
+function wsSecretsCard(ws) {
+  ws.secrets_allow = ws.secrets_allow || [];
+  const listBox = el("div", {id:"wssecretslist"}, el("div", {class:"hint"}, "…"));
+  const allOn = el("input", {type:"checkbox"});
+  allOn.checked = !!ws.secrets_allow_all;
+  allOn.addEventListener("change", () => {
+    ws.secrets_allow_all = allOn.checked; loadWsSecrets(ws); refreshSave();
+  });
+  const allLabel = el("label", {class:"check"});
+  allLabel.append(allOn, document.createTextNode("全ての秘密を許可（危険・自己責任）"));
+  const c = card("このワークスペースが使える秘密",
+    el("div", {class:"hint"},
+      "ラリー（AI）が使ってよい秘密だけを選びます。既定は全拒否。別用途の鍵を流用させないための絞り込みです。"),
+    listBox,
+    el("div", {class:"row", style:"margin-top:10px"}, allLabel));
+  setTimeout(() => loadWsSecrets(ws), 0);
+  return c;
+}
+
+async function loadWsSecrets(ws) {
+  const box = document.getElementById("wssecretslist");
+  if (!box) return;
+  let j;
+  try { j = await fetch("/api/secrets", {headers:{"X-Token":TOKEN}}).then(r=>r.json()); }
+  catch (e) { box.textContent=""; box.append(el("div",{class:"hint warn"},"読み込み失敗")); return; }
+  box.textContent = "";
+  if (j.mode === "locked") {
+    box.append(el("div",{class:"hint warn"},"暗号化されています。アプリでマスターパスワードを入力すると一覧が出ます"));
+    return;
+  }
+  if (!j.secrets || !j.secrets.length) {
+    box.append(el("div",{class:"hint"},"登録された秘密がありません。「全体設定」の『秘密』で登録してください。"));
+    return;
+  }
+  const allowAll = !!ws.secrets_allow_all;
+  for (const s of j.secrets) {
+    const cb = el("input", {type:"checkbox"});
+    cb.checked = allowAll || ws.secrets_allow.includes(s.key);
+    cb.disabled = allowAll;
+    cb.addEventListener("change", () => {
+      const i = ws.secrets_allow.indexOf(s.key);
+      if (cb.checked && i < 0) ws.secrets_allow.push(s.key);
+      else if (!cb.checked && i >= 0) ws.secrets_allow.splice(i, 1);
+      refreshSave();
+    });
+    const l = el("label", {class:"check",
+      style:"display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)"});
+    l.append(cb,
+      el("span", {class:"mono", style:"min-width:170px;color:var(--text)"}, s.key),
+      el("span", {class:"hint", style:"flex:1"}, s.description || ""));
+    box.append(l);
+  }
 }
 
 // 書き出しも取り込みも、ディスクにある設定が相手。
@@ -2190,11 +2248,15 @@ async function load() {
     const ws = { name:w.name || "", file:w.file || null,
                  automation:w.automation || w.lua || "", tabs:[],
                  // 画面では触らないが、保存で消さないために持っておく
-                 browsers:w.browsers || null };
+                 browsers:w.browsers || null,
+                 secrets_allow: w.secrets_allow || [],
+                 secrets_allow_all: !!w.secrets_allow_all };
     if (ws.file) {
       const f = await (await wsApi("GET", ws.file)).json().catch(() => ({}));
       ws.tabs = flatten(f.tabs, 0, []);
       if (!ws.automation) ws.automation = f.automation || f.lua || "";
+      if (!ws.secrets_allow.length) ws.secrets_allow = f.secrets_allow || [];
+      if (!ws.secrets_allow_all) ws.secrets_allow_all = !!f.secrets_allow_all;
     } else ws.tabs = flatten(w.tabs, 0, []);
     wss.push(ws);
   }
@@ -2237,6 +2299,8 @@ function payload() {
     if (!w.file) continue;
     const body = { name:w.name, tabs:nest(w.tabs) };
     if (w.automation) body.automation = w.automation;
+    if (w.secrets_allow && w.secrets_allow.length) body.secrets_allow = w.secrets_allow;
+    if (w.secrets_allow_all) body.secrets_allow_all = true;
     files.push({ file:w.file, body });
   }
   out.workspaces = wss.map(w => {
@@ -2245,6 +2309,9 @@ function payload() {
     else { if (w.automation) o.automation = w.automation; o.tabs = nest(w.tabs); }
     // 画面に無い設定を、画面から保存しただけで失わない
     if (w.browsers) o.browsers = w.browsers;
+    // ラリーが使ってよい秘密の許可リスト (既定は全拒否)
+    if (w.secrets_allow && w.secrets_allow.length) o.secrets_allow = w.secrets_allow;
+    if (w.secrets_allow_all) o.secrets_allow_all = true;
     return o;
   });
   return { out, files };

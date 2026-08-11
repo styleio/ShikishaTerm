@@ -1517,6 +1517,9 @@ mod stamp_tests {
 mod tests {
     use super::*;
 
+    /// data/last-rally.lua を触るテストは同じファイルを共有するので直列化する
+    static RALLY_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn ctx(index: usize, output: &str) -> TabCtx {
         TabCtx {
             index,
@@ -1692,6 +1695,7 @@ mod tests {
 
     #[test]
     fn rally_recording_is_appendable_replayable_lua() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
         // 司令塔が実行Luaを積むと、貼れば再生できる本文が残ること
         let mut e = HookEngine::from_source(
             r##"
@@ -1774,6 +1778,7 @@ mod tests {
 
     #[test]
     fn rally_example_orchestrator_parses_and_runs() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
         // 雛形 (docs/rally-example) が構文的に読め、開始と完了の要が動くこと
         let dir = std::path::Path::new("docs/rally-example");
         let mut e = HookEngine::new().unwrap();
