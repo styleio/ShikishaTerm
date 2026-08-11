@@ -69,6 +69,31 @@ fn lerr(e: mlua::Error) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
 
+/// ラリーの再生用スクリプトの置き場。実行したブラウザ操作Luaをここに積む。
+/// 本文 (文の並び) だけを書くので、そのまま on_done.lua に貼れば再生できる
+fn rally_record_path() -> std::path::PathBuf {
+    crate::config::state_path("last-rally.lua")
+}
+
+/// 記録を始め直す (前回分を消してヘッダだけ置く)
+fn rally_record_reset() -> std::io::Result<()> {
+    std::fs::write(
+        rally_record_path(),
+        "-- SHIKISHA ラリー記録: 実行したブラウザ操作Lua。\n\
+         -- これを on_done.lua (または on_load.lua) に貼れば、AI無しで同じ動きを再生できる。\n\n",
+    )
+}
+
+/// 実行したLuaを1手ぶん追記する
+fn rally_record_append(text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(rally_record_path())?;
+    writeln!(f, "{}", text.trim_end())
+}
+
 /// JSONの値をそのままLuaの値へ写す (browser_fetch の結果をテーブルで返すため)。
 /// オブジェクトはキー付きテーブル、配列は1始まりの並び
 fn json_to_lua(lua: &mlua::Lua, v: &serde_json::Value) -> mlua::Result<Value> {
@@ -801,6 +826,28 @@ impl HookEngine {
                 )
                 .map_err(lerr)?;
         }
+        {
+            // ラリーの記録。司令塔が各手番の実行Luaを積み、貼れば再生できる形にする。
+            // 信頼側 (司令塔) 専用。AI製Luaのサンドボックスには公開しない
+            shikisha
+                .set(
+                    "record_reset",
+                    lua.create_function(|_, ()| {
+                        rally_record_reset().map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            shikisha
+                .set(
+                    "record",
+                    lua.create_function(|_, text: String| {
+                        rally_record_append(&text).map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
         lua.globals().set("shikisha", shikisha).map_err(lerr)?;
         lua.load(PRELUDE).exec().map_err(lerr)?;
 
@@ -1361,6 +1408,28 @@ mod tests {
             .eval()
             .unwrap();
         assert_eq!(out, "true,200,text/html,hi,3");
+    }
+
+    #[test]
+    fn rally_recording_is_appendable_replayable_lua() {
+        // 司令塔が実行Luaを積むと、貼れば再生できる本文が残ること
+        let mut e = HookEngine::from_source(
+            r##"
+            function on_start(tab)
+              shikisha.record_reset()
+              shikisha.record('shikisha.browser_click("br", "#login")')
+              shikisha.record('shikisha.browser_fill("br", "#body", "hi")')
+            end
+            "##,
+        )
+        .unwrap();
+        e.fire("on_start", &ctx(1, ""), None);
+        let path = super::rally_record_path();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with("-- SHIKISHA"), "ヘッダが要る");
+        assert!(content.contains(r##"shikisha.browser_click("br", "#login")"##));
+        assert!(content.contains(r##"shikisha.browser_fill("br", "#body", "hi")"##));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
