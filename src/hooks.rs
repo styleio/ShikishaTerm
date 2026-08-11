@@ -181,6 +181,13 @@ pub enum Command {
     /// 表示するタブを切り替える (観戦モード: AI↔ブラウザの手番を人が目視できる)。
     /// 0 = 稼働盤 (INDEX)
     ShowTab { target: TabRef },
+    /// ラリーの終了結果 (AIが目的達成を判定して出す終了コードと理由)。
+    /// data/last-result.json とログとUIに出す
+    SetResult {
+        code: i32,
+        reason: String,
+        origin: usize,
+    },
     /// 登録済み通知先への通知 (Phase 4-3でSlack/Telegram実装、現状はログ+表示)
     Notify { dest: String, text: String },
     /// タブの再起動 (SSH切断・CLI自己更新からの復帰)
@@ -398,6 +405,25 @@ impl HookEngine {
                     lua.create_function(move |_, target: Value| {
                         c.borrow_mut().push(Command::ShowTab {
                             target: tab_ref_of(&target)?,
+                        });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // ラリーの終了結果。AIが目的達成を判定して出す終了コードと理由
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "set_result",
+                    lua.create_function(move |_, (code, reason): (i64, Option<String>)| {
+                        c.borrow_mut().push(Command::SetResult {
+                            code: code as i32,
+                            reason: reason.unwrap_or_default(),
+                            origin: o.get(),
                         });
                         Ok(())
                     })
@@ -1430,6 +1456,29 @@ mod tests {
         assert!(content.contains(r##"shikisha.browser_click("br", "#login")"##));
         assert!(content.contains(r##"shikisha.browser_fill("br", "#body", "hi")"##));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_result_carries_the_exit_code_and_reason() {
+        // AIが判定した終了コードと理由が、そのタブ発で積まれること
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_done(tab)
+              shikisha.set_result(0, "投稿できた")
+            end
+            "#,
+        )
+        .unwrap();
+        e.fire("on_done", &ctx(3, ""), None);
+        let cmds = e.drain_commands();
+        match &cmds[0] {
+            Command::SetResult { code, reason, origin } => {
+                assert_eq!(*code, 0);
+                assert_eq!(reason, "投稿できた");
+                assert_eq!(*origin, 3, "発したタブの番号を持つ");
+            }
+            other => panic!("SetResultが積まれるはず: {other:?}"),
+        }
     }
 
     #[test]

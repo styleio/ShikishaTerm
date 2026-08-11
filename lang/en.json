@@ -88,6 +88,7 @@
   "msg.auto_on": ">> Automation: ON",
   "msg.auto_off": ">> Automation: OFF",
   "msg.emergency_stop": ">> EMERGENCY STOP: all automation halted (Ctrl+B a to resume)",
+  "msg.result": ">> Result code={code}: {reason}",
   "msg.locked": ">> This tab is locked (Ctrl+B l or click 🔒 to unlock)",
   "msg.locked_paste": ">> Cannot paste while the tab is locked",
   "msg.lock_on": ">> 🔒 Locked",

@@ -3077,6 +3077,26 @@ fn exec_commands(
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
                 }
             }
+            // ラリーの終了結果。data/last-result.json とログとUIに出す。
+            // 外部連携はこのファイルを読む (対話アプリのままなのでプロセスは終えない)
+            Command::SetResult { code, reason, origin } => {
+                let at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let json = serde_json::json!({
+                    "code": code, "reason": reason, "tab": origin, "at": at,
+                });
+                let path = config::state_path("last-result.json");
+                if let Err(e) = crate::crypto::write_atomic(&path, &json.to_string()) {
+                    append_hook_log(&format!("結果の書き込みに失敗: {e}"));
+                }
+                append_hook_log(&format!("結果 code={code} reason={reason} (tab{origin})"));
+                *flash = Some(i18n::tp(
+                    "msg.result",
+                    &[("code", &code.to_string()), ("reason", &reason)],
+                ));
+            }
             Command::Restart { target } => {
                 let Some(target) = index_of(&target) else {
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));

@@ -88,6 +88,7 @@
   "msg.auto_on": ">> 自動化: ON",
   "msg.auto_off": ">> 自動化: OFF",
   "msg.emergency_stop": ">> 緊急停止: 全自動化を止めました（Ctrl+B a で再開）",
+  "msg.result": ">> 結果 code={code}: {reason}",
   "msg.locked": ">> 🔒 ロック中です（Ctrl+B l または🔒クリックで解除）",
   "msg.locked_paste": ">> 🔒 ロック中のためペーストできません",
   "msg.lock_on": ">> 🔒 ロックしました",
