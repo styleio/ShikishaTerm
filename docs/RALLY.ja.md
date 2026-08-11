@@ -169,3 +169,138 @@ reCAPTCHA、確認）を「人へ回す」1つの汎用機構に集約する。
 
 P0 から。まず `shikisha.show`（自己完結・観戦UXの要）を実装・検証し、次に
 `browser_fetch`。並行して最小の司令塔でラリーの往復を通し、P1以降を積む。
+
+---
+
+## 9. 実装状況（2026-08-11）
+
+| フェーズ | 状態 |
+|---|---|
+| P0 `show` / `browser_fetch` | ✅ 実装・実機検証済み |
+| P1 記録 `record`/`record_reset` | ✅ |
+| P2 終了コード `set_result` | ✅ |
+| P3 サンドボックス `run_scoped` | ✅ |
+| P4a 秘密ストア | ✅ |
+| P4b 遮蔽 `redact` | ✅ |
+| P4c 秘密登録GUI | ✅ 実機検証済み |
+| P4d 許可リスト＋`browser_fill_secret` | ✅（ワークスペース許可リストのGUIは未実装、config直書きで有効） |
+| P5 ベーシック認証 `browser_auth`（CDP Fetch） | ✅ 実機検証済み（401→200） |
+| P6 CDP Network（遷移の生ステータス） | ⬜ 未着手 |
+| P7 参照司令塔＋本ドキュメント | ✅ |
+
+---
+
+## 10. ⚠ 既知のバグ
+
+### 複数ブラウザタブ同時ロードで on_load が最後の1枚しか本体実行されない
+
+**症状**：ブラウザのページフック（`on_load`/`on_press`）は、複数のブラウザ子タブが
+ほぼ同時にロード完了したとき、**最後の1枚しか関数本体が走らない**。他のタブは
+`fire_page` が呼ばれ `func.call`/`resume` も成功（status=Finished）を返すのに、
+**本体が1行も実行されない**（`log` も `record` も呼ばれず、エラーも出ない）。
+
+**切り分け済み**：`page_ctx` は各ペインで Some（別index）、`resolve` は同一スクリプト・
+`defines=true`。コルーチンを外して `func.call` 直接呼び出しでも同じ。→ mlua の
+スレッド再利用の問題ではない。同一 func の連続呼び出しで片方だけ空振りする。原因未特定。
+
+**影響とワークアラウンド**：**ラリー本体はブロックしない**。司令塔は AIセッションタブの
+`on_done`（セッションフック、1件ずつ発火）に置く設計で、そちらは正常。ブラウザ操作は
+`on_done` の中から `shikisha.browser_*(browser_name, …)` で行うため、ページフックに
+依存しない。ページフックで複数ブラウザを同時に捌く用途だけ、この癖に当たる。
+
+---
+
+## 11. プロトコル（AI ⇔ 司令塔）
+
+AIはCLI（claude/codex等）なので、決まった書式で読み書きする。司令塔は AIの確定応答
+（`tab.output`）をこの書式で解析する。
+
+- **ブラウザ操作**：Luaを囲みで出す（この囲みの中身がサンドボックスで実行される）
+  ~~~
+  ```shikisha-lua
+  shikisha.browser_go("br", "to", "https://example.com/login")
+  shikisha.browser_fill("br", "#user", "alice")
+  shikisha.browser_fill_secret("br", "#pass", "example_login")
+  shikisha.browser_click("br", "#submit")
+  ```
+  ~~~
+- **人間の助け**（ログイン・reCAPTCHA等）：
+  ```
+  «HUMAN» ログインして、できたら画面の「できたら押す」を押してください
+  ```
+- **完了**（AIが達成/失敗を判定）：
+  ~~~
+  ```shikisha-done
+  code = 0
+  reason = ダッシュボードに投稿が表示された
+  ```
+  ~~~
+
+書式外なら司令塔は「Luaブロックか完了マーカーを1つだけ出して」と促す。
+
+---
+
+## 12. プリミティブ一覧（実装済み）
+
+ブラウザ操作（`name` は操作対象タブのid）：
+
+| 関数 | 返り | 説明 |
+|---|---|---|
+| `browser_go(name, what, url?)` | – | `what`=`"to"`/`"reload"`/`"back"`/`"forward"`。その場で移動（webviewは作り直さない） |
+| `browser_open(name, url)` | – | タブを開く/差し替え（webviewを作り直す。仕込んだ認証は消える） |
+| `browser_find(name, sel)` | `"visible"`/`"off_screen"`/`"not_found"` | 要素の在否 |
+| `browser_click(name, sel, opts?)` | 状態 | クリック。`opts.on_missing="continue"`で無くても進む |
+| `browser_fill(name, sel, value)` | 状態 | 値を入れる |
+| `browser_fill_secret(name, sel, 秘密名)` | 状態 | 秘密の値を入れる（値はAIに渡らない・記録は鍵名だけ） |
+| `browser_text(name, sel)` | 文字列/nil | 要素のテキスト（秘密値はマスク） |
+| `browser_html(name)` | 文字列 | ページ全体のHTML（秘密値はマスク） |
+| `browser_fetch(name, url, opts?)` | `{status,ok,url,headers,body}` | ページ内fetch（ログイン済みクッキー使用・秘密値はマスク） |
+| `browser_auth(name, 秘密名)` | – | ベーシック認証を仕込む（秘密は `user:pass` 形式・以後の401に自動応答） |
+| `browser_ask(name, 文言, ボタン?)` / `browser_unask(name)` / `browser_pressed(name)` | – / – / bool | 人への帯 |
+
+観戦・記録・終了・待機：
+
+| 関数 | 説明 |
+|---|---|
+| `show(対象)` | 表示タブ切替（`0`=INDEX）。手番ごとに見える画面を動かす |
+| `record(text)` / `record_reset()` | 実行Luaを `data/last-rally.lua` に追記／始め直し（貼れば再生） |
+| `set_result(code, reason)` | 終了コードと理由（`data/last-result.json`＋ログ＋UI） |
+| `sleep(ms)` / `wait(tab, 正規表現, ms)` / `browser_wait(name, opts)` | 待機（コルーチンでyield） |
+| `run_scoped(name, code)` | AI製Luaを browser限定サンドボックスで実行。成功=nil / 失敗=エラー文字列 |
+| `send_to_tab(tab, text)` / `get_var` / `set_var` | タブへ送信 / スクリプト間共有変数 |
+
+**サンドボックス（`run_scoped`）で見えるのは browser系＋log だけ**。`os/io/load/require`、
+`record`/`set_result`/`send_to_tab`/`read_file`/`http`/秘密の生値、他タブには触れられない。
+
+---
+
+## 13. 参照司令塔（雛形）
+
+`docs/rally-example/` に置いた3ファイルを、ワークスペースの **AIセッションタブ** の
+`automation` に指すディレクトリへコピーして使う（`_shared.lua` を各自の環境に書き換える）。
+
+- `_shared.lua` … `RALLY.browser`（操作対象ブラウザid）・目的・上限などの設定
+- `on_start.lua` … 起動時にAIへ目的＋プロトコルを送る
+- `on_done.lua` … AIの手番ごとに解析→サンドボックス実行→状態収集→記録→AIへ返す/終了
+
+流れ（`on_done`）：`shikisha-done`があれば `set_result` で終了 → `«HUMAN»`があれば
+`browser_ask`＋`browser_wait` で人へ → `shikisha-lua` があれば `show(browser)`＋`sleep`で
+見せてから `run_scoped` で実行し `record`、状態を集めて `send_to_tab` でAIへ返す。
+
+## 14. セットアップ手順
+
+1. **秘密を登録**（必要なら）：設定GUIの「秘密」で `example_login` 等を登録（`user:pass` 形式なら
+   ベーシック認証にも使える）。
+2. **ワークスペースを用意**：AIセッションタブ（例 `claude`）＋ブラウザタブ（例 id=`br`）。
+   AIタブの `automation` を雛形のコピー先ディレクトリに向ける。許可する秘密を
+   `secrets_allow: ["example_login"]`（危険承知の全許可は `secrets_allow_all: true`）。
+3. **`_shared.lua` を編集**：`RALLY.browser = "br"`、`goal` を目的に。
+4. **AUTO ON で起動**。AIが手を出し、ブラウザで実行され、往復する様子を観戦できる。
+5. うまくいったら `data/last-rally.lua` を保存 → 別タブの `on_done.lua` に貼れば AI無しで再生。
+
+## 15. 記録と再生
+
+各手番のAI製Luaは `data/last-rally.lua` に順に積まれる（値の秘密は鍵名で参照されるので
+生値は残らない）。これを丸ごと `on_load.lua`/`on_done.lua` の本体に貼れば、AI無しで同じ
+ブラウザ操作を再生できる。人間待ち（`browser_ask`/`browser_wait`）も記録されるので、
+再生時もログイン待ちで止まる。

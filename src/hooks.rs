@@ -1773,6 +1773,40 @@ mod tests {
     }
 
     #[test]
+    fn rally_example_orchestrator_parses_and_runs() {
+        // 雛形 (docs/rally-example) が構文的に読め、開始と完了の要が動くこと
+        let dir = std::path::Path::new("docs/rally-example");
+        let mut e = HookEngine::new().unwrap();
+        let id = e.load_path(dir).expect("雛形が読めない (構文エラー?)");
+        e.set_base(id);
+
+        // on_start: 目的とプロトコルをAIへ送る
+        e.fire("on_start", &ctx(1, ""), None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c,
+                Command::SendPrompt { text, .. } if text.contains("shikisha-lua"))),
+            "on_start がプロトコルを送っていない: {cmds:?}"
+        );
+
+        // on_done: 完了マーカーを解析して終了コードにする (チェーン中なので反応する)
+        let out = "やりました。\n```shikisha-done\ncode = 0\nreason = 投稿できた\n```\n";
+        let mut c = ctx(1, out);
+        c.chain_depth = 1;
+        e.fire("on_done", &c, None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c,
+                Command::SetResult { code: 0, reason, .. } if reason.contains("投稿"))),
+            "on_done が完了マーカーを終了コードにできていない: {cmds:?}"
+        );
+
+        // 人間が始めた会話 (chain_depth=0) には反応しない
+        e.fire("on_done", &ctx(1, out), None);
+        assert!(e.drain_commands().is_empty(), "人間の入力に自動反応してはいけない");
+    }
+
+    #[test]
     fn explicit_id_survives_renaming_the_tab() {
         let r = TabRef::Name("reviewer".into());
         let with_id = |id: &str, name: &str| TabKey {
