@@ -41,10 +41,12 @@ if code and #code > 0 then
     }, "\n"))
     return
   end
-  -- 実行 (ブラウザは隠れたまま処理する。人へ逐一見せる必要はない。
-  -- 見えているAIタブの「処理中」表示だけで、進んでいることは伝わる)。
+  -- すぐブラウザタブへ切り替えて、動くところを見せる(待たずに即切替=きびきび)。
+  -- 「切替が遅い」対策として、実行の前に余計なスリープは入れない
+  shikisha.show(br)
   local err = shikisha.run_scoped(br, code)
   if err then
+    shikisha.show(ai)
     shikisha.send_to_tab(ai, table.concat({
       "実行でエラーになりました:",
       err,
@@ -55,8 +57,8 @@ if code and #code > 0 then
   -- 成功した手だけ記録する(貼れば再現できるよう、鍵名のまま積む)
   shikisha.exchange_append(shikisha.get_var("rally_record"), code)
   shikisha.set_var("rally_round", (shikisha.get_var("rally_round") or 0) + 1)
-  -- 遷移が終わって本文が出るまで短く待つ。出たら即進む(きびきび)、遅ければ待つ。
-  -- 先に少し待つのは、遷移前の古い画面を掴まないため
+  -- ブラウザを見せたまま、本文が出るまで短くポーリング。出たら即進む(きびきび)、
+  -- 遅ければ待つ。先に少し待つのは、遷移前の古い画面を掴まないため
   for _ = 1, 12 do
     shikisha.sleep(150)
     local t = shikisha.browser_text(br, "body")
@@ -73,7 +75,8 @@ if verdict then
   return
 end
 
--- 4) まだ終わらない → 今の画面テキストを返して次の手番へ (AIタブは出したまま)
+-- 4) まだ終わらない → AIの手番へ戻し、今の画面テキストを返して次の1手を促す
+shikisha.show(ai)
 local text = shikisha.browser_text(br, "body") or ""
 if #text > RALLY.screen_chars then
   text = text:sub(1, RALLY.screen_chars) .. "…(以下略)"
