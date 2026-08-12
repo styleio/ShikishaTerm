@@ -48,6 +48,13 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   /* 「+」は普段は控えめに。触れたときだけ普通の濃さになる */
   .tab.addtab { color:var(--dim); }
   .tab.addtab:hover { color:inherit; }
+  /* INDEXの上のワークスペース切替。押すと一覧のポップアップが開く */
+  .tab.wsrow { color:var(--dim); font-weight:700; border-bottom:1px solid #1a2129; }
+  .tab.wsrow:hover { color:inherit; }
+  .tab.wsrow .wscaret { margin-left:auto; font-size:11px; }
+  /* ヘッダ・フッターのワークスペース名を押せるようにする */
+  .wslink { cursor:pointer; }
+  .wslink:hover { color:var(--text); text-decoration:underline; }
   /* 出力量。文字ではなく本物の棒 */
   .spark { display:flex; align-items:flex-end; gap:1px; height:14px; flex:none; }
   .spark i { width:2px; background:var(--brand); opacity:.75; }
@@ -395,6 +402,12 @@ addEventListener("blur", release, true);
 function drawTabs() {
   const nav = document.getElementById("tabs");
   nav.textContent = "";
+  // INDEXの上に、今のワークスペースと切替。押すと一覧のポップアップが開く
+  nav.append(el("div", {class:"tab wsrow", title:T["tui.menu.workspace"] || "WORKSPACE",
+      onclick:() => send({kind:"menu", key:"w"})},
+    el("span", {class:"num"}, "◇"),
+    el("span", {class:"nm"}, S.workspace || ""),
+    el("span", {class:"wscaret"}, "▾")));
   nav.append(el("div", {class:"tab" + (S.active === 0 ? " sel" : ""),
       onclick:() => send({kind:"select", tab:0})},
     el("span", {class:"num"}, "0"),
@@ -439,7 +452,10 @@ function drawBoard() {
   // 素直な太字テキストに切り替える (CSS のメディアクエリで出し分け)
   b.append(el("div", {class:"mark"}, WORDMARK.join("\n")),
            el("div", {class:"mark-lite"}, "SHIKISHA-TERM"),
-           el("div", {class:"sub"}, (S.workspace || "") + "   " + BUILD));
+           el("div", {class:"sub"},
+             el("span", {class:"wslink", title:T["tui.menu.workspace"] || "WORKSPACE",
+               onclick:() => send({kind:"menu", key:"w"})}, S.workspace || ""),
+             el("span", {}, "   " + BUILD)));
 
   // 連鎖
   const heat = S.ball.max ? Math.min(1, S.ball.depth / S.ball.max) : 0;
@@ -510,7 +526,8 @@ function drawStatus() {
   // append に null を渡すと、DOMは文字列 "null" にして並べる。
   // el() の中では弾いているが、ここは素の append なので自分で弾く
   [
-    el("span", {}, S.workspace || ""),
+    el("span", {class:"wslink", title:T["tui.menu.workspace"] || "WORKSPACE",
+      onclick:() => send({kind:"menu", key:"w"})}, S.workspace || ""),
     el("span", {class:"pill " + (S.auto_enabled ? "on" : "off")},
       "AUTO " + (S.auto_enabled ? "ON" : "OFF")),
     S.remote_on ? el("span", {class:"pill on"}, "REMOTE") : null,
