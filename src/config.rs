@@ -181,7 +181,7 @@ impl Config {
     ) {
         let mut map = self.notify.clone();
         let mut err = None;
-        if let Some(path) = self.secrets_path() {
+        if let Some(path) = self.secrets_path().filter(|p| p.exists()) {
             match crate::crypto::read_maybe_encrypted(&path, password)
                 .and_then(|t| serde_json::from_str::<Secrets>(&t).context("secretsのJSONが不正"))
             {
