@@ -1614,9 +1614,9 @@ async function downloadRally() {
 function secretsCard() {
   const status = el("div", {class:"hint", id:"secretsmode"});
   const listBox = el("div", {id:"secretslist"}, el("div", {class:"hint"}, T["common.reload"] ? "…" : "…"));
-  const keyIn = el("input", {class:"mono", placeholder:"キー 例: diary_saas", style:"width:200px"});
-  const descIn = el("input", {placeholder:"説明 例: 日記SaaSのログイン", style:"flex:1;min-width:160px"});
-  const valIn = el("input", {type:"password", placeholder:"値（保存後は二度と表示されません）", style:"flex:1;min-width:160px"});
+  const keyIn = el("input", {class:"mono", placeholder:"例: diary_saas", style:"width:200px"});
+  const descIn = el("input", {placeholder:"例: 日記SaaSのログイン", style:"width:220px"});
+  const valIn = el("input", {type:"password", placeholder:"パスワード等", style:"width:220px"});
   const addBtn = el("button", {class:"primary", onclick: async () => {
     const key = keyIn.value.trim();
     if (!key) { toast("キーを入れてください", true); return; }
@@ -1627,8 +1627,16 @@ function secretsCard() {
     if (r.ok) { toast("保存しました: " + key); keyIn.value=""; descIn.value=""; valIn.value=""; loadSecrets(); }
     else toast(r.error || "保存に失敗", true);
   }}, "＋ 登録 / 更新");
-  const form = el("div", {class:"row", style:"flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center"},
-    keyIn, descIn, valIn, addBtn);
+  // 各欄が何かを見出しで明示する。プレースホルダだけだと切れて分かりにくかった
+  const labeled = (title, hint, input) => el("div", {style:"display:flex;flex-direction:column;gap:3px"},
+    el("span", {style:"font-size:12px;color:var(--text)"}, title),
+    input,
+    el("span", {class:"hint", style:"font-size:11px"}, hint));
+  const form = el("div", {class:"row", style:"flex-wrap:wrap;gap:14px;margin-top:12px;align-items:flex-end"},
+    labeled("キー", "一意の呼び名。AIはこれで参照", keyIn),
+    labeled("説明", "任意。何の秘密かのメモ", descIn),
+    labeled("値", "保存後は二度と表示されません", valIn),
+    addBtn);
   const c = card("秘密 (Secrets)", status, listBox, form);
   // カードがDOMに入ってから読み込む (getElementById が効くように)
   setTimeout(loadSecrets, 0);

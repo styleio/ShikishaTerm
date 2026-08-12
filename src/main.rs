@@ -2275,6 +2275,22 @@ enum TabAuto {
     Agent(String),
 }
 
+/// ワークスペース内で、id (無ければ名前) が一致するタブの画面番号 (1始まり) を返す。
+/// 議論の参加者/審判をタブ id から画面番号に解決するのに使う
+fn pane_of_id(ws: &config::Workspace, id: &str) -> Option<usize> {
+    let mut pane = 0;
+    for t in &ws.tabs {
+        if t.cfg.command.argv().is_empty() {
+            continue;
+        }
+        pane += 1;
+        if t.cfg.id.as_deref() == Some(id) || t.cfg.name.as_deref() == Some(id) {
+            return Some(pane);
+        }
+    }
+    None
+}
+
 fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, TabAuto)> {
     let mut pane = 0;
     let mut out = Vec::new();
@@ -2303,7 +2319,10 @@ fn build_engine(
     let base = cfg.and_then(|c| c.automation_path());
     let ws_lua = ws.and_then(|w| w.automation.clone());
     let tab_luas: Vec<(usize, TabAuto)> = ws.map(automation_by_pane).unwrap_or_default();
-    if base.is_none() && ws_lua.is_none() && tab_luas.is_empty() {
+    let has_discuss = ws
+        .and_then(|w| w.discuss.as_ref())
+        .is_some_and(|d| d.agents.len() >= 2);
+    if base.is_none() && ws_lua.is_none() && tab_luas.is_empty() && !has_discuss {
         return None;
     }
 
@@ -2351,6 +2370,50 @@ fn build_engine(
         };
         if let Some(id) = id {
             engine.set_tab(*idx, id);
+        }
+    }
+    // AI×AI 議論: ワークスペースに discuss があれば、各参加者タブに内蔵の議論司令塔を入れる
+    if let Some(w) = ws {
+        if let Some(d) = &w.discuss {
+            let agents: Vec<String> = d
+                .agents
+                .iter()
+                .filter(|s| !s.trim().is_empty())
+                .cloned()
+                .collect();
+            let n = agents.len();
+            if n >= 2 {
+                let max_turns = (d.max_rounds.max(1) as usize) * n;
+                for (i, id) in agents.iter().enumerate() {
+                    let Some(pane) = pane_of_id(w, id) else {
+                        errors.push(format!("議論: タブ '{id}' が見つかりません"));
+                        continue;
+                    };
+                    let next = &agents[(i + 1) % n];
+                    match engine.load_discuss_agent(
+                        id,
+                        next,
+                        i == 0,
+                        false,
+                        d.judge.as_deref(),
+                        max_turns,
+                    ) {
+                        Ok(sid) => engine.set_tab(pane, sid),
+                        Err(e) => errors.push(format!("議論({id}): {e:#}")),
+                    }
+                }
+                if let Some(j) = d.judge.as_deref().filter(|s| !s.trim().is_empty()) {
+                    match pane_of_id(w, j) {
+                        Some(pane) => match engine.load_discuss_agent(j, j, false, true, None, max_turns) {
+                            Ok(sid) => engine.set_tab(pane, sid),
+                            Err(e) => errors.push(format!("議論(審判 {j}): {e:#}")),
+                        },
+                        None => errors.push(format!("議論: 審判タブ '{j}' が見つかりません")),
+                    }
+                }
+            } else if !d.agents.is_empty() {
+                errors.push("議論には参加者(agents)が2人以上必要です".into());
+            }
         }
     }
     (!engine.is_empty()).then_some(engine)
@@ -3693,6 +3756,22 @@ mod tests {
         );
     }
 
+    /// 議論の参加者/審判のタブidが、画面番号に正しく解決されること
+    #[test]
+    fn discuss_agents_resolve_to_panes() {
+        let ws = ws_from(&[
+            ("参加A", "ai1", "claude"),
+            ("参加B", "ai2", "codex"),
+            ("審判", "ref", "claude"),
+        ]);
+        assert_eq!(pane_of_id(&ws, "ai1"), Some(1));
+        assert_eq!(pane_of_id(&ws, "ai2"), Some(2));
+        assert_eq!(pane_of_id(&ws, "ref"), Some(3));
+        assert_eq!(pane_of_id(&ws, "いない"), None);
+        // 名前でも引ける
+        assert_eq!(pane_of_id(&ws, "審判"), Some(3));
+    }
+
     /// drives (ブラウザ操作モード) を書いたタブは、内蔵エージェントに割り当てられること
     #[test]
     fn a_tab_with_drives_uses_the_builtin_browser_agent() {
@@ -3760,6 +3839,7 @@ mod tests {
             secrets_allow: Vec::new(),
             secrets_allow_all: false,
             stops: Vec::new(),
+            discuss: None,
         }
     }
 

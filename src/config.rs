@@ -373,6 +373,9 @@ pub struct WorkspaceSpec {
     /// 停止条件 (審判)。ブラウザ操作モード等の内蔵司令塔が読む
     #[serde(default)]
     pub stops: Vec<StopCond>,
+    /// AI×AI 議論の設定 (あれば内蔵の議論オーケストレータを各AIタブに入れる)
+    #[serde(default)]
+    pub discuss: Option<DiscussSpec>,
 }
 
 /// ワークスペース定義ファイル (workspaces/*.json) の中身
@@ -393,6 +396,33 @@ pub struct WorkspaceFile {
     pub secrets_allow_all: bool,
     #[serde(default)]
     pub stops: Vec<StopCond>,
+    #[serde(default)]
+    pub discuss: Option<DiscussSpec>,
+}
+
+/// AI×AI(N者)の議論設定。ワークスペース単位。内蔵の議論オーケストレータが読む。
+/// 参加者(agents)は手番の順。round-robinで回し、max_rounds でjudge(いれば)に裁定させる
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DiscussSpec {
+    /// 参加AIタブの id (手番の順)
+    #[serde(default)]
+    pub agents: Vec<String>,
+    /// 手番の回し方。今は "round-robin" のみ
+    #[serde(default = "default_order")]
+    pub order: String,
+    /// 各参加者が話す最大周回数 (これを超えたら審判/終了へ)
+    #[serde(default = "default_rounds")]
+    pub max_rounds: u32,
+    /// 審判(レフェリー)のタブ id。省略時は周回上限で「議論終了」として畳む
+    #[serde(default)]
+    pub judge: Option<String>,
+}
+
+fn default_order() -> String {
+    "round-robin".into()
+}
+fn default_rounds() -> u32 {
+    6
 }
 
 /// 停止条件 (審判)。ワークスペース単位で持つ。上から評価し最初に成立したものが勝つ。
@@ -630,6 +660,8 @@ pub struct Workspace {
     pub secrets_allow_all: bool,
     /// 停止条件 (審判)
     pub stops: Vec<StopCond>,
+    /// AI×AI 議論の設定
+    pub discuss: Option<DiscussSpec>,
 }
 
 /// このタブはブラウザか。そうならURLを返す。
@@ -752,18 +784,21 @@ impl Config {
                     secrets_allow: Vec::new(),
                     secrets_allow_all: false,
                     stops: Vec::new(),
+                    discuss: None,
                 });
             }
             return (out, errors);
         }
         for ws in &self.workspaces {
             #[allow(clippy::type_complexity)]
-            let (tab_defs, file_name, file_lua, file_secrets, file_stops): (
+            #[allow(clippy::type_complexity)]
+            let (tab_defs, file_name, file_lua, file_secrets, file_stops, file_discuss): (
                 Vec<TabConfig>,
                 Option<String>,
                 Option<String>,
                 (Vec<String>, bool),
                 Vec<StopCond>,
+                Option<DiscussSpec>,
             ) = match &ws.file {
                 Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
                     Ok(p) => (
@@ -772,13 +807,14 @@ impl Config {
                         p.automation.or(p.lua),
                         (p.secrets_allow, p.secrets_allow_all),
                         p.stops,
+                        p.discuss,
                     ),
                     Err(e) => {
                         errors.push(format!("{}: {e:#}", ws.name));
                         continue;
                     }
                 },
-                None => (ws.tabs.clone(), None, None, (Vec::new(), false), Vec::new()),
+                None => (ws.tabs.clone(), None, None, (Vec::new(), false), Vec::new(), None),
             };
             let mut tabs = Vec::new();
             flatten(&tab_defs, 0, &mut tabs);
@@ -802,6 +838,7 @@ impl Config {
                 secrets_allow_all: ws.secrets_allow_all || file_secrets.1,
                 // config側の指定を優先し、無ければ定義ファイル側を使う
                 stops: if ws.stops.is_empty() { file_stops } else { ws.stops.clone() },
+                discuss: ws.discuss.clone().or(file_discuss),
             });
         }
         (out, errors)

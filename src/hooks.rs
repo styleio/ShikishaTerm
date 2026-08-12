@@ -1522,6 +1522,138 @@ end
         self.load_source(&key, &src)
     }
 
+    /// AI×AI(N者)の議論オーケストレータを、この参加者向けに読み込む (チャット型)。
+    ///
+    /// 各参加者は毎手番、自分の発言を say.txt に **書く** (画面ではなくファイル)。
+    /// on_done がそれを読み、記録(transcript)して次の参加者へ回す(round-robin)。
+    /// 周回上限で審判(judge)へ渡し、審判の発言=裁定として終了。ユーザーはLuaを書かない。
+    /// me/next/judge はタブの id、フラグと上限は下で注入する
+    pub fn load_discuss_agent(
+        &mut self,
+        me: &str,
+        next: &str,
+        is_first: bool,
+        is_judge: bool,
+        judge: Option<&str>,
+        max_turns: usize,
+    ) -> Result<usize> {
+        let key = format!("<discuss:{me}:{next}:{is_first}:{is_judge}:{max_turns}>");
+        if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
+            return Ok(i);
+        }
+        const SRC: &str = r##"
+local function ensure_run()
+  local r = shikisha.get_var("discuss_run")
+  if r then return r end
+  r = shikisha.exchange_new()
+  shikisha.set_var("discuss_run", r)
+  shikisha.set_var("discuss_tx", r .. "/transcript.md")
+  shikisha.set_var("discuss_round", 0)
+  shikisha.exchange_append(r .. "/transcript.md", "# SHIKISHA 議論記録\n")
+  return r
+end
+
+local function tx(entry)
+  shikisha.exchange_append(shikisha.get_var("discuss_tx"), entry)
+end
+
+function on_start(tab)
+  local run = ensure_run()
+  local say = run .. "/say.txt"
+  local lines
+  if IS_JUDGE then
+    lines = {
+      "あなたは議論の審判 <" .. ME .. "> です。",
+      "議論がまとまったら、勝敗(または統合)と理由を **このファイルに** 書いてください:",
+      "  " .. say,
+      "ルーブリック: 論理性・根拠・相手への応答。判定は意見なので理由を必ず添えること。",
+      "順番(裁定を求められたとき)が来たら書いてください。",
+    }
+  else
+    lines = {
+      "あなたは議論の参加者 <" .. ME .. "> です。",
+      "毎手番、あなたの発言を **このファイルに上書き保存** してください(画面には書かない):",
+      "  " .. say,
+      "他の参加者の発言はこちらが渡します。端的に、要点を述べてください。",
+    }
+    if IS_FIRST then
+      lines[#lines + 1] = ""
+      lines[#lines + 1] = "準備OK。議題を入力欄に書いてください。あなたが口火を切ります。"
+    else
+      lines[#lines + 1] = "順番が来たら発言を求めます。それまで待機。"
+    end
+  end
+  shikisha.send_to_tab(tab.index, table.concat(lines, "\n"))
+end
+
+function on_done(tab)
+  if shikisha.get_var("discuss_done") then return end
+  local run = shikisha.get_var("discuss_run")
+  if not run then return end
+  local say = run .. "/say.txt"
+
+  local msg = shikisha.exchange_take(say)
+  if not (msg and #msg > 0) then
+    -- まだ発言していない。口火役が議題を受けた直後なら一度だけ促す
+    if IS_FIRST and tab.chain_depth == 0 then
+      shikisha.send_to_tab(tab.index, "議題を受けました。あなたの口火の発言を " .. say .. " に書いてください。")
+    end
+    return
+  end
+
+  -- 発言を記録(人が読むtranscriptと、次へ渡す用のログ)
+  local r = (shikisha.get_var("discuss_round") or 0) + 1
+  shikisha.set_var("discuss_round", r)
+  tx("\n### " .. ME .. "（" .. r .. "）\n" .. msg .. "\n")
+  local log = (shikisha.get_var("discuss_log") or "") .. "【" .. ME .. "】\n" .. msg .. "\n\n"
+  shikisha.set_var("discuss_log", log)
+
+  -- 審判の発言 = 裁定。ここで終了
+  if IS_JUDGE then
+    tx("\n## 判定（審判 " .. ME .. "）\n" .. msg .. "\n")
+    shikisha.show(tab.index)
+    shikisha.set_result(0, "審判が裁定しました")
+    shikisha.set_var("discuss_done", true)
+    return
+  end
+
+  -- 周回上限に達したら審判へ(いれば)、いなければ終了
+  if r >= MAX_TURNS then
+    if JUDGE ~= nil and #JUDGE > 0 then
+      shikisha.show(JUDGE)
+      shikisha.send_to_tab(JUDGE, table.concat({
+        "以下の議論を審判してください。勝敗(または統合)と理由を say.txt に。",
+        "----", log, "----",
+      }, "\n"))
+    else
+      tx("\n## 判定\n(周回上限。審判なし)\n")
+      shikisha.set_result(0, "議論終了(周回上限)")
+      shikisha.set_var("discuss_done", true)
+    end
+    return
+  end
+
+  -- 次の参加者へ回す(観戦のため画面も切り替える)
+  shikisha.show(NEXT)
+  local ctx = log
+  if #ctx > 4000 then ctx = "…(以下略)\n" .. ctx:sub(#ctx - 4000) end
+  shikisha.send_to_tab(NEXT, table.concat({
+    "これまでの議論:",
+    "----", ctx, "----",
+    "あなた(" .. NEXT .. ")の意見を " .. say .. " に端的に書いてください。",
+  }, "\n"))
+end
+"##;
+        let judge_lua = match judge {
+            Some(j) => format!("{j:?}"),
+            None => "nil".into(),
+        };
+        let src = format!(
+            "local ME={me:?}\nlocal NEXT={next:?}\nlocal IS_FIRST={is_first}\nlocal IS_JUDGE={is_judge}\nlocal JUDGE={judge_lua}\nlocal MAX_TURNS={max_turns}\n{SRC}"
+        );
+        self.load_source(&key, &src)
+    }
+
     pub fn set_base(&mut self, id: usize) {
         self.attach.base = Some(id);
     }
@@ -2007,6 +2139,26 @@ mod tests {
                         && text.contains("browser_go")
                         && text.contains("入力欄"))),
             "on_start がブラウザ操作プロトコル(入力欄でゴール)を送っていない: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn discuss_agent_is_built_in_and_first_asks_for_topic() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        // AI×AI議論の内蔵司令塔が読め、口火役(is_first)は議題を入力欄で促すこと。
+        // ユーザーはLuaを書かない
+        let mut e = HookEngine::new().unwrap();
+        let a = e
+            .load_discuss_agent("ai1", "ai2", true, false, Some("ref"), 4)
+            .expect("議論の内蔵司令塔が読めない");
+        e.set_tab(1, a);
+        e.fire("on_start", &ctx(1, ""), None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c,
+                Command::SendPrompt { text, .. }
+                    if text.contains("say.txt") && text.contains("入力欄") && text.contains("参加者"))),
+            "口火役の on_start が議題入力を促していない: {cmds:?}"
         );
     }
 
