@@ -1860,6 +1860,7 @@ function wsDiscussCard(ws) {
   const body = el("div", {id:"wsdiscussbody"});
   const ensure = () => {
     ws.discuss = ws.discuss || { agents:[], order:"round-robin", max_rounds:6, verdict:"winner" };
+    ws.discuss.personas = ws.discuss.personas || {};
     return ws.discuss;
   };
   const on = el("input", {type:"checkbox"});
@@ -1881,13 +1882,34 @@ function wsDiscussCard(ws) {
     for (const [v,l] of opts) { const o=el("option",{value:v},l); if(val===v)o.selected=true; e.append(o); }
     e.addEventListener("change", () => { save(e.value); refreshSave(); }); return e; };
 
-  const agentsIn = txt((d.agents||[]).join(", "), "例: ai1, ai2, ai3",
-    v => ensure().agents = v.split(",").map(s=>s.trim()).filter(Boolean));
+  // ペルソナ編集。参加者/審判/司会の id ごとに立場・人格の欄を出す
+  const personaBox = el("div", {id:"discusspersonas"});
+  const drawPersonas = () => {
+    personaBox.textContent = "";
+    const dd = ws.discuss; if (!dd) return;
+    dd.personas = dd.personas || {};
+    const ids = [...new Set((dd.agents||[])
+      .concat(dd.judge ? [dd.judge] : [])
+      .concat(dd.moderator ? [dd.moderator] : [])
+      .filter(Boolean))];
+    if (!ids.length) { personaBox.append(el("div", {class:"hint"}, "参加者を入れると、各タブに立場・人格を設定できます。")); return; }
+    ids.forEach(id => {
+      const ta = el("textarea", {rows:2, style:"width:100%;box-sizing:border-box",
+        placeholder:"例: あなたはブラザーフッド・オブ・スティール。技術は厳しく管理すべきという立場で主張する。"});
+      ta.value = dd.personas[id] || "";
+      ta.addEventListener("input", () => { dd.personas[id] = ta.value; refreshSave(); });
+      personaBox.append(el("div", {style:"margin:6px 0"},
+        el("div", {class:"mono", style:"font-size:12px;color:var(--text);margin-bottom:3px"}, id), ta));
+    });
+  };
+
+  const agentsIn = txt((d.agents||[]).join(", "), "例: bos, railroad, institute",
+    v => { ensure().agents = v.split(",").map(s=>s.trim()).filter(Boolean); drawPersonas(); });
   const orderSel = self(d.order || "round-robin",
     [["round-robin","順番(round-robin)"],["moderated","司会が指名(moderated)"]], v => ensure().order = v);
   const roundsIn = numf(d.max_rounds, v => ensure().max_rounds = v);
-  const judgeIn = txt(d.judge, "審判タブid(任意)", v => ensure().judge = v || null);
-  const modIn = txt(d.moderator, "司会タブid(moderated時)", v => ensure().moderator = v || null);
+  const judgeIn = txt(d.judge, "審判タブid(任意)", v => { ensure().judge = v || null; drawPersonas(); });
+  const modIn = txt(d.moderator, "司会タブid(moderated時)", v => { ensure().moderator = v || null; drawPersonas(); });
   const verdictSel = self(d.verdict || "winner",
     [["winner","勝敗をつける"],["synthesis","統合する"]], v => ensure().verdict = v);
 
@@ -1897,7 +1919,12 @@ function wsDiscussCard(ws) {
     row("周回上限", roundsIn, el("span", {class:"hint"}, "各参加者の最大周回。超えたら審判/終了へ")),
     row("審判", judgeIn, el("span", {class:"hint"}, "任意。周回上限で裁定させる")),
     row("司会", modIn, el("span", {class:"hint"}, "moderated のとき次の話者を指名")),
-    row("裁定", verdictSel));
+    row("裁定", verdictSel),
+    el("div", {style:"margin-top:8px"},
+      el("div", {style:"font-size:12px;color:var(--text)"}, "立場・人格（ペルソナ）"),
+      el("div", {class:"hint"}, "各タブの立場を書くと、賛成/反対に限らず派閥や役柄で議論させられます（空＝ニュートラル）。"),
+      personaBox));
+  drawPersonas();
 
   return card("AI×AI 議論",
     el("div", {class:"hint"},

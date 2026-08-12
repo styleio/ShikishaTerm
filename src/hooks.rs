@@ -1548,9 +1548,10 @@ end
         order: &str,
         moderator: Option<&str>,
         is_mod: bool,
+        persona: &str,
     ) -> Result<usize> {
         let key = format!(
-            "<discuss:{me}:{next}:{is_first}:{is_judge}:{is_mod}:{max_turns}:{verdict}:{order}>{stops_lua}"
+            "<discuss:{me}:{next}:{is_first}:{is_judge}:{is_mod}:{max_turns}:{verdict}:{order}:{persona}>{stops_lua}"
         );
         if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
             return Ok(i);
@@ -1629,6 +1630,12 @@ function on_start(tab)
     else
       lines[#lines + 1] = "順番が来たら発言を求めます。それまで待機。"
     end
+  end
+  -- ペルソナ(立場・人格)があれば冒頭に据える。議論全体でこの立場を保つ
+  if PERSONA ~= nil and #PERSONA > 0 then
+    table.insert(lines, 1, "【あなたの立場・人格】" .. PERSONA)
+    table.insert(lines, 2, "この立場を最後まで貫いて発言してください。")
+    table.insert(lines, 3, "")
   end
   shikisha.send_to_tab(tab.index, table.concat(lines, "\n"))
 end
@@ -1754,7 +1761,7 @@ end
             None => "nil".into(),
         };
         let src = format!(
-            "local ME={me:?}\nlocal NEXT={next:?}\nlocal IS_FIRST={is_first}\nlocal IS_JUDGE={is_judge}\nlocal IS_MOD={is_mod}\nlocal JUDGE={judge_lua}\nlocal MODERATOR={mod_lua}\nlocal ORDER={order:?}\nlocal MAX_TURNS={max_turns}\nlocal AGENTS={agents_lua}\nlocal STOPS={stops_lua}\nlocal MODE={verdict:?}\n{SRC}"
+            "local ME={me:?}\nlocal NEXT={next:?}\nlocal IS_FIRST={is_first}\nlocal IS_JUDGE={is_judge}\nlocal IS_MOD={is_mod}\nlocal JUDGE={judge_lua}\nlocal MODERATOR={mod_lua}\nlocal ORDER={order:?}\nlocal MAX_TURNS={max_turns}\nlocal AGENTS={agents_lua}\nlocal STOPS={stops_lua}\nlocal MODE={verdict:?}\nlocal PERSONA={persona:?}\n{SRC}"
         );
         self.load_source(&key, &src)
     }
@@ -2267,6 +2274,7 @@ mod tests {
                 "round-robin",
                 None,
                 false,
+                "",
             )
             .expect("議論の内蔵司令塔が読めない");
         e.set_tab(1, a);

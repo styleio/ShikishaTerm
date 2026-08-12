@@ -2400,6 +2400,7 @@ fn build_engine(
                         continue;
                     };
                     let next = &agents[(i + 1) % n];
+                    let persona = d.personas.get(id).map(String::as_str).unwrap_or("");
                     match engine.load_discuss_agent(
                         id,
                         next,
@@ -2413,16 +2414,18 @@ fn build_engine(
                         &d.order,
                         moderator,
                         false,
+                        persona,
                     ) {
                         Ok(sid) => engine.set_tab(pane, sid),
                         Err(e) => errors.push(format!("議論({id}): {e:#}")),
                     }
                 }
                 if let Some(j) = d.judge.as_deref().filter(|s| !s.trim().is_empty()) {
+                    let persona = d.personas.get(j).map(String::as_str).unwrap_or("");
                     match pane_of_id(w, j) {
                         Some(pane) => match engine.load_discuss_agent(
                             j, j, false, true, None, max_turns, &agents_lua, &stops_lua,
-                            &d.verdict, &d.order, moderator, false,
+                            &d.verdict, &d.order, moderator, false, persona,
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
                             Err(e) => errors.push(format!("議論(審判 {j}): {e:#}")),
@@ -2432,10 +2435,11 @@ fn build_engine(
                 }
                 // 司会(moderator)タブ: order="moderated" のとき次の話者を指名する
                 if let Some(m) = moderator {
+                    let persona = d.personas.get(m).map(String::as_str).unwrap_or("");
                     match pane_of_id(w, m) {
                         Some(pane) => match engine.load_discuss_agent(
                             m, m, false, false, d.judge.as_deref(), max_turns, &agents_lua,
-                            &stops_lua, &d.verdict, &d.order, moderator, true,
+                            &stops_lua, &d.verdict, &d.order, moderator, true, persona,
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
                             Err(e) => errors.push(format!("議論(司会 {m}): {e:#}")),

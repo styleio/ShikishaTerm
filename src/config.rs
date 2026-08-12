@@ -422,6 +422,11 @@ pub struct DiscussSpec {
     /// 司会(moderator)のタブ id。order="moderated" のとき、次の話者を指名する
     #[serde(default)]
     pub moderator: Option<String>,
+    /// 各タブの立場・人格 (タブ id → ペルソナ文)。
+    /// 例: {"bos":"あなたはブラザーフッド・オブ・スティール...", ...}。
+    /// 開始時にそのAIへ伝える。空なら素のAI(ニュートラル)
+    #[serde(default)]
+    pub personas: std::collections::HashMap<String, String>,
 }
 
 fn default_order() -> String {
