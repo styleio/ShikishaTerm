@@ -2393,6 +2393,7 @@ fn build_engine(
                         .collect::<Vec<_>>()
                         .join(",")
                 );
+                let moderator = d.moderator.as_deref().filter(|s| !s.trim().is_empty());
                 for (i, id) in agents.iter().enumerate() {
                     let Some(pane) = pane_of_id(w, id) else {
                         errors.push(format!("議論: タブ '{id}' が見つかりません"));
@@ -2409,6 +2410,9 @@ fn build_engine(
                         &agents_lua,
                         &stops_lua,
                         &d.verdict,
+                        &d.order,
+                        moderator,
+                        false,
                     ) {
                         Ok(sid) => engine.set_tab(pane, sid),
                         Err(e) => errors.push(format!("議論({id}): {e:#}")),
@@ -2417,12 +2421,26 @@ fn build_engine(
                 if let Some(j) = d.judge.as_deref().filter(|s| !s.trim().is_empty()) {
                     match pane_of_id(w, j) {
                         Some(pane) => match engine.load_discuss_agent(
-                            j, j, false, true, None, max_turns, &agents_lua, &stops_lua, &d.verdict,
+                            j, j, false, true, None, max_turns, &agents_lua, &stops_lua,
+                            &d.verdict, &d.order, moderator, false,
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
                             Err(e) => errors.push(format!("議論(審判 {j}): {e:#}")),
                         },
                         None => errors.push(format!("議論: 審判タブ '{j}' が見つかりません")),
+                    }
+                }
+                // 司会(moderator)タブ: order="moderated" のとき次の話者を指名する
+                if let Some(m) = moderator {
+                    match pane_of_id(w, m) {
+                        Some(pane) => match engine.load_discuss_agent(
+                            m, m, false, false, d.judge.as_deref(), max_turns, &agents_lua,
+                            &stops_lua, &d.verdict, &d.order, moderator, true,
+                        ) {
+                            Ok(sid) => engine.set_tab(pane, sid),
+                            Err(e) => errors.push(format!("議論(司会 {m}): {e:#}")),
+                        },
+                        None => errors.push(format!("議論: 司会タブ '{m}' が見つかりません")),
                     }
                 }
             } else if !d.agents.is_empty() {

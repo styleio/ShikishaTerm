@@ -1774,6 +1774,7 @@ function wsPane(ws) {
     e.append(bar);
     box.append(e);
   }
+  box.append(wsDiscussCard(ws));
   box.append(wsStopsCard(ws));
   box.append(wsSecretsCard(ws));
 
@@ -1790,6 +1791,58 @@ function wsPane(ws) {
       }
     }}, T["settings.workspace.delete"])));
   return box;
+}
+
+// AI×AI 議論。参加者のタブidを並べ、round-robin か moderated(司会が指名)で回す。
+// 周回上限で審判(judge)が裁定(勝敗/統合)。ゴール(議題)は入力欄に打つ
+function wsDiscussCard(ws) {
+  const body = el("div", {id:"wsdiscussbody"});
+  const ensure = () => {
+    ws.discuss = ws.discuss || { agents:[], order:"round-robin", max_rounds:6, verdict:"winner" };
+    return ws.discuss;
+  };
+  const on = el("input", {type:"checkbox"});
+  on.checked = !!ws.discuss;
+  body.style.display = ws.discuss ? "" : "none";
+  on.addEventListener("change", () => {
+    if (on.checked) { ensure(); body.style.display=""; } else { ws.discuss = null; body.style.display="none"; }
+    render(); refreshSave();
+  });
+  const onLabel = el("label", {class:"check"});
+  onLabel.append(on, document.createTextNode("AI×AI 議論を有効にする"));
+
+  const d = ws.discuss || {};
+  const txt = (val, ph, save) => { const e = el("input", {value:val||"", placeholder:ph||""});
+    e.addEventListener("input", () => { save(e.value); refreshSave(); }); return e; };
+  const numf = (val, save) => { const e = el("input", {type:"number", value:(val ?? 6), style:"width:90px"});
+    e.addEventListener("input", () => { save(parseInt(e.value,10)||1); refreshSave(); }); return e; };
+  const self = (val, opts, save) => { const e = el("select", {});
+    for (const [v,l] of opts) { const o=el("option",{value:v},l); if(val===v)o.selected=true; e.append(o); }
+    e.addEventListener("change", () => { save(e.value); refreshSave(); }); return e; };
+
+  const agentsIn = txt((d.agents||[]).join(", "), "例: ai1, ai2, ai3",
+    v => ensure().agents = v.split(",").map(s=>s.trim()).filter(Boolean));
+  const orderSel = self(d.order || "round-robin",
+    [["round-robin","順番(round-robin)"],["moderated","司会が指名(moderated)"]], v => ensure().order = v);
+  const roundsIn = numf(d.max_rounds, v => ensure().max_rounds = v);
+  const judgeIn = txt(d.judge, "審判タブid(任意)", v => ensure().judge = v || null);
+  const modIn = txt(d.moderator, "司会タブid(moderated時)", v => ensure().moderator = v || null);
+  const verdictSel = self(d.verdict || "winner",
+    [["winner","勝敗をつける"],["synthesis","統合する"]], v => ensure().verdict = v);
+
+  body.append(
+    row("参加者", agentsIn, el("span", {class:"hint"}, "タブidをカンマ区切り(手番の順)。2人以上")),
+    row("回し方", orderSel),
+    row("周回上限", roundsIn, el("span", {class:"hint"}, "各参加者の最大周回。超えたら審判/終了へ")),
+    row("審判", judgeIn, el("span", {class:"hint"}, "任意。周回上限で裁定させる")),
+    row("司会", modIn, el("span", {class:"hint"}, "moderated のとき次の話者を指名")),
+    row("裁定", verdictSel));
+
+  return card("AI×AI 議論",
+    el("div", {class:"hint"},
+      "複数のAIタブで議論/協働させます。議題(ゴール)は設定ではなく、開始後に口火役の入力欄へ打ちます。"),
+    el("div", {class:"row", style:"margin-top:6px"}, onLabel),
+    body);
 }
 
 // 停止条件(審判)。ワークスペース単位。上から評価し最初に成立したものが勝つ。
@@ -2399,7 +2452,8 @@ async function load() {
                  browsers:w.browsers || null,
                  secrets_allow: w.secrets_allow || [],
                  secrets_allow_all: !!w.secrets_allow_all,
-                 stops: Array.isArray(w.stops) ? w.stops : [] };
+                 stops: Array.isArray(w.stops) ? w.stops : [],
+                 discuss: w.discuss || null };
     if (ws.file) {
       const f = await (await wsApi("GET", ws.file)).json().catch(() => ({}));
       ws.tabs = flatten(f.tabs, 0, []);
@@ -2407,6 +2461,7 @@ async function load() {
       if (!ws.secrets_allow.length) ws.secrets_allow = f.secrets_allow || [];
       if (!ws.secrets_allow_all) ws.secrets_allow_all = !!f.secrets_allow_all;
       if (!ws.stops.length && Array.isArray(f.stops)) ws.stops = f.stops;
+      if (!ws.discuss && f.discuss) ws.discuss = f.discuss;
     } else ws.tabs = flatten(w.tabs, 0, []);
     wss.push(ws);
   }
@@ -2445,6 +2500,8 @@ function payload() {
 
   // 停止条件は when が空の行を捨ててから保存する
   const cleanStops = w => (w.stops || []).filter(s => s && s.when);
+  // 議論は参加者が2人以上のときだけ保存する
+  const cleanDiscuss = w => (w.discuss && (w.discuss.agents || []).length >= 2) ? w.discuss : null;
 
   // 別ファイルに切り出されたワークスペースは、そのファイルへ書く
   const files = [];
@@ -2455,6 +2512,7 @@ function payload() {
     if (w.secrets_allow && w.secrets_allow.length) body.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) body.secrets_allow_all = true;
     const st = cleanStops(w); if (st.length) body.stops = st;
+    const dc = cleanDiscuss(w); if (dc) body.discuss = dc;
     files.push({ file:w.file, body });
   }
   out.workspaces = wss.map(w => {
@@ -2468,6 +2526,8 @@ function payload() {
     if (w.secrets_allow_all) o.secrets_allow_all = true;
     // 停止条件(審判)。ファイル参照のワークスペースはファイル側に書いたので二重には出さない
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
+    // AI×AI 議論
+    if (!w.file) { const dc = cleanDiscuss(w); if (dc) o.discuss = dc; }
     return o;
   });
   return { out, files };

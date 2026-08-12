@@ -419,6 +419,9 @@ pub struct DiscussSpec {
     /// 審判の出し方: "winner"(勝敗) / "synthesis"(統合)。既定は winner
     #[serde(default = "default_verdict")]
     pub verdict: String,
+    /// 司会(moderator)のタブ id。order="moderated" のとき、次の話者を指名する
+    #[serde(default)]
+    pub moderator: Option<String>,
 }
 
 fn default_order() -> String {

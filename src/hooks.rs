@@ -1545,9 +1545,13 @@ end
         agents_lua: &str,
         stops_lua: &str,
         verdict: &str,
+        order: &str,
+        moderator: Option<&str>,
+        is_mod: bool,
     ) -> Result<usize> {
-        let key =
-            format!("<discuss:{me}:{next}:{is_first}:{is_judge}:{max_turns}:{verdict}>{stops_lua}");
+        let key = format!(
+            "<discuss:{me}:{next}:{is_first}:{is_judge}:{is_mod}:{max_turns}:{verdict}:{order}>{stops_lua}"
+        );
         if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
             return Ok(i);
         }
@@ -1593,7 +1597,15 @@ function on_start(tab)
   local run = ensure_run()
   local say = run .. "/say.txt"
   local lines
-  if IS_JUDGE then
+  if IS_MOD then
+    lines = {
+      "あなたは議論の司会 <" .. ME .. "> です。",
+      "指名を求められたら、「次に発言すべき参加者の id を1つ」または「END(議論を締める)」を",
+      "  " .. say,
+      "に書いてください。参加者: " .. table.concat(AGENTS, ", "),
+      "順番が来たら書いてください。それまで待機。",
+    }
+  elseif IS_JUDGE then
     local ask = (MODE == "synthesis")
       and "両者の強い点を統合した結論と理由を"
       or  "勝者(どちらが優勢か)と理由を"
@@ -1633,6 +1645,37 @@ function on_done(tab)
     if IS_FIRST and tab.chain_depth == 0 then
       shikisha.send_to_tab(tab.index, "議題を受けました。あなたの口火の発言を " .. say .. " に書いてください。")
     end
+    return
+  end
+
+  -- 司会の手番: 発言ではなく「次の話者 or END」の指示。参加者としては記録しない
+  if IS_MOD then
+    local ctx = shikisha.get_var("discuss_log") or ""
+    if #ctx > 4000 then ctx = "…(略)\n" .. ctx:sub(#ctx - 4000) end
+    if msg:upper():find("END") then
+      tx("\n（司会 " .. ME .. ": 議論を締めます）\n")
+      if JUDGE ~= nil and #JUDGE > 0 then
+        shikisha.show(JUDGE)
+        shikisha.send_to_tab(JUDGE, table.concat({
+          "以下の議論を審判してください。", "----", ctx, "----",
+        }, "\n"))
+      else
+        shikisha.set_result(0, "議論終了(司会が締め)")
+        shikisha.set_var("discuss_done", true)
+      end
+      return
+    end
+    local pick = nil
+    for _, ag in ipairs(AGENTS) do
+      if msg:find(ag, 1, true) then pick = ag; break end
+    end
+    pick = pick or AGENTS[1]
+    tx("\n（司会 " .. ME .. ": 次は " .. pick .. "）\n")
+    shikisha.show(pick)
+    shikisha.send_to_tab(pick, table.concat({
+      "これまでの議論:", "----", ctx, "----",
+      "あなた(" .. pick .. ")の番です。意見を " .. say .. " に端的に書いてください。",
+    }, "\n"))
     return
   end
 
@@ -1682,23 +1725,36 @@ function on_done(tab)
     return
   end
 
-  -- 次の参加者へ回す(観戦のため画面も切り替える)
-  shikisha.show(NEXT)
+  -- 次へ回す(観戦のため画面も切り替える)。
+  -- moderated なら司会に「次は誰か」を尋ね、既定(round-robin)は静的な NEXT へ
   local ctx = log
   if #ctx > 4000 then ctx = "…(以下略)\n" .. ctx:sub(#ctx - 4000) end
-  shikisha.send_to_tab(NEXT, table.concat({
-    "これまでの議論:",
-    "----", ctx, "----",
-    "あなた(" .. NEXT .. ")の意見を " .. say .. " に端的に書いてください。",
-  }, "\n"))
+  if ORDER == "moderated" and MODERATOR ~= nil and #MODERATOR > 0 then
+    shikisha.show(MODERATOR)
+    shikisha.send_to_tab(MODERATOR, table.concat({
+      "これまでの議論:", "----", ctx, "----",
+      "次に発言すべき参加者の id を1つ、または END を " .. say
+        .. " に書いてください。参加者: " .. table.concat(AGENTS, ", "),
+    }, "\n"))
+  else
+    shikisha.show(NEXT)
+    shikisha.send_to_tab(NEXT, table.concat({
+      "これまでの議論:", "----", ctx, "----",
+      "あなた(" .. NEXT .. ")の意見を " .. say .. " に端的に書いてください。",
+    }, "\n"))
+  end
 end
 "##;
         let judge_lua = match judge {
             Some(j) => format!("{j:?}"),
             None => "nil".into(),
         };
+        let mod_lua = match moderator {
+            Some(m) => format!("{m:?}"),
+            None => "nil".into(),
+        };
         let src = format!(
-            "local ME={me:?}\nlocal NEXT={next:?}\nlocal IS_FIRST={is_first}\nlocal IS_JUDGE={is_judge}\nlocal JUDGE={judge_lua}\nlocal MAX_TURNS={max_turns}\nlocal AGENTS={agents_lua}\nlocal STOPS={stops_lua}\nlocal MODE={verdict:?}\n{SRC}"
+            "local ME={me:?}\nlocal NEXT={next:?}\nlocal IS_FIRST={is_first}\nlocal IS_JUDGE={is_judge}\nlocal IS_MOD={is_mod}\nlocal JUDGE={judge_lua}\nlocal MODERATOR={mod_lua}\nlocal ORDER={order:?}\nlocal MAX_TURNS={max_turns}\nlocal AGENTS={agents_lua}\nlocal STOPS={stops_lua}\nlocal MODE={verdict:?}\n{SRC}"
         );
         self.load_source(&key, &src)
     }
@@ -2208,6 +2264,9 @@ mod tests {
                 r#"{"ai1","ai2"}"#,
                 "{}",
                 "winner",
+                "round-robin",
+                None,
+                false,
             )
             .expect("議論の内蔵司令塔が読めない");
         e.set_tab(1, a);
