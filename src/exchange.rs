@@ -98,6 +98,33 @@ pub fn latest_run() -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// 最近の run フォルダを新しい順に返す (最大 limit 件)。結果DLの履歴で使う
+pub fn recent_runs(limit: usize) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(root()) else {
+        return Vec::new();
+    };
+    let mut runs: Vec<(std::time::SystemTime, PathBuf)> = rd
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let m = e.metadata().and_then(|m| m.modified()).ok()?;
+            Some((m, e.path()))
+        })
+        .collect();
+    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    runs.into_iter().take(limit).map(|(_, p)| p).collect()
+}
+
+/// run の id (フォルダ名) から run フォルダを解決する。exchange 配下・直下のみ許可
+pub fn run_by_id(id: &str) -> Option<PathBuf> {
+    // トラバーサル防止: 区切りを含む id は拒否
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return None;
+    }
+    let p = root().join(id);
+    (p.is_dir() && within_root(&p)).then_some(p)
+}
+
 /// 起動時の掃除。更新が `days` 日より古い run フォルダ／ファイルを丸ごと削除する。
 /// 正常終了なら一時ファイルは既に消えているので、これは不正終了のゴミの救済
 pub fn sweep_old(days: u64) {

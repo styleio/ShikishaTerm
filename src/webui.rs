@@ -616,10 +616,52 @@ fn handle(
             );
             req.respond(resp)?;
         }
-        // 最新のラリー結果をひとつのMarkdownにまとめてダウンロードさせる。
-        // 中身: 人が読む流れ(transcript) ＋ 判定 ＋ 実行Lua(record, 貼れば再現)。
+        // 最近のラリー履歴 (新しい順)。id と、人が見分けるための抜粋を返す
+        ("GET", "/api/rally/list") => {
+            let mut arr: Vec<serde_json::Value> = Vec::new();
+            for dir in crate::exchange::recent_runs(60) {
+                if arr.len() >= 20 {
+                    break;
+                }
+                let id = dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let t = std::fs::read_to_string(dir.join("transcript.md")).unwrap_or_default();
+                let record = std::fs::read_to_string(dir.join("record.lua")).unwrap_or_default();
+                // 見出し(#)や空行を飛ばした最初の行を、見分け用の抜粋にする
+                let title = t
+                    .lines()
+                    .find(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty())
+                    .map(|l| l.chars().take(60).collect::<String>());
+                // 中身の無い run (on_start が作っただけ) は履歴に出さない
+                let has_record = record.lines().any(|l| !l.trim_start().starts_with("--") && !l.trim().is_empty());
+                match &title {
+                    Some(tt) => arr.push(serde_json::json!({ "id": id, "title": tt })),
+                    None if has_record => {
+                        arr.push(serde_json::json!({ "id": id, "title": "(操作のみ)" }))
+                    }
+                    None => {}
+                }
+            }
+            let resp = Response::from_string(serde_json::Value::Array(arr).to_string()).with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
+                    .unwrap(),
+            );
+            req.respond(resp)?;
+        }
+        // ラリー結果をひとつのMarkdownにまとめてダウンロードさせる。?run=<id> で特定の回、
+        // 無ければ最新。中身: 人が読む流れ(transcript) ＋ 判定 ＋ 実行Lua(record, 貼れば再現)。
         // AI+AI 等どの司令塔でも、run フォルダに transcript.md/record.lua を残せば同じ口で落とせる
-        ("GET", "/api/rally/download") => match crate::exchange::latest_run() {
+        ("GET", "/api/rally/download") => {
+            let picked = req
+                .url()
+                .split_once('?')
+                .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("run=")))
+                .map(percent_decode)
+                .and_then(|id| crate::exchange::run_by_id(&id));
+            match picked.or_else(crate::exchange::latest_run) {
             Some(dir) => {
                 let transcript =
                     std::fs::read_to_string(dir.join("transcript.md")).unwrap_or_default();
@@ -653,7 +695,8 @@ fn handle(
             None => {
                 req.respond(Response::from_string("no rally").with_status_code(404))?;
             }
-        },
+            }
+        }
         // ワークスペース定義ファイル (外部ファイル参照) の読み書き
         ("GET", "/api/workspace") => {
             let Some(p) = safe_workspace_path(req.url(), config_path) else {
@@ -1587,22 +1630,40 @@ function globalPane() {
 // 中身: 人が読む流れ(transcript) ＋ 判定 ＋ 実行Lua(貼れば再現)。
 // AI+AI の議論もこの1枚に流れと勝敗が残るので、後から人が確認できる
 function rallyResultCard() {
-  const btn = el("button", {class:"primary", onclick: downloadRally}, "最新のラリー結果をダウンロード");
+  const list = el("div", {id:"rallylist"}, el("div", {class:"hint"}, "…"));
+  setTimeout(loadRallyList, 0);
   return card("ラリー結果",
     el("div", {class:"hint"},
-      "直近のラリー（ブラウザ操作／AI議論など）の流れ・判定・実行Luaを1つのMarkdownで保存します。貼れば再現できるLuaも同梱。"),
-    el("div", {class:"row", style:"margin-top:10px"}, btn));
+      "ラリー（ブラウザ操作／AI議論など）の流れ・判定・実行Luaを1つのMarkdownで保存します。過去の回も選べます。貼れば再現できるLuaも同梱。"),
+    list);
 }
 
-async function downloadRally() {
+async function loadRallyList() {
+  const box = document.getElementById("rallylist");
+  if (!box) return;
+  let runs = [];
+  try { runs = await (await fetch("/api/rally/list", {headers:{"X-Token":TOKEN}})).json(); } catch (e) {}
+  box.textContent = "";
+  if (!runs.length) { box.append(el("div", {class:"hint"}, "まだラリーの記録がありません。")); return; }
+  runs.forEach((r, i) => {
+    const label = (i === 0 ? "最新 ・ " : "") + (r.title || r.id);
+    box.append(el("div", {class:"row", style:"gap:10px"},
+      el("span", {class:"grow", style:"min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis",
+        title:r.title || r.id}, label),
+      el("button", {class: i === 0 ? "primary" : "", onclick:() => downloadRally(r.id)}, "ダウンロード")));
+  });
+}
+
+async function downloadRally(runId) {
   try {
-    const r = await fetch("/api/rally/download", {headers:{"X-Token":TOKEN}});
-    if (!r.ok) { result("まだラリーの記録がありません。", true); return; }
+    const url = "/api/rally/download" + (runId ? ("?run=" + encodeURIComponent(runId)) : "");
+    const r = await fetch(url, {headers:{"X-Token":TOKEN}});
+    if (!r.ok) { result("記録がありません。", true); return; }
     const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
+    const u = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = "rally.md"; document.body.append(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    a.href = u; a.download = "rally-" + (runId || "latest") + ".md"; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(u), 1000);
     result("ラリー結果をダウンロードしました。");
   } catch (e) {
     result("ダウンロードに失敗しました: " + (e.message || e), true);
