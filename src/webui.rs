@@ -1404,6 +1404,67 @@ function choose(obj, key, opts, onChange) {
 function row(label, ...kids) { return el("div", {class:"row"}, el("label", {}, label), ...kids); }
 function card(title, ...kids) { return el("div", {class:"card"}, el("h2", {}, title), ...kids); }
 
+// ── タブid まわり ────────────────────────────────────
+// ワークスペース内の既存タブidを集める (id が無ければ表示名を手掛かりにする)。
+// 参照フィールド(議論の参加者/審判/司会、停止条件の対象タブ)の候補に使う
+function tabIds(ws) {
+  return [...new Set((ws.tabs || [])
+    .map(t => (t.id || t.name || "").trim())
+    .filter(Boolean))];
+}
+// 文字列 → 5文字の安定ハッシュ (FNV-1a 32bit を base36)。日本語のみの名前など、
+// ASCII英数が1つも無いときのid素材にする
+function hash5(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36).padStart(5, "0").slice(-5);
+}
+// 表示名から自動化用idを推測する。
+// - ASCII英数がある(英語名など) → それをスラグ化 (小文字, [a-z0-9]+ を "-" で連結)
+// - 無い(日本語のみ等) → 5文字ハッシュ。名前も空なら "" (据え置き)
+function slugId(name) {
+  const parts = (name || "").toLowerCase().match(/[a-z0-9]+/g);
+  if (parts && parts.length) return parts.join("-").slice(0, 24);
+  const src = (name || "").trim();
+  return src ? hash5(src) : "";
+}
+// base を ws 内で衝突しないidにする (使われていれば -2, -3 …)。self は自分自身(除外)
+function uniqueId(ws, base, self) {
+  if (!base) return "";
+  const used = new Set((ws.tabs || [])
+    .filter(t => t !== self).map(t => (t.id || "").trim()).filter(Boolean));
+  if (!used.has(base)) return base;
+  for (let n = 2; ; n++) { const c = base + "-" + n; if (!used.has(c)) return c; }
+}
+// 空idのタブに、名前から作ったidを埋める(保存時の保険)。名前も空なら触らない
+function ensureIds(ws) {
+  const tabs = ws.tabs || [];
+  const used = new Set(tabs.map(t => (t.id || "").trim()).filter(Boolean));
+  for (const t of tabs) {
+    if ((t.id || "").trim()) continue;
+    const base = slugId(t.name);
+    if (!base) continue;
+    let id = base, n = 2;
+    while (used.has(id)) id = base + "-" + (n++);
+    t.id = id; used.add(id);
+  }
+}
+// タブid を選ぶプルダウン (候補=既存タブid)。空選択肢のラベルは emptyLabel。
+// drives のタブを除きたいときは exclude(t)=>bool を渡す
+function idSelect(ws, val, emptyLabel, onChange, exclude) {
+  const s = el("select");
+  s.append(el("option", {value:""}, emptyLabel));
+  const ids = [...new Set((ws.tabs || [])
+    .filter(t => !(exclude && exclude(t)))
+    .map(t => (t.id || t.name || "").trim()).filter(Boolean))];
+  for (const id of ids) s.append(el("option", {value:id}, id));
+  // 候補に無い既存値も選べるようにしておく (手書き済みの値を消さない)
+  if (val && !ids.includes(val)) s.append(el("option", {value:val}, val + " (無いタブ)"));
+  s.value = val || "";
+  s.addEventListener("change", () => { onChange(s.value || null); refreshSave(); });
+  return s;
+}
+
 async function pickPath(kind, title, start) {
   try {
     const r = await fetch("/api/pick", {method:"POST",
@@ -1905,17 +1966,36 @@ function wsDiscussCard(ws) {
   };
 
   const agentsIn = txt((d.agents||[]).join(", "), "例: bos, railroad, institute",
-    v => { ensure().agents = v.split(",").map(s=>s.trim()).filter(Boolean); drawPersonas(); });
+    v => { ensure().agents = v.split(",").map(s=>s.trim()).filter(Boolean); drawChips(); drawPersonas(); });
+  // 参加者候補チップ: 既存タブidをワンクリックで手番末尾に足す。
+  // drives(ブラウザ操作モード)付きのタブは議論に同居できないので候補から外す
+  const chipBox = el("div", {class:"hint", style:"display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px"});
+  const drawChips = () => {
+    chipBox.textContent = "";
+    const cur = (ws.discuss && ws.discuss.agents) || [];
+    const cand = tabIds(ws).filter(id => !cur.includes(id)
+      && !(ws.tabs||[]).some(t => (t.id||t.name)===id && (t.drives||"").trim()));
+    if (!cand.length) { chipBox.append(document.createTextNode("候補なし（タブに呼び名IDを付けると候補に出ます）")); return; }
+    chipBox.append(document.createTextNode("候補:"));
+    for (const id of cand) chipBox.append(el("button", {class:"quiet", onclick:() => {
+      const a = ensure().agents; if (!a.includes(id)) a.push(id);
+      agentsIn.value = a.join(", "); drawChips(); drawPersonas(); refreshSave();
+    }}, "＋" + id));
+  };
   const orderSel = self(d.order || "round-robin",
     [["round-robin","順番(round-robin)"],["moderated","司会が指名(moderated)"]], v => ensure().order = v);
   const roundsIn = numf(d.max_rounds, v => ensure().max_rounds = v);
-  const judgeIn = txt(d.judge, "審判タブid(任意)", v => { ensure().judge = v || null; drawPersonas(); });
-  const modIn = txt(d.moderator, "司会タブid(moderated時)", v => { ensure().moderator = v || null; drawPersonas(); });
+  const excludeDrives = t => (t.drives||"").trim();
+  const judgeIn = idSelect(ws, d.judge, "（なし）",
+    v => { ensure().judge = v; drawPersonas(); }, excludeDrives);
+  const modIn = idSelect(ws, d.moderator, "（なし）",
+    v => { ensure().moderator = v; drawPersonas(); }, excludeDrives);
   const verdictSel = self(d.verdict || "winner",
     [["winner","勝敗をつける"],["synthesis","統合する"]], v => ensure().verdict = v);
 
   body.append(
     row("参加者", agentsIn, el("span", {class:"hint"}, "タブidをカンマ区切り(手番の順)。2人以上")),
+    row("", chipBox),
     row("回し方", orderSel),
     row("周回上限", roundsIn, el("span", {class:"hint"}, "各参加者の最大周回。超えたら審判/終了へ")),
     row("審判", judgeIn, el("span", {class:"hint"}, "任意。周回上限で裁定させる")),
@@ -1925,6 +2005,7 @@ function wsDiscussCard(ws) {
       el("div", {style:"font-size:12px;color:var(--text)"}, "立場・人格（ペルソナ）"),
       el("div", {class:"hint"}, "各タブの立場を書くと、賛成/反対に限らず派閥や役柄で議論させられます（空＝ニュートラル）。"),
       personaBox));
+  drawChips();
   drawPersonas();
 
   return card("AI×AI 議論",
@@ -1979,7 +2060,7 @@ function stopRow(ws, s, i, redraw) {
   const dyn = [];
   if (s.when === "screen" || s.when === "css" || s.when === "xpath" || s.when === "console") {
     if (s.when !== "console")
-      dyn.push(inp(s.tab, "対象タブid(既定=操作対象)", "text", v => set("tab", v || null)));
+      dyn.push(idSelect(ws, s.tab, "対象タブ（既定=操作対象）", v => set("tab", v)));
     if (s.when === "css" || s.when === "xpath")
       dyn.push(inp(s.sel, s.when === "xpath" ? "//button[...]" : "#id", "text", v => set("sel", v)));
     else
@@ -2110,11 +2191,25 @@ function tabPane(ws, t) {
   const box = el("div");
   const kind = kindOf(t.command);
 
-  // 基本: 名前とIDは identity なので隣に置く
+  // 基本: 名前とIDは identity なので隣に置く。
+  // ID空欄なら名前から自動で用意する(英語→スラグ / 日本語のみ→5文字ハッシュ)。
+  // 推測値はプレースホルダで見せ、名前欄を離れた時点で確定する
+  const idInput = field(t, "id", "", {grow:false, width:280, mono:true});
+  const refreshIdPh = () => {
+    idInput.placeholder = uniqueId(ws, slugId(t.name), t) || T["settings.tab.id.ph"];
+  };
+  const nameInput = field(t, "name", T["settings.tab.name.ph"], {grow:false, width:280,
+    onInput:() => { renderNav(); refreshIdPh(); }});
+  nameInput.addEventListener("blur", () => {
+    if (!(t.id || "").trim()) {
+      const sug = uniqueId(ws, slugId(t.name), t);
+      if (sug) { t.id = sug; idInput.value = sug; refreshSave(); renderNav(); }
+    }
+  });
+  refreshIdPh();
   box.append(card(T["settings.tab.basic"],
-    row(T["settings.tab.name"], field(t, "name", T["settings.tab.name.ph"], {grow:false, width:280,
-        onInput:() => renderNav()})),
-    row(T["settings.tab.id"], field(t, "id", T["settings.tab.id.ph"], {grow:false, width:280, mono:true}),
+    row(T["settings.tab.name"], nameInput),
+    row(T["settings.tab.id"], idInput,
         el("span", {class:"hint"}, T["settings.tab.id.hint"]))));
 
   // 起動するもの
@@ -2138,14 +2233,26 @@ function tabPane(ws, t) {
   // ゴールは設定ではなく、開始後に入力欄へ打つ。ブラウザタブ自身には出さない
   const isBrowser = c => { const h = (c || "").trim().split(/\s+/)[0].toLowerCase(); return h === "browser" || h === "web"; };
   if (!isBrowser(t.command)) {
-    const brTabs = (ws.tabs || []).filter(x => x !== t && isBrowser(x.command)).map(x => x.id || x.name).filter(Boolean);
-    const opts = [["", "オフ（ふつうのAI）"]].concat(brTabs.map(id => [id, id]));
-    const sel = choose(t, "drives", opts, v => { if (!v) delete t.drives; refreshSave(); });
-    const hint = brTabs.length
-      ? "選ぶと、このAIは入力欄に打ったゴールで、そのブラウザを1手ずつ操作します（Lua不要）。停止条件はワークスペースの「停止条件（審判）」で。"
-      : "同じワークスペースに「ブラウザ」タブを足すと選べます。";
-    box.append(card("ブラウザ操作モード",
-      row("操作するブラウザ", sel, el("span", {class:"hint"}, hint))));
+    // drives と discuss は同じタブに同居できない。このタブが議論の参加者なら、
+    // ブラウザ操作モードは出さず、理由を示す(入口で併用を防ぐ)
+    const inDiscuss = !!(ws.discuss && [...(ws.discuss.agents||[]),
+      ws.discuss.judge, ws.discuss.moderator].filter(Boolean)
+      .includes((t.id || t.name || "").trim()));
+    if (inDiscuss) {
+      if (t.drives) delete t.drives;
+      box.append(card("ブラウザ操作モード",
+        el("div", {class:"hint"},
+          "このタブは「AI×AI 議論」の参加者です。ブラウザ操作モードとは同居できないため無効です（議論から外すと選べます）。")));
+    } else {
+      const brTabs = (ws.tabs || []).filter(x => x !== t && isBrowser(x.command)).map(x => x.id || x.name).filter(Boolean);
+      const opts = [["", "オフ（ふつうのAI）"]].concat(brTabs.map(id => [id, id]));
+      const sel = choose(t, "drives", opts, v => { if (!v) delete t.drives; refreshSave(); });
+      const hint = brTabs.length
+        ? "選ぶと、このAIは入力欄に打ったゴールで、そのブラウザを1手ずつ操作します（Lua不要）。停止条件はワークスペースの「停止条件（審判）」で。"
+        : "同じワークスペースに「ブラウザ」タブを足すと選べます。";
+      box.append(card("ブラウザ操作モード",
+        row("操作するブラウザ", sel, el("span", {class:"hint"}, hint))));
+    }
   }
 
   // 自動化: 何が設定済みか一覧で分かるようにする
@@ -2622,7 +2729,8 @@ async function save() {
   }
 }
 
-// 書き込む内容を組み立てる。保存と未保存判定の両方がこれを使う
+// 書き込む内容を組み立てる。保存と未保存判定の両方がこれを使う。
+// 600ms毎の未保存判定からも呼ばれるので、ここは副作用を持たせない
 function payload() {
   const out = Object.assign({}, current);
   ["tab_bar_width","max_chain"].forEach(k => {
@@ -2668,6 +2776,9 @@ function payload() {
 }
 
 async function doSave() {
+  // 空idのタブは名前からidを用意してから書く(参照の取りこぼしを防ぐ保険)。
+  // 副作用なので保存の直前だけで行う(未保存判定の payload では触らない)
+  for (const w of wss) ensureIds(w);
   const { out, files } = payload();
   for (const f of files) {
     const rf = await wsApi("POST", f.file, JSON.stringify(f.body, null, 2));

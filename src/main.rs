@@ -2359,10 +2359,33 @@ fn build_engine(
     let stops_lua = ws
         .map(|w| config::stops_to_lua(&w.stops))
         .unwrap_or_else(|| "{}".to_string());
+    // drives と discuss は同じタブに同居できない (どちらもそのタブの自動化を占有する)。
+    // 併用が書かれていたら discuss を優先し、ブラウザ操作モードは無効化して警告する
+    let discuss_panes: std::collections::HashSet<usize> = ws
+        .and_then(|w| {
+            w.discuss.as_ref().map(|d| {
+                d.agents
+                    .iter()
+                    .chain(d.judge.iter())
+                    .chain(d.moderator.iter())
+                    .filter(|s| !s.trim().is_empty())
+                    .filter_map(|id| pane_of_id(w, id))
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
     for (idx, auto) in &tab_luas {
         let id = match auto {
             TabAuto::Path(p) => load(&mut engine, p, errors),
-            // ブラウザ操作モード: 内蔵の司令塔を対象ブラウザ向けに読み込む
+            // ブラウザ操作モード: 内蔵の司令塔を対象ブラウザ向けに読み込む。
+            // ただし同じタブが議論の参加者でもあるなら、議論を優先して無効化する
+            TabAuto::Agent(br) if discuss_panes.contains(idx) => {
+                errors.push(format!(
+                    "タブ{}: ブラウザ操作モードと議論(discuss)が両方指定されています。議論を優先し、ブラウザ操作モードは無効にしました",
+                    idx
+                ));
+                None
+            }
             TabAuto::Agent(br) => match engine.load_browser_agent(br, &stops_lua) {
                 Ok(id) => Some(id),
                 Err(e) => {
