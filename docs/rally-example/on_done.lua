@@ -5,6 +5,10 @@
 -- ラリー中は send_to_tab で往復するのでチェーンは1以上になる。
 if tab.chain_depth == 0 then return end
 
+-- 決着済みなら、もう何もしない(手番も送らない)。
+-- これが無いと set_result 後もAIが動き続け、プロンプトが溜まって「無限ループ」に見える
+if shikisha.get_var("rally_done") then return end
+
 local br = RALLY.browser
 local ai = tab.index
 local run = shikisha.get_var("rally_run")
@@ -37,12 +41,10 @@ if code and #code > 0 then
     }, "\n"))
     return
   end
-  -- 実行を観戦できるように: ブラウザへ切替 → 少し待つ → 実行
-  shikisha.show(br)
-  shikisha.sleep(400)
+  -- 実行 (ブラウザは隠れたまま処理する。人へ逐一見せる必要はない。
+  -- 見えているAIタブの「処理中」表示だけで、進んでいることは伝わる)。
   local err = shikisha.run_scoped(br, code)
   if err then
-    shikisha.show(ai)
     shikisha.send_to_tab(ai, table.concat({
       "実行でエラーになりました:",
       err,
@@ -53,19 +55,25 @@ if code and #code > 0 then
   -- 成功した手だけ記録する(貼れば再現できるよう、鍵名のまま積む)
   shikisha.exchange_append(shikisha.get_var("rally_record"), code)
   shikisha.set_var("rally_round", (shikisha.get_var("rally_round") or 0) + 1)
-  shikisha.sleep(600)                                              -- 結果を目視できるよう少し待つ
+  -- 遷移が終わって本文が出るまで短く待つ。出たら即進む(きびきび)、遅ければ待つ。
+  -- 先に少し待つのは、遷移前の古い画面を掴まないため
+  for _ = 1, 12 do
+    shikisha.sleep(150)
+    local t = shikisha.browser_text(br, "body")
+    if t and #(t:gsub("%s", "")) > 0 then break end
+  end
 end
 
 -- 3) 審判: 停止条件を評価。成立したら終了コードを記録して終わる
 local verdict = RALLY_judge(tab.output)
 if verdict then
+  shikisha.set_var("rally_done", true)                 -- 以後の on_done を止める(手番を送らない)
   shikisha.show(verdict.outcome == "success" and ai or br)
   shikisha.set_result(verdict.code or 0, verdict.reason or "")
   return
 end
 
--- 4) まだ終わらない → 今の画面テキストを返して次の手番へ
-shikisha.show(ai)
+-- 4) まだ終わらない → 今の画面テキストを返して次の手番へ (AIタブは出したまま)
 local text = shikisha.browser_text(br, "body") or ""
 if #text > RALLY.screen_chars then
   text = text:sub(1, RALLY.screen_chars) .. "…(以下略)"

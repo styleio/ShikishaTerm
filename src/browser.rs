@@ -1109,6 +1109,9 @@ fn run_window(
     // ベーシック認証の仕込み。対象ごとに1つ。持っている間だけ 401 に答える
     let mut auths: std::collections::HashMap<Option<String>, cdp::AuthArm> =
         std::collections::HashMap::new();
+    // JSダイアログの自動処理。子ごとに1つ。これが無いと離脱確認等で自動化が凍る
+    let mut dialogs: std::collections::HashMap<Option<String>, cdp::DialogArm> =
+        std::collections::HashMap::new();
     // 直近フレームのCSSピクセル寸法 (入力注入の座標変換に使う)。
     // フレーム通知と入力注入は同じスレッドなので Rc<Cell> で足りる
     let cast_dims = std::rc::Rc::new(std::cell::Cell::new((0.0f64, 0.0f64)));
@@ -1222,6 +1225,11 @@ fn run_window(
                         .build_as_child(&window)
                     {
                         Ok(v) => {
+                            // 置いた直後にダイアログ自動処理を仕込む (離脱確認等で凍らせない)
+                            let wvh = cdp::webview_of(&v);
+                            if let Some(arm) = cdp::arm_dialogs(&wvh) {
+                                dialogs.insert(Some(name.clone()), arm);
+                            }
                             children.insert(name, v);
                         }
                         Err(e) => {
@@ -1236,6 +1244,8 @@ fn run_window(
                 }
                 Cmd::RemoveChild { name } => {
                     children.remove(&name);
+                    dialogs.remove(&Some(name.clone()));
+                    auths.remove(&Some(name));
                 }
                 Cmd::Focus { to } => {
                     if let Some(v) = target(&webview, &children, &to) {
@@ -1597,6 +1607,32 @@ mod cdp {
             receivers: vec![paused, required],
             webview: webview.clone(),
             creds,
+        })
+    }
+
+    /// JSダイアログ (alert / confirm / prompt / beforeunload) の自動処理。
+    ///
+    /// これが無いと、ページの離脱確認などがネイティブのダイアログで開き、
+    /// CDPの応答線が止まって browser_* が「結果が返りません」で固まる
+    /// (自動化がまるごと凍る)。自動化なので既定は accept=true = 続行:
+    /// beforeunload は「移動」、confirm は OK、alert/prompt は閉じる。
+    /// Page を有効化して購読すると、以後ネイティブのダイアログは出ず
+    /// こちらが即座に閉じる。持っている間だけ効く (ドロップで購読解除)。
+    pub struct DialogArm {
+        pub receivers: Vec<(ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
+        pub webview: ICoreWebView2,
+    }
+
+    pub fn arm_dialogs(webview: &ICoreWebView2) -> Option<DialogArm> {
+        let wv = webview.clone();
+        let opening = subscribe(webview, "Page.javascriptDialogOpening", move |_v| {
+            call(&wv, "Page.handleJavaScriptDialog", r#"{"accept":true}"#);
+        })?;
+        // 購読を有効にするため Page を有効化 (screencast と重ねても冪等)
+        call(webview, "Page.enable", "{}");
+        Some(DialogArm {
+            receivers: vec![opening],
+            webview: webview.clone(),
         })
     }
 

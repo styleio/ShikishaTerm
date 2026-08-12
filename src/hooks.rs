@@ -778,9 +778,17 @@ impl HookEngine {
             shikisha
                 .set(
                     "browser_text",
+                    // 司令塔の制御ループ用: 読めないとき (無応答・タイムアウト等) は
+                    // 例外にせず nil を返す。1手の失敗でループごと落とさないため
+                    // (審判の安全網が回り続ける)。エラーはログにだけ残す
                     lua.create_function(move |_, (name, sel): (String, Value)| {
-                        c.browser_text(&name, &sel_of(&sel)?)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                        match c.browser_text(&name, &sel_of(&sel)?) {
+                            Ok(v) => Ok(v),
+                            Err(e) => {
+                                crate::append_hook_log(&format!("browser_text 読めず: {e}"));
+                                Ok(None)
+                            }
+                        }
                     })
                     .map_err(lerr)?,
                 )
@@ -791,9 +799,13 @@ impl HookEngine {
             shikisha
                 .set(
                     "browser_html",
-                    lua.create_function(move |_, name: String| {
-                        c.browser_html(&name)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    // browser_text と同じく、読めないときは例外にせず nil を返す
+                    lua.create_function(move |lua, name: String| match c.browser_html(&name) {
+                        Ok(h) => Ok(Value::String(lua.create_string(&h)?)),
+                        Err(e) => {
+                            crate::append_hook_log(&format!("browser_html 読めず: {e}"));
+                            Ok(Value::Nil)
+                        }
                     })
                     .map_err(lerr)?,
                 )

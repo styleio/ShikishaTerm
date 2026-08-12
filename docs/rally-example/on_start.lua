@@ -2,6 +2,7 @@
 -- ディレクトリ方式なので、このファイルの中身がそのまま on_start(tab, screen) の本体になる。
 
 -- 審判用の状態を初期化
+shikisha.set_var("rally_done", false)                    -- 決着したら true。以後 on_done は動かない
 shikisha.set_var("rally_round", 0)                       -- 実行した手数
 shikisha.set_var("rally_tok", 0)                         -- 概算コスト(やり取り文字数)
 shikisha.set_var("rally_t0", shikisha.epoch_ms())        -- 開始時刻(ミリ秒)
@@ -33,6 +34,7 @@ local prompt = table.concat({
   "",
   "【人間】ログイン/CAPTCHA/2段階認証など人手が要るときは、依頼文をこのファイルに書く:",
   "  " .. humanfile,
+  "  依頼は端的に(1〜2文)。詳しい手順は不要(人はブラウザ画面を見れば分かる)。",
   "",
   "終了の判定はこちら(審判)が自動で行います。あなたは完了宣言をしなくてよい。",
   "うまくいかない手は、次の手番で別の方法を " .. infile .. " に書いてください。",
