@@ -137,7 +137,7 @@ fn safe_workspace_path(
 }
 
 /// 自動化フォルダのパスを安全に解決する (拡張子チェックなし版)
-fn safe_dir_path(url: &str, config_path: &std::path::Path) -> Option<std::path::PathBuf> {
+fn safe_dir_path(url: &str, _config_path: &std::path::Path) -> Option<std::path::PathBuf> {
     let raw = url
         .split_once('?')?
         .1
@@ -156,7 +156,9 @@ fn safe_dir_path(url: &str, config_path: &std::path::Path) -> Option<std::path::
     }) {
         return None;
     }
-    Some(config_path.parent()?.join(rel))
+    // 本体 (main) の自動化ローダと同じ解決を使う。config 隣ではなく exe 隣を優先。
+    // これがズレると「GUIは未設定なのに実際は動く」「GUIで編集しても効かない」が起きる
+    Some(crate::resolve_data_path(&decoded))
 }
 
 /// マニュアルはexeに埋め込む。どこから起動しても必ず参照でき、

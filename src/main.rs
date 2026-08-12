@@ -2874,8 +2874,10 @@ fn open_settings(
     caps.browser_open(SETTINGS_TAB, &format!("{url}{query}"))
 }
 
-/// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する
-fn resolve_data_path(p: &str) -> std::path::PathBuf {
+/// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する。
+/// 自動化ディレクトリの解決に使う。設定GUI (webui) も同じ解決を使い、
+/// 「本体が動かす場所」と「GUIが読み書きする場所」がズレないようにする
+pub(crate) fn resolve_data_path(p: &str) -> std::path::PathBuf {
     if let Some(dir) = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
