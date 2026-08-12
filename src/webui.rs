@@ -616,6 +616,44 @@ fn handle(
             );
             req.respond(resp)?;
         }
+        // 最新のラリー結果をひとつのMarkdownにまとめてダウンロードさせる。
+        // 中身: 人が読む流れ(transcript) ＋ 判定 ＋ 実行Lua(record, 貼れば再現)。
+        // AI+AI 等どの司令塔でも、run フォルダに transcript.md/record.lua を残せば同じ口で落とせる
+        ("GET", "/api/rally/download") => match crate::exchange::latest_run() {
+            Some(dir) => {
+                let transcript =
+                    std::fs::read_to_string(dir.join("transcript.md")).unwrap_or_default();
+                let record = std::fs::read_to_string(dir.join("record.lua")).unwrap_or_default();
+                let mut md = String::new();
+                if transcript.trim().is_empty() {
+                    md.push_str("# SHIKISHA ラリー記録\n\n（記録がまだありません）\n");
+                } else {
+                    md.push_str(&transcript);
+                }
+                if !record.trim().is_empty() {
+                    md.push_str("\n\n## 実行Lua（貼れば再現）\n\n    ");
+                    md.push_str(&record.replace('\n', "\n    "));
+                    md.push('\n');
+                }
+                let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("rally");
+                let cd = format!("attachment; filename=\"rally-{name}.md\"");
+                let resp = Response::from_string(md)
+                    .with_header(
+                        Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"text/markdown; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    )
+                    .with_header(
+                        Header::from_bytes(&b"Content-Disposition"[..], cd.as_bytes()).unwrap(),
+                    );
+                req.respond(resp)?;
+            }
+            None => {
+                req.respond(Response::from_string("no rally").with_status_code(404))?;
+            }
+        },
         // ワークスペース定義ファイル (外部ファイル参照) の読み書き
         ("GET", "/api/workspace") => {
             let Some(p) = safe_workspace_path(req.url(), config_path) else {
@@ -1541,7 +1579,34 @@ function globalPane() {
         T["settings.secrets"]),
         el("span", {class:"hint"}, T["settings.secrets.hint"]))));
   box.append(secretsCard());
+  box.append(rallyResultCard());
   return box;
+}
+
+// 最新のラリー結果をダウンロードする。
+// 中身: 人が読む流れ(transcript) ＋ 判定 ＋ 実行Lua(貼れば再現)。
+// AI+AI の議論もこの1枚に流れと勝敗が残るので、後から人が確認できる
+function rallyResultCard() {
+  const btn = el("button", {class:"primary", onclick: downloadRally}, "最新のラリー結果をダウンロード");
+  return card("ラリー結果",
+    el("div", {class:"hint"},
+      "直近のラリー（ブラウザ操作／AI議論など）の流れ・判定・実行Luaを1つのMarkdownで保存します。貼れば再現できるLuaも同梱。"),
+    el("div", {class:"row", style:"margin-top:10px"}, btn));
+}
+
+async function downloadRally() {
+  try {
+    const r = await fetch("/api/rally/download", {headers:{"X-Token":TOKEN}});
+    if (!r.ok) { result("まだラリーの記録がありません。", true); return; }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "rally.md"; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    result("ラリー結果をダウンロードしました。");
+  } catch (e) {
+    result("ダウンロードに失敗しました: " + (e.message || e), true);
+  }
 }
 
 // 秘密 (GitHub Secrets 相当)。キーで参照し、値は保存したら二度と表示されない。

@@ -85,6 +85,19 @@ pub fn append(path: &Path, text: &str) -> std::io::Result<()> {
     writeln!(f, "{}", text.trim_end())
 }
 
+/// 一番新しい run フォルダを返す (更新時刻で最新)。結果ダウンロードで使う
+pub fn latest_run() -> Option<PathBuf> {
+    let rd = std::fs::read_dir(root()).ok()?;
+    rd.flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let m = e.metadata().and_then(|m| m.modified()).ok()?;
+            Some((m, e.path()))
+        })
+        .max_by_key(|(m, _)| *m)
+        .map(|(_, p)| p)
+}
+
 /// 起動時の掃除。更新が `days` 日より古い run フォルダ／ファイルを丸ごと削除する。
 /// 正常終了なら一時ファイルは既に消えているので、これは不正終了のゴミの救済
 pub fn sweep_old(days: u64) {

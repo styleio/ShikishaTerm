@@ -1408,11 +1408,20 @@ local function reset_budget()
   shikisha.set_var("rally_tok", 0)
 end
 
+-- 人が読む記録(transcript)に1項目追記する。ダウンロードで使う
+local function tx(entry)
+  local p = shikisha.get_var("rally_tx")
+  if p then shikisha.exchange_append(p, entry) end
+end
+
 function on_start(tab)
   local run = shikisha.exchange_new()
   shikisha.set_var("rally_run", run)
   shikisha.set_var("rally_record", run .. "/record.lua")
+  shikisha.set_var("rally_tx", run .. "/transcript.md")
   reset_budget()
+  tx("# SHIKISHA ラリー記録\n")
+  tx("ブラウザ操作モード（対象タブ: " .. BR .. "）\n")
   shikisha.send_to_tab(tab.index, table.concat({
     protocol(run),
     "",
@@ -1435,8 +1444,10 @@ function on_done(tab)
   -- 人手依頼ファイル
   local human = shikisha.exchange_take(run .. "/human.txt")
   if human and #human > 0 then
+    tx("\n### 人間へ依頼\n" .. human .. "\n")
     shikisha.show(BR)
     shikisha.browser_wait(BR, { ask = human, label = "できたら押す" })
+    tx("（人間が対応を完了）\n")
     shikisha.show(ai)
     shikisha.send_to_tab(ai, "対応しました。続けてください(次の1手を " .. infile .. " に)。")
     return
@@ -1460,14 +1471,20 @@ function on_done(tab)
     shikisha.exchange_append(shikisha.get_var("rally_record"), code)
     local n = (shikisha.get_var("rally_round") or 0) + 1
     shikisha.set_var("rally_round", n)
+    -- 人が読む記録に、実行した手を残す(4字下げ=Markdownのコード)
+    tx("\n### 手 " .. n .. "\n    " .. code:gsub("\n", "\n    ") .. "\n")
     for _ = 1, 12 do
       shikisha.sleep(150)
       local t = shikisha.browser_text(BR, "body")
       if t and #(t:gsub("%s", "")) > 0 then break end
     end
+    local body0 = shikisha.browser_text(BR, "body") or ""
+    tx("- 画面: " .. body0:sub(1, 400):gsub("%s+", " ") .. "\n")
     -- 審判(設定した停止条件)。成立したら終了コードを出して一区切り(待機に戻る)
     local v = judge(tab.output)
     if v then
+      tx("\n## 判定: " .. (v.outcome == "success" and "成功" or "失敗")
+        .. " (code=" .. (v.code or 0) .. ")\n" .. (v.reason or "") .. "\n")
       shikisha.show(v.outcome == "success" and ai or BR)
       shikisha.set_result(v.code or 0, v.reason or v.outcome)
       shikisha.send_to_tab(ai, "判定: " .. (v.reason or v.outcome)
