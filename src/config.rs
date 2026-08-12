@@ -370,6 +370,9 @@ pub struct WorkspaceSpec {
     /// 危険承知で全ての秘密を許可する
     #[serde(default)]
     pub secrets_allow_all: bool,
+    /// 停止条件 (審判)。ブラウザ操作モード等の内蔵司令塔が読む
+    #[serde(default)]
+    pub stops: Vec<StopCond>,
 }
 
 /// ワークスペース定義ファイル (workspaces/*.json) の中身
@@ -388,6 +391,95 @@ pub struct WorkspaceFile {
     pub secrets_allow: Vec<String>,
     #[serde(default)]
     pub secrets_allow_all: bool,
+    #[serde(default)]
+    pub stops: Vec<StopCond>,
+}
+
+/// 停止条件 (審判)。ワークスペース単位で持つ。上から評価し最初に成立したものが勝つ。
+/// 「この共同作業はいつ終わりか (成功/失敗)」の定義。参加者(タブ)をまたいで指定できる
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+pub struct StopCond {
+    /// 監視の種類: screen|css|xpath|console|rounds|time|tokens
+    pub when: String,
+    /// 監視するタブの id (screen/css/xpath/console 用。省略時は操作対象)
+    #[serde(default)]
+    pub tab: Option<String>,
+    /// 文字列パターン (screen=ブラウザ本文, console=タブ出力)
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// セレクタ (css/xpath 用。"#id" か xpath 文字列)
+    #[serde(default)]
+    pub sel: Option<String>,
+    /// しきい値 (rounds=回数, tokens=概算)
+    #[serde(default)]
+    pub max: Option<i64>,
+    /// 秒 (time 用)
+    #[serde(default)]
+    pub sec: Option<i64>,
+    /// 判定: "success" | "fail"
+    #[serde(default)]
+    pub outcome: String,
+    /// 終了コード
+    #[serde(default)]
+    pub code: i32,
+    /// 理由 (人が読む・記録に残る)
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// 停止条件の並びを、内蔵司令塔へ渡す Lua テーブルリテラルにする。
+/// 文字列は %q 相当で安全に引用する (Lua の string.format ではなくRust側で)
+pub fn stops_to_lua(stops: &[StopCond]) -> String {
+    fn q(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                _ => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+    let mut b = String::from("{\n");
+    for s in stops {
+        if s.when.trim().is_empty() {
+            continue;
+        }
+        b.push_str("  { when=");
+        b.push_str(&q(&s.when));
+        if let Some(t) = &s.tab {
+            b.push_str(", tab=");
+            b.push_str(&q(t));
+        }
+        if let Some(p) = &s.pattern {
+            b.push_str(", pattern=");
+            b.push_str(&q(p));
+        }
+        if let Some(sel) = &s.sel {
+            b.push_str(", sel=");
+            b.push_str(&q(sel));
+        }
+        if let Some(m) = s.max {
+            b.push_str(&format!(", max={m}"));
+        }
+        if let Some(sec) = s.sec {
+            b.push_str(&format!(", sec={sec}"));
+        }
+        let outcome = if s.outcome.is_empty() { "success" } else { &s.outcome };
+        b.push_str(", outcome=");
+        b.push_str(&q(outcome));
+        b.push_str(&format!(", code={}", s.code));
+        b.push_str(", reason=");
+        b.push_str(&q(s.reason.as_deref().unwrap_or("")));
+        b.push_str(" },\n");
+    }
+    b.push('}');
+    b
 }
 
 /// ブラウザの上に出す操作。どれを出すかだけを持つ。
@@ -536,6 +628,8 @@ pub struct Workspace {
     pub secrets_allow: Vec<String>,
     /// 危険承知で全ての秘密を許可する
     pub secrets_allow_all: bool,
+    /// 停止条件 (審判)
+    pub stops: Vec<StopCond>,
 }
 
 /// このタブはブラウザか。そうならURLを返す。
@@ -657,17 +751,19 @@ impl Config {
                     browsers: Vec::new(),
                     secrets_allow: Vec::new(),
                     secrets_allow_all: false,
+                    stops: Vec::new(),
                 });
             }
             return (out, errors);
         }
         for ws in &self.workspaces {
             #[allow(clippy::type_complexity)]
-            let (tab_defs, file_name, file_lua, file_secrets): (
+            let (tab_defs, file_name, file_lua, file_secrets, file_stops): (
                 Vec<TabConfig>,
                 Option<String>,
                 Option<String>,
                 (Vec<String>, bool),
+                Vec<StopCond>,
             ) = match &ws.file {
                 Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
                     Ok(p) => (
@@ -675,13 +771,14 @@ impl Config {
                         p.name,
                         p.automation.or(p.lua),
                         (p.secrets_allow, p.secrets_allow_all),
+                        p.stops,
                     ),
                     Err(e) => {
                         errors.push(format!("{}: {e:#}", ws.name));
                         continue;
                     }
                 },
-                None => (ws.tabs.clone(), None, None, (Vec::new(), false)),
+                None => (ws.tabs.clone(), None, None, (Vec::new(), false), Vec::new()),
             };
             let mut tabs = Vec::new();
             flatten(&tab_defs, 0, &mut tabs);
@@ -703,6 +800,8 @@ impl Config {
                     ws.secrets_allow.clone()
                 },
                 secrets_allow_all: ws.secrets_allow_all || file_secrets.1,
+                // config側の指定を優先し、無ければ定義ファイル側を使う
+                stops: if ws.stops.is_empty() { file_stops } else { ws.stops.clone() },
             });
         }
         (out, errors)

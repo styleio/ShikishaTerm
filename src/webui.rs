@@ -1079,6 +1079,12 @@ const PAGE: &str = r##"<!doctype html>
  .row > label:first-child { width:150px; flex:none; color:var(--muted); font-size:13px; }
  .hint { color:var(--muted); font-size:12px; }
  .grow { flex:1; min-width:180px; }
+ .stoprow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px;
+   margin:6px 0; border:1px solid var(--line); border-radius:8px; }
+ .stoprow input { width:auto; }
+ .stoprow input[type=number] { width:80px; }
+ .stoprow .arrow { color:var(--muted); }
+ #wsstopslist select { width:auto; }
 
  input[type=text], input[type=number], select, textarea {
    background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:7px;
@@ -1695,6 +1701,7 @@ function wsPane(ws) {
     e.append(bar);
     box.append(e);
   }
+  box.append(wsStopsCard(ws));
   box.append(wsSecretsCard(ws));
 
   box.append(card(T["settings.ws.share"],
@@ -1710,6 +1717,72 @@ function wsPane(ws) {
       }
     }}, T["settings.workspace.delete"])));
   return box;
+}
+
+// 停止条件(審判)。ワークスペース単位。上から評価し最初に成立したものが勝つ。
+// 「この共同作業をいつ終わりにするか(成功/失敗)」の定義
+function wsStopsCard(ws) {
+  ws.stops = ws.stops || [];
+  const list = el("div", {id:"wsstopslist"});
+  const redraw = () => {
+    list.textContent = "";
+    if (!ws.stops.length) list.append(el("div", {class:"hint"}, "（条件なし。ブラウザ操作モードは人間が判断＋安全網で自動停止）"));
+    ws.stops.forEach((s, i) => list.append(stopRow(ws, s, i, redraw)));
+  };
+  const add = el("button", {onclick:() => {
+    ws.stops.push({ when:"screen", outcome:"success", code:0 }); redraw(); refreshSave();
+  }}, "＋ 条件を追加");
+  const c = card("停止条件（審判）",
+    el("div", {class:"hint"},
+      "この共同作業をいつ終わりにするか。上から評価し、最初に成立したものが勝ちます。空でもブラウザ操作モードは「人間が判断＋暴走の安全網（回数40/時間15分/トークン）」で自動停止します。"),
+    list,
+    el("div", {class:"row", style:"margin-top:10px"}, add));
+  redraw();
+  return c;
+}
+
+function stopRow(ws, s, i, redraw) {
+  const set = (k, v) => { s[k] = v; refreshSave(); };
+  const sel = (val, opts, on) => {
+    const e = el("select", {});
+    for (const [v, label] of opts) { const o = el("option", {value:v}, label); if (val === v) o.selected = true; e.append(o); }
+    e.addEventListener("change", () => on(e.value));
+    return e;
+  };
+  const inp = (val, ph, type, on) => {
+    const e = el("input", type === "number" ? {type:"number", value:(val ?? "")} : {value:(val ?? ""), placeholder:ph||""});
+    if (type !== "number") e.style.minWidth = "150px";
+    e.addEventListener("input", () => on(type === "number" ? (parseInt(e.value, 10) || 0) : e.value));
+    return e;
+  };
+  const when = sel(s.when || "screen", [
+    ["screen","画面に文字列(ブラウザ本文)"],["css","要素が見える(CSS)"],["xpath","要素が見える(XPath)"],
+    ["console","AIの発言に文字列"],["rounds","往復回数"],["time","経過秒"],["tokens","概算コスト"],
+  ], v => { s.when = v; redraw(); refreshSave(); });
+
+  // 種類に応じて出す入力を変える
+  const dyn = [];
+  if (s.when === "screen" || s.when === "css" || s.when === "xpath" || s.when === "console") {
+    if (s.when !== "console")
+      dyn.push(inp(s.tab, "対象タブid(既定=操作対象)", "text", v => set("tab", v || null)));
+    if (s.when === "css" || s.when === "xpath")
+      dyn.push(inp(s.sel, s.when === "xpath" ? "//button[...]" : "#id", "text", v => set("sel", v)));
+    else
+      dyn.push(inp(s.pattern, "含まれる文字列", "text", v => set("pattern", v)));
+  } else if (s.when === "rounds" || s.when === "tokens") {
+    dyn.push(inp(s.max, "しきい値", "number", v => set("max", v)));
+  } else if (s.when === "time") {
+    dyn.push(inp(s.sec, "秒", "number", v => set("sec", v)));
+  }
+
+  const outcome = sel(s.outcome || "success", [["success","成功"],["fail","失敗"]], v => set("outcome", v));
+  const code = inp(s.code || 0, "code", "number", v => set("code", v));
+  const reason = inp(s.reason, "理由(任意)", "text", v => set("reason", v || null));
+  const rm = el("button", {class:"quiet", title:"削除", onclick:() => { ws.stops.splice(i, 1); redraw(); refreshSave(); }}, "×");
+
+  const row = el("div", {class:"stoprow"}, when, ...dyn,
+    el("span", {class:"arrow"}, "→"), outcome, code, reason, rm);
+  return row;
 }
 
 // このワークスペースのラリー(AI)が使ってよい秘密を絞る。既定は全拒否。
@@ -2252,13 +2325,15 @@ async function load() {
                  // 画面では触らないが、保存で消さないために持っておく
                  browsers:w.browsers || null,
                  secrets_allow: w.secrets_allow || [],
-                 secrets_allow_all: !!w.secrets_allow_all };
+                 secrets_allow_all: !!w.secrets_allow_all,
+                 stops: Array.isArray(w.stops) ? w.stops : [] };
     if (ws.file) {
       const f = await (await wsApi("GET", ws.file)).json().catch(() => ({}));
       ws.tabs = flatten(f.tabs, 0, []);
       if (!ws.automation) ws.automation = f.automation || f.lua || "";
       if (!ws.secrets_allow.length) ws.secrets_allow = f.secrets_allow || [];
       if (!ws.secrets_allow_all) ws.secrets_allow_all = !!f.secrets_allow_all;
+      if (!ws.stops.length && Array.isArray(f.stops)) ws.stops = f.stops;
     } else ws.tabs = flatten(w.tabs, 0, []);
     wss.push(ws);
   }
@@ -2295,6 +2370,9 @@ function payload() {
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
   delete out.lua; delete out.tabs;
 
+  // 停止条件は when が空の行を捨ててから保存する
+  const cleanStops = w => (w.stops || []).filter(s => s && s.when);
+
   // 別ファイルに切り出されたワークスペースは、そのファイルへ書く
   const files = [];
   for (const w of wss) {
@@ -2303,6 +2381,7 @@ function payload() {
     if (w.automation) body.automation = w.automation;
     if (w.secrets_allow && w.secrets_allow.length) body.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) body.secrets_allow_all = true;
+    const st = cleanStops(w); if (st.length) body.stops = st;
     files.push({ file:w.file, body });
   }
   out.workspaces = wss.map(w => {
@@ -2314,6 +2393,8 @@ function payload() {
     // ラリーが使ってよい秘密の許可リスト (既定は全拒否)
     if (w.secrets_allow && w.secrets_allow.length) o.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) o.secrets_allow_all = true;
+    // 停止条件(審判)。ファイル参照のワークスペースはファイル側に書いたので二重には出さない
+    if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
     return o;
   });
   return { out, files };

@@ -1347,14 +1347,42 @@ impl HookEngine {
     /// 1手ずつ in.lua に書く→実行→画面を返す、を繰り返す。AIが操作を書かず
     /// 報告したら一区切りとして次の入力を待つ。暴走は安全網で必ず止める。
     /// BR (操作対象ブラウザの id) は先頭に注入する
-    pub fn load_browser_agent(&mut self, browser: &str) -> Result<usize> {
-        let key = format!("<browser-agent:{browser}>");
+    pub fn load_browser_agent(&mut self, browser: &str, stops_lua: &str) -> Result<usize> {
+        let key = format!("<browser-agent:{browser}>{stops_lua}");
         if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
             return Ok(i);
         }
-        // 内蔵オーケストレータ (関数定義方式)。BR は下で注入
+        // 内蔵オーケストレータ (関数定義方式)。BR と STOPS は下で注入
         const SRC: &str = r##"
 local MAX_ROUNDS, MAX_SEC, MAX_TOK = 40, 900, 400000
+
+-- 審判: 設定した停止条件(STOPS)を上から評価し、成立した条件を返す(無ければnil)。
+-- screen/css/xpath はタブ(既定BR)を見る。console は今の手番のAI発言(screen_out)を見る
+local function judge(screen_out)
+  for _, s in ipairs(STOPS or {}) do
+    local hit = false
+    local target = s.tab or BR
+    if s.when == "screen" then
+      local ok, body = pcall(shikisha.browser_text, target, "body")
+      hit = ok and body ~= nil and s.pattern ~= nil and body:find(s.pattern, 1, true) ~= nil
+    elseif s.when == "css" or s.when == "xpath" then
+      local sel = (s.when == "xpath") and { xpath = s.sel } or s.sel
+      local ok, st = pcall(shikisha.browser_find, target, sel)
+      hit = ok and st == "visible"
+    elseif s.when == "console" then
+      hit = s.pattern ~= nil and (screen_out or ""):find(s.pattern, 1, true) ~= nil
+    elseif s.when == "rounds" then
+      hit = (shikisha.get_var("rally_round") or 0) >= (s.max or 0)
+    elseif s.when == "time" then
+      local t0 = shikisha.get_var("rally_t0") or shikisha.epoch_ms()
+      hit = (shikisha.epoch_ms() - t0) >= (s.sec or 0) * 1000
+    elseif s.when == "tokens" then
+      hit = (shikisha.get_var("rally_tok") or 0) >= (s.max or 0)
+    end
+    if hit then return s end
+  end
+  return nil
+end
 
 local function protocol(run)
   local infile = run .. "/in.lua"
@@ -1437,6 +1465,15 @@ function on_done(tab)
       local t = shikisha.browser_text(BR, "body")
       if t and #(t:gsub("%s", "")) > 0 then break end
     end
+    -- 審判(設定した停止条件)。成立したら終了コードを出して一区切り(待機に戻る)
+    local v = judge(tab.output)
+    if v then
+      shikisha.show(v.outcome == "success" and ai or BR)
+      shikisha.set_result(v.code or 0, v.reason or v.outcome)
+      shikisha.send_to_tab(ai, "判定: " .. (v.reason or v.outcome)
+        .. " (code=" .. (v.code or 0) .. ")。次の指示があればどうぞ。")
+      return
+    end
     -- 安全網(暴走保険)。ゴールごとに予算はリセットされる
     local t0 = shikisha.get_var("rally_t0") or shikisha.epoch_ms()
     if n >= MAX_ROUNDS or (shikisha.epoch_ms() - t0) >= MAX_SEC * 1000
@@ -1464,7 +1501,7 @@ function on_done(tab)
   end
 end
 "##;
-        let src = format!("local BR = {browser:?}\n{SRC}");
+        let src = format!("local BR = {browser:?}\nlocal STOPS = {stops_lua}\n{SRC}");
         self.load_source(&key, &src)
     }
 
@@ -1932,7 +1969,17 @@ mod tests {
         // 内蔵のブラウザ操作モードが読め、on_start が「操作プロトコル」を送ること。
         // ゴールは設定に持たず入力欄から与える方式なので、プロンプトに入力欄の案内が要る
         let mut e = HookEngine::new().unwrap();
-        let id = e.load_browser_agent("br").expect("内蔵司令塔が読めない");
+        // 設定した停止条件(審判)が Lua に注入されても読めること
+        let stops = crate::config::stops_to_lua(&[crate::config::StopCond {
+            when: "screen".into(),
+            tab: Some("br".into()),
+            pattern: Some("公開に進む".into()),
+            outcome: "success".into(),
+            code: 0,
+            reason: Some("エディタ表示".into()),
+            ..Default::default()
+        }]);
+        let id = e.load_browser_agent("br", &stops).expect("内蔵司令塔が読めない");
         e.set_tab(1, id);
         e.fire("on_start", &ctx(1, ""), None);
         let cmds = e.drain_commands();

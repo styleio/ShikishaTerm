@@ -2333,11 +2333,15 @@ fn build_engine(
             engine.set_workspace(id);
         }
     }
+    // 審判(停止条件)はワークスペース単位。内蔵司令塔へ Lua テーブルで渡す
+    let stops_lua = ws
+        .map(|w| config::stops_to_lua(&w.stops))
+        .unwrap_or_else(|| "{}".to_string());
     for (idx, auto) in &tab_luas {
         let id = match auto {
             TabAuto::Path(p) => load(&mut engine, p, errors),
             // ブラウザ操作モード: 内蔵の司令塔を対象ブラウザ向けに読み込む
-            TabAuto::Agent(br) => match engine.load_browser_agent(br) {
+            TabAuto::Agent(br) => match engine.load_browser_agent(br, &stops_lua) {
                 Ok(id) => Some(id),
                 Err(e) => {
                     errors.push(format!("ブラウザ操作モード({br}): {e:#}"));
@@ -3755,6 +3759,7 @@ mod tests {
             browsers: Vec::new(),
             secrets_allow: Vec::new(),
             secrets_allow_all: false,
+            stops: Vec::new(),
         }
     }
 
