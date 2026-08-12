@@ -1473,15 +1473,20 @@ function on_done(tab)
     shikisha.set_var("rally_round", n)
     -- 人が読む記録に、実行した手を残す(4字下げ=Markdownのコード)
     tx("\n### 手 " .. n .. "\n    " .. code:gsub("\n", "\n    ") .. "\n")
-    for _ = 1, 12 do
-      shikisha.sleep(150)
+    -- 遷移後、本文が出る＋判定が成立するまで短くポーリング。
+    -- ボタン等が遅れて描画される(late-render)停止条件を取りこぼさない。出たら即進む
+    local v = nil
+    for _ = 1, 10 do
+      shikisha.sleep(180)
       local t = shikisha.browser_text(BR, "body")
-      if t and #(t:gsub("%s", "")) > 0 then break end
+      if t and #(t:gsub("%s", "")) > 0 then
+        v = judge(tab.output)
+        if v then break end
+      end
     end
     local body0 = shikisha.browser_text(BR, "body") or ""
     tx("- 画面: " .. body0:sub(1, 400):gsub("%s+", " ") .. "\n")
     -- 審判(設定した停止条件)。成立したら終了コードを出して一区切り(待機に戻る)
-    local v = judge(tab.output)
     if v then
       tx("\n## 判定: " .. (v.outcome == "success" and "成功" or "失敗")
         .. " (code=" .. (v.code or 0) .. ")\n" .. (v.reason or "") .. "\n")
@@ -1528,6 +1533,7 @@ end
     /// on_done がそれを読み、記録(transcript)して次の参加者へ回す(round-robin)。
     /// 周回上限で審判(judge)へ渡し、審判の発言=裁定として終了。ユーザーはLuaを書かない。
     /// me/next/judge はタブの id、フラグと上限は下で注入する
+    #[allow(clippy::too_many_arguments)]
     pub fn load_discuss_agent(
         &mut self,
         me: &str,
@@ -1536,8 +1542,12 @@ end
         is_judge: bool,
         judge: Option<&str>,
         max_turns: usize,
+        agents_lua: &str,
+        stops_lua: &str,
+        verdict: &str,
     ) -> Result<usize> {
-        let key = format!("<discuss:{me}:{next}:{is_first}:{is_judge}:{max_turns}>");
+        let key =
+            format!("<discuss:{me}:{next}:{is_first}:{is_judge}:{max_turns}:{verdict}>{stops_lua}");
         if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
             return Ok(i);
         }
@@ -1557,14 +1567,39 @@ local function tx(entry)
   shikisha.exchange_append(shikisha.get_var("discuss_tx"), entry)
 end
 
+-- 集合stops(審判の自動判定)。各参加者の最新発言(discuss_says)を横断して評価する。
+-- when="console" + agents="all"/"any"/"majority" + pattern。成立した条件を返す
+local function agg_judge()
+  local says = shikisha.get_var("discuss_says") or {}
+  for _, s in ipairs(STOPS or {}) do
+    if s.when == "console" and s.agents and s.pattern then
+      local hit, total = 0, 0
+      for _, ag in ipairs(AGENTS) do
+        total = total + 1
+        local st = says[ag]
+        if st and st:find(s.pattern, 1, true) then hit = hit + 1 end
+      end
+      local ok = false
+      if s.agents == "all" then ok = (total > 0 and hit == total)
+      elseif s.agents == "any" then ok = (hit >= 1)
+      elseif s.agents == "majority" then ok = (hit * 2 > total) end
+      if ok then return s end
+    end
+  end
+  return nil
+end
+
 function on_start(tab)
   local run = ensure_run()
   local say = run .. "/say.txt"
   local lines
   if IS_JUDGE then
+    local ask = (MODE == "synthesis")
+      and "両者の強い点を統合した結論と理由を"
+      or  "勝者(どちらが優勢か)と理由を"
     lines = {
       "あなたは議論の審判 <" .. ME .. "> です。",
-      "議論がまとまったら、勝敗(または統合)と理由を **このファイルに** 書いてください:",
+      "裁定を求められたら、" .. ask .. " **このファイルに** 書いてください:",
       "  " .. say,
       "ルーブリック: 論理性・根拠・相手への応答。判定は意見なので理由を必ず添えること。",
       "順番(裁定を求められたとき)が来たら書いてください。",
@@ -1607,12 +1642,26 @@ function on_done(tab)
   tx("\n### " .. ME .. "（" .. r .. "）\n" .. msg .. "\n")
   local log = (shikisha.get_var("discuss_log") or "") .. "【" .. ME .. "】\n" .. msg .. "\n\n"
   shikisha.set_var("discuss_log", log)
+  -- 各参加者の最新発言を控える(集合stopsの材料)
+  local says = shikisha.get_var("discuss_says")
+  if not says then says = {}; shikisha.set_var("discuss_says", says) end
+  says[ME] = msg
 
   -- 審判の発言 = 裁定。ここで終了
   if IS_JUDGE then
     tx("\n## 判定（審判 " .. ME .. "）\n" .. msg .. "\n")
     shikisha.show(tab.index)
     shikisha.set_result(0, "審判が裁定しました")
+    shikisha.set_var("discuss_done", true)
+    return
+  end
+
+  -- 集合stops(全員合意/誰か中止/過半数 等)が成立したら、そこで決着
+  local agg = agg_judge()
+  if agg then
+    tx("\n## 判定（集合条件）: " .. (agg.outcome == "success" and "成功" or "失敗")
+      .. " (code=" .. (agg.code or 0) .. ")\n" .. (agg.reason or "") .. "\n")
+    shikisha.set_result(agg.code or 0, agg.reason or "集合条件が成立")
     shikisha.set_var("discuss_done", true)
     return
   end
@@ -1649,7 +1698,7 @@ end
             None => "nil".into(),
         };
         let src = format!(
-            "local ME={me:?}\nlocal NEXT={next:?}\nlocal IS_FIRST={is_first}\nlocal IS_JUDGE={is_judge}\nlocal JUDGE={judge_lua}\nlocal MAX_TURNS={max_turns}\n{SRC}"
+            "local ME={me:?}\nlocal NEXT={next:?}\nlocal IS_FIRST={is_first}\nlocal IS_JUDGE={is_judge}\nlocal JUDGE={judge_lua}\nlocal MAX_TURNS={max_turns}\nlocal AGENTS={agents_lua}\nlocal STOPS={stops_lua}\nlocal MODE={verdict:?}\n{SRC}"
         );
         self.load_source(&key, &src)
     }
@@ -2149,7 +2198,17 @@ mod tests {
         // ユーザーはLuaを書かない
         let mut e = HookEngine::new().unwrap();
         let a = e
-            .load_discuss_agent("ai1", "ai2", true, false, Some("ref"), 4)
+            .load_discuss_agent(
+                "ai1",
+                "ai2",
+                true,
+                false,
+                Some("ref"),
+                4,
+                r#"{"ai1","ai2"}"#,
+                "{}",
+                "winner",
+            )
             .expect("議論の内蔵司令塔が読めない");
         e.set_tab(1, a);
         e.fire("on_start", &ctx(1, ""), None);

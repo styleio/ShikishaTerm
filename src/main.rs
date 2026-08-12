@@ -2384,6 +2384,15 @@ fn build_engine(
             let n = agents.len();
             if n >= 2 {
                 let max_turns = (d.max_rounds.max(1) as usize) * n;
+                // 参加者一覧を Lua のリストリテラルにして司令塔へ渡す (集合stopsで使う)
+                let agents_lua = format!(
+                    "{{{}}}",
+                    agents
+                        .iter()
+                        .map(|a| format!("{a:?}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
                 for (i, id) in agents.iter().enumerate() {
                     let Some(pane) = pane_of_id(w, id) else {
                         errors.push(format!("議論: タブ '{id}' が見つかりません"));
@@ -2397,6 +2406,9 @@ fn build_engine(
                         false,
                         d.judge.as_deref(),
                         max_turns,
+                        &agents_lua,
+                        &stops_lua,
+                        &d.verdict,
                     ) {
                         Ok(sid) => engine.set_tab(pane, sid),
                         Err(e) => errors.push(format!("議論({id}): {e:#}")),
@@ -2404,7 +2416,9 @@ fn build_engine(
                 }
                 if let Some(j) = d.judge.as_deref().filter(|s| !s.trim().is_empty()) {
                     match pane_of_id(w, j) {
-                        Some(pane) => match engine.load_discuss_agent(j, j, false, true, None, max_turns) {
+                        Some(pane) => match engine.load_discuss_agent(
+                            j, j, false, true, None, max_turns, &agents_lua, &stops_lua, &d.verdict,
+                        ) {
                             Ok(sid) => engine.set_tab(pane, sid),
                             Err(e) => errors.push(format!("議論(審判 {j}): {e:#}")),
                         },

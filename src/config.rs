@@ -416,6 +416,9 @@ pub struct DiscussSpec {
     /// 審判(レフェリー)のタブ id。省略時は周回上限で「議論終了」として畳む
     #[serde(default)]
     pub judge: Option<String>,
+    /// 審判の出し方: "winner"(勝敗) / "synthesis"(統合)。既定は winner
+    #[serde(default = "default_verdict")]
+    pub verdict: String,
 }
 
 fn default_order() -> String {
@@ -423,6 +426,9 @@ fn default_order() -> String {
 }
 fn default_rounds() -> u32 {
     6
+}
+fn default_verdict() -> String {
+    "winner".into()
 }
 
 /// 停止条件 (審判)。ワークスペース単位で持つ。上から評価し最初に成立したものが勝つ。
