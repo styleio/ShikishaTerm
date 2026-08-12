@@ -21,6 +21,7 @@ mod caps;
 mod config;
 mod crypto;
 mod detect;
+mod exchange;
 mod hooks;
 mod i18n;
 mod netaddr;
@@ -81,6 +82,9 @@ fn main() -> Result<()> {
     // 旧配置 (ルート直下の config.json) を config フォルダへ移す (一度だけ)。
     // 読み込みより前に済ませないと、移行前の空設定で起動してしまう
     config::migrate_legacy_config();
+    // ラリーの受け渡し置き場 (exchange) の掃除。不正終了で残った古い run フォルダを
+    // 起動時に回収する (正常時の一時ファイルは消費時に消えている)。30日より古いもの
+    exchange::sweep_old(30);
     // WebView2 のユーザーデータ (Cookie・キャッシュ等) の置き場を設定から決める。
     // 既定はローカル (%LOCALAPPDATA%) — Drive同期フォルダに置くとキャッシュが
     // 延々と同期され通知や衝突を招くため。最初のWebViewが作られる前に指定する

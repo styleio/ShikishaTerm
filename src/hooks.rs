@@ -311,6 +311,13 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             })?,
         )?;
     }
+    // AIが書く1行Luaでは bare 名 (browser_go(...)) で呼べるのが自然。
+    // shikisha.* と同じ関数を、サンドボックス env の素のグローバルにも置く
+    // (新しい能力は増えない。同じ関数の別名にすぎない)。プロンプトの表記とも一致する
+    for pair in sh.pairs::<String, Value>() {
+        let (k, v) = pair?;
+        env.set(k, v)?;
+    }
     env.set("shikisha", sh)?;
     Ok(env)
 }
@@ -996,6 +1003,20 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
+            // 経過時間の計測用。UNIXエポックからのミリ秒。審判の time 停止条件で使う
+            // (now は表示・ファイル名向けで %s を持たないため、数値の時計を別に出す)
+            shikisha
+                .set(
+                    "epoch_ms",
+                    lua.create_function(|_, ()| {
+                        Ok(std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
         }
         {
             let c = Rc::clone(&commands);
@@ -1108,6 +1129,55 @@ impl HookEngine {
                     "record",
                     lua.create_function(|_, text: String| {
                         rally_record_append(&text).map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // ラリーの受け渡し置き場 (exchange)。AIが書いた生Luaを「画面を読む」のではなく
+            // ファイルからバイト正確に受け取るための橋。司令塔専用 (サンドボックスには出さない)。
+            // exchange_new: run 用フォルダを作りパスを返す (前方スラッシュ正規化)
+            shikisha
+                .set(
+                    "exchange_new",
+                    lua.create_function(|_, ()| {
+                        crate::exchange::new_run()
+                            .map(|p| p.display().to_string().replace('\\', "/"))
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // exchange_take: ファイルを読んで削除し中身を返す (無ければ nil)。一時ファイルの消費
+            shikisha
+                .set(
+                    "exchange_take",
+                    lua.create_function(|_, path: String| {
+                        Ok(crate::exchange::take(std::path::Path::new(&path)))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // exchange_append: 記録 (record.lua) に1手ぶん追記する
+            shikisha
+                .set(
+                    "exchange_append",
+                    lua.create_function(|_, (path, text): (String, String)| {
+                        crate::exchange::append(std::path::Path::new(&path), &text)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // lint: Luaの構文チェックだけ行う (実行はしない)。壊れていればエラー文字列、健全なら nil。
+            // 実際の権限封じは run_scoped の環境が実行時に担保する
+            shikisha
+                .set(
+                    "lint",
+                    lua.create_function(|lua, code: String| match lua.load(&code).into_function() {
+                        Ok(_) => Ok(Value::Nil),
+                        Err(e) => Ok(Value::String(lua.create_string(e.to_string())?)),
                     })
                     .map_err(lerr)?,
                 )
@@ -1779,35 +1849,36 @@ mod tests {
     #[test]
     fn rally_example_orchestrator_parses_and_runs() {
         let _g = RALLY_FILE_LOCK.lock().unwrap();
-        // 雛形 (docs/rally-example) が構文的に読め、開始と完了の要が動くこと
+        // 雛形 (docs/rally-example) が構文的に読め、開始と審判の要が動くこと
         let dir = std::path::Path::new("docs/rally-example");
         let mut e = HookEngine::new().unwrap();
         let id = e.load_path(dir).expect("雛形が読めない (構文エラー?)");
         e.set_base(id);
 
-        // on_start: 目的とプロトコルをAIへ送る
+        // on_start: ファイル受け渡しのプロトコルをAIへ送る (画面ではなく in.lua に書かせる)
         e.fire("on_start", &ctx(1, ""), None);
         let cmds = e.drain_commands();
         assert!(
             cmds.iter().any(|c| matches!(c,
-                Command::SendPrompt { text, .. } if text.contains("shikisha-lua"))),
-            "on_start がプロトコルを送っていない: {cmds:?}"
+                Command::SendPrompt { text, .. }
+                    if text.contains("in.lua") && text.contains("browser_go"))),
+            "on_start がファイル受け渡しのプロトコルを送っていない: {cmds:?}"
         );
 
-        // on_done: 完了マーカーを解析して終了コードにする (チェーン中なので反応する)
-        let out = "やりました。\n```shikisha-done\ncode = 0\nreason = 投稿できた\n```\n";
-        let mut c = ctx(1, out);
+        // on_done: 審判の安全網が終了コードを出す (ブラウザ無しでも決定的に効く)。
+        // 巨大な出力で概算コスト(tokens)を一気に超えさせ、code=125 で停止することを見る
+        let huge = "x".repeat(300_001);
+        let mut c = ctx(1, &huge);
         c.chain_depth = 1;
         e.fire("on_done", &c, None);
         let cmds = e.drain_commands();
         assert!(
-            cmds.iter().any(|c| matches!(c,
-                Command::SetResult { code: 0, reason, .. } if reason.contains("投稿"))),
-            "on_done が完了マーカーを終了コードにできていない: {cmds:?}"
+            cmds.iter().any(|c| matches!(c, Command::SetResult { code: 125, .. })),
+            "審判(tokens上限)が終了コードを出していない: {cmds:?}"
         );
 
         // 人間が始めた会話 (chain_depth=0) には反応しない
-        e.fire("on_done", &ctx(1, out), None);
+        e.fire("on_done", &ctx(1, ""), None);
         assert!(e.drain_commands().is_empty(), "人間の入力に自動反応してはいけない");
     }
 

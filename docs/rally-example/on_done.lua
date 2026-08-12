@@ -1,64 +1,71 @@
--- AIの手番が終わった。出力を解析して1手進める (AIセッションタブの on_done)。
+-- AIの手番が終わった。受け渡しファイルを読み、実行し、審判で終了を判定する (AIタブの on_done)。
 -- ディレクトリ方式なので、このファイルの中身がそのまま on_done(tab, screen) の本体になる。
 
 -- 人間が始めた会話には反応しない(自己ループ・乗っ取り防止)。
 -- ラリー中は send_to_tab で往復するのでチェーンは1以上になる。
 if tab.chain_depth == 0 then return end
 
-local out = tab.output or ""
 local br = RALLY.browser
 local ai = tab.index
+local run = shikisha.get_var("rally_run")
+if not run then return end
+local infile = run .. "/in.lua"
+local humanfile = run .. "/human.txt"
 
--- 1) 完了マーカー？ → 終了コードを記録して終わる
-local done = out:match("```shikisha%-done(.-)```")
-if done then
-  local code = tonumber(done:match("code%s*=%s*(%-?%d+)")) or 0
-  local reason = done:match("reason%s*=%s*(.-)%s*$")
-    or done:match("reason%s*=%s*(.-)\n") or ""
-  shikisha.show(ai)
-  shikisha.set_result(code, reason)
-  return
-end
+-- 概算コスト(やり取り文字数)を積む。tokens 停止条件の材料
+shikisha.set_var("rally_tok", (shikisha.get_var("rally_tok") or 0) + #(tab.output or ""))
 
--- 2) 人間依頼？ → ブラウザを見せて帯を出し、押されるまで待つ
-local human = out:match("«HUMAN»%s*([^\n]+)")
-if human then
+-- 1) 人間依頼ファイル？ → ブラウザを見せて帯を出し、押されるまで待つ
+local human = shikisha.exchange_take(humanfile)
+if human and #human > 0 then
   shikisha.show(br)
   shikisha.browser_wait(br, { ask = human, label = "できたら押す" })
   shikisha.show(ai)
-  shikisha.send_to_tab(ai, "人間が対応を終えました。続けてください。")
+  shikisha.send_to_tab(ai, "人間が対応を終えました。続けてください。次の1手を " .. infile .. " に書いてください。")
   return
 end
 
--- 3) Luaブロック？ → サンドボックスで実行
-local code = out:match("```shikisha%-lua%s*(.-)```")
-if not code then
-  shikisha.send_to_tab(ai,
-    "書式が読めません。```shikisha-lua のLuaブロックか ```shikisha-done の完了マーカーを、1つだけ出してください。")
+-- 2) 操作ファイル？ → LINT(構文) → サンドボックス実行 → 記録
+local code = shikisha.exchange_take(infile)
+if code and #code > 0 then
+  local lint_err = shikisha.lint(code)
+  if lint_err then
+    shikisha.send_to_tab(ai, table.concat({
+      "書いてくれたLuaが構文エラーでした:",
+      lint_err,
+      "直して " .. infile .. " に書き直してください。",
+    }, "\n"))
+    return
+  end
+  -- 実行を観戦できるように: ブラウザへ切替 → 少し待つ → 実行
+  shikisha.show(br)
+  shikisha.sleep(400)
+  local err = shikisha.run_scoped(br, code)
+  if err then
+    shikisha.show(ai)
+    shikisha.send_to_tab(ai, table.concat({
+      "実行でエラーになりました:",
+      err,
+      "別の手を " .. infile .. " に書いてください。",
+    }, "\n"))
+    return
+  end
+  -- 成功した手だけ記録する(貼れば再現できるよう、鍵名のまま積む)
+  shikisha.exchange_append(shikisha.get_var("rally_record"), code)
+  shikisha.set_var("rally_round", (shikisha.get_var("rally_round") or 0) + 1)
+  shikisha.sleep(600)                                              -- 結果を目視できるよう少し待つ
+end
+
+-- 3) 審判: 停止条件を評価。成立したら終了コードを記録して終わる
+local verdict = RALLY_judge(tab.output)
+if verdict then
+  shikisha.show(verdict.outcome == "success" and ai or br)
+  shikisha.set_result(verdict.code or 0, verdict.reason or "")
   return
 end
 
--- 手数の上限(暴走ガード)。max_chain とは別に、ここでも数える
-local step = (shikisha.get_var("rally_step") or 0) + 1
-shikisha.set_var("rally_step", step)
-if step > RALLY.max_steps then
-  shikisha.set_result(2, "手数の上限(" .. RALLY.max_steps .. ")に達しました")
-  return
-end
-
--- 実行を観戦できるように: ブラウザへ切替 → 少し待つ → サンドボックス実行 → 記録
-shikisha.show(br)
-shikisha.sleep(400)                 -- 画面が切り替わってから動かす(人が目で追える)
-local err = shikisha.run_scoped(br, code)
-shikisha.record(code)               -- 再生用に、実行したLuaを鍵名のまま積む
-shikisha.sleep(600)                 -- 結果を目視できるよう少し待つ
-
--- 状態を集めてAIへ返す(次の手番へ)
+-- 4) まだ終わらない → 今の画面テキストを返して次の手番へ
 shikisha.show(ai)
-if err then
-  shikisha.send_to_tab(ai, "実行でエラーになりました:\n" .. err .. "\n別の手を出してください。")
-  return
-end
 local text = shikisha.browser_text(br, "body") or ""
 if #text > RALLY.screen_chars then
   text = text:sub(1, RALLY.screen_chars) .. "…(以下略)"
@@ -68,5 +75,5 @@ shikisha.send_to_tab(ai, table.concat({
   "----",
   text,
   "----",
-  "次の1手を出してください。達成/失敗が判断できたら ```shikisha-done を。",
+  "次の1手を " .. infile .. " に書いてください。目的: " .. RALLY.goal,
 }, "\n"))
