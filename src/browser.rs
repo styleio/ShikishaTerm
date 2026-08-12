@@ -208,6 +208,8 @@ pub enum Cmd {
         name: String,
         url: String,
         rect: (i32, i32, i32, i32),
+        /// このページのデータ保存 (プロファイル / プライベート)
+        profile: BrowserProfile,
     },
     /// 置いたページの場所と大きさを決める。幅か高さが0なら隠す
     ChildBounds {
@@ -542,6 +544,80 @@ pub fn is_openable(url: &str) -> bool {
     scheme_ok && has_host && !u.contains(['\n', '\r', ' '])
 }
 
+/// ブラウザのデータ保存の指定。プロファイル分離(ログインの箱)とプライベート(使い捨て)を
+/// 1つで表す。private が true のときは name を使わず、閉じたら消える一時領域を使う。
+///
+/// wry の WebContext は「データフォルダ」を1つ受け取る。同じフォルダ＝同じ Cookie/ログイン、
+/// 別フォルダ＝別プロファイル。プライベートはユニークな一時フォルダを渡すだけ (wry公式ドキュメント
+/// 同旨: 通常タブ用の context と private/incognito タブ用の context を分ける)。
+#[derive(Clone, Debug)]
+pub struct BrowserProfile {
+    /// プロファイル名 ("default" 等)。private=true のときは無視
+    pub name: String,
+    /// 使い捨て。true なら履歴・Cookie を残さない一時フォルダで開く
+    pub private: bool,
+}
+
+impl BrowserProfile {
+    /// 名前とプライベート指定から作る。空名は "default" に寄せる
+    pub fn new(name: &str, private: bool) -> Self {
+        let n = name.trim();
+        Self {
+            name: if n.is_empty() { "default".into() } else { n.to_string() },
+            private,
+        }
+    }
+    /// 既定 (共有の "default" プロファイル、永続)
+    pub fn shared_default() -> Self {
+        Self { name: "default".into(), private: false }
+    }
+}
+
+/// ブラウザプロファイルの置き場。WebView2 のデータ(SQLite・キャッシュ)は重く、
+/// Drive同期と喧嘩するので、exchange と同じ %LOCALAPPDATA% 配下に置く (アプリ本体の隣には置かない)
+fn profiles_root() -> std::path::PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("ShikishaTerm").join("browser-profiles")
+}
+
+/// プロファイル名を安全なフォルダ名に直す (パス区切りや .. を除く)。空なら "default"
+fn sanitize_profile(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .collect();
+    let s = s.trim_matches('.').to_string();
+    if s.is_empty() { "default".into() } else { s }
+}
+
+/// プライベート用の一時フォルダ名の連番 (同一ミリ秒でも衝突しない)
+static PRIVATE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// プロファイル指定に対応するデータフォルダを返す (作成もする)。
+/// private の場合はユニークな一時フォルダ (呼ぶたびに別)
+fn profile_dir(p: &BrowserProfile) -> std::path::PathBuf {
+    let dir = if p.private {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let n = PRIVATE_SEQ.fetch_add(1, Ordering::Relaxed);
+        profiles_root().join("_private").join(format!("{ms:013}-{n:04}"))
+    } else {
+        profiles_root().join(sanitize_profile(&p.name))
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// 起動時に、前回の異常終了で残ったプライベート領域を一掃する。
+/// プライベートは本来「閉じたら消える」ので、残っていれば全部ゴミ
+pub fn sweep_private() {
+    let _ = std::fs::remove_dir_all(profiles_root().join("_private"));
+}
+
 impl Browser {
     /// 窓を開いて、指示を受け付ける状態にする
     pub fn spawn(url: &str, title: &str) -> Result<Self> {
@@ -706,7 +782,13 @@ impl Browser {
     /// 別窓にすると、所有関係も位置の追従も、
     /// Windows Terminal のタブ切替での露出も、全部こちらの持ち物になる。
     /// 同じ窓に入れれば、どれも起きない
-    pub fn open_child(&self, name: &str, url: &str, rect: (i32, i32, i32, i32)) -> Result<()> {
+    pub fn open_child(
+        &self,
+        name: &str,
+        url: &str,
+        rect: (i32, i32, i32, i32),
+        profile: BrowserProfile,
+    ) -> Result<()> {
         if !is_openable(url) {
             return Err(anyhow!("開けないURLです: {url}"));
         }
@@ -714,6 +796,7 @@ impl Browser {
             name: name.to_string(),
             url: url.to_string(),
             rect,
+            profile,
         })
     }
 
@@ -1068,7 +1151,7 @@ fn run_window(
     use tao::platform::run_return::EventLoopExtRunReturn;
     use tao::platform::windows::EventLoopBuilderExtWindows;
     use tao::window::WindowBuilder;
-    use wry::WebViewBuilder;
+    use wry::{WebContext, WebViewBuilder};
 
     // TUIの描画ループとは別スレッドなので、メインスレッド縛りを外す
     let mut ev_loop = EventLoopBuilder::<Cmd>::with_user_event()
@@ -1101,6 +1184,13 @@ fn run_window(
 
     // 同じ窓に置いたページたち。名前で引く
     let mut children: std::collections::HashMap<String, wry::WebView> =
+        std::collections::HashMap::new();
+    // プロファイルごとの WebContext。データフォルダ単位で1つ (同じ名前のタブは共有)。
+    // Windows では生成後は不要だが、保持しても害は無いのでフォルダ鍵で持っておく
+    let mut web_ctxs: std::collections::HashMap<std::path::PathBuf, WebContext> =
+        std::collections::HashMap::new();
+    // プライベートで置いた子の一時フォルダ (子名→フォルダ)。閉じるときに消す
+    let mut ephemeral_dirs: std::collections::HashMap<String, std::path::PathBuf> =
         std::collections::HashMap::new();
 
     // 画面中継。対象ごとに1つ。持っている間だけフレームが届く
@@ -1169,8 +1259,20 @@ fn run_window(
                         );
                     }
                 }
-                Cmd::AddChild { name, url, rect } => {
+                Cmd::AddChild { name, url, rect, profile } => {
                     let bounds = to_rect(rect);
+                    // このページのデータ保存先 (プロファイル/プライベート) を決める。
+                    // 同じフォルダ＝同じ Cookie/ログイン、別フォルダ＝別プロファイル。
+                    // "default" も含め全タブが browser-profiles/<名前> に分離される
+                    // (Chromeの「人物」)。プライベートは呼ぶたびユニークな一時フォルダに
+                    // なり、閉じるとき消す。
+                    let data_dir = profile_dir(&profile);
+                    if profile.private {
+                        ephemeral_dirs.insert(name.clone(), data_dir.clone());
+                    }
+                    let ctx = web_ctxs
+                        .entry(data_dir.clone())
+                        .or_insert_with(|| WebContext::new(Some(data_dir.clone())));
                     // 子にも主画面と同じ道具を積む。
                     // 積まないと、置いたページは映っているだけになる
                     let ipc = ev_tx.clone();
@@ -1183,7 +1285,7 @@ fn run_window(
                     let nav_who = name.clone();
                     let fin_tx = ev_tx.clone();
                     let fin_who = name.clone();
-                    match WebViewBuilder::new()
+                    match WebViewBuilder::new_with_web_context(ctx)
                         .with_url(&url)
                         .with_bounds(bounds)
                         .with_initialization_script(INIT_JS)
@@ -1245,7 +1347,14 @@ fn run_window(
                 Cmd::RemoveChild { name } => {
                     children.remove(&name);
                     dialogs.remove(&Some(name.clone()));
-                    auths.remove(&Some(name));
+                    auths.remove(&Some(name.clone()));
+                    // プライベートで置いた子なら、その使い捨てフォルダを片付ける。
+                    // WebView2 がロックを離すのに一拍かかることがあるので best-effort
+                    // (取りこぼしは起動時の sweep_private が回収する)
+                    if let Some(dir) = ephemeral_dirs.remove(&name) {
+                        web_ctxs.remove(&dir);
+                        let _ = std::fs::remove_dir_all(&dir);
+                    }
                 }
                 Cmd::Focus { to } => {
                     if let Some(v) = target(&webview, &children, &to) {
@@ -1880,7 +1989,7 @@ mod tests {
     #[ignore]
     fn a_page_can_sit_inside_the_window() {
         let b = Browser::spawn(&serve(PAGE), "child probe").expect("窓が開かない");
-        b.open_child("side", "https://example.com/", (400, 0, 400, 500))
+        b.open_child("side", "https://example.com/", (400, 0, 400, 500), BrowserProfile::shared_default())
             .expect("置けない");
         std::thread::sleep(std::time::Duration::from_secs(3));
         // 場所を変えられる

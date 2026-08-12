@@ -386,8 +386,14 @@ impl Capabilities {
         }
     }
 
-    /// ブラウザを開く (同じ名前があれば、そこで移動する)
-    pub fn browser_open(&self, name: &str, url: &str) -> Result<()> {
+    /// ブラウザを開く (同じ名前があれば、そこで移動する)。
+    /// profile はデータ保存の指定 (プロファイル名 / プライベート)
+    pub fn browser_open(
+        &self,
+        name: &str,
+        url: &str,
+        profile: crate::browser::BrowserProfile,
+    ) -> Result<()> {
         // 窓があるなら、その中に置く。別窓にすると位置も重なり順も自前になる
         let host = self
             .host
@@ -396,7 +402,7 @@ impl Capabilities {
             .map(std::rc::Rc::clone)
             .ok_or_else(|| anyhow::anyhow!("ブラウザを置く窓がありません"))?;
         let ws = self.ws.get();
-        host.open_child(&Self::key(ws, name), url, self.area.get())?;
+        host.open_child(&Self::key(ws, name), url, self.area.get(), profile)?;
         let mut hosted = self.hosted.borrow_mut();
         if !hosted.iter().any(|(w, x)| *w == ws && x == name) {
             hosted.push((ws, name.to_string()));

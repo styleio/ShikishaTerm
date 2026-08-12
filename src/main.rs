@@ -85,6 +85,9 @@ fn main() -> Result<()> {
     // ラリーの受け渡し置き場 (exchange) の掃除。不正終了で残った古い run フォルダを
     // 起動時に回収する (正常時の一時ファイルは消費時に消えている)。30日より古いもの
     exchange::sweep_old(30);
+    // プライベート(使い捨て)ブラウザの一時領域を一掃する。閉じたら消える建前なので、
+    // 前回の異常終了で残っていれば全部ゴミ
+    browser::sweep_private();
     // WebView2 のユーザーデータ (Cookie・キャッシュ等) の置き場を設定から決める。
     // 既定はローカル (%LOCALAPPDATA%) — Drive同期フォルダに置くとキャッシュが
     // 延々と同期され通知や衝突を招くため。最初のWebViewが作られる前に指定する
@@ -2586,7 +2589,11 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             caps.note_declared(&b.id);
             continue;
         }
-        match caps.browser_open(&b.id, &b.url) {
+        let profile = browser::BrowserProfile::new(
+            b.browser_profile.as_deref().unwrap_or_default(),
+            b.private,
+        );
+        match caps.browser_open(&b.id, &b.url, profile) {
             Ok(()) => caps.note_declared(&b.id),
             Err(e) => errors.push(format!("ブラウザ {}: {e:#}", b.id)),
         }
@@ -2605,7 +2612,11 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             .or_else(|| ft.cfg.name.clone())
             .unwrap_or_else(|| "browser".into());
         if !already(&name) {
-            if let Err(e) = caps.browser_open(&name, &url) {
+            let profile = browser::BrowserProfile::new(
+                ft.cfg.browser_profile.as_deref().unwrap_or_default(),
+                ft.cfg.private,
+            );
+            if let Err(e) = caps.browser_open(&name, &url, profile) {
                 errors.push(format!("ブラウザ {name}: {e:#}"));
                 continue;
             }
@@ -2997,7 +3008,12 @@ fn open_settings(
             u
         }
     };
-    caps.browser_open(SETTINGS_TAB, &format!("{url}{query}"))
+    // 設定画面はローカルのUIページ。Cookieを持たないので共有の default で十分
+    caps.browser_open(
+        SETTINGS_TAB,
+        &format!("{url}{query}"),
+        browser::BrowserProfile::shared_default(),
+    )
 }
 
 /// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する。

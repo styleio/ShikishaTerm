@@ -213,9 +213,13 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             )?;
         }};
     }
-    bind!("browser_open", (String, String), |lua_, c, al, (name, url)| {
+    bind!("browser_open", (String, String, Option<String>, Option<bool>), |lua_, c, al, (name, url, profile, private)| {
         guard(&name, &al)?;
-        c.browser_open(&name, &url)
+        let prof = crate::browser::BrowserProfile::new(
+            profile.as_deref().unwrap_or_default(),
+            private.unwrap_or(false),
+        );
+        c.browser_open(&name, &url, prof)
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
     bind!("browser_go", (String, String, Option<String>), |lua_, c, al, (name, what, url)| {
@@ -667,8 +671,12 @@ impl HookEngine {
             shikisha
                 .set(
                     "browser_open",
-                    lua.create_function(move |_, (name, url): (String, String)| {
-                        c.browser_open(&name, &url)
+                    lua.create_function(move |_, (name, url, profile, private): (String, String, Option<String>, Option<bool>)| {
+                        let prof = crate::browser::BrowserProfile::new(
+                            profile.as_deref().unwrap_or_default(),
+                            private.unwrap_or(false),
+                        );
+                        c.browser_open(&name, &url, prof)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,

@@ -576,6 +576,12 @@ pub struct BrowserConfig {
     pub id: String,
     /// 最初に開くURL。http/https のみ
     pub url: String,
+    /// ブラウザのプロファイル名 (省略時 "default")。private が true なら無視
+    #[serde(default)]
+    pub browser_profile: Option<String>,
+    /// プライベート(使い捨て)ブラウザ
+    #[serde(default)]
+    pub private: bool,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -630,6 +636,15 @@ pub struct TabConfig {
     /// ブラウザのタブの下に出す帯 (文言とボタンの字)
     #[serde(default)]
     pub ask: Option<AskSpec>,
+    /// ブラウザのプロファイル名 (Cookie・ログインの箱)。省略時は "default"。
+    /// 同じ名前のタブ同士でログイン状態を共有する。Chrome の「人物」と同じ発想。
+    /// private が true のときは無視される
+    #[serde(default)]
+    pub browser_profile: Option<String>,
+    /// プライベート(使い捨て)ブラウザ。true なら Cookie・履歴を残さない一時領域で
+    /// 開き、閉じたら消す。このとき browser_profile は使われない
+    #[serde(default)]
+    pub private: bool,
     /// 表示上の子タブ (転送関係はLuaが決める。ここでは階層表示のみ)
     #[serde(default)]
     pub children: Vec<TabConfig>,

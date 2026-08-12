@@ -1552,6 +1552,7 @@ function renderNav() {
 
 const newTab = (o = {}) => Object.assign(
   {name:"", id:"", command:"", profile:"", automation:"", locked:false, auto_restart:false,
+   browser_profile:"", private:false,
    cwd:"", encoding:"", scrollback:"", log:false, depth:0}, o);
 
 // 名前もコマンドも空のタブ (作りかけ) の番号。無ければ -1。
@@ -2284,6 +2285,32 @@ function kindPanel(t, cmdInput, rebuild) {
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.browser.nav.hint"])));
 
+    // プロファイル(Cookie・ログインの箱)とプライベート(使い捨て)。
+    // 既定は "default"。名前を変えればログインを分けられる(Chromeの「人物」)。
+    // プライベートにチェックすると名前欄は隠れ、内部で使い捨て領域が使われる
+    const profRow = el("div", {class:"row"});
+    const profInput = el("input", {type:"text", class:"mono", style:"width:220px", placeholder:"default"});
+    profInput.value = t.browser_profile || "";
+    profInput.addEventListener("input", () => {
+      const v = profInput.value.trim();
+      if (v) t.browser_profile = v; else delete t.browser_profile;
+    });
+    profRow.append(el("label", {}, T["settings.browser.profile"]), profInput,
+      el("span", {class:"hint"}, T["settings.browser.profile.hint"]));
+    const priv = el("input", {type:"checkbox"});
+    priv.checked = !!t.private;
+    const privLabel = el("label", {class:"check"});
+    privLabel.append(priv, document.createTextNode(T["settings.browser.private"]));
+    const applyPriv = () => {
+      if (priv.checked) { t.private = true; profRow.style.display = "none"; }
+      else { delete t.private; profRow.style.display = ""; }
+    };
+    priv.addEventListener("change", applyPriv);
+    box.append(el("div", {class:"row"}, el("label", {}, T["settings.browser.data"]), privLabel,
+      el("span", {class:"hint"}, T["settings.browser.private.hint"])));
+    box.append(profRow);
+    applyPriv();
+
     // 下に出す帯。チェック1つでは足りない (文言とボタンの字が要る) ので、
     // 「出す」を入れたときだけ中身の欄を出す
     const askOn = el("input", {type:"checkbox"});
@@ -2493,6 +2520,7 @@ function flatten(tabs, depth, out) {
     out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command),
                profile: t.profile || "", automation: t.automation || t.lua || "",
                drives: t.drives || "",
+               browser_profile: t.browser_profile || "", private: !!t.private,
                locked: !!t.locked, auto_restart: !!t.auto_restart, cwd: t.cwd || "",
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
                nav: t.nav || null, ask: t.ask || null, depth });
@@ -2508,6 +2536,8 @@ function nest(flat) {
     if (f.profile) node.profile = f.profile;
     if (f.automation) node.automation = f.automation;
     if (f.drives) node.drives = f.drives;
+    if (f.browser_profile) node.browser_profile = f.browser_profile;
+    if (f.private) node.private = true;
     if (f.locked) node.locked = true;
     if (f.auto_restart) node.auto_restart = true;
     if (f.cwd) node.cwd = f.cwd;
