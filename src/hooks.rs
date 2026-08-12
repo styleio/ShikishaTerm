@@ -1340,6 +1340,134 @@ impl HookEngine {
         Ok(self.scripts.len() - 1)
     }
 
+    /// ブラウザ操作モードの内蔵司令塔を、指定ブラウザ向けに読み込む (チャット型)。
+    ///
+    /// ユーザーはLuaを書かない。ゴールは設定ではなく **入力欄に打つ**。
+    /// 打った文(chain 0)を新しいゴール/訂正として拾い、AIがブラウザ操作を
+    /// 1手ずつ in.lua に書く→実行→画面を返す、を繰り返す。AIが操作を書かず
+    /// 報告したら一区切りとして次の入力を待つ。暴走は安全網で必ず止める。
+    /// BR (操作対象ブラウザの id) は先頭に注入する
+    pub fn load_browser_agent(&mut self, browser: &str) -> Result<usize> {
+        let key = format!("<browser-agent:{browser}>");
+        if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
+            return Ok(i);
+        }
+        // 内蔵オーケストレータ (関数定義方式)。BR は下で注入
+        const SRC: &str = r##"
+local MAX_ROUNDS, MAX_SEC, MAX_TOK = 40, 900, 400000
+
+local function protocol(run)
+  local infile = run .. "/in.lua"
+  local humanfile = run .. "/human.txt"
+  return table.concat({
+    "あなたはブラウザ \"" .. BR .. "\" を操作するエージェントです。",
+    "毎手番、次の1手のLuaを **このファイルに上書き保存** して渡す(画面には貼らない):",
+    "  " .. infile,
+    "  使える関数(対象は \"" .. BR .. "\"):",
+    "    browser_go(\"" .. BR .. "\", \"to\"|\"reload\"|\"back\"|\"forward\", url?)",
+    "    browser_click(\"" .. BR .. "\", sel)   browser_fill(\"" .. BR .. "\", sel, value)",
+    "    browser_fill_secret(\"" .. BR .. "\", sel, 秘密名)   browser_auth(\"" .. BR .. "\", 秘密名)",
+    "    browser_text(\"" .. BR .. "\", sel)   browser_find(\"" .. BR .. "\", sel)",
+    "    sel は \"#id\" か {xpath=\"...\"}。1ファイル=1手。書いたら手番を終える。",
+    "  ログイン/CAPTCHA等で人手が要るときは、依頼を " .. humanfile .. " に(1〜2文で端的に)。",
+    "  ゴールを達成した/これ以上操作が不要と思ったら、**in.luaを書かず**に結果を短く報告して待機。",
+  }, "\n")
+end
+
+local function reset_budget()
+  shikisha.set_var("rally_round", 0)
+  shikisha.set_var("rally_t0", shikisha.epoch_ms())
+  shikisha.set_var("rally_tok", 0)
+end
+
+function on_start(tab)
+  local run = shikisha.exchange_new()
+  shikisha.set_var("rally_run", run)
+  shikisha.set_var("rally_record", run .. "/record.lua")
+  reset_budget()
+  shikisha.send_to_tab(tab.index, table.concat({
+    protocol(run),
+    "",
+    "準備OK。やってほしいことを入力欄に書いてください(例: ログインして投稿画面へ)。",
+  }, "\n"))
+end
+
+function on_done(tab)
+  local ai = tab.index
+  local run = shikisha.get_var("rally_run")
+  if not run then return end
+  local infile = run .. "/in.lua"
+
+  -- 入力欄に人間が打った(chain 0) = 新しいゴール/訂正。予算(安全網)を切り直す
+  if tab.chain_depth == 0 then
+    reset_budget()
+  end
+  shikisha.set_var("rally_tok", (shikisha.get_var("rally_tok") or 0) + #(tab.output or ""))
+
+  -- 人手依頼ファイル
+  local human = shikisha.exchange_take(run .. "/human.txt")
+  if human and #human > 0 then
+    shikisha.show(BR)
+    shikisha.browser_wait(BR, { ask = human, label = "できたら押す" })
+    shikisha.show(ai)
+    shikisha.send_to_tab(ai, "対応しました。続けてください(次の1手を " .. infile .. " に)。")
+    return
+  end
+
+  -- 操作ファイル → LINT → 実行 → 記録
+  local code = shikisha.exchange_take(infile)
+  if code and #code > 0 then
+    local lint = shikisha.lint(code)
+    if lint then
+      shikisha.send_to_tab(ai, "Luaが構文エラーです:\n" .. lint .. "\n直して " .. infile .. " に。")
+      return
+    end
+    shikisha.show(BR)
+    local err = shikisha.run_scoped(BR, code)
+    if err then
+      shikisha.show(ai)
+      shikisha.send_to_tab(ai, "実行でエラー:\n" .. err .. "\n別の手を " .. infile .. " に。")
+      return
+    end
+    shikisha.exchange_append(shikisha.get_var("rally_record"), code)
+    local n = (shikisha.get_var("rally_round") or 0) + 1
+    shikisha.set_var("rally_round", n)
+    for _ = 1, 12 do
+      shikisha.sleep(150)
+      local t = shikisha.browser_text(BR, "body")
+      if t and #(t:gsub("%s", "")) > 0 then break end
+    end
+    -- 安全網(暴走保険)。ゴールごとに予算はリセットされる
+    local t0 = shikisha.get_var("rally_t0") or shikisha.epoch_ms()
+    if n >= MAX_ROUNDS or (shikisha.epoch_ms() - t0) >= MAX_SEC * 1000
+        or (shikisha.get_var("rally_tok") or 0) >= MAX_TOK then
+      shikisha.show(ai)
+      shikisha.send_to_tab(ai, "安全網(上限)に達したので一旦止めます。指示を見直すか、新しく指示してください。")
+      return
+    end
+    -- 画面を返して次の1手を促す
+    shikisha.show(ai)
+    local text = shikisha.browser_text(BR, "body") or ""
+    if #text > 3000 then text = text:sub(1, 3000) .. "…(略)" end
+    shikisha.send_to_tab(ai, table.concat({
+      "実行しました。今の画面テキスト:", "----", text, "----",
+      "次の1手を " .. infile .. " に。達成/不要と思ったら in.lua を書かず結果を報告して待機を。",
+    }, "\n"))
+    return
+  end
+
+  -- 操作なし: 人間がゴールを打った直後(chain 0)なら一度だけ促す。
+  -- そうでなければ(AIが報告/待機した)、何も送らず人間の次の入力を待つ
+  if tab.chain_depth == 0 then
+    shikisha.send_to_tab(ai,
+      "了解。ブラウザ操作は1手ずつ " .. infile .. " に書いてください。まず最初の1手を。")
+  end
+end
+"##;
+        let src = format!("local BR = {browser:?}\n{SRC}");
+        self.load_source(&key, &src)
+    }
+
     pub fn set_base(&mut self, id: usize) {
         self.attach.base = Some(id);
     }
@@ -1796,6 +1924,26 @@ mod tests {
         assert!(content.contains(r##"shikisha.browser_click("br", "#login")"##));
         assert!(content.contains(r##"shikisha.browser_fill("br", "#body", "hi")"##));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn browser_agent_mode_is_built_in_and_needs_no_lua() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        // 内蔵のブラウザ操作モードが読め、on_start が「操作プロトコル」を送ること。
+        // ゴールは設定に持たず入力欄から与える方式なので、プロンプトに入力欄の案内が要る
+        let mut e = HookEngine::new().unwrap();
+        let id = e.load_browser_agent("br").expect("内蔵司令塔が読めない");
+        e.set_tab(1, id);
+        e.fire("on_start", &ctx(1, ""), None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c,
+                Command::SendPrompt { text, .. }
+                    if text.contains("in.lua")
+                        && text.contains("browser_go")
+                        && text.contains("入力欄"))),
+            "on_start がブラウザ操作プロトコル(入力欄でゴール)を送っていない: {cmds:?}"
+        );
     }
 
     #[test]

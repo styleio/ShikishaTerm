@@ -462,6 +462,11 @@ pub struct TabConfig {
     /// SSH切断や、CLIツールの自己更新後の復帰に使う
     #[serde(default)]
     pub auto_restart: bool,
+    /// ブラウザ操作モード。ここに操作対象のブラウザタブの id を書くと、
+    /// このタブは「ブラウザを操作するエージェント」になる。内蔵の司令塔が動き、
+    /// ゴールは入力欄に打つ (設定には書かない)。automation より優先
+    #[serde(default)]
+    pub drives: Option<String>,
     /// 起動時の作業フォルダ。相対パスは設定ファイルの場所が基準。
     /// Docker/WSLの中のフォルダはこれでは指定できない (コマンド側の -w / --cd を使う)
     #[serde(default)]

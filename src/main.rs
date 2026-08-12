@@ -2266,7 +2266,16 @@ fn open_console() {
 ///
 /// 並べ替えられても、設定を読み直せば付け直される。
 /// どこにも覚えさせないので、ずれたままにならない
-fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, String)> {
+/// タブの自動化の指定。ファイル/ディレクトリか、内蔵のブラウザ操作エージェントか
+#[derive(Debug, PartialEq)]
+enum TabAuto {
+    /// automation パス (ディレクトリ or .lua)
+    Path(String),
+    /// ブラウザ操作モード。中身は内蔵。値は操作対象ブラウザの id
+    Agent(String),
+}
+
+fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, TabAuto)> {
     let mut pane = 0;
     let mut out = Vec::new();
     for t in &ws.tabs {
@@ -2275,8 +2284,11 @@ fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, String)> {
             continue;
         }
         pane += 1;
-        if let Some(p) = t.cfg.automation_path() {
-            out.push((pane, p));
+        // drives (ブラウザ操作モード) は automation より優先。内蔵司令塔が動く
+        if let Some(br) = t.cfg.drives.clone().filter(|s| !s.trim().is_empty()) {
+            out.push((pane, TabAuto::Agent(br)));
+        } else if let Some(p) = t.cfg.automation_path() {
+            out.push((pane, TabAuto::Path(p)));
         }
     }
     out
@@ -2290,7 +2302,7 @@ fn build_engine(
 ) -> Option<HookEngine> {
     let base = cfg.and_then(|c| c.automation_path());
     let ws_lua = ws.and_then(|w| w.automation.clone());
-    let tab_luas: Vec<(usize, String)> = ws.map(automation_by_pane).unwrap_or_default();
+    let tab_luas: Vec<(usize, TabAuto)> = ws.map(automation_by_pane).unwrap_or_default();
     if base.is_none() && ws_lua.is_none() && tab_luas.is_empty() {
         return None;
     }
@@ -2321,8 +2333,19 @@ fn build_engine(
             engine.set_workspace(id);
         }
     }
-    for (idx, p) in &tab_luas {
-        if let Some(id) = load(&mut engine, p, errors) {
+    for (idx, auto) in &tab_luas {
+        let id = match auto {
+            TabAuto::Path(p) => load(&mut engine, p, errors),
+            // ブラウザ操作モード: 内蔵の司令塔を対象ブラウザ向けに読み込む
+            TabAuto::Agent(br) => match engine.load_browser_agent(br) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    errors.push(format!("ブラウザ操作モード({br}): {e:#}"));
+                    None
+                }
+            },
+        };
+        if let Some(id) = id {
             engine.set_tab(*idx, id);
         }
     }
@@ -3658,8 +3681,28 @@ mod tests {
         // 画面の番号で並ぶ。ブラウザが1番、claude が2番
         assert_eq!(
             got,
-            vec![(1, "scripts/html".to_string()), (2, "scripts/ai".to_string())],
+            vec![
+                (1, TabAuto::Path("scripts/html".to_string())),
+                (2, TabAuto::Path("scripts/ai".to_string())),
+            ],
             "割り当てがずれている"
+        );
+    }
+
+    /// drives (ブラウザ操作モード) を書いたタブは、内蔵エージェントに割り当てられること
+    #[test]
+    fn a_tab_with_drives_uses_the_builtin_browser_agent() {
+        let mut ws = ws_from(&[
+            ("エージェント", "ai", "claude"),
+            ("ページ", "br", "browser https://example.com/"),
+        ]);
+        ws.tabs[0].cfg.drives = Some("br".into());
+
+        let got = automation_by_pane(&ws);
+        assert_eq!(
+            got,
+            vec![(1, TabAuto::Agent("br".to_string()))],
+            "drives のタブが内蔵エージェントに割り当たっていない"
         );
     }
 
