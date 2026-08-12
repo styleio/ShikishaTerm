@@ -2106,6 +2106,20 @@ function tabPane(ws, t) {
         T["settings.tab.cwd.pick"]),
         el("span", {class:"hint"}, T["settings.tab.cwd.hint"]))));
 
+  // ブラウザ操作モード(drives): このAIタブが操作するブラウザタブを選ぶ。Lua不要。
+  // ゴールは設定ではなく、開始後に入力欄へ打つ。ブラウザタブ自身には出さない
+  const isBrowser = c => { const h = (c || "").trim().split(/\s+/)[0].toLowerCase(); return h === "browser" || h === "web"; };
+  if (!isBrowser(t.command)) {
+    const brTabs = (ws.tabs || []).filter(x => x !== t && isBrowser(x.command)).map(x => x.id || x.name).filter(Boolean);
+    const opts = [["", "オフ（ふつうのAI）"]].concat(brTabs.map(id => [id, id]));
+    const sel = choose(t, "drives", opts, v => { if (!v) delete t.drives; refreshSave(); });
+    const hint = brTabs.length
+      ? "選ぶと、このAIは入力欄に打ったゴールで、そのブラウザを1手ずつ操作します（Lua不要）。停止条件はワークスペースの「停止条件（審判）」で。"
+      : "同じワークスペースに「ブラウザ」タブを足すと選べます。";
+    box.append(card("ブラウザ操作モード",
+      row("操作するブラウザ", sel, el("span", {class:"hint"}, hint))));
+  }
+
   // 自動化: 何が設定済みか一覧で分かるようにする
   const ev = el("div", {class:"events"});
   for (const [id, label, hint] of eventsFor(t).filter(e => e[0] !== "_shared")) {
@@ -2451,6 +2465,7 @@ function flatten(tabs, depth, out) {
   for (const t of tabs || []) {
     out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command),
                profile: t.profile || "", automation: t.automation || t.lua || "",
+               drives: t.drives || "",
                locked: !!t.locked, auto_restart: !!t.auto_restart, cwd: t.cwd || "",
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
                nav: t.nav || null, ask: t.ask || null, depth });
@@ -2465,6 +2480,7 @@ function nest(flat) {
     if (f.id) node.id = f.id;
     if (f.profile) node.profile = f.profile;
     if (f.automation) node.automation = f.automation;
+    if (f.drives) node.drives = f.drives;
     if (f.locked) node.locked = true;
     if (f.auto_restart) node.auto_restart = true;
     if (f.cwd) node.cwd = f.cwd;
