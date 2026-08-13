@@ -173,7 +173,7 @@
   "settings.secrets.hint": "Notification targets and tokens",
   "settings.language": "Language",
   "settings.language.auto": "Automatic (follow the system)",
-  "settings.language.hint": "Add lang/<code>.json to contribute a translation",
+  "settings.language.hint": "Screen language. Automatic follows the OS. Choosing here overrides the OS and takes effect after a restart (add lang/<code>.json to contribute a translation)",
   "settings.workspace": "Workspace",
   "settings.workspace.settings": "Workspace settings",
   "settings.workspace.name": "Name",

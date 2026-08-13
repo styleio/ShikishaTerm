@@ -1674,7 +1674,14 @@ function globalPane() {
           ["", T["settings.browser_data.local"] || "このPCだけ (推奨)"],
           ["portable", T["settings.browser_data.portable"] || "全PCで共有 (Drive同期)"],
         ]),
-        el("span", {class:"hint"}, T["settings.browser_data.hint"] || ""))));
+        el("span", {class:"hint"}, T["settings.browser_data.hint"] || "")),
+    row(T["settings.language"],
+        choose(current, "language", [
+          ["", T["settings.language.auto"]],
+          ["ja", "日本語"],
+          ["en", "English"],
+        ]),
+        el("span", {class:"hint"}, T["settings.language.hint"]))));
   box.append(remoteCard());
   box.append(card(T["settings.section.files"],
     row(T["settings.automation_global"], ...pathField(current, "automation", "scripts/common", "dir",
@@ -2736,7 +2743,7 @@ function payload() {
   ["tab_bar_width","max_chain"].forEach(k => {
     const v = out[k]; if (v === "" || v === null || v === undefined) delete out[k]; else out[k] = Number(v);
   });
-  ["automation","secrets","ai_engine","browser_data"].forEach(k => { if (!out[k]) delete out[k]; });
+  ["automation","secrets","ai_engine","browser_data","language"].forEach(k => { if (!out[k]) delete out[k]; });
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
   delete out.lua; delete out.tabs;
 

@@ -173,7 +173,7 @@
   "settings.secrets.hint": "通知先やトークン",
   "settings.language": "言語",
   "settings.language.auto": "自動（システムに従う）",
-  "settings.language.hint": "lang/<コード>.json を追加すると翻訳を提供できます",
+  "settings.language.hint": "画面の言語。自動はOSに従います。選ぶとOSより優先され、再起動で反映されます（lang/<コード>.json を足せば翻訳を追加できます）",
   "settings.workspace": "ワークスペース",
   "settings.workspace.settings": "ワークスペース設定",
   "settings.workspace.name": "名前",
