@@ -1299,6 +1299,8 @@ let current = {};        // config.json の中身 (基本設定の保持用)
 let wss = [];            // ワークスペースとタブ
 let sel = {ws:0, tab:null, global:true};
 let aiEngines = [];
+// ページを開いた時点の言語設定。保存時に「変わったか＝再起動が要るか」を見るため
+let loadedLanguage = "";
 
 const el = (tag, attrs = {}, ...kids) => {
   const n = document.createElement(tag);
@@ -2689,6 +2691,7 @@ async function loadAi() {
 async function load() {
   await loadAi();
   current = await (await api("GET")).json();
+  loadedLanguage = (current.language || "").trim().toLowerCase();
   const list = (Array.isArray(current.workspaces) && current.workspaces.length)
       ? current.workspaces
       : [{ name:"DEFAULT", tabs: current.tabs || [] }];
@@ -2797,9 +2800,26 @@ async function doSave() {
   if (!j.ok) { result(fill(T["settings.save_failed"], {error: j.error}), true); return; }
   markClean();
   result(T["common.saved"]);
+  // 言語は起動時にしか読まないので、変えたら再起動しないと反映されない。
+  // 盤面へ戻るとトーストは背面に隠れて気づけないため、確実に読める alert で伝える
+  if (languageNeedsRestart()) {
+    loadedLanguage = (current.language || "").trim().toLowerCase(); // 二重案内を防ぐ
+    alert(T["settings.language.restart"]);
+  }
   // 保存したら用は済んでいる。開いたままだと盤面へ戻る道が
   // 「別のタブを押す」しかなく、設定画面が居座っているように見える
   goIndex();
+}
+
+// 保存した言語設定が、いま動いている言語と食い違うか。
+// document.documentElement.lang には起動時に決まった実行中の言語が入っている
+function languageNeedsRestart() {
+  const active = (document.documentElement.lang || "").trim().toLowerCase();
+  const chosen = (current.language || "").trim().toLowerCase();
+  // 明示指定なら、実行中と違うときだけ再起動が要る
+  if (chosen) return chosen !== active;
+  // 「自動」に戻したとき: 元が明示指定だったならOSの言語に変わり得る
+  return !!loadedLanguage;
 }
 
 // この画面は窓の中に置かれたページなので、本体へ直接ものが言える。
