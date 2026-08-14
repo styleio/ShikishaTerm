@@ -46,6 +46,9 @@ fn main() {
     // 自動化を書かせるAIへそのまま渡している。古いものが隣に残っていると、
     // AIは「その機能は仕様に無い」と正しく答えてしまう
     copy_beside_exe("docs", "md");
+    // 状態検出プロファイル (profiles/*.json) も exe の隣から読む
+    // (profile::candidate_dirs)。配らないと配布版が全AIをGENERIC判定にしてしまう
+    copy_beside_exe("profiles", "json");
 
     println!("cargo:rustc-env=BUILD_TIME={built}");
     println!(
@@ -59,6 +62,7 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=lang");
     println!("cargo:rerun-if-changed=docs");
+    println!("cargo:rerun-if-changed=profiles");
 }
 
 /// リポジトリのフォルダを、そのまま exe の隣へ置く。
