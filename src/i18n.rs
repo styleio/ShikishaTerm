@@ -53,6 +53,17 @@ pub fn init(lang: Option<&str>, dirs: &[std::path::PathBuf]) {
     let _ = LANG.get_or_init(|| RwLock::new(code.clone())).write().map(|mut l| *l = code);
 }
 
+/// この言語指定で起動し直したら、いま動いている言語と変わるか。
+/// 変わるなら「再起動で反映される」と促せる。決め方は `init` と揃える
+/// (揃えないと、案内は出るのに実際は変わらない/その逆が起きる)
+pub fn would_change(lang: Option<&str>) -> bool {
+    let next = match lang.map(str::trim).filter(|s| !s.is_empty() && *s != "auto") {
+        Some(c) => c.to_string(),
+        None => system_language(),
+    };
+    next != self::lang()
+}
+
 /// 現在の言語コード ("ja" など)
 pub fn lang() -> String {
     LANG.get()

@@ -114,6 +114,7 @@
   "msg.config_added": "added {n}",
   "msg.config_removed": "stopped {n}",
   "msg.config_needs_restart": "{n} need a restart (Ctrl+B r)",
+  "msg.lang_restart": " / Language change applies after you restart the app",
   "msg.duplicate_names": "Tab names are duplicated ({names}) — give them an id so automation can tell them apart",
   "msg.tab_not_found": ">> Automation: tab {target} not found",
   "msg.draft_unsupported": "Tab {tab} does not accept pasted drafts, so nothing was placed. Only AI CLIs can hold a draft; a plain shell would run it.",

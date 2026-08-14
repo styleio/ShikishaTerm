@@ -946,6 +946,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
             if let Some(newcfg) = config::load() {
                 let (new_ws, errs) = newcfg.resolve_workspaces();
                 startup_errors.extend(errs);
+                // 言語は起動時にしか読まないので、設定で変えても今の画面には
+                // 反映されない。盤面の知らせに一言添えて、閉じて開き直すよう促す
+                // (設定GUIのalertはアプリ内WebViewでは出ないため、こちらで伝える)
+                let lang_restart = i18n::would_change(newcfg.language.as_deref());
                 // 表示中のワークスペースへ即反映し、他は切替時に反映する
                 let target = new_ws
                     .iter()
@@ -1022,10 +1026,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 }
                 cfg = Some(newcfg);
                 watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
-                flash = Some(match remote_changed {
-                    Some(m) => format!(">> {m}"),
-                    None => format!(">> {msg}"),
-                });
+                let mut note = remote_changed.unwrap_or(msg);
+                if lang_restart {
+                    note.push_str(&i18n::t("msg.lang_restart"));
+                }
+                flash = Some(format!(">> {note}"));
             }
         }
 

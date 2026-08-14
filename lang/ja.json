@@ -114,6 +114,7 @@
   "msg.config_added": "追加{n}",
   "msg.config_removed": "終了{n}",
   "msg.config_needs_restart": "要再起動{n}（Ctrl+B r）",
+  "msg.lang_restart": " / 言語の変更はアプリを再起動すると反映されます",
   "msg.duplicate_names": "タブ名が重複しています（{names}） — 自動化から指すにはIDを設定してください",
   "msg.tab_not_found": ">> 自動化: タブ {target} が見つかりません",
   "msg.draft_unsupported": "tab {tab} は下書きを受け取れないため、何も置きませんでした。下書きを保持できるのはAI CLIだけで、素のシェルでは実行されてしまいます。",
