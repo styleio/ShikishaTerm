@@ -1569,11 +1569,26 @@ function parseBrowser(c) {
 const buildBrowser = o => (o.head || "browser") + " " + (o.url || "");
 /// 窓の中に置けるURLか。file: や data: は開けない
 const openableUrl = u => /^https?:\/\/\S/i.test((u || "").trim());
-const kindOf = c => parseBrowser(c) ? "browser"
+
+// モデル(API接続)。プリミティブは「model 接続先/モデル名」の1行。
+// 接続先(provider)は 最初の "/" まで、残り全部がモデル名 (ollama の
+// huihui_ai/qwen... のように名前に "/" を含むものがあるため先頭のみで割る)
+function parseModel(c) {
+  const m = /^\s*model\s+(\S.*)$/i.exec(cmdToText(c));
+  if (!m) return null;
+  const rest = m[1].trim();
+  const i = rest.indexOf("/");
+  return {provider: i >= 0 ? rest.slice(0, i) : rest, model: i >= 0 ? rest.slice(i + 1) : ""};
+}
+const buildModel = o => "model " + (o.provider || "") + (o.model ? "/" + o.model : "");
+// 接続先ごとの既定モデル名 (入力を省ける親切値。無ければ空)
+const DEFAULT_MODEL = {deepseek: "deepseek-chat"};
+
+const kindOf = c => parseBrowser(c) ? "browser" : parseModel(c) ? "model"
   : parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
-const KIND_LABEL = {cmd:T["settings.tab.command"], ssh:"SSH", docker:"Docker", wsl:"WSL",
-  browser:T["settings.tab.kind.browser"]};
-const KIND_START = {cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl ",
+const KIND_LABEL = {cmd:T["settings.tab.command"], model:"モデル（API接続）",
+  ssh:"SSH", docker:"Docker", wsl:"WSL", browser:T["settings.tab.kind.browser"]};
+const KIND_START = {cmd:"", model:"model ", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl ",
   browser:"browser https://"};
 const COMMON_COMMANDS = [
   {label:"Claude Code", cmd:"claude",         check:"claude"},
@@ -1584,6 +1599,18 @@ const COMMON_COMMANDS = [
   {label:"PowerShell",  cmd:"powershell.exe", check:null},
   {label:T["settings.tab.kind.cmdprompt"], cmd:"cmd.exe", check:null},
 ];
+
+// 討論(AI×AI)に出せるのは、対話できるAI CLI か モデル(API接続)タブだけ。
+// ブラウザ・シェル(cmd/PowerShell/SSH/Docker/WSL)・Aider は議論に出さない
+const DISCUSS_HEADS = ["claude", "codex", "gemini", "kimi"];
+function isDiscussable(t) {
+  const c = cmdToText(t.command).trim();
+  const k = kindOf(c);
+  if (k === "model") return true;
+  if (k !== "cmd") return false;
+  const head = c.split(/\s+/)[0].toLowerCase().replace(/\.exe$/, "");
+  return DISCUSS_HEADS.includes(head);
+}
 const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 
 // ── サイドバー ───────────────────────────────────────
@@ -1637,10 +1664,259 @@ function addTabTo(ws) {
   return i;
 }
 
+// ── 新規ワークスペースのウィザード ───────────────────────
+// 0からの導線: まず目的(テンプレ)を選び、AIをプルダウンで選ぶだけで、
+// 裏でタブ・discussブロック・停止条件・ペルソナを自動生成する。
+// プリミティブ(model x/y や discuss)はそのまま。増やすのは薄いGUIだけ。
+
+// 動的モーダル。中身のDOMを渡すと中央に出す。背景クリックで閉じる。
+function openModal(...kids) {
+  const inner = el("div", {class:"modal-inner"}, ...kids);
+  const back = el("div", {class:"modal"}, inner);
+  back.addEventListener("click", e => { if (e.target === back) back.remove(); });
+  document.body.append(back);
+  return back;
+}
+
+// 参加者に選べるAI = 対話できるAI CLI + 登録済みモデル接続先
+function aiChoices() {
+  const cli = [
+    {key:"claude", label:"Claude Code"},
+    {key:"codex",  label:"Codex CLI"},
+    {key:"gemini", label:"Gemini CLI"},
+    {key:"kimi",   label:"Kimi Code"},
+  ];
+  const models = Object.keys(current.providers || {}).map(n =>
+    ({key:"model:" + n, label: n + "（モデルAPI）", isModel:true, provider:n}));
+  return cli.concat(models);
+}
+const choiceOf = key => aiChoices().find(c => c.key === key) || null;
+const aiLabelOf = key => { const c = choiceOf(key); return c ? c.label : (key || "AI"); };
+// 選択キー(+モデル名)から起動コマンドを作る。討論は毎ターン発言を保存するので、
+// Claudeは権限の事前許可フラグ付きにする(隠さず、生成後の編集画面にも表示される)
+function aiCommandOf(key, model) {
+  if (key && key.startsWith("model:")) {
+    const p = key.slice(6);
+    return "model " + p + "/" + ((model || "").trim() || DEFAULT_MODEL[p] || "");
+  }
+  if (key === "claude") return "claude --dangerously-skip-permissions";
+  return key || "";
+}
+// AI選択 + (モデルAPIのときだけ)モデル名。st={key,model} を書き戻す
+function aiPick(st) {
+  const wrap = el("span", {style:"display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap"});
+  const sel = el("select");
+  for (const c of aiChoices()) sel.append(el("option", {value:c.key}, c.label));
+  sel.value = st.key || "claude"; st.key = sel.value;
+  const modelIn = el("input", {type:"text", class:"mono", style:"width:180px"});
+  modelIn.value = st.model || "";
+  const sync = () => {
+    const c = choiceOf(st.key), isM = !!(c && c.isModel);
+    modelIn.style.display = isM ? "" : "none";
+    if (isM) modelIn.placeholder = DEFAULT_MODEL[c.provider] || "例: deepseek-chat";
+  };
+  sel.addEventListener("change", () => { st.key = sel.value; sync(); });
+  modelIn.addEventListener("input", () => { st.model = modelIn.value.trim(); });
+  sync(); wrap.append(sel, modelIn); return wrap;
+}
+// モデルAPI参加者はモデル名が要る(既定値がある接続先を除く)
+function partsValid(parts) {
+  for (const p of parts) {
+    const c = choiceOf(p.key);
+    if (c && c.isModel && !(p.model || "").trim() && !DEFAULT_MODEL[c.provider])
+      return "モデルAPIの参加者にはモデル名を入れてください（例: deepseek-chat）";
+  }
+  return null;
+}
+function landOnWs(ws) {
+  wss.push(ws); sel = {ws:wss.length - 1, tab:null, global:false}; render(); refreshSave();
+}
+
+// 「＋ ワークスペースを追加」 → まず目的を選ばせる
 function addWs() {
-  wss.push({name:T["settings.workspace"], automation:"", tabs:[]});
-  sel = {ws:wss.length - 1, tab:null, global:false};
-  render();
+  const m = openModal();
+  const pick = fn => { m.remove(); fn(); };
+  const opt = (emoji, title, desc, fn) => el("button",
+    {class:"quiet", style:"display:flex;gap:12px;align-items:flex-start;text-align:left;" +
+      "width:100%;padding:14px;border:1px solid var(--line);border-radius:10px;margin:8px 0",
+     onclick:() => pick(fn)},
+    el("span", {style:"font-size:22px;line-height:1"}, emoji),
+    el("span", {}, el("div", {style:"color:var(--text);font-weight:600;margin-bottom:2px"}, title),
+      el("div", {class:"hint"}, desc)));
+  m.firstChild.append(
+    el("h2", {}, "新しいワークスペース"),
+    el("div", {class:"hint"}, "何をする場所ですか？"),
+    el("div", {style:"margin-top:8px"},
+      opt("🗣", "AI×AI 討論", "複数のAIに議論・協働させる（勝敗/統合）", wizardDiscuss),
+      opt("🌐", "AIでブラウザ操作", "AIがブラウザを1手ずつ操作する", wizardBrowser),
+      opt("👨\u200d💻", "AI×AI コードレビュー（Git連携）", "討論しながらコードを書き、gitにコミットして磨く", wizardReview),
+      opt("🖥", "空（自分で作る）", "白紙から自由に組む（ふつうのターミナル）", createBlankWs)),
+    el("div", {class:"row", style:"margin-top:6px"},
+      el("button", {class:"quiet", onclick:() => m.remove()}, "キャンセル")));
+}
+function createBlankWs() {
+  landOnWs({name: T["settings.workspace"], automation:"", tabs:[]});
+}
+
+// 🗣 討論ウィザード
+function wizardDiscuss() {
+  const parts = [{key:"claude", model:"", name:"", persona:""},
+                 {key:"claude", model:"", name:"", persona:""}];
+  const st = {verdict:"winner", judge:""};
+  const nameIn = el("input", {value:"討論", style:"width:220px"});
+  const list = el("div");
+  const draw = () => {
+    list.textContent = "";
+    parts.forEach((p, i) => {
+      const nm = el("input", {value:p.name || "", placeholder:"名前(任意) 例: 賛成派", style:"width:160px"});
+      nm.addEventListener("input", () => p.name = nm.value);
+      const persona = el("textarea", {rows:2, style:"width:100%;box-sizing:border-box;margin-top:6px",
+        placeholder:"立場・人格(任意)。例: あなたは○○の立場で300字以内で主張する"});
+      persona.value = p.persona || "";
+      persona.addEventListener("input", () => p.persona = persona.value);
+      const del = el("button", {class:"quiet", onclick:() => {
+        if (parts.length > 2) { parts.splice(i, 1); draw(); } else toast("参加者は2人以上必要です", true);
+      }}, "削除");
+      list.append(el("div", {style:"border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0"},
+        el("div", {class:"row", style:"align-items:center;gap:8px"},
+          el("span", {class:"mono", style:"color:var(--muted)"}, "#" + (i + 1)), nm, aiPick(p), del),
+        persona));
+    });
+  };
+  draw();
+  const addBtn = el("button", {class:"quiet", onclick:() => {
+    parts.push({key:"claude", model:"", name:"", persona:""}); draw();
+  }}, "＋ 参加者を追加");
+  const judgeSel = el("select");
+  judgeSel.append(el("option", {value:""}, "（なし）"));
+  for (const c of aiChoices().filter(c => !c.isModel))
+    judgeSel.append(el("option", {value:c.key}, c.label));
+  judgeSel.addEventListener("change", () => st.judge = judgeSel.value);
+  const verdictSel = el("select");
+  for (const [v, l] of [["winner","勝敗をつける"],["synthesis","統合する"]])
+    verdictSel.append(el("option", {value:v}, l));
+  verdictSel.addEventListener("change", () => st.verdict = verdictSel.value);
+  const m = openModal(
+    el("h2", {}, "🗣 AI×AI 討論をつくる"),
+    el("div", {class:"hint"}, "参加者を選ぶだけ。議題(ゴール)は作成後、口火役の入力欄に打ちます。"),
+    row("名前", nameIn),
+    el("div", {style:"margin-top:10px;color:var(--text);font-size:13px"}, "参加者（2人以上）"), list, addBtn,
+    el("div", {class:"row", style:"margin-top:12px"}, el("label", {}, "審判(任意)"), judgeSel,
+      el("label", {style:"width:auto"}, "裁定"), verdictSel),
+    el("div", {class:"row"}, el("label", {}, ""),
+      el("span", {class:"hint"}, "モデルAPI(DeepSeek等)は確認なしで討論できます。Claudeは権限許可フラグ付きで生成します。")),
+    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:14px"},
+      el("button", {class:"primary", onclick:() => {
+        const err = partsValid(parts); if (err) { toast(err, true); return; }
+        const tabs = [], personas = {}, agents = [];
+        parts.forEach((p, i) => {
+          const id = "p" + (i + 1);
+          tabs.push(newTab({name: p.name.trim() || aiLabelOf(p.key), id, command: aiCommandOf(p.key, p.model)}));
+          if ((p.persona || "").trim()) personas[id] = p.persona.trim();
+          agents.push(id);
+        });
+        const discuss = {agents, order:"round-robin", max_rounds:6, verdict: st.verdict, personas};
+        if (st.judge) { tabs.push(newTab({name:"審判", id:"ref", command: aiCommandOf(st.judge, "")})); discuss.judge = "ref"; }
+        m.remove();
+        landOnWs({name: nameIn.value.trim() || "討論", automation:"", tabs, discuss});
+      }}, "つくる"),
+      el("button", {class:"quiet", onclick:() => m.remove()}, "キャンセル")));
+}
+
+// 🌐 ブラウザ操作ウィザード
+function wizardBrowser() {
+  const nameIn = el("input", {value:"ブラウザ操作", style:"width:220px"});
+  const urlIn = el("input", {class:"mono", placeholder:"https://example.com/",
+    style:"width:100%;box-sizing:border-box"});
+  const ai = {key:"claude", model:""};
+  const m = openModal(
+    el("h2", {}, "🌐 AIでブラウザ操作をつくる"),
+    el("div", {class:"hint"}, "AIが、入力欄に打ったゴールを、そのブラウザで1手ずつ操作します。"),
+    row("名前", nameIn),
+    el("div", {class:"row", style:"margin-top:8px"}, el("label", {}, "開くURL"), urlIn),
+    el("div", {class:"row"}, el("label", {}, "操作するAI"), aiPick(ai)),
+    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:14px"},
+      el("button", {class:"primary", onclick:() => {
+        const url = urlIn.value.trim();
+        if (!openableUrl(url)) { toast("http(s) で始まるURLを入れてください", true); return; }
+        const err = partsValid([ai]); if (err) { toast(err, true); return; }
+        const page = newTab({name:"ブラウザ", id:"page", command:"browser " + url,
+          nav:{back:true, forward:true, reload:true, url:true}});
+        const aiTab = newTab({name:"AI", id:"ai", command: aiCommandOf(ai.key, ai.model), drives:"page"});
+        m.remove();
+        landOnWs({name: nameIn.value.trim() || "ブラウザ操作", automation:"", tabs:[page, aiTab]});
+      }}, "つくる"),
+      el("button", {class:"quiet", onclick:() => m.remove()}, "キャンセル")));
+}
+
+// 👨‍💻 コードレビュー(Git連携)ウィザード
+const CODER_PERSONA = "あなたはコーダー。作業リポジトリ(cwd=カレント)で要件を実装し `git add -A && git commit` する。発言には『変更の要約』と『git diff の出力(直近コミットの差分)』を必ず貼る。レビュー指摘を受けたら修正して再コミット。全レビュアーが LGTM を出したら最終コミットし、あなたも発言の最後に LGTM と書いて締める。";
+const REVIEW_ROLES = [
+  {label:"UIデザイナー", id:"ui", persona:"あなたはUIレビュアー。coderの差分を使い勝手・アクセシビリティの観点で辛口レビュー。問題は具体的に指摘。十分に良ければ発言に LGTM と書く。"},
+  {label:"セキュリティエンジニア", id:"security", persona:"あなたはセキュリティレビュアー。差分を脆弱性・入力検証・秘密の扱い・権限の観点で辛口レビュー。問題は具体的に指摘。十分に良ければ発言に LGTM と書く。"},
+  {label:"パフォーマンス", id:"perf", persona:"あなたはパフォーマンスレビュアー。差分を計算量・メモリ・I/O・無駄な処理の観点で辛口レビュー。問題は具体的に指摘。十分に良ければ発言に LGTM と書く。"},
+  {label:"テスト", id:"test", persona:"あなたはテストレビュアー。差分をテスト網羅・境界値・回帰リスクの観点で辛口レビュー。不足するテストを具体的に指摘。十分に良ければ発言に LGTM と書く。"},
+  {label:"（自由に書く）", id:"", persona:""},
+];
+function wizardReview() {
+  const nameIn = el("input", {value:"コードレビュー", style:"width:220px"});
+  const repo = {dir:""};
+  const coder = {key:"claude", model:""};
+  const revs = [{role:"UIデザイナー", key:"claude", model:""},
+                {role:"セキュリティエンジニア", key:"claude", model:""}];
+  const repoIn = el("input", {class:"mono", placeholder:"例: C:/proj/myapp", style:"width:100%;box-sizing:border-box"});
+  repoIn.addEventListener("input", () => repo.dir = repoIn.value.trim());
+  const repoBtn = el("button", {class:"quiet", onclick: async () => {
+    const p = await pickPath("dir", "作業リポジトリを選ぶ", repo.dir);
+    if (p !== null) { repo.dir = p; repoIn.value = p; }
+  }}, T["common.browse"]);
+  const list = el("div");
+  const draw = () => {
+    list.textContent = "";
+    revs.forEach((r, i) => {
+      const roleSel = el("select");
+      for (const rr of REVIEW_ROLES) roleSel.append(el("option", {value:rr.label}, rr.label));
+      roleSel.value = r.role; roleSel.addEventListener("change", () => r.role = roleSel.value);
+      const del = el("button", {class:"quiet", onclick:() => {
+        if (revs.length > 1) { revs.splice(i, 1); draw(); } else toast("レビュアーは1人以上必要です", true);
+      }}, "削除");
+      list.append(el("div", {class:"row", style:"align-items:center;gap:8px;border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0"},
+        el("span", {class:"mono", style:"color:var(--muted)"}, "#" + (i + 1)), roleSel, aiPick(r), del));
+    });
+  };
+  draw();
+  const addBtn = el("button", {class:"quiet", onclick:() => {
+    revs.push({role:"（自由に書く）", key:"claude", model:""}); draw();
+  }}, "＋ レビュアーを追加");
+  const m = openModal(
+    el("h2", {}, "👨\u200d💻 AI×AI コードレビュー（Git連携）をつくる"),
+    el("div", {class:"hint"}, "コーダーが実装して git commit、レビュアーが辛口レビュー。全員 LGTM で自動終了します。"),
+    row("名前", nameIn),
+    el("div", {class:"row", style:"margin-top:8px"}, el("label", {}, "作業リポジトリ"), repoIn, repoBtn),
+    el("div", {class:"row"}, el("label", {}, "コーダー"), aiPick(coder)),
+    el("div", {style:"margin-top:10px;color:var(--text);font-size:13px"}, "レビュアー（1人以上）"), list, addBtn,
+    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:14px"},
+      el("button", {class:"primary", onclick:() => {
+        if (!repo.dir.trim()) { toast("作業リポジトリを選んでください", true); return; }
+        const err = partsValid([coder].concat(revs)); if (err) { toast(err, true); return; }
+        const tabs = [], personas = {}, agents = [], used = new Set();
+        tabs.push(newTab({name:"コーダー", id:"coder", command: aiCommandOf(coder.key, coder.model), cwd: repo.dir.trim()}));
+        personas["coder"] = CODER_PERSONA; agents.push("coder"); used.add("coder");
+        revs.forEach((r, i) => {
+          const rr = REVIEW_ROLES.find(x => x.label === r.role);
+          let base = (rr && rr.id) || slugId(r.role) || ("rev" + (i + 1)), id = base, n = 2;
+          while (used.has(id)) id = base + "-" + (n++);
+          used.add(id);
+          tabs.push(newTab({name: r.role, id, command: aiCommandOf(r.key, r.model)}));
+          personas[id] = (rr && rr.persona) || "あなたはレビュアー。差分を辛口レビューし、十分に良ければ発言に LGTM と書く。";
+          agents.push(id);
+        });
+        m.remove();
+        landOnWs({name: nameIn.value.trim() || "コードレビュー", automation:"", tabs,
+          discuss:{agents, order:"round-robin", max_rounds:4, personas},
+          stops:[{when:"console", agents:"all", pattern:"LGTM", outcome:"success", code:0, reason:"全員承認(LGTM)"}]});
+      }}, "つくる"),
+      el("button", {class:"quiet", onclick:() => m.remove()}, "キャンセル")));
 }
 
 // ── 詳細ペイン ───────────────────────────────────────
@@ -2047,9 +2323,12 @@ function wsDiscussCard(ws) {
   const drawChips = () => {
     chipBox.textContent = "";
     const cur = (ws.discuss && ws.discuss.agents) || [];
-    const cand = tabIds(ws).filter(id => !cur.includes(id)
-      && !(ws.tabs||[]).some(t => (t.id||t.name)===id && (t.drives||"").trim()));
-    if (!cand.length) { chipBox.append(document.createTextNode("候補なし（タブに呼び名IDを付けると候補に出ます）")); return; }
+    // 討論に出せるAI(CLI/モデルAPI)で、まだ参加していない・ブラウザ操作でないタブだけ候補にする
+    const cand = (ws.tabs || [])
+      .filter(t => isDiscussable(t) && !(t.drives||"").trim())
+      .map(t => (t.id || t.name || "").trim())
+      .filter(id => id && !cur.includes(id));
+    if (!cand.length) { chipBox.append(document.createTextNode("候補なし（Claude等のAIか『モデル(API接続)』タブを足すと候補に出ます）")); return; }
     chipBox.append(document.createTextNode("候補:"));
     for (const id of cand) chipBox.append(el("button", {class:"quiet", onclick:() => {
       const a = ensure().agents; if (!a.includes(id)) a.push(id);
@@ -2059,11 +2338,12 @@ function wsDiscussCard(ws) {
   const orderSel = self(d.order || "round-robin",
     [["round-robin","順番(round-robin)"],["moderated","司会が指名(moderated)"]], v => ensure().order = v);
   const roundsIn = numf(d.max_rounds, v => ensure().max_rounds = v);
-  const excludeDrives = t => (t.drives||"").trim();
+  // 審判・司会も 討論に出せるAI に限る（ブラウザ操作タブ・シェル・Aiderは除外）
+  const notDiscuss = t => (t.drives||"").trim() || !isDiscussable(t);
   const judgeIn = idSelect(ws, d.judge, "（なし）",
-    v => { ensure().judge = v; drawPersonas(); }, excludeDrives);
+    v => { ensure().judge = v; drawPersonas(); }, notDiscuss);
   const modIn = idSelect(ws, d.moderator, "（なし）",
-    v => { ensure().moderator = v; drawPersonas(); }, excludeDrives);
+    v => { ensure().moderator = v; drawPersonas(); }, notDiscuss);
   const verdictSel = self(d.verdict || "winner",
     [["winner","勝敗をつける"],["synthesis","統合する"]], v => ensure().verdict = v);
 
@@ -2383,6 +2663,7 @@ function kindPanel(t, cmdInput, rebuild) {
   const box = el("div");
   const ssh = parseSsh(t.command), dk = parseDocker(t.command), wsl = parseWsl(t.command);
   const web = parseBrowser(t.command);
+  const mdl = parseModel(t.command);
   const sync = (build, o) => () => {
     t.command = build(o); cmdInput.value = t.command; renderNav();
   };
@@ -2517,6 +2798,40 @@ function kindPanel(t, cmdInput, rebuild) {
     box.append(askBody);
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.browser.ask.hint"])));
+  } else if (mdl) {
+    const upd = sync(buildModel, mdl);
+    const names = Object.keys(current.providers || {});
+    if (!names.length) {
+      box.append(el("div", {class:"row"}, el("label", {}, "接続先"),
+        el("span", {class:"hint"},
+          "先に「基本設定」の『モデル接続先(Providers)』で DeepSeek や Ollama を登録してください。")));
+    } else {
+      const provSel = el("select");
+      provSel.append(el("option", {value:""}, "（接続先を選ぶ）"));
+      for (const n of names) provSel.append(el("option", {value:n}, n));
+      if (mdl.provider && !names.includes(mdl.provider))
+        provSel.append(el("option", {value:mdl.provider}, mdl.provider + "（未登録）"));
+      provSel.value = mdl.provider || "";
+      const modelIn = el("input", {type:"text", class:"mono", style:"width:260px"});
+      const applyPh = () => { modelIn.placeholder = DEFAULT_MODEL[mdl.provider] || "例: deepseek-chat"; };
+      modelIn.value = mdl.model || "";
+      applyPh();
+      provSel.addEventListener("change", () => {
+        mdl.provider = provSel.value;
+        // モデル未入力なら接続先の既定モデルを補う (親切値。手打ちは尊重)
+        if (!(mdl.model || "").trim() && DEFAULT_MODEL[mdl.provider]) {
+          mdl.model = DEFAULT_MODEL[mdl.provider]; modelIn.value = mdl.model;
+        }
+        applyPh(); upd();
+      });
+      modelIn.addEventListener("input", () => { mdl.model = modelIn.value.trim(); upd(); });
+      box.append(el("div", {class:"row"},
+        el("label", {}, "接続先"), provSel,
+        el("label", {style:"width:auto"}, "モデル名"), modelIn));
+      box.append(el("div", {class:"row"}, el("label", {}, ""),
+        el("span", {class:"hint"},
+          "安いモデル/ローカルAIをタブにできます（例: model deepseek/deepseek-chat）。討論に混ぜられます。")));
+    }
   } else if (dk || wsl) {
     const o = dk || wsl, upd = sync(dk ? buildDocker : buildWsl, o);
     box.append(el("div", {class:"row"},
