@@ -77,6 +77,30 @@ pub struct Config {
     /// 省略時は cast_keys_default() を使う
     #[serde(default)]
     pub cast_keys: Option<Vec<String>>,
+    /// model ブリッジ (OpenAI互換API) の接続先。名前 → {base_url, api_key, headers}。
+    /// 討論やブラウザ操作で cheap/local モデル(DeepSeek/Qwen/Ollama等)を使うための橋。
+    /// `model <名前>/<モデル>` タブがここを参照して起動する
+    #[serde(default)]
+    pub providers: std::collections::HashMap<String, ProviderSpec>,
+}
+
+/// OpenAI互換APIの接続先 (DeepSeekクラウド / Ollamaローカル / OpenRouter / Azure 等)。
+/// 「接続先(base_url＋認証) × モデル名」の2軸で、クラウド/ローカルもモデル種別も直交して扱える
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ProviderSpec {
+    /// OpenAI互換 base URL (例: https://api.deepseek.com/v1, http://localhost:11434/v1)。
+    /// Azure等のフルパス/クエリ付きはそのまま使う
+    #[serde(default)]
+    pub base_url: String,
+    /// 認証キー。"@名前" で secrets.json の tokens を参照する (直値も可)。
+    /// headers 未指定なら Authorization: Bearer <解決値> ヘッダになる。
+    /// ローカル(Ollama)等で不要なら省略
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// 送信ヘッダの明示指定 (Azure の `api-key` や独自ゲートウェイ用)。値も "@名前" で
+    /// secrets 参照可。指定すると api_key の既定 Bearer は使わずこちらを送る
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
 }
 
 /// 補助キー列の既定の並び。よく使う Enter/Space/⌫ と矢印を前に、
@@ -230,6 +254,37 @@ impl Config {
             .and_then(|t| serde_json::from_str::<Secrets>(&t).ok())
             .map(|s| s.tokens)
             .unwrap_or_default()
+    }
+
+    /// provider名から接続先を解決する。返り値は (base_url, 送信ヘッダ)。
+    /// 値中の "@名前" は secrets.json の tokens を展開する。
+    /// headers 未指定で api_key があれば Authorization: Bearer を組み立てる。
+    /// これを model ブリッジ子プロセスの env に渡す (鍵の復号は親=ここだけ)
+    pub fn resolve_provider(
+        &self,
+        name: &str,
+        password: Option<&str>,
+    ) -> Option<(String, std::collections::HashMap<String, String>)> {
+        let p = self.providers.get(name)?;
+        if p.base_url.trim().is_empty() {
+            return None;
+        }
+        let tokens = self.resolve_tokens(password);
+        let deref = |v: &str| -> String {
+            match v.strip_prefix('@') {
+                Some(k) => tokens.get(k).cloned().unwrap_or_default(),
+                None => v.to_string(),
+            }
+        };
+        let mut headers = std::collections::HashMap::new();
+        if !p.headers.is_empty() {
+            for (k, v) in &p.headers {
+                headers.insert(k.clone(), deref(v));
+            }
+        } else if let Some(key) = p.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            headers.insert("Authorization".into(), format!("Bearer {}", deref(key)));
+        }
+        Some((p.base_url.trim().to_string(), headers))
     }
 }
 

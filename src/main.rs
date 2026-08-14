@@ -16,6 +16,7 @@
 #![windows_subsystem = "windows"]
 
 mod ball;
+mod bridge;
 mod browser;
 mod caps;
 mod config;
@@ -79,6 +80,11 @@ fn install_crash_log() {
 
 fn main() -> Result<()> {
     install_crash_log();
+    // model ブリッジの子プロセス。env で接続先を受け取り stdin→応答 を返して終わる。
+    // 本体のウィンドウ/WebView等は一切起こさない (ヘッドレスなHTTP呼び出しのみ)
+    if std::env::args().nth(1).as_deref() == Some("--bridge") {
+        return bridge::run();
+    }
     // 旧配置 (ルート直下の config.json) を config フォルダへ移す (一度だけ)。
     // 読み込みより前に済ませないと、移行前の空設定で起動してしまう
     config::migrate_legacy_config();
