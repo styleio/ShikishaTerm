@@ -454,6 +454,8 @@ pub struct TabCtx {
     /// `if tab.chain_depth == 0 then return end` で人間の指示に反応しないフックが書ける
     pub chain_depth: u32,
     pub locked: bool,
+    /// このタブが model ブリッジ(API)か。討論の口火役の自動キック等で使う
+    pub is_model: bool,
 }
 
 enum WaitKind {
@@ -1653,12 +1655,19 @@ function on_done(tab)
   local run = shikisha.get_var("discuss_run")
   if not run then return end
   local say = run .. "/say.txt"
+  -- 手番を渡すときは末尾に say.txt の場所を機械可読な形で添える。
+  -- CLIのAIには無害なヒント、model ブリッジ(自前)はこの行を手番の合図として使う
+  local function speak(pane, msg)
+    shikisha.send_to_tab(pane, msg .. "\nSHIKISHA_SAY=" .. say)
+  end
 
   local msg = shikisha.exchange_take(say)
   if not (msg and #msg > 0) then
-    -- まだ発言していない。口火役が議題を受けた直後なら一度だけ促す
-    if IS_FIRST and tab.chain_depth == 0 then
-      shikisha.send_to_tab(tab.index, "議題を受けました。あなたの口火の発言を " .. say .. " に書いてください。")
+    -- まだ発言していない。口火役に開始を促す。
+    -- CLIは議題を人が打った直後(chain_depth==0)。model橋は人の入力を受け取れないので、
+    -- ペルソナ/文脈から自動で口火を切らせる(is_model)
+    if IS_FIRST and (tab.chain_depth == 0 or tab.is_model) then
+      speak(tab.index, "議題を受けました。あなたの口火の発言を " .. say .. " に書いてください。")
     end
     return
   end
@@ -1671,7 +1680,7 @@ function on_done(tab)
       tx("\n（司会 " .. ME .. ": 議論を締めます）\n")
       if JUDGE ~= nil and #JUDGE > 0 then
         shikisha.show(JUDGE)
-        shikisha.send_to_tab(JUDGE, table.concat({
+        speak(JUDGE, table.concat({
           "以下の議論を審判してください。", "----", ctx, "----",
         }, "\n"))
       else
@@ -1687,7 +1696,7 @@ function on_done(tab)
     pick = pick or AGENTS[1]
     tx("\n（司会 " .. ME .. ": 次は " .. pick .. "）\n")
     shikisha.show(pick)
-    shikisha.send_to_tab(pick, table.concat({
+    speak(pick, table.concat({
       "これまでの議論:", "----", ctx, "----",
       "あなた(" .. pick .. ")の番です。意見を " .. say .. " に端的に書いてください。",
     }, "\n"))
@@ -1728,7 +1737,7 @@ function on_done(tab)
   if r >= MAX_TURNS then
     if JUDGE ~= nil and #JUDGE > 0 then
       shikisha.show(JUDGE)
-      shikisha.send_to_tab(JUDGE, table.concat({
+      speak(JUDGE, table.concat({
         "以下の議論を審判してください。勝敗(または統合)と理由を say.txt に。",
         "----", log, "----",
       }, "\n"))
@@ -1746,14 +1755,14 @@ function on_done(tab)
   if #ctx > 4000 then ctx = "…(以下略)\n" .. ctx:sub(#ctx - 4000) end
   if ORDER == "moderated" and MODERATOR ~= nil and #MODERATOR > 0 then
     shikisha.show(MODERATOR)
-    shikisha.send_to_tab(MODERATOR, table.concat({
+    speak(MODERATOR, table.concat({
       "これまでの議論:", "----", ctx, "----",
       "次に発言すべき参加者の id を1つ、または END を " .. say
         .. " に書いてください。参加者: " .. table.concat(AGENTS, ", "),
     }, "\n"))
   else
     shikisha.show(NEXT)
-    shikisha.send_to_tab(NEXT, table.concat({
+    speak(NEXT, table.concat({
       "これまでの議論:", "----", ctx, "----",
       "あなた(" .. NEXT .. ")の意見を " .. say .. " に端的に書いてください。",
     }, "\n"))
@@ -1974,6 +1983,7 @@ end
         t.set("output", ctx.output.as_str())?;
         t.set("chain_depth", ctx.chain_depth)?;
         t.set("locked", ctx.locked)?;
+        t.set("is_model", ctx.is_model)?;
         Ok(t)
     }
 
@@ -2042,6 +2052,7 @@ mod tests {
             name: format!("tab{index}"),
             state: "DONE".into(),
             profile: "test".into(),
+            is_model: false,
             output: output.into(),
             chain_depth: 0,
             locked: false,

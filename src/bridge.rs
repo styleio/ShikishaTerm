@@ -3,21 +3,32 @@
 //! DeepSeek(クラウド)・Ollama(ローカルQwen/DeepSeek)・OpenRouter 等、
 //! **base_url と model を差し替えるだけ**で同じ経路で通る。SHIKISHA自身の正体は
 //! 「既存AIを振る指揮者」なので、ここは "AI" ではなく「プロンプト→APIを叩いて
-//! 指定先に書くだけ」の薄いパイプに徹する。
+//! 応答を返すだけ」の薄いパイプに徹する。
 //!
-//! 子プロセス (`--bridge`) は **env で接続先を受け取る**。鍵の復号や config/secrets の
-//! 読み出しは親(本体)がやり、子は無知でよい (鍵をコマンドラインに出さない)。
-//!   SHIKISHA_BRIDGE_URL     … base_url (例 https://api.deepseek.com/v1)
-//!   SHIKISHA_BRIDGE_MODEL   … モデル名 (例 deepseek-chat / qwen2.5:7b)
-//!   SHIKISHA_BRIDGE_HEADERS … 送信ヘッダ {"Authorization":"Bearer …"} 等 (JSON, 任意)
-//!   SHIKISHA_BRIDGE_SYSTEM  … システムメッセージ (任意)
+//! 討論での使い方は **サブプロセスにしない**。本体はGUIサブシステムで ConPTY 子に
+//! コンソールI/Oが付かないため、`Command::SendPrompt` がモデルペインに来たら、本体が
+//! スレッドで `complete()` を直接叩き、応答をタブ画面へ注入＋say.txt へ書く (in-process)。
+//!
+//! `--bridge` 子プロセスは端末直実行(パイプ)用に残す。env で接続先を受け取り、
+//! stdin を1回読んで応答を stdout に返す (テスト・単発利用)。
 
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::Mutex;
 
-/// `--bridge` で子プロセスとして呼ばれたときの入口。
-/// まずは一問一答: stdin を1回読み、応答本文を stdout に出して終わる。
+/// 解決済みのモデル接続先 (タブに持たせ、手番ごとに complete() へ渡す)
+#[derive(Debug, Clone)]
+pub struct ModelConn {
+    pub url: String,
+    pub model: String,
+    pub headers: HashMap<String, String>,
+    /// 討論での立場・人格。ブリッジはステートレスなので、毎手番これを system として
+    /// 添えないと立場を忘れて話題がぶれる (討論参加者のときだけ設定される)
+    pub persona: Option<String>,
+}
+
+/// `--bridge` 子プロセス (端末直実行・パイプ用)。stdin を1回読んで応答を stdout に返す
 pub fn run() -> Result<()> {
     let url = std::env::var("SHIKISHA_BRIDGE_URL").context("SHIKISHA_BRIDGE_URL 未設定")?;
     let model = std::env::var("SHIKISHA_BRIDGE_MODEL").context("SHIKISHA_BRIDGE_MODEL 未設定")?;
@@ -26,7 +37,6 @@ pub fn run() -> Result<()> {
         .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
         .unwrap_or_default();
     let system = std::env::var("SHIKISHA_BRIDGE_SYSTEM").ok();
-
     let mut prompt = String::new();
     std::io::stdin().read_to_string(&mut prompt)?;
     let out = complete(&url, &model, &headers, system.as_deref(), prompt.trim())?;
@@ -62,7 +72,6 @@ pub fn complete(
         .send_json(&body)
         .map_err(|e| anyhow!("接続失敗 ({endpoint}): {e}"))?;
     let v: serde_json::Value = resp.body_mut().read_json().context("応答JSONが読めない")?;
-    // OpenAI互換: choices[0].message.content。reasoning系の <think> は落とす
     let content = v
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
@@ -88,6 +97,53 @@ fn strip_think(s: &str) -> String {
     }
 }
 
+/// 討論プロンプト末尾の `SHIKISHA_SAY=<path>` を取り出す (最後の一致。パスに空白可)
+pub fn extract_say(s: &str) -> Option<String> {
+    s.lines().rev().find_map(|l| {
+        l.trim()
+            .strip_prefix("SHIKISHA_SAY=")
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+    })
+}
+
+/// 解決済みプロバイダのキャッシュ (名前 → (base_url, headers))。
+/// 本体がパスワードを持つ起動時/設定リロード時に埋める (secretの復号はそこだけ)
+static PROVIDERS: Mutex<Option<HashMap<String, (String, HashMap<String, String>)>>> =
+    Mutex::new(None);
+
+/// config の providers を解決してキャッシュする
+pub fn set_providers(cfg: &crate::config::Config, password: Option<&str>) {
+    let mut m = HashMap::new();
+    for name in cfg.providers.keys() {
+        if let Some(resolved) = cfg.resolve_provider(name, password) {
+            m.insert(name.clone(), resolved);
+        }
+    }
+    if let Ok(mut g) = PROVIDERS.lock() {
+        *g = Some(m);
+    }
+}
+
+/// `model <provider>/<model>` なら、解決済みの接続先を返す (無ければ None)。
+/// model名は "/" を含みうる(Ollamaタグ)ので最初の "/" で割る
+pub fn launch_for(argv: &[String]) -> Option<ModelConn> {
+    if argv.first().map(String::as_str) != Some("model") {
+        return None;
+    }
+    let (provider, model) = argv.get(1)?.trim().split_once('/')?;
+    let (url, headers) = {
+        let g = PROVIDERS.lock().ok()?;
+        g.as_ref()?.get(provider)?.clone()
+    };
+    Some(ModelConn {
+        url,
+        model: model.to_string(),
+        headers,
+        persona: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,7 +158,6 @@ mod tests {
             chat_endpoint("http://localhost:11434/v1/"),
             "http://localhost:11434/v1/chat/completions"
         );
-        // 既にフルパス/クエリ付きはそのまま
         let full = "https://x.openai.azure.com/openai/deployments/g/chat/completions?api-version=2024";
         assert_eq!(chat_endpoint(full), full);
     }
@@ -111,5 +166,14 @@ mod tests {
     fn strip_think_keeps_answer() {
         assert_eq!(strip_think("<think>reasoning</think>Answer"), "Answer");
         assert_eq!(strip_think("no think here"), "no think here");
+    }
+
+    #[test]
+    fn extract_say_finds_marker() {
+        assert_eq!(
+            extract_say("hello\nSHIKISHA_SAY=C:/a b/say.txt\n").as_deref(),
+            Some("C:/a b/say.txt")
+        );
+        assert_eq!(extract_say("no marker"), None);
     }
 }

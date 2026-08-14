@@ -24,6 +24,9 @@ pub struct TabOptions {
     pub encoding: Option<&'static encoding_rs::Encoding>,
     /// セッションログを logs/ に保存する
     pub log: bool,
+    /// このタブが model ブリッジ (OpenAI互換API) なら、その接続先。
+    /// Some のとき spawn は実プロセスを立てず、表示用の待機プロセスだけを起こす
+    pub model: Option<crate::bridge::ModelConn>,
 }
 
 impl Default for TabOptions {
@@ -33,6 +36,7 @@ impl Default for TabOptions {
             scrollback: SCROLLBACK_LINES,
             encoding: None,
             log: false,
+            model: None,
         }
     }
 }
@@ -113,6 +117,12 @@ pub fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
     let mut w = writer.lock().expect("pty writer lock");
     w.write_all(bytes)?;
     Ok(())
+}
+
+/// model タブが表示を保持するためだけに起こす待機プロセス。
+/// キー入力を静かに待って生きているだけ (画面は本体が注入する)
+fn idle_argv() -> Vec<String> {
+    vec!["cmd.exe".into(), "/c".into(), "pause>nul".into()]
 }
 
 /// 起動コマンドを組み立てる。
@@ -719,6 +729,9 @@ pub struct Tab {
     pub title: String,
     /// 自動化から指すID (任意)。未設定ならタブ名で指す
     pub id: Option<String>,
+    /// model ブリッジの接続先。Some ならこのタブはAI CLIでなくOpenAI互換API。
+    /// 手番が来たら本体がスレッドで complete() を叩き、応答を画面へ注入する
+    pub model: Option<crate::bridge::ModelConn>,
     pub parser: SharedParser,
     pub writer: PtyWriter,
     pub state: TabState,
@@ -837,7 +850,17 @@ impl Tab {
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        let mut cmd = build_command(argv);
+        // model タブは実CLIを立てず、表示を保持するだけの待機プロセスを起こす。
+        // 手番の応答は本体がスレッドで complete() を叩いて parser へ注入する
+        // (本体はGUIサブシステムで、ブリッジをConPTY子にするとI/Oが付かないため)
+        let idle;
+        let spawn_argv: &[String] = if opts.model.is_some() {
+            idle = idle_argv();
+            &idle
+        } else {
+            argv
+        };
+        let mut cmd = build_command(spawn_argv);
         // 指定が無い/存在しない場合はアプリのフォルダで起動する
         // (存在しないフォルダを渡すと起動そのものが失敗するため)
         let cwd = opts
@@ -943,6 +966,7 @@ impl Tab {
         Ok(Self {
             title,
             id: None,
+            model: opts.model.clone(),
             parser,
             writer,
             state: TabState::Wait,
@@ -1266,6 +1290,82 @@ impl Tab {
     /// 子プロセスが何か出力したか (起動して動き出したかの目安)
     pub fn had_output(&self) -> bool {
         self.output_count() > 0
+    }
+
+    /// このタブが model ブリッジ (API) か
+    pub fn is_model(&self) -> bool {
+        self.model.is_some()
+    }
+
+    /// model の手番開始をマークする (write_bytes の submit 時と同等の記録)。
+    /// これで検出が「応答待ち」に入り、注入した応答の DONE で on_done が発火する。
+    /// これをしないと prompted=false で DONE が無視され、議事が進まない
+    fn mark_turn_start(&self) {
+        self.prompted.store(true, Ordering::Relaxed);
+        self.submitted_output
+            .store(self.output_count(), Ordering::Relaxed);
+        self.response_marker
+            .store(self.line_position() as u64 + 1, Ordering::Relaxed);
+        self.submitted_screen
+            .store(self.screen_fingerprint(), Ordering::Relaxed);
+        self.saw_working.store(false, Ordering::Relaxed);
+        self.resized_while_waiting.store(false, Ordering::Relaxed);
+        *self.submitted_rows.lock().unwrap() = self.visible_rows();
+    }
+
+    /// model の手番: スレッドで complete() を叩き、応答を画面へ注入＋say.txt へ書く。
+    /// parser/bytes_out は Arc共有なので、メインループの検出(BUSY→DONE→on_done)が
+    /// そのまま働く。ブロックするHTTPは別スレッドに逃がし、本体ループは止めない
+    pub fn dispatch_model(&self, prompt: String) {
+        let Some(conn) = self.model.clone() else {
+            return;
+        };
+        // 手番開始を記録しておかないと、注入した応答の DONE が prompted=false で無視される
+        self.mark_turn_start();
+        let parser = Arc::clone(&self.parser);
+        let counter = Arc::clone(&self.bytes_out);
+        std::thread::spawn(move || {
+            // 画面へ書き、活動量も増やす (検出が拾えるように)
+            let inject = |s: &str| {
+                let bytes = s.as_bytes();
+                counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    parser
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .process(bytes);
+                }));
+            };
+            inject(&format!("\r\n\x1b[36m… 生成中 ({})\x1b[0m\r\n", conn.model));
+            // 討論プロンプトには「say.txtに書け」等CLI向けの指示が混じる。
+            // ブリッジではSHIKISHAが書くので、モデルには「意見だけ述べよ」と伝える。
+            // ステートレスなので、立場(ペルソナ)も毎回 system に添えて忘れさせない
+            let mut system = String::from(
+                "あなたは討論の参加者です。渡された文脈と自分の立場に沿って、\
+                 意見だけを簡潔なプレーンテキストで述べてください。\
+                 ファイルへの書き込みやツールには言及しないこと。",
+            );
+            if let Some(p) = &conn.persona {
+                system.push_str("\n【あなたの立場・人格】");
+                system.push_str(p);
+                system.push_str("\nこの立場を最後まで貫くこと。");
+            }
+            match crate::bridge::complete(&conn.url, &conn.model, &conn.headers, Some(&system), prompt.trim()) {
+                Ok(text) => {
+                    if let Some(say) = crate::bridge::extract_say(&prompt) {
+                        match std::fs::write(&say, &text) {
+                            Ok(_) => inject(&format!(
+                                "\x1b[32m→ 発言を書き込みました ({}字)\x1b[0m\r\n",
+                                text.chars().count()
+                            )),
+                            Err(e) => inject(&format!("\x1b[31msay書込失敗: {e}\x1b[0m\r\n")),
+                        }
+                    }
+                    inject(&format!("{}\r\n", text.replace('\n', "\r\n")));
+                }
+                Err(e) => inject(&format!("\x1b[31mエラー: {e}\x1b[0m\r\n")),
+            }
+        });
     }
 
     /// PTYから読んだ累計バイト数。ある時点からの反応の有無を見るのに使う

@@ -733,6 +733,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
         let (ws, errs) = c.resolve_workspaces();
         workspaces = ws;
         startup_errors.extend(errs);
+        // model ブリッジの接続先を解決してキャッシュ (この時点は暗号化secretは未解錠。
+        // パスワード確定後に下でもう一度解決するので、平文secret/無認証はここで揃う)
+        bridge::set_providers(c, None);
     }
 
     let mut tabs: Vec<Tab> = Vec::new();
@@ -832,6 +835,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                 }
             }
+        }
+    }
+
+    // パスワード確定後に model ブリッジの接続先をもう一度解決 (暗号化secretのキーもここで展開)
+    if let Some(c) = &cfg {
+        if password.is_some() {
+            bridge::set_providers(c, password.as_deref());
         }
     }
 
@@ -1031,6 +1041,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     });
                 }
                 cfg = Some(newcfg);
+                // model ブリッジの接続先を再解決 (providers/secretの変更を反映)
+                if let Some(c) = &cfg {
+                    bridge::set_providers(c, password.as_deref());
+                }
                 watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
                 let mut note = remote_changed.unwrap_or(msg);
                 if lang_restart {
@@ -2493,6 +2507,24 @@ fn build_engine(
 }
 
 /// タブ設定を作り直したTabOptionsに変換する
+/// `model <provider>/<model>` タブなら、解決済みの接続先を opts に載せる。
+/// 討論参加者ならペルソナも持たせる (ステートレスなブリッジが立場を忘れないように)。
+/// argv は識別用にそのまま残す (spawn 側が待機プロセスへ差し替える)。普通のタブは素通し
+fn resolve_launch(
+    argv: Vec<String>,
+    opts: &mut tab::TabOptions,
+    ws: Option<&config::Workspace>,
+    id: Option<&str>,
+) -> Vec<String> {
+    if let Some(mut conn) = bridge::launch_for(&argv) {
+        if let (Some(d), Some(id)) = (ws.and_then(|w| w.discuss.as_ref()), id) {
+            conn.persona = d.personas.get(id).filter(|p| !p.trim().is_empty()).cloned();
+        }
+        opts.model = Some(conn);
+    }
+    argv
+}
+
 fn tab_options(cfg: &config::TabConfig) -> tab::TabOptions {
     tab::TabOptions {
         // 相対指定は設定ファイルの場所を基準にする (フォルダごと持ち運べる)
@@ -2507,6 +2539,7 @@ fn tab_options(cfg: &config::TabConfig) -> tab::TabOptions {
         scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
+        model: None,
     }
 }
 
@@ -2558,7 +2591,8 @@ fn apply_ws_config(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let opts = tab_options(&ft.cfg);
+        let mut opts = tab_options(&ft.cfg);
+        let argv = resolve_launch(argv, &mut opts, Some(ws), ft.cfg.id.as_deref());
         match tabs.iter().position(|t| t.title == title) {
             Some(i) => {
                 let mut t = tabs.remove(i);
@@ -2752,13 +2786,15 @@ fn spawn_workspace(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
+        let mut opts = tab_options(&ft.cfg);
+        let argv = resolve_launch(argv, &mut opts, Some(ws), ft.cfg.id.as_deref());
         match Tab::spawn(
             title.clone(),
             &argv,
             ft.cfg.profile.clone(),
             rows,
             cols,
-            tab_options(&ft.cfg),
+            opts,
         ) {
             Ok(mut tab) => {
                 tab.locked = ft.cfg.locked;
@@ -3095,6 +3131,7 @@ fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
         output: t.last_response.clone().unwrap_or_default(),
         chain_depth: t.chain_depth,
         locked: t.locked,
+        is_model: t.is_model(),
     }
 }
 
@@ -3417,10 +3454,17 @@ fn exec_commands(
                     continue;
                 }
                 t.chain_depth = depth;
-                let seen = t.output_count();
-                write_prompt(t, &text);
-                pending_submit.push(PendingSubmit::new(target, seen, now_ms));
-                append_hook_log(&format!("貼り付け tab{target} ({}文字)", text.chars().count()));
+                if t.is_model() {
+                    // model ブリッジ: スレッドで complete() を叩き、応答を画面へ注入＋
+                    // say.txt へ書く。検出(BUSY→DONE→on_done)は注入された活動で回る
+                    t.dispatch_model(text.clone());
+                    append_hook_log(&format!("model手番 tab{target} ({}文字)", text.chars().count()));
+                } else {
+                    let seen = t.output_count();
+                    write_prompt(t, &text);
+                    pending_submit.push(PendingSubmit::new(target, seen, now_ms));
+                    append_hook_log(&format!("貼り付け tab{target} ({}文字)", text.chars().count()));
+                }
                 ball.throw(origin, target, depth, now_ms);
                 append_hook_log(&format!(
                     "auto-send tab{origin} -> tab{target} (depth {depth}): {}",
