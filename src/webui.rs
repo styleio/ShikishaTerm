@@ -1695,6 +1695,7 @@ function globalPane() {
         T["settings.secrets"]),
         el("span", {class:"hint"}, T["settings.secrets.hint"]))));
   box.append(secretsCard());
+  box.append(providersCard());
   box.append(rallyResultCard());
   return box;
 }
@@ -1774,6 +1775,68 @@ function secretsCard() {
   const c = card("秘密 (Secrets)", status, listBox, form);
   // カードがDOMに入ってから読み込む (getElementById が効くように)
   setTimeout(loadSecrets, 0);
+  return c;
+}
+
+// model ブリッジの接続先(Providers)。OpenAI互換APIを名前で登録する。
+// キーは直接打ち込むと裏で暗号化secretへ保存し、configには @参照 だけ置く
+// (利用者は「秘密ストア」や @名前 を知らなくてよい)
+function providersCard() {
+  current.providers = current.providers || {};
+  const listBox = el("div", {id:"providerslist"});
+  const draw = () => {
+    listBox.textContent = "";
+    const names = Object.keys(current.providers);
+    if (!names.length) {
+      listBox.append(el("div", {class:"hint"},
+        "接続先はまだありません。下で追加してください（例: deepseek / ollama）"));
+    }
+    for (const name of names) {
+      const p = (current.providers[name] = current.providers[name] || {});
+      const urlIn = el("input", {class:"mono", value: p.base_url || "",
+        placeholder:"https://api.deepseek.com/v1", style:"width:270px"});
+      urlIn.addEventListener("input", () => { p.base_url = urlIn.value; refreshSave(); });
+      const hasKey = (p.api_key || "").startsWith("@");
+      const keyIn = el("input", {type:"password", style:"width:200px",
+        placeholder: hasKey ? "設定済み（変えるなら入力）" : "APIキー（ローカルは空でOK）"});
+      const keyBtn = el("button", {class:"quiet", onclick: async () => {
+        const v = keyIn.value.trim();
+        if (!v) { toast("キーを入れてください", true); return; }
+        const sk = "provider:" + name;
+        const r = await fetch("/api/secrets/set", {method:"POST",
+          headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+          body: JSON.stringify({key: sk, description: "model provider "+name, value: v})})
+          .then(r=>r.json());
+        if (r.ok) { p.api_key = "@" + sk; keyIn.value = ""; toast("キーを保存しました: "+name); refreshSave(); draw(); }
+        else toast(r.error || "保存に失敗", true);
+      }}, "鍵を保存");
+      const del = el("button", {class:"quiet", onclick: () => {
+        if (confirm(name + " を削除しますか？")) { delete current.providers[name]; refreshSave(); draw(); }
+      }}, "削除");
+      listBox.append(el("div", {class:"row",
+        style:"align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:wrap"},
+        el("span", {class:"mono", style:"min-width:90px;color:var(--text)"}, name),
+        urlIn, keyIn, keyBtn,
+        el("span", {class:"hint"}, hasKey ? "🔑" : ""),
+        del));
+    }
+  };
+  const nameIn = el("input", {class:"mono", placeholder:"例: deepseek", style:"width:130px"});
+  const addBtn = el("button", {class:"primary", onclick: () => {
+    const n = nameIn.value.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "");
+    if (!n) { toast("名前を入れてください", true); return; }
+    if (current.providers[n]) { toast("同名があります", true); return; }
+    current.providers[n] = { base_url: "" };
+    nameIn.value = ""; refreshSave(); draw();
+  }}, "＋ 接続先を追加");
+  const c = card("モデル接続先 (Providers)",
+    el("div", {class:"hint"},
+      "OpenAI互換API。DeepSeek(クラウド)やOllama(ローカル)等を登録し、タブのコマンドに "
+      + "「model 名前/モデル」と書いて使います（例: model deepseek/deepseek-chat）。"
+      + "キーは暗号化して保存され、二度と画面に出ません"),
+    listBox,
+    el("div", {class:"row", style:"gap:10px;margin-top:12px;align-items:flex-end"}, nameIn, addBtn));
+  setTimeout(draw, 0);
   return c;
 }
 
@@ -2750,6 +2813,12 @@ function payload() {
   });
   ["automation","secrets","ai_engine","browser_data","language"].forEach(k => { if (!out[k]) delete out[k]; });
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
+  // base_url 空の接続先は保存しない (追加途中のゴミを残さない)
+  if (out.providers) {
+    out.providers = Object.fromEntries(
+      Object.entries(out.providers).filter(([, p]) => p && (p.base_url || "").trim()));
+    if (!Object.keys(out.providers).length) delete out.providers;
+  }
   delete out.lua; delete out.tabs;
 
   // 停止条件は when が空の行を捨ててから保存する
