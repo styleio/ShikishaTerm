@@ -1579,6 +1579,8 @@ const COMMON_COMMANDS = [
   {label:"Claude Code", cmd:"claude",         check:"claude"},
   {label:"Codex CLI",   cmd:"codex",          check:"codex"},
   {label:"Gemini CLI",  cmd:"gemini",         check:"gemini"},
+  {label:"Kimi Code",   cmd:"kimi",           check:null},
+  {label:"Aider",       cmd:"aider",          check:null},
   {label:"PowerShell",  cmd:"powershell.exe", check:null},
   {label:T["settings.tab.kind.cmdprompt"], cmd:"cmd.exe", check:null},
 ];
