@@ -79,8 +79,7 @@ fn rally_record_path() -> std::path::PathBuf {
 fn rally_record_reset() -> std::io::Result<()> {
     std::fs::write(
         rally_record_path(),
-        "-- SHIKISHA ラリー記録: 実行したブラウザ操作Lua。\n\
-         -- これを on_done.lua (または on_load.lua) に貼れば、AI無しで同じ動きを再生できる。\n\n",
+        crate::i18n::t("transcript.record.header"),
     )
 }
 
@@ -104,10 +103,10 @@ fn sel_of(v: &Value) -> mlua::Result<crate::browser::Sel> {
             } else if let Ok(x) = t.get::<String>("css") {
                 Ok(crate::browser::Sel::Css(x))
             } else {
-                Err(mlua::Error::runtime("セレクタは \"#id\" か { xpath = ... }"))
+                Err(mlua::Error::runtime(crate::i18n::t("err.hooks.selector")))
             }
         }
-        _ => Err(mlua::Error::runtime("セレクタは \"#id\" か { xpath = ... }")),
+        _ => Err(mlua::Error::runtime(crate::i18n::t("err.hooks.selector"))),
     }
 }
 
@@ -119,7 +118,7 @@ fn go_of(what: &str, url: Option<String>) -> mlua::Result<crate::browser::Go> {
         "forward" => Go::Forward,
         "reload" => Go::Reload,
         "to" => Go::To(url.unwrap_or_default()),
-        _ => return Err(mlua::Error::runtime("browser_go は back/forward/reload/to のいずれか")),
+        _ => return Err(mlua::Error::runtime(crate::i18n::t("err.hooks.browser_go"))),
     })
 }
 
@@ -132,8 +131,9 @@ fn missing_ok(opts: &Option<Table>) -> bool {
 
 fn check(what: &str, state: &str, opts: &Option<Table>) -> mlua::Result<String> {
     if state == "not_found" && !missing_ok(opts) {
-        return Err(mlua::Error::runtime(format!(
-            "{what}: 要素が見つかりません (進めたいなら on_missing=\"continue\")"
+        return Err(mlua::Error::runtime(crate::i18n::tp(
+            "err.hooks.not_found",
+            &[("what", what)],
         )));
     }
     Ok(state.to_string())
@@ -195,8 +195,9 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
         if name == allowed {
             Ok(())
         } else {
-            Err(mlua::Error::runtime(format!(
-                "許可されていないブラウザ: {name} (このラリーは {allowed} のみ)"
+            Err(mlua::Error::runtime(crate::i18n::tp(
+                "err.hooks.browser_not_allowed",
+                &[("name", name), ("allowed", allowed)],
             )))
         }
     }
@@ -497,7 +498,7 @@ function shikisha.browser_wait(name, opts)
   local left = opts.timeout_ms or 300000
   local step = 300
   if opts.ask then
-    shikisha.browser_ask(name, opts.ask, opts.label or "できました")
+    shikisha.browser_ask(name, opts.ask, opts.label or shikisha.t("agent.browser.wait.label"))
   end
   while left > 0 do
     if opts.selector and shikisha.browser_find(name, opts.selector) == "visible" then
@@ -607,6 +608,33 @@ impl HookEngine {
                             .and_then(|i| states.get(i - 1).map(|(_, st)| st.clone()))
                             .unwrap_or_else(|| "EXIT".to_string()))
                     })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // 表示文言の翻訳。en.json 基底 + 言語オーバーレイ (i18n)。
+            // 内蔵司令塔(討論/ブラウザ操作)がAIへ送る文や議事録の見出しを英語ファーストにする。
+            // 差し込みが要るものは tf(key, {name="…"}) で {name} を置換する
+            shikisha
+                .set(
+                    "t",
+                    lua.create_function(|_, key: String| Ok(crate::i18n::t(&key)))
+                        .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            shikisha
+                .set(
+                    "tf",
+                    lua.create_function(
+                        |_, (key, args): (String, std::collections::HashMap<String, String>)| {
+                            let mut s = crate::i18n::t(&key);
+                            for (k, v) in args {
+                                s = s.replace(&format!("{{{k}}}"), &v);
+                            }
+                            Ok(s)
+                        },
+                    )
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
@@ -795,7 +823,10 @@ impl HookEngine {
                         match c.browser_text(&name, &sel_of(&sel)?) {
                             Ok(v) => Ok(v),
                             Err(e) => {
-                                crate::append_hook_log(&format!("browser_text 読めず: {e}"));
+                                crate::append_hook_log(&crate::i18n::tp(
+                                    "err.hooks.browser_text_unreadable",
+                                    &[("e", &format!("{e}"))],
+                                ));
                                 Ok(None)
                             }
                         }
@@ -813,7 +844,10 @@ impl HookEngine {
                     lua.create_function(move |lua, name: String| match c.browser_html(&name) {
                         Ok(h) => Ok(Value::String(lua.create_string(&h)?)),
                         Err(e) => {
-                            crate::append_hook_log(&format!("browser_html 読めず: {e}"));
+                            crate::append_hook_log(&crate::i18n::tp(
+                                "err.hooks.browser_html_unreadable",
+                                &[("e", &format!("{e}"))],
+                            ));
                             Ok(Value::Nil)
                         }
                     })
@@ -1271,7 +1305,7 @@ impl HookEngine {
             self.load_dir(path)
         } else {
             let source = std::fs::read_to_string(path)
-                .with_context(|| format!("自動化スクリプトを読めません: {key}"))?;
+                .with_context(|| crate::i18n::tp("err.hooks.cannot_read_script", &[("key", &key)]))?;
             self.load_source(&key, &source)
         }
     }
@@ -1286,7 +1320,7 @@ impl HookEngine {
         if shared.is_file() {
             source.push_str(
                 &std::fs::read_to_string(&shared)
-                    .with_context(|| format!("読めません: {}", shared.display()))?,
+                    .with_context(|| crate::i18n::tp("err.hooks.cannot_read", &[("path", &shared.display().to_string())]))?,
             );
             source.push('\n');
         }
@@ -1297,7 +1331,7 @@ impl HookEngine {
                 continue;
             }
             let body = std::fs::read_to_string(&f)
-                .with_context(|| format!("読めません: {}", f.display()))?;
+                .with_context(|| crate::i18n::tp("err.hooks.cannot_read", &[("path", &f.display().to_string())]))?;
             // on_question は画面テキストを第2引数で受け取る
             source.push_str(&format!("function {hook}(tab, screen)\n{body}\nend\n"));
             found = true;
@@ -1309,14 +1343,15 @@ impl HookEngine {
                 continue;
             }
             let body = std::fs::read_to_string(&f)
-                .with_context(|| format!("読めません: {}", f.display()))?;
+                .with_context(|| crate::i18n::tp("err.hooks.cannot_read", &[("path", &f.display().to_string())]))?;
             source.push_str(&format!("function {hook}(page)\n{body}\nend\n"));
             found = true;
         }
         if !found && source.is_empty() {
-            anyhow::bail!(
-                "{key} にイベントファイル (on_done.lua 等) がありません"
-            );
+            anyhow::bail!(crate::i18n::tp(
+                "err.hooks.no_event_files",
+                &[("key", &key)]
+            ));
         }
         self.load_source(&key, &source)
     }
@@ -1333,7 +1368,12 @@ impl HookEngine {
             .load(source)
             .set_environment(env.clone())
             .exec()
-            .map_err(|e| anyhow::anyhow!("{path}: Luaスクリプトの実行に失敗: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(crate::i18n::tp(
+                    "err.hooks.script_run_failed",
+                    &[("path", path), ("e", &format!("{e}"))]
+                ))
+            })?;
 
         let mut defined = HashSet::new();
         // セッションのフックと、ブラウザのフックの両方を見る
@@ -1398,17 +1438,17 @@ local function protocol(run)
   local infile = run .. "/in.lua"
   local humanfile = run .. "/human.txt"
   return table.concat({
-    "あなたはブラウザ \"" .. BR .. "\" を操作するエージェントです。",
-    "毎手番、次の1手のLuaを **このファイルに上書き保存** して渡す(画面には貼らない):",
+    shikisha.tf("agent.browser.proto.intro", { br = BR }),
+    shikisha.t("agent.browser.proto.each_turn"),
     "  " .. infile,
-    "  使える関数(対象は \"" .. BR .. "\"):",
+    shikisha.tf("agent.browser.proto.funcs_header", { br = BR }),
     "    browser_go(\"" .. BR .. "\", \"to\"|\"reload\"|\"back\"|\"forward\", url?)",
     "    browser_click(\"" .. BR .. "\", sel)   browser_fill(\"" .. BR .. "\", sel, value)",
-    "    browser_fill_secret(\"" .. BR .. "\", sel, 秘密名)   browser_auth(\"" .. BR .. "\", 秘密名)",
+    "    browser_fill_secret(\"" .. BR .. "\", sel, " .. shikisha.t("agent.browser.secret_name") .. ")   browser_auth(\"" .. BR .. "\", " .. shikisha.t("agent.browser.secret_name") .. ")",
     "    browser_text(\"" .. BR .. "\", sel)   browser_find(\"" .. BR .. "\", sel)",
-    "    sel は \"#id\" か {xpath=\"...\"}。1ファイル=1手。書いたら手番を終える。",
-    "  ログイン/CAPTCHA等で人手が要るときは、依頼を " .. humanfile .. " に(1〜2文で端的に)。",
-    "  ゴールを達成した/これ以上操作が不要と思ったら、**in.luaを書かず**に結果を短く報告して待機。",
+    shikisha.t("agent.browser.proto.sel_note"),
+    shikisha.t("agent.browser.proto.human_before") .. humanfile .. shikisha.t("agent.browser.proto.human_after"),
+    shikisha.t("agent.browser.proto.done_note"),
   }, "\n")
 end
 
@@ -1430,12 +1470,12 @@ function on_start(tab)
   shikisha.set_var("rally_record", run .. "/record.lua")
   shikisha.set_var("rally_tx", run .. "/transcript.md")
   reset_budget()
-  tx("# SHIKISHA ラリー記録\n")
-  tx("ブラウザ操作モード（対象タブ: " .. BR .. "）\n")
+  tx(shikisha.t("transcript.rally.header") .. "\n")
+  tx(shikisha.tf("transcript.rally.mode", { br = BR }) .. "\n")
   shikisha.send_to_tab(tab.index, table.concat({
     protocol(run),
     "",
-    "準備OK。やってほしいことを入力欄に書いてください(例: ログインして投稿画面へ)。",
+    shikisha.t("agent.browser.start.ready"),
   }, "\n"))
 end
 
@@ -1454,12 +1494,12 @@ function on_done(tab)
   -- 人手依頼ファイル
   local human = shikisha.exchange_take(run .. "/human.txt")
   if human and #human > 0 then
-    tx("\n### 人間へ依頼\n" .. human .. "\n")
+    tx("\n### " .. shikisha.t("transcript.rally.human_request") .. "\n" .. human .. "\n")
     shikisha.show(BR)
-    shikisha.browser_wait(BR, { ask = human, label = "できたら押す" })
-    tx("（人間が対応を完了）\n")
+    shikisha.browser_wait(BR, { ask = human, label = shikisha.t("agent.browser.human.label") })
+    tx(shikisha.t("transcript.rally.human_done") .. "\n")
     shikisha.show(ai)
-    shikisha.send_to_tab(ai, "対応しました。続けてください(次の1手を " .. infile .. " に)。")
+    shikisha.send_to_tab(ai, shikisha.t("agent.browser.human.resumed_before") .. infile .. shikisha.t("agent.browser.human.resumed_after"))
     return
   end
 
@@ -1468,21 +1508,21 @@ function on_done(tab)
   if code and #code > 0 then
     local lint = shikisha.lint(code)
     if lint then
-      shikisha.send_to_tab(ai, "Luaが構文エラーです:\n" .. lint .. "\n直して " .. infile .. " に。")
+      shikisha.send_to_tab(ai, shikisha.t("agent.browser.lint.error") .. "\n" .. lint .. "\n" .. shikisha.tf("agent.browser.lint.fix", { infile = infile }))
       return
     end
     shikisha.show(BR)
     local err = shikisha.run_scoped(BR, code)
     if err then
       shikisha.show(ai)
-      shikisha.send_to_tab(ai, "実行でエラー:\n" .. err .. "\n別の手を " .. infile .. " に。")
+      shikisha.send_to_tab(ai, shikisha.t("agent.browser.run.error") .. "\n" .. err .. "\n" .. shikisha.tf("agent.browser.run.retry", { infile = infile }))
       return
     end
     shikisha.exchange_append(shikisha.get_var("rally_record"), code)
     local n = (shikisha.get_var("rally_round") or 0) + 1
     shikisha.set_var("rally_round", n)
     -- 人が読む記録に、実行した手を残す(4字下げ=Markdownのコード)
-    tx("\n### 手 " .. n .. "\n    " .. code:gsub("\n", "\n    ") .. "\n")
+    tx("\n### " .. shikisha.t("transcript.rally.action") .. " " .. n .. "\n    " .. code:gsub("\n", "\n    ") .. "\n")
     -- 遷移後、本文が出る＋判定が成立するまで短くポーリング。
     -- ボタン等が遅れて描画される(late-render)停止条件を取りこぼさない。出たら即進む
     local v = nil
@@ -1495,15 +1535,15 @@ function on_done(tab)
       end
     end
     local body0 = shikisha.browser_text(BR, "body") or ""
-    tx("- 画面: " .. body0:sub(1, 400):gsub("%s+", " ") .. "\n")
+    tx("- " .. shikisha.t("transcript.rally.screen") .. ": " .. body0:sub(1, 400):gsub("%s+", " ") .. "\n")
     -- 審判(設定した停止条件)。成立したら終了コードを出して一区切り(待機に戻る)
     if v then
-      tx("\n## 判定: " .. (v.outcome == "success" and "成功" or "失敗")
+      tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. (v.outcome == "success" and shikisha.t("agent.verdict.success") or shikisha.t("agent.verdict.fail"))
         .. " (code=" .. (v.code or 0) .. ")\n" .. (v.reason or "") .. "\n")
       shikisha.show(v.outcome == "success" and ai or BR)
       shikisha.set_result(v.code or 0, v.reason or v.outcome)
-      shikisha.send_to_tab(ai, "判定: " .. (v.reason or v.outcome)
-        .. " (code=" .. (v.code or 0) .. ")。次の指示があればどうぞ。")
+      shikisha.send_to_tab(ai, shikisha.t("agent.verdict.label") .. ": " .. (v.reason or v.outcome)
+        .. " (code=" .. (v.code or 0) .. ")" .. shikisha.t("agent.browser.next_instruction"))
       return
     end
     -- 安全網(暴走保険)。ゴールごとに予算はリセットされる
@@ -1511,16 +1551,16 @@ function on_done(tab)
     if n >= MAX_ROUNDS or (shikisha.epoch_ms() - t0) >= MAX_SEC * 1000
         or (shikisha.get_var("rally_tok") or 0) >= MAX_TOK then
       shikisha.show(ai)
-      shikisha.send_to_tab(ai, "安全網(上限)に達したので一旦止めます。指示を見直すか、新しく指示してください。")
+      shikisha.send_to_tab(ai, shikisha.t("agent.browser.safety_net"))
       return
     end
     -- 画面を返して次の1手を促す
     shikisha.show(ai)
     local text = shikisha.browser_text(BR, "body") or ""
-    if #text > 3000 then text = text:sub(1, 3000) .. "…(略)" end
+    if #text > 3000 then text = text:sub(1, 3000) .. shikisha.t("agent.browser.truncated") end
     shikisha.send_to_tab(ai, table.concat({
-      "実行しました。今の画面テキスト:", "----", text, "----",
-      "次の1手を " .. infile .. " に。達成/不要と思ったら in.lua を書かず結果を報告して待機を。",
+      shikisha.t("agent.browser.executed_screen"), "----", text, "----",
+      shikisha.t("agent.browser.next_action.before") .. infile .. shikisha.t("agent.browser.next_action.after"),
     }, "\n"))
     return
   end
@@ -1529,7 +1569,7 @@ function on_done(tab)
   -- そうでなければ(AIが報告/待機した)、何も送らず人間の次の入力を待つ
   if tab.chain_depth == 0 then
     shikisha.send_to_tab(ai,
-      "了解。ブラウザ操作は1手ずつ " .. infile .. " に書いてください。まず最初の1手を。")
+      shikisha.t("agent.browser.first_action.before") .. infile .. shikisha.t("agent.browser.first_action.after"))
   end
 end
 "##;
@@ -1574,7 +1614,7 @@ local function ensure_run()
   shikisha.set_var("discuss_run", r)
   shikisha.set_var("discuss_tx", r .. "/transcript.md")
   shikisha.set_var("discuss_round", 0)
-  shikisha.exchange_append(r .. "/transcript.md", "# SHIKISHA 議論記録\n")
+  shikisha.exchange_append(r .. "/transcript.md", shikisha.t("transcript.discuss.header") .. "\n")
   return r
 end
 
@@ -1610,41 +1650,41 @@ function on_start(tab)
   local lines
   if IS_MOD then
     lines = {
-      "あなたは議論の司会 <" .. ME .. "> です。",
-      "指名を求められたら、「次に発言すべき参加者の id を1つ」または「END(議論を締める)」を",
+      shikisha.tf("agent.discuss.mod.intro", { me = ME }),
+      shikisha.t("agent.discuss.mod.nominate"),
       "  " .. say,
-      "に書いてください。参加者: " .. table.concat(AGENTS, ", "),
-      "順番が来たら書いてください。それまで待機。",
+      shikisha.t("agent.discuss.mod.write_to") .. table.concat(AGENTS, ", "),
+      shikisha.t("agent.discuss.mod.wait_turn"),
     }
   elseif IS_JUDGE then
     local ask = (MODE == "synthesis")
-      and "両者の強い点を統合した結論と理由を"
-      or  "勝者(どちらが優勢か)と理由を"
+      and shikisha.t("agent.discuss.judge.ask_synthesis")
+      or  shikisha.t("agent.discuss.judge.ask_winner")
     lines = {
-      "あなたは議論の審判 <" .. ME .. "> です。",
-      "裁定を求められたら、" .. ask .. " **このファイルに** 書いてください:",
+      shikisha.tf("agent.discuss.judge.intro", { me = ME }),
+      shikisha.t("agent.discuss.judge.ruling_before") .. ask .. shikisha.t("agent.discuss.judge.ruling_after"),
       "  " .. say,
-      "ルーブリック: 論理性・根拠・相手への応答。判定は意見なので理由を必ず添えること。",
-      "順番(裁定を求められたとき)が来たら書いてください。",
+      shikisha.t("agent.discuss.judge.rubric"),
+      shikisha.t("agent.discuss.judge.wait_turn"),
     }
   else
     lines = {
-      "あなたは議論の参加者 <" .. ME .. "> です。",
-      "毎手番、あなたの発言を **このファイルに上書き保存** してください(画面には書かない):",
+      shikisha.tf("agent.discuss.part.intro", { me = ME }),
+      shikisha.t("agent.discuss.part.each_turn"),
       "  " .. say,
-      "他の参加者の発言はこちらが渡します。端的に、要点を述べてください。",
+      shikisha.t("agent.discuss.part.others"),
     }
     if IS_FIRST then
       lines[#lines + 1] = ""
-      lines[#lines + 1] = "準備OK。議題を入力欄に書いてください。あなたが口火を切ります。"
+      lines[#lines + 1] = shikisha.t("agent.discuss.part.ready")
     else
-      lines[#lines + 1] = "順番が来たら発言を求めます。それまで待機。"
+      lines[#lines + 1] = shikisha.t("agent.discuss.part.wait_turn")
     end
   end
   -- ペルソナ(立場・人格)があれば冒頭に据える。議論全体でこの立場を保つ
   if PERSONA ~= nil and #PERSONA > 0 then
-    table.insert(lines, 1, "【あなたの立場・人格】" .. PERSONA)
-    table.insert(lines, 2, "この立場を最後まで貫いて発言してください。")
+    table.insert(lines, 1, shikisha.t("agent.discuss.persona.label") .. PERSONA)
+    table.insert(lines, 2, shikisha.t("agent.discuss.persona.keep"))
     table.insert(lines, 3, "")
   end
   shikisha.send_to_tab(tab.index, table.concat(lines, "\n"))
@@ -1667,7 +1707,7 @@ function on_done(tab)
     -- CLIは議題を人が打った直後(chain_depth==0)。model橋は人の入力を受け取れないので、
     -- ペルソナ/文脈から自動で口火を切らせる(is_model)
     if IS_FIRST and (tab.chain_depth == 0 or tab.is_model) then
-      speak(tab.index, "議題を受けました。あなたの口火の発言を " .. say .. " に書いてください。")
+      speak(tab.index, shikisha.t("agent.discuss.first.before") .. say .. shikisha.t("agent.discuss.first.after"))
     end
     return
   end
@@ -1675,16 +1715,16 @@ function on_done(tab)
   -- 司会の手番: 発言ではなく「次の話者 or END」の指示。参加者としては記録しない
   if IS_MOD then
     local ctx = shikisha.get_var("discuss_log") or ""
-    if #ctx > 4000 then ctx = "…(略)\n" .. ctx:sub(#ctx - 4000) end
+    if #ctx > 4000 then ctx = shikisha.t("agent.discuss.truncated_short") .. "\n" .. ctx:sub(#ctx - 4000) end
     if msg:upper():find("END") then
-      tx("\n（司会 " .. ME .. ": 議論を締めます）\n")
+      tx("\n" .. shikisha.tf("transcript.discuss.mod_close", { me = ME }) .. "\n")
       if JUDGE ~= nil and #JUDGE > 0 then
         shikisha.show(JUDGE)
         speak(JUDGE, table.concat({
-          "以下の議論を審判してください。", "----", ctx, "----",
+          shikisha.t("agent.discuss.judge_request"), "----", ctx, "----",
         }, "\n"))
       else
-        shikisha.set_result(0, "議論終了(司会が締め)")
+        shikisha.set_result(0, shikisha.t("agent.discuss.result.mod_closed"))
         shikisha.set_var("discuss_done", true)
       end
       return
@@ -1694,11 +1734,11 @@ function on_done(tab)
       if msg:find(ag, 1, true) then pick = ag; break end
     end
     pick = pick or AGENTS[1]
-    tx("\n（司会 " .. ME .. ": 次は " .. pick .. "）\n")
+    tx("\n" .. shikisha.tf("transcript.discuss.mod_next", { me = ME, pick = pick }) .. "\n")
     shikisha.show(pick)
     speak(pick, table.concat({
-      "これまでの議論:", "----", ctx, "----",
-      "あなた(" .. pick .. ")の番です。意見を " .. say .. " に端的に書いてください。",
+      shikisha.t("agent.discuss.so_far"), "----", ctx, "----",
+      shikisha.t("agent.discuss.your_turn.before") .. pick .. shikisha.t("agent.discuss.your_turn.mid") .. say .. shikisha.t("agent.discuss.your_turn.after"),
     }, "\n"))
     return
   end
@@ -1706,8 +1746,8 @@ function on_done(tab)
   -- 発言を記録(人が読むtranscriptと、次へ渡す用のログ)
   local r = (shikisha.get_var("discuss_round") or 0) + 1
   shikisha.set_var("discuss_round", r)
-  tx("\n### " .. ME .. "（" .. r .. "）\n" .. msg .. "\n")
-  local log = (shikisha.get_var("discuss_log") or "") .. "【" .. ME .. "】\n" .. msg .. "\n\n"
+  tx("\n### " .. shikisha.tf("transcript.discuss.entry", { me = ME, r = tostring(r) }) .. "\n" .. msg .. "\n")
+  local log = (shikisha.get_var("discuss_log") or "") .. shikisha.tf("agent.discuss.log_speaker", { me = ME }) .. "\n" .. msg .. "\n\n"
   shikisha.set_var("discuss_log", log)
   -- 各参加者の最新発言を控える(集合stopsの材料)
   local says = shikisha.get_var("discuss_says")
@@ -1716,9 +1756,9 @@ function on_done(tab)
 
   -- 審判の発言 = 裁定。ここで終了
   if IS_JUDGE then
-    tx("\n## 判定（審判 " .. ME .. "）\n" .. msg .. "\n")
+    tx("\n## " .. shikisha.tf("transcript.discuss.verdict_judge", { me = ME }) .. "\n" .. msg .. "\n")
     shikisha.show(tab.index)
-    shikisha.set_result(0, "審判が裁定しました")
+    shikisha.set_result(0, shikisha.t("agent.discuss.result.judge_ruled"))
     shikisha.set_var("discuss_done", true)
     return
   end
@@ -1726,9 +1766,9 @@ function on_done(tab)
   -- 集合stops(全員合意/誰か中止/過半数 等)が成立したら、そこで決着
   local agg = agg_judge()
   if agg then
-    tx("\n## 判定（集合条件）: " .. (agg.outcome == "success" and "成功" or "失敗")
+    tx("\n## " .. shikisha.t("agent.discuss.verdict_agg") .. ": " .. (agg.outcome == "success" and shikisha.t("agent.verdict.success") or shikisha.t("agent.verdict.fail"))
       .. " (code=" .. (agg.code or 0) .. ")\n" .. (agg.reason or "") .. "\n")
-    shikisha.set_result(agg.code or 0, agg.reason or "集合条件が成立")
+    shikisha.set_result(agg.code or 0, agg.reason or shikisha.t("agent.discuss.agg_met"))
     shikisha.set_var("discuss_done", true)
     return
   end
@@ -1738,12 +1778,12 @@ function on_done(tab)
     if JUDGE ~= nil and #JUDGE > 0 then
       shikisha.show(JUDGE)
       speak(JUDGE, table.concat({
-        "以下の議論を審判してください。勝敗(または統合)と理由を say.txt に。",
+        shikisha.t("agent.discuss.judge_request_final"),
         "----", log, "----",
       }, "\n"))
     else
-      tx("\n## 判定\n(周回上限。審判なし)\n")
-      shikisha.set_result(0, "議論終了(周回上限)")
+      tx("\n## " .. shikisha.t("agent.verdict.label") .. "\n" .. shikisha.t("agent.discuss.round_limit_no_judge") .. "\n")
+      shikisha.set_result(0, shikisha.t("agent.discuss.result.round_limit"))
       shikisha.set_var("discuss_done", true)
     end
     return
@@ -1752,19 +1792,19 @@ function on_done(tab)
   -- 次へ回す(観戦のため画面も切り替える)。
   -- moderated なら司会に「次は誰か」を尋ね、既定(round-robin)は静的な NEXT へ
   local ctx = log
-  if #ctx > 4000 then ctx = "…(以下略)\n" .. ctx:sub(#ctx - 4000) end
+  if #ctx > 4000 then ctx = shikisha.t("agent.discuss.truncated") .. "\n" .. ctx:sub(#ctx - 4000) end
   if ORDER == "moderated" and MODERATOR ~= nil and #MODERATOR > 0 then
     shikisha.show(MODERATOR)
     speak(MODERATOR, table.concat({
-      "これまでの議論:", "----", ctx, "----",
-      "次に発言すべき参加者の id を1つ、または END を " .. say
-        .. " に書いてください。参加者: " .. table.concat(AGENTS, ", "),
+      shikisha.t("agent.discuss.so_far"), "----", ctx, "----",
+      shikisha.t("agent.discuss.mod.pick_before") .. say
+        .. shikisha.t("agent.discuss.mod.pick_after") .. table.concat(AGENTS, ", "),
     }, "\n"))
   else
     shikisha.show(NEXT)
     speak(NEXT, table.concat({
-      "これまでの議論:", "----", ctx, "----",
-      "あなた(" .. NEXT .. ")の意見を " .. say .. " に端的に書いてください。",
+      shikisha.t("agent.discuss.so_far"), "----", ctx, "----",
+      shikisha.t("agent.discuss.next_turn.before") .. NEXT .. shikisha.t("agent.discuss.next_turn.mid") .. say .. shikisha.t("agent.discuss.next_turn.after"),
     }, "\n"))
   end
 end
@@ -1834,7 +1874,7 @@ end
             Ok(())
         })();
         if let Err(e) = result {
-            self.push_log(format!("Luaエラー({hook}): {e}"));
+            self.push_log(crate::i18n::tp("err.hooks.lua_error", &[("hook", hook), ("e", &format!("{e}"))]));
         }
     }
 
@@ -1869,7 +1909,7 @@ end
             Ok(())
         })();
         if let Err(e) = result {
-            self.push_log(format!("Luaエラー({hook}): {e}"));
+            self.push_log(crate::i18n::tp("err.hooks.lua_error", &[("hook", hook), ("e", &format!("{e}"))]));
         }
     }
 
@@ -1894,7 +1934,10 @@ end
                             let args = MultiValue::from_vec(vec![Value::Boolean(result)]);
                             self.resume_thread(thread, &p.hook, p.origin, args);
                         }
-                        Err(e) => self.push_log(format!("Lua再開エラー: {e}")),
+                        Err(e) => self.push_log(crate::i18n::tp(
+                            "err.hooks.lua_resume",
+                            &[("e", &format!("{e}"))],
+                        )),
                     }
                     let _ = self.lua.remove_registry_value(p.key);
                 }
@@ -1921,15 +1964,21 @@ end
                                 origin,
                                 wait,
                             }),
-                            Err(e) => self.push_log(format!("Lua登録エラー: {e}")),
+                            Err(e) => self.push_log(crate::i18n::tp(
+                                "err.hooks.lua_register",
+                                &[("e", &format!("{e}"))],
+                            )),
                         },
-                        Err(e) => self.push_log(format!("Lua yield不正({hook}): {e}")),
+                        Err(e) => self.push_log(crate::i18n::tp(
+                            "err.hooks.lua_yield_bad",
+                            &[("hook", hook), ("e", &format!("{e}"))],
+                        )),
                     }
                 } else {
                     self.on_complete(hook, origin, vals);
                 }
             }
-            Err(e) => self.push_log(format!("Luaエラー({hook}): {e}")),
+            Err(e) => self.push_log(crate::i18n::tp("err.hooks.lua_error", &[("hook", hook), ("e", &format!("{e}"))])),
         }
     }
 
@@ -1949,7 +1998,7 @@ end
 
     fn parse_yield(&self, vals: &MultiValue) -> Result<WaitKind> {
         let Some(Value::Table(t)) = vals.iter().next() else {
-            anyhow::bail!("yieldはshikisha.wait/sleep経由のみ対応");
+            anyhow::bail!(crate::i18n::t("err.hooks.yield_only"));
         };
         let op: String = t.get("op").map_err(lerr)?;
         match op.as_str() {
@@ -1966,11 +2015,11 @@ end
                 Ok(WaitKind::Screen {
                     tab,
                     re: regex::Regex::new(&pattern)
-                        .with_context(|| format!("waitの正規表現が不正: {pattern}"))?,
+                        .with_context(|| crate::i18n::tp("err.hooks.wait_regex", &[("pattern", &pattern)]))?,
                     deadline: Instant::now() + Duration::from_millis(timeout_ms),
                 })
             }
-            other => anyhow::bail!("不明なyield op: {other}"),
+            other => anyhow::bail!(crate::i18n::tp("err.hooks.unknown_yield", &[("other", other)])),
         }
     }
 
@@ -1999,9 +2048,7 @@ fn tab_ref_of(v: &Value) -> mlua::Result<TabRef> {
         Value::Number(n) => Ok(TabRef::Index(*n as usize)),
         Value::String(s) => Ok(TabRef::Name(s.to_str()?.to_string())),
         Value::Table(t) => Ok(TabRef::Index(t.get("index")?)),
-        _ => Err(mlua::Error::runtime(
-            "タブは番号かタブ名で指定してください",
-        )),
+        _ => Err(mlua::Error::runtime(crate::i18n::t("err.hooks.tab_ref"))),
     }
 }
 
@@ -2268,7 +2315,7 @@ mod tests {
                 Command::SendPrompt { text, .. }
                     if text.contains("in.lua")
                         && text.contains("browser_go")
-                        && text.contains("入力欄"))),
+                        && text.contains("input field"))),
             "on_start がブラウザ操作プロトコル(入力欄でゴール)を送っていない: {cmds:?}"
         );
     }
@@ -2302,7 +2349,7 @@ mod tests {
         assert!(
             cmds.iter().any(|c| matches!(c,
                 Command::SendPrompt { text, .. }
-                    if text.contains("say.txt") && text.contains("入力欄") && text.contains("参加者"))),
+                    if text.contains("say.txt") && text.contains("input field") && text.contains("participant"))),
             "口火役の on_start が議題入力を促していない: {cmds:?}"
         );
     }
@@ -2360,7 +2407,7 @@ mod tests {
         assert!(find("write=").contains("write_file"), "write_file が使えてしまう: {:?}", find("write="));
         assert!(find("load=").contains("load"), "load が使えてしまう: {:?}", find("load="));
         assert!(
-            find("wrong=").contains("許可されていないブラウザ"),
+            find("wrong=").contains("Browser not allowed"),
             "他タブを操作できてしまう: {:?}",
             find("wrong=")
         );

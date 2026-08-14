@@ -71,7 +71,7 @@ pub fn append(path: &Path, text: &str) -> std::io::Result<()> {
     if !within_root(path) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "exchange の外には書けません",
+            crate::i18n::t("err.exchange.outside_root"),
         ));
     }
     use std::io::Write;
@@ -157,7 +157,10 @@ pub fn sweep_old(days: u64) {
         }
     }
     if removed > 0 {
-        crate::append_hook_log(&format!("exchange: 古いrunを{removed}件掃除しました"));
+        crate::append_hook_log(&crate::i18n::tp(
+            "err.exchange.swept_old_runs",
+            &[("removed", &removed.to_string())],
+        ));
     }
 }
 

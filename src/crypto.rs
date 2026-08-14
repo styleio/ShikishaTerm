@@ -34,7 +34,12 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
     let params = Params::new(64 * 1024, 3, 1, Some(32)).map_err(|e| anyhow::anyhow!("{e}"))?;
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(password.as_bytes(), salt, &mut key)
-        .map_err(|e| anyhow::anyhow!("鍵導出に失敗: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(crate::i18n::tp(
+                "err.crypto.key_derivation_failed",
+                &[("e", &format!("{e}"))]
+            ))
+        })?;
     Ok(key)
 }
 
@@ -43,18 +48,31 @@ pub fn encrypt(plaintext: &str, password: &str) -> Result<Envelope> {
     use rand::TryRng as _;
     let mut salt = [0u8; 16];
     let mut nonce_bytes = [0u8; 12];
-    rand::rngs::SysRng
-        .try_fill_bytes(&mut salt)
-        .map_err(|e| anyhow::anyhow!("乱数生成に失敗: {e}"))?;
+    rand::rngs::SysRng.try_fill_bytes(&mut salt).map_err(|e| {
+        anyhow::anyhow!(crate::i18n::tp(
+            "err.crypto.random_failed",
+            &[("e", &format!("{e}"))]
+        ))
+    })?;
     rand::rngs::SysRng
         .try_fill_bytes(&mut nonce_bytes)
-        .map_err(|e| anyhow::anyhow!("乱数生成に失敗: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(crate::i18n::tp(
+                "err.crypto.random_failed",
+                &[("e", &format!("{e}"))]
+            ))
+        })?;
 
     let mut key = derive_key(password, &salt)?;
     let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key));
     let ciphertext = cipher
         .encrypt(&Nonce::from(nonce_bytes), plaintext.as_bytes())
-        .map_err(|e| anyhow::anyhow!("暗号化に失敗: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(crate::i18n::tp(
+                "err.crypto.encrypt_failed",
+                &[("e", &format!("{e}"))]
+            ))
+        })?;
     key.zeroize();
 
     Ok(Envelope {
@@ -67,23 +85,32 @@ pub fn encrypt(plaintext: &str, password: &str) -> Result<Envelope> {
 
 pub fn decrypt(env: &Envelope, password: &str) -> Result<String> {
     if env.magic != MAGIC {
-        bail!("暗号化ファイルの形式が不明です: {}", env.magic);
+        bail!(crate::i18n::tp(
+            "err.crypto.unknown_format",
+            &[("magic", &env.magic)]
+        ));
     }
-    let salt = B64.decode(&env.salt).context("saltが不正")?;
-    let nonce = B64.decode(&env.nonce).context("nonceが不正")?;
-    let data = B64.decode(&env.data).context("暗号文が不正")?;
+    let salt = B64
+        .decode(&env.salt)
+        .with_context(|| crate::i18n::t("err.crypto.bad_salt"))?;
+    let nonce = B64
+        .decode(&env.nonce)
+        .with_context(|| crate::i18n::t("err.crypto.bad_nonce"))?;
+    let data = B64
+        .decode(&env.data)
+        .with_context(|| crate::i18n::t("err.crypto.bad_ciphertext"))?;
 
     let nonce: [u8; 12] = nonce
         .as_slice()
         .try_into()
-        .context("nonceの長さが不正です")?;
+        .with_context(|| crate::i18n::t("err.crypto.bad_nonce_length"))?;
     let mut key = derive_key(password, &salt)?;
     let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key));
     let plain = cipher
         .decrypt(&Nonce::from(nonce), data.as_ref())
-        .map_err(|_| anyhow::anyhow!("復号できません (パスワードが違うか、ファイルが壊れています)"));
+        .map_err(|_| anyhow::anyhow!(crate::i18n::t("err.crypto.decrypt_failed")));
     key.zeroize();
-    String::from_utf8(plain?).context("復号結果がUTF-8ではありません")
+    String::from_utf8(plain?).with_context(|| crate::i18n::t("err.crypto.not_utf8"))
 }
 
 /// ファイルが暗号化されているか (平文JSONと共存させるため中身で判定する)
@@ -98,24 +125,33 @@ pub fn read_maybe_encrypted(
     path: &std::path::Path,
     password: Option<&str>,
 ) -> Result<String> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("読み込めません: {}", path.display()))?;
+    let text = std::fs::read_to_string(path).with_context(|| {
+        crate::i18n::tp(
+            "err.crypto.read_failed",
+            &[("path", &path.display().to_string())],
+        )
+    })?;
     if !is_encrypted(&text) {
         return Ok(text);
     }
-    let env: Envelope = serde_json::from_str(&text).context("暗号化ファイルの形式が不正")?;
+    let env: Envelope = serde_json::from_str(&text)
+        .with_context(|| crate::i18n::t("err.crypto.bad_envelope"))?;
     let Some(pw) = password else {
-        bail!("暗号化されています。マスターパスワードが必要です");
+        bail!(crate::i18n::t("err.crypto.password_required"));
     };
     decrypt(&env, pw)
 }
 
 /// 平文JSONを暗号化して書き戻す (アトミック置換)
 pub fn encrypt_file(path: &std::path::Path, password: &str) -> Result<()> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("読み込めません: {}", path.display()))?;
+    let text = std::fs::read_to_string(path).with_context(|| {
+        crate::i18n::tp(
+            "err.crypto.read_failed",
+            &[("path", &path.display().to_string())],
+        )
+    })?;
     if is_encrypted(&text) {
-        bail!("すでに暗号化されています");
+        bail!(crate::i18n::t("err.crypto.already_encrypted"));
     }
     let env = encrypt(&text, password)?;
     write_atomic(path, &serde_json::to_string_pretty(&env)?)
@@ -127,13 +163,27 @@ pub fn write_atomic(path: &std::path::Path, content: &str) -> Result<()> {
     // 一時ファイルの作成で失敗し、保存が「空の応答」で黙って落ちる
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("フォルダを作れません: {}", dir.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| {
+                crate::i18n::tp(
+                    "err.crypto.mkdir_failed",
+                    &[("path", &dir.display().to_string())],
+                )
+            })?;
         }
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, content).with_context(|| format!("書き込めません: {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("置換できません: {}", path.display()))?;
+    std::fs::write(&tmp, content).with_context(|| {
+        crate::i18n::tp(
+            "err.crypto.write_failed",
+            &[("path", &tmp.display().to_string())],
+        )
+    })?;
+    std::fs::rename(&tmp, path).with_context(|| {
+        crate::i18n::tp(
+            "err.crypto.rename_failed",
+            &[("path", &path.display().to_string())],
+        )
+    })?;
     Ok(())
 }
 
@@ -151,7 +201,7 @@ mod tests {
     fn wrong_password_fails_clearly() {
         let env = encrypt("secret", "right").unwrap();
         let err = decrypt(&env, "wrong").unwrap_err().to_string();
-        assert!(err.contains("復号できません"), "{err}");
+        assert!(err.contains("decrypt"), "{err}");
     }
 
     #[test]

@@ -141,10 +141,10 @@ fn cast_test(url: &str) -> Result<()> {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
 
-    println!("開いています: {url}");
+    println!("{}", crate::i18n::tp("cli.cast_test.opening", &[("url", url)]));
     let browser = browser::Browser::spawn(url, "cast-test")?;
     browser.screencast(None, true)?;
-    println!("中継開始。フレームを待っています (最長20秒)...");
+    println!("{}", crate::i18n::t("cli.cast_test.relaying"));
 
     let status = config::logs_dir().join("cast-test.txt");
     // 最初のフレームは描画前で真っ白になりがち。数秒ためて「最後の1枚」を保存する
@@ -154,9 +154,12 @@ fn cast_test(url: &str) -> Result<()> {
     loop {
         for ev in browser.drain() {
             if let browser::Ev::Frame { data, w, h, .. } = ev {
-                let bytes = b64
-                    .decode(data.as_bytes())
-                    .map_err(|e| anyhow::anyhow!("フレームのbase64が不正: {e}"))?;
+                let bytes = b64.decode(data.as_bytes()).map_err(|e| {
+                    anyhow::anyhow!(crate::i18n::tp(
+                        "cli.cast_test.bad_base64",
+                        &[("e", &e.to_string())]
+                    ))
+                })?;
                 last = Some((bytes, w, h));
                 count += 1;
             }
@@ -179,11 +182,11 @@ fn cast_test(url: &str) -> Result<()> {
                 count
             );
             let _ = std::fs::write(&status, &msg);
-            print!("保存: {msg}");
+            print!("{}", crate::i18n::tp("cli.cast_test.saved", &[("msg", &msg)]));
         }
         None => {
             let _ = std::fs::write(&status, "TIMEOUT: no frame in 5s\n");
-            println!("フレームが来ませんでした (非表示WebViewでは中継が止まる可能性)");
+            println!("{}", crate::i18n::t("cli.cast_test.no_frame"));
         }
     }
     Ok(())
@@ -539,12 +542,16 @@ fn named_key(n: &str) -> Option<KeyCode> {
 /// 自前の窓を開いて、同じループをその上で回す
 fn run_in_window() -> Result<()> {
     // 外皮を配る。file:// は wry のIPCで落ちるので、ローカルHTTPで出す
-    let server = tiny_http::Server::http("127.0.0.1:0")
-        .map_err(|e| anyhow::anyhow!("ローカルサーバーを開けません: {e}"))?;
+    let server = tiny_http::Server::http("127.0.0.1:0").map_err(|e| {
+        anyhow::anyhow!(crate::i18n::tp(
+            "err.main.local_server",
+            &[("e", &e.to_string())]
+        ))
+    })?;
     let port = server
         .server_addr()
         .to_ip()
-        .ok_or_else(|| anyhow::anyhow!("ポートが取れません"))?
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.main.no_port")))?
         .port();
     let page = shell::page("");
     std::thread::spawn(move || {
@@ -1962,7 +1969,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             flash = Some(if notifier.is_empty() {
                                 i18n::t("msg.notify_none")
                             } else {
-                                notifier.send_all("SHIKISHA-TERM: テスト通知")
+                                notifier.send_all(&crate::i18n::t("err.main.test_notify_body"))
                             });
                         }
                         // マスターパスワードの設定・変更・解除 (TUI内で完結)
@@ -2405,16 +2412,19 @@ fn build_engine(
             // ブラウザ操作モード: 内蔵の司令塔を対象ブラウザ向けに読み込む。
             // ただし同じタブが議論の参加者でもあるなら、議論を優先して無効化する
             TabAuto::Agent(br) if discuss_panes.contains(idx) => {
-                errors.push(format!(
-                    "タブ{}: ブラウザ操作モードと議論(discuss)が両方指定されています。議論を優先し、ブラウザ操作モードは無効にしました",
-                    idx
+                errors.push(crate::i18n::tp(
+                    "err.ws.agent_mode_and_discuss",
+                    &[("idx", &idx.to_string())],
                 ));
                 None
             }
             TabAuto::Agent(br) => match engine.load_browser_agent(br, &stops_lua) {
                 Ok(id) => Some(id),
                 Err(e) => {
-                    errors.push(format!("ブラウザ操作モード({br}): {e:#}"));
+                    errors.push(crate::i18n::tp(
+                        "err.ws.agent_mode_failed",
+                        &[("br", br), ("e", &format!("{e:#}"))],
+                    ));
                     None
                 }
             },
@@ -2447,7 +2457,10 @@ fn build_engine(
                 let moderator = d.moderator.as_deref().filter(|s| !s.trim().is_empty());
                 for (i, id) in agents.iter().enumerate() {
                     let Some(pane) = pane_of_id(w, id) else {
-                        errors.push(format!("議論: タブ '{id}' が見つかりません"));
+                        errors.push(crate::i18n::tp(
+                            "err.ws.discuss_tab_missing",
+                            &[("id", id)],
+                        ));
                         continue;
                     };
                     let next = &agents[(i + 1) % n];
@@ -2468,7 +2481,10 @@ fn build_engine(
                         persona,
                     ) {
                         Ok(sid) => engine.set_tab(pane, sid),
-                        Err(e) => errors.push(format!("議論({id}): {e:#}")),
+                        Err(e) => errors.push(crate::i18n::tp(
+                            "err.ws.discuss_agent_failed",
+                            &[("id", id), ("e", &format!("{e:#}"))],
+                        )),
                     }
                 }
                 if let Some(j) = d.judge.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -2479,9 +2495,15 @@ fn build_engine(
                             &d.verdict, &d.order, moderator, false, persona,
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
-                            Err(e) => errors.push(format!("議論(審判 {j}): {e:#}")),
+                            Err(e) => errors.push(crate::i18n::tp(
+                                "err.ws.discuss_judge_failed",
+                                &[("j", j), ("e", &format!("{e:#}"))],
+                            )),
                         },
-                        None => errors.push(format!("議論: 審判タブ '{j}' が見つかりません")),
+                        None => errors.push(crate::i18n::tp(
+                            "err.ws.discuss_judge_missing",
+                            &[("j", j)],
+                        )),
                     }
                 }
                 // 司会(moderator)タブ: order="moderated" のとき次の話者を指名する
@@ -2493,13 +2515,19 @@ fn build_engine(
                             &stops_lua, &d.verdict, &d.order, moderator, true, persona,
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
-                            Err(e) => errors.push(format!("議論(司会 {m}): {e:#}")),
+                            Err(e) => errors.push(crate::i18n::tp(
+                                "err.ws.discuss_moderator_failed",
+                                &[("m", m), ("e", &format!("{e:#}"))],
+                            )),
                         },
-                        None => errors.push(format!("議論: 司会タブ '{m}' が見つかりません")),
+                        None => errors.push(crate::i18n::tp(
+                            "err.ws.discuss_moderator_missing",
+                            &[("m", m)],
+                        )),
                     }
                 }
             } else if !d.agents.is_empty() {
-                errors.push("議論には参加者(agents)が2人以上必要です".into());
+                errors.push(crate::i18n::t("err.ws.discuss_needs_two"));
             }
         }
     }
@@ -2663,7 +2691,10 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
         );
         match caps.browser_open(&b.id, &b.url, profile) {
             Ok(()) => caps.note_declared(&b.id),
-            Err(e) => errors.push(format!("ブラウザ {}: {e:#}", b.id)),
+            Err(e) => errors.push(crate::i18n::tp(
+                "err.ws.browser_open",
+                &[("id", &b.id), ("e", &format!("{e:#}"))],
+            )),
         }
     }
     // タブとして「browser https://...」と書かれたものも同じ扱い。
@@ -2685,7 +2716,10 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
                 ft.cfg.private,
             );
             if let Err(e) = caps.browser_open(&name, &url, profile) {
-                errors.push(format!("ブラウザ {name}: {e:#}"));
+                errors.push(crate::i18n::tp(
+                    "err.ws.browser_open",
+                    &[("id", &name), ("e", &format!("{e:#}"))],
+                ));
                 continue;
             }
         }
@@ -2768,9 +2802,9 @@ fn spawn_workspace(
     // 呼び名が重複していると自動化の送信先が定まらないので知らせる
     let dups = config::duplicate_keys(ws);
     if !dups.is_empty() {
-        errors.push(format!(
-            "タブ名が重複しています ({}) — 自動化から指すにはIDを設定してください",
-            dups.join(", ")
+        errors.push(crate::i18n::tp(
+            "err.ws.duplicate_names",
+            &[("names", &dups.join(", "))],
         ));
     }
     for ft in &ws.tabs {
@@ -3015,13 +3049,19 @@ fn start_remote(
                     Some(r)
                 }
                 Err(e) => {
-                    errors.push(format!("リモートUI: {e}"));
+                    errors.push(crate::i18n::tp(
+                        "err.ws.remote_ui",
+                        &[("e", &e.to_string())],
+                    ));
                     None
                 }
             }
         }
         Err(e) => {
-            errors.push(format!("リモートUI: {e}"));
+            errors.push(crate::i18n::tp(
+                "err.ws.remote_ui",
+                &[("e", &e.to_string())],
+            ));
             None
         }
     }

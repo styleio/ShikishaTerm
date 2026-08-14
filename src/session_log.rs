@@ -81,7 +81,10 @@ impl SessionLog {
             stripper: AnsiStripper::default(),
             buf: Vec::new(),
         };
-        me.raw(&format!("\n===== セッション開始 {} =====\n", now_string()));
+        me.raw(&crate::i18n::tp(
+            "log.session.start",
+            &[("time", &now_string())],
+        ));
         me
     }
 

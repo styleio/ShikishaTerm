@@ -206,9 +206,10 @@ impl Config {
         let mut map = self.notify.clone();
         let mut err = None;
         if let Some(path) = self.secrets_path().filter(|p| p.exists()) {
-            match crate::crypto::read_maybe_encrypted(&path, password)
-                .and_then(|t| serde_json::from_str::<Secrets>(&t).context("secretsのJSONが不正"))
-            {
+            match crate::crypto::read_maybe_encrypted(&path, password).and_then(|t| {
+                serde_json::from_str::<Secrets>(&t)
+                    .with_context(|| crate::i18n::t("err.config.secrets_json_invalid"))
+            }) {
                 Ok(s) => map.extend(s.notify),
                 Err(e) => err = Some(format!("secrets: {e:#}")),
             }
@@ -367,7 +368,7 @@ pub fn upsert_secret(
     value: &str,
 ) -> anyhow::Result<()> {
     if !valid_secret_key(key) {
-        anyhow::bail!("キーは英数字と _ - . のみ使えます");
+        anyhow::bail!(crate::i18n::t("err.config.invalid_key_chars"));
     }
     let mut root = read_secrets_value(path, password)?;
     if !root.get("tokens").map(|v| v.is_object()).unwrap_or(false) {
@@ -817,9 +818,18 @@ fn flatten(tabs: &[TabConfig], depth: u16, out: &mut Vec<FlatTab>) {
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("読み込めません: {}", path.display()))?;
-    serde_json::from_str(&text).with_context(|| format!("JSONが不正: {}", path.display()))
+    let text = std::fs::read_to_string(path).with_context(|| {
+        crate::i18n::tp(
+            "err.config.read_failed",
+            &[("path", &path.display().to_string())],
+        )
+    })?;
+    serde_json::from_str(&text).with_context(|| {
+        crate::i18n::tp(
+            "err.config.json_invalid",
+            &[("path", &path.display().to_string())],
+        )
+    })
 }
 
 /// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する。

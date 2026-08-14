@@ -622,7 +622,7 @@ impl Browser {
     /// 窓を開いて、指示を受け付ける状態にする
     pub fn spawn(url: &str, title: &str) -> Result<Self> {
         if !is_openable(url) {
-            return Err(anyhow!("開けないURLです: {url}"));
+            return Err(anyhow!(crate::i18n::tp("err.browser.bad_url", &[("url", url)])));
         }
         Self::start(url, title)
     }
@@ -637,7 +637,10 @@ impl Browser {
             .name("shikisha-browser".into())
             .spawn(move || {
                 if let Err(e) = run_window(&url, &title, proxy_tx, ev_tx.clone()) {
-                    crate::append_hook_log(&format!("ブラウザを開けません: {e}"));
+                    crate::append_hook_log(&crate::i18n::tp(
+                        "err.browser.log_open_failed",
+                        &[("e", &format!("{e}"))],
+                    ));
                     let _ = ev_tx.send(Ev::Closed);
                 }
             })?;
@@ -645,7 +648,7 @@ impl Browser {
         // 窓ができるまで待つ (作れなければ proxy は届かない)
         let proxy = proxy_rx
             .recv_timeout(std::time::Duration::from_secs(20))
-            .map_err(|_| anyhow!("ブラウザの起動が終わりません (WebView2 が無い可能性)"))?;
+            .map_err(|_| anyhow!(crate::i18n::t("err.browser.startup_timeout")))?;
 
         let me = Self {
             proxy,
@@ -668,18 +671,18 @@ impl Browser {
         loop {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
-                .ok_or_else(|| anyhow!("ページが用意できません"))?;
+                .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.page_not_ready")))?;
             match self.events.recv_timeout(left) {
                 Ok(Ev::Ready { from, url, .. }) => {
                     self.reask(from.as_deref());
                     return Ok(url);
                 }
-                Ok(Ev::Closed) => return Err(anyhow!("ブラウザが閉じました")),
+                Ok(Ev::Closed) => return Err(anyhow!(crate::i18n::t("err.browser.closed"))),
                 Ok(other) => {
                     self.spare.lock().unwrap().push(other);
                     continue;
                 }
-                Err(_) => return Err(anyhow!("ページが用意できません")),
+                Err(_) => return Err(anyhow!(crate::i18n::t("err.browser.page_not_ready"))),
             }
         }
     }
@@ -687,7 +690,7 @@ impl Browser {
     fn send(&self, cmd: Cmd) -> Result<()> {
         self.proxy
             .send_event(cmd)
-            .map_err(|_| anyhow!("ブラウザが閉じています"))
+            .map_err(|_| anyhow!(crate::i18n::t("err.browser.not_connected")))
     }
 
     /// JSを評価する。結果は `Ev::Result` で後から届く
@@ -790,7 +793,7 @@ impl Browser {
         profile: BrowserProfile,
     ) -> Result<()> {
         if !is_openable(url) {
-            return Err(anyhow!("開けないURLです: {url}"));
+            return Err(anyhow!(crate::i18n::tp("err.browser.bad_url", &[("url", url)])));
         }
         self.send(Cmd::AddChild {
             name: name.to_string(),
@@ -925,15 +928,15 @@ impl Browser {
         loop {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
-                .ok_or_else(|| anyhow!("入力がありません"))?;
+                .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.no_input")))?;
             match self.events.recv_timeout(left) {
                 Ok(Ev::Password { text }) => return Ok(text),
-                Ok(Ev::Closed) => return Err(anyhow!("窓が閉じました")),
+                Ok(Ev::Closed) => return Err(anyhow!(crate::i18n::t("err.browser.window_closed"))),
                 Ok(other) => {
                     self.spare.lock().unwrap().push(other);
                     continue;
                 }
-                Err(_) => return Err(anyhow!("入力がありません")),
+                Err(_) => return Err(anyhow!(crate::i18n::t("err.browser.no_input"))),
             }
         }
     }
@@ -944,13 +947,16 @@ impl Browser {
         loop {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
-                .ok_or_else(|| anyhow!("結果が返りません"))?;
+                .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.no_result")))?;
             match self.events.recv_timeout(left) {
                 Ok(Ev::Result { id: got, ok, value }) if got == id => {
                     return if ok {
                         Ok(value)
                     } else {
-                        Err(anyhow!("JSの評価に失敗: {value}"))
+                        Err(anyhow!(crate::i18n::tp(
+                            "err.browser.js_eval_failed",
+                            &[("value", &value)]
+                        )))
                     };
                 }
                 Ok(Ev::Ready { from, .. }) => {
@@ -961,7 +967,7 @@ impl Browser {
                     self.spare.lock().unwrap().push(other);
                     continue;
                 }
-                Err(_) => return Err(anyhow!("結果が返りません")),
+                Err(_) => return Err(anyhow!(crate::i18n::t("err.browser.no_result"))),
             }
         }
     }
@@ -1159,7 +1165,7 @@ fn run_window(
         .build();
     proxy_tx
         .send(ev_loop.create_proxy())
-        .map_err(|_| anyhow!("指揮者との接続に失敗"))?;
+        .map_err(|_| anyhow!(crate::i18n::t("err.browser.proxy_connect_failed")))?;
 
     let window = WindowBuilder::new()
         .with_title(title)
@@ -1225,9 +1231,9 @@ fn run_window(
                         let _ = ev_tx.send(Ev::Result {
                             id,
                             ok: false,
-                            value: serde_json::Value::String(format!(
-                                "ページ '{}' は置かれていません",
-                                to.unwrap_or_default()
+                            value: serde_json::Value::String(crate::i18n::tp(
+                                "err.browser.page_not_placed",
+                                &[("to", &to.unwrap_or_default())],
                             ))
                             .to_string(),
                         });
@@ -1243,7 +1249,9 @@ fn run_window(
                             Some(arm) => {
                                 auths.insert(to.clone(), arm);
                             }
-                            None => crate::append_hook_log("ベーシック認証を仕込めません (CDP)"),
+                            None => crate::append_hook_log(&crate::i18n::t(
+                                "err.browser.log_basic_auth_failed",
+                            )),
                         }
                     }
                 }
@@ -1334,9 +1342,10 @@ fn run_window(
                             }
                             children.insert(name, v);
                         }
-                        Err(e) => {
-                            crate::append_hook_log(&format!("ページを置けません {name}: {e}"))
-                        }
+                        Err(e) => crate::append_hook_log(&crate::i18n::tp(
+                            "err.browser.log_place_failed",
+                            &[("name", &name), ("e", &format!("{e}"))],
+                        )),
                     }
                 }
                 Cmd::ChildBounds { name, rect } => {
@@ -1359,7 +1368,10 @@ fn run_window(
                 Cmd::Focus { to } => {
                     if let Some(v) = target(&webview, &children, &to) {
                         if let Err(e) = v.focus() {
-                            crate::append_hook_log(&format!("焦点を移せません {to:?}: {e}"));
+                            crate::append_hook_log(&crate::i18n::tp(
+                                "err.browser.log_focus_failed",
+                                &[("to", &format!("{to:?}")), ("e", &format!("{e}"))],
+                            ));
                         }
                     }
                 }
@@ -1372,10 +1384,16 @@ fn run_window(
                             Go::To(u) => v.load_url(u),
                         };
                         if let Err(e) = r {
-                            crate::append_hook_log(&format!("移動できません {go:?}: {e}"));
+                            crate::append_hook_log(&crate::i18n::tp(
+                                "err.browser.log_move_failed",
+                                &[("go", &format!("{go:?}")), ("e", &format!("{e}"))],
+                            ));
                         }
                     }
-                    None => crate::append_hook_log(&format!("移動先のページがありません: {to:?}")),
+                    None => crate::append_hook_log(&crate::i18n::tp(
+                        "err.browser.log_no_target",
+                        &[("to", &format!("{to:?}"))],
+                    )),
                 },
                 Cmd::Where { to } => {
                     if let Some(v) = target(&webview, &children, &to) {
@@ -1412,7 +1430,9 @@ fn run_window(
                             }) {
                                 casts.insert(to.clone(), cast);
                             } else {
-                                crate::append_hook_log("画面中継を開始できません (CDP)");
+                                crate::append_hook_log(&crate::i18n::t(
+                                    "err.browser.log_screencast_failed",
+                                ));
                             }
                         }
                     } else if let Some(cast) = casts.remove(&to) {

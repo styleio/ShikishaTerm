@@ -131,7 +131,7 @@ impl RemoteUi {
         let real_port = server
             .server_addr()
             .to_ip()
-            .context("ポート取得に失敗")?
+            .with_context(|| crate::i18n::t("err.remote.no_port"))?
             .port();
         let url = format!("http://{bind}:{real_port}/?t={token}");
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
@@ -151,7 +151,10 @@ impl RemoteUi {
                         break;
                     }
                     if let Err(e) = handle(req, &token, &snapshot, &tx, &clients, &kf) {
-                        crate::append_hook_log(&format!("リモートUI: {e}"));
+                        crate::append_hook_log(&crate::i18n::tp(
+                            "err.remote.hook_log",
+                            &[("e", &e.to_string())],
+                        ));
                     }
                 }
             });

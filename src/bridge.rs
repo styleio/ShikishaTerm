@@ -30,8 +30,10 @@ pub struct ModelConn {
 
 /// `--bridge` 子プロセス (端末直実行・パイプ用)。stdin を1回読んで応答を stdout に返す
 pub fn run() -> Result<()> {
-    let url = std::env::var("SHIKISHA_BRIDGE_URL").context("SHIKISHA_BRIDGE_URL 未設定")?;
-    let model = std::env::var("SHIKISHA_BRIDGE_MODEL").context("SHIKISHA_BRIDGE_MODEL 未設定")?;
+    let url = std::env::var("SHIKISHA_BRIDGE_URL")
+        .with_context(|| crate::i18n::t("err.bridge.url_unset"))?;
+    let model = std::env::var("SHIKISHA_BRIDGE_MODEL")
+        .with_context(|| crate::i18n::t("err.bridge.model_unset"))?;
     let headers = std::env::var("SHIKISHA_BRIDGE_HEADERS")
         .ok()
         .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
@@ -68,14 +70,25 @@ pub fn complete(
     for (k, v) in headers {
         req = req.header(k.as_str(), v.as_str());
     }
-    let mut resp = req
-        .send_json(&body)
-        .map_err(|e| anyhow!("接続失敗 ({endpoint}): {e}"))?;
-    let v: serde_json::Value = resp.body_mut().read_json().context("応答JSONが読めない")?;
+    let mut resp = req.send_json(&body).map_err(|e| {
+        anyhow!(crate::i18n::tp(
+            "err.bridge.connect_failed",
+            &[("endpoint", &endpoint), ("e", &e.to_string())]
+        ))
+    })?;
+    let v: serde_json::Value = resp
+        .body_mut()
+        .read_json()
+        .with_context(|| crate::i18n::t("err.bridge.bad_response_json"))?;
     let content = v
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
-        .ok_or_else(|| anyhow!("応答に content がありません: {v}"))?;
+        .ok_or_else(|| {
+            anyhow!(crate::i18n::tp(
+                "err.bridge.no_content",
+                &[("v", &v.to_string())]
+            ))
+        })?;
     Ok(strip_think(content).trim().to_string())
 }
 

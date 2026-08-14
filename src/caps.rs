@@ -224,9 +224,10 @@ impl Capabilities {
                             "http {} {} -> {code}",
                             job.method, job.url
                         )),
-                        Err(e) => {
-                            crate::append_hook_log(&format!("http {} 失敗: {e}", job.url))
-                        }
+                        Err(e) => crate::append_hook_log(&crate::i18n::tp(
+                            "err.caps.http_failed",
+                            &[("url", &job.url), ("e", &format!("{e}"))],
+                        )),
                     }
                 }
             });
@@ -238,20 +239,23 @@ impl Capabilities {
     fn named_path(&self, name: &str, rel: &str, want_write: bool) -> Result<PathBuf> {
         let spec = self.spec.borrow();
         let Some(cap) = spec.files.get(name) else {
-            bail!("ファイル窓口 '{name}' は未登録です (config.json の capabilities.files)");
+            bail!(crate::i18n::tp(
+                "err.caps.file_cap_unregistered",
+                &[("name", name)]
+            ));
         };
         if want_write && !cap.write {
-            bail!("'{name}' は書き込みが許可されていません");
+            bail!(crate::i18n::tp("err.caps.write_not_allowed", &[("name", name)]));
         }
         if !want_write && !cap.read {
-            bail!("'{name}' は読み取りが許可されていません");
+            bail!(crate::i18n::tp("err.caps.read_not_allowed", &[("name", name)]));
         }
         if !rel_is_safe(rel) {
-            bail!("ファイル名が不正です: {rel}");
+            bail!(crate::i18n::tp("err.caps.bad_filename", &[("rel", rel)]));
         }
         let path = self.base.join(&cap.dir).join(rel);
         if is_forbidden(&path) {
-            bail!("このファイルは自動化からは扱えません: {rel}");
+            bail!(crate::i18n::tp("err.caps.file_forbidden", &[("rel", rel)]));
         }
         Ok(path)
     }
@@ -260,13 +264,16 @@ impl Capabilities {
     fn raw_path(&self, p: &str) -> Result<PathBuf> {
         let spec = self.spec.borrow();
         if spec.allow_dirs.is_empty() {
-            bail!("生パスの利用は許可されていません (capabilities.allow_dirs が空)");
+            bail!(crate::i18n::t("err.caps.raw_path_not_allowed"));
         }
         let target = self.base.join(p);
         let parent = target.parent().unwrap_or(Path::new("."));
-        let canon_parent = parent
-            .canonicalize()
-            .map_err(|_| anyhow::anyhow!("フォルダが存在しません: {}", parent.display()))?;
+        let canon_parent = parent.canonicalize().map_err(|_| {
+            anyhow::anyhow!(crate::i18n::tp(
+                "err.caps.folder_missing",
+                &[("path", &parent.display().to_string())]
+            ))
+        })?;
         let ok = spec.allow_dirs.iter().any(|d| {
             self.base
                 .join(d)
@@ -275,10 +282,10 @@ impl Capabilities {
                 .unwrap_or(false)
         });
         if !ok {
-            bail!("許可されていない場所です: {p}");
+            bail!(crate::i18n::tp("err.caps.location_not_allowed", &[("p", p)]));
         }
         if is_forbidden(&target) {
-            bail!("このファイルは自動化からは扱えません: {p}");
+            bail!(crate::i18n::tp("err.caps.file_forbidden", &[("rel", p)]));
         }
         Ok(target)
     }
@@ -316,7 +323,10 @@ impl Capabilities {
     pub fn http(&self, name: &str, body: &str) -> Result<()> {
         let spec = self.spec.borrow();
         let Some(cap) = spec.http.get(name) else {
-            bail!("HTTP窓口 '{name}' は未登録です (config.json の capabilities.http)");
+            bail!(crate::i18n::tp(
+                "err.caps.http_cap_unregistered",
+                &[("name", name)]
+            ));
         };
         let auth = cap.auth_from_secrets.as_ref().and_then(|key| {
             self.tokens
@@ -363,13 +373,14 @@ impl Capabilities {
     /// 認証やフィルに使うだけで、AIの世界には出さない
     pub fn secret_value(&self, key: &str) -> Result<String> {
         if !self.secret_allow_all.get() && !self.secret_allow.borrow().contains(key) {
-            bail!("秘密 '{key}' はこのワークスペースで許可されていません");
+            bail!(crate::i18n::tp("err.caps.secret_not_allowed", &[("key", key)]));
         }
-        self.tokens
-            .borrow()
-            .get(key)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("秘密 '{key}' は未登録です (設定の「秘密」で登録)"))
+        self.tokens.borrow().get(key).cloned().ok_or_else(|| {
+            anyhow::anyhow!(crate::i18n::tp(
+                "err.caps.secret_unregistered",
+                &[("key", key)]
+            ))
+        })
     }
 
     /// 窓の中に置く先を教える。設定を読み直すたびに設定し直す
@@ -400,7 +411,7 @@ impl Capabilities {
             .borrow()
             .as_ref()
             .map(std::rc::Rc::clone)
-            .ok_or_else(|| anyhow::anyhow!("ブラウザを置く窓がありません"))?;
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.caps.no_host_window")))?;
         let ws = self.ws.get();
         host.open_child(&Self::key(ws, name), url, self.area.get(), profile)?;
         let mut hosted = self.hosted.borrow_mut();
@@ -409,7 +420,10 @@ impl Capabilities {
         }
         // 新しく置いた分は、次の描画で場所を決め直す
         *self.shown.borrow_mut() = (None, (0, 0, 0, 0));
-        crate::append_hook_log(&format!("ブラウザ {name}: {url}"));
+        crate::append_hook_log(&crate::i18n::tp(
+            "err.caps.log_browser_open",
+            &[("name", name), ("url", url)],
+        ));
         Ok(())
     }
 
@@ -483,14 +497,17 @@ impl Capabilities {
     ) -> Result<T> {
         let ws = self.ws.get();
         if !self.hosted.borrow().iter().any(|(w, x)| *w == ws && x == name) {
-            return Err(anyhow::anyhow!("ブラウザ '{name}' は開いていません"));
+            return Err(anyhow::anyhow!(crate::i18n::tp(
+                "err.caps.browser_not_open",
+                &[("name", name)]
+            )));
         }
         let host = self
             .host
             .borrow()
             .as_ref()
             .map(std::rc::Rc::clone)
-            .ok_or_else(|| anyhow::anyhow!("ブラウザを置く窓がありません"))?;
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.caps.no_host_window")))?;
         f(&host, Some(&Self::key(ws, name)))
     }
 
@@ -613,9 +630,12 @@ impl Capabilities {
     /// 値はここで解いて CDP に渡すだけで、Lua/AI には一切出さない
     pub fn browser_auth(&self, name: &str, secret_key: &str) -> Result<()> {
         let val = self.secret_value(secret_key)?;
-        let (user, pass) = val
-            .split_once(':')
-            .ok_or_else(|| anyhow::anyhow!("秘密 '{secret_key}' は user:pass の形式で登録してください"))?;
+        let (user, pass) = val.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!(crate::i18n::tp(
+                "err.caps.secret_format",
+                &[("secret_key", secret_key)]
+            ))
+        })?;
         self.with(name, |b, to| b.basic_auth(to, user, pass))
     }
 
@@ -681,12 +701,13 @@ impl Capabilities {
 
     /// 生URL (allow_hosts に完全一致するホストのみ)
     pub fn http_raw(&self, url: &str, body: &str) -> Result<()> {
-        let host = host_of(url).ok_or_else(|| anyhow::anyhow!("URLが不正です: {url}"))?;
+        let host = host_of(url)
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.caps.bad_url", &[("url", url)])))?;
         if !url.starts_with("https://") {
-            bail!("https:// のみ許可されています");
+            bail!(crate::i18n::t("err.caps.https_only"));
         }
         if !self.spec.borrow().allow_hosts.iter().any(|h| h == &host) {
-            bail!("許可されていない接続先です: {host}");
+            bail!(crate::i18n::tp("err.caps.host_not_allowed", &[("host", &host)]));
         }
         self.dispatch(HttpJob {
             url: url.to_string(),
@@ -699,10 +720,10 @@ impl Capabilities {
     fn dispatch(&self, job: HttpJob) -> Result<()> {
         let tx = self.tx.borrow();
         let Some(tx) = tx.as_ref() else {
-            bail!("HTTPは有効化されていません");
+            bail!(crate::i18n::t("err.caps.http_disabled"));
         };
         tx.send(job)
-            .map_err(|_| anyhow::anyhow!("送信キューが閉じています"))
+            .map_err(|_| anyhow::anyhow!(crate::i18n::t("err.caps.queue_closed")))
     }
 }
 

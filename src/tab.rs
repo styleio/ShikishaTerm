@@ -1336,34 +1336,44 @@ impl Tab {
                         .process(bytes);
                 }));
             };
-            inject(&format!("\r\n\x1b[36m… 生成中 ({})\x1b[0m\r\n", conn.model));
+            inject(&format!(
+                "\r\n\x1b[36m… {}\x1b[0m\r\n",
+                crate::i18n::tp("agent.model.generating", &[("model", &conn.model)])
+            ));
             // 討論プロンプトには「say.txtに書け」等CLI向けの指示が混じる。
             // ブリッジではSHIKISHAが書くので、モデルには「意見だけ述べよ」と伝える。
             // ステートレスなので、立場(ペルソナ)も毎回 system に添えて忘れさせない
-            let mut system = String::from(
-                "あなたは討論の参加者です。渡された文脈と自分の立場に沿って、\
-                 意見だけを簡潔なプレーンテキストで述べてください。\
-                 ファイルへの書き込みやツールには言及しないこと。",
-            );
+            let mut system = crate::i18n::t("agent.model.system");
             if let Some(p) = &conn.persona {
-                system.push_str("\n【あなたの立場・人格】");
+                system.push('\n');
+                system.push_str(&crate::i18n::t("agent.model.persona_head"));
                 system.push_str(p);
-                system.push_str("\nこの立場を最後まで貫くこと。");
+                system.push('\n');
+                system.push_str(&crate::i18n::t("agent.model.persona_tail"));
             }
             match crate::bridge::complete(&conn.url, &conn.model, &conn.headers, Some(&system), prompt.trim()) {
                 Ok(text) => {
                     if let Some(say) = crate::bridge::extract_say(&prompt) {
                         match std::fs::write(&say, &text) {
                             Ok(_) => inject(&format!(
-                                "\x1b[32m→ 発言を書き込みました ({}字)\x1b[0m\r\n",
-                                text.chars().count()
+                                "\x1b[32m→ {}\x1b[0m\r\n",
+                                crate::i18n::tp(
+                                    "agent.model.wrote",
+                                    &[("n", &text.chars().count().to_string())]
+                                )
                             )),
-                            Err(e) => inject(&format!("\x1b[31msay書込失敗: {e}\x1b[0m\r\n")),
+                            Err(e) => inject(&format!(
+                                "\x1b[31m{}\x1b[0m\r\n",
+                                crate::i18n::tp("agent.model.say_failed", &[("e", &e.to_string())])
+                            )),
                         }
                     }
                     inject(&format!("{}\r\n", text.replace('\n', "\r\n")));
                 }
-                Err(e) => inject(&format!("\x1b[31mエラー: {e}\x1b[0m\r\n")),
+                Err(e) => inject(&format!(
+                    "\x1b[31m{}\x1b[0m\r\n",
+                    crate::i18n::tp("agent.model.error", &[("e", &e.to_string())])
+                )),
             }
         });
     }

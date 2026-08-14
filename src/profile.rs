@@ -77,7 +77,11 @@ impl Profile {
         let compile_all = |patterns: &[String]| -> Result<Vec<regex::Regex>> {
             patterns
                 .iter()
-                .map(|p| regex::Regex::new(p).with_context(|| format!("正規表現が不正: {p}")))
+                .map(|p| {
+                    regex::Regex::new(p).with_context(|| {
+                        crate::i18n::tp("err.profile.bad_regex", &[("p", p)])
+                    })
+                })
                 .collect()
         };
         Ok(Self {

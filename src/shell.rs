@@ -1051,8 +1051,8 @@ function ensureBar() {
   if (castDock) return;
   castInput = el("input", {id:"castinput", autocomplete:"off", autocorrect:"off",
     autocapitalize:"off", spellcheck:"false",
-    placeholder: T["tui.cast.type.ph"] || "ここで入力して送信 (日本語は変換してから)"});
-  const send = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "送信");
+    placeholder: T["tui.cast.type.ph"] || "Type here to send"});
+  const send = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "Send");
   const bs = el("button", {class:"castbtn", onclick:() => sendCastKey("backspace")}, "⌫");
   // ✕ はキーボードを下げるだけ (サブ入力欄は操作モード中ずっと出しておく)
   const close = el("button", {class:"castbtn", onclick:() => { if (castInput) castInput.blur(); }}, "✕");
@@ -1064,7 +1064,7 @@ function ensureBar() {
   castKeysEl = buildCastKeys();
   // 解除の帯。補助窓のすぐ上に置き、キーボードが出たらドックごと一緒に
   // 上へずれる (下固定だと鍵盤に隠れ、上固定だと画面上部で邪魔になる)
-  modeEl = el("div", {id:"castmode"}, el("span", {}, T["tui.cast.control"] || "操作中 — タップで解除"));
+  modeEl = el("div", {id:"castmode"}, el("span", {}, T["tui.cast.control"] || "In control — tap to release"));
   modeEl.onclick = exitCast;
   // 最上段=解除、中段=補助キー列、下段=文字入力バー。まとめて持ち上げる
   castDock = el("div", {id:"castdock"}, modeEl, castKeysEl, castBar);

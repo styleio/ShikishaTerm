@@ -39,7 +39,7 @@ pub struct Placed {
 fn base_of(config_path: &Path) -> Result<&Path> {
     config_path
         .parent()
-        .ok_or_else(|| anyhow!("設定ファイルの場所が分かりません"))
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.wspack.no_config_dir")))
 }
 
 /// 設定フォルダの中を指しているか確かめる。
@@ -133,7 +133,10 @@ fn read_dir_lua(base: &Path, rel: &str, out: &mut Map<String, Value>) -> Result<
             read_dir_lua(base, &child, out)?;
         } else if name.to_ascii_lowercase().ends_with(".lua") {
             if out.len() >= MAX_FILES {
-                bail!("スクリプトが多すぎます ({MAX_FILES}個まで)");
+                bail!(crate::i18n::tp(
+                    "err.wspack.too_many_scripts",
+                    &[("max", &MAX_FILES.to_string())]
+                ));
             }
             let code = std::fs::read_to_string(e.path())?;
             out.insert(child, Value::String(code));
@@ -166,12 +169,21 @@ fn inline(base: &Path, entry: &Value) -> Result<Value> {
 
     let file_body = match entry.get("file").and_then(Value::as_str) {
         Some(f) => {
-            let p = under_base(base, &f.replace('\\', "/"))
-                .ok_or_else(|| anyhow!("定義ファイルの場所が設定フォルダの外です: {f}"))?;
-            let text = std::fs::read_to_string(&p)
-                .map_err(|e| anyhow!("定義ファイルを読めません ({f}): {e}"))?;
-            serde_json::from_str::<Value>(&text)
-                .map_err(|e| anyhow!("定義ファイルのJSONが不正です ({f}): {e}"))?
+            let p = under_base(base, &f.replace('\\', "/")).ok_or_else(|| {
+                anyhow!(crate::i18n::tp("err.wspack.file_outside", &[("f", f)]))
+            })?;
+            let text = std::fs::read_to_string(&p).map_err(|e| {
+                anyhow!(crate::i18n::tp(
+                    "err.wspack.file_unreadable",
+                    &[("f", f), ("e", &e.to_string())]
+                ))
+            })?;
+            serde_json::from_str::<Value>(&text).map_err(|e| {
+                anyhow!(crate::i18n::tp(
+                    "err.wspack.file_bad_json",
+                    &[("f", f), ("e", &e.to_string())]
+                ))
+            })?
         }
         None => Value::Null,
     };
@@ -211,7 +223,7 @@ pub fn pack(config_path: &Path, index: usize) -> Result<(String, String)> {
     let list = workspace_list(&cfg);
     let entry = list
         .get(index)
-        .ok_or_else(|| anyhow!("そのワークスペースがありません"))?;
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.wspack.no_such_workspace")))?;
     let ws = inline(base, entry)?;
 
     let refs = referenced(&ws);
@@ -268,7 +280,7 @@ fn free_name(base: &Path, rel: &str) -> Result<String> {
             return Ok(cand);
         }
     }
-    bail!("置き場所の名前を決められません: {rel}")
+    bail!(crate::i18n::tp("err.wspack.cannot_name", &[("rel", rel)]))
 }
 
 /// 前置きの置き換え。`scripts/ws2` を `scripts/ws2-2` にすると、
@@ -332,21 +344,28 @@ fn free_title(list: &[Value], want: &str) -> String {
 /// スクリプトを空いている場所へ置く
 pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     if text.len() > MAX_BYTES {
-        bail!("ファイルが大きすぎます");
+        bail!(crate::i18n::t("err.wspack.file_too_big"));
     }
     let base = base_of(config_path)?;
-    let bundle: Value =
-        serde_json::from_str(text).map_err(|e| anyhow!("このファイルは読めません: {e}"))?;
+    let bundle: Value = serde_json::from_str(text).map_err(|e| {
+        anyhow!(crate::i18n::tp(
+            "err.wspack.cannot_read",
+            &[("e", &e.to_string())]
+        ))
+    })?;
     match bundle.get("shikisha_workspace").and_then(Value::as_u64) {
         Some(v) if v == FORMAT => {}
-        Some(v) => bail!("この版のワークスペースファイルは読めません (版 {v})"),
-        None => bail!("ワークスペースファイルではありません"),
+        Some(v) => bail!(crate::i18n::tp(
+            "err.wspack.bad_version",
+            &[("v", &v.to_string())]
+        )),
+        None => bail!(crate::i18n::t("err.wspack.not_a_workspace_file")),
     }
     let mut ws = bundle
         .get("workspace")
         .cloned()
         .filter(Value::is_object)
-        .ok_or_else(|| anyhow!("中身がありません"))?;
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.wspack.empty_content")))?;
 
     let scripts = bundle
         .get("scripts")
@@ -354,7 +373,10 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
         .cloned()
         .unwrap_or_default();
     if scripts.len() > MAX_FILES {
-        bail!("スクリプトが多すぎます ({MAX_FILES}個まで)");
+        bail!(crate::i18n::tp(
+            "err.wspack.too_many_scripts",
+            &[("max", &MAX_FILES.to_string())]
+        ));
     }
 
     // 置き場所を先に決める。1つでも置けないなら何も書かない
@@ -368,7 +390,7 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     {
         let r = r.replace('\\', "/");
         if under_base(base, &r).is_none() {
-            bail!("設定フォルダの外を指しています: {r}");
+            bail!(crate::i18n::tp("err.wspack.outside_folder", &[("path", &r)]));
         }
         let to = free_name(base, &r)?;
         if to != r {
@@ -380,16 +402,17 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     for (path, code) in &scripts {
         let path = remap(&path.replace('\\', "/"), &moves);
         if !path.to_ascii_lowercase().ends_with(".lua") {
-            bail!("Lua以外のファイルは取り込めません: {path}");
+            bail!(crate::i18n::tp("err.wspack.non_lua", &[("path", &path)]));
         }
-        let dest =
-            under_base(base, &path).ok_or_else(|| anyhow!("設定フォルダの外を指しています: {path}"))?;
+        let dest = under_base(base, &path).ok_or_else(|| {
+            anyhow!(crate::i18n::tp("err.wspack.outside_folder", &[("path", &path)]))
+        })?;
         if dest.exists() {
-            bail!("既にあるファイルを上書きしようとしています: {path}");
+            bail!(crate::i18n::tp("err.wspack.would_overwrite", &[("path", &path)]));
         }
-        let code = code
-            .as_str()
-            .ok_or_else(|| anyhow!("スクリプトの中身が文字列ではありません: {path}"))?;
+        let code = code.as_str().ok_or_else(|| {
+            anyhow!(crate::i18n::tp("err.wspack.not_a_string", &[("path", &path)]))
+        })?;
         writes.push((dest, code.to_string()));
     }
 

@@ -30,7 +30,10 @@ impl Notifier {
         std::thread::spawn(move || {
             while let Ok((dest, text)) = rx.recv() {
                 if let Err(e) = send_blocking(&dest, &text) {
-                    crate::append_hook_log(&format!("通知失敗: {e}"));
+                    crate::append_hook_log(&crate::i18n::tp(
+                        "err.notify.send_failed",
+                        &[("e", e.as_str())],
+                    ));
                 }
             }
         });
@@ -49,7 +52,7 @@ impl Notifier {
             names.push(name);
         }
         names.sort_unstable();
-        format!(">> テスト通知を送信: {}", names.join(", "))
+        crate::i18n::tp("err.notify.test_sent", &[("names", &names.join(", "))])
     }
 
     /// 宛先名で送信をキューイングする。戻り値は画面表示用のメッセージ
@@ -59,7 +62,7 @@ impl Notifier {
                 let _ = self.tx.send((dest.clone(), text.to_string()));
                 format!(">> NOTIFY[{name}] {text}")
             }
-            None => format!(">> 通知先 '{name}' は未登録です (config.jsonのnotifyを確認)"),
+            None => crate::i18n::tp("err.notify.unknown_target", &[("name", name)]),
         }
     }
 }
@@ -90,7 +93,7 @@ mod tests {
     #[test]
     fn unknown_destination_is_reported() {
         let n = Notifier::new(HashMap::new());
-        assert!(n.send("slack", "hi").contains("未登録"));
+        assert!(n.send("slack", "hi").contains("not registered"));
     }
 
     #[test]
