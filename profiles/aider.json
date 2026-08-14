@@ -1,0 +1,11 @@
+{
+  "name": "Aider",
+  "command_match": ["aider"],
+  "busy_patterns": [],
+  "question_patterns": [
+    "\\(Y\\)es/\\(N\\)o",
+    "\\(Y\\)es/\\(N\\)o/\\(D\\)",
+    "Add .+ to the chat\\?"
+  ],
+  "silence_ms": 2000
+}
