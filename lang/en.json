@@ -159,7 +159,7 @@
   "settings.restore_ws": "Where to start",
   "settings.restore_ws.label": "Open the workspace you used last",
   "settings.restore_ws.hint": "Remembered by name, so reordering or adding workspaces does not change where you land. Turn this off to always start at the first one.",
-  "settings.ai_engine": "AI that writes code",
+  "settings.ai_engine": "Assistant AI",
   "settings.browser_data": "Browser data",
   "settings.browser_data.local": "This PC only (recommended)",
   "settings.browser_data.portable": "Share across PCs (Drive sync)",

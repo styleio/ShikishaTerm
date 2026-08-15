@@ -1591,7 +1591,6 @@ const COMMON_COMMANDS = [
   {label:"Claude Code", cmd:"claude",         check:"claude"},
   {label:"Codex CLI",   cmd:"codex",          check:"codex"},
   {label:"Gemini CLI",  cmd:"gemini",         check:"gemini"},
-  {label:"Kimi Code",   cmd:"kimi",           check:null},
   {label:"Aider",       cmd:"aider",          check:null},
   {label:"PowerShell",  cmd:"powershell.exe", check:null},
   {label:T["settings.tab.kind.cmdprompt"], cmd:"cmd.exe", check:null},
@@ -1681,7 +1680,6 @@ function aiChoices() {
     {key:"claude", label:"Claude Code"},
     {key:"codex",  label:"Codex CLI"},
     {key:"gemini", label:"Gemini CLI"},
-    {key:"kimi",   label:"Kimi Code"},
   ];
   const models = Object.keys(current.providers || {}).map(n =>
     ({key:"model:" + n, label: fill(T["wizard.discuss.model_suffix"], {name: n}), isModel:true, provider:n}));
@@ -2072,10 +2070,10 @@ function providersCard() {
     for (const name of names) {
       const p = (current.providers[name] = current.providers[name] || {});
       const urlIn = el("input", {class:"mono", value: p.base_url || "",
-        placeholder:"https://api.deepseek.com/v1", style:"width:270px"});
+        placeholder:"https://api.deepseek.com/v1", style:"flex:1 1 0;min-width:120px"});
       urlIn.addEventListener("input", () => { p.base_url = urlIn.value; refreshSave(); });
       const hasKey = (p.api_key || "").startsWith("@");
-      const keyIn = el("input", {type:"password", style:"width:200px",
+      const keyIn = el("input", {type:"password", style:"flex:1 1 0;min-width:110px",
         placeholder: hasKey ? T["settings.providers.key_set_ph"] : T["settings.providers.key_ph"]});
       const keyBtn = el("button", {class:"quiet", onclick: async () => {
         const v = keyIn.value.trim();
@@ -2089,15 +2087,15 @@ function providersCard() {
         if (r.ok) { p.api_key = "@" + sk; keyIn.value = ""; toast(fill(T["settings.providers.key_saved"], {name})); refreshSave(); draw(); }
         else toast(r.error || T["settings.secrets.save_failed"], true);
       }}, T["settings.providers.save_key"]);
-      const del = el("button", {class:"quiet", onclick: () => {
+      const del = el("button", {class:"quiet", style:"flex:none", onclick: () => {
         if (confirm(fill(T["settings.providers.delete_confirm"], {name}))) { delete current.providers[name]; refreshSave(); draw(); }
       }}, T["common.delete"]);
       listBox.append(el("div", {class:"row",
-        style:"align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:wrap"},
-        el("span", {class:"mono", style:"min-width:90px;color:var(--text)"}, name),
-        urlIn, keyIn, keyBtn,
-        el("span", {class:"hint"}, hasKey ? "🔑" : ""),
-        del));
+        style:"align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:nowrap"},
+        el("span", {class:"mono", style:"flex:none;min-width:70px;color:var(--text)"}, name),
+        urlIn, keyIn,
+        el("span", {class:"mono", style:"flex:none;width:14px"}, hasKey ? "🔑" : ""),
+        keyBtn, del));
     }
   };
   const nameIn = el("input", {class:"mono", placeholder:T["settings.providers.name_ph"], style:"width:130px"});

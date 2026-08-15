@@ -159,7 +159,7 @@
   "settings.restore_ws": "起動時の画面",
   "settings.restore_ws.label": "前回開いていたワークスペースから始める",
   "settings.restore_ws.hint": "番号ではなく名前で覚えるので、並べ替えても追加しても同じ場所に戻ります。切ると常に先頭から始まります。",
-  "settings.ai_engine": "コードを書くAI",
+  "settings.ai_engine": "アシスタントAI",
   "settings.browser_data": "ブラウザのデータ",
   "settings.browser_data.local": "このPCだけ (推奨)",
   "settings.browser_data.portable": "全PCで共有 (Drive同期)",
