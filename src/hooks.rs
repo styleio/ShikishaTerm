@@ -1646,6 +1646,7 @@ end
         judge: Option<&str>,
         max_turns: usize,
         agents_lua: &str,
+        names_lua: &str,
         stops_lua: &str,
         verdict: &str,
         order: &str,
@@ -1660,6 +1661,18 @@ end
             return Ok(i);
         }
         const SRC: &str = r##"
+-- Display helpers: routing/keys always use the stable tab id, but anything a
+-- human (or another AI) reads shows the display name instead of the id.
+local function nm(id)
+  local n = NAMES[id]
+  if n ~= nil and #n > 0 then return n else return id end
+end
+local function agent_names()
+  local t = {}
+  for _, a in ipairs(AGENTS) do t[#t + 1] = nm(a) end
+  return t
+end
+
 local function ensure_run()
   local r = shikisha.get_var("discuss_run")
   if r then return r end
@@ -1705,10 +1718,10 @@ function on_start(tab)
   local lines
   if IS_MOD then
     lines = {
-      shikisha.tf("agent.discuss.mod.intro", { me = ME }),
+      shikisha.tf("agent.discuss.mod.intro", { me = nm(ME) }),
       shikisha.t("agent.discuss.mod.nominate"),
       "  " .. say,
-      shikisha.t("agent.discuss.mod.write_to") .. table.concat(AGENTS, ", "),
+      shikisha.t("agent.discuss.mod.write_to") .. table.concat(agent_names(), ", "),
       shikisha.t("agent.discuss.mod.wait_turn"),
     }
   elseif IS_JUDGE then
@@ -1716,7 +1729,7 @@ function on_start(tab)
       and shikisha.t("agent.discuss.judge.ask_synthesis")
       or  shikisha.t("agent.discuss.judge.ask_winner")
     lines = {
-      shikisha.tf("agent.discuss.judge.intro", { me = ME }),
+      shikisha.tf("agent.discuss.judge.intro", { me = nm(ME) }),
       shikisha.t("agent.discuss.judge.ruling_before") .. ask .. shikisha.t("agent.discuss.judge.ruling_after"),
       "  " .. say,
       shikisha.t("agent.discuss.judge.rubric"),
@@ -1724,7 +1737,7 @@ function on_start(tab)
     }
   else
     lines = {
-      shikisha.tf("agent.discuss.part.intro", { me = ME }),
+      shikisha.tf("agent.discuss.part.intro", { me = nm(ME) }),
       shikisha.t("agent.discuss.part.each_turn"),
       "  " .. say,
       shikisha.t("agent.discuss.part.others"),
@@ -1774,7 +1787,7 @@ function on_done(tab)
     local ctx = shikisha.get_var("discuss_log") or ""
     if #ctx > 4000 then ctx = shikisha.t("agent.discuss.truncated_short") .. "\n" .. ctx:sub(#ctx - 4000) end
     if msg:upper():find("END") then
-      tx("\n" .. shikisha.tf("transcript.discuss.mod_close", { me = ME }) .. "\n")
+      tx("\n" .. shikisha.tf("transcript.discuss.mod_close", { me = nm(ME) }) .. "\n")
       if JUDGE ~= nil and #JUDGE > 0 then
         shikisha.show(JUDGE)
         speak(JUDGE, table.concat({
@@ -1788,14 +1801,14 @@ function on_done(tab)
     end
     local pick = nil
     for _, ag in ipairs(AGENTS) do
-      if msg:find(ag, 1, true) then pick = ag; break end
+      if msg:find(ag, 1, true) or msg:find(nm(ag), 1, true) then pick = ag; break end
     end
     pick = pick or AGENTS[1]
-    tx("\n" .. shikisha.tf("transcript.discuss.mod_next", { me = ME, pick = pick }) .. "\n")
+    tx("\n" .. shikisha.tf("transcript.discuss.mod_next", { me = nm(ME), pick = nm(pick) }) .. "\n")
     shikisha.show(pick)
     speak(pick, table.concat({
       shikisha.t("agent.discuss.so_far"), "----", ctx, "----",
-      shikisha.t("agent.discuss.your_turn.before") .. pick .. shikisha.t("agent.discuss.your_turn.mid") .. say .. shikisha.t("agent.discuss.your_turn.after"),
+      shikisha.t("agent.discuss.your_turn.before") .. nm(pick) .. shikisha.t("agent.discuss.your_turn.mid") .. say .. shikisha.t("agent.discuss.your_turn.after"),
     }, "\n"))
     return
   end
@@ -1803,8 +1816,8 @@ function on_done(tab)
   -- Record the statement (both the human-readable transcript and the log passed to the next speaker)
   local r = (shikisha.get_var("discuss_round") or 0) + 1
   shikisha.set_var("discuss_round", r)
-  tx("\n### " .. shikisha.tf("transcript.discuss.entry", { me = ME, r = tostring(r) }) .. "\n" .. msg .. "\n")
-  local log = (shikisha.get_var("discuss_log") or "") .. shikisha.tf("agent.discuss.log_speaker", { me = ME }) .. "\n" .. msg .. "\n\n"
+  tx("\n### " .. shikisha.tf("transcript.discuss.entry", { me = nm(ME), r = tostring(r) }) .. "\n" .. msg .. "\n")
+  local log = (shikisha.get_var("discuss_log") or "") .. shikisha.tf("agent.discuss.log_speaker", { me = nm(ME) }) .. "\n" .. msg .. "\n\n"
   shikisha.set_var("discuss_log", log)
   -- Keep each participant's latest statement (material for the aggregate stops)
   local says = shikisha.get_var("discuss_says")
@@ -1813,7 +1826,7 @@ function on_done(tab)
 
   -- The judge's statement = the verdict. Ends here
   if IS_JUDGE then
-    tx("\n## " .. shikisha.tf("transcript.discuss.verdict_judge", { me = ME }) .. "\n" .. msg .. "\n")
+    tx("\n## " .. shikisha.tf("transcript.discuss.verdict_judge", { me = nm(ME) }) .. "\n" .. msg .. "\n")
     shikisha.show(tab.index)
     shikisha.set_result(0, shikisha.t("agent.discuss.result.judge_ruled"))
     shikisha.set_var("discuss_done", true)
@@ -1857,13 +1870,13 @@ function on_done(tab)
     speak(MODERATOR, table.concat({
       shikisha.t("agent.discuss.so_far"), "----", ctx, "----",
       shikisha.t("agent.discuss.mod.pick_before") .. say
-        .. shikisha.t("agent.discuss.mod.pick_after") .. table.concat(AGENTS, ", "),
+        .. shikisha.t("agent.discuss.mod.pick_after") .. table.concat(agent_names(), ", "),
     }, "\n"))
   else
     shikisha.show(NEXT)
     speak(NEXT, table.concat({
       shikisha.t("agent.discuss.so_far"), "----", ctx, "----",
-      shikisha.t("agent.discuss.next_turn.before") .. NEXT .. shikisha.t("agent.discuss.next_turn.mid") .. say .. shikisha.t("agent.discuss.next_turn.after"),
+      shikisha.t("agent.discuss.next_turn.before") .. nm(NEXT) .. shikisha.t("agent.discuss.next_turn.mid") .. say .. shikisha.t("agent.discuss.next_turn.after"),
     }, "\n"))
   end
 end
@@ -1877,7 +1890,7 @@ end
             None => "nil".into(),
         };
         let src = format!(
-            "local ME={me:?}\nlocal NEXT={next:?}\nlocal IS_FIRST={is_first}\nlocal IS_JUDGE={is_judge}\nlocal IS_MOD={is_mod}\nlocal JUDGE={judge_lua}\nlocal MODERATOR={mod_lua}\nlocal ORDER={order:?}\nlocal MAX_TURNS={max_turns}\nlocal AGENTS={agents_lua}\nlocal STOPS={stops_lua}\nlocal MODE={verdict:?}\nlocal PERSONA={persona:?}\n{SRC}"
+            "local ME={me:?}\nlocal NEXT={next:?}\nlocal IS_FIRST={is_first}\nlocal IS_JUDGE={is_judge}\nlocal IS_MOD={is_mod}\nlocal JUDGE={judge_lua}\nlocal MODERATOR={mod_lua}\nlocal ORDER={order:?}\nlocal MAX_TURNS={max_turns}\nlocal AGENTS={agents_lua}\nlocal NAMES={names_lua}\nlocal STOPS={stops_lua}\nlocal MODE={verdict:?}\nlocal PERSONA={persona:?}\n{SRC}"
         );
         self.load_source(&key, &src)
     }
@@ -2397,6 +2410,7 @@ mod tests {
                 Some("ref"),
                 4,
                 r#"{"ai1","ai2"}"#,
+                "{}",
                 "{}",
                 "winner",
                 "round-robin",

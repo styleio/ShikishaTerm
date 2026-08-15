@@ -116,6 +116,14 @@ pub struct UiState {
     pub scrolled: usize,
     /// Which build this is (lets you confirm you're not looking at a stale executable)
     pub build: String,
+    /// If the current workspace is an AI-vs-AI discussion, the session number
+    /// (1-based) of the opening speaker. The dashboard shows a "start the
+    /// discussion" card that sends the typed topic there. None = not a discussion.
+    #[serde(default)]
+    pub discuss_start: Option<usize>,
+    /// The opening speaker's display name, for the start card's label.
+    #[serde(default)]
+    pub discuss_start_name: Option<String>,
 }
 
 impl TabState {

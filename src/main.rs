@@ -645,6 +645,8 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         nav: ui.nav.clone(),
         scrolled: ui.scrolled,
         build: format!("build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
+        discuss_start: ui.discuss_start,
+        discuss_start_name: ui.discuss_start_name.clone(),
     }
 }
 
@@ -1593,6 +1595,30 @@ fn run(mut surface: WinSurface) -> Result<()> {
             let _ = caps.browser_where(key);
         }
 
+        // If the current workspace is a discussion, find the opening speaker
+        // (first participant) so the dashboard can offer a "start" card.
+        let (discuss_start, discuss_start_name) = workspaces
+            .get(ws_index)
+            .and_then(|w| {
+                let d = w.discuss.as_ref()?;
+                if d.agents.iter().filter(|s| !s.trim().is_empty()).count() < 2 {
+                    return None;
+                }
+                let first = d.agents.iter().find(|s| !s.trim().is_empty())?;
+                let pane = pane_of_id(w, first)?;
+                let name = w
+                    .tabs
+                    .iter()
+                    .find(|t| {
+                        t.cfg.id.as_deref() == Some(first.as_str())
+                            || t.cfg.name.as_deref() == Some(first.as_str())
+                    })
+                    .and_then(|t| t.cfg.name.as_deref().filter(|x| !x.is_empty()))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| first.clone());
+                Some((pane, name))
+            })
+            .map_or((None, None), |(p, n)| (Some(p), Some(n)));
         let ui = Ui {
             first_run,
             active,
@@ -1618,6 +1644,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
             max_chain,
             now_ms: start.elapsed().as_millis() as u64,
             panes: layout.clone(),
+            discuss_start,
+            discuss_start_name,
         };
         last_ui_state = Some(ui_state_of(&tabs, &ui, flash.as_deref()));
         surface.draw(&tabs, &ui, flash.as_deref())?;
@@ -2530,6 +2558,33 @@ fn build_engine(
                         .collect::<Vec<_>>()
                         .join(",")
                 );
+                // id -> display name, so the discussion (statements, transcript,
+                // hand-offs) refers to participants by their display name while
+                // routing still uses the stable id.
+                let names_lua = {
+                    let mut s = String::from("{");
+                    for t in &w.tabs {
+                        if t.cfg.command.argv().is_empty() {
+                            continue;
+                        }
+                        let key = t
+                            .cfg
+                            .id
+                            .as_deref()
+                            .filter(|x| !x.is_empty())
+                            .or_else(|| t.cfg.name.as_deref().filter(|x| !x.is_empty()));
+                        let Some(key) = key else { continue };
+                        let disp = t
+                            .cfg
+                            .name
+                            .as_deref()
+                            .filter(|x| !x.is_empty())
+                            .unwrap_or(key);
+                        s.push_str(&format!("[{key:?}]={disp:?},"));
+                    }
+                    s.push('}');
+                    s
+                };
                 let moderator = d.moderator.as_deref().filter(|s| !s.trim().is_empty());
                 for (i, id) in agents.iter().enumerate() {
                     let Some(pane) = pane_of_id(w, id) else {
@@ -2549,6 +2604,7 @@ fn build_engine(
                         d.judge.as_deref(),
                         max_turns,
                         &agents_lua,
+                        &names_lua,
                         &stops_lua,
                         &d.verdict,
                         &d.order,
@@ -2567,7 +2623,8 @@ fn build_engine(
                     let persona = d.personas.get(j).map(String::as_str).unwrap_or("");
                     match pane_of_id(w, j) {
                         Some(pane) => match engine.load_discuss_agent(
-                            j, j, false, true, None, max_turns, &agents_lua, &stops_lua,
+                            j, j, false, true, None, max_turns, &agents_lua, &names_lua,
+                            &stops_lua,
                             &d.verdict, &d.order, moderator, false, persona,
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
@@ -2588,7 +2645,7 @@ fn build_engine(
                     match pane_of_id(w, m) {
                         Some(pane) => match engine.load_discuss_agent(
                             m, m, false, false, d.judge.as_deref(), max_turns, &agents_lua,
-                            &stops_lua, &d.verdict, &d.order, moderator, true, persona,
+                            &names_lua, &stops_lua, &d.verdict, &d.order, moderator, true, persona,
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
                             Err(e) => errors.push(crate::i18n::tp(
@@ -3734,6 +3791,10 @@ struct Ui {
     now_ms: u64,
     /// What's laid out on screen, in the order written in config
     panes: Vec<Pane>,
+    /// If the current workspace is a discussion, the opening speaker's session
+    /// number (1-based) and display name — for the dashboard's "start" card
+    discuss_start: Option<usize>,
+    discuss_start_name: Option<String>,
     /// The controls shown over the browser being viewed (None = don't show)
     nav: Option<crate::uistate::NavState>,
     /// How many lines back from the current screen we're scrolled (0 = live)

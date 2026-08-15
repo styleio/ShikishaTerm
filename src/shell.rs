@@ -485,6 +485,33 @@ function drawBoard() {
     el("div", {class:"sub"}, S.ball.depth + " / " + S.ball.max),
     lanes()));
 
+  // Start-the-discussion card. Shown only when the current workspace is an
+  // AI-vs-AI discussion, so nobody has to hunt for the opening speaker's tab:
+  // type the topic here and it's sent to the opening speaker, kicking it off.
+  if (S.discuss_start) {
+    const input = el("input", {type:"text",
+      style:"flex:1;min-width:120px;padding:8px 10px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:14px",
+      placeholder: T["tui.discuss.start.ph"] || "Type the topic to start the discussion"});
+    const start = () => {
+      const topic = input.value.trim();
+      if (!topic) { input.focus(); return; }
+      send({kind:"select", tab:S.discuss_start});
+      send({kind:"key", text:topic});
+      send({kind:"key", named:"Return"});
+      input.value = "";
+    };
+    input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); start(); } });
+    const btn = el("button", {onclick:start,
+      style:"padding:8px 16px;border-radius:7px;border:0;background:var(--live);color:#04121c;font-weight:700;cursor:pointer;font-size:14px"},
+      T["tui.discuss.start.btn"] || "Start");
+    const hint = (T["tui.discuss.start.hint"] || "Sends your topic to the opening speaker ({name}) and begins.")
+      .split("{name}").join(S.discuss_start_name || "");
+    b.append(el("div", {class:"card"},
+      el("h2", {}, "🗣 " + (T["tui.discuss.start.title"] || "Start the discussion")),
+      el("div", {class:"sub", style:"margin-bottom:10px"}, hint),
+      el("div", {style:"display:flex;gap:10px;align-items:center"}, input, btn)));
+  }
+
   // Tab list
   const rows = el("table", {class:"rows"});
   rows.append(el("tr", {},
