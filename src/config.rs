@@ -483,7 +483,7 @@ pub struct DiscussSpec {
     #[serde(default)]
     pub moderator: Option<String>,
     /// Each tab's stance/persona (tab id -> persona text).
-    /// e.g. {"bos":"You are the Brotherhood of Steel...", ...}.
+    /// e.g. {"safety":"You are a safety-first faction...", ...}.
     /// Told to that AI at the start. Empty means a plain (neutral) AI
     #[serde(default)]
     pub personas: std::collections::HashMap<String, String>,

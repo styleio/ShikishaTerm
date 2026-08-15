@@ -620,7 +620,7 @@
   "settings.discuss.order.round_robin": "順番(round-robin)",
   "settings.discuss.order_label": "回し方",
   "settings.discuss.persona_hint": "参加者を入れると、各タブに立場・人格を設定できます。",
-  "settings.discuss.persona_ph": "例: あなたはブラザーフッド・オブ・スティール。技術は厳しく管理すべきという立場で主張する。",
+  "settings.discuss.persona_ph": "例: あなたは安全第一派。危険な技術は厳しく管理すべきという立場で主張する。",
   "settings.discuss.persona_section_hint": "各タブの立場を書くと、賛成/反対に限らず派閥や役柄で議論させられます（空＝ニュートラル）。",
   "settings.discuss.persona_section_label": "立場・人格（ペルソナ）",
   "settings.discuss.title": "AI×AI 議論",

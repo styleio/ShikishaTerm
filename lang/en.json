@@ -620,7 +620,7 @@
   "settings.discuss.order.round_robin": "In order (round-robin)",
   "settings.discuss.order_label": "Turn order",
   "settings.discuss.persona_hint": "Add participants to set a stance/persona for each tab.",
-  "settings.discuss.persona_ph": "e.g. You are the Brotherhood of Steel. Argue that technology must be strictly controlled.",
+  "settings.discuss.persona_ph": "e.g. You are a safety-first faction; argue that risky technology must be strictly controlled.",
   "settings.discuss.persona_section_hint": "Writing a stance for each tab lets you go beyond pro/con — factions or characters can argue too (empty = neutral).",
   "settings.discuss.persona_section_label": "Stance / persona",
   "settings.discuss.title": "AI x AI discussion",
