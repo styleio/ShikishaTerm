@@ -795,6 +795,49 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // List the available models for a provider (the "candidates" button).
+        // Hits the OpenAI-compatible {base_url}/models so the user can pick a
+        // real model name instead of guessing. Resolves an @secret api_key and
+        // any custom headers just like resolve_provider does.
+        ("POST", "/api/provider/models") => {
+            let mut req = req;
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body)?;
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let s = |k| p.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            let base_url = s("base_url").trim();
+            let api_key = s("api_key").trim();
+            let pw = password.lock().unwrap().clone();
+            let tokens = crate::config::load()
+                .map(|c| c.resolve_tokens(pw.as_deref()))
+                .unwrap_or_default();
+            let deref = |v: &str| -> String {
+                match v.strip_prefix('@') {
+                    Some(k) => tokens.get(k).cloned().unwrap_or_default(),
+                    None => v.to_string(),
+                }
+            };
+            let mut headers = std::collections::HashMap::new();
+            if let Some(obj) = p.get("headers").and_then(|h| h.as_object()) {
+                for (k, v) in obj {
+                    if let Some(vs) = v.as_str() {
+                        headers.insert(k.clone(), deref(vs));
+                    }
+                }
+            }
+            if headers.is_empty() && !api_key.is_empty() {
+                headers.insert("Authorization".into(), format!("Bearer {}", deref(api_key)));
+            }
+            let resp = if base_url.is_empty() {
+                serde_json::json!({ "ok": false, "error": crate::i18n::t("webui.err.empty_base_url") })
+            } else {
+                match crate::bridge::list_models(base_url, &headers) {
+                    Ok(models) => serde_json::json!({ "ok": true, "models": models }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
         // Export a single workspace, scripts and all, as one file.
         // Addressed by index into the saved config — not the screen's in-progress edits
         ("POST", "/api/workspace/export") => {
@@ -1703,21 +1746,59 @@ function aiCommandOf(key, model) {
   return key || "";  // kimi and anything else: bare command (no known bypass flag)
 }
 // AI selection + (only for a model API) a model name. Writes back to st={key,model}
+// "Candidates" button: lists a provider's real models via {base_url}/models so
+// the user picks an existing model name instead of guessing. getProv() returns
+// the provider spec {base_url, api_key, headers?}; onPick(id) fills the model.
+// Returns { btn, chips } — put btn inline and chips just below.
+function modelCandidates(getProv, onPick) {
+  const chips = el("div", {style:"display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"});
+  const btn = el("button", {class:"quiet", type:"button", onclick: async () => {
+    const prov = getProv() || {};
+    chips.textContent = "";
+    chips.append(el("span", {class:"hint"}, T["settings.model.candidates_loading"]));
+    let r;
+    try {
+      r = await fetch("/api/provider/models", {method:"POST",
+        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+        body: JSON.stringify({base_url: prov.base_url || "", api_key: prov.api_key || "", headers: prov.headers || {}})})
+        .then(x => x.json());
+    } catch (e) { r = {ok:false, error:String(e)}; }
+    chips.textContent = "";
+    if (!r || !r.ok) {
+      chips.append(el("span", {class:"hint"}, fill(T["settings.model.candidates_failed"], {e: (r && r.error) || ""})));
+      return;
+    }
+    const models = r.models || [];
+    if (!models.length) { chips.append(el("span", {class:"hint"}, T["settings.model.candidates_none"])); return; }
+    for (const id of models) chips.append(el("button", {class:"quiet", type:"button",
+      style:"font-size:12px;padding:2px 8px", onclick:() => onPick(id)}, id));
+  }}, T["settings.model.candidates"]);
+  return {btn, chips};
+}
+
 function aiPick(st) {
-  const wrap = el("span", {style:"display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap"});
+  const row = el("span", {style:"display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap"});
   const sel = el("select");
   for (const c of aiChoices()) sel.append(el("option", {value:c.key}, c.label));
   sel.value = st.key || "claude"; st.key = sel.value;
   const modelIn = el("input", {type:"text", class:"mono", style:"width:180px"});
   modelIn.value = st.model || "";
+  const cand = modelCandidates(
+    () => current.providers[(choiceOf(st.key) || {}).provider] || {},
+    id => { st.model = id; modelIn.value = id; });
   const sync = () => {
     const c = choiceOf(st.key), isM = !!(c && c.isModel);
     modelIn.style.display = isM ? "" : "none";
+    cand.btn.style.display = isM ? "" : "none";
+    cand.chips.style.display = isM ? "" : "none";
+    if (!isM) cand.chips.textContent = "";
     if (isM) modelIn.placeholder = DEFAULT_MODEL[c.provider] || T["wizard.discuss.model_ph"];
   };
   sel.addEventListener("change", () => { st.key = sel.value; sync(); });
   modelIn.addEventListener("input", () => { st.model = modelIn.value.trim(); });
-  sync(); wrap.append(sel, modelIn); return wrap;
+  sync();
+  row.append(sel, modelIn, cand.btn);
+  return el("span", {style:"display:inline-block"}, row, cand.chips);
 }
 // A model-API participant needs a model name (except for a provider that has a default value)
 function partsValid(parts) {
@@ -2824,9 +2905,13 @@ function kindPanel(t, cmdInput, rebuild) {
         applyPh(); upd();
       });
       modelIn.addEventListener("input", () => { mdl.model = modelIn.value.trim(); upd(); });
+      const cand = modelCandidates(
+        () => current.providers[mdl.provider] || {},
+        id => { mdl.model = id; modelIn.value = id; upd(); });
       box.append(el("div", {class:"row"},
         el("label", {}, T["settings.model.provider_label"]), provSel,
-        el("label", {style:"width:auto"}, T["settings.model.name_label"]), modelIn));
+        el("label", {style:"width:auto"}, T["settings.model.name_label"]), modelIn, cand.btn));
+      box.append(el("div", {class:"row"}, el("label", {}, ""), cand.chips));
       box.append(el("div", {class:"row"}, el("label", {}, ""),
         el("span", {class:"hint"},
           T["settings.model.hint"])));

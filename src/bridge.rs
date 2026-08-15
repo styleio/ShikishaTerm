@@ -101,6 +101,54 @@ pub fn complete(
     Ok(strip_think(content).trim().to_string())
 }
 
+/// List the available models from an OpenAI-compatible `{base_url}/models`
+/// endpoint. Returns the model ids. Works for DeepSeek, Ollama (/v1),
+/// OpenRouter, etc. — the same providers `complete()` talks to.
+pub fn list_models(base_url: &str, headers: &HashMap<String, String>) -> Result<Vec<String>> {
+    let endpoint = models_endpoint(base_url);
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .new_agent();
+    let mut req = agent.get(&endpoint);
+    for (k, v) in headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let mut resp = req.call().map_err(|e| {
+        anyhow!(crate::i18n::tp(
+            "err.bridge.connect_failed",
+            &[("endpoint", &endpoint), ("e", &e.to_string())]
+        ))
+    })?;
+    let v: serde_json::Value = resp
+        .body_mut()
+        .read_json()
+        .with_context(|| crate::i18n::t("err.bridge.bad_response_json"))?;
+    // OpenAI-compatible response: { "data": [ { "id": "..." }, ... ] }
+    let mut out = Vec::new();
+    if let Some(arr) = v.pointer("/data").and_then(|d| d.as_array()) {
+        for m in arr {
+            if let Some(id) = m.get("id").and_then(|i| i.as_str()) {
+                out.push(id.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Append `/models` to base_url (or use as-is if it already points at models).
+fn models_endpoint(base: &str) -> String {
+    let b = base.trim();
+    if b.ends_with("/models") {
+        return b.to_string();
+    }
+    // Tolerate a base that includes the chat path (swap it for /models).
+    if let Some(prefix) = b.strip_suffix("/chat/completions") {
+        return format!("{}/models", prefix.trim_end_matches('/'));
+    }
+    format!("{}/models", b.trim_end_matches('/'))
+}
+
 /// Append `/chat/completions` to base_url if needed.
 /// If it's already a full path (e.g. Azure) or has a query string, use it
 /// as-is.
@@ -187,6 +235,23 @@ mod tests {
         );
         let full = "https://x.openai.azure.com/openai/deployments/g/chat/completions?api-version=2024";
         assert_eq!(chat_endpoint(full), full);
+    }
+
+    #[test]
+    fn models_endpoint_builds() {
+        assert_eq!(
+            models_endpoint("https://api.deepseek.com/v1"),
+            "https://api.deepseek.com/v1/models"
+        );
+        assert_eq!(
+            models_endpoint("http://localhost:11434/v1/"),
+            "http://localhost:11434/v1/models"
+        );
+        assert_eq!(models_endpoint("https://x/v1/models"), "https://x/v1/models");
+        assert_eq!(
+            models_endpoint("https://x/v1/chat/completions"),
+            "https://x/v1/models"
+        );
     }
 
     #[test]
