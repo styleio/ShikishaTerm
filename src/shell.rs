@@ -909,9 +909,10 @@ const onTerminal = () => S && S.active !== 0 && S.tabs &&
 const focus = () => {
   const a = document.activeElement;
   if (a && a.closest && a.closest("#nav")) return;
-  // Never steal focus sitting on the input bar (castInput is declared with
-  // `let` further down, so checked by id here to avoid a TDZ crash if evaluated at startup)
-  if (a && a.id === "castinput") return;
+  // Never steal focus while a text field is being used (the cast input bar, the
+  // discussion-topic box, etc.). Otherwise every keystroke would be swallowed by
+  // #kbd and fired as a board shortcut (e.g. typing "w" opens the workspace list).
+  if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA")) return;
   // On a phone, only show the keyboard while a terminal tab is in view.
   // Not right after load (S not yet fetched), and not on INDEX or a browser
   // tab — the keyboard popping up uninvited would just get in the way.
