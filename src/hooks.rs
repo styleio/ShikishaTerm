@@ -1714,6 +1714,14 @@ end
 
 function on_start(tab)
   local run = ensure_run()
+  -- A model bridge is stateless: it answers whatever prompt it is handed
+  -- straight away, so it cannot hold an intro the way a CLI waits at its
+  -- prompt. Briefing it at startup would make it speak before any topic
+  -- exists. Its persona rides on every turn's system message instead, so it
+  -- needs no startup briefing -- stay silent until its turn actually arrives.
+  -- (ensure_run() still runs above so the shared run exists even if the
+  -- opening speaker happens to be a model, which self-kicks from on_done.)
+  if tab.is_model then return end
   local say = run .. "/say.txt"
   local lines
   if IS_MOD then
