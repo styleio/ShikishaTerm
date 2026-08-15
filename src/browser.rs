@@ -338,6 +338,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .unwrap_or_default()
                 .to_string(),
         },
+        Some("openws") => Ev::OpenWs,
         Some("stop") => Ev::Stop,
         Some("scroll") => Ev::Scroll {
             // The tick count is a count of human finger movements. An absurdly large number carries no meaning
@@ -425,6 +426,13 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             named: v.get("named").and_then(|x| x.as_str()).map(str::to_string),
             ctrl: v.get("ctrl").and_then(|x| x.as_str()).map(str::to_string),
         },
+        Some("chat") => Ev::Chat {
+            text: v
+                .get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        },
         Some("result") => Ev::Result {
             id: v.get("id").and_then(|i| i.as_u64()).unwrap_or(0),
             ok: v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false),
@@ -474,6 +482,11 @@ pub enum Ev {
     CloseSettings,
     /// The operating board's menu was pressed
     Menu { key: String },
+    /// Open the workspace switcher. A dedicated intent (rather than reusing the
+    /// plain 'w' keystroke of `Menu`) so the tab-bar button works from any tab:
+    /// a bare 'w' would just be typed into whatever session is showing instead
+    /// of opening the list. Converted to the Ctrl+B w prefix in `keys_for`.
+    OpenWs,
     /// Emergency stop
     Stop,
     /// The wheel was turned (positive = scroll back into the log, negative
@@ -521,6 +534,9 @@ pub enum Ev {
         named: Option<String>,
         ctrl: Option<String>,
     },
+    /// A line typed into a model tab's chat box. Delivered to whichever model
+    /// tab is currently in view (the bridge answers it directly).
+    Chat { text: String },
     /// The window was closed
     Closed,
 }
@@ -1914,6 +1930,21 @@ mod nav_tests {
         // Discard unknown instructions. Doing nothing is better than silently doing something else
         assert!(read(r#"{"kind":"go","what":"quit"}"#).is_none());
         assert!(read(r#"{"kind":"go"}"#).is_none());
+    }
+
+    /// The workspace button and the model-chat box parse into their own intents,
+    /// not into a keystroke that would leak into the visible session.
+    #[test]
+    fn workspace_and_chat_intents_parse() {
+        let read = |s: &str| {
+            let v: serde_json::Value = serde_json::from_str(s).unwrap();
+            parse_intent(&v)
+        };
+        assert!(matches!(read(r#"{"kind":"openws"}"#), Some(Ev::OpenWs)));
+        match read(r#"{"kind":"chat","text":"hello"}"#) {
+            Some(Ev::Chat { text }) => assert_eq!(text, "hello"),
+            other => panic!("chat が読めていない: {other:?}"),
+        }
     }
 }
 

@@ -354,6 +354,8 @@ struct WinSurface {
     closed: bool,
     /// The settings page's "close settings" button was pressed. The loop closes the settings tab.
     close_settings: bool,
+    /// Lines typed into a model tab's chat box, awaiting delivery to the bridge.
+    chats: Vec<String>,
 }
 
 impl WinSurface {
@@ -402,6 +404,11 @@ impl WinSurface {
         std::mem::take(&mut self.frames)
     }
 
+    /// Takes ownership of chat lines typed into model tabs
+    fn take_chats(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.chats)
+    }
+
     fn take_events(&mut self, active_tab: Option<&Tab>) {
         use crate::browser::Ev;
         for ev in self.win.drain() {
@@ -425,6 +432,7 @@ impl WinSurface {
                 // showing", so the loop decides (only one bar is ever displayed).
                 Ev::Go { go } => self.gos.push(go),
                 Ev::Scroll { by, row, col } => self.scrolls.push((by, row, col)),
+                Ev::Chat { text } => self.chats.push(text),
                 Ev::Where {
                     from: Some(name),
                     url,
@@ -505,6 +513,10 @@ fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
         // The board's menu is a plain keystroke while looking at INDEX.
         // Adding the prefix key would mean only characters present on both sides work.
         Ev::Menu { key } => key.chars().next().map(plain).map(|k| vec![k]).unwrap_or_default(),
+        // The workspace-switcher button. Prefixed (Ctrl+B w) so it opens the
+        // list no matter which tab is showing — a bare 'w' would be typed into
+        // the visible session instead (the old Menu "w" bug: "wwww").
+        Ev::OpenWs => prefixed('w'),
         Ev::Stop => prefixed('x'),
         Ev::Key { text, named, ctrl } => {
             if let Some(n) = named {
@@ -601,6 +613,7 @@ fn run_in_window() -> Result<()> {
         frames: Vec::new(),
         closed: false,
         close_settings: false,
+        chats: Vec::new(),
     })
 }
 
@@ -997,6 +1010,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut ws_open = false;
     let mut help_open = false;
     let mut qr_open = false;
+    // While the settings overlay is up, automation (ball-follow, ShowTab) must
+    // not yank the screen to another tab — settings is a place of its own, not a
+    // tab you get pushed out of. Only an explicit human tab/workspace pick, or
+    // "close settings", leaves it.
+    let mut settings_open = false;
     // Flag for dragging the tab-bar border (lets the mouse adjust its width)
     // The settings web GUI (launched via INDEX's [e], stopped when the app exits)
     let mut web: Option<webui::WebUi> = None;
@@ -1302,6 +1320,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         &mut pending_submit,
                         &mut waiting,
                         &mut active,
+                        settings_open,
                     );
                 }
             }
@@ -1509,6 +1528,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     &mut pending_submit,
                     &mut waiting,
                     &mut active,
+                    settings_open,
                 );
             }
         }
@@ -1551,7 +1571,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 view_touched_ms,
             ) {
                 followed = to;
-                if active != to {
+                // Don't follow while the settings overlay is up — the human is
+                // reading settings, not spectating the ball. (followed is still
+                // advanced above, so we don't re-jump the instant it closes.)
+                if active != to && !settings_open {
                     // Keep this so "it was passed but the screen didn't move" can be
                     // traced. This was removed once during cleanup, and that exact
                     // investigation got stuck because of it.
@@ -1746,12 +1769,24 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
+        // Lines typed into a model tab's chat box. Deliver each to whichever
+        // model tab is in view; a line typed while a non-model tab is up is
+        // dropped (the box is only shown over model tabs anyway).
+        for line in surface.take_chats() {
+            if let Some(t) = session_at(&layout, active).and_then(|i| tabs.get(i)) {
+                if t.is_model() {
+                    t.chat_send(line);
+                }
+            }
+        }
+
         // The settings page's "close settings" button. Collapses the settings tab
         // and returns to the operating board (INDEX). Settings disappears from the
         // left-hand list because it drops out of `hosted`, and the layout gets
         // rebuilt on the next draw.
         if surface.take_close_settings() {
             let _ = caps.browser_close(SETTINGS_TAB);
+            settings_open = false;
             active = 0;
         }
 
@@ -1880,6 +1915,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 );
                             }
                             ws_open = false;
+                            // Switching workspace drops the settings overlay (it's
+                            // hosted per-workspace); don't leave the flag stuck on.
+                            settings_open = false;
                         }
                         _ => {}
                     }
@@ -1894,6 +1932,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             if n <= panes {
                                 active = n;
                                 view_touched_ms = start.elapsed().as_millis() as u64;
+                                // An explicit tab pick is a deliberate exit from settings.
+                                settings_open = false;
                             }
                         }
                         KeyCode::Char('n') => {
@@ -1957,6 +1997,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     &mut engines,
                                     &caps,
                                 );
+                                settings_open = false;
                             }
                         }
                         KeyCode::Char('?') => help_open = true,
@@ -1980,6 +2021,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 ) {
                                     Ok(()) => {
                                         active = settings_active(&layout);
+                                        settings_open = true;
                                         i18n::t("msg.settings_here")
                                     }
                                     Err(e) => i18n::tp(
@@ -2107,6 +2149,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                         // Don't leave it opened but invisible.
                                         // If already open, switch to its existing location.
                                         active = settings_active(&layout);
+                                        settings_open = true;
                                         i18n::t("msg.settings_here")
                                     }
                                     Err(e) => i18n::tp(
@@ -3491,6 +3534,9 @@ fn exec_commands(
     pending_submit: &mut Vec<PendingSubmit>,
     waiting: &mut Vec<Waiting>,
     active: &mut usize,
+    // When true, the settings overlay is showing; ShowTab is ignored so
+    // automation can't pull the screen off settings.
+    settings_open: bool,
 ) {
     let keys = pane_keys(panes, tabs);
     let index_of = |r: &hooks::TabRef| r.resolve(&keys);
@@ -3522,7 +3568,12 @@ fn exec_commands(
             // Switch the displayed tab (spectator mode). 0 is the operating board (INDEX).
             // The target, whether a session or a browser, is addressed by screen number.
             Command::ShowTab { target } => {
-                if matches!(target, hooks::TabRef::Index(0)) {
+                if settings_open {
+                    // The human is in settings; don't yank them out of it.
+                    append_hook_log(&format!(
+                        "ShowTab {target:?} ignored: settings overlay is open"
+                    ));
+                } else if matches!(target, hooks::TabRef::Index(0)) {
                     *active = 0;
                 } else if let Some(pane) = index_of(&target) {
                     *active = pane;
@@ -4017,6 +4068,21 @@ mod tests {
         assert!(k.modifiers.contains(KeyModifiers::CONTROL));
         let Event::Key(k) = &evs[1] else { panic!("本体が打鍵でない") };
         assert_eq!(k.code, KeyCode::Char('t'));
+        assert!(k.modifiers.is_empty());
+    }
+
+    /// The workspace-switcher button must arrive prefixed (Ctrl+B w) so it opens
+    /// the list from any tab. The old Menu "w" path was a plain 'w', which just
+    /// got typed into whatever session was showing ("wwww") instead of opening.
+    #[test]
+    fn the_workspace_button_arrives_prefixed() {
+        let evs = super::keys_for(&crate::browser::Ev::OpenWs);
+        assert_eq!(evs.len(), 2, "前置キー + 'w' の2打鍵");
+        let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
+        assert_eq!(k.code, KeyCode::Char('b'));
+        assert!(k.modifiers.contains(KeyModifiers::CONTROL));
+        let Event::Key(k) = &evs[1] else { panic!("本体が打鍵でない") };
+        assert_eq!(k.code, KeyCode::Char('w'));
         assert!(k.modifiers.is_empty());
     }
 

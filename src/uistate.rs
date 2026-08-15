@@ -36,6 +36,13 @@ pub struct TabState {
     pub activity: Vec<u8>,
     /// "pty" or "browser". Changes how it's displayed
     pub kind: String,
+    /// This pty tab is a model bridge (OpenAI-compatible API). The shell offers
+    /// a chat input box for it instead of leaving it as a silent idle screen.
+    #[serde(default)]
+    pub model: bool,
+    /// A chat reply is being generated right now (drives the shell's spinner).
+    #[serde(default)]
+    pub busy: bool,
 }
 
 /// Current position of the automation ring
@@ -147,6 +154,8 @@ impl TabState {
             depth: t.chain_depth,
             activity: t.activity().to_vec(),
             kind: "pty".into(),
+            model: t.is_model(),
+            busy: t.is_generating(),
         }
     }
 
@@ -166,6 +175,8 @@ impl TabState {
             depth: 0,
             activity: Vec::new(),
             kind: "browser".into(),
+            model: false,
+            busy: false,
         }
     }
 }
@@ -233,6 +244,8 @@ mod tests {
             depth: 0,
             activity: vec![0; 4],
             kind: "pty".into(),
+            model: false,
+            busy: false,
         }
     }
 

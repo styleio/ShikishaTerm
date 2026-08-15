@@ -197,6 +197,30 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   /* The topic hint drops onto its own line below on narrow widths */
   #topicbar .tb-hint { color:var(--dim); font-size:12px; flex:1 1 100%; margin:-2px 0 0; }
   @media (prefers-reduced-motion: reduce) { #topicbar button { animation:none; } }
+  /* Model-tab chat box — a Claude-style input pinned to the bottom of a model
+     tab, with a spinner while the reply generates. */
+  #modelchat { position:absolute; left:0; right:0; bottom:0; z-index:23;
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:10px 14px; background:linear-gradient(0deg,#12242e,var(--panel));
+    border-top:2px solid var(--live); box-shadow:0 -8px 22px rgba(0,0,0,.5); }
+  #modelchat[hidden] { display:none; }
+  #modelchat .mc-label { font-weight:700; color:var(--text); font-size:13px; flex:none; }
+  #modelchat input { flex:1 1 240px; min-width:140px; padding:9px 12px;
+    border-radius:8px; border:1px solid var(--line); background:var(--bg);
+    color:var(--text); font-size:14px; outline:none; }
+  #modelchat input:focus { border-color:var(--live); }
+  #modelchat input:disabled { opacity:.5; }
+  #modelchat button { flex:none; padding:9px 20px; border-radius:8px; border:0;
+    background:var(--live); color:#04121c; font-weight:700; cursor:pointer; font-size:14px; }
+  #modelchat button:hover { filter:brightness(1.08); }
+  #modelchat button:disabled { cursor:default; filter:grayscale(.6) brightness(.8); }
+  /* The "thinking" spinner: a ring that keeps spinning while the model generates */
+  #modelchat .mc-spin { flex:none; width:16px; height:16px; border-radius:50%;
+    border:2px solid var(--line); border-top-color:var(--live);
+    animation:mcspin .8s linear infinite; }
+  #modelchat .mc-busy { color:var(--live); font-size:13px; flex:none; }
+  @keyframes mcspin { to { transform:rotate(360deg) } }
+  @media (prefers-reduced-motion: reduce) { #modelchat .mc-spin { animation:none } }
 
   /* ── Dashboard ─────────────────────────────── */
   #board { position:absolute; inset:0; overflow:auto; padding:22px 26px; }
@@ -362,6 +386,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     <div id="back" hidden></div>
     <div id="flash" hidden></div>
     <div id="topicbar" hidden></div>
+    <div id="modelchat" hidden></div>
   </div>
   <div id="veil" hidden></div>
   <div id="status"></div>
@@ -451,7 +476,7 @@ function drawTabs() {
   nav.textContent = "";
   // Above INDEX: the current workspace and a switcher. Clicking opens the list popup
   nav.append(el("div", {class:"tab wsrow", title:T["tui.menu.workspace"] || "WORKSPACE",
-      onclick:() => send({kind:"menu", key:"w"})},
+      onclick:() => send({kind:"openws"})},
     el("span", {class:"num"}, "◇"),
     el("span", {class:"nm"}, S.workspace || ""),
     el("span", {class:"wscaret"}, "▾")));
@@ -501,7 +526,7 @@ function drawBoard() {
            el("div", {class:"mark-lite"}, "SHIKISHA-TERM"),
            el("div", {class:"sub"},
              el("span", {class:"wslink", title:T["tui.menu.workspace"] || "WORKSPACE",
-               onclick:() => send({kind:"menu", key:"w"})}, S.workspace || ""),
+               onclick:() => send({kind:"openws"})}, S.workspace || ""),
              el("span", {}, "   " + BUILD)));
 
   // Chain
@@ -611,6 +636,47 @@ function drawTopicBar() {
   bar.hidden = false;
 }
 
+// The model-tab chat box, pinned to the bottom of a model tab. Rebuilt only
+// when the visible model tab changes, so a half-typed message survives the
+// frequent state pushes; the busy spinner is toggled without a rebuild (so the
+// input keeps its text and focus while a reply generates).
+function drawModelChat() {
+  const box = document.getElementById("modelchat");
+  const t = S && S.tabs && S.tabs.find(x => x.index === S.active);
+  if (!(t && t.model)) { box.hidden = true; return; }
+  const sig = "m" + t.index;
+  if (box.dataset.sig !== sig || !box.childNodes.length) {
+    box.dataset.sig = sig;
+    box.textContent = "";
+    const input = el("input", {type:"text",
+      placeholder:(T["tui.chat.ph"] || "Message {model}…").split("{model}").join(t.name || "model")});
+    const go = () => {
+      const msg = input.value.trim();
+      if (!msg) { input.focus(); return; }
+      send({kind:"chat", text:msg});
+      input.value = "";
+    };
+    input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+    box.append(
+      el("span", {class:"mc-label"}, T["tui.chat.title"] || "Chat"),
+      input,
+      el("button", {onclick:go}, T["tui.chat.btn"] || "Send"),
+      el("span", {class:"mc-spin"}),
+      el("span", {class:"mc-busy"}, T["tui.chat.busy"] || "Thinking…"));
+  }
+  box.hidden = false;
+  // Toggle the busy state in place (no rebuild) so typing isn't interrupted.
+  const gen = !!t.busy;
+  const inp = box.querySelector("input");
+  const btn = box.querySelector("button");
+  const spin = box.querySelector(".mc-spin");
+  const busy = box.querySelector(".mc-busy");
+  if (inp) inp.disabled = gen;
+  if (btn) btn.disabled = gen;
+  if (spin) spin.style.display = gen ? "" : "none";
+  if (busy) busy.style.display = gen ? "" : "none";
+}
+
 // ── Status line ──────────────────────────────
 function drawStatus() {
   const s = document.getElementById("status");
@@ -619,7 +685,7 @@ function drawStatus() {
   // el() filters that out internally, but this is a raw append, so filter it out here too
   [
     el("span", {class:"wslink", title:T["tui.menu.workspace"] || "WORKSPACE",
-      onclick:() => send({kind:"menu", key:"w"})}, S.workspace || ""),
+      onclick:() => send({kind:"openws"})}, S.workspace || ""),
     el("span", {class:"pill " + (S.auto_enabled ? "on" : "off")},
       "AUTO " + (S.auto_enabled ? "ON" : "OFF")),
     S.remote_on ? el("span", {class:"pill on"}, "REMOTE") : null,
@@ -778,6 +844,7 @@ window.__state = function (json) {
   if (web && REMOTE) castStart(); else castStop();
   if (S.active === 0) drawBoard();
   drawTopicBar();
+  drawModelChat();
   drawVeil();
   // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");

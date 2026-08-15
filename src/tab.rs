@@ -931,6 +931,14 @@ pub struct Tab {
     /// whatever was already in the same place back then (startup banner, frame)
     submitted_rows: Mutex<Vec<String>>,
     detector: Detector,
+    /// Direct-chat conversation with a model tab (true = a human turn, false =
+    /// the model's reply). The bridge is stateless, so on each send the whole
+    /// history is replayed. Behind an Arc<Mutex> so the reply thread can append.
+    /// Empty and unused for non-model (CLI) tabs.
+    chat_history: Arc<Mutex<Vec<(bool, String)>>>,
+    /// Whether a chat reply is currently being generated. Drives the spinner in
+    /// the UI and is set/cleared by `chat_send`'s thread.
+    model_busy: Arc<AtomicBool>,
 }
 
 impl Tab {
@@ -1126,6 +1134,8 @@ impl Tab {
             resized_while_waiting: AtomicBool::new(false),
             submitted_rows: Mutex::new(Vec::new()),
             detector: Detector::new(profile),
+            chat_history: Arc::new(Mutex::new(Vec::new())),
+            model_busy: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -1439,6 +1449,85 @@ impl Tab {
     /// Whether this tab is a model bridge (API)
     pub fn is_model(&self) -> bool {
         self.model.is_some()
+    }
+
+    /// Whether a chat reply is being generated right now (for the UI spinner).
+    pub fn is_generating(&self) -> bool {
+        self.model_busy.load(Ordering::Relaxed)
+    }
+
+    /// Send a line a human typed into a model tab's chat box. Echoes it into the
+    /// screen, then replays the whole conversation to the bridge on a thread and
+    /// injects the reply. This is a plain chat: unlike `dispatch_model` (used by
+    /// discussions) there is no say.txt hand-off and no turn/on_done bookkeeping.
+    pub fn chat_send(&self, user_text: String) {
+        let Some(conn) = self.model.clone() else { return };
+        let text = user_text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let parser = Arc::clone(&self.parser);
+        let counter = Arc::clone(&self.bytes_out);
+        let busy = Arc::clone(&self.model_busy);
+        let history = Arc::clone(&self.chat_history);
+        busy.store(true, Ordering::Relaxed);
+        history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((true, text.clone()));
+        std::thread::spawn(move || {
+            let inject = |s: &str| {
+                let bytes = s.as_bytes();
+                counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    parser
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .process(bytes);
+                }));
+            };
+            // Echo the human's line with a Claude-style prompt marker.
+            inject(&format!(
+                "\r\n\x1b[1;32m❯\x1b[0m {}\r\n",
+                text.replace('\n', "\r\n")
+            ));
+            inject(&format!(
+                "\x1b[36m… {}\x1b[0m\r\n",
+                crate::i18n::tp("agent.model.generating", &[("model", &conn.model)])
+            ));
+            // Replay the whole history (the bridge keeps no state of its own).
+            let msgs = {
+                let h = history.lock().unwrap_or_else(|e| e.into_inner());
+                let mut msgs = Vec::new();
+                let mut system = crate::i18n::t("agent.model.chat_system");
+                if let Some(p) = &conn.persona {
+                    system.push('\n');
+                    system.push_str(p);
+                }
+                msgs.push(serde_json::json!({"role": "system", "content": system}));
+                for (is_user, content) in h.iter() {
+                    msgs.push(serde_json::json!({
+                        "role": if *is_user { "user" } else { "assistant" },
+                        "content": content,
+                    }));
+                }
+                msgs
+            };
+            match crate::bridge::complete_messages(&conn.url, &conn.model, &conn.headers, &msgs) {
+                Ok(reply) => {
+                    history
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((false, reply.clone()));
+                    inject(&format!("{}\r\n", reply.replace('\n', "\r\n")));
+                }
+                Err(e) => inject(&format!(
+                    "\r\n\x1b[31m{}\x1b[0m\r\n",
+                    crate::i18n::tp("agent.model.error", &[("e", &e.to_string())])
+                )),
+            }
+            busy.store(false, Ordering::Relaxed);
+        });
     }
 
     /// Mark the start of the model's turn (the same record as a submit in

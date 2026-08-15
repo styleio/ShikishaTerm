@@ -66,12 +66,25 @@ pub fn complete(
     system: Option<&str>,
     user: &str,
 ) -> Result<String> {
-    let endpoint = chat_endpoint(base_url);
     let mut messages = Vec::new();
     if let Some(s) = system.filter(|s| !s.trim().is_empty()) {
         messages.push(serde_json::json!({"role": "system", "content": s}));
     }
     messages.push(serde_json::json!({"role": "user", "content": user}));
+    complete_messages(base_url, model, headers, &messages)
+}
+
+/// Like `complete`, but takes a full pre-built message list. Used for
+/// multi-turn chat: the bridge is stateless, so the whole conversation is
+/// replayed each call. `messages` is an OpenAI-style array of
+/// `{"role":..., "content":...}` objects (system first, then the turns).
+pub fn complete_messages(
+    base_url: &str,
+    model: &str,
+    headers: &HashMap<String, String>,
+    messages: &[serde_json::Value],
+) -> Result<String> {
+    let endpoint = chat_endpoint(base_url);
     let body = serde_json::json!({ "model": model, "messages": messages, "stream": false });
 
     let agent = ureq::Agent::config_builder()

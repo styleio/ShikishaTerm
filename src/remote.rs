@@ -92,6 +92,12 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
             // in front of the window answers
             | "k"
         ),
+        // Opening the workspace switcher is allowed (it was allowed before as
+        // Menu "w"). It only shows the list; picking a workspace is a separate
+        // digit intent, so this alone doesn't disrupt the window.
+        Ev::OpenWs => true,
+        // Chatting with a model tab from the phone is just like typing into it.
+        Ev::Chat { .. } => true,
         // Size is decided by the window. There's no reason to collapse the
         // other person's terminal to fit the phone's screen.
         // Same for paste — one long-press would flow straight into the AI's input box
