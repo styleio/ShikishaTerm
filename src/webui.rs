@@ -1171,9 +1171,18 @@ const PAGE: &str = r##"<!doctype html>
    transition:opacity .18s ease, transform .18s ease; }
  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
  #toast.warn { background:var(--danger); color:#fff; }
- /* Mark the save button while there are unsaved changes.
-    Knowing "does this need saving?" before you click removes the after-click anxiety */
+ /* Mark the save button while there are unsaved changes. It turns amber and
+    pulses a glow ring so an unsaved edit is impossible to miss and you remember
+    to press Save at the end (it goes back to the normal blue once saved). */
+ #savebtn.dirty { background:#ffb020; border-color:#ffb020; color:#1a1205;
+   animation:savepulse 1.1s ease-in-out infinite; }
  #savebtn.dirty::before { content:"● "; }
+ @keyframes savepulse {
+   0%   { box-shadow:0 0 0 0 rgba(255,176,32,.6); }
+   70%  { box-shadow:0 0 0 8px rgba(255,176,32,0); }
+   100% { box-shadow:0 0 0 0 rgba(255,176,32,0); }
+ }
+ @media (prefers-reduced-motion: reduce) { #savebtn.dirty { animation:none; } }
 
  .layout { display:flex; align-items:flex-start; }
  nav { width:260px; flex:none; border-right:1px solid var(--line); min-height:calc(100vh - 53px);
