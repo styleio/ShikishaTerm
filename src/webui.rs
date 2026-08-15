@@ -1689,15 +1689,20 @@ function aiChoices() {
 }
 const choiceOf = key => aiChoices().find(c => c.key === key) || null;
 const aiLabelOf = key => { const c = choiceOf(key); return c ? c.label : (key || "AI"); };
-// Builds the launch command from the selection key (+ model name). Since a discussion saves every turn's
-// statement, Claude gets the permission-pre-approval flag (not hidden — it also shows in the post-generation edit screen)
+// Builds the launch command from the selection key (+ model name). Wizard-made AIs run
+// autonomously (a discussion saves a statement every turn, code review commits, browser-op
+// writes step files), so each CLI gets its "skip confirmation prompts" flag. It is not hidden:
+// the flag also shows in the tab's Command field afterwards, so it stays editable and visible.
+// Model-API participants need no flag (the bridge writes the reply itself, in-process).
 function aiCommandOf(key, model) {
   if (key && key.startsWith("model:")) {
     const p = key.slice(6);
     return "model " + p + "/" + ((model || "").trim() || DEFAULT_MODEL[p] || "");
   }
   if (key === "claude") return "claude --dangerously-skip-permissions";
-  return key || "";
+  if (key === "codex")  return "codex --dangerously-bypass-approvals-and-sandbox";
+  if (key === "gemini") return "gemini --yolo";
+  return key || "";  // kimi and anything else: bare command (no known bypass flag)
 }
 // AI selection + (only for a model API) a model name. Writes back to st={key,model}
 function aiPick(st) {
