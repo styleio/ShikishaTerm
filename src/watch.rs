@@ -56,9 +56,12 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 pub fn watch_targets(cfg: Option<&crate::config::Config>, config_path: &Path) -> Vec<PathBuf> {
     let mut out = vec![config_path.to_path_buf()];
     let Some(cfg) = cfg else { return out };
-    if let Some(p) = cfg.secrets_path() {
-        out.push(p);
-    }
+    // Deliberately NOT watching secrets.json: the app writes it itself from the
+    // settings UI (saving a key / a provider secret), and watching it would make
+    // that self-write trigger a full config reload — which redraws the board and
+    // kicks the user out of the settings screen mid-edit (they land on INDEX and
+    // can't finish registering the provider). Secrets are re-resolved on the next
+    // real config reload (e.g. when the whole config is saved), which is enough.
     fn add_automation(out: &mut Vec<PathBuf>, spec: Option<String>) {
         let Some(s) = spec else { return };
         let p = crate::config::resolve_data_path(&s);
