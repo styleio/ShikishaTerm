@@ -129,6 +129,82 @@ fn idle_argv() -> Vec<String> {
     vec!["cmd.exe".into(), "/c".into(), "pause>nul".into()]
 }
 
+/// Truncate to at most `max` characters, appending "…" when it had to cut.
+/// Character counts (not display width) — fine here since the values are ASCII.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut r: String = s.chars().take(max - 1).collect();
+    r.push('…');
+    r
+}
+
+/// A compact, ASCII-art-free title card for a model-bridge tab, in the spirit
+/// of the CLIs' startup boxes. It identifies the endpoint (model / provider /
+/// host) so a blank idle screen doesn't look broken. The width tracks the
+/// terminal so it stays intact on narrow windows instead of wrapping.
+fn model_title_box(conn: &crate::bridge::ModelConn, cols: u16) -> String {
+    // Host portion of the endpoint URL ("https://api.deepseek.com/v1" -> "api.deepseek.com").
+    let host = conn
+        .url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&conn.url)
+        .split('/')
+        .next()
+        .unwrap_or(&conn.url);
+    const HEADER: &str = ">_ SHIKISHA bridge";
+    const LABEL_W: usize = 10; // widest label ("provider:"/"endpoint:") + a space
+    // (label, value); an empty label is a blank spacer row.
+    let rows: [(&str, &str); 5] = [
+        ("", ""),
+        ("model", &conn.model),
+        ("provider", &conn.provider),
+        ("endpoint", host),
+        ("mode", "internal \u{b7} no ConPTY child"),
+    ];
+    // Inner text width: fit the longest line, but never exceed the terminal.
+    let longest = rows
+        .iter()
+        .map(|(l, v)| if l.is_empty() { 0 } else { LABEL_W + v.chars().count() })
+        .chain(std::iter::once(HEADER.chars().count()))
+        .max()
+        .unwrap_or(0);
+    let max_inner = (cols as usize).saturating_sub(4).max(8);
+    let inner = longest.clamp(8, max_inner);
+    let bar = "\u{2500}".repeat(inner + 2);
+    let line = |body: &str| {
+        format!(
+            "\x1b[36m\u{2502}\x1b[0m {:<width$} \x1b[36m\u{2502}\x1b[0m\r\n",
+            clip(body, inner),
+            width = inner
+        )
+    };
+    // Lead with a few blank lines so the header clears the discussion banner
+    // (which floats over the top of every tab while a discussion is at rest).
+    let mut out = String::from("\r\n\r\n\r\n");
+    out.push_str(&format!("\x1b[36m\u{256d}{bar}\u{256e}\x1b[0m\r\n"));
+    out.push_str(&format!(
+        "\x1b[36m\u{2502}\x1b[0m \x1b[1;36m{:<width$}\x1b[0m \x1b[36m\u{2502}\x1b[0m\r\n",
+        clip(HEADER, inner),
+        width = inner
+    ));
+    for (label, value) in rows.iter() {
+        if label.is_empty() {
+            out.push_str(&line(""));
+        } else {
+            let value = clip(value, inner.saturating_sub(LABEL_W));
+            out.push_str(&line(&format!("{:<LABEL_W$}{value}", format!("{label}:"))));
+        }
+    }
+    out.push_str(&format!("\x1b[36m\u{2570}{bar}\u{256f}\x1b[0m\r\n"));
+    out
+}
+
 /// Build the launch command.
 /// CreateProcess cannot launch extension-less scripts directly (e.g. npm
 /// shims) (os error 193), so we search PATH+PATHEXT and route .cmd/.bat
@@ -923,6 +999,15 @@ impl Tab {
                 bell: Arc::clone(&bell_count),
             },
         )));
+        // A model-bridge tab launches an idle placeholder process, so its screen
+        // would otherwise be blank. Paint a small title card (like the CLIs show
+        // on startup) so it reads as a real, identified endpoint. Done straight
+        // on the parser, not counted as output, so it doesn't look like activity.
+        if let Some(conn) = opts.model.as_ref() {
+            if let Ok(mut p) = parser.lock() {
+                p.process(model_title_box(conn, cols).as_bytes());
+            }
+        }
         let child_exited = Arc::new(AtomicBool::new(false));
 
         // PTY output → (encoding conversion if needed) → vt100 parser / session log

@@ -25,6 +25,9 @@ use std::sync::Mutex;
 /// A resolved model connection (held by a tab, passed to complete() each turn)
 #[derive(Debug, Clone)]
 pub struct ModelConn {
+    /// The provider name as registered in settings (e.g. "deepseek"). Shown on
+    /// the tab's title box; not used for the request itself.
+    pub provider: String,
     pub url: String,
     pub model: String,
     pub headers: HashMap<String, String>,
@@ -212,6 +215,7 @@ pub fn launch_for(argv: &[String]) -> Option<ModelConn> {
         g.as_ref()?.get(provider)?.clone()
     };
     Some(ModelConn {
+        provider: provider.to_string(),
         url,
         model: model.to_string(),
         headers,

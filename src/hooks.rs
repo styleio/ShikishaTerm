@@ -2421,7 +2421,7 @@ mod tests {
     }
 
     #[test]
-    fn discuss_agent_is_built_in_and_first_asks_for_topic() {
+    fn discuss_agent_is_built_in_and_first_waits_for_topic() {
         let _g = RALLY_FILE_LOCK.lock().unwrap();
         // The built-in AI-vs-AI discussion orchestrator must load, and the opening
         // speaker (is_first) must prompt for the topic via the input field.
@@ -2451,8 +2451,8 @@ mod tests {
         assert!(
             cmds.iter().any(|c| matches!(c,
                 Command::SendPrompt { text, .. }
-                    if text.contains("say.txt") && text.contains("input field") && text.contains("participant"))),
-            "口火役の on_start が議題入力を促していない: {cmds:?}"
+                    if text.contains("say.txt") && text.contains("participant") && text.contains("open the discussion"))),
+            "口火役の on_start が待機の案内をしていない: {cmds:?}"
         );
     }
 
