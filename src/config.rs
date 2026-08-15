@@ -1,111 +1,113 @@
-//! config/config.json: ワークスペース / タブ構成の定義。DESIGN.md 7.4章。
-//! exe隣の config フォルダ → カレントの config フォルダの順で探す。
+//! config/config.json: defines the workspace / tab layout. See DESIGN.md chapter 7.4.
+//! Looked up in the config folder beside the exe, then the config folder in the
+//! current directory.
 //!
-//! 用語: 「ワークスペース」= 切り替える単位 (仮想デスクトップ相当)。
-//!       その中身を外部化したものが「ワークスペース定義ファイル」。
+//! Terminology: a "workspace" is the unit you switch between (like a virtual
+//! desktop). Its externalized contents form a "workspace definition file".
 //!
-//! 設定は役割で3種に分ける (利用者の持ち物は config フォルダにまとめる):
-//!   config/config.json  … 全体設定 + ワークスペース一覧 (滅多に変えない)
-//!   workspaces/*.json   … ワークスペース定義ファイル (コピー・共有できる単位)
-//!   config/secrets.json … 資格情報 (暗号化可、共有厳禁)
+//! Settings are split into 3 kinds by role (everything the user owns lives
+//! under the config folder):
+//!   config/config.json  ... global settings + workspace list (rarely changed)
+//!   workspaces/*.json   ... workspace definition files (copyable/shareable units)
+//!   config/secrets.json ... credentials (can be encrypted, never share)
 
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
-    /// ワークスペース (プロジェクト) 一覧。仮想デスクトップのように切り替える
+    /// List of workspaces (projects). Switched between like virtual desktops
     #[serde(default)]
     pub workspaces: Vec<WorkspaceSpec>,
-    /// 後方互換: ワークスペースを使わない場合のタブ直書き
+    /// Backward compat: tabs written directly when workspaces are not used
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
-    /// 全体共通の自動化 (例: "scripts/common" または "scripts/hooks.lua")
+    /// Global automation shared by everything (e.g. "scripts/common" or "scripts/hooks.lua")
     #[serde(default)]
     pub automation: Option<String>,
     #[serde(default)]
     pub lua: Option<String>,
-    /// 自動送信チェーンの深度上限 (既定10)。
-    /// 自動送信のたびに+1されてタブ間を受け継がれ、人間の手動入力で0に戻る
+    /// Max depth of the auto-forward chain (default 10).
+    /// Incremented by 1 each time it auto-forwards between tabs; reset to 0 by manual human input
     #[serde(default)]
     pub max_chain: Option<u32>,
-    /// ボールが渡った先へ自動で画面を切り替えるか (既定: する)
+    /// Whether to automatically switch the screen to wherever the ball was passed (default: yes)
     pub follow_ball: Option<bool>,
-    /// 最後に開いていたワークスペースから始めるか (既定: する)
+    /// Whether to start from the last-opened workspace (default: yes)
     pub restore_workspace: Option<bool>,
-    /// ブラウザをターミナルに重ねるか (既定: 重ねる)。
-    /// 切ると独立した窓になり、自分で動かせる代わりにタブらしくはならない
+    /// Whether to overlay the browser on the terminal (default: overlay).
+    /// Turning it off makes it a standalone window you can move yourself, but it no longer feels like a tab
     pub browser_overlay: Option<bool>,
-    /// 応答が終わったと確定するまでの待ち時間 (ms)。
-    /// プロファイル側で指定があればそちらが優先される
+    /// Wait time (ms) before a response is considered finished.
+    /// If the profile specifies its own value, that takes priority
     pub done_confirm_ms: Option<u64>,
-    /// 左タブバーの幅 (桁)。省略時はタブ名に合わせて自動調整。
-    /// 実行中は境界線のドラッグでも変更できる
+    /// Width (columns) of the left tab bar. Auto-sized to fit tab names when omitted.
+    /// Can also be changed at runtime by dragging the divider
     #[serde(default)]
     pub tab_bar_width: Option<u16>,
-    /// 通知先の登録 (Luaはここに登録された宛先にしか送信できない)。
-    /// トークン類は secrets.json (gitignore対象) に分離することを推奨
+    /// Registered notification destinations (Lua can only send to destinations registered here).
+    /// Recommended to keep tokens separated out in secrets.json (gitignored)
     #[serde(default)]
     pub notify: std::collections::HashMap<String, crate::notify::Destination>,
-    /// 通知先などの秘密情報を別ファイルから読み込む (例: "secrets.json")
+    /// Load secrets such as notification destinations from a separate file (e.g. "secrets.json")
     #[serde(default)]
     pub secrets: Option<String>,
-    /// 自動化コードを書かせるAI ("claude" / "codex" / "gemini")。
-    /// 空なら見つかったものを使う
+    /// The AI that writes automation code ("claude" / "codex" / "gemini").
+    /// Uses whichever is found if empty
     #[serde(default)]
     pub ai_engine: Option<String>,
-    /// 自動化に与える能力 (ファイル・HTTP)。既定は空 = 何も許可しない。
-    /// 玄人向け機能のためGUIからは編集しない
+    /// Capabilities granted to automation (file/HTTP). Default is empty = nothing allowed.
+    /// Not editable from the GUI since this is an advanced feature
     #[serde(default)]
     pub capabilities: crate::caps::CapabilitySpec,
-    /// スマホ等から見るリモートUI。既定は無効
+    /// Remote UI viewable from a phone etc. Disabled by default
     #[serde(default)]
     pub remote: RemoteSpec,
-    /// 表示言語 ("ja" 等)。省略時はOSの設定に従う
+    /// Display language ("ja" etc). Follows the OS setting if omitted
     #[serde(default)]
     pub language: Option<String>,
-    /// ブラウザ (WebView2) のデータ置き場。キャッシュとログイン状態が入る。
-    ///   "local" (既定) … 各PCの %LOCALAPPDATA% (Drive同期しない・軽い)
-    ///   "portable"      … アプリ隣の data\webview2 (Driveで全PC共有・ログインも共有)
-    ///   その他          … その文字列を絶対パスとして使う
+    /// Where the browser (WebView2) stores its data. Holds cache and login state.
+    ///   "local" (default) ... each PC's %LOCALAPPDATA% (not Drive-synced, lightweight)
+    ///   "portable"         ... data\webview2 beside the app (shared across PCs via Drive, logins shared too)
+    ///   anything else      ... used as an absolute path
     #[serde(default)]
     pub browser_data: Option<String>,
-    /// 中継画面 (スマホ操縦) の補助キー列。左から順に並ぶ。
-    /// 使える名前: esc tab space enter backspace delete
+    /// Auxiliary key row for the relay screen (phone remote control). Listed left to right.
+    /// Usable names: esc tab space enter backspace delete
     ///   left up down right home end pageup pagedown
-    ///   f1〜f12 ctrl alt (ctrl/alt は固定トグル)。
-    /// 省略時は cast_keys_default() を使う
+    ///   f1-f12 ctrl alt (ctrl/alt are fixed toggles).
+    /// Uses cast_keys_default() when omitted
     #[serde(default)]
     pub cast_keys: Option<Vec<String>>,
-    /// model ブリッジ (OpenAI互換API) の接続先。名前 → {base_url, api_key, headers}。
-    /// 討論やブラウザ操作で cheap/local モデル(DeepSeek/Qwen/Ollama等)を使うための橋。
-    /// `model <名前>/<モデル>` タブがここを参照して起動する
+    /// Connection info for the model bridge (OpenAI-compatible API). name -> {base_url, api_key, headers}.
+    /// The bridge that lets discussions and browser operation use cheap/local models (DeepSeek/Qwen/Ollama etc).
+    /// A `model <name>/<model>` tab looks this up when it launches
     #[serde(default)]
     pub providers: std::collections::HashMap<String, ProviderSpec>,
 }
 
-/// OpenAI互換APIの接続先 (DeepSeekクラウド / Ollamaローカル / OpenRouter / Azure 等)。
-/// 「接続先(base_url＋認証) × モデル名」の2軸で、クラウド/ローカルもモデル種別も直交して扱える
+/// Connection info for an OpenAI-compatible API (DeepSeek cloud / Ollama local / OpenRouter / Azure etc).
+/// Two orthogonal axes -- "connection (base_url + auth)" x "model name" -- let cloud/local and model kind vary independently
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ProviderSpec {
-    /// OpenAI互換 base URL (例: https://api.deepseek.com/v1, http://localhost:11434/v1)。
-    /// Azure等のフルパス/クエリ付きはそのまま使う
+    /// OpenAI-compatible base URL (e.g. https://api.deepseek.com/v1, http://localhost:11434/v1).
+    /// Full paths/queries such as Azure's are used as-is
     #[serde(default)]
     pub base_url: String,
-    /// 認証キー。"@名前" で secrets.json の tokens を参照する (直値も可)。
-    /// headers 未指定なら Authorization: Bearer <解決値> ヘッダになる。
-    /// ローカル(Ollama)等で不要なら省略
+    /// Auth key. "@name" refers to a token in secrets.json's tokens (a literal value also works).
+    /// Becomes an Authorization: Bearer <resolved value> header when headers is not specified.
+    /// Can be omitted where not needed, e.g. local (Ollama)
     #[serde(default)]
     pub api_key: Option<String>,
-    /// 送信ヘッダの明示指定 (Azure の `api-key` や独自ゲートウェイ用)。値も "@名前" で
-    /// secrets 参照可。指定すると api_key の既定 Bearer は使わずこちらを送る
+    /// Explicit outgoing headers (for Azure's `api-key` or a custom gateway). Values also support
+    /// "@name" secrets references. When given, the default api_key Bearer header is not sent -- these are sent instead
     #[serde(default)]
     pub headers: std::collections::HashMap<String, String>,
 }
 
-/// 補助キー列の既定の並び。よく使う Enter/Space/⌫ と矢印を前に、
-/// F1〜F12 や Ctrl/Alt は後ろへ (横スクロールで届く)。
-/// 使う人が config の cast_keys で自由に差し替えられる
+/// Default order of the auxiliary key row. Frequently used Enter/Space/Backspace and the
+/// arrow keys come first; F1-F12 and Ctrl/Alt come later (reachable by scrolling sideways).
+/// Users can freely override this via cast_keys in config
 pub fn cast_keys_default() -> Vec<String> {
     [
         "esc", "tab", "left", "up", "down", "right", "space", "enter", "backspace", "ctrl", "alt",
@@ -117,7 +119,7 @@ pub fn cast_keys_default() -> Vec<String> {
     .collect()
 }
 
-/// 補助キー列の並びを設定から得る (未設定なら既定)。中継画面のクライアントへ渡す
+/// Get the auxiliary key row from config (default if unset). Passed to the relay screen client
 pub fn cast_keys() -> Vec<String> {
     load()
         .and_then(|c| c.cast_keys)
@@ -125,8 +127,8 @@ pub fn cast_keys() -> Vec<String> {
         .unwrap_or_else(cast_keys_default)
 }
 
-/// WebView2 のデータ置き場を設定から決める。DriveのキャッシュチャーンやEBWebView
-/// の同期通知を避けるため、既定は同期されないローカル (%LOCALAPPDATA%)
+/// Decide where WebView2 stores its data, based on config. To avoid Drive cache churn
+/// and EBWebView sync notifications, the default is the non-synced local folder (%LOCALAPPDATA%)
 pub fn browser_data_dir() -> std::path::PathBuf {
     let mode = load()
         .and_then(|c| c.browser_data)
@@ -144,17 +146,17 @@ fn local_appdata() -> std::path::PathBuf {
         .unwrap_or_else(|| root_dir().join("data"))
 }
 
-/// リモートUIの設定。遠隔からAIを操作できる機能なので既定はオフ
+/// Remote UI settings. Off by default since this lets AI be operated from afar
 #[derive(Debug, Clone, Deserialize)]
 pub struct RemoteSpec {
     #[serde(default)]
     pub enabled: bool,
-    /// "auto" (Tailscale→LANの順に探す) / "127.0.0.1" / 明示のIP
+    /// "auto" (tries Tailscale, then LAN) / "127.0.0.1" / an explicit IP
     #[serde(default = "default_bind")]
     pub bind: String,
     #[serde(default = "default_remote_port")]
     pub port: u16,
-    /// プライベート網の外へ公開することを明示的に許可する
+    /// Explicitly allow exposing this outside the private network
     #[serde(default)]
     pub allow_public: bool,
 }
@@ -177,25 +179,25 @@ fn default_remote_port() -> u16 {
     8787
 }
 
-/// secrets.json: 資格情報だけを分離したファイル (共有厳禁)
+/// secrets.json: a file holding only credentials, kept separate (never share)
 #[derive(Debug, Deserialize, Default)]
 pub struct Secrets {
     #[serde(default)]
     pub notify: std::collections::HashMap<String, crate::notify::Destination>,
-    /// HTTP窓口が使う認証情報 (スクリプトからは読めない)
+    /// Auth info used by the HTTP gateway (not readable from scripts)
     #[serde(default)]
     pub tokens: std::collections::HashMap<String, String>,
-    /// 各トークンの説明 (GUIの一覧に出す。値そのものは出さない)
+    /// Description of each token (shown in the GUI list; the value itself never is)
     #[serde(default)]
     pub descriptions: std::collections::HashMap<String, String>,
-    /// リモートUIのトークン。設定するとURLが固定され、再ペアリングが不要になる
+    /// Remote UI token. Setting this pins the URL and avoids needing to re-pair
     #[serde(default)]
     pub remote_token: Option<String>,
 }
 
 impl Config {
-    /// config.json の notify に secrets ファイルの内容をマージする
-    /// (同名は secrets 側を優先)。secretsは暗号化されていることがある
+    /// Merge the secrets file's contents into config.json's notify
+    /// (secrets wins on name collision). secrets may be encrypted
     pub fn resolve_notify(
         &self,
         password: Option<&str>,
@@ -217,11 +219,12 @@ impl Config {
         (map, err)
     }
 
-    /// secretsファイルのパス。相対パスは config.json の隣として解決する。
+    /// Path to the secrets file. A relative path is resolved next to config.json.
     ///
-    /// 明示指定が無ければ既定で config/secrets.json を指す。こうしないと、
-    /// 設定GUIが既定の場所に作った秘密を本体が読み込めない (登録したのに
-    /// 使えない) ことになる。ファイルが無ければ読み手側が空として扱う
+    /// Without an explicit setting, this defaults to config/secrets.json. Otherwise
+    /// the app would be unable to read secrets the settings GUI created in the
+    /// default location (registered, but unusable). The reader treats a missing
+    /// file as empty
     pub fn secrets_path(&self) -> Option<std::path::PathBuf> {
         let p = self.secrets.as_deref().unwrap_or("secrets.json");
         if std::path::Path::new(p).is_absolute() {
@@ -232,7 +235,7 @@ impl Config {
         Some(c)
     }
 
-    /// リモートUIのトークン (secretsに書かれていれば使う)
+    /// Remote UI token (used if present in secrets)
     pub fn remote_token(&self, password: Option<&str>) -> Option<String> {
         let path = self.secrets_path()?;
         crate::crypto::read_maybe_encrypted(&path, password)
@@ -242,7 +245,7 @@ impl Config {
             .filter(|t| t.len() >= 16)
     }
 
-    /// HTTP窓口が使う認証情報を取り出す (スクリプトには渡さない)
+    /// Retrieve the auth info used by the HTTP gateway (never passed to scripts)
     pub fn resolve_tokens(
         &self,
         password: Option<&str>,
@@ -257,10 +260,10 @@ impl Config {
             .unwrap_or_default()
     }
 
-    /// provider名から接続先を解決する。返り値は (base_url, 送信ヘッダ)。
-    /// 値中の "@名前" は secrets.json の tokens を展開する。
-    /// headers 未指定で api_key があれば Authorization: Bearer を組み立てる。
-    /// これを model ブリッジ子プロセスの env に渡す (鍵の復号は親=ここだけ)
+    /// Resolve connection info from a provider name. Returns (base_url, outgoing headers).
+    /// An "@name" inside a value is expanded from secrets.json's tokens.
+    /// If headers is unset and api_key is present, builds an Authorization: Bearer header.
+    /// This is passed into the model bridge child process's env (key decryption happens only here, in the parent)
     pub fn resolve_provider(
         &self,
         name: &str,
@@ -289,11 +292,12 @@ impl Config {
     }
 }
 
-// ── 秘密ストア (GitHub Secrets 相当) ─────────────────────────
-// キー名で参照し、値そのものは決して返さない。書けば暗号化 (パスワードがあれば)。
-// notify や remote_token など他の項目を壊さないよう、丸ごとの JSON を読み書きする
+// -- Secrets store (equivalent to GitHub Secrets) ---------------------------
+// Referenced by key name; the value itself is never returned. Writing encrypts
+// it if a password is set. Reads/writes the whole JSON so other entries such
+// as notify and remote_token aren't clobbered
 
-/// secrets ファイルを JSON として読む (無ければ空)
+/// Read the secrets file as JSON (empty if missing)
 fn read_secrets_value(
     path: &std::path::Path,
     password: Option<&str>,
@@ -305,7 +309,7 @@ fn read_secrets_value(
     Ok(serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({})))
 }
 
-/// secrets ファイルを書き戻す (パスワードがあれば暗号化)
+/// Write the secrets file back (encrypted if a password is set)
 fn write_secrets_value(
     path: &std::path::Path,
     password: Option<&str>,
@@ -324,7 +328,7 @@ fn write_secrets_value(
     }
 }
 
-/// キー名として妥当か (英数字と _ - . のみ)。すり替えや変な文字を弾く
+/// Whether this is a valid key name (alphanumeric and _ - . only). Rejects substitution tricks and odd characters
 pub fn valid_secret_key(key: &str) -> bool {
     !key.is_empty()
         && key
@@ -332,7 +336,7 @@ pub fn valid_secret_key(key: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
-/// 秘密の一覧 (キーと説明のみ)。**値は決して返さない**
+/// List of secrets (keys and descriptions only). **Values are never returned**
 pub fn list_secrets(
     path: &std::path::Path,
     password: Option<&str>,
@@ -359,7 +363,7 @@ pub fn list_secrets(
     Ok(out)
 }
 
-/// 秘密を追加/更新する (write-only。保存したら値は読み戻せない)
+/// Add/update a secret (write-only; once saved, the value can't be read back)
 pub fn upsert_secret(
     path: &std::path::Path,
     password: Option<&str>,
@@ -386,7 +390,7 @@ pub fn upsert_secret(
     write_secrets_value(path, password, &root)
 }
 
-/// 秘密を削除する
+/// Delete a secret
 pub fn delete_secret(
     path: &std::path::Path,
     password: Option<&str>,
@@ -402,46 +406,46 @@ pub fn delete_secret(
     write_secrets_value(path, password, &root)
 }
 
-/// config.json 内のワークスペース項目。tabs直書き or 定義ファイル参照
+/// A workspace entry inside config.json. Either inline tabs or a reference to a definition file
 #[derive(Debug, Deserialize)]
 pub struct WorkspaceSpec {
     pub name: String,
-    /// ワークスペース定義ファイルの参照 (例: "workspaces/projectx.json")
+    /// Reference to a workspace definition file (e.g. "workspaces/projectx.json")
     #[serde(default)]
     pub file: Option<String>,
-    /// インライン定義
+    /// Inline definition
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
-    /// このワークスペース共通の自動化 (タブ指定が無い場合に使われる)
+    /// Automation shared across this workspace (used when a tab doesn't specify its own)
     #[serde(default)]
     pub automation: Option<String>,
-    /// 一緒に開くブラウザ。自動化からは id で指す
+    /// Browsers opened alongside this workspace. Referred to by id from automation
     #[serde(default)]
     pub browsers: Vec<BrowserConfig>,
     #[serde(default)]
     pub lua: Option<String>,
-    /// このワークスペースのラリーが使ってよい秘密のキー (既定は空 = 全拒否)
+    /// Secret keys this workspace's rally is allowed to use (default is empty = deny all)
     #[serde(default)]
     pub secrets_allow: Vec<String>,
-    /// 危険承知で全ての秘密を許可する
+    /// Allow all secrets, knowingly accepting the risk
     #[serde(default)]
     pub secrets_allow_all: bool,
-    /// 停止条件 (審判)。ブラウザ操作モード等の内蔵司令塔が読む
+    /// Stop conditions (the referee). Read by built-in controllers such as browser-operation mode
     #[serde(default)]
     pub stops: Vec<StopCond>,
-    /// AI×AI 議論の設定 (あれば内蔵の議論オーケストレータを各AIタブに入れる)
+    /// AI-vs-AI discussion settings (when present, the built-in discussion orchestrator is put into each AI tab)
     #[serde(default)]
     pub discuss: Option<DiscussSpec>,
 }
 
-/// ワークスペース定義ファイル (workspaces/*.json) の中身
+/// Contents of a workspace definition file (workspaces/*.json)
 #[derive(Debug, Deserialize)]
 pub struct WorkspaceFile {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
-    /// このワークスペース共通の自動化
+    /// Automation shared across this workspace
     #[serde(default)]
     pub automation: Option<String>,
     #[serde(default)]
@@ -456,31 +460,31 @@ pub struct WorkspaceFile {
     pub discuss: Option<DiscussSpec>,
 }
 
-/// AI×AI(N者)の議論設定。ワークスペース単位。内蔵の議論オーケストレータが読む。
-/// 参加者(agents)は手番の順。round-robinで回し、max_rounds でjudge(いれば)に裁定させる
+/// AI-vs-AI (N-party) discussion settings. Per workspace. Read by the built-in discussion orchestrator.
+/// Participants (agents) are listed in turn order. Cycled round-robin; once max_rounds is reached, the judge (if any) rules
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct DiscussSpec {
-    /// 参加AIタブの id (手番の順)
+    /// ids of the participating AI tabs (in turn order)
     #[serde(default)]
     pub agents: Vec<String>,
-    /// 手番の回し方。今は "round-robin" のみ
+    /// How turns are cycled. Currently only "round-robin"
     #[serde(default = "default_order")]
     pub order: String,
-    /// 各参加者が話す最大周回数 (これを超えたら審判/終了へ)
+    /// Max number of rounds each participant speaks (once exceeded, goes to the judge/ends)
     #[serde(default = "default_rounds")]
     pub max_rounds: u32,
-    /// 審判(レフェリー)のタブ id。省略時は周回上限で「議論終了」として畳む
+    /// Tab id of the judge (referee). If omitted, hitting the round limit just folds up as "discussion ended"
     #[serde(default)]
     pub judge: Option<String>,
-    /// 審判の出し方: "winner"(勝敗) / "synthesis"(統合)。既定は winner
+    /// How the judge renders its verdict: "winner" / "synthesis". Default is winner
     #[serde(default = "default_verdict")]
     pub verdict: String,
-    /// 司会(moderator)のタブ id。order="moderated" のとき、次の話者を指名する
+    /// Tab id of the moderator. When order="moderated", nominates the next speaker
     #[serde(default)]
     pub moderator: Option<String>,
-    /// 各タブの立場・人格 (タブ id → ペルソナ文)。
-    /// 例: {"bos":"あなたはブラザーフッド・オブ・スティール...", ...}。
-    /// 開始時にそのAIへ伝える。空なら素のAI(ニュートラル)
+    /// Each tab's stance/persona (tab id -> persona text).
+    /// e.g. {"bos":"You are the Brotherhood of Steel...", ...}.
+    /// Told to that AI at the start. Empty means a plain (neutral) AI
     #[serde(default)]
     pub personas: std::collections::HashMap<String, String>,
 }
@@ -495,40 +499,40 @@ fn default_verdict() -> String {
     "winner".into()
 }
 
-/// 停止条件 (審判)。ワークスペース単位で持つ。上から評価し最初に成立したものが勝つ。
-/// 「この共同作業はいつ終わりか (成功/失敗)」の定義。参加者(タブ)をまたいで指定できる
+/// Stop conditions (the referee). Held per workspace. Evaluated top to bottom; the first match wins.
+/// Defines "when this collaboration ends (success/failure)". Can span multiple participants (tabs)
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 pub struct StopCond {
-    /// 監視の種類: screen|css|xpath|console|rounds|time|tokens
+    /// Kind of monitoring: screen|css|xpath|console|rounds|time|tokens
     pub when: String,
-    /// 監視するタブの id (screen/css/xpath/console 用。省略時は操作対象)
+    /// Tab id being watched (for screen/css/xpath/console; defaults to the target being operated)
     #[serde(default)]
     pub tab: Option<String>,
-    /// 文字列パターン (screen=ブラウザ本文, console=タブ出力)
+    /// String pattern (screen = browser body text, console = tab output)
     #[serde(default)]
     pub pattern: Option<String>,
-    /// セレクタ (css/xpath 用。"#id" か xpath 文字列)
+    /// Selector (for css/xpath; either "#id" or an xpath string)
     #[serde(default)]
     pub sel: Option<String>,
-    /// しきい値 (rounds=回数, tokens=概算)
+    /// Threshold (rounds = count, tokens = estimate)
     #[serde(default)]
     pub max: Option<i64>,
-    /// 秒 (time 用)
+    /// Seconds (for time)
     #[serde(default)]
     pub sec: Option<i64>,
-    /// 判定: "success" | "fail"
+    /// Verdict: "success" | "fail"
     #[serde(default)]
     pub outcome: String,
-    /// 終了コード
+    /// Exit code
     #[serde(default)]
     pub code: i32,
-    /// 理由 (人が読む・記録に残る)
+    /// Reason (human-readable, kept in the record)
     #[serde(default)]
     pub reason: Option<String>,
 }
 
-/// 停止条件の並びを、内蔵司令塔へ渡す Lua テーブルリテラルにする。
-/// 文字列は %q 相当で安全に引用する (Lua の string.format ではなくRust側で)
+/// Turn the list of stop conditions into a Lua table literal to pass to the built-in controller.
+/// Strings are quoted safely as if by %q (done on the Rust side, not via Lua's string.format)
 pub fn stops_to_lua(stops: &[StopCond]) -> String {
     fn q(s: &str) -> String {
         let mut out = String::with_capacity(s.len() + 2);
@@ -582,10 +586,10 @@ pub fn stops_to_lua(stops: &[StopCond]) -> String {
     b
 }
 
-/// ブラウザの上に出す操作。どれを出すかだけを持つ。
+/// Controls shown above the browser. Just holds which ones to show.
 ///
-/// 既定はすべて false = 何も出さない。要らないプロジェクトの画面を
-/// 勝手に狭めない。使う人が1つずつ選ぶ
+/// All false by default = nothing shown. Doesn't crowd a project's screen with
+/// controls it doesn't need. The user picks each one individually
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 pub struct NavSpec {
     #[serde(default)]
@@ -594,114 +598,114 @@ pub struct NavSpec {
     pub forward: bool,
     #[serde(default)]
     pub reload: bool,
-    /// URL欄。人が任意のページへ移る手段
+    /// URL bar. Lets a person navigate to any page
     #[serde(default)]
     pub url: bool,
 }
 
 impl NavSpec {
-    /// 1つも出さないなら、バーそのものが要らない
+    /// If none are shown, the bar itself isn't needed
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
 
-    /// 全部出す。`browser_nav(id)` のように指定を省いたとき用
+    /// Show all of them. Used when the spec is omitted, as in `browser_nav(id)`
     pub fn all() -> Self {
         Self { back: true, forward: true, reload: true, url: true }
     }
 }
 
-/// ページの下に出す帯。
+/// The banner shown below a page.
 ///
-/// 書いてあること自体が「出す」の意味。バーと違って文言が要るので、
-/// 出す・出さないをまとめた真偽値では足りない
+/// Its mere presence means "show it". Unlike the nav bar, it needs actual text,
+/// so a plain show/hide boolean isn't enough
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 pub struct AskSpec {
-    /// 帯の左に出る文言
+    /// Text shown on the left of the banner
     #[serde(default)]
     pub text: String,
-    /// ボタンの字。空なら既定の言葉を使う
+    /// Button label. Uses the default wording if empty
     #[serde(default)]
     pub label: String,
 }
 
-/// 一緒に開くブラウザ1台
+/// A single browser opened alongside the workspace
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserConfig {
-    /// 自動化から指す名前 (例: "br")
+    /// Name referred to from automation (e.g. "br")
     pub id: String,
-    /// 最初に開くURL。http/https のみ
+    /// URL opened initially. http/https only
     pub url: String,
-    /// ブラウザのプロファイル名 (省略時 "default")。private が true なら無視
+    /// Browser profile name (defaults to "default"). Ignored if private is true
     #[serde(default)]
     pub browser_profile: Option<String>,
-    /// プライベート(使い捨て)ブラウザ
+    /// Private (disposable) browser
     #[serde(default)]
     pub private: bool,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct TabConfig {
-    /// タブ名 (省略時はコマンド名から生成)
+    /// Tab name (generated from the command name if omitted)
     pub name: Option<String>,
-    /// 自動化から指す名前 (任意)。設定すると、タブ名を変えても
-    /// スクリプトが壊れない。省略時はタブ名で指せる
+    /// Name referred to from automation (optional). Setting this means renaming the
+    /// tab won't break scripts. If omitted, the tab can be referred to by its name
     #[serde(default)]
     pub id: Option<String>,
-    /// 起動コマンド: "ssh user@host" または ["ssh", "user@host"]
+    /// Launch command: "ssh user@host" or ["ssh", "user@host"]
     pub command: CommandSpec,
-    /// 検出プロファイルの明示指定 (省略時はコマンド名から自動選択)
+    /// Explicit detection profile (auto-selected from the command name if omitted)
     pub profile: Option<String>,
-    /// 入力ロック (ソフトロック)。パイプラインの中間タブの誤操作防止。
-    /// 実行時に Ctrl+B l / 🔒クリックで解除できる
+    /// Input lock (soft lock). Prevents accidental input into a mid-pipeline tab.
+    /// Can be released at runtime with Ctrl+B l or by clicking the lock icon
     #[serde(default)]
     pub locked: bool,
-    /// 子プロセスが終了したら自動で再起動する。
-    /// SSH切断や、CLIツールの自己更新後の復帰に使う
+    /// Automatically restart when the child process exits.
+    /// Used to recover from an SSH disconnect or after a CLI tool self-updates
     #[serde(default)]
     pub auto_restart: bool,
-    /// ブラウザ操作モード。ここに操作対象のブラウザタブの id を書くと、
-    /// このタブは「ブラウザを操作するエージェント」になる。内蔵の司令塔が動き、
-    /// ゴールは入力欄に打つ (設定には書かない)。automation より優先
+    /// Browser-operation mode. Setting this to the id of the browser tab being
+    /// operated makes this tab a "browser-operating agent". The built-in controller
+    /// runs, and the goal is typed into the input field (not written in config). Takes priority over automation
     #[serde(default)]
     pub drives: Option<String>,
-    /// 起動時の作業フォルダ。相対パスは設定ファイルの場所が基準。
-    /// Docker/WSLの中のフォルダはこれでは指定できない (コマンド側の -w / --cd を使う)
+    /// Working folder at launch. A relative path is resolved against the config file's location.
+    /// A folder inside Docker/WSL cannot be specified this way (use the command's own -w / --cd)
     #[serde(default)]
     pub cwd: Option<String>,
-    /// スクロールバック行数 (省略時5000)
+    /// Scrollback line count (defaults to 5000)
     #[serde(default)]
     pub scrollback: Option<usize>,
-    /// 文字コード ("shift_jis" 等)。省略時はUTF-8
+    /// Character encoding ("shift_jis" etc). Defaults to UTF-8
     #[serde(default)]
     pub encoding: Option<String>,
-    /// セッションログを logs/ に保存する
+    /// Save the session log under logs/
     #[serde(default)]
     pub log: bool,
-    /// このタブ専用の自動化 (最優先で引き当てられる)。
-    /// ディレクトリならイベント別ファイル方式、.lua なら関数定義方式
+    /// Automation dedicated to this tab (matched with the highest priority).
+    /// A directory means per-event files; a .lua file means function definitions
     #[serde(default)]
     pub automation: Option<String>,
-    /// 旧称。automation が無いときに使われる
+    /// Old name. Used when automation is not set
     #[serde(default)]
     pub lua: Option<String>,
-    /// ブラウザのタブに出す操作 (戻る/進む/更新/URL欄)。
-    /// 端末のタブでは意味がないので読まれない
+    /// Controls shown on a browser tab (back/forward/reload/URL bar).
+    /// Meaningless for a terminal tab, so it's not read there
     #[serde(default)]
     pub nav: Option<NavSpec>,
-    /// ブラウザのタブの下に出す帯 (文言とボタンの字)
+    /// Banner shown below a browser tab (text and button label)
     #[serde(default)]
     pub ask: Option<AskSpec>,
-    /// ブラウザのプロファイル名 (Cookie・ログインの箱)。省略時は "default"。
-    /// 同じ名前のタブ同士でログイン状態を共有する。Chrome の「人物」と同じ発想。
-    /// private が true のときは無視される
+    /// Browser profile name (the box holding cookies/login). Defaults to "default".
+    /// Tabs sharing a profile name share login state, the same idea as Chrome's "person".
+    /// Ignored when private is true
     #[serde(default)]
     pub browser_profile: Option<String>,
-    /// プライベート(使い捨て)ブラウザ。true なら Cookie・履歴を残さない一時領域で
-    /// 開き、閉じたら消す。このとき browser_profile は使われない
+    /// Private (disposable) browser. When true, opens in a temporary area that
+    /// keeps no cookies/history and is wiped on close. browser_profile is unused in that case
     #[serde(default)]
     pub private: bool,
-    /// 表示上の子タブ (転送関係はLuaが決める。ここでは階層表示のみ)
+    /// Child tabs for display purposes (forwarding relationships are decided by Lua; this is display hierarchy only)
     #[serde(default)]
     pub children: Vec<TabConfig>,
 }
@@ -714,15 +718,15 @@ pub enum CommandSpec {
 }
 
 impl Default for CommandSpec {
-    /// 何も書かれていない状態。argv は空になる
+    /// The nothing-written state. argv ends up empty
     fn default() -> Self {
         CommandSpec::Argv(Vec::new())
     }
 }
 
 impl CommandSpec {
-    /// 空白区切り文字列 or 配列を argv に正規化。
-    /// 空白を含むパスを使う場合は配列形式で書くこと
+    /// Normalize a whitespace-separated string or an array into argv.
+    /// Use the array form if a path contains whitespace
     pub fn argv(&self) -> Vec<String> {
         match self {
             CommandSpec::Line(s) => s.split_whitespace().map(str::to_string).collect(),
@@ -731,28 +735,28 @@ impl CommandSpec {
     }
 }
 
-/// 起動時に解決済みのワークスペース (タブは平坦化し、depthで階層を保持)
+/// A workspace resolved at launch time (tabs are flattened; depth preserves the hierarchy)
 pub struct Workspace {
     pub name: String,
     pub tabs: Vec<FlatTab>,
-    /// ワークスペース階層の自動化
+    /// Automation at the workspace level
     pub automation: Option<String>,
-    /// 一緒に開くブラウザ
+    /// Browsers opened alongside it
     pub browsers: Vec<BrowserConfig>,
-    /// このワークスペースのラリーが使ってよい秘密のキー (既定は空 = 全拒否)
+    /// Secret keys this workspace's rally is allowed to use (default is empty = deny all)
     pub secrets_allow: Vec<String>,
-    /// 危険承知で全ての秘密を許可する
+    /// Allow all secrets, knowingly accepting the risk
     pub secrets_allow_all: bool,
-    /// 停止条件 (審判)
+    /// Stop conditions (the referee)
     pub stops: Vec<StopCond>,
-    /// AI×AI 議論の設定
+    /// AI-vs-AI discussion settings
     pub discuss: Option<DiscussSpec>,
 }
 
-/// このタブはブラウザか。そうならURLを返す。
+/// Whether this tab is a browser. Returns the URL if so.
 ///
-/// ssh/docker/wsl と同じで、コマンド文字列の頭で見分ける。
-/// 設定画面の「種類」もこの規則を見ている
+/// Told apart the same way as ssh/docker/wsl: by the head of the command string.
+/// The settings screen's "type" field follows this same rule
 pub fn browser_url_of(argv: &[String]) -> Option<String> {
     let (head, rest) = argv.split_first()?;
     if !head.eq_ignore_ascii_case("browser") && !head.eq_ignore_ascii_case("web") {
@@ -763,7 +767,7 @@ pub fn browser_url_of(argv: &[String]) -> Option<String> {
 }
 
 impl TabConfig {
-    /// automation を優先し、旧称 lua にフォールバックする
+    /// Prefer automation, falling back to the old name lua
     pub fn automation_path(&self) -> Option<String> {
         self.automation.clone().or_else(|| self.lua.clone())
     }
@@ -777,12 +781,12 @@ impl Config {
 
 pub struct FlatTab {
     pub cfg: TabConfig,
-    /// 表示インデント段数 (0 = 親)
+    /// Display indent depth (0 = parent)
     pub depth: u16,
 }
 
-/// 自動化から一意に指せるかを確認する。
-/// 同じ呼び名が複数あると送信先が定まらないため、起動時に知らせる
+/// Verify each tab can be addressed uniquely from automation.
+/// If the same name is used more than once the destination is ambiguous, so this warns at startup
 pub fn duplicate_keys(ws: &Workspace) -> Vec<String> {
     let mut seen: std::collections::HashMap<String, usize> = Default::default();
     for t in &ws.tabs {
@@ -806,7 +810,7 @@ pub fn duplicate_keys(ws: &Workspace) -> Vec<String> {
     dups
 }
 
-/// children を深さ優先で平坦化する (表示順とタブ番号を一致させる)
+/// Flatten children depth-first (keeps display order matching tab numbers)
 fn flatten(tabs: &[TabConfig], depth: u16, out: &mut Vec<FlatTab>) {
     for t in tabs {
         out.push(FlatTab {
@@ -832,11 +836,11 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T
     })
 }
 
-/// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する。
-/// 旧称の projects/ を指す設定も workspaces/ にフォールバックして読める (互換)
+/// Resolve a data file path, preferring beside the exe (portable layout).
+/// Configs pointing at the old projects/ name also fall back to workspaces/ (compat)
 pub fn resolve_data_path(p: &str) -> std::path::PathBuf {
     let mut candidates = vec![p.to_string()];
-    // projects/ ↔ workspaces/ を相互にフォールバック
+    // Fall back between projects/ and workspaces/ in either direction
     if let Some(rest) = p.strip_prefix("projects/") {
         candidates.push(format!("workspaces/{rest}"));
     } else if let Some(rest) = p.strip_prefix("workspaces/") {
@@ -861,8 +865,8 @@ pub fn resolve_data_path(p: &str) -> std::path::PathBuf {
 }
 
 impl Config {
-    /// ワークスペース定義を解決する。
-    /// workspaces未定義なら tabs直書きを名前なしワークスペース1個として扱う
+    /// Resolve the workspace definitions.
+    /// If workspaces isn't defined, inline tabs are treated as a single unnamed workspace
     pub fn resolve_workspaces(&self) -> (Vec<Workspace>, Vec<String>) {
         let mut out = Vec::new();
         let mut errors = Vec::new();
@@ -913,24 +917,24 @@ impl Config {
             let mut tabs = Vec::new();
             flatten(&tab_defs, 0, &mut tabs);
             out.push(Workspace {
-                // 表示名はconfig側を優先し、空なら定義ファイルのnameを使う
+                // Prefer the display name from config; fall back to the definition file's name if empty
                 name: if ws.name.is_empty() {
                     file_name.unwrap_or_else(|| "UNNAMED".into())
                 } else {
                     ws.name.clone()
                 },
                 tabs,
-                // config側の指定を優先し、無ければ定義ファイル側を使う
+                // Prefer config's setting; fall back to the definition file's if absent
                 automation: ws.automation.clone().or_else(|| ws.lua.clone()).or(file_lua),
                 browsers: ws.browsers.clone(),
-                // config側の指定を優先し、無ければ定義ファイル側を使う
+                // Prefer config's setting; fall back to the definition file's if absent
                 secrets_allow: if ws.secrets_allow.is_empty() {
                     file_secrets.0
                 } else {
                     ws.secrets_allow.clone()
                 },
                 secrets_allow_all: ws.secrets_allow_all || file_secrets.1,
-                // config側の指定を優先し、無ければ定義ファイル側を使う
+                // Prefer config's setting; fall back to the definition file's if absent
                 stops: if ws.stops.is_empty() { file_stops } else { ws.stops.clone() },
                 discuss: ws.discuss.clone().or(file_discuss),
             });
@@ -939,8 +943,8 @@ impl Config {
     }
 }
 
-/// ポータブル配置のルート (exe と各フォルダが並ぶ場所)。
-/// data / logs / config はここの下に置く
+/// Root of the portable layout (where the exe and its folders sit side by side).
+/// data / logs / config all live under here
 pub fn root_dir() -> std::path::PathBuf {
     std::env::current_exe()
         .ok()
@@ -948,20 +952,20 @@ pub fn root_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// 設定ファイルの探索順。新配置 (config フォルダ) を優先し、
-/// 旧配置 (ルート直下の config.json) も読める。カレント基準も後ろに足す
+/// Search order for the config file. Prefers the new layout (config folder),
+/// but also reads the old layout (config.json directly under root). Current-dir-relative paths come last
 fn config_candidates() -> Vec<std::path::PathBuf> {
     let root = root_dir();
     vec![
-        root.join("config").join("config.json"), // 新: exe隣の config フォルダ
-        root.join("config.json"),                // 旧: exe隣の直下 (移行対象)
-        std::path::PathBuf::from("config/config.json"), // 新: カレント
-        std::path::PathBuf::from("config.json"),        // 旧: カレント
+        root.join("config").join("config.json"), // new: the config folder beside the exe
+        root.join("config.json"),                // old: directly beside the exe (migration target)
+        std::path::PathBuf::from("config/config.json"), // new: relative to current dir
+        std::path::PathBuf::from("config.json"),        // old: relative to current dir
     ]
 }
 
-/// 旧配置 (ルート直下の config.json / secrets.json) を新しい config フォルダへ移す。
-/// 一度だけ。移せなくても読み込みは旧配置にフォールバックするので致命ではない
+/// Move the old layout (config.json / secrets.json directly under root) into the new config folder.
+/// Done only once. Not fatal if it fails, since loading still falls back to the old layout
 pub fn migrate_legacy_config() {
     let root = root_dir();
     let new_cfg = root.join("config").join("config.json");
@@ -970,13 +974,13 @@ pub fn migrate_legacy_config() {
         return;
     }
     let _ = std::fs::create_dir_all(new_cfg.parent().unwrap());
-    // 同一ボリュームなら rename、駄目ならコピーして消す
+    // rename if on the same volume; otherwise copy then delete
     if std::fs::rename(&old_cfg, &new_cfg).is_err()
         && std::fs::copy(&old_cfg, &new_cfg).is_ok()
     {
         let _ = std::fs::remove_file(&old_cfg);
     }
-    // secrets.json も隣にあれば一緒に移す
+    // Move secrets.json alongside it too, if present
     let (old_s, new_s) = (root.join("secrets.json"), root.join("config").join("secrets.json"));
     if old_s.exists() && !new_s.exists() {
         if std::fs::rename(&old_s, &new_s).is_err() && std::fs::copy(&old_s, &new_s).is_ok() {
@@ -985,41 +989,41 @@ pub fn migrate_legacy_config() {
     }
 }
 
-/// Web GUIの編集対象となる設定ファイルのパス。
-/// 既存ファイルがあればそれを、無ければexe隣に新規作成する想定のパスを返す
-/// 状態ファイル (人が編集しないもの) の置き場。ルートの data フォルダにまとめる。
-/// ルートのファイルは exe だけ (フォルダは config / data / logs / lang / workspaces / scripts)
+/// Path to the config file the web GUI edits.
+/// Returns the existing file's path if present, otherwise the path where a new one would be created beside the exe.
+/// Home for state files (ones a human doesn't edit), gathered under the root's data folder.
+/// The exe is the only file directly at the root (folders are config / data / logs / lang / workspaces / scripts)
 pub fn state_path(name: &str) -> std::path::PathBuf {
     let p = root_dir().join("data");
     let _ = std::fs::create_dir_all(&p);
     p.join(name)
 }
 
-/// ログの置き場。カレントディレクトリではなくルートの logs フォルダに固定する
-/// (起動のしかたでログの行き先が変わると、クラッシュの記録が迷子になる)
+/// Home for logs. Pinned to the root's logs folder rather than the current directory
+/// (if the log destination changed depending on how the app was launched, crash records would get lost)
 pub fn logs_dir() -> std::path::PathBuf {
     let p = root_dir().join("logs");
     let _ = std::fs::create_dir_all(&p);
     p
 }
 
-/// 最後に開いていたワークスペース名の置き場。
+/// Home for the name of the last-open workspace.
 ///
-/// config.json には書き戻さない。利用者が編集している最中に割り込むし、
-/// 変更監視が自分の書き込みに反応して読み直しが走る
+/// Not written back into config.json -- that would interrupt a user mid-edit,
+/// and the change-watcher would react to its own write and trigger a reload
 fn last_workspace_path() -> std::path::PathBuf {
     state_path("last-workspace")
 }
 
-/// 最後に開いていたワークスペース名
+/// Name of the last-open workspace
 pub fn load_last_workspace() -> Option<String> {
     let s = std::fs::read_to_string(last_workspace_path()).ok()?;
     let s = s.trim().to_string();
     (!s.is_empty()).then_some(s)
 }
 
-/// 開いているワークスペース名を覚える。失敗しても黙って諦める
-/// (覚えられないことは、動かない理由にはならない)
+/// Remember the name of the currently open workspace. Fails silently if it can't
+/// (being unable to remember it is no reason for things to stop working)
 pub fn save_last_workspace(name: &str) {
     let _ = crate::crypto::write_atomic(&last_workspace_path(), name);
 }
@@ -1056,36 +1060,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("secrets.json");
 
-        // 平文で登録 → 一覧はキーと説明だけ (値は出ない)
+        // Register in plaintext -> the list shows only key and description (no value)
         upsert_secret(&path, None, "diary_saas", "日記SaaSのログイン", "hunter2秘密").unwrap();
         let list = list_secrets(&path, None).unwrap();
         assert_eq!(list, vec![("diary_saas".into(), "日記SaaSのログイン".into())]);
-        // 実際に値は保存されている (resolve_tokens 経由で取れる)
+        // The value really is stored (retrievable via resolve_tokens)
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("hunter2秘密"), "値が保存されていない");
-        // だが一覧APIには値が一切現れない
+        // But the value never appears in the listing API
         assert!(!format!("{list:?}").contains("hunter2"), "一覧に値が漏れている");
 
-        // 更新・追加
+        // Update / add
         upsert_secret(&path, None, "diary_saas", "説明更新", "newpass").unwrap();
         upsert_secret(&path, None, "github", "PAT", "ghp_xxx").unwrap();
         let keys: Vec<String> = list_secrets(&path, None).unwrap().into_iter().map(|(k, _)| k).collect();
         assert_eq!(keys, vec!["diary_saas".to_string(), "github".to_string()], "整列済み");
 
-        // 削除
+        // Delete
         delete_secret(&path, None, "github").unwrap();
         let keys: Vec<String> = list_secrets(&path, None).unwrap().into_iter().map(|(k, _)| k).collect();
         assert_eq!(keys, vec!["diary_saas".to_string()]);
 
-        // マスターパスワードありなら暗号化されて保存される
+        // With a master password set, it's saved encrypted
         upsert_secret(&path, Some("master"), "enc_key", "暗号化テスト", "topsecret").unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(crate::crypto::is_encrypted(&raw), "パスワードありなら暗号化される");
         assert!(!raw.contains("topsecret"), "暗号化後は生値が見えない");
-        // 正しいパスワードなら一覧が読め、値はやはり出ない
+        // With the correct password the list can be read; the value still doesn't appear
         let list = list_secrets(&path, Some("master")).unwrap();
         assert!(list.iter().any(|(k, _)| k == "enc_key"));
-        // 不正なキーは弾く
+        // An invalid key is rejected
         assert!(upsert_secret(&path, None, "../evil", "x", "y").is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1114,7 +1118,7 @@ mod tests {
 
     #[test]
     fn legacy_projects_path_falls_back_to_workspaces() {
-        // 旧称 projects/ を指す既存設定でも workspaces/ 側を読めること
+        // An existing config pointing at the old name projects/ should still be able to read workspaces/
         let dir = std::env::temp_dir().join("shikisha-ws-compat");
         let ws_dir = dir.join("workspaces");
         std::fs::create_dir_all(&ws_dir).unwrap();
@@ -1167,10 +1171,10 @@ mod browser_kind_tests {
         a.iter().map(|s| s.to_string()).collect()
     }
 
-    /// 「種類=ブラウザ」を、設定画面と本体が同じ規則で見分けること。
+    /// The settings screen and the app itself must classify "type = browser" by the same rule.
     ///
-    /// 判定が2箇所に分かれると、画面ではブラウザに見えるのに
-    /// 起動するとシェルが立つ、という食い違いが起きる
+    /// If the check were split across two places, a tab could look like a browser
+    /// on screen but launch a shell instead -- a mismatch
     #[test]
     fn a_browser_tab_is_told_apart_by_its_command() {
         assert_eq!(
@@ -1188,19 +1192,19 @@ mod browser_kind_tests {
             "大文字小文字は問わない"
         );
 
-        // ブラウザではないもの
+        // Things that are not a browser
         assert!(browser_url_of(&v(&["cmd.exe"])).is_none());
         assert!(browser_url_of(&v(&["claude"])).is_none());
         assert!(browser_url_of(&v(&["browser"])).is_none(), "URLが無い");
         assert!(browser_url_of(&v(&["browser", "  "])).is_none(), "空白だけ");
         assert!(browser_url_of(&[]).is_none());
-        // 「browser」で始まる別のコマンドを巻き込まない
+        // Don't sweep in some other command that merely starts with "browser"
         assert!(browser_url_of(&v(&["browserify", "x"])).is_none());
     }
 
-    /// ブラウザの見た目を、Luaを書かずに設定だけで決められること。
+    /// A browser tab's appearance can be decided by config alone, with no Lua.
     ///
-    /// 書いてある項目だけが出る。書いていないものは既定 (出さない) になる
+    /// Only what's written shows up; anything not written falls back to the default (hidden)
     #[test]
     fn a_browser_tab_can_be_dressed_from_the_settings_alone() {
         let t: super::TabConfig = serde_json::from_str(
@@ -1218,12 +1222,12 @@ mod browser_kind_tests {
         let ask = t.ask.expect("帯が読めていない");
         assert_eq!(ask.label, "解析する");
 
-        // 何も書かなければ、どちらも出さない
+        // If nothing is written, neither is shown
         let bare: super::TabConfig =
             serde_json::from_str(r#"{"command": "browser https://example.com/"}"#).unwrap();
         assert!(bare.nav.is_none() && bare.ask.is_none());
 
-        // 帯は書いてあること自体が「出す」の意味。中身が空でも出す
+        // The banner's mere presence means "show it" -- shown even with empty contents
         let empty: super::TabConfig =
             serde_json::from_str(r#"{"command": "browser https://x/", "ask": {}}"#).unwrap();
         assert!(empty.ask.is_some(), "空の帯を無かったことにしている");

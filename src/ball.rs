@@ -1,53 +1,54 @@
-//! 自動チェーンの「透明のボール」を目に見えるようにする。
+//! Makes the automation chain's "invisible ball" visible.
 //!
-//! ボールという概念そのものは前からあった (`Tab::chain_depth`)。
-//! ここでやるのは、それが今どのタブにあり、直前にどこから飛んできたかを
-//! 覚えておくことだけ。表示は main.rs 側が行う。
+//! The concept of the ball itself already existed (`Tab::chain_depth`).
+//! What this adds is remembering which tab currently has it, and where it
+//! last flew in from. Rendering is done by main.rs.
 //!
-//! 見せる価値があるのは、飾りだからではなく、
-//! - どのタブが今仕事を持っているのか
-//! - 連鎖が上限にどれだけ近いのか (暴走対策が効いている様子)
-//! - 人間が入力した瞬間に連鎖が切れること
-//! がそのまま安全機構の状態だから。
+//! It's worth showing not because it's decoration, but because
+//! - which tab currently has the work
+//! - how close the chain is to its limit (runaway protection visibly working)
+//! - the chain breaking the instant a human types
+//! are exactly the state of the safety mechanism.
 
-/// 投げてから着弾までの見かけ上の飛行時間
+/// Apparent flight time from throw to landing
 const FLIGHT_MS: u64 = 420;
-/// 着弾後、受け取ったタブが光っている時間
+/// How long the receiving tab glows after landing
 const CATCH_MS: u64 = 260;
 
-/// ボールの現在地。`holder` は 1始まりのタブ番号で、0 は「人間が持っている」
+/// Current location of the ball. `holder` is a 1-based tab number; 0 means "the human has it"
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Ball {
-    /// 今ボールを持っているタブ (0 = 人間)
+    /// Tab currently holding the ball (0 = human)
     pub holder: usize,
-    /// 直前の投げ元 (0 = 人間から)
+    /// Where it was thrown from most recently (0 = from the human)
     pub from: usize,
-    /// 連鎖の深さ。人間が入力すると0に戻る
+    /// Chain depth. Resets to 0 when a human types
     pub depth: u32,
-    /// 投げられた時刻 (相対ms)。アニメの進行に使う
+    /// Time it was thrown (relative ms). Used to drive the animation
     pub thrown_ms: u64,
-    /// 下書きを置いて、人が書き足すのを待っている状態。
+    /// A draft was left, waiting for a human to add to it.
     ///
-    /// 連鎖が終わったわけではない。人も輪の一部で、書き足せばまた回り出す。
-    /// 深さは引き継いだまま、次に動くのが人だということだけを表す
+    /// The chain hasn't ended. The human is part of the ring too, and it
+    /// starts turning again once they add to it. Depth carries over; this
+    /// just marks that the human moves next
     pub awaiting_human: bool,
 }
 
-/// 表示上の状態。main.rs はこれを見て描き分ける
+/// Display state. main.rs reads this to decide how to draw things
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Phase {
-    /// 誰も自動で動いていない (ボールは人間の手元)
+    /// Nobody is running automatically (the ball is in the human's hands)
     Idle,
-    /// from から holder へ飛んでいる最中。0.0..=1.0 が進捗
+    /// Currently flying from `from` to `holder`. 0.0..=1.0 is progress
     Flying { from: usize, to: usize, progress: f32 },
-    /// 着弾直後。受け取った側を光らせる
+    /// Just landed. The receiving side glows
     Caught { at: usize },
-    /// holder が保持している (静止)
+    /// `holder` is holding it (at rest)
     Held { at: usize },
 }
 
 impl Ball {
-    /// 自動送信が起きた: `from` から `to` へ、深さ `depth` で渡った
+    /// An auto-send happened: passed from `from` to `to` at depth `depth`
     pub fn throw(&mut self, from: usize, to: usize, depth: u32, now_ms: u64) {
         self.awaiting_human = false;
         self.from = from;
@@ -56,10 +57,11 @@ impl Ball {
         self.thrown_ms = now_ms;
     }
 
-    /// 下書きを置いた: 仕事は to にあり、次に動くのは人。
+    /// A draft was left: the work is at `to`, and a human moves next.
     ///
-    /// 深さは自動送信と同じに数える。人が書き足して流せば連鎖は続くので、
-    /// ここで0に戻すと、そこから先が何連鎖目なのか分からなくなる
+    /// Depth is counted the same as an auto-send. If a human adds to it and
+    /// sends, the chain continues, so resetting to 0 here would make it
+    /// impossible to tell what link in the chain we're on from that point
     pub fn draft(&mut self, from: usize, to: usize, depth: u32, now_ms: u64) {
         self.from = from;
         self.holder = to;
@@ -68,7 +70,7 @@ impl Ball {
         self.awaiting_human = true;
     }
 
-    /// 人間が手で入力した: 連鎖は切れ、ボールは手元に戻る
+    /// A human typed by hand: the chain breaks, the ball returns to hand
     pub fn reset(&mut self) {
         *self = Ball::default();
     }
@@ -91,7 +93,7 @@ impl Ball {
         Phase::Held { at: self.holder }
     }
 
-    /// タブが消えた/並び替わったときに、指しているタブが居なくなっていたら手放す
+    /// If a tab it points at disappeared/got reordered away, let go of it
     pub fn clamp_to(&mut self, tab_count: usize) {
         if self.holder > tab_count || self.from > tab_count {
             self.reset();
@@ -102,11 +104,12 @@ impl Ball {
 #[cfg(test)]
 mod tests {
 
-    /// 下書きを置いたら、ボールはそこで人を待つこと。
+    /// Confirms that after a draft is left, the ball waits there for a human.
     ///
-    /// 人も輪の一部で、書き足せばまた回り出す。だから深さは引き継ぐ。
-    /// 0に戻すと、そこから先が何連鎖目なのか分からなくなり、
-    /// 暴走対策の数え上げも人のところで途切れてしまう
+    /// The human is part of the ring too, and it starts turning again once
+    /// they add to it. So depth carries over. Resetting it to 0 would make
+    /// it impossible to tell what link in the chain we're on from that
+    /// point, and the runaway-protection count would also break off at the human
     #[test]
     fn a_draft_leaves_the_ball_waiting_for_a_person() {
         let mut b = Ball::default();
@@ -120,11 +123,11 @@ mod tests {
         assert_eq!(b.depth, 2, "人も輪の一部。連鎖はここで途切れない");
         assert!(b.awaiting_human, "人待ちになっていない");
 
-        // 次に自動送信が起きたら人待ちは解ける
+        // The next auto-send clears the "waiting for human" flag
         b.throw(2, 3, 1, 200);
         assert!(!b.awaiting_human, "自動送信で人待ちが解けていない");
 
-        // 人が手で入力したら、ボールは手元へ戻る
+        // A human typing by hand returns the ball to hand
         b.draft(1, 2, 3, 300);
         b.reset();
         assert_eq!(b.holder, 0);
@@ -157,7 +160,7 @@ mod tests {
         }
         assert_eq!(b.phase(1000 + FLIGHT_MS), Phase::Caught { at: 2 });
         assert_eq!(b.phase(1000 + FLIGHT_MS + CATCH_MS), Phase::Held { at: 2 });
-        // 時間が経っても持ち主は変わらない
+        // The holder doesn't change even after time passes
         assert_eq!(b.phase(9_999_999), Phase::Held { at: 2 });
     }
 
@@ -177,7 +180,7 @@ mod tests {
         b.throw(1, 3, 2, 0);
         b.clamp_to(3);
         assert_eq!(b.holder, 3, "居るうちは持ったまま");
-        // ワークスペースを切り替えてタブが減った
+        // Switched workspace and the tab count went down
         b.clamp_to(2);
         assert_eq!(b.phase(0), Phase::Idle, "居なくなったら手放す");
     }

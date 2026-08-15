@@ -1,4 +1,4 @@
-//! タブ = 1つのPTYセッション (子プロセス + vt100パーサ + 状態検出)。DESIGN.md 4章。
+//! A tab = one PTY session (child process + vt100 parser + state detection). DESIGN.md chapter 4.
 
 use std::io::{Read as _, Write as _};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -13,19 +13,20 @@ use crate::profile::Profile;
 
 pub const SCROLLBACK_LINES: usize = 5000;
 
-/// タブごとの端末設定 (PuTTYのセッション設定に相当するもの)
+/// Per-tab terminal settings (roughly equivalent to a PuTTY session profile)
 #[derive(Clone)]
 pub struct TabOptions {
-    /// 起動時の作業フォルダ (AI CLIはここのプロジェクトを見る)
+    /// Working folder at launch (the AI CLI looks at the project here)
     pub cwd: Option<std::path::PathBuf>,
-    /// スクロールバック行数
+    /// Number of scrollback lines
     pub scrollback: usize,
-    /// 文字コード ("utf-8" / "shift_jis" / "euc-jp" 等)。既定はUTF-8
+    /// Encoding ("utf-8" / "shift_jis" / "euc-jp" etc). Defaults to UTF-8
     pub encoding: Option<&'static encoding_rs::Encoding>,
-    /// セッションログを logs/ に保存する
+    /// Save the session log under logs/
     pub log: bool,
-    /// このタブが model ブリッジ (OpenAI互換API) なら、その接続先。
-    /// Some のとき spawn は実プロセスを立てず、表示用の待機プロセスだけを起こす
+    /// If this tab is a model bridge (OpenAI-compatible API), its endpoint.
+    /// When Some, spawn does not start a real process — it only starts an idle
+    /// placeholder process to hold the display
     pub model: Option<crate::bridge::ModelConn>,
 }
 
@@ -42,7 +43,7 @@ impl Default for TabOptions {
 }
 
 impl TabOptions {
-    /// 設定の文字列から文字コードを解決する (未知の名前はUTF-8扱い)
+    /// Resolve an encoding from a config string (unknown names are treated as UTF-8)
     pub fn encoding_from_name(name: Option<&str>) -> Option<&'static encoding_rs::Encoding> {
         let n = name?.trim();
         if n.is_empty() || n.eq_ignore_ascii_case("utf-8") || n.eq_ignore_ascii_case("utf8") {
@@ -56,18 +57,20 @@ impl TabOptions {
 pub type PtyWriter = Arc<Mutex<Box<dyn std::io::Write + Send>>>;
 pub type SharedParser = Arc<Mutex<vt100::Parser<QueryResponder>>>;
 
-/// コピーモードの状態 (Ctrl+B [ / マウスで開始)
+/// Copy-mode state (started with Ctrl+B [ / mouse)
 pub struct CopyState {
-    /// ペイン内のカーソル行 (0 = 最上行)
+    /// Cursor row within the pane (0 = top row)
     pub cursor_row: u16,
-    /// 選択開始位置 (画面最下行から数えた行数)。None = 未選択
+    /// Selection start position (row count from the bottom of the screen). None = no selection
     pub anchor: Option<usize>,
 }
 
-/// 子プロセスからの端末照会 (DSR/DA) への応答係。
-/// ConPTY配下のプログラム (ssh等) はカーソル位置照会 `\x1b[6n` への応答を
-/// 待ってブロックするため、本物のターミナルと同様にPTYへ書き戻す。
-/// あわせてベル文字 (完了通知によく使われる) を数え、状態検出の信号にする。
+/// Responder for terminal queries (DSR/DA) from the child process.
+/// Programs under ConPTY (ssh etc) block waiting for a reply to the cursor
+/// position query `\x1b[6n`, so we write the reply back to the PTY just like
+/// a real terminal would.
+/// Also counts bell characters (often used for completion notifications) as
+/// a signal for state detection.
 pub struct QueryResponder {
     writer: PtyWriter,
     bell: Arc<AtomicU64>,
@@ -97,16 +100,16 @@ impl vt100::Callbacks for QueryResponder {
     ) {
         let p0 = params.first().and_then(|p| p.first()).copied();
         match (i1, c, p0) {
-            // DSR-CPR: カーソル位置照会 → \x1b[{row};{col}R (1始まり)
+            // DSR-CPR: cursor position query → \x1b[{row};{col}R (1-based)
             (None, 'n', Some(6)) => {
                 let (row, col) = screen.cursor_position();
                 self.reply(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
             }
-            // DSR: 端末ステータス照会 → 正常
+            // DSR: terminal status query → OK
             (None, 'n', Some(5)) => self.reply(b"\x1b[0n"),
-            // DA1: 端末種別照会 → VT102相当
+            // DA1: terminal type query → VT102-equivalent
             (None, 'c', _) => self.reply(b"\x1b[?6c"),
-            // DA2: 二次端末種別照会
+            // DA2: secondary terminal type query
             (Some(b'>'), 'c', _) => self.reply(b"\x1b[>0;0;0c"),
             _ => {}
         }
@@ -119,15 +122,17 @@ pub fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// model タブが表示を保持するためだけに起こす待機プロセス。
-/// キー入力を静かに待って生きているだけ (画面は本体が注入する)
+/// The idle process started solely so a model tab has a display to hold onto.
+/// It just sits alive quietly waiting for keystrokes (the screen content is
+/// injected by the main process)
 fn idle_argv() -> Vec<String> {
     vec!["cmd.exe".into(), "/c".into(), "pause>nul".into()]
 }
 
-/// 起動コマンドを組み立てる。
-/// npmシム等の拡張子なしスクリプトは CreateProcess が直接起動できない
-/// (os error 193) ため、PATH+PATHEXT を探索して .cmd/.bat は cmd.exe /c 経由にする
+/// Build the launch command.
+/// CreateProcess cannot launch extension-less scripts directly (e.g. npm
+/// shims) (os error 193), so we search PATH+PATHEXT and route .cmd/.bat
+/// through cmd.exe /c
 pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
     let Some(prog) = cmd_args.first() else {
         return CommandBuilder::new("powershell.exe");
@@ -155,7 +160,7 @@ pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
                 c
             }
         }
-        // 解決できなければそのまま渡してエラーを表面化させる
+        // If it can't be resolved, pass it through as-is so the error surfaces
         None => {
             let mut c = CommandBuilder::new(prog);
             for a in rest {
@@ -166,7 +171,7 @@ pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
     }
 }
 
-/// PATH と実行可能拡張子 (.exe/.com/.cmd/.bat) でコマンドを実ファイルに解決する
+/// Resolve a command to an actual file via PATH and executable extensions (.exe/.com/.cmd/.bat)
 pub fn resolve_command(prog: &str) -> Option<std::path::PathBuf> {
     resolve_windows_command(prog)
 }
@@ -190,7 +195,7 @@ fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
     };
 
     let p = Path::new(prog);
-    // パス区切りを含む指定はPATH探索せずそのまま解決
+    // A path that already contains a separator is resolved as-is, without searching PATH
     if p.components().count() > 1 {
         return try_base(p.to_path_buf());
     }
@@ -198,19 +203,22 @@ fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
     std::env::split_paths(&path_var).find_map(|dir| try_base(dir.join(prog)))
 }
 
-/// 答えとして取り出す範囲を、画面下端からの深さで返す (深さ0 = 最下行)。
+/// Return the range to extract as the answer, expressed as depth from the
+/// bottom of the screen (depth 0 = bottom row).
 ///
-/// カーソルは入力欄の中にいる。その下にあるのは答えではなく枠なので、
-/// 数え始めをカーソル行に合わせる。文字を見ないので、答えの文面が
-/// たまたま枠の文言と一致しても巻き込まれない
+/// The cursor sits inside the input box. Everything below it is frame, not
+/// answer, so we align the starting count with the cursor row. Since this
+/// works on position rather than text content, it's never fooled even if the
+/// answer's wording happens to coincide with the frame's
 pub fn capture_range(rows: u16, cursor_row: u16, since: usize) -> (usize, usize) {
     let below = rows.saturating_sub(1).saturating_sub(cursor_row) as usize;
-    // below を足すのは目的の行まで届くため。届いたら下駄は履いたままにしない
+    // We add `below` so the range reaches the target row. Once it does, we don't pad further
     (below, below.saturating_add(since))
 }
 
-/// スクロールバック内の行範囲 (画面最下行からの行数 lo..=hi) をテキスト化する。
-/// 折返し行は連結し、行末の空白は除去する。
+/// Turn a row range within the scrollback (row count from the bottom of the
+/// screen, lo..=hi) into text.
+/// Wrapped rows are joined together, and trailing whitespace is trimmed.
 pub fn extract_text<CB: vt100::Callbacks>(
     p: &mut vt100::Parser<CB>,
     lo: usize,
@@ -227,7 +235,7 @@ pub fn extract_text<CB: vt100::Callbacks>(
         let s = d.min(max);
         p.screen_mut().set_scrollback(s);
         let r = (rows as usize - 1 - (d - s)) as u16;
-        // rows(start_col, width) は各可視行の水平スライスを返すイテレータ
+        // rows(start_col, width) is an iterator returning a horizontal slice of each visible row
         let line = p
             .screen()
             .rows(0, cols)
@@ -244,11 +252,12 @@ pub fn extract_text<CB: vt100::Callbacks>(
     out
 }
 
-/// この入力に「実行」が含まれるか。
+/// Does this input contain a "submit"?
 ///
-/// 括弧付き貼り付けの中身は本文なので、その中の改行は実行ではない。
-/// 打っただけ・貼っただけを実行と数えると、手が止まった画面を
-/// 応答完了と読んでしまう
+/// The contents of a bracketed paste are just body text, so a newline inside
+/// it is not a submit. If typing or pasting alone counted as submitting, a
+/// screen that simply went idle mid-typing would be misread as a completed
+/// response
 pub fn contains_submit(bytes: &[u8]) -> bool {
     const START: &[u8] = b"\x1b[200~";
     const END: &[u8] = b"\x1b[201~";
@@ -271,12 +280,13 @@ pub fn contains_submit(bytes: &[u8]) -> bool {
     false
 }
 
-/// 画面を見たままのテキストにする (1画面行 = 1行)。
+/// Turn the screen into text exactly as displayed (1 screen row = 1 line).
 ///
-/// `Screen::contents()` は折り返し扱いの行を改行なしで連結する。
-/// テキストとしては正しいが、行末いっぱいまで描くアスキーアートは
-/// 全行が折り返し扱いになり、画面全体が1行に潰れてしまう。
-/// 見た目を運ぶ用途では行を保つ必要がある
+/// `Screen::contents()` joins rows treated as wrapped without a newline.
+/// That's correct as plain text, but ASCII art that draws all the way to the
+/// edge of every line gets treated as wrapped on every row, collapsing the
+/// entire screen into a single line.
+/// When the goal is to carry the visual layout, rows need to be preserved
 pub fn visible_text(screen: &vt100::Screen) -> String {
     let (_, cols) = screen.size();
     screen
@@ -286,9 +296,10 @@ pub fn visible_text(screen: &vt100::Screen) -> String {
         .join("\n")
 }
 
-/// 画面内容のハッシュ。最下部 ignore_bottom 行は判定から除外する
-/// (byobu/tmux等のステータスバーは時計が毎秒更新され、
-///  生の出力活動を見ると永遠にBUSYになってしまうため)
+/// Hash of the screen content. The bottom `ignore_bottom` rows are excluded
+/// from the judgment
+/// (status bars like byobu/tmux update their clock every second, and if we
+///  looked at raw output activity the tab would look BUSY forever)
 pub fn screen_hash(screen: &vt100::Screen, ignore_bottom: u16) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let (rows, cols) = screen.size();
@@ -308,29 +319,31 @@ mod changed_span_tests {
         v.iter().map(|s| s.to_string()).collect()
     }
 
-    /// 全画面TUIでは、実行前から出ていたものを答えに含めないこと。
+    /// In a full-screen TUI, anything that was already on screen before
+    /// execution must not be included in the answer.
     ///
-    /// Claude Code はスクロールしないので「実行してから書かれた行」が
-    /// 数えられず、可視画面を丸ごと取っていた。その結果、起動バナーと
-    /// 入力欄の枠まで相手のAIへ送っていた
+    /// Claude Code doesn't scroll, so "rows written since execution" couldn't
+    /// be counted, and the whole visible screen was captured instead. As a
+    /// result, the startup banner and the input box frame were being sent to
+    /// the other AI too
     #[test]
     fn what_was_already_on_screen_is_not_the_answer() {
         let before = rows(&[
-            "  Claude Code v2.1.223", // 起動バナー
+            "  Claude Code v2.1.223", // startup banner
             "  D:\\project",
             "",
-            "────────",             // 枠の上辺
+            "────────",             // top edge of frame
             "> 質問",
-            "────────",             // 枠の下辺
+            "────────",             // bottom edge of frame
             "  ? for shortcuts",
         ]);
         let now = rows(&[
-            "  Claude Code v2.1.223", // 変わらない
+            "  Claude Code v2.1.223", // unchanged
             "  D:\\project",
             "",
-            "答えの1行目", // ここから変わった
+            "答えの1行目", // changed starting here
             "答えの2行目",
-            "────────", // また変わらない (枠に戻った)
+            "────────", // unchanged again (back to the frame)
             "  ? for shortcuts",
         ]);
         assert_eq!(
@@ -340,16 +353,17 @@ mod changed_span_tests {
         );
     }
 
-    /// 答えが届いていなければ、何も渡さないこと
+    /// If no answer has arrived yet, nothing should be returned
     #[test]
     fn an_unchanged_screen_yields_nothing() {
         let same = rows(&["a", "b", "c"]);
         assert_eq!(Tab::changed_span(&same, &same), (0, 0));
     }
 
-    /// 端だけを削り、真ん中は触らないこと。
+    /// Trim only the edges, and don't touch the middle.
     ///
-    /// 答えの途中にたまたま実行前と同じ行があっても、そこで切ってはいけない
+    /// Even if a row identical to a pre-execution row happens to appear in
+    /// the middle of the answer, it must not be cut there
     #[test]
     fn a_coincidence_in_the_middle_does_not_split_the_answer() {
         let before = rows(&["枠", "x", "同じ行", "y", "枠"]);
@@ -361,7 +375,7 @@ mod changed_span_tests {
         );
     }
 
-    /// 行数が変わっていたら、下端どうしは対応しないので上端だけで判断すること
+    /// If the row count changed, the bottom edges no longer correspond, so decide from the top edge alone
     #[test]
     fn a_resized_screen_falls_back_to_the_top_edge() {
         let before = rows(&["枠", "x"]);
@@ -369,7 +383,7 @@ mod changed_span_tests {
         assert_eq!(Tab::changed_span(&before, &now), (1, 3));
     }
 
-    /// 実行前の画面を撮れていなければ、削らないこと (安全側に倒す)
+    /// If we never captured the pre-execution screen, don't trim anything (fail safe)
     #[test]
     fn without_a_snapshot_nothing_is_removed() {
         let now = rows(&["a", "b", "c"]);
@@ -381,33 +395,34 @@ mod changed_span_tests {
 mod capture_range_tests {
     use super::capture_range;
 
-    /// 入力欄の下にあるものは、答えとして渡さないこと。
+    /// Anything below the input box must not be passed along as part of the answer.
     ///
-    /// 利用者が見たのは 'Use /skills to list available skills' と
-    /// 'gpt-5.5 medium  D:\\Test' が相手に転送される現象。どちらも
-    /// カーソルより下に描かれる枠で、答えではない。
+    /// What the user saw was 'Use /skills to list available skills' and
+    /// 'gpt-5.5 medium  D:\\Test' being forwarded to the other side. Both are
+    /// frame drawn below the cursor, not the answer.
     ///
-    /// 文字ではなく位置で切る。答えの文面がたまたま枠の文言と一致しても
-    /// 巻き込まれないし、CLI が文言を変えても壊れない
+    /// Cut by position, not by text. That way it's never fooled even if the
+    /// answer's wording happens to coincide with the frame's, and it doesn't
+    /// break when the CLI changes its wording
     #[test]
     fn the_frame_below_the_cursor_is_not_part_of_the_answer() {
-        // 24行の画面、カーソルは入力欄 (下から4行目) にいる。
-        // その下の3行はヒント行とステータス行
+        // A 24-row screen; the cursor sits in the input box (4th row from the
+        // bottom). The 3 rows below it are a hint row and a status row
         let (lo, hi) = capture_range(24, 20, 10);
         assert_eq!(lo, 3, "カーソルより下の3行を飛ばして数え始める");
         assert_eq!(hi, 13, "実行してから書かれた10行ぶんを取る");
 
-        // 素のシェル: カーソルは最下行のプロンプトにいる
+        // Plain shell: the cursor sits at the prompt on the bottom row
         let (lo, hi) = capture_range(24, 23, 5);
         assert_eq!((lo, hi), (0, 5), "下に枠がなければ最下行から数える");
 
-        // 何も書かれていなければ、何も取らない (lo == hi で1行だが、
-        // それはカーソル行そのもの = 入力欄なので trim で落ちる)
+        // If nothing was written, nothing is taken (lo == hi gives 1 row, but
+        // that row is the cursor row itself = the input box, so trim drops it)
         let (lo, hi) = capture_range(24, 20, 0);
         assert_eq!(lo, hi, "実行後に何も書かれていなければ範囲は空に近い");
     }
 
-    /// 画面が壊れた値でも、範囲計算だけは破綻しないこと
+    /// Even with a broken screen size, the range calculation alone must not break down
     #[test]
     fn a_broken_screen_size_does_not_panic() {
         assert_eq!(capture_range(0, 0, 0), (0, 0), "高さ0");
@@ -422,13 +437,14 @@ mod capture_range_tests {
 mod tests {
     use super::screen_hash;
 
-    /// 画面いっぱいに描かれた行が1行に潰れないこと。
-    /// contents() は折り返し行を連結するので、アスキーアートが
-    /// 全部つながって「改行されていない」表示になる (実際に起きた)
+    /// A row drawn all the way to the edge of the screen must not collapse
+    /// into a single line.
+    /// contents() joins wrapped rows together, so ASCII art ends up all
+    /// concatenated into a display with "no line breaks" (this actually happened)
     #[test]
     fn full_width_rows_keep_their_line_breaks() {
         let mut p = vt100::Parser::new(4, 10, 0);
-        // 10桁ちょうどの行を3つ。端末はこれを折り返しとして記録する
+        // Three rows of exactly 10 columns. The terminal records these as wrapped
         p.process(b"##########$$$$$$$$$$%%%%%%%%%%");
 
         assert!(
@@ -443,18 +459,19 @@ mod tests {
         );
     }
 
-    /// 実行が効かなかったときに、それを応答と呼ばないこと。
+    /// When the submit didn't actually take effect, that must not be called a response.
     ///
-    /// 貼り付けが `[Pasted Content …]` の形に描き変わるだけでも、出力は増え
-    /// 画面も動く。そこを応答の合図にすると、実行が届いていなくてもボールが渡る。
-    /// AIが働き始めた表示が出たかどうかで見る
+    /// Even a paste redrawing into the `[Pasted Content …]` form increases
+    /// output and moves the screen. If that's treated as the signal for a
+    /// response, the ball gets passed even though the submit never landed.
+    /// Judge it by whether the "AI started working" display appeared
     #[test]
     fn an_answer_requires_the_ai_to_have_started_working() {
         use super::{Tab, TabOptions};
         use std::sync::atomic::Ordering;
         use std::time::{Duration, Instant};
 
-        // 作業中の表示を持つプロファイルを当てる
+        // Pick a profile that has a "working" indicator
         let argv = vec!["cmd.exe".to_string()];
         let mut t = Tab::spawn(
             "shell".into(),
@@ -475,7 +492,7 @@ mod tests {
         assert!(t.was_prompted(), "実行として記録される");
         assert!(!t.answered_since_submit(), "実行した直後はまだ応答が無い");
 
-        // 出力も画面も動いたが、AIは働いていない状態 (貼り付けの描き変わり)
+        // Output moved and the screen changed, but the AI hasn't started working (paste redraw)
         for _ in 0..40 {
             std::thread::sleep(Duration::from_millis(50));
             t.tick(start);
@@ -486,11 +503,11 @@ mod tests {
             "画面が動いただけで応答ありと数えている (実行が効いていなくてもボールが渡る)"
         );
 
-        // 働き始めた表示を見たら応答
+        // Once the "started working" indicator is seen, it counts as answered
         t.saw_working.store(true, Ordering::Relaxed);
         assert!(t.answered_since_submit(), "働き始めたら応答として数える");
 
-        // 次の実行で、また待つ状態に戻る
+        // The next submit resets it back to a waiting state
         t.write_bytes(b"echo AGAIN\r").unwrap();
         assert!(
             !t.answered_since_submit(),
@@ -500,10 +517,12 @@ mod tests {
         t.kill();
     }
 
-    /// 応答の始まりが「実行した瞬間」に決まること。
+    /// The start of a response must be fixed at "the moment execution was submitted."
     ///
-    /// 「最初に画面が動いた位置」にすると、貼り付けの表示や入力欄の描き直しも
-    /// 画面を動かすので、答えではなく枠を掴む (実際にそうなっていた)
+    /// If it were "the first position where the screen moved" instead, a
+    /// paste being displayed or the input box redrawing would also move the
+    /// screen, so the frame would be grabbed instead of the answer (this
+    /// actually happened)
     #[test]
     fn a_response_starts_where_the_instruction_was_submitted() {
         use super::{Tab, TabOptions};
@@ -520,19 +539,19 @@ mod tests {
         }
         assert_eq!(marker(&t), u64::MAX, "実行していないうちは始まりが無い");
 
-        // 実行した時点で決まる (画面が動くのを待たない)
+        // Fixed at the moment of execution (doesn't wait for the screen to move)
         t.write_bytes(b"echo ONE\r").unwrap();
         let began = marker(&t);
         assert_ne!(began, u64::MAX, "実行した瞬間に始まりが決まる");
 
-        // そのあと画面がどれだけ動いても取り直さない
+        // No matter how much the screen moves after that, it's not re-taken
         for _ in 0..40 {
             std::thread::sleep(Duration::from_millis(50));
             t.tick(start);
         }
         assert_eq!(marker(&t), began, "画面が動いても始まりは動かない");
 
-        // 受け取り切ったら次の実行を待つ
+        // Once fully received, wait for the next execution
         t.finish_response();
         assert_eq!(marker(&t), u64::MAX, "次の応答は新しく取り直す");
         assert!(!t.was_prompted(), "次の実行を待つ状態に戻る");
@@ -540,10 +559,11 @@ mod tests {
         t.kill();
     }
 
-    /// 打っただけ・貼っただけを「実行した」と数えないこと。
+    /// Just typing or just pasting must not count as "submitted."
     ///
-    /// 数えてしまうと、入力しかけて手を止めた画面が静かになった瞬間に
-    /// 応答完了と読まれ、書きかけの内容が他のタブへ転送される
+    /// If it did, a screen that went idle mid-typing would be misread as a
+    /// completed response, and the half-written content would be forwarded
+    /// to other tabs
     #[test]
     fn only_a_real_enter_counts_as_submitting() {
         use super::contains_submit;
@@ -554,28 +574,29 @@ mod tests {
         assert!(contains_submit(b"\r"), "改行だけでも実行");
         assert!(contains_submit(b"\n"), "LFも実行として扱う");
 
-        // 括弧付き貼り付けの中身は本文。中の改行は実行ではない
+        // The contents of a bracketed paste are body text. A newline inside it is not a submit
         assert!(
             !contains_submit(b"\x1b[200~one\rtwo\x1b[201~"),
             "貼り付けた本文の改行は実行ではない"
         );
-        // 貼り付けたあとの改行は実行
+        // A newline after the paste closes is a submit
         assert!(
             contains_submit(b"\x1b[200~one\rtwo\x1b[201~\r"),
             "貼り付けを閉じたあとの改行は実行"
         );
-        // 閉じ忘れても、中身を実行と誤認しない
+        // Even if the paste is never closed, its contents are not mistaken for a submit
         assert!(
             !contains_submit(b"\x1b[200~one\rtwo"),
             "閉じられていない貼り付けの中身"
         );
     }
 
-    /// 画面の大きさを変えただけで「応答が来た」ことにならないこと。
+    /// Merely resizing the screen must not be treated as "a response arrived."
     ///
-    /// 子プロセスは端末が変わると画面を描き直す。中身は同じでも画面は動くので、
-    /// 活動と数えると BUSY→DONE を通り、再描画が新しい応答として
-    /// 他のタブへ転送されてしまう
+    /// A child process redraws the screen when the terminal size changes.
+    /// The content is the same but the screen still moves, so counting that
+    /// as activity would walk through BUSY→DONE and forward the redraw to
+    /// other tabs as if it were a new response
     #[test]
     fn resizing_the_window_is_not_a_new_answer() {
         use super::{Tab, TabOptions};
@@ -586,7 +607,7 @@ mod tests {
         let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
         let start = Instant::now();
 
-        // 起動後、落ち着くまで進める
+        // After startup, run until it settles down
         let settle = |t: &mut Tab| {
             for _ in 0..120 {
                 std::thread::sleep(Duration::from_millis(50));
@@ -599,7 +620,7 @@ mod tests {
         let calm = settle(&mut t);
         assert_ne!(calm, TabState::Busy, "まず落ち着かせる");
 
-        // 大きさを変える。子プロセスは描き直すが、応答ではない
+        // Change the size. The child process redraws, but it's not a response
         t.resize(30, 100).unwrap();
         let mut went_busy = false;
         for _ in 0..30 {
@@ -617,11 +638,12 @@ mod tests {
         t.kill();
     }
 
-    /// 起動時の出力だけで DONE になること、そしてそれを応答扱いしないこと。
+    /// Startup output alone reaches DONE, and that must not be treated as an answer.
     ///
-    /// どんなプログラムも起動時に何か出力するので、画面は「動いて→止まる」を
-    /// 通り、状態は必ず DONE になる。ここを応答完了として扱うと、
-    /// 誰も聞いていないバナーが自動化で他のタブへ転送されてしまう
+    /// Any program outputs something at startup, so the screen goes through
+    /// "moves → stops" and the state necessarily becomes DONE. If this were
+    /// treated as a completed response, a banner nobody asked for would get
+    /// forwarded to other tabs by automation
     #[test]
     fn startup_output_reaches_done_but_is_not_an_answer() {
         use super::{Tab, TabOptions};
@@ -631,7 +653,7 @@ mod tests {
         let argv = vec!["cmd.exe".to_string()];
         let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
 
-        // 起動時の出力だけで DONE まで行くことを確かめる (前提の確認)
+        // Confirm that startup output alone reaches DONE (checking the premise)
         let start = Instant::now();
         let mut saw_done = false;
         for _ in 0..120 {
@@ -643,23 +665,24 @@ mod tests {
         }
         assert!(saw_done, "起動しただけで DONE になる");
 
-        // 誰も入力していないので、応答として扱ってはいけない
+        // Nobody submitted any input, so this must not be treated as a response
         assert!(
             !t.was_prompted(),
             "何も聞いていないのに応答完了として扱われている"
         );
 
-        // 入力したあとの DONE は本物の応答
+        // A DONE that comes after real input is a genuine response
         t.write_bytes(b"echo hi\r").unwrap();
         assert!(t.was_prompted(), "入力したら応答を待つ状態になる");
 
         t.kill();
     }
 
-    /// 起動直後の自動化は、プログラムが入力を受け取れるようになるまで待つこと。
+    /// Automation right after startup must wait until the program can actually accept input.
     ///
-    /// AI CLIは起動して入力欄を描き終わるまで入力を捨てる。
-    /// すぐ流し込むと、設定した文章がどこにも入らない (実際に起きた)
+    /// An AI CLI discards input until it finishes drawing the input box after
+    /// launch. Sending input immediately means the configured text goes
+    /// nowhere (this actually happened)
     #[test]
     fn the_startup_hook_waits_until_the_program_settles() {
         use super::{Tab, TabOptions};
@@ -668,11 +691,11 @@ mod tests {
         let argv = vec!["cmd.exe".to_string()];
         let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
 
-        // まだ何も出ていない = 起動途中なので流し込まない
+        // Nothing has been output yet = still starting up, so don't send input
         assert!(!t.had_output(), "起動直後は無出力");
         assert!(!t.ready_for_startup_hook(), "無出力のうちは待つ");
 
-        // 出力が出て画面が落ち着いたら準備完了
+        // Once output appears and the screen settles, it's ready
         let start = Instant::now();
         let mut became_ready = false;
         for _ in 0..120 {
@@ -699,16 +722,16 @@ mod tests {
         let mut p = vt100::Parser::new(5, 20, 0);
         p.process(b"main content\r\n");
         let before = screen_hash(p.screen(), 2);
-        // 最下行 (byobuの時計に相当) だけを書き換える
+        // Rewrite only the bottom row (the equivalent of byobu's clock)
         p.process(b"\x1b[5;1H12:34:56");
         assert_eq!(before, screen_hash(p.screen(), 2), "最下部の変化は無視");
-        // 本文が変わればハッシュも変わる
+        // The hash changes if the body content changes
         p.process(b"\x1b[1;1Hchanged!");
         assert_ne!(before, screen_hash(p.screen(), 2));
     }
 }
 
-/// 起動条件の指紋。これが変われば新しいセッションを作らないと反映できない
+/// Fingerprint of the launch conditions. If this changes, a new session must be created to take effect
 pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
     format!(
         "{}|{}|{}|{}",
@@ -722,111 +745,122 @@ pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
     )
 }
 
-/// 波形の横幅 (サンプル数)。tickごとに1つ進む
+/// Waveform width (number of samples). Advances by one per tick
 pub const ACTIVITY_LEN: usize = 24;
 
 pub struct Tab {
     pub title: String,
-    /// 自動化から指すID (任意)。未設定ならタブ名で指す
+    /// ID referenced by automation (optional). If unset, the tab name is used to reference it
     pub id: Option<String>,
-    /// model ブリッジの接続先。Some ならこのタブはAI CLIでなくOpenAI互換API。
-    /// 手番が来たら本体がスレッドで complete() を叩き、応答を画面へ注入する
+    /// The model bridge's endpoint. If Some, this tab is an OpenAI-compatible
+    /// API rather than an AI CLI.
+    /// When its turn comes, the main process hits complete() on a thread and injects the response into the screen
     pub model: Option<crate::bridge::ModelConn>,
     pub parser: SharedParser,
     pub writer: PtyWriter,
     pub state: TabState,
     pub spinner_idx: usize,
     pub copy: Option<CopyState>,
-    /// 自動送信チェーンの深度 (透明のボールに記録された「渡された回数」。
-    /// 自動送信で+1を継承、人間の手動入力で0にリセット)
+    /// Depth of the auto-send chain (the "number of times passed along"
+    /// recorded on the invisible ball.
+    /// Inherited +1 on auto-send, reset to 0 on manual human input)
     pub chain_depth: u32,
-    /// 入力ロック (ソフトロック)。人間の誤入力を防ぐだけで、自動送信は通る
+    /// Input lock (soft lock). Only guards against human mistakes — auto-send still goes through
     pub locked: bool,
-    /// 子プロセス終了時に自動再起動するか
+    /// Whether to auto-restart when the child process exits
     pub auto_restart: bool,
-    /// 設定が変わったが、反映にはセッションの作り直しが必要な状態
-    /// (実行中のAIを勝手に切らないため、再起動は利用者に委ねる)
+    /// Settings changed, but taking effect requires the session to be
+    /// recreated
+    /// (restart is left to the user so a running AI is never cut off unexpectedly)
     pub needs_restart: bool,
-    /// タブバーの表示インデント段数 (0 = 親)
+    /// Tab-bar display indent level (0 = top-level)
     pub depth: u16,
-    /// 再起動用に起動条件を保持する (プロセス終了後に同じ設定で再spawnできる)
+    /// Retains the launch conditions for restarting (allows re-spawning with the same settings after the process exits)
     argv: Vec<String>,
     profile_spec: Option<String>,
     opts: TabOptions,
-    /// 最後に人間が手動入力した時刻 (相対ms)。直後の自動送信をガードする。
+    /// Time of the last manual human input (relative ms). Guards against auto-send immediately after.
     ///
-    /// None は「まだ一度も触られていない」。0 で表すと、アプリ起動から
-    /// ガード時間のあいだ「たった今触った」と誤認してしまう
+    /// None means "never touched yet." Using 0 to represent that would be
+    /// misread as "just touched" for the guard duration right after app startup
     pub last_manual_ms: Option<u64>,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     child_exited: Arc<AtomicBool>,
     bell_count: Arc<AtomicU64>,
-    /// PTYから読んだ累計バイト数 (読み取りスレッドが加算する)
+    /// Cumulative bytes read from the PTY (incremented by the reader thread)
     bytes_out: Arc<AtomicU64>,
-    /// このセッションを作った時刻。起動直後かどうかの判定に使う
+    /// Time this session was created. Used to judge whether it just started up
     created: Instant,
-    /// 直近でリサイズした時刻 (生成からの経過ms)。
+    /// Time of the most recent resize (elapsed ms since creation).
     ///
-    /// 端末の大きさが変わると子プロセスは画面を描き直す。中身は同じでも
-    /// 画面は変化するので、そのまま活動と数えると BUSY→DONE を通り、
-    /// 応答が来たように見えてしまう
+    /// A child process redraws the screen when the terminal size changes.
+    /// The content is unchanged but the screen still moves, so counting that
+    /// directly as activity would walk through BUSY→DONE and make it look
+    /// like a response had arrived
     last_resize_ms: AtomicU64,
-    /// 実行してから「作業中」の表示を見たか。
+    /// Whether the "working" indicator was seen since execution.
     ///
-    /// 画面が変わったかどうかでは足りない。貼り付けが `[Pasted Content …]`
-    /// の形に描き変わるだけでも画面は変わるが、AIは何もしていない
+    /// Whether the screen changed isn't enough by itself. Even a paste
+    /// redrawing into the `[Pasted Content …]` form changes the screen, but
+    /// the AI hasn't done anything
     saw_working: AtomicBool,
-    /// 実行した時点の画面の中身 (ハッシュ)。
+    /// Hash of the screen content at the moment of execution.
     ///
-    /// 出力のバイト数だと、カーソルの点滅や枠の描き直しでも増えるので
-    /// 「答えた」と数えてしまう。実行が届かなければ画面の中身は変わらない
+    /// Using output byte count instead would count cursor blinking or frame
+    /// redraws too, misreading them as "answered." If execution never
+    /// landed, the screen content doesn't change
     submitted_screen: AtomicU64,
-    /// 実行した時点の累計出力量。
+    /// Cumulative output amount at the moment of execution.
     ///
-    /// 実行が相手に届かなかった場合、画面は貼り付けが見えたまま静かになる。
-    /// 「動いて→止まった」形は応答と同じなので、実行より後に出力が
-    /// あったかどうかまで見ないと、答えていないものを答えたと扱ってしまう
+    /// If execution never reached the other side, the screen goes quiet
+    /// while still showing the paste. That "moved → stopped" shape looks
+    /// just like a response, so without checking whether output occurred
+    /// after execution, something never answered would be treated as answered
     submitted_output: AtomicU64,
-    /// 実行された入力を待っているか。
+    /// Whether we're waiting for a response to a submitted input.
     ///
-    /// 「入力された」ではなく「実行された」であることが大事。文字を打っただけ、
-    /// 貼り付けただけでも画面は動いて止まるので、入力を根拠にすると
-    /// 手が止まった瞬間を応答完了と読んでしまう
+    /// What matters is "submitted," not merely "typed." Just typing or just
+    /// pasting also makes the screen move and then stop, so using input
+    /// alone as the basis would misread the moment typing paused as a
+    /// completed response
     prompted: AtomicBool,
-    /// 直近の出力量の履歴 (古い→新しい)。INDEXの波形用
+    /// History of recent output volume (oldest → newest). For the INDEX waveform
     activity: [u8; ACTIVITY_LEN],
-    /// 前回サンプル時点の累計バイト数
+    /// Cumulative byte count at the time of the previous sample
     activity_mark: u64,
     last_hash: u64,
     last_change_ms: u64,
-    /// 最新応答のキャプチャ (DESIGN 7.3: 送信境界マーカー方式)
+    /// Capture of the latest response (DESIGN 7.3: submit-boundary marker scheme)
     pub last_response: Option<String>,
-    /// 応答の開始位置 (スクロールバック蓄積量)。u64::MAX = 未設定。
+    /// Start position of the response (scrollback accumulation amount). u64::MAX = unset.
     ///
-    /// 「最初に画面が動いた位置」ではなく「実行した位置」であることが大事。
-    /// 貼り付けの表示や入力欄の描き直しも画面を動かすので、動いた位置から
-    /// 取ると、答えではなく枠を掴む
+    /// What matters is "the position where execution happened," not "the
+    /// first position where the screen moved." A paste being displayed or
+    /// the input box redrawing also moves the screen, so taking it from the
+    /// moved position would grab the frame instead of the answer
     response_marker: AtomicU64,
-    /// 応答を待っている間に画面の幅が狭まったか。
+    /// Whether the screen width narrowed while waiting for a response.
     ///
-    /// 行番号は大きさを変えても動かないので、切り出す範囲は保てる。
-    /// だが幅を狭めると vt100 が各行をその幅で切り捨てるため、
-    /// 文章そのものが欠ける。こちらでは戻せないので、
-    /// せめて欠けたかもしれないことが分かるようにしておく
+    /// Row numbers don't move when the size changes, so the extraction range
+    /// is preserved. But narrowing the width makes vt100 truncate each row
+    /// to that width, chopping off the text itself. This can't be undone
+    /// from our side, so at least make it possible to know it may have been chopped
     resized_while_waiting: AtomicBool,
-    /// 実行した瞬間の可視画面 (上から順の各行)。
+    /// The visible screen at the moment of execution (each row, top to bottom).
     ///
-    /// 全画面TUI (Claude Code 等) はスクロールしないので行番号が進まず、
-    /// 「実行してから書かれた行」を数えられない。代わりに実行前の画面と
-    /// 見比べて、当時から同じ場所にあったもの (起動バナー、枠) を外す
+    /// A full-screen TUI (like Claude Code) doesn't scroll, so row numbers
+    /// don't advance and "rows written since execution" can't be counted.
+    /// Instead, compare against the pre-execution screen and strip out
+    /// whatever was already in the same place back then (startup banner, frame)
     submitted_rows: Mutex<Vec<String>>,
     detector: Detector,
 }
 
 impl Tab {
-    /// プロファイルは名前 (config指定) かコマンド名から都度解決する。
-    /// 再起動時に再解決されるので、profiles/*.json の修正が即反映される
+    /// The profile is resolved fresh each time, either from a name (given in
+    /// config) or from the command name.
+    /// Because it's re-resolved on restart, edits to profiles/*.json take effect immediately
     fn resolve_profile(argv: &[String], spec: &Option<String>) -> Profile {
         match spec {
             Some(name) => crate::profile::load_by_name(name),
@@ -850,9 +884,11 @@ impl Tab {
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        // model タブは実CLIを立てず、表示を保持するだけの待機プロセスを起こす。
-        // 手番の応答は本体がスレッドで complete() を叩いて parser へ注入する
-        // (本体はGUIサブシステムで、ブリッジをConPTY子にするとI/Oが付かないため)
+        // A model tab doesn't start a real CLI — it starts an idle process
+        // that just holds the display.
+        // The turn's response is injected into the parser by the main
+        // process hitting complete() on a thread
+        // (the main process is a GUI subsystem, and making the bridge a ConPTY child would leave it without I/O)
         let idle;
         let spawn_argv: &[String] = if opts.model.is_some() {
             idle = idle_argv();
@@ -861,8 +897,8 @@ impl Tab {
             argv
         };
         let mut cmd = build_command(spawn_argv);
-        // 指定が無い/存在しない場合はアプリのフォルダで起動する
-        // (存在しないフォルダを渡すと起動そのものが失敗するため)
+        // If unspecified/nonexistent, launch in the app's folder
+        // (passing a nonexistent folder would make the launch itself fail)
         let cwd = opts
             .cwd
             .clone()
@@ -875,8 +911,8 @@ impl Tab {
 
         let writer: PtyWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
         let bell_count = Arc::new(AtomicU64::new(0));
-        // 出力量の累計。INDEXの波形はこれの増分から描く
-        // (画面ハッシュの変化だけだと「動いている量」が分からない)
+        // Cumulative output volume. The INDEX waveform is drawn from its deltas
+        // (the change in screen hash alone doesn't tell us "how much is moving")
         let bytes_out = Arc::new(AtomicU64::new(0));
         let parser: SharedParser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
@@ -889,7 +925,7 @@ impl Tab {
         )));
         let child_exited = Arc::new(AtomicBool::new(false));
 
-        // PTY出力 → (必要なら文字コード変換) → vt100パーサ / セッションログ
+        // PTY output → (encoding conversion if needed) → vt100 parser / session log
         {
             let parser = Arc::clone(&parser);
             let counter = Arc::clone(&bytes_out);
@@ -908,7 +944,7 @@ impl Tab {
                         Ok(n) => {
                             counter.fetch_add(n as u64, Ordering::Relaxed);
                             let chunk: &[u8] = match decoder.as_mut() {
-                                // Shift_JIS等はUTF-8に直してからパーサへ渡す
+                                // Convert Shift_JIS etc to UTF-8 before passing to the parser
                                 Some(d) => {
                                     text.clear();
                                     text.reserve(n * 3);
@@ -920,10 +956,13 @@ impl Tab {
                             if let Some(l) = log.as_mut() {
                                 l.write(chunk);
                             }
-                            // vt100 は幅を狭めた後の全角の扱いで落ちることがある
-                            // (実測: 右端が全角のまま縮めて半角を書くと unwrap)。
-                            // 落ちたら解析器を作り直して読み取りを続ける。
-                            // ここで諦めると、そのタブは以後何も映さなくなる
+                            // vt100 can panic on how it handles full-width
+                            // characters after narrowing the width
+                            // (observed: unwrap fires when the right edge
+                            // stays full-width after narrowing and a
+                            // half-width character is written).
+                            // If it panics, rebuild the parser and keep reading.
+                            // Giving up here would mean the tab shows nothing ever again
                             let hit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                                 || {
                                     parser
@@ -933,8 +972,9 @@ impl Tab {
                                 },
                             ));
                             if hit.is_err() {
-                                // 壊れた状態のまま読み続けると、次の1文字でまた落ちる。
-                                // 端末の完全リセットを流して、既知の状態へ戻す
+                                // Continuing to read in the broken state would
+                                // panic again on the very next character.
+                                // Send a full terminal reset to return to a known state
                                 let reset = std::panic::catch_unwind(
                                     std::panic::AssertUnwindSafe(|| {
                                         parser
@@ -944,9 +984,9 @@ impl Tab {
                                     }),
                                 );
                                 crate::append_hook_log(if reset.is_ok() {
-                                    "画面の解析が壊れたので作り直しました (幅の変更と全角文字)"
+                                    "Screen parsing broke, so it was rebuilt (width change and full-width characters)"
                                 } else {
-                                    "画面の解析が壊れ、作り直しにも失敗しました"
+                                    "Screen parsing broke, and rebuilding it also failed"
                                 });
                             }
                         }
@@ -954,7 +994,7 @@ impl Tab {
                 }
             });
         }
-        // 子プロセス終了検知
+        // Detect child process exit
         {
             let flag = Arc::clone(&child_exited);
             std::thread::spawn(move || {
@@ -1004,58 +1044,62 @@ impl Tab {
         })
     }
 
-    /// 実行された入力の応答を待っているか
+    /// Whether we're waiting for a response to a submitted input
     pub fn was_prompted(&self) -> bool {
         self.prompted.load(Ordering::Relaxed)
     }
 
-    /// 今の画面の中身 (最下部の飾りは除く)
+    /// Current screen content (excluding the bottom decoration)
     fn screen_fingerprint(&self) -> u64 {
         let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
         screen_hash(p.screen(), self.detector.ignore_bottom_rows())
     }
 
-    /// 「働き始めた表示を見たか」の生の値 (ログ用)
+    /// Raw value of "was the started-working indicator seen" (for logging)
     pub fn saw_working_flag(&self) -> bool {
         self.saw_working.load(Ordering::Relaxed)
     }
 
-    /// 実行が相手に届き、実際に応答が始まったか。
+    /// Whether execution reached the other side and a response actually started.
     ///
-    /// AI CLIは働いている間それを画面に出す (「esc to interrupt」など)。
-    /// 実行が届かなければ、貼り付けが入力欄に乗ったままで、その表示は出ない。
-    /// 画面が変わったかどうかでは足りない ——
-    /// 貼り付けが `[Pasted Content …]` に描き変わるだけでも画面は変わる。
+    /// While working, an AI CLI shows it on screen (e.g. "esc to interrupt").
+    /// If execution never landed, the paste just sits in the input box and
+    /// that indicator never appears.
+    /// Whether the screen changed isn't enough on its own —
+    /// even a paste redrawing into `[Pasted Content …]` changes the screen.
     ///
-    /// 作業中の表示を持たない相手 (素のシェル、プロファイル未設定) は、
-    /// 実行後の描き直しが落ち着いてからの画面変化で代用する。
+    /// For a peer without a "working" indicator (a plain shell, no profile
+    /// configured), fall back to the screen change after the post-execution
+    /// redraw settles.
     ///
-    /// プロファイルの有無で守りの強さが変わらないようにしてある。
-    /// 以前は未設定なら判定が丸ごと弱くなり、貼り付けの描き直しだけで
-    /// 「答えた」ことになっていた
+    /// This is set up so the strength of the guard doesn't depend on whether
+    /// a profile exists. Previously, having no profile weakened the whole
+    /// judgment, and a mere paste redraw alone would count as "answered"
     pub fn answered_since_submit(&self) -> bool {
         if self.detector.shows_working() {
-            // 作業中を画面に出す相手なら、それが出たかどうかで判断する。
-            // 画面が動いたかどうかより確かで、描き直しに騙されない
+            // For a peer that shows a working indicator, judge by whether it
+            // appeared. More reliable than whether the screen moved, and not fooled by redraws
             return self.saw_working.load(Ordering::Relaxed);
         }
-        // 出さない相手 (素のシェル、プロファイル未設定) は画面の変化で代用する。
-        // 基準は実行を送った瞬間の画面で、実行は貼り付けの取り込みが
-        // 終わってから送るので、この時点の画面は既に落ち着いている。
-        // 届かなければ何も動かず、届けば答えが現れる
+        // For a peer that doesn't show one (plain shell, no profile
+        // configured), fall back to the screen change. The baseline is the
+        // screen at the moment execution was sent, and since execution is
+        // sent only after the paste finishes being taken in, the screen at
+        // that point has already settled.
+        // If it never landed, nothing moves; if it landed, the answer appears
         self.screen_fingerprint() != self.submitted_screen.load(Ordering::Relaxed)
     }
 
-    /// 応答を受け取り切ったので、次の実行を待つ状態に戻す
+    /// The response has been fully received, so go back to waiting for the next execution
     pub fn finish_response(&mut self) {
         self.prompted.store(false, Ordering::Relaxed);
         self.response_marker.store(u64::MAX, Ordering::Relaxed);
     }
 
-    /// 入力を送る。実行を含むものだけが「応答を求めた」ことになる
-    /// 子プロセスへそのまま流すだけの入力。
-    /// 応答を求める入力ではないので prompted は立てない
-    /// (使うのは実機の検証だけ。ふだんの経路は write_bytes)
+    /// Send input. Only input containing a submit counts as "requesting a response"
+    /// Input that just flows straight through to the child process.
+    /// Not input that requests a response, so `prompted` is not set
+    /// (used only for real-machine verification. The normal path is write_bytes)
     #[cfg(test)]
     pub fn write_passthrough(&self, bytes: &[u8]) -> Result<()> {
         pty_write(&self.writer, bytes)
@@ -1066,11 +1110,13 @@ impl Tab {
             self.prompted.store(true, Ordering::Relaxed);
             self.submitted_output
                 .store(self.output_count(), Ordering::Relaxed);
-            // 応答はここから始まる。これより前は指示であって答えではない。
+            // The response starts here. Anything before this is the
+            // instruction, not the answer.
             //
-            // +1 は、実行がまさに今の行を書き終える動作だから。
-            // カーソル行そのものを起点にすると、打ち込んだ指示の
-            // 最後の1行 (折り返していればその後半だけ) を答えに含めてしまう
+            // The +1 is because execution is precisely the action that
+            // finishes writing the current row. Using the cursor row itself
+            // as the starting point would include the last line of the
+            // typed instruction (or just its back half, if wrapped) in the answer
             self.response_marker
                 .store(self.line_position() as u64 + 1, Ordering::Relaxed);
             self.submitted_screen
@@ -1079,8 +1125,8 @@ impl Tab {
             self.resized_while_waiting.store(false, Ordering::Relaxed);
             *self.submitted_rows.lock().unwrap() = self.visible_rows();
         }
-        // 相手がUTF-8以外なら、送る文字も変換する
-        // (制御シーケンスはASCIIなのでそのまま通る)
+        // If the peer isn't UTF-8, convert the characters we send too
+        // (control sequences are ASCII, so they pass through unchanged)
         if let Some(enc) = self.opts.encoding {
             if let Ok(s) = std::str::from_utf8(bytes) {
                 let (encoded, _, _) = enc.encode(s);
@@ -1090,10 +1136,10 @@ impl Tab {
         pty_write(&self.writer, bytes)
     }
 
-    /// 再描画が届いているあいだか。
+    /// Whether we're within the redraw window.
     ///
-    /// 待つのは再描画そのものが終わるまでで、落ち着くまでではない。
-    /// 長く止めると本物の応答の始まりを取りこぼす
+    /// What we wait for is the redraw itself finishing, not the screen
+    /// settling down. Waiting too long would miss the start of a real response
     fn redrawing(&self) -> bool {
         const REDRAW_MS: u64 = 800;
         self.age_ms()
@@ -1101,16 +1147,17 @@ impl Tab {
             < REDRAW_MS
     }
 
-    /// 相手が括弧貼り付けを理解すると宣言しているか。
+    /// Whether the peer has declared that it understands bracketed paste.
     ///
-    /// 端末の規格では、対応するアプリが自分で ESC[?2004h を送って申告する。
-    /// 申告していない相手 (素のシェル) に目印付きで送ると、目印は無視され、
-    /// 中の改行がそのまま実行になる。推測ではなく、この申告で判断する
+    /// By terminal convention, a supporting app declares this itself by
+    /// sending ESC[?2004h. If sent with markers to a peer that hasn't
+    /// declared it (a plain shell), the markers are ignored and the
+    /// newlines inside become real submits. We judge by this declaration, not by guessing
     pub fn accepts_bracketed_paste(&self) -> bool {
         self.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste()
     }
 
-    /// 応答を待つ間に幅が狭まったか (文章が欠けている恐れがある)
+    /// Whether the width narrowed while waiting for a response (the text may have been chopped)
     pub fn resized_while_waiting(&self) -> bool {
         self.resized_while_waiting.load(Ordering::Relaxed)
     }
@@ -1121,7 +1168,7 @@ impl Tab {
             let (_, old_cols) = p.screen().size();
             cols < old_cols
         };
-        // 中身が失われるのは幅が狭まったときだけ。高さは行番号にも中身にも触らない
+        // Content is only lost when the width narrows. Height affects neither row numbers nor content
         if narrower && self.prompted.load(Ordering::Relaxed) {
             self.resized_while_waiting.store(true, Ordering::Relaxed);
         }
@@ -1144,9 +1191,9 @@ impl Tab {
         let _ = self.killer.kill();
     }
 
-    /// 同じ設定でセッションを作り直す。
-    /// 子プロセスの自己更新・SSH切断・クラッシュからの復帰に使う。
-    /// ロック状態と階層表示は引き継ぎ、チェーン深度と履歴はリセットされる
+    /// Recreate the session with the same settings.
+    /// Used to recover from a child process self-update, SSH disconnect, or crash.
+    /// Lock state and hierarchy display carry over; chain depth and history are reset
     pub fn restart(&mut self, rows: u16, cols: u16) -> Result<()> {
         self.kill();
         let mut fresh = Tab::spawn(
@@ -1161,7 +1208,7 @@ impl Tab {
         fresh.depth = self.depth;
         fresh.auto_restart = self.auto_restart;
         fresh.id = self.id.clone();
-        // 作り直したので、保留していた設定変更は反映済みになる
+        // Since it was recreated, any pending config changes are now in effect
         *self = fresh;
         Ok(())
     }
@@ -1170,12 +1217,12 @@ impl Tab {
         self.detector.profile_name()
     }
 
-    /// 起動条件の指紋。これが変わるとセッションの作り直しが必要
+    /// Fingerprint of the launch conditions. If this changes, the session needs to be recreated
     pub fn signature(&self) -> String {
         signature_of(&self.argv, &self.opts)
     }
 
-    /// 自動化から見たこのタブの見分け方
+    /// How automation identifies this tab
     pub fn key(&self) -> crate::hooks::TabKey {
         crate::hooks::TabKey {
             id: self.id.clone(),
@@ -1183,7 +1230,7 @@ impl Tab {
         }
     }
 
-    /// 再起動せずに反映できる設定を差し替える
+    /// Swap in settings that can take effect without a restart
     pub fn apply_live_config(&mut self, profile_spec: Option<String>, locked: bool, auto_restart: bool, depth: u16) {
         if self.profile_spec != profile_spec {
             self.profile_spec = profile_spec;
@@ -1194,16 +1241,16 @@ impl Tab {
         self.depth = depth;
     }
 
-    /// 次回の再起動で使う起動条件を控えておく (再起動するまでは現行のまま動く)
+    /// Stash the launch conditions to use on the next restart (keeps running with the current settings until then)
     pub fn stage_restart_config(&mut self, argv: Vec<String>, opts: TabOptions) {
         self.argv = argv;
         self.opts = opts;
         self.needs_restart = true;
     }
 
-    /// 200ms毎の状態判定 (非アクティブタブも含めて呼ぶこと)。
-    /// 活動の有無は「画面内容の変化」で判定する (最下部のステータス行は除外)。
-    /// 戻り値はフック発火用の (旧状態, 新状態)
+    /// State judgment every 200ms (call this for inactive tabs too).
+    /// Activity is judged by "screen content change" (excluding the bottom status row).
+    /// Returns (old state, new state) for firing hooks
     pub fn tick(&mut self, start: Instant) -> (TabState, TabState) {
         if self.exited() {
             let old = self.state;
@@ -1221,7 +1268,7 @@ impl Tab {
         let now = start.elapsed().as_millis() as u64;
         if hash != self.last_hash {
             self.last_hash = hash;
-            // リサイズ後の描き直しは新しい出力ではないので、活動と数えない
+            // A post-resize redraw isn't new output, so it doesn't count as activity
             if !self.redrawing() {
                 self.last_change_ms = now;
             }
@@ -1236,10 +1283,10 @@ impl Tab {
         }
         if self.detector.working_shown() {
             if !self.saw_working.swap(true, Ordering::Relaxed) {
-                // 何を根拠に「働き始めた」と見たのかを残す。
-                // 画面の飾りを拾っていた場合、ここに出る
+                // Record what evidence led us to see "started working."
+                // If it picked up screen decoration by mistake, it shows up here
                 crate::append_hook_log(&format!(
-                    "working tab? [{}] マッチ: {:?}",
+                    "working tab? [{}] match: {:?}",
                     self.detector.profile_name(),
                     self.detector.working_matched()
                 ));
@@ -1247,18 +1294,20 @@ impl Tab {
         }
         self.sample_activity();
 
-        // 応答キャプチャ (送信境界マーカー方式):
-        // BUSY開始時点のスクロールバック蓄積量を境界として記録し、
-        // DONEでその境界以降だけを抽出する (過去の応答は混ざらない)
+        // Response capture (submit-boundary marker scheme):
+        // record the scrollback accumulation amount at the moment BUSY
+        // starts as the boundary, and on DONE extract only what's after
+        // that boundary (past responses never get mixed in)
         if old_state == TabState::Busy && self.state == TabState::Done {
             self.last_response = Some(self.capture_since_marker());
         }
         (old_state, self.state)
     }
 
-    /// この tick の出力量を履歴に1つ積む。
-    /// 生バイト数は桁が振れすぎるので、対数で 0..=7 段に潰す
-    /// (「静か / ぽつぽつ / 流れている」が読めれば十分なので)
+    /// Push this tick's output volume onto the history.
+    /// Raw byte counts swing too wildly in magnitude, so collapse them
+    /// logarithmically into 0..=7 levels
+    /// (enough to distinguish "quiet / trickling / flowing")
     fn sample_activity(&mut self) {
         let total = self.bytes_out.load(Ordering::Relaxed);
         let delta = total.saturating_sub(self.activity_mark);
@@ -1277,29 +1326,31 @@ impl Tab {
         self.activity[ACTIVITY_LEN - 1] = level;
     }
 
-    /// このAI固有の確認時間 (プロファイルに指定があれば)
+    /// This AI's specific confirmation time (if given in the profile)
     pub fn done_confirm_ms(&self) -> Option<u64> {
         self.detector.done_confirm_ms()
     }
 
-    /// 直近の出力量 (古い→新しい、各 0..=7)
+    /// Recent output volume (oldest → newest, each 0..=7)
     pub fn activity(&self) -> &[u8] {
         &self.activity
     }
 
-    /// 子プロセスが何か出力したか (起動して動き出したかの目安)
+    /// Whether the child process has output anything (a proxy for whether it started up and is moving)
     pub fn had_output(&self) -> bool {
         self.output_count() > 0
     }
 
-    /// このタブが model ブリッジ (API) か
+    /// Whether this tab is a model bridge (API)
     pub fn is_model(&self) -> bool {
         self.model.is_some()
     }
 
-    /// model の手番開始をマークする (write_bytes の submit 時と同等の記録)。
-    /// これで検出が「応答待ち」に入り、注入した応答の DONE で on_done が発火する。
-    /// これをしないと prompted=false で DONE が無視され、議事が進まない
+    /// Mark the start of the model's turn (the same record as a submit in
+    /// write_bytes).
+    /// This puts detection into "waiting for response," so a DONE on the
+    /// injected response fires on_done.
+    /// Without this, DONE gets ignored with prompted=false and the discussion never proceeds
     fn mark_turn_start(&self) {
         self.prompted.store(true, Ordering::Relaxed);
         self.submitted_output
@@ -1313,19 +1364,21 @@ impl Tab {
         *self.submitted_rows.lock().unwrap() = self.visible_rows();
     }
 
-    /// model の手番: スレッドで complete() を叩き、応答を画面へ注入＋say.txt へ書く。
-    /// parser/bytes_out は Arc共有なので、メインループの検出(BUSY→DONE→on_done)が
-    /// そのまま働く。ブロックするHTTPは別スレッドに逃がし、本体ループは止めない
+    /// The model's turn: hit complete() on a thread, inject the response
+    /// into the screen, and write it to say.txt.
+    /// Since parser/bytes_out are Arc-shared, the main loop's detection
+    /// (BUSY→DONE→on_done) works unchanged. The blocking HTTP call runs on a
+    /// separate thread so it never stalls the main loop
     pub fn dispatch_model(&self, prompt: String) {
         let Some(conn) = self.model.clone() else {
             return;
         };
-        // 手番開始を記録しておかないと、注入した応答の DONE が prompted=false で無視される
+        // Without recording the turn start, the DONE on the injected response would be ignored with prompted=false
         self.mark_turn_start();
         let parser = Arc::clone(&self.parser);
         let counter = Arc::clone(&self.bytes_out);
         std::thread::spawn(move || {
-            // 画面へ書き、活動量も増やす (検出が拾えるように)
+            // Write to the screen and bump the activity volume too (so detection can pick it up)
             let inject = |s: &str| {
                 let bytes = s.as_bytes();
                 counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
@@ -1340,9 +1393,11 @@ impl Tab {
                 "\r\n\x1b[36m… {}\x1b[0m\r\n",
                 crate::i18n::tp("agent.model.generating", &[("model", &conn.model)])
             ));
-            // 討論プロンプトには「say.txtに書け」等CLI向けの指示が混じる。
-            // ブリッジではSHIKISHAが書くので、モデルには「意見だけ述べよ」と伝える。
-            // ステートレスなので、立場(ペルソナ)も毎回 system に添えて忘れさせない
+            // The debate prompt has CLI-oriented instructions mixed in, like
+            // "write to say.txt."
+            // With the bridge, SHIKISHA does the writing, so we tell the
+            // model to "just state your opinion."
+            // Since it's stateless, attach the stance (persona) to `system` every time too, so it's never forgotten
             let mut system = crate::i18n::t("agent.model.system");
             if let Some(p) = &conn.persona {
                 system.push('\n');
@@ -1378,31 +1433,32 @@ impl Tab {
         });
     }
 
-    /// PTYから読んだ累計バイト数。ある時点からの反応の有無を見るのに使う
+    /// Cumulative bytes read from the PTY. Used to check for activity since a given point in time
     pub fn output_count(&self) -> u64 {
         self.bytes_out.load(Ordering::Relaxed)
     }
 
-    /// このセッションを作ってからの経過ミリ秒
+    /// Elapsed milliseconds since this session was created
     pub fn age_ms(&self) -> u64 {
         self.created.elapsed().as_millis() as u64
     }
 
-    /// 起動直後の自動化 (on_start) を流し込んでよい状態か。
+    /// Whether it's OK to send automation (on_start) right after startup.
     ///
-    /// AI CLIは起動して入力欄を描き終わるまで入力を受け取らない。
-    /// 出力が出て、かつ画面が落ち着いたところを「準備できた」とみなす。
-    /// 何も出力しないプログラムのために時間切れも設ける
+    /// An AI CLI doesn't accept input until it launches and finishes drawing
+    /// the input box. We treat "output appeared and the screen settled" as
+    /// "ready." A timeout is also set for programs that never output anything
     pub fn ready_for_startup_hook(&self) -> bool {
         const GIVE_UP_MS: u64 = 15_000;
         (self.had_output() && self.state != TabState::Busy) || self.age_ms() > GIVE_UP_MS
     }
 
-    /// これまでに書かれた行数の目安。
+    /// An estimate of the number of rows written so far.
     ///
-    /// 流れて消えた行数だけでは、画面に収まっている間ずっと 0 のままで
-    /// 「どこから書かれたか」が分からない。画面内のカーソル位置を足して、
-    /// 出力が進むほど増える値にする
+    /// Counting only rows that scrolled off would stay at 0 the whole time
+    /// content still fits on screen, leaving no way to tell "where writing
+    /// started." Add the on-screen cursor position so the value keeps
+    /// increasing as output progresses
     pub fn line_position(&self) -> usize {
         let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
         let saved = p.screen().scrollback();
@@ -1413,14 +1469,14 @@ impl Tab {
         scrolled + row as usize
     }
 
-    /// マーカー以降の新規出力をテキスト化する
-    /// 試験から切り出しをそのまま覗くための入口
+    /// Turn new output since the marker into text
+    /// An entry point for tests to peek directly at the extraction
     #[cfg(test)]
     pub fn capture_for_probe(&self) -> String {
         self.capture_since_marker()
     }
 
-    /// 今の可視画面を、上から順に1行ずつ
+    /// The current visible screen, row by row from the top
     fn visible_rows(&self) -> Vec<String> {
         let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
         let screen = p.screen();
@@ -1428,22 +1484,24 @@ impl Tab {
         screen.rows(0, cols).take(rows as usize).collect()
     }
 
-    /// 実行してから変わった行の範囲を返す (上からの行番号で lo..hi)。
+    /// Return the range of rows that changed since execution (row numbers from the top, lo..hi).
     ///
-    /// 見比べるのは実行の瞬間に自分で撮った画面なので、文言を決め打ちしない。
-    /// CLI が見た目を変えても、日本語でも英語でも、そのまま効く。
-    /// 上端は起動バナー、下端は入力欄の枠が外れる。
+    /// What's compared is the screen captured by hand at the moment of
+    /// execution, so nothing is hardcoded on wording. It works unchanged
+    /// even if the CLI changes its appearance, whether in Japanese or English.
+    /// The top edge strips the startup banner, the bottom edge strips the input box frame.
     ///
-    /// 端から順に、食い違ったところで止める。真ん中は触らないので、
-    /// 答えの中にたまたま実行前と同じ行があっても穴は空かない
+    /// Working inward from each edge, stop at the first mismatch. The middle
+    /// is never touched, so even if a row identical to a pre-execution row
+    /// happens to appear inside the answer, no hole opens up
     pub fn changed_span(before: &[String], now: &[String]) -> (usize, usize) {
         let same = |a: &String, b: &String| a.trim_end() == b.trim_end();
         let head = now.iter().zip(before).take_while(|(a, b)| same(a, b)).count();
         if head >= now.len() {
-            // 何ひとつ変わっていない = 答えは届いていない
+            // Not a single thing changed = the answer hasn't arrived
             return (0, 0);
         }
-        // 行数が違うと下端どうしが対応しないので、そのときは上端だけで判断する
+        // If the row counts differ, the bottom edges no longer correspond, so decide from the top edge alone in that case
         let tail = if before.len() == now.len() {
             now.iter()
                 .rev()
@@ -1456,14 +1514,16 @@ impl Tab {
         (head, now.len().saturating_sub(tail).max(head))
     }
 
-    /// 実行の瞬間から動いていない「貼り付いた枠」が、下端に何行あるか。
+    /// How many rows at the bottom edge form a "pinned frame" that hasn't
+    /// moved since the moment of execution.
     ///
-    /// カーソルより下は位置だけで枠と分かる。その内側は実行前の画面と
-    /// 見比べる。入力欄そのもの (カーソル行) は実行で中身が消えるため
-    /// 必ず食い違うが、これは答えではないので走査を止めさせない。
+    /// Anything below the cursor is known to be frame by position alone.
+    /// What's inside that is compared against the pre-execution screen. The
+    /// input box itself (the cursor row) always mismatches because its
+    /// content is cleared by execution, but that's not the answer, so it must not halt the scan.
     ///
-    /// Codex は例文をカーソル行に出す ("Implement {feature}")。
-    /// スクロールする相手でも枠は貼り付いたままなので、同じ理屈で外せる
+    /// Codex shows a placeholder example on the cursor row ("Implement
+    /// {feature}"). Even for a peer that scrolls, the frame stays pinned, so the same logic strips it out
     fn pinned_rows(&self, rows: u16, cols: u16, cursor_row: u16, floor: usize) -> usize {
         let keep = (rows as usize).saturating_sub(floor);
         let mut now: Vec<String> = {
@@ -1479,26 +1539,28 @@ impl Tab {
             *a = b.clone();
         }
         let (_, end) = Self::changed_span(&before, &now);
-        // end = 変わった行の下端。そこから下は貼り付いた枠
+        // end = the bottom edge of the changed rows. Below that is the pinned frame
         (rows as usize).saturating_sub(end).max(floor)
     }
 
     fn capture_since_marker(&self) -> String {
         let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
         let (rows, cols) = p.screen().size();
-        // カーソルは入力欄の中にある。その下にあるのは、答えではなく枠。
-        // ヒント行 ("Use /skills to list available skills") や
-        // ステータス行 ("gpt-5.5 medium  D:\\Test") がここに住んでいる
+        // The cursor sits inside the input box. Below it is frame, not the
+        // answer. That's where hint rows (e.g. "Use /skills to list
+        // available skills") and status rows (e.g. "gpt-5.5 medium
+        // D:\\Test") live
         let (cursor_row, _) = p.screen().cursor_position();
         if p.screen().alternate_screen() {
-            // 全画面TUIはスクロールしないため可視画面のスナップショットで代替。
-            // ただし実行前から出ていたもの (起動バナー等) は答えではない
+            // A full-screen TUI doesn't scroll, so fall back to a snapshot
+            // of the visible screen.
+            // However, anything that was already on screen before execution (e.g. the startup banner) is not the answer
             let (floor, _) = capture_range(rows, cursor_row, 0);
             let keep = (rows as usize).saturating_sub(floor);
             let now: Vec<String> = p.screen().rows(0, cols).take(keep).collect();
             let mut before = self.submitted_rows.lock().unwrap().clone();
             before.truncate(keep);
-            // 上端は実行前から出ていたもの (起動バナー) を外す
+            // The top edge strips out what was already on screen before execution (the startup banner)
             let (start, _) = Self::changed_span(&before, &now);
             drop(p);
             let lo = self.pinned_rows(rows, cols, cursor_row, floor);
@@ -1512,9 +1574,9 @@ impl Tab {
         }
         drop(p);
 
-        // 実行してから書かれた行だけを取る。
-        // ここに画面の高さを足すと、必ず1画面ぶん (起動バナーや入力欄) が
-        // 混ざり、答えの代わりに枠を渡すことになる
+        // Take only the rows written since execution.
+        // Adding the screen height here would always mix in a full screen's
+        // worth (startup banner, input box), handing back frame instead of the answer
         let stored = self.response_marker.load(Ordering::Relaxed);
         let since = if stored == u64::MAX {
             rows.saturating_sub(1) as usize
@@ -1522,7 +1584,7 @@ impl Tab {
             self.line_position().saturating_sub(stored as usize)
         };
         let (floor, hi) = capture_range(rows, cursor_row, since);
-        // 下端の枠は、スクロールしても貼り付いたまま残る
+        // The bottom-edge frame stays pinned even after scrolling
         let lo = self.pinned_rows(rows, cols, cursor_row, floor);
         if lo > hi {
             return String::new();
@@ -1541,12 +1603,12 @@ mod real_codex_probe {
     use std::io::Write as _;
     use std::time::{Duration, Instant};
 
-    /// 本物の Codex に貼り付けて実行し、何が起きるかを全部書き出す。
+    /// Paste into a real Codex and execute, writing out everything that happens.
     ///
     ///   cargo test probe_real_codex -- --ignored --nocapture
     ///
-    /// 偽物で代用すると「こちらが思う振る舞い」しか確かめられないので、
-    /// 実機で観測する
+    /// Substituting a fake would only confirm "the behavior we assume,"
+    /// so observe it on the real thing
     #[test]
     #[ignore]
     fn probe_real_codex() {
@@ -1587,7 +1649,7 @@ mod real_codex_probe {
             );
         };
 
-        // 起動を待つ。信頼確認が出たら答える
+        // Wait for startup. Answer once the trust prompt appears
         let mut trusted = false;
         for _ in 0..80 {
             std::thread::sleep(Duration::from_millis(200));
@@ -1602,7 +1664,7 @@ mod real_codex_probe {
                 break;
             }
         }
-        // 落ち着くまで待つ
+        // Wait until it settles
         for _ in 0..30 {
             std::thread::sleep(Duration::from_millis(200));
             snap(&mut t, &mut log, "待機中");
@@ -1610,7 +1672,7 @@ mod real_codex_probe {
         let _ = writeln!(log, "=== 待機時の画面全体 ===\n{}",
                          super::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()));
 
-        // 利用者の事例と同じくらいの長さを貼り付ける
+        // Paste roughly the same length as the user's case
         let body = format!(
             "これはテストです。返事は OK の一言だけにしてください。{}",
             "あ".repeat(1900)
@@ -1627,7 +1689,7 @@ mod real_codex_probe {
         }
         t.write_bytes(&bytes).unwrap();
 
-        // 貼り付けの取り込みが「終わる」まで待つ (始まるまで、ではない)
+        // Wait until the paste ingestion "finishes" (not until it starts)
         let mut last = t.output_count();
         let mut quiet = 0;
         for _ in 0..100 {
@@ -1649,7 +1711,7 @@ mod real_codex_probe {
         let _ = writeln!(log, "=== 実行 (Enter) ===");
         t.write_bytes(b"\r").unwrap();
 
-        // 実行後の様子を長めに追う
+        // Follow the situation for a while after execution
         for _ in 0..150 {
             std::thread::sleep(Duration::from_millis(200));
             snap(&mut t, &mut log, "実行後");
@@ -1667,12 +1729,13 @@ mod layout_probe {
     use super::{Tab, TabOptions};
     use std::time::{Duration, Instant};
 
-    /// 起動直後の入力欄の形を、行番号とカーソル位置つきで書き出す。
+    /// Write out the shape of the input box right after startup, with row numbers and cursor position.
     ///
     ///   cargo test layout_probe -- --ignored --nocapture
     ///
-    /// 「カーソルより下を外す」で足りるのか、枠の上辺が残るのかを
-    /// 本物で確かめる。推測で足すと、また効かない調整をすることになる
+    /// Confirm on the real thing whether "stripping below the cursor" is
+    /// enough, or whether the top edge of the frame remains. Adding
+    /// adjustments based on guesswork just leads to another fix that doesn't work
     #[test]
     #[ignore]
     fn probe_real_input_box_layout() {
@@ -1692,7 +1755,7 @@ mod layout_probe {
                     continue;
                 }
             };
-            // 枠を描き終えるまで待つ (出力が止まったら描き終わり)
+            // Wait until the frame finishes drawing (drawing is done once output stops)
             let start = Instant::now();
             let mut last = 0u64;
             let mut quiet = Instant::now();
@@ -1730,12 +1793,12 @@ mod capture_probe {
     use super::{Tab, TabOptions};
     use std::time::{Duration, Instant};
 
-    /// 本物に短い質問をして、切り出し結果を一字一句そのまま書き出す。
+    /// Ask a real one a short question, and write out the extraction result verbatim, character by character.
     ///
     ///   cargo test capture_probe -- --ignored --nocapture
     ///
-    /// 知りたいのは「答えの本文が、範囲のどこから始まるか」。
-    /// 枠の高さぶん頭が欠けているなら、下端を削るだけでは足りない
+    /// What we want to know is "where in the range does the answer's body actually start."
+    /// If the head is missing by the height of the frame, trimming just the bottom edge isn't enough
     #[test]
     #[ignore]
     fn probe_what_the_capture_actually_grabs() {
@@ -1749,7 +1812,7 @@ mod capture_probe {
         )
         .expect("起動");
 
-        // 枠を描き終えるまで待つ
+        // Wait until the frame finishes drawing
         let quiet_for = |tab: &Tab, ms: u64, cap: u64| {
             let start = Instant::now();
             let mut last = 0u64;
@@ -1768,7 +1831,7 @@ mod capture_probe {
         };
         assert!(quiet_for(&tab, 3000, 60), "起動しない");
 
-        // 括弧貼り付けで入れて、落ち着いてから実行 (本番と同じ順序)
+        // Enter via bracketed paste, then execute once it settles (same order as production)
         let q = "Reply with exactly three lines: AAA then BBB then CCC. Nothing else.";
         tab.write_passthrough(b"\x1b[200~").unwrap();
         tab.write_passthrough(q.as_bytes()).unwrap();
@@ -1812,15 +1875,17 @@ mod turns_probe {
     use super::{Tab, TabOptions};
     use std::time::{Duration, Instant};
 
-    /// 答えとして渡すのは、答えだけであること。本物の端末で確かめる。
+    /// What's handed over as the answer must be the answer, and only the
+    /// answer. Confirm this on a real terminal.
     ///
-    /// 利用者が見たのは、相手へ渡した文章の先頭に
-    /// 「派閥として相手を１００文字以内で論破してください」だけが
-    /// ぽつんと付いてくる現象。折り返した指示の後半だった。
+    /// What the user saw was the phrase "as your faction, refute the other
+    /// side in under 100 characters" tacked on by itself at the start of the
+    /// text handed to the other side. It was the back half of a wrapped instruction.
     ///
-    /// 実行はその行を書き終える動作なので、カーソル行を起点にすると
-    /// 指示の最後の1行を巻き込む。2往復目以降でしか出ないので、
-    /// 1回きりの試験では捕まらない
+    /// Since execution is the action that finishes writing that row, using
+    /// the cursor row as the starting point pulls in the last line of the
+    /// instruction. This only shows up from the 2nd round onward, so a
+    /// single-shot test won't catch it
     #[test]
     fn the_instruction_is_not_sent_back_as_part_of_the_answer() {
         let mut tab = Tab::spawn(
@@ -1850,7 +1915,7 @@ mod turns_probe {
         };
         settle(&tab);
 
-        // 100桁を超えて折り返す長さにする (利用者のプロンプトと同じ性質)
+        // Make it long enough to wrap past 100 columns (same nature as the user's prompt)
         let long = |n: usize| {
             format!(
                 "echo TURN{n}-ドラクエ５のビアンカを妻にすべきかフローラを妻にすべきか議論をしてもらいますあなたはビアンカ派閥として相手を１００文字以内で論破してください-END{n}"
@@ -1895,14 +1960,15 @@ mod paste_no_submit_probe {
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
-    /// 括弧貼り付けだけを送ると、入力欄に入って止まること。
+    /// Sending only a bracketed paste must land in the input box and stop there.
     ///
-    /// 自動化から「下書きだけ入れて、送信は人が決める」を作るための土台。
-    /// 実測: 短い本文はそのまま見え、長いと [Pasted text #1 +N lines] に畳まれる
+    /// The foundation for building, from automation, "just insert a draft
+    /// and let the human decide whether to send." Observed: short bodies
+    /// display as-is; long ones collapse into [Pasted text #1 +N lines]
     ///
     ///   cargo test paste_no_submit -- --ignored --nocapture
     ///
-    /// APIは呼ばれないので消費はない。貼るだけで止まるかを実機で見る
+    /// No API is called, so there's no cost. Check on the real thing whether it merely stops after pasting
     #[test]
     #[ignore]
     fn probe_paste_without_enter_stays_unsent() {
@@ -1920,14 +1986,14 @@ mod paste_no_submit_probe {
         };
         settle(3000, 60);
 
-        // Lua から作られるのと同じ形: ESC[200~ 本文 ESC[201~
+        // Same shape as what Lua produces: ESC[200~ body ESC[201~
         let body = "lp.html を読んでください。\n\n";
         let payload = format!("\x1b[200~{body}\x1b[201~");
         tab.write_bytes(payload.as_bytes()).unwrap();
         settle(1500, 20);
 
-        // これが true になると、送っていないのに応答待ちが始まり、
-        // on_done が空振りで撃たれる
+        // If this becomes true, waiting-for-response starts even though
+        // nothing was sent, and on_done fires on an empty swing
         assert!(
             !tab.prompted.load(Ordering::Relaxed),
             "括弧貼り付けだけで送信扱いになっている"
@@ -1974,14 +2040,15 @@ mod draft_target_tests {
         .expect("起動")
     }
 
-    /// 下書きをシェルへ置かないこと。
+    /// A draft must never be placed into a shell.
     ///
-    /// 目印を理解しない相手に送ると、目印は無視され、中の改行が
-    /// そのまま実行になる。実測 (cmd.exe): 目印で囲んだ `echo HELLO` に
-    /// 復帰を付けたら、そのまま実行された。
+    /// Sent to a peer that doesn't understand the markers, the markers are
+    /// ignored and the newline inside becomes a real submit. Observed
+    /// (cmd.exe): wrapping `echo HELLO` in the markers and appending a
+    /// carriage return executed it immediately.
     ///
-    /// 見た目やプロファイル名で決めてはいけない。規格では、対応する
-    /// アプリが自分で ESC[?2004h と申告する。それを読む
+    /// This must not be decided by appearance or profile name. By
+    /// convention, a supporting app declares ESC[?2004h itself — read that instead
     #[test]
     fn a_shell_is_never_given_a_draft() {
         let tab = spawn("cmd.exe");
@@ -1992,11 +2059,11 @@ mod draft_target_tests {
         );
     }
 
-    /// AI CLI には置けること。
+    /// A draft must be placeable in an AI CLI.
     ///
     ///   cargo test a_draft_reaches -- --ignored
     ///
-    /// 実測: cmd.exe = false / powershell.exe = false / claude = true
+    /// Observed: cmd.exe = false / powershell.exe = false / claude = true
     #[test]
     #[ignore]
     fn a_draft_reaches_an_ai_cli() {
@@ -2029,15 +2096,17 @@ mod resize_survival_tests {
         }
     }
 
-    /// 幅を狭めても、画面が死なないこと。
+    /// Narrowing the width must not kill the screen.
     ///
-    /// vt100 0.16.2 は「全角があるなら次のマスもある」と仮定して
-    /// unwrap しており、右端が全角のまま狭めて半角を書くと落ちる
-    /// (総当たりで 848 通り中 24 通り)。窓の幅を追いかける以上、
-    /// 日本語を出しながら枠を引けば必ず通る道になる。
+    /// vt100 0.16.2 unwraps on the assumption that "if there's a full-width
+    /// character, there's also a next cell," and panics if the right edge
+    /// stays full-width after narrowing and a half-width character is
+    /// written (24 out of 848 cases in an exhaustive sweep). Since we track
+    /// the window width regardless, drawing a frame while outputting
+    /// Japanese is a path that's guaranteed to be hit eventually.
     ///
-    /// 落ちた解析器は完全リセットで立て直す。錠前が毒されても
-    /// 連鎖して死なない (毒された側を取り出して続ける)
+    /// A panicked parser is rebuilt via a full reset. Even if the mutex is
+    /// poisoned, it doesn't cascade into death (the poisoned side is recovered and execution continues)
     #[test]
     fn narrowing_the_window_does_not_kill_the_screen() {
         let tab = Tab::spawn(
@@ -2052,17 +2121,17 @@ mod resize_survival_tests {
         settle(&tab, 500);
 
         for to in [20u16, 7, 5, 11, 60] {
-            // 右端まで全角で埋める
+            // Fill all the way to the right edge with full-width characters
             tab.write_passthrough("あいうえおかきくけこさしすせそたちつてと".as_bytes())
                 .unwrap();
             settle(&tab, 300);
             tab.resize(8, to).unwrap();
-            // 狭めた直後の半角文字が、落とす引き金だった。
-            // 改行まで送って行を片付ける (残すと次のコマンドとくっつく)
+            // A half-width character right after narrowing was the trigger for the panic.
+            // Send a newline too, to clear the row (leaving it would run into the next command)
             tab.write_passthrough(b"x\r").unwrap();
             settle(&tab, 300);
 
-            // 生きていれば画面が読める (毒された錠前でも取り出せる)
+            // If it's still alive, the screen can be read (recovered even from a poisoned mutex)
             let text = {
                 let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
                 crate::tab::visible_text(p.screen())
@@ -2073,7 +2142,7 @@ mod resize_survival_tests {
             );
         }
 
-        // 最後まで出力を受け取り続けていること
+        // Confirm output is still being received all the way through
         tab.write_passthrough(b"echo ALIVE\r").unwrap();
         settle(&tab, 500);
         let text = {

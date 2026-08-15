@@ -1,12 +1,15 @@
-//! 最小限の WebSocket サーバー (RFC 6455)。
+//! A minimal WebSocket server (RFC 6455).
 //!
-//! 画面中継 (VNC相当) のフレームを流し、指の軌跡を低遅延で受け取るために使う。
-//! 我々が両端 (このサーバーと shell.rs のクライアント) を制御し、通信路も
-//! プライベート網 (LAN / Tailscale) に限られるので、tiny_http の upgrade で
-//! 生ソケットを取り、フレーミングと握手だけを自前で持つ。外部依存を増やさない。
+//! Used to stream screen-mirroring (VNC-equivalent) frames and receive
+//! finger-trace input with low latency. Since we control both ends (this
+//! server and the shell.rs client) and the transport is confined to a
+//! private network (LAN / Tailscale), we grab the raw socket via tiny_http's
+//! upgrade and implement only framing and the handshake ourselves. This
+//! avoids adding an external dependency.
 //!
-//! 対応するのは text / binary / ping / pong / close の各フレームと、
-//! 64KiB までの1フレーム。分割 (continuation) は使わない側で送らないので扱わない。
+//! Supports text / binary / ping / pong / close frames, and a single frame
+//! up to 64KiB. Fragmentation (continuation frames) is not handled, since
+//! the side we talk to never sends them.
 
 use std::io::{Read, Write};
 
@@ -14,8 +17,9 @@ use base64::Engine as _;
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
 
-/// 握手の応答キーを作る。クライアントの Sec-WebSocket-Key に固定のGUIDを足して
-/// SHA-1 し、base64 する (RFC 6455 が定める決まった変換)
+/// Build the handshake response key. Appends the fixed GUID to the client's
+/// Sec-WebSocket-Key, then SHA-1 hashes and base64-encodes it (the fixed
+/// transform defined by RFC 6455).
 pub fn accept_key(client_key: &str) -> String {
     const MAGIC: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     let mut input = client_key.as_bytes().to_vec();
@@ -23,7 +27,7 @@ pub fn accept_key(client_key: &str) -> String {
     B64.encode(sha1(&input))
 }
 
-/// フレームの種類。中身の解釈はこの opcode で決まる
+/// Frame type. How the payload is interpreted depends on this opcode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Text,
@@ -33,7 +37,8 @@ pub enum Op {
     Pong,
 }
 
-/// サーバーから送るフレームを組み立てる (マスクは付けない = サーバー側の作法)
+/// Build a frame to send from the server (no mask is applied — that's the
+/// server-side convention).
 pub fn encode(op: Op, payload: &[u8]) -> Vec<u8> {
     let opcode: u8 = match op {
         Op::Text => 0x1,
@@ -58,8 +63,9 @@ pub fn encode(op: Op, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// クライアントからのフレームを1つ読む (クライアントのフレームは必ずマスクされる)。
-/// 大きすぎるフレーム (>64KiB) やマスクなしは、約束破りとしてエラーで閉じる
+/// Read one frame from the client (a client frame is always masked).
+/// An oversized frame (>64KiB) or a missing mask is treated as a protocol
+/// violation and closed with an error.
 pub fn read_frame<R: Read>(r: &mut R) -> std::io::Result<(Op, Vec<u8>)> {
     let mut hdr = [0u8; 2];
     r.read_exact(&mut hdr)?;
@@ -103,8 +109,9 @@ fn err(msg: &str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, msg.to_string())
 }
 
-/// SHA-1。握手の応答キーを作るためだけに使う (機密用途ではない)。
-/// RFC 3174 の素朴な実装。依存を足さないために自前で持つ
+/// SHA-1. Used only to build the handshake response key (not for
+/// security-sensitive purposes). A straightforward implementation of
+/// RFC 3174, kept in-house to avoid adding a dependency.
 fn sha1(data: &[u8]) -> [u8; 20] {
     let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
     let ml = (data.len() as u64) * 8;
@@ -157,7 +164,8 @@ fn sha1(data: &[u8]) -> [u8; 20] {
     out
 }
 
-/// サーバー側のフレームを書き出す薄い包み。閉じるまで生ソケットを持つ
+/// A thin wrapper for writing server-side frames. Holds the raw socket until
+/// closed.
 pub struct WsWriter<W: Write> {
     inner: W,
 }
@@ -190,7 +198,7 @@ mod tests {
 
     #[test]
     fn sha1_matches_known_vectors() {
-        // RFC 3174 / 有名なテストベクタ
+        // RFC 3174 / well-known test vectors
         assert_eq!(
             hex(&sha1(b"abc")),
             "a9993e364706816aba3e25717850c26c9cd0d89d"
@@ -203,7 +211,7 @@ mod tests {
 
     #[test]
     fn accept_key_matches_rfc_example() {
-        // RFC 6455 4.2.2 の例
+        // Example from RFC 6455 4.2.2
         assert_eq!(
             accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
             "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
@@ -212,8 +220,9 @@ mod tests {
 
     #[test]
     fn server_frame_roundtrips_through_client_reader() {
-        // サーバーが組んだ本文を、クライアント側のマスク付きで包み直し、read_frame で戻せること
-        let payload = b"hello \xf0\x9f\x91\x8b".to_vec(); // 絵文字入り
+        // A body built by the server, re-wrapped with a client-side mask, should
+        // come back out through read_frame
+        let payload = b"hello \xf0\x9f\x91\x8b".to_vec(); // includes an emoji
         let masked = mask_as_client(Op::Text, &payload);
         let (op, got) = read_frame(&mut &masked[..]).unwrap();
         assert_eq!(op, Op::Text);
@@ -222,7 +231,7 @@ mod tests {
 
     #[test]
     fn oversize_frame_is_rejected() {
-        // 65KiB のフレームは約束破りとして弾く
+        // A 65KiB frame is rejected as a protocol violation
         let big = vec![0u8; 65 * 1024];
         let masked = mask_as_client(Op::Binary, &big);
         assert!(read_frame(&mut &masked[..]).is_err());
@@ -232,7 +241,7 @@ mod tests {
         b.iter().map(|x| format!("{x:02x}")).collect()
     }
 
-    /// テスト用にクライアントの作法 (マスク必須) でフレームを組む
+    /// Build a frame following client conventions (mask required), for tests.
     fn mask_as_client(op: Op, payload: &[u8]) -> Vec<u8> {
         let opcode: u8 = match op {
             Op::Text => 0x1,

@@ -1,18 +1,18 @@
-//! SHIKISHA-TERM: ポータブル・マルチセッションAIオーケストレーションTUI
+//! SHIKISHA-TERM: portable, multi-session AI orchestration TUI
 //!
-//! Phase 3: マルチタブ + INDEXダッシュボード + config.json
+//! Phase 3: multi-tab + INDEX dashboard + config.json
 //!
-//! 起動:
-//!   SHIKISHA-TERM.exe                 # config.jsonのタブ構成 (無ければPowerShell 1タブ)
-//!   SHIKISHA-TERM.exe claude          # デバッグ用: 引数のコマンドを1タブで起動
+//! Launch:
+//!   SHIKISHA-TERM.exe                 # tabs from config.json (falls back to 1 PowerShell tab)
+//!   SHIKISHA-TERM.exe claude          # debug: launch the given command in a single tab
 //!
-//! 操作 (プレフィックスキー Ctrl+B):
-//!   Ctrl+B q      終了 / Ctrl+B 0-9 タブ切替 (0=INDEX) / Ctrl+B n/p 隣のタブ
-//!   Ctrl+B [      コピーモード / Ctrl+B b 素のCtrl+Bを送信
-//! マウス: ホイール=スクロール(コピーモード) / 左ドラッグ=選択即コピー / 右クリック=ペースト
+//! Controls (prefix key Ctrl+B):
+//!   Ctrl+B q      quit / Ctrl+B 0-9 switch tab (0=INDEX) / Ctrl+B n/p next/prev tab
+//!   Ctrl+B [      copy mode / Ctrl+B b send a literal Ctrl+B
+//! Mouse: wheel=scroll (copy mode) / left-drag=select & copy instantly / right-click=paste
 
-// 画面は自前の窓に描く。黒いコンソールは要らないので、Windowsに用意させない。
-// (端末で使う --settings だけは、そのとき自分で1つ開く)
+// The UI draws into our own window. We don't need a black console, so don't let
+// Windows allocate one. (Only the terminal-facing --settings mode opens one itself, on demand.)
 #![windows_subsystem = "windows"]
 
 mod ball;
@@ -56,8 +56,8 @@ const TAB_BAR_MAX: u16 = 40;
 const STATUS_BAR_HEIGHT: u16 = 1;
 
 
-/// 異常終了の理由を残す。TUIは画面を占有するため、
-/// パニックメッセージが見えないまま消えてしまうのを防ぐ
+/// Records the reason for an abnormal exit. The TUI occupies the whole screen,
+/// so this keeps a panic message from disappearing unseen.
 fn install_crash_log() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -65,7 +65,7 @@ fn install_crash_log() {
             .location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_default();
-        append_hook_log(&format!("!!! 異常終了 {where_}: {info}"));
+        append_hook_log(&format!("!!! Crashed {where_}: {info}"));
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -80,39 +80,44 @@ fn install_crash_log() {
 
 fn main() -> Result<()> {
     install_crash_log();
-    // model ブリッジの子プロセス。env で接続先を受け取り stdin→応答 を返して終わる。
-    // 本体のウィンドウ/WebView等は一切起こさない (ヘッドレスなHTTP呼び出しのみ)
+    // Child-process mode for the model bridge. It receives its connection info via env,
+    // relays stdin -> response, then exits. It never spins up the main window/WebView etc.
+    // (headless HTTP calls only)
     if std::env::args().nth(1).as_deref() == Some("--bridge") {
         return bridge::run();
     }
-    // 旧配置 (ルート直下の config.json) を config フォルダへ移す (一度だけ)。
-    // 読み込みより前に済ませないと、移行前の空設定で起動してしまう
+    // Move the legacy layout (config.json under the root) into the config folder (once only).
+    // This must happen before loading, or we'd start up with the pre-migration empty config.
     config::migrate_legacy_config();
-    // ラリーの受け渡し置き場 (exchange) の掃除。不正終了で残った古い run フォルダを
-    // 起動時に回収する (正常時の一時ファイルは消費時に消えている)。30日より古いもの
+    // Clean up the exchange hand-off area. Sweep old run folders left behind by an abnormal
+    // exit, collecting them at startup (temp files from a normal exit are already gone by
+    // the time they're consumed). Anything older than 30 days.
     exchange::sweep_old(30);
-    // プライベート(使い捨て)ブラウザの一時領域を一掃する。閉じたら消える建前なので、
-    // 前回の異常終了で残っていれば全部ゴミ
+    // Wipe the scratch area for private (throwaway) browsers. The premise is that it
+    // disappears when closed, so if anything is left from a previous abnormal exit, it's
+    // all garbage.
     browser::sweep_private();
-    // WebView2 のユーザーデータ (Cookie・キャッシュ等) の置き場を設定から決める。
-    // 既定はローカル (%LOCALAPPDATA%) — Drive同期フォルダに置くとキャッシュが
-    // 延々と同期され通知や衝突を招くため。最初のWebViewが作られる前に指定する
+    // Decide where WebView2's user data (cookies, cache, etc.) lives, based on config.
+    // Default is local (%LOCALAPPDATA%) — putting it in a Drive-synced folder would cause
+    // the cache to sync endlessly and trigger notifications/conflicts. This must be set
+    // before the first WebView is created.
     unsafe {
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", config::browser_data_dir());
     }
-    // 表示言語を決める (設定 → OS の順。翻訳が無ければ英語)
+    // Decide the display language (config, then OS; falls back to English if untranslated)
     i18n::init(
         config::load().and_then(|c| c.language).as_deref(),
         &[config_file_dir(), std::path::PathBuf::from(".")],
     );
-    // 設定だけ開くモード (本体を起動せずブラウザで設定を編集する)
+    // Settings-only mode (edit settings in a browser without launching the main app)
     if std::env::args().nth(1).as_deref() == Some("--settings") {
-        // ここは文字で話すモードなので、話す場所を確保する
+        // This is a text-conversation mode, so make sure there's somewhere to talk
         open_console();
-        // 本体が動いていなくてもQRを出せる (接続先は設定から都度組み立てる)
+        // We can still show a QR code even without the main app running (the connection
+        // info is assembled from settings each time)
         let info = Arc::new(Mutex::new(webui::RemoteInfo::default()));
-        // 単体の設定モードは本体が動いていないのでマスターパスワードを持たない。
-        // 暗号化済みの秘密は編集できず、一覧は locked と表示される
+        // Standalone settings mode has no master password, since the main app isn't
+        // running. Encrypted secrets can't be edited; the list shows them as locked.
         let pw = Arc::new(Mutex::new(None));
         let web = webui::WebUi::start_with(config::config_file_path(), info, pw)?;
         println!("{}", i18n::tp("msg.settings_opened", &[("url", &web.url)]));
@@ -123,20 +128,20 @@ fn main() -> Result<()> {
         web.shutdown();
         return Ok(());
     }
-    // 画面中継の自己検証: ブラウザを開き、CDPのフレームを1枚保存して終わる。
-    // 保存した画像を見れば、非表示のWebViewでもフレームが出るかが分かる
+    // Self-check for screen relaying: open a browser, save one CDP frame, and exit.
+    // Looking at the saved image tells us whether frames come through even for a hidden WebView.
     if std::env::args().nth(1).as_deref() == Some("--cast-test") {
         open_console();
         let url = std::env::args().nth(2).unwrap_or_else(|| "https://example.com/".into());
         return cast_test(&url);
     }
 
-    // 叩いたら窓が出る。ランチャを挟むのは、挟む理由があるときだけでいい
+    // Running it pops up the window. Only add a launcher in front when there's a reason to.
     run_in_window()
 }
 
-/// `--cast-test <url>`: ブラウザを開いて画面中継を始め、最初のフレームを
-/// logs/cast-test.jpg に保存して終わる。人の目が要らない自己検証用
+/// `--cast-test <url>`: opens a browser, starts screen relaying, saves the first frame
+/// to logs/cast-test.jpg, and exits. For self-checks that don't need a human's eyes.
 fn cast_test(url: &str) -> Result<()> {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
@@ -147,7 +152,8 @@ fn cast_test(url: &str) -> Result<()> {
     println!("{}", crate::i18n::t("cli.cast_test.relaying"));
 
     let status = config::logs_dir().join("cast-test.txt");
-    // 最初のフレームは描画前で真っ白になりがち。数秒ためて「最後の1枚」を保存する
+    // The very first frame tends to be blank white, before anything's drawn.
+    // Collect for a few seconds and save the "last one" instead.
     let settle = Instant::now() + Duration::from_secs(5);
     let mut last: Option<(Vec<u8>, u32, u32)> = None;
     let mut count = 0u32;
@@ -192,14 +198,14 @@ fn cast_test(url: &str) -> Result<()> {
     Ok(())
 }
 
-/// 画面の大きさ。幅と高さだけあればいい
+/// Screen size. Only width and height are needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Size {
     pub width: u16,
     pub height: u16,
 }
 
-/// 画面上の矩形
+/// A rectangle on screen
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     pub x: u16,
@@ -208,20 +214,20 @@ pub struct Rect {
     pub height: u16,
 }
 
-/// タブバー・枠線・ステータスバーを除いた、PTYに渡す端末サイズ (rows, cols)
+/// The terminal size passed to the PTY (rows, cols), excluding the tab bar, borders, and status bar
 fn pty_dims(size: Size, tab_w: u16) -> (u16, u16) {
     let cols = size.width.saturating_sub(tab_w + 2).max(10);
     let rows = size.height.saturating_sub(STATUS_BAR_HEIGHT + 2).max(3);
     (rows, cols)
 }
 
-/// タブ名に合わせたタブバー幅の自動算出。
-/// "[x] 12. タブ名 🔒" が収まる幅 (全角考慮) を求め、範囲内に収める
+/// Auto-computes the tab bar width to fit the tab names.
+/// Finds the width (accounting for full-width chars) needed for "[x] 12. tab-name 🔒" and clamps it to range.
 fn auto_tab_width(tabs: &[Tab]) -> u16 {
     let longest = tabs
         .iter()
         .map(|t| {
-            // インジケータ4桁 + "N. " + 名前 + インデント + 錠2桁 + 枠線1桁
+            // 4-digit indicator + "N. " + name + indent + 2-digit lock + 1-char border
             4 + 4 + t.title.width() as u16 + t.depth + 2 + 1
         })
         .max()
@@ -232,12 +238,12 @@ fn auto_tab_width(tabs: &[Tab]) -> u16 {
 
 
 
-/// 画面最下行から数えた絶対行位置
+/// Absolute line position counted from the bottom of the screen
 fn abs_line(offset: usize, rows: u16, cursor_row: u16) -> usize {
     offset + rows.saturating_sub(1).saturating_sub(cursor_row) as usize
 }
 
-/// argvからタブ名を生成 ("ssh" → "SSH")
+/// Generates a tab name from argv ("ssh" -> "SSH")
 fn title_of(argv: &[String]) -> String {
     argv.first()
         .map(|c| {
@@ -251,7 +257,7 @@ fn title_of(argv: &[String]) -> String {
 }
 
 
-/// マスターパスワードの設定・変更・解除 (INDEXメニュー [k])
+/// Set, change, or remove the master password (INDEX menu [k])
 fn manage_master_password(
     surface: &mut WinSurface,
     cfg: Option<&config::Config>,
@@ -266,7 +272,7 @@ fn manage_master_password(
     let text = std::fs::read_to_string(&path)?;
 
     if crypto::is_encrypted(&text) {
-        // 変更 or 解除
+        // Change or remove
         let Some(old) = surface.ask_password(&i18n::t("prompt.password.current"),
             &i18n::t("prompt.password.current_note"),
         )?
@@ -296,7 +302,7 @@ fn manage_master_password(
         *password = Some(new);
         Ok(i18n::t("msg.password.changed"))
     } else {
-        // 新規設定
+        // First-time setup
         let Some(new) = surface.ask_password(&i18n::t("prompt.password.set"),
             &i18n::t("prompt.password.set_note"),
         )? else {
@@ -315,75 +321,75 @@ fn manage_master_password(
     }
 }
 
-/// 自前の窓へ描くときの持ち物
+/// The set of things needed to draw into our own window
 struct WinSurface {
     win: std::rc::Rc<crate::browser::Browser>,
     rows: u16,
     cols: u16,
-    /// 直前に送った状態。変わったときだけ送る
+    /// The last state we sent. Only send again when it changes.
     last: Option<crate::uistate::UiState>,
     last_screen: String,
-    /// 中身の領域 (x, y, 幅, 高さ)。ブラウザを置く場所
+    /// The content area (x, y, width, height). Where the browser gets placed.
     area: (i32, i32, i32, i32),
-    /// 窓から来た意図を、ループが読む形に直したもの。
-    /// ループは端末のキー操作しか知らないので、そこへ寄せる
+    /// Intents that arrived from the window, converted into the form the loop reads.
+    /// The loop only understands terminal key input, so everything gets funneled there.
     pending: std::collections::VecDeque<Event>,
-    /// 置いたページの帯で、人が「終わった」を押したもの
+    /// Names of pages whose bar button was pressed to signal "done" by a human
     presses: Vec<String>,
-    /// 読み込みが終わったページ (呼び名, URL, 参照先まで揃ったか)
+    /// Pages that finished loading (id, URL, whether refs are settled too)
     loads: Vec<(String, String, bool)>,
-    /// ホイールで頼まれた遡り (正 = 過去へ)
+    /// Scroll-back requested via the wheel (positive = further into the past)
     scrolls: Vec<(i32, u16, u16)>,
-    /// 上のバーで頼まれた移動
+    /// Navigation requested via the top bar
     gos: Vec<crate::browser::Go>,
-    /// 聞いておいた居場所の答え (窓の中での名前, URL, 戻れる, 進める)
+    /// The answer to a location query we asked for (name inside the window, URL, can-go-back, can-go-forward)
     wheres: Vec<(String, String, bool, bool)>,
-    /// ブラウザの読み込み開始/終了の報せ (窓の中での名前, 読み込み中か)。
-    /// 名前は "{ws}/{呼び名}" の形。呼び名への変換はループ側で行う
-    /// (WinSurface は caps を知らない)。wheres と同じ作法
+    /// Browser load start/end notifications (name inside the window, whether loading).
+    /// The name is in "{ws}/{id}" form; converting to the id happens on the loop side
+    /// (WinSurface doesn't know about caps). Same convention as `wheres`.
     loading: Vec<(String, bool)>,
-    /// 中継画面のフレーム (JPEGのバイト列)。ループがスマホへ配る
+    /// Relay-screen frames (JPEG byte buffers). The loop delivers these to phones.
     frames: Vec<Vec<u8>>,
-    /// 窓が閉じた。描く先が無くなったので、ループは畳むしかない
+    /// The window was closed. With nowhere left to draw, the loop has no choice but to shut down.
     closed: bool,
-    /// 設定ページの「設定を閉じる」が押された。ループが設定タブを畳む
+    /// The settings page's "close settings" button was pressed. The loop closes the settings tab.
     close_settings: bool,
 }
 
 impl WinSurface {
-    /// 外から届いた操作を、窓の打鍵と同じ列に入れる。
-    /// スマホから来ても、ループから見れば区別が無い
+    /// Puts an externally-arrived operation into the same queue as window keystrokes.
+    /// Whether it came from a phone or not, the loop sees no difference.
     fn inject(&mut self, ev: Event) {
         self.pending.push_back(ev);
     }
 
-    /// 帯のボタンが押されたページの名前を引き取る。
-    /// 窓の報告は1本しかないので、受けるのはここだけにする
+    /// Takes ownership of the names of pages whose bar button was pressed.
+    /// The window only has a single report channel, so this is the only place that consumes it.
     fn take_presses(&mut self) -> Vec<String> {
         std::mem::take(&mut self.presses)
     }
 
-    /// 「設定を閉じる」が押されていたら true (押されていたら下ろす)
+    /// True if "close settings" was pressed (and clears the flag if so)
     fn take_close_settings(&mut self) -> bool {
         std::mem::take(&mut self.close_settings)
     }
 
-    /// 読み込みが終わったページを引き取る (呼び名, URL, 揃ったか)
+    /// Takes ownership of pages that finished loading (id, URL, whether settled)
     fn take_loads(&mut self) -> Vec<(String, String, bool)> {
         std::mem::take(&mut self.loads)
     }
 
-    /// 上のバーで頼まれた移動を引き取る
+    /// Takes ownership of navigation requested via the top bar
     fn take_gos(&mut self) -> Vec<crate::browser::Go> {
         std::mem::take(&mut self.gos)
     }
 
-    /// ホイールの合図を引き取る (目盛りの数, 指していた行, 桁)
+    /// Takes ownership of wheel signals (tick count, row and column pointed at)
     fn take_scrolls(&mut self) -> Vec<(i32, u16, u16)> {
         std::mem::take(&mut self.scrolls)
     }
 
-    /// 居場所の答えを引き取る
+    /// Takes ownership of location answers
     fn take_wheres(&mut self) -> Vec<(String, String, bool, bool)> {
         std::mem::take(&mut self.wheres)
     }
@@ -391,7 +397,7 @@ impl WinSurface {
         std::mem::take(&mut self.loading)
     }
 
-    /// たまった中継フレームを引き取る (ループがスマホへ配る)
+    /// Takes ownership of accumulated relay frames (the loop delivers them to phones)
     fn take_frames(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.frames)
     }
@@ -407,16 +413,16 @@ impl WinSurface {
                     self.pending.push_back(Event::Resize(cols, rows));
                 }
                 Ev::JsError { msg } => {
-                    crate::append_hook_log(&format!("画面の失敗: {msg}"));
+                    crate::append_hook_log(&format!("Screen failure: {msg}"));
                 }
-                // 窓が閉じた。ここで畳まないと、描く先を失ったまま
-                // 誰にも見えないプロセスが残り、待ち受けの口を握り続ける
+                // The window was closed. If we don't shut down here, a process with
+                // nowhere left to draw stays alive unseen, still holding the listening port.
                 Ev::Closed => self.closed = true,
-                // 設定ページの「設定を閉じる」。畳む先 (caps・active) は
-                // ここでは触れないので、ループに預ける
+                // The settings page's "close settings" button. Where the tab actually
+                // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.close_settings = true,
-                // 上のバーが押された。宛先は「今見ているページ」なので
-                // ループが決める (バーは1枚しか出ていない)
+                // The top bar was pressed. The destination is "whatever page is currently
+                // showing", so the loop decides (only one bar is ever displayed).
                 Ev::Go { go } => self.gos.push(go),
                 Ev::Scroll { by, row, col } => self.scrolls.push((by, row, col)),
                 Ev::Where {
@@ -425,22 +431,23 @@ impl WinSurface {
                     can_back,
                     can_forward,
                 } => self.wheres.push((name, url, can_back, can_forward)),
-                // 置いたページの帯が押された = 人が自分の番を終えた。
-                // 誰が押したかは、報告に付いてくる名前でしか分からない
+                // The bar on a placed page was pressed = a human finished their turn.
+                // Who pressed it can only be told from the name attached to the report.
                 Ev::Button { from: Some(name) } => self.presses.push(name),
-                // 置いたページの読み込みが終わった (移動のたびに来る)
+                // A placed page finished loading (fires on every navigation)
                 Ev::Ready {
                     from: Some(name),
                     url,
                     complete,
                 } => self.loads.push((name, url, complete)),
-                // ブラウザが読み込みを始めた/終えた。呼び名への変換はループ側。
-                // ここで表示名にすると WinSurface が caps を知る羽目になる
+                // A browser started/finished loading. Conversion to the id happens on
+                // the loop side — doing it here as a display name would make WinSurface
+                // need to know about caps.
                 Ev::Loading {
                     from: Some(name),
                     busy,
                 } => self.loading.push((name, busy)),
-                // クリップボードは端末側と同じ扱いにする
+                // Treat the clipboard the same way the terminal side does
                 Ev::Copy { text } => {
                     if let Ok(mut c) = arboard::Clipboard::new() {
                         let _ = c.set_text(text);
@@ -451,7 +458,8 @@ impl WinSurface {
                         let _ = paste_clipboard(t);
                     }
                 }
-                // 中継フレーム。base64をほどいてバイト列で溜め、ループがスマホへ配る
+                // A relay frame. Decode the base64 into a byte buffer and stash it;
+                // the loop delivers it to phones.
                 Ev::Frame { data, .. } => {
                     use base64::Engine as _;
                     if let Ok(bytes) =
@@ -460,7 +468,8 @@ impl WinSurface {
                         self.frames.push(bytes);
                     }
                 }
-                // 残りは打鍵に直せるもの。直し方は keys_for に1つだけ置く
+                // Everything else can be converted into keystrokes. `keys_for` is the
+                // single place that knows how.
                 other => {
                     for e in keys_for(&other) {
                         self.pending.push_back(e);
@@ -471,11 +480,12 @@ impl WinSurface {
     }
 }
 
-/// 画面からの意図を、ループが既に知っている打鍵に直す。
+/// Converts an intent from the screen into keystrokes the loop already understands.
 ///
-/// 窓もスマホも同じページを使う。直し方が2か所にあると、
-/// 同じ押下がどちらから来たかで別の意味になる日が来る。
-/// 打鍵に直せない意図 (読み込み完了・大きさの変更など) は空を返す
+/// The window and the phone use the same page. If there were two separate places
+/// doing this conversion, the same press could end up meaning different things
+/// depending on which one it came from.
+/// Intents that can't be converted to a keystroke (load-complete, resize, etc.) return empty.
 fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
     use crate::browser::Ev;
     let plain = |c: char| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -486,14 +496,14 @@ fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
         ]
     };
     match ev {
-        // 「このタブを見たい」は Ctrl+B の数字と同じこと
+        // "I want to look at this tab" is the same thing as Ctrl+B <digit>
         Ev::Select { tab } if *tab <= 9 => {
             prefixed(char::from_digit(*tab as u32, 10).unwrap_or('0'))
         }
-        // タブバーの + は、どのタブを見ていても効くよう前置キー付きにする
+        // The tab bar's + is prefixed so it works no matter which tab is showing
         Ev::AddTab => prefixed('t'),
-        // 盤面のメニューは INDEX を見ているときの素の打鍵。
-        // 前置キーを付けると、同じ文字が両方にあるものだけが効く
+        // The board's menu is a plain keystroke while looking at INDEX.
+        // Adding the prefix key would mean only characters present on both sides work.
         Ev::Menu { key } => key.chars().next().map(plain).map(|k| vec![k]).unwrap_or_default(),
         Ev::Stop => prefixed('x'),
         Ev::Key { text, named, ctrl } => {
@@ -516,7 +526,7 @@ fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
     }
 }
 
-/// 名前で送られてきた制御キーを、端末のキー種別に直す
+/// Converts a control key sent by name into the terminal's key type
 fn named_key(n: &str) -> Option<KeyCode> {
     Some(match n {
         "enter" => KeyCode::Enter,
@@ -539,9 +549,9 @@ fn named_key(n: &str) -> Option<KeyCode> {
     })
 }
 
-/// 自前の窓を開いて、同じループをその上で回す
+/// Opens our own window and runs the same loop on top of it
 fn run_in_window() -> Result<()> {
-    // 外皮を配る。file:// は wry のIPCで落ちるので、ローカルHTTPで出す
+    // Serve the shell page. file:// breaks wry's IPC, so serve it over local HTTP instead.
     let server = tiny_http::Server::http("127.0.0.1:0").map_err(|e| {
         anyhow::anyhow!(crate::i18n::tp(
             "err.main.local_server",
@@ -556,8 +566,9 @@ fn run_in_window() -> Result<()> {
     let page = shell::page("");
     std::thread::spawn(move || {
         for req in server.incoming_requests() {
-            // 外皮を配るだけ。QRの絵は state に載って届くので、
-            // 画像用の別ルートは持たない (窓とスマホで配信元が違っても壊れない)
+            // Only serves the shell page. The QR image rides along inside the state,
+            // so there's no separate route for it (works even when the window and
+            // the phone get served from different origins).
             let r = tiny_http::Response::from_string(page.clone()).with_header(
                 tiny_http::Header::from_bytes(
                     &b"Content-Type"[..],
@@ -593,7 +604,7 @@ fn run_in_window() -> Result<()> {
     })
 }
 
-/// 今の状態を、見た目を持たない形にまとめる
+/// Summarizes the current state into a form with no presentation attached
 fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
     crate::uistate::UiState {
         workspace: ui
@@ -607,9 +618,9 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         auto_enabled: ui.auto.unwrap_or(true),
         remote_on: ui.remote_on,
         first_run: ui.first_run,
-        // 設定に書いた順のまま並べる。
-        // セッションとブラウザを分けて並べると、1番目に書いたブラウザが
-        // 後ろに回る
+        // Keep the order exactly as written in the config.
+        // Listing sessions and browsers separately would push the browser
+        // written first to the back.
         tabs: ui
             .panes
             .iter()
@@ -621,14 +632,15 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
                 }
             })
             .collect(),
-        // ボールはセッションの番号で動く。見せるのは画面の番号
+        // The ball moves by session number; what we display is the screen number
         ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
         flash: flash.map(str::to_string),
         help_open: ui.help_open,
         ws_open: ui.ws_open,
         qr: ui.qr.clone(),
-        // 絵はここで一度だけ組む。窓もスマホも同じ state を読むので、
-        // 配信元に依らず同じQRが出る (別画像にしていた頃のリンク切れを断つ)
+        // Build the image just once here. Both the window and the phone read the
+        // same state, so the same QR shows up regardless of origin (this ends the
+        // link-rot we used to get back when it was served as a separate image).
         qr_svg: ui.qr.as_deref().map(|u| crate::netaddr::qr_svg(u, 6)),
         nav: ui.nav.clone(),
         scrolled: ui.scrolled,
@@ -641,8 +653,8 @@ impl WinSurface {
         Ok(Size { width: self.cols, height: self.rows })
     }
 
-    /// 次の操作を待つ。窓からの意図は、ループが既に知っている
-    /// キー操作に直して渡してある
+    /// Waits for the next operation. Intents from the window arrive already
+    /// converted into key operations the loop knows about.
     fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> Result<Option<Event>> {
         self.take_events(active_tab);
         if self.closed {
@@ -655,19 +667,20 @@ impl WinSurface {
         Ok(None)
     }
 
-    /// ブラウザを置く先。窓の中に置くと、位置も重なり順もOSが見てくれる
+    /// Where browsers get placed. Placing them inside the window lets the OS handle
+    /// position and stacking order for us.
     fn host(&self) -> Option<(std::rc::Rc<crate::browser::Browser>, (i32, i32, i32, i32))> {
         Some((std::rc::Rc::clone(&self.win), self.area))
     }
 
-    /// パスワードを聞く。スマホには出さない (ページ側が出さない)
+    /// Asks for a password. Not shown on the phone (the page side doesn't show it there either).
     fn ask_password(&mut self, title: &str, note: &str) -> Result<Option<String>> {
         let _ = self.win.eval(&format!(
             "return window.__password({},{});",
             serde_json::to_string(title).unwrap_or_default(),
             serde_json::to_string(note).unwrap_or_default()
         ));
-        // 人が入力し終えるまで待つ。急かす理由がない
+        // Wait until the human finishes typing. No reason to rush them.
         self.win.wait_password(Duration::from_secs(600))
     }
 
@@ -680,7 +693,7 @@ impl WinSurface {
                     let json = serde_json::to_string(&state).unwrap_or_default();
                     if w.last.is_none() {
                         crate::append_hook_log(&format!(
-                            "状態を送る: タブ{} 「{}」 {}文字",
+                            "Sending state: {} tabs, workspace \"{}\", {} chars",
                             state.tabs.len(),
                             state.workspace,
                             json.len()
@@ -692,7 +705,7 @@ impl WinSurface {
                     ));
                     w.last = Some(state);
                 }
-                // ターミナルの中身は、見ているタブのぶんだけ送る
+                // Only send the terminal contents for the tab currently being viewed
                 if let Some(t) = session_at(&ui.panes, ui.active).and_then(|i| tabs.get(i)) {
                     let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
                     let s = p.screen();
@@ -717,18 +730,19 @@ impl WinSurface {
 }
 
 fn run(mut surface: WinSurface) -> Result<()> {
-    // モード指定は起動するコマンドではない。
-    // 外すのを忘れると `--window` という名前のプログラムを探しに行く
+    // The mode flag is not a command to launch.
+    // Forgetting to filter it out would send us looking for a program named `--window`.
     let cmd_args: Vec<String> = std::env::args()
         .skip(1)
         .filter(|a| !matches!(a.as_str(), "--settings"))
         .collect();
     let start = Instant::now();
-    // 幅はconfig指定 → 無ければタブ名から自動算出 (タブ起動後に確定)
+    // Width comes from config if given; otherwise it's auto-computed from tab names
+    // (finalized once tabs are launched).
     let mut tab_w = 18u16;
     let (mut rows, mut cols) = pty_dims(surface.size()?, tab_w);
 
-    // タブ構成: CLI引数 (デバッグ用) > config.json > 既定 (PowerShell 1タブ)
+    // Tab layout precedence: CLI args (debug) > config.json > default (1 PowerShell tab)
     let cfg = if cmd_args.is_empty() {
         config::load()
     } else {
@@ -740,8 +754,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
         let (ws, errs) = c.resolve_workspaces();
         workspaces = ws;
         startup_errors.extend(errs);
-        // model ブリッジの接続先を解決してキャッシュ (この時点は暗号化secretは未解錠。
-        // パスワード確定後に下でもう一度解決するので、平文secret/無認証はここで揃う)
+        // Resolve and cache the model bridge's connection info (at this point encrypted
+        // secrets aren't unlocked yet; it's resolved again below once the password is
+        // confirmed, so plaintext secrets/no-auth setups are already covered here).
         bridge::set_providers(c, None);
     }
 
@@ -753,13 +768,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
         &workspaces.iter().map(|w| w.name.clone()).collect::<Vec<_>>(),
     );
     if let Some(w) = workspaces.get(ws_index) {
-        // どこから始まったかは、あとで「なぜこの画面なのか」を追う手がかりになる
+        // Knowing where we started is a handy clue later, when tracking down "why is
+        // this the screen we're on".
         append_hook_log(&format!(
-            "起動: ワークスペース「{}」({})",
+            "Startup: workspace \"{}\" ({})",
             w.name,
             match remembered.as_deref() {
-                Some(r) if r == w.name => "前回の続き",
-                _ => "先頭",
+                Some(r) if r == w.name => "resuming last session",
+                _ => "first workspace",
             }
         ));
     }
@@ -773,12 +789,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
             tab::TabOptions::default(),
         )?);
     } else if let Some(w) = workspaces.get(ws_index) {
-        // 前回の続きから始めるなら、起動するのもそのワークスペース。
-        // ここを先頭に決め打つと、名前だけ復元されて中身が違う画面になる
+        // If we're resuming where we left off, launch that same workspace too.
+        // Hard-coding this to the first workspace would restore only the name while
+        // showing a screen with different contents.
         spawn_workspace(w, rows, cols, &mut tabs, &mut startup_errors);
     }
-    // 設定がまだ無い = 初回起動。何をすればいいか分からないまま
-    // シェルが1つ開くだけ、という体験にならないよう案内する
+    // No config yet = first run. Guide the user so the experience isn't just
+    // "a single shell opens and nothing else happens", leaving them unsure what to do.
     let first_run = cmd_args.is_empty() && cfg.is_none();
     if tabs.is_empty() && workspaces.is_empty() {
         let argv = vec!["powershell.exe".to_string()];
@@ -792,7 +809,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         )?);
     }
 
-    // タブ名が出揃ってから幅を確定し、PTYサイズを合わせ直す
+    // Finalize the width now that all tab names are known, and re-fit the PTY size
     tab_w = match cfg.as_ref().and_then(|c| c.tab_bar_width) {
         Some(w) => w.clamp(TAB_BAR_MIN, TAB_BAR_MAX),
         None => auto_tab_width(&tabs),
@@ -802,14 +819,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
         let _ = t.resize(rows, cols);
     }
 
-    // Luaフックエンジンはワークスペース単位 (共有変数もその中で共有される)。
-    // 未使用のワークスペースは作らず、切替時に必要なら生成する
+    // The Lua hook engine is per-workspace (shared variables are scoped inside it too).
+    // Unused workspaces don't get one built; it's created on demand when switched to.
     let mut max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
     let mut done_confirm_ms = cfg
         .as_ref()
         .and_then(|c| c.done_confirm_ms)
         .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
-    // secretsが暗号化されていれば起動時にマスターパスワードを尋ねる
+    // If secrets are encrypted, ask for the master password at startup
     let mut password: Option<String> = None;
     if let Some(path) = cfg.as_ref().and_then(|c| c.secrets_path()) {
         if std::fs::read_to_string(&path)
@@ -834,7 +851,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             break;
                         }
                     }
-                    // キャンセル時は秘密情報なしで続行 (通知だけが使えない)
+                    // On cancel, continue without secrets (only notifications become unusable)
                     None => {
                         startup_errors
                             .push(i18n::t("prompt.password.skipped"));
@@ -845,14 +862,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
     }
 
-    // パスワード確定後に model ブリッジの接続先をもう一度解決 (暗号化secretのキーもここで展開)
+    // Resolve the model bridge's connection info again now that the password is confirmed
+    // (encrypted-secret keys get unlocked here too)
     if let Some(c) = &cfg {
         if password.is_some() {
             bridge::set_providers(c, password.as_deref());
         }
     }
 
-    // 通知先 (Slack / Telegram)。Luaはここに登録された宛先にしか送れない
+    // Notification destinations (Slack / Telegram). Lua can only send to destinations
+    // registered here.
     let mut notifier = match cfg.as_ref() {
         Some(c) => {
             let (dests, err) = c.resolve_notify(password.as_deref());
@@ -863,7 +882,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         None => notify::Notifier::new(Default::default()),
     };
-    // 自動化に与える能力 (既定は空)。設定ファイルにだけ書ける玄人向け機能
+    // Capabilities granted to automation (empty by default). An advanced feature that
+    // can only be enabled by writing it into the config file.
     let caps: hooks::Caps = std::rc::Rc::new(match cfg.as_ref() {
         Some(c) => caps::Capabilities::new(
             c.capabilities.clone(),
@@ -873,11 +893,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
         None => caps::Capabilities::disabled(),
     });
     let mut engines: Vec<Option<HookEngine>> = (0..workspaces.len().max(1)).map(|_| None).collect();
-    // 窓を持っているなら、ブラウザはその中に置く
+    // If we have a window, put browsers inside it
     caps.set_host(surface.host());
     caps.set_workspace(ws_index);
     if let Some(w) = workspaces.get(ws_index) {
-        // このワークスペースが使ってよい秘密を絞る (既定は全拒否)
+        // Restrict which secrets this workspace is allowed to use (deny-all by default)
         caps.set_secret_allow(w.secrets_allow.clone(), w.secrets_allow_all);
         engines[ws_index] = build_engine(cfg.as_ref(), Some(w), &mut startup_errors, &caps);
         open_declared_browsers(w, &caps, &mut startup_errors);
@@ -887,93 +907,101 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let slot = ws_index.min(engines.len().saturating_sub(1));
     let mut engine = engines[slot].take();
 
-    // リモートUI (スマホ等から監視・指示する)。設定で有効にしたときだけ待ち受ける。
-    // 状況は設定画面にも渡し、QRコードをブラウザで見られるようにする
+    // Remote UI (monitor/control from a phone, etc). Only starts listening when
+    // enabled in config. Status is also handed to the settings page so the QR code
+    // can be viewed in a browser.
     let remote_info: Arc<Mutex<webui::RemoteInfo>> = Arc::new(Mutex::new(Default::default()));
     let mut remote_ui = start_remote(cfg.as_ref(), password.as_deref(), &mut startup_errors);
     publish_remote(&remote_info, &remote_ui);
 
-    // 今どこへ焦点を移してあるか。None = まだ一度も移していない
+    // Where focus is currently directed. None = never moved it yet.
     let mut focused: Option<Option<String>> = None;
 
-    // 見ているページの居場所 (窓の中での名前, URL, 戻れるか, 進めるか)。
-    // 窓しか知らないので、聞いて控える
+    // The location of the page being viewed (name inside the window, URL, can-go-back,
+    // can-go-forward). Only the window knows this, so we ask and cache it.
     let mut where_now: Option<(String, String, bool, bool)> = None;
-    // 呼び名ごとの読み込み状態 (読み込み中か, 直近で始まった時刻)。
-    // 一瞬で終わる通信も見えるよう、始まりから最低時間はインジケータを点ける
+    // Per-id loading state (currently loading, time it most recently started).
+    // The indicator stays lit for a minimum duration from the start so even
+    // instantaneous network activity remains visible.
     let mut loading_now: std::collections::HashMap<String, (bool, std::time::Instant)> =
         std::collections::HashMap::new();
     let mut asked_where_ms: u64 = 0;
 
     let mut auto_enabled = true;
     let mut started_fired = vec![false; tabs.len()];
-    // 自動チェーンの「透明のボール」。今どのタブが仕事を持っているかを表示に使う
+    // The "invisible ball" of the automation chain. Used in the display to show
+    // which tab currently holds the work.
     let mut ball = ball::Ball::default();
-    // 相手がまだ受け取れない受け渡しを預かる場所
+    // Holding area for hand-offs the recipient can't accept yet
     let mut waiting: Vec<Waiting> = Vec::new();
-    // 送信した本文に対して、あとから実行(改行)を送る予約
+    // A reservation to send submit (Enter) later, for text that's already been sent
     let mut pending_submit: Vec<PendingSubmit> = Vec::new();
-    // 応答完了と見えたタブと、それを確定させる時刻。
-    // 途中の息継ぎで撃たないよう、静かなまま保っていることを確かめてから撃つ
+    // Tabs that look like they've finished responding, and the time that gets confirmed.
+    // We hold off firing until we've verified it stayed quiet, so we don't fire on a
+    // mid-response pause for breath.
     let mut pending_done: Vec<(usize, u64)> = Vec::new();
-    // ボールを追って画面を切り替えるか
+    // Whether to follow the ball by switching screens
     let mut follow_ball = cfg.as_ref().and_then(|c| c.follow_ball).unwrap_or(true);
-    // 人が最後に画面を触った時刻。直後は追従しない
+    // The last time a human touched the screen. Don't auto-follow right after that.
     let mut view_touched_ms: u64 = 0;
-    // 追従で切り替えた先。同じ場所へ何度も飛ばさないために覚えておく
+    // Where we last auto-followed to. Remembered so we don't jump to the same place repeatedly.
     let mut followed: usize = 0;
-    // INDEXで押せる場所。毎フレーム描画時に作り直す
+    // Clickable spots on INDEX. Rebuilt every frame at draw time.
 
-    // 0 = INDEX、1.. = セッション。初回はINDEX(案内のある画面)から始める
+    // 0 = INDEX, 1.. = sessions. Start on INDEX (the screen with onboarding guidance) at first.
     let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
     let mut prefix_active = false;
-    // 直前に描いた状態。スマホへはこれを渡す (組み立てる場所を1つに保つ)
+    // The last state drawn. This is what gets handed to the phone (keeps the
+    // assembly point to a single spot).
     let mut last_ui_state: Option<crate::uistate::UiState> = None;
-    // 重ねたブラウザを今見せているか。出しっぱなしだと
-    // ターミナルがずっと隠れてしまうので、既定は隠す
+    // Whether an overlaid browser is currently being shown. Leaving it up would
+    // permanently hide the terminal, so it's hidden by default.
     let mut flash: Option<String> = startup_errors.first().map(|e| i18n::tp("msg.startup_failed", &[("error", e)]));
     let mut last_detect = Instant::now() - Duration::from_secs(1);
-    // いま画面中継しているブラウザ (見ている人がいる間だけ流す)
+    // The browser currently being screen-relayed (only streams while someone's watching)
     let mut casting: Option<String> = None;
-    // ワークスペースは仮想デスクトップ方式: 切替=非表示であって停止ではない。
-    // 各ワークスペースのタブ群を保持し、初回アクティブ化時に起動する
-    // 起動した分は tabs が持っている。棚は残りのワークスペースの数だけ空けておく
+    // Workspaces use a virtual-desktop model: switching means hiding, not stopping.
+    // Each workspace keeps its own set of tabs, launched the first time it's activated.
+    // Launched tabs live in `tabs`; the shelf reserves space for the remaining workspaces.
     let mut ws_tabs: Vec<Vec<Tab>> = Vec::new();
     ws_tabs.resize_with(workspaces.len(), Vec::new);
-    // 設定ファイルの変更監視 (保存したら再起動なしで反映する)
+    // Watch the config file for changes (saving takes effect without a restart)
     let mut watcher = watch::Watcher::new(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
-    // 新しい版が出ていないか裏で一度だけ確かめる (知らせるだけで、更新はしない)
+    // Check once in the background for whether a newer version is out (only notifies; doesn't update)
     let update_rx = update::spawn_check();
     let mut cfg = cfg;
 
     let mut ws_open = false;
     let mut help_open = false;
     let mut qr_open = false;
-    // タブバー境界線のドラッグ中フラグ (マウスで幅を調整できる)
-    // 設定Web GUI (INDEXの [e] で起動、アプリ終了時に停止)
+    // Flag for dragging the tab-bar border (lets the mouse adjust its width)
+    // The settings web GUI (launched via INDEX's [e], stopped when the app exits)
     let mut web: Option<webui::WebUi> = None;
-    // 本体が握るマスターパスワードを設定GUIと共有する (秘密の暗号化に使う)。
-    // ページには出さず、同一プロセスのサーバ側でだけ読む。変更時に反映する
+    // Share the master password held by the main app with the settings GUI
+    // (used to encrypt secrets). Never sent to the page; only read server-side,
+    // within the same process. Kept in sync on change.
     let web_password: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(password.clone()));
     let config_file = config::config_file_path();
 
     loop {
-        // 画面に並ぶもの。設定に書いた順。
-        // 押せる番号の上限は、セッションの数だけでは足りない
+        // What's laid out on screen, in the order written in config.
+        // The upper bound of pressable numbers needs more than just the session count.
         let hosted = caps.hosted_names();
         let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
         let layout = panes_of(workspaces.get(ws_index), &titles, &hosted);
         let panes = layout.len();
-        // 設定が保存されたら読み直して反映する (アプリの再起動は不要)
+        // Reload and apply once the config is saved (no app restart needed)
         if watcher.changed() {
             if let Some(newcfg) = config::load() {
                 let (new_ws, errs) = newcfg.resolve_workspaces();
                 startup_errors.extend(errs);
-                // 言語は起動時にしか読まないので、設定で変えても今の画面には
-                // 反映されない。盤面の知らせに一言添えて、閉じて開き直すよう促す
-                // (設定GUIのalertはアプリ内WebViewでは出ないため、こちらで伝える)
+                // The language is only read at startup, so changing it in settings
+                // doesn't apply to the current screen. Add a note to the board's
+                // notification prompting the user to close and reopen.
+                // (the settings GUI's alert doesn't show inside the in-app WebView,
+                // so we convey it here instead)
                 let lang_restart = i18n::would_change(newcfg.language.as_deref());
-                // 表示中のワークスペースへ即反映し、他は切替時に反映する
+                // Apply immediately to the workspace being viewed; others get it on switch
                 let target = new_ws
                     .iter()
                     .position(|w| Some(&w.name) == workspaces.get(ws_index).map(|w| &w.name))
@@ -982,12 +1010,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 if let Some(w) = new_ws.get(target) {
                     msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors);
                     ws_index = target;
-                    // ブラウザも設定に揃える。足したものは開き、消したものは閉じ、
-                    // バーと帯は出し直す。開き直さないと反映されない、では
-                    // 設定を触った意味がない (既に開いてあるページには触らない)
+                    // Bring browsers in line with config too: open added ones, close
+                    // removed ones, redraw the bar and band. If reopening were required
+                    // to take effect, editing settings would be pointless
+                    // (pages already open are left untouched).
                     open_declared_browsers(w, &caps, &mut startup_errors);
                 }
-                // 他のワークスペースは作り直しに任せる (裏で動いているタブは触らない)
+                // Leave other workspaces to be rebuilt on demand (don't touch tabs running in the background)
                 ws_tabs.resize_with(new_ws.len().max(1), Vec::new);
                 workspaces = new_ws;
                 max_chain = newcfg.max_chain.unwrap_or(10);
@@ -1005,15 +1034,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                     }
                 }
-                // 通知先・能力・自動化スクリプトを作り直す
+                // Rebuild notification destinations, capabilities, and automation scripts
                 let (dests, err) = newcfg.resolve_notify(password.as_deref());
                 if let Some(e) = err {
                     startup_errors.push(e);
                 }
                 notifier = notify::Notifier::new(dests);
-                // 設定から来るものだけを差し替える。作り直すと、窓の中に
-                // 置いたページを誰も知らなくなり、消せないまま画面に残る
-                // (設定を保存した瞬間に設定画面が居座り、タブが効かなくなった)
+                // Only swap out the parts that come from config. Rebuilding it
+                // entirely would leave nobody aware of pages already placed in the
+                // window, so they'd stay stuck on screen with no way to remove them
+                // (this used to happen: the moment settings were saved, the settings
+                // screen would stick around and tabs would stop responding).
                 caps.set_config(
                     newcfg.capabilities.clone(),
                     newcfg.resolve_tokens(password.as_deref()),
@@ -1029,7 +1060,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 if active > tabs.len() {
                     active = if tabs.is_empty() { 0 } else { 1 };
                 }
-                // リモートUIの設定変更を反映する (有効化/無効化もここで効く)
+                // Apply remote UI config changes (enable/disable takes effect here too)
                 let mut remote_changed: Option<String> = None;
                 let want = newcfg.remote.clone();
                 let now = cfg.as_ref().map(|c| c.remote.clone()).unwrap_or_default();
@@ -1048,7 +1079,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     });
                 }
                 cfg = Some(newcfg);
-                // model ブリッジの接続先を再解決 (providers/secretの変更を反映)
+                // Re-resolve the model bridge's connection info (picks up providers/secret changes)
                 if let Some(c) = &cfg {
                     bridge::set_providers(c, password.as_deref());
                 }
@@ -1061,14 +1092,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
-        // 更新の知らせ。他の表示を潰さないよう、画面が空いたときに出す
+        // Update notification. Shown once the screen is free, so it doesn't overwrite other output.
         if flash.is_none() {
             if let Ok(v) = update_rx.try_recv() {
                 flash = Some(i18n::tp("msg.update_available", &[("version", &v)]));
             }
         }
 
-        // 200ms毎に全タブの状態を判定 (非アクティブタブの完了もINDEXに反映される)
+        // Check every tab's state every 200ms (completion of inactive tabs is
+        // reflected on INDEX too)
         if last_detect.elapsed() >= Duration::from_millis(200) {
             last_detect = Instant::now();
             let mut transitions = Vec::with_capacity(tabs.len());
@@ -1077,15 +1109,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 transitions.push((i + 1, old, new));
             }
 
-            // フック発火 → wait中コルーチン再開 → 積まれた操作の実行
+            // Fire hooks -> resume waiting coroutines -> run the queued operations
             if let Some(eng) = engine.as_mut() {
-                // ループ中から現在の状態を読めるようにする (shikisha.state)
+                // Let the loop read the current state (shikisha.state)
                 eng.set_states(
                     tabs.iter()
                         .map(|t| (t.key(), t.state.label().to_string()))
                         .collect(),
                 );
-                // 終了したタブで待機中のループは破棄する (無限ループを残さない)
+                // Discard waiting loops belonging to exited tabs (don't leave infinite loops behind)
                 for &(idx, old, new) in &transitions {
                     if new == TabState::Exited && old != TabState::Exited {
                         eng.cancel_tab(pane_at(&layout, idx));
@@ -1094,8 +1126,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 let now_ms = start.elapsed().as_millis() as u64;
                 if auto_enabled {
                     for (i, fired) in started_fired.iter_mut().enumerate() {
-                        // 起動直後に送ると、AI CLIが入力欄を描く前なので捨てられる。
-                        // 準備できるまで待ってから流し込む
+                        // Sending right after launch gets dropped, since the AI CLI
+                        // hasn't drawn its input box yet. Wait until it's ready before
+                        // flushing it in.
                         if !*fired && tabs[i].ready_for_startup_hook() {
                             *fired = true;
                             eng.fire(
@@ -1111,7 +1144,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         let t = &tabs[idx - 1];
                         append_hook_log(&format!(
-                            "状態 tab{idx} {}->{} [{}] prompted={} working={} 応答あり={} 実行待ち={}",
+                            "State tab{idx} {}->{} [{}] prompted={} working={} answered={} submit_pending={}",
                             old.label(),
                             new.label(),
                             t.profile_name(),
@@ -1122,7 +1155,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         ));
                     }
 
-                    // 続きが始まったら、完了の確定待ちは取り消す
+                    // Once a follow-up starts, cancel any pending completion confirmation
                     for &(idx, _, new) in &transitions {
                         if new == TabState::Busy || new == TabState::Exited {
                             pending_done.retain(|&(t, _)| t != idx);
@@ -1132,21 +1165,22 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         if old == new {
                             continue;
                         }
-                        // 再起動したら on_start をやり直す (SSH再接続後のresume自動化)
+                        // If it restarted, redo on_start (resume automation after an SSH reconnect)
                         if new != TabState::Exited && old == TabState::Exited {
                             if let Some(f) = started_fired.get_mut(idx - 1) {
                                 *f = false;
                             }
                         }
                         let ctx = tab_ctx(&tabs[idx - 1], pane_at(&layout, idx));
-                        // 起動時のバナー出力だけでも画面は動いて止まるので、
-                        // どのタブも必ず一度 DONE を通る。誰も何も聞いていない
-                        // その出力を応答として転送しないよう、入力があった後だけ扱う
-                        // 実行(改行)がまだ届いていないタブは、貼り付けが置かれた
-                        // だけの状態。静かになっても、それは応答ではない
+                        // Even just the startup banner's output makes the screen move
+                        // then settle, so every tab is guaranteed to pass through DONE
+                        // once with nobody having asked anything. To avoid forwarding
+                        // that output as a response, only treat it as one once there's
+                        // been input. A tab where submit (Enter) hasn't arrived yet is
+                        // merely showing a pasted draft. Going quiet doesn't make that a response.
                         let submitting = pending_submit.iter().any(|p| p.tab == idx);
-                        // 実行のあとに何も出ていないなら、届かなかったということ。
-                        // 貼り付けが見えているだけの画面を応答と読まない
+                        // If nothing came out after submit, it never arrived.
+                        // Don't read a screen that's just showing the pasted draft as a response.
                         let answering = tabs[idx - 1].was_prompted()
                             && !submitting
                             && tabs[idx - 1].answered_since_submit();
@@ -1154,7 +1188,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             TabState::Busy if answering => eng.fire("on_busy", &ctx, None),
                             TabState::Done if old == TabState::Busy && !answering => {
                                 append_hook_log(&format!(
-                                    "done無視 tab{idx} [{}] prompted={} submitting={} answered={}",
+                                    "Ignoring done tab{idx} [{}] prompted={} submitting={} answered={}",
                                     tabs[idx - 1].profile_name(),
                                     tabs[idx - 1].was_prompted(),
                                     submitting,
@@ -1163,12 +1197,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                             TabState::Done if answering && old == TabState::Busy => {
                                 append_hook_log(&format!(
-                                    "done確認待ち tab{idx} [{}]",
+                                    "Awaiting done confirmation tab{idx} [{}]",
                                     tabs[idx - 1].profile_name()
                                 ));
-                                // ここでは撃たない。AIの出力は途中で息継ぎをするので、
-                                // 静かになっただけでは終わったと言えない
-                                // AI固有の指定があればそちら、無ければ基本設定
+                                // Don't fire yet here. AI output pauses for breath
+                                // partway through, so going quiet alone doesn't mean it's done.
+                                // Use the AI-specific setting if given, otherwise the base config.
                                 let wait = tabs[idx - 1].done_confirm_ms().unwrap_or(done_confirm_ms);
                                 let at = now_ms + wait;
                                 pending_done.retain(|&(t, _)| t != idx);
@@ -1183,7 +1217,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             _ => {}
                         }
                     }
-                    // 静かなまま保ったものだけを、本当の完了として撃つ
+                    // Fire only the ones that stayed quiet as truly done
                     let (ready, waiting): (Vec<_>, Vec<_>) =
                         pending_done.iter().partition(|&&(_, at)| now_ms >= at);
                     pending_done = waiting;
@@ -1192,28 +1226,29 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             if t.state != TabState::Done {
                                 continue;
                             }
-                            // 一度の実行に一度の応答。次を待つには次の実行が要る
+                            // One response per submit. Waiting for the next one requires another submit.
                             t.finish_response();
                         }
                         let ctx = tab_ctx(&tabs[idx - 1], pane_at(&layout, idx));
-                        // 幅を狭めると vt100 が各行をその幅で切り捨てるので、
-                        // 応答を待つ間に狭めていると文章が欠けている。
-                        // 戻せないが、黙って欠けたものを渡すよりは残す
+                        // Narrowing the width makes vt100 truncate each line to that
+                        // width, so if it got narrower while waiting for a response,
+                        // the text is missing pieces. We can't undo that, but keeping
+                        // the truncated text is better than silently handing over gaps.
                         if tabs[idx - 1].resized_while_waiting() {
                             append_hook_log(&format!(
-                                "警告 tab{idx}: 応答中に画面幅が狭まりました。\
-                                 端末が行を切り詰めるため、応答が欠けている恐れがあります"
+                                "Warning tab{idx}: the screen width narrowed while a response was in \
+                                 progress. The terminal truncates lines to fit, so the response may be missing content."
                             ));
                         }
                         append_hook_log(&format!(
-                            "on_done発火 tab{idx}: 応答 {}文字: {}",
+                            "on_done fired tab{idx}: response {} chars: {}",
                             ctx.output.chars().count(),
                             log_excerpt(&ctx.output, 100)
                         ));
                         eng.fire("on_done", &ctx, None);
                     }
 
-                    // 自動化が指すのは画面の番号。中身はセッションが持っている
+                    // Automation addresses things by screen number; the contents live in sessions
                     eng.tick_pending(&|pane| {
                         session_at(&layout, pane)
                             .and_then(|i| tabs.get(i))
@@ -1242,11 +1277,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 }
             }
 
-            // リモートUIへ現在の状況を渡し、届いた操作を実行する
+            // Hand the current status to the remote UI and run any operations it sent
             if let Some(r) = remote_ui.as_ref() {
                 *r.snapshot.lock().unwrap() = remote::Snapshot {
-                    // 描画のときに作ったものを渡す。ここでは ui がまだ無く、
-                    // 作り直すと「状態を組み立てる場所」が2つになる
+                    // Pass along what was built at draw time. `ui` doesn't exist here yet,
+                    // and rebuilding it would create a second place that assembles state.
                     ui: last_ui_state.clone(),
                     screen_html: tabs
                         .get(session_at(&layout, active).unwrap_or(usize::MAX))
@@ -1273,7 +1308,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 &t.last_response.clone().unwrap_or_default(),
                                 200,
                             ),
-                            // 見た目を運ぶので contents() ではなく行単位で取る
+                            // Carries appearance, so read line by line rather than via contents()
                             screen: trim_for_phone(
                                 &tab::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()),
                                 200,
@@ -1283,7 +1318,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 };
             }
 
-            // auto_restart: 終了したタブを自動で復帰させる
+            // auto_restart: automatically bring exited tabs back
             for (i, t) in tabs.iter_mut().enumerate() {
                 if t.state == TabState::Exited && t.auto_restart {
                     match t.restart(rows, cols) {
@@ -1297,19 +1332,19 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
-        // リモート操作とフレーム配信は毎イテレーション処理する (200ms待つと
-        // 指の軌跡が固まって届き、スワイプの再現が壊れる)
+        // Process remote operations and frame delivery every iteration (waiting 200ms
+        // would let finger-swipe traces bunch up and arrive all at once, breaking swipe playback)
         if let Some(r) = remote_ui.as_ref() {
             let now_ms = start.elapsed().as_millis() as u64;
-            // いま見ているブラウザ (Injectの宛先・中継の対象)
+            // The browser currently being viewed (target for Inject / relay)
             let shown_browser = match layout.get(active.wrapping_sub(1)) {
                 Some(Pane::Browser { key, .. }) => Some(key.clone()),
                 _ => None,
             };
             while let Ok(cmd) = r.rx.try_recv() {
                 match cmd {
-                    // 遠隔からの入力は人間の操作として扱う
-                    // (自動チェーンをリセットし、ロック中は拒否する)
+                    // Treat input from remote as a human operation
+                    // (resets the auto-chain, and is rejected while locked)
                     remote::RemoteCmd::Send { tab, text } => {
                         if let Some(t) = session_at(&layout, tab).and_then(|i| tabs.get_mut(i)) {
                             if t.locked {
@@ -1321,7 +1356,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             write_prompt(t, &text);
                             pending_submit.push(PendingSubmit::new(tab, seen, now_ms));
                             append_hook_log(&format!(
-                                "remote送信 tab{tab}: {}",
+                                "remote send tab{tab}: {}",
                                 log_excerpt(&text, 120)
                             ));
                         }
@@ -1336,19 +1371,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             let _ = t.write_bytes(keys.as_bytes());
                         }
                     }
-                    // 中継画面への入力は、見ているブラウザへ本物の入力として注入する
+                    // Input on the relay screen is injected as real input into the browser being viewed
                     remote::RemoteCmd::Ui(crate::browser::Ev::Inject { input, .. }) => {
                         if let Some(key) = &shown_browser {
                             let _ = caps.browser_inject(key, input);
                         }
                     }
-                    // 上のバー (戻る/進む/更新/URL) は端末の打鍵に化けない。
-                    // 窓と同じく gos に積んで、下の共通処理でブラウザへ渡す。
-                    // keys_for に通すと Go は該当なしで黙って捨てられていた
+                    // The top bar (back/forward/refresh/URL) doesn't turn into terminal
+                    // keystrokes. Just like the window, push it onto `gos` and let the
+                    // shared handling below pass it to the browser. Routing it through
+                    // `keys_for` used to silently drop `Go` as unmatched.
                     remote::RemoteCmd::Ui(crate::browser::Ev::Go { go }) => {
                         surface.gos.push(go);
                     }
-                    // その他の画面操作は、窓から来たものと同じ打鍵に直す
+                    // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         for e in keys_for(&ev) {
                             surface.inject(e);
@@ -1369,12 +1405,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                 }
             }
-            // 溜まった中継フレームは最新の1枚だけ配る (古いものは捨てる)。
-            // 送り手が速いときに回線とスマホを溢れさせない。常に一番新しい絵を見せる
+            // Deliver only the newest of the accumulated relay frames (drop the older ones).
+            // Keeps the connection and the phone from being flooded when the sender is fast;
+            // always shows the latest picture.
             if let Some(jpeg) = surface.take_frames().pop() {
                 r.push_frame(jpeg);
             }
-            // 見ているブラウザに視聴者がいれば中継、いなければ止める
+            // Relay if the browser being viewed has viewers, otherwise stop
             let want = if r.has_frame_clients() {
                 shown_browser
             } else {
@@ -1389,16 +1426,18 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 }
                 casting = want;
             } else if let Some(key) = &casting {
-                // 対象は同じでも、新しい視聴者が入ったら今の画面を1枚出す。
-                // 静止したページだと、変化待ちのままいつまでも空になるため
+                // Even if the target hasn't changed, push out one frame of the current
+                // screen when a new viewer joins. Otherwise a static page would leave
+                // them waiting for a change forever, staring at nothing.
                 if r.take_keyframe_request() {
                     let _ = caps.browser_screencast(key, true);
                 }
             }
         }
 
-        // 預かっている受け渡しを、相手が受け取れるようになったら流す。
-        // 諦めた分も黙って消さない。消えたことが見えないのが一番困る
+        // Flush held hand-offs once the recipient becomes ready to receive them.
+        // Even ones we give up on aren't silently discarded — the worst outcome
+        // is for something to vanish without a trace.
         if !waiting.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
             let keys = pane_keys(&layout, &tabs);
@@ -1415,7 +1454,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     ready.push(w.cmd);
                 } else if now_ms >= w.give_up_ms {
                     let to = target_of(&w.cmd);
-                    append_hook_log(&format!("受け取れないまま時間切れ: {to:?}"));
+                    append_hook_log(&format!("Timed out never becoming ready to receive: {to:?}"));
                     flash = Some(i18n::tp(
                         "msg.handoff_timeout",
                         &[("target", &format!("{to:?}"))],
@@ -1445,7 +1484,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
-        // 予約しておいた実行(改行)を、相手が貼り付けを描いてから送る
+        // Send the reserved submit (Enter) once the recipient has drawn the pasted text
         if !pending_submit.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
             pending_submit.retain_mut(|p| {
@@ -1460,41 +1499,44 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 append_hook_log(&format!(
                     "submit tab{} ({})",
                     p.tab,
-                    if settled { "取り込み完了後" } else { "落ち着かないまま送信" }
+                    if settled { "after intake finished" } else { "sent while still unsettled" }
                 ));
                 false
             });
         }
 
-        // ボールが渡った先へ画面を移す。
-        // 人が画面を触った直後は従わない (読んでいる最中に飛ばされないように)
+        // Move the screen to wherever the ball was passed.
+        // Don't follow right after a human touches the screen (so they're not
+        // yanked away mid-read).
         {
             let now_ms = start.elapsed().as_millis() as u64;
             if let Some(to) = follow_target(
                 follow_ball,
                 ball.holder,
                 followed,
-                // 数えるのは画面に並んでいる数。セッションの数で数えると、
-                // ブラウザを挟んだ分だけ後ろのタブが「無い番号」に見え、
-                // そこへ渡ったボールに永久に追従しない
+                // Count against what's laid out on screen. Counting sessions instead
+                // would make tabs behind any browsers look like "numbers that don't
+                // exist", and the ball passed there would never be followed.
                 layout.len(),
                 now_ms,
                 view_touched_ms,
             ) {
                 followed = to;
                 if active != to {
-                    // 「渡ったのに画面が動かない」を追えるようにしておく。
-                    // 一度これを整理で消して、まさにその調査で困った
-                    append_hook_log(&format!("追従 tab{active} -> tab{to}"));
+                    // Keep this so "it was passed but the screen didn't move" can be
+                    // traced. This was removed once during cleanup, and that exact
+                    // investigation got stuck because of it.
+                    append_hook_log(&format!("Following tab{active} -> tab{to}"));
                     active = to;
                 }
             }
         }
 
-        // 人間が入力すると chain_depth が0に戻る。ボールもそれに追従させる
-        // (リセット箇所を増やさずに済むよう、持ち主の側から確認する)
-        // 人待ちのボールはここで消さない。連鎖は終わっていても
-        // 仕事は holder にある。人が触ったら touched 側で消える
+        // chain_depth resets to 0 when a human types. Make the ball follow that too
+        // (checked from the holder's side, so we don't need to add more places that reset it).
+        // Don't clear a ball that's waiting on a human here. Even if the chain has
+        // ended, the work still belongs to the holder. It gets cleared on the
+        // touched side once a human touches it.
         if ball.holder > 0
             && !ball.awaiting_human
             && !session_at(&layout, ball.holder)
@@ -1506,10 +1548,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         ball.clamp_to(layout.len());
 
-        // 見ているブラウザの上に出す操作。
+        // The controls shown over the browser being viewed.
         //
-        // 出す・出さないは設定かLuaが決め、押せる・押せないは窓が答える。
-        // 答えは遅れて届くので、届くまでは押せない顔で出しておく
+        // Whether to show them is decided by config or Lua; whether they're pressable
+        // is answered by the window. The answer arrives with a delay, so show them
+        // looking unpressable until it comes in.
         let drawn_ms = start.elapsed().as_millis() as u64;
         let showing = match layout.get(active.wrapping_sub(1)) {
             Some(Pane::Browser { key, .. }) => Some(key.clone()),
@@ -1526,15 +1569,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 can_back: w.is_some_and(|w| w.2),
                 can_forward: w.is_some_and(|w| w.3),
                 at: w.map(|w| w.1.clone()).unwrap_or_default(),
-                // 読み込み中、または始まりから0.5秒未満なら点灯 (一瞬の通信対策)
+                // Lit while loading, or if it started less than 0.5s ago (covers instantaneous requests)
                 loading: loading_now.get(key).is_some_and(|(busy, since)| {
                     *busy || since.elapsed() < std::time::Duration::from_millis(500)
                 }),
             })
         });
-        // 居場所は窓しか知らない。出しているときだけ、ほどよい間隔で聞く。
-        // 履歴から戻ったページは読み込みを名乗らないことがあるので、
-        // 「読み込んだら聞く」だけでは戻るボタンが古いままになる
+        // Only the window knows the current location. Ask at a reasonable interval,
+        // and only while the controls are shown. Pages returned to via history don't
+        // always announce a load, so relying on "ask when it loads" alone would leave
+        // the back button stale.
         if let (Some(key), true) = (
             &showing,
             nav.is_some() && drawn_ms.saturating_sub(asked_where_ms) >= WHERE_EVERY_MS,
@@ -1571,16 +1615,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
         };
         last_ui_state = Some(ui_state_of(&tabs, &ui, flash.as_deref()));
         surface.draw(&tabs, &ui, flash.as_deref())?;
-        // 窓の大きさは変わる。渡し直さないと、置いたページは前の大きさのまま
+        // The window's size can change. If we don't hand it back over, a placed
+        // page stays at its previous size.
         caps.set_area(surface.area);
-        // 選ばれている1枚だけを、ターミナルの中身の位置に置く。
-        // 所有関係で最小化と重なり順はOSが見てくれるが、位置だけは追う必要がある
-        // キーボードの焦点を、見えているものへ移す。
+        // Place only the one currently selected at the terminal content's position.
+        // The OS handles minimize and stacking order via ownership, but position
+        // still needs to be tracked by us.
+        // Move keyboard focus to whatever is currently visible.
         //
-        // ページの中の焦点 (activeElement) と、OSが見ている焦点は別物。
-        // 窓ができた直後はOS側が定まっておらず、打鍵は届くのに
-        // 日本語の変換窓だけが画面の隅に出た (窓を少しでも動かすと直る、が目印)。
-        // 見ているものが変わるたびに、こちらから移し直す
+        // A page's internal focus (activeElement) and what the OS considers focused
+        // are different things. Right after the window is created, the OS side
+        // hasn't settled yet — keystrokes arrive, but only the Japanese IME
+        // conversion window would show up in the corner of the screen (a telltale
+        // sign; moving the window even slightly fixes it). Re-set focus from our
+        // side every time what's visible changes.
         {
             let want = match layout.get(active.wrapping_sub(1)) {
                 Some(Pane::Browser { key, .. }) => Some(key.clone()),
@@ -1602,15 +1650,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
             Some(Pane::Browser { key, .. }) => Some(key.as_str()),
             _ => None,
         });
-        // 帯のボタンが押されたことを預ける。
-        // 窓の報告を受けられるのは本体だけなので、ここを通す
+        // Hand off that a bar button was pressed.
+        // Only the main app can receive the window's reports, so it goes through here.
         for child in surface.take_presses() {
             caps.note_press(&child);
-            // 窓の中での名前を呼び名へ戻す。戻せないのは別のワークスペースの分
+            // Convert the name inside the window back to an id. Ones we can't
+            // convert belong to a different workspace.
             let Some(name) = caps.name_of_child(&child) else {
                 continue;
             };
-            append_hook_log(&format!("帯を押した {name}"));
+            append_hook_log(&format!("Bar pressed {name}"));
             if !auto_enabled {
                 flash = Some(i18n::t("msg.press_auto_off"));
                 continue;
@@ -1621,41 +1670,45 @@ fn run(mut surface: WinSurface) -> Result<()> {
             else {
                 continue;
             };
-            // 受ける先が無いのに押せる顔で出ていると、壊れたようにしか見えない
+            // Showing a pressable-looking control with nothing to receive it just
+            // looks broken.
             if !eng.has_page_hook("on_press", page.index) {
                 flash = Some(i18n::tp("msg.press_nowhere", &[("name", &page.name)]));
-                append_hook_log("on_press が書かれていないので何もしない");
+                append_hook_log("Not doing anything, since no on_press is written");
                 continue;
             }
             eng.fire_page("on_press", &page);
         }
-        // ホイールを回した。見えているタブだけが動く
+        // The wheel was scrolled. Only the visible tab moves.
         for (by, row, col) in surface.take_scrolls() {
             if by == 0 {
                 continue;
             }
             if let Some(t) = session_at(&layout, active).and_then(|i| tabs.get(i)) {
                 scroll_by(t, by, row, col);
-                // 遡っている間に画面が飛ぶと、読んでいるものを見失う
+                // If the screen jumps while scrolling back, you lose track of what you were reading
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
         }
 
-        // 設定ページの「設定を閉じる」。設定タブを畳んで稼働盤 (INDEX) へ戻す。
-        // 左の一覧から設定が消えるのは、hosted から外れて次の描画で並びが
-        // 組み直されるため
+        // The settings page's "close settings" button. Collapses the settings tab
+        // and returns to the operating board (INDEX). Settings disappears from the
+        // left-hand list because it drops out of `hosted`, and the layout gets
+        // rebuilt on the next draw.
         if surface.take_close_settings() {
             let _ = caps.browser_close(SETTINGS_TAB);
             active = 0;
         }
 
-        // 上のバーが押された。宛先は今見ているページ (バーは1枚しか出ていない)。
-        // 連鎖の深さには触らない。数えるのは他のタブへ渡ったときだけ
+        // The top bar was pressed. The destination is whatever page is currently
+        // viewed (only one bar is ever shown). Don't touch chain depth — that's
+        // only counted when work is passed to another tab.
         for go in surface.take_gos() {
             let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) else {
                 continue;
             };
-            // 出していない操作は受け付けない。画面に無いものが効くのはおかしい
+            // Reject operations that aren't shown. It would be strange for
+            // something not on screen to still work.
             let Some(spec) = caps.nav_of(key) else {
                 continue;
             };
@@ -1669,7 +1722,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             if !allowed {
                 continue;
             }
-            // 人が打った文字は、開いてよい行き先かを見てから渡す
+            // Check that text a human typed is an allowed destination before passing it along
             let go = match go {
                 Go::To(raw) => match crate::browser::openable(&raw) {
                     Some(u) => Go::To(u),
@@ -1680,19 +1733,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 },
                 other => other,
             };
-            append_hook_log(&format!("移動 {key}: {go:?}"));
+            append_hook_log(&format!("Navigate {key}: {go:?}"));
             let _ = caps.browser_go(key, go);
-            // 動いた直後は居場所が変わる。次の描画で聞き直させる
+            // The location changes right after navigating. Make the next draw ask again.
             asked_where_ms = 0;
         }
-        // 答えは窓の中での名前で返る。人の呼び名に戻してから控える
+        // The answer comes back using the name inside the window. Convert it back
+        // to the human-facing id before caching it.
         for (child, url, can_back, can_forward) in surface.take_wheres() {
             if let Some(name) = caps.name_of_child(&child) {
                 where_now = Some((name, url, can_back, can_forward));
             }
         }
-        // 読み込みの開始/終了も、同じく呼び名へ直して控える。
-        // 始まりの時刻を更新し、上のバーの通信中表示に使う
+        // Load start/end likewise gets converted to the id before caching.
+        // Update the start time, used for the top bar's "in progress" indicator.
         for (child, busy) in surface.take_loading() {
             if let Some(name) = caps.name_of_child(&child) {
                 let now = std::time::Instant::now();
@@ -1704,14 +1758,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
-        // 読み込みが終わったページ。移動のたびに来る
+        // A page that finished loading. Fires on every navigation.
         for (child, url, complete) in surface.take_loads() {
             let Some(name) = caps.name_of_child(&child) else {
                 continue;
             };
             append_hook_log(&format!(
-                "読み込み {name}: {url} ({})",
-                if complete { "全部" } else { "DOMまで" }
+                "Loaded {name}: {url} ({})",
+                if complete { "fully" } else { "DOM only" }
             ));
             if auto_enabled {
                 if let (Some(eng), Some(page)) =
@@ -1726,8 +1780,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
             Duration::from_millis(16),
             session_at(&layout, active).and_then(|i| tabs.get(i)),
         )?;
-        // 窓が無くなったら、Ctrl+B q と同じところへ落ちる。
-        // 片付けは1か所だけにしておきたい
+        // Once the window is gone, fall through to the same place as Ctrl+B q.
+        // We want cleanup to live in exactly one place.
         if surface.closed {
             break;
         }
@@ -1738,7 +1792,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 flash = None;
-                // オーバーレイ (ヘルプ / QR / ワークスペース一覧) が最優先
+                // Overlays (help / QR / workspace list) take top priority
                 if help_open {
                     help_open = false;
                     continue;
@@ -1795,13 +1849,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             active = if active == 0 { panes } else { active - 1 };
                             view_touched_ms = start.elapsed().as_millis() as u64;
                         }
-                        // Ctrl+B b で子プロセスに素のCtrl+Bを送る
+                        // Ctrl+B b sends a literal Ctrl+B through to the child process
                         KeyCode::Char('b') => {
                             if let Some(t) = session_mut(&mut tabs, &layout, active) {
                                 t.write_bytes(&[0x02])?;
                             }
                         }
-                        // Ctrl+B r このタブを再起動 (終了・切断からの復帰)
+                        // Ctrl+B r restarts this tab (recovers from exit/disconnect)
                         KeyCode::Char('r') => {
                             if let Some(eng) = engine.as_mut() {
                                 eng.cancel_tab(active);
@@ -1813,7 +1867,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 });
                             }
                         }
-                        // Ctrl+B l 入力ロック切替 / w ワークスペース一覧 / ? ヘルプ
+                        // Ctrl+B l toggles the input lock / w workspace list / ? help
                         KeyCode::Char('l') => {
                             if let Some(t) = session_mut(&mut tabs, &layout, active) {
                                 t.locked = !t.locked;
@@ -1851,8 +1905,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                         }
                         KeyCode::Char('?') => help_open = true,
-                        // Ctrl+B t 設定画面を「タブ追加」の状態で開く (タブバーの + が送る)。
-                        // nonce を変えないと、2度目の押下で同じURLに戻れず何も起きない
+                        // Ctrl+B t opens the settings screen in "add tab" state
+                        // (this is what the tab bar's + button sends).
+                        // Without changing the nonce, a second press returns to the
+                        // same URL and nothing happens.
                         KeyCode::Char('t') => {
                             let query = format!(
                                 "&addtab={ws_index}&nonce={}",
@@ -1878,7 +1934,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 },
                             );
                         }
-                        // Ctrl+B a 自動化ON/OFF、Ctrl+B x 緊急停止
+                        // Ctrl+B a toggles automation on/off, Ctrl+B x is emergency stop
                         KeyCode::Char('a') => {
                             auto_enabled = !auto_enabled;
                             flash = Some(i18n::t(if auto_enabled {
@@ -1889,16 +1945,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         KeyCode::Char('x') => {
                             auto_enabled = false;
-                            // 送信予約が残っていると、止めた後に改行だけ届いてしまう
+                            // If a submit reservation is left over, only the Enter
+                            // would arrive after stopping.
                             pending_submit.clear();
-                            // 待機中のループも全て破棄する (再開時に蘇らせない)
+                            // Discard every waiting loop too (don't let them revive on resume)
                             if let Some(eng) = engine.as_mut() {
                                 eng.cancel_all();
                             }
                             flash =
                                 Some(i18n::t("msg.emergency_stop"));
                         }
-                        // Ctrl+B c で最新キャプチャ応答をクリップボードへ
+                        // Ctrl+B c copies the latest captured response to the clipboard
                         KeyCode::Char('c') => {
                             if let Some(t) = session_mut(&mut tabs, &layout, active) {
                                 flash = Some(match &t.last_response {
@@ -1907,7 +1964,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 });
                             }
                         }
-                        // Ctrl+B [ でコピーモード (tmuxのコピーモード風)
+                        // Ctrl+B [ enters copy mode (tmux copy-mode style)
                         KeyCode::Char('[') => {
                             let rows = pty_dims(surface.size()?, tab_w).0;
                             if let Some(t) = session_mut(&mut tabs, &layout, active) {
@@ -1924,9 +1981,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 {
                     prefix_active = true;
                 } else if active == 0 {
-                    // INDEX = ホーム画面: 数字でタブ切替、英字でメニュー実行。
-                    // ここで受ける文字は MENU_KEYS と揃っている必要がある
-                    // (盤面が出しているのに、押しても何も起きない、を防ぐ)
+                    // INDEX = home screen: digit keys switch tabs, letter keys run menu items.
+                    // Characters received here must line up with MENU_KEYS
+                    // (prevents a case where the board shows something that does nothing when pressed)
                     match key.code {
                         KeyCode::Char(c @ '0'..='9') => {
                             let n = c as usize - '0' as usize;
@@ -1935,7 +1992,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                         }
                         KeyCode::Char('?') | KeyCode::Char('h') => help_open = true,
-                        // スマホから繋ぐためのQRコードを出す
+                        // Show the QR code for connecting from a phone
                         KeyCode::Char('i') => {
                             if remote_ui.is_some() {
                                 qr_open = true;
@@ -1955,7 +2012,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             for t in tabs.iter_mut().filter(|t| t.state == TabState::Exited) {
                                 match t.restart(rows, cols) {
                                     Ok(()) => msgs.push(t.title.clone()),
-                                    Err(e) => msgs.push(format!("{}(失敗:{e})", t.title)),
+                                    Err(e) => msgs.push(format!("{}(failed:{e})", t.title)),
                                 }
                             }
                             flash = Some(if msgs.is_empty() {
@@ -1964,7 +2021,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 i18n::tp("msg.restarted_list", &[("names", &msgs.join(", "))])
                             });
                         }
-                        // 通知先の疎通確認 (フックを待たずに設定を検証できる)
+                        // Connectivity test for notification destinations (lets you
+                        // verify settings without waiting for a hook)
                         KeyCode::Char('t') => {
                             flash = Some(if notifier.is_empty() {
                                 i18n::t("msg.notify_none")
@@ -1972,26 +2030,27 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 notifier.send_all(&crate::i18n::t("err.main.test_notify_body"))
                             });
                         }
-                        // マスターパスワードの設定・変更・解除 (TUI内で完結)
+                        // Set, change, or remove the master password (all within the TUI)
                         KeyCode::Char('k') => {
                             flash = Some(manage_master_password(
                                 &mut surface,
                                 cfg.as_ref(),
                                 &mut password,
                             )?);
-                            // 変更を設定GUIの暗号化にも反映する
+                            // Reflect the change into the settings GUI's encryption too
                             *web_password.lock().unwrap() = password.clone();
                         }
-                        // 設定: 自分の窓の中で開く。
-                        // 外のブラウザに投げると、どの窓が誰のものか分からなくなる
+                        // Settings: open inside our own window.
+                        // Throwing it at an external browser would leave no way to
+                        // tell which window belongs to whom.
                         KeyCode::Char('e') => {
                             flash = Some(
                                 match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, "")
                                 {
                                     Ok(()) => {
-                                        // 開いたら、そのタブへ移る。
-                                        // 出したのに見えていない状態を作らない。
-                                        // 既に開いていれば、その居場所へ移る
+                                        // Once opened, switch to that tab.
+                                        // Don't leave it opened but invisible.
+                                        // If already open, switch to its existing location.
                                         active = settings_active(&layout);
                                         i18n::t("msg.settings_here")
                                     }
@@ -2005,7 +2064,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         KeyCode::Char('q') => break,
                         _ => {}
                     }
-                    // INDEX-ここまで (盤面が出すキーを、ここが受けているか試験が見る)
+                    // INDEX-END (a test checks whether keys the board offers are received here)
                 } else {
                     let size = surface.size()?;
                     let now_ms = start.elapsed().as_millis() as u64;
@@ -2014,12 +2073,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         if t.copy.is_some() {
                             handle_copy_key(t, &key, size, tab_w, &mut flash)?;
                         } else if t.locked {
-                            // ソフトロック: 閲覧・コピーはできるが入力は無視
+                            // Soft lock: viewing and copying still work, but input is ignored
                             locked_hit = true;
                         } else if let Some(bytes) = key_to_bytes(&key) {
-                            // 手動入力は連鎖を切る。ただし下書きを受け取った
-                            // タブへの入力だけは切らない。あれは乗っ取りではなく
-                            // 参加で、書き足して流すところまでが一連の流れ
+                            // Manual input breaks the chain. Except input to a tab that
+                            // received a draft doesn't break it — that's not a takeover,
+                            // it's joining in; writing more and sending it is all part
+                            // of the same flow.
                             if ball.awaiting_human && ball.holder == active {
                                 ball.awaiting_human = false;
                             } else {
@@ -2027,7 +2087,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                             t.last_manual_ms = Some(now_ms);
                             view_touched_ms = now_ms;
-                            // 打った文字は一番下に出る。遡ったままだと見えない
+                            // Typed characters show up at the very bottom. Scrolled back, they're invisible.
                             to_live(t);
                             t.write_bytes(&bytes)?;
                         }
@@ -2072,43 +2132,48 @@ fn run(mut surface: WinSurface) -> Result<()> {
     Ok(())
 }
 
-/// 子プロセスに窓を出させない。
+/// Keeps a child process from popping up a window.
 ///
-/// cmd.exe のようなコンソールのアプリは、黙って起動すると黒い窓を出す。
-/// ブラウザを開くたびに一瞬ちらつくので、最初から出させない
+/// Console apps like cmd.exe show a black window if launched quietly.
+/// That would flash briefly every time a browser is opened, so it's suppressed from the start.
 pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
     use std::os::windows::process::CommandExt as _;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW)
 }
 
-/// 本文を送ってから実行(改行)を送るまでの、最低限の間。
-/// 相手が本当に処理し終える時間は機種にも負荷にも依るので、これは下限でしかない
+/// Minimum gap between sending the text body and sending submit (Enter).
+/// How long the recipient actually takes to process it depends on device and load,
+/// so this is only a floor.
 const SUBMIT_FLOOR_MS: u64 = 100;
-/// 貼り付けの取り込みが終わったとみなす無出力時間。
+/// The no-output duration after which paste intake is considered finished.
 ///
-/// 「反応が始まった」ではなく「終わった」を待つ。長い貼り付けは描画が
-/// 何往復も続くので、始まった時点で改行を送ると取り込み中に届いて捨てられる
-/// (実測: 約600文字なら通り、約1900文字で落ちる)
+/// This waits for "finished", not "started responding". A long paste keeps
+/// redrawing over several round trips, so sending Enter as soon as it starts
+/// would arrive mid-intake and get dropped.
+/// (measured: around 600 chars goes through fine, around 1900 chars fails)
 const SUBMIT_QUIET_MS: u64 = 400;
-/// 相手が返し続けて落ち着かないときに、それでも実行を送るまでの上限
+/// The cap on how long to wait before sending submit anyway, when the recipient
+/// keeps responding and never settles
 const SUBMIT_GIVE_UP_MS: u64 = 8_000;
 
-/// 本文を送ったあと、実行(改行)を送る予約。
+/// A reservation to send submit (Enter) after the text body has been sent.
 ///
-/// まとめて1回で書くと、AI CLIが貼り付けを取り込む前に改行が届いて捨てられる。
-/// かといって固定の待ち時間にすると、それは「相手が何秒で処理するか」の当て推量で、
-/// 機種・負荷・本文の長さのどれかが変われば破綻する。
-/// 相手が貼り付けを描いた (= 出力を返した) ことを合図にする
+/// Writing it all in one go means the Enter arrives before the AI CLI has
+/// finished taking in the paste and gets dropped. But using a fixed wait time
+/// instead is just guessing "how many seconds the recipient takes to process
+/// it", and breaks the moment device, load, or body length changes.
+/// The signal to use instead is the recipient having drawn the paste
+/// (= having produced output).
 struct PendingSubmit {
     tab: usize,
-    /// 最後に見た累計出力量。増えている間は、まだ取り込み中
+    /// The cumulative output amount last seen. While it keeps increasing, intake is still in progress.
     seen: u64,
-    /// 出力が止まってからの起点 (None = まだ止まっていない)
+    /// The point output stopped (None = hasn't stopped yet)
     quiet_since: Option<u64>,
-    /// 早すぎる送信を防ぐ下限時刻
+    /// The earliest time submission is allowed, to prevent sending too early
     not_before: u64,
-    /// 落ち着かないときに諦めて送る時刻
+    /// The time to give up and send anyway, if things never settle
     give_up: u64,
 }
 
@@ -2123,14 +2188,15 @@ impl PendingSubmit {
         }
     }
 
-    /// 今このタブへ実行(改行)を送ってよいか。
+    /// Whether it's okay to send submit (Enter) to this tab right now.
     ///
-    /// 待つのは「反応が始まった」ではなく「取り込みが終わった」。
-    /// 長い貼り付けは描画が何往復も続くので、始まった時点で送ると
-    /// 取り込み中に届いて捨てられる (実測: 約600文字は通り、約1900文字で落ちた)
+    /// What we wait for is "intake finished", not "response started". A long
+    /// paste keeps redrawing over several round trips, so sending as soon as it
+    /// starts arrives mid-intake and gets dropped (measured: around 600 chars
+    /// goes through, around 1900 chars fails).
     fn ready(&mut self, output_count: u64, now_ms: u64) -> bool {
         if output_count != self.seen {
-            // まだ取り込み中。止まってからの計測はやり直す
+            // Still mid-intake. Restart the measurement from when it stops.
             self.seen = output_count;
             self.quiet_since = None;
         } else if self.quiet_since.is_none() {
@@ -2146,13 +2212,13 @@ impl PendingSubmit {
     }
 }
 
-/// プロンプトへ本文だけを送る。実行は呼び出し側が少し遅らせて送る
+/// Sends just the text body to the prompt. The caller sends submit a little later.
 fn write_prompt(t: &Tab, text: &str) {
     let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
     let body = text.replace("\r\n", "\r").replace('\n', "\r");
     let mut bytes = Vec::new();
     if bracketed {
-        // 括弧付き貼り付けに対応していれば、複数行でも1回の入力として渡る
+        // If bracketed paste is supported, multi-line text still arrives as a single input
         bytes.extend_from_slice(b"\x1b[200~");
         bytes.extend_from_slice(body.as_bytes());
         bytes.extend_from_slice(b"\x1b[201~");
@@ -2162,15 +2228,16 @@ fn write_prompt(t: &Tab, text: &str) {
     let _ = t.write_bytes(&bytes);
 }
 
-/// 設定画面を窓の中に置くときの名前。
-/// 綴りがずれると別のブラウザとして扱われ、2枚目が開く
+/// The name used when placing the settings page inside the window.
+/// If the spelling drifts, it gets treated as a different browser and a second copy opens.
 const SETTINGS_TAB: &str = "settings";
 
-/// 設定タブへ移るときの画面番号 (1始まり)。
+/// The screen number (1-based) to switch to for the settings tab.
 ///
-/// 既に開いているなら、その居場所へ。まだ無いなら、末尾の次に付く分を指す。
-/// 開いている最中に `layout.len() + 1` を使うと、設定タブは既に並びに
-/// 入っているので1つ先の空席を指してしまい、画面が真っ黒になっていた
+/// If it's already open, go to that location. If not yet open, this points to
+/// the slot right after the end. Using `layout.len() + 1` while it's already
+/// open would point one slot too far, since the settings tab is already in the
+/// layout — that used to turn the screen solid black.
 fn settings_active(layout: &[Pane]) -> usize {
     layout
         .iter()
@@ -2179,14 +2246,14 @@ fn settings_active(layout: &[Pane]) -> usize {
         .unwrap_or(layout.len() + 1)
 }
 
-/// ホイール1目盛りぶんの合図を、端末の作法で書き出す。
+/// Writes out the signal for one wheel tick, in terminal convention.
 ///
-/// 全画面のプログラムは自分の中身を自分で巻き戻すので、こちらが
-/// 履歴を持っていても意味がない。回したことを伝えるのが正しい。
-/// 番号は決まりごと: 64 が上、65 が下
+/// A full-screen program rewinds its own contents itself, so any history we
+/// hold means nothing to it. Reporting the scroll itself is the correct thing
+/// to do. Button numbers are fixed by convention: 64 is up, 65 is down.
 fn wheel_bytes(up: bool, row: u16, col: u16, enc: vt100::MouseProtocolEncoding) -> Vec<u8> {
     let button = if up { 64 } else { 65 };
-    // 画面の左上は 1,1 (0始まりではない)
+    // The top-left of the screen is 1,1 (not 0-based)
     let (x, y) = (col.saturating_add(1), row.saturating_add(1));
     match enc {
         vt100::MouseProtocolEncoding::Sgr => {
@@ -2202,7 +2269,7 @@ fn wheel_bytes(up: bool, row: u16, col: u16, enc: vt100::MouseProtocolEncoding) 
             }
             out
         }
-        // 昔の書き方は1バイトずつ。223 より先は表せない
+        // The legacy encoding is one byte per value; it can't represent anything past 223
         _ => {
             let b = |v: u16| (v.min(223) as u8).saturating_add(32);
             vec![0x1b, b'[', b'M', b(button), b(x), b(y)]
@@ -2210,7 +2277,7 @@ fn wheel_bytes(up: bool, row: u16, col: u16, enc: vt100::MouseProtocolEncoding) 
     }
 }
 
-/// 遡った先。正が過去。0 より手前 (未来) は無い
+/// The position after scrolling back. Positive is into the past. There's nothing before 0 (the future).
 fn scrolled_to(cur: usize, by: i32) -> usize {
     if by > 0 {
         cur.saturating_add(by as usize)
@@ -2219,12 +2286,12 @@ fn scrolled_to(cur: usize, by: i32) -> usize {
     }
 }
 
-/// ホイールを回した。
+/// The wheel was scrolled.
 ///
-/// 相手がマウスを見ているなら、回したことをそのまま渡す。全画面の
-/// プログラムは自分の中身を自分で巻き戻すので、こちらの履歴には何も無い。
-/// 見ていないなら (素のシェル等)、こちらが持っている履歴を遡る。
-/// `by` は目盛りの数で、正が過去
+/// If the recipient is watching the mouse, pass the scroll straight through.
+/// A full-screen program rewinds its own contents itself, so our history holds
+/// nothing useful. If it's not watching (a plain shell, etc.), scroll back
+/// through the history we keep instead. `by` is the tick count; positive is into the past.
 fn scroll_by(t: &Tab, by: i32, row: u16, col: u16) {
     let (wants_mouse, enc) = {
         let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
@@ -2242,16 +2309,16 @@ fn scroll_by(t: &Tab, by: i32, row: u16, col: u16) {
         let _ = t.write_bytes(&bytes);
         return;
     }
-    // 1目盛りで3行。端末の作法に合わせる
+    // 3 lines per tick, matching terminal convention
     let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
     let next = scrolled_to(p.screen().scrollback(), by.saturating_mul(3));
     p.screen_mut().set_scrollback(next);
 }
 
-/// 今の画面へ戻す。
+/// Returns to the current, live screen.
 ///
-/// 打った文字は画面の一番下に出る。遡ったまま打つと、
-/// 自分が打っているところが見えない
+/// Typed characters show up at the very bottom of the screen. If you type
+/// while still scrolled back, you can't see what you're typing.
 fn to_live(t: &Tab) {
     let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
     if p.screen().scrollback() != 0 {
@@ -2259,14 +2326,14 @@ fn to_live(t: &Tab) {
     }
 }
 
-/// 「今どこに居るか」を窓に聞く間隔。
+/// The interval for asking the window "where are you right now".
 ///
-/// 押せる・押せないの見た目がこれだけ遅れる。毎フレーム聞くほどの
-/// ものではなく、人が気づくほど遅れてもいけない
+/// The pressable/unpressable appearance lags by this much. It's not worth
+/// asking every frame, but it shouldn't lag enough for a human to notice either.
 const WHERE_EVERY_MS: u64 = 400;
 
 fn open_browser(url: &str) {
-    // cmd の start はURL内の & を分割してしまうため、空タイトル引数の後に渡す
+    // cmd's `start` splits on `&` inside the URL, so pass it after an empty title argument
     let mut cmd = std::process::Command::new("cmd");
     cmd.args(["/c", "start", "", url])
         .stdin(std::process::Stdio::null())
@@ -2275,11 +2342,11 @@ fn open_browser(url: &str) {
     let _ = detach_console(&mut cmd).spawn();
 }
 
-/// 文字で話す場所を用意する。
+/// Sets up a place to talk in text.
 ///
-/// この実行ファイルは窓のアプリなので、Windowsはコンソールを付けてくれない。
-/// 呼んだ相手が端末なら、そこへお邪魔する。そうでなければ自分で1つ開く。
-/// 既に繋がっているなら何もしない (どちらも失敗するだけで済む)
+/// This executable is a windowed app, so Windows doesn't attach a console for
+/// it. If the caller is a terminal, borrow that one. Otherwise, open one of
+/// our own. If already attached, do nothing (both calls simply fail harmlessly in that case).
 fn open_console() {
     use windows_sys::Win32::System::Console::{
         ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole,
@@ -2291,27 +2358,29 @@ fn open_console() {
     }
 }
 
-/// Luaフックを3階層 (基本 > ワークスペース > タブ) で読み込む。
-/// フックの引き当ては「より具体的な方が勝つ」ので、タブ用スクリプトが
-/// 定義していないフックだけがワークスペース・基本へフォールバックする
-/// タブごとの自動化を、画面の番号で並べる。
+/// Loads Lua hooks across 3 tiers (base > workspace > tab).
+/// Hook resolution favors "the more specific one wins", so only hooks a tab's
+/// script doesn't define fall back to workspace, then base.
+/// Lines up per-tab automation by screen number.
 ///
-/// 番号は画面に出ているものと同じにする。人が押す番号、スクリプトが
-/// 指す番号、ボールが飛ぶ番号が別々だと、誰にも追えなくなる。
+/// The number matches whatever's shown on screen. If the number a human
+/// presses, the number a script points at, and the number the ball flies to
+/// were all different, nobody could keep track of any of it.
 ///
-/// 並べ替えられても、設定を読み直せば付け直される。
-/// どこにも覚えさせないので、ずれたままにならない
-/// タブの自動化の指定。ファイル/ディレクトリか、内蔵のブラウザ操作エージェントか
+/// Reordering still works, because it's reassigned every time config is reloaded.
+/// Nothing is remembered anywhere, so it can never drift out of sync.
+/// The automation assignment for a tab. Either a file/directory, or the built-in browser-driving agent.
 #[derive(Debug, PartialEq)]
 enum TabAuto {
-    /// automation パス (ディレクトリ or .lua)
+    /// An automation path (a directory or .lua file)
     Path(String),
-    /// ブラウザ操作モード。中身は内蔵。値は操作対象ブラウザの id
+    /// Browser-driving mode. Built in; the value is the id of the browser being driven.
     Agent(String),
 }
 
-/// ワークスペース内で、id (無ければ名前) が一致するタブの画面番号 (1始まり) を返す。
-/// 議論の参加者/審判をタブ id から画面番号に解決するのに使う
+/// Returns the screen number (1-based) of the tab in a workspace whose id
+/// (or name, if no id) matches. Used to resolve discussion participants/referee
+/// from a tab id to a screen number.
 fn pane_of_id(ws: &config::Workspace, id: &str) -> Option<usize> {
     let mut pane = 0;
     for t in &ws.tabs {
@@ -2330,12 +2399,12 @@ fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, TabAuto)> {
     let mut pane = 0;
     let mut out = Vec::new();
     for t in &ws.tabs {
-        // コマンドが空の行は、画面にも並ばない
+        // A row with an empty command doesn't show up on screen either
         if t.cfg.command.argv().is_empty() {
             continue;
         }
         pane += 1;
-        // drives (ブラウザ操作モード) は automation より優先。内蔵司令塔が動く
+        // `drives` (browser-driving mode) takes priority over `automation`; the built-in commander runs
         if let Some(br) = t.cfg.drives.clone().filter(|s| !s.trim().is_empty()) {
             out.push((pane, TabAuto::Agent(br)));
         } else if let Some(p) = t.cfg.automation_path() {
@@ -2387,12 +2456,13 @@ fn build_engine(
             engine.set_workspace(id);
         }
     }
-    // 審判(停止条件)はワークスペース単位。内蔵司令塔へ Lua テーブルで渡す
+    // The referee (stop conditions) is per-workspace. Passed to the built-in commander as a Lua table.
     let stops_lua = ws
         .map(|w| config::stops_to_lua(&w.stops))
         .unwrap_or_else(|| "{}".to_string());
-    // drives と discuss は同じタブに同居できない (どちらもそのタブの自動化を占有する)。
-    // 併用が書かれていたら discuss を優先し、ブラウザ操作モードは無効化して警告する
+    // `drives` and `discuss` can't coexist on the same tab (each one claims that
+    // tab's automation). If both are written, `discuss` takes priority and
+    // browser-driving mode is disabled with a warning.
     let discuss_panes: std::collections::HashSet<usize> = ws
         .and_then(|w| {
             w.discuss.as_ref().map(|d| {
@@ -2409,8 +2479,8 @@ fn build_engine(
     for (idx, auto) in &tab_luas {
         let id = match auto {
             TabAuto::Path(p) => load(&mut engine, p, errors),
-            // ブラウザ操作モード: 内蔵の司令塔を対象ブラウザ向けに読み込む。
-            // ただし同じタブが議論の参加者でもあるなら、議論を優先して無効化する
+            // Browser-driving mode: loads the built-in commander for the target browser.
+            // But if the same tab is also a discussion participant, discuss wins and this is disabled.
             TabAuto::Agent(br) if discuss_panes.contains(idx) => {
                 errors.push(crate::i18n::tp(
                     "err.ws.agent_mode_and_discuss",
@@ -2433,7 +2503,7 @@ fn build_engine(
             engine.set_tab(*idx, id);
         }
     }
-    // AI×AI 議論: ワークスペースに discuss があれば、各参加者タブに内蔵の議論司令塔を入れる
+    // AI-vs-AI discussion: if the workspace has `discuss`, load the built-in discussion commander into each participant tab
     if let Some(w) = ws {
         if let Some(d) = &w.discuss {
             let agents: Vec<String> = d
@@ -2445,7 +2515,7 @@ fn build_engine(
             let n = agents.len();
             if n >= 2 {
                 let max_turns = (d.max_rounds.max(1) as usize) * n;
-                // 参加者一覧を Lua のリストリテラルにして司令塔へ渡す (集合stopsで使う)
+                // Turn the participant list into a Lua list literal to pass to the commander (used by group stops)
                 let agents_lua = format!(
                     "{{{}}}",
                     agents
@@ -2506,7 +2576,7 @@ fn build_engine(
                         )),
                     }
                 }
-                // 司会(moderator)タブ: order="moderated" のとき次の話者を指名する
+                // The moderator tab: nominates the next speaker when order="moderated"
                 if let Some(m) = moderator {
                     let persona = d.personas.get(m).map(String::as_str).unwrap_or("");
                     match pane_of_id(w, m) {
@@ -2534,10 +2604,11 @@ fn build_engine(
     (!engine.is_empty()).then_some(engine)
 }
 
-/// タブ設定を作り直したTabOptionsに変換する
-/// `model <provider>/<model>` タブなら、解決済みの接続先を opts に載せる。
-/// 討論参加者ならペルソナも持たせる (ステートレスなブリッジが立場を忘れないように)。
-/// argv は識別用にそのまま残す (spawn 側が待機プロセスへ差し替える)。普通のタブは素通し
+/// Converts a rebuilt tab config into TabOptions.
+/// For a `model <provider>/<model>` tab, loads the resolved connection info into opts.
+/// A discussion participant also gets its persona attached (so the stateless
+/// bridge doesn't forget its stance). argv is left as-is for identification
+/// (the spawn side swaps it for the waiting process). A regular tab passes through untouched.
 fn resolve_launch(
     argv: Vec<String>,
     opts: &mut tab::TabOptions,
@@ -2555,7 +2626,7 @@ fn resolve_launch(
 
 fn tab_options(cfg: &config::TabConfig) -> tab::TabOptions {
     tab::TabOptions {
-        // 相対指定は設定ファイルの場所を基準にする (フォルダごと持ち運べる)
+        // Relative paths are resolved against the config file's location (so the whole folder is portable)
         cwd: cfg.cwd.as_ref().map(|c| {
             let p = std::path::PathBuf::from(c);
             if p.is_absolute() {
@@ -2571,9 +2642,10 @@ fn tab_options(cfg: &config::TabConfig) -> tab::TabOptions {
     }
 }
 
-/// 設定変更を、起動中のタブ群へ反映する。
-/// 反映できるものは即座に、セッションの作り直しが要るものは保留して印を付ける
-/// (実行中のAIを勝手に切らないため)。戻り値は利用者への報告メッセージ
+/// Applies a config change to the running set of tabs.
+/// Whatever can take effect immediately does; whatever needs the session
+/// rebuilt is deferred and flagged instead (so a running AI doesn't get cut
+/// off without asking). The return value is the message reported to the user.
 fn apply_ws_config(
     tabs: &mut Vec<Tab>,
     ws: &config::Workspace,
@@ -2585,7 +2657,7 @@ fn apply_ws_config(
     let mut removed = 0usize;
     let mut staged = 0usize;
 
-    // 設定に無くなったタブを閉じる (GUIで削除された = 明示的な指示)
+    // Close tabs no longer in config (removed via the GUI = an explicit instruction)
     let wanted: Vec<String> = ws
         .tabs
         .iter()
@@ -2606,15 +2678,15 @@ fn apply_ws_config(
         }
     });
 
-    // 既存タブの更新と、新規タブの追加
+    // Update existing tabs and add new ones
     let mut ordered: Vec<Tab> = Vec::with_capacity(ws.tabs.len());
     for ft in &ws.tabs {
         let argv = ft.cfg.command.argv();
         if argv.is_empty() {
             continue;
         }
-        // ブラウザは子プロセスではないので、ここでは立てない
-        // (open_declared_browsers が窓を開く)
+        // Browsers aren't child processes, so don't launch them here
+        // (open_declared_browsers opens the window)
         if config::browser_url_of(&argv).is_some() {
             continue;
         }
@@ -2630,7 +2702,7 @@ fn apply_ws_config(
                     ft.cfg.auto_restart,
                     ft.depth,
                 );
-                // コマンド・文字コード・行数の変更は作り直しが必要
+                // Changes to command, encoding, or line count require a rebuild
                 if t.signature() != tab::signature_of(&argv, &opts) {
                     t.stage_restart_config(argv.clone(), opts);
                     staged += 1;
@@ -2650,7 +2722,7 @@ fn apply_ws_config(
             },
         }
     }
-    // 設定に載っていない残りは閉じる
+    // Close whatever's left that isn't in config
     for mut t in tabs.drain(..) {
         t.kill();
         removed += 1;
@@ -2670,14 +2742,14 @@ fn apply_ws_config(
     parts.join(" / ")
 }
 
-/// ワークスペースのタブ群を起動する (初回アクティブ化時に呼ぶ)
-/// 設定で宣言されたブラウザを開く。
+/// Launches the tabs for a workspace (called on first activation)
+/// Opens the browsers declared in config.
 ///
-/// 1台開けなくても他は動かす。ブラウザが立たないことは、
-/// ワークスペース全体を止める理由にならない
+/// If one fails to open, the rest still run. A browser failing to launch is
+/// never a reason to stop the whole workspace.
 fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &mut Vec<String>) {
-    // 既に開いてあるものは触らない。開き直すと読み込みからやり直しになり、
-    // 設定を保存するたびに見ていたページが消える
+    // Don't touch ones already open. Reopening them would restart the page from
+    // scratch, wiping out whatever the user was looking at every time settings are saved.
     let open_now = caps.hosted_names();
     let already = |name: &str| open_now.iter().any(|n| n == name);
     for b in &ws.browsers {
@@ -2697,8 +2769,8 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             )),
         }
     }
-    // タブとして「browser https://...」と書かれたものも同じ扱い。
-    // 自動化から指す名前は、そのタブのID (無ければ表示名)
+    // A tab written as "browser https://..." gets the same treatment.
+    // The name automation addresses it by is that tab's ID (or display name if no ID)
     for ft in &ws.tabs {
         let argv = ft.cfg.command.argv();
         let Some(url) = config::browser_url_of(&argv) else {
@@ -2728,13 +2800,13 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
     apply_browser_chrome(ws, caps);
 }
 
-/// ページの上のバーと下の帯を、設定のとおりに出し直す。
+/// Redraws a page's top bar and bottom band to match config.
 ///
-/// 開いたときだけでなく、設定を読み直したときにも通る。
-/// ここを通さないと、チェックを入れても再起動するまで出てこない
+/// Runs not just on open, but also whenever config is reloaded.
+/// Without going through here, checking a box wouldn't show up until a restart.
 fn apply_browser_chrome(ws: &config::Workspace, caps: &hooks::Caps) {
-    // 設定から消えたブラウザは閉じる。置いたままにすると、
-    // 「設定に無いページ」として一覧の後ろに現れ直す
+    // Close browsers that dropped out of config. Leaving them in place would
+    // make them reappear at the back of the list as a "page not in config".
     let declared: Vec<String> = ws
         .browsers
         .iter()
@@ -2752,7 +2824,7 @@ fn apply_browser_chrome(ws: &config::Workspace, caps: &hooks::Caps) {
         }))
         .collect();
     for gone in caps.keep_only_declared(&declared) {
-        append_hook_log(&format!("設定から消えたので閉じました: {gone}"));
+        append_hook_log(&format!("Closed because it dropped out of config: {gone}"));
     }
 
     for ft in &ws.tabs {
@@ -2766,8 +2838,9 @@ fn apply_browser_chrome(ws: &config::Workspace, caps: &hooks::Caps) {
             .clone()
             .or_else(|| ft.cfg.name.clone())
             .unwrap_or_else(|| "browser".into());
-        // 外したなら消す。設定を戻したのに残っていては直せない。
-        // Luaから出したものも、設定を保存した時点の指定に揃える
+        // Clear it if it was removed. Leaving it around even after reverting
+        // config would make it un-fixable. This also brings anything Lua set
+        // into line with whatever config specifies at save time.
         match ft.cfg.nav {
             Some(nav) => {
                 let _ = caps.browser_nav(&name, nav);
@@ -2799,7 +2872,7 @@ fn spawn_workspace(
     tabs: &mut Vec<Tab>,
     errors: &mut Vec<String>,
 ) {
-    // 呼び名が重複していると自動化の送信先が定まらないので知らせる
+    // Warn when ids collide, since automation can't tell where to send in that case
     let dups = config::duplicate_keys(ws);
     if !dups.is_empty() {
         errors.push(crate::i18n::tp(
@@ -2812,10 +2885,10 @@ fn spawn_workspace(
         if argv.is_empty() {
             continue;
         }
-        // ブラウザは子プロセスではない。窓の中にページを置くだけなので、
-        // ここで立てようとすると「browser という名前の実行ファイルが無い」と
-        // 言われて、起動のたびに身に覚えのない失敗が出る
-        // (open_declared_browsers が開く)
+        // Browsers aren't child processes; they're just pages placed inside the
+        // window. Trying to launch one here would produce a baffling "no
+        // executable named browser" failure every time, out of nowhere.
+        // (open_declared_browsers opens them)
         if config::browser_url_of(&argv).is_some() {
             continue;
         }
@@ -2842,9 +2915,9 @@ fn spawn_workspace(
     }
 }
 
-/// ワークスペース切替 (仮想デスクトップ方式)。
-/// 切替は非表示化であって停止ではない — 裏に回ったタブも動き続ける。
-/// 未起動のワークスペースはこのタイミングで初回起動する
+/// Switches workspaces (virtual-desktop model).
+/// Switching means hiding, not stopping — tabs that go into the background keep running.
+/// An unlaunched workspace gets its first launch right here.
 #[allow(clippy::too_many_arguments)]
 fn switch_workspace(
     to: usize,
@@ -2866,11 +2939,11 @@ fn switch_workspace(
         return;
     }
     ws_tabs[*ws_index] = std::mem::take(tabs);
-    // Lua環境はワークスペース毎に保持する (共有変数が切替で失われない)
+    // The Lua environment is kept per workspace (so shared variables survive switching)
     engines[*ws_index] = engine.take();
     *ws_index = to;
-    // 呼び名はワークスペースの中でだけ通じる。
-    // 置いたページも、いま見ている分だけがタブに並ぶ
+    // Ids only mean something within their own workspace.
+    // Placed pages also only appear in the tab list for whichever one is currently viewed.
     caps.set_workspace(to);
     caps.set_secret_allow(
         workspaces[to].secrets_allow.clone(),
@@ -2891,27 +2964,28 @@ fn switch_workspace(
     *active = if tabs.is_empty() { 0 } else { 1 };
 }
 
-/// 画面に並ぶもの。設定に書いた順のまま。
+/// What's laid out on screen, in exactly the order written in config.
 ///
-/// セッションとブラウザを別々に持っているのは中の都合で、
-/// 設定を書いた人には関係がない
+/// Keeping sessions and browsers as separate variants is purely an internal
+/// concern; it has nothing to do with whoever wrote the config.
 #[derive(Clone, Debug, PartialEq)]
 enum Pane {
-    /// tabs の何番目か (0始まり)
+    /// Which index into `tabs` (0-based)
     Session(usize),
-    /// 窓の中に置いたページ
+    /// A page placed inside the window
     Browser {
-        /// 自動化から指す名前 (ID、無ければ表示名)。窓に置くときの名前でもある
+        /// The name automation addresses it by (ID, or display name if none). Also the name used to place it in the window.
         key: String,
-        /// 人が読む名前
+        /// The human-readable name
         name: String,
     },
 }
 
-/// 設定に書いた順で、画面に並ぶものを組み立てる。
+/// Builds what's laid out on screen, in the order written in config.
 ///
-/// 設定に無いもの (自動化が後から開いたブラウザ、引数で立てたタブ) は
-/// 後ろに付ける。書いていないものの位置は決めようがない
+/// Things not in config (a browser automation opened later, a tab launched
+/// via arguments) get appended at the end. There's no way to decide a
+/// position for something that was never written down.
 fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) -> Vec<Pane> {
     let mut out: Vec<Pane> = Vec::new();
     let mut used_tabs = vec![false; titles.len()];
@@ -2929,8 +3003,9 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
                     .clone()
                     .or_else(|| ft.cfg.name.clone())
                     .unwrap_or_else(|| "browser".into());
-                // 開けていなくても位置は持つ。開いた順で番号が動くと、
-                // スクリプトの指す先が走るたびに変わる
+                // Keeps a position even if it isn't open. If numbering shifted
+                // based on open order, whatever a script points to would change
+                // on every run.
                 if let Some(h) = hosted.iter().find(|h| **h == key) {
                     used_web.push(h);
                 }
@@ -2939,7 +3014,7 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
                 continue;
             }
             let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-            // 同じ名前が並んでいても、書いた順に1つずつ対応させる
+            // Even with duplicate names, match them one-to-one in written order
             let found = titles
                 .iter()
                 .enumerate()
@@ -2951,13 +3026,13 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
             }
         }
     }
-    // 設定に書かれていないもの
+    // Things not written in config
     for (i, used) in used_tabs.iter().enumerate() {
         if !used {
             out.push(Pane::Session(i));
         }
     }
-    // 設定に無いもの (自動化が後から開いた分、設定画面など) は名前がそれだけ
+    // Things not in config (opened later by automation, the settings screen, etc.) — the name is all there is
     for h in hosted {
         if !used_web.iter().any(|u| u == h) {
             out.push(Pane::Browser {
@@ -2969,7 +3044,7 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
     out
 }
 
-/// 画面の番号 (1始まり) から、セッションの居場所を引く
+/// Looks up a session's location from its screen number (1-based)
 fn session_at(panes: &[Pane], active: usize) -> Option<usize> {
     match panes.get(active.checked_sub(1)?)? {
         Pane::Session(i) => Some(*i),
@@ -2977,8 +3052,8 @@ fn session_at(panes: &[Pane], active: usize) -> Option<usize> {
     }
 }
 
-/// セッションの居場所から、画面の番号 (1始まり) を引く。
-/// ボールはセッションの番号で動くので、見せるときにここを通す
+/// Looks up the screen number (1-based) from a session's location.
+/// The ball moves by session number, so route it through here when displaying it.
 fn pane_at(panes: &[Pane], session: usize) -> usize {
     panes
         .iter()
@@ -2987,15 +3062,15 @@ fn pane_at(panes: &[Pane], session: usize) -> usize {
         .unwrap_or(0)
 }
 
-/// いま見ているセッション。ブラウザを見ているなら None
+/// The session currently being viewed. None if viewing a browser.
 fn session_mut<'a>(tabs: &'a mut [Tab], panes: &[Pane], active: usize) -> Option<&'a mut Tab> {
     let i = session_at(panes, active)?;
     tabs.get_mut(i)
 }
 
-/// スマホへ送る画面テキストを整える。
-/// 端末の空行がそのままだと本文が見えなくなるので末尾を落とし、
-/// 通信量のために行数も抑える
+/// Trims the screen text sent to the phone.
+/// Trailing blank lines from the terminal would otherwise hide the content, so
+/// those are dropped from the end; line count is also capped to save bandwidth.
 fn trim_for_phone(s: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = s.lines().collect();
     let end = lines
@@ -3011,9 +3086,10 @@ fn trim_for_phone(s: &str, max_lines: usize) -> String {
         .join("\n")
 }
 
-/// リモートUIのトークンを決める。
-/// secretsにあればそれを使い、無ければ data\remote-token に保存して使い回す
-/// (毎回変わるとスマホを繋ぎ直すことになり、QRも設定画面から出せない)
+/// Decides the remote UI's token.
+/// Uses the one in secrets if present; otherwise saves one to data\remote-token
+/// and reuses it (a token that changes every time would force reconnecting
+/// phones each time and make it impossible to show the QR from settings).
 pub fn remote_token(cfg: &config::Config, password: Option<&str>) -> String {
     if let Some(t) = cfg.remote_token(password) {
         return t;
@@ -3030,7 +3106,7 @@ pub fn remote_token(cfg: &config::Config, password: Option<&str>) -> String {
     t
 }
 
-/// 設定に従ってリモートUIを開始する (無効なら None)
+/// Starts the remote UI according to config (None if disabled)
 fn start_remote(
     cfg: Option<&config::Config>,
     password: Option<&str>,
@@ -3067,7 +3143,7 @@ fn start_remote(
     }
 }
 
-/// 設定画面がQRコードを出せるよう、現在の待ち受け状況を渡す
+/// Passes the current listening status along so the settings screen can show the QR code
 fn publish_remote(info: &Arc<Mutex<webui::RemoteInfo>>, ui: &Option<remote::RemoteUi>) {
     let mut i = info.lock().unwrap();
     match ui {
@@ -3080,7 +3156,7 @@ fn publish_remote(info: &Arc<Mutex<webui::RemoteInfo>>, ui: &Option<remote::Remo
     }
 }
 
-/// 16進のランダム文字列 (リモートUIのトークン用)
+/// A random hex string (for the remote UI's token)
 fn random_hex(bytes: usize) -> String {
     use rand::TryRng as _;
     let mut buf = vec![0u8; bytes];
@@ -3090,13 +3166,14 @@ fn random_hex(bytes: usize) -> String {
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// ポータブル配置のルート (相対パスの基準。exe と各フォルダが並ぶ場所)
+/// The root of the portable layout (base for relative paths; where the exe and its folders sit side by side)
 fn config_file_dir() -> std::path::PathBuf {
     config::root_dir()
 }
 
-/// 設定画面を自分の窓の中に開く。立ち上げるのは1度だけで、2度目からは同じ場所へ戻る。
-/// `query` はURLに付け足す追加の指示 ("&addtab=0" など。無指定は "")
+/// Opens the settings screen inside our own window. Only launched once; from
+/// the second time on, it just returns to the same location.
+/// `query` is extra instruction appended to the URL (e.g. "&addtab=0"; empty by default)
 fn open_settings(
     web: &mut Option<webui::WebUi>,
     config_file: &std::path::Path,
@@ -3118,7 +3195,7 @@ fn open_settings(
             u
         }
     };
-    // 設定画面はローカルのUIページ。Cookieを持たないので共有の default で十分
+    // The settings screen is a local UI page. It holds no cookies, so the shared default profile is plenty.
     caps.browser_open(
         SETTINGS_TAB,
         &format!("{url}{query}"),
@@ -3126,9 +3203,10 @@ fn open_settings(
     )
 }
 
-/// exe隣 (ポータブル配置) を優先してデータファイルのパスを解決する。
-/// 自動化ディレクトリの解決に使う。設定GUI (webui) も同じ解決を使い、
-/// 「本体が動かす場所」と「GUIが読み書きする場所」がズレないようにする
+/// Resolves a data file's path, preferring the location beside the exe (portable layout).
+/// Used to resolve the automation directory. The settings GUI (webui) uses this
+/// same resolution too, so "where the main app runs it from" and "where the
+/// GUI reads/writes it" never drift apart.
 pub(crate) fn resolve_data_path(p: &str) -> std::path::PathBuf {
     if let Some(dir) = std::env::current_exe()
         .ok()
@@ -3142,8 +3220,8 @@ pub(crate) fn resolve_data_path(p: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(p)
 }
 
-/// 置いたページの様子を、画面の並びから組み立てる。
-/// 並びに無いページ (閉じた後など) には None
+/// Builds a placed page's context from the screen layout.
+/// Returns None for a page that's not in the layout (e.g. after it's closed).
 fn page_ctx(
     panes: &[Pane],
     key: &str,
@@ -3175,18 +3253,19 @@ fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
     }
 }
 
-/// 手動入力直後は自動送信を控える猶予 (打鍵の混線防止)
+/// Grace period holding off auto-submit right after manual input (avoids keystroke cross-talk)
 const MANUAL_GUARD_MS: u64 = 5000;
 
-/// ボールを追って移るべき画面。移らないなら None。
+/// The screen to move to, following the ball. None if it shouldn't move.
 ///
-/// 人が画面を触った直後は従わない。読んでいる最中に飛ばされるのが
-/// いちばん困るので、手を出したらしばらく黙る
-/// どのワークスペースから始めるか。
+/// Don't follow right after a human touches the screen. Getting yanked away
+/// mid-read is the worst outcome, so once someone touches it, stay quiet for a while.
+/// Which workspace to start from.
 ///
-/// 覚えるのは番号ではなく名前。番号は並べ替えや追加でずれるので、
-/// 「昨日の続き」のつもりが別のものになる。
-/// 見つからなければ先頭に落とす (消した・改名した場合)
+/// What's remembered is the name, not the number. Numbers shift with
+/// reordering or additions, which would turn "resume where I left off
+/// yesterday" into something else entirely.
+/// Falls back to the first one if not found (e.g. it was deleted or renamed).
 fn starting_workspace(enabled: bool, last: Option<&str>, names: &[String]) -> usize {
     if !enabled {
         return 0;
@@ -3209,22 +3288,24 @@ fn follow_target(
     (now_ms.saturating_sub(view_touched_ms) >= FOLLOW_GUARD_MS).then_some(holder)
 }
 
-/// 人が画面を触ってから、自動追従を再開するまでの間。
+/// The delay after a human touches the screen before auto-follow resumes.
 ///
-/// 読んでいる最中に勝手に飛ばされるのが一番困るので、
-/// 手を出したらしばらく黙って従う
+/// Getting yanked away mid-read is the worst outcome, so once someone touches
+/// it, stay quiet and follow along for a while.
 const FOLLOW_GUARD_MS: u64 = 8_000;
 
-/// 人間が触った直後か。一度も触られていなければ false。
+/// Whether a human touched it recently. False if never touched at all.
 ///
-/// ここを「時刻0 = 触られた」と扱うと、アプリ起動からガード時間のあいだ
-/// 自動送信が丸ごと捨てられる (起動時の自動化が動かない原因になっていた)
+/// Treating time 0 as "touched" here would silently drop every auto-send for
+/// the guard period after app startup (this used to be why startup automation
+/// didn't run).
 fn touched_recently(t: &Tab, now_ms: u64) -> bool {
     t.last_manual_ms
         .is_some_and(|m| now_ms.saturating_sub(m) < MANUAL_GUARD_MS)
 }
 
-/// ログ用に1行へ潰した抜粋。全文だと読めないので頭だけ残す
+/// An excerpt collapsed onto a single line, for logging. Full text isn't
+/// readable, so keep only the beginning.
 fn log_excerpt(text: &str, max: usize) -> String {
     let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out: String = one.chars().take(max).collect();
@@ -3245,16 +3326,16 @@ pub fn append_hook_log(msg: &str) {
     }
 }
 
-/// 画面の並びどおりの呼び名の一覧。
+/// The list of ids in the same order they're laid out on screen.
 ///
-/// 指す先は画面の並びで数える。名前でも番号でも同じものを指す
-/// (番号は並べ替えで変わるので、書くときは名前を勧める)
+/// Targets are counted by screen position. A name and a number both point to
+/// the same thing (numbers shift with reordering, so using names when writing is recommended).
 fn pane_keys(panes: &[Pane], tabs: &[Tab]) -> Vec<hooks::TabKey> {
     panes
         .iter()
         .map(|p| match p {
             Pane::Session(i) => tabs.get(*i).map(|t| t.key()).unwrap_or_default(),
-            // ブラウザも呼び名 (ID) が先。表示名でも引けるようにする
+            // Browsers give priority to the id too; still lookup-able by display name
             Pane::Browser { key, name } => hooks::TabKey {
                 id: Some(key.clone()),
                 name: name.clone(),
@@ -3263,19 +3344,20 @@ fn pane_keys(panes: &[Pane], tabs: &[Tab]) -> Vec<hooks::TabKey> {
         .collect()
 }
 
-/// まだ渡せない受け渡し。相手が入力を受け取れるようになったら実行する。
+/// A hand-off that can't be delivered yet. Runs once the recipient becomes ready to receive input.
 ///
-/// 渡す先が起動しきっていないことは珍しくない。捨てられたことは
-/// 誰にも見えないので、こちらで持っておく
+/// It's not unusual for the target to still be starting up. Since a dropped
+/// hand-off is invisible to everyone, we hold onto it ourselves instead.
 struct Waiting {
     cmd: Command,
-    /// これを過ぎたら諦める。持ち続けても、いつか誰も覚えていない
+    /// Give up once this time passes. Holding onto it any longer wouldn't help — eventually nobody remembers it anyway.
     give_up_ms: u64,
 }
 
-/// 相手が受け取れるようになるまで待てる受け渡しか。
+/// Whether this hand-off is one that can wait for the recipient to become ready.
 ///
-/// 待てるのは「渡す」ものだけ。再起動や通知は相手の準備と関係がない
+/// Only "delivering something" can wait. Restarts and notifications have
+/// nothing to do with whether the recipient is ready.
 fn can_wait(cmd: &Command) -> bool {
     matches!(
         cmd,
@@ -3283,7 +3365,7 @@ fn can_wait(cmd: &Command) -> bool {
     )
 }
 
-/// その受け渡しの宛先
+/// The destination of that hand-off
 fn target_of(cmd: &Command) -> Option<&hooks::TabRef> {
     match cmd {
         Command::SendPrompt { target, .. } | Command::DraftPrompt { target, .. } => Some(target),
@@ -3291,16 +3373,16 @@ fn target_of(cmd: &Command) -> Option<&hooks::TabRef> {
     }
 }
 
-/// 渡す相手が入力を受け取れる状態か
+/// Whether the recipient is in a state where it can accept input
 fn ready_to_receive(t: &Tab) -> bool {
     t.ready_for_startup_hook()
 }
 
-/// 諦めるまでの間。これより長く持っていても、書いた人はもう見ていない
+/// How long to hold before giving up. Whoever wrote it isn't watching anymore by the time this long has passed.
 const WAIT_FOR_TAB_MS: u64 = 30_000;
 
-/// Luaフックが積んだ操作依頼を実行する。
-/// 自動送信はチェーン深度 (透明のボール) を継承し、上限で止める
+/// Executes the operation requests queued by Lua hooks.
+/// Auto-sends inherit chain depth (the invisible ball) and stop once the cap is hit.
 #[allow(clippy::too_many_arguments)]
 fn exec_commands(
     cmds: Vec<Command>,
@@ -3320,11 +3402,11 @@ fn exec_commands(
 ) {
     let keys = pane_keys(panes, tabs);
     let index_of = |r: &hooks::TabRef| r.resolve(&keys);
-    // 画面の番号から、タブ配列の居場所へ。ブラウザなら None
+    // From a screen number to its location in the tabs array. None for a browser.
     let session_of = |pane: usize| session_at(panes, pane);
     for cmd in cmds {
-        // 渡す相手がまだ入力を受け取れないなら、預かって後で渡す。
-        // ここで流すと黙って捨てられ、書いた人には何も見えない
+        // If the recipient can't accept input yet, hold onto it and deliver it later.
+        // Sending it now would be silently dropped, invisible to whoever wrote it.
         if can_wait(&cmd) {
             let not_yet = target_of(&cmd)
                 .and_then(index_of)
@@ -3334,7 +3416,7 @@ fn exec_commands(
                 .unwrap_or(false);
             if not_yet {
                 if let Some(t) = target_of(&cmd) {
-                    append_hook_log(&format!("受け取れるまで待つ: {t:?}"));
+                    append_hook_log(&format!("Waiting for it to become ready to receive: {t:?}"));
                 }
                 waiting.push(Waiting {
                     cmd,
@@ -3345,8 +3427,8 @@ fn exec_commands(
         }
         match cmd {
             Command::Log(msg) => append_hook_log(&msg),
-            // 表示タブの切替 (観戦モード)。0 は稼働盤 (INDEX)。
-            // 相手はセッションでもブラウザでも、画面の番号で指せる
+            // Switch the displayed tab (spectator mode). 0 is the operating board (INDEX).
+            // The target, whether a session or a browser, is addressed by screen number.
             Command::ShowTab { target } => {
                 if matches!(target, hooks::TabRef::Index(0)) {
                     *active = 0;
@@ -3356,8 +3438,8 @@ fn exec_commands(
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
                 }
             }
-            // ラリーの終了結果。data/last-result.json とログとUIに出す。
-            // 外部連携はこのファイルを読む (対話アプリのままなのでプロセスは終えない)
+            // A rally's final result. Written to data/last-result.json, the log, and the UI.
+            // External integrations read this file (the process itself keeps running as an interactive app).
             Command::SetResult { code, reason, origin } => {
                 let at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -3368,9 +3450,9 @@ fn exec_commands(
                 });
                 let path = config::state_path("last-result.json");
                 if let Err(e) = crate::crypto::write_atomic(&path, &json.to_string()) {
-                    append_hook_log(&format!("結果の書き込みに失敗: {e}"));
+                    append_hook_log(&format!("Failed to write result: {e}"));
                 }
-                append_hook_log(&format!("結果 code={code} reason={reason} (tab{origin})"));
+                append_hook_log(&format!("Result code={code} reason={reason} (tab{origin})"));
                 *flash = Some(i18n::tp(
                     "msg.result",
                     &[("code", &code.to_string()), ("reason", &reason)],
@@ -3430,7 +3512,7 @@ fn exec_commands(
                 if depth > max_chain {
                     *flash = Some(i18n::t("msg.chain_limit"));
                     append_hook_log(&format!(
-                        "chain limit ({max_chain}): 下書き tab{origin} -> tab{idx}"
+                        "chain limit ({max_chain}): draft tab{origin} -> tab{idx}"
                     ));
                     continue;
                 }
@@ -3438,27 +3520,29 @@ fn exec_commands(
                     if touched_recently(t, now_ms) {
                         continue;
                     }
-                    // 目印を理解しない相手 (素のシェル) に同じものを送ると、
-                    // 目印は無視され、中の改行がそのまま実行になる。
-                    // 黙って改行を落とすより、断って理由を残す方がいい
+                    // Sending this same thing to a recipient that doesn't
+                    // understand the markers (a plain shell) would have the
+                    // markers ignored and the newline inside it run as-is.
+                    // Better to refuse and leave a reason than to silently drop the newline.
                     if !t.accepts_bracketed_paste() {
                         let msg = i18n::tp("msg.draft_unsupported", &[("tab", &t.title)]);
                         append_hook_log(&msg);
                         *flash = Some(msg);
                         continue;
                     }
-                    // 実行(改行)は送らない。人が書き足して自分で送る
+                    // Don't send submit (Enter). A human adds to it and sends it themselves.
                     let mut bytes = Vec::with_capacity(text.len() + 12);
                     bytes.extend_from_slice(b"\x1b[200~");
                     bytes.extend_from_slice(text.as_bytes());
                     bytes.extend_from_slice(b"\x1b[201~");
                     let _ = t.write_bytes(&bytes);
-                    // 人も輪の一部。書き足して流せば連鎖は続くので、
-                    // 深さは自動送信と同じに数える
+                    // A human is part of the loop too. If they add to it and
+                    // send it, the chain continues, so count the depth the same
+                    // way as an auto-send.
                     t.chain_depth = depth;
                     ball.draft(origin, idx, depth, now_ms);
                     append_hook_log(&format!(
-                        "下書き tab{origin} -> tab{idx} (depth {depth}): {}",
+                        "Draft tab{origin} -> tab{idx} (depth {depth}): {}",
                         log_excerpt(&text, 60)
                     ));
                 }
@@ -3473,7 +3557,7 @@ fn exec_commands(
                 }
                 let Some(target) = index_of(&target) else {
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
-                    append_hook_log(&format!("送信先が見つかりません: {target:?}"));
+                    append_hook_log(&format!("Send target not found: {target:?}"));
                     continue;
                 };
                 let depth = session_of(origin)
@@ -3495,15 +3579,16 @@ fn exec_commands(
                 }
                 t.chain_depth = depth;
                 if t.is_model() {
-                    // model ブリッジ: スレッドで complete() を叩き、応答を画面へ注入＋
-                    // say.txt へ書く。検出(BUSY→DONE→on_done)は注入された活動で回る
+                    // model bridge: hits complete() on a thread, injects the
+                    // response into the screen, and writes it to say.txt too.
+                    // Detection (BUSY -> DONE -> on_done) runs on the injected activity.
                     t.dispatch_model(text.clone());
-                    append_hook_log(&format!("model手番 tab{target} ({}文字)", text.chars().count()));
+                    append_hook_log(&format!("model's turn tab{target} ({} chars)", text.chars().count()));
                 } else {
                     let seen = t.output_count();
                     write_prompt(t, &text);
                     pending_submit.push(PendingSubmit::new(target, seen, now_ms));
-                    append_hook_log(&format!("貼り付け tab{target} ({}文字)", text.chars().count()));
+                    append_hook_log(&format!("Paste tab{target} ({} chars)", text.chars().count()));
                 }
                 ball.throw(origin, target, depth, now_ms);
                 append_hook_log(&format!(
@@ -3515,7 +3600,7 @@ fn exec_commands(
     }
 }
 
-/// コピーモード中のキー操作
+/// Key handling while in copy mode
 fn handle_copy_key(
     t: &mut Tab,
     key: &KeyEvent,
@@ -3553,7 +3638,7 @@ fn handle_copy_key(
         KeyCode::PageDown => {
             p.screen_mut().set_scrollback(cur.saturating_sub(rows_v as usize));
         }
-        // 最古へ (実際の保持量にクランプされる)
+        // To the oldest point (clamped to what's actually retained)
         KeyCode::Home | KeyCode::Char('g') => {
             p.screen_mut().set_scrollback(usize::MAX / 2);
         }
@@ -3561,14 +3646,14 @@ fn handle_copy_key(
             p.screen_mut().set_scrollback(0);
             cs.cursor_row = rows_v.saturating_sub(1);
         }
-        // 選択開始 / 解除
+        // Start / clear selection
         KeyCode::Char('v') | KeyCode::Char(' ') => {
             cs.anchor = match cs.anchor {
                 Some(_) => None,
                 None => Some(abs_line(cur, rows_v, cs.cursor_row)),
             };
         }
-        // 選択範囲 (未選択ならカーソル行) をコピーして復帰
+        // Copy the selected range (or the cursor's line if none) and return
         KeyCode::Char('y') | KeyCode::Enter => {
             let here = abs_line(cur, rows_v, cs.cursor_row);
             let (lo, hi) = match cs.anchor {
@@ -3582,7 +3667,7 @@ fn handle_copy_key(
             t.copy = None;
             return Ok(());
         }
-        // 全履歴コピー
+        // Copy the whole history
         KeyCode::Char('a') => {
             let text = extract_text(&mut p, 0, usize::MAX / 2, cols_v);
             p.screen_mut().set_scrollback(0);
@@ -3599,7 +3684,7 @@ fn handle_copy_key(
     Ok(())
 }
 
-/// マウス操作: タブバークリック切替 / ホイールスクロール / 選択即コピー / 右クリックペースト
+/// Mouse handling: click a tab bar entry to switch / wheel scroll / select-to-copy instantly / right-click to paste
 #[allow(clippy::too_many_arguments)]
 
 
@@ -3613,9 +3698,9 @@ fn handle_copy_key(
 
 
 
-/// 描画に必要なUI状態
+/// UI state needed for drawing
 struct Ui {
-    /// 設定がまだ無い初回起動 (INDEXに案内を出す)
+    /// First-ever run, before config exists (shows onboarding on INDEX)
     first_run: bool,
     active: usize,
     auto: Option<bool>,
@@ -3623,21 +3708,21 @@ struct Ui {
     ws_index: usize,
     ws_open: bool,
     help_open: bool,
-    /// QRコード表示中なら、その接続URL
+    /// The connection URL, if the QR code is being shown
     qr: Option<String>,
-    /// リモートUIが待ち受け中か (常時わかるように表示する)
+    /// Whether the remote UI is listening (shown at all times so it's never a mystery)
     remote_on: bool,
-    /// 自動チェーンの現在地 (透明のボールを見えるようにしたもの)
+    /// Where the auto-chain currently is (the invisible ball, made visible)
     ball: ball::Ball,
-    /// チェーン上限。ボールの色が上限にどれだけ近いかを表す
+    /// The chain cap. Represents how close the ball's color is to that cap.
     max_chain: u32,
-    /// 描画時刻 (相対ms)。ボールのアニメ進行に使う
+    /// Draw timestamp (relative ms). Used to drive the ball's animation.
     now_ms: u64,
-    /// 画面に並ぶもの。設定に書いた順
+    /// What's laid out on screen, in the order written in config
     panes: Vec<Pane>,
-    /// 見ているブラウザの上に出す操作 (None = 出さない)
+    /// The controls shown over the browser being viewed (None = don't show)
     nav: Option<crate::uistate::NavState>,
-    /// 今の画面から何行遡って見ているか (0 = 今)
+    /// How many lines back from the current screen we're scrolled (0 = live)
     scrolled: usize,
 }
 
@@ -3646,29 +3731,31 @@ struct Ui {
 
 
 
-/// INDEX = ホーム画面: セッション一覧 + メニュー
-/// ブロック文字のワードマーク (3行)。1文字ぶんの幅は不揃いなので、
-/// 右端の余白まで含めて数えず、実際の文字幅で測る
+/// INDEX = home screen: session list + menu
+/// The block-letter wordmark (3 lines). Per-character width is uneven, so
+/// measure actual character width rather than counting including right-edge padding.
 const WORDMARK: [&str; 3] = [
     "█▀▀ █ █ █ █ █ █ █▀▀ █ █ █▀█    ▀█▀ █▀▀ █▀█ █▄█",
     "▀▀█ █▀█ █ █▀▄ █ ▀▀█ █▀█ █▀█ ▀▀  █  █▀▀ █▀▄ █ █",
     "▀▀▀ ▀ ▀ ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀ ▀ ▀     ▀  ▀▀▀ ▀ ▀ ▀ ▀",
 ];
 
-/// 1行に落としたときの表記
+/// The wording used when collapsed to a single line
 const WORDMARK_SMALL: &str = "◢◤ SHIKISHA-TERM";
 
-/// 名前をどう出すか。画面に入らないなら小さくし、それも入らないなら出さない。
+/// How to show the name. Shrink it if it doesn't fit the screen; if even that
+/// doesn't fit, don't show it at all.
 ///
-/// 入らないものを無理に描くと折り返して崩れ、名前どころか画面が壊れて見える。
-/// 縦も見るのは、タブが多いときに名前で一覧を押し出さないため
+/// Forcing something that doesn't fit to draw anyway would wrap and break
+/// apart, making the screen itself look broken, not just the name. Height is
+/// checked too, so the name doesn't push the list off screen when there are many tabs.
 pub fn wordmark_lines(width: u16, height: u16) -> Vec<String> {
     let need = WORDMARK
         .iter()
         .map(|l| l.chars().count())
         .max()
         .unwrap_or(0) as u16;
-    // 左の余白1桁ぶんを足して測る。ぴったりだと枠に触れて窮屈に見える
+    // Measure with one extra column added for left padding. An exact fit touches the border and looks cramped.
     if width >= need + 2 && height >= 12 {
         return WORDMARK.iter().map(|l| format!(" {l}")).collect();
     }
@@ -3686,8 +3773,8 @@ fn copy_to_clipboard(text: &str) -> String {
     }
 }
 
-/// クリップボードの内容を子プロセスへペーストする。
-/// 子がbracketed pasteモードなら \x1b[200~ ... \x1b[201~ で包む
+/// Pastes clipboard contents into the child process.
+/// Wraps it in \x1b[200~ ... \x1b[201~ if the child is in bracketed paste mode
 fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
     match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
         Ok(text) => {
@@ -3707,7 +3794,7 @@ fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
     }
 }
 
-/// crossterm KeyEvent → 子PTYへ送るバイト列 (VT100/xterm系エンコード)
+/// crossterm KeyEvent -> the byte sequence sent to the child PTY (VT100/xterm-style encoding)
 fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
     let mut buf: Vec<u8> = Vec::with_capacity(8);
     if key.modifiers.contains(KeyModifiers::ALT) {
@@ -3780,25 +3867,26 @@ mod tests {
     }
 
 
-    /// 盤面が出しているメニューのキーを、INDEX が全部受けること。
+    /// Every menu key the board displays must be received by INDEX.
     ///
-    /// 出しているのに受け手が無いと、押しても何も起きない。
-    /// 落ちも警告も出ないので、押した人が気づくしかない。
+    /// Showing it with no receiver means nothing happens when it's pressed.
+    /// No crash, no warning — only the person who pressed it would ever notice.
     ///
-    /// 実際に `e`(設定) `i`(QR) `t`(通知) がそうだった。
-    /// 前置キー付きで送っていたため、たまたま両方に同じ文字がある
-    /// `?` `w` `r` だけが効き、半分動くので原因が見えなかった
+    /// This actually happened with `e` (settings), `i` (QR), `t` (notify).
+    /// They were being sent with the prefix key, so only `?`, `w`, `r` — the
+    /// characters that happened to also exist on the prefix-key side — worked,
+    /// which made the cause hard to see since it was only half broken.
     #[test]
     fn every_key_the_board_offers_is_answered_on_index() {
         let src = include_str!("main.rs");
-        // INDEX の分岐だけを切り出す
-        let head = "// INDEX = ホーム画面";
-        let from = src.find(head).expect("INDEX の分岐が見つからない");
-        // 分岐の終わりは、印を置いてある。
-        // 文字数で切ると足りず、括弧で探すと途中の入れ子に当たる
+        // Slice out just the INDEX branch
+        let head = "// INDEX = home screen";
+        let from = src.find(head).expect("Couldn't find the INDEX branch");
+        // The end of the branch has a marker planted.
+        // Cutting by character count falls short, and searching for braces hits nested ones along the way.
         let len = src[from..]
-            .find("INDEX-ここまで")
-            .expect("INDEX の分岐の終わりの印が無い");
+            .find("INDEX-END")
+            .expect("Missing the end-of-INDEX-branch marker");
         let body = &src[from..from + len];
 
         for (key, _) in crate::shell::MENU {
@@ -3810,7 +3898,7 @@ mod tests {
         }
     }
 
-    /// タブバーの + は、どのタブを見ていても効くよう前置キー付きで届くこと
+    /// The tab bar's + must arrive with the prefix key attached, so it works no matter which tab is being viewed
     #[test]
     fn the_add_tab_button_arrives_prefixed() {
         let evs = super::keys_for(&crate::browser::Ev::AddTab);
@@ -3823,9 +3911,9 @@ mod tests {
         assert!(k.modifiers.is_empty());
     }
 
-    /// 盤面のメニューは、前置キーの付かない打鍵として届くこと。
+    /// The board's menu must arrive as a plain keystroke, without the prefix key attached.
     ///
-    /// Ctrl+B を付けると、前置キー側の表に同じ文字があるものだけが効く
+    /// Adding Ctrl+B would mean only characters that also exist on the prefix-key side work.
     #[test]
     fn a_menu_press_arrives_as_a_plain_key() {
         for (key, _) in crate::shell::MENU {
@@ -3845,12 +3933,14 @@ mod tests {
         }
     }
 
-    /// 渡す相手が受け取れないとき、預かること。
+    /// It must hold onto a hand-off when the recipient can't accept it yet.
     ///
-    /// AI CLI は起動してすぐ入力欄を描かない。その前に流し込むと
-    /// 黙って捨てられ、書いた人には「動いていない」としか見えない。
+    /// An AI CLI doesn't draw its input box the instant it launches. Flushing
+    /// text in before that gets silently dropped, and to whoever wrote it,
+    /// it just looks like "nothing happened".
     ///
-    /// 待てるのは「渡す」ものだけ。再起動や通知は相手の準備と関係がない
+    /// Only "delivering something" can wait. Restarts and notifications have
+    /// nothing to do with whether the recipient is ready.
     #[test]
     fn only_a_handoff_waits_for_the_other_side() {
         use hooks::{Command, TabRef};
@@ -3878,10 +3968,10 @@ mod tests {
         }
     }
 
-    /// ブラウザのフックへ渡す様子が、画面の並びから作られること。
+    /// What gets passed to a browser's hook must be built from the screen layout.
     ///
-    /// 番号は人が押す番号と同じ。名前は人が読む方で、
-    /// 自動化から指す呼び名とは別
+    /// The number matches the one a human presses. The name is the
+    /// human-readable one, distinct from the id automation addresses it by.
     #[test]
     fn a_page_knows_its_number_and_both_of_its_names() {
         let layout = vec![
@@ -3895,15 +3985,16 @@ mod tests {
         assert_eq!(page.name, "HTML解析", "人が読む名前が出ていない");
         assert!(page.complete);
 
-        // 並びに無いページ (閉じた後など) には渡さない
+        // Nothing is passed for a page not in the layout (e.g. after it's closed)
         assert!(page_ctx(&layout, "shop", String::new(), true).is_none());
     }
 
-    /// 自動化の割り当てが、画面の番号で並ぶこと。
+    /// Automation assignments must be numbered the way the screen is.
     ///
-    /// 人が押す番号、スクリプトが指す番号、ボールが飛ぶ番号は
-    /// 同じでなければ追えない。番号はどこにも覚えさせず、
-    /// 設定を読むたびに付け直す (並べ替えられても、ずれたままにならない)
+    /// The number a human presses, the number a script addresses, and the
+    /// number the ball flies to have to be the same, or none of it can be
+    /// tracked. The number is never remembered anywhere — it's reassigned
+    /// every time config is read, so it never drifts out of sync even after reordering.
     #[test]
     fn the_scripts_are_numbered_the_way_the_screen_is() {
         let ws = ws_from(&[
@@ -3915,7 +4006,7 @@ mod tests {
         ws.tabs[1].cfg.automation = Some("scripts/ai".into());
 
         let got = automation_by_pane(&ws);
-        // 画面の番号で並ぶ。ブラウザが1番、claude が2番
+        // Ordered by screen number: the browser is 1, claude is 2
         assert_eq!(
             got,
             vec![
@@ -3926,7 +4017,7 @@ mod tests {
         );
     }
 
-    /// 議論の参加者/審判のタブidが、画面番号に正しく解決されること
+    /// A discussion participant's/referee's tab id must resolve correctly to a screen number
     #[test]
     fn discuss_agents_resolve_to_panes() {
         let ws = ws_from(&[
@@ -3938,11 +4029,11 @@ mod tests {
         assert_eq!(pane_of_id(&ws, "ai2"), Some(2));
         assert_eq!(pane_of_id(&ws, "ref"), Some(3));
         assert_eq!(pane_of_id(&ws, "いない"), None);
-        // 名前でも引ける
+        // Also lookup-able by name
         assert_eq!(pane_of_id(&ws, "審判"), Some(3));
     }
 
-    /// drives (ブラウザ操作モード) を書いたタブは、内蔵エージェントに割り当てられること
+    /// A tab with `drives` (browser-driving mode) written on it must be assigned the built-in agent
     #[test]
     fn a_tab_with_drives_uses_the_builtin_browser_agent() {
         let mut ws = ws_from(&[
@@ -3959,11 +4050,12 @@ mod tests {
         );
     }
 
-    /// 画面の並びが、設定に書いた順であること。
+    /// The screen order must match the order written in config.
     ///
-    /// セッションとブラウザは別々に持っている。並べるときにその都合を
-    /// 出すと、1番目に書いたブラウザが後ろに回る。実際そうなっていて、
-    /// 「順番的にはHTMLが1番なのになんで2番目になっているの？」となった
+    /// Sessions and browsers are kept separately. Letting that internal
+    /// distinction leak into the ordering would push the browser written
+    /// first to the back. This actually happened, and the result was
+    /// "HTML should be first in order — why did it end up second?"
     #[test]
     fn the_order_on_screen_is_the_order_in_the_settings() {
         let ws = ws_from(&[
@@ -3979,10 +4071,10 @@ mod tests {
             vec![Pane::Browser { key: "html".into(), name: "HTML解析".into() }, Pane::Session(0)],
             "設定の順に並んでいない"
         );
-        // 画面の番号から、セッションを引き当てられること
+        // A session must be resolvable from its screen number
         assert_eq!(session_at(&panes, 1), None, "1番はブラウザのはず");
         assert_eq!(session_at(&panes, 2), Some(0));
-        // ボールはセッションの番号で動く。見せるのは画面の番号
+        // The ball moves by session number; what's displayed is the screen number
         assert_eq!(pane_at(&panes, 1), 2);
     }
 
@@ -4013,10 +4105,11 @@ mod tests {
         }
     }
 
-    /// まだ開けていないブラウザも、設定に書いた位置を保つこと。
+    /// A browser that hasn't been opened yet must still keep the position written in config.
     ///
-    /// 開いた順で番号が動くと、スクリプトが指す先が走るたびに変わる。
-    /// 開けなかったことは状態で見せればいい
+    /// If the number shifted based on open order, whatever a script points to
+    /// would change every run. Failure to open should just be shown through
+    /// state, not by moving the slot.
     #[test]
     fn a_browser_keeps_its_place_even_before_it_opens() {
         let ws = ws_from(&[
@@ -4032,8 +4125,9 @@ mod tests {
         );
     }
 
-    /// 設定に書いていないものは後ろに付くこと。
-    /// 自動化が後から開いたブラウザや、引数で立てたタブの居場所は決めようがない
+    /// Things not written in config must be appended at the end.
+    /// There's no way to decide a position for a browser automation opened
+    /// later, or a tab launched via arguments.
     #[test]
     fn what_the_settings_do_not_mention_goes_last() {
         let ws = ws_from(&[("エンジニア", "ai", "claude")]);
@@ -4050,18 +4144,19 @@ mod tests {
         );
     }
 
-    /// 設定タブへ移る番号は、既に開いていればその居場所を指すこと。
+    /// The number that switches to the settings tab must point at its
+    /// existing location if it's already open.
     ///
-    /// `layout.len() + 1` を使うと、設定が既に並びに入っているぶん
-    /// 1つ先の空席を指し、押しても真っ黒な画面になっていた
-    /// (設定を開いた状態で「タブを追加」を押したとき)
+    /// Using `layout.len() + 1` points one slot too far, since settings is
+    /// already in the layout — this used to leave the screen solid black when pressed
+    /// (this happens when pressing "add tab" while settings is already open).
     #[test]
     fn settings_active_points_at_the_open_settings_tab() {
-        // まだ開いていない: 末尾の次に付く分を指す
+        // Not open yet: points to the slot right after the end
         let before = vec![Pane::Session(0), Pane::Session(1)];
         assert_eq!(settings_active(&before), 3, "開く前は末尾の次");
 
-        // 既に開いている: その居場所 (末尾) を指す。1つ先ではない
+        // Already open: points to its existing location (the end). Not one slot further.
         let after = vec![
             Pane::Session(0),
             Pane::Session(1),
@@ -4070,7 +4165,7 @@ mod tests {
         assert_eq!(settings_active(&after), 3, "開いていればその場所");
     }
 
-    /// 波形は飾りではなく出力量なので、何も出ていなければ底ばいであること
+    /// The activity wave reflects actual output, not decoration, so it must stay flat when nothing came out
     #[test]
     fn activity_wave_reflects_real_output() {
         let argv = vec!["cmd.exe".to_string()];
@@ -4079,7 +4174,7 @@ mod tests {
         assert_eq!(t.activity().len(), tab::ACTIVITY_LEN);
         assert!(t.activity().iter().all(|l| *l == 0), "起動直後は無音");
 
-        // 出力があったあとにtickすると、直近のコマが立ち上がる
+        // Ticking after output arrives should bring up the most recent frame
         t.write_bytes(b"echo hello\r").unwrap();
         let start = Instant::now();
         for _ in 0..40 {
@@ -4097,10 +4192,11 @@ mod tests {
         t.kill();
     }
 
-    /// 送信は「本文を入れる」と「実行する」の2段階であること。
+    /// Sending must be two stages: "type the text" then "submit it".
     ///
-    /// まとめて1回で書くと、AI CLIの入力欄が貼り付けを処理しきる前に改行が届き、
-    /// 本文だけ入って実行されない状態になる (スマホからの送信で実際に起きた)
+    /// Writing it all in one go means Enter arrives before the AI CLI's input
+    /// box has finished processing the paste, leaving the text typed but never
+    /// submitted (this actually happened with sends from a phone).
     #[test]
     fn a_prompt_is_typed_first_and_submitted_after() {
         let argv = vec!["cmd.exe".to_string()];
@@ -4121,7 +4217,7 @@ mod tests {
             false
         };
 
-        // プロンプトが出るまで待つ
+        // Wait for the prompt to appear
         for _ in 0..60 {
             if screen(&t).contains('>') {
                 break;
@@ -4142,24 +4238,26 @@ mod tests {
             screen(&t)
         );
 
-        // 予約されていた実行が届く
+        // The reserved submit arrives
         t.write_bytes(b"\r").unwrap();
         assert!(wait_for(&t, "shikisha-ok"), "実行される: {}", screen(&t));
 
         t.kill();
     }
 
-    /// 「人間が触った直後は自動送信しない」保護が、起動直後に誤作動しないこと。
+    /// The "don't auto-send right after a human touches it" protection must
+    /// not misfire right after startup.
     ///
-    /// 触られた時刻を 0 で初期化していたため、アプリ起動からガード時間のあいだ
-    /// 「たった今触った」と誤認し、起動時の自動化が黙って捨てられていた
+    /// Initializing the touched timestamp to 0 used to be mistaken for
+    /// "touched just now" for the whole guard period after app startup,
+    /// silently dropping startup automation.
     #[test]
     fn an_untouched_tab_is_not_mistaken_for_one_just_typed_into() {
         let argv = vec!["cmd.exe".to_string()];
         let mut t =
             Tab::spawn("T".into(), &argv, None, 20, 60, tab::TabOptions::default()).unwrap();
 
-        // 起動直後: まだ誰も触っていないので、いつ聞かれても保護は働かない
+        // Right after startup: nobody has touched it yet, so the protection never kicks in, no matter when asked
         assert!(!touched_recently(&t, 0), "起動した瞬間");
         assert!(!touched_recently(&t, 1_000), "1秒後");
         assert!(
@@ -4167,7 +4265,7 @@ mod tests {
             "ガード時間の内側でも、触られていなければ送ってよい"
         );
 
-        // 人間が触ったらガードが効く
+        // The guard kicks in once a human touches it
         t.last_manual_ms = Some(10_000);
         assert!(touched_recently(&t, 10_000), "触った直後");
         assert!(
@@ -4182,27 +4280,27 @@ mod tests {
         t.kill();
     }
 
-    /// 実行(改行)は、貼り付けの取り込みが「終わって」から送ること。
+    /// Submit (Enter) must wait until paste intake has "finished".
     ///
-    /// 「始まった」時点で送ると、長い貼り付けでは取り込み中に届いて捨てられる。
-    /// 実測では約600文字なら通り、約1900文字で落ちた
+    /// Sending it the moment it "starts" gets a long paste dropped mid-intake.
+    /// Measured: around 600 chars goes through, around 1900 chars fails.
     #[test]
     fn the_enter_waits_for_the_paste_to_finish_being_taken_in() {
         let mut p = PendingSubmit::new(1, 100, 1_000);
 
-        // 出力が動いている間は、いくら経っても送らない
+        // Never send while output is still moving, no matter how long it's been
         assert!(!p.ready(100, 1_000), "送った瞬間");
         assert!(!p.ready(200, 1_100), "反応が始まっただけでは送らない");
         assert!(!p.ready(300, 2_000), "まだ増えている");
         assert!(!p.ready(400, 3_000), "まだ増えている");
 
-        // 止まってから、静かな時間が続いて初めて送る
+        // Only send once it's stopped and stayed quiet for a while
         assert!(!p.ready(400, 3_100), "止まった直後はまだ");
         assert!(!p.ready(400, 3_100 + SUBMIT_QUIET_MS - 1), "静かな時間が足りない");
         assert!(p.ready(400, 3_100 + SUBMIT_QUIET_MS), "落ち着いたら送る");
 
-        // 途中で再開したら測り直す。
-        // 静止の起点は「止まった瞬間」ではなく「止まっていると最初に気づいた時刻」
+        // Restart the measurement if activity resumes partway through.
+        // The quiet period starts not at "the moment it stopped" but "the first time we noticed it had stopped".
         let mut p = PendingSubmit::new(1, 0, 0);
         assert!(!p.ready(0, 100), "静かだがまだ足りない");
         assert!(!p.ready(50, 200), "再開したので測り直す");
@@ -4210,7 +4308,7 @@ mod tests {
         assert!(!p.ready(50, 300 + SUBMIT_QUIET_MS - 1), "測り直し中");
         assert!(p.ready(50, 300 + SUBMIT_QUIET_MS), "改めて落ち着いた");
 
-        // 落ち着かないままでも、上限に達したら送る
+        // Send anyway once the cap is hit, even if it never settles
         let mut p = PendingSubmit::new(1, 0, 0);
         let mut out = 0;
         for t in (100..SUBMIT_GIVE_UP_MS).step_by(100) {
@@ -4221,45 +4319,45 @@ mod tests {
         assert!(p.ready(out, SUBMIT_GIVE_UP_MS), "上限に達したら送る");
     }
 
-    /// ボールを追って画面が移ること、そして人の操作を邪魔しないこと。
+    /// The view must follow the ball, but yield to a human operating it.
     #[test]
     fn the_view_follows_the_ball_but_yields_to_the_person() {
         let g = FOLLOW_GUARD_MS;
 
-        // ボールが渡った先へ移る
+        // Moves to wherever the ball was passed
         assert_eq!(follow_target(true, 2, 1, 3, g, 0), Some(2));
-        // 同じ場所へは何度も飛ばさない
+        // Doesn't jump to the same place repeatedly
         assert_eq!(follow_target(true, 2, 2, 3, g, 0), None);
-        // 誰も持っていなければ動かない
+        // Doesn't move if nobody holds it
         assert_eq!(follow_target(true, 0, 1, 3, g, 0), None);
-        // 居ないタブへは行かない (ワークスペース切替の直後など)
+        // Doesn't go to a tab that doesn't exist (e.g. right after a workspace switch)
         assert_eq!(follow_target(true, 5, 1, 3, g, 0), None);
-        // 設定で切っていれば動かない
+        // Doesn't move if disabled in config
         assert_eq!(follow_target(false, 2, 1, 3, g, 0), None);
 
-        // 人が画面を触った直後は従わない (読んでいる最中に飛ばさない)
+        // Doesn't follow right after a human touches the screen (don't yank them away mid-read)
         assert_eq!(follow_target(true, 2, 1, 3, 1_000, 1_000), None);
         assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g - 1, 1_000), None);
-        // 時間が経てば再び従う
+        // Follows again once enough time has passed
         assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g, 1_000), Some(2));
     }
 
-    /// ホイールで遡り、打てば今へ戻ること。
+    /// The wheel scrolls back, and typing brings you back to the present.
     ///
-    /// 遡ったまま打つと、打った文字は画面の一番下に出るので見えない。
-    /// 「打ったのに何も出ない」に見える
+    /// If you type while still scrolled back, the typed characters appear at
+    /// the bottom of the screen, so it looks like "I typed but nothing showed up".
     #[test]
     fn the_wheel_goes_back_and_typing_comes_home() {
         assert_eq!(scrolled_to(0, 3), 3, "遡れていない");
         assert_eq!(scrolled_to(3, -1), 2);
-        // 行き過ぎても今より先へは行かない
+        // Doesn't go past the present even if it overshoots
         assert_eq!(scrolled_to(2, -100), 0);
         assert_eq!(scrolled_to(0, -1), 0);
-        // 一番奥へ (実際に持っている量は端末側が抑える)
+        // All the way back (the terminal side caps how much is actually retained)
         assert_eq!(scrolled_to(5, i32::MAX), 5 + i32::MAX as usize);
 
-        // 打ったら今へ戻る。遡ったままだと、打った文字は
-        // 画面の一番下に出るので見えない
+        // Typing returns to the present. While still scrolled back, typed
+        // characters appear at the bottom of the screen, so they're invisible.
         let mut p = vt100::Parser::new(3, 20, 100);
         p.process(b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n");
         p.screen_mut().set_scrollback(2);
@@ -4268,36 +4366,37 @@ mod tests {
         assert_eq!(p.screen().scrollback(), 0, "今へ戻らない");
     }
 
-    /// 全画面のプログラムには、回したことをそのまま渡すこと。
+    /// A full-screen program must be handed the scroll itself, unmodified.
     ///
-    /// あちらは自分の中身を自分で巻き戻すので、こちらが履歴を持っていても
-    /// 何も無い (代替画面には遡る先が無い)。Claude Code がこれに当たる
+    /// It rewinds its own contents itself, so any history we hold is useless
+    /// to it (the alternate screen has nothing to scroll back into). Claude Code is one such program.
     #[test]
     fn a_full_screen_program_is_told_that_the_wheel_turned() {
         use vt100::MouseProtocolEncoding as E;
-        // 今どきの書き方。64が上、65が下、位置は1始まり
+        // The modern encoding: 64 is up, 65 is down, position is 1-based
         assert_eq!(wheel_bytes(true, 0, 0, E::Sgr), b"\x1b[<64;1;1M".to_vec());
         assert_eq!(wheel_bytes(false, 4, 9, E::Sgr), b"\x1b[<65;10;5M".to_vec());
-        // 昔の書き方は1バイトずつ (32を足す)
+        // The legacy encoding is one byte per value (32 is added)
         assert_eq!(
             wheel_bytes(true, 0, 0, E::Default),
             vec![0x1b, b'[', b'M', 96, 33, 33]
         );
     }
 
-    /// ブラウザを挟んだ並びでも、ボールを追えること。
+    /// The ball must still be followable even in a layout with a browser mixed in.
     ///
-    /// ボールは画面の番号で動く。数える方をセッションの数にすると、
-    /// ブラウザの枚数だけ後ろの番号が「無いタブ」に見えて、
-    /// そこへ渡ったボールには二度と追従しない。
-    /// (解析=1 ブラウザ / AI=2 セッション の並びで、AIへ渡しても画面が動かなかった)
+    /// The ball moves by screen number. If the count used the session number
+    /// instead, tabs behind however many browsers there are would look like
+    /// "numbers that don't exist", and a ball passed there would never be
+    /// followed again.
+    /// (With the layout Analysis=1 browser / AI=2 session, passing to AI didn't move the screen.)
     #[test]
     fn a_browser_in_the_row_does_not_hide_the_tabs_behind_it() {
         let panes = vec![
             Pane::Browser { key: "html".into(), name: "解析".into() },
             Pane::Session(0),
         ];
-        // セッションは1つだけ。数える先を間違えると 2 > 1 で弾かれる
+        // Only one session. Counting against the wrong thing gets it rejected by 2 > 1.
         assert_eq!(
             follow_target(true, 2, 0, panes.len(), FOLLOW_GUARD_MS, 0),
             Some(2),
@@ -4308,11 +4407,13 @@ mod tests {
 
 
 
-    /// 初回起動でINDEXに案内が出ること (何をすればいいか分からないまま終わらせない)
-    /// 起動したら、前に開いていたワークスペースから始めること。
+    /// On first run, INDEX must show onboarding guidance (never leave the user
+    /// unsure what to do).
+    /// Launching must start from the workspace that was previously open.
     ///
-    /// 毎回先頭から始まると、試したいものが2つ目にあるだけで、
-    /// 起動のたびに切り替える手間が要る。デバッグ中はそれを何十回も繰り返す
+    /// Always starting from the first one means extra switching effort every
+    /// launch whenever what you want to try is the second one. During
+    /// debugging, that gets repeated dozens of times.
     #[test]
     fn it_opens_where_you_left_off() {
         let names: Vec<String> = ["指揮者", "たまごカート編集部", "検証"]
@@ -4326,7 +4427,7 @@ mod tests {
             "前に開いていたものに戻らない"
         );
 
-        // 番号ではなく名前で覚えるので、並べ替えても追いかける
+        // What's remembered is the name, not the number, so it still tracks after reordering
         let reordered: Vec<String> = ["検証", "たまごカート編集部", "指揮者"]
             .iter()
             .map(|s| s.to_string())
@@ -4341,7 +4442,7 @@ mod tests {
             "並べ替えで別のワークスペースを開いている"
         );
 
-        // 消した・改名した・記憶が無い・切ってある → 先頭
+        // Deleted, renamed, no memory of it, or disabled -> falls back to the first one
         assert_eq!(starting_workspace(true, Some("消えた"), &names), 0);
         assert_eq!(starting_workspace(true, None, &names), 0);
         assert_eq!(starting_workspace(false, Some("検証"), &names), 0, "切ってある");
@@ -4349,7 +4450,7 @@ mod tests {
     }
 
 
-    /// ワードマークの3行は同じ幅であること (揃っていないと文字が崩れて見える)
+    /// The wordmark's 3 lines must be the same width (mismatched widths look broken)
     #[test]
     fn the_wordmark_rows_line_up() {
         let w: Vec<usize> = WORDMARK.iter().map(|l| l.chars().count()).collect();
@@ -4363,10 +4464,10 @@ mod tests {
 
     #[test]
     fn phone_view_drops_trailing_blank_lines() {
-        // 端末の空行をそのまま送ると、スマホでは本文が見えなくなる
+        // Sending the terminal's blank lines as-is would hide the content on the phone
         let screen = "hello\nworld\n\n\n\n\n";
         assert_eq!(trim_for_phone(screen, 200), "hello\nworld");
-        // 長すぎる場合は末尾だけ送る
+        // Only the tail gets sent when it's too long
         let long: String = (1..=300).map(|i| format!("line{i}\n")).collect();
         let out = trim_for_phone(&long, 10);
         assert_eq!(out.lines().count(), 10);
@@ -4384,7 +4485,7 @@ mod tests {
         };
         let argv = vec!["cmd.exe".to_string(), "/c".into(), "cd".into()];
         let mut t = Tab::spawn("cwd".into(), &argv, None, 10, 60, opts).unwrap();
-        // cmd の "cd" は現在のフォルダを表示する
+        // cmd's "cd" shows the current folder
         std::thread::sleep(std::time::Duration::from_millis(1200));
         let screen = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
         t.kill();
@@ -4402,7 +4503,7 @@ mod tests {
             ..Default::default()
         };
         let argv = vec!["cmd.exe".to_string()];
-        // 存在しないフォルダでもセッションは起動する (起動失敗より復帰しやすい)
+        // The session still launches even for a folder that doesn't exist (easier to recover from than a launch failure)
         let mut t = Tab::spawn("fallback".into(), &argv, None, 10, 60, opts)
             .expect("存在しないフォルダでも起動できる");
         t.kill();
@@ -4422,7 +4523,7 @@ mod tests {
         assert_eq!(tabs.len(), 2, "{errs:?}");
         let one_before = tabs[0].signature();
 
-        // one: ロックを付ける(即時反映) / two: 削除 / three: 追加
+        // one: gains a lock (applies immediately) / two: removed / three: added
         let ws1 = workspace_from(
             r#"{"workspaces":[{"name":"T","tabs":[
                 {"name":"one","command":"cmd.exe","locked":true},
@@ -4441,7 +4542,7 @@ mod tests {
         assert_eq!(tabs[0].signature(), one_before, "既存セッションは維持される");
         assert!(msg.contains("added 1") && msg.contains("stopped 1"), "{msg}");
 
-        // 文字コードの変更は作り直しが必要なので、保留して印を付ける
+        // A change to the encoding requires a rebuild, so it gets deferred and flagged
         let ws2 = workspace_from(
             r#"{"workspaces":[{"name":"T","tabs":[
                 {"name":"one","command":"cmd.exe","encoding":"shift_jis"},
@@ -4475,17 +4576,17 @@ mod tests {
     #[test]
     fn extract_lines_from_scrollback() {
         let mut p = parser_with_lines(5, 20, 30);
-        // 最下行(d=0)はプロンプト空行。d=1がline30、d=3がline28
+        // The bottom row (d=0) is the blank prompt line. d=1 is line30, d=3 is line28.
         let text = extract_text(&mut p, 1, 3, 20);
         assert_eq!(text, "line28\nline29\nline30\n");
-        // 抽出後はスクロール位置が復元される
+        // The scroll position is restored after extraction
         assert_eq!(p.screen().scrollback(), 0);
     }
 
     #[test]
     fn extract_joins_wrapped_lines() {
-        // 5行画面: row0="abcdefghij"(折返し) row1="KLMNO" row2以降は空。
-        // 画面最下行から数えると折返し行はd=4、続きはd=3
+        // A 5-row screen: row0="abcdefghij" (wrapped), row1="KLMNO", row2 onward empty.
+        // Counting from the bottom of the screen, the wrapped row is d=4, its continuation is d=3.
         let mut p = vt100::Parser::new(5, 10, 100);
         p.process(b"abcdefghijKLMNO\r\n");
         let text = extract_text(&mut p, 3, 4, 10);
@@ -4496,10 +4597,10 @@ mod tests {
 
 #[cfg(test)]
 mod shutdown_tests {
-    /// 窓のアプリとして作られていること。
+    /// Must be built as a windowed app.
     ///
-    /// これが無いと Windows が黒いコンソールを一緒に開く。
-    /// 画面は自前の窓に描いているので、その窓には何も映らない
+    /// Without this, Windows opens a black console alongside it.
+    /// Since the UI draws into our own window, that console would show nothing at all.
     #[test]
     fn the_exe_asks_windows_for_no_console() {
         let src = include_str!("main.rs");
@@ -4509,14 +4610,14 @@ mod shutdown_tests {
         );
     }
 
-    /// 窓が閉じたら終わること。
+    /// The run must end when the window closes.
     ///
-    /// 閉じても回り続けると、誰にも見えないプロセスが残る。
-    /// それが待ち受けの口を握ったままなので、次の起動が
-    /// 「アドレスは既に使用中」で失敗する。
+    /// If it kept running after that, a process invisible to everyone would
+    /// be left behind. Since it still holds the listening port, the next
+    /// launch would fail with "address already in use".
     ///
-    /// 打鍵に直せない報告は keys_for が捨てるので、閉じたことは
-    /// そこを通せない。ループが直に見るしかない
+    /// `keys_for` discards reports that can't be converted into keystrokes,
+    /// so a close can't be routed through there. The loop has to see it directly.
     #[test]
     fn closing_the_window_ends_the_run() {
         use crate::browser::Ev;
@@ -4529,7 +4630,7 @@ mod shutdown_tests {
             src.contains("Ev::Closed => self.closed = true"),
             "窓が閉じた報告を受けていない"
         );
-        // 改行の書き方は環境で変わるので、行ごとに見る
+        // How newlines are written varies by environment, so check line by line
         let mut lines = src.lines().map(str::trim);
         assert!(
             lines.any(|l| l == "if surface.closed {") && lines.next() == Some("break;"),

@@ -1,34 +1,42 @@
-//! model ブリッジ: OpenAI互換の `/chat/completions` を叩いて応答テキストを得る。
+//! model bridge: hits an OpenAI-compatible `/chat/completions` endpoint to
+//! get response text.
 //!
-//! DeepSeek(クラウド)・Ollama(ローカルQwen/DeepSeek)・OpenRouter 等、
-//! **base_url と model を差し替えるだけ**で同じ経路で通る。SHIKISHA自身の正体は
-//! 「既存AIを振る指揮者」なので、ここは "AI" ではなく「プロンプト→APIを叩いて
-//! 応答を返すだけ」の薄いパイプに徹する。
+//! DeepSeek (cloud), Ollama (local Qwen/DeepSeek), OpenRouter, etc. all go
+//! through the same path — **just swap base_url and model**. SHIKISHA's own
+//! identity is "a conductor that directs existing AIs," so this module is
+//! deliberately kept to a thin pipe that just does "prompt -> hit the API ->
+//! return the response," not an "AI" itself.
 //!
-//! 討論での使い方は **サブプロセスにしない**。本体はGUIサブシステムで ConPTY 子に
-//! コンソールI/Oが付かないため、`Command::SendPrompt` がモデルペインに来たら、本体が
-//! スレッドで `complete()` を直接叩き、応答をタブ画面へ注入＋say.txt へ書く (in-process)。
+//! Usage from discussions **does not spawn a subprocess**. Because the main
+//! binary is a GUI subsystem and its ConPTY children have no console I/O,
+//! when `Command::SendPrompt` arrives at a model pane, the main binary calls
+//! `complete()` directly on a thread and injects the response into the tab
+//! screen plus writes it to say.txt (in-process).
 //!
-//! `--bridge` 子プロセスは端末直実行(パイプ)用に残す。env で接続先を受け取り、
-//! stdin を1回読んで応答を stdout に返す (テスト・単発利用)。
+//! The `--bridge` child process is kept around for direct terminal execution
+//! via pipes. It reads the connection info from env, reads stdin once, and
+//! writes the response to stdout (for testing / one-off use).
 
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Mutex;
 
-/// 解決済みのモデル接続先 (タブに持たせ、手番ごとに complete() へ渡す)
+/// A resolved model connection (held by a tab, passed to complete() each turn)
 #[derive(Debug, Clone)]
 pub struct ModelConn {
     pub url: String,
     pub model: String,
     pub headers: HashMap<String, String>,
-    /// 討論での立場・人格。ブリッジはステートレスなので、毎手番これを system として
-    /// 添えないと立場を忘れて話題がぶれる (討論参加者のときだけ設定される)
+    /// The stance/persona for a discussion. The bridge is stateless, so
+    /// unless this is attached as the system message every turn, the model
+    /// forgets its stance and drifts off topic (only set when this is a
+    /// discussion participant).
     pub persona: Option<String>,
 }
 
-/// `--bridge` 子プロセス (端末直実行・パイプ用)。stdin を1回読んで応答を stdout に返す
+/// The `--bridge` child process (for direct terminal execution via pipes).
+/// Reads stdin once and returns the response to stdout.
 pub fn run() -> Result<()> {
     let url = std::env::var("SHIKISHA_BRIDGE_URL")
         .with_context(|| crate::i18n::t("err.bridge.url_unset"))?;
@@ -46,7 +54,8 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// OpenAI互換の `/chat/completions` を1回叩いて、応答本文を返す
+/// Hit an OpenAI-compatible `/chat/completions` once and return the response
+/// body.
 pub fn complete(
     base_url: &str,
     model: &str,
@@ -92,8 +101,9 @@ pub fn complete(
     Ok(strip_think(content).trim().to_string())
 }
 
-/// base_url に `/chat/completions` を必要なら足す。
-/// 既にフルパス (Azure等) やクエリ付きならそのまま使う
+/// Append `/chat/completions` to base_url if needed.
+/// If it's already a full path (e.g. Azure) or has a query string, use it
+/// as-is.
 fn chat_endpoint(base: &str) -> String {
     let b = base.trim();
     if b.contains("/chat/completions") || b.contains('?') {
@@ -102,7 +112,8 @@ fn chat_endpoint(base: &str) -> String {
     format!("{}/chat/completions", b.trim_end_matches('/'))
 }
 
-/// reasoning系モデルが混ぜる `<think>…</think>` を除去する (最後の閉じタグ以降を採る)
+/// Strip the `<think>...</think>` block that reasoning models mix in (takes
+/// everything after the last closing tag).
 fn strip_think(s: &str) -> String {
     match s.rfind("</think>") {
         Some(i) => s[i + "</think>".len()..].to_string(),
@@ -110,7 +121,8 @@ fn strip_think(s: &str) -> String {
     }
 }
 
-/// 討論プロンプト末尾の `SHIKISHA_SAY=<path>` を取り出す (最後の一致。パスに空白可)
+/// Extract `SHIKISHA_SAY=<path>` from the tail of a discussion prompt (last
+/// match; the path may contain spaces).
 pub fn extract_say(s: &str) -> Option<String> {
     s.lines().rev().find_map(|l| {
         l.trim()
@@ -120,12 +132,13 @@ pub fn extract_say(s: &str) -> Option<String> {
     })
 }
 
-/// 解決済みプロバイダのキャッシュ (名前 → (base_url, headers))。
-/// 本体がパスワードを持つ起動時/設定リロード時に埋める (secretの復号はそこだけ)
+/// Cache of resolved providers (name -> (base_url, headers)).
+/// Filled in at startup / config reload, when the main binary holds the
+/// password (secret decryption happens only there).
 static PROVIDERS: Mutex<Option<HashMap<String, (String, HashMap<String, String>)>>> =
     Mutex::new(None);
 
-/// config の providers を解決してキャッシュする
+/// Resolve config's providers and cache them.
 pub fn set_providers(cfg: &crate::config::Config, password: Option<&str>) {
     let mut m = HashMap::new();
     for name in cfg.providers.keys() {
@@ -138,8 +151,9 @@ pub fn set_providers(cfg: &crate::config::Config, password: Option<&str>) {
     }
 }
 
-/// `model <provider>/<model>` なら、解決済みの接続先を返す (無ければ None)。
-/// model名は "/" を含みうる(Ollamaタグ)ので最初の "/" で割る
+/// If this is `model <provider>/<model>`, return the resolved connection
+/// (None if not found). The model name may itself contain "/" (Ollama
+/// tags), so split on the first "/" only.
 pub fn launch_for(argv: &[String]) -> Option<ModelConn> {
     if argv.first().map(String::as_str) != Some("model") {
         return None;

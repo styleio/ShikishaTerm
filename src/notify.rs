@@ -1,8 +1,9 @@
-//! 通知先 (Slack / Telegram)。DESIGN.md 8.4章。
+//! Notification destinations (Slack / Telegram). DESIGN.md section 8.4.
 //!
-//! Luaサンドボックスは任意URLへ通信できない。通知はここに登録済みの宛先に対してのみ、
-//! Rust側が送信する (ケーパビリティ注入)。悪意あるスクリプトを拾っても
-//! 資格情報の外部送信には使えない。
+//! The Lua sandbox can't talk to arbitrary URLs. Notifications are sent by
+//! the Rust side, and only to destinations already registered here
+//! (capability injection). Even a malicious script that gets picked up
+//! can't use this to exfiltrate credentials.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -20,7 +21,7 @@ pub enum Destination {
 
 pub struct Notifier {
     dests: HashMap<String, Destination>,
-    /// 送信は別スレッドで行い、UIをブロックしない
+    /// Sending happens on a separate thread, so it doesn't block the UI.
     tx: mpsc::Sender<(Destination, String)>,
 }
 
@@ -44,7 +45,7 @@ impl Notifier {
         self.dests.is_empty()
     }
 
-    /// 登録済みの全宛先へ送る (疎通確認用)
+    /// Send to every registered destination (for connectivity testing).
     pub fn send_all(&self, text: &str) -> String {
         let mut names: Vec<&str> = Vec::new();
         for (name, dest) in &self.dests {
@@ -55,7 +56,8 @@ impl Notifier {
         crate::i18n::tp("err.notify.test_sent", &[("names", &names.join(", "))])
     }
 
-    /// 宛先名で送信をキューイングする。戻り値は画面表示用のメッセージ
+    /// Queue a send by destination name. The return value is a message for
+    /// on-screen display.
     pub fn send(&self, name: &str, text: &str) -> String {
         match self.dests.get(name) {
             Some(dest) => {

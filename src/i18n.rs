@@ -1,15 +1,16 @@
-//! 表示文言の多言語化。
+//! Internationalization of displayed text.
 //!
-//! - 基準は英語。`lang/en.json` をexeに埋め込むので、言語ファイルが1つも
-//!   無くても必ず表示できる
-//! - `lang/<code>.json` を上に重ねる。**翻訳が欠けているキーは英語のまま**出るので、
-//!   翻訳が古くなっても壊れない
-//! - 有志は en.json をコピーして値を訳し、`lang/fr.json` として置くだけでよい
+//! - English is the baseline. `lang/en.json` is embedded in the exe, so
+//!   display always works even with zero language files present
+//! - `lang/<code>.json` is layered on top. **Keys missing a translation
+//!   stay in English**, so stale translations never break anything
+//! - Contributors only need to copy en.json, translate the values, and drop
+//!   it in as `lang/fr.json`
 
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
-/// 基準となる英語。配布物に言語ファイルが無くても動くよう埋め込む
+/// The baseline English. Embedded so it works even without a language file in the distribution
 const EN: &str = include_str!("../lang/en.json");
 
 static DICT: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
@@ -29,15 +30,15 @@ fn parse(json: &str) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-/// 使用言語を決めて読み込む。
-/// `lang` が None か "auto" ならOSの設定から推定する
+/// Decides which language to use and loads it.
+/// If `lang` is None or "auto", infers it from the OS setting
 pub fn init(lang: Option<&str>, dirs: &[std::path::PathBuf]) {
     let code = match lang.map(str::trim).filter(|s| !s.is_empty() && *s != "auto") {
         Some(c) => c.to_string(),
         None => system_language(),
     };
     let mut map = parse(EN);
-    // 英語以外なら、その言語のファイルを上書きで重ねる (欠けた分は英語のまま)
+    // If not English, layer that language's file on top (anything missing stays English)
     if code != "en" {
         for dir in dirs {
             let path = dir.join("lang").join(format!("{code}.json"));
@@ -53,9 +54,10 @@ pub fn init(lang: Option<&str>, dirs: &[std::path::PathBuf]) {
     let _ = LANG.get_or_init(|| RwLock::new(code.clone())).write().map(|mut l| *l = code);
 }
 
-/// この言語指定で起動し直したら、いま動いている言語と変わるか。
-/// 変わるなら「再起動で反映される」と促せる。決め方は `init` と揃える
-/// (揃えないと、案内は出るのに実際は変わらない/その逆が起きる)
+/// Whether restarting with this language setting would change the language
+/// currently running. If it would, we can prompt "takes effect on restart."
+/// The decision logic must match `init`
+/// (otherwise the prompt would show when nothing actually changes, or vice versa)
 pub fn would_change(lang: Option<&str>) -> bool {
     let next = match lang.map(str::trim).filter(|s| !s.is_empty() && *s != "auto") {
         Some(c) => c.to_string(),
@@ -64,14 +66,14 @@ pub fn would_change(lang: Option<&str>) -> bool {
     next != self::lang()
 }
 
-/// 現在の言語コード ("ja" など)
+/// Current language code (e.g. "ja")
 pub fn lang() -> String {
     LANG.get()
         .and_then(|l| l.read().ok().map(|s| s.clone()))
         .unwrap_or_else(|| "en".into())
 }
 
-/// 文言を引く。未知のキーはキー自体を返す (画面上で欠落に気づけるように)
+/// Looks up a string. An unknown key returns the key itself (so a missing string is noticeable on screen)
 pub fn t(key: &str) -> String {
     dict()
         .read()
@@ -80,12 +82,12 @@ pub fn t(key: &str) -> String {
         .unwrap_or_else(|| key.to_string())
 }
 
-/// 差し込み付きで引く。`{name}` の形を置き換える
+/// Looks up a string with interpolation. Replaces `{name}`-style placeholders
 pub fn tp(key: &str, args: &[(&str, &str)]) -> String {
     fill(&t(key), args)
 }
 
-/// `{name}` の差し込みだけを行う
+/// Performs only the `{name}` substitution
 fn fill(text: &str, args: &[(&str, &str)]) -> String {
     let mut s = text.to_string();
     for (k, v) in args {
@@ -94,9 +96,9 @@ fn fill(text: &str, args: &[(&str, &str)]) -> String {
     s
 }
 
-/// テンプレート中の `{{key}}` をまとめて置き換える (HTMLページ用)
+/// Replaces every `{{key}}` in a template at once (for HTML pages)
 pub fn render(template: &str) -> String {
-    // `<html lang="...">` 用。辞書のキーではないので先に差し込んでおく
+    // For `<html lang="...">`. Not a dictionary key, so substitute it in first
     let template = template.replace("{{__lang__}}", &lang());
     match dict().read() {
         Ok(d) => render_with(&template, &d),
@@ -126,7 +128,7 @@ fn render_with(template: &str, d: &HashMap<String, String>) -> String {
     out
 }
 
-/// 画面のJavaScriptへ渡す辞書
+/// Dictionary handed to the screen's JavaScript
 pub fn dict_json() -> String {
     dict()
         .read()
@@ -135,7 +137,7 @@ pub fn dict_json() -> String {
         .unwrap_or_else(|| "{}".into())
 }
 
-/// OSの表示言語 ("ja-JP" → "ja")
+/// OS display language ("ja-JP" -> "ja")
 fn system_language() -> String {
     let raw = std::env::var("LANG")
         .or_else(|_| std::env::var("LC_ALL"))
@@ -171,16 +173,16 @@ mod tests {
         let en = parse(EN);
         assert!(!en.is_empty(), "英語の辞書が読める");
         assert!(en.contains_key("app.title"), "基本のキーがある");
-        // 値が空だと画面が空白になるので許さない
+        // Not allowed to have an empty value, or the screen would show blank
         assert!(en.values().all(|v| !v.trim().is_empty()), "空の文言が無い");
     }
 
-    /// 翻訳ファイルは英語のキーの範囲内であること (綴り間違いは黙って無視されるため)
+    /// Confirms shipped translation files only use keys that exist in English (a typo'd key is otherwise silently ignored)
     #[test]
     fn shipped_translations_use_known_keys() {
         let en = parse(EN);
-        // 相対パスにすると、カレントディレクトリを変える別のテストと
-        // 並列に走ったときに読めなくなる (実際に落ちた)
+        // A relative path would break when running in parallel with another
+        // test that changes the current directory (this actually happened)
         let lang_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lang");
         for entry in std::fs::read_dir(&lang_dir).expect("langフォルダ") {
             let path = entry.unwrap().path();
@@ -203,7 +205,7 @@ mod tests {
         let en = parse(EN);
         let mut ja = HashMap::new();
         ja.insert("app.title".to_string(), "訳あり".to_string());
-        // 実際の重ね方と同じ手順
+        // Same procedure as the real layering
         let mut merged = en.clone();
         for (k, v) in ja {
             merged.insert(k, v);
@@ -214,7 +216,7 @@ mod tests {
 
     #[test]
     fn unknown_key_shows_the_key_itself() {
-        // 欠落に気づけるよう、キーをそのまま出す
+        // Shows the key as-is, so a missing entry is noticeable
         assert_eq!(t("no.such.key.exists"), "no.such.key.exists");
     }
 
@@ -230,7 +232,7 @@ mod tests {
         d.insert("a".to_string(), "A".to_string());
         assert_eq!(render_with("<p>{{a}}</p><i>{{missing}}</i>", &d), "<p>A</p><i>missing</i>");
         assert_eq!(render_with("no placeholders", &d), "no placeholders");
-        // 閉じ忘れても壊れない
+        // Doesn't break even if the closing braces are forgotten
         assert_eq!(render_with("{{unclosed", &d), "{{unclosed");
     }
 

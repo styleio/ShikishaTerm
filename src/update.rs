@@ -1,12 +1,15 @@
-//! 新しい版の知らせ。起動時に GitHub Releases を裏で一度だけ見に行き、
-//! 新しい版が出ていたらトーストで知らせる。
-//! 自動更新はしない (ポータブル配布。入れ替えるかどうかは人が決める)。
-//! 同じ版を起動のたびに繰り返し知らせない (一度知らせた版を書き留める)。
+//! Notifies about new versions. On startup, checks GitHub Releases once in
+//! the background, and shows a toast if a newer version is out.
+//! No auto-update (portable distribution; a human decides whether to swap
+//! it in). Doesn't repeat the same notification on every launch (records
+//! the version already notified about).
 
 use std::sync::mpsc;
 
-/// 裏で最新版を確かめ、知らせるべき版番号だけを送る。
-/// 何も無ければ何も届かない (受け手は try_recv で覗くだけでよい)
+/// Checks the latest version in the background and sends only the version
+/// number that should be notified about.
+/// If there's nothing to report, nothing arrives (the receiver can just
+/// peek with try_recv).
 pub fn spawn_check() -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -29,7 +32,7 @@ fn latest_unnotified() -> Option<String> {
     Some(latest)
 }
 
-/// リリースの置き場は Cargo.toml の repository から組み立てる
+/// The releases endpoint is built from the repository in Cargo.toml.
 fn releases_api() -> Option<String> {
     let repo = env!("CARGO_PKG_REPOSITORY").strip_prefix("https://github.com/")?;
     Some(format!(
@@ -57,7 +60,8 @@ fn fetch_latest() -> Option<String> {
     (!ver.is_empty()).then_some(ver)
 }
 
-/// "0.1.10" > "0.1.9" のような数値比較。数字にならない部分は 0 とみなす
+/// Numeric comparison such that "0.1.10" > "0.1.9". Any non-numeric part is
+/// treated as 0.
 fn parse(v: &str) -> Vec<u64> {
     v.split('.')
         .map(|part| {
@@ -71,7 +75,8 @@ fn is_newer(remote: &str, local: &str) -> bool {
     parse(remote) > parse(local)
 }
 
-/// 一度知らせた版の置き場 (configには書き戻さない)
+/// Where the last-notified version is stored (not written back into
+/// config).
 fn notified_path() -> std::path::PathBuf {
     crate::config::state_path("update-notified")
 }
@@ -82,7 +87,7 @@ fn load_notified() -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// 失敗しても黙って諦める (次の起動でもう一度知らせるだけ)
+/// Silently give up on failure (it'll just be notified again next launch).
 fn save_notified(v: &str) {
     let _ = crate::crypto::write_atomic(&notified_path(), v);
 }

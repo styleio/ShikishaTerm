@@ -1,11 +1,11 @@
-//! 自動化に与える能力 (ファイル・HTTP)。DESIGN.md 8.5章。
+//! Capabilities granted to automation (file/HTTP). See DESIGN.md chapter 8.5.
 //!
-//! 既定では何も許可しない。設定ファイルに書いたものだけが使える。
-//! GUIからは編集させない (玄人向け機能であり、誤操作の影響が大きいため)。
+//! Nothing is allowed by default. Only what's written in the config file can be used.
+//! Not editable from the GUI (this is an advanced feature, and a mistake here has a large blast radius).
 //!
-//! 方式は「名前付きの窓口」。スクリプトはパスやURLを組み立てられず、
-//! 登録済みの名前しか呼べないので、送信先のすり替えや資格情報の持ち出しが起きない。
-//! 生パス・生URLのホワイトリストも用意するが既定は空。
+//! The scheme is "named gateways". Scripts can't build up their own paths or URLs --
+//! they can only call registered names -- so a destination can't be swapped out and
+//! credentials can't be exfiltrated. A whitelist for raw paths/URLs also exists, but is empty by default.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -14,8 +14,8 @@ use std::sync::mpsc;
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
-/// 許可ディレクトリ内であっても決して触れさせないファイル
-/// (自己書き換えと資格情報の吸い出しを防ぐ)
+/// Files that must never be touched even inside an allowed directory
+/// (prevents self-modification and credential exfiltration)
 fn is_forbidden(path: &Path) -> bool {
     let name = path
         .file_name()
@@ -30,7 +30,7 @@ fn is_forbidden(path: &Path) -> bool {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    // 自動化スクリプト自身と暗号化ファイル
+    // The automation scripts themselves, and encrypted files
     matches!(ext.as_str(), "lua" | "enc")
 }
 
@@ -45,16 +45,16 @@ fn rel_is_safe(rel: &str) -> bool {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct CapabilitySpec {
-    /// 名前付きのファイル窓口
+    /// Named file gateways
     #[serde(default)]
     pub files: HashMap<String, FileCap>,
-    /// 名前付きのHTTP窓口
+    /// Named HTTP gateways
     #[serde(default)]
     pub http: HashMap<String, HttpCap>,
-    /// 玄人向け: 生パスを許可するディレクトリ (既定は空)
+    /// Advanced: directories where raw paths are allowed (empty by default)
     #[serde(default)]
     pub allow_dirs: Vec<String>,
-    /// 玄人向け: 生URLを許可するホスト。完全一致で照合する (既定は空)
+    /// Advanced: hosts where raw URLs are allowed. Matched by exact equality (empty by default)
     #[serde(default)]
     pub allow_hosts: Vec<String>,
 }
@@ -73,10 +73,10 @@ pub struct HttpCap {
     pub url: String,
     #[serde(default = "default_method")]
     pub method: String,
-    /// secretsの tokens から取り出して付与する認証情報の名前
+    /// Name of the credential to pull from secrets' tokens and attach
     #[serde(default)]
     pub auth_from_secrets: Option<String>,
-    /// 認証情報を載せるヘッダ名 (既定 Authorization)
+    /// Header name to carry the credential in (defaults to Authorization)
     #[serde(default = "default_auth_header")]
     pub auth_header: String,
 }
@@ -96,54 +96,56 @@ struct HttpJob {
 }
 
 pub struct Capabilities {
-    /// 設定から来るもの。読み直しで差し替わる
+    /// What comes from config. Swapped out on reload
     spec: std::cell::RefCell<CapabilitySpec>,
     base: PathBuf,
     tokens: std::cell::RefCell<HashMap<String, String>>,
     tx: std::cell::RefCell<Option<mpsc::Sender<HttpJob>>>,
-    /// 名前で引くブラウザ。フックは単一スレッドで回るので Rc/RefCell でよい
-    /// 帯のボタンが押されたか (名前ごと)。読んだら下ろす
+    /// Browsers looked up by name. Rc/RefCell is fine since hooks run on a single thread
+    /// Whether a banner's button was pressed (per name). Cleared once read
     pressed: std::cell::RefCell<HashMap<String, bool>>,
-    /// ターミナルに重ねるか
-    /// 窓を持っているなら、その取っ手。ここに置くと別窓にならない
+    /// Whether to overlay the terminal
+    /// If we have a host window, its handle. Keeping it here means it doesn't become a separate window
     host: std::cell::RefCell<Option<std::rc::Rc<crate::browser::Browser>>>,
-    /// 窓の中で、ブラウザを置く領域
+    /// The area inside the window where the browser is placed
     area: std::cell::Cell<(i32, i32, i32, i32)>,
-    /// 窓の中に置いたページの名前。
+    /// Names of pages placed inside the window.
     ///
-    /// 覚えないと、位置を直す先も閉じる先も分からない。
-    /// 開いた場所に置きっぱなしになり、窓を動かしても付いてこなかった
-    /// 窓の中に置いたページ (持ち主のワークスペース, 呼び名)。
-    /// 置いた順を保つので Vec
+    /// Without remembering this, there's no way to know where to fix the position
+    /// or where to close. Otherwise pages stayed put wherever they were opened and
+    /// didn't follow when the window moved
+    /// Pages placed in the window (owning workspace, display name).
+    /// A Vec so the placement order is preserved
     hosted: std::cell::RefCell<Vec<(usize, String)>>,
-    /// いま見ているワークスペース。呼び名はこの中でだけ通じる
+    /// The workspace currently being viewed. Names are only meaningful within it
     ws: std::cell::Cell<usize>,
-    /// 今どれを、どの領域に出しているか。同じなら送り直さない
+    /// Which page is currently shown in which area. Skipped if unchanged
     shown: std::cell::RefCell<(Option<String>, (i32, i32, i32, i32))>,
-    /// ページの上に出す操作 (名前ごと)。
+    /// Controls shown above a page (per name).
     ///
-    /// 帯と違ってページの中には描かない。ページを一段下げて、
-    /// 空いた場所にアプリが描く。だから覚えるのもこちら側で、
-    /// 遷移しても消えない
+    /// Unlike the banner, these aren't drawn inside the page. The page is pushed
+    /// down a notch and the app draws in the space that opens up. So this side has
+    /// to remember it too, and it doesn't disappear across navigation
     nav: std::cell::RefCell<HashMap<String, crate::config::NavSpec>>,
-    /// 設定に書かれていたから開いたページ (窓の中での名前)。
+    /// Pages opened because config declared them (name within the window).
     ///
-    /// 自動化が自分で開いた分や設定画面と区別が要る。設定から消えたときに
-    /// 閉じてよいのは、設定が開けたものだけ
+    /// Needs to be distinguished from pages automation opened on its own, and from
+    /// the settings screen. Only pages config opened are allowed to be closed when
+    /// they disappear from config
     declared: std::cell::RefCell<std::collections::HashSet<String>>,
-    /// このワークスペースで使ってよい秘密のキー (既定は空 = 全拒否)。
-    /// ラリー(AI製Lua)が別用途の鍵を流用できないよう、ここで絞る
+    /// Secret keys this workspace is allowed to use (default is empty = deny all).
+    /// Narrows things down here so a rally (AI-authored Lua) can't repurpose a key meant for something else
     secret_allow: std::cell::RefCell<std::collections::HashSet<String>>,
-    /// 危険承知で全ての秘密を許可する (ワークスペースのトグル)
+    /// Allow all secrets, knowingly accepting the risk (a per-workspace toggle)
     secret_allow_all: std::cell::Cell<bool>,
 }
 
-/// ページを触るときの既定の待ち時間。
-/// 要素の有無を見るだけなので、長くする意味がない
+/// Default wait time when touching a page.
+/// Just checking whether an element exists, so there's no point making this longer
 const OP_MS: u64 = 5_000;
 
 impl Capabilities {
-    /// 何も許可しない状態 (既定)
+    /// The nothing-allowed state (default)
     pub fn disabled() -> Self {
         Self {
             spec: std::cell::RefCell::new(CapabilitySpec::default()),
@@ -172,10 +174,10 @@ impl Capabilities {
         me
     }
 
-    /// 設定から来るものだけを入れ替える。
+    /// Swap out only the config-sourced parts.
     ///
-    /// 置いたページ・帯・バーは持ち越す。設定を読み直しただけで
-    /// 画面から物が消えたり、消えないまま残ったりしてはいけない
+    /// Placed pages, banners, and bars carry over. Merely reloading config
+    /// must not make things vanish from the screen, or stick around when they shouldn't
     pub fn set_config(&self, spec: CapabilitySpec, tokens: HashMap<String, String>) {
         let wants_http = !spec.http.is_empty() || !spec.allow_hosts.is_empty();
         *self.spec.borrow_mut() = spec;
@@ -186,7 +188,7 @@ impl Capabilities {
         *self.tx.borrow_mut() = Some(Self::start_sender());
     }
 
-    /// 通信はUIをブロックしないよう専用スレッドで行う
+    /// Communication runs on a dedicated thread so it doesn't block the UI
     fn start_sender() -> mpsc::Sender<HttpJob> {
         {
             let (tx, rx) = mpsc::channel::<HttpJob>();
@@ -196,7 +198,7 @@ impl Capabilities {
                     .build()
                     .new_agent();
                 while let Ok(job) = rx.recv() {
-                    // GETは本体を持たないので型が異なる (ureq)
+                    // GET has no body, so its type differs (ureq)
                     let result = match job.method.to_ascii_uppercase().as_str() {
                         "GET" => {
                             let mut r = agent.get(&job.url);
@@ -235,7 +237,7 @@ impl Capabilities {
         }
     }
 
-    /// 名前付き窓口のパスを解決する
+    /// Resolve the path for a named gateway
     fn named_path(&self, name: &str, rel: &str, want_write: bool) -> Result<PathBuf> {
         let spec = self.spec.borrow();
         let Some(cap) = spec.files.get(name) else {
@@ -260,7 +262,7 @@ impl Capabilities {
         Ok(path)
     }
 
-    /// 生パス (allow_dirs 内に限る)
+    /// A raw path (must be within allow_dirs)
     fn raw_path(&self, p: &str) -> Result<PathBuf> {
         let spec = self.spec.borrow();
         if spec.allow_dirs.is_empty() {
@@ -319,7 +321,7 @@ impl Capabilities {
         Ok(())
     }
 
-    /// 名前付きHTTP窓口へ送信する (送りっぱなし。応答はログに残す)
+    /// Send to a named HTTP gateway (fire and forget; the response is left in the log)
     pub fn http(&self, name: &str, body: &str) -> Result<()> {
         let spec = self.spec.borrow();
         let Some(cap) = spec.http.get(name) else {
@@ -342,12 +344,13 @@ impl Capabilities {
         })
     }
 
-    /// AIへ渡す文字列から、既知の秘密値を伏字にする (GitHub流のマスク)。
+    /// Mask known secret values out of text headed to the AI (GitHub-style redaction).
     ///
-    /// サンドボックスは秘密の生値を「読む」関数を持たないが、フォームに
-    /// 入れた値がDOM経由で読み戻される等の抜け道に備え、AIへ向かうテキスト
-    /// (browser の読み取り結果・AIのログ) はここを通してからにする。
-    /// 短すぎる値は普通の語まで消してしまうので対象外 (4文字以上)
+    /// The sandbox has no function that "reads" a secret's raw value, but as a
+    /// safeguard against loopholes -- e.g. a value typed into a form being read
+    /// back out through the DOM -- any text bound for the AI (browser read
+    /// results, AI logs) should pass through here first.
+    /// Values that are too short are excluded, since they'd blot out ordinary words too (4+ chars only)
     pub fn redact(&self, text: &str) -> String {
         let tokens = self.tokens.borrow();
         let mut out = text.to_string();
@@ -359,18 +362,18 @@ impl Capabilities {
         out
     }
 
-    /// このワークスペースで使ってよい秘密を教える (切り替えのたびに呼ぶ)。
-    /// 既定は全拒否。all=true は危険承知の全許可トグル
+    /// Tell it which secrets this workspace may use (called on every switch).
+    /// Default is deny-all. all=true is the knowingly-risky allow-all toggle
     pub fn set_secret_allow(&self, keys: Vec<String>, all: bool) {
         *self.secret_allow.borrow_mut() = keys.into_iter().collect();
         self.secret_allow_all.set(all);
     }
 
-    /// 秘密の生値を取り出す (Rust内部専用。Luaには決して返さない)。
+    /// Retrieve a secret's raw value (Rust-internal only. Never returned to Lua).
     ///
-    /// 許可リストに無いキーは拒否する。ラリーが別用途の鍵を流用しようとしても、
-    /// ここで止まる。値そのものは呼び出し側 (browser_fill_secret 等) が
-    /// 認証やフィルに使うだけで、AIの世界には出さない
+    /// Rejects keys not on the allowlist. Even if a rally tries to repurpose a key
+    /// meant for something else, it's stopped here. The value itself is only used
+    /// by the caller (browser_fill_secret etc) for auth or form-filling, and never surfaces into the AI's world
     pub fn secret_value(&self, key: &str) -> Result<String> {
         if !self.secret_allow_all.get() && !self.secret_allow.borrow().contains(key) {
             bail!(crate::i18n::tp("err.caps.secret_not_allowed", &[("key", key)]));
@@ -383,7 +386,7 @@ impl Capabilities {
         })
     }
 
-    /// 窓の中に置く先を教える。設定を読み直すたびに設定し直す
+    /// Tell it where to place things inside the window. Reset every time config reloads
     pub fn set_host(
         &self,
         host: Option<(std::rc::Rc<crate::browser::Browser>, (i32, i32, i32, i32))>,
@@ -397,15 +400,15 @@ impl Capabilities {
         }
     }
 
-    /// ブラウザを開く (同じ名前があれば、そこで移動する)。
-    /// profile はデータ保存の指定 (プロファイル名 / プライベート)
+    /// Open a browser (navigates there if the same name already exists).
+    /// profile specifies how data is stored (profile name / private)
     pub fn browser_open(
         &self,
         name: &str,
         url: &str,
         profile: crate::browser::BrowserProfile,
     ) -> Result<()> {
-        // 窓があるなら、その中に置く。別窓にすると位置も重なり順も自前になる
+        // If there's a host window, place it inside that. A separate window would mean handling position and stacking order ourselves
         let host = self
             .host
             .borrow()
@@ -418,7 +421,7 @@ impl Capabilities {
         if !hosted.iter().any(|(w, x)| *w == ws && x == name) {
             hosted.push((ws, name.to_string()));
         }
-        // 新しく置いた分は、次の描画で場所を決め直す
+        // Newly placed items get their position decided on the next redraw
         *self.shown.borrow_mut() = (None, (0, 0, 0, 0));
         crate::append_hook_log(&crate::i18n::tp(
             "err.caps.log_browser_open",
@@ -427,8 +430,8 @@ impl Capabilities {
         Ok(())
     }
 
-    /// 窓の中に置いてあるページの名前 (置いた順)。
-    /// そのままタブの並びになる
+    /// Names of pages placed inside the window (in placement order).
+    /// Becomes the tab ordering as-is
     pub fn hosted_names(&self) -> Vec<String> {
         let ws = self.ws.get();
         self.hosted
@@ -439,28 +442,28 @@ impl Capabilities {
             .collect()
     }
 
-    /// いま見ているワークスペースを教える。切り替えのたびに呼ぶ
+    /// Tell it which workspace is currently being viewed. Called on every switch
     pub fn set_workspace(&self, ws: usize) {
         self.ws.set(ws);
     }
 
-    /// 窓に置くときの実際の名前。
-    /// ワークスペースが違えば、同じ呼び名でも別のページ
+    /// The actual name used when placing something in the window.
+    /// A different workspace means a different page even under the same display name
     fn key(ws: usize, name: &str) -> String {
         format!("{ws}/{name}")
     }
 
-    /// 中身の領域を教える。窓の大きさが変わるたびに呼ぶ
+    /// Tell it the content area. Called every time the window is resized
     pub fn set_area(&self, area: (i32, i32, i32, i32)) {
         self.area.set(area);
     }
 
-    /// 1枚だけを見せて、残りは畳む。
+    /// Show only one page, and collapse the rest.
     ///
-    /// タブなのだから、見えているのは常に1枚でいい。
-    /// 畳むのは幅と高さを0にすること。取り除くと読み込み直しになる。
+    /// It's a tab bar, so only one page needs to be visible at a time.
+    /// "Collapse" means setting width and height to 0. Removing it outright would force a reload.
     ///
-    /// 描画は1秒に60回来る。変わっていないなら何も送らない
+    /// Redraws happen 60 times a second. Sends nothing if nothing changed
     pub fn show_only(&self, name: Option<&str>) {
         let want = (name.map(str::to_string), self.area.get());
         if *self.shown.borrow() == want {
@@ -471,7 +474,7 @@ impl Capabilities {
         };
         let ws = self.ws.get();
         for (w, held) in self.hosted.borrow().iter() {
-            // 他のワークスペースの分は、生かしたまま畳んでおく
+            // Pages from other workspaces are kept alive but collapsed
             let r = if *w == ws && Some(held.as_str()) == name {
                 want.1
             } else {
@@ -482,14 +485,14 @@ impl Capabilities {
         *self.shown.borrow_mut() = want;
     }
 
-    /// 名前で1枚を引き当てて、操作を渡す。
+    /// Look up a page by name and hand it the operation.
     ///
-    /// ページは窓の中に置いてある。窓に「このページ宛に」と頼む形になる。
+    /// The page lives inside the window; this asks the window to address "this page".
     ///
-    /// ここで窓の報告を読んではいけない。報告の線は1本で、
-    /// 画面の操作も同じ線に乗っている。横から取ると打鍵やタブの
-    /// 切り替えが消える。押された帯は本体のループが受け取り、
-    /// note_press で預けてくる
+    /// Never read the window's reports from here. There's only one report channel,
+    /// and screen operations ride the same channel. Intercepting it from the side
+    /// would drop keystrokes or tab switches. A pressed banner is received by the
+    /// main loop and handed over via note_press
     fn with<T>(
         &self,
         name: &str,
@@ -511,18 +514,17 @@ impl Capabilities {
         f(&host, Some(&Self::key(ws, name)))
     }
 
-    /// 帯のボタンが押されたことを預かる。
-    /// 窓の中に置いた分は、本体のループが報告を受け取るのでそこから届く。
-    /// 受け取る名前は窓の中での名前 (ワークスペース番号付き)
+    /// Record that a banner's button was pressed.
+    /// For pages placed inside the window, this arrives via the main loop, which
+    /// receives the report. The name received is the in-window name (with the workspace number)
     pub fn note_press(&self, child: &str) {
         self.pressed.borrow_mut().insert(child.to_string(), true);
     }
 
-    /// 窓の中での名前を、人が使う呼び名へ戻す。
+    /// Turn an in-window name back into the human-facing display name.
     ///
-    /// いま見ているワークスペースのものでなければ None。
-    /// 別のワークスペースのページの出来事で、こちらのフックを
-    /// 動かすわけにはいかない
+    /// None if it doesn't belong to the workspace currently being viewed.
+    /// An event from a page in another workspace must not be allowed to trigger this hook
     pub fn name_of_child(&self, child: &str) -> Option<String> {
         let head = format!("{}/", self.ws.get());
         child.strip_prefix(&head).map(str::to_string)
@@ -553,24 +555,24 @@ impl Capabilities {
         self.with(name, |b, to| b.html(to, 30_000))
     }
 
-    /// ページの中から通信し、`{status,ok,url,headers,body}` のJSON文字列を返す
+    /// Make a request from inside the page, returning a `{status,ok,url,headers,body}` JSON string
     pub fn browser_fetch(&self, name: &str, url: &str, opts: &serde_json::Value) -> Result<String> {
         self.with(name, |b, to| b.fetch(to, url, opts, 30_000))
     }
 
-    /// 人へ呼びかける帯を出す
+    /// Show a banner asking the human something
     pub fn browser_ask(&self, name: &str, text: &str, label: &str) -> Result<()> {
         self.forget_press(name);
         self.with(name, |b, to| b.ask(to, text, label))
     }
 
-    /// 帯のボタンが押されたか。押されていたら下ろして true を返す
+    /// Whether the banner's button was pressed. If so, clears it and returns true
     pub fn browser_pressed(&self, name: &str) -> Result<bool> {
         self.with(name, |_, _| Ok(()))?;
         Ok(self.forget_press(name))
     }
 
-    /// 押された記録を下ろす。鍵は窓の中での名前
+    /// Clear the pressed record. Keyed by the in-window name
     fn forget_press(&self, name: &str) -> bool {
         let key = Self::key(self.ws.get(), name);
         self.pressed.borrow_mut().remove(&key).unwrap_or(false)
@@ -581,9 +583,9 @@ impl Capabilities {
         self.with(name, |b, to| b.unask(to))
     }
 
-    /// ページの上に操作を出す。出すものが1つも無ければ、出さないのと同じ
+    /// Show controls above a page. If there's nothing to show, it's as if nothing were shown at all
     pub fn browser_nav(&self, name: &str, spec: crate::config::NavSpec) -> Result<()> {
-        // 開いていないページに出すことはできない。ここで断る
+        // Can't show controls on a page that isn't open. Rejected here
         self.with(name, |_, _| Ok(()))?;
         let key = Self::key(self.ws.get(), name);
         if spec.is_empty() {
@@ -600,34 +602,34 @@ impl Capabilities {
         Ok(())
     }
 
-    /// ページを動かす。呼び名から窓の中の名前に直すのはこちら側の仕事。
-    /// 呼ぶ側に直させると、直し忘れが「何も起きない」として現れる
+    /// Navigate a page. Converting the display name to the in-window name is this side's job.
+    /// If the caller had to do that conversion, forgetting it would show up as "nothing happens"
     pub fn browser_go(&self, name: &str, go: crate::browser::Go) -> Result<()> {
         self.with(name, |b, to| b.go(to, go))
     }
 
-    /// 今どこに居るかを聞く (答えは報告として届く)
+    /// Ask where it currently is (the answer arrives as a report)
     pub fn browser_where(&self, name: &str) -> Result<()> {
         self.with(name, |b, to| b.ask_where(to))
     }
 
-    /// キーボードの焦点をこのページへ移す
+    /// Move keyboard focus to this page
     pub fn browser_focus(&self, name: &str) -> Result<()> {
         self.with(name, |b, to| b.focus(to))
     }
 
-    /// このページの画面中継を始める/止める (フレームは本体のループへ報告で届く)
+    /// Start/stop this page's screencast (frames arrive via reports to the main loop)
     pub fn browser_screencast(&self, name: &str, on: bool) -> Result<()> {
         self.with(name, |b, to| b.screencast(to, on))
     }
 
-    /// 中継画面へ入力を注入する (指の軌跡・スワイプ・文字)
+    /// Inject input into the relay screen (finger trails, swipes, characters)
     pub fn browser_inject(&self, name: &str, input: crate::browser::Input) -> Result<()> {
         self.with(name, |b, to| b.inject(to, input))
     }
 
-    /// ベーシック認証を仕込む。資格情報は秘密 (許可リスト内) から `user:pass` で解決する。
-    /// 値はここで解いて CDP に渡すだけで、Lua/AI には一切出さない
+    /// Set up basic auth. Credentials are resolved as `user:pass` from a secret (must be on the allowlist).
+    /// The value is decoded here and passed straight to CDP -- never exposed to Lua/AI
     pub fn browser_auth(&self, name: &str, secret_key: &str) -> Result<()> {
         let val = self.secret_value(secret_key)?;
         let (user, pass) = val.split_once(':').ok_or_else(|| {
@@ -639,12 +641,12 @@ impl Capabilities {
         self.with(name, |b, to| b.basic_auth(to, user, pass))
     }
 
-    /// 設定に書かれたページを、設定のとおりに揃える。
+    /// Line pages up to match config exactly.
     ///
-    /// 設定から消したページは閉じる。閉じないと、置いたままのページが
-    /// 「設定に無いブラウザ」として一覧の後ろに居座り、消したのに
-    /// 別の場所に現れる (再起動するまで消えない) ことになる。
-    /// 自動化が自分で開いた分と設定画面は、ここでは触らない
+    /// Pages removed from config get closed. Without this, a leftover page would
+    /// linger at the back of the list as "a browser not in config" -- it was
+    /// deleted, yet it reappears elsewhere (and won't go away until restart).
+    /// Pages automation opened on its own, and the settings screen, are left untouched here
     pub fn keep_only_declared(&self, names: &[String]) -> Vec<String> {
         let ws = self.ws.get();
         let want: std::collections::HashSet<String> =
@@ -668,15 +670,15 @@ impl Capabilities {
         closed
     }
 
-    /// 設定が開けたページとして控える
+    /// Note this down as a page config opened
     pub fn note_declared(&self, name: &str) {
         self.declared
             .borrow_mut()
             .insert(Self::key(self.ws.get(), name));
     }
 
-    /// 何を出すか (画面を描くループが使う)。
-    /// 受けるのは人が使う呼び名。窓の中での名前に直すのはこちらの仕事
+    /// What to show (used by the screen-drawing loop).
+    /// Takes the human-facing display name; converting to the in-window name is this side's job
     pub fn nav_of(&self, name: &str) -> Option<crate::config::NavSpec> {
         self.nav
             .borrow()
@@ -699,7 +701,7 @@ impl Capabilities {
         Ok(())
     }
 
-    /// 生URL (allow_hosts に完全一致するホストのみ)
+    /// A raw URL (only hosts that exactly match allow_hosts)
     pub fn http_raw(&self, url: &str, body: &str) -> Result<()> {
         let host = host_of(url)
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.caps.bad_url", &[("url", url)])))?;
@@ -731,15 +733,15 @@ impl Capabilities {
 mod reload_tests {
     use super::*;
 
-    /// 設定を読み直しても、窓の中に置いたページを忘れないこと。
+    /// Reloading config must not forget pages placed inside the window.
     ///
-    /// 忘れると、そのページは誰にも動かせないまま画面の上に残る。
-    /// 設定画面を保存した瞬間にそれが起き、タブを押しても
-    /// 何も変わらないように見えた
+    /// Forgetting one leaves it stuck on screen, unable to be operated by anyone.
+    /// This used to happen the instant the settings screen was saved -- clicking
+    /// the tab appeared to do nothing
     #[test]
     fn reloading_the_settings_does_not_lose_the_pages_on_screen() {
         let c = Capabilities::disabled();
-        // 窓の代わりは無いので、置いた記録だけを直に作る
+        // There's no stand-in window, so we just create the placement record directly
         c.hosted.borrow_mut().push((0, "settings".into()));
         c.nav
             .borrow_mut()
@@ -753,10 +755,10 @@ mod reload_tests {
         assert!(c.forget_press("html"), "押された帯を忘れた");
     }
 
-    /// 設定から消したブラウザは閉じること。
+    /// A browser removed from config must be closed.
     ///
-    /// 置いたままにすると「設定に無いページ」として一覧の後ろに並び直し、
-    /// 消したはずのタブが別の場所に現れる (再起動するまで消えない)
+    /// Leaving it in place re-lists it at the back as "a page not in config" --
+    /// a tab that was supposedly deleted reappears elsewhere (and won't go away until restart)
     #[test]
     fn a_browser_removed_from_the_settings_does_not_come_back() {
         let c = Capabilities::disabled();
@@ -764,7 +766,7 @@ mod reload_tests {
             c.hosted.borrow_mut().push((0, n.to_string()));
             c.note_declared(n);
         }
-        // 自動化が自分で開いた分は、設定に無くても閉じない
+        // Pages automation opened on its own are not closed even if absent from config
         c.hosted.borrow_mut().push((0, "調べ物".into()));
 
         let closed = c.keep_only_declared(&["ai".to_string()]);
@@ -776,7 +778,7 @@ mod reload_tests {
         );
     }
 
-    /// 設定から来るものは、ちゃんと入れ替わること
+    /// Config-sourced state really must be replaced
     #[test]
     fn the_settings_themselves_are_replaced() {
         let c = Capabilities::disabled();
@@ -791,17 +793,17 @@ mod reload_tests {
             CapabilitySpec { files, ..Default::default() },
             HashMap::new(),
         );
-        // 窓口は登録された (ファイルが無いので読み込み自体は失敗する)
+        // The gateway is registered (the read itself still fails since the file doesn't exist)
         let err = c.read("tmp", "居ないファイル.txt").unwrap_err().to_string();
         assert!(!err.contains("未登録"), "窓口が入れ替わっていない: {err}");
     }
 }
 
-/// URLからホスト部だけを取り出す (ポート・認証情報は除く)
+/// Extract just the host portion from a URL (excluding port and credentials)
 fn host_of(url: &str) -> Option<String> {
     let rest = url.split_once("://")?.1;
     let hostport = rest.split(['/', '?', '#']).next()?;
-    // user:pass@host のような形は認めない (すり替えを防ぐ)
+    // Reject forms like user:pass@host (prevents substitution attacks)
     if hostport.contains('@') {
         return None;
     }
@@ -823,11 +825,11 @@ mod tests {
         tokens.insert("diary".to_string(), "hunter2secret".to_string());
         tokens.insert("short".to_string(), "ab".to_string());
         let c = Capabilities::new(CapabilitySpec::default(), PathBuf::from("."), tokens);
-        // 既知の秘密値は伏字になる
+        // A known secret value gets redacted
         let masked = c.redact("Authorization: hunter2secret\n本文");
         assert!(!masked.contains("hunter2secret"), "秘密値が残っている: {masked}");
         assert!(masked.contains("••••"));
-        // 短すぎる値は普通の語を壊すので対象外
+        // Values that are too short are excluded, since they'd break ordinary words
         assert_eq!(c.redact("ab cd ab"), "ab cd ab");
     }
 
@@ -837,16 +839,16 @@ mod tests {
         tokens.insert("diary".to_string(), "hunter2secret".to_string());
         tokens.insert("github".to_string(), "ghp_xxx".to_string());
         let c = Capabilities::new(CapabilitySpec::default(), PathBuf::from("."), tokens);
-        // 既定は全拒否 (許可リストが空)
+        // Default is deny-all (empty allowlist)
         assert!(c.secret_value("diary").is_err(), "既定は全拒否のはず");
-        // 許可した鍵だけ取れる
+        // Only an allowed key can be retrieved
         c.set_secret_allow(vec!["diary".to_string()], false);
         assert_eq!(c.secret_value("diary").unwrap(), "hunter2secret");
         assert!(c.secret_value("github").is_err(), "別用途の鍵は流用できない");
-        // 危険承知の全許可トグル
+        // The knowingly-risky allow-all toggle
         c.set_secret_allow(vec![], true);
         assert_eq!(c.secret_value("github").unwrap(), "ghp_xxx");
-        // 全許可でも、未登録キーは取れない
+        // Even with allow-all, an unregistered key can't be retrieved
         assert!(c.secret_value("nope").is_err(), "未登録は取れない");
     }
 
@@ -875,10 +877,10 @@ mod tests {
 
         assert!(c.write("reports", "ok.md", "hello").is_ok());
         assert_eq!(c.read("reports", "ok.md").unwrap(), "hello");
-        // 外へ出ようとする指定は拒否
+        // A path that tries to escape outward is rejected
         assert!(c.write("reports", "../escape.md", "x").is_err());
         assert!(c.write("reports", "C:/windows/x.md", "x").is_err());
-        // 未登録の窓口は使えない
+        // An unregistered gateway can't be used
         assert!(c.write("other", "a.md", "x").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -907,12 +909,12 @@ mod tests {
     #[test]
     fn host_matching_is_exact() {
         assert_eq!(host_of("https://api.github.com/x"), Some("api.github.com".into()));
-        // 前方一致のすり抜けを許さない
+        // Don't let a prefix match slip through
         assert_eq!(
             host_of("https://api.github.com.evil.com/x"),
             Some("api.github.com.evil.com".into())
         );
-        // 認証情報つきURLでのすり替えを拒否
+        // Reject substitution via a URL carrying credentials
         assert_eq!(host_of("https://api.github.com@evil.com/x"), None);
 
         let mut spec = CapabilitySpec::default();

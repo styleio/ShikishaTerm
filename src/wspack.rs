@@ -1,51 +1,55 @@
-//! ワークスペースを1つのファイルに持ち出し、取り込む。
+//! Take a workspace out into a single file, and bring one back in.
 //!
-//! ワークスペースはタブの並びだけではない。タブが指す自動化スクリプトが
-//! 別の場所にあり、それが無ければ持ち出したものは動かない。
-//! だから設定とスクリプトを1つの入れ物に入れる。
+//! A workspace isn't just the row of tabs. The tabs point at automation
+//! scripts that live elsewhere, and without those, what you took out won't
+//! run. So settings and scripts go into one container.
 //!
-//! 取り込むときは、置き場所が既に埋まっていたら別名にする。
-//! 同じ名前のフォルダを持つワークスペースを2つ入れたとき、
-//! 後から入れた方が先の中身を上書きしたら、気づく術がない。
+//! When bringing one in, if the destination is already occupied, use a
+//! different name. If you bring in two workspaces that share a folder name
+//! and the later one silently overwrites the earlier one's contents,
+//! there's no way to notice.
 //!
-//! 入らないもの: 通知先・secrets.json・能力(capabilities)。
-//! これらは全体の設定であってワークスペースの持ち物ではないし、
-//! 資格情報を配って回ることになる
+//! Not included: notification destinations, secrets.json, capabilities.
+//! Those belong to the whole app's settings, not to any one workspace, and
+//! shipping them around would mean handing out credentials
 
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
-/// 書式の版。読めない版は断る。黙って一部だけ取り込むより良い
+/// Format version. An unreadable version is refused. Better than silently
+/// importing only part of it
 const FORMAT: u64 = 1;
-/// 1つの入れ物に入るスクリプトの数
+/// Number of scripts that fit in one container
 const MAX_FILES: usize = 500;
-/// 1つの入れ物の大きさ
+/// Size of one container
 const MAX_BYTES: usize = 4 * 1024 * 1024;
-/// 別名を探す回数。ここまで埋まっているなら、原因は別にある
+/// Number of times to search for an alternate name. If it's still taken by
+/// then, something else is going on
 const MAX_RENAME: u32 = 100;
 
-/// 取り込んだ結果。何がどこへ置かれたかを人に見せるために返す
+/// Result of an import. Returned so the user can be shown what landed where
 pub struct Placed {
-    /// 実際に付いた名前 (重複していれば変えてある)
+    /// The name actually assigned (changed if it collided)
     pub name: String,
-    /// スクリプトの置き場所 (元の名前から変わったものだけ)
+    /// Where scripts were placed (only the ones whose name changed from the original)
     pub moved: Vec<(String, String)>,
-    /// 書いたスクリプトの数
+    /// Number of scripts written
     pub files: usize,
 }
 
-/// 設定ファイルの置き場所。相対パスはすべてここが基準
+/// Where the config file lives. Every relative path is based on this
 fn base_of(config_path: &Path) -> Result<&Path> {
     config_path
         .parent()
         .ok_or_else(|| anyhow!(crate::i18n::t("err.wspack.no_config_dir")))
 }
 
-/// 設定フォルダの中を指しているか確かめる。
+/// Checks that a path stays inside the settings folder.
 ///
-/// 取り込むファイルは他人が書いたものなので、行き先は必ず自分で決める。
-/// 絶対パス・親への遡り・ドライブ指定は受け付けない
+/// Imported files were written by someone else, so the destination is
+/// always decided here. Absolute paths, going up to a parent, and drive
+/// specifiers are all rejected
 fn under_base(base: &Path, rel: &str) -> Option<PathBuf> {
     if rel.is_empty() {
         return None;
@@ -65,7 +69,7 @@ fn under_base(base: &Path, rel: &str) -> Option<PathBuf> {
     Some(base.join(p))
 }
 
-/// 設定の中の自動化の指定。新しい綴りを優先し、旧称にも応じる
+/// The automation reference in a config entry. Prefers the new spelling, but also honors the old name
 fn automation_of(v: &Value) -> Option<String> {
     for key in ["automation", "lua"] {
         if let Some(s) = v.get(key).and_then(Value::as_str) {
@@ -78,7 +82,7 @@ fn automation_of(v: &Value) -> Option<String> {
     None
 }
 
-/// ワークスペースとその全タブが指す自動化の場所を集める
+/// Collects every automation location referenced by the workspace and all its tabs
 fn referenced(ws: &Value) -> Vec<String> {
     fn walk(tabs: Option<&Value>, out: &mut Vec<String>) {
         for t in tabs.and_then(Value::as_array).into_iter().flatten() {
@@ -98,8 +102,8 @@ fn referenced(ws: &Value) -> Vec<String> {
     out
 }
 
-/// 実際に持ち出す単位。存在するものだけを残し、
-/// 別のフォルダの中に入っているものはその親に任せる
+/// The actual units to take out. Keep only ones that exist, and leave
+/// anything nested inside another folder to its parent
 fn roots(base: &Path, refs: &[String]) -> Vec<String> {
     let alive: Vec<&String> = refs
         .iter()
@@ -116,13 +120,13 @@ fn roots(base: &Path, refs: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// フォルダの中の .lua を集める。鍵は設定フォルダから見た場所
+/// Collects the .lua files inside a folder. The key is the location relative to the settings folder
 fn read_dir_lua(base: &Path, rel: &str, out: &mut Map<String, Value>) -> Result<()> {
     let Some(dir) = under_base(base, rel) else {
         return Ok(());
     };
     let mut entries: Vec<_> = std::fs::read_dir(&dir)?.filter_map(|e| e.ok()).collect();
-    // 並びを決めておく。書き出すたびに順が変わると、差分が読めない
+    // Fix the ordering. If it changes every time we write, diffs become unreadable
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
         let Some(name) = e.file_name().to_str().map(str::to_string) else {
@@ -145,8 +149,8 @@ fn read_dir_lua(base: &Path, rel: &str, out: &mut Map<String, Value>) -> Result<
     Ok(())
 }
 
-/// 設定の workspaces を取り出す。
-/// 昔の書き方 (tabs直書き) は、名前なしのワークスペース1つとして見る
+/// Pulls `workspaces` out of the config.
+/// The old style (tabs written directly) is treated as a single unnamed workspace
 fn workspace_list(cfg: &Value) -> Vec<Value> {
     match cfg.get("workspaces").and_then(Value::as_array) {
         Some(a) if !a.is_empty() => a.clone(),
@@ -161,8 +165,8 @@ fn workspace_list(cfg: &Value) -> Vec<Value> {
     }
 }
 
-/// 別ファイルに切り出されているものを、その場に展開する。
-/// 持ち出した先では1枚で完結していてほしい
+/// Expands anything that was split out into a separate file, inline.
+/// Once taken out, it should be self-contained in one piece
 fn inline(base: &Path, entry: &Value) -> Result<Value> {
     let mut ws = Map::new();
     let name = entry.get("name").and_then(Value::as_str).unwrap_or("");
@@ -208,15 +212,15 @@ fn inline(base: &Path, entry: &Value) -> Result<Value> {
         ws.insert("automation".into(), a);
     }
     ws.insert("tabs".into(), pick("tabs").unwrap_or_else(|| json!([])));
-    // 旧い書き方のブラウザ宣言。設定画面は触らないが、持ち出しでは落とさない
+    // Old-style browser declaration. The settings screen doesn't touch it, but export shouldn't drop it
     if let Some(b) = pick("browsers") {
         ws.insert("browsers".into(), b);
     }
     Ok(Value::Object(ws))
 }
 
-/// 番号で指したワークスペースを、1枚のファイルの中身にまとめる。
-/// 返すのは (勧めるファイル名, 中身)
+/// Bundles the workspace picked by index into the contents of a single
+/// file. Returns (suggested file name, contents)
 pub fn pack(config_path: &Path, index: usize) -> Result<(String, String)> {
     let base = base_of(config_path)?;
     let cfg: Value = serde_json::from_str(&std::fs::read_to_string(config_path)?)?;
@@ -247,14 +251,14 @@ pub fn pack(config_path: &Path, index: usize) -> Result<(String, String)> {
         "shikisha_workspace": FORMAT,
         "exported_at": crate::hooks::local_stamp("%Y-%m-%d %H:%M:%S"),
         "workspace": ws,
-        // 貼り直す単位。ここが埋まっていたら別名にする
+        // The unit to re-place. If this is already taken, use a different name
         "roots": keep,
         "scripts": Value::Object(scripts),
     });
     Ok((format!("{}.stws.json", safe_file_name(&name)), serde_json::to_string_pretty(&bundle)?))
 }
 
-/// ファイル名に使えない文字を落とす。空になったら既定の名前にする
+/// Strips characters that can't be used in a file name. Falls back to the default name if it becomes empty
 fn safe_file_name(name: &str) -> String {
     let s: String = name
         .chars()
@@ -264,12 +268,12 @@ fn safe_file_name(name: &str) -> String {
     if s.is_empty() { "workspace".into() } else { s }
 }
 
-/// 埋まっていない名前を探す。`scripts/ws2` が埋まっていれば `scripts/ws2-2`
+/// Finds a name that isn't taken. If `scripts/ws2` is taken, tries `scripts/ws2-2`
 fn free_name(base: &Path, rel: &str) -> Result<String> {
     if under_base(base, rel).is_some_and(|p| !p.exists()) {
         return Ok(rel.to_string());
     }
-    // 拡張子があれば、その手前に付ける (ws2.lua-2 では読めない)
+    // If there's an extension, insert before it (ws2.lua-2 wouldn't be readable)
     let (stem, ext) = match rel.rsplit_once('.') {
         Some((s, e)) if !e.contains('/') && !s.is_empty() => (s, format!(".{e}")),
         _ => (rel, String::new()),
@@ -283,8 +287,8 @@ fn free_name(base: &Path, rel: &str) -> Result<String> {
     bail!(crate::i18n::tp("err.wspack.cannot_name", &[("rel", rel)]))
 }
 
-/// 前置きの置き換え。`scripts/ws2` を `scripts/ws2-2` にすると、
-/// その中を指していた `scripts/ws2/html` も一緒に動く
+/// Rewrites prefixes. Renaming `scripts/ws2` to `scripts/ws2-2` also moves
+/// along anything pointing inside it, like `scripts/ws2/html`
 fn remap(path: &str, moves: &[(String, String)]) -> String {
     for (from, to) in moves {
         if path == from {
@@ -297,7 +301,7 @@ fn remap(path: &str, moves: &[(String, String)]) -> String {
     path.to_string()
 }
 
-/// ワークスペースとタブが指す自動化の場所を、置いた先へ書き換える
+/// Rewrites the automation locations referenced by the workspace and its tabs to wherever they were placed
 fn rewrite(ws: &mut Value, moves: &[(String, String)]) {
     fn one(v: &mut Value, moves: &[(String, String)]) {
         for key in ["automation", "lua"] {
@@ -321,8 +325,8 @@ fn rewrite(ws: &mut Value, moves: &[(String, String)]) {
     }
 }
 
-/// 既に使われていない表示名にする。同じ名前が2つ並ぶと、
-/// タブバーでもスクリプトでもどちらを指しているのか分からない
+/// Picks a display name that isn't already used. If the same name appears
+/// twice, there's no way to tell which one the tab bar or a script is pointing at
 fn free_title(list: &[Value], want: &str) -> String {
     let taken = |n: &str| {
         list.iter()
@@ -340,8 +344,8 @@ fn free_title(list: &[Value], want: &str) -> String {
     want.to_string()
 }
 
-/// 持ち出したファイルを取り込む。設定にワークスペースを1つ足し、
-/// スクリプトを空いている場所へ置く
+/// Imports a file that was taken out. Adds one workspace to the config, and
+/// places its scripts wherever there's room
 pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     if text.len() > MAX_BYTES {
         bail!(crate::i18n::t("err.wspack.file_too_big"));
@@ -379,7 +383,7 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
         ));
     }
 
-    // 置き場所を先に決める。1つでも置けないなら何も書かない
+    // Decide the destinations first. If even one can't be placed, write nothing
     let mut moves = Vec::new();
     for r in bundle
         .get("roots")
@@ -431,7 +435,7 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     ws["name"] = Value::String(name.clone());
     list.push(ws);
     cfg["workspaces"] = Value::Array(list);
-    // ワークスペースに移した以上、昔の直書きは残しておくと二重に見える
+    // Now that it's moved into workspaces, keeping the old direct-write form around would show it twice
     if let Some(o) = cfg.as_object_mut() {
         o.remove("tabs");
     }
@@ -448,7 +452,7 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
 mod tests {
     use super::*;
 
-    /// 試験用の設定一式を作る
+    /// Builds a set of config files for testing
     fn setup(dir: &Path) -> PathBuf {
         let cfg = dir.join("config.json");
         std::fs::write(
@@ -480,8 +484,8 @@ mod tests {
         d
     }
 
-    /// スクリプトごと持ち出せること。
-    /// 設定だけ渡しても、指す先が無ければ相手の手元では動かない
+    /// Confirms scripts travel along with the workspace.
+    /// Passing only the config, without what it points at, leaves it dead on the other end
     #[test]
     fn a_workspace_travels_with_its_scripts() {
         let d = tmp("pack");
@@ -498,12 +502,12 @@ mod tests {
             s["scripts/ws1/html/on_load.lua"], "-- よみこみ",
             "タブのスクリプトが入っていない"
         );
-        // 貼り直す単位は親だけ。中のフォルダは親と一緒に動く
+        // The re-place unit is only the parent. Nested folders travel with their parent
         assert_eq!(v["roots"], json!(["scripts/ws1"]));
     }
 
-    /// 同じものを2回取り込んでも、先に入れた方が壊れないこと。
-    /// 上書きしてしまうと、消えたことに誰も気づけない
+    /// Confirms that importing the same thing twice doesn't break the first
+    /// copy. Overwriting it would mean nobody notices it got wiped
     #[test]
     fn a_second_copy_does_not_overwrite_the_first() {
         let d = tmp("twice");
@@ -517,18 +521,18 @@ mod tests {
         let second = unpack(&cfg, &text).unwrap();
         assert_eq!(second.name, "編集部-3");
 
-        // 元のスクリプトは手つかず
+        // The original scripts are untouched
         assert_eq!(
             std::fs::read_to_string(d.join("scripts/ws1/on_start.lua")).unwrap(),
             "-- はじめ"
         );
-        // 入れた分はそれぞれ別の場所にある
+        // Each import lands in its own separate location
         assert!(d.join("scripts/ws1-2/on_start.lua").exists());
         assert!(d.join("scripts/ws1-3/on_start.lua").exists());
         assert!(d.join("scripts/ws1-2/html/on_load.lua").exists());
     }
 
-    /// 置き場所が変わったら、指している側も一緒に変わること
+    /// Confirms that when the destination changes, whatever points at it changes along with it
     #[test]
     fn the_tabs_point_at_where_the_scripts_actually_landed() {
         let d = tmp("rewrite");
@@ -545,8 +549,8 @@ mod tests {
         );
     }
 
-    /// 設定フォルダの外へは書かないこと。
-    /// 取り込むファイルは他人が書いたもので、中身は信用できない
+    /// Confirms nothing is written outside the settings folder.
+    /// Imported files were written by someone else, and their contents can't be trusted
     #[test]
     fn an_import_cannot_write_outside_the_settings_folder() {
         let d = tmp("escape");
@@ -568,7 +572,7 @@ mod tests {
         assert!(!d.parent().unwrap().join("逃げた.lua").exists());
     }
 
-    /// Lua以外は書かないこと。取り込みは実行ファイルの配り口にしない
+    /// Confirms nothing but Lua is written. Import must not be a delivery vector for executables
     #[test]
     fn an_import_writes_nothing_but_lua() {
         let d = tmp("kind");
@@ -584,7 +588,7 @@ mod tests {
         assert!(!d.join("scripts/x.cmd").exists());
     }
 
-    /// 知らない書式は断ること。読めないものを黙って半分だけ入れない
+    /// Confirms an unknown format is refused. Never silently import only half of something unreadable
     #[test]
     fn an_unknown_format_is_refused() {
         let d = tmp("format");
@@ -594,7 +598,7 @@ mod tests {
         }
     }
 
-    /// 別ファイルに切り出したワークスペースも、1枚で持ち出せること
+    /// Confirms a workspace kept in its own separate file still travels whole
     #[test]
     fn a_workspace_kept_in_its_own_file_still_travels_whole() {
         let d = tmp("file");

@@ -1,23 +1,29 @@
-//! ラリーのデータ受け渡し置き場 (exchange)。
+//! Data hand-off area for rallies (exchange).
 //!
-//! AI→ブラウザのLua手渡しファイルや、貼れば再生できる記録を、Drive同期されない
-//! ローカル領域 (%LOCALAPPDATA%) に **run 単位のフォルダ** で置く。
+//! Lua files handed from AI to browser, and records that can be pasted and
+//! replayed, are stored in a local area not synced by Drive (%LOCALAPPDATA%),
+//! organized **one folder per run**.
 //!
-//! 設計の決定事項:
-//! - 固定ファイル名は使わない (複数タスクの同時実行ができなくなるため)。
-//!   run ごとにユニークなフォルダを作り、その中は単純名でよい。
-//! - フォルダが肥大化しないよう掃除は必須:
-//!   - 一時ファイル (in.lua / human.txt) は消費した時点で削除 (take が消す)。
-//!   - 不正終了で残ったゴミは、起動時に古いフォルダを一掃して回収する。
+//! Design decisions:
+//! - No fixed file names (that would prevent running multiple tasks
+//!   concurrently). Each run gets a unique folder, and simple names are fine
+//!   inside it.
+//! - Cleanup is mandatory so folders don't bloat over time:
+//!   - Temp files (in.lua / human.txt) are deleted as soon as they're
+//!     consumed (`take` deletes them).
+//!   - Leftover junk from abnormal exits is reclaimed by sweeping old
+//!     folders at startup.
 //!
-//! AIが書いた生Luaは「TUI画面を読む」のではなく、この置き場のファイルから
-//! バイト正確に受け取る。描画によるフェンス消失・指示エコーの誤検知が原理的に起きない。
+//! Raw Lua written by an AI is received byte-exact from files in this area,
+//! rather than by "reading the TUI screen." This makes false detections from
+//! rendering artifacts (fence loss, instruction echo) structurally impossible.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// exchange のルート。%LOCALAPPDATA%\ShikishaTerm\exchange (無ければ一時フォルダ)。
-/// Drive同期下 (アプリ本体の隣) には置かない
+/// The exchange root. %LOCALAPPDATA%\ShikishaTerm\exchange (falls back to the
+/// temp folder if unavailable). Never placed under Drive sync (beside the
+/// app binary).
 pub fn root() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -25,11 +31,13 @@ pub fn root() -> PathBuf {
     base.join("ShikishaTerm").join("exchange")
 }
 
-/// プロセス内での連番。同一ミリ秒に複数 run が始まっても衝突しないように付ける
+/// A per-process sequence number, so multiple runs starting within the same
+/// millisecond don't collide.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// 新しい run 用フォルダを作って、そのパスを返す。
-/// 名前は「エポックミリ秒-連番」でユニーク (固定名を避け同時実行を可能にする)
+/// Create a new run folder and return its path.
+/// The name is unique as "epoch-ms-sequence" (avoids fixed names so runs can
+/// happen concurrently).
 pub fn new_run() -> std::io::Result<PathBuf> {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -41,8 +49,9 @@ pub fn new_run() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// 渡されたパスが exchange のルート配下かどうか (パストラバーサル防止)。
-/// 未作成ファイルは canonicalize できないので、親フォルダで判定する
+/// Whether the given path is under the exchange root (prevents path
+/// traversal). A not-yet-created file can't be canonicalized, so fall back
+/// to checking the parent folder.
 pub fn within_root(p: &Path) -> bool {
     let Ok(rr) = root().canonicalize() else {
         return false;
@@ -55,8 +64,9 @@ pub fn within_root(p: &Path) -> bool {
         .is_some_and(|par| par.starts_with(&rr))
 }
 
-/// ファイルを読んで削除し、中身を返す (無ければ None)。
-/// 一時ファイル (in.lua / human.txt) の「消費」に使う。exchange 配下限定
+/// Read a file and delete it, returning its contents (None if absent).
+/// Used to "consume" temp files (in.lua / human.txt). Restricted to under
+/// the exchange root.
 pub fn take(path: &Path) -> Option<String> {
     if !within_root(path) {
         return None;
@@ -66,7 +76,8 @@ pub fn take(path: &Path) -> Option<String> {
     Some(text)
 }
 
-/// テキストを1行追記する (記録 record.lua 用)。exchange 配下限定
+/// Append one line of text (for the record.lua log). Restricted to under the
+/// exchange root.
 pub fn append(path: &Path, text: &str) -> std::io::Result<()> {
     if !within_root(path) {
         return Err(std::io::Error::new(
@@ -85,7 +96,8 @@ pub fn append(path: &Path, text: &str) -> std::io::Result<()> {
     writeln!(f, "{}", text.trim_end())
 }
 
-/// 一番新しい run フォルダを返す (更新時刻で最新)。結果ダウンロードで使う
+/// Return the newest run folder (by modification time). Used for result
+/// downloads.
 pub fn latest_run() -> Option<PathBuf> {
     let rd = std::fs::read_dir(root()).ok()?;
     rd.flatten()
@@ -98,7 +110,8 @@ pub fn latest_run() -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
-/// 最近の run フォルダを新しい順に返す (最大 limit 件)。結果DLの履歴で使う
+/// Return recent run folders, newest first (up to `limit` entries). Used for
+/// the result-download history.
 pub fn recent_runs(limit: usize) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(root()) else {
         return Vec::new();
@@ -115,9 +128,10 @@ pub fn recent_runs(limit: usize) -> Vec<PathBuf> {
     runs.into_iter().take(limit).map(|(_, p)| p).collect()
 }
 
-/// run の id (フォルダ名) から run フォルダを解決する。exchange 配下・直下のみ許可
+/// Resolve a run folder from its run id (folder name). Only direct children
+/// of the exchange root are allowed.
 pub fn run_by_id(id: &str) -> Option<PathBuf> {
-    // トラバーサル防止: 区切りを含む id は拒否
+    // Anti-traversal: reject any id containing a path separator.
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
         return None;
     }
@@ -125,8 +139,9 @@ pub fn run_by_id(id: &str) -> Option<PathBuf> {
     (p.is_dir() && within_root(&p)).then_some(p)
 }
 
-/// 起動時の掃除。更新が `days` 日より古い run フォルダ／ファイルを丸ごと削除する。
-/// 正常終了なら一時ファイルは既に消えているので、これは不正終了のゴミの救済
+/// Startup cleanup. Removes any run folder/file whose modification time is
+/// older than `days` days. On a clean exit temp files are already gone, so
+/// this is only a rescue for junk left by abnormal exits.
 pub fn sweep_old(days: u64) {
     let Ok(rd) = std::fs::read_dir(root()) else {
         return;
@@ -199,7 +214,7 @@ mod tests {
         append(&rec, "line2\n").unwrap();
         let body = std::fs::read_to_string(&rec).unwrap();
         assert_eq!(body, "line1\nline2\n");
-        // ルート外は拒否
+        // Outside the root is rejected
         assert!(append(Path::new("C:/windows/x.lua"), "x").is_err());
         let _ = std::fs::remove_dir_all(&run);
     }

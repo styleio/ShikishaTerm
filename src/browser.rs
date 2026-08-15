@@ -1,32 +1,33 @@
-//! ブラウザを1台、指揮下に置く。
+//! Put one browser under command.
 //!
-//! Windows 11 には Chromium エンジン (WebView2) が最初から入っていて、
-//! Microsoft が更新し続けている。だから同梱しない。借りる。
-//! 「インストール不要の単一exe」はそのまま保たれる。
+//! Windows 11 ships with a Chromium engine (WebView2) built in,
+//! and Microsoft keeps it updated. So we don't bundle our own. We borrow it.
+//! That keeps the "no-install single exe" promise intact.
 //!
-//! 窓は別スレッドで動かす。TUIの描画ループとメッセージループは
-//! どちらも自分の都合で回りたがるので、混ぜない。
+//! The window runs on its own thread. The TUI's render loop and the
+//! message loop both want to run on their own terms, so they must not mix.
 //!
-//! `run` ではなく `run_return` を使うこと。`run` は `-> !` で、
-//! 内部で `process::exit` を呼ぶ。ブラウザの窓を閉じただけで
-//! アプリ全体が消える
+//! Use `run_return`, not `run`. `run` is `-> !` and calls
+//! `process::exit` internally. Just closing the browser window would
+//! take down the whole app.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::{Result, anyhow};
 
-/// 各文書に必ず先に流し込むもの。
+/// Always injected into every document first.
 ///
-/// 遷移のたびに実行されるので、ログインが何度リダイレクトしても
-/// 帯を出す手段は生き残る。ただし「今出すべきか」はRust側が覚えていて、
-/// 遷移のたびに指示し直す (JSの世界は遷移で消えるので)
+/// It runs on every navigation, so no matter how many times a login
+/// redirects, there's always a way to show the bar. But whether it
+/// *should* show right now is something the Rust side remembers and
+/// re-issues on every navigation (the JS world disappears on navigation).
 const INIT_JS: &str = r#"
 (function () {
   if (window.__shikisha) return;
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
 
-  // 人への呼びかけ。ページのCSSと喧嘩しないよう影の中に閉じる
+  // Calls out to the human. Enclosed in a shadow root so it doesn't clash with the page's CSS
   window.__shikisha_ask = function (text, label) {
     let host = document.getElementById("__shikisha_bar");
     if (!host) {
@@ -47,9 +48,10 @@ const INIT_JS: &str = r#"
     host.shadowRoot.querySelector("span").textContent = text;
     const b = host.shadowRoot.querySelector("button");
     b.textContent = label;
-    // 押したことがその場で分かるようにする。手応えが無いと、
-    // 押せたのか、押せていないのか、何も起きない仕事なのかが区別できない。
-    // 二度押しも防げる (受け取る側は1回しか来ないと思っている)
+    // Give immediate feedback that the click registered. Without it,
+    // there's no way to tell whether the click landed, didn't land,
+    // or just triggered work that produces nothing visible.
+    // Also guards against double-clicks (the receiving side expects exactly one)
     b.onclick = () => {
       if (b.disabled) return;
       b.disabled = true;
@@ -64,9 +66,9 @@ const INIT_JS: &str = r#"
     if (host) host.remove();
   };
 
-  // セレクタは {css:"..."} か {xpath:"..."}。
-  // XPath は「『氏名』というラベルの右隣のセル」のように、
-  // CSSでは書けない探し方ができるので両方持つ
+  // A selector is either {css:"..."} or {xpath:"..."}.
+  // XPath lets us express lookups CSS can't, like "the cell just to the
+  // right of the cell labeled 'Name'", so we support both
   window.__shikisha_q = function (sel) {
     if (sel && sel.xpath) {
       return document.evaluate(sel.xpath, document, null, 9, null).singleNodeValue;
@@ -74,8 +76,9 @@ const INIT_JS: &str = r#"
     return document.querySelector(sel.css);
   };
 
-  // 「DOMに無い」と「あるが画面外」を分ける。
-  // 同じ失敗で潰すと、セレクタを疑うべきか待ちを疑うべきか分からない
+  // Distinguish "not in the DOM" from "in the DOM but off-screen".
+  // Collapsing them into one failure makes it impossible to tell whether
+  // to suspect the selector or the wait
   window.__shikisha_state = function (sel) {
     const el = window.__shikisha_q(sel);
     if (!el) return "not_found";
@@ -97,7 +100,7 @@ const INIT_JS: &str = r#"
     if (!el) return "not_found";
     el.scrollIntoView({ block: "center" });
     el.click();
-    // 触れた以上、届いていた。判定の語彙は find と揃える
+    // If we touched it, it was reachable. Keep the same vocabulary as find
     return "visible";
   };
 
@@ -109,8 +112,9 @@ const INIT_JS: &str = r#"
     if (el.isContentEditable) {
       el.textContent = value;
     } else {
-      // React などは value を直接書いても気づかない。
-      // 元の setter を通してから input を投げると、枠組み側の状態も動く
+      // Frameworks like React don't notice a direct write to value.
+      // Going through the original setter before dispatching input
+      // also updates the framework's own state
       const proto =
         el instanceof HTMLTextAreaElement
           ? HTMLTextAreaElement.prototype
@@ -128,9 +132,10 @@ const INIT_JS: &str = r#"
     return document.documentElement.outerHTML;
   };
 
-  // ページの中から通信する。ステータス/本文/ヘッダを取れる (WebViewは生の
-  // HTTPを直接は見せないので、ページ自身に叩かせて返す)。ログイン済みの
-  // クッキーを使うため credentials:"include"。失敗は投げずに表として返す
+  // Make the request from inside the page so we can read the status/body/
+  // headers (the WebView doesn't expose raw HTTP directly, so we have the
+  // page itself make the call and hand back the result). credentials:"include"
+  // so logged-in cookies are used. Failures are returned as a value, not thrown
   window.__shikisha_fetch = async function (url, opts) {
     const o = opts || {};
     try {
@@ -157,17 +162,18 @@ const INIT_JS: &str = r#"
 
   window.__shikisha = true;
 
-  // 「読み込み終わった」は load まで待つ。DOMContentLoaded の時点では
-  // 画像もCSSも来ておらず、JSが後から作る中身も入っていない。
+  // "Loading finished" waits for `load`. At DOMContentLoaded, images and
+  // CSS haven't arrived yet, and content JS builds afterward isn't in place.
   //
-  // ただし広告のページは外部の計測タグを待つので、load が数秒遅れる、
-  // 来ないことがある。待ち切れなければDOMだけの時点で名乗り、
-  // どちらだったかを complete に入れる。当てにいって外すより正直
+  // But ad-laden pages wait on external tracking tags, so `load` can lag
+  // several seconds, or never fire. If we can't wait that long, announce
+  // at the DOM-only point instead and record which case it was in
+  // `complete`. Better to be honest than to guess and be wrong
   let told = false;
   const announce = complete => {
     if (told) return;
     told = true;
-    send({ kind: "loading", busy: false });   // 読み込み終わり = 通信中を消す
+    send({ kind: "loading", busy: false });   // Loading finished = clear the "busy" indicator
     send({ kind: "ready", url: location.href, complete: !!complete });
   };
   const SETTLE_MS = 8000;
@@ -185,101 +191,108 @@ const INIT_JS: &str = r#"
 })();
 "#;
 
-/// 指揮者からブラウザへの指示
+/// An instruction from the conductor to the browser
 #[derive(Debug, Clone)]
 pub enum Cmd {
-    /// JSを評価して結果を返す (`id` で対応づける)。
-    /// `to` は宛先のページ名。None は主画面
+    /// Evaluate JS and return the result (matched up by `id`).
+    /// `to` is the destination page name. `None` means the main view
     Eval {
         id: u64,
         to: Option<String>,
         js: String,
     },
-    /// 人へ呼びかける帯を出す
+    /// Show a bar calling out to the human
     Ask {
         to: Option<String>,
         text: String,
         label: String,
     },
-    /// 帯を消す
+    /// Hide the bar
     Unask { to: Option<String> },
-    /// 同じ窓の中に、名前を付けてページを置く
+    /// Place a named page inside the same window
     AddChild {
         name: String,
         url: String,
         rect: (i32, i32, i32, i32),
-        /// このページのデータ保存 (プロファイル / プライベート)
+        /// This page's data storage (profile / private)
         profile: BrowserProfile,
     },
-    /// 置いたページの場所と大きさを決める。幅か高さが0なら隠す
+    /// Set the placed page's position and size. Width or height of 0 hides it
     ChildBounds {
         name: String,
         rect: (i32, i32, i32, i32),
     },
-    /// 置いたページを取り除く
+    /// Remove a placed page
     RemoveChild { name: String },
-    /// キーボードの焦点をこのページへ移す。`to` が None なら主画面。
+    /// Move keyboard focus to this page. `None` for `to` means the main view.
     ///
-    /// ページの中の焦点 (activeElement) と、OSが見ている焦点は別物。
-    /// 重ねたページを出し入れするとOS側だけが余所へ残り、
-    /// 打鍵は届くのに日本語の変換窓だけが画面の隅に出る、という形で現れる
+    /// Focus inside the page (activeElement) and the focus the OS sees are
+    /// separate things. Showing/hiding a stacked page can leave the OS-level
+    /// focus stranded elsewhere, which shows up as keystrokes arriving fine
+    /// while the Japanese IME candidate window pops up in the wrong corner
     Focus { to: Option<String> },
-    /// 置いたページを動かす (人が上のバーを押した)
+    /// Move a placed page (the human pressed the bar above it)
     Move { to: Option<String>, go: Go },
-    /// 今どこに居るか、戻れるか進めるかを聞く。
-    /// 答えは `Ev::Where` で返る
+    /// Ask where we currently are and whether we can go back/forward.
+    /// The answer comes back as `Ev::Where`
     Where { to: Option<String> },
-    /// 画面の中継 (VNC相当) を始める/止める。
-    /// 始めると変化のたびに `Ev::Frame` が届く。`to` は対象ページ (None は主画面)
+    /// Start/stop screencasting (VNC-equivalent).
+    /// Once started, `Ev::Frame` arrives on every change. `to` is the target
+    /// page (`None` is the main view)
     Screencast {
         to: Option<String>,
         on: bool,
     },
-    /// 中継中の画面へ、実際の入力を注入する (CDP経由。合成ではなく本物の入力扱い)。
-    /// 人の指の軌跡もCAPTCHAのスワイプも、届いた点をそのまま再生する
+    /// Inject real input into the screencast target (via CDP — treated as
+    /// genuine input, not synthetic). Both a human's finger trace and a
+    /// CAPTCHA swipe are replayed exactly as the points arrive
     Inject {
         to: Option<String>,
         input: Input,
     },
-    /// ベーシック認証を仕込む。以後この页の 401 チャレンジに、
-    /// CDP (Fetch.authRequired → continueWithAuth) で資格情報を返す。
-    /// user/pass は秘密から解決済みで、AI/Luaには渡っていない
+    /// Arm basic auth. From then on, this page's 401 challenges get
+    /// credentials returned via CDP (Fetch.authRequired -> continueWithAuth).
+    /// user/pass are already resolved from secrets and are never handed to AI/Lua
     BasicAuth {
         to: Option<String>,
         user: String,
         pass: String,
     },
-    /// 窓を閉じる (指揮者がいなくなったとき)
+    /// Close the window (when the conductor is gone)
     Close,
 }
 
-/// 中継画面への入力ひとつ。座標は中継フレーム上の割合 (0.0〜1.0) で受け取り、
-/// 実ピクセルへ直す。端末の大きさやDPRが送り手と違っても、同じ場所を指せる
+/// A single input event for the screencast view. Coordinates arrive as a
+/// fraction (0.0-1.0) of the screencast frame and get converted to real
+/// pixels. This lets the same spot be pointed at even when the sender's
+/// screen size or DPR differs
 #[derive(Debug, Clone)]
 pub enum Input {
-    /// マウスの押下/移動/解放。ドラッグは move を連ねて表す
+    /// Mouse down/move/up. A drag is expressed as a chain of moves
     Mouse {
         /// "pressed" / "released" / "moved"
         phase: String,
         x: f64,
         y: f64,
-        /// 押している間の移動なら true (ドラッグの再生に要る)
+        /// true if this move happens while the button is held (needed to replay drags)
         down: bool,
     },
-    /// ホイール。dx/dy はピクセル
+    /// Wheel. dx/dy are in pixels
     Wheel { x: f64, y: f64, dx: f64, dy: f64 },
-    /// 確定済みの文字列を今の焦点へ挿入する (IME変換は送り手側で済ませる)
+    /// Insert an already-committed string at the current focus (IME conversion is done on the sender's side)
     Text { text: String },
-    /// 名前付きの制御キー (Enter / Backspace / Tab / F1〜F12 など)。
-    /// ctrl/alt は補助キー列の固定トグルから合成できる (Ctrl+C など)
+    /// A named control key (Enter / Backspace / Tab / F1-F12, etc).
+    /// ctrl/alt can be composed from the fixed toggles in the auxiliary
+    /// key row (e.g. Ctrl+C)
     Key { named: String, ctrl: bool, alt: bool },
 }
 
-/// ブラウザに頼む移動。
+/// A navigation request sent to the browser.
 ///
-/// ページに `history.back()` をやらせる手もあるが、それだと
-/// 「もう戻れない」が分からず、押せないボタンを押せる顔で出すことになる。
-/// 窓の側は戻れるかを知っているので、そちらに頼む
+/// We could have the page call `history.back()` instead, but then we
+/// wouldn't know when there's nowhere left to go, and an unpressable
+/// button would show up looking pressable. The window itself knows
+/// whether it can go back, so we ask it
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Go {
     Back,
@@ -288,11 +301,12 @@ pub enum Go {
     To(String),
 }
 
-/// 画面からの意図をひとつ読む。
+/// Read one intent from the screen.
 ///
-/// 窓 (ipc) からもスマホ (HTTP) からも同じ形で届く。読み方が2か所にあると、
-/// 同じ押下が2通りに解釈される日が来るので、ここだけに置く。
-/// 知らない `kind` は `None`。黙って捨てるのが正しい
+/// Arrives in the same shape whether from the window (ipc) or a phone
+/// (HTTP). If parsing lived in two places, the day would come when the
+/// same click gets interpreted two different ways, so it lives only here.
+/// An unknown `kind` is `None`. Silently discarding it is correct
 pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
     Some(match v.get("kind").and_then(|k| k.as_str()) {
         Some("ready") => Ev::Ready {
@@ -326,12 +340,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("stop") => Ev::Stop,
         Some("scroll") => Ev::Scroll {
-            // 目盛りは人の指の数。桁外れの数が来ても意味がない
+            // The tick count is a count of human finger movements. An absurdly large number carries no meaning
             by: v.get("by").and_then(|x| x.as_i64()).unwrap_or(0).clamp(-64, 64) as i32,
             row: v.get("row").and_then(|x| x.as_u64()).unwrap_or(0).min(9999) as u16,
             col: v.get("col").and_then(|x| x.as_u64()).unwrap_or(0).min(9999) as u16,
         },
-        // 上のバー。行き先は人が打った文字なので、ここで型を絞る
+        // The top bar. The destination is text the human typed, so narrow its type here
         Some("go") => Ev::Go {
             go: match v.get("what").and_then(|x| x.as_str()) {
                 Some("back") => Go::Back,
@@ -377,7 +391,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .to_string(),
         },
         Some("paste") => Ev::Paste,
-        // 中継画面の上でのタッチ/マウス。座標は割合 (0..1) で来る
+        // Touch/mouse on the screencast view. Coordinates arrive as a fraction (0..1)
         Some("inject") => {
             let f = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
             let what = v.get("what").and_then(|x| x.as_str()).unwrap_or("");
@@ -423,117 +437,125 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
     })
 }
 
-/// ブラウザから指揮者への報告
+/// A report from the browser to the conductor
 #[derive(Debug, Clone)]
 pub enum Ev {
-    /// 文書が読み込まれた (遷移のたびに来る)。
-    /// `from` は読み込んだページの名前 (None は主画面)
+    /// A document finished loading (arrives on every navigation).
+    /// `from` is the name of the page that loaded (`None` is the main view)
     Ready {
         from: Option<String>,
         url: String,
-        /// 参照しているものまで揃ったか。
-        /// false は「load が来ないので、DOMだけの時点で名乗った」
+        /// Whether referenced resources finished loading too.
+        /// `false` means "`load` never fired, so we announced at the DOM-only point"
         complete: bool,
     },
-    /// `Eval` の結果。`value` はJSON
+    /// The result of `Eval`. `value` is JSON
     Result { id: u64, ok: bool, value: String },
-    /// 帯のボタンが押された = 人が自分の番を終えた。
-    /// `from` は押されたページの名前 (None は主画面)。
-    /// 何枚も置ける以上、どれで押されたかを持っていないと
-    /// 隣のブラウザの番が終わったことにできてしまう
+    /// The bar's button was pressed = the human finished their turn.
+    /// `from` is the name of the page it was pressed on (`None` is the
+    /// main view). Since multiple pages can be placed at once, without
+    /// tracking which one it was, a neighboring browser's turn could
+    /// wrongly be marked as finished
     Button { from: Option<String> },
-    /// 窓の大きさが変わった (何行何桁入るか)
+    /// The window's size changed (how many rows/columns fit)
     Resize {
         rows: u16,
         cols: u16,
-        /// 中身の領域 (x, y, 幅, 高さ)。ブラウザはここに置く
+        /// The content area (x, y, width, height). The browser is placed here
         area: (i32, i32, i32, i32),
     },
-    /// このタブを見たい (0 = 稼働盤)
+    /// Wants to view this tab (0 = the operating board)
     Select { tab: usize },
-    /// タブバーの + が押された (設定画面をタブ追加の状態で開く)
+    /// The + on the tab bar was pressed (opens the settings screen in add-tab mode)
     AddTab,
-    /// 設定ページの「設定を閉じる」。設定タブを畳んで稼働盤へ戻す。
-    /// 窓の中の操作なので、スマホからは受け付けない (allowed_from_afar)
+    /// "Close settings" on the settings page. Collapses the settings tab
+    /// and returns to the operating board. This is a window-internal
+    /// action, so it's not accepted from a phone (allowed_from_afar)
     CloseSettings,
-    /// 稼働盤のメニューが押された
+    /// The operating board's menu was pressed
     Menu { key: String },
-    /// 緊急停止
+    /// Emergency stop
     Stop,
-    /// ホイールを回した (正 = 遡る、負 = 戻る)。数は目盛りの数。
-    /// `row`/`col` は指していたマス (全画面のプログラムへ渡すのに要る)
+    /// The wheel was turned (positive = scroll back into the log, negative
+    /// = return to the present). The number is a count of ticks.
+    /// `row`/`col` is the cell it was over (needed to pass through to
+    /// full-screen programs)
     Scroll { by: i32, row: u16, col: u16 },
-    /// パスワードの入力結果 (None = 取り消し)
+    /// The result of a password entry (`None` = cancelled)
     Password { text: Option<String> },
-    /// 画面の中で失敗した
+    /// Something failed inside the page
     JsError { msg: String },
-    /// 上のバーが押された。宛先は「今見ているブラウザ」なので、
-    /// どれ宛かは指揮者が決める (バーは1枚しか出ていない)
+    /// The top bar was pressed. The destination is "whichever browser is
+    /// currently being viewed", so the conductor decides which one it's
+    /// for (only one bar is ever shown)
     Go { go: Go },
-    /// `Cmd::Where` の答え
+    /// The answer to `Cmd::Where`
     Where {
         from: Option<String>,
         url: String,
         can_back: bool,
         can_forward: bool,
     },
-    /// 中継画面の1フレーム。base64のJPEG (そのまま data URL にできる)。
-    /// `from` は送り元ページ。`w`/`h` はフレームの実ピクセル寸法
+    /// One frame of the screencast. Base64 JPEG (usable as a data URL as-is).
+    /// `from` is the source page. `w`/`h` are the frame's actual pixel dimensions
     Frame {
         from: Option<String>,
         data: String,
         w: u32,
         h: u32,
     },
-    /// ページの読み込みが始まった/終わった (上のバーに通信中を出す)。
-    /// 本フレームの文書生成と load でしか動かないので、SPA内の遷移や
-    /// 裏の常時接続では灯らない (誤検知より正直さを採る)
+    /// Page loading started/finished (shows "in progress" on the top bar).
+    /// Only fires on main-frame document creation and `load`, so it won't
+    /// light up for in-SPA navigation or background persistent connections
+    /// (favoring honesty over false positives)
     Loading { from: Option<String>, busy: bool },
-    /// 選択された文字 (PuTTY と同じで、選んだ時点でコピーする)
+    /// The selected text (like PuTTY, copies as soon as it's selected)
     Copy { text: String },
-    /// 貼り付けの要求 (右クリック)
+    /// A paste request (right-click)
     Paste,
-    /// 中継画面への入力要求 (クライアントから届き、指揮者が Cmd::Inject に直す)
+    /// An input request for the screencast view (arrives from a client; the conductor turns it into `Cmd::Inject`)
     Inject { to: Option<String>, input: Input },
-    /// 窓モードでの打鍵。確定した文字、名前付きの制御キー、Ctrl+文字のいずれか
+    /// A keystroke in window mode. Either a committed character, a named control key, or Ctrl+character
     Key {
         text: Option<String>,
         named: Option<String>,
         ctrl: Option<String>,
     },
-    /// 窓が閉じられた
+    /// The window was closed
     Closed,
 }
 
-/// 動いているブラウザ1台への取っ手
+/// A handle to one running browser
 pub struct Browser {
     proxy: tao::event_loop::EventLoopProxy<Cmd>,
     events: Receiver<Ev>,
     next_id: AtomicU64,
-    /// 出しておくべき帯。遷移でJSの世界ごと消えるので、
-    /// 新しい文書が用意できるたびに出し直す。
-    /// ログインはSSOで2〜3回飛ぶのが普通で、
-    /// 入れ直さないと「最初だけ出て途中で消える」ことになる
-    /// 出しっぱなしにしておく帯。ページごとに1つ。
-    /// 鍵の None は主画面
+    /// The bar that should be showing. Navigation wipes out the whole JS
+    /// world, so it gets re-shown every time a new document is ready.
+    /// Logins commonly bounce through SSO two or three times, and without
+    /// re-issuing it, it would "show only at the start and disappear partway".
+    /// The bar we keep showing. One per page.
+    /// A `None` key means the main view
     pending_ask: std::sync::Mutex<std::collections::HashMap<Option<String>, (String, String)>>,
-    /// 何かを待っている間に届いた、別の合図。
+    /// A different signal that arrived while we were waiting on something.
     ///
-    /// 読み飛ばして捨てると、待ちの前に送られたものが永久に消える。
-    /// 実際それで、窓の桁数が一度も届かなかった
+    /// Skipping and discarding it means anything sent before the wait
+    /// began vanishes forever. That's exactly how the window's column
+    /// count once never arrived
     spare: std::sync::Mutex<Vec<Ev>>,
 }
 
-/// 開けるURLか。http/https だけを通す。
+/// Is this a URL we're allowed to open? Only http/https pass.
 ///
-/// wry はページからのIPCを受け取るとき、そのページのURLを `http::Uri` として
-/// 組み立てて `unwrap` する (webview2/mod.rs)。`file:///` も `data:` も
-/// そこで解釈に失敗し、**プロセスごと落ちる** (実測)。
-/// こちらから流し込む初期化スクリプトが必ずIPCを送るので、
-/// 開けてしまえば必ず落ちる。だから入口で止める。
+/// When wry receives IPC from a page, it builds that page's URL as an
+/// `http::Uri` and `unwrap`s it (webview2/mod.rs). Both `file:///` and
+/// `data:` fail to parse there and **take down the whole process**
+/// (confirmed by testing). Since the initialization script we inject
+/// always sends IPC, opening one of these guarantees a crash. So we
+/// stop it at the door.
 ///
-/// 手元のファイルを見せたいときは、このソフトが持っている
-/// ローカルHTTPで配れば同じことができる
+/// To show a local file, serve it over this app's own local HTTP server
+/// instead — it achieves the same thing
 pub fn is_openable(url: &str) -> bool {
     let u = url.trim();
     let scheme_ok = u.starts_with("https://") || u.starts_with("http://");
@@ -544,22 +566,24 @@ pub fn is_openable(url: &str) -> bool {
     scheme_ok && has_host && !u.contains(['\n', '\r', ' '])
 }
 
-/// ブラウザのデータ保存の指定。プロファイル分離(ログインの箱)とプライベート(使い捨て)を
-/// 1つで表す。private が true のときは name を使わず、閉じたら消える一時領域を使う。
+/// A browser data-storage spec. Represents both profile isolation (a login
+/// box) and private (throwaway) mode in one type. When `private` is true,
+/// `name` is ignored and a temporary area that's wiped on close is used instead.
 ///
-/// wry の WebContext は「データフォルダ」を1つ受け取る。同じフォルダ＝同じ Cookie/ログイン、
-/// 別フォルダ＝別プロファイル。プライベートはユニークな一時フォルダを渡すだけ (wry公式ドキュメント
-/// 同旨: 通常タブ用の context と private/incognito タブ用の context を分ける)。
+/// wry's `WebContext` takes one "data folder". Same folder = same
+/// cookies/login, different folder = different profile. Private mode just
+/// hands it a unique temp folder (matches wry's own docs: keep a separate
+/// context for normal tabs and one for private/incognito tabs).
 #[derive(Clone, Debug)]
 pub struct BrowserProfile {
-    /// プロファイル名 ("default" 等)。private=true のときは無視
+    /// The profile name ("default", etc). Ignored when `private` is true
     pub name: String,
-    /// 使い捨て。true なら履歴・Cookie を残さない一時フォルダで開く
+    /// Throwaway. If true, opens in a temp folder that keeps no history/cookies
     pub private: bool,
 }
 
 impl BrowserProfile {
-    /// 名前とプライベート指定から作る。空名は "default" に寄せる
+    /// Build from a name and a private flag. An empty name falls back to "default"
     pub fn new(name: &str, private: bool) -> Self {
         let n = name.trim();
         Self {
@@ -567,14 +591,15 @@ impl BrowserProfile {
             private,
         }
     }
-    /// 既定 (共有の "default" プロファイル、永続)
+    /// The default (shared "default" profile, persistent)
     pub fn shared_default() -> Self {
         Self { name: "default".into(), private: false }
     }
 }
 
-/// ブラウザプロファイルの置き場。WebView2 のデータ(SQLite・キャッシュ)は重く、
-/// Drive同期と喧嘩するので、exchange と同じ %LOCALAPPDATA% 配下に置く (アプリ本体の隣には置かない)
+/// Where browser profiles live. WebView2's data (SQLite, cache) is heavy
+/// and clashes with Drive sync, so it goes under %LOCALAPPDATA%, same as
+/// exchange (not next to the app binary)
 fn profiles_root() -> std::path::PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
@@ -582,7 +607,7 @@ fn profiles_root() -> std::path::PathBuf {
     base.join("ShikishaTerm").join("browser-profiles")
 }
 
-/// プロファイル名を安全なフォルダ名に直す (パス区切りや .. を除く)。空なら "default"
+/// Turn a profile name into a safe folder name (strips path separators and `..`). Empty becomes "default"
 fn sanitize_profile(name: &str) -> String {
     let s: String = name
         .chars()
@@ -592,11 +617,11 @@ fn sanitize_profile(name: &str) -> String {
     if s.is_empty() { "default".into() } else { s }
 }
 
-/// プライベート用の一時フォルダ名の連番 (同一ミリ秒でも衝突しない)
+/// A running counter for private temp folder names (avoids collisions even within the same millisecond)
 static PRIVATE_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// プロファイル指定に対応するデータフォルダを返す (作成もする)。
-/// private の場合はユニークな一時フォルダ (呼ぶたびに別)
+/// Return the data folder for a profile spec (creating it too).
+/// For private mode, a unique temp folder (a different one on every call)
 fn profile_dir(p: &BrowserProfile) -> std::path::PathBuf {
     let dir = if p.private {
         let ms = std::time::SystemTime::now()
@@ -612,14 +637,15 @@ fn profile_dir(p: &BrowserProfile) -> std::path::PathBuf {
     dir
 }
 
-/// 起動時に、前回の異常終了で残ったプライベート領域を一掃する。
-/// プライベートは本来「閉じたら消える」ので、残っていれば全部ゴミ
+/// At startup, sweep away any private areas left behind by a previous
+/// abnormal exit. Private mode is supposed to "vanish on close", so
+/// anything still there is garbage
 pub fn sweep_private() {
     let _ = std::fs::remove_dir_all(profiles_root().join("_private"));
 }
 
 impl Browser {
-    /// 窓を開いて、指示を受け付ける状態にする
+    /// Open the window and get it ready to accept instructions
     pub fn spawn(url: &str, title: &str) -> Result<Self> {
         if !is_openable(url) {
             return Err(anyhow!(crate::i18n::tp("err.browser.bad_url", &[("url", url)])));
@@ -645,7 +671,7 @@ impl Browser {
                 }
             })?;
 
-        // 窓ができるまで待つ (作れなければ proxy は届かない)
+        // Wait until the window exists (if it can't be created, the proxy never arrives)
         let proxy = proxy_rx
             .recv_timeout(std::time::Duration::from_secs(20))
             .map_err(|_| anyhow!(crate::i18n::t("err.browser.startup_timeout")))?;
@@ -657,15 +683,16 @@ impl Browser {
             pending_ask: std::sync::Mutex::new(std::collections::HashMap::new()),
             spare: std::sync::Mutex::new(Vec::new()),
         };
-        // 文書が用意できるまで返さない。窓ができた時点で返すと、
-        // 呼んだ側は空の文書を触ることになり、
-        // 「セレクタが違う」のか「まだ来ていない」のか区別がつかない
+        // Don't return until the document is ready. Returning as soon as
+        // the window exists would leave the caller touching an empty
+        // document, unable to tell "the selector is wrong" from "it just
+        // hasn't arrived yet"
         me.wait_ready(std::time::Duration::from_secs(30))?;
         Ok(me)
     }
 
-    /// 次の文書が用意できるまで待ち、そのURLを返す。
-    /// 遷移のたびに1回来るので、`open` の後にも使う
+    /// Wait until the next document is ready and return its URL.
+    /// Fires once per navigation, so this is also used after `open`
     pub fn wait_ready(&self, timeout: std::time::Duration) -> Result<String> {
         let until = std::time::Instant::now() + timeout;
         loop {
@@ -693,12 +720,12 @@ impl Browser {
             .map_err(|_| anyhow!(crate::i18n::t("err.browser.not_connected")))
     }
 
-    /// JSを評価する。結果は `Ev::Result` で後から届く
+    /// Evaluate JS. The result arrives later as `Ev::Result`
     pub fn eval(&self, js: &str) -> Result<u64> {
         self.eval_in(None, js)
     }
 
-    /// 宛先を指してJSを評価する。None は主画面
+    /// Evaluate JS against a target. `None` is the main view
     pub fn eval_in(&self, to: Option<&str>, js: &str) -> Result<u64> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.send(Cmd::Eval {
@@ -721,7 +748,7 @@ impl Browser {
         })
     }
 
-    /// 置いたページを動かす
+    /// Navigate a placed page
     pub fn go(&self, to: Option<&str>, go: Go) -> Result<()> {
         self.send(Cmd::Move {
             to: to.map(str::to_string),
@@ -729,7 +756,7 @@ impl Browser {
         })
     }
 
-    /// 画面の中継 (VNC相当) を始める/止める。始めると `Ev::Frame` が届く
+    /// Start/stop screencasting (VNC-equivalent). Once started, `Ev::Frame` arrives
     pub fn screencast(&self, to: Option<&str>, on: bool) -> Result<()> {
         self.send(Cmd::Screencast {
             to: to.map(str::to_string),
@@ -737,7 +764,7 @@ impl Browser {
         })
     }
 
-    /// 中継画面へ入力を注入する (人の指の軌跡・スワイプ・文字)
+    /// Inject input into the screencast view (finger traces, swipes, text)
     pub fn inject(&self, to: Option<&str>, input: Input) -> Result<()> {
         self.send(Cmd::Inject {
             to: to.map(str::to_string),
@@ -745,8 +772,8 @@ impl Browser {
         })
     }
 
-    /// ベーシック認証を仕込む。以後この页の 401 に資格情報を返す。
-    /// user/pass は秘密から解決済み (呼ぶ側でしか触らない)
+    /// Arm basic auth. From then on, returns credentials for this page's
+    /// 401s. user/pass are already resolved from secrets (only the caller touches them)
     pub fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> Result<()> {
         self.send(Cmd::BasicAuth {
             to: to.map(str::to_string),
@@ -755,14 +782,14 @@ impl Browser {
         })
     }
 
-    /// キーボードの焦点を移す (None = 主画面)
+    /// Move keyboard focus (`None` = main view)
     pub fn focus(&self, to: Option<&str>) -> Result<()> {
         self.send(Cmd::Focus {
             to: to.map(str::to_string),
         })
     }
 
-    /// 今どこに居るかを聞く (答えは報告として届く)
+    /// Ask where we currently are (the answer arrives as a report)
     pub fn ask_where(&self, to: Option<&str>) -> Result<()> {
         self.send(Cmd::Where {
             to: to.map(str::to_string),
@@ -780,11 +807,11 @@ impl Browser {
     }
 
 
-    /// 同じ窓の中にページを置く。
+    /// Place a page inside the same window.
     ///
-    /// 別窓にすると、所有関係も位置の追従も、
-    /// Windows Terminal のタブ切替での露出も、全部こちらの持ち物になる。
-    /// 同じ窓に入れれば、どれも起きない
+    /// Using a separate window would make ownership, position tracking,
+    /// and even exposure during Windows Terminal tab switching all our
+    /// own problem to manage. Placing it in the same window sidesteps all of it
     pub fn open_child(
         &self,
         name: &str,
@@ -803,7 +830,7 @@ impl Browser {
         })
     }
 
-    /// 置いたページの場所と大きさ。幅か高さを0にすると隠れる
+    /// The placed page's position and size. Setting width or height to 0 hides it
     pub fn child_bounds(&self, name: &str, rect: (i32, i32, i32, i32)) -> Result<()> {
         self.send(Cmd::ChildBounds {
             name: name.to_string(),
@@ -817,7 +844,7 @@ impl Browser {
         })
     }
 
-    /// JSを1回呼んで、結果が返るまで待つ
+    /// Call JS once and wait for the result
     fn call(
         &self,
         to: Option<&str>,
@@ -829,7 +856,7 @@ impl Browser {
         self.wait_result(id, std::time::Duration::from_millis(timeout_ms))
     }
 
-    /// その要素が今どこにいるか
+    /// Where that element currently is
     pub fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {
         Ok(Found::parse(&self.call(
             to,
@@ -839,13 +866,13 @@ impl Browser {
         )?))
     }
 
-    /// 文字を読む (入力欄なら中身、それ以外は表示文字列)
+    /// Read text (an input field's contents, or the displayed string otherwise)
     pub fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Option<String>> {
         let v = self.call(to, "__shikisha_text", &[sel.json()], timeout_ms)?;
         Ok(serde_json::from_str::<Option<String>>(&v).unwrap_or(None))
     }
 
-    /// 押す
+    /// Click it
     pub fn click(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {
         Ok(Found::parse(&self.call(
             to,
@@ -855,7 +882,7 @@ impl Browser {
         )?))
     }
 
-    /// 入力欄に値を入れる
+    /// Put a value into an input field
     pub fn fill(
         &self,
         to: Option<&str>,
@@ -871,14 +898,15 @@ impl Browser {
         )?))
     }
 
-    /// 解釈済みのHTML全文
+    /// The full parsed HTML
     pub fn html(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> {
         let v = self.call(to, "__shikisha_html", &[], timeout_ms)?;
         Ok(serde_json::from_str::<String>(&v).unwrap_or(v))
     }
 
-    /// ページの中から通信する。返りは `{status,ok,url,headers,body,...}` のJSON文字列。
-    /// `opts` は `{method,headers,body}` (省略可)
+    /// Make a request from inside the page. Returns a JSON string
+    /// `{status,ok,url,headers,body,...}`.
+    /// `opts` is `{method,headers,body}` (optional)
     pub fn fetch(
         &self,
         to: Option<&str>,
@@ -894,10 +922,10 @@ impl Browser {
         )
     }
 
-    /// 溜まっている報告を取り出す (待たない)。
-    /// 新しい文書に移っていたら、出しておくべき帯を出し直す
+    /// Drain the reports accumulated so far (doesn't block).
+    /// If we moved to a new document, re-show the bar that should be showing
     pub fn drain(&self) -> Vec<Ev> {
-        // 待っている間に来たものを先に返す (届いた順を保つ)
+        // Return anything that arrived while we were waiting first (preserves arrival order)
         let mut evs: Vec<Ev> = std::mem::take(&mut *self.spare.lock().unwrap());
         evs.extend(self.events.try_iter());
         for e in &evs {
@@ -908,7 +936,7 @@ impl Browser {
         evs
     }
 
-    /// 遷移で消えた帯を出し直す。出し直すのは、遷移したページの分だけ
+    /// Re-show a bar that navigation wiped out. Only re-shown for the page that navigated
     fn reask(&self, to: Option<&str>) {
         let key = to.map(str::to_string);
         let want = self.pending_ask.lock().unwrap().get(&key).cloned();
@@ -921,8 +949,8 @@ impl Browser {
         }
     }
 
-    /// パスワードが入力されるまで待つ。
-    /// 待っている間に来た他の合図は取っておく (捨てると永久に消える)
+    /// Wait until a password is entered.
+    /// Any other signal that arrives while waiting is kept aside (discarding it loses it forever)
     pub fn wait_password(&self, timeout: std::time::Duration) -> Result<Option<String>> {
         let until = std::time::Instant::now() + timeout;
         loop {
@@ -941,7 +969,7 @@ impl Browser {
         }
     }
 
-    /// 特定の評価の結果が届くまで待つ
+    /// Wait until a specific evaluation's result arrives
     pub fn wait_result(&self, id: u64, timeout: std::time::Duration) -> Result<String> {
         let until = std::time::Instant::now() + timeout;
         loop {
@@ -974,17 +1002,18 @@ impl Browser {
 }
 
 impl Drop for Browser {
-    /// 指揮者がいなくなった窓を残さない。
-    /// 閉じられなくても構わない (相手が先に死んでいるだけなので)
+    /// Don't leave behind a window whose conductor is gone.
+    /// It's fine if closing fails (that just means the other side already died first)
     fn drop(&mut self) {
         let _ = self.proxy.send_event(Cmd::Close);
     }
 }
 
-/// 評価式を、結果がIPCで返る形に包む。
+/// Wrap an expression so its result comes back over IPC.
 ///
-/// async にして await するので、`fetch` のような非同期の値も解決してから返せる。
-/// 同期の値を await しても素通りなので、既存の DOM 系呼び出しはそのまま動く
+/// Wrapped in an async function and awaited, so an async value like the
+/// result of `fetch` also gets resolved before returning. Awaiting a
+/// synchronous value just passes it through, so existing DOM calls still work as-is
 fn wrap_eval(id: u64, js: &str) -> String {
     format!(
         r#"(async function(){{
@@ -1000,7 +1029,7 @@ fn wrap_eval(id: u64, js: &str) -> String {
     )
 }
 
-/// ページを探す指定。CSS か XPath
+/// A specifier for locating something on the page. CSS or XPath
 #[derive(Debug, Clone)]
 pub enum Sel {
     Css(String),
@@ -1016,19 +1045,20 @@ impl Sel {
     }
 }
 
-/// 要素の居場所。押す・入れるも同じ語彙で返す
-/// (触れたなら届いていたので `Visible`)。
+/// Where an element currently is. Click and fill return the same
+/// vocabulary (if we touched it, it was reachable, hence `Visible`).
 ///
-/// 「DOMに無い」と「あるが画面外」を分けるのが肝心で、
-/// 前者はセレクタを、後者は待ちやスクロールを疑う。
-/// 同じ「失敗」に潰すと、直す場所が分からなくなる
+/// Distinguishing "not in the DOM" from "in the DOM but off-screen"
+/// matters: the former means suspect the selector, the latter means
+/// suspect the wait or the scroll position. Collapsing both into one
+/// "failure" makes it impossible to know what to fix
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Found {
-    /// 画面に見えている
+    /// Visible on screen
     Visible,
-    /// DOMにはあるが画面の外
+    /// In the DOM but off-screen
     OffScreen,
-    /// DOMに無い
+    /// Not in the DOM
     NotFound,
 }
 
@@ -1050,10 +1080,10 @@ impl Found {
     }
 }
 
-/// 指示の宛先を解く。None は主画面、名前はそのページ。
-/// 名前があるのに見つからないときは None を返す。
-/// 主画面に落とすと、サイト向けのJSが自分の画面に対して走る
-/// 中継画面へ送る制御キーの名前を、CDP が要る (key名, Windows仮想キーコード) に直す
+/// Resolve an instruction's destination. `None` is the main view; a name is that page.
+/// If a name is given but not found, returns `None`.
+/// Falling back to the main view would run site-facing JS against our own screen
+/// Convert a control key name for the screencast view into what CDP needs (key name, Windows virtual key code)
 fn named_vk(named: &str) -> Option<(&'static str, u32)> {
     Some(match named {
         "enter" => ("Enter", 13),
@@ -1097,17 +1127,18 @@ fn target<'a>(
     }
 }
 
-/// JSの呼び出しを組み立てる。
+/// Build a JS function call.
 ///
-/// **引数は必ずここを通す。** すべて `serde_json` で書き出すので、
-/// 引用符も改行も外れず、渡した値がコードとして解釈されない。
-/// AIの出力やページから読んだ文章をそのまま入れても、値のまま届く
+/// **Arguments must always go through here.** Everything is serialized
+/// with `serde_json`, so quotes and newlines survive intact and the value
+/// passed in is never interpreted as code. Even AI output or text read
+/// straight off a page arrives as a plain value
 fn call_js(func: &str, args: &[serde_json::Value]) -> String {
     let list: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     format!("return window.{func}({});", list.join(","))
 }
 
-/// 場所と大きさを wry の形に直す
+/// Convert a position and size into wry's shape
 fn to_rect((x, y, w, h): (i32, i32, i32, i32)) -> wry::Rect {
     wry::Rect {
         position: wry::dpi::LogicalPosition::new(x, y).into(),
@@ -1115,20 +1146,23 @@ fn to_rect((x, y, w, h): (i32, i32, i32, i32)) -> wry::Rect {
     }
 }
 
-/// 人が打った文字を、開いてよい行き先に直す。
+/// Turn text a human typed into a destination we're allowed to open.
 ///
-/// 綴りを省いたときだけ補う (`example.com` → `https://example.com`)。
-/// それ以外は書いたとおりに扱い、http/https でなければ開かない。
-/// `file:` は手元のファイルを、`javascript:` は今のページを乗っ取れるので、
-/// URL欄という「どこへでも行ける口」から届かせるわけにいかない
+/// Only fills in a scheme when it's missing (`example.com` -> `https://example.com`).
+/// Otherwise it's taken exactly as written, and won't open unless it's
+/// http/https. `file:` can read local files and `javascript:` can hijack
+/// the current page, so we can't let either through an address bar — a
+/// "gateway to anywhere"
 pub fn openable(raw: &str) -> Option<String> {
     let s = raw.trim();
     if s.is_empty() {
         return None;
     }
-    // 綴りが無いものは全部「相手先」として扱う。`javascript:alert(1)` は
-    // https://javascript:alert(1) という壊れた行き先になって開けずに終わる。
-    // 綴りかどうかを当てにいくより、当たらなくても危なくない方を選ぶ
+    // Anything without a scheme is treated purely as a destination.
+    // `javascript:alert(1)` becomes the broken destination
+    // https://javascript:alert(1) and ends up failing to open.
+    // Rather than guessing whether it's a scheme, pick the option that's
+    // safe even when the guess is wrong
     let with_scheme = if s.contains("://") {
         s.to_string()
     } else {
@@ -1159,7 +1193,7 @@ fn run_window(
     use tao::window::WindowBuilder;
     use wry::{WebContext, WebViewBuilder};
 
-    // TUIの描画ループとは別スレッドなので、メインスレッド縛りを外す
+    // Runs on a separate thread from the TUI's render loop, so lift the main-thread restriction
     let mut ev_loop = EventLoopBuilder::<Cmd>::with_user_event()
         .with_any_thread(true)
         .build();
@@ -1188,43 +1222,44 @@ fn run_window(
         })
         .build(&window)?;
 
-    // 同じ窓に置いたページたち。名前で引く
+    // Pages placed inside the same window. Looked up by name
     let mut children: std::collections::HashMap<String, wry::WebView> =
         std::collections::HashMap::new();
-    // プロファイルごとの WebContext。データフォルダ単位で1つ (同じ名前のタブは共有)。
-    // Windows では生成後は不要だが、保持しても害は無いのでフォルダ鍵で持っておく
+    // WebContext per profile. One per data folder (tabs with the same name share it).
+    // Not needed after creation on Windows, but keeping it around is harmless, so hold it keyed by folder
     let mut web_ctxs: std::collections::HashMap<std::path::PathBuf, WebContext> =
         std::collections::HashMap::new();
-    // プライベートで置いた子の一時フォルダ (子名→フォルダ)。閉じるときに消す
+    // Temp folders for children placed in private mode (child name -> folder). Removed on close
     let mut ephemeral_dirs: std::collections::HashMap<String, std::path::PathBuf> =
         std::collections::HashMap::new();
 
-    // 画面中継。対象ごとに1つ。持っている間だけフレームが届く
+    // Screencasts. One per target. Frames only arrive while this is held
     let mut casts: std::collections::HashMap<Option<String>, cdp::Cast> =
         std::collections::HashMap::new();
-    // ベーシック認証の仕込み。対象ごとに1つ。持っている間だけ 401 に答える
+    // Basic-auth arming. One per target. Only answers 401s while this is held
     let mut auths: std::collections::HashMap<Option<String>, cdp::AuthArm> =
         std::collections::HashMap::new();
-    // JSダイアログの自動処理。子ごとに1つ。これが無いと離脱確認等で自動化が凍る
+    // Automatic handling of JS dialogs. One per child. Without this, automation freezes on things like "leave this page?" confirmations
     let mut dialogs: std::collections::HashMap<Option<String>, cdp::DialogArm> =
         std::collections::HashMap::new();
-    // 直近フレームのCSSピクセル寸法 (入力注入の座標変換に使う)。
-    // フレーム通知と入力注入は同じスレッドなので Rc<Cell> で足りる
+    // The most recent frame's CSS pixel dimensions (used to convert
+    // coordinates for input injection).
+    // Frame notification and input injection run on the same thread, so `Rc<Cell>` is enough
     let cast_dims = std::rc::Rc::new(std::cell::Cell::new((0.0f64, 0.0f64)));
-    // ドラッグ判定用: 今ボタンを押し下げているか
+    // For drag detection: is the button currently held down
     let mut mouse_down = false;
 
-    // ループの中でも報告を送るので、閉じたことを伝える分を先に取っておく
+    // Reports are sent from inside the loop too, so grab a sender for "closed" ahead of time
     let closed_tx = ev_tx.clone();
-    // 「今どこに居るか」の答えを返す線。窓の中でしか分からないので、ここから返す
+    // The channel that answers "where are we now". Only known from inside the window, so it answers from here
     let where_tx = ev_tx.clone();
     ev_loop.run_return(move |event, _, control| {
         *control = ControlFlow::Wait;
         match event {
             Event::UserEvent(cmd) => match cmd {
                 Cmd::Eval { id, to, js } => {
-                    // 宛先が見つからないとき、主画面には落とさない。
-                    // サイト向けのJSが自分の画面に対して走ってしまう
+                    // When the destination can't be found, don't fall back
+                    // to the main view. That would run site-facing JS against our own screen
                     if let Some(v) = target(&webview, &children, &to) {
                         let _ = v.evaluate_script(&wrap_eval(id, &js));
                     } else {
@@ -1240,7 +1275,7 @@ fn run_window(
                     }
                 }
                 Cmd::BasicAuth { to, user, pass } => {
-                    // 資格情報は既に仕込んであれば差し替え、無ければ Fetch を有効化して仕込む
+                    // If credentials are already armed, swap them; otherwise enable Fetch and arm them
                     if let Some(arm) = auths.get(&to) {
                         *arm.creds.borrow_mut() = (user, pass);
                     } else if let Some(v) = target(&webview, &children, &to) {
@@ -1269,11 +1304,12 @@ fn run_window(
                 }
                 Cmd::AddChild { name, url, rect, profile } => {
                     let bounds = to_rect(rect);
-                    // このページのデータ保存先 (プロファイル/プライベート) を決める。
-                    // 同じフォルダ＝同じ Cookie/ログイン、別フォルダ＝別プロファイル。
-                    // "default" も含め全タブが browser-profiles/<名前> に分離される
-                    // (Chromeの「人物」)。プライベートは呼ぶたびユニークな一時フォルダに
-                    // なり、閉じるとき消す。
+                    // Decide this page's data storage (profile/private).
+                    // Same folder = same cookies/login, different folder = different profile.
+                    // All tabs, including "default", are isolated under
+                    // browser-profiles/<name> (like Chrome's "person").
+                    // Private mode gets a unique temp folder on every call
+                    // and is removed on close.
                     let data_dir = profile_dir(&profile);
                     if profile.private {
                         ephemeral_dirs.insert(name.clone(), data_dir.clone());
@@ -1281,14 +1317,17 @@ fn run_window(
                     let ctx = web_ctxs
                         .entry(data_dir.clone())
                         .or_insert_with(|| WebContext::new(Some(data_dir.clone())));
-                    // 子にも主画面と同じ道具を積む。
-                    // 積まないと、置いたページは映っているだけになる
+                    // Equip the child with the same tools as the main view.
+                    // Without them, a placed page would just be something displayed, nothing more
                     let ipc = ev_tx.clone();
                     let who = name.clone();
-                    // 「通信中」は、ページ内スクリプト (文書生成時) では遅い。
-                    // サーバが遅いと文書は応答が返るまで作られず、待っている間が
-                    // 消えたままになる。ナビゲーション開始 (押した瞬間・応答前) で
-                    // 点け、読み込み完了で消す。これで待ち時間ずっと点灯する
+                    // Signaling "in progress" from the in-page script (at
+                    // document creation) is too late. If the server is slow,
+                    // the document isn't created until the response comes
+                    // back, so the indicator would stay off the whole time
+                    // we're waiting. Instead, turn it on when navigation
+                    // starts (the moment it's pressed, before any response)
+                    // and off when loading finishes. This keeps it lit for the entire wait
                     let nav_tx = ev_tx.clone();
                     let nav_who = name.clone();
                     let fin_tx = ev_tx.clone();
@@ -1299,7 +1338,7 @@ fn run_window(
                         .with_initialization_script(INIT_JS)
                         .with_navigation_handler(move |_url| {
                             let _ = nav_tx.send(Ev::Loading { from: Some(nav_who.clone()), busy: true });
-                            true // 移動は止めない。ここは合図を出すだけ
+                            true // Don't block the navigation. This is only here to emit a signal
                         })
                         .with_on_page_load_handler(move |e, _url| {
                             if matches!(e, wry::PageLoadEvent::Finished) {
@@ -1314,7 +1353,7 @@ fn run_window(
                             let Some(ev) = parse_intent(&v) else {
                                 return;
                             };
-                            // 誰が押したのかを、ここでしか知りようがない
+                            // There's no way to know who pressed it except here
                             let ev = match ev {
                                 Ev::Button { .. } => Ev::Button {
                                     from: Some(who.clone()),
@@ -1335,7 +1374,7 @@ fn run_window(
                         .build_as_child(&window)
                     {
                         Ok(v) => {
-                            // 置いた直後にダイアログ自動処理を仕込む (離脱確認等で凍らせない)
+                            // Arm automatic dialog handling right after placing it (don't let "leave page?" freeze it)
                             let wvh = cdp::webview_of(&v);
                             if let Some(arm) = cdp::arm_dialogs(&wvh) {
                                 dialogs.insert(Some(name.clone()), arm);
@@ -1357,9 +1396,10 @@ fn run_window(
                     children.remove(&name);
                     dialogs.remove(&Some(name.clone()));
                     auths.remove(&Some(name.clone()));
-                    // プライベートで置いた子なら、その使い捨てフォルダを片付ける。
-                    // WebView2 がロックを離すのに一拍かかることがあるので best-effort
-                    // (取りこぼしは起動時の sweep_private が回収する)
+                    // If this child was placed in private mode, clean up
+                    // its throwaway folder. WebView2 can take a moment to
+                    // release the lock, so this is best-effort
+                    // (anything missed gets swept up by sweep_private at startup)
                     if let Some(dir) = ephemeral_dirs.remove(&name) {
                         web_ctxs.remove(&dir);
                         let _ = std::fs::remove_dir_all(&dir);
@@ -1408,9 +1448,10 @@ fn run_window(
                 Cmd::Screencast { to, on } => {
                     if on {
                         if casts.contains_key(&to) {
-                            // 既に流している。二重登録はしないが、startScreencast を
-                            // 打ち直して今の画面を1枚出す (新しい視聴者が入ったとき、
-                            // ページが静止しているといつまでも空のままになるため)
+                            // Already streaming. We won't register twice,
+                            // but re-issue startScreencast to push out one
+                            // fresh frame (otherwise a new viewer joining
+                            // while the page is static would see nothing indefinitely)
                             if let Some(view) = target(&webview, &children, &to) {
                                 cdp::kick(&cdp::webview_of(view));
                             }
@@ -1473,10 +1514,12 @@ fn run_window(
                                 cdp::call(&wv, "Input.dispatchMouseEvent", &params);
                             }
                             Input::Text { text } => {
-                                // insertText は Google など一部サイトの入力欄に入らない
-                                // (input イベントを無視する)。1文字ずつ char キーイベント
-                                // として送ると、実際の打鍵として扱われ広く通る。
-                                // IME変換は送り手側で済んでいるので確定文字をそのまま流す
+                                // insertText doesn't land in the input fields
+                                // of some sites, e.g. Google (they ignore the
+                                // input event). Sending one char key event
+                                // per character gets treated as a real
+                                // keystroke and works much more broadly.
+                                // IME conversion is already done on the sender's side, so just send the committed characters through
                                 for ch in text.chars() {
                                     let mut buf = [0u8; 4];
                                     let s: &str = ch.encode_utf8(&mut buf);
@@ -1487,7 +1530,7 @@ fn run_window(
                             }
                             Input::Key { named, ctrl, alt } => {
                                 if let Some((key, vk)) = named_vk(&named) {
-                                    // CDP の修飾ビット: Alt=1, Ctrl=2, Meta=4, Shift=8
+                                    // CDP modifier bits: Alt=1, Ctrl=2, Meta=4, Shift=8
                                     let mods = (if alt { 1 } else { 0 }) | (if ctrl { 2 } else { 0 });
                                     for kind in ["keyDown", "keyUp"] {
                                         let mut ev = serde_json::json!({
@@ -1496,8 +1539,8 @@ fn run_window(
                                             "nativeVirtualKeyCode": vk,
                                             "modifiers": mods,
                                         });
-                                        // スペースは text を添えないと入力欄に文字が入らない。
-                                        // 修飾キー併用時 (Ctrl+Space 等) はショートカット扱いにする
+                                        // Space needs a `text` field attached, or it won't land in
+                                        // the input field. When combined with a modifier (e.g. Ctrl+Space), treat it as a shortcut instead
                                         if kind == "keyDown" && named == "space" && mods == 0 {
                                             ev["text"] = serde_json::Value::from(" ");
                                         }
@@ -1526,14 +1569,15 @@ fn run_window(
     Ok(())
 }
 
-/// CDP (Chrome DevTools Protocol) 越しの画面中継と入力注入。
+/// Screencasting and input injection over CDP (Chrome DevTools Protocol).
 ///
-/// WebView2 は中身が Chromium なので、開発者ツール用のプロトコルを話せる。
-/// これを使うと「変化したところだけ」をJPEGフレームで受け取れ (VNCより軽い)、
-/// マウス・ホイール・文字を**本物の入力として**注入できる (合成イベントではない)。
+/// WebView2 is Chromium under the hood, so it speaks the developer-tools
+/// protocol. Using it lets us receive "only what changed" as JPEG frames
+/// (lighter than VNC), and inject mouse, wheel, and text input as
+/// **genuine input** (not synthetic events).
 ///
-/// COMのオブジェクトはスレッドに縛られるので、呼び出しは必ず窓のイベントループ
-/// スレッド (run_window の中) から行う。フレーム通知も同じスレッドに届く。
+/// COM objects are thread-bound, so calls must always be made from the
+/// window's event-loop thread (inside `run_window`). Frame notifications also arrive on that same thread.
 mod cdp {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2, ICoreWebView2DevToolsProtocolEventReceivedEventArgs,
@@ -1544,14 +1588,14 @@ mod cdp {
     };
     use windows::core::{HSTRING, PCWSTR};
 
-    /// 中継の後始末に要るもの (これを持っている間だけ通知が届く)
+    /// What's needed to tear down a screencast (notifications only arrive while this is held)
     pub struct Cast {
         pub receiver: ICoreWebView2DevToolsProtocolEventReceiver,
         pub token: i64,
         pub webview: ICoreWebView2,
     }
 
-    /// CDPのメソッドを1つ呼ぶ (結果は捨てる)。params_json は "{}" でよい
+    /// Call one CDP method (the result is discarded). `params_json` can just be "{}"
     pub fn call(webview: &ICoreWebView2, method: &str, params_json: &str) {
         let method = HSTRING::from(method);
         let params = HSTRING::from(params_json);
@@ -1566,14 +1610,15 @@ mod cdp {
         }
     }
 
-    /// wry の WebView から下の ICoreWebView2 を取り出す
+    /// Pull the underlying `ICoreWebView2` out of a wry `WebView`
     pub fn webview_of(view: &wry::WebView) -> ICoreWebView2 {
         use wry::WebViewExtWindows;
         view.webview()
     }
 
-    /// 画面中継を始める。フレームが来るたびに `on_frame(base64_jpeg, css_w, css_h)` を呼ぶ。
-    /// フレームの ack もここで自動的に返す (返さないと次が来ない)
+    /// Start screencasting. Calls `on_frame(base64_jpeg, css_w, css_h)`
+    /// every time a frame arrives.
+    /// This also sends the frame ack automatically (without it, the next frame never comes)
     pub fn start<F>(webview: &ICoreWebView2, on_frame: F) -> Option<Cast>
     where
         F: FnMut(String, f64, f64) + 'static,
@@ -1603,7 +1648,7 @@ mod cdp {
                                     .and_then(|x| x.as_f64())
                                     .unwrap_or(0.0);
                                 let sid = v.get("sessionId").and_then(|x| x.as_i64()).unwrap_or(0);
-                                // 先に ack を返してから届ける (詰まらせない)
+                                // Send the ack first, then deliver the frame (avoids stalling the pipe)
                                 call(
                                     &wv,
                                     "Page.screencastFrameAck",
@@ -1643,20 +1688,21 @@ mod cdp {
         }
     }
 
-    /// ベーシック認証の仕込み (これを持っている間だけ 401 に答え続ける)。
+    /// Basic-auth arming (401s only get answered while this is held).
     ///
-    /// 認証チャレンジ (authRequired) を受けるにはリクエストを横取りする必要が
-    /// あるので、全リクエストを Fetch で掴む。掴んだ通常リクエストは
-    /// そのまま continueRequest で流し (掴みっぱなしだとページが止まる)、
-    /// 認証だけ continueWithAuth で資格情報を返す
+    /// Receiving auth challenges (authRequired) requires intercepting
+    /// requests, so we catch every request via Fetch. A caught, ordinary
+    /// request is passed straight through with continueRequest (holding
+    /// it forever would stall the page); only auth challenges get
+    /// credentials back via continueWithAuth
     pub struct AuthArm {
         pub receivers: Vec<(ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
         pub webview: ICoreWebView2,
-        /// 返す資格情報 (user, pass)。差し替えられるよう共有で持つ
+        /// The credentials to return (user, pass). Held shared so it can be swapped out
         pub creds: std::rc::Rc<std::cell::RefCell<(String, String)>>,
     }
 
-    /// 1つのCDPイベントを購読する。JSONを受け取って `on` を呼ぶ
+    /// Subscribe to one CDP event. Calls `on` with the received JSON
     fn subscribe<F>(
         webview: &ICoreWebView2,
         event: &str,
@@ -1697,7 +1743,7 @@ mod cdp {
     pub fn arm_basic_auth(webview: &ICoreWebView2, user: &str, pass: &str) -> Option<AuthArm> {
         let creds = std::rc::Rc::new(std::cell::RefCell::new((user.to_string(), pass.to_string())));
 
-        // 掴んだ通常リクエストはそのまま流す (継続しないとページが止まる)
+        // Pass a caught, ordinary request straight through (not continuing it would stall the page)
         let wv_req = webview.clone();
         let paused = subscribe(webview, "Fetch.requestPaused", move |v| {
             if let Some(id) = v.get("requestId").and_then(|x| x.as_str()) {
@@ -1705,7 +1751,7 @@ mod cdp {
             }
         })?;
 
-        // 認証チャレンジには資格情報を返す
+        // Return credentials for auth challenges
         let wv_auth = webview.clone();
         let creds_h = std::rc::Rc::clone(&creds);
         let required = subscribe(webview, "Fetch.authRequired", move |v| {
@@ -1726,7 +1772,7 @@ mod cdp {
             call(&wv_auth, "Fetch.continueWithAuth", &params);
         })?;
 
-        // 全リクエストを掴む + 認証も掴む
+        // Catch every request, and auth too
         call(
             webview,
             "Fetch.enable",
@@ -1739,14 +1785,16 @@ mod cdp {
         })
     }
 
-    /// JSダイアログ (alert / confirm / prompt / beforeunload) の自動処理。
+    /// Automatic handling of JS dialogs (alert / confirm / prompt / beforeunload).
     ///
-    /// これが無いと、ページの離脱確認などがネイティブのダイアログで開き、
-    /// CDPの応答線が止まって browser_* が「結果が返りません」で固まる
-    /// (自動化がまるごと凍る)。自動化なので既定は accept=true = 続行:
-    /// beforeunload は「移動」、confirm は OK、alert/prompt は閉じる。
-    /// Page を有効化して購読すると、以後ネイティブのダイアログは出ず
-    /// こちらが即座に閉じる。持っている間だけ効く (ドロップで購読解除)。
+    /// Without this, things like a page's "leave this page?" confirmation
+    /// open as a native dialog, the CDP response channel stalls, and
+    /// `browser_*` hangs with "no result returned" (automation freezes
+    /// entirely). Since this is for automation, the default is
+    /// accept=true = proceed: beforeunload means "navigate away", confirm
+    /// means OK, alert/prompt means dismiss. Once `Page` is enabled and
+    /// this is subscribed, no more native dialogs appear — we close them
+    /// immediately instead. Only active while this is held (unsubscribes on drop).
     pub struct DialogArm {
         pub receivers: Vec<(ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
         pub webview: ICoreWebView2,
@@ -1757,7 +1805,7 @@ mod cdp {
         let opening = subscribe(webview, "Page.javascriptDialogOpening", move |_v| {
             call(&wv, "Page.handleJavaScriptDialog", r#"{"accept":true}"#);
         })?;
-        // 購読を有効にするため Page を有効化 (screencast と重ねても冪等)
+        // Enable Page so the subscription actually fires (idempotent even if screencast already enabled it)
         call(webview, "Page.enable", "{}");
         Some(DialogArm {
             receivers: vec![opening],
@@ -1765,8 +1813,8 @@ mod cdp {
         })
     }
 
-    /// 今の画面を1枚出させる (startScreencast を打ち直す)。
-    /// 新しい視聴者が入ったが、ページが静止していて次の変化が来ないときに使う
+    /// Force the current screen out as one frame (re-issues startScreencast).
+    /// Used when a new viewer joins but the page is static and no new change is coming
     pub fn kick(webview: &ICoreWebView2) {
         call(
             webview,
@@ -1775,7 +1823,7 @@ mod cdp {
         );
     }
 
-    /// 中継を止め、通知の登録も外す
+    /// Stop the screencast and unsubscribe its notifications too
     pub fn stop(cast: Cast) {
         unsafe {
             call(&cast.webview, "Page.stopScreencast", "{}");
@@ -1790,11 +1838,12 @@ mod cdp {
 mod nav_tests {
     use super::*;
 
-    /// 綴りを省いたら補い、http/https 以外へは行かせないこと。
+    /// Fill in a missing scheme, and never allow anything but http/https.
     ///
-    /// URL欄は「どこへでも行ける口」なので、`file:` で手元のファイルを、
-    /// `javascript:` で今のページを開かれると、そこから先は
-    /// 自動化の目に触れる。行き先はここで絞る
+    /// The URL bar is a "gateway to anywhere", so opening `file:` would
+    /// expose local files and `javascript:` could hijack the current
+    /// page — and from there, automation would be exposed to it.
+    /// The destination is narrowed down right here
     #[test]
     fn the_address_box_only_opens_web_pages() {
         assert_eq!(openable("example.com").as_deref(), Some("https://example.com"));
@@ -1810,7 +1859,7 @@ mod nav_tests {
         for bad in ["", "   ", "file:///C:/secret.txt", "ftp://x/y"] {
             assert!(openable(bad).is_none(), "開けてしまう: {bad}");
         }
-        // 綴りとして扱わないので、壊れた行き先になって開けずに終わる
+        // Since it's not treated as a scheme, it becomes a broken destination and fails to open
         let js = openable("javascript:alert(1)").unwrap_or_default();
         assert!(
             js.starts_with("https://"),
@@ -1818,8 +1867,8 @@ mod nav_tests {
         );
     }
 
-    /// ホイールの合図が、遡る量として読めること。
-    /// 上へ回したら過去へ (正)、下へ回したら今へ (負)
+    /// The wheel's signal reads as an amount to scroll back through the log.
+    /// Turning it up goes to the past (positive), turning it down goes to now (negative)
     #[test]
     fn the_wheel_asks_to_go_back_through_the_log() {
         let read = |s: &str| {
@@ -1834,16 +1883,16 @@ mod nav_tests {
             read(r#"{"kind":"scroll","by":-3,"row":0,"col":0}"#),
             Some(Ev::Scroll { by: -3, .. })
         ));
-        // 量が無ければ動かない (0 は「何もしない」であって捨てない)
+        // With no amount it doesn't move (0 means "do nothing", not "discard")
         assert!(matches!(read(r#"{"kind":"scroll"}"#), Some(Ev::Scroll { by: 0, .. })));
-        // 指の数として意味のない量は抑える
+        // Clamp amounts that make no sense as a count of finger movements
         assert!(matches!(
             read(r#"{"kind":"scroll","by":999999}"#),
             Some(Ev::Scroll { by: 64, .. })
         ));
     }
 
-    /// 画面からの合図が、そのまま移動の指示になること
+    /// A signal from the screen becomes a navigation instruction as-is
     #[test]
     fn the_bar_speaks_the_same_words_as_the_loop() {
         let read = |s: &str| {
@@ -1862,7 +1911,7 @@ mod nav_tests {
             Some(Ev::Go { go: Go::To(u) }) => assert_eq!(u, "example.com"),
             other => panic!("行き先が読めていない: {other:?}"),
         }
-        // 知らない指示は捨てる。黙って別の動きをするより何もしない方がいい
+        // Discard unknown instructions. Doing nothing is better than silently doing something else
         assert!(read(r#"{"kind":"go","what":"quit"}"#).is_none());
         assert!(read(r#"{"kind":"go"}"#).is_none());
     }
@@ -1874,8 +1923,8 @@ mod tests {
     use std::time::Duration;
 
 
-    /// 試験用のページを 127.0.0.1 で配る。
-    /// file:/// は wry のIPCで落ちるので、本番と同じ http にする
+    /// Serve a test page on 127.0.0.1.
+    /// `file:///` crashes on wry's IPC, so use http, same as production
     fn serve(body: &'static str) -> String {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
@@ -1909,7 +1958,7 @@ mod tests {
   document.getElementById('q').addEventListener('input', function(){ fired++; });
 </script>"#;
 
-    /// 探して、押して、入れて、読めること。
+    /// Find it, click it, fill it, read it.
     ///
     ///   cargo test browser_page_ops -- --ignored --nocapture
     #[test]
@@ -1918,19 +1967,19 @@ mod tests {
         let b = Browser::spawn(&serve(PAGE), "SHIKISHA-TERM ops probe").expect("窓が開かない");
         let t = 20_000;
 
-        // 「DOMに無い」と「あるが画面外」を分けること。
-        // 同じ失敗にすると、セレクタを疑うのか待ちを疑うのか分からなくなる
+        // Distinguish "not in the DOM" from "in the DOM but off-screen".
+        // Collapsing them into one failure makes it impossible to tell whether to suspect the selector or the wait
         assert_eq!(b.find(None, &Sel::Css("#here".into()), t).unwrap(), Found::Visible);
         assert_eq!(b.find(None, &Sel::Css("#far".into()), t).unwrap(), Found::OffScreen);
         assert_eq!(b.find(None, &Sel::Css("#nope".into()), t).unwrap(), Found::NotFound);
 
-        // XPath: CSSでは書けない探し方 (ラベルの隣のセル)
+        // XPath: a lookup CSS can't express (the cell next to a label)
         let name = b
             .text(None, &Sel::Xpath("//td[text()='氏名']/following-sibling::td".into()), t)
             .unwrap();
         assert_eq!(name.as_deref(), Some("山田"), "XPathで隣のセルが取れない");
 
-        // 押す
+        // Click it
         assert_eq!(b.click(None, &Sel::Css("#go".into()), t).unwrap(), Found::Visible);
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert_eq!(
@@ -1939,8 +1988,8 @@ mod tests {
             "押した結果がページに出ていない"
         );
 
-        // 入れる。値を書くだけでなく input が飛ぶこと
-        // (Reactなどは飛ばさないと状態が動かない)
+        // Fill it. Not just writing the value — the `input` event must fire too
+        // (frameworks like React won't update state otherwise)
         assert_eq!(
             b.fill(None, &Sel::Css("#q".into()), "ふつうの値", t).unwrap(),
             Found::Visible
@@ -1956,8 +2005,8 @@ mod tests {
             "input イベントが飛んでいない"
         );
 
-        // ここが肝心: 値はコードにならないこと。
-        // AIの出力やページから読んだ文章をそのまま入れても、値のまま届く
+        // This is the crux: the value must never become code.
+        // Even AI output or text read straight off a page arrives as a plain value
         let nasty = "'; window.__pwned = 1; //\"</script><img src=x onerror=alert(1)>\\";
         assert_eq!(
             b.fill(None, &Sel::Css("#q".into()), nasty, t).unwrap(),
@@ -1969,9 +2018,9 @@ mod tests {
             "値が一字一句そのまま入っていない"
         );
 
-        // 改行を含む値。1行の input は改行を落とす (HTMLの仕様) ので、
-        // 複数行を渡すなら textarea でなければならない。
-        // 値が壊れたのではなく、入れ物が保持できないだけ
+        // A value containing newlines. A single-line `input` drops
+        // newlines (per the HTML spec), so multi-line values must go
+        // through a `textarea`. The value isn't corrupted — the container just can't hold it
         let multi = format!("1行目\n2行目\t{nasty}");
         assert_eq!(
             b.fill(None, &Sel::Css("#multi".into()), &multi, t).unwrap(),
@@ -1989,7 +2038,7 @@ mod tests {
             "渡した値がコードとして実行された"
         );
 
-        // 解釈済みのHTML全文
+        // The full parsed HTML
         let html = b.html(None, t).unwrap();
         assert!(html.contains("ここにいる"), "HTMLが取れていない");
         assert!(html.len() > 200, "HTMLが短すぎる: {}", html.len());
@@ -1999,12 +2048,12 @@ mod tests {
     }
 
 
-    /// 同じ窓の中にページを置けること。
+    /// Pages can be placed inside the same window.
     ///
     ///   cargo test child_view -- --ignored --nocapture
     ///
-    /// 別窓だと、所有関係も位置の追従も、Windows Terminal の
-    /// タブ切替での露出も、全部こちらの持ち物になっていた
+    /// With a separate window, ownership, position tracking, and even
+    /// exposure during Windows Terminal tab switching all became our own problem
     #[test]
     #[ignore]
     fn a_page_can_sit_inside_the_window() {
@@ -2012,15 +2061,15 @@ mod tests {
         b.open_child("side", "https://example.com/", (400, 0, 400, 500), BrowserProfile::shared_default())
             .expect("置けない");
         std::thread::sleep(std::time::Duration::from_secs(3));
-        // 場所を変えられる
+        // Its position can be changed
         b.child_bounds("side", (200, 0, 600, 500)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(600));
-        // 幅0で隠れる
+        // Hidden with width 0
         b.child_bounds("side", (0, 0, 0, 0)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(400));
         b.close_child("side").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(400));
-        // 外皮のほうは生きたまま
+        // The shell itself stays alive
         let id = b.eval("return 1+1;").unwrap();
         assert_eq!(
             b.wait_result(id, std::time::Duration::from_secs(10)).unwrap(),
@@ -2031,11 +2080,11 @@ mod tests {
         drop(b);
     }
 
-    /// 開けないURLは入口で止めること。
+    /// URLs we can't open are stopped at the door.
     ///
-    /// wry はページからのIPCでURLを `http::Uri` にして unwrap するので、
-    /// file:/// や data: を開くと、初期化スクリプトが最初のメッセージを
-    /// 送った瞬間にプロセスごと落ちる。実測で確認済み
+    /// wry turns a page's URL into an `http::Uri` and unwraps it on IPC,
+    /// so opening `file:///` or `data:` takes down the whole process the
+    /// moment the initialization script sends its first message. Confirmed by testing
     #[test]
     fn only_http_pages_are_opened() {
         assert!(is_openable("https://example.com/a"));
@@ -2049,16 +2098,17 @@ mod tests {
         assert!(!is_openable("https://example.com/a\nhttps://evil"), "改行の混入");
     }
 
-    /// 窓が開き、JSが動き、結果が返り、閉じてもアプリが死なないこと。
+    /// The window opens, JS runs, results come back, and closing it
+    /// doesn't kill the app.
     ///
     ///   cargo test browser_round_trip -- --ignored --nocapture
     ///
-    /// 最後の一点が肝心。tao の `run` は内部で process::exit を呼ぶので、
-    /// 素直に書くと窓を閉じただけでTUIごと消える
+    /// That last point is the crux. tao's `run` calls `process::exit`
+    /// internally, so a naive implementation would take down the whole TUI just by closing the window
     #[test]
     #[ignore]
     fn browser_round_trip() {
-        // 本番と同じ経路で試す。file:/// は wry のIPCで落ちるので使えない
+        // Test through the same path as production. `file:///` crashes on wry's IPC, so it can't be used
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
         std::thread::spawn(move || {

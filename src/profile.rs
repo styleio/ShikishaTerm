@@ -1,36 +1,41 @@
-//! エージェントプロファイル: ツール毎の状態検出ルールを宣言的に外部定義する。
-//! DESIGN.md 4.3章。./profiles/*.json をユーザーが編集するだけで新ツールに対応できる。
+//! Agent profiles: declaratively define state-detection rules per tool, in
+//! external files. DESIGN.md section 4.3. Users can support a new tool just
+//! by editing ./profiles/*.json.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-/// profiles/*.json の生の形
+/// The raw shape of profiles/*.json
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProfileFile {
     pub name: String,
-    /// コマンド名にこの文字列が含まれたら適用 (小文字比較)
+    /// Applied when the command name contains this string (case-insensitive)
     #[serde(default)]
     pub command_match: Vec<String>,
-    /// 画面にマッチしたらBUSY (処理中) とみなす正規表現
+    /// Regex: if it matches the screen, treat as BUSY (in progress)
     #[serde(default)]
     pub busy_patterns: Vec<String>,
-    /// 画面にマッチしたらQUESTION (選択肢待ち) とみなす正規表現
+    /// Regex: if it matches the screen, treat as QUESTION (waiting on a choice)
     #[serde(default)]
     pub question_patterns: Vec<String>,
-    /// この時間 (ms) 画面に変化が無ければ完了/待機とみなす
+    /// If the screen doesn't change for this long (ms), treat as done/idle
     #[serde(default = "default_silence_ms")]
     pub silence_ms: u64,
-    /// 画面変化の判定から除外する最下部の行数。
-    /// byobu/tmux等のステータスバー (時計が毎秒更新される) を無視するため
+    /// Number of bottom rows excluded from the screen-change check.
+    /// Used to ignore status bars (e.g. byobu/tmux, whose clock updates
+    /// every second)
     #[serde(default = "default_ignore_bottom_rows")]
     pub ignore_bottom_rows: u16,
-    /// DONE と見えてから、本当に終わったと確定するまでの待ち時間。
+    /// How long to wait, after DONE first appears, before it's confirmed as
+    /// truly finished.
     ///
-    /// AIの出力は途中で息継ぎをするので、静かになっただけでは終わりと言えない。
-    /// 画面の表示はすぐ切り替えてよい (間違っても戻るだけ) が、
-    /// 他のタブへ渡すのは取り消せないので、こちらだけ確証を待つ。
+    /// AI output can pause mid-stream, so mere silence isn't proof of
+    /// completion. It's fine to switch the on-screen display right away
+    /// (worst case it just flips back), but handing off to another tab
+    /// can't be undone, so only that path waits for confirmation.
     ///
-    /// 未指定なら基本設定の値を使う。AIごとに癖があるときだけここで上書きする
+    /// If unset, uses the base config value. Override here only when a
+    /// particular AI has its own quirks.
     #[serde(default)]
     pub done_confirm_ms: Option<u64>,
 }
@@ -43,13 +48,14 @@ fn default_ignore_bottom_rows() -> u16 {
     2
 }
 
-/// 応答完了を確定させるまでの既定の待ち時間。
+/// Default wait time before response completion is confirmed.
 ///
-/// 待って失うのは受け渡しが数秒遅れることだけで、
-/// 早合点して途中の返事を渡してしまう損害とは釣り合わない。長めに取る
+/// The cost of waiting is only a few seconds' delay in hand-off, which
+/// doesn't compare to the damage of jumping the gun and handing off a
+/// mid-response answer. Err on the long side.
 pub const DEFAULT_DONE_CONFIRM_MS: u64 = 10_000;
 
-/// コンパイル済みプロファイル
+/// A compiled profile
 pub struct Profile {
     pub name: String,
     pub busy: Vec<regex::Regex>,
@@ -60,8 +66,8 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// どのプロファイルにもマッチしない場合の汎用フォールバック
-    /// (沈黙タイマー・ベル・プロセス終了のみで判定)
+    /// Generic fallback for when nothing matches any profile
+    /// (judged only by the silence timer, bell, and process exit).
     pub fn generic() -> Self {
         Self {
             name: "GENERIC".into(),
@@ -95,7 +101,8 @@ impl Profile {
     }
 }
 
-/// exe隣 (ポータブル配置) → カレント直下の順で探す
+/// Search beside the exe (portable layout) first, then directly under the
+/// current directory.
 fn candidate_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs = Vec::new();
     if let Some(d) = std::env::current_exe()
@@ -104,7 +111,8 @@ fn candidate_dirs() -> Vec<std::path::PathBuf> {
     {
         dirs.push(d);
     }
-    // 設定ファイルの隣も見る (exeとデータの置き場が違う構成でも見つかるように)
+    // Also check beside the config file (so it's found even in setups where
+    // the exe and data live in different places)
     if let Some(d) = crate::config::config_file_path().parent() {
         dirs.push(d.join("profiles"));
     }
@@ -141,7 +149,8 @@ where
     None
 }
 
-/// コマンド名にマッチするプロファイルを返す。無ければ汎用フォールバック
+/// Return the profile matching the command name; falls back to generic if
+/// none match.
 pub fn load_for_command(cmd: &str) -> Profile {
     let needle = std::path::Path::new(cmd)
         .file_stem()
@@ -156,8 +165,9 @@ pub fn load_for_command(cmd: &str) -> Profile {
     .unwrap_or_else(Profile::generic)
 }
 
-/// プロファイル名 (ファイル名 or name フィールド) の明示指定でロードする。
-/// config.jsonのタブ定義 "profile": "claude" 用 (ssh先のAI等、コマンド名で判別できない場合)
+/// Load a profile by explicit name (the file name, or its `name` field).
+/// Used by config.json's tab definition "profile": "claude" (for cases like
+/// an AI over ssh, where the command name alone can't identify it).
 pub fn load_by_name(name: &str) -> Profile {
     let needle = name.to_lowercase();
     find_profile(|path, pf| {

@@ -1,14 +1,15 @@
-//! スマホ等から見る監視・指示用のリモートUI。DESIGN.md 10.4章。
+//! Remote UI for monitoring/instructing from a phone etc. DESIGN.md ch. 10.4.
 //!
-//! 端末画面をそのまま再現するのではなく「状況を見て、一言指示する」ことに絞る。
-//! 実装は既存の材料 (状態検出・応答キャプチャ・画面テキスト) をJSONで返すだけで、
-//! WebSocketも端末エミュレータも要らない。
+//! Rather than reproducing the terminal screen as-is, this focuses on
+//! "look at the situation, give a one-line instruction." The implementation
+//! just returns existing material (state detection, response capture, screen
+//! text) as JSON — no WebSocket, no terminal emulator needed.
 //!
-//! 安全性:
-//!   - 既定で無効。設定で明示的に有効化したときだけ待ち受ける
-//!   - 待ち受け先はプライベート網に限定 (netaddr.rs)
-//!   - 長さ32バイトのトークン必須。定数時間比較
-//!   - 遠隔からの入力は「人間の操作」として扱う (自動チェーンをリセットする)
+//! Safety:
+//!   - Disabled by default. Only listens when explicitly enabled in settings
+//!   - Listening is restricted to private networks (netaddr.rs)
+//!   - Requires a 32-byte token. Constant-time comparison
+//!   - Remote input is treated as "human operation" (resets the auto chain)
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -18,83 +19,88 @@ use anyhow::{Context as _, Result};
 use serde::Serialize;
 use tiny_http::{Header, Response, Server};
 
-/// 画面に見せるタブの状態 (本体から毎ティック更新される)
+/// State of a tab as shown on screen (updated from the main loop every tick)
 #[derive(Clone, Serialize, Default)]
 pub struct RemoteTab {
     pub index: usize,
     pub name: String,
     pub state: String,
     pub locked: bool,
-    /// 直近の応答 (無ければ画面の末尾)
+    /// Latest response (or the tail of the screen if there is none)
     pub output: String,
-    /// 確認待ちのときの画面 (選択肢を読むため)
+    /// Screen contents while waiting for confirmation (to read the choices)
     pub screen: String,
 }
 
 #[derive(Clone, Serialize, Default)]
 pub struct Snapshot {
-    /// 窓と同じ状態。スマホも同じページで描く
+    /// Same state as the window. The phone draws the same page too
     #[serde(default)]
     pub ui: Option<crate::uistate::UiState>,
-    /// 見ているタブの画面 (色付きのHTML)
+    /// Screen of the tab being viewed (colored HTML)
     #[serde(default)]
     pub screen_html: String,
     pub workspace: String,
     pub tabs: Vec<RemoteTab>,
     pub auto_enabled: bool,
-    /// 端末の桁数。画面はこの幅で描かれているので、
-    /// スマホ側はこれを使って「折り返さずに収める」文字サイズを決める
+    /// Terminal column count. The screen is drawn at this width, so
+    /// the phone side uses it to pick a font size that fits without wrapping
     pub cols: u16,
 }
 
-/// リモートから届く操作。本体のループで実行される
+/// Operations arriving from remote. Executed on the main loop
 #[derive(Debug)]
 pub enum RemoteCmd {
-    /// タブへ指示を送る (人間の入力として扱う)
+    /// Send an instruction to a tab (treated as human input)
     Send { tab: usize, text: String },
-    /// 確認への返答など、生のキーを送る
+    /// Raw keys, e.g. an answer to a confirmation
     Keys { tab: usize, keys: String },
-    /// 自動化の緊急停止 / 再開
+    /// Emergency stop / resume of automation
     SetAuto(bool),
-    /// 画面からの操作 (タブの切り替え・メニュー・打鍵)。
-    /// 窓から来たものと同じ扱いで、同じ列に入る
+    /// Operation from the screen (switch tab, menu, keystroke).
+    /// Treated the same as one coming from the window, entering the same queue
     Ui(crate::browser::Ev),
 }
 
-/// スマホから受け付ける操作かどうか。
+/// Whether an operation is accepted from the phone.
 ///
-/// 同じページを配っている以上、送れる意図は窓と同じだけある。
-/// だが窓の前にいないと意味が無いもの、窓を止めてしまうものがある。
-/// 通すものを数え上げる側で書く。増やすのは、理由を書いてからでいい
+/// Since the same page is served, in principle it can send the same intents
+/// as the window. But some only make sense in front of the window, and some
+/// would stop the window. This is written from the side that enumerates
+/// what's let through. Add to it only after writing down the reason
 fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
     use crate::browser::Ev;
     match ev {
-        // 見たいタブを選ぶ・打つ・止める。遠隔操作の本体
+        // Pick/type into/stop the tab you want to view. The core of remote control
         Ev::Select { .. } | Ev::Key { .. } | Ev::Stop => true,
-        // 中継画面への入力 (指の軌跡・スワイプ・文字)。遠隔操作の要なので通す
+        // Input into the relay screen (finger trail / swipe / characters). The
+        // heart of remote control, so let it through
         Ev::Inject { .. } => true,
-        // 戻る/進む/更新/URL移動。ブラウザを遠隔操作する以上、上のバーの
-        // ボタンも効かないと片手落ち。行き先を変えるだけで窓は止めない
+        // Back/forward/reload/navigate. Since this remotely controls a browser,
+        // the buttons on the top bar need to work too, or it's only half done.
+        // It only changes the destination; it doesn't stop the window
         Ev::Go { .. } => true,
-        // 選んだ文字を控える。窓と同じ作法 (PuTTY と同じ) を保つ
+        // Copy the selected text. Keep the same manners as the window (same as PuTTY)
         Ev::Copy { .. } => true,
         Ev::Menu { key } => !matches!(
             key.as_str(),
-            // 設定とブラウザは窓の中に出る。手元では何も起きない
+            // Settings and the browser appear inside the window. Nothing
+            // happens on the remote side
             "e" | "o"
-            // マスターパスワードは窓に尋ねる。
-            // 遠くから呼ぶと、窓の前の人が答えるまで本体が止まる
+            // The master password is asked inside the window.
+            // Calling it from afar would block the app until the person
+            // in front of the window answers
             | "k"
         ),
-        // 大きさは窓が決める。手元の画面に合わせて
-        // 相手のターミナルを畳んでしまう理由が無い。
-        // 貼り付けも同じで、長押しひとつでAIの入力欄に流れ込む
+        // Size is decided by the window. There's no reason to collapse the
+        // other person's terminal to fit the phone's screen.
+        // Same for paste — one long-press would flow straight into the AI's input box
         _ => false,
     }
 }
 
-/// 中継フレームの配信先 (接続中のWSクライアントごとに1本)。
-/// 送れなくなった線は次のフレームで掃除する
+/// Destinations for relay frames (one per connected WS client).
+/// A line that can no longer send is cleaned up on the next frame
 type FrameClients = Arc<Mutex<Vec<Sender<Vec<u8>>>>>;
 
 pub struct RemoteUi {
@@ -103,10 +109,11 @@ pub struct RemoteUi {
     pub snapshot: Arc<Mutex<Snapshot>>,
     pub rx: Receiver<RemoteCmd>,
     stop: Arc<AtomicBool>,
-    /// 中継フレームの配信先。ブラウザから届いたJPEGをここへ流す
+    /// Destinations for relay frames. JPEGs arriving from the browser flow here
     frame_clients: FrameClients,
-    /// 新しい視聴者が入った。本体は次の機会に今の画面を1枚出す
-    /// (静止ページだと変化待ちのまま空になるのを防ぐ)
+    /// A new viewer joined. The main loop will emit one frame of the current
+    /// screen at the next opportunity (so a static page doesn't stay blank
+    /// waiting for the next change)
     keyframe_wanted: Arc<AtomicBool>,
 }
 
@@ -114,8 +121,8 @@ impl RemoteUi {
     pub fn start(bind: std::net::Ipv4Addr, port: u16, token: String) -> Result<Self> {
         let server = Server::http((bind, port)).map_err(|e| {
             let addr = format!("{bind}:{port}");
-            // 「使用中」はOSの原文が長いわりに何をすればいいか言わない。
-            // 相手は大抵、前に起動したままの自分自身
+            // "In use" is a long OS message that doesn't say what to do about
+            // it. The culprit is usually your own previous instance still running
             let in_use = e
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse);
@@ -170,19 +177,21 @@ impl RemoteUi {
         })
     }
 
-    /// 新しい視聴者が入ったので今の画面を1枚出すべきか (立っていたら降ろして返す)
+    /// Whether a new viewer joined and we should emit one frame of the
+    /// current screen (lowers the flag and returns it if it was raised)
     pub fn take_keyframe_request(&self) -> bool {
         self.keyframe_wanted.swap(false, Ordering::SeqCst)
     }
 
-    /// 中継フレーム (JPEGのバイト列) を、接続中のWSクライアント全員へ配る。
-    /// 受け取れない線は捨てる (相手が閉じた・詰まった)
+    /// Deliver a relay frame (JPEG bytes) to every connected WS client.
+    /// Drop lines that can't receive it (the peer closed or is backed up)
     pub fn push_frame(&self, jpeg: Vec<u8>) {
         let mut clients = self.frame_clients.lock().unwrap();
         clients.retain(|tx| tx.send(jpeg.clone()).is_ok());
     }
 
-    /// 中継を見ているクライアントが1人でもいるか (誰も見ていなければ中継を止められる)
+    /// Whether at least one client is watching the relay (if nobody is
+    /// watching, the relay can be stopped)
     pub fn has_frame_clients(&self) -> bool {
         !self.frame_clients.lock().unwrap().is_empty()
     }
@@ -242,7 +251,8 @@ fn handle(
     let method = req.method().as_str().to_string();
     let path = req.url().split('?').next().unwrap_or("/").to_string();
     match (method.as_str(), path.as_str()) {
-        // 窓と同じ外皮。見た目を2回書かないための入口
+        // Same shell as the window. One entry point so the appearance
+        // isn't written twice
         ("GET", "/") | ("GET", "/shell") => {
             req.respond(
                 Response::from_string(crate::shell::page(token))
@@ -253,7 +263,7 @@ fn handle(
                         )
                         .unwrap(),
                     )
-                    // 更新したのに古い画面が出る、を起こさない
+                    // Never show a stale page after an update
                     .with_header(
                         Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
                     ),
@@ -263,8 +273,9 @@ fn handle(
             let snap = snapshot.lock().unwrap().clone();
             req.respond(json_response(serde_json::to_value(snap)?))?;
         }
-        // 画面中継の受け口。握手してWebSocketへ格上げし、以後はこの線へ
-        // JPEGフレームを流す (下り専用。ソケットは書き込みスレッドが持つ)
+        // Entry point for the screen relay. Handshake, upgrade to WebSocket,
+        // and from then on JPEG frames flow over this line (download-only;
+        // the write thread owns the socket)
         ("GET", "/ws") => {
             let key = req
                 .headers()
@@ -284,7 +295,7 @@ fn handle(
             let stream = req.upgrade("websocket", resp);
             let (ftx, frx) = channel::<Vec<u8>>();
             frame_clients.lock().unwrap().push(ftx);
-            // 新しい視聴者。本体に「今の画面を1枚出して」と伝える
+            // New viewer. Tell the main loop "emit one frame of the current screen"
             keyframe_wanted.store(true, Ordering::SeqCst);
             std::thread::spawn(move || {
                 let mut w = crate::ws::WsWriter::new(stream);
@@ -296,8 +307,9 @@ fn handle(
                 let _ = w.send_close();
             });
         }
-        // 入力の上り。指の軌跡を低遅延で運ぶため、下りとは別の単方向WSにする
-        // (同じソケットを読み書きで分けずに済み、各線が1スレッドで完結する)
+        // Upload path for input. Carries the finger trail with low latency,
+        // so it's a separate one-way WS from the download path (avoids
+        // splitting one socket for read/write; each line stays single-threaded)
         ("GET", "/ws-in") => {
             let key = req
                 .headers()
@@ -333,7 +345,7 @@ fn handle(
                             }
                         }
                         Ok((crate::ws::Op::Close, _)) | Err(_) => break,
-                        Ok(_) => {} // ping/pong/binary は無視
+                        Ok(_) => {} // ping/pong/binary are ignored
                     }
                 }
             });
@@ -357,7 +369,8 @@ fn handle(
             }
             req.respond(json_response(serde_json::json!({"ok": true})))?;
         }
-        // 画面からの操作。窓と同じ意図を、同じ言葉で受ける
+        // Operation from the screen. Received with the same intent, the
+        // same vocabulary, as the window
         ("POST", "/api/intent") => {
             let mut req = req;
             let mut body = String::new();
@@ -394,18 +407,19 @@ mod tests {
     use super::*;
 
 
-    /// 遠くから送れる操作を、通す側で数えていること。
+    /// Operations sendable from afar are counted on the allow side.
     ///
-    /// 同じページを配る以上、送れる意図は窓と同じだけある。
-    /// だが大きさは窓が決めるものだし、マスターパスワードを遠くから呼ぶと
-    /// 窓の前の人が答えるまで本体が止まる
+    /// Since the same page is served, it can in principle send the same
+    /// intents as the window. But size is decided by the window, and calling
+    /// the master password from afar would block the app until the person
+    /// in front of the window answers
     #[test]
     fn the_phone_cannot_reach_what_only_the_window_can_answer() {
         use crate::browser::Ev;
         let menu = |k: &str| super::allowed_from_afar(&Ev::Menu { key: k.into() });
         assert!(super::allowed_from_afar(&Ev::Select { tab: 2 }));
         assert!(super::allowed_from_afar(&Ev::Stop));
-        // 戻る/進む/更新/URL移動は遠隔から効かないと、上のバーが飾りになる
+        // Back/forward/reload/navigate must work from remote, or the top bar is just decoration
         assert!(super::allowed_from_afar(&Ev::Go { go: crate::browser::Go::Back }));
         assert!(super::allowed_from_afar(&Ev::Go {
             go: crate::browser::Go::To("example.com".into())
@@ -437,7 +451,7 @@ mod tests {
         assert_eq!(query_value("/api/state", "t"), "");
     }
 
-    /// 実際にサーバーを起動し、認証と操作の受け渡しを確認する
+    /// Actually starts the server and confirms auth and command delivery
     #[test]
     fn serves_state_and_forwards_commands() {
         let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into()).unwrap();
@@ -449,10 +463,10 @@ mod tests {
             Err(e) => panic!("unexpected: {e}"),
         };
 
-        // トークン無しは拒否
+        // No token is rejected
         assert_eq!(status(agent.get(&format!("{base}/api/state")).call()), 403);
 
-        // 状態を返す
+        // Returns state
         ui.snapshot.lock().unwrap().tabs = vec![RemoteTab {
             index: 1,
             name: "実装".into(),
@@ -468,7 +482,7 @@ mod tests {
             .unwrap();
         assert!(body.contains("実装") && body.contains("QUESTION"), "{body}");
 
-        // 指示が本体へ届く
+        // The instruction reaches the main loop
         agent
             .post(&format!("{base}/api/send?t=tok123456789012"))
             .send(r#"{"tab":1,"text":"続けて"}"#)
@@ -480,9 +494,9 @@ mod tests {
             other => panic!("想定外: {other:?}"),
         }
 
-        // 入口が窓と同じ外皮を配っていること。
-        // 以前はスマホ用の古いページを別に持っていて、直しても
-        // スマホ側には一度も出ないままだった
+        // The entry point serves the same shell as the window.
+        // There used to be a separate, old page just for the phone that,
+        // even after being fixed, never once reached the phone side
         for entry in ["/", "/shell"] {
             let page = agent
                 .get(&format!("{base}{entry}?t=tok123456789012"))
@@ -497,7 +511,7 @@ mod tests {
             );
         }
 
-        // 画面からの操作が本体へ届くこと
+        // Operations from the screen reach the main loop
         agent
             .post(&format!("{base}/api/intent?t=tok123456789012"))
             .send(r#"{"kind":"select","tab":2}"#)
@@ -507,8 +521,9 @@ mod tests {
             other => panic!("想定外: {other:?}"),
         }
 
-        // 上のバーの「戻る」も本体まで届くこと (許可リストと経路の両方)。
-        // 以前は許可リストで止まり、その後は keys_for で黙って捨てられていた
+        // The "back" button on the top bar also reaches the main loop (both
+        // the allow-list and the path). It used to be blocked by the
+        // allow-list, and after that fix, silently dropped by keys_for
         agent
             .post(&format!("{base}/api/intent?t=tok123456789012"))
             .send(r#"{"kind":"go","what":"back"}"#)
@@ -520,8 +535,9 @@ mod tests {
             other => panic!("戻るが本体まで届かない: {other:?}"),
         }
 
-        // 窓にしか答えられないものは、受け取った時点で止める。
-        // 通らなかったことは、次の受信で分かる (select が先に出てくる)
+        // Something only the window can answer is stopped as soon as it's
+        // received. That it didn't get through is confirmed on the next
+        // receive (select comes through first)
         agent
             .post(&format!("{base}/api/intent?t=tok123456789012"))
             .send(r#"{"kind":"menu","key":"k"}"#)
@@ -539,8 +555,9 @@ mod tests {
         ui.shutdown();
     }
 
-    /// /ws が握手し、push_frame で流したJPEGがWSのバイナリフレームで届くこと。
-    /// 生のTCPと自作の ws モジュールだけで端から端まで確かめる (電話も外部ツールも不要)
+    /// Confirms /ws handshakes and that a JPEG pushed via push_frame arrives
+    /// as a WS binary frame. Verified end to end with just a raw TCP
+    /// connection and our own ws module (no phone or external tool needed)
     #[test]
     fn ws_upgrades_and_delivers_a_frame() {
         use std::io::{Read, Write};
@@ -556,7 +573,7 @@ mod tests {
             .to_string();
 
         let mut sock = TcpStream::connect(&hostport).unwrap();
-        // RFC 6455 の例と同じキー (accept は s3pP... になる)
+        // Same key as the RFC 6455 example (accept becomes s3pP...)
         let req = "GET /ws?t=tok123456789012 HTTP/1.1\r\n\
              Host: localhost\r\n\
              Upgrade: websocket\r\n\
@@ -565,7 +582,7 @@ mod tests {
              Sec-WebSocket-Version: 13\r\n\r\n";
         sock.write_all(req.as_bytes()).unwrap();
 
-        // 応答ヘッダを \r\n\r\n まで読む
+        // Read the response headers up to \r\n\r\n
         let mut buf = Vec::new();
         let mut one = [0u8; 1];
         loop {
@@ -582,11 +599,11 @@ mod tests {
             "Sec-WebSocket-Accept が違う: {head}"
         );
 
-        // 登録が済むまでの隙をおいてからフレームを流す
+        // Wait out the gap until registration is done, then push a frame
         std::thread::sleep(std::time::Duration::from_millis(200));
         ui.push_frame(vec![0xDE, 0xAD, 0xBE, 0xEF]);
 
-        // サーバー→クライアントのフレームはマスク無し。ここで直接ほどく
+        // Server-to-client frames are unmasked. Unpack it directly here
         let mut hdr = [0u8; 2];
         sock.read_exact(&mut hdr).unwrap();
         assert_eq!(hdr[0] & 0x0F, 0x2, "バイナリフレームでない");
@@ -598,7 +615,7 @@ mod tests {
         ui.shutdown();
     }
 
-    /// /ws-in が握手し、送った入力意図 (指の軌跡) が本体へ届くこと
+    /// Confirms /ws-in handshakes and that a sent input intent (finger trail) reaches the main loop
     #[test]
     fn ws_in_forwards_injected_input() {
         use std::io::{Read, Write};
@@ -632,7 +649,7 @@ mod tests {
         }
         assert!(String::from_utf8_lossy(&buf).contains("101"));
 
-        // クライアント→サーバーのフレームはマスク必須。テキストで意図を送る
+        // Client-to-server frames must be masked. Send an intent as text
         let intent = r#"{"kind":"inject","what":"mouse","phase":"pressed","x":0.5,"y":0.25}"#;
         sock.write_all(&mask_text_frame(intent)).unwrap();
 
@@ -649,7 +666,7 @@ mod tests {
         ui.shutdown();
     }
 
-    /// テスト用: クライアントの作法 (マスク必須) でテキストフレームを組む
+    /// Test helper: build a text frame the way a client must (masked)
     fn mask_text_frame(s: &str) -> Vec<u8> {
         let payload = s.as_bytes();
         let mut out = vec![0x81u8]; // FIN + text

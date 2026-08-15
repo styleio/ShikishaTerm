@@ -1,27 +1,28 @@
-//! 状態検出エンジン: 複数の独立した信号 (画面パターン / ベル / 沈黙タイマー) を
-//! 重ねてタブ状態を判定する状態機械。DESIGN.md 4.2章。
+//! State-detection engine: overlays several independent signals (screen
+//! pattern / bell / silence timer) into a state machine that decides tab
+//! state. DESIGN.md ch. 4.2.
 
 use crate::profile::Profile;
 
-/// 直近このms以内に出力があれば「動作中」とみなす
+/// If there was output within this many ms, treat it as "active"
 const ACTIVITY_MS: u64 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabState {
-    /// 黄: 処理中 (出力が流れている / BUSYパターンにマッチ)
+    /// Yellow: processing (output is flowing / matched a BUSY pattern)
     Busy,
-    /// 緑: 応答完了 (動作後に沈黙 or ベル)
+    /// Green: response complete (silence or bell after activity)
     Done,
-    /// 青: 選択肢・確認待ち (QUESTIONパターンにマッチ)
+    /// Blue: waiting on a choice/confirmation (matched a QUESTION pattern)
     Question,
-    /// 青: 待機 (動作なし)
+    /// Blue: idle (no activity)
     Wait,
-    /// 赤: 子プロセス終了 (Detectorではなく Tab が設定する)
+    /// Red: child process exited (set by Tab, not by Detector)
     Exited,
 }
 
 impl TabState {
-    /// 内部用の不変な名前 (ログ・自動化・リモートUIの判定に使う)
+    /// Stable internal name (used by logging, automation, remote UI judgments)
     pub fn label(&self) -> &'static str {
         match self {
             TabState::Busy => "BUSY",
@@ -32,7 +33,7 @@ impl TabState {
         }
     }
 
-    /// 画面に出す名前 (翻訳される)
+    /// Name shown on screen (translated)
     pub fn display(&self) -> String {
         crate::i18n::t(match self {
             TabState::Busy => "state.busy",
@@ -47,14 +48,15 @@ impl TabState {
 pub struct Detector {
     profile: Profile,
     state: TabState,
-    /// 直近に「動作」があったか (Done判定は動作→沈黙の遷移でのみ発火)
+    /// Whether there was "activity" recently (Done only fires on the activity-to-silence transition)
     was_active: bool,
-    /// 直近のtickで「作業中」の表示が画面に出ていたか。
+    /// Whether the "working" indicator was showing on screen at the last tick.
     ///
-    /// 画面が動いたかどうかとは別物。貼り付けが表示されても画面は動くが、
-    /// AIは何もしていない。実際に働き始めた証拠はこちら
+    /// This is distinct from whether the screen changed. Rendering a paste
+    /// also changes the screen, but the AI hasn't done anything. This is
+    /// the actual evidence that it started working
     working_shown: bool,
-    /// 実際にマッチした文字列 (誤検出を追うため)
+    /// The string that actually matched (to trace false positives)
     working_matched: Option<String>,
     last_bell: u64,
 }
@@ -75,33 +77,33 @@ impl Detector {
         &self.profile.name
     }
 
-    /// 画面変化判定から除外する最下部行数 (byobu等のステータスバー対策)
+    /// Number of bottom rows excluded from screen-change detection (works around status bars like byobu's)
     pub fn ignore_bottom_rows(&self) -> u16 {
         self.profile.ignore_bottom_rows
     }
 
-    /// 直近のtickで「作業中」の表示が出ていたか
+    /// Whether the "working" indicator was showing at the last tick
     pub fn working_shown(&self) -> bool {
         self.working_shown
     }
 
-    /// 「作業中」と判定させた文字列 (誤検出を追うため)
+    /// The string that triggered the "working" judgment (to trace false positives)
     pub fn working_matched(&self) -> Option<&str> {
         self.working_matched.as_deref()
     }
 
-    /// このAIは「作業中」を画面に出すか (プロファイルに指定があるか)
+    /// Whether this AI shows a "working" indicator on screen (whether the profile specifies one)
     pub fn shows_working(&self) -> bool {
         !self.profile.busy.is_empty()
     }
 
-    /// このAI固有の確認時間 (指定があれば)
+    /// This AI's own confirmation delay, if specified
     pub fn done_confirm_ms(&self) -> Option<u64> {
         self.profile.done_confirm_ms
     }
 
-    /// 定期実行 (200ms毎目安)。
-    /// 優先度: QUESTION > BUSY(パターン) > ベル完了 > 活動タイマー > 沈黙タイマー
+    /// Runs periodically (roughly every 200ms).
+    /// Priority: QUESTION > BUSY (pattern) > bell completion > activity timer > silence timer
     pub fn tick(&mut self, screen_text: &str, ms_since_output: u64, bell_count: u64) -> TabState {
         let bell_rang = bell_count > self.last_bell;
         self.last_bell = bell_count;
@@ -110,8 +112,8 @@ impl Detector {
             self.state = TabState::Question;
             return self.state;
         }
-        // 何にマッチしたかだけでなく、その行ごと残す。
-        // 単語だけ見ても、飾りを拾ったのか本物かが分からない
+        // Keep not just what matched, but the whole line it's on.
+        // Looking at just the word can't tell decoration from the real thing
         self.working_matched = self.profile.busy.iter().find_map(|r| {
             r.find(screen_text).map(|m| {
                 let head = screen_text[..m.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
@@ -143,9 +145,9 @@ impl Detector {
             } else if self.state == TabState::Busy {
                 self.state = TabState::Wait;
             }
-            // Done / Wait は次の動作まで維持
+            // Done / Wait are held until the next activity
         }
-        // ACTIVITY_MS..silence_ms の間は直前の状態を維持 (チラつき防止)
+        // Between ACTIVITY_MS and silence_ms, hold the previous state (prevents flicker)
         self.state
     }
 }
@@ -168,30 +170,31 @@ mod tests {
         .unwrap()
     }
 
-    /// 画面が動いたことと、AIが働き始めたことを混同しないこと。
+    /// Confirms the screen changing isn't confused with the AI starting to work.
     ///
-    /// 貼り付けが `[Pasted Content …]` の形に描き変わるだけでも画面は動く。
-    /// それを応答の始まりと数えると、実行が届いていなくてもボールが渡る
+    /// The screen changes even when a paste is only re-rendered into the
+    /// `[Pasted Content …]` form. Counting that as the start of a response
+    /// would pass the ball even though execution never actually happened
     #[test]
     fn a_redrawn_paste_is_not_the_ai_starting_work() {
         let mut d = Detector::new(claude_like());
 
-        // 貼り付けが描き変わっただけ。作業中の表示は無い
+        // Just a paste being re-rendered. No "working" indicator
         d.tick("> [Pasted Content 1917 chars]", 0, 0);
         assert!(
             !d.working_shown(),
             "貼り付けの描き変わりを「働き始めた」と数えている"
         );
 
-        // 実際に働き始めたら表示が出る
+        // The indicator shows once it actually starts working
         d.tick("Thinking… (12s · esc to interrupt)", 0, 0);
         assert!(d.working_shown(), "作業中の表示を見落としている");
 
-        // 表示が消えたら、また働いていない状態
+        // Once the indicator disappears, it's not working again
         d.tick("> [Pasted Content 1917 chars]", 3000, 0);
         assert!(!d.working_shown(), "表示が消えたら働いていない");
 
-        // 作業中の表示を持つプロファイルかどうかも分かること
+        // Also confirms whether the profile has a "working" indicator at all
         assert!(d.shows_working(), "このAIは作業中を画面に出す");
     }
 
@@ -213,7 +216,7 @@ mod tests {
         let mut d = Detector::new(claude_like());
         assert_eq!(d.tick("output flowing", 100, 0), TabState::Busy);
         assert_eq!(d.tick("output stopped", 3000, 0), TabState::Done);
-        // 動作を挟まない限りDoneを維持
+        // Holds Done unless activity happens in between
         assert_eq!(d.tick("output stopped", 10_000, 0), TabState::Done);
     }
 
@@ -228,7 +231,7 @@ mod tests {
     fn grace_period_keeps_previous_state() {
         let mut d = Detector::new(claude_like());
         d.tick("working", 100, 0);
-        // 500ms〜2000msの間は判定を保留してBusyを維持 (チラつき防止)
+        // Between 500ms and 2000ms, hold the judgment and stay Busy (prevents flicker)
         assert_eq!(d.tick("quiet", 1000, 0), TabState::Busy);
     }
 

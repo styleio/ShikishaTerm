@@ -1,5 +1,6 @@
-//! 設定ファイルの変更監視。保存したら再起動なしで反映するために使う。
-//! 依存を増やさないよう、1秒ごとに更新時刻を見るだけの素朴な実装。
+//! Watches config files for changes, so edits take effect without a restart.
+//! A simple implementation that just checks the modification time once a
+//! second, to avoid adding a dependency.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,12 +22,14 @@ impl Watcher {
         }
     }
 
-    /// 監視対象を入れ替える (設定変更でワークスペース構成が変わったとき)
+    /// Swap out the watched targets (when config changes alter the workspace
+    /// layout).
     pub fn retarget(&mut self, paths: Vec<PathBuf>) {
         self.stamps = paths.into_iter().map(|p| { let t = mtime(&p); (p, t) }).collect();
     }
 
-    /// 変更があれば true。呼ぶたびに現在の状態を基準にし直す
+    /// True if something changed. Each call re-baselines against the current
+    /// state.
     pub fn changed(&mut self) -> bool {
         if self.last_check.elapsed() < INTERVAL {
             return false;
@@ -48,8 +51,8 @@ fn mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).ok().and_then(|m| m.modified().ok())
 }
 
-/// 監視すべきファイル一覧を組み立てる
-/// (設定本体・ワークスペース定義・自動化スクリプト・secrets)
+/// Build the list of files that should be watched
+/// (the main config, workspace definitions, automation scripts, secrets).
 pub fn watch_targets(cfg: Option<&crate::config::Config>, config_path: &Path) -> Vec<PathBuf> {
     let mut out = vec![config_path.to_path_buf()];
     let Some(cfg) = cfg else { return out };
@@ -60,7 +63,7 @@ pub fn watch_targets(cfg: Option<&crate::config::Config>, config_path: &Path) ->
         let Some(s) = spec else { return };
         let p = crate::config::resolve_data_path(&s);
         if p.is_dir() {
-            // フォルダ方式はイベントファイルを個別に見る
+            // For the folder-based approach, watch each event file individually
             if let Ok(entries) = std::fs::read_dir(&p) {
                 for e in entries.flatten() {
                     let f = e.path();
@@ -102,7 +105,7 @@ mod tests {
         std::fs::write(&f, "{}").unwrap();
 
         let mut w = Watcher::new(vec![f.clone()]);
-        // 監視間隔の直後は判定しない
+        // No judgment is made immediately after the watch interval
         assert!(!w.changed());
         w.last_check = Instant::now() - INTERVAL * 2;
         assert!(!w.changed(), "変更が無ければ false");

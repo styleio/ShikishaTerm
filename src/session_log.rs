@@ -1,10 +1,11 @@
-//! セッションログ: 画面に流れた内容をテキストファイルに残す。
-//! PuTTYの「セッションログ」に相当し、後からAIとのやり取りを追える。
+//! Session log: keeps what scrolled across the screen in a text file.
+//! Equivalent to PuTTY's "session logging"; lets you trace the exchange
+//! with an AI afterward.
 
 use std::io::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 端末制御シーケンスを取り除いて、人が読めるテキストだけにする
+/// Strips terminal control sequences, leaving only human-readable text.
 pub struct AnsiStripper {
     state: State,
 }
@@ -12,9 +13,9 @@ pub struct AnsiStripper {
 enum State {
     Text,
     Esc,
-    /// CSI (ESC [) — 終端バイト (0x40..=0x7e) まで読み飛ばす
+    /// CSI (ESC [) — skip until the terminator byte (0x40..=0x7e)
     Csi,
-    /// OSC (ESC ]) — BEL か ESC \ まで読み飛ばす
+    /// OSC (ESC ]) — skip until BEL or ESC \
     Osc,
     OscEsc,
 }
@@ -32,7 +33,7 @@ impl AnsiStripper {
                 State::Text => match b {
                     0x1b => self.state = State::Esc,
                     b'\n' | b'\t' => out.push(b),
-                    // CRは行頭復帰。上書き描画の痕跡を残さないよう捨てる
+                    // CR is a carriage return; drop it so it doesn't leave overwrite-redraw artifacts
                     b'\r' => {}
                     0x00..=0x1f | 0x7f => {}
                     _ => out.push(b),
@@ -40,7 +41,7 @@ impl AnsiStripper {
                 State::Esc => match b {
                     b'[' => self.state = State::Csi,
                     b']' => self.state = State::Osc,
-                    // ESC + 1文字のシーケンス
+                    // An ESC + 1-character sequence
                     _ => self.state = State::Text,
                 },
                 State::Csi => {
@@ -59,8 +60,8 @@ impl AnsiStripper {
     }
 }
 
-/// 追記専用のセッションログ。書けない場合は黙って無効化する
-/// (ログのためにセッションを落とさない)
+/// An append-only session log. Silently disables itself if it can't write
+/// (never let logging bring down a session).
 pub struct SessionLog {
     file: Option<std::fs::File>,
     stripper: AnsiStripper,
@@ -129,7 +130,8 @@ fn epoch_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// エポック秒から年月日を求める (civil_from_days アルゴリズム)
+/// Compute the calendar date from epoch seconds (the civil_from_days
+/// algorithm).
 fn ymd(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -192,8 +194,9 @@ mod tests {
     fn date_conversion_is_correct() {
         assert_eq!(ymd(0), (1970, 1, 1));
         assert_eq!(ymd(19_000), (2022, 1, 8));
-        // 日本語はファイル名に残す (どのタブのログか分かるように)。
-        // ファイル名に使えない記号だけを置き換える
+        // Japanese text is kept in the file name (so it's clear which tab a
+        // log belongs to). Only characters not usable in a file name are
+        // replaced.
         assert_eq!(sanitize("A:実装"), "A_実装");
         assert_eq!(sanitize("///"), "session");
     }

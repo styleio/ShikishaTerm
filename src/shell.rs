@@ -1,17 +1,20 @@
-//! 窓の外皮。タブバー、稼働盤、ステータス。
+//! The window's shell. Tab bar, dashboard, status line.
 //!
-//! ここは本物のHTMLで書く。文字マスをそのまま変換すると早いが、
-//! それだと窓を持った意味の半分が消える:
-//!   - ボールが永遠に文字の ● のまま
-//!   - 出力を選ぶとタブバーと罫線まで付いてくる (全部が1枚のマス目なので)
-//!   - スマホ表示との重複が消えない
+//! This part is written as real HTML. Converting it into character cells
+//! straight through would be faster, but that would throw away half the
+//! point of having a window at all:
+//!   - the ball would stay a text ● forever
+//!   - selecting output would drag the tab bar and box-drawing lines along
+//!     with it (since everything would be one big grid of cells)
+//!   - the duplication with the phone view would never go away
 //!
-//! ターミナルの中身だけはマス目のままでいい。あれは本当にマス目だから。
+//! Only the terminal's own contents should stay a grid of cells — that part
+//! really is a grid, so it's fine.
 //!
-//! 状態は uistate から来る。ここには「何が起きているか」を書かず、
-//! 「どう見せるか」だけを書く。
+//! State comes in from uistate. This file never writes "what is happening" —
+//! only "how to show it".
 
-/// 外皮のページ。`{{DICT}}` に訳語、`{{BUILD}}` にビルド刻印が入る
+/// The shell page. `{{DICT}}` gets the translated strings, `{{BUILD}}` gets the build stamp.
 pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SHIKISHA-TERM</title>
@@ -19,8 +22,8 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   :root {
     --bg:#0a0c0e; --panel:#11151a; --line:#1d2630; --text:#e8eef4;
     --dim:#7a8896; --brand:#00aaff; --live:#4ade80; --warn:#ffc857; --stop:#ff6b6b;
-    /* 罫線と記号を1マスで描けるものを先に。
-       日本語は等幅の MS ゴシックへ回す (Meiryo は等幅ではない) */
+    /* Prefer fonts that draw box-drawing characters and symbols in one cell.
+       Japanese falls back to the monospaced MS Gothic (Meiryo is not monospaced) */
     --mono:"Cascadia Mono","Consolas","MS Gothic","MS ゴシック",monospace;
   }
   * { box-sizing:border-box; }
@@ -29,7 +32,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #app { display:grid; grid-template-columns:auto 1fr; grid-template-rows:1fr auto;
     height:100%; }
 
-  /* ── 左のタブバー ───────────────────────── */
+  /* ── Left tab bar ───────────────────────── */
   #tabs { grid-row:1/3; width:210px; background:var(--panel);
     border-right:1px solid var(--line); overflow-y:auto; padding:6px 0; }
   .tab { display:flex; align-items:center; gap:8px; padding:7px 10px;
@@ -45,52 +48,55 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   .num { color:var(--dim); font-size:12px; min-width:14px; }
   .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .lock { color:var(--warn); font-size:11px; }
-  /* 「+」は普段は控えめに。触れたときだけ普通の濃さになる */
+  /* The "+" stays muted by default; it only reaches full contrast on hover/touch */
   .tab.addtab { color:var(--dim); }
   .tab.addtab:hover { color:inherit; }
-  /* INDEXの上のワークスペース切替。押すと一覧のポップアップが開く */
+  /* Workspace switcher above INDEX. Clicking it opens the workspace list popup */
   .tab.wsrow { color:var(--dim); font-weight:700; border-bottom:1px solid #1a2129; }
   .tab.wsrow:hover { color:inherit; }
   .tab.wsrow .wscaret { margin-left:auto; font-size:11px; }
-  /* ヘッダ・フッターのワークスペース名を押せるようにする */
+  /* Make the workspace name in the header/footer clickable */
   .wslink { cursor:pointer; }
   .wslink:hover { color:var(--text); text-decoration:underline; }
-  /* 出力量。文字ではなく本物の棒 */
+  /* Output volume as a real bar chart, not characters */
   .spark { display:flex; align-items:flex-end; gap:1px; height:14px; flex:none; }
   .spark i { width:2px; background:var(--brand); opacity:.75; }
 
-  /* ハンバーガーと幕。広い画面では出さない (サイドバー常時表示のまま) */
+  /* Hamburger and scrim. Not shown on wide screens (sidebar stays visible) */
   #hamburger { display:none; position:fixed; top:6px; left:6px; z-index:40;
     width:34px; height:30px; align-items:center; justify-content:center;
     background:var(--panel); border:1px solid var(--line); border-radius:6px;
     color:var(--text); font-size:16px; cursor:pointer; }
   #backdrop { display:none; }
 
-  /* ── 中身 ───────────────────────────────── */
+  /* ── Content area ───────────────────────── */
   #main { position:relative; overflow:hidden; }
-  /* font-family を書くのは飾りではない。<pre> にはブラウザ自身が
-     monospace を当てていて、それは body から受け継ぐ指定より強い。
-     書かないと、選んだフォントは端末の中身にだけ効かない */
-  /* --cw はマス1つの幅。画面が測って入れる (中身とカーソルを同じ数で置く) */
+  /* Declaring font-family here isn't cosmetic. Browsers apply their own
+     monospace to <pre>, and that wins over whatever body inherits.
+     Skip it, and the chosen font only ever applies to the terminal contents */
+  /* --cw is the width of a single cell, measured and set by the page
+     (so the content and the cursor are placed using the same number) */
   #screen { position:absolute; inset:0; margin:0; padding:8px; white-space:pre;
     overflow:auto; line-height:1.25; font-family:var(--mono); --cw:1ch; }
-  /* 画面中継。ブラウザタブを見ているとき、端末の代わりにここへ映す。
-     縦横比は保ちつつ枠に収める。touch-action:none で既定のスクロールを止め、
-     指の動きを軌跡としてそのまま送る */
+  /* Screen relay. While viewing a browser tab, this shows in place of the
+     terminal. Keeps the aspect ratio while fitting the frame.
+     touch-action:none stops the default scroll so finger movement can be
+     forwarded as a raw motion trail instead */
   #cast { position:absolute; inset:0; width:100%; height:100%;
     object-fit:contain; object-position:top center; background:#000; touch-action:none; }
-  /* トラックパッド式の合成カーソル。Windows風の矢印で、先端がクリック点。
-     負マージンで矢印の先端 (SVG座標 2,1) を left/top にぴったり合わせる */
+  /* Trackpad-style synthetic cursor: a Windows-like arrow whose tip is the
+     click point. The negative margin aligns the arrow tip (SVG coords 2,1)
+     exactly with left/top */
   #castcursor { position:absolute; width:19px; height:30px; margin:-2px 0 0 -2px;
     pointer-events:none; z-index:15; display:none;
     filter:drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
   #castcursor svg { display:block; }
-  /* クリックの波紋 (押せたことのフィードバック) */
+  /* Click ripple (feedback that the tap registered) */
   .ripple { position:absolute; width:10px; height:10px; margin:-5px 0 0 -5px;
     border-radius:50%; border:2px solid var(--brand); pointer-events:none; z-index:14;
     animation:rip .48s ease-out forwards; }
   @keyframes rip { from { transform:scale(.4); opacity:.9 } to { transform:scale(4.5); opacity:0 } }
-  /* 文字入力バー (画面下部の変換プレビュー付き入力欄) */
+  /* Text input bar (bottom-of-screen input field with an IME preview) */
   #castbar { display:flex; align-items:center; gap:6px; padding:6px 8px;
     background:var(--panel); border-top:1px solid var(--brand); }
   #castinput { flex:1; min-width:0; font-size:16px; padding:8px 10px;
@@ -100,15 +106,18 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     background:var(--brand); color:#04121c; font-weight:700; cursor:pointer; }
   #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);
     border-radius:8px; background:var(--bg); color:var(--text); cursor:pointer; }
-  /* 操作モード中の表示 (タップで解除) */
-  /* 解除の帯。ドックの最上段に入れて、補助窓・キーボードと一緒に上下する。
-     下固定だと鍵盤に隠れ、上固定だと画面上部で邪魔になるのを両方避ける */
+  /* Indicator shown while in control mode (tap to release) */
+  /* Release banner. Placed at the top of the dock so it rides up and down
+     together with the auxiliary key row and the keyboard. Avoids both
+     failure modes: pinned to the bottom it hides under the keyboard,
+     pinned to the top it gets in the way at the top of the screen */
   #castmode { background:#16202b; border-top:1px solid var(--brand);
     color:var(--text); padding:8px 14px; font-size:13px; text-align:center;
     cursor:pointer; user-select:none; }
   #castmode:active { background:#1d2a38; }
-  /* 補助キー列＋文字入力バーをまとめた下部ドック。visualViewport で
-     キーボードの上へ持ち上げる。列は横スクロール、入力は下段 */
+  /* Bottom dock combining the auxiliary key row and the text input bar.
+     visualViewport lifts it above the on-screen keyboard. The key row
+     scrolls horizontally, the input sits on the bottom row */
   #castdock { position:absolute; left:0; right:0; bottom:0; z-index:18;
     display:none; flex-direction:column; }
   #castkeys { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
@@ -119,15 +128,16 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     border:1px solid var(--line); border-radius:8px; background:var(--bg);
     color:var(--text); cursor:pointer; user-select:none; }
   .castkey:active { background:var(--brand); color:#04121c; }
-  /* Ctrl/Alt は固定トグル。押している間は光らせて次の一打を待つ */
+  /* Ctrl/Alt are latching toggles: while held on, light them up and wait for the next keypress */
   .castkey.mod.on { background:var(--brand); color:#04121c; border-color:var(--brand); }
-  /* ここだけ選べる。タブバーや枠は選択に混ざらない */
+  /* Only this is selectable — the tab bar and frame never get pulled into a selection */
   #screen { user-select:text; }
 
-  /* ── ブラウザの上のバー ──────────────────
-     ページの中には描かない。ページを一段下げて、空いた場所に描く。
-     中に描くと相手のCSSと喧嘩し、遷移のたびに消え、
-     サイト自身の固定ヘッダーを上から覆ってしまう */
+  /* ── Bar above the browser view ──────────────────
+     Never drawn inside the page — the page is pushed down a notch and this
+     is drawn in the space that opens up. Drawing inside the page would
+     fight with the site's own CSS, disappear on every navigation, and
+     cover the site's own fixed header from above */
   #nav { position:absolute; left:0; right:0; top:0; height:36px; z-index:5;
     display:flex; align-items:center; gap:6px; padding:0 8px;
     border-bottom:1px solid var(--line); background:var(--panel);
@@ -142,27 +152,28 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     color:var(--text); background:#0a0c0e; border:1px solid var(--line);
     border-radius:6px; padding:3px 8px; outline:none; }
   #nav input:focus { border-color:var(--brand); }
-  /* 読み込み中はバー全体を青く染めて、一目で通信中と分かるようにする。
-     一瞬の通信でも見えるよう、本体側で最低0.5秒は点けたままにしている */
+  /* While loading, tint the whole bar blue so it's obvious at a glance
+     that something is in flight. Kept lit for at least 0.5s on the app
+     side so even a near-instant load is visible */
   #nav.loading { background:#0d2a3a; border-bottom-color:var(--brand); }
-  /* さらに下端を光が流れる帯 (動きの手がかり) */
+  /* A band of light sweeping along the bottom edge as an added motion cue */
   #nav.loading::after { content:""; position:absolute; left:0; right:0; bottom:0;
     height:3px; background:linear-gradient(90deg,transparent,var(--brand),transparent);
     background-size:40% 100%; background-repeat:no-repeat;
     animation:navload 1s linear infinite; }
   @keyframes navload { from { background-position:-40% 0 } to { background-position:140% 0 } }
-  /* 更新ボタンは青く光らせて回す (どこを見ればいいか分かりやすい) */
+  /* The reload button glows blue and spins so it's obvious where to look */
   #nav button.spin { color:var(--brand); border-color:var(--brand); background:#0a1f2b; }
   #nav button.spin .ico { display:inline-block; animation:spin .8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg) } }
-  /* ページを置く場所。バーを出したぶんだけ下がる */
+  /* Where the page sits. Pushed down by exactly the height of the bar above it */
   #page { position:absolute; inset:0; pointer-events:none; }
 
-  /* ── 稼働盤 ─────────────────────────────── */
+  /* ── Dashboard ─────────────────────────────── */
   #board { position:absolute; inset:0; overflow:auto; padding:22px 26px; }
   .mark { color:var(--brand); font-weight:700; letter-spacing:.5px;
     font-size:13px; line-height:1.15; white-space:pre; }
-  /* 狭い画面用の素直なタイトル (既定は隠す) */
+  /* Plain title for narrow screens (hidden by default) */
   .mark-lite { display:none; color:var(--brand); font-weight:700;
     font-size:22px; letter-spacing:2px; }
   .sub { color:var(--dim); font-size:12px; margin-top:4px; }
@@ -170,7 +181,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     background:var(--panel); padding:14px 16px; }
   .card h2 { margin:0 0 10px; font-size:12px; font-weight:600; color:var(--dim);
     letter-spacing:1px; text-transform:uppercase; }
-  /* 連鎖のゲージ。文字の ━ ではなく本物の帯 */
+  /* Chain gauge — a real bar, not a run of ━ characters */
   .gauge { height:8px; border-radius:4px; background:#141a21; overflow:hidden; }
   .gauge i { display:block; height:100%; background:var(--live);
     transition:width .3s ease, background .3s ease; }
@@ -189,7 +200,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   .key { font-size:11px; color:#04121c; background:var(--brand); border-radius:4px;
     padding:1px 6px; font-weight:700; }
 
-  /* ── ボール。本物の円が本当に動く ────────── */
+  /* ── The ball. A real circle that actually moves ────────── */
   #lanes { position:relative; height:44px; margin-top:6px; }
   #ball { position:absolute; width:14px; height:14px; border-radius:50%;
     background:var(--live); box-shadow:0 0 12px var(--live);
@@ -204,12 +215,12 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   .peg b { position:absolute; top:12px; left:50%; transform:translateX(-50%);
     font-size:10px; color:var(--dim); font-weight:400; white-space:nowrap; }
 
-  /* ── ステータス ─────────────────────────── */
+  /* ── Status line ─────────────────────────── */
   #status { grid-column:2; display:flex; align-items:center; gap:12px;
     padding:5px 12px; border-top:1px solid var(--line); background:var(--panel);
     font-size:12px; color:var(--dim); flex-wrap:nowrap; }
   #status .grow { flex:1; }
-  /* ワークスペース名だけは詰まったら省略。ピルや STOP は縮めない */
+  /* Only the workspace name gets truncated when space is tight — pills and STOP never shrink */
   #status > span:first-child { min-width:0; white-space:nowrap;
     overflow:hidden; text-overflow:ellipsis; }
   #status .pill, #status .build, #stop { flex:none; white-space:nowrap; }
@@ -219,9 +230,10 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #stop { cursor:pointer; color:var(--stop); border:1px solid #3d2020;
     padding:2px 10px; border-radius:7px; font-weight:700; }
   #stop:hover { background:var(--stop); color:#0a0c0e; }
-  /* 入力を受ける場所。カーソルに重ねる。
-     IMEの候補窓はこの要素に付いてくるので、置き場所がそのまま候補の位置になる。
-     変換中の文字はブラウザが下線付きで描くので、こちらでは描かない */
+  /* Where input is captured, layered over the cursor.
+     The IME candidate window follows this element, so its position becomes
+     the candidate window's position too. Text mid-conversion is drawn
+     underlined by the browser itself, so this element doesn't draw it */
   #kbd { position:absolute; border:0; padding:0; margin:0; outline:none;
     background:transparent; color:var(--text); caret-color:transparent;
     overflow:hidden; resize:none; white-space:pre; font:inherit;
@@ -229,15 +241,16 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #cur { position:absolute; background:var(--brand); opacity:.75;
     pointer-events:none; animation:blink 1.06s step-end infinite; }
   @keyframes blink { 0%,50% { opacity:.75 } 50.01%,100% { opacity:0 } }
-  /* 測る側も同じ理由で書く。測るものと描くものが違っては話にならない */
+  /* The measuring probe needs the same font declaration for the same reason
+     — measuring with one thing and drawing with another defeats the point */
   #probe, #tprobe { position:absolute; visibility:hidden; white-space:pre;
     left:0; top:0; margin:0; font-family:var(--mono); }
-  /* 覆いかぶさる画面。押せる場所を見失わないよう、外は暗くする */
+  /* Overlay screen. Darken outside it so the clickable area stays obvious */
   .dot.WEB { background:var(--brand); }
   #veil { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:center; justify-content:center; z-index:50; }
-  /* hidden は既定で display:none にするが、自分で display を書くと
-     そちらが勝つ。書いた以上、消す指定も自分で持つ */
+  /* hidden defaults to display:none, but declaring display yourself wins
+     over that default. Since we declared it, we also own hiding it */
   #veil[hidden] { display:none; }
 
   #veil .box { background:var(--panel); border:1px solid var(--brand);
@@ -252,7 +265,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #veil .qr { background:#fff; padding:12px; border-radius:8px; }
   #veil .url { font-size:12px; color:var(--dim); margin-top:10px;
     word-break:break-all; user-select:text; }
-  /* 過去を見ている印。出ていないと、出力が止まったように見える */
+  /* Marker shown while scrolled back through history. Without it, the output looks like it has frozen */
   #back { position:absolute; right:14px; top:10px; z-index:6;
     background:#16202b; border:1px solid var(--brand); color:var(--text);
     padding:4px 12px; border-radius:14px; font-size:12px; cursor:pointer; }
@@ -261,43 +274,44 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     background:#16202b; border:1px solid var(--brand); color:var(--text);
     padding:8px 16px; border-radius:8px; font-size:13px; }
 
-  /* ── 狭い画面・縦長のレスポンシブ (スマホ・小型PC・縦長ディスプレイ) ──
-     必ず全ての基本ルールの後ろに置く。前に置くと、後で定義された基本ルールが
-     同じ詳細度で後勝ちして上書きが効かない */
+  /* ── Narrow/tall responsive layout (phones, small PCs, portrait displays) ──
+     Must always come after all the base rules. Placed earlier, a later
+     base rule at the same specificity would win and the override wouldn't stick */
   @media (max-width:700px), (max-aspect-ratio:1/1) {
-    /* 何があっても横スクロール (謎の右空間) を出さない */
+    /* Never allow horizontal scroll (that mystery strip on the right), no matter what */
     html, body, #app { max-width:100vw; overflow-x:hidden; }
-    /* グリッドの「幻の2列目」を避けるため flex の縦積みに */
+    /* Stack with flex instead of grid, to avoid a grid's "phantom second column" */
     #app { display:flex; flex-direction:column; }
     #main { flex:1; min-height:0; }
 
-    /* フッターを上部バーに回す。ハンバーガーはこのバーの中に収まるので、
-       本文のどの要素にも重ならない (position:fixed の ☰ がバー左の余白に載る) */
+    /* Move the footer up into a top bar. The hamburger fits inside this bar,
+       so it never overlaps any body content (the position:fixed ☰ sits in
+       the bar's own left margin) */
     #status { order:-1; width:100vw; box-sizing:border-box; gap:8px;
       min-height:42px; padding-left:48px;
       border-top:none; border-bottom:1px solid var(--line); }
-    /* ☰ は上部バーの左に載せる (バーと同じ高さで中央に) */
+    /* ☰ sits on the left of the top bar (centered at the bar's height) */
     #hamburger { display:flex; top:6px; left:8px; }
-    /* 緊急停止は横幅節約のため赤い ■ だけにする (■ は世界共通の停止記号) */
+    /* Save width on the emergency stop by showing just a red ■ (a universal stop symbol) */
     #stop { font-size:0; padding:2px 9px; }
     #stop::after { content:"\25A0"; font-size:13px; }
-    /* build 刻印は場所を取るので隠す (STOP を確実に残す) */
+    /* Hide the build stamp — it takes up space, and STOP must stay visible */
     #status .build { display:none; }
 
-    /* 引き出し式タブバー */
+    /* Drawer-style tab bar */
     #tabs { position:fixed; top:0; left:0; bottom:0; z-index:30; width:240px;
       transform:translateX(-100%); transition:transform .2s ease;
       box-shadow:2px 0 14px rgba(0,0,0,.5);
-      padding-top:46px; }   /* 先頭の項目がハンバーガーに隠れないよう空ける */
+      padding-top:46px; }   /* leaves room so the hamburger doesn't cover the first item */
     #app.drawer #tabs { transform:none; }
     #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
       background:rgba(0,0,0,.45); }
 
-    /* 本文は上部バーの下に来るので、もう ☰ 用の余白は要らない */
+    /* Body content sits below the top bar now, so it no longer needs margin for ☰ */
     #board { padding:16px 12px; }
-    .card { overflow-x:auto; }          /* 幅超えの表はカード内でスクロール */
-    .menu { grid-template-columns:1fr; } /* メニューは1列 */
-    /* アスキーのワードマークは崩れるので、素直なテキスト側に切り替える */
+    .card { overflow-x:auto; }          /* tables wider than the card scroll inside it */
+    .menu { grid-template-columns:1fr; } /* single-column menu */
+    /* The ASCII wordmark breaks up at this width, so switch to plain bold text */
     .mark { display:none; }
     .mark-lite { display:block; }
   }
@@ -323,8 +337,8 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   <div id="status"></div>
 </div>
 <script>
-// 画面の中で失敗したら知らせる。黙って止まると、外からは
-// 「出るはずのものが出ない」としか見えない
+// Report failures that happen inside the page. If it dies silently, all
+// anyone outside sees is "something that should have appeared didn't"
 window.onerror = function (msg, src, line, col) {
   try {
     window.ipc.postMessage(JSON.stringify(
@@ -333,14 +347,14 @@ window.onerror = function (msg, src, line, col) {
 };
 const T = {{DICT}};
 const BUILD = {{BUILD}};
-// 盤面が出すメニュー。押されたら、その文字がそのまま INDEX に届く
+// The menu the dashboard shows. When a key is pressed, that character is delivered to INDEX as-is
 const MENU_KEYS = {{MENU_KEYS}};
 const MENU_WORDS = {{MENU_WORDS}};
-// 中継画面の補助キー列の並び (configでカスタマイズ可)
+// The auxiliary key row shown in the screen relay (customizable via config)
 const CAST_KEYS = {{CAST_KEYS}};
 const TOKEN = {{TOKEN}};
-// 窓の中なら直に渡せる。スマホからはHTTPで届ける。
-// ページは同じものを使う (見た目を2回書かないため)
+// Inside the window, messages can be handed over directly. From a phone
+// they arrive over HTTP. Both use the same page (so the UI isn't written twice)
 const REMOTE = !window.ipc;
 const send = REMOTE
   ? (o => fetch("api/intent?t=" + encodeURIComponent(TOKEN),
@@ -357,12 +371,14 @@ const el = (t, a, ...kids) => {
   return n;
 };
 
-let S = null;   // 直近の状態
+let S = null;   // most recent state
 
-// 押している間は作り直さない。
-// click は「同じ要素で始まって終わる」ことで成立する。押し下げと押し上げの
-// 間に盤面を作り直すと、押した要素はもう無く、その押下はどこにも届かない。
-// 活動グラフは絶えず動くので、これは稀な事故ではなく既定の動作だった。
+// Don't rebuild the DOM while a press is in progress.
+// A click only registers when it "starts and ends on the same element".
+// Rebuilding the dashboard between pointerdown and pointerup means the
+// pressed element no longer exists, so that press never reaches anywhere.
+// The activity graph keeps redrawing constantly, so this wasn't some rare
+// edge case — it was the default behavior.
 let holding = false, queued = null, holdTimer = 0;
 const release = () => {
   holding = false;
@@ -371,38 +387,39 @@ const release = () => {
 };
 addEventListener("pointerdown", () => {
   holding = true;
-  // 離した合図が届かないことがある。重ねたページの上で指を離すと、
-  // こちらには pointerup が来ない。そのまま押しっぱなし扱いになると
-  // 画面が二度と描き直されず、タブを押しても効かないように見える。
-  // 押下を守るのに1秒あれば足りる
+  // The "released" signal can fail to arrive. If a finger lifts off over a
+  // page layered on top, pointerup never reaches us here. Left stuck in a
+  // "still pressed" state, the screen would never redraw again and tabs
+  // would look like they stopped responding.
+  // One second is plenty to guard a press.
   clearTimeout(holdTimer);
   holdTimer = setTimeout(release, 1000);
 }, true);
 addEventListener("pointerup", release, true);
 addEventListener("pointercancel", release, true);
-// 窓の外で離された時のために。押しっぱなしのまま固まる方が困る
+// Covers the case where the pointer is released outside the window — better than staying stuck "held"
 addEventListener("blur", release, true);
 
-// 引き出し式タブバー (狭い画面・縦長)。広い画面では常時表示なので効かない
+// Drawer-style tab bar (narrow/tall screens). Inert on wide screens since the bar stays visible there
 {
   const app = document.getElementById("app");
   const ham = document.getElementById("hamburger");
   const bd = document.getElementById("backdrop");
   if (ham) ham.onclick = () => app.classList.toggle("drawer");
   if (bd) bd.onclick = () => app.classList.remove("drawer");
-  // タブを選んだら畳んで全幅へ戻す
+  // Picking a tab collapses the drawer back to full width
   const tabs = document.getElementById("tabs");
   if (tabs) tabs.addEventListener("click", () => app.classList.remove("drawer"));
-  // 上のバー (キャストの外) を押したら操作モードを抜ける
+  // Pressing the top bar (outside the cast area) exits control mode
   const st = document.getElementById("status");
   if (st) st.addEventListener("pointerdown", () => { if (typeof exitCast === "function") exitCast(); });
 }
 
-// ── 左のタブバー ────────────────────────────
+// ── Left tab bar ────────────────────────────
 function drawTabs() {
   const nav = document.getElementById("tabs");
   nav.textContent = "";
-  // INDEXの上に、今のワークスペースと切替。押すと一覧のポップアップが開く
+  // Above INDEX: the current workspace and a switcher. Clicking opens the list popup
   nav.append(el("div", {class:"tab wsrow", title:T["tui.menu.workspace"] || "WORKSPACE",
       onclick:() => send({kind:"menu", key:"w"})},
     el("span", {class:"num"}, "◇"),
@@ -421,13 +438,13 @@ function drawTabs() {
       t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
       spark(t.activity)));
   }
-  // 一覧の最後に「+」。設定画面をタブ追加の状態で開く
+  // A "+" at the end of the list. Opens the settings page already in the "add tab" state
   nav.append(el("div", {class:"tab addtab", onclick:() => send({kind:"addtab"})},
     el("span", {class:"num"}, "+"),
     el("span", {class:"nm"}, T["tui.tab.add"] || "ADD TAB")));
 }
 
-// 出力量を本物の棒で描く。文字の ▁▄█ ではない
+// Draw output volume as a real bar chart, not ▁▄█ characters
 function spark(a) {
   const box = el("div", {class:"spark"});
   for (const v of (a || []).slice(-10)) {
@@ -438,7 +455,7 @@ function spark(a) {
   return box;
 }
 
-// ── 稼働盤 ──────────────────────────────────
+// ── Dashboard ──────────────────────────────────
 const WORDMARK = [
   "█▀▀ █ █ █ █ █ █ █▀▀ █ █ █▀█    ▀█▀ █▀▀ █▀█ █▄█",
   "▀▀█ █▀█ █ █▀▄ █ ▀▀█ █▀█ █▀█ ▀▀  █  █▀▀ █▀▄ █ █",
@@ -448,8 +465,8 @@ const WORDMARK = [
 function drawBoard() {
   const b = document.getElementById("board");
   b.textContent = "";
-  // 広い画面はアスキーアートのワードマーク。狭い画面は崩れるので
-  // 素直な太字テキストに切り替える (CSS のメディアクエリで出し分け)
+  // Wide screens get the ASCII-art wordmark. Narrow screens break it up,
+  // so they switch to plain bold text (handled via CSS media query)
   b.append(el("div", {class:"mark"}, WORDMARK.join("\n")),
            el("div", {class:"mark-lite"}, "SHIKISHA-TERM"),
            el("div", {class:"sub"},
@@ -457,7 +474,7 @@ function drawBoard() {
                onclick:() => send({kind:"menu", key:"w"})}, S.workspace || ""),
              el("span", {}, "   " + BUILD)));
 
-  // 連鎖
+  // Chain
   const heat = S.ball.max ? Math.min(1, S.ball.depth / S.ball.max) : 0;
   const bar = el("i");
   bar.style.width = Math.round(heat * 100) + "%";
@@ -468,7 +485,7 @@ function drawBoard() {
     el("div", {class:"sub"}, S.ball.depth + " / " + S.ball.max),
     lanes()));
 
-  // タブ一覧
+  // Tab list
   const rows = el("table", {class:"rows"});
   rows.append(el("tr", {},
     el("th", {}, "#"), el("th", {}, T["tui.col.name"] || "NAME"),
@@ -485,7 +502,7 @@ function drawBoard() {
   }
   b.append(el("div", {class:"card"}, el("h2", {}, "SESSIONS"), rows));
 
-  // メニュー。並びは MENU_KEYS が決める (受け手と突き合わせるため)
+  // Menu. Order is decided by MENU_KEYS (to keep it in sync with the receiver)
   const items = MENU_KEYS.map(k => [k, T[MENU_WORDS[k]]]);
   const m = el("div", {class:"menu"});
   for (const [k, label] of items) {
@@ -496,7 +513,7 @@ function drawBoard() {
   b.append(el("div", {class:"card"}, el("h2", {}, "MENU"), m));
 }
 
-// ボールの通り道。人(0)と各タブを並べ、円を実際に動かす
+// The ball's track. Lays out the human (0) and each tab, and actually moves the circle
 function lanes() {
   const box = el("div", {id:"lanes"});
   const n = S.tabs.length + 1;
@@ -519,12 +536,12 @@ function lanes() {
   return box;
 }
 
-// ── ステータス ──────────────────────────────
+// ── Status line ──────────────────────────────
 function drawStatus() {
   const s = document.getElementById("status");
   s.textContent = "";
-  // append に null を渡すと、DOMは文字列 "null" にして並べる。
-  // el() の中では弾いているが、ここは素の append なので自分で弾く
+  // Passing null to append renders it as the literal string "null".
+  // el() filters that out internally, but this is a raw append, so filter it out here too
   [
     el("span", {class:"wslink", title:T["tui.menu.workspace"] || "WORKSPACE",
       onclick:() => send({kind:"menu", key:"w"})}, S.workspace || ""),
@@ -538,8 +555,8 @@ function drawStatus() {
   ].forEach(x => { if (x) s.append(x); });
 }
 
-// ── 受け口 ──────────────────────────────────
-// 覆いかぶさる画面。閉じるのは Esc かどこかを押すこと
+// ── Receiving surface ──────────────────────────────────
+// The overlay screen. Closes on Esc or a click anywhere
 function drawVeil() {
   const v = document.getElementById("veil");
   const shown = S.help_open || S.ws_open || !!S.qr;
@@ -556,14 +573,15 @@ function drawVeil() {
     });
   } else if (S.qr) {
     box.append(el("h3", {}, T["tui.menu.phone"] || "PHONE"));
-    // QRの絵はstate(S.qr_svg)に載って届く。別リクエストの画像にすると、
-    // 同じ画面を配る窓とスマホのうち片方でしか出ずリンク切れになっていた
+    // The QR image arrives riding on the state (S.qr_svg). Making it a
+    // separate image request meant it only rendered on one side of the
+    // window/phone pair sharing this same page — a broken link on the other
     const qr = el("div", {class:"qr"});
     qr.innerHTML = S.qr_svg || "";
     box.append(qr, el("div", {class:"url"}, S.qr));
   } else {
     box.append(el("h3", {}, T["tui.help.title"] || "HELP"));
-    // 訳語は1行ずつ別のキーで持っている。並べる順はここで決める
+    // The translated strings are stored one line per key. This is where display order is decided
     for (const k of ["quit", "tabs", "ws", "lock", "restart", "copy", "auto", "raw",
                      "mouse", "mouse.wheel", "mouse.drag", "mouse.right",
                      "mouse.tab", "mouse.divider"]) {
@@ -575,9 +593,9 @@ function drawVeil() {
   v.append(box);
 }
 
-// パスワードを聞く。スマホには出さない。
-// 使う場面が無いうえ、同じページを配っているので、
-// 出せば公開設定を開けた人のところにも出てしまう
+// Prompt for a password. Never shown on the phone.
+// There's no use case for it there, and since it's the same page being
+// served, showing it would also expose it to anyone who opened the public settings
 window.__password = function (title, note) {
   if (REMOTE) { send({kind:"password"}); return; }
   const v = document.getElementById("veil");
@@ -598,8 +616,8 @@ window.__password = function (title, note) {
   inp.focus();
 };
 
-// 上のバー。押した先はRustが決める (出ているバーは常に1枚なので、
-// どのページ宛かをこちらから言う必要がない)
+// The top bar. Where a click goes is decided by Rust (only one bar is ever
+// shown at a time, so this side never needs to say which page it's for)
 const goTo = () => {
   const inp = document.querySelector("#nav input");
   if (inp && inp.value.trim()) send({kind:"go", what:"to", url:inp.value});
@@ -608,9 +626,9 @@ function drawNav() {
   const n = document.getElementById("nav");
   const want = S && S.nav;
   n.hidden = !want;
-  n.classList.toggle("loading", !!(want && want.loading));   // 通信中の帯
+  n.classList.toggle("loading", !!(want && want.loading));   // in-flight loading band
   if (!want) { n.textContent = ""; layout(); return; }
-  // 打っている途中に組み直すと、1文字ごとに書きかけが消える
+  // Rebuilding while the user is mid-typing would erase what's typed so far, one character at a time
   const inp = n.querySelector("input");
   const typing = inp && document.activeElement === inp;
   if (!typing) {
@@ -624,7 +642,7 @@ function drawNav() {
     if (want.back) n.append(btn("←", "tui.nav.back", "back", want.can_back));
     if (want.forward) n.append(btn("→", "tui.nav.forward", "forward", want.can_forward));
     if (want.reload) {
-      // 更新アイコンは span に包んで、読み込み中だけ回す
+      // Wrap the reload icon in a span so it only spins while loading
       const rb = el("button", {title:T["tui.nav.reload"], onclick:() => send({kind:"go", what:"reload"})},
         el("span", {class:"ico"}, "⟳"));
       if (want.loading) rb.classList.add("spin");
@@ -635,14 +653,14 @@ function drawNav() {
         title:T["tui.nav.url"], placeholder:T["tui.nav.url"], value:want.at || ""});
       box.onkeydown = e => {
         if (e.key === "Enter") { e.preventDefault(); goTo(); }
-        // 打鍵は端末へ流さない。ここはページの行き先を書く場所
+        // Keystrokes here never flow to the terminal — this is where the destination URL is typed
         e.stopPropagation();
       };
       box.onfocus = () => box.select();
       n.append(box);
     }
   } else if (want.edit) {
-    // 打っていないボタンだけは、押せるかどうかを直す
+    // Only fix up the enabled/disabled state of the buttons the user isn't currently typing into
     const bs = n.querySelectorAll("button");
     let i = 0;
     if (want.back && bs[i]) bs[i++].disabled = !want.can_back;
@@ -651,9 +669,11 @@ function drawNav() {
   layout();
 }
 
-// ページを置く場所を、バーのぶんだけ下げる。
-// 中継キャンバスも同じだけ下げないと、ブラウザ上端 (ログイン等がよくある)
-// がバーの裏に隠れてしまう。カーソル座標はキャンバスの位置から測るので追従する
+// Push where the page sits down by the bar's height.
+// The screen-relay canvas must be pushed down by the same amount, or the
+// top edge of the browser view (often where a login form sits) ends up
+// hidden behind the bar. Cursor coordinates are measured from the
+// canvas's position, so they follow along automatically
 function layout() {
   const n = document.getElementById("nav");
   const top = n.hidden ? "0" : "36px";
@@ -670,19 +690,20 @@ window.__state = function (json) {
   drawNav();
   const board = document.getElementById("board");
   const screen = document.getElementById("screen");
-  // ブラウザのタブを見ているときは、置いたページが同じ場所を覆う。
-  // 端末の中身を残しておくと、切り替えた瞬間だけ前のタブが見える
+  // While viewing a browser tab, the embedded page covers the same spot.
+  // Leaving the terminal contents in place would flash the previous tab's
+  // output for a frame at the moment of switching
   const web = S.tabs.some(t => t.index === S.active && t.kind === "browser");
   board.hidden = S.active !== 0;
   screen.hidden = S.active === 0 || web;
-  // ブラウザタブを見ているとき、スマホでは中継画面 (canvas) を出す。
-  // 窓 (PC) は今までどおり本物のページを重ねるので中継は使わない
+  // While viewing a browser tab, the phone shows the screen relay (canvas).
+  // The window (PC) still layers the real page as before, so it never uses the relay
   const cast = document.getElementById("cast");
   cast.hidden = !(web && REMOTE);
   if (web && REMOTE) castStart(); else castStop();
   if (S.active === 0) drawBoard();
   drawVeil();
-  // 遡っているあいだは、そう言っておく。押せば今へ戻る
+  // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");
   const away = !screen.hidden && S.scrolled > 0;
   b.hidden = !away;
@@ -695,24 +716,25 @@ window.__state = function (json) {
   if (S.flash) f.textContent = S.flash;
 };
 
-// ターミナルの中身。ここだけはマス目で正しいので、そのまま受ける
+// The terminal's own contents. This is the one place a grid of cells is correct, so accept it as-is
 window.__screen = function (html) {
   document.getElementById("screen").innerHTML = html;
 };
 
-// ── ここから入力 ────────────────────────────
-// ターミネルの中身だけがマス目なので、測るのも重ねるのもここに限る
+// ── Input handling starts here ────────────────────────────
+// Only the terminal's contents are a grid of cells, so measuring and overlaying only ever happens here
 const scr = document.getElementById("screen");
 const kbd = document.getElementById("kbd");
 const cur = document.getElementById("cur");
 const probe = document.getElementById("probe");
 const tprobe = document.getElementById("tprobe");
 let cellW = 0, cellH = 0, curX = 8, curY = 8, composing = false;
-// 最後に言われたカーソルの居場所。測り直したら、ここへ置き直す
+// The last-reported cursor position. Re-placed here whenever measurements are redone
 let lastCur = null;
 
-// font の一括指定は、直せない組み合わせだと空文字になる。
-// 空を代入しても何も起きず、別のフォントで測ることになるので個別に写す
+// Setting the shorthand `font` property falls back to an empty string for
+// combinations the browser can't resolve. Assigning an empty string does
+// nothing visibly, but silently measures with a different font — so copy each property individually
 function copyFont(el2) {
   const c = getComputedStyle(scr);
   el2.style.fontFamily = c.fontFamily;
@@ -725,17 +747,19 @@ function measure() {
   const r = probe.getBoundingClientRect();
   cellW = r.width / 10;
   cellH = parseFloat(getComputedStyle(scr).lineHeight) || r.height;
-  // 中身の桁もカーソルも、この1つの数から置く。
+  // Both the content columns and the cursor are placed using this one number.
   //
-  // 以前は中身が ch (フォントが言う「0」の送り)、カーソルが測った値、と
-  // 別々の数で並んでいた。2つが少しでも違うと、桁が進むほど差が積もり、
-  // 打つほどカーソルが右へ離れていった。どちらが正しいかではなく、
-  // 同じ数で置くことが要る
+  // Previously the content used ch (the font's own advance width for "0")
+  // while the cursor used the measured value — two separate numbers.
+  // Any tiny difference between them compounded column by column, so the
+  // cursor drifted further right the more you typed. It's not about which
+  // number is "correct" — what matters is placing both from the same number
   scr.style.setProperty("--cw", cellW + "px");
 }
 
-// フォントは後から届く。届く前に測ると、代役の字幅で桁が決まってしまう。
-// 届いたら測り直して、置き直す
+// The font arrives later, asynchronously. Measuring before it loads locks
+// in column widths based on the fallback font's metrics.
+// Once it arrives, re-measure and re-place everything
 if (document.fonts && document.fonts.ready) {
   document.fonts.ready.then(() => {
     cellW = 0;
@@ -746,8 +770,9 @@ if (document.fonts && document.fonts.ready) {
   });
 }
 
-// 窓に何行何桁入るかを知らせる。
-// 相手はこの数を信じて折り返すので、食い違うと画面の外へ書き続ける
+// Report how many rows and columns fit in the window.
+// The other side trusts this number for line-wrapping, so a mismatch
+// means it keeps writing past the edge of the screen
 let lastRC = "";
 function report() {
   measure();
@@ -756,12 +781,13 @@ function report() {
   const pad = (parseFloat(getComputedStyle(scr).paddingLeft) || 0) * 2;
   const cols = Math.max(20, Math.floor((box.width - pad) / cellW));
   const rows = Math.max(5, Math.floor((box.height - pad) / cellH));
-  // 行桁は #main から、ブラウザの置き場所は #page から取る。
-  // 1つの矩形から両方出すと、上のバーを出しただけで端末まで縮み、
-  // ブラウザのタブへ切り替えただけでAIの画面が折り返し直される
+  // Rows/columns come from #main; the browser view's placement comes from
+  // #page. Deriving both from a single rectangle would shrink the terminal
+  // just because the top bar appeared, or re-wrap the AI's screen just
+  // because a browser tab was switched to
   const area = document.getElementById("page").getBoundingClientRect();
-  // ブラウザを置く場所。外皮のCSSを変えても、知っているのは
-  // ページなので、Rust側で座標を推測させない
+  // Where the browser view sits. Even if the shell's CSS changes, only the
+  // page itself knows this — never let Rust guess the coordinates
   const key = rows + "x" + cols + "@" + Math.round(area.left) + "," +
     Math.round(area.top) + "," + Math.round(area.width) + "," + Math.round(area.height);
   if (key === lastRC) return;
@@ -778,18 +804,18 @@ window.__cursor = function (row, col, shown) {
   if (!cellW) measure();
   const pad = parseFloat(getComputedStyle(scr).paddingLeft) || 0;
   const padT = parseFloat(getComputedStyle(scr).paddingTop) || 0;
-  // #cur も #kbd も #main の中にある。left/top は #main からの距離なので、
-  // 画面全体の座標を入れるとタブバーの幅だけ右へずれる
+  // Both #cur and #kbd live inside #main. left/top are distances from
+  // #main, so using viewport-wide coordinates would shift everything right by the tab bar's width
   const frame = document.getElementById("main").getBoundingClientRect();
   const box = scr.getBoundingClientRect();
-  // 中身は動かせる。動いた分だけ、文字も一緒に動いている
+  // The content is scrollable — the text moves along with it by exactly the same amount
   curX = (box.left - frame.left) + pad + col * cellW - scr.scrollLeft;
   curY = (box.top - frame.top) + padT + row * cellH - scr.scrollTop;
   kbd.style.left = curX + "px";
   kbd.style.top = curY + "px";
   kbd.style.height = cellH + "px";
-  // 端末を見ていないときは出さない。盤面やブラウザの上に
-  // 前のカーソルが残ると、そこに何かあるように見える
+  // Hide it whenever the terminal isn't in view. A leftover cursor sitting
+  // over the dashboard or a browser tab would look like it means something there
   cur.hidden = !shown || composing || S === null || scr.hidden;
   if (!cur.hidden) {
     cur.style.left = curX + "px";
@@ -799,13 +825,14 @@ window.__cursor = function (row, col, shown) {
   }
 };
 
-// 変換中は送らない。確定した文字だけを送る。
-// 幅は文字数から見積もらず実際に描いて測る (全角と半角が混ざると必ず外れる)
+// Never send while the IME is still composing — only send confirmed text.
+// The width is measured by actually rendering it, not estimated from
+// character count (mixing full-width and half-width characters always throws that off)
 function widen(s) {
   copyFont(tprobe);
   tprobe.textContent = s || "";
   const need = tprobe.getBoundingClientRect().width + cellW * 2;
-  // 幅も #main の中で数える。はみ出すなら左へ寄せる
+  // Width is also computed within #main. If it would overflow, shift left
   const room0 = document.getElementById("main").clientWidth;
   let left = curX;
   if (curX + need > room0 - 8) {
@@ -847,44 +874,46 @@ kbd.addEventListener("keydown", e => {
   }
 });
 
-// PuTTY と同じ作法: 選んだ時点でコピーされる。右クリックで貼り付け
-// ただしURL欄を打っている最中は奪わない。奪うと1文字も入らない
-// 端末タブ (セッション) を見ているか。INDEX(0)・ブラウザ・状態不明は false
+// Same convention as PuTTY: selecting text copies it immediately, right-click pastes.
+// Except while typing in the URL bar — stealing focus there would block every keystroke
+// Whether a terminal tab (session) is currently in view. False for INDEX(0), browser tabs, and unknown state
 const onTerminal = () => S && S.active !== 0 && S.tabs &&
   S.tabs.some(t => t.index === S.active && t.kind !== "browser");
 const focus = () => {
   const a = document.activeElement;
   if (a && a.closest && a.closest("#nav")) return;
-  // 入力バーに乗っているフォーカスは奪わない (castInput は後で let 宣言される
-  // ので起動時に評価しても TDZ で落ちないよう id で見る)
+  // Never steal focus sitting on the input bar (castInput is declared with
+  // `let` further down, so checked by id here to avoid a TDZ crash if evaluated at startup)
   if (a && a.id === "castinput") return;
-  // スマホは端末タブのときだけキーボードを出す。読み込み直後(S未取得)や
-  // INDEX・ブラウザでは出さない — 勝手に鍵盤が立ち上がって邪魔になるため。
-  // 窓 (PC) は従来どおり (メニューのキー操作に #kbd が要る)
+  // On a phone, only show the keyboard while a terminal tab is in view.
+  // Not right after load (S not yet fetched), and not on INDEX or a browser
+  // tab — the keyboard popping up uninvited would just get in the way.
+  // The window (PC) keeps its previous behavior (#kbd is needed for menu key handling)
   if (REMOTE && !onTerminal()) return;
   kbd.focus();
 };
-// ホイールで過去を遡る。
+// Scroll back through history with the wheel.
 //
-// 端末に見えているのは今の1画面だけで、続きは向こうが持っている。
-// ここで巻き戻す量を伝え、どこを見せるかは持っている側が決める
+// The terminal only ever shows a single screen's worth at a time — the
+// rest is held by the other side. This just reports how far to rewind; the side holding the buffer decides what to show
 scr.addEventListener("wheel", e => {
   if (!S || S.active === 0 || scr.hidden) return;
   e.preventDefault();
   if (!cellW || !cellH) measure();
-  // 全画面のプログラムは自分で巻き戻す。どのマスの上かを一緒に渡す
+  // Full-screen programs handle their own scrollback. Pass along which cell it's over, too
   const pad = parseFloat(getComputedStyle(scr).paddingLeft) || 0;
   const padT = parseFloat(getComputedStyle(scr).paddingTop) || 0;
   const box = scr.getBoundingClientRect();
   const col = Math.max(0, Math.floor((e.clientX - box.left - pad) / cellW));
   const row = Math.max(0, Math.floor((e.clientY - box.top - padT + scr.scrollTop) / cellH));
-  // 上へ回す (deltaY < 0) = 遡る。1目盛りを1つと数える
+  // Scrolling up (deltaY < 0) means going further back. Count each notch as one step
   const n = Math.max(1, Math.round(Math.abs(e.deltaY) / 100));
   send({kind:"scroll", by: e.deltaY < 0 ? n : -n, row: row, col: col});
 }, {passive:false});
 
-// 上のバーは普通の入力欄として振る舞わせる。選んだだけで写し取られたり、
-// 右クリックが端末への貼り付けになったりしては、URLを直せない
+// The top bar's input needs to behave like an ordinary text field. If
+// merely selecting text copied it, or right-click pasted into the
+// terminal, editing the URL would be impossible
 const inBar = e => e.target && e.target.closest && e.target.closest("#nav");
 document.addEventListener("mouseup", e => {
   if (inBar(e)) return;
@@ -904,7 +933,7 @@ focus();
 measure();
 report();
 
-// スマホからは押しに行く。窓へは向こうから届く
+// A phone polls for state; the window instead receives it pushed from the other side
 if (REMOTE) {
   const pull = async () => {
     try {
@@ -919,9 +948,10 @@ if (REMOTE) {
   setInterval(pull, 900);
 }
 
-// ── 画面中継 (ブラウザタブをスマホから見る・触る) ──────────────
-// フレームは /ws で下り、指の操作は /ws-in で上り。別々の単方向WSにして
-// どちらも詰まらせない。座標は 0..1 の割合で送り、端末の大きさに依らせない
+// ── Screen relay (viewing and touching a browser tab from a phone) ──────────────
+// Frames come down over /ws; finger input goes up over /ws-in. Keeping
+// them as two separate one-directional sockets means neither one can
+// clog the other. Coordinates are sent as a 0..1 fraction, independent of the device's screen size
 let castWs = null, castIn = null, castCtx = null, castBound = false;
 function castStart() {
   if (!REMOTE || castWs) return;
@@ -937,8 +967,8 @@ function castStart() {
       const bmp = await createImageBitmap(e.data);
       if (cv.width !== bmp.width || cv.height !== bmp.height) {
         cv.width = bmp.width; cv.height = bmp.height;
-        // フレームでキャンバス寸法が変わったら、カーソルの位置も計算し直す
-        // (最初のフレーム前は 300x150 の既定寸法でズレるため)
+        // If a frame changes the canvas dimensions, recompute the cursor
+        // position too (before the first frame it defaults to 300x150, which throws things off)
         if (castMode) posCursor();
       }
       castCtx.drawImage(bmp, 0, 0);
@@ -958,9 +988,10 @@ function castStop() {
 function sendIn(o) {
   if (castIn && castIn.readyState === 1) castIn.send(JSON.stringify(o));
 }
-// 中身 (object-fit:contain のレターボックス) の矩形を client 座標で返す。
-// 画像は object-position:top center で置いているので、横は中央・縦は上詰め。
-// ここを中央計算のままにすると、カーソルとクリック位置が縦にずれる
+// Returns the letterboxed content rect (from object-fit:contain) in client
+// coordinates. The image uses object-position:top center, so it's
+// horizontally centered but top-aligned vertically. Using a vertically
+// centered calculation here would throw off the cursor and click position vertically
 function castRect(cv) {
   const r = cv.getBoundingClientRect();
   const cw = cv.width || 1, ch = cv.height || 1;
@@ -969,29 +1000,31 @@ function castRect(cv) {
   return { ox: r.left + (r.width - dw) / 2, oy: r.top, dw, dh };
 }
 
-// トラックパッド式カーソル。
-//   1) キャストをタップ → 操作モードに入りカーソルが出る (この時はクリックしない)
-//   2) ドラッグ → カーソルが相対移動 (指で対象が隠れないので小さい的も狙える)
-//   3) タップ → カーソル位置をクリック
-//   4) 素早く2度目タップして動かす → 掴んでドラッグ (CAPTCHAのスライダー等)
-//   5) 2本指ドラッグ → スクロール
-//   6) 上のバーや操作中バッジをタップ → 解除
+// Trackpad-style cursor.
+//   1) Tap the cast → enters control mode and shows the cursor (this tap itself doesn't click)
+//   2) Drag → moves the cursor relatively (the finger never covers the
+//      target, so even small targets can be hit)
+//   3) Tap → clicks at the cursor position
+//   4) Tap a second time quickly, then move → grab-and-drag (e.g. a CAPTCHA slider)
+//   5) Two-finger drag → scroll
+//   6) Tap the top bar or the control-mode badge → release
 let castMode = false, cx = 0.5, cy = 0.5, cursorEl = null, modeEl = null, dragging = false;
-let modCtrl = false, modAlt = false;   // Ctrl/Alt 固定トグル
+let modCtrl = false, modAlt = false;   // Ctrl/Alt latching toggles
 const CURSOR_ACCEL = 1.25;
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 function ensureCursor() {
   if (!cursorEl) {
     cursorEl = el("div", {id:"castcursor"});
-    // Windows標準に似た矢印。先端 (viewBox の 1,1) がクリック点。
-    // CSSの負マージンで先端を left/top にぴったり合わせる
+    // An arrow shaped like the standard Windows cursor; its tip (viewBox
+    // coordinates 1,1) is the click point. A negative CSS margin aligns
+    // the tip exactly with left/top
     cursorEl.innerHTML = '<svg width="19" height="30" viewBox="0 0 12 19">' +
       '<path d="M1 1 L1 15 L4.5 11.5 L7 17 L9 16 L6.5 10.5 L11 10.5 Z" ' +
       'fill="#000" stroke="#fff" stroke-width="1" stroke-linejoin="round"/></svg>';
     document.getElementById("main").append(cursorEl);
   }
 }
-// クリックした場所に波紋を出す (押せたことが分かるように)
+// Show a ripple at the click location (confirms the tap registered)
 function spawnRipple() {
   const cv = document.getElementById("cast");
   const cw = cv.width || 1, ch = cv.height || 1, mw = cv.clientWidth, mh = cv.clientHeight;
@@ -1002,23 +1035,25 @@ function spawnRipple() {
   document.getElementById("main").append(r);
   setTimeout(() => r.remove(), 480);
 }
-// 文字入力バー。画面下部にプレビュー入力欄を出し、そこで日本語変換を
-// 見ながら打ち、確定してから「送信」でまとめて送る。こうすると:
-//   - 変換の途中経過が自分の欄で見える (漢字に直してから送れる)
-//   - 中継画面はバーの上にそのまま見えるので、入力先を見失わない
-//   - キーボードはバーの下に出る (visualViewport でバーを鍵盤の上へ)
-// 補助キーの表示名。無い名前はそのまま大文字化して出す
+// Text input bar. Shows a preview input field at the bottom of the screen
+// where IME conversion (e.g. Japanese) can be watched while typing, then
+// sent all at once with "Send" once confirmed. This has three benefits:
+//   - the in-progress conversion is visible in its own field (so it can be
+//     fixed up before sending)
+//   - the relayed screen stays visible above the bar, so the target never gets lost
+//   - the keyboard appears below the bar (visualViewport lifts the bar above it)
+// Display labels for the auxiliary keys. Names with no label fall back to their uppercased form
 const CAST_LABEL = {
   esc:"Esc", tab:"Tab", space:"Space", enter:"⏎", backspace:"⌫", delete:"Del",
   left:"←", up:"↑", down:"↓", right:"→",
   home:"Home", end:"End", pageup:"PgUp", pagedown:"PgDn", ctrl:"Ctrl", alt:"Alt" };
 function castKeyLabel(name) { return CAST_LABEL[name] || name.toUpperCase(); }
-// 補助キーを一発送る。Ctrl/Alt が固定トグル中なら合成し、送ったら解除する
+// Send a single auxiliary key press. If Ctrl/Alt is latched on, combine it in, then release the latch
 function sendCastKey(name) {
   sendIn({kind:"inject", what:"key", named:name, ctrl:modCtrl, alt:modAlt});
   if (modCtrl || modAlt) { modCtrl = false; modAlt = false; refreshMods(); }
 }
-// 固定トグルの見た目を今の状態に合わせる
+// Sync the latching toggles' appearance with their current state
 function refreshMods() {
   if (!castKeysEl) return;
   castKeysEl.querySelectorAll(".castkey.mod").forEach(b => {
@@ -1033,7 +1068,7 @@ function buildCastKeys() {
   keys.forEach(name => {
     const isMod = (name === "ctrl" || name === "alt");
     const b = el("button", {class:"castkey" + (isMod ? " mod" : ""), "data-k":name}, castKeyLabel(name));
-    // 入力欄のフォーカス(＝キーボード)を保つため、押下で既定動作を止める
+    // Prevent the default action on pointerdown, so the input field keeps focus (i.e. the keyboard stays open)
     b.addEventListener("pointerdown", (e) => e.preventDefault());
     b.onclick = (e) => {
       e.stopPropagation();
@@ -1054,26 +1089,28 @@ function ensureBar() {
     placeholder: T["tui.cast.type.ph"] || "Type here to send"});
   const send = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "Send");
   const bs = el("button", {class:"castbtn", onclick:() => sendCastKey("backspace")}, "⌫");
-  // ✕ はキーボードを下げるだけ (サブ入力欄は操作モード中ずっと出しておく)
+  // ✕ only dismisses the keyboard (the sub-input bar itself stays visible throughout control mode)
   const close = el("button", {class:"castbtn", onclick:() => { if (castInput) castInput.blur(); }}, "✕");
-  // ⌫ と 送信 は入力欄のフォーカス(=キーボード)を保つ。押下の既定動作を
-  // 止めないと、ボタンに焦点が移って鍵盤が閉じ、続けて打てなくなる。
-  // ✕ はわざと閉じたいので対象外
+  // ⌫ and Send keep the input field's focus (= the keyboard) in place. If
+  // the default pointerdown action weren't prevented, focus would shift to
+  // the button, the keyboard would close, and typing couldn't continue.
+  // ✕ is deliberately excluded since closing it is the whole point
   [bs, send].forEach(b => b.addEventListener("pointerdown", (e) => e.preventDefault()));
   castBar = el("div", {id:"castbar"}, bs, castInput, send, close);
   castKeysEl = buildCastKeys();
-  // 解除の帯。補助窓のすぐ上に置き、キーボードが出たらドックごと一緒に
-  // 上へずれる (下固定だと鍵盤に隠れ、上固定だと画面上部で邪魔になる)
+  // The release banner. Placed just above the auxiliary key panel, and
+  // shifts up together with the whole dock once the keyboard appears
+  // (pinned to the bottom it hides under the keyboard, pinned to the top it gets in the way)
   modeEl = el("div", {id:"castmode"}, el("span", {}, T["tui.cast.control"] || "In control — tap to release"));
   modeEl.onclick = exitCast;
-  // 最上段=解除、中段=補助キー列、下段=文字入力バー。まとめて持ち上げる
+  // Top row = release banner, middle row = auxiliary keys, bottom row = text input bar. All lifted together
   castDock = el("div", {id:"castdock"}, modeEl, castKeysEl, castBar);
   document.getElementById("main").append(castDock);
   castInput.addEventListener("keydown", (e) => {
     if (e.isComposing) return;
     if (e.key === "Enter") { sendBar(); e.preventDefault(); }
   });
-  // キーボードの高さぶんドックを持ち上げる (鍵盤に隠れないように)
+  // Lift the dock by the keyboard's height (so it doesn't hide underneath it)
   if (window.visualViewport) {
     const fit = () => {
       const gap = window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop;
@@ -1083,39 +1120,41 @@ function ensureBar() {
     window.visualViewport.addEventListener("scroll", fit);
   }
 }
-// サブ入力欄 (補助キー列＋入力欄) を出す。フォーカスはしない=キーボードは
-// 勝手に出さない。ユーザーが入力欄をタップしたときだけ鍵盤が上がる
+// Show the sub-input bar (auxiliary key row + input field). Never focused
+// automatically — the keyboard never pops up uninvited. It only opens when the user taps the input field
 function showDock() { ensureBar(); castDock.style.display = "flex"; }
 function closeBar() { if (castDock) castDock.style.display = "none"; if (castInput) castInput.blur(); }
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
   if (t) {
-    sendIn({kind:"inject", what:"text", text:t});   // 確定済みの文字列をまとめて送る
+    sendIn({kind:"inject", what:"text", text:t});   // send the confirmed text as one batch
   } else {
-    sendCastKey("enter");   // 空のまま送信 = Enter (検索確定・フォーム送信など)
+    sendCastKey("enter");   // sending with nothing typed = Enter (confirms a search, submits a form, etc.)
   }
   castInput.value = "";
   castInput.focus();
 }
-// カーソルは #main 内の絶対配置。#cast の中身 (contain・上詰め) の位置を
-// #main 基準で求める。ビューポートや上部バーの高さに依存させない
+// The cursor is absolutely positioned within #main. Compute #cast's content
+// position (contain, top-aligned) relative to #main, independent of the viewport or the top bar's height
 function posCursor() {
   const cv = document.getElementById("cast");
   const cw = cv.width || 1, ch = cv.height || 1;
   const mw = cv.clientWidth, mh = cv.clientHeight;
   const s = Math.min(mw / cw, mh / ch);
   const dw = cw * s, dh = ch * s;
-  const ox = (mw - dw) / 2;   // 横は中央
-  // キャンバス自身の位置 (バーのぶん下がっている) を足して #main 基準に直す
+  const ox = (mw - dw) / 2;   // horizontally centered
+  // Add the canvas's own position (offset down by the bar) to convert into #main-relative coordinates
   cursorEl.style.left = (cv.offsetLeft + ox + cx * dw) + "px";
-  cursorEl.style.top = (cv.offsetTop + cy * dh) + "px";   // 縦は上詰め (oy=0)
+  cursorEl.style.top = (cv.offsetTop + cy * dh) + "px";   // top-aligned vertically (oy=0)
 }
-// 操作モードに入ったら、サブ入力欄を常時出す (ボタンを押さなくても補助キーが使える)
+// Once control mode is entered, keep the sub-input bar shown at all times
+// (so the auxiliary keys work without needing to press a button first)
 function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; showDock(); posCursor(); }
 function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; closeBar(); }
-// 矢印の先端の真下にある要素。自前の矢印と波紋は pointer-events:none なので
-// 透けて、その下の本物 (バーのボタン/URL欄、または中継キャンバス) が返る
+// The element directly under the arrow's tip. The synthetic arrow and
+// ripple both use pointer-events:none, so they're transparent to hit
+// testing, and the real thing beneath them (a bar button/URL field, or the relay canvas) is returned instead
 function underCursor() {
   if (!cursorEl) return null;
   const m = document.getElementById("main").getBoundingClientRect();
@@ -1124,15 +1163,16 @@ function underCursor() {
   return document.elementFromPoint(x, y);
 }
 const click = () => {
-  // 矢印が自前のバー (戻る/進む/更新/URL) の上にあるなら、ブラウザへ注入せず
-  // そのUIを直接操作する。直タップと同じ挙動をカーソルでも得られる
+  // If the arrow is over the app's own bar (back/forward/reload/URL),
+  // don't inject into the browser — operate that UI directly instead.
+  // This gives the cursor the same behavior a direct tap would have
   const hit = underCursor();
   if (hit && hit.closest && hit.closest("#nav")) {
     const b = hit.closest("button");
     if (b) { b.click(); spawnRipple(); return; }
     const inp = hit.closest("input");
     if (inp) { inp.focus(); if (inp.select) inp.select(); spawnRipple(); return; }
-    return;   // バーの余白 — 誤ってページを押さないよう何もしない
+    return;   // empty space in the bar — do nothing, so the page below isn't tapped by accident
   }
   sendIn({kind:"inject", what:"mouse", phase:"pressed",  x:cx, y:cy, down:true});
   sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false});
@@ -1144,17 +1184,17 @@ function bindCastInput(cv) {
   cv.addEventListener("pointerdown", (e) => {
     pts.set(e.pointerId, 1); try { cv.setPointerCapture(e.pointerId); } catch (x) {}
     e.preventDefault();
-    if (!castMode) { enterCast(); return; }   // 最初のタップは入場だけ
-    if (pts.size >= 2) return;                 // 2本指はスクロール
+    if (!castMode) { enterCast(); return; }   // the very first tap only enters control mode
+    if (pts.size >= 2) return;                 // two fingers means scroll
     startT = Date.now(); moved = false;
-    if (Date.now() - lastTapT < 300) {         // タップ&ドラッグ = 掴む
+    if (Date.now() - lastTapT < 300) {         // tap-then-drag = grab
       dragging = true;
       sendIn({kind:"inject", what:"mouse", phase:"pressed", x:cx, y:cy, down:true});
     }
   });
   cv.addEventListener("pointermove", (e) => {
     if (!castMode) return; e.preventDefault();
-    if (pts.size >= 2) {                        // 2本指: 縦の動きをホイールに
+    if (pts.size >= 2) {                        // two fingers: vertical movement becomes wheel scroll
       const dy = e.movementY || 0;
       if (dy) sendIn({kind:"inject", what:"wheel", x:cx, y:cy, dx:0, dy:-dy * 3});
       return;
@@ -1170,13 +1210,13 @@ function bindCastInput(cv) {
   const up = (e) => {
     pts.delete(e.pointerId);
     if (!castMode) return; e.preventDefault();
-    if (pts.size >= 1) return;                  // まだ指が残っている
+    if (pts.size >= 1) return;                  // another finger is still down
     if (dragging) { sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false}); dragging = false; return; }
     if (!moved && Date.now() - startT < 300) { click(); lastTapT = Date.now(); }
   };
   cv.addEventListener("pointerup", up);
   cv.addEventListener("pointercancel", up);
-  // PCブラウザでの確認用にマウスホイールも通す
+  // Also forward the mouse wheel, for testing in a desktop browser
   cv.addEventListener("wheel", (e) => {
     if (!castMode) return;
     sendIn({kind:"inject", what:"wheel", x:cx, y:cy, dx:e.deltaX, dy:e.deltaY});
@@ -1187,21 +1227,22 @@ function bindCastInput(cv) {
 send({kind:"ready"});
 </script></body></html>"####;
 
-// ── ターミナルの中身 ────────────────────────────
-// ここだけはマス目のままでいい。あれは本当にマス目だから。
-// 外皮 (タブバー・盤面) は本物のHTMLで書いてある
+// ── Terminal contents ────────────────────────────
+// This is the one place that's fine staying a grid of cells — it really is
+// a grid. The shell (tab bar, dashboard) is written as real HTML.
 
-/// 端末の16色。既定はロゴの青に寄せた落ち着いた配色にする。
-/// 黒地に彩度100%の純色を並べると、道具ではなく侵入された画面に見える
+/// The terminal's 16 colors. Defaults to a muted palette leaning toward the
+/// logo's blue. A row of 100%-saturation pure colors on black would read as
+/// a compromised screen rather than a tool.
 const PALETTE: [&str; 16] = [
     "#1b2027", "#ff6b6b", "#4ade80", "#ffc857", "#00aaff", "#c792ea", "#4ec9ff", "#c8d2dc",
     "#3a4552", "#ff8f8f", "#7ceaa4", "#ffd88a", "#5cc4ff", "#dcb0ff", "#8fe0ff", "#eef3f8",
 ];
 
-/// 色番号をCSSの色に直す。
+/// Converts a color index into a CSS color.
 ///
-/// 0-15 は配色表、16-231 は6段階の立方体、232-255 は灰色の階段。
-/// この並びは端末の決まりごとなので、こちらで変えられない
+/// 0-15 use the palette table, 16-231 are a 6x6x6 color cube, and 232-255
+/// are a grayscale ramp. This layout is a terminal convention, not something we can change here.
 fn color_css(c: vt100::Color, fallback: &'static str) -> String {
     match c {
         vt100::Color::Default => fallback.to_string(),
@@ -1237,10 +1278,11 @@ fn esc_into(out: &mut String, s: &str) {
     }
 }
 
-/// 画面をHTMLにする。
+/// Renders the screen as HTML.
 ///
-/// 同じ見た目が続く間は1つのまとまりにまとめる。1マスずつ要素にすると
-/// 50行×180桁で9000要素になり、毎フレームの書き換えが重くなる
+/// Consecutive cells with the same appearance are merged into a single
+/// span. Making an element per cell would produce 9000 elements for a
+/// 50-row by 180-column screen, making every frame's redraw expensive.
 pub fn screen_html(screen: &vt100::Screen) -> String {
     const FG: &str = "#e8eef4";
     const BG: &str = "transparent";
@@ -1249,7 +1291,7 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
     for r in 0..rows {
         let mut open: Option<String> = None;
         let mut run = String::new();
-        // その区間が何マス分か。字送りではなく、これで場所が決まる
+        // How many cells this run spans. Position is determined by this, not by font advance width
         let mut span = 0usize;
         for c in 0..cols {
             let Some(cell) = screen.cell(r, c) else { continue };
@@ -1281,7 +1323,7 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
             if cell.underline() {
                 style.push_str("text-decoration:underline;");
             }
-            // 見た目が変わったところで区切る
+            // Break the run wherever the appearance changes
             if open.as_deref() != Some(style.as_str()) {
                 if let Some(prev) = open.take() {
                     flush_run(&mut out, &prev, &run, span);
@@ -1292,14 +1334,17 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
             }
             let ch = cell.contents();
             let wide = cell.is_wide();
-            // 素の英数字だけをまとめる。
+            // Only plain ASCII gets merged into a run.
             //
-            // マスの幅は英数字を測って決めているので、英数字は箱にぴったり入る。
-            // それ以外は別のフォントから来ることがあり、字送りがマスと合わない。
-            // 日本語は1文字あたり2マスより狭く出るので、まとめると足りない分が
-            // 区間の末尾に溜まる。40文字も打てば、文字列の終わりとカーソルの間に
-            // マス10個ぶんの隙間ができていた。1文字ずつ箱に入れれば、
-            // 足りない分は文字と文字の間に均され、どこにも溜まらない
+            // The cell width is derived from measuring ASCII characters, so
+            // ASCII always fits its box exactly. Anything else may come
+            // from a different font, whose advance width doesn't match the
+            // cell. CJK characters render narrower than 2 cells each, so
+            // merging them lets the shortfall accumulate at the end of the
+            // run — after just 40 characters, a gap of about 10 cells had
+            // opened up between the end of the string and the cursor.
+            // Boxing each character individually instead spreads the
+            // shortfall evenly between characters, so it never accumulates anywhere.
             if !wide && (ch.is_empty() || ch.chars().all(|c| c.is_ascii())) {
                 span += 1;
                 if ch.is_empty() {
@@ -1309,7 +1354,7 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
                 }
                 continue;
             }
-            // まとめられないものは、その1文字だけで1つの箱に入れる
+            // Anything that can't be merged gets its own single-character box
             flush_run(&mut out, style.as_str(), &run, span);
             run.clear();
             span = 0;
@@ -1325,37 +1370,41 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
     out
 }
 
-/// 1区間を書き出す。`span` はその区間が占めるマス数。
+/// Writes out one run. `span` is the number of cells the run occupies.
 ///
-/// 幅を書いておかないと、字送りの合わないフォントが1文字混ざるだけで
-/// その行の残り全部がずれる。罫線も日本語もそれに当たる
+/// Without writing the width explicitly, a single character from a font
+/// whose advance width doesn't match would throw off the rest of that
+/// entire line. Both box-drawing characters and CJK text run into this.
 fn flush_run(out: &mut String, style: &str, run: &str, span: usize) {
     if run.is_empty() {
         return;
     }
-    // 行末の空白は場所を決める必要がない (後ろに何も無い)
+    // Trailing whitespace at the end of a line doesn't need a fixed position (nothing follows it)
     if style.is_empty() && run.trim_end().is_empty() {
         out.push_str(run);
         return;
     }
-    // マスの幅は、画面が測ってCSS変数に入れてくれる。
-    // ch (フォントが言う「0」の送り) で置くと、カーソルを置く数と
-    // 別の数になり、桁が進むほど離れていく
+    // The cell width is measured by the page and supplied via a CSS
+    // variable. Using ch (the font's own advance width for "0") instead
+    // would give the cursor a different number than the content, and the
+    // gap would widen column by column.
     box_of(out, style, run, span, false);
 }
 
-/// 1マス (全角なら2マス) を、その1文字だけで書き出す。
+/// Writes out a single cell (2 cells wide for full-width characters), containing just that one character.
 ///
-/// 字送りがマスに満たない文字は、真ん中に置く。左に寄せると
-/// 文字の右側にだけ隙間が並び、揃っていないように見える
+/// A character whose advance width is narrower than the cell is centered.
+/// Left-aligning it instead would leave gaps only on the right side of
+/// each character, making the row look uneven.
 fn flush_cell(out: &mut String, style: &str, ch: &str, span: usize) {
     box_of(out, style, ch, span, true);
 }
 
 fn box_of(out: &mut String, style: &str, body: &str, span: usize, center: bool) {
-    // マスの幅は、画面が測ってCSS変数に入れてくれる。
-    // ch (フォントが言う「0」の送り) で置くと、カーソルを置く数と
-    // 別の数になり、桁が進むほど離れていく
+    // The cell width is measured by the page and supplied via a CSS
+    // variable. Using ch (the font's own advance width for "0") instead
+    // would give the cursor a different number than the content, and the
+    // gap would widen column by column.
     out.push_str("<span style=\"display:inline-block;vertical-align:top;width:calc(var(--cw)*");
     out.push_str(&span.to_string());
     out.push_str(");");
@@ -1368,12 +1417,12 @@ fn box_of(out: &mut String, style: &str, body: &str, span: usize, center: bool) 
     out.push_str("</span>");
 }
 
-/// 訳語とビルド刻印を埋めて、配れる形にする
-/// 盤面が出すメニュー (押す文字, 訳語のキー)。
+/// Fills in the translated strings and build stamp, producing a page ready to serve.
+/// The menu shown on the dashboard (key to press, translation key).
 ///
-/// 押された文字は、INDEX を見ているときの打鍵としてそのまま届く。
-/// 受け手 (INDEX の分岐) が知らない文字をここに足すと、
-/// 「出ているのに押しても何も起きない」ができあがる
+/// A pressed key is delivered verbatim as a keystroke while INDEX is in
+/// view. Adding a key here that the receiver (INDEX's dispatch) doesn't
+/// know about produces "it's shown, but pressing it does nothing".
 pub const MENU: [(&str, &str); 6] = [
     ("e", "tui.menu.settings"),
     ("i", "tui.menu.phone"),
@@ -1420,15 +1469,15 @@ mod tests {
     use super::PAGE;
 
 
-    /// ページが読む訳語のキーが、辞書にあること。
+    /// Every translation key the page asks for must exist in the dictionary.
     ///
-    /// 無いキーは空文字になる。落ちも警告も出ないので、
-    /// 「押したのに何も出ない」という形でしか気づけない。
-    /// 実際、ヘルプは tui.help.body という無いキーを読んでいて、
-    /// 題名だけの空の箱が出ていた。押しても効いていないように見える。
+    /// A missing key just becomes an empty string — no crash, no warning —
+    /// so the only way to notice is "I pressed it and nothing appeared".
+    /// This actually happened: help was reading a nonexistent key,
+    /// tui.help.body, and showed an empty box with just a title. It looked
+    /// like pressing it simply did nothing.
     ///
-    /// これを見ていた試験は前にもあったが、
-    /// 古いスマホ用ページを消したときに一緒に消えてしまった
+    /// A test used to cover this, but it got deleted along with the old phone-only page.
     #[test]
     fn every_word_the_page_asks_for_is_in_the_dictionary() {
         let en: serde_json::Value =
@@ -1436,18 +1485,18 @@ mod tests {
         let p = super::page("");
         let mut rest = p.as_str();
         let mut checked = 0;
-        // T["..."] の形で読んでいるものを拾う
+        // Pick up every place the page reads T["..."]
         while let Some(i) = rest.find("T[\"") {
             rest = &rest[i + 3..];
             let key = &rest[..rest.find('"').expect("閉じていない")];
-            // 末尾が点なら組み立てて読む形 (T["tui.help." + k])。下で見る
+            // A trailing dot means it's built dynamically (T["tui.help." + k]) — handled below
             if key.ends_with('.') {
                 continue;
             }
             assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
             checked += 1;
         }
-        // 組み立てて読む分 (T["tui.help." + k]) も、並べた名前ごと見る
+        // Also check every name in the dynamically-built form (T["tui.help." + k])
         let head = "T[\"tui.help.\" + k]";
         if p.contains(head) {
             for k in [
@@ -1462,31 +1511,33 @@ mod tests {
         assert!(checked > 20, "訳語をほとんど読んでいない ({checked}件)");
     }
 
-    /// 押している間は、盤面を作り直さないこと。
+    /// While a press is in progress, the dashboard must not be rebuilt.
     ///
-    /// click は「押し下げと押し上げが同じ要素で起きる」ことで成立する。
-    /// 状態が届くたびに盤面を全部作り直していたので、押している最中に
-    /// 作り直されると、押した要素はもう無く、押下はどこにも届かなかった。
-    /// 活動グラフは絶えず動くため、これは稀な事故ではなく既定の動作で、
-    /// INDEXのメニューはマウスでは押せなかった。
+    /// A click only registers when "pointerdown and pointerup happen on the
+    /// same element". Since the dashboard used to be fully rebuilt every
+    /// time state arrived, a rebuild mid-press meant the pressed element no
+    /// longer existed, and the press never reached anywhere. Since the
+    /// activity graph keeps updating constantly, this wasn't some rare edge
+    /// case — it was the default behavior, and INDEX's menu couldn't be
+    /// clicked with a mouse at all.
     ///
-    /// 見た目を確かめないと気づけない類なので、ここで押さえる
+    /// This is the kind of bug you can only notice by watching it happen, so it's pinned down here.
     #[test]
     fn a_press_is_not_interrupted_by_a_redraw() {
         let p = super::page("");
-        // 描き直しの入口に、押している間の預かりがあること
+        // The redraw entry point must hold back updates while a press is in progress
         let at = p.find("window.__state = function").expect("状態の入口が無い");
         let head = &p[at..at + 200];
         assert!(
             head.contains("holding") && head.contains("queued"),
             "状態が届いたら、押している最中でも作り直してしまう"
         );
-        // 離したら、預かった分を必ず流すこと (押した後に画面が止まらない)
+        // On release, any held-back redraw must be flushed (so the screen doesn't freeze after a press)
         assert!(
             p.contains("addEventListener(\"pointerup\", release"),
             "離したときに、預かった描き直しを流していない"
         );
-        // 窓の外で離された場合の逃げ道。無いと押しっぱなしのまま固まる
+        // The escape hatch for when the pointer is released outside the window. Without it, a stuck "held" state freezes the screen
         assert!(
             p.contains("addEventListener(\"pointercancel\", release")
                 && p.contains("addEventListener(\"blur\", release"),
@@ -1494,14 +1545,15 @@ mod tests {
         );
     }
 
-    /// 配る形に、埋め忘れが残っていないこと。
+    /// The distributed page must have no unfilled placeholders left.
     ///
-    /// 差し込み先が残ったままだと、ページ全体がSyntaxErrorになり、
-    /// 画面には何も出ないまま原因が見えない
+    /// A leftover placeholder turns the whole page into a SyntaxError, and
+    /// the screen shows nothing with no visible cause.
     #[test]
     fn the_page_has_nothing_left_to_fill_in() {
-        // 言語は初期化しない。ここで init すると、並行して走る
-        // 他の試験の言語まで変わる (盤面の試験が CHAIN を探して落ちた)
+        // Don't initialize the language here — doing so would change the
+        // language for other tests running concurrently (a dashboard test
+        // once failed this way looking for CHAIN)
         let p = super::page("");
         assert!(!p.contains("{{"), "差し込み先が残っている");
         assert!(p.contains("const T = {"), "訳語が入っていない");
@@ -1509,17 +1561,17 @@ mod tests {
     }
 
 
-    /// hidden を付けた要素が、本当に隠れること。
+    /// Elements marked hidden must actually be hidden.
     ///
-    /// HTMLの hidden は既定で display:none にする規則だが、
-    /// 自分で display を書くとそちらが勝ち、隠れなくなる。
-    /// 覆いが出っぱなしになり、画面が暗いまま何も押せなくなった。
+    /// HTML's hidden attribute defaults to display:none, but declaring
+    /// display yourself overrides that default and un-hides it. This once
+    /// left an overlay stuck visible, with the screen dark and nothing clickable.
     ///
-    /// 書き方の問題なので、見た目を確かめないと気づけない。
-    /// だからここで押さえる
+    /// This is a class of bug you can only notice by looking at the
+    /// rendered result, so it's pinned down here.
     #[test]
     fn things_marked_hidden_are_actually_hidden() {
-        // markup で hidden を付けている id を拾う
+        // Collect every id in the markup that has hidden set
         let mut ids: Vec<String> = Vec::new();
         for line in PAGE.lines() {
             let t = line.trim();
@@ -1535,7 +1587,7 @@ mod tests {
         assert!(!ids.is_empty(), "hidden を使っている要素が見つからない");
 
         for id in ids {
-            // その id に display を指定しているか
+            // Whether that id has its own display rule
             let sets_display = PAGE.lines().any(|l| {
                 let t = l.trim_start();
                 t.starts_with(&format!("#{id} "))
@@ -1551,11 +1603,11 @@ mod tests {
         }
     }
 
-    /// 同じ名前を2回宣言していないこと。
+    /// No name is declared twice.
     ///
-    /// 以前これで設定ページが丸ごと動かなくなった。宣言が重なると
-    /// SyntaxError になり、スクリプト全体が実行されない。
-    /// 画面には見出しだけが残り、原因がまるで見えない
+    /// This once broke the settings page entirely: a duplicate declaration
+    /// becomes a SyntaxError, and the whole script fails to run. All that's
+    /// left on screen is a heading, with no visible cause.
     #[test]
     fn nothing_is_declared_twice() {
         let mut seen: Vec<&str> = Vec::new();
@@ -1565,7 +1617,7 @@ mod tests {
                 let Some(rest) = t.strip_prefix(kw) else {
                     continue;
                 };
-                // 字下げのある行は関数の中なので、重なっても構わない
+                // An indented line is inside a function body, so a duplicate there is fine
                 if line.starts_with(' ') {
                     continue;
                 }
@@ -1583,10 +1635,10 @@ mod tests {
         assert!(seen.contains(&"send"), "走査が効いていない");
     }
 
-    /// 状態のどの項目も、画面のどこかで使われていること。
+    /// Every field of the state must be used somewhere on the page.
     ///
-    /// 送っているのに誰も見ていない項目があると、
-    /// 「出るはずのものが出ない」を探すとき最初に疑う場所になる
+    /// A field that's sent but never read by anything becomes the first
+    /// suspect when hunting down "something that should appear doesn't"
     #[test]
     fn every_piece_of_state_is_used() {
         for field in [
@@ -1598,10 +1650,11 @@ mod tests {
         }
     }
 
-    /// 選択がターミナルの中身に限られること。
+    /// Text selection is limited to the terminal's contents.
     ///
-    /// 全部を1枚のマス目にすると、出力を選ぶとタブバーと罫線まで
-    /// 付いてくる。分けてあるからこそ、出力だけを選べる
+    /// If everything were a single grid of cells, selecting the output
+    /// would drag the tab bar and box-drawing lines along with it. Keeping
+    /// them separate is exactly what lets only the output be selected.
     #[test]
     fn only_the_terminal_contents_are_selectable() {
         assert!(
@@ -1614,40 +1667,42 @@ mod tests {
         );
     }
 
-    /// 上のバーは、ページの中ではなく外皮に描くこと。
+    /// The top bar is drawn by the shell, not injected into the page.
     ///
-    /// ページの中に差し込むと、相手のCSSと喧嘩し、遷移のたびに消え、
-    /// サイト自身の固定ヘッダーを上から覆う。ページを一段下げて
-    /// 空いた場所に描けば、どれも起きない
+    /// Injecting it into the page would fight with the site's own CSS,
+    /// disappear on every navigation, and cover the site's own fixed
+    /// header from above. Pushing the page down a notch and drawing in the
+    /// space that opens up avoids all of that.
     #[test]
     fn the_bar_is_drawn_by_the_app_not_injected_into_the_page() {
         assert!(PAGE.contains("id=\"nav\""), "バーの置き場所が無い");
         assert!(PAGE.contains("id=\"page\""), "ページを置く場所が無い");
-        // 置き場所はバーのぶんだけ下がる
+        // Where the page sits is pushed down by exactly the bar's height
         assert!(
             PAGE.contains("const top = n.hidden ? \"0\" : \"36px\"")
                 && PAGE.contains("getElementById(\"page\").style.top = top"),
             "バーを出してもページが下がらない"
         );
-        // 中継キャンバスも同じだけ下げる (下げないとブラウザ上端がバーに隠れる)
+        // The relay canvas is pushed down by the same amount (otherwise the browser's top edge would hide behind the bar)
         assert!(
             PAGE.contains("getElementById(\"cast\").style.top = top"),
             "バーを出しても中継キャンバスが下がらず、ブラウザ上端が隠れる"
         );
-        // 行桁は #main、ブラウザの置き場所は #page。
-        // 1つの矩形から両方出すと、バーを出しただけで端末まで縮む
+        // Rows/columns come from #main; the browser view's placement comes
+        // from #page. Deriving both from one rectangle would shrink the
+        // terminal just because the bar appeared
         assert!(
             PAGE.contains("document.getElementById(\"page\").getBoundingClientRect()"),
             "置き場所を #page から取っていない"
         );
     }
 
-    /// URL欄を打っている間は、打鍵が端末へ流れないこと。
-    /// 流れると、行き先を書いているつもりでAIに文字を送ることになる
+    /// While typing in the URL bar, keystrokes must never flow to the terminal.
+    /// If they did, typing what feels like a destination would actually send text to the AI.
     #[test]
     fn typing_an_address_does_not_reach_the_terminal() {
         assert!(PAGE.contains("e.stopPropagation();"), "打鍵を止めていない");
-        // 選択やクリックで入力欄から焦点を奪わない
+        // Selection or a click must never steal focus away from the input field
         assert!(
             PAGE.contains("if (a && a.closest && a.closest(\"#nav\")) return;"),
             "入力中に焦点を奪っている"
@@ -1655,9 +1710,9 @@ mod tests {
         assert!(PAGE.contains("if (inBar(e)) return;"), "バーの中で端末の作法が働く");
     }
 
-    /// ボールが文字ではなく、動く要素であること。
+    /// The ball is a moving element, not a character.
     ///
-    /// 窓を持った理由の半分がこれ。マス目のままなら ● で足りていた
+    /// This is half the reason for having a window at all — a plain grid of cells would have made do with a ● character.
     #[test]
     fn the_ball_is_a_moving_thing_not_a_character() {
         assert!(PAGE.contains("#ball"), "ボールの要素が無い");
@@ -1676,18 +1731,21 @@ mod color_tests {
         screen_html(p.screen())
     }
 
-    /// どの区間も、自分が何マス分かを持っていること。
+    /// Every run must carry its own cell count.
     ///
-    /// 端末はマスで桁を数え、ブラウザは字送りで並べる。この2つが
-    /// 一致するフォントは無い。Cascadia Mono の英字は 0.586em、
-    /// 全角は 1.0em で、倍にならない。罫線を1マスで描くフォントに
-    /// 替えても、日本語が並べばずれる。
+    /// The terminal counts columns in cells; the browser lays text out
+    /// using font advance widths. No font makes the two match exactly —
+    /// Cascadia Mono's Latin characters are 0.586em wide, and full-width
+    /// characters are 1.0em, which isn't exactly double. Even switching to
+    /// a font that draws box-drawing characters in one cell, things drift
+    /// out of alignment as soon as CJK text appears.
     ///
-    /// マス数を書いておけば、字送りが何であっても次の区間は正しい場所から
-    /// 始まる。フォントは見た目だけの話になる
+    /// Recording the cell count explicitly means the next run always
+    /// starts from the right place, no matter what the font's advance
+    /// width is. The font then only ever affects appearance.
     #[test]
     fn every_run_carries_its_own_width() {
-        // 全角・罫線・英字が混ざった行
+        // A line mixing full-width characters, box-drawing characters, and Latin characters
         let html = render("\u{1b}[31mあ\u{1b}[0m\u{2502}ab");
         for piece in html.split("<span").skip(1) {
             assert!(
@@ -1695,18 +1753,18 @@ mod color_tests {
                 "マス数を持たない区間がある: {piece}"
             );
         }
-        // 全角は2マス
+        // A full-width character is 2 cells
         assert!(
             html.contains("width:calc(var(--cw)*2)"),
             "全角が2マスになっていない: {html}"
         );
-        // 半角3文字の区間は3マス
+        // A run of 3 half-width characters is 3 cells
         let three = render("\u{1b}[31mabc\u{1b}[0m");
         assert!(
             three.contains("width:calc(var(--cw)*3)"),
             "半角3文字が3マスになっていない: {three}"
         );
-        // 罫線も1マス。端末がそう数えているので、描く側も合わせる
+        // Box-drawing characters are also 1 cell — the terminal counts them that way, so rendering matches
         let line = render("\u{1b}[31m\u{2502}\u{1b}[0m");
         assert!(
             line.contains("width:calc(var(--cw)*1)"),
@@ -1714,11 +1772,13 @@ mod color_tests {
         );
     }
 
-    /// 字送りがマスに合わない文字は、1文字ずつ箱に入れること。
+    /// Characters whose advance width doesn't match a cell get boxed individually.
     ///
-    /// 日本語の字送りは2マスより狭い (別のフォントから来るので合わない)。
-    /// まとめて1つの箱に入れると、足りない分が区間の末尾に溜まる。
-    /// 40文字で、文字列の終わりとカーソルの間にマス10個ぶんの隙間ができていた
+    /// CJK advance width is narrower than 2 cells (it comes from a
+    /// different font, so it doesn't line up). Merging them into a single
+    /// box lets the shortfall accumulate at the end of the run — after 40
+    /// characters, a gap of about 10 cells had opened up between the end
+    /// of the string and the cursor.
     #[test]
     fn a_letter_that_does_not_fill_its_cell_gets_a_box_of_its_own() {
         let html = render("あいう");
@@ -1729,7 +1789,7 @@ mod color_tests {
         );
         assert!(html.contains("text-align:center;"), "マスの中で寄っている: {html}");
 
-        // 英数字はマスにぴったり入るので、まとめてよい (要素を増やさない)
+        // ASCII characters fit their cell exactly, so merging them is fine (avoids extra elements)
         let ascii = render("\u{1b}[31mabcdef\u{1b}[0m");
         assert_eq!(
             ascii.matches("width:calc(var(--cw)*").count(),
@@ -1738,10 +1798,11 @@ mod color_tests {
         );
     }
 
-    /// 中身とカーソルが、同じ1つの数で置かれること。
+    /// The content and the cursor must be placed using the same single number.
     ///
-    /// 別々の数 (中身は ch、カーソルは測った値) にすると、
-    /// その差が桁ごとに積もる。打つほどカーソルが右へ離れていった
+    /// Using separate numbers (ch for content, a measured value for the
+    /// cursor) lets the difference between them compound column by column —
+    /// the cursor drifted further right the more you typed.
     #[test]
     fn the_text_and_the_cursor_share_one_cell_width() {
         assert!(
@@ -1752,12 +1813,12 @@ mod color_tests {
             PAGE.contains("scr.style.setProperty(\"--cw\", cellW + \"px\")"),
             "測った幅を中身へ渡していない"
         );
-        // カーソルも同じ cellW から置く
+        // The cursor is also placed from that same cellW
         assert!(PAGE.contains("col * cellW"), "カーソルが別の数で置かれている");
     }
 
-    /// 行末の空白は場所を決めなくてよいこと。
-    /// 後ろに何も無いので、40桁ぶんの箱を毎行置く意味がない
+    /// Trailing whitespace at the end of a line doesn't need a fixed position.
+    /// There's nothing after it, so boxing out 40 columns' worth on every line would be pointless.
     #[test]
     fn the_blank_tail_of_a_line_needs_no_box() {
         let html = render("ab");
@@ -1769,10 +1830,10 @@ mod color_tests {
         );
     }
 
-    /// プログラムが出す色を、そのまま描くこと。
+    /// Colors emitted by a program are rendered as-is.
     ///
-    /// ここまでは文字だけを送っていたので、ビルドの警告もgitの差分も
-    /// AIの強調も、全部同じ灰色に見えていた
+    /// Before this, only plain text was sent, so build warnings, git
+    /// diffs, and the AI's own emphasis all looked like the same shade of gray.
     #[test]
     fn colours_reach_the_screen() {
         let h = render("\x1b[31mred\x1b[0m plain");
@@ -1780,26 +1841,26 @@ mod color_tests {
         assert!(h.contains(">red<"), "色の中身が入っていない: {h}");
         assert!(h.contains("plain"), "色なしの部分が消えている: {h}");
 
-        // 背景・太字・下線
+        // Background, bold, underline
         assert!(render("\x1b[44mx").contains("background:#00aaff"), "背景色");
         assert!(render("\x1b[1mx").contains("font-weight:700"), "太字");
         assert!(render("\x1b[4mx").contains("text-decoration:underline"), "下線");
 
-        // 反転は前景と背景を入れ替える
+        // Inverse swaps the foreground and background
         let inv = render("\x1b[7mx");
         assert!(inv.contains("background:") && inv.contains("color:"), "反転: {inv}");
 
-        // 256色の立方体と灰色の階段
+        // The 256-color cube and the grayscale ramp
         assert!(render("\x1b[38;5;196mx").contains("color:#ff0000"), "立方体の赤");
         assert!(render("\x1b[38;5;232mx").contains("color:#080808"), "灰色の下端");
-        // 24bit
+        // 24-bit
         assert!(render("\x1b[38;2;18;52;86mx").contains("color:#123456"), "24bit色");
     }
 
-    /// 画面の文字がHTMLとして解釈されないこと。
+    /// Characters shown on screen are never interpreted as HTML markup.
     ///
-    /// プログラムの出力に `<script>` が現れるのは、ごく普通にある
-    /// (HTMLを cat する、grep の結果、AIの回答)
+    /// It's completely ordinary for `<script>` to show up in a program's
+    /// output (catting an HTML file, grep results, an AI's reply)
     #[test]
     fn output_is_never_treated_as_markup() {
         let h = render("<script>alert(1)</script> & <b>");
@@ -1808,16 +1869,16 @@ mod color_tests {
         assert!(h.contains("&amp;"), "アンパサンドが素通り: {h}");
     }
 
-    /// 同じ見た目は1つのまとまりにすること。
+    /// Runs with the same appearance are merged into one.
     ///
-    /// 1マス1要素にすると 50行×180桁で9000要素になり、
-    /// 書き換えのたびに重くなる
+    /// One element per cell would produce 9000 elements for a 50-row by
+    /// 180-column screen, making every redraw more expensive.
     #[test]
     fn runs_of_the_same_look_are_merged() {
         let h = render("\x1b[31maaaaaaaaaa");
         assert_eq!(h.matches("<span").count(), 1, "文字ごとに分かれている: {h}");
 
-        // 見た目が変われば分かれる
+        // A change in appearance splits the run
         let h = render("\x1b[31ma\x1b[32mb\x1b[31mc");
         assert_eq!(h.matches("<span").count(), 3, "{h}");
     }

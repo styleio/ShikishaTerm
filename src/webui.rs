@@ -1,12 +1,12 @@
-//! 設定用ローカルWeb GUI。DESIGN.md 5.5 / 10.2章。
+//! Local web GUI for settings. DESIGN.md sections 5.5 / 10.2.
 //!
-//! セキュリティ:
-//!   - 127.0.0.1 のみにバインド (外部からは到達不能、ファイアウォール警告も出ない)
-//!   - ランダムポート + 起動毎のワンタイムトークン
-//!   - トークンはURLとリクエストヘッダの両方で検証し、同一PCの他プロセスや
-//!     悪意あるWebページ (CSRF / DNS rebinding) からの設定API操作を防ぐ
-//!   - Hostヘッダを127.0.0.1系に限定 (DNS rebinding対策)
-//!   - マスターパスワードはここでは扱わない (TUI内で完結させる)
+//! Security:
+//!   - Binds to 127.0.0.1 only (unreachable from outside, no firewall warning either)
+//!   - Random port + one-time token per launch
+//!   - The token is verified both in the URL and the request header, preventing
+//!     other processes on the same PC or a malicious web page (CSRF / DNS rebinding) from operating the config API
+//!   - Host header is restricted to the 127.0.0.1 family (DNS rebinding countermeasure)
+//!   - The master password is not handled here (kept entirely inside the TUI)
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -16,12 +16,12 @@ use anyhow::{Context as _, Result};
 use rand::TryRng as _;
 use tiny_http::{Header, Response, Server};
 
-/// 設定画面へ渡すリモートUIの状況 (本体が更新する)
+/// Remote UI status passed to the settings screen (updated by the main app)
 #[derive(Default, Clone)]
 pub struct RemoteInfo {
     pub running: bool,
     pub url: String,
-    /// 有効にできない・注意が要る場合の説明
+    /// Explanation for when it can't be enabled, or a note that needs attention
     pub note: String,
 }
 
@@ -31,10 +31,10 @@ pub struct WebUi {
 }
 
 impl WebUi {
-    /// 設定ファイルを編集するローカルサーバーを起動する。
-    /// config_path は編集対象 (通常 config.json)。
-    /// password は本体が握っているマスターパスワードの共有 (秘密の暗号化に使う)。
-    /// **ページにもネットワークにも出さない**。同一プロセスのサーバ側でだけ使う
+    /// Starts a local server that edits the config file.
+    /// config_path is the target being edited (usually config.json).
+    /// password is a share of the master password held by the main app (used to encrypt secrets).
+    /// **Never exposed to the page or the network** — used only on the server side, within the same process
     pub fn start_with(
         config_path: std::path::PathBuf,
         remote: Arc<std::sync::Mutex<RemoteInfo>>,
@@ -80,7 +80,7 @@ fn random_token() -> Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// 定数時間比較 (トークンの総当たりを情報漏洩なく弾く)
+/// Constant-time comparison (rejects token brute-forcing without leaking timing info)
 fn token_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
@@ -106,9 +106,9 @@ fn query_token(url: &str) -> String {
         .to_string()
 }
 
-/// ?file=... のパスを安全に解決する。
-/// 設定ファイルと同じディレクトリ配下の .json だけを許可し、
-/// 絶対パス・親ディレクトリ参照 (..) は拒否する (パストラバーサル対策)
+/// Safely resolves the ?file=... path.
+/// Only allows .json files under the same directory as the config file,
+/// and rejects absolute paths or parent-directory references (..) (path traversal countermeasure)
 fn safe_workspace_path(
     url: &str,
     config_path: &std::path::Path,
@@ -136,7 +136,7 @@ fn safe_workspace_path(
     Some(base.join(rel))
 }
 
-/// 自動化フォルダのパスを安全に解決する (拡張子チェックなし版)
+/// Safely resolves the automation folder path (version without extension checking)
 fn safe_dir_path(url: &str, _config_path: &std::path::Path) -> Option<std::path::PathBuf> {
     let raw = url
         .split_once('?')?
@@ -156,21 +156,21 @@ fn safe_dir_path(url: &str, _config_path: &std::path::Path) -> Option<std::path:
     }) {
         return None;
     }
-    // 本体 (main) の自動化ローダと同じ解決を使う。config 隣ではなく exe 隣を優先。
-    // これがズレると「GUIは未設定なのに実際は動く」「GUIで編集しても効かない」が起きる
+    // Uses the same resolution as the main app's automation loader. Prefers next to the exe over next to config.
+    // If this drifts, you get "the GUI says it's unconfigured but it actually runs" / "editing in the GUI has no effect"
     Some(crate::resolve_data_path(&decoded))
 }
 
-/// マニュアルはexeに埋め込む。どこから起動しても必ず参照でき、
-/// 配布物にドキュメントを同梱し忘れても壊れない。
-/// 翻訳を exe に同梱したい場合はここに1行足す (無くても docs/ に置けば読まれる)
+/// The manual is embedded in the exe. It can always be referenced regardless of where it's
+/// launched from, and won't break even if the docs are forgotten in the distribution.
+/// To bundle a translation into the exe, add one line here (it's still read if placed in docs/ instead)
 const EMBEDDED_MANUALS: &[(&str, &str)] = &[
     ("en", include_str!("../docs/AUTOMATION.md")),
     ("ja", include_str!("../docs/AUTOMATION.ja.md")),
 ];
 
-/// 隣に置かれたファイルがあればそちらを優先する (利用者が加筆できるように)。
-/// 言語版 (AUTOMATION.<コード>.md) → 英語 → 埋め込み の順に探す
+/// Prefers a file placed alongside it, if any (so the user can add to it).
+/// Looks in order: localized version (AUTOMATION.<code>.md) → English → embedded
 fn load_manual(config_path: &std::path::Path) -> String {
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Some(d) = config_path.parent() {
@@ -206,9 +206,9 @@ fn load_manual(config_path: &std::path::Path) -> String {
     embedded(&lang).or_else(|| embedded("en")).unwrap_or_default().to_string()
 }
 
-/// 表示すべきリモートUIの状況を求める。
-/// 本体が待ち受け中ならその情報を、そうでなければ設定から接続先を組み立てる
-/// (設定だけを開いた場合や、有効にした直後でもQRを出せるようにするため)
+/// Computes the remote UI status that should be displayed.
+/// If the main app is listening, uses that info; otherwise builds the connection
+/// info from config (so a QR code can still be shown when only settings is open, or right after enabling it)
 fn effective_remote(shared: &Arc<std::sync::Mutex<RemoteInfo>>) -> RemoteInfo {
     let info = shared.lock().unwrap().clone();
     if info.running && !info.url.is_empty() {
@@ -235,9 +235,9 @@ fn effective_remote(shared: &Arc<std::sync::Mutex<RemoteInfo>>) -> RemoteInfo {
     }
 }
 
-/// 自プロセスのダイアログが現れたら前面に持ち上げる。
-/// Windowsはバックグラウンドのプロセスが勝手に前面へ出るのを禁じているため、
-/// 最前面属性を付けてブラウザの後ろに隠れないようにする
+/// Brings our own process's dialog to the front when it appears.
+/// Windows forbids background processes from popping themselves to the front on their own,
+/// so we set the topmost attribute to keep it from hiding behind the browser
 #[cfg(windows)]
 fn raise_own_dialog() {
     use windows_sys::Win32::Foundation::{HWND, LPARAM};
@@ -260,7 +260,7 @@ fn raise_own_dialog() {
         if pid != found.pid || unsafe { IsWindowVisible(hwnd) } == 0 {
             return 1;
         }
-        // 標準のダイアログはクラス名 "#32770"。コンソールは対象外
+        // Standard dialogs have the class name "#32770". Consoles are excluded
         let mut buf = [0u16; 64];
         let n = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
         let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
@@ -282,8 +282,8 @@ fn raise_own_dialog() {
             unsafe { EnumWindows(Some(cb), &mut found as *mut Found as LPARAM) };
             if !found.hwnd.is_null() {
                 unsafe {
-                    // 最前面属性は付けたままにする。閉じるまでの間だけなので、
-                    // これを外すとブラウザの後ろに隠れてしまう
+                    // Leave the topmost attribute set. It only lasts until the dialog closes,
+                    // and removing it would let it hide behind the browser
                     SetWindowPos(
                         found.hwnd,
                         HWND_TOPMOST,
@@ -294,8 +294,8 @@ fn raise_own_dialog() {
                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
                     );
                     BringWindowToTop(found.hwnd);
-                    // 前面化はバックグラウンドプロセスだと拒否されることがあるため、
-                    // Alt+Tab相当の切り替えも併用する
+                    // Foregrounding can be refused for a background process,
+                    // so also use an Alt+Tab-equivalent switch
                     SwitchToThisWindow(found.hwnd, 1);
                     SetForegroundWindow(found.hwnd);
                 }
@@ -308,8 +308,8 @@ fn raise_own_dialog() {
 #[cfg(not(windows))]
 fn raise_own_dialog() {}
 
-/// 選ばれたパスを設定に書く形にする。
-/// 設定フォルダ配下なら相対パスにして、フォルダごと持ち運べる状態を保つ
+/// Turns the chosen path into the form written to config.
+/// If it's under the config folder, makes it relative so the whole folder stays portable
 fn display_path(path: &std::path::Path, config_path: &std::path::Path) -> String {
     config_path
         .parent()
@@ -319,7 +319,7 @@ fn display_path(path: &std::path::Path, config_path: &std::path::Path) -> String
         .replace('\\', "/")
 }
 
-/// 最初に開く場所。鍵なら ~/.ssh、フォルダなら設定のある場所
+/// The place to open first. ~/.ssh for a key, the config's location for a folder
 fn default_pick_dir(kind: &str, config_path: &std::path::Path) -> Option<std::path::PathBuf> {
     if kind == "key" {
         if let Some(home) = std::env::var_os("USERPROFILE") {
@@ -333,8 +333,8 @@ fn default_pick_dir(kind: &str, config_path: &std::path::Path) -> Option<std::pa
     config_path.parent().map(std::path::Path::to_path_buf)
 }
 
-/// 設定画面から読み書きするイベントファイル。
-/// セッションのものと、ブラウザのものの両方
+/// Event files read/written from the settings screen.
+/// Both the session's and the browser's
 const EVENT_FILES: [&str; 8] = [
     "on_start",
     "on_done",
@@ -346,18 +346,18 @@ const EVENT_FILES: [&str; 8] = [
     "_shared",
 ];
 
-/// ローカルにインストール済みのAI CLIをワンショットで実行し、Luaコードを生成させる。
-/// APIキーは不要 (利用者のサブスク認証をそのまま使う)。
-/// 生成結果は必ず画面に表示し、利用者が承認するまで保存しない
-/// 対応するAI CLI (名前, 非対話実行の引数, 表示名)
+/// Runs a locally installed AI CLI one-shot to generate Lua code.
+/// No API key needed (uses the user's subscription auth as-is).
+/// The generated result is always shown on screen and never saved until the user approves it
+/// Supported AI CLIs (name, non-interactive execution args, display name)
 const AI_ENGINES: [(&str, &[&str], &str); 3] = [
     ("claude", &["-p"], "Claude Code"),
     ("codex", &["exec"], "Codex CLI"),
     ("gemini", &["-p"], "Gemini CLI"),
 ];
 
-/// タブ構成を説明文にする。AIに送信先の番号を分からせるために渡す
-/// (利用者はタブ名で指示できるべきなので)
+/// Turns the tab layout into descriptive text. Passed so the AI knows the destination number
+/// (since the user should be able to give instructions by tab name)
 fn describe_tabs(parsed: &serde_json::Value) -> String {
     let Some(tabs) = parsed.get("tabs").and_then(|v| v.as_array()) else {
         return String::new();
@@ -375,7 +375,7 @@ fn describe_tabs(parsed: &serde_json::Value) -> String {
         if id.is_empty() {
             s.push_str(&format!("{i}. {name}"));
         } else {
-            // IDがある場合はそちらで指させる (タブ名を変えても壊れない)
+            // If there's an ID, use it for addressing instead (survives tab renames)
             s.push_str(&format!(
                 "{i}. {name}{}",
                 crate::i18n::tp("ai.tabs.id", &[("id", id)])
@@ -399,10 +399,10 @@ fn generate_with_local_ai(
     if want.trim().is_empty() {
         anyhow::bail!("{}", crate::i18n::t("automation.editor.want"));
     }
-    // マニュアルを仕様書としてAIに渡す (独自APIは学習データに無いため)
+    // Pass the manual to the AI as a spec (the custom API isn't in its training data)
     let manual = load_manual(config_path);
 
-    // 会話文を返させないため、出力形式をマーカーで固定する
+    // Fix the output format with markers so it doesn't just reply with conversational text
     let prompt = crate::i18n::tp(
         "ai.prompt",
         &[
@@ -420,7 +420,7 @@ fn generate_with_local_ai(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    // ここもコンソールを継承するとマウスが死ぬ (open_browser と同じ理由)
+    // Inheriting the console here too would kill the mouse (same reason as open_browser)
     let mut child = crate::detach_console(&mut spawner)
         .spawn()
         .with_context(|| crate::i18n::tp("ai.err.cannot_run", &[("cmd", &cmd)]))?;
@@ -443,16 +443,16 @@ fn generate_with_local_ai(
     extract_lua(&text)
 }
 
-/// AIの出力から <<<LUA ... >>> の中身を取り出す。
-/// マーカーが無ければコードフェンスを剥がして返し、それも無ければエラーにする
-/// (会話文をそのままコードとして保存してしまわないため)
+/// Extracts the contents of <<<LUA ... >>> from the AI's output.
+/// If there's no marker, strips a code fence and returns that instead; if there's no fence either, errors out
+/// (so conversational text doesn't get saved as code as-is)
 fn extract_lua(text: &str) -> Result<String> {
     if let Some((_, rest)) = text.split_once("<<<LUA") {
         let body = rest.split_once(">>>").map(|(b, _)| b).unwrap_or(rest);
         return Ok(body.trim().to_string());
     }
     let stripped = strip_code_fence(text);
-    // コードらしさの最低条件: shikisha.* か tab. を含むこと
+    // Minimum bar for "looks like code": contains shikisha.* or tab.
     if stripped.contains("shikisha.") || stripped.contains("tab.") {
         return Ok(stripped);
     }
@@ -465,7 +465,7 @@ fn extract_lua(text: &str) -> Result<String> {
     )
 }
 
-/// 使うAI CLIを決める。指定が無ければ claude → codex → gemini の順で最初に見つかったもの
+/// Decides which AI CLI to use. If none is specified, the first one found in order claude → codex → gemini
 fn pick_local_ai(want: Option<&str>) -> Result<(String, Vec<String>)> {
     for (name, args, _) in AI_ENGINES {
         if want.is_some_and(|w| w != name) {
@@ -473,7 +473,7 @@ fn pick_local_ai(want: Option<&str>) -> Result<(String, Vec<String>)> {
         }
         if let Some(path) = crate::tab::resolve_command(name) {
             let p = path.to_string_lossy().to_string();
-            // .cmd/.bat は cmd.exe 経由でないと起動できない
+            // .cmd/.bat can only be launched via cmd.exe
             let ext = path
                 .extension()
                 .and_then(|e| e.to_str())
@@ -493,7 +493,7 @@ fn pick_local_ai(want: Option<&str>) -> Result<(String, Vec<String>)> {
     }
 }
 
-/// AIが付けがちなコードフェンスを取り除く
+/// Strips the code fence AIs tend to add
 fn strip_code_fence(s: &str) -> String {
     let t = s.trim();
     let Some(rest) = t.strip_prefix("```") else {
@@ -540,14 +540,14 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// JSONで応答する
+/// Responds with JSON
 fn json_resp(v: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
     Response::from_string(v.to_string()).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
     )
 }
 
-/// 秘密ファイルのパス。設定に指定があればそれ、無ければ config.json の隣の secrets.json
+/// Path to the secrets file. Uses config's setting if present, otherwise secrets.json next to config.json
 fn secrets_file(config_path: &std::path::Path) -> std::path::PathBuf {
     crate::config::load()
         .and_then(|c| c.secrets_path())
@@ -565,10 +565,10 @@ fn handle(
     remote: &Arc<std::sync::Mutex<RemoteInfo>>,
     password: &Arc<std::sync::Mutex<Option<String>>>,
 ) -> Result<()> {
-    // DNS rebinding対策: Hostは必ずループバックであること
+    // DNS rebinding countermeasure: Host must always be loopback
     let host = header_value(&req, "Host");
     let host_ok = host.starts_with("127.0.0.1:") || host.starts_with("localhost:");
-    // トークンはURLか X-Token ヘッダのどちらかで一致すればよい
+    // The token only needs to match in either the URL or the X-Token header
     let supplied = {
         let h = header_value(&req, "X-Token");
         if h.is_empty() {
@@ -595,7 +595,7 @@ fn handle(
             );
             req.respond(resp)?;
         }
-        // 書き方の説明 (GUIから開ける。ファイルを探させない)
+        // How-to-write documentation (openable from the GUI, so the user doesn't have to hunt for the file)
         ("GET", "/help") => {
             let md = load_manual(config_path);
             let html = crate::i18n::render(HELP_PAGE)
@@ -613,7 +613,7 @@ fn handle(
             );
             req.respond(resp)?;
         }
-        // 最近のラリー履歴 (新しい順)。id と、人が見分けるための抜粋を返す
+        // Recent rally history (newest first). Returns the id plus an excerpt to help a human tell them apart
         ("GET", "/api/rally/list") => {
             let mut arr: Vec<serde_json::Value> = Vec::new();
             for dir in crate::exchange::recent_runs(60) {
@@ -627,12 +627,12 @@ fn handle(
                     .to_string();
                 let t = std::fs::read_to_string(dir.join("transcript.md")).unwrap_or_default();
                 let record = std::fs::read_to_string(dir.join("record.lua")).unwrap_or_default();
-                // 見出し(#)や空行を飛ばした最初の行を、見分け用の抜粋にする
+                // Use the first line that isn't a heading (#) or blank as an identifying excerpt
                 let title = t
                     .lines()
                     .find(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty())
                     .map(|l| l.chars().take(60).collect::<String>());
-                // 中身の無い run (on_start が作っただけ) は履歴に出さない
+                // Don't show empty runs (ones on_start merely created) in the history
                 let has_record = record.lines().any(|l| !l.trim_start().starts_with("--") && !l.trim().is_empty());
                 match &title {
                     Some(tt) => arr.push(serde_json::json!({ "id": id, "title": tt })),
@@ -648,9 +648,9 @@ fn handle(
             );
             req.respond(resp)?;
         }
-        // ラリー結果をひとつのMarkdownにまとめてダウンロードさせる。?run=<id> で特定の回、
-        // 無ければ最新。中身: 人が読む流れ(transcript) ＋ 判定 ＋ 実行Lua(record, 貼れば再現)。
-        // AI+AI 等どの司令塔でも、run フォルダに transcript.md/record.lua を残せば同じ口で落とせる
+        // Lets the rally result be downloaded as a single Markdown file. ?run=<id> for a specific run,
+        // otherwise the latest. Contents: the human-readable flow (transcript) + the verdict + the executed Lua (record, paste it to reproduce).
+        // Whatever the orchestrator (AI+AI, etc.), leaving transcript.md/record.lua in the run folder lets it be downloaded through the same path
         ("GET", "/api/rally/download") => {
             let picked = req
                 .url()
@@ -694,7 +694,7 @@ fn handle(
             }
             }
         }
-        // ワークスペース定義ファイル (外部ファイル参照) の読み書き
+        // Read/write a workspace definition file (external file reference)
         ("GET", "/api/workspace") => {
             let Some(p) = safe_workspace_path(req.url(), config_path) else {
                 return req
@@ -731,9 +731,9 @@ fn handle(
                 }
             }
         }
-        // ── 秘密 (GitHub Secrets 相当) ────────────────────
-        // マスターパスワードはページにもネットワークにも出さない。
-        // 一覧はキーと説明だけを返し、値は決して返さない
+        // ── Secrets (equivalent to GitHub Secrets) ────────────────────
+        // The master password is never exposed to the page or the network.
+        // The listing returns only keys and descriptions; values are never returned
         ("GET", "/api/secrets") => {
             let path = secrets_file(config_path);
             let pw = password.lock().unwrap().clone();
@@ -743,7 +743,7 @@ fn handle(
             let (mode, items): (&str, Vec<serde_json::Value>) = if !path.exists() {
                 ("empty", Vec::new())
             } else if encrypted && pw.is_none() {
-                // 暗号化されていてパスワードが無ければ、一覧すら出せない
+                // If it's encrypted and there's no password, we can't even show the listing
                 ("locked", Vec::new())
             } else {
                 match crate::config::list_secrets(&path, pw.as_deref()) {
@@ -795,8 +795,8 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
-        // ワークスペース1つを、スクリプトごと1枚のファイルに書き出す。
-        // 番号で指すのは保存済みの設定。画面の編集中の姿ではない
+        // Export a single workspace, scripts and all, as one file.
+        // Addressed by index into the saved config — not the screen's in-progress edits
         ("POST", "/api/workspace/export") => {
             let mut req = req;
             let mut body = String::new();
@@ -815,7 +815,7 @@ fn handle(
                         )
                         .save_file();
                     match picked {
-                        // 選ばれた場所へ書く。ここは利用者が指した先なので設定フォルダの外でよい
+                        // Write to the chosen location. This is fine to be outside the config folder, since the user picked it
                         Some(path) => match crate::crypto::write_atomic(&path, &text) {
                             Ok(()) => serde_json::json!({
                                 "ok": true,
@@ -840,7 +840,7 @@ fn handle(
                 ),
             )?;
         }
-        // 書き出したファイルを取り込む。設定にワークスペースが1つ増える
+        // Import an exported file. Adds one workspace to the config
         ("POST", "/api/workspace/import") => {
             raise_own_dialog();
             let picked = rfd::FileDialog::new()
@@ -875,7 +875,7 @@ fn handle(
                 ),
             )?;
         }
-        // 自動化 (イベント別ファイル) の読み書き
+        // Read/write automation (per-event files)
         ("GET", "/api/automation") => {
             let Some(dir) = safe_dir_path(req.url(), config_path) else {
                 return req
@@ -915,7 +915,7 @@ fn handle(
                 };
                 let f = dir.join(format!("{name}.lua"));
                 if code.trim().is_empty() {
-                    // 空にしたら「そのイベントでは何もしない」= ファイルごと削除
+                    // Emptying it means "do nothing for this event" = delete the whole file
                     let _ = std::fs::remove_file(&f);
                 } else {
                     crate::crypto::write_atomic(&f, code)?;
@@ -923,8 +923,8 @@ fn handle(
             }
             req.respond(Response::from_string(r#"{"ok":true}"#))?;
         }
-        // Windows標準のファイル選択ダイアログを開く。
-        // ブラウザは安全のため実ファイルパスを渡せないため、こちら側で開く
+        // Opens the standard Windows file-picker dialog.
+        // The browser can't hand over a real file path for safety reasons, so we open it on this side
         ("POST", "/api/pick") => {
             let mut req = req;
             let mut body = String::new();
@@ -941,8 +941,8 @@ fn handle(
                 .filter(|p| p.exists())
                 .or_else(|| default_pick_dir(kind, config_path));
 
-            // ダイアログは開いた直後に前面へ出す
-            // (バックグラウンドのプロセスは自力で前面に立てないため)
+            // Bring the dialog to the front right after opening it
+            // (a background process can't foreground itself on its own)
             raise_own_dialog();
             let mut dlg = rfd::FileDialog::new().set_title(title);
             if let Some(d) = start {
@@ -969,7 +969,7 @@ fn handle(
                 ),
             )?;
         }
-        // スマホから使う機能の状況 (どのネットワークが使えるかも返す)
+        // Status of the phone-usable feature (also returns which network is available)
         ("GET", "/api/remote") => {
             let info = effective_remote(remote);
             let ts = crate::netaddr::tailscale_ip().map(|i| i.to_string());
@@ -991,7 +991,7 @@ fn handle(
                 ),
             )?;
         }
-        // 接続用QRコード (URLとトークンを手入力させない)
+        // Connection QR code (avoids having to hand-type the URL and token)
         ("GET", "/api/remote/qr") => {
             let url = effective_remote(remote).url;
             let svg = if url.is_empty() {
@@ -1004,7 +1004,7 @@ fn handle(
                     .unwrap(),
             ))?;
         }
-        // 使えるAI CLIを調べる (画面を出す前に判定し、無ければ機能ごと隠す)
+        // Checks which AI CLIs are available (determined before rendering, so the feature is hidden entirely if none)
         ("GET", "/api/ai") => {
             let list: Vec<serde_json::Value> = AI_ENGINES
                 .iter()
@@ -1021,7 +1021,7 @@ fn handle(
                 );
             req.respond(resp)?;
         }
-        // 自然言語からLuaを生成する (ローカルのAI CLIをワンショット実行)
+        // Generates Lua from natural language (one-shot run of a local AI CLI)
         ("POST", "/api/generate") => {
             let mut req = req;
             let mut body = String::new();
@@ -1029,7 +1029,7 @@ fn handle(
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let event = parsed.get("event").and_then(|v| v.as_str()).unwrap_or("on_done");
             let want = parsed.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-            // 指定が無ければ設定の ai_engine を使う
+            // If none is specified, use config's ai_engine
             let from_cfg = std::fs::read_to_string(config_path)
                 .ok()
                 .and_then(|t| serde_json::from_str::<crate::config::Config>(&t).ok())
@@ -1061,7 +1061,7 @@ fn handle(
             let mut req = req;
             let mut body = String::new();
             req.as_reader().read_to_string(&mut body)?;
-            // 壊れたJSONで設定を失わないよう、保存前に必ず検証する
+            // Always validate before saving, so broken JSON never wipes out the config
             match serde_json::from_str::<serde_json::Value>(&body) {
                 Ok(_) => {
                     crate::crypto::write_atomic(config_path, &body)?;
@@ -1088,8 +1088,8 @@ fn handle(
     Ok(())
 }
 
-// 設定画面。本体のサイバー調とは別に、読みやすさを優先した静かなUIにしている
-// (サイドバー + 詳細ペイン。一覧は「何があるか」だけを見せ、編集は1つに集中させる)
+// The settings screen. Unlike the main app's cyber look, it's a quiet UI that prioritizes readability
+// (sidebar + detail pane. The list shows only "what exists"; editing stays focused on one item at a time)
 const PAGE: &str = r##"<!doctype html>
 <html lang="{{__lang__}}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1112,7 +1112,7 @@ const PAGE: &str = r##"<!doctype html>
  header .spacer { flex:1; }
  #msg { color:var(--muted); font-size:13px; border-radius:6px; padding:4px 10px; }
  #msg.warn { color:var(--danger); }
- /* 同じ文言が続いても押したことが分かるよう、毎回アニメーションを流し直す */
+ /* Replay the animation every time, so a click still registers even if the message text repeats */
  #msg.flash { animation:msgflash 1.1s ease-out; }
  @keyframes msgflash {
    0%   { background:var(--accent); color:#04121c; }
@@ -1120,7 +1120,7 @@ const PAGE: &str = r##"<!doctype html>
    100% { background:transparent; color:var(--muted); }
  }
  button.primary:disabled { opacity:.55; cursor:default; }
- /* 保存の結果はヘッダの小さな文字だと視線が行かないので、画面下に出す */
+ /* Small text in the header doesn't catch the eye for a save result, so show it at the bottom of the screen */
  #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(16px);
    padding:11px 20px; border-radius:9px; background:var(--accent); color:#04121c;
    font-weight:600; font-size:13.5px; box-shadow:0 10px 30px rgba(0,0,0,.5);
@@ -1128,8 +1128,8 @@ const PAGE: &str = r##"<!doctype html>
    transition:opacity .18s ease, transform .18s ease; }
  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
  #toast.warn { background:var(--danger); color:#fff; }
- /* 未保存の変更があるあいだは保存ボタンに印を出す。
-    押す前から「保存が要る状態か」が分かれば、押したあと不安にならない */
+ /* Mark the save button while there are unsaved changes.
+    Knowing "does this need saving?" before you click removes the after-click anxiety */
  #savebtn.dirty::before { content:"● "; }
 
  .layout { display:flex; align-items:flex-start; }
@@ -1207,8 +1207,8 @@ const PAGE: &str = r##"<!doctype html>
  pre { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:12px;
    overflow:auto; max-height:240px; font-size:12.5px; }
  a { color:var(--accent); }
- /* AIの生成は数十秒かかることがある。止まっていないと一目で分かるように、
-    回るもの・伸びるもの・進む数字を揃える */
+ /* AI generation can take tens of seconds. Line up a spinner, a growing bar, and a
+    progressing number so it's obvious at a glance that it hasn't stalled */
  #aibusy { flex-direction:column; gap:9px; margin-top:10px; padding:12px 14px;
    background:var(--panel2); border:1px solid var(--accent); border-radius:9px; }
  #aibusy .head { display:flex; align-items:center; gap:10px; }
@@ -1284,7 +1284,7 @@ const PAGE: &str = r##"<!doctype html>
 <script>
 const TOKEN = "__TOKEN__";
 const T = __DICT__;
-// {name} 差し込み (Rust側の tp と同じ規則)
+// {name} substitution (same rule as tp on the Rust side)
 const fill = (s, args) => Object.entries(args)
   .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
 const api = (m, b) => fetch("/api/config", {
@@ -1292,11 +1292,11 @@ const api = (m, b) => fetch("/api/config", {
 const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(file), {
    method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
 
-let current = {};        // config.json の中身 (基本設定の保持用)
-let wss = [];            // ワークスペースとタブ
+let current = {};        // Contents of config.json (holds the base settings)
+let wss = [];            // Workspaces and tabs
 let sel = {ws:0, tab:null, global:true};
 let aiEngines = [];
-// ページを開いた時点の言語設定。保存時に「変わったか＝再起動が要るか」を見るため
+// The language setting as of when the page was opened. Used at save time to check "did it change = is a restart needed?"
 let loadedLanguage = "";
 
 const el = (tag, attrs = {}, ...kids) => {
@@ -1313,7 +1313,7 @@ const msg = (t, warn) => {
   const m = document.getElementById("msg");
   m.textContent = t;
   m.classList.toggle("warn", !!warn);
-  // クラスを付け直すだけでは再生されないので、一度外して強制的に再計算させる
+  // Just re-adding the class doesn't replay it, so remove it and force a reflow first
   m.classList.remove("flash");
   void m.offsetWidth;
   if (!warn) m.classList.add("flash");
@@ -1326,34 +1326,34 @@ function toast(text, warn) {
   t.classList.toggle("warn", !!warn);
   t.classList.add("show");
   clearTimeout(toastTimer);
-  // 失敗は読む時間が要るので長く出す
+  // Failures need time to read, so show them longer
   toastTimer = setTimeout(() => t.classList.remove("show"), warn ? 6000 : 2200);
 }
 
-// 操作の結果はヘッダにも残しつつ、トーストで必ず気づけるようにする
+// Keep the result in the header too, but also always make it noticeable via a toast
 const result = (text, warn) => { msg(text, warn); toast(text, warn); };
 
-// 未保存かどうかの判定。保存/読込した時点の内容を覚えておいて見比べる
+// Determines whether there are unsaved changes. Remembers the content as of save/load and compares against it
 let savedSnapshot = "";
-// 生の入力状態ではなく「保存したら実際に何が書かれるか」を比べる。
-// 入力欄は数値を文字列にしてしまうので、10 と "10" を別物と見てしまう
+// Compares "what would actually get written on save", not the raw input state.
+// Input fields turn numbers into strings, so 10 and "10" would otherwise look different
 const snapshot = () => JSON.stringify(payload());
 function markClean() { savedSnapshot = snapshot(); refreshSave(); }
 function refreshSave() {
   const b = document.getElementById("savebtn");
-  // 読み込みが終わるまでは比較対象が無い。ここで抜けないと開いた瞬間に未保存の印が出る
+  // There's nothing to compare against until loading finishes. Without this bail-out, the unsaved mark would show the instant the page opens
   if (!b || b.disabled || savedSnapshot === "") return;
   const dirty = snapshot() !== savedSnapshot;
   b.classList.toggle("dirty", dirty);
   b.title = dirty ? T["settings.unsaved"] : "";
 }
-// タブの追加・削除・並べ替えは input イベントを出さないので、
-// イベントを拾うだけでは取りこぼす。内容そのものを見比べるほうが確実
+// Adding, removing, or reordering tabs doesn't fire an input event,
+// so listening for events alone would miss it. Comparing the content directly is more reliable
 setInterval(refreshSave, 600);
 
-// ── 部品 ─────────────────────────────────────────────
-// 中身はミリ秒で持つが、人に見せるのは秒。
-// 「10000」と書かせるより「10」のほうが、設定として素直に読める
+// ── Widgets ─────────────────────────────────────────────
+// Stored internally in milliseconds, but shown to people in seconds.
+// Letting someone read "10" rather than write "10000" makes for a more natural setting
 function secondsField(obj, key, placeholderSec) {
   const i = el("input", {type:"number", step:"1", min:"0",
                          placeholder:String(placeholderSec), class:"grow"});
@@ -1382,7 +1382,7 @@ function check(obj, key, label) {
   const l = el("label", {class:"check"}); l.append(i, document.createTextNode(label));
   return l;
 }
-// 既定がオンの項目。未設定とオンを見分けず、外したときだけ false を持つ
+// An item that's on by default. Doesn't distinguish "unset" from "on"; only holds false once unchecked
 function checkDefaultOn(obj, key, label) {
   const i = el("input", {type:"checkbox"});
   i.checked = obj[key] !== false;
@@ -1403,31 +1403,31 @@ function choose(obj, key, opts, onChange) {
 function row(label, ...kids) { return el("div", {class:"row"}, el("label", {}, label), ...kids); }
 function card(title, ...kids) { return el("div", {class:"card"}, el("h2", {}, title), ...kids); }
 
-// ── タブid まわり ────────────────────────────────────
-// ワークスペース内の既存タブidを集める (id が無ければ表示名を手掛かりにする)。
-// 参照フィールド(議論の参加者/審判/司会、停止条件の対象タブ)の候補に使う
+// ── Tab id handling ────────────────────────────────────
+// Collects existing tab ids within a workspace (falls back to the display name if there's no id).
+// Used as candidates for reference fields (discussion participants/judge/moderator, stop-condition target tab)
 function tabIds(ws) {
   return [...new Set((ws.tabs || [])
     .map(t => (t.id || t.name || "").trim())
     .filter(Boolean))];
 }
-// 文字列 → 5文字の安定ハッシュ (FNV-1a 32bit を base36)。日本語のみの名前など、
-// ASCII英数が1つも無いときのid素材にする
+// String → stable 5-char hash (FNV-1a 32-bit in base36). Used as id material
+// for names with no ASCII alphanumerics at all, such as Japanese-only names
 function hash5(s) {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
   return (h >>> 0).toString(36).padStart(5, "0").slice(-5);
 }
-// 表示名から自動化用idを推測する。
-// - ASCII英数がある(英語名など) → それをスラグ化 (小文字, [a-z0-9]+ を "-" で連結)
-// - 無い(日本語のみ等) → 5文字ハッシュ。名前も空なら "" (据え置き)
+// Infers an automation id from the display name.
+// - Has ASCII alphanumerics (e.g. an English name) → slugify it (lowercase, join [a-z0-9]+ runs with "-")
+// - Doesn't (Japanese-only, etc.) → 5-char hash. If the name is also empty, "" (leave as-is)
 function slugId(name) {
   const parts = (name || "").toLowerCase().match(/[a-z0-9]+/g);
   if (parts && parts.length) return parts.join("-").slice(0, 24);
   const src = (name || "").trim();
   return src ? hash5(src) : "";
 }
-// base を ws 内で衝突しないidにする (使われていれば -2, -3 …)。self は自分自身(除外)
+// Turns base into an id that doesn't collide within ws (-2, -3, ... if already used). self excludes itself
 function uniqueId(ws, base, self) {
   if (!base) return "";
   const used = new Set((ws.tabs || [])
@@ -1435,7 +1435,7 @@ function uniqueId(ws, base, self) {
   if (!used.has(base)) return base;
   for (let n = 2; ; n++) { const c = base + "-" + n; if (!used.has(c)) return c; }
 }
-// 空idのタブに、名前から作ったidを埋める(保存時の保険)。名前も空なら触らない
+// Fills in an id derived from the name for tabs with an empty id (a safety net at save time). Leaves it alone if the name is also empty
 function ensureIds(ws) {
   const tabs = ws.tabs || [];
   const used = new Set(tabs.map(t => (t.id || "").trim()).filter(Boolean));
@@ -1448,8 +1448,8 @@ function ensureIds(ws) {
     t.id = id; used.add(id);
   }
 }
-// タブid を選ぶプルダウン (候補=既存タブid)。空選択肢のラベルは emptyLabel。
-// drives のタブを除きたいときは exclude(t)=>bool を渡す
+// A dropdown for picking a tab id (candidates = existing tab ids). emptyLabel is the label for the empty option.
+// Pass exclude(t)=>bool when tabs with drives should be excluded
 function idSelect(ws, val, emptyLabel, onChange, exclude) {
   const s = el("select");
   s.append(el("option", {value:""}, emptyLabel));
@@ -1457,7 +1457,7 @@ function idSelect(ws, val, emptyLabel, onChange, exclude) {
     .filter(t => !(exclude && exclude(t)))
     .map(t => (t.id || t.name || "").trim()).filter(Boolean))];
   for (const id of ids) s.append(el("option", {value:id}, id));
-  // 候補に無い既存値も選べるようにしておく (手書き済みの値を消さない)
+  // Also allow selecting an existing value that isn't among the candidates (don't erase a hand-typed value)
   if (val && !ids.includes(val)) s.append(el("option", {value:val}, fill(T["settings.tab.missing_option"], {name: val})));
   s.value = val || "";
   s.addEventListener("change", () => { onChange(s.value || null); refreshSave(); });
@@ -1482,7 +1482,7 @@ function pathField(obj, key, ph, kind, title) {
   return [i, b];
 }
 
-// ── コマンドの組み立て (SSH / Docker / WSL) ───────────
+// ── Command assembly (SSH / Docker / WSL) ───────────
 function parseSsh(cmd) {
   const t = (cmd || "").trim().split(/\s+/);
   if (t[0] !== "ssh") return null;
@@ -1557,19 +1557,19 @@ function parseWsl(cmd) {
 const buildWsl = o => ["wsl", o.distro ? "-d " + o.distro : "", o.dir ? "--cd " + o.dir : "",
   o.shell ? "-- " + o.shell : ""].filter(Boolean).join(" ");
 
-// ブラウザのコマンドを読む。持ち物はURLひとつ。
-// 頭の語 (browser / web) は書いた人のものなので、そのまま残す
+// Parses a browser command. Its only payload is a single URL.
+// The leading word (browser / web) belongs to whoever wrote it, so keep it as-is
 function parseBrowser(c) {
   const m = /^\s*(browser|web)\s+(\S.*)$/i.exec(cmdToText(c));
   return m ? {head: m[1], url: m[2].trim()} : null;
 }
 const buildBrowser = o => (o.head || "browser") + " " + (o.url || "");
-/// 窓の中に置けるURLか。file: や data: は開けない
+/// Whether the URL can be embedded in the window. file: and data: can't be opened
 const openableUrl = u => /^https?:\/\/\S/i.test((u || "").trim());
 
-// モデル(API接続)。プリミティブは「model 接続先/モデル名」の1行。
-// 接続先(provider)は 最初の "/" まで、残り全部がモデル名 (ollama の
-// huihui_ai/qwen... のように名前に "/" を含むものがあるため先頭のみで割る)
+// Model (API connection). The primitive is a single "model provider/model-name" line.
+// The provider is everything up to the first "/"; the rest is the whole model name (split only
+// on the first "/" because some names, like ollama's huihui_ai/qwen..., contain their own "/")
 function parseModel(c) {
   const m = /^\s*model\s+(\S.*)$/i.exec(cmdToText(c));
   if (!m) return null;
@@ -1578,7 +1578,7 @@ function parseModel(c) {
   return {provider: i >= 0 ? rest.slice(0, i) : rest, model: i >= 0 ? rest.slice(i + 1) : ""};
 }
 const buildModel = o => "model " + (o.provider || "") + (o.model ? "/" + o.model : "");
-// 接続先ごとの既定モデル名 (入力を省ける親切値。無ければ空)
+// Default model name per provider (a convenience value that lets input be skipped; empty if none)
 const DEFAULT_MODEL = {deepseek: "deepseek-chat"};
 
 const kindOf = c => parseBrowser(c) ? "browser" : parseModel(c) ? "model"
@@ -1597,8 +1597,8 @@ const COMMON_COMMANDS = [
   {label:T["settings.tab.kind.cmdprompt"], cmd:"cmd.exe", check:null},
 ];
 
-// 討論(AI×AI)に出せるのは、対話できるAI CLI か モデル(API接続)タブだけ。
-// ブラウザ・シェル(cmd/PowerShell/SSH/Docker/WSL)・Aider は議論に出さない
+// Only an interactive AI CLI or a model (API connection) tab can join a discussion (AI vs AI).
+// Browser, shell (cmd/PowerShell/SSH/Docker/WSL), and Aider are excluded from discussions
 const DISCUSS_HEADS = ["claude", "codex", "gemini", "kimi"];
 function isDiscussable(t) {
   const c = cmdToText(t.command).trim();
@@ -1610,7 +1610,7 @@ function isDiscussable(t) {
 }
 const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 
-// ── サイドバー ───────────────────────────────────────
+// ── Sidebar ───────────────────────────────────────
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
@@ -1644,16 +1644,16 @@ const newTab = (o = {}) => Object.assign(
    browser_profile:"", private:false,
    cwd:"", encoding:"", scrollback:"", log:false, depth:0}, o);
 
-// 名前もコマンドも空のタブ (作りかけ) の番号。無ければ -1。
-// 「タブを追加」を連打しても、まだ何も書いていないタブがあれば
-// そこへ移るだけにして、空のタブが積み上がらないようにする
+// Index of a tab with both an empty name and empty command (still in progress). -1 if there is none.
+// Even if "Add tab" is clicked repeatedly, if an empty, unwritten tab already exists,
+// this just jumps to it instead — so empty tabs don't pile up
 function firstEmptyTab(ws) {
   return (ws.tabs || []).findIndex(t =>
     !(t.name || "").trim() && !(t.command || "").trim() && !(t.id || "").trim());
 }
 
-// タブを1つ増やす。ただし作りかけの空タブがあるなら、それを選ぶだけ。
-// 増やした(または見つけた)タブの番号を返す
+// Adds one tab. But if there's already an in-progress empty tab, just selects that instead.
+// Returns the index of the added (or found) tab
 function addTabTo(ws) {
   ws.tabs = ws.tabs || [];
   let i = firstEmptyTab(ws);
@@ -1661,12 +1661,12 @@ function addTabTo(ws) {
   return i;
 }
 
-// ── 新規ワークスペースのウィザード ───────────────────────
-// 0からの導線: まず目的(テンプレ)を選び、AIをプルダウンで選ぶだけで、
-// 裏でタブ・discussブロック・停止条件・ペルソナを自動生成する。
-// プリミティブ(model x/y や discuss)はそのまま。増やすのは薄いGUIだけ。
+// ── New-workspace wizard ───────────────────────
+// The from-scratch flow: just pick a purpose (a template), then pick AIs from a dropdown,
+// and tabs, discuss blocks, stop conditions, and personas are auto-generated behind the scenes.
+// The primitives (model x/y, discuss, etc.) stay as they are. Only a thin GUI is added on top.
 
-// 動的モーダル。中身のDOMを渡すと中央に出す。背景クリックで閉じる。
+// A dynamic modal. Pass in the content's DOM and it's shown centered. Clicking the background closes it.
 function openModal(...kids) {
   const inner = el("div", {class:"modal-inner"}, ...kids);
   const back = el("div", {class:"modal"}, inner);
@@ -1675,7 +1675,7 @@ function openModal(...kids) {
   return back;
 }
 
-// 参加者に選べるAI = 対話できるAI CLI + 登録済みモデル接続先
+// AIs selectable as a participant = interactive AI CLIs + registered model connections
 function aiChoices() {
   const cli = [
     {key:"claude", label:"Claude Code"},
@@ -1689,8 +1689,8 @@ function aiChoices() {
 }
 const choiceOf = key => aiChoices().find(c => c.key === key) || null;
 const aiLabelOf = key => { const c = choiceOf(key); return c ? c.label : (key || "AI"); };
-// 選択キー(+モデル名)から起動コマンドを作る。討論は毎ターン発言を保存するので、
-// Claudeは権限の事前許可フラグ付きにする(隠さず、生成後の編集画面にも表示される)
+// Builds the launch command from the selection key (+ model name). Since a discussion saves every turn's
+// statement, Claude gets the permission-pre-approval flag (not hidden — it also shows in the post-generation edit screen)
 function aiCommandOf(key, model) {
   if (key && key.startsWith("model:")) {
     const p = key.slice(6);
@@ -1699,7 +1699,7 @@ function aiCommandOf(key, model) {
   if (key === "claude") return "claude --dangerously-skip-permissions";
   return key || "";
 }
-// AI選択 + (モデルAPIのときだけ)モデル名。st={key,model} を書き戻す
+// AI selection + (only for a model API) a model name. Writes back to st={key,model}
 function aiPick(st) {
   const wrap = el("span", {style:"display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap"});
   const sel = el("select");
@@ -1716,7 +1716,7 @@ function aiPick(st) {
   modelIn.addEventListener("input", () => { st.model = modelIn.value.trim(); });
   sync(); wrap.append(sel, modelIn); return wrap;
 }
-// モデルAPI参加者はモデル名が要る(既定値がある接続先を除く)
+// A model-API participant needs a model name (except for a provider that has a default value)
 function partsValid(parts) {
   for (const p of parts) {
     const c = choiceOf(p.key);
@@ -1729,7 +1729,7 @@ function landOnWs(ws) {
   wss.push(ws); sel = {ws:wss.length - 1, tab:null, global:false}; render(); refreshSave();
 }
 
-// 「＋ ワークスペースを追加」 → まず目的を選ばせる
+// "+ Add workspace" → first, have the user pick a purpose
 function addWs() {
   const m = openModal();
   const pick = fn => { m.remove(); fn(); };
@@ -1755,7 +1755,7 @@ function createBlankWs() {
   landOnWs({name: T["settings.workspace"], automation:"", tabs:[]});
 }
 
-// 🗣 討論ウィザード
+// 🗣 Discussion wizard
 function wizardDiscuss() {
   const parts = [{key:"claude", model:"", name:"", persona:""},
                  {key:"claude", model:"", name:"", persona:""}];
@@ -1820,7 +1820,7 @@ function wizardDiscuss() {
       el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
 }
 
-// 🌐 ブラウザ操作ウィザード
+// 🌐 Browser-control wizard
 function wizardBrowser() {
   const nameIn = el("input", {value:T["wizard.browser.default_name"], style:"width:220px"});
   const urlIn = el("input", {class:"mono", placeholder:"https://example.com/",
@@ -1846,7 +1846,7 @@ function wizardBrowser() {
       el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
 }
 
-// 👨‍💻 コードレビュー(Git連携)ウィザード
+// 👨‍💻 Code review (Git integration) wizard
 const CODER_PERSONA = T["wizard.review.persona.coder"];
 const REVIEW_ROLES = [
   {label:T["wizard.review.role.ui"], id:"ui", persona:T["wizard.review.persona.ui"]},
@@ -1916,7 +1916,7 @@ function wizardReview() {
       el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
 }
 
-// ── 詳細ペイン ───────────────────────────────────────
+// ── Detail pane ───────────────────────────────────────
 function render() { renderNav(); renderDetail(); }
 
 function renderDetail() {
@@ -1973,9 +1973,9 @@ function globalPane() {
   return box;
 }
 
-// 最新のラリー結果をダウンロードする。
-// 中身: 人が読む流れ(transcript) ＋ 判定 ＋ 実行Lua(貼れば再現)。
-// AI+AI の議論もこの1枚に流れと勝敗が残るので、後から人が確認できる
+// Downloads the latest rally result.
+// Contents: the human-readable flow (transcript) + the verdict + the executed Lua (paste it to reproduce).
+// An AI+AI discussion's flow and outcome also stay in this one file, so a human can check it later
 function rallyResultCard() {
   const list = el("div", {id:"rallylist"}, el("div", {class:"hint"}, "…"));
   setTimeout(loadRallyList, 0);
@@ -2017,8 +2017,8 @@ async function downloadRally(runId) {
   }
 }
 
-// 秘密 (GitHub Secrets 相当)。キーで参照し、値は保存したら二度と表示されない。
-// マスターパスワードがあれば暗号化、無ければ平文 (自己責任) — どちらも同じUIで扱う
+// Secrets (equivalent to GitHub Secrets). Referenced by key; once saved, the value is never shown again.
+// Encrypted if a master password is set, plaintext otherwise (at the user's own risk) — both handled through the same UI
 function secretsCard() {
   const status = el("div", {class:"hint", id:"secretsmode"});
   const listBox = el("div", {id:"secretslist"}, el("div", {class:"hint"}, T["common.reload"] ? "…" : "…"));
@@ -2035,7 +2035,7 @@ function secretsCard() {
     if (r.ok) { toast(fill(T["settings.secrets.saved_key"], {key})); keyIn.value=""; descIn.value=""; valIn.value=""; loadSecrets(); }
     else toast(r.error || T["settings.secrets.save_failed"], true);
   }}, T["settings.secrets.add_update"]);
-  // 各欄が何かを見出しで明示する。プレースホルダだけだと切れて分かりにくかった
+  // Label each field explicitly with a heading. A placeholder alone got truncated and was hard to read
   const labeled = (title, hint, input) => el("div", {style:"display:flex;flex-direction:column;gap:3px"},
     el("span", {style:"font-size:12px;color:var(--text)"}, title),
     input,
@@ -2046,14 +2046,14 @@ function secretsCard() {
     labeled(T["settings.secrets.value_label"], T["settings.secrets.value_hint"], valIn),
     addBtn);
   const c = card(T["settings.secrets.title"], status, listBox, form);
-  // カードがDOMに入ってから読み込む (getElementById が効くように)
+  // Load only after the card is in the DOM (so getElementById works)
   setTimeout(loadSecrets, 0);
   return c;
 }
 
-// model ブリッジの接続先(Providers)。OpenAI互換APIを名前で登録する。
-// キーは直接打ち込むと裏で暗号化secretへ保存し、configには @参照 だけ置く
-// (利用者は「秘密ストア」や @名前 を知らなくてよい)
+// Model bridge connections (Providers). Registers OpenAI-compatible APIs by name.
+// A directly typed key is saved behind the scenes into an encrypted secret, and only an @reference is put in config
+// (the user doesn't need to know about the "secret store" or the @name)
 function providersCard() {
   current.providers = current.providers || {};
   const listBox = el("div", {id:"providerslist"});
@@ -2149,7 +2149,7 @@ async function loadSecrets() {
       del));
   }
 }
-// スマホから使う設定。危険性は隠さず説明したうえで、1クリックで有効にできるようにする
+// The phone-usage setting. Explains the risk plainly, but still lets it be enabled with one click
 function remoteCard() {
   current.remote = current.remote || {};
   const r = current.remote;
@@ -2162,7 +2162,7 @@ function remoteCard() {
   onoff.addEventListener("change", async () => {
     r.enabled = onoff.checked;
     if (r.enabled) { if (!r.bind) r.bind = "auto"; if (!r.port) r.port = 8787; }
-    await save();          // 保存すると本体がすぐ待ち受けを開始/停止する
+    await save();          // Saving makes the main app immediately start/stop listening
     setTimeout(refreshRemote, 1200);
   });
   const l = el("label", {class:"check"});
@@ -2195,7 +2195,7 @@ function remoteCard() {
     status.style.color = j.running ? "var(--accent)" : "var(--muted)";
     qrbox.textContent = "";
     if (j.running && j.url) {
-      // 画像は fetch ではなく直接読み込まれるので、認証はURLのtokenで渡す
+      // The image is loaded directly rather than via fetch, so pass auth as the token in the URL
       const img = el("img", {src:"/api/remote/qr?token=" + encodeURIComponent(TOKEN),
         style:"width:200px;height:200px;border-radius:8px;background:#fff;padding:6px"});
       qrbox.append(el("div", {class:"hint"}, T["settings.phone.scan"]), img,
@@ -2261,8 +2261,8 @@ function wsPane(ws) {
   return box;
 }
 
-// AI×AI 議論。参加者のタブidを並べ、round-robin か moderated(司会が指名)で回す。
-// 周回上限で審判(judge)が裁定(勝敗/統合)。ゴール(議題)は入力欄に打つ
+// AI vs AI discussion. Lines up participant tab ids and cycles them round-robin or moderated (moderator picks the next speaker).
+// At the round cap, the judge renders a verdict (winner/synthesis). The goal (topic) is typed into an input field
 function wsDiscussCard(ws) {
   const body = el("div", {id:"wsdiscussbody"});
   const ensure = () => {
@@ -2289,7 +2289,7 @@ function wsDiscussCard(ws) {
     for (const [v,l] of opts) { const o=el("option",{value:v},l); if(val===v)o.selected=true; e.append(o); }
     e.addEventListener("change", () => { save(e.value); refreshSave(); }); return e; };
 
-  // ペルソナ編集。参加者/審判/司会の id ごとに立場・人格の欄を出す
+  // Persona editing. Shows a stance/personality field for each participant/judge/moderator id
   const personaBox = el("div", {id:"discusspersonas"});
   const drawPersonas = () => {
     personaBox.textContent = "";
@@ -2312,13 +2312,13 @@ function wsDiscussCard(ws) {
 
   const agentsIn = txt((d.agents||[]).join(", "), T["settings.discuss.agents_ph"],
     v => { ensure().agents = v.split(",").map(s=>s.trim()).filter(Boolean); drawChips(); drawPersonas(); });
-  // 参加者候補チップ: 既存タブidをワンクリックで手番末尾に足す。
-  // drives(ブラウザ操作モード)付きのタブは議論に同居できないので候補から外す
+  // Participant-candidate chips: one click appends an existing tab id to the end of the turn order.
+  // Tabs with drives (browser-control mode) can't coexist in a discussion, so they're excluded from candidates
   const chipBox = el("div", {class:"hint", style:"display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px"});
   const drawChips = () => {
     chipBox.textContent = "";
     const cur = (ws.discuss && ws.discuss.agents) || [];
-    // 討論に出せるAI(CLI/モデルAPI)で、まだ参加していない・ブラウザ操作でないタブだけ候補にする
+    // Only candidate tabs that are a discussable AI (CLI/model API), not already a participant, and not browser-controlled
     const cand = (ws.tabs || [])
       .filter(t => isDiscussable(t) && !(t.drives||"").trim())
       .map(t => (t.id || t.name || "").trim())
@@ -2333,7 +2333,7 @@ function wsDiscussCard(ws) {
   const orderSel = self(d.order || "round-robin",
     [["round-robin",T["settings.discuss.order.round_robin"]],["moderated",T["settings.discuss.order.moderated"]]], v => ensure().order = v);
   const roundsIn = numf(d.max_rounds, v => ensure().max_rounds = v);
-  // 審判・司会も 討論に出せるAI に限る（ブラウザ操作タブ・シェル・Aiderは除外）
+  // Judge and moderator are likewise restricted to discussable AIs (browser-control tabs, shells, and Aider are excluded)
   const notDiscuss = t => (t.drives||"").trim() || !isDiscussable(t);
   const judgeIn = idSelect(ws, d.judge, T["wizard.discuss.judge_none"],
     v => { ensure().judge = v; drawPersonas(); }, notDiscuss);
@@ -2364,8 +2364,8 @@ function wsDiscussCard(ws) {
     body);
 }
 
-// 停止条件(審判)。ワークスペース単位。上から評価し最初に成立したものが勝つ。
-// 「この共同作業をいつ終わりにするか(成功/失敗)」の定義
+// Stop conditions (judge). Per-workspace. Evaluated top to bottom; the first one satisfied wins.
+// Defines "when does this collaborative task end (success/failure)"
 function wsStopsCard(ws) {
   ws.stops = ws.stops || [];
   const list = el("div", {id:"wsstopslist"});
@@ -2405,7 +2405,7 @@ function stopRow(ws, s, i, redraw) {
     ["console",T["settings.stops.when.console"]],["rounds",T["settings.stops.when.rounds"]],["time",T["settings.stops.when.time"]],["tokens",T["settings.stops.when.tokens"]],
   ], v => { s.when = v; redraw(); refreshSave(); });
 
-  // 種類に応じて出す入力を変える
+  // Switch which inputs are shown depending on the type
   const dyn = [];
   if (s.when === "screen" || s.when === "css" || s.when === "xpath" || s.when === "console") {
     if (s.when !== "console")
@@ -2430,8 +2430,8 @@ function stopRow(ws, s, i, redraw) {
   return row;
 }
 
-// このワークスペースのラリー(AI)が使ってよい秘密を絞る。既定は全拒否。
-// 別用途の鍵の流用を防ぐ。値は出さず、キー名の許可だけを扱う
+// Restricts which secrets this workspace's rally (AI) is allowed to use. Denied by default.
+// Prevents a key meant for another purpose from being reused. Only key-name permissions are handled here, never values
 function wsSecretsCard(ws) {
   ws.secrets_allow = ws.secrets_allow || [];
   const listBox = el("div", {id:"wssecretslist"}, el("div", {class:"hint"}, "…"));
@@ -2486,8 +2486,8 @@ async function loadWsSecrets(ws) {
   }
 }
 
-// 書き出しも取り込みも、ディスクにある設定が相手。
-// 編集中の姿を書き出すと、渡した相手だけが持っている設定ができてしまう
+// Both export and import operate against the config that's on disk.
+// Exporting the in-progress editing state would create a config that only the recipient has
 function savedAlready() {
   if (snapshot() === savedSnapshot) return true;
   result(T["settings.ws.save_first"], true);
@@ -2511,7 +2511,7 @@ async function importWs() {
   const j = await wsShare("/api/workspace/import", null);
   if (j.cancelled) return;
   if (!j.ok) return result(fill(T["settings.ws.import_failed"], {error:j.error || ""}), true);
-  // 設定はサーバ側で書き換わっている。画面はそれを読み直す
+  // The config has already been rewritten on the server side; reload it here on screen
   await load();
   sel = {ws:wss.length - 1, tab:null, global:false};
   render();
@@ -2540,9 +2540,9 @@ function tabPane(ws, t) {
   const box = el("div");
   const kind = kindOf(t.command);
 
-  // 基本: 名前とIDは identity なので隣に置く。
-  // ID空欄なら名前から自動で用意する(英語→スラグ / 日本語のみ→5文字ハッシュ)。
-  // 推測値はプレースホルダで見せ、名前欄を離れた時点で確定する
+  // Basics: name and ID are identity, so place them side by side.
+  // If ID is empty, auto-derive one from the name (English → slug / Japanese-only → 5-char hash).
+  // The guessed value is shown as a placeholder and finalized once the name field is left
   const idInput = field(t, "id", "", {grow:false, width:280, mono:true});
   const refreshIdPh = () => {
     idInput.placeholder = uniqueId(ws, slugId(t.name), t) || T["settings.tab.id.ph"];
@@ -2561,7 +2561,7 @@ function tabPane(ws, t) {
     row(T["settings.tab.id"], idInput,
         el("span", {class:"hint"}, T["settings.tab.id.hint"]))));
 
-  // 起動するもの
+  // What gets launched
   const cmdRow = el("div", {class:"row"});
   const cmdInput = field(t, "command", T["settings.tab.command.ph"], {mono:true, onInput:() => renderNav()});
   cmdInput.setAttribute("list", "cmdlist");
@@ -2578,12 +2578,12 @@ function tabPane(ws, t) {
         T["settings.tab.cwd.pick"]),
         el("span", {class:"hint"}, T["settings.tab.cwd.hint"]))));
 
-  // ブラウザ操作モード(drives): このAIタブが操作するブラウザタブを選ぶ。Lua不要。
-  // ゴールは設定ではなく、開始後に入力欄へ打つ。ブラウザタブ自身には出さない
+  // Browser-control mode (drives): picks which browser tab this AI tab controls. No Lua needed.
+  // The goal isn't a setting — it's typed into an input field after starting. Not shown on the browser tab itself
   const isBrowser = c => { const h = (c || "").trim().split(/\s+/)[0].toLowerCase(); return h === "browser" || h === "web"; };
   if (!isBrowser(t.command)) {
-    // drives と discuss は同じタブに同居できない。このタブが議論の参加者なら、
-    // ブラウザ操作モードは出さず、理由を示す(入口で併用を防ぐ)
+    // drives and discuss can't coexist on the same tab. If this tab is a discussion participant,
+    // don't show browser-control mode, and explain why (prevents combining the two at the entry point)
     const inDiscuss = !!(ws.discuss && [...(ws.discuss.agents||[]),
       ws.discuss.judge, ws.discuss.moderator].filter(Boolean)
       .includes((t.id || t.name || "").trim()));
@@ -2604,7 +2604,7 @@ function tabPane(ws, t) {
     }
   }
 
-  // 自動化: 何が設定済みか一覧で分かるようにする
+  // Automation: make it visible at a glance what's already configured
   const ev = el("div", {class:"events"});
   for (const [id, label, hint] of eventsFor(t).filter(e => e[0] !== "_shared")) {
     ev.append(el("div", {class:"event"},
@@ -2615,7 +2615,7 @@ function tabPane(ws, t) {
   box.append(card(T["settings.tab.automation"], ev));
   loadAutoStates(ws, t);
 
-  // 詳細: めったに触らないものは畳む
+  // Details: fold away things that are rarely touched
   const det = el("details");
   det.append(el("summary", {}, T["settings.tab.details"]));
   det.append(
@@ -2653,7 +2653,7 @@ function moveTab(ws, d) {
   sel.tab = j; render();
 }
 
-/// 種類ごとの入力補助 (SSH / Docker / WSL)
+/// Type-specific input helpers (SSH / Docker / WSL)
 function kindPanel(t, cmdInput, rebuild) {
   const box = el("div");
   const ssh = parseSsh(t.command), dk = parseDocker(t.command), wsl = parseWsl(t.command);
@@ -2712,7 +2712,7 @@ function kindPanel(t, cmdInput, rebuild) {
     const u = el("input", {type:"text", class:"mono grow",
       placeholder:"https://example.com/"});
     u.value = web.url || "";
-    // 開けないURLは、開いてから気づくより、書いている最中に言う方がいい
+    // Better to flag an unopenable URL while it's being typed than to discover it after opening
     const note = el("span", {class:"hint"});
     const check = () => {
       const bad = web.url && !openableUrl(web.url);
@@ -2724,7 +2724,7 @@ function kindPanel(t, cmdInput, rebuild) {
     box.append(el("div", {class:"row"}, el("label", {}, T["settings.browser.url"]), u));
     box.append(el("div", {class:"row"}, el("label", {}, ""), note));
 
-    // ページの上に出す操作。出したものだけが効く
+    // Controls shown on top of the page. Only the ones enabled here take effect
     t.nav = t.nav || {};
     const part = (key, label) => {
       const c = el("input", {type:"checkbox"});
@@ -2742,9 +2742,9 @@ function kindPanel(t, cmdInput, rebuild) {
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.browser.nav.hint"])));
 
-    // プロファイル(Cookie・ログインの箱)とプライベート(使い捨て)。
-    // 既定は "default"。名前を変えればログインを分けられる(Chromeの「人物」)。
-    // プライベートにチェックすると名前欄は隠れ、内部で使い捨て領域が使われる
+    // Profile (the cookie/login store) vs. private (throwaway).
+    // Defaults to "default". Changing the name splits off separate logins (like Chrome's "person").
+    // Checking private hides the name field and uses a throwaway area internally
     const profRow = el("div", {class:"row"});
     const profInput = el("input", {type:"text", class:"mono", style:"width:220px", placeholder:"default"});
     profInput.value = t.browser_profile || "";
@@ -2768,8 +2768,8 @@ function kindPanel(t, cmdInput, rebuild) {
     box.append(profRow);
     applyPriv();
 
-    // 下に出す帯。チェック1つでは足りない (文言とボタンの字が要る) ので、
-    // 「出す」を入れたときだけ中身の欄を出す
+    // The band shown at the bottom. A single checkbox isn't enough (needs message text and a button label),
+    // so only show the content fields once "show it" is turned on
     const askOn = el("input", {type:"checkbox"});
     askOn.checked = !!t.ask;
     const askLabel = el("label", {class:"check"});
@@ -2813,7 +2813,7 @@ function kindPanel(t, cmdInput, rebuild) {
       applyPh();
       provSel.addEventListener("change", () => {
         mdl.provider = provSel.value;
-        // モデル未入力なら接続先の既定モデルを補う (親切値。手打ちは尊重)
+        // If no model was entered, fill in the provider's default model (a convenience value; hand-typed input is respected)
         if (!(mdl.model || "").trim() && DEFAULT_MODEL[mdl.provider]) {
           mdl.model = DEFAULT_MODEL[mdl.provider]; modelIn.value = mdl.model;
         }
@@ -2852,8 +2852,8 @@ function kindPanel(t, cmdInput, rebuild) {
   return box;
 }
 
-// ── 自動化エディタ ───────────────────────────────────
-// セッションのフック。ブラウザには一つも飛ばない
+// ── Automation editor ───────────────────────────────────
+// Session hooks. None of these ever fire for a browser
 const TAB_EVENTS = [
   ["on_start",    T["automation.on_start"],           T["automation.on_start.hint"]],
   ["on_done",     T["automation.on_done"],     T["automation.on_done.hint"]],
@@ -2862,14 +2862,14 @@ const TAB_EVENTS = [
   ["on_busy",     T["automation.on_busy"],     T["automation.on_busy.hint"]],
   ["_shared",     T["automation._shared"],       ""],
 ];
-// ブラウザのフック。ページには状態が無いので、言葉が違う
+// Browser hooks. A page has no state, so the wording differs
 const PAGE_EVENTS = [
   ["on_load",     T["automation.on_load"],     T["automation.on_load.hint"]],
   ["on_press",    T["automation.on_press"],    T["automation.on_press.hint"]],
   ["_shared",     T["automation._shared"],       ""],
 ];
-// そのタブで本当に飛ぶものだけを並べる。
-// 書ける場所があるのに動かないのは、無いより悪い
+// Lists only the events that actually fire for that tab.
+// Having a place to write code that never runs is worse than not having it at all
 const eventsFor = t => kindOf(t.command) === "browser" ? PAGE_EVENTS : TAB_EVENTS;
 let autoTarget = null, autoData = {}, autoEvent = "on_done";
 
@@ -2907,28 +2907,28 @@ async function openAuto(ws, t, event) {
   const events = eventsFor(t);
   for (const [id, label] of events) s.append(el("option", {value:id}, label));
   autoData = await fetchAuto(autoTarget.dir);
-  // showEvent を使う (switchEvent だと、まだ前のタブの内容が入っている
-  // テキストエリアを新しいタブのデータとして取り込んでしまう)
-  // 既定は、そのタブで最初に並ぶもの (ブラウザなら on_load)
+  // Use showEvent here (switchEvent would capture the textarea's still-there previous-tab
+  // content as the new tab's data)
+  // Defaults to whichever event is listed first for that tab (on_load for a browser)
   showEvent(event || events[0][0]);
   document.getElementById("airow").style.display = aiEngines.length ? "flex" : "none";
   document.getElementById("ainone").style.display = aiEngines.length ? "none" : "flex";
   document.getElementById("aipreview").style.display = "none";
-  // AIへの依頼文と生成結果も前のタブのものを残さない
+  // Don't leave the previous tab's AI request text or generated result behind either
   document.getElementById("autoask").value = "";
   document.getElementById("aicode").textContent = "";
   aiBusy(false);
   automsg("");
   document.getElementById("autobox").style.display = "flex";
 }
-// イベントを切り替える。今表示している内容は失わないよう先に退避する
+// Switches events. Stashes the currently displayed content first so it isn't lost
 function switchEvent() {
   autoData[autoEvent] = document.getElementById("autocode").value;
   showEvent(document.getElementById("autoevent").value);
 }
 
-// 退避せずに表示だけ差し替える。
-// 開いた直後は前のタブの内容が残っているので、退避してはいけない
+// Swaps the displayed content without stashing anything.
+// Right after opening, the previous tab's content is still there, so it must not be stashed
 function showEvent(id) {
   autoEvent = id;
   document.getElementById("autoevent").value = id;
@@ -2952,8 +2952,8 @@ async function saveAuto() {
   msg(created ? T["automation.editor.saved_new"] : T["automation.editor.saved"]);
 }
 
-// 生成中の見た目。経過秒を出すのは、止まっているのか考えているのかの差が
-// 待つ側にとっていちばん重要だから
+// The in-progress-generation look. Showing elapsed seconds matters most to whoever is
+// waiting, because it's the difference between "it's stuck" and "it's thinking"
 let aiTimer = null;
 function aiBusy(on) {
   clearInterval(aiTimer);
@@ -2991,7 +2991,7 @@ async function askAi() {
     document.getElementById("aipreview").style.display = "block";
     automsg(T["automation.editor.check"]);
   } catch (e) {
-    // 通信ごと失敗した場合、今までは黙って終わっていた
+    // Previously, if the request itself failed, it would just end silently
     automsg(fill(T["automation.editor.failed"], {error: e.message || e}), true);
   } finally {
     aiBusy(false);
@@ -3005,7 +3005,7 @@ function applyAi() {
 function automsg(t, warn) { const m = document.getElementById("automsg");
   m.textContent = t; m.style.color = warn ? "var(--danger)" : "var(--muted)"; }
 
-// ── 読み込み / 保存 ──────────────────────────────────
+// ── Load / save ──────────────────────────────────
 function flatten(tabs, depth, out) {
   for (const t of tabs || []) {
     out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command),
@@ -3035,13 +3035,13 @@ function nest(flat) {
     if (f.encoding) node.encoding = f.encoding;
     if (f.scrollback) node.scrollback = Number(f.scrollback);
     if (f.log) node.log = true;
-    // 1つも出さないなら書かない。false ばかりの塊を残しても読みにくいだけ
+    // Don't write it if none are enabled. Leaving a block of all-false values just hurts readability
     if (f.nav && Object.values(f.nav).some(Boolean)) {
       node.nav = {};
       for (const k of ["back", "forward", "reload", "url"])
         if (f.nav[k]) node.nav[k] = true;
     }
-    // 帯は書いてあること自体が「出す」の意味。空欄は書かない
+    // The mere presence of this block means "show it"; don't write it when empty
     if (f.ask) {
       node.ask = {};
       if (f.ask.text) node.ask.text = f.ask.text;
@@ -3074,7 +3074,7 @@ async function load() {
   for (const w of list) {
     const ws = { name:w.name || "", file:w.file || null,
                  automation:w.automation || w.lua || "", tabs:[],
-                 // 画面では触らないが、保存で消さないために持っておく
+                 // Not touched from the screen, but kept so saving doesn't drop it
                  browsers:w.browsers || null,
                  secrets_allow: w.secrets_allow || [],
                  secrets_allow_all: !!w.secrets_allow_all,
@@ -3105,7 +3105,7 @@ async function save() {
   try {
     await doSave();
   } catch (e) {
-    // 通信自体が失敗した場合、今までは何も出ないまま終わっていた
+    // Previously, if the request itself failed, it would end with nothing shown at all
     result(fill(T["settings.save_failed"], {error: e.message || e}), true);
   } finally {
     btn.disabled = false;
@@ -3114,8 +3114,8 @@ async function save() {
   }
 }
 
-// 書き込む内容を組み立てる。保存と未保存判定の両方がこれを使う。
-// 600ms毎の未保存判定からも呼ばれるので、ここは副作用を持たせない
+// Assembles what gets written. Used by both saving and unsaved-change detection.
+// Also called from the every-600ms unsaved check, so this must have no side effects
 function payload() {
   const out = Object.assign({}, current);
   ["tab_bar_width","max_chain"].forEach(k => {
@@ -3123,7 +3123,7 @@ function payload() {
   });
   ["automation","secrets","ai_engine","browser_data","language"].forEach(k => { if (!out[k]) delete out[k]; });
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
-  // base_url 空の接続先は保存しない (追加途中のゴミを残さない)
+  // Don't save a provider with an empty base_url (avoids leaving leftover junk from a still-in-progress add)
   if (out.providers) {
     out.providers = Object.fromEntries(
       Object.entries(out.providers).filter(([, p]) => p && (p.base_url || "").trim()));
@@ -3131,12 +3131,12 @@ function payload() {
   }
   delete out.lua; delete out.tabs;
 
-  // 停止条件は when が空の行を捨ててから保存する
+  // Stop conditions are saved after dropping rows with an empty when
   const cleanStops = w => (w.stops || []).filter(s => s && s.when);
-  // 議論は参加者が2人以上のときだけ保存する
+  // A discussion is only saved when there are 2 or more participants
   const cleanDiscuss = w => (w.discuss && (w.discuss.agents || []).length >= 2) ? w.discuss : null;
 
-  // 別ファイルに切り出されたワークスペースは、そのファイルへ書く
+  // A workspace that was split out into a separate file gets written to that file
   const files = [];
   for (const w of wss) {
     if (!w.file) continue;
@@ -3152,14 +3152,14 @@ function payload() {
     const o = { name:w.name };
     if (w.file) o.file = w.file;
     else { if (w.automation) o.automation = w.automation; o.tabs = nest(w.tabs); }
-    // 画面に無い設定を、画面から保存しただけで失わない
+    // Don't lose a setting that isn't on screen just because it was saved from the screen
     if (w.browsers) o.browsers = w.browsers;
-    // ラリーが使ってよい秘密の許可リスト (既定は全拒否)
+    // Allow-list of secrets the rally may use (denied by default)
     if (w.secrets_allow && w.secrets_allow.length) o.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) o.secrets_allow_all = true;
-    // 停止条件(審判)。ファイル参照のワークスペースはファイル側に書いたので二重には出さない
+    // Stop conditions (judge). Already written into the file for a file-referenced workspace, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
-    // AI×AI 議論
+    // AI vs AI discussion
     if (!w.file) { const dc = cleanDiscuss(w); if (dc) o.discuss = dc; }
     return o;
   });
@@ -3167,8 +3167,8 @@ function payload() {
 }
 
 async function doSave() {
-  // 空idのタブは名前からidを用意してから書く(参照の取りこぼしを防ぐ保険)。
-  // 副作用なので保存の直前だけで行う(未保存判定の payload では触らない)
+  // Tabs with an empty id get one derived from the name before writing (a safety net against dropped references).
+  // Since this is a side effect, it's done only right before saving (never inside payload's unsaved-check)
   for (const w of wss) ensureIds(w);
   const { out, files } = payload();
   for (const f of files) {
@@ -3181,43 +3181,43 @@ async function doSave() {
   if (!j.ok) { result(fill(T["settings.save_failed"], {error: j.error}), true); return; }
   markClean();
   result(T["common.saved"]);
-  // 言語は起動時にしか読まないので、変えたら再起動しないと反映されない。
-  // 盤面へ戻るとトーストは背面に隠れて気づけないため、確実に読める alert で伝える
+  // The language is only read at launch, so a change won't take effect until a restart.
+  // Since a toast gets hidden behind the board on returning to it and goes unnoticed, use a reliable alert instead
   if (languageNeedsRestart()) {
-    loadedLanguage = (current.language || "").trim().toLowerCase(); // 二重案内を防ぐ
+    loadedLanguage = (current.language || "").trim().toLowerCase(); // Avoids showing the notice twice
     alert(T["settings.language.restart"]);
   }
-  // 保存したら用は済んでいる。開いたままだと盤面へ戻る道が
-  // 「別のタブを押す」しかなく、設定画面が居座っているように見える
+  // Once saved, this screen's job is done. Leaving it open would mean the only way back
+  // to the board is "click another tab", making settings feel like it's overstaying
   goIndex();
 }
 
-// 保存した言語設定が、いま動いている言語と食い違うか。
-// document.documentElement.lang には起動時に決まった実行中の言語が入っている
+// Whether the saved language setting disagrees with the language currently running.
+// document.documentElement.lang holds the running language as decided at launch
 function languageNeedsRestart() {
   const active = (document.documentElement.lang || "").trim().toLowerCase();
   const chosen = (current.language || "").trim().toLowerCase();
-  // 明示指定なら、実行中と違うときだけ再起動が要る
+  // If it's an explicit choice, a restart is only needed when it differs from what's running
   if (chosen) return chosen !== active;
-  // 「自動」に戻したとき: 元が明示指定だったならOSの言語に変わり得る
+  // When reverted to "Auto": if the original was an explicit choice, it may now change to the OS language
   return !!loadedLanguage;
 }
 
-// この画面は窓の中に置かれたページなので、本体へ直接ものが言える。
-// 外のブラウザで開いているときは window.ipc が無いだけ (何も起きない)
+// This screen is a page embedded in a window, so it can talk directly to the main app.
+// When opened in an external browser, window.ipc simply doesn't exist (so nothing happens)
 function goIndex() {
   try { window.ipc.postMessage(JSON.stringify({kind:"select", tab:0})); } catch (e) {}
 }
 
-// 設定を閉じる。稼働盤(INDEX)へ戻り、設定タブごと畳んで左の一覧からも消す。
-// 未保存なら、消えることを先に伝える
+// Closes settings. Returns to the operating board (INDEX), folding the settings tab away and removing it from the list on the left too.
+// If there are unsaved changes, warns first that they'll be lost
 function closeSettings() {
   if (snapshot() !== savedSnapshot && !confirm(T["settings.back.confirm"])) return;
   try { window.ipc.postMessage(JSON.stringify({kind:"closesettings"})); } catch (e) { goIndex(); }
 }
 
-// URLに addtab=<ワークスペース番号> が付いていたら、読み込み後に
-// そのワークスペースへタブを1つ足した状態で始める (タブバーの + から来る)
+// If the URL has addtab=<workspace-index>, start with one tab already added
+// to that workspace after loading (this is where the tab bar's + comes from)
 load().then(() => {
   const wi = Number(new URLSearchParams(location.search).get("addtab"));
   if (!Number.isInteger(wi) || !wss[wi]) return;
@@ -3229,7 +3229,7 @@ load().then(() => {
 </script></body></html>
 "##;
 
-/// マニュアル表示ページ (Markdownの必要な部分だけを描画する簡易レンダラ)
+/// The manual display page (a simple renderer that only handles the Markdown subset needed here)
 const HELP_PAGE: &str = r##"<!doctype html>
 <html lang="{{__lang__}}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{{help.page.title}}</title>
@@ -3259,18 +3259,18 @@ function render(md) {
   let i = 0;
   while (i < lines.length) {
     const l = lines[i];
-    if (l.startsWith("```")) {                      // コードブロック
+    if (l.startsWith("```")) {                      // Code block
       const buf = []; i++;
       while (i < lines.length && !lines[i].startsWith("```")) buf.push(lines[i++]);
       i++; out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>"); continue;
     }
-    if (/^\|/.test(l)) {                            // 表
+    if (/^\|/.test(l)) {                            // Table
       const rows = [];
       while (i < lines.length && /^\|/.test(lines[i])) rows.push(lines[i++]);
       const cells = r => r.split("|").slice(1,-1).map(c => c.trim());
       let html = "<table>";
       rows.forEach((r, n) => {
-        if (/^\|[\s:|-]+\|$/.test(r)) return;        // 区切り行
+        if (/^\|[\s:|-]+\|$/.test(r)) return;        // Separator row
         const tag = n === 0 ? "th" : "td";
         html += "<tr>" + cells(r).map(c => `<${tag}>${inline(c)}</${tag}>`).join("") + "</tr>";
       });
@@ -3279,7 +3279,7 @@ function render(md) {
     const h = l.match(/^(#{1,3})\s+(.*)$/);
     if (h) { const n = h[1].length; out.push(`<h${n}>${inline(h[2])}</h${n}>`); i++; continue; }
     if (/^---+$/.test(l)) { out.push("<hr>"); i++; continue; }
-    if (/^[-*]\s+/.test(l)) {                        // 箇条書き
+    if (/^[-*]\s+/.test(l)) {                        // Bulleted list
       const buf = [];
       while (i < lines.length && /^[-*]\s+/.test(lines[i]))
         buf.push("<li>" + inline(lines[i++].replace(/^[-*]\s+/, "")) + "</li>");
@@ -3303,7 +3303,7 @@ mod tests {
 
     #[test]
     fn manual_is_embedded_and_usable() {
-        // どこから起動してもAIに渡す仕様書が手に入ること (言語を問わず)
+        // The spec handed to the AI must be obtainable no matter where it's launched from (regardless of language)
         for (code, text) in EMBEDDED_MANUALS {
             assert!(text.contains("shikisha.send_to_tab"), "{code} の仕様書が空");
         }
@@ -3311,16 +3311,16 @@ mod tests {
         assert!(m.contains("shikisha."), "埋め込みにフォールバックする");
     }
 
-    /// 仕様書が、画面で選べるイベントを全部説明していること。
+    /// The spec must explain every event the screen offers as a choice.
     ///
-    /// この仕様書はAIへそのまま渡している。載っていないイベントを頼むと、
-    /// AIは嘘をつかずに「仕様に無いので何もしません」と正しく答えてしまう。
-    /// 機能を足したのに書き足し忘れると、その機能はAIから見えないまま残る
+    /// This spec is passed to the AI as-is. If asked for an event it doesn't cover,
+    /// the AI will honestly and correctly reply "that's not in the spec, so I won't do anything."
+    /// If a feature is added but the spec isn't updated, that feature stays invisible to the AI
     #[test]
     fn the_manual_covers_every_event_the_screen_offers() {
         for (code, text) in EMBEDDED_MANUALS {
             for event in EVENT_FILES {
-                // _shared はイベントではなく、共通の置き場
+                // _shared isn't an event; it's a shared location
                 if event == "_shared" {
                     continue;
                 }
@@ -3333,9 +3333,9 @@ mod tests {
     }
 
 
-    /// トップレベルの const/let が重複していないこと。
-    /// 重複すると SyntaxError でスクリプト全体が動かず、静的なHTMLだけが残る。
-    /// 画面は出ているのに何も動かないという、原因の分かりにくい壊れ方をする
+    /// Top-level const/let bindings must not be duplicated.
+    /// A duplicate causes a SyntaxError, so the whole script fails to run and only static HTML is left.
+    /// The result is a hard-to-diagnose break: the screen shows up but nothing works
     fn top_level_bindings(page: &str) -> Vec<String> {
         page.lines()
             .filter_map(|l| l.strip_prefix("const ").or_else(|| l.strip_prefix("let ")))
@@ -3355,8 +3355,8 @@ mod tests {
         }
     }
 
-    /// 画面に `{{key}}` や `__DICT__` がそのまま出ていないこと。
-    /// 差し込み忘れは実行して初めて気づくので、ここで止める
+    /// The screen must not still contain a raw `{{key}}` or `__DICT__`.
+    /// A forgotten substitution would only be caught at runtime, so it's stopped here instead
     #[test]
     fn pages_are_fully_rendered() {
         for (name, page) in [("PAGE", PAGE), ("HELP_PAGE", HELP_PAGE)] {
@@ -3371,7 +3371,7 @@ mod tests {
         }
     }
 
-    /// JSから引くキーがすべて辞書にあること (T["..."] が undefined にならない)
+    /// Every key referenced from JS must exist in the dictionary (T["..."] must never be undefined)
     #[test]
     fn page_script_only_uses_known_keys() {
         let en: serde_json::Value = serde_json::from_str(include_str!("../lang/en.json")).unwrap();
@@ -3404,38 +3404,38 @@ mod tests {
         )
         .unwrap();
         let s = describe_tabs(&v);
-        // 名前で指示できるよう、番号と名前の対応をAIに渡す
+        // Pass the index-to-name mapping to the AI so it can be addressed by name
         assert!(s.contains("1. 実装"), "{s}");
         assert!(s.contains("2. 検査"), "{s}");
         assert!(s.contains("this script runs in"), "{s}");
-        // タブ情報が無いときは何も足さない
+        // Adds nothing when there's no tab info
         assert_eq!(describe_tabs(&serde_json::json!({})), "");
     }
 
     #[test]
     fn extracts_lua_from_ai_output() {
-        // マーカー付き (期待する形)
+        // With marker (the expected shape)
         let s = "了解しました\n<<<LUA\nshikisha.log(\"hi\")\n>>>\n以上です";
         assert_eq!(extract_lua(s).unwrap(), "shikisha.log(\"hi\")");
-        // コードフェンスのみでもコードらしければ受け入れる
+        // Accepted with just a code fence too, as long as it looks like code
         let s2 = "```lua\nshikisha.send_to_tab(1, tab.output)\n```";
         assert_eq!(
             extract_lua(s2).unwrap(),
             "shikisha.send_to_tab(1, tab.output)"
         );
-        // 会話文だけならエラーにして、保存させない
+        // Errors out (and isn't saved) for conversational text alone
         assert!(extract_lua("どのような自動化を作りますか？").is_err());
     }
 
     #[test]
     fn picked_paths_stay_portable_when_inside_the_config_folder() {
         let cfg = std::path::Path::new("D:/app/config.json");
-        // 設定フォルダ配下は相対パスにする (フォルダごと持ち運べる)
+        // Paths under the config folder become relative (so the whole folder stays portable)
         assert_eq!(
             display_path(std::path::Path::new("D:/app/scripts/reviewer"), cfg),
             "scripts/reviewer"
         );
-        // 外にあるものは絶対パスのまま、区切りだけ揃える
+        // Paths outside it stay absolute, just with normalized separators
         assert_eq!(
             display_path(std::path::Path::new("C:\\Users\\me\\.ssh\\id_ed25519"), cfg),
             "C:/Users/me/.ssh/id_ed25519"
@@ -3445,14 +3445,14 @@ mod tests {
     #[test]
     fn workspace_path_rejects_traversal() {
         let cfg = std::path::Path::new("C:/app/config.json");
-        // 正常系
+        // Happy path
         assert!(safe_workspace_path("/api/workspace?file=workspaces/x.json", cfg).is_some());
-        // パストラバーサル・絶対パス・非JSONは拒否
+        // Path traversal, absolute paths, and non-JSON are rejected
         assert!(safe_workspace_path("/api/workspace?file=../secrets.json", cfg).is_none());
         assert!(safe_workspace_path("/api/workspace?file=workspaces/../../x.json", cfg).is_none());
         assert!(safe_workspace_path("/api/workspace?file=C:/windows/x.json", cfg).is_none());
         assert!(safe_workspace_path("/api/workspace?file=workspaces/x.lua", cfg).is_none());
-        // URLエンコードされた .. も拒否
+        // URL-encoded .. is rejected too
         assert!(safe_workspace_path("/api/workspace?file=%2E%2E%2Fsecrets.json", cfg).is_none());
     }
 
@@ -3464,7 +3464,7 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    /// 実際にサーバーを起動し、認証と保存の動作を確認する
+    /// Actually starts the server and verifies the auth and save behavior
     #[test]
     fn server_requires_token_and_saves_valid_json() {
         let dir = std::env::temp_dir().join("shikisha-webui-test");
@@ -3482,7 +3482,7 @@ mod tests {
         let base = ui.url.split("/?").next().unwrap().to_string();
         let agent = ureq::Agent::new_with_defaults();
 
-        // トークン無し → 403
+        // No token → 403
         let status = agent
             .get(&format!("{base}/api/config"))
             .call()
@@ -3493,7 +3493,7 @@ mod tests {
             });
         assert_eq!(status, 403, "トークン無しは拒否される");
 
-        // 正しいトークン → 現在の設定が読める
+        // Correct token → the current config can be read
         let body = agent
             .get(&format!("{base}/api/config?token={token}"))
             .call()
@@ -3503,7 +3503,7 @@ mod tests {
             .unwrap();
         assert!(body.contains("max_chain"));
 
-        // 壊れたJSONは保存されない
+        // Broken JSON is not saved
         let bad = agent
             .post(&format!("{base}/api/config?token={token}"))
             .send("{ broken")
@@ -3519,7 +3519,7 @@ mod tests {
             "検証に失敗したら元の設定は保たれる"
         );
 
-        // 正しいJSONは保存される
+        // Valid JSON is saved
         agent
             .post(&format!("{base}/api/config?token={token}"))
             .send(r#"{"max_chain":5}"#)

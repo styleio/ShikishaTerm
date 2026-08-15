@@ -1,10 +1,12 @@
-//! Luaフックエンジン。DESIGN.md 8章。
+//! Lua hook engine. See DESIGN.md chapter 8.
 //!
-//! - サンドボックス: string/table/math/coroutine のみロード (io/os/ネットワーク無し)
-//! - ケーパビリティ注入: Rust側が実装した shikisha.* だけが外界への窓口
-//! - コルーチン実行モデル: shikisha.wait/sleep は coroutine.yield で
-//!   検出ティック(200ms)に待機し、UIをブロックしない
-//! - 自動送信は呼び出し元タブのチェーン深度+1を引き継ぐ (暴走対策はmain側)
+//! - Sandbox: only string/table/math/coroutine are loaded (no io/os/network)
+//! - Capability injection: only the shikisha.* functions implemented on the
+//!   Rust side are windows to the outside world
+//! - Coroutine execution model: shikisha.wait/sleep use coroutine.yield to
+//!   wait for the next detection tick (200ms) without blocking the UI
+//! - Auto-sent prompts inherit the calling tab's chain depth + 1 (runaway
+//!   protection lives on the main side)
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -15,24 +17,25 @@ use anyhow::{Context as _, Result};
 use mlua::thread::ThreadStatus;
 use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib, Table, Thread, Value};
 
-/// いまの日時を、渡された書き方で返す (手元の時計)。
+/// Returns the current date/time formatted per the given directives (local clock).
 ///
-/// 綴りは `os.date` と同じにする。Lua を書く人は既にそれを知っているので、
-/// 覚え直すものを増やさない。使えるのは日時に要るものだけ:
+/// The directives match `os.date`, since anyone writing Lua already knows
+/// them — no need to make them learn a new set. Only the directives needed
+/// for dates/times are supported:
 ///
-/// | 綴り | 中身            | 例       |
-/// |------|-----------------|----------|
-/// | `%Y` | 年 (4桁)        | `2026`   |
-/// | `%y` | 年 (下2桁)      | `26`     |
-/// | `%m` | 月              | `08`     |
-/// | `%d` | 日              | `07`     |
-/// | `%H` | 時 (24)         | `01`     |
-/// | `%M` | 分              | `05`     |
-/// | `%S` | 秒              | `09`     |
-/// | `%%` | `%` そのもの    | `%`      |
+/// | Directive | Meaning              | Example  |
+/// |-----------|----------------------|----------|
+/// | `%Y` | Year (4 digits)           | `2026`   |
+/// | `%y` | Year (last 2 digits)      | `26`     |
+/// | `%m` | Month                     | `08`     |
+/// | `%d` | Day                       | `07`     |
+/// | `%H` | Hour (24h)                | `01`     |
+/// | `%M` | Minute                    | `05`     |
+/// | `%S` | Second                    | `09`     |
+/// | `%%` | Literal `%`               | `%`      |
 ///
-/// 知らない綴りは、そのまま残す。黙って消すと、書いたつもりのものが
-/// 消えたことに気づけない
+/// Unknown directives are left as-is. Silently dropping them would make it
+/// impossible to notice that what was written has disappeared.
 pub fn local_stamp(fmt: &str) -> String {
     use windows_sys::Win32::System::SystemInformation::GetLocalTime;
     let mut t = unsafe { std::mem::zeroed() };
@@ -53,7 +56,7 @@ pub fn local_stamp(fmt: &str) -> String {
             Some('M') => out.push_str(&format!("{:02}", t.wMinute)),
             Some('S') => out.push_str(&format!("{:02}", t.wSecond)),
             Some('%') => out.push('%'),
-            // 知らない綴りは残す。消すと、書いたものが消えたと気づけない
+            // Unknown directives are kept. Dropping them would hide the fact that what was written disappeared
             Some(other) => {
                 out.push('%');
                 out.push(other);
@@ -64,18 +67,19 @@ pub fn local_stamp(fmt: &str) -> String {
     out
 }
 
-/// mluaのエラーはSend+Syncでないためanyhowへ文字列で変換する
+/// mlua errors aren't Send+Sync, so convert them to anyhow via a string
 fn lerr(e: mlua::Error) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
 
-/// ラリーの再生用スクリプトの置き場。実行したブラウザ操作Luaをここに積む。
-/// 本文 (文の並び) だけを書くので、そのまま on_done.lua に貼れば再生できる
+/// Location of the rally replay script. Executed browser-operation Lua is
+/// appended here. Only the statement body is written, so it can be pasted
+/// straight into on_done.lua to replay
 fn rally_record_path() -> std::path::PathBuf {
     crate::config::state_path("last-rally.lua")
 }
 
-/// 記録を始め直す (前回分を消してヘッダだけ置く)
+/// Restart recording (clears the previous run and writes only the header)
 fn rally_record_reset() -> std::io::Result<()> {
     std::fs::write(
         rally_record_path(),
@@ -83,7 +87,7 @@ fn rally_record_reset() -> std::io::Result<()> {
     )
 }
 
-/// 実行したLuaを1手ぶん追記する
+/// Append one executed Lua move to the record
 fn rally_record_append(text: &str) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
@@ -93,7 +97,7 @@ fn rally_record_append(text: &str) -> std::io::Result<()> {
     writeln!(f, "{}", text.trim_end())
 }
 
-/// セレクタの指定を解く。"#id" (CSS) か { xpath = "..." } / { css = "..." }
+/// Resolve a selector spec: "#id" (CSS) or { xpath = "..." } / { css = "..." }
 fn sel_of(v: &Value) -> mlua::Result<crate::browser::Sel> {
     match v {
         Value::String(s) => Ok(crate::browser::Sel::Css(s.to_str()?.to_string())),
@@ -110,7 +114,7 @@ fn sel_of(v: &Value) -> mlua::Result<crate::browser::Sel> {
     }
 }
 
-/// browser_go の指定を解く (back / forward / reload / to(URL))
+/// Resolve a browser_go spec (back / forward / reload / to(URL))
 fn go_of(what: &str, url: Option<String>) -> mlua::Result<crate::browser::Go> {
     use crate::browser::Go;
     Ok(match what {
@@ -122,7 +126,7 @@ fn go_of(what: &str, url: Option<String>) -> mlua::Result<crate::browser::Go> {
     })
 }
 
-/// 見つからなかったときに止めるか進むか (呼び出しごとに選べる)
+/// Whether to stop or continue when not found (selectable per call)
 fn missing_ok(opts: &Option<Table>) -> bool {
     opts.as_ref()
         .and_then(|t| t.get::<String>("on_missing").ok())
@@ -139,7 +143,7 @@ fn check(what: &str, state: &str, opts: &Option<Table>) -> mlua::Result<String> 
     Ok(state.to_string())
 }
 
-/// browser_fetch の opts (Luaテーブル) を JSON に直す
+/// Convert browser_fetch's opts (a Lua table) into JSON
 fn fetch_opts_json(opts: &Option<Table>) -> serde_json::Value {
     let mut o = serde_json::Map::new();
     if let Some(t) = opts {
@@ -160,13 +164,15 @@ fn fetch_opts_json(opts: &Option<Table>) -> serde_json::Value {
     serde_json::Value::Object(o)
 }
 
-/// AIが書いたLuaを、限定した環境で実行する (P3 サンドボックス)。
+/// Run Lua written by the AI in a restricted environment (P3 sandbox).
 ///
-/// 見せるのは browser 系 (許可された1タブに限る) と log だけ。
-/// file/http/os/io/load/require/debug/coroutine、記録・送信・秘密の生値、
-/// そして他のブラウザには一切触れさせない。触ろうとしても、その名前が
-/// 環境に無いので nil で弾かれる (`_ENV` を差し替え、グローバルへの __index も張らない)。
-/// 成功なら nil、失敗ならエラー文字列を返す (司令塔がAIへ返せるように)
+/// Only the browser functions (limited to a single allowed tab) and log are
+/// exposed. file/http/os/io/load/require/debug/coroutine, recording,
+/// sending, raw secret values, and every other browser are completely off
+/// limits. Even an attempt to touch them fails with nil, since those names
+/// don't exist in the environment (`_ENV` is replaced, with no __index
+/// fallback to globals). Returns nil on success, or an error string on
+/// failure (so the orchestrator can relay it back to the AI)
 fn run_scoped(lua: &mlua::Lua, caps: &Caps, browser: &str, code: &str) -> mlua::Result<Value> {
     let env = build_sandbox_env(lua, caps, browser)?;
     match lua.load(code).set_name("ai-lua").set_environment(env).exec() {
@@ -175,10 +181,10 @@ fn run_scoped(lua: &mlua::Lua, caps: &Caps, browser: &str, code: &str) -> mlua::
     }
 }
 
-/// サンドボックスの `_ENV` を組む。安全な標準機能と、限定した shikisha だけを入れる
+/// Build the sandbox's `_ENV`. Contains only safe standard functions plus a restricted shikisha table
 fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Result<Table> {
     let env = lua.create_table()?;
-    // 安全な標準機能だけを移す。load/require/os/io/debug/coroutine/getmetatable 等は入れない
+    // Copy over only the safe standard functions. load/require/os/io/debug/coroutine/getmetatable etc. are excluded
     let g = lua.globals();
     for name in [
         "assert", "error", "ipairs", "pairs", "next", "pcall", "xpcall", "select", "tonumber",
@@ -190,7 +196,7 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
     }
     let sh = lua.create_table()?;
     let allowed = browser.to_string();
-    // 呼ばれたブラウザ名が、このラリーで許された1つと一致するか
+    // Check whether the called browser name matches the one allowed for this rally
     fn guard(name: &str, allowed: &str) -> mlua::Result<()> {
         if name == allowed {
             Ok(())
@@ -248,8 +254,9 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
         check("browser_fill", st, &opts)
     });
-    // 秘密の値を欄に入れる。値は名前で参照し、Rustが解決して入れる。
-    // AIには値が渡らない (返るのは状態だけ)。許可リストに無い鍵は secret_value が弾く
+    // Fill a field with a secret value. The value is referenced by name and
+    // resolved/filled by Rust. The AI never sees the value (only the state
+    // is returned). secret_value rejects any key not on the allowlist
     bind!("browser_fill_secret", (String, Value, String), |lua_, c, al, (name, sel, secret_key)| {
         guard(&name, &al)?;
         let value = c
@@ -259,7 +266,7 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             .map(|s| s.to_string())
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
-    // ベーシック認証を仕込む (資格情報は許可リスト内の秘密から。値はAIに渡らない)
+    // Set up basic auth (credentials come from an allowlisted secret; the value never reaches the AI)
     bind!("browser_auth", (String, String), |lua_, c, al, (name, secret_key)| {
         guard(&name, &al)?;
         c.browser_auth(&name, &secret_key)
@@ -267,7 +274,7 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
     });
     bind!("browser_text", (String, Value), |lua_, c, al, (name, sel)| {
         guard(&name, &al)?;
-        // 読み取り結果はAIへ渡るので、既知の秘密値を伏字にする
+        // The read result goes to the AI, so redact any known secret values
         c.browser_text(&name, &sel_of(&sel)?)
             .map(|o| o.map(|s| c.redact(&s)))
             .map_err(|e| mlua::Error::runtime(e.to_string()))
@@ -283,7 +290,7 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
         let json = c
             .browser_fetch(&name, &url, &fetch_opts_json(&opts))
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-        // 本文・ヘッダに秘密が載っていても、AIへ渡る前に伏字にする
+        // Even if secrets appear in the body/headers, redact them before they reach the AI
         let json = c.redact(&json);
         let v: serde_json::Value =
             serde_json::from_str(&json).map_err(|e| mlua::Error::runtime(e.to_string()))?;
@@ -304,8 +311,9 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
         c.browser_pressed(&name)
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
-    // ログだけは許す (AIが自分の手を説明できる)。ほかの副作用は無い。
-    // AIが秘密値をログに書こうとしても、ここで伏字にする
+    // Only logging is allowed (so the AI can explain its own moves). No
+    // other side effects. Even if the AI tries to log a secret value, it
+    // gets redacted here
     {
         let c = Caps::clone(caps);
         sh.set(
@@ -316,9 +324,11 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             })?,
         )?;
     }
-    // AIが書く1行Luaでは bare 名 (browser_go(...)) で呼べるのが自然。
-    // shikisha.* と同じ関数を、サンドボックス env の素のグローバルにも置く
-    // (新しい能力は増えない。同じ関数の別名にすぎない)。プロンプトの表記とも一致する
+    // In the one-line Lua the AI writes, calling by bare name
+    // (browser_go(...)) reads naturally. Place the same functions as
+    // shikisha.* directly on the sandbox env's bare globals too (this adds
+    // no new capability — it's just an alias for the same function). This
+    // also matches how the prompt describes them
     for pair in sh.pairs::<String, Value>() {
         let (k, v) = pair?;
         env.set(k, v)?;
@@ -327,8 +337,9 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
     Ok(env)
 }
 
-/// JSONの値をそのままLuaの値へ写す (browser_fetch の結果をテーブルで返すため)。
-/// オブジェクトはキー付きテーブル、配列は1始まりの並び
+/// Map a JSON value directly to a Lua value (so browser_fetch results can be
+/// returned as a table). Objects become keyed tables, arrays become
+/// 1-indexed sequences
 fn json_to_lua(lua: &mlua::Lua, v: &serde_json::Value) -> mlua::Result<Value> {
     Ok(match v {
         serde_json::Value::Null => Value::Nil,
@@ -355,14 +366,14 @@ fn json_to_lua(lua: &mlua::Lua, v: &serde_json::Value) -> mlua::Result<Value> {
     })
 }
 
-/// タブの指定方法。番号は並べ替えで変わるので、名前で指定するのが安全
+/// How to specify a tab. Index numbers change on reorder, so specifying by name is safer
 #[derive(Debug, Clone)]
 pub enum TabRef {
     Index(usize),
     Name(String),
 }
 
-/// 自動化から見たタブの見分け方 (ID優先、無ければタブ名)
+/// How automation identifies a tab (ID takes priority, falling back to tab name)
 #[derive(Debug, Clone, Default)]
 pub struct TabKey {
     pub id: Option<String>,
@@ -371,7 +382,7 @@ pub struct TabKey {
 
 impl TabKey {
     fn matches(&self, s: &str) -> bool {
-        // IDが設定されていればIDで、無ければ名前で照合する
+        // Match by ID if one is set, otherwise match by name
         match &self.id {
             Some(id) => id == s,
             None => self.name == s,
@@ -380,8 +391,8 @@ impl TabKey {
 }
 
 impl TabRef {
-    /// タブ一覧から実際の番号 (1始まり) を求める。
-    /// 文字列指定は ID → タブ名 の順に探す
+    /// Resolve the actual (1-indexed) number from a tab list.
+    /// A string spec is looked up first by ID, then by tab name
     pub fn resolve(&self, keys: &[TabKey]) -> Option<usize> {
         match self {
             TabRef::Index(i) => (*i >= 1 && *i <= keys.len()).then_some(*i),
@@ -394,56 +405,57 @@ impl TabRef {
     }
 }
 
-/// フックからRust側へ依頼される操作。main側で実行される
+/// Operations requested from hooks to the Rust side. Executed by main
 #[derive(Debug)]
 pub enum Command {
-    /// プロンプトとして他タブへ送信 (bracketed paste + Enter、チェーン深度を継承)
+    /// Send as a prompt to another tab (bracketed paste + Enter, inherits chain depth)
     SendPrompt {
         target: TabRef,
         text: String,
         origin: usize,
     },
-    /// 生のキー列を送信 (on_questionの自動応答等。エンコードせずそのまま)
+    /// Send a raw key sequence (e.g. on_question auto-replies; sent as-is, unencoded)
     SendKeys { target: TabRef, keys: String },
-    /// 送らずに入力欄へ置くだけ (人が書き足して自分で送る)
+    /// Place into the input field without sending (a human can add to it and send it themselves)
     DraftPrompt {
         target: TabRef,
         text: String,
         origin: usize,
     },
-    /// 表示するタブを切り替える (観戦モード: AI↔ブラウザの手番を人が目視できる)。
-    /// 0 = 稼働盤 (INDEX)
+    /// Switch the displayed tab (spectator mode: lets a human watch the
+    /// AI<->browser turns). 0 = the dashboard (INDEX)
     ShowTab { target: TabRef },
-    /// ラリーの終了結果 (AIが目的達成を判定して出す終了コードと理由)。
-    /// data/last-result.json とログとUIに出す
+    /// The rally's final result (an exit code and reason the AI produces by
+    /// judging whether the goal was met). Written to data/last-result.json,
+    /// the log, and the UI
     SetResult {
         code: i32,
         reason: String,
         origin: usize,
     },
-    /// 登録済み通知先への通知 (Phase 4-3でSlack/Telegram実装、現状はログ+表示)
+    /// Notify a registered destination (Slack/Telegram implemented in Phase 4-3; currently log + display only)
     Notify { dest: String, text: String },
-    /// タブの再起動 (SSH切断・CLI自己更新からの復帰)
+    /// Restart a tab (recovery from an SSH disconnect or a CLI self-update)
     Restart { target: TabRef },
     Log(String),
 }
 
-/// ブラウザのフックへ渡すページの様子
+/// Page state passed to browser hooks
 #[derive(Clone)]
 pub struct PageCtx {
-    /// 画面の番号 (人が押す番号と同じ)
+    /// The screen's index (same number a human would press)
     pub index: usize,
-    /// 自動化から指す呼び名
+    /// The name automation refers to it by
     pub id: String,
-    /// 人が読む名前
+    /// The human-readable name
     pub name: String,
     pub url: String,
-    /// 参照しているものまで揃ったか。
-    /// false は「load が来ないので、DOMだけの時点で来た」
+    /// Whether everything the page references has finished loading.
+    /// false means "load hasn't fired yet, so this arrived at the DOM-only stage"
     pub complete: bool,
 }
 
-/// フック発火時にLuaへ渡すタブ情報のスナップショット
+/// A snapshot of tab info passed to Lua when a hook fires
 #[derive(Clone)]
 pub struct TabCtx {
     pub index: usize,
@@ -451,11 +463,13 @@ pub struct TabCtx {
     pub state: String,
     pub profile: String,
     pub output: String,
-    /// 自動チェーンの深度。0 = 人間が始めた会話。
-    /// `if tab.chain_depth == 0 then return end` で人間の指示に反応しないフックが書ける
+    /// Depth of the automation chain. 0 = a conversation started by a human.
+    /// Writing `if tab.chain_depth == 0 then return end` lets a hook ignore
+    /// human-issued instructions
     pub chain_depth: u32,
     pub locked: bool,
-    /// このタブが model ブリッジ(API)か。討論の口火役の自動キック等で使う
+    /// Whether this tab is a model bridge (API). Used for things like
+    /// auto-kicking off a discussion's opening speaker
     pub is_model: bool,
 }
 
@@ -481,7 +495,7 @@ const PRELUDE: &str = r#"
 shikisha.__vars = {}
 function shikisha.get_var(k) return shikisha.__vars[k] end
 function shikisha.set_var(k, v) shikisha.__vars[k] = v end
--- 状態が変わるまで待つ (state と sleep で組み立てられるのでLua側で実装)
+-- Wait until the state changes (built from state + sleep, so it's implemented on the Lua side)
 function shikisha.wait_state(tab, want, timeout_ms)
   local left = timeout_ms or 60000
   while left > 0 do
@@ -491,8 +505,9 @@ function shikisha.wait_state(tab, want, timeout_ms)
   end
   return false
 end
--- ページの状態か、人のボタンか、時間切れか。先に来た方で抜ける。
--- ボタンは常に出しておく: セレクタが外れたときに詰まないように
+-- Whichever comes first wins: the page reaching a state, a human pressing
+-- the button, or a timeout.
+-- Always show the button: so it doesn't get stuck if the selector misses
 function shikisha.browser_wait(name, opts)
   opts = opts or {}
   local left = opts.timeout_ms or 300000
@@ -524,17 +539,17 @@ function shikisha.sleep(ms)
 end
 "#;
 
-/// 1つのLuaスクリプト。独立した環境(_ENV)で読み込むので、
-/// 複数ファイルが同じ `on_done` を定義しても衝突しない
+/// A single Lua script. Loaded with its own environment (_ENV), so
+/// multiple files defining the same `on_done` don't collide
 struct Script {
-    /// 表示用のパス
+    /// Path used for display
     path: String,
-    /// このスクリプトの環境テーブル (ここからフック関数を引く)
+    /// This script's environment table (hook functions are looked up from here)
     env: Table,
     defined: HashSet<String>,
 }
 
-/// フックの引き当て先。より具体的な方が優先される (タブ > ワークスペース > 基本)
+/// Where a hook resolves to. The more specific one wins (tab > workspace > base)
 #[derive(Default)]
 struct Attach {
     base: Option<usize>,
@@ -542,14 +557,14 @@ struct Attach {
     tabs: std::collections::HashMap<usize, usize>,
 }
 
-/// 自動化に与える能力 (既定は空 = ファイル・通信ともに不可)
+/// Capabilities granted to automation (default is empty = no file or network access)
 pub type Caps = std::rc::Rc<crate::caps::Capabilities>;
 
 pub struct HookEngine {
     lua: Lua,
     commands: Rc<RefCell<Vec<Command>>>,
     current_origin: Rc<Cell<usize>>,
-    /// 各タブの (見分け方, 現在の状態)。ループ中から読めるようにする
+    /// Each tab's (identifier, current state). Made readable from inside loops
     states: Rc<RefCell<Vec<(TabKey, String)>>>,
     pending: Vec<Pending>,
     scripts: Vec<Script>,
@@ -558,14 +573,14 @@ pub struct HookEngine {
 
 const HOOK_NAMES: [&str; 5] = ["on_start", "on_question", "on_busy", "on_done", "on_exit"];
 
-/// ブラウザのタブで使えるフック。
+/// Hooks available on a browser tab.
 ///
-/// セッションの状態はページには当てはまらないので、言葉を分ける。
-/// 増やすのは、増やす理由が出てからでいい
+/// Session state doesn't apply to a page, so the vocabulary is kept
+/// separate. Add more only once there's a reason to
 pub const PAGE_HOOK_NAMES: [&str; 2] = ["on_load", "on_press"];
 
 impl HookEngine {
-    /// スクリプトを1本だけ読み込んで基本設定に紐づける (テスト・単純構成用)
+    /// Load a single script and attach it as the base config (for tests / simple setups)
     #[cfg(test)]
     pub fn from_source(source: &str) -> Result<Self> {
         let mut e = Self::new()?;
@@ -574,7 +589,7 @@ impl HookEngine {
         Ok(e)
     }
 
-    /// 能力を与えないエンジン (テスト・単純構成用)
+    /// An engine with no capabilities granted (for tests / simple setups)
     #[cfg(test)]
     pub fn new() -> Result<Self> {
         Self::with_caps(std::rc::Rc::new(crate::caps::Capabilities::disabled()))
@@ -594,8 +609,8 @@ impl HookEngine {
 
         let shikisha = lua.create_table().map_err(lerr)?;
         {
-            // 現在の状態を読む。ループの終了条件に使う
-            // (フック引数の tab.state は発火時点のスナップショットなので変化しない)
+            // Read the current state. Used as a loop's exit condition
+            // (the tab.state hook argument is a snapshot at fire time and never changes)
             let s = Rc::clone(&states);
             shikisha
                 .set(
@@ -613,9 +628,10 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // 表示文言の翻訳。en.json 基底 + 言語オーバーレイ (i18n)。
-            // 内蔵司令塔(討論/ブラウザ操作)がAIへ送る文や議事録の見出しを英語ファーストにする。
-            // 差し込みが要るものは tf(key, {name="…"}) で {name} を置換する
+            // Translate display text. en.json base + language overlay (i18n).
+            // Keeps the strings the built-in orchestrators (discussion / browser
+            // operation) send to the AI, and the transcript headings, English-first.
+            // Where interpolation is needed, tf(key, {name="…"}) substitutes {name}
             shikisha
                 .set(
                     "t",
@@ -658,8 +674,9 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // 表示タブを切り替える。観戦モードの要 (手番ごとに見える画面を動かす)。
-            // 相手はセッションでもブラウザでもよい (番号・名前・id・tab表で指せる)
+            // Switch the displayed tab. The core of spectator mode (moves the
+            // visible screen on each turn). The target may be a session or a
+            // browser (addressable by index, name, id, or a tab table)
             let c = Rc::clone(&commands);
             shikisha
                 .set(
@@ -675,7 +692,7 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // ラリーの終了結果。AIが目的達成を判定して出す終了コードと理由
+            // The rally's final result: an exit code and reason the AI produces by judging whether the goal was met
             let c = Rc::clone(&commands);
             let o = Rc::clone(&current_origin);
             shikisha
@@ -693,9 +710,9 @@ impl HookEngine {
                 )
                 .map_err(lerr)?;
         }
-        // ── ブラウザ ──────────────────────────────
-        // セレクタ・on_missing の解釈はモジュール関数 sel_of / check にある
-        // (サンドボックス run_scoped からも同じものを使う)
+        // ── Browser ──────────────────────────────
+        // Selector / on_missing interpretation lives in the module functions
+        // sel_of / check (the sandboxed run_scoped uses the same ones)
         {
             let c = Caps::clone(&caps);
             shikisha
@@ -714,8 +731,9 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // 今のタブをその場で動かす: back / forward / reload / to(URL)。
-            // browser_open と違い webview を作り直さないので、仕込んだ認証も残る
+            // Drive the current tab in place: back / forward / reload /
+            // to(URL). Unlike browser_open, this doesn't recreate the
+            // webview, so any auth already set up survives
             let c = Caps::clone(&caps);
             shikisha
                 .set(
@@ -778,8 +796,10 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // 秘密の値を欄に入れる。名前で参照し、Rustが解決して入れるので
-            // 値はLua/AIに渡らない。記録に残るのも鍵名だけ (貼れば再生できる)
+            // Fill a field with a secret value. Referenced by name and
+            // resolved/filled by Rust, so the value never reaches Lua/the
+            // AI. Only the key name is kept in the record (so it can still
+            // be pasted to replay)
             let c = Caps::clone(&caps);
             shikisha
                 .set(
@@ -797,8 +817,9 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // ベーシック認証を仕込む。資格情報は秘密 (許可リスト内) から解決。
-            // 呼んでから保護ページへ移動/再読込すると、401 に自動で答える
+            // Set up basic auth. Credentials are resolved from an
+            // allowlisted secret. Calling this before navigating to /
+            // reloading a protected page answers the 401 automatically
             let c = Caps::clone(&caps);
             shikisha
                 .set(
@@ -816,9 +837,11 @@ impl HookEngine {
             shikisha
                 .set(
                     "browser_text",
-                    // 司令塔の制御ループ用: 読めないとき (無応答・タイムアウト等) は
-                    // 例外にせず nil を返す。1手の失敗でループごと落とさないため
-                    // (審判の安全網が回り続ける)。エラーはログにだけ残す
+                    // For the orchestrator's control loop: when unreadable
+                    // (no response, timeout, etc.) return nil instead of
+                    // raising, so a single failed move doesn't take down the
+                    // whole loop (the judge's safety net keeps running).
+                    // The error is only recorded to the log
                     lua.create_function(move |_, (name, sel): (String, Value)| {
                         match c.browser_text(&name, &sel_of(&sel)?) {
                             Ok(v) => Ok(v),
@@ -840,7 +863,7 @@ impl HookEngine {
             shikisha
                 .set(
                     "browser_html",
-                    // browser_text と同じく、読めないときは例外にせず nil を返す
+                    // Same as browser_text: return nil instead of raising when unreadable
                     lua.create_function(move |lua, name: String| match c.browser_html(&name) {
                         Ok(h) => Ok(Value::String(lua.create_string(&h)?)),
                         Err(e) => {
@@ -856,8 +879,9 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // ページの中から通信する。返りは {status,ok,url,headers,body} のテーブル。
-            // opts は {method=..,headers={..},body=..}（省略可）
+            // Make a request from inside the page. Returns a table of
+            // {status,ok,url,headers,body}. opts is
+            // {method=..,headers={..},body=..} (optional)
             let c = Caps::clone(&caps);
             shikisha
                 .set(
@@ -924,8 +948,8 @@ impl HookEngine {
                 .set(
                     "browser_nav",
                     lua.create_function(move |_, (name, opts): (String, Option<mlua::Table>)| {
-                        // 何も渡さなければ全部出す。1つずつ選ぶのは、
-                        // 選びたい人だけがやればいい
+                        // If nothing is passed, show everything. Picking
+                        // individually is only for those who want to
                         let spec = match opts {
                             None => crate::config::NavSpec::all(),
                             Some(t) => {
@@ -1047,9 +1071,11 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // 日時。ファイル名に使うのはごく普通の用なので、ここだけ出す。
-            // os を丸ごと渡すと、プロセスを起こす道具も一緒に渡ることになる。
-            // 書き方は呼ぶ側が決める。既定は並べ替えで時間順になる形
+            // Date/time. Using it in file names is a common enough need
+            // that this is exposed on its own. Handing over the whole os
+            // module would also hand over the tools for spawning
+            // processes. The caller decides the format; the default
+            // sorts chronologically when reordered
             shikisha
                 .set(
                     "now",
@@ -1059,8 +1085,10 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
-            // 経過時間の計測用。UNIXエポックからのミリ秒。審判の time 停止条件で使う
-            // (now は表示・ファイル名向けで %s を持たないため、数値の時計を別に出す)
+            // For measuring elapsed time: milliseconds since the UNIX
+            // epoch. Used by the judge's "time" stop condition (now is for
+            // display/filenames and has no %s, so a separate numeric clock
+            // is exposed)
             shikisha
                 .set(
                     "epoch_ms",
@@ -1087,8 +1115,9 @@ impl HookEngine {
                 )
                 .map_err(lerr)?;
         }
-        // ファイル・HTTPは「登録済みの窓口」経由でのみ許可される (caps.rs)。
-        // 生のio/osは一切与えず、Rust側の関数だけを注入する
+        // File/HTTP access is only allowed through a "registered gateway"
+        // (caps.rs). Raw io/os is never granted; only Rust-side functions
+        // are injected
         {
             let c = Caps::clone(&caps);
             shikisha
@@ -1128,7 +1157,7 @@ impl HookEngine {
                 )
                 .map_err(lerr)?;
         }
-        // 玄人向け: 生パス・生URL (allow_dirs / allow_hosts が空なら常に失敗する)
+        // For power users: raw paths / raw URLs (always fails if allow_dirs / allow_hosts is empty)
         {
             let c = Caps::clone(&caps);
             shikisha
@@ -1169,8 +1198,10 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // ラリーの記録。司令塔が各手番の実行Luaを積み、貼れば再生できる形にする。
-            // 信頼側 (司令塔) 専用。AI製Luaのサンドボックスには公開しない
+            // Rally recording. The orchestrator appends each turn's
+            // executed Lua, keeping it in a form that can be pasted back in
+            // to replay. Trusted (orchestrator) side only — never exposed
+            // to the AI-authored Lua sandbox
             shikisha
                 .set(
                     "record_reset",
@@ -1191,9 +1222,12 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // ラリーの受け渡し置き場 (exchange)。AIが書いた生Luaを「画面を読む」のではなく
-            // ファイルからバイト正確に受け取るための橋。司令塔専用 (サンドボックスには出さない)。
-            // exchange_new: run 用フォルダを作りパスを返す (前方スラッシュ正規化)
+            // The rally hand-off area (exchange). A bridge for receiving
+            // raw Lua the AI wrote byte-exact from a file, rather than by
+            // "reading the screen". Orchestrator only (never exposed to
+            // the sandbox).
+            // exchange_new: create a folder for this run and return its
+            // path (forward slashes normalized)
             shikisha
                 .set(
                     "exchange_new",
@@ -1205,7 +1239,7 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
-            // exchange_take: ファイルを読んで削除し中身を返す (無ければ nil)。一時ファイルの消費
+            // exchange_take: read the file, delete it, and return its contents (nil if absent). Consumes a temp file
             shikisha
                 .set(
                     "exchange_take",
@@ -1215,7 +1249,7 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
-            // exchange_append: 記録 (record.lua) に1手ぶん追記する
+            // exchange_append: append one move's worth to the record (record.lua)
             shikisha
                 .set(
                     "exchange_append",
@@ -1226,8 +1260,10 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
-            // lint: Luaの構文チェックだけ行う (実行はしない)。壊れていればエラー文字列、健全なら nil。
-            // 実際の権限封じは run_scoped の環境が実行時に担保する
+            // lint: syntax-check the Lua only (never executes it). Returns
+            // an error string if broken, nil if sound. The actual
+            // permission sandboxing is enforced at run time by
+            // run_scoped's environment
             shikisha
                 .set(
                     "lint",
@@ -1240,9 +1276,11 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            // AIが書いたLuaを、限定した環境で実行する (browser系だけ・許可された1タブだけ)。
-            // 司令塔が受け取った危険入力 (Webの内容から生成されたLua) を、
-            // file/http/秘密の生値/他タブに触れさせずに走らせるための境界
+            // Run Lua written by the AI in a restricted environment
+            // (browser functions only, on a single allowed tab). The
+            // boundary that lets the orchestrator run untrusted input
+            // (Lua generated from web content) without touching
+            // file/http/raw secret values/other tabs
             let c = Caps::clone(&caps);
             shikisha
                 .set(
@@ -1268,12 +1306,12 @@ impl HookEngine {
         })
     }
 
-    /// 検出ティックごとに全タブの (見分け方, 状態) を反映する
+    /// Reflect every tab's (identifier, state) on each detection tick
     pub fn set_states(&self, states: Vec<(TabKey, String)>) {
         *self.states.borrow_mut() = states;
     }
 
-    /// そのタブで待機中のループを破棄する (終了・再起動時)
+    /// Drop any loop waiting on that tab (on exit / restart)
     pub fn cancel_tab(&mut self, tab: usize) {
         let dropped: Vec<Pending> = {
             let (keep, drop): (Vec<_>, Vec<_>) =
@@ -1286,16 +1324,17 @@ impl HookEngine {
         }
     }
 
-    /// 待機中のループを全て破棄する (緊急停止)
+    /// Drop every waiting loop (emergency stop)
     pub fn cancel_all(&mut self) {
         for p in std::mem::take(&mut self.pending) {
             let _ = self.lua.remove_registry_value(p.key);
         }
     }
 
-    /// 自動化を読み込む。同じパスは再利用する。
-    /// ディレクトリなら `on_done.lua` 等のイベント別ファイル方式、
-    /// `.lua` ファイルなら従来の関数定義方式として扱う
+    /// Load an automation. The same path is reused if seen again.
+    /// A directory is treated as the per-event-file layout (`on_done.lua`
+    /// etc.); a `.lua` file is treated as the legacy function-definition
+    /// layout
     pub fn load_path(&mut self, path: &std::path::Path) -> Result<usize> {
         let key = path.display().to_string();
         if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
@@ -1310,11 +1349,12 @@ impl HookEngine {
         }
     }
 
-    /// イベント別ファイル方式。各ファイルの中身は「処理の本体」なので、
-    /// Rust側で関数に包んでからフックとして登録する
+    /// The per-event-file layout. Each file's contents are "just the
+    /// processing body", so wrap it in a function on the Rust side before
+    /// registering it as a hook
     fn load_dir(&mut self, dir: &std::path::Path) -> Result<usize> {
         let key = dir.display().to_string();
-        // 共通の下請け関数を先に読み込む (同一ディレクトリ内で名前空間を共有)
+        // Load shared helper functions first (namespace is shared within the same directory)
         let shared = dir.join("_shared.lua");
         let mut source = String::new();
         if shared.is_file() {
@@ -1332,11 +1372,11 @@ impl HookEngine {
             }
             let body = std::fs::read_to_string(&f)
                 .with_context(|| crate::i18n::tp("err.hooks.cannot_read", &[("path", &f.display().to_string())]))?;
-            // on_question は画面テキストを第2引数で受け取る
+            // on_question receives the screen text as its second argument
             source.push_str(&format!("function {hook}(tab, screen)\n{body}\nend\n"));
             found = true;
         }
-        // ブラウザのフックは、受け取るものが tab ではなく page
+        // Browser hooks receive a page, not a tab
         for hook in PAGE_HOOK_NAMES {
             let f = dir.join(format!("{hook}.lua"));
             if !f.is_file() {
@@ -1356,9 +1396,10 @@ impl HookEngine {
         self.load_source(&key, &source)
     }
 
-    /// スクリプトを独立した環境で読み込む。
-    /// 環境の __index はグローバル (string/math/shikisha 等) を指すので
-    /// 標準機能とAPIは使えるが、フック関数は各スクリプトに閉じる
+    /// Load a script with its own independent environment.
+    /// The environment's __index points at the globals (string/math/shikisha
+    /// etc.), so standard functions and the API are usable, but hook
+    /// functions stay scoped to their own script
     fn load_source(&mut self, path: &str, source: &str) -> Result<usize> {
         let env = self.lua.create_table().map_err(lerr)?;
         let mt = self.lua.create_table().map_err(lerr)?;
@@ -1376,7 +1417,7 @@ impl HookEngine {
             })?;
 
         let mut defined = HashSet::new();
-        // セッションのフックと、ブラウザのフックの両方を見る
+        // Check both session hooks and browser hooks
         for name in HOOK_NAMES.iter().chain(PAGE_HOOK_NAMES.iter()) {
             if env.get::<mlua::Function>(*name).is_ok() {
                 defined.insert(name.to_string());
@@ -1390,24 +1431,30 @@ impl HookEngine {
         Ok(self.scripts.len() - 1)
     }
 
-    /// ブラウザ操作モードの内蔵司令塔を、指定ブラウザ向けに読み込む (チャット型)。
+    /// Load the built-in orchestrator for browser-operation mode, targeting
+    /// the given browser (chat-style).
     ///
-    /// ユーザーはLuaを書かない。ゴールは設定ではなく **入力欄に打つ**。
-    /// 打った文(chain 0)を新しいゴール/訂正として拾い、AIがブラウザ操作を
-    /// 1手ずつ in.lua に書く→実行→画面を返す、を繰り返す。AIが操作を書かず
-    /// 報告したら一区切りとして次の入力を待つ。暴走は安全網で必ず止める。
-    /// BR (操作対象ブラウザの id) は先頭に注入する
+    /// The user never writes Lua. The goal is **typed into the input
+    /// field**, not configured. What's typed (chain 0) is picked up as a
+    /// new goal/correction, and the AI repeats: write one browser move at a
+    /// time to in.lua -> execute -> return the screen. Once the AI reports
+    /// instead of writing a move, that's treated as a checkpoint and it
+    /// waits for the next input. Runaway loops are always stopped by the
+    /// safety net. BR (the id of the browser being operated) is injected up
+    /// front
     pub fn load_browser_agent(&mut self, browser: &str, stops_lua: &str) -> Result<usize> {
         let key = format!("<browser-agent:{browser}>{stops_lua}");
         if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
             return Ok(i);
         }
-        // 内蔵オーケストレータ (関数定義方式)。BR と STOPS は下で注入
+        // Built-in orchestrator (function-definition layout). BR and STOPS are injected below
         const SRC: &str = r##"
 local MAX_ROUNDS, MAX_SEC, MAX_TOK = 40, 900, 400000
 
--- 審判: 設定した停止条件(STOPS)を上から評価し、成立した条件を返す(無ければnil)。
--- screen/css/xpath はタブ(既定BR)を見る。console は今の手番のAI発言(screen_out)を見る
+-- Judge: evaluate the configured stop conditions (STOPS) top to bottom and
+-- return the one that matched (nil if none did).
+-- screen/css/xpath look at the tab (default BR). console looks at this
+-- turn's AI output (screen_out)
 local function judge(screen_out)
   for _, s in ipairs(STOPS or {}) do
     local hit = false
@@ -1458,7 +1505,7 @@ local function reset_budget()
   shikisha.set_var("rally_tok", 0)
 end
 
--- 人が読む記録(transcript)に1項目追記する。ダウンロードで使う
+-- Append one entry to the human-readable record (transcript). Used for downloads
 local function tx(entry)
   local p = shikisha.get_var("rally_tx")
   if p then shikisha.exchange_append(p, entry) end
@@ -1485,13 +1532,13 @@ function on_done(tab)
   if not run then return end
   local infile = run .. "/in.lua"
 
-  -- 入力欄に人間が打った(chain 0) = 新しいゴール/訂正。予算(安全網)を切り直す
+  -- A human typed into the input field (chain 0) = a new goal/correction. Reset the budget (safety net)
   if tab.chain_depth == 0 then
     reset_budget()
   end
   shikisha.set_var("rally_tok", (shikisha.get_var("rally_tok") or 0) + #(tab.output or ""))
 
-  -- 人手依頼ファイル
+  -- Human-assistance-request file
   local human = shikisha.exchange_take(run .. "/human.txt")
   if human and #human > 0 then
     tx("\n### " .. shikisha.t("transcript.rally.human_request") .. "\n" .. human .. "\n")
@@ -1503,7 +1550,7 @@ function on_done(tab)
     return
   end
 
-  -- 操作ファイル → LINT → 実行 → 記録
+  -- Move file -> lint -> execute -> record
   local code = shikisha.exchange_take(infile)
   if code and #code > 0 then
     local lint = shikisha.lint(code)
@@ -1521,10 +1568,11 @@ function on_done(tab)
     shikisha.exchange_append(shikisha.get_var("rally_record"), code)
     local n = (shikisha.get_var("rally_round") or 0) + 1
     shikisha.set_var("rally_round", n)
-    -- 人が読む記録に、実行した手を残す(4字下げ=Markdownのコード)
+    -- Record the executed move in the human-readable transcript (4-space indent = Markdown code block)
     tx("\n### " .. shikisha.t("transcript.rally.action") .. " " .. n .. "\n    " .. code:gsub("\n", "\n    ") .. "\n")
-    -- 遷移後、本文が出る＋判定が成立するまで短くポーリング。
-    -- ボタン等が遅れて描画される(late-render)停止条件を取りこぼさない。出たら即進む
+    -- After navigating, poll briefly until the body appears and a
+    -- verdict is reached. This avoids missing stop conditions whose
+    -- elements (e.g. buttons) render late; proceed the moment it appears
     local v = nil
     for _ = 1, 10 do
       shikisha.sleep(180)
@@ -1536,7 +1584,7 @@ function on_done(tab)
     end
     local body0 = shikisha.browser_text(BR, "body") or ""
     tx("- " .. shikisha.t("transcript.rally.screen") .. ": " .. body0:sub(1, 400):gsub("%s+", " ") .. "\n")
-    -- 審判(設定した停止条件)。成立したら終了コードを出して一区切り(待機に戻る)
+    -- The judge (configured stop conditions). Once satisfied, emit an exit code and pause (back to waiting)
     if v then
       tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. (v.outcome == "success" and shikisha.t("agent.verdict.success") or shikisha.t("agent.verdict.fail"))
         .. " (code=" .. (v.code or 0) .. ")\n" .. (v.reason or "") .. "\n")
@@ -1546,7 +1594,7 @@ function on_done(tab)
         .. " (code=" .. (v.code or 0) .. ")" .. shikisha.t("agent.browser.next_instruction"))
       return
     end
-    -- 安全網(暴走保険)。ゴールごとに予算はリセットされる
+    -- Safety net (runaway insurance). The budget resets per goal
     local t0 = shikisha.get_var("rally_t0") or shikisha.epoch_ms()
     if n >= MAX_ROUNDS or (shikisha.epoch_ms() - t0) >= MAX_SEC * 1000
         or (shikisha.get_var("rally_tok") or 0) >= MAX_TOK then
@@ -1554,7 +1602,7 @@ function on_done(tab)
       shikisha.send_to_tab(ai, shikisha.t("agent.browser.safety_net"))
       return
     end
-    -- 画面を返して次の1手を促す
+    -- Return the screen and prompt for the next move
     shikisha.show(ai)
     local text = shikisha.browser_text(BR, "body") or ""
     if #text > 3000 then text = text:sub(1, 3000) .. shikisha.t("agent.browser.truncated") end
@@ -1565,8 +1613,9 @@ function on_done(tab)
     return
   end
 
-  -- 操作なし: 人間がゴールを打った直後(chain 0)なら一度だけ促す。
-  -- そうでなければ(AIが報告/待機した)、何も送らず人間の次の入力を待つ
+  -- No move: if a human just typed the goal (chain 0), nudge once.
+  -- Otherwise (the AI reported/waited), send nothing and wait for the
+  -- human's next input
   if tab.chain_depth == 0 then
     shikisha.send_to_tab(ai,
       shikisha.t("agent.browser.first_action.before") .. infile .. shikisha.t("agent.browser.first_action.after"))
@@ -1577,12 +1626,16 @@ end
         self.load_source(&key, &src)
     }
 
-    /// AI×AI(N者)の議論オーケストレータを、この参加者向けに読み込む (チャット型)。
+    /// Load the AI-vs-AI (N-party) discussion orchestrator for this
+    /// participant (chat-style).
     ///
-    /// 各参加者は毎手番、自分の発言を say.txt に **書く** (画面ではなくファイル)。
-    /// on_done がそれを読み、記録(transcript)して次の参加者へ回す(round-robin)。
-    /// 周回上限で審判(judge)へ渡し、審判の発言=裁定として終了。ユーザーはLuaを書かない。
-    /// me/next/judge はタブの id、フラグと上限は下で注入する
+    /// Each turn, every participant **writes** their statement to say.txt
+    /// (a file, not the screen). on_done reads it, records it to the
+    /// transcript, and hands off to the next participant (round-robin).
+    /// Once the round limit is hit, it's handed to the judge, and the
+    /// judge's statement becomes the verdict that ends things. The user
+    /// never writes Lua. me/next/judge are tab ids; flags and limits are
+    /// injected below
     #[allow(clippy::too_many_arguments)]
     pub fn load_discuss_agent(
         &mut self,
@@ -1622,8 +1675,10 @@ local function tx(entry)
   shikisha.exchange_append(shikisha.get_var("discuss_tx"), entry)
 end
 
--- 集合stops(審判の自動判定)。各参加者の最新発言(discuss_says)を横断して評価する。
--- when="console" + agents="all"/"any"/"majority" + pattern。成立した条件を返す
+-- Aggregate stops (automatic judging). Evaluated across every
+-- participant's latest statement (discuss_says).
+-- when="console" + agents="all"/"any"/"majority" + pattern. Returns the
+-- condition that matched
 local function agg_judge()
   local says = shikisha.get_var("discuss_says") or {}
   for _, s in ipairs(STOPS or {}) do
@@ -1681,7 +1736,7 @@ function on_start(tab)
       lines[#lines + 1] = shikisha.t("agent.discuss.part.wait_turn")
     end
   end
-  -- ペルソナ(立場・人格)があれば冒頭に据える。議論全体でこの立場を保つ
+  -- If a persona (stance/character) is set, put it at the very top. Keep to that stance throughout the discussion
   if PERSONA ~= nil and #PERSONA > 0 then
     table.insert(lines, 1, shikisha.t("agent.discuss.persona.label") .. PERSONA)
     table.insert(lines, 2, shikisha.t("agent.discuss.persona.keep"))
@@ -1695,24 +1750,26 @@ function on_done(tab)
   local run = shikisha.get_var("discuss_run")
   if not run then return end
   local say = run .. "/say.txt"
-  -- 手番を渡すときは末尾に say.txt の場所を機械可読な形で添える。
-  -- CLIのAIには無害なヒント、model ブリッジ(自前)はこの行を手番の合図として使う
+  -- When handing off a turn, append say.txt's location in a machine-readable
+  -- form at the end. Harmless hint for a CLI AI; the model bridge (ours)
+  -- uses this line as the turn signal
   local function speak(pane, msg)
     shikisha.send_to_tab(pane, msg .. "\nSHIKISHA_SAY=" .. say)
   end
 
   local msg = shikisha.exchange_take(say)
   if not (msg and #msg > 0) then
-    -- まだ発言していない。口火役に開始を促す。
-    -- CLIは議題を人が打った直後(chain_depth==0)。model橋は人の入力を受け取れないので、
-    -- ペルソナ/文脈から自動で口火を切らせる(is_model)
+    -- Hasn't spoken yet. Nudge the opening speaker to start.
+    -- For a CLI, this is right after a human typed the topic
+    -- (chain_depth==0). A model bridge can't receive human input, so let
+    -- it kick off automatically from its persona/context instead (is_model)
     if IS_FIRST and (tab.chain_depth == 0 or tab.is_model) then
       speak(tab.index, shikisha.t("agent.discuss.first.before") .. say .. shikisha.t("agent.discuss.first.after"))
     end
     return
   end
 
-  -- 司会の手番: 発言ではなく「次の話者 or END」の指示。参加者としては記録しない
+  -- The moderator's turn: not a statement but a "next speaker or END" instruction. Not recorded as a participant statement
   if IS_MOD then
     local ctx = shikisha.get_var("discuss_log") or ""
     if #ctx > 4000 then ctx = shikisha.t("agent.discuss.truncated_short") .. "\n" .. ctx:sub(#ctx - 4000) end
@@ -1743,18 +1800,18 @@ function on_done(tab)
     return
   end
 
-  -- 発言を記録(人が読むtranscriptと、次へ渡す用のログ)
+  -- Record the statement (both the human-readable transcript and the log passed to the next speaker)
   local r = (shikisha.get_var("discuss_round") or 0) + 1
   shikisha.set_var("discuss_round", r)
   tx("\n### " .. shikisha.tf("transcript.discuss.entry", { me = ME, r = tostring(r) }) .. "\n" .. msg .. "\n")
   local log = (shikisha.get_var("discuss_log") or "") .. shikisha.tf("agent.discuss.log_speaker", { me = ME }) .. "\n" .. msg .. "\n\n"
   shikisha.set_var("discuss_log", log)
-  -- 各参加者の最新発言を控える(集合stopsの材料)
+  -- Keep each participant's latest statement (material for the aggregate stops)
   local says = shikisha.get_var("discuss_says")
   if not says then says = {}; shikisha.set_var("discuss_says", says) end
   says[ME] = msg
 
-  -- 審判の発言 = 裁定。ここで終了
+  -- The judge's statement = the verdict. Ends here
   if IS_JUDGE then
     tx("\n## " .. shikisha.tf("transcript.discuss.verdict_judge", { me = ME }) .. "\n" .. msg .. "\n")
     shikisha.show(tab.index)
@@ -1763,7 +1820,7 @@ function on_done(tab)
     return
   end
 
-  -- 集合stops(全員合意/誰か中止/過半数 等)が成立したら、そこで決着
+  -- If an aggregate stop is met (unanimous agreement, anyone objects, majority, etc.), settle it here
   local agg = agg_judge()
   if agg then
     tx("\n## " .. shikisha.t("agent.discuss.verdict_agg") .. ": " .. (agg.outcome == "success" and shikisha.t("agent.verdict.success") or shikisha.t("agent.verdict.fail"))
@@ -1773,7 +1830,7 @@ function on_done(tab)
     return
   end
 
-  -- 周回上限に達したら審判へ(いれば)、いなければ終了
+  -- Once the round limit is hit, hand off to the judge if there is one, otherwise end
   if r >= MAX_TURNS then
     if JUDGE ~= nil and #JUDGE > 0 then
       shikisha.show(JUDGE)
@@ -1789,8 +1846,10 @@ function on_done(tab)
     return
   end
 
-  -- 次へ回す(観戦のため画面も切り替える)。
-  -- moderated なら司会に「次は誰か」を尋ね、既定(round-robin)は静的な NEXT へ
+  -- Hand off to the next speaker (also switches the visible screen for
+  -- spectating).
+  -- If moderated, ask the moderator "who's next"; otherwise (round-robin,
+  -- the default) go to the static NEXT
   local ctx = log
   if #ctx > 4000 then ctx = shikisha.t("agent.discuss.truncated") .. "\n" .. ctx:sub(#ctx - 4000) end
   if ORDER == "moderated" and MODERATOR ~= nil and #MODERATOR > 0 then
@@ -1831,13 +1890,13 @@ end
         self.attach.workspace = Some(id);
     }
 
-    /// タブ番号 (1始まり) にスクリプトを紐づける
+    /// Attach a script to a tab index (1-based)
     pub fn set_tab(&mut self, tab_index: usize, id: usize) {
         self.attach.tabs.insert(tab_index, id);
     }
 
-    /// そのタブのそのフックを担当するスクリプトを解決する
-    /// (タブ > ワークスペース > 基本。両方は実行しない)
+    /// Resolve which script is responsible for that hook on that tab
+    /// (tab > workspace > base. Never runs more than one)
     fn resolve(&self, hook: &str, tab_index: usize) -> Option<usize> {
         [
             self.attach.tabs.get(&tab_index).copied(),
@@ -1853,7 +1912,7 @@ end
         self.scripts.is_empty()
     }
 
-    /// フックを発火する。extra は on_question の画面テキスト等
+    /// Fire a hook. extra is e.g. the screen text for on_question
     pub fn fire(&mut self, hook: &str, ctx: &TabCtx, extra: Option<&str>) {
         let Some(id) = self.resolve(hook, ctx.index) else {
             return;
@@ -1878,14 +1937,16 @@ end
         }
     }
 
-    /// ブラウザのフックを呼ぶ。
+    /// Call a browser hook.
     ///
-    /// 渡すのは page で、tab ではない。ページには状態も出力も無い。
-    /// 無いものを埋めて似せると、書く人が別のものと取り違える
-    /// そのページに、そのフックの引き当て先があるか。
+    /// What's passed is a page, not a tab. A page has no state and no
+    /// output. Faking those fields to make it look like a tab would let
+    /// the person writing it confuse it with something else.
+    /// Whether that page has a resolution target for that hook.
     ///
-    /// 押しても受ける先が無い帯は、壊れたボタンにしか見えない。
-    /// 出す前に、あるいは押された時点で、そう言えるようにしておく
+    /// A control whose press has nowhere to land just looks like a broken
+    /// button. This should be knowable before it's shown, or at the
+    /// moment it's pressed
     pub fn has_page_hook(&self, hook: &str, index: usize) -> bool {
         self.resolve(hook, index).is_some()
     }
@@ -1913,7 +1974,7 @@ end
         }
     }
 
-    /// 検出ティック毎に呼ぶ。wait/sleep中のコルーチンの条件を評価して再開する
+    /// Called on every detection tick. Evaluates the condition for coroutines waiting on wait/sleep and resumes them
     pub fn tick_pending(&mut self, screens: &dyn Fn(usize) -> Option<String>) {
         let now = Instant::now();
         let pending = std::mem::take(&mut self.pending);
@@ -1946,7 +2007,7 @@ end
         }
     }
 
-    /// フックが積んだ操作依頼を取り出す (main側で実行)
+    /// Drain the operation requests hooks have queued (executed by main)
     pub fn drain_commands(&mut self) -> Vec<Command> {
         std::mem::take(&mut *self.commands.borrow_mut())
     }
@@ -1955,7 +2016,7 @@ end
         match thread.resume::<MultiValue>(args) {
             Ok(vals) => {
                 if thread.status() == ThreadStatus::Resumable {
-                    // yield: wait/sleep の待機要求
+                    // yield: a wait/sleep wait request
                     match self.parse_yield(&vals) {
                         Ok(wait) => match self.lua.create_registry_value(thread) {
                             Ok(key) => self.pending.push(Pending {
@@ -1982,7 +2043,7 @@ end
         }
     }
 
-    /// フック完了時の返値処理: on_question が文字列を返したら自動応答キーとして送信
+    /// Handle a hook's return value on completion: if on_question returns a string, send it as auto-reply keys
     fn on_complete(&mut self, hook: &str, origin: usize, vals: MultiValue) {
         if hook == "on_question" {
             if let Some(Value::String(s)) = vals.into_iter().next() {
@@ -2041,7 +2102,7 @@ end
     }
 }
 
-/// タブ指定を受け取る。番号・タブ名・tabテーブルのいずれでもよい
+/// Accept a tab spec: an index, a tab name, or a tab table all work
 fn tab_ref_of(v: &Value) -> mlua::Result<TabRef> {
     match v {
         Value::Integer(n) => Ok(TabRef::Index(*n as usize)),
@@ -2054,11 +2115,11 @@ fn tab_ref_of(v: &Value) -> mlua::Result<TabRef> {
 
 #[cfg(test)]
 mod stamp_tests {
-    /// 日時が、並べ替えで時間順になる形であること。
+    /// The date/time must be in a form that sorts chronologically.
     ///
-    /// ファイル名に使うので、桁が揺れると並びが崩れる。
-    /// Lua には os を渡していないので、ここが唯一の出どころ
-    /// 渡した書き方のとおりに返ること
+    /// Used in file names, so shifting digit widths would break the
+    /// ordering. Lua isn't given os, so this is the only source of it.
+    /// It must be returned exactly as the given format specifies
     #[test]
     fn the_shape_is_the_caller_s_to_choose() {
         let ymd = super::local_stamp("%Y-%m-%d");
@@ -2066,9 +2127,9 @@ mod stamp_tests {
         assert_eq!(&ymd[4..5], "-");
         assert_eq!(&ymd[7..8], "-");
         assert_eq!(super::local_stamp("%y").len(), 2);
-        // 綴りでないものは、そのまま出る
+        // Anything that isn't a directive passes through unchanged
         assert_eq!(super::local_stamp("報告_%%.html"), "報告_%.html");
-        // 知らない綴りは残す。黙って消えると、消えたことに気づけない
+        // Unknown directives are kept. Silently dropping them would hide the fact that they disappeared
         assert_eq!(super::local_stamp("%Q"), "%Q");
         assert_eq!(super::local_stamp(""), "");
     }
@@ -2090,7 +2151,7 @@ mod stamp_tests {
 mod tests {
     use super::*;
 
-    /// data/last-rally.lua を触るテストは同じファイルを共有するので直列化する
+    /// Tests touching data/last-rally.lua share the same file, so serialize them
     static RALLY_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn ctx(index: usize, output: &str) -> TabCtx {
@@ -2165,11 +2226,11 @@ mod tests {
         e.fire("on_start", &ctx(1, ""), None);
         assert!(e.drain_commands().is_empty(), "まだ待機中");
 
-        // 条件不成立 → 保留のまま
+        // Condition not met -> stays pending
         e.tick_pending(&|_| Some("loading...".to_string()));
         assert!(e.drain_commands().is_empty());
 
-        // プロンプトが出た → 再開してsend実行
+        // Prompt appeared -> resumes and executes send
         e.tick_pending(&|_| Some("user@host:~$ ".to_string()));
         let cmds = e.drain_commands();
         assert!(matches!(
@@ -2211,17 +2272,17 @@ mod tests {
         let Command::SendPrompt { target, .. } = &cmds[0] else {
             panic!("送信コマンドが積まれるはず");
         };
-        // 並べ替えても、名前が同じなら正しいタブに解決される
+        // Even after reordering, the same name still resolves to the correct tab
         let key = |n: &str| TabKey { id: None, name: n.to_string() };
         assert_eq!(target.resolve(&[key("実装"), key("検査")]), Some(2));
         assert_eq!(target.resolve(&[key("検査"), key("実装")]), Some(1));
-        // 存在しない名前は解決できない (誤爆させない)
+        // A nonexistent name can't resolve (avoids false hits)
         assert_eq!(target.resolve(&[key("別名")]), None);
     }
 
     #[test]
     fn show_switches_the_visible_tab_for_spectating() {
-        // 観戦モード: 手番ごとに見える画面を動かす。相手はブラウザでもINDEXでも指せる
+        // Spectator mode: moves the visible screen on each turn. The target can be a browser or the INDEX
         let mut e = HookEngine::from_source(
             r#"
             function on_done(tab)
@@ -2237,10 +2298,10 @@ mod tests {
         let Command::ShowTab { target } = &cmds[0] else {
             panic!("ShowTabが積まれるはず");
         };
-        // 名前は画面の番号 (セッションもブラウザも並ぶ) に解決される
+        // A name resolves to the screen's index (sessions and browsers are listed together)
         let key = |n: &str| TabKey { id: None, name: n.to_string() };
         assert_eq!(target.resolve(&[key("AI"), key("ブラウザ")]), Some(2));
-        // 0 は稼働盤 (INDEX)。resolveでは拾わず、main側が特別扱いする
+        // 0 is the dashboard (INDEX). resolve doesn't catch it; main handles it specially
         assert!(
             matches!(&cmds[1], Command::ShowTab { target: TabRef::Index(0) }),
             "show(0) は INDEX"
@@ -2249,8 +2310,8 @@ mod tests {
 
     #[test]
     fn fetch_result_json_becomes_a_lua_table() {
-        // browser_fetch はJSON文字列で返る結果を、Luaのテーブルに写して渡す。
-        // status/ok/body/headers/配列が素直に引けること
+        // browser_fetch maps its JSON-string result into a Lua table before returning it.
+        // status/ok/body/headers/arrays must all be readable directly
         let lua = mlua::Lua::new();
         let v: serde_json::Value = serde_json::from_str(
             r#"{"ok":true,"status":200,"headers":{"content-type":"text/html"},"body":"hi","nums":[1,2,3]}"#,
@@ -2270,7 +2331,7 @@ mod tests {
     #[test]
     fn rally_recording_is_appendable_replayable_lua() {
         let _g = RALLY_FILE_LOCK.lock().unwrap();
-        // 司令塔が実行Luaを積むと、貼れば再生できる本文が残ること
+        // When the orchestrator appends executed Lua, what's left behind must be pasteable to replay
         let mut e = HookEngine::from_source(
             r##"
             function on_start(tab)
@@ -2293,10 +2354,10 @@ mod tests {
     #[test]
     fn browser_agent_mode_is_built_in_and_needs_no_lua() {
         let _g = RALLY_FILE_LOCK.lock().unwrap();
-        // 内蔵のブラウザ操作モードが読め、on_start が「操作プロトコル」を送ること。
-        // ゴールは設定に持たず入力欄から与える方式なので、プロンプトに入力欄の案内が要る
+        // The built-in browser-operation mode must load, and on_start must send the "operation protocol".
+        // Since the goal is given via the input field rather than config, the prompt needs to explain the input field
         let mut e = HookEngine::new().unwrap();
-        // 設定した停止条件(審判)が Lua に注入されても読めること
+        // Configured stop conditions (the judge) must still be readable once injected into Lua
         let stops = crate::config::stops_to_lua(&[crate::config::StopCond {
             when: "screen".into(),
             tab: Some("br".into()),
@@ -2323,8 +2384,9 @@ mod tests {
     #[test]
     fn discuss_agent_is_built_in_and_first_asks_for_topic() {
         let _g = RALLY_FILE_LOCK.lock().unwrap();
-        // AI×AI議論の内蔵司令塔が読め、口火役(is_first)は議題を入力欄で促すこと。
-        // ユーザーはLuaを書かない
+        // The built-in AI-vs-AI discussion orchestrator must load, and the opening
+        // speaker (is_first) must prompt for the topic via the input field.
+        // The user never writes Lua
         let mut e = HookEngine::new().unwrap();
         let a = e
             .load_discuss_agent(
@@ -2356,7 +2418,7 @@ mod tests {
 
     #[test]
     fn set_result_carries_the_exit_code_and_reason() {
-        // AIが判定した終了コードと理由が、そのタブ発で積まれること
+        // The exit code and reason the AI judged must be queued as coming from that tab
         let mut e = HookEngine::from_source(
             r#"
             function on_done(tab)
@@ -2379,8 +2441,8 @@ mod tests {
 
     #[test]
     fn sandbox_blocks_dangerous_access_and_other_tabs() {
-        // run_scoped は AI製Luaを browser系＋許可された1タブに限定する。
-        // os/io/load/require、shikisha.write_file/http、他タブへは触れさせない
+        // run_scoped restricts AI-authored Lua to the browser functions plus a single allowed tab.
+        // os/io/load/require, shikisha.write_file/http, and other tabs must all be off limits
         let mut e = HookEngine::from_source(
             r##"
             function on_done(t)
@@ -2417,13 +2479,13 @@ mod tests {
     #[test]
     fn rally_example_orchestrator_parses_and_runs() {
         let _g = RALLY_FILE_LOCK.lock().unwrap();
-        // 雛形 (docs/rally-example) が構文的に読め、開始と審判の要が動くこと
+        // The template (docs/rally-example) must parse, and the essentials of start and judging must work
         let dir = std::path::Path::new("docs/rally-example");
         let mut e = HookEngine::new().unwrap();
         let id = e.load_path(dir).expect("雛形が読めない (構文エラー?)");
         e.set_base(id);
 
-        // on_start: ファイル受け渡しのプロトコルをAIへ送る (画面ではなく in.lua に書かせる)
+        // on_start: sends the file-handoff protocol to the AI (has it write to in.lua rather than the screen)
         e.fire("on_start", &ctx(1, ""), None);
         let cmds = e.drain_commands();
         assert!(
@@ -2433,8 +2495,8 @@ mod tests {
             "on_start がファイル受け渡しのプロトコルを送っていない: {cmds:?}"
         );
 
-        // on_done: 審判の安全網が終了コードを出す (ブラウザ無しでも決定的に効く)。
-        // 巨大な出力で概算コスト(tokens)を一気に超えさせ、code=125 で停止することを見る
+        // on_done: the judge's safety net must emit an exit code (deterministically, even with no browser).
+        // Blow past the estimated cost (tokens) budget with a huge output and confirm it stops with code=125
         let huge = "x".repeat(300_001);
         let mut c = ctx(1, &huge);
         c.chain_depth = 1;
@@ -2445,7 +2507,7 @@ mod tests {
             "審判(tokens上限)が終了コードを出していない: {cmds:?}"
         );
 
-        // 人間が始めた会話 (chain_depth=0) には反応しない
+        // Must not auto-react to a conversation a human started (chain_depth=0)
         e.fire("on_done", &ctx(1, ""), None);
         assert!(e.drain_commands().is_empty(), "人間の入力に自動反応してはいけない");
     }
@@ -2461,21 +2523,21 @@ mod tests {
             id: None,
             name: name.to_string(),
         };
-        // IDを付けておけば、タブ名を変えても指し続けられる
+        // With an ID attached, a tab can still be addressed even after its name changes
         assert_eq!(r.resolve(&[plain("実装"), with_id("reviewer", "検査")]), Some(2));
         assert_eq!(
             r.resolve(&[plain("実装"), with_id("reviewer", "レビュー担当")]),
             Some(2),
             "タブ名を変えても壊れない"
         );
-        // 同名タブがあってもIDで区別できる
+        // Even with duplicate tab names, the ID still disambiguates
         let dup = [with_id("a", "claude"), with_id("b", "claude")];
         assert_eq!(TabRef::Name("b".into()).resolve(&dup), Some(2));
     }
 
     #[test]
     fn loop_can_read_live_state_and_exit() {
-        // on_tick の代わりに「開始時 + ループ + sleep」で定期処理が書けること
+        // Periodic processing must be expressible as "on start + loop + sleep" instead of an on_tick hook
         let mut e = HookEngine::from_source(
             r#"
             function on_busy(tab)
@@ -2490,10 +2552,10 @@ mod tests {
         .unwrap();
         e.set_states(vec![(TabKey { id: None, name: "tab1".into() }, "BUSY".into())]);
         e.fire("on_busy", &ctx(1, ""), None);
-        // 状態がBUSYの間はループが続く
+        // The loop keeps going while the state is BUSY
         std::thread::sleep(std::time::Duration::from_millis(1100));
         e.tick_pending(&|_| None);
-        // 状態が変わればループを抜ける
+        // Once the state changes, the loop exits
         e.set_states(vec![(TabKey { id: None, name: "tab1".into() }, "DONE".into())]);
         std::thread::sleep(std::time::Duration::from_millis(1100));
         e.tick_pending(&|_| None);
@@ -2530,7 +2592,7 @@ mod tests {
     fn event_files_in_directory_are_loaded_as_bodies() {
         let dir = std::env::temp_dir().join("shikisha-auto-dir");
         std::fs::create_dir_all(&dir).unwrap();
-        // 中身は「処理の本体」だけ。function...end は書かない
+        // Only "the processing body" goes in the file; no function...end wrapper is written
         std::fs::write(dir.join("_shared.lua"), "function greet(n) return 'hi ' .. n end").unwrap();
         std::fs::write(dir.join("on_done.lua"), "shikisha.log(greet(tab.name))").unwrap();
         std::fs::write(dir.join("on_question.lua"), "if screen:match('削除') then return nil end\nreturn '1\\r'").unwrap();
@@ -2566,11 +2628,11 @@ mod tests {
         e.set_workspace(ws);
         e.set_tab(2, tab);
 
-        // タブ2はタブ用が勝つ
+        // Tab 2 has a tab-specific script, so it wins
         e.fire("on_done", &ctx(2, ""), None);
-        // タブ1はタブ用が無いのでワークスペース用
+        // Tab 1 has no tab-specific script, so the workspace one is used
         e.fire("on_done", &ctx(1, ""), None);
-        // タブ用にon_exitが無ければ基本へフォールバック
+        // If the tab-specific script has no on_exit, fall back to the base one
         e.fire("on_exit", &ctx(2, ""), None);
 
         let logs: Vec<String> = e
@@ -2615,13 +2677,13 @@ mod tests {
     }
 
 
-    /// 時計を持たないまま、時刻入りのファイル名を受け渡せること。
+    /// A file name containing a timestamp must be able to pass through without Lua ever having a clock.
     ///
-    /// サンドボックスに os は無い (意図的に外してある) ので、Lua 側で
-    /// 日時を作ることはできない。時計を持っているのはシェルなので、
-    /// 名前はシェルに作らせ、その出力から読み取る。
+    /// The sandbox has no os (deliberately left out), so Lua can't
+    /// construct a date/time itself. The shell is the one with a clock, so
+    /// the shell generates the name and Lua reads it back out of its output.
     ///
-    /// 読み取った名前は set_var で他のスクリプトからも使える
+    /// The name read this way can be used from other scripts too, via set_var
     #[test]
     fn a_name_made_by_the_shell_can_be_carried_into_the_prompt() {
         let mut e = HookEngine::new().unwrap();
@@ -2637,7 +2699,7 @@ function on_done(t)
 end"#,
             )
             .unwrap();
-        // 別ファイルからでも同じ名前を参照できる
+        // The same name must be referenceable from a different file too
         let other = e
             .load_source(
                 "other",
@@ -2647,7 +2709,7 @@ end"#,
         e.set_tab(1, fetch);
         e.set_tab(2, other);
 
-        // シェルが実際に吐く形 (打ち込んだ行は切り出しに含まれない)
+        // The actual shape the shell outputs (the typed line itself isn't part of the extracted text)
         let shell_output = "\r\nSAVED tmp/LP20260806154212.html\r\nD:\\Test>";
         e.fire("on_done", &ctx(1, shell_output), None);
         e.fire("on_done", &ctx(2, ""), None);
@@ -2687,12 +2749,12 @@ end"#,
     }
 
 
-    /// Lua から実際のページを触れること。
+    /// Lua must be able to actually drive a real page.
     ///
     ///   cargo test lua_drives_a_real_page -- --ignored --nocapture
     ///
-    /// 途中の層だけを試しても「繋がっている」ことは分からないので、
-    /// Lua の文字列から本物のページまで通す
+    /// Testing just the intermediate layers can't tell you it's actually
+    /// "wired up", so this runs the whole path from a Lua string to a real page
     #[test]
     #[ignore]
     fn lua_drives_a_real_page() {

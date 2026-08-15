@@ -1,13 +1,15 @@
-//! 待ち受けアドレスの決定。DESIGN.md 10.4章。
+//! Determining the listen address. DESIGN.md section 10.4.
 //!
-//! リモートUIは「遠隔からAIに任意のコマンドを実行させられる」機能なので、
-//! どこに公開するかを厳しく扱う。プライベート網 (Tailscale / LAN) 以外への
-//! バインドは、設定で明示的に許可しない限り拒否する。
+//! The remote UI is a feature that lets an AI be told to run arbitrary
+//! commands from afar, so where it gets exposed is treated strictly.
+//! Binding to anything outside a private network (Tailscale / LAN) is
+//! refused unless explicitly allowed in config.
 
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 
-/// そのアドレスへ到達するときに使う自分側のIPを調べる。
-/// 実際には送信しない (UDPのconnectは経路を決めるだけ) ので副作用がない
+/// Find the local IP that would be used to reach the given address.
+/// No packets are actually sent (a UDP connect just resolves the route), so
+/// this has no side effects.
 fn local_ip_for(target: &str) -> Option<Ipv4Addr> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     sock.connect(target).ok()?;
@@ -17,13 +19,14 @@ fn local_ip_for(target: &str) -> Option<Ipv4Addr> {
     }
 }
 
-/// Tailscaleのアドレス (100.64.0.0/10)。MagicDNSの解決先への経路から判定する
+/// Tailscale address (100.64.0.0/10). Determined from the route to a
+/// MagicDNS resolution target.
 pub fn tailscale_ip() -> Option<Ipv4Addr> {
     let ip = local_ip_for("100.100.100.100:80")?;
     is_tailscale(&ip).then_some(ip)
 }
 
-/// LAN内のアドレス (192.168.x / 10.x / 172.16-31.x)
+/// An address on the LAN (192.168.x / 10.x / 172.16-31.x)
 pub fn lan_ip() -> Option<Ipv4Addr> {
     let ip = local_ip_for("8.8.8.8:80")?;
     ip.is_private().then_some(ip)
@@ -34,13 +37,14 @@ pub fn is_tailscale(ip: &Ipv4Addr) -> bool {
     o[0] == 100 && (64..128).contains(&o[1])
 }
 
-/// 外に晒しても比較的安全な範囲か (ループバック・LAN・Tailscale)
+/// Whether this range is relatively safe to expose (loopback, LAN,
+/// Tailscale)
 pub fn is_private(ip: &Ipv4Addr) -> bool {
     ip.is_loopback() || ip.is_private() || ip.is_link_local() || is_tailscale(ip)
 }
 
-/// 設定の bind 指定を実際のアドレスに解決する。
-/// "auto" は Tailscale → LAN → ループバック の順に探す
+/// Resolve the configured bind spec to an actual address.
+/// "auto" searches in order: Tailscale -> LAN -> loopback.
 pub fn resolve_bind(spec: &str, allow_public: bool) -> Result<(Ipv4Addr, Option<String>), String> {
     let spec = spec.trim();
     if spec.is_empty() || spec.eq_ignore_ascii_case("auto") {
@@ -61,7 +65,8 @@ pub fn resolve_bind(spec: &str, allow_public: bool) -> Result<(Ipv4Addr, Option<
     Ok((ip, None))
 }
 
-/// 設定画面に表示するQRコード (SVG)。スマホのカメラで読ませる
+/// QR code (SVG) shown on the settings screen, for scanning with a phone
+/// camera.
 pub fn qr_svg(text: &str, scale: u32) -> String {
     use qrcode::{EcLevel, QrCode};
     let Ok(code) = QrCode::with_error_correction_level(text.as_bytes(), EcLevel::L) else {
@@ -87,7 +92,7 @@ pub fn qr_svg(text: &str, scale: u32) -> String {
             }
         }
     }
-    // 色指定の "#..." が終端と衝突しないよう r##"..."## で囲む
+    // Wrapped in r##"..."## so the "#..." color specs don't collide with the terminator
     format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 {size} {size}"><rect width="{size}" height="{size}" fill="#fff"/><g fill="#000">{rects}</g></svg>"##
     )
@@ -110,12 +115,12 @@ mod tests {
 
     #[test]
     fn public_bind_requires_explicit_permission() {
-        // 公開アドレスは既定で拒否する (遠隔実行を晒さない)
+        // A public address is rejected by default (don't expose remote execution)
         let e = resolve_bind("203.0.113.5", false).unwrap_err();
         assert!(e.contains("allow_public"), "{e}");
-        // 明示的に許可すれば通す
+        // Explicit permission lets it through
         assert!(resolve_bind("203.0.113.5", true).is_ok());
-        // プライベートは既定で通る
+        // Private addresses pass by default
         assert_eq!(
             resolve_bind("192.168.1.5", false).unwrap().0,
             "192.168.1.5".parse::<Ipv4Addr>().unwrap()
@@ -123,7 +128,8 @@ mod tests {
         assert!(resolve_bind("なにこれ", false).is_err());
     }
 
-    /// 実環境で何が選ばれるかを確認する (環境依存なので結果は表示のみ)
+    /// Checks what gets picked in the real environment (result is
+    /// environment-dependent, so this only prints it for inspection).
     #[test]
     fn auto_bind_picks_a_private_address_when_available() {
         let ts = tailscale_ip();
