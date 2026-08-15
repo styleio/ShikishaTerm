@@ -1614,9 +1614,11 @@ const openableUrl = u => /^https?:\/\/\S/i.test((u || "").trim());
 // The provider is everything up to the first "/"; the rest is the whole model name (split only
 // on the first "/" because some names, like ollama's huihui_ai/qwen..., contain their own "/")
 function parseModel(c) {
-  const m = /^\s*model\s+(\S.*)$/i.exec(cmdToText(c));
+  // Match a bare "model" too (provider/name still empty) so switching the Kind
+  // to Model shows the model panel before anything is filled in.
+  const m = /^\s*model(?:\s+(\S.*?))?\s*$/i.exec(cmdToText(c));
   if (!m) return null;
-  const rest = m[1].trim();
+  const rest = (m[1] || "").trim();
   const i = rest.indexOf("/");
   return {provider: i >= 0 ? rest.slice(0, i) : rest, model: i >= 0 ? rest.slice(i + 1) : ""};
 }
