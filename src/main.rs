@@ -1018,6 +1018,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 }
                 // Leave other workspaces to be rebuilt on demand (don't touch tabs running in the background)
                 ws_tabs.resize_with(new_ws.len().max(1), Vec::new);
+                // The per-workspace Lua engine cache is indexed by position, and that
+                // position shifts whenever workspaces are added/removed here. Reset it
+                // to match the new count (all None) so switching to a newly added
+                // workspace can't index out of bounds; each inactive workspace's engine
+                // is rebuilt on demand on the next switch (the active one is rebuilt below).
+                engines = (0..new_ws.len().max(1)).map(|_| None).collect();
                 workspaces = new_ws;
                 max_chain = newcfg.max_chain.unwrap_or(10);
                 follow_ball = newcfg.follow_ball.unwrap_or(true);
@@ -2935,7 +2941,15 @@ fn switch_workspace(
     engines: &mut [Option<HookEngine>],
     caps: &hooks::Caps,
 ) {
-    if to == *ws_index || to >= workspaces.len() {
+    // Guard against every backing array, not just `workspaces`: the per-workspace
+    // `engines`/`ws_tabs` caches are resized on config reload, and a mismatch must
+    // never index out of bounds (that would crash the whole app on switch).
+    if to == *ws_index
+        || to >= workspaces.len()
+        || to >= engines.len()
+        || to >= ws_tabs.len()
+        || *ws_index >= ws_tabs.len()
+    {
         return;
     }
     ws_tabs[*ws_index] = std::mem::take(tabs);
