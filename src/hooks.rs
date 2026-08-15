@@ -661,10 +661,15 @@ impl HookEngine {
             shikisha
                 .set(
                     "send_to_tab",
-                    lua.create_function(move |_, (target, text): (Value, String)| {
+                    // Take the text as a raw Lua string, not `String`: a turn's
+                    // relayed context can carry stray invalid UTF-8 from the
+                    // terminal capture, and a strict conversion would raise here
+                    // and abort the whole discussion mid-round. Lossy-decode so
+                    // the round keeps going (a bad byte becomes U+FFFD).
+                    lua.create_function(move |_, (target, text): (Value, mlua::String)| {
                         c.borrow_mut().push(Command::SendPrompt {
                             target: tab_ref_of(&target)?,
-                            text,
+                            text: text.to_string_lossy(),
                             origin: o.get(),
                         });
                         Ok(())
@@ -1253,8 +1258,11 @@ impl HookEngine {
             shikisha
                 .set(
                     "exchange_append",
-                    lua.create_function(|_, (path, text): (String, String)| {
-                        crate::exchange::append(std::path::Path::new(&path), &text)
+                    // `text` as a raw Lua string (see send_to_tab): an AI turn
+                    // recorded into the transcript can carry invalid UTF-8, and
+                    // a strict String conversion would raise and abort the round.
+                    lua.create_function(|_, (path, text): (String, mlua::String)| {
+                        crate::exchange::append(std::path::Path::new(&path), &text.to_string_lossy())
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,

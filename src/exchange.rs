@@ -71,9 +71,12 @@ pub fn take(path: &Path) -> Option<String> {
     if !within_root(path) {
         return None;
     }
-    let text = std::fs::read_to_string(path).ok()?;
+    // Read as bytes and lossy-decode rather than read_to_string: a statement an
+    // AI writes here can contain invalid UTF-8, and a strict read would drop the
+    // whole turn (returning None), stalling the discussion. Lossy keeps the turn.
+    let bytes = std::fs::read(path).ok()?;
     let _ = std::fs::remove_file(path);
-    Some(text)
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Append one line of text (for the record.lua log). Restricted to under the
