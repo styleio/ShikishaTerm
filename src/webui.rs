@@ -2080,7 +2080,8 @@ function providersCard() {
       const keyBtn = el("button", {class:"quiet", onclick: async () => {
         const v = keyIn.value.trim();
         if (!v) { toast(T["settings.secrets.key_required"], true); return; }
-        const sk = "provider:" + name;
+        // Secret keys allow only [A-Za-z0-9_-.], so namespace with "_" not ":".
+        const sk = "provider_" + name;
         const r = await fetch("/api/secrets/set", {method:"POST",
           headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
           body: JSON.stringify({key: sk, description: "model provider "+name, value: v})})
