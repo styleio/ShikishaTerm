@@ -124,6 +124,13 @@ pub struct UiState {
     /// The opening speaker's display name, for the start card's label.
     #[serde(default)]
     pub discuss_start_name: Option<String>,
+    /// Whether the discussion is currently at rest: nobody is generating and
+    /// the automation ring is idle. When true, the shell floats a prominent
+    /// "pose a topic" banner over whatever tab is in view, so you never have to
+    /// hunt for the opening speaker. While a participant is speaking it hides,
+    /// so the AI screens are never covered. Only meaningful with `discuss_start`.
+    #[serde(default)]
+    pub discuss_idle: bool,
 }
 
 impl TabState {

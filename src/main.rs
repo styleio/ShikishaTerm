@@ -647,6 +647,27 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         build: format!("build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
         discuss_start: ui.discuss_start,
         discuss_start_name: ui.discuss_start_name.clone(),
+        // "At rest" = a discussion workspace where every participant's screen
+        // has gone quiet and the automation ring has settled (Idle). We gauge
+        // "quiet" from how long the screen has been unchanged rather than the
+        // BUSY verdict, because some CLIs (Claude Code) leave a static status
+        // footer that keeps the busy-pattern matcher latched — a screen that
+        // hasn't changed in a couple of seconds is genuinely done regardless.
+        // Requiring the ring to be idle too covers the brief hand-off gap
+        // between turns, when the outgoing speaker has stopped but the ring is
+        // still in flight — without it the banner would flicker mid-round.
+        discuss_idle: ui.discuss_start.is_some() && {
+            const QUIET_MS: u64 = 2000;
+            let anyone_active = ui.panes.iter().any(|p| match p {
+                Pane::Session(s) => tabs
+                    .get(*s)
+                    .map(|t| t.ms_since_change(ui.now_ms) < QUIET_MS)
+                    .unwrap_or(false),
+                Pane::Browser { .. } => false,
+            });
+            let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
+            !anyone_active && ring_idle
+        },
     }
 }
 
@@ -3512,6 +3533,12 @@ fn exec_commands(
             // A rally's final result. Written to data/last-result.json, the log, and the UI.
             // External integrations read this file (the process itself keeps running as an interactive app).
             Command::SetResult { code, reason, origin } => {
+                // A result means the automated chain (rally, discussion, …) has
+                // concluded: hand the ring back to the human. Beyond being
+                // semantically right, this is what lets the discussion topic
+                // banner reappear once a round finishes — the ring sits Held on
+                // the last speaker until something puts it back in idle.
+                ball.reset();
                 let at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -3661,7 +3688,14 @@ fn exec_commands(
                     pending_submit.push(PendingSubmit::new(target, seen, now_ms));
                     append_hook_log(&format!("Paste tab{target} ({} chars)", text.chars().count()));
                 }
-                ball.throw(origin, target, depth, now_ms);
+                // A self-send (seeding a persona at launch, the opening nudge,
+                // a model's self-kick) starts things moving but isn't a hand-off
+                // between participants. Leaving the ring parked on it would make
+                // the "start the discussion" banner believe a round is already
+                // running, so only a genuine pass to another participant moves it.
+                if origin != target {
+                    ball.throw(origin, target, depth, now_ms);
+                }
                 append_hook_log(&format!(
                     "auto-send tab{origin} -> tab{target} (depth {depth}): {}",
                     log_excerpt(&text, 120)

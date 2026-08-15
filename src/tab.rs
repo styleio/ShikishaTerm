@@ -1336,6 +1336,16 @@ impl Tab {
         &self.activity
     }
 
+    /// How long the meaningful screen contents have been unchanged, in ms
+    /// (post-resize redraws excluded, same as the activity timer). Unlike the
+    /// BUSY verdict this reads the raw screen, so a program that parks a static
+    /// status footer on screen (e.g. Claude Code's "✳ Crunched for 15s") can't
+    /// masquerade as still working. `now_ms` must come from the same clock as
+    /// `Tab::tick` (the launch `Instant`'s elapsed millis).
+    pub fn ms_since_change(&self, now_ms: u64) -> u64 {
+        now_ms.saturating_sub(self.last_change_ms)
+    }
+
     /// Whether the child process has output anything (a proxy for whether it started up and is moving)
     pub fn had_output(&self) -> bool {
         self.output_count() > 0

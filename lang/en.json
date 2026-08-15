@@ -571,7 +571,7 @@
   "agent.discuss.part.intro": "You are a participant in the discussion <{me}>.",
   "agent.discuss.part.each_turn": "Each turn, **overwrite** your statement into this file (do not write it on screen):",
   "agent.discuss.part.others": "We will hand you the other participants' statements. Be concise and state your main points.",
-  "agent.discuss.part.ready": "Ready. Write the topic in the input field. You will open the discussion.",
+  "agent.discuss.part.ready": "You open the discussion — but do NOT begin yet. Stay completely silent and write NOTHING to the file until a topic is given to you. The moment a topic arrives, make your opening statement.",
   "agent.discuss.part.wait_turn": "You'll be asked to speak when your turn comes. Until then, wait.",
   "agent.discuss.persona.label": "[Your stance / persona]",
   "agent.discuss.persona.keep": "Maintain this stance to the end throughout your statements.",

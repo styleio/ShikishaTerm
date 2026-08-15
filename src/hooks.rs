@@ -1759,7 +1759,23 @@ function on_start(tab)
 end
 
 function on_done(tab)
-  if shikisha.get_var("discuss_done") then return end
+  if shikisha.get_var("discuss_done") then
+    -- The discussion has already reached a verdict. Only a fresh human topic on
+    -- the opening speaker (chain_depth == 0 means a person just typed) opens a
+    -- new round; every other on_done stays finished. Reuse the same run so the
+    -- participants keep the say.txt path they were told, and just clear the
+    -- per-round state so the next topic starts clean.
+    if IS_FIRST and tab.chain_depth == 0 then
+      shikisha.set_var("discuss_done", nil)
+      shikisha.set_var("discuss_log", nil)
+      shikisha.set_var("discuss_says", nil)
+      shikisha.set_var("discuss_round", 0)
+      shikisha.set_var("discuss_ask_judge", nil)
+      tx("\n---\n")
+    else
+      return
+    end
+  end
   local run = shikisha.get_var("discuss_run")
   if not run then return end
   local say = run .. "/say.txt"
@@ -1782,6 +1798,14 @@ function on_done(tab)
     return
   end
 
+  -- The judge speaks only when it has been formally asked to rule. Until then,
+  -- ignore anything it writes (Claude tends to eagerly acknowledge its
+  -- instructions into say.txt), so it can't hand down a verdict before the
+  -- debate has even taken place.
+  if IS_JUDGE and not shikisha.get_var("discuss_ask_judge") then
+    return
+  end
+
   -- The moderator's turn: not a statement but a "next speaker or END" instruction. Not recorded as a participant statement
   if IS_MOD then
     local ctx = shikisha.get_var("discuss_log") or ""
@@ -1789,6 +1813,7 @@ function on_done(tab)
     if msg:upper():find("END") then
       tx("\n" .. shikisha.tf("transcript.discuss.mod_close", { me = nm(ME) }) .. "\n")
       if JUDGE ~= nil and #JUDGE > 0 then
+        shikisha.set_var("discuss_ask_judge", true)
         shikisha.show(JUDGE)
         speak(JUDGE, table.concat({
           shikisha.t("agent.discuss.judge_request"), "----", ctx, "----",
@@ -1846,6 +1871,7 @@ function on_done(tab)
   -- Once the round limit is hit, hand off to the judge if there is one, otherwise end
   if r >= MAX_TURNS then
     if JUDGE ~= nil and #JUDGE > 0 then
+      shikisha.set_var("discuss_ask_judge", true)
       shikisha.show(JUDGE)
       speak(JUDGE, table.concat({
         shikisha.t("agent.discuss.judge_request_final"),

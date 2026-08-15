@@ -169,6 +169,35 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   /* Where the page sits. Pushed down by exactly the height of the bar above it */
   #page { position:absolute; inset:0; pointer-events:none; }
 
+  /* ── Discussion topic banner ─────────────────────
+     A prominent prompt floated over whatever tab is in view while an AI-vs-AI
+     discussion is at rest. Type a topic → it's sent to the opening speaker and
+     the round begins. It hides itself the moment a participant starts speaking,
+     so the AI screens are never covered, and returns when the round finishes so
+     the next topic can be posed. Placed at the very top: the AI CLIs keep their
+     input line at the bottom, so this never sits on top of it. */
+  #topicbar { position:absolute; left:0; right:0; top:0; z-index:24;
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:11px 16px; background:linear-gradient(180deg,#12242e,var(--panel));
+    border-bottom:2px solid var(--live); box-shadow:0 8px 22px rgba(0,0,0,.55); }
+  #topicbar[hidden] { display:none; }
+  #topicbar .tb-ico { font-size:16px; flex:none; }
+  #topicbar .tb-label { font-weight:700; color:var(--text); font-size:13px; flex:none; }
+  #topicbar input { flex:1 1 220px; min-width:140px; padding:9px 12px;
+    border-radius:8px; border:1px solid var(--line); background:var(--bg);
+    color:var(--text); font-size:14px; outline:none; }
+  #topicbar input:focus { border-color:var(--live); }
+  #topicbar button { flex:none; padding:9px 22px; border-radius:8px; border:0;
+    background:var(--live); color:#04121c; font-weight:700; cursor:pointer;
+    font-size:14px; animation:tbpulse 1.7s ease-in-out infinite; }
+  #topicbar button:hover { filter:brightness(1.08); }
+  /* A soft green ring that breathes outward, to draw the eye without motion sickness */
+  @keyframes tbpulse { 0%,100% { box-shadow:0 0 0 0 rgba(74,222,128,.55) }
+    50% { box-shadow:0 0 0 7px rgba(74,222,128,0) } }
+  /* The topic hint drops onto its own line below on narrow widths */
+  #topicbar .tb-hint { color:var(--dim); font-size:12px; flex:1 1 100%; margin:-2px 0 0; }
+  @media (prefers-reduced-motion: reduce) { #topicbar button { animation:none; } }
+
   /* ── Dashboard ─────────────────────────────── */
   #board { position:absolute; inset:0; overflow:auto; padding:22px 26px; }
   .mark { color:var(--brand); font-weight:700; letter-spacing:.5px;
@@ -332,6 +361,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     <pre id="tprobe"></pre>
     <div id="back" hidden></div>
     <div id="flash" hidden></div>
+    <div id="topicbar" hidden></div>
   </div>
   <div id="veil" hidden></div>
   <div id="status"></div>
@@ -485,32 +515,9 @@ function drawBoard() {
     el("div", {class:"sub"}, S.ball.depth + " / " + S.ball.max),
     lanes()));
 
-  // Start-the-discussion card. Shown only when the current workspace is an
-  // AI-vs-AI discussion, so nobody has to hunt for the opening speaker's tab:
-  // type the topic here and it's sent to the opening speaker, kicking it off.
-  if (S.discuss_start) {
-    const input = el("input", {type:"text",
-      style:"flex:1;min-width:120px;padding:8px 10px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:14px",
-      placeholder: T["tui.discuss.start.ph"] || "Type the topic to start the discussion"});
-    const start = () => {
-      const topic = input.value.trim();
-      if (!topic) { input.focus(); return; }
-      send({kind:"select", tab:S.discuss_start});
-      send({kind:"key", text:topic});
-      send({kind:"key", named:"Return"});
-      input.value = "";
-    };
-    input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); start(); } });
-    const btn = el("button", {onclick:start,
-      style:"padding:8px 16px;border-radius:7px;border:0;background:var(--live);color:#04121c;font-weight:700;cursor:pointer;font-size:14px"},
-      T["tui.discuss.start.btn"] || "Start");
-    const hint = (T["tui.discuss.start.hint"] || "Sends your topic to the opening speaker ({name}) and begins.")
-      .split("{name}").join(S.discuss_start_name || "");
-    b.append(el("div", {class:"card"},
-      el("h2", {}, "🗣 " + (T["tui.discuss.start.title"] || "Start the discussion")),
-      el("div", {class:"sub", style:"margin-bottom:10px"}, hint),
-      el("div", {style:"display:flex;gap:10px;align-items:center"}, input, btn)));
-  }
+  // (The "start the discussion" prompt used to live here as a dashboard card,
+  // but it blended into the board and only showed on INDEX. It's now the
+  // #topicbar banner — floated over every tab while the discussion is at rest.)
 
   // Tab list
   const rows = el("table", {class:"rows"});
@@ -561,6 +568,47 @@ function lanes() {
   if (S.ball.awaiting_human) ball.className += " wait";
   box.append(ball);
   return box;
+}
+
+// ── Discussion topic banner ──────────────────
+// A prominent prompt floated over any tab while an AI-vs-AI discussion is at
+// rest. Type a topic → it's sent to the opening speaker and the round starts.
+// The banner is rebuilt only when the target changes (workspace / speaker),
+// so a half-typed topic survives the frequent state pushes.
+function drawTopicBar() {
+  const bar = document.getElementById("topicbar");
+  const show = !!(S && S.discuss_start && S.discuss_idle);
+  if (!show) { bar.hidden = true; return; }
+  const sig = (S.workspace || "") + "|" + S.discuss_start + "|" + (S.discuss_start_name || "");
+  if (bar.dataset.sig === sig && bar.childNodes.length) { bar.hidden = false; return; }
+  bar.dataset.sig = sig;
+  bar.textContent = "";
+  const input = el("input", {type:"text",
+    placeholder: T["tui.discuss.start.ph"] || "Type the topic to start the discussion"});
+  const go = () => {
+    const topic = input.value.trim();
+    if (!topic) { input.focus(); return; }
+    send({kind:"select", tab:S.discuss_start});
+    send({kind:"key", text:topic});
+    // Submit for real — the key name the backend knows for Enter is "enter",
+    // not "Return"; sending "Return" was a no-op, so the topic just sat in the
+    // input as an unsent draft.
+    send({kind:"key", named:"enter"});
+    input.value = "";
+    // It vanishes on its own once the opening speaker goes BUSY, but hide it
+    // right away so a stray second Enter can't fire a duplicate topic.
+    bar.hidden = true;
+  };
+  input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  const hint = (T["tui.discuss.start.hint"] || "Sends your topic to the opening speaker ({name}) and begins.")
+    .split("{name}").join(S.discuss_start_name || "");
+  bar.append(
+    el("span", {class:"tb-ico"}, "\u{1F5E3}"),
+    el("span", {class:"tb-label"}, T["tui.discuss.start.title"] || "Start the discussion"),
+    input,
+    el("button", {onclick:go}, T["tui.discuss.start.btn"] || "Start"),
+    el("span", {class:"tb-hint"}, hint));
+  bar.hidden = false;
 }
 
 // ── Status line ──────────────────────────────
@@ -729,6 +777,7 @@ window.__state = function (json) {
   cast.hidden = !(web && REMOTE);
   if (web && REMOTE) castStart(); else castStop();
   if (S.active === 0) drawBoard();
+  drawTopicBar();
   drawVeil();
   // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");

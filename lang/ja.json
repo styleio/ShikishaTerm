@@ -571,7 +571,7 @@
   "agent.discuss.part.intro": "あなたは議論の参加者 <{me}> です。",
   "agent.discuss.part.each_turn": "毎手番、あなたの発言を **このファイルに上書き保存** してください(画面には書かない):",
   "agent.discuss.part.others": "他の参加者の発言はこちらが渡します。端的に、要点を述べてください。",
-  "agent.discuss.part.ready": "準備OK。議題を入力欄に書いてください。あなたが口火を切ります。",
+  "agent.discuss.part.ready": "あなたが口火役です。ただし、まだ始めないでください。議題が与えられるまで、一切発言せず、ファイルにも何も書かずに待機してください。議題が届いた瞬間に、口火の発言をしてください。",
   "agent.discuss.part.wait_turn": "順番が来たら発言を求めます。それまで待機。",
   "agent.discuss.persona.label": "【あなたの立場・人格】",
   "agent.discuss.persona.keep": "この立場を最後まで貫いて発言してください。",
