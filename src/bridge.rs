@@ -36,6 +36,12 @@ pub struct ModelConn {
     /// forgets its stance and drifts off topic (only set when this is a
     /// discussion participant).
     pub persona: Option<String>,
+    /// When set, this model is a browser-operation *brain*: it drives the
+    /// browser tab with this id. Unlike a CLI agent (which writes `in.lua`
+    /// itself), a model brain emits a ```lua block in its reply; the tab
+    /// extracts it and hands it to the same rally orchestrator. Toggles the
+    /// rally system prompt and per-turn `on_done` firing in the tab's chat.
+    pub drives: Option<String>,
 }
 
 /// The `--bridge` child process (for direct terminal execution via pipes).
@@ -233,6 +239,7 @@ pub fn launch_for(argv: &[String]) -> Option<ModelConn> {
         model: model.to_string(),
         headers,
         persona: None,
+        drives: None,
     })
 }
 

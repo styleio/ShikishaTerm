@@ -471,6 +471,11 @@ pub struct TabCtx {
     /// Whether this tab is a model bridge (API). Used for things like
     /// auto-kicking off a discussion's opening speaker
     pub is_model: bool,
+    /// For a browser-brain model, its latest reply verbatim (exposed as
+    /// `tab.reply`). The orchestrator pulls the ```lua block from this rather
+    /// than `output`, whose screen copy is line-wrapped to the tab width and
+    /// would split long URLs. None for CLI tabs and plain chat.
+    pub reply: Option<String>,
 }
 
 enum WaitKind {
@@ -1489,6 +1494,36 @@ local function judge(screen_out)
   return nil
 end
 
+-- A model brain can't write files, so it hands over the next move as a fenced
+-- ```lua block in its reply. Pull that block out (any/no language tag). Fall
+-- back to gathering bare browser_*/shikisha./local lines if the model forgot
+-- the fence. Returns nil when there's nothing runnable.
+local function extract_lua(reply)
+  if not reply or #reply == 0 then return nil end
+  local body = reply:match("```%s*%w*%s*\n(.-)```")
+  if not body then body = reply:match("```%s*%w*%s*(.-)```") end
+  if body and #(body:gsub("%s", "")) > 0 then return body end
+  local lines = {}
+  for line in (reply .. "\n"):gmatch("(.-)\n") do
+    if line:match("browser_%w+%s*%(") or line:match("shikisha%.")
+        or line:match("^%s*local%s") or line:match("^%s*for%s") or line:match("^%s*if%s") then
+      lines[#lines + 1] = line
+    end
+  end
+  if #lines > 0 then return table.concat(lines, "\n") end
+  return nil
+end
+
+-- A brain signals completion by replying with a bare DONE (no code block).
+local function is_done(reply)
+  if not reply then return false end
+  for line in (reply .. "\n"):gmatch("(.-)\n") do
+    local w = line:gsub("[%s%p]", "")
+    if w == "DONE" or w == "done" then return true end
+  end
+  return false
+end
+
 local function protocol(run)
   local infile = run .. "/in.lua"
   local humanfile = run .. "/human.txt"
@@ -1519,19 +1554,40 @@ local function tx(entry)
   if p then shikisha.exchange_append(p, entry) end
 end
 
+-- Where to tell the AI to put its next move. A CLI agent writes a file; a
+-- model brain just replies with a ```lua block (or DONE).
+local function fix_hint(tab, infile)
+  if tab.is_model then return shikisha.t("agent.browser.model.fix") end
+  return shikisha.tf("agent.browser.lint.fix", { infile = infile })
+end
+local function retry_hint(tab, infile)
+  if tab.is_model then return shikisha.t("agent.browser.model.retry") end
+  return shikisha.tf("agent.browser.run.retry", { infile = infile })
+end
+local function next_hint(tab, infile)
+  if tab.is_model then return shikisha.t("agent.browser.model.next") end
+  return shikisha.t("agent.browser.next_action.before") .. infile .. shikisha.t("agent.browser.next_action.after")
+end
+
 function on_start(tab)
   local run = shikisha.exchange_new()
   shikisha.set_var("rally_run", run)
   shikisha.set_var("rally_record", run .. "/record.lua")
   shikisha.set_var("rally_tx", run .. "/transcript.md")
+  shikisha.set_var("rally_nocode", 0)
   reset_budget()
   tx(shikisha.t("transcript.rally.header") .. "\n")
   tx(shikisha.tf("transcript.rally.mode", { br = BR }) .. "\n")
-  shikisha.send_to_tab(tab.index, table.concat({
-    protocol(run),
-    "",
-    shikisha.t("agent.browser.start.ready"),
-  }, "\n"))
+  -- A model brain already carries the operating rules in its system prompt and
+  -- can't write files, so it isn't handed the file-based protocol; it waits for
+  -- the human's goal in the chat box. A CLI agent gets the file-handoff brief.
+  if not tab.is_model then
+    shikisha.send_to_tab(tab.index, table.concat({
+      protocol(run),
+      "",
+      shikisha.t("agent.browser.start.ready"),
+    }, "\n"))
+  end
 end
 
 function on_done(tab)
@@ -1539,12 +1595,16 @@ function on_done(tab)
   local run = shikisha.get_var("rally_run")
   if not run then return end
   local infile = run .. "/in.lua"
+  -- A brain hands its move over inside its reply; a CLI agent writes files, so
+  -- its reply text is on screen (tab.output). Use whichever carries the move.
+  local said = tab.reply or tab.output or ""
 
   -- A human typed into the input field (chain 0) = a new goal/correction. Reset the budget (safety net)
   if tab.chain_depth == 0 then
     reset_budget()
+    shikisha.set_var("rally_nocode", 0)
   end
-  shikisha.set_var("rally_tok", (shikisha.get_var("rally_tok") or 0) + #(tab.output or ""))
+  shikisha.set_var("rally_tok", (shikisha.get_var("rally_tok") or 0) + #said)
 
   -- Human-assistance-request file
   local human = shikisha.exchange_take(run .. "/human.txt")
@@ -1558,22 +1618,28 @@ function on_done(tab)
     return
   end
 
-  -- Move file -> lint -> execute -> record
+  -- Move: a CLI agent overwrites in.lua; a model brain returns a ```lua block
+  -- in its reply, which we pull out here. Either way it lands as `code` and the
+  -- rest of the pipeline (lint -> execute -> record -> judge) is shared.
   local code = shikisha.exchange_take(infile)
+  if (not code or #code == 0) and tab.is_model then
+    code = extract_lua(tab.reply)
+  end
   if code and #code > 0 then
     local lint = shikisha.lint(code)
     if lint then
-      shikisha.send_to_tab(ai, shikisha.t("agent.browser.lint.error") .. "\n" .. lint .. "\n" .. shikisha.tf("agent.browser.lint.fix", { infile = infile }))
+      shikisha.send_to_tab(ai, shikisha.t("agent.browser.lint.error") .. "\n" .. lint .. "\n" .. fix_hint(tab, infile))
       return
     end
     shikisha.show(BR)
     local err = shikisha.run_scoped(BR, code)
     if err then
       shikisha.show(ai)
-      shikisha.send_to_tab(ai, shikisha.t("agent.browser.run.error") .. "\n" .. err .. "\n" .. shikisha.tf("agent.browser.run.retry", { infile = infile }))
+      shikisha.send_to_tab(ai, shikisha.t("agent.browser.run.error") .. "\n" .. err .. "\n" .. retry_hint(tab, infile))
       return
     end
     shikisha.exchange_append(shikisha.get_var("rally_record"), code)
+    shikisha.set_var("rally_nocode", 0)
     local n = (shikisha.get_var("rally_round") or 0) + 1
     shikisha.set_var("rally_round", n)
     -- Record the executed move in the human-readable transcript (4-space indent = Markdown code block)
@@ -1586,7 +1652,7 @@ function on_done(tab)
       shikisha.sleep(180)
       local t = shikisha.browser_text(BR, "body")
       if t and #(t:gsub("%s", "")) > 0 then
-        v = judge(tab.output)
+        v = judge(said)
         if v then break end
       end
     end
@@ -1616,12 +1682,32 @@ function on_done(tab)
     if #text > 3000 then text = text:sub(1, 3000) .. shikisha.t("agent.browser.truncated") end
     shikisha.send_to_tab(ai, table.concat({
       shikisha.t("agent.browser.executed_screen"), "----", text, "----",
-      shikisha.t("agent.browser.next_action.before") .. infile .. shikisha.t("agent.browser.next_action.after"),
+      next_hint(tab, infile),
     }, "\n"))
     return
   end
 
-  -- No move: if a human just typed the goal (chain 0), nudge once.
+  -- No runnable move.
+  if tab.is_model then
+    -- A brain replying with a bare DONE means the goal is met.
+    if is_done(said) then
+      tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. shikisha.t("agent.verdict.success") .. "\n")
+      shikisha.set_result(0, shikisha.t("agent.verdict.success"))
+      return
+    end
+    -- Neither code nor DONE: remind, but cap consecutive empty turns so a
+    -- chatty model can't loop forever prompting itself.
+    local nc = (shikisha.get_var("rally_nocode") or 0) + 1
+    shikisha.set_var("rally_nocode", nc)
+    if nc >= 3 then
+      shikisha.send_to_tab(ai, shikisha.t("agent.browser.model.stuck"))
+      return
+    end
+    shikisha.send_to_tab(ai, shikisha.t("agent.browser.model.remind"))
+    return
+  end
+
+  -- CLI no-code: if a human just typed the goal (chain 0), nudge once.
   -- Otherwise (the AI reported/waited), send nothing and wait for the
   -- human's next input
   if tab.chain_depth == 0 then
@@ -2149,6 +2235,11 @@ end
         t.set("chain_depth", ctx.chain_depth)?;
         t.set("locked", ctx.locked)?;
         t.set("is_model", ctx.is_model)?;
+        // Only a brain sets this; leave it nil otherwise so `tab.reply or ""`
+        // reads cleanly in Lua.
+        if let Some(r) = &ctx.reply {
+            t.set("reply", r.as_str())?;
+        }
         Ok(t)
     }
 
@@ -2219,6 +2310,7 @@ mod tests {
             output: output.into(),
             chain_depth: 0,
             locked: false,
+            reply: None,
         }
     }
 
@@ -2433,6 +2525,93 @@ mod tests {
                         && text.contains("browser_go")
                         && text.contains("input field"))),
             "on_start がブラウザ操作プロトコル(入力欄でゴール)を送っていない: {cmds:?}"
+        );
+    }
+
+    fn ctx_model(index: usize, reply: &str) -> TabCtx {
+        let mut c = ctx(index, "");
+        c.is_model = true;
+        c.reply = Some(reply.into());
+        c
+    }
+
+    fn load_brain() -> HookEngine {
+        let empty: &[crate::config::StopCond] = &[];
+        let stops = crate::config::stops_to_lua(empty);
+        let mut e = HookEngine::new().unwrap();
+        let id = e.load_browser_agent("br", &stops).expect("内蔵司令塔が読めない");
+        e.set_tab(1, id);
+        e
+    }
+
+    #[test]
+    fn a_browser_brain_gets_no_file_protocol_at_start() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        // A model brain carries its rules in the system prompt and can't write
+        // files, so on_start must NOT hand it the in.lua file-handoff protocol.
+        let mut e = load_brain();
+        e.fire("on_start", &ctx_model(1, ""), None);
+        let cmds = e.drain_commands();
+        assert!(
+            !cmds
+                .iter()
+                .any(|c| matches!(c, Command::SendPrompt { text, .. } if text.contains("in.lua"))),
+            "model brain should not receive the file-handoff protocol: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn a_browser_brain_move_is_pulled_from_its_reply() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        // The brain never writes in.lua; the orchestrator must EXTRACT the
+        // fenced ```lua from its reply and run it through the same pipeline.
+        // A block that isn't valid Lua proves extraction reached the linter
+        // (rather than falling through to the "no move" path).
+        let mut e = load_brain();
+        e.fire("on_start", &ctx_model(1, ""), None);
+        let _ = e.drain_commands();
+        e.fire(
+            "on_done",
+            &ctx_model(1, "Sure, next:\n```lua\n=== not lua ===\n```"),
+            None,
+        );
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c, Command::SendPrompt { text, .. }
+                if text.contains(&crate::i18n::t("agent.browser.lint.error")))),
+            "the ```lua block should have been extracted and linted: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn a_browser_brain_finishes_on_a_bare_done() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let mut e = load_brain();
+        e.fire("on_start", &ctx_model(1, ""), None);
+        let _ = e.drain_commands();
+        e.fire("on_done", &ctx_model(1, "DONE\nPosted the article."), None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Command::SetResult { code: 0, .. })),
+            "a bare DONE should end the rally with success: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn a_browser_brain_is_reminded_when_it_only_chats() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        // A reply with neither a code block nor DONE gets nudged back toward
+        // emitting Lua (so a chatty model doesn't silently stall).
+        let mut e = load_brain();
+        e.fire("on_start", &ctx_model(1, ""), None);
+        let _ = e.drain_commands();
+        e.fire("on_done", &ctx_model(1, "I think we should log in first."), None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Command::SendPrompt { text, .. } if text.contains("```lua"))),
+            "a chatty no-code reply should be reminded to send lua: {cmds:?}"
         );
     }
 

@@ -939,6 +939,12 @@ pub struct Tab {
     /// Whether a chat reply is currently being generated. Drives the spinner in
     /// the UI and is set/cleared by `chat_send`'s thread.
     model_busy: Arc<AtomicBool>,
+    /// A browser-brain model's latest reply, verbatim. The reply thread stores
+    /// it here so the rally orchestrator's `on_done` can pull the ```lua block
+    /// out of the exact text (the on-screen copy is line-wrapped to the tab
+    /// width, which would split long URLs). None until the first reply / for
+    /// non-brain tabs.
+    last_model_reply: Arc<Mutex<Option<String>>>,
 }
 
 impl Tab {
@@ -1136,6 +1142,7 @@ impl Tab {
             detector: Detector::new(profile),
             chat_history: Arc::new(Mutex::new(Vec::new())),
             model_busy: Arc::new(AtomicBool::new(false)),
+            last_model_reply: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -1460,21 +1467,69 @@ impl Tab {
     /// screen, then replays the whole conversation to the bridge on a thread and
     /// injects the reply. This is a plain chat: unlike `dispatch_model` (used by
     /// discussions) there is no say.txt hand-off and no turn/on_done bookkeeping.
+    /// True when this model tab is a browser-operation *brain* (`drives` set):
+    /// it steers the browser by emitting Lua in its reply, so its turns must
+    /// fire `on_done` and its reply is kept verbatim for the orchestrator.
+    pub fn is_browser_brain(&self) -> bool {
+        self.model
+            .as_ref()
+            .and_then(|c| c.drives.as_deref())
+            .is_some_and(|d| !d.trim().is_empty())
+    }
+
+    /// The brain's latest reply, verbatim (None for CLI / plain-chat tabs, or
+    /// before the first reply). Cloned so the on_done handler reads the exact
+    /// text rather than the line-wrapped screen copy.
+    pub fn model_reply(&self) -> Option<String> {
+        self.last_model_reply
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// A human line typed into the chat box. Echoes the line with a
+    /// Claude-style prompt marker, then the model replies.
     pub fn chat_send(&self, user_text: String) {
+        self.model_turn(user_text, true);
+    }
+
+    /// A relayed rally turn (the orchestrator handing back the browser screen).
+    /// Same conversation, but the (potentially huge) context isn't echoed as a
+    /// prompt line — only a compact marker is shown, then the model's reply.
+    pub fn rally_relay(&self, context: String) {
+        self.model_turn(context, false);
+    }
+
+    /// Shared core of a model turn. `echo` controls whether the incoming text
+    /// is shown verbatim (a human's line) or as a compact marker (relayed rally
+    /// context). For a browser brain the turn is marked so BUSY→DONE→on_done
+    /// fires and the reply is stashed verbatim for the orchestrator.
+    fn model_turn(&self, incoming: String, echo: bool) {
         let Some(conn) = self.model.clone() else { return };
-        let text = user_text.trim().to_string();
+        let text = incoming.trim().to_string();
         if text.is_empty() {
             return;
         }
+        let brain = self.is_browser_brain();
         let parser = Arc::clone(&self.parser);
         let counter = Arc::clone(&self.bytes_out);
         let busy = Arc::clone(&self.model_busy);
         let history = Arc::clone(&self.chat_history);
+        let last_reply = Arc::clone(&self.last_model_reply);
         busy.store(true, Ordering::Relaxed);
+        // Start the turn with no stashed reply, so if this turn errors out the
+        // orchestrator won't re-extract and re-run the *previous* turn's ```lua.
+        *last_reply.lock().unwrap_or_else(|e| e.into_inner()) = None;
         history
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((true, text.clone()));
+        // A brain's turn must be picked up by detection (BUSY→DONE→on_done);
+        // a plain chat turn must NOT (there is no orchestrator, and firing
+        // would be a no-op at best). Marking here mirrors dispatch_model.
+        if brain {
+            self.mark_turn_start();
+        }
         std::thread::spawn(move || {
             let inject = |s: &str| {
                 let bytes = s.as_bytes();
@@ -1486,18 +1541,36 @@ impl Tab {
                         .process(bytes);
                 }));
             };
-            // Echo the human's line with a Claude-style prompt marker. The
-            // "generating" state is shown by the HTML thinking bubble (driven by
-            // model_busy), not by a text line, so nothing is injected here for it.
-            inject(&format!(
-                "\r\n\x1b[1;32m❯\x1b[0m {}\r\n",
-                text.replace('\n', "\r\n")
-            ));
+            if echo {
+                // The human's line, with a Claude-style prompt marker. The
+                // "generating" state is shown by the HTML thinking bubble
+                // (driven by model_busy), not a text line.
+                inject(&format!(
+                    "\r\n\x1b[1;32m❯\x1b[0m {}\r\n",
+                    text.replace('\n', "\r\n")
+                ));
+            } else {
+                // Relayed context: a compact dim marker instead of the dump.
+                inject(&format!(
+                    "\r\n\x1b[2m… {}\x1b[0m\r\n",
+                    crate::i18n::t("agent.browser.model.relayed")
+                ));
+            }
             // Replay the whole history (the bridge keeps no state of its own).
             let msgs = {
                 let h = history.lock().unwrap_or_else(|e| e.into_inner());
                 let mut msgs = Vec::new();
-                let mut system = crate::i18n::t("agent.model.chat_system");
+                // A brain gets the browser-operation protocol as its system
+                // prompt (so it never forgets to answer with a ```lua block);
+                // a plain chat tab gets the friendly chat system prompt.
+                let mut system = if brain {
+                    crate::i18n::tp(
+                        "agent.browser.model.system",
+                        &[("br", conn.drives.as_deref().unwrap_or_default())],
+                    )
+                } else {
+                    crate::i18n::t("agent.model.chat_system")
+                };
                 if let Some(p) = &conn.persona {
                     system.push('\n');
                     system.push_str(p);
@@ -1517,6 +1590,9 @@ impl Tab {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .push((false, reply.clone()));
+                    // Stash the verbatim reply BEFORE injecting, so it's ready
+                    // by the time DONE fires and on_done reads tab.reply.
+                    *last_reply.lock().unwrap_or_else(|e| e.into_inner()) = Some(reply.clone());
                     inject(&format!("{}\r\n", reply.replace('\n', "\r\n")));
                 }
                 Err(e) => inject(&format!(

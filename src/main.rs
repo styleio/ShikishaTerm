@@ -1773,8 +1773,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // model tab is in view; a line typed while a non-model tab is up is
         // dropped (the box is only shown over model tabs anyway).
         for line in surface.take_chats() {
-            if let Some(t) = session_at(&layout, active).and_then(|i| tabs.get(i)) {
+            if let Some(t) = session_at(&layout, active).and_then(|i| tabs.get_mut(i)) {
                 if t.is_model() {
+                    // A line typed by the human is a fresh turn (chain 0), so a
+                    // rally brain resets its per-goal budget instead of treating
+                    // it as more of the automated chain.
+                    t.chain_depth = 0;
                     t.chat_send(line);
                 }
             }
@@ -2741,11 +2745,18 @@ fn resolve_launch(
     opts: &mut tab::TabOptions,
     ws: Option<&config::Workspace>,
     id: Option<&str>,
+    drives: Option<&str>,
 ) -> Vec<String> {
     if let Some(mut conn) = bridge::launch_for(&argv) {
         if let (Some(d), Some(id)) = (ws.and_then(|w| w.discuss.as_ref()), id) {
             conn.persona = d.personas.get(id).filter(|p| !p.trim().is_empty()).cloned();
         }
+        // A model tab that `drives` a browser is a rally brain: it steers the
+        // browser by emitting Lua in its reply instead of chatting.
+        conn.drives = drives
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
         opts.model = Some(conn);
     }
     argv
@@ -2819,7 +2830,13 @@ fn apply_ws_config(
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
         let mut opts = tab_options(&ft.cfg);
-        let argv = resolve_launch(argv, &mut opts, Some(ws), ft.cfg.id.as_deref());
+        let argv = resolve_launch(
+            argv,
+            &mut opts,
+            Some(ws),
+            ft.cfg.id.as_deref(),
+            ft.cfg.drives.as_deref(),
+        );
         match tabs.iter().position(|t| t.title == title) {
             Some(i) => {
                 let mut t = tabs.remove(i);
@@ -3021,7 +3038,13 @@ fn spawn_workspace(
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
         let mut opts = tab_options(&ft.cfg);
-        let argv = resolve_launch(argv, &mut opts, Some(ws), ft.cfg.id.as_deref());
+        let argv = resolve_launch(
+            argv,
+            &mut opts,
+            Some(ws),
+            ft.cfg.id.as_deref(),
+            ft.cfg.drives.as_deref(),
+        );
         match Tab::spawn(
             title.clone(),
             &argv,
@@ -3385,6 +3408,10 @@ fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
         chain_depth: t.chain_depth,
         locked: t.locked,
         is_model: t.is_model(),
+        // A rally brain's exact reply, kept verbatim so the orchestrator can
+        // pull ```lua out of it without the terminal's line-wrapping mangling
+        // long URLs. None for CLI tabs and plain chat.
+        reply: t.model_reply(),
     }
 }
 
@@ -3727,7 +3754,15 @@ fn exec_commands(
                     continue;
                 }
                 t.chain_depth = depth;
-                if t.is_model() {
+                if t.is_browser_brain() {
+                    // A model steering the browser: replay the conversation
+                    // (history-backed) so it remembers earlier moves, mark the
+                    // turn so BUSY -> DONE -> on_done fires, and let on_done pull
+                    // the ```lua out of the reply. The relayed screen text is
+                    // fed as context but not echoed as a giant prompt line.
+                    t.rally_relay(text.clone());
+                    append_hook_log(&format!("brain's turn tab{target} ({} chars)", text.chars().count()));
+                } else if t.is_model() {
                     // model bridge: hits complete() on a thread, injects the
                     // response into the screen, and writes it to say.txt too.
                     // Detection (BUSY -> DONE -> on_done) runs on the injected activity.
