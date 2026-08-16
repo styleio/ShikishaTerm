@@ -199,28 +199,50 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   @media (prefers-reduced-motion: reduce) { #topicbar button { animation:none; } }
   /* Model-tab chat box — a Claude-style input pinned to the bottom of a model
      tab, with a spinner while the reply generates. */
+  /* Claude-Code-style composer: a divider on top, a ">" prompt, and a
+     multi-line textarea that grows with the text. Enter sends, Shift+Enter
+     inserts a newline. A faint hint sits below, mirroring Claude's CLI. */
   #modelchat { position:absolute; left:0; right:0; bottom:0; z-index:23;
-    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
-    padding:10px 14px; background:linear-gradient(0deg,#12242e,var(--panel));
-    border-top:2px solid var(--live); box-shadow:0 -8px 22px rgba(0,0,0,.5); }
+    padding:9px 16px 7px; background:var(--panel);
+    border-top:1px solid var(--line); }
   #modelchat[hidden] { display:none; }
-  #modelchat .mc-label { font-weight:700; color:var(--text); font-size:13px; flex:none; }
-  #modelchat input { flex:1 1 240px; min-width:140px; padding:9px 12px;
-    border-radius:8px; border:1px solid var(--line); background:var(--bg);
-    color:var(--text); font-size:14px; outline:none; }
-  #modelchat input:focus { border-color:var(--live); }
-  #modelchat input:disabled { opacity:.5; }
-  #modelchat button { flex:none; padding:9px 20px; border-radius:8px; border:0;
-    background:var(--live); color:#04121c; font-weight:700; cursor:pointer; font-size:14px; }
-  #modelchat button:hover { filter:brightness(1.08); }
-  #modelchat button:disabled { cursor:default; filter:grayscale(.6) brightness(.8); }
-  /* The "thinking" spinner: a ring that keeps spinning while the model generates */
-  #modelchat .mc-spin { flex:none; width:16px; height:16px; border-radius:50%;
-    border:2px solid var(--line); border-top-color:var(--live);
-    animation:mcspin .8s linear infinite; }
-  #modelchat .mc-busy { color:var(--live); font-size:13px; flex:none; }
-  @keyframes mcspin { to { transform:rotate(360deg) } }
-  @media (prefers-reduced-motion: reduce) { #modelchat .mc-spin { animation:none } }
+  #modelchat .mc-box { display:flex; align-items:flex-start; gap:9px; }
+  #modelchat .mc-prompt { color:var(--live); font-weight:700; font-size:15px;
+    line-height:24px; flex:none; }
+  #modelchat textarea { flex:1; resize:none; border:0; outline:0; background:transparent;
+    color:var(--text); font:inherit; font-size:14px; line-height:24px;
+    max-height:168px; overflow-y:auto; padding:0; }
+  #modelchat textarea:disabled { opacity:.5; }
+  #modelchat .mc-hint { display:flex; justify-content:flex-end; align-items:center;
+    margin:4px 0 0 24px; color:var(--dim); font-size:11.5px; }
+  #modelchat .mc-send { border:0; border-radius:7px; padding:4px 14px;
+    background:var(--live); color:#04121c; font-weight:700; cursor:pointer; font-size:12px; }
+  #modelchat .mc-send:hover { filter:brightness(1.08); }
+  #modelchat .mc-send:disabled { cursor:default; filter:grayscale(.6) brightness(.8); }
+  /* Claude-style "thinking" bubble floated over the conversation while a reply
+     generates — bouncing dots + a bubble that breathes, so the wait feels alive.
+     Sits just above the chat input, bottom-left like a chat app. */
+  /* No bubble chrome — the dots + text sit inline right where the cursor is
+     (where "generating" used to print), so it reads as part of the
+     conversation. left/top are set from the cursor position by JS. */
+  #thinking { position:absolute; z-index:22; white-space:nowrap;
+    display:inline-flex; align-items:center; gap:8px;
+    color:var(--text); font-size:14px; font-weight:500; }
+  #thinking[hidden] { display:none; }
+  #thinking .th-dots { display:flex; align-items:center; gap:4px; height:16px; }
+  #thinking .th-dots span { width:6px; height:6px; background:var(--live);
+    border-radius:50%; animation:thinking-dot 1.15s ease-in-out infinite; }
+  #thinking .th-dots span:nth-child(2) { animation-delay:.14s; }
+  #thinking .th-dots span:nth-child(3) { animation-delay:.28s; }
+  #thinking .th-text { animation:text-pulse 2s ease-in-out infinite; }
+  /* Elapsed time, so you can see it's still working and not stuck */
+  #thinking .th-elapsed { color:var(--dim); font-size:12px; font-weight:400;
+    font-variant-numeric:tabular-nums; }
+  @keyframes thinking-dot { 0%,60%,100% { transform:translateY(0) scale(.9); opacity:.32 }
+    30% { transform:translateY(-5px) scale(1); opacity:1 } }
+  @keyframes text-pulse { 0%,100% { opacity:.62 } 50% { opacity:1 } }
+  @media (prefers-reduced-motion: reduce) {
+    #thinking .th-dots span, #thinking .th-text { animation:none } }
 
   /* ── Dashboard ─────────────────────────────── */
   #board { position:absolute; inset:0; overflow:auto; padding:22px 26px; }
@@ -386,6 +408,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     <div id="back" hidden></div>
     <div id="flash" hidden></div>
     <div id="topicbar" hidden></div>
+    <div id="thinking" hidden></div>
     <div id="modelchat" hidden></div>
   </div>
   <div id="veil" hidden></div>
@@ -640,41 +663,78 @@ function drawTopicBar() {
 // when the visible model tab changes, so a half-typed message survives the
 // frequent state pushes; the busy spinner is toggled without a rebuild (so the
 // input keeps its text and focus while a reply generates).
+// The thinking bubble's live elapsed timer. __state only fires on change, so a
+// standalone interval keeps the seconds ticking while the reply generates.
+let thinkTimer = null, thinkStart = 0;
+function fmtElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60) + "s";
+}
 function drawModelChat() {
   const box = document.getElementById("modelchat");
+  const think = document.getElementById("thinking");
   const t = S && S.tabs && S.tabs.find(x => x.index === S.active);
-  if (!(t && t.model)) { box.hidden = true; return; }
+  if (!(t && t.model)) {
+    box.hidden = true; think.hidden = true;
+    if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
+    return;
+  }
   const sig = "m" + t.index;
   if (box.dataset.sig !== sig || !box.childNodes.length) {
     box.dataset.sig = sig;
     box.textContent = "";
-    const input = el("input", {type:"text",
+    const ta = el("textarea", {rows:"1",
       placeholder:(T["tui.chat.ph"] || "Message {model}…").split("{model}").join(t.name || "model")});
+    // Grow with the text, up to a cap, like Claude's composer.
+    const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 168) + "px"; };
     const go = () => {
-      const msg = input.value.trim();
-      if (!msg) { input.focus(); return; }
+      const msg = ta.value.trim();
+      if (!msg) { ta.focus(); return; }
       send({kind:"chat", text:msg});
-      input.value = "";
+      ta.value = ""; grow();
     };
-    input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+    ta.addEventListener("input", grow);
+    // Enter sends; Shift+Enter (or an active IME) inserts a newline instead.
+    ta.addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); }
+    });
     box.append(
-      el("span", {class:"mc-label"}, T["tui.chat.title"] || "Chat"),
-      input,
-      el("button", {onclick:go}, T["tui.chat.btn"] || "Send"),
-      el("span", {class:"mc-spin"}),
-      el("span", {class:"mc-busy"}, T["tui.chat.busy"] || "Thinking…"));
+      el("div", {class:"mc-box"}, el("span", {class:"mc-prompt"}, ">"), ta),
+      el("div", {class:"mc-hint"},
+        el("button", {class:"mc-send", onclick:go}, T["tui.chat.btn"] || "Send")));
   }
   box.hidden = false;
-  // Toggle the busy state in place (no rebuild) so typing isn't interrupted.
+  // While a reply generates: disable the input and float the Claude-style
+  // thinking bubble (bouncing dots) over the conversation, so the wait never
+  // feels dead. Toggled in place so typed text / focus survive a state push.
   const gen = !!t.busy;
-  const inp = box.querySelector("input");
-  const btn = box.querySelector("button");
-  const spin = box.querySelector(".mc-spin");
-  const busy = box.querySelector(".mc-busy");
+  const inp = box.querySelector("textarea");
+  const btn = box.querySelector(".mc-send");
   if (inp) inp.disabled = gen;
   if (btn) btn.disabled = gen;
-  if (spin) spin.style.display = gen ? "" : "none";
-  if (busy) busy.style.display = gen ? "" : "none";
+  if (gen) {
+    if (!think.childNodes.length) {
+      think.append(
+        el("span", {class:"th-dots"}, el("span"), el("span"), el("span")),
+        el("span", {class:"th-text"}, T["tui.chat.busy"] || "Thinking…"),
+        el("span", {class:"th-elapsed"}, ""));
+    }
+    think.hidden = false;
+    positionThinking();
+    // Start (or keep) the per-second elapsed ticker.
+    if (!thinkTimer) {
+      thinkStart = Date.now();
+      const tick = () => {
+        const e = think.querySelector(".th-elapsed");
+        if (e) e.textContent = fmtElapsed(Date.now() - thinkStart);
+      };
+      tick();
+      thinkTimer = setInterval(tick, 1000);
+    }
+  } else {
+    think.hidden = true;
+    if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
+  }
 }
 
 // ── Status line ──────────────────────────────
@@ -959,14 +1019,27 @@ window.__cursor = function (row, col, shown) {
   kbd.style.height = cellH + "px";
   // Hide it whenever the terminal isn't in view. A leftover cursor sitting
   // over the dashboard or a browser tab would look like it means something there
-  cur.hidden = !shown || composing || S === null || scr.hidden;
+  // On a model tab the caret lives in the chat composer, so hide the screen's.
+  const modelTab = S && S.tabs && S.tabs.some(x => x.index === S.active && x.model);
+  cur.hidden = !shown || composing || S === null || scr.hidden || modelTab;
   if (!cur.hidden) {
     cur.style.left = curX + "px";
     cur.style.top = curY + "px";
     cur.style.width = cellW + "px";
     cur.style.height = cellH + "px";
   }
+  positionThinking();
 };
+
+// Park the thinking indicator right at the cursor — where "generating" used to
+// print — so it reads as part of the conversation, not a floating widget.
+function positionThinking() {
+  const think = document.getElementById("thinking");
+  if (!think || think.hidden) return;
+  think.style.left = curX + "px";
+  think.style.top = curY + "px";
+  think.style.height = cellH + "px";
+}
 
 // Never send while the IME is still composing — only send confirmed text.
 // The width is measured by actually rendering it, not estimated from
@@ -1029,6 +1102,12 @@ const focus = () => {
   // discussion-topic box, etc.). Otherwise every keystroke would be swallowed by
   // #kbd and fired as a board shortcut (e.g. typing "w" opens the workspace list).
   if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA")) return;
+  // On a model tab the caret belongs in the chat composer, not the screen —
+  // send focus there (like Claude, whose cursor always sits in the prompt).
+  if (S && S.tabs && S.tabs.some(x => x.index === S.active && x.model)) {
+    const ta = document.querySelector("#modelchat textarea");
+    if (ta) { ta.focus(); return; }
+  }
   // On a phone, only show the keyboard while a terminal tab is in view.
   // Not right after load (S not yet fetched), and not on INDEX or a browser
   // tab — the keyboard popping up uninvited would just get in the way.

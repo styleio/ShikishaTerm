@@ -608,6 +608,7 @@
   "tui.chat.title": "Chat",
   "tui.chat.ph": "Message {model}…",
   "tui.chat.btn": "Send",
+  "tui.chat.hint": "Enter to send · Shift+Enter for newline",
   "tui.chat.busy": "Thinking…",
   "rally.md.actions_only": "(actions only)",
   "rally.md.empty": "# SHIKISHA Rally Record\n\n(No record yet)",

@@ -1486,14 +1486,12 @@ impl Tab {
                         .process(bytes);
                 }));
             };
-            // Echo the human's line with a Claude-style prompt marker.
+            // Echo the human's line with a Claude-style prompt marker. The
+            // "generating" state is shown by the HTML thinking bubble (driven by
+            // model_busy), not by a text line, so nothing is injected here for it.
             inject(&format!(
                 "\r\n\x1b[1;32m❯\x1b[0m {}\r\n",
                 text.replace('\n', "\r\n")
-            ));
-            inject(&format!(
-                "\x1b[36m… {}\x1b[0m\r\n",
-                crate::i18n::tp("agent.model.generating", &[("model", &conn.model)])
             ));
             // Replay the whole history (the bridge keeps no state of its own).
             let msgs = {

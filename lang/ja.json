@@ -608,6 +608,7 @@
   "tui.chat.title": "チャット",
   "tui.chat.ph": "{model} にメッセージ…",
   "tui.chat.btn": "送信",
+  "tui.chat.hint": "Enter で送信 · Shift+Enter で改行",
   "tui.chat.busy": "考え中…",
   "rally.md.actions_only": "(操作のみ)",
   "rally.md.empty": "# SHIKISHA ラリー記録\n\n（記録がまだありません）\n",
