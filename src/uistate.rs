@@ -43,6 +43,10 @@ pub struct TabState {
     /// A chat reply is being generated right now (drives the shell's spinner).
     #[serde(default)]
     pub busy: bool,
+    /// The settings page. It rides in the pane list like a browser, but the
+    /// shell keeps it out of the tab strip and reaches it via a fixed gear.
+    #[serde(default)]
+    pub settings: bool,
 }
 
 /// Current position of the automation ring
@@ -156,6 +160,7 @@ impl TabState {
             kind: "pty".into(),
             model: t.is_model(),
             busy: t.is_generating(),
+            settings: false,
         }
     }
 
@@ -177,6 +182,7 @@ impl TabState {
             kind: "browser".into(),
             model: false,
             busy: false,
+            settings: key == "settings",
         }
     }
 }
@@ -246,6 +252,7 @@ mod tests {
             kind: "pty".into(),
             model: false,
             busy: false,
+            settings: false,
         }
     }
 

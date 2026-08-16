@@ -331,6 +331,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("addtab") => Ev::AddTab,
         Some("closesettings") => Ev::CloseSettings,
+        Some("opensettings") => Ev::OpenSettings,
         Some("menu") => Ev::Menu {
             key: v
                 .get("key")
@@ -480,6 +481,10 @@ pub enum Ev {
     /// and returns to the operating board. This is a window-internal
     /// action, so it's not accepted from a phone (allowed_from_afar)
     CloseSettings,
+    /// Open the settings page. A dedicated intent for the sidebar gear so it
+    /// works from any tab (the menu "e" key only fires while INDEX is in view).
+    /// Window-internal, so not accepted from a phone (allowed_from_afar).
+    OpenSettings,
     /// The operating board's menu was pressed
     Menu { key: String },
     /// Open the workspace switcher. A dedicated intent (rather than reusing the

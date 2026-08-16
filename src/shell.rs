@@ -34,7 +34,14 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
 
   /* ── Left tab bar ───────────────────────── */
   #tabs { grid-row:1/3; width:210px; background:var(--panel);
-    border-right:1px solid var(--line); overflow-y:auto; padding:6px 0; }
+    border-right:1px solid var(--line); overflow-y:auto; padding:6px 0;
+    display:flex; flex-direction:column; }
+  /* Settings lives here as a fixed gear pinned to the very bottom, not a tab */
+  .tab.gearrow { margin-top:auto; color:var(--dim); border-top:1px solid #1a2129;
+    justify-content:center; padding:10px; }
+  .tab.gearrow:hover { color:inherit; }
+  .tab.gearrow.sel { color:var(--text); }
+  .tab.gearrow .gear { font-size:17px; line-height:1; }
   .tab { display:flex; align-items:center; gap:8px; padding:7px 10px;
     cursor:pointer; border-left:3px solid transparent; user-select:none; }
   .tab:hover { background:#161c23; }
@@ -508,6 +515,8 @@ function drawTabs() {
     el("span", {class:"num"}, "0"),
     el("span", {class:"nm"}, T["tui.index"] || "INDEX")));
   for (const t of S.tabs) {
+    // Settings isn't a tab — it's reached via the gear pinned at the bottom.
+    if (t.settings) continue;
     nav.append(el("div", {class:"tab" + (S.active === t.index ? " sel" : ""),
         onclick:() => send({kind:"select", tab:t.index})},
       el("span", {class:"dot " + t.state}),
@@ -520,6 +529,12 @@ function drawTabs() {
   nav.append(el("div", {class:"tab addtab", onclick:() => send({kind:"addtab"})},
     el("span", {class:"num"}, "+"),
     el("span", {class:"nm"}, T["tui.tab.add"] || "ADD TAB")));
+  // The settings gear, pinned to the very bottom of the sidebar. Always visible.
+  const settingsOpen = S.tabs.some(t => t.settings && S.active === t.index);
+  nav.append(el("div", {class:"tab gearrow" + (settingsOpen ? " sel" : ""),
+      title:T["tui.menu.settings"] || "SETTINGS",
+      onclick:() => send({kind:"opensettings"})},
+    el("span", {class:"gear"}, "⚙️")));
 }
 
 // Draw output volume as a real bar chart, not ▁▄█ characters

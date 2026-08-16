@@ -354,6 +354,8 @@ struct WinSurface {
     closed: bool,
     /// The settings page's "close settings" button was pressed. The loop closes the settings tab.
     close_settings: bool,
+    /// The sidebar gear was pressed. The loop opens the settings page (from any tab).
+    open_settings: bool,
     /// Lines typed into a model tab's chat box, awaiting delivery to the bridge.
     chats: Vec<String>,
 }
@@ -374,6 +376,11 @@ impl WinSurface {
     /// True if "close settings" was pressed (and clears the flag if so)
     fn take_close_settings(&mut self) -> bool {
         std::mem::take(&mut self.close_settings)
+    }
+
+    /// True if the settings gear was pressed (and clears the flag if so)
+    fn take_open_settings(&mut self) -> bool {
+        std::mem::take(&mut self.open_settings)
     }
 
     /// Takes ownership of pages that finished loading (id, URL, whether settled)
@@ -428,6 +435,7 @@ impl WinSurface {
                 // The settings page's "close settings" button. Where the tab actually
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.close_settings = true,
+                Ev::OpenSettings => self.open_settings = true,
                 // The top bar was pressed. The destination is "whatever page is currently
                 // showing", so the loop decides (only one bar is ever displayed).
                 Ev::Go { go } => self.gos.push(go),
@@ -613,6 +621,7 @@ fn run_in_window() -> Result<()> {
         frames: Vec::new(),
         closed: false,
         close_settings: false,
+        open_settings: false,
         chats: Vec::new(),
     })
 }
@@ -1792,6 +1801,21 @@ fn run(mut surface: WinSurface) -> Result<()> {
             let _ = caps.browser_close(SETTINGS_TAB);
             settings_open = false;
             active = 0;
+        }
+
+        // The sidebar gear. Opens settings from any tab (the menu "e" key only
+        // fires while INDEX is in view, so the gear needs its own path).
+        if surface.take_open_settings() {
+            flash = Some(
+                match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, "") {
+                    Ok(()) => {
+                        active = settings_active(&layout);
+                        settings_open = true;
+                        i18n::t("msg.settings_here")
+                    }
+                    Err(e) => i18n::tp("msg.settings_failed", &[("error", &e.to_string())]),
+                },
+            );
         }
 
         // The top bar was pressed. The destination is whatever page is currently

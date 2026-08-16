@@ -1197,6 +1197,9 @@ const PAGE: &str = r##"<!doctype html>
    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
  .navgroup { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
    margin:14px 10px 4px; }
+ .navgrouphead { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+   margin:12px 0 2px; display:flex; align-items:center; gap:6px; }
+ .navgrouphead .caret { font-size:10px; width:10px; display:inline-block; text-align:center; }
  .navtab { padding-left:18px; }
  .navtab.child { padding-left:34px; }
  .navadd { color:var(--muted); }
@@ -1347,6 +1350,9 @@ const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(
 let current = {};        // Contents of config.json (holds the base settings)
 let wss = [];            // Workspaces and tabs
 let sel = {ws:0, tab:null, global:true};
+// Which workspace groups are expanded in the sidebar. Collapsed by default so
+// the nav stays tidy; the workspace you're editing auto-expands.
+const navOpen = new Set();
 let aiEngines = [];
 // The language setting as of when the page was opened. Used at save time to check "did it change = is a restart needed?"
 let loadedLanguage = "";
@@ -1694,20 +1700,26 @@ function renderNav() {
     onclick:() => { sel = {ws:sel.ws, tab:null, global:true}; render(); }}, T["settings.global"]));
 
   wss.forEach((ws, wi) => {
-    nav.append(el("div", {class:"navgroup"}, ws.name || T["settings.tab.unnamed"]));
+    // The group you're editing counts as open even without an explicit toggle.
+    const open = navOpen.has(wi) || (!sel.global && sel.ws === wi);
+    nav.append(el("button", {class:"navitem navgrouphead",
+      onclick:() => { navOpen.has(wi) ? navOpen.delete(wi) : navOpen.add(wi); render(); }},
+      el("span", {class:"caret"}, open ? "▾" : "▸"),
+      el("span", {}, ws.name || T["settings.tab.unnamed"])));
+    if (!open) return;
     nav.append(el("button", {class:"navitem" + (!sel.global && sel.ws === wi && sel.tab === null ? " sel" : ""),
-      onclick:() => { sel = {ws:wi, tab:null, global:false}; render(); }},
+      onclick:() => { navOpen.add(wi); sel = {ws:wi, tab:null, global:false}; render(); }},
       el("span", {}, T["settings.workspace.settings"])));
     (ws.tabs || []).forEach((t, ti) => {
       const b = el("button", {class:"navitem navtab" + (t.depth ? " child" : "") +
         (!sel.global && sel.ws === wi && sel.tab === ti ? " sel" : ""),
-        onclick:() => { sel = {ws:wi, tab:ti, global:false}; render(); }});
+        onclick:() => { navOpen.add(wi); sel = {ws:wi, tab:ti, global:false}; render(); }});
       b.append(el("span", {}, (t.depth ? "└ " : "") + (t.name || T["settings.tab.unnamed"])));
       b.append(el("span", {class:"sub"}, cmdToText(t.command) || T["automation.unset"]));
       nav.append(b);
     });
     nav.append(el("button", {class:"navitem navtab navadd",
-      onclick:() => { sel = {ws:wi, tab:addTabTo(ws), global:false}; render(); }},
+      onclick:() => { navOpen.add(wi); sel = {ws:wi, tab:addTabTo(ws), global:false}; render(); }},
       T["settings.tab.add"]));
   });
   nav.append(el("div", {class:"navgroup"}, ""));
