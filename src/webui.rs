@@ -1637,18 +1637,26 @@ const DEFAULT_MODEL = {deepseek: "deepseek-chat"};
 
 const kindOf = c => parseBrowser(c) ? "browser" : parseModel(c) ? "model"
   : parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
-const KIND_LABEL = {cmd:T["settings.tab.command"], model:T["settings.tab.kind.model"],
-  ssh:"SSH", docker:"Docker", wsl:"WSL", browser:T["settings.tab.kind.browser"]};
-const KIND_START = {cmd:"", model:"model ", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl ",
-  browser:"browser https://"};
-const COMMON_COMMANDS = [
-  {label:"Claude Code", cmd:"claude",         check:"claude"},
-  {label:"Codex CLI",   cmd:"codex",          check:"codex"},
-  {label:"Gemini CLI",  cmd:"gemini",         check:"gemini"},
-  {label:"Aider",       cmd:"aider",          check:null},
+// CLI-type AIs (external programs the user installs). check = engine id to
+// look up in aiEngines for the "(not installed)" note.
+const AI_CLIS = [
+  {label:"Claude Code", cmd:"claude", check:"claude"},
+  {label:"Codex CLI",   cmd:"codex",  check:"codex"},
+  {label:"Gemini CLI",  cmd:"gemini", check:"gemini"},
+  {label:"Aider",       cmd:"aider",  check:null},
+];
+// Plain shells (the "Command" category).
+const SHELL_CMDS = [
   {label:"PowerShell",  cmd:"powershell.exe", check:null},
   {label:T["settings.tab.kind.cmdprompt"], cmd:"cmd.exe", check:null},
 ];
+// All launchers, for the command field's datalist.
+const COMMON_COMMANDS = AI_CLIS.concat(SHELL_CMDS);
+// A "cmd" tab whose head is one of these is an AI CLI, so it groups under the
+// AI category rather than the plain-shell one.
+const AI_CLI_HEADS = ["claude", "codex", "gemini", "aider", "kimi"];
+const headOf = c => (cmdToText(c).trim().split(/\s+/)[0] || "").toLowerCase().replace(/\.exe$/, "");
+const isAiCli = c => AI_CLI_HEADS.includes(headOf(c));
 
 // Only an interactive AI CLI or a model (API connection) tab can join a discussion (AI vs AI).
 // Browser, shell (cmd/PowerShell/SSH/Docker/WSL), and Aider are excluded from discussions
@@ -1662,6 +1670,21 @@ function isDiscussable(t) {
   return DISCUSS_HEADS.includes(head);
 }
 const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
+
+// Top-level category for the tab-kind selector. The coarse "cmd" kind splits
+// into an AI CLI (grouped under AI) vs a plain shell; a model tab is AI (API).
+// Others map 1:1. CLI AIs and API providers then sit side by side inside the AI panel.
+const catOf = c => { const k = kindOf(cmdToText(c));
+  return k === "model" ? "ai" : k === "cmd" ? (isAiCli(c) ? "ai" : "cmd") : k; };
+const CAT_START = {ai:"claude", cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl ", browser:"browser https://"};
+const CAT_LIST = [
+  ["ai",      T["settings.tab.cat.ai"]],
+  ["cmd",     T["settings.tab.cat.cmd"]],
+  ["ssh",     "SSH"],
+  ["docker",  "Docker"],
+  ["wsl",     "WSL"],
+  ["browser", T["settings.tab.kind.browser"]],
+];
 
 // ── Sidebar ───────────────────────────────────────
 function renderNav() {
@@ -1763,7 +1786,9 @@ function aiCommandOf(key, model) {
 // Returns { btn, chips } — put btn inline and chips just below.
 function modelCandidates(getProv, onPick) {
   const chips = el("div", {style:"display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"});
-  const btn = el("button", {class:"quiet", type:"button", onclick: async () => {
+  // Fetch the provider's real models, render them as chips, and return the list
+  // (empty on failure). Callers can auto-select the first when nothing is set.
+  async function load() {
     const prov = getProv() || {};
     chips.textContent = "";
     chips.append(el("span", {class:"hint"}, T["settings.model.candidates_loading"]));
@@ -1777,14 +1802,16 @@ function modelCandidates(getProv, onPick) {
     chips.textContent = "";
     if (!r || !r.ok) {
       chips.append(el("span", {class:"hint"}, fill(T["settings.model.candidates_failed"], {e: (r && r.error) || ""})));
-      return;
+      return [];
     }
     const models = r.models || [];
-    if (!models.length) { chips.append(el("span", {class:"hint"}, T["settings.model.candidates_none"])); return; }
+    if (!models.length) { chips.append(el("span", {class:"hint"}, T["settings.model.candidates_none"])); return []; }
     for (const id of models) chips.append(el("button", {class:"quiet", type:"button",
       style:"font-size:12px;padding:2px 8px", onclick:() => onPick(id)}, id));
-  }}, T["settings.model.candidates"]);
-  return {btn, chips};
+    return models;
+  }
+  const btn = el("button", {class:"quiet", type:"button", onclick: load}, T["settings.model.candidates"]);
+  return {btn, chips, load};
 }
 
 function aiPick(st) {
@@ -2634,7 +2661,6 @@ function addTemplate(kind) {
 
 function tabPane(ws, t) {
   const box = el("div");
-  const kind = kindOf(t.command);
 
   // Basics: name and ID are identity, so place them side by side.
   // If ID is empty, auto-derive one from the name (English → slug / Japanese-only → 5-char hash).
@@ -2664,8 +2690,8 @@ function tabPane(ws, t) {
   const detailBox = el("div");
   const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild)); };
   cmdRow.append(el("label", {}, T["settings.tab.kind"]),
-    choose({k:kind}, "k", Object.entries(KIND_LABEL), v => {
-      t.command = KIND_START[v] || ""; cmdInput.value = t.command; rebuild(); renderNav();
+    choose({k:catOf(t.command)}, "k", CAT_LIST, v => {
+      t.command = CAT_START[v] || ""; cmdInput.value = t.command; rebuild(); renderNav();
     }));
   rebuild();
   box.append(card(T["settings.tab.launch"], cmdRow, detailBox,
@@ -2750,7 +2776,92 @@ function moveTab(ws, d) {
 }
 
 /// Type-specific input helpers (SSH / Docker / WSL)
+// The AI category's panel. One dropdown lists CLI-type AIs (Claude/Codex/…,
+// with a "(not installed)" note if missing) and every registered API provider,
+// side by side, plus "＋ Add AI" at the bottom. Picking a provider (API) reveals
+// a model-name field whose candidates are auto-loaded (no hardcoded guess).
+function aiPanel(t, cmdInput, rebuild) {
+  const box = el("div");
+  const sel = el("select");
+  for (const c of AI_CLIS) {
+    const ok = c.check ? aiEngines.some(e => e.id === c.check) : true;
+    sel.append(el("option", {value:"cli:" + c.cmd}, c.label + (!ok ? T["settings.tab.common.missing"] : "")));
+  }
+  const provs = Object.keys(current.providers || {});
+  for (const n of provs) sel.append(el("option", {value:"prov:" + n}, n));
+  sel.append(el("option", {value:"add-ai"}, T["settings.tab.ai.add"]));
+
+  // Reflect the current command in the dropdown.
+  const cur = parseModel(t.command);
+  if (cur && cur.provider) sel.value = "prov:" + cur.provider;
+  else { const h = headOf(t.command); sel.value = AI_CLIS.some(c => c.cmd === h) ? "cli:" + h : ""; }
+
+  const detail = el("div");
+  const drawDetail = () => {
+    detail.textContent = "";
+    const m = parseModel(t.command);
+    if (!m) return;                       // a CLI is selected → nothing else to set
+    const modelIn = el("input", {type:"text", class:"mono", style:"width:260px",
+      placeholder:T["settings.model.name_ph"]});
+    modelIn.value = m.model || "";
+    const setModel = name => {
+      t.command = "model " + m.provider + (name ? "/" + name : "");
+      cmdInput.value = t.command; renderNav();
+    };
+    modelIn.addEventListener("input", () => setModel(modelIn.value.trim()));
+    const cand = modelCandidates(() => current.providers[m.provider] || {},
+      id => { modelIn.value = id; setModel(id); });
+    detail.append(
+      el("div", {class:"row"}, el("label", {}, T["settings.model.name_label"]), modelIn, cand.btn),
+      el("div", {class:"row"}, el("label", {}, ""), cand.chips));
+    // Auto-load real models and preselect the first if none is set yet.
+    cand.load().then(models => {
+      if (models && models.length && !(m.model || "").trim()) { modelIn.value = models[0]; setModel(models[0]); }
+    });
+  };
+
+  sel.addEventListener("change", async () => {
+    const v = sel.value;
+    if (v === "add-ai") {
+      const before = new Set(Object.keys(current.providers || {}));
+      await openProvidersPopup();
+      const added = Object.keys(current.providers || {}).find(n => !before.has(n));
+      if (added) { t.command = "model " + added + "/"; cmdInput.value = t.command; renderNav(); }
+      rebuild();                          // redraw: the new provider now appears (and its model field)
+      return;
+    }
+    if (v.startsWith("cli:")) t.command = v.slice(4);
+    else if (v.startsWith("prov:")) t.command = "model " + v.slice(5) + "/";
+    cmdInput.value = t.command; renderNav();
+    drawDetail();
+  });
+
+  box.append(el("div", {class:"row"}, el("label", {}, T["settings.tab.ai.pick"]), sel));
+  if (!provs.length)
+    box.append(el("div", {class:"row"}, el("label", {}, ""),
+      el("span", {class:"hint"}, T["settings.tab.ai.api_hint"])));
+  box.append(detail);
+  drawDetail();
+  return box;
+}
+
+// The inline "add an API AI" flow: the Providers editor in a popup, so a
+// first-timer can register DeepSeek / a local LLM without leaving this screen.
+// The global-settings Providers editor stays too (this reuses the same card).
+function openProvidersPopup() {
+  return new Promise(resolve => {
+    const m = openModal(
+      el("h2", {}, T["settings.tab.ai.add_title"]),
+      el("div", {class:"hint"}, T["settings.tab.ai.api_hint"]),
+      providersCard(),
+      el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:12px;justify-content:flex-end"},
+        el("button", {class:"primary", onclick: () => { m.remove(); resolve(); }}, T["common.done"])));
+    m.addEventListener("click", e => { if (e.target === m) resolve(); });
+  });
+}
+
 function kindPanel(t, cmdInput, rebuild) {
+  if (catOf(t.command) === "ai") return aiPanel(t, cmdInput, rebuild);
   const box = el("div");
   const ssh = parseSsh(t.command), dk = parseDocker(t.command), wsl = parseWsl(t.command);
   const web = parseBrowser(t.command);
@@ -2889,44 +3000,6 @@ function kindPanel(t, cmdInput, rebuild) {
     box.append(askBody);
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.browser.ask.hint"])));
-  } else if (mdl) {
-    const upd = sync(buildModel, mdl);
-    const names = Object.keys(current.providers || {});
-    if (!names.length) {
-      box.append(el("div", {class:"row"}, el("label", {}, T["settings.model.provider_label"]),
-        el("span", {class:"hint"},
-          T["settings.model.no_providers"])));
-    } else {
-      const provSel = el("select");
-      provSel.append(el("option", {value:""}, T["settings.model.pick_provider"]));
-      for (const n of names) provSel.append(el("option", {value:n}, n));
-      if (mdl.provider && !names.includes(mdl.provider))
-        provSel.append(el("option", {value:mdl.provider}, fill(T["settings.model.unregistered_suffix"], {name: mdl.provider})));
-      provSel.value = mdl.provider || "";
-      const modelIn = el("input", {type:"text", class:"mono", style:"width:260px"});
-      const applyPh = () => { modelIn.placeholder = DEFAULT_MODEL[mdl.provider] || T["wizard.discuss.model_ph"]; };
-      modelIn.value = mdl.model || "";
-      applyPh();
-      provSel.addEventListener("change", () => {
-        mdl.provider = provSel.value;
-        // If no model was entered, fill in the provider's default model (a convenience value; hand-typed input is respected)
-        if (!(mdl.model || "").trim() && DEFAULT_MODEL[mdl.provider]) {
-          mdl.model = DEFAULT_MODEL[mdl.provider]; modelIn.value = mdl.model;
-        }
-        applyPh(); upd();
-      });
-      modelIn.addEventListener("input", () => { mdl.model = modelIn.value.trim(); upd(); });
-      const cand = modelCandidates(
-        () => current.providers[mdl.provider] || {},
-        id => { mdl.model = id; modelIn.value = id; upd(); });
-      box.append(el("div", {class:"row"},
-        el("label", {}, T["settings.model.provider_label"]), provSel,
-        el("label", {style:"width:auto"}, T["settings.model.name_label"]), modelIn, cand.btn));
-      box.append(el("div", {class:"row"}, el("label", {}, ""), cand.chips));
-      box.append(el("div", {class:"row"}, el("label", {}, ""),
-        el("span", {class:"hint"},
-          T["settings.model.hint"])));
-    }
   } else if (dk || wsl) {
     const o = dk || wsl, upd = sync(dk ? buildDocker : buildWsl, o);
     box.append(el("div", {class:"row"},
@@ -2939,7 +3012,7 @@ function kindPanel(t, cmdInput, rebuild) {
   } else {
     const s = el("select");
     s.append(el("option", {value:""}, T["settings.tab.common.pick"]));
-    for (const c of COMMON_COMMANDS) {
+    for (const c of SHELL_CMDS) {
       const ok = c.check ? aiEngines.some(e => e.id === c.check) : true;
       s.append(el("option", {value:c.cmd}, c.label + (c.check && !ok ? T["settings.tab.common.missing"] : "")));
     }
