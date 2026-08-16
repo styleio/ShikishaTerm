@@ -254,6 +254,14 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
         check("browser_fill", st, &opts)
     });
+    // Press a single named key (enter/tab/escape/…) on the focused element.
+    // browser_fill only sets a value; this is how the AI submits a form or
+    // runs a search: fill the box, then browser_press(BR, "enter").
+    bind!("browser_press", (String, String), |lua_, c, al, (name, key)| {
+        guard(&name, &al)?;
+        c.browser_press(&name, &key)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
     // Fill a field with a secret value. The value is referenced by name and
     // resolved/filled by Rust. The AI never sees the value (only the state
     // is returned). secret_value rejects any key not on the allowlist
@@ -1533,10 +1541,11 @@ local function protocol(run)
     "  " .. infile,
     shikisha.tf("agent.browser.proto.funcs_header", { br = BR }),
     "    browser_go(\"" .. BR .. "\", \"to\"|\"reload\"|\"back\"|\"forward\", url?)",
-    "    browser_click(\"" .. BR .. "\", sel)   browser_fill(\"" .. BR .. "\", sel, value)",
+    "    browser_click(\"" .. BR .. "\", sel)   browser_fill(\"" .. BR .. "\", sel, value)   browser_press(\"" .. BR .. "\", key)",
     "    browser_fill_secret(\"" .. BR .. "\", sel, " .. shikisha.t("agent.browser.secret_name") .. ")   browser_auth(\"" .. BR .. "\", " .. shikisha.t("agent.browser.secret_name") .. ")",
     "    browser_text(\"" .. BR .. "\", sel)   browser_find(\"" .. BR .. "\", sel)",
     shikisha.t("agent.browser.proto.sel_note"),
+    shikisha.t("agent.browser.proto.press_note"),
     shikisha.t("agent.browser.proto.human_before") .. humanfile .. shikisha.t("agent.browser.proto.human_after"),
     shikisha.t("agent.browser.proto.done_note"),
   }, "\n")
@@ -2686,6 +2695,8 @@ mod tests {
               shikisha.log("load=" .. tostring(shikisha.run_scoped("br", "load('return 1')")))
               shikisha.log("wrong=" .. tostring(shikisha.run_scoped("br", "shikisha.browser_click('evil', '#x')")))
               shikisha.log("hasclick=" .. tostring(shikisha.run_scoped("br", "assert(type(shikisha.browser_click)=='function')")))
+              shikisha.log("haspress=" .. tostring(shikisha.run_scoped("br", "assert(type(shikisha.browser_press)=='function')")))
+              shikisha.log("badkey=" .. tostring(shikisha.run_scoped("br", "shikisha.browser_press('br', 'notakey')")))
             end
             "##,
         )
@@ -2709,6 +2720,12 @@ mod tests {
             find("wrong=")
         );
         assert_eq!(find("hasclick="), "hasclick=nil", "browser_click は使えるはず");
+        assert_eq!(find("haspress="), "haspress=nil", "browser_press は使えるはず");
+        assert!(
+            find("badkey=").contains("Unknown key"),
+            "不正なキー名を弾いていない: {:?}",
+            find("badkey=")
+        );
     }
 
     #[test]

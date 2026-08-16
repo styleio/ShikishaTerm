@@ -1132,6 +1132,12 @@ fn named_vk(named: &str) -> Option<(&'static str, u32)> {
     })
 }
 
+/// Whether `named` is a control key we can dispatch (enter/tab/escape/arrows/
+/// f-keys/…). Lets `browser_press` reject a typo instead of silently no-op-ing.
+pub fn key_known(named: &str) -> bool {
+    named_vk(named).is_some()
+}
+
 fn target<'a>(
     main: &'a wry::WebView,
     children: &'a std::collections::HashMap<String, wry::WebView>,
