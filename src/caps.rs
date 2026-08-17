@@ -138,6 +138,11 @@ pub struct Capabilities {
     secret_allow: std::cell::RefCell<std::collections::HashSet<String>>,
     /// Allow all secrets, knowingly accepting the risk (a per-workspace toggle)
     secret_allow_all: std::cell::Cell<bool>,
+    /// A pending "open the result view" request from a built-in orchestrator
+    /// (discussion / code review / browser rally). Holds the exchange run id
+    /// (folder name) whose transcript.md should be shown. Drained by the main
+    /// loop, which owns the webui server and window placement. Cleared on read.
+    open_result: std::cell::RefCell<Option<String>>,
 }
 
 /// Default wait time when touching a page.
@@ -162,6 +167,7 @@ impl Capabilities {
             declared: std::cell::RefCell::new(std::collections::HashSet::new()),
             secret_allow: std::cell::RefCell::new(std::collections::HashSet::new()),
             secret_allow_all: std::cell::Cell::new(false),
+            open_result: std::cell::RefCell::new(None),
         }
     }
 
@@ -718,6 +724,29 @@ impl Capabilities {
         self.declared.borrow_mut().remove(&key);
         *self.shown.borrow_mut() = (None, (0, 0, 0, 0));
         Ok(())
+    }
+
+    /// Request that the result view be opened for the given exchange run.
+    ///
+    /// Called by a built-in orchestrator (discussion / rally) the moment a run
+    /// concludes. `run` is the run folder path the orchestrator holds; only its
+    /// basename (the run id) is kept, and only when it genuinely sits under the
+    /// exchange root — a path from anywhere else is ignored rather than trusted.
+    /// The main loop drains this and does the actual open (it owns the webui
+    /// server and the window). The latest request wins.
+    pub fn request_open_result(&self, run: &str) {
+        let p = Path::new(run);
+        if !crate::exchange::within_root(p) {
+            return;
+        }
+        if let Some(id) = p.file_name().and_then(|s| s.to_str()) {
+            *self.open_result.borrow_mut() = Some(id.to_string());
+        }
+    }
+
+    /// Take any pending result-view request (run id), clearing it.
+    pub fn take_open_result(&self) -> Option<String> {
+        self.open_result.borrow_mut().take()
     }
 
     /// A raw URL (only hosts that exactly match allow_hosts)

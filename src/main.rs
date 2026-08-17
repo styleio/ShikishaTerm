@@ -1818,6 +1818,22 @@ fn run(mut surface: WinSurface) -> Result<()> {
             );
         }
 
+        // A built-in orchestrator (discussion / code review / browser rally)
+        // just finished: show its transcript as a chat-style result tab and
+        // switch to it. Don't steal the screen while the human is in settings.
+        if let Some(run_id) = caps.take_open_result() {
+            if settings_open {
+                append_hook_log(&format!(
+                    "open_result {run_id} deferred: settings overlay is open"
+                ));
+            } else {
+                match open_result(&mut web, &config_file, &remote_info, &web_password, &caps, &run_id) {
+                    Ok(()) => active = placed_active(&layout, RESULT_TAB),
+                    Err(e) => append_hook_log(&format!("open_result failed: {e}")),
+                }
+            }
+        }
+
         // The top bar was pressed. The destination is whatever page is currently
         // viewed (only one bar is ever shown). Don't touch chain depth — that's
         // only counted when work is passed to another tab.
@@ -2358,18 +2374,26 @@ fn write_prompt(t: &Tab, text: &str) {
 /// If the spelling drifts, it gets treated as a different browser and a second copy opens.
 const SETTINGS_TAB: &str = "settings";
 
-/// The screen number (1-based) to switch to for the settings tab.
-///
-/// If it's already open, go to that location. If not yet open, this points to
-/// the slot right after the end. Using `layout.len() + 1` while it's already
-/// open would point one slot too far, since the settings tab is already in the
-/// layout — that used to turn the screen solid black.
-fn settings_active(layout: &[Pane]) -> usize {
+/// The name used when placing the result view (finished discussion / review /
+/// rally, rendered as a chat) inside the window. Unlike settings it *does* show
+/// in the tab strip, and it is reused (re-pointed) on each new result rather
+/// than piling up copies.
+const RESULT_TAB: &str = "result";
+
+/// The screen number (1-based) to switch to for a placed local page (settings
+/// or result). If already open, its own slot; otherwise the slot right after
+/// the end (`layout.len() + 1`). Using `len()+1` while it is already in the
+/// layout would point one slot too far and paint the screen solid black.
+fn placed_active(layout: &[Pane], key_want: &str) -> usize {
     layout
         .iter()
-        .position(|p| matches!(p, Pane::Browser { key, .. } if key == SETTINGS_TAB))
+        .position(|p| matches!(p, Pane::Browser { key, .. } if key == key_want))
         .map(|i| i + 1)
         .unwrap_or(layout.len() + 1)
+}
+
+fn settings_active(layout: &[Pane]) -> usize {
+    placed_active(layout, SETTINGS_TAB)
 }
 
 /// Writes out the signal for one wheel tick, in terminal convention.
@@ -3217,9 +3241,16 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
     // Things not in config (opened later by automation, the settings screen, etc.) — the name is all there is
     for h in hosted {
         if !used_web.iter().any(|u| u == h) {
+            // The result view gets a friendly, localized tab label; every other
+            // ad-hoc page is addressed by (and labeled with) its own name.
+            let name = if h == RESULT_TAB {
+                i18n::t("tui.result.tab")
+            } else {
+                h.clone()
+            };
             out.push(Pane::Browser {
                 key: h.clone(),
-                name: h.clone(),
+                name,
             });
         }
     }
@@ -3364,8 +3395,26 @@ fn open_settings(
     caps: &hooks::Caps,
     query: &str,
 ) -> Result<()> {
-    let url = match web.as_ref() {
-        Some(w) => w.url.clone(),
+    let url = ensure_web_url(web, config_file, remote_info, web_password)?;
+    // The settings screen is a local UI page. It holds no cookies, so the shared default profile is plenty.
+    caps.browser_open(
+        SETTINGS_TAB,
+        &format!("{url}{query}"),
+        browser::BrowserProfile::shared_default(),
+    )
+}
+
+/// Ensure the local settings/result web server is running and hand back its
+/// base URL (`http://127.0.0.1:<port>/?token=<token>`). Started lazily on first
+/// use and kept for the process lifetime.
+fn ensure_web_url(
+    web: &mut Option<webui::WebUi>,
+    config_file: &std::path::Path,
+    remote_info: &Arc<Mutex<webui::RemoteInfo>>,
+    web_password: &Arc<Mutex<Option<String>>>,
+) -> Result<String> {
+    match web.as_ref() {
+        Some(w) => Ok(w.url.clone()),
         None => {
             let w = webui::WebUi::start_with(
                 config_file.to_path_buf(),
@@ -3374,13 +3423,34 @@ fn open_settings(
             )?;
             let u = w.url.clone();
             *web = Some(w);
-            u
+            Ok(u)
         }
-    };
-    // The settings screen is a local UI page. It holds no cookies, so the shared default profile is plenty.
+    }
+}
+
+/// Open (or re-point) the result view for a finished run, rendered as a chat.
+///
+/// Served by the same local web server as settings, at `/result?...&run=<id>`.
+/// Reuses the single RESULT_TAB page so repeated results re-navigate in place
+/// rather than stacking up tabs. Shares the default profile (no cookies needed).
+fn open_result(
+    web: &mut Option<webui::WebUi>,
+    config_file: &std::path::Path,
+    remote_info: &Arc<Mutex<webui::RemoteInfo>>,
+    web_password: &Arc<Mutex<Option<String>>>,
+    caps: &hooks::Caps,
+    run_id: &str,
+) -> Result<()> {
+    let base = ensure_web_url(web, config_file, remote_info, web_password)?;
+    // base is ".../?token=<t>"; move to the /result page and carry the run id.
+    let url = format!(
+        "{}&run={}",
+        base.replacen("/?token=", "/result?token=", 1),
+        run_id
+    );
     caps.browser_open(
-        SETTINGS_TAB,
-        &format!("{url}{query}"),
+        RESULT_TAB,
+        &url,
         browser::BrowserProfile::shared_default(),
     )
 }

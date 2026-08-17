@@ -595,6 +595,18 @@ fn handle(
             );
             req.respond(resp)?;
         }
+        // The result view: a finished run's transcript.md rendered as a chat
+        // (AI-vs-AI discussion / code review / browser rally). Same token gate
+        // as the settings page; the run id rides in the query string.
+        ("GET", "/result") => {
+            let html = crate::i18n::render(RESULT_PAGE)
+                .replace("__TOKEN__", token)
+                .replace("__DICT__", &crate::i18n::dict_json());
+            let resp = Response::from_string(html).with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+            );
+            req.respond(resp)?;
+        }
         // How-to-write documentation (openable from the GUI, so the user doesn't have to hunt for the file)
         ("GET", "/help") => {
             let md = load_manual(config_path);
@@ -647,6 +659,54 @@ fn handle(
                     .unwrap(),
             );
             req.respond(resp)?;
+        }
+        // Raw transcript for the chat-style result view. Returns the run's
+        // transcript.md verbatim plus a `kind` hint (discuss vs rally, told
+        // apart by whether the run recorded executed Lua). The page parses the
+        // Markdown itself; the untouched download stays available separately.
+        ("GET", "/api/rally/transcript") => {
+            let picked = req
+                .url()
+                .split_once('?')
+                .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("run=")))
+                .map(percent_decode)
+                .and_then(|id| crate::exchange::run_by_id(&id));
+            match picked.or_else(crate::exchange::latest_run) {
+                Some(dir) => {
+                    let md = std::fs::read_to_string(dir.join("transcript.md")).unwrap_or_default();
+                    let record = std::fs::read_to_string(dir.join("record.lua")).unwrap_or_default();
+                    // A rally records the Lua it executed; a discussion never
+                    // does. That presence is the reliable tell, independent of
+                    // the (localized) transcript headings.
+                    let kind = if record
+                        .lines()
+                        .any(|l| !l.trim_start().starts_with("--") && !l.trim().is_empty())
+                    {
+                        "rally"
+                    } else {
+                        "discuss"
+                    };
+                    let id = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    let body = serde_json::json!({ "md": md, "kind": kind, "id": id }).to_string();
+                    let resp = Response::from_string(body).with_header(
+                        Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"application/json; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    );
+                    req.respond(resp)?;
+                }
+                None => {
+                    req.respond(Response::from_string("{}").with_header(
+                        Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"application/json; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    ))?;
+                }
+            }
         }
         // Lets the rally result be downloaded as a single Markdown file. ?run=<id> for a specific run,
         // otherwise the latest. Contents: the human-readable flow (transcript) + the verdict + the executed Lua (record, paste it to reproduce).
@@ -3414,6 +3474,339 @@ load().then(() => {
 </script></body></html>
 "##;
 
+/// The result view: a finished run's transcript.md rendered as a chat
+/// (WhatsApp-style bubbles for a discussion / code review; the same block
+/// renderer doubles for a browser rally's request→action→screen log). Verdicts
+/// and moderator notes become centered system cards. Tall bubbles (long prose
+/// or a pasted git diff) clamp with a "show all" toggle; the download button
+/// always hands over the full, untruncated Markdown.
+const RESULT_PAGE: &str = r##"<!doctype html>
+<html lang="{{__lang__}}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{result.title}}</title>
+<style>
+ :root {
+   --bg:#0f1115; --panel:#161a20; --panel2:#1b2027; --line:#262d37;
+   --text:#e6e9ef; --muted:#8b95a5; --accent:#00aaff; --danger:#ff6b6b;
+   --sys:#20272f; color-scheme: dark;
+ }
+ * { box-sizing:border-box; }
+ body { margin:0; background:var(--bg); color:var(--text); font-size:14px; line-height:1.6;
+   font-family:system-ui,"Segoe UI","Yu Gothic UI","Hiragino Sans",sans-serif; }
+ code, pre { font-family:ui-monospace,Consolas,"Courier New",monospace; }
+
+ header { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:12px;
+   padding:12px 20px; background:rgba(15,17,21,.92); backdrop-filter:blur(8px);
+   border-bottom:1px solid var(--line); }
+ header .ttl { display:flex; flex-direction:column; min-width:0; }
+ header h1 { font-size:15px; font-weight:600; margin:0; letter-spacing:.02em; }
+ header .sub { color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+ header .spacer { flex:1; }
+ button { font-family:inherit; font-size:13px; border-radius:8px; border:1px solid var(--line);
+   background:var(--panel2); color:var(--text); padding:8px 14px; cursor:pointer; }
+ button:hover { border-color:var(--accent); }
+ button.primary { background:var(--accent); border-color:var(--accent); color:#04121c; font-weight:600; }
+ button.ghost { background:none; }
+
+ main { max-width:900px; margin:0 auto; padding:20px 18px 80px; }
+ .caption { text-align:center; color:var(--muted); font-size:12px; margin:6px auto 16px; }
+
+ .turn { display:flex; margin:14px 0; gap:10px; align-items:flex-end; }
+ .turn.right { flex-direction:row-reverse; }
+ .avatar { flex:none; width:34px; height:34px; border-radius:50%; display:flex; align-items:center;
+   justify-content:center; font-weight:700; font-size:14px; color:#04121c; }
+ .col { max-width:78%; min-width:0; display:flex; flex-direction:column; }
+ .turn.right .col { align-items:flex-end; }
+ .who { font-size:12px; color:var(--muted); margin:0 4px 3px; }
+ .who .badge { opacity:.6; margin-left:6px; }
+ .bubble { position:relative; background:var(--panel); border:1px solid var(--line);
+   border-radius:14px; padding:10px 14px; overflow:hidden; }
+ .turn.left .bubble { border-top-left-radius:4px; }
+ .turn.right .bubble { border-top-right-radius:4px; }
+ .bubble .body { overflow-x:auto; }
+ .bubble .body p { margin:0 0 8px; }
+ .bubble .body p:last-child { margin-bottom:0; }
+ .bubble .body pre { background:#0c0f13; border:1px solid var(--line); border-radius:8px;
+   padding:10px 12px; margin:8px 0; overflow-x:auto; font-size:12.5px; line-height:1.5; }
+ .bubble .body pre .add { color:#7ee787; display:block; }
+ .bubble .body pre .del { color:#ff9a9a; display:block; }
+ .bubble .body pre .hunk { color:#79c0ff; display:block; }
+ .bubble .body code.inline { background:#0c0f13; border:1px solid var(--line);
+   border-radius:4px; padding:1px 5px; font-size:12.5px; }
+
+ /* Tall bubbles clamp; the fade + button invite a click to see the rest. */
+ .bubble.clamped .body { max-height:320px; overflow:hidden; }
+ .bubble.clamped::after { content:""; position:absolute; left:0; right:0; bottom:34px; height:60px;
+   pointer-events:none; background:linear-gradient(transparent, var(--panel)); }
+ .bubble .more { margin-top:8px; font-size:12px; padding:4px 10px; }
+
+ .sys { text-align:center; margin:20px auto; max-width:80%; }
+ .sys .card { display:inline-block; text-align:left; background:var(--sys);
+   border:1px solid var(--line); border-radius:12px; padding:10px 16px; max-width:100%; overflow:hidden; }
+ .sys .card h3 { margin:0 0 6px; font-size:12px; letter-spacing:.05em; text-transform:uppercase;
+   color:var(--accent); }
+ .sys .card .body { overflow-x:auto; }
+ .note { text-align:center; color:var(--muted); font-size:12px; margin:12px auto; font-style:italic; }
+ .empty { text-align:center; color:var(--muted); margin-top:60px; font-size:14px; }
+ #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(16px);
+   padding:11px 20px; border-radius:9px; background:var(--accent); color:#04121c;
+   font-weight:600; font-size:13.5px; box-shadow:0 10px 30px rgba(0,0,0,.5);
+   opacity:0; pointer-events:none; z-index:50; transition:opacity .18s, transform .18s; }
+ #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+ #toast.warn { background:var(--danger); color:#fff; }
+</style></head>
+<body>
+<header>
+  <div class="ttl">
+    <h1>{{result.title}}</h1>
+    <span class="sub" id="sub"></span>
+  </div>
+  <span class="spacer"></span>
+  <button class="ghost" id="toggleall" style="display:none"></button>
+  <button class="primary" id="dl"></button>
+</header>
+<main id="chat"></main>
+<div id="toast"></div>
+<script>
+const TOKEN = "__TOKEN__";
+const T = __DICT__;
+const RUN = new URLSearchParams(location.search).get("run") || "";
+const MAXH = 320;
+let allOpen = false;
+
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) n.setAttribute(k, v);
+  }
+  for (const c of kids) if (c !== null && c !== undefined) n.append(c);
+  return n;
+};
+const fill = (s, args) => Object.entries(args)
+  .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function toast(t, warn) {
+  const b = document.getElementById("toast");
+  b.textContent = t; b.classList.toggle("warn", !!warn); b.classList.add("show");
+  setTimeout(() => b.classList.remove("show"), 2200);
+}
+
+// A stable color + left/right lane per speaker, assigned on first appearance.
+const PALETTE = ["#00aaff","#ffb020","#7ee787","#ff6b9d","#b388ff","#5ad1cd","#ff8f5a","#9aa0ff"];
+const lanes = new Map();
+function laneOf(name) {
+  if (!lanes.has(name)) {
+    const i = lanes.size;
+    lanes.set(name, { color: PALETTE[i % PALETTE.length], side: i % 2 === 0 ? "left" : "right" });
+  }
+  return lanes.get(name);
+}
+
+// ── Markdown-lite (only what a transcript actually carries) ──
+function looksDiff(lines) {
+  return lines.some(l => /^diff --git /.test(l) || /^@@ /.test(l));
+}
+function codeBlock(lines, forceDiff) {
+  const diff = forceDiff || looksDiff(lines);
+  const rows = lines.map(l => {
+    const e = esc(l);
+    if (!diff) return e;
+    if (/^\+/.test(l)) return '<span class="add">' + e + '</span>';
+    if (/^-/.test(l))  return '<span class="del">' + e + '</span>';
+    if (/^@@/.test(l)) return '<span class="hunk">' + e + '</span>';
+    return e;
+  }).join("\n");
+  return "<pre><code>" + rows + "</code></pre>";
+}
+function inline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<code class="inline">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+function renderBody(lines) {
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    const fence = /^```(\w*)\s*$/.exec(ln.trim());
+    if (fence) {
+      const lang = fence[1]; const code = []; i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i].trim())) { code.push(lines[i]); i++; }
+      i++;
+      out.push(codeBlock(code, lang === "diff")); continue;
+    }
+    // 4-space indented block (browser-rally actions are recorded this way)
+    if (/^ {4}\S/.test(ln)) {
+      const code = [];
+      while (i < lines.length && (/^ {4}/.test(lines[i]) || (lines[i].trim() === "" && /^ {4}/.test(lines[i + 1] || "")))) {
+        code.push(lines[i].replace(/^ {4}/, "")); i++;
+      }
+      out.push(codeBlock(code, false)); continue;
+    }
+    // A raw pasted git diff (not fenced) — keep it as a diff block
+    if (/^diff --git /.test(ln) || /^@@ /.test(ln)) {
+      const code = [];
+      while (i < lines.length && lines[i].trim() !== "") { code.push(lines[i]); i++; }
+      out.push(codeBlock(code, true)); continue;
+    }
+    if (ln.trim() === "") { i++; continue; }
+    const para = [];
+    while (i < lines.length && lines[i].trim() !== ""
+        && !/^```/.test(lines[i].trim()) && !/^ {4}\S/.test(lines[i])
+        && !/^diff --git /.test(lines[i]) && !/^@@ /.test(lines[i])) {
+      para.push(lines[i]); i++;
+    }
+    if (para.length) out.push("<p>" + para.map(inline).join("<br>") + "</p>");
+  }
+  return out.join("");
+}
+
+// Split the transcript into heading-led blocks. Level 3 (###) = a turn,
+// level 2 (##) = a verdict/system card, level 1 (#) = the document title.
+function parseBlocks(md) {
+  const lines = md.split(/\r?\n/);
+  const blocks = []; let cur = null; const pre = [];
+  for (const ln of lines) {
+    const m = /^(#{1,3})\s+(.*)$/.exec(ln);
+    if (m) { if (cur) blocks.push(cur); cur = { level: m[1].length, title: m[2].trim(), body: [] }; }
+    else if (cur) cur.body.push(ln);
+    else pre.push(ln);
+  }
+  if (cur) blocks.push(cur);
+  return { pre, blocks };
+}
+function splitSpeaker(title) {
+  let m = /^(.*?)\s*\((\d+)\)\s*$/.exec(title);      // discussion: "Name (3)"
+  if (m) return { name: m[1].trim(), round: m[2] };
+  m = /^(.*?)\s+(\d+)\s*$/.exec(title);              // rally: "Action 3"
+  if (m) return { name: m[1].trim(), round: m[2] };
+  return { name: title, round: null };
+}
+
+function turnEl(name, round, bodyHtml) {
+  const lane = laneOf(name);
+  const av = el("div", { class: "avatar", style: "background:" + lane.color },
+    (name.trim()[0] || "?").toUpperCase());
+  const who = el("div", { class: "who" }, name);
+  if (round) who.append(el("span", { class: "badge" }, "#" + round));
+  const body = el("div", { class: "body" });
+  body.innerHTML = bodyHtml;
+  const bubble = el("div", { class: "bubble" }, body);
+  const col = el("div", { class: "col" }, who, bubble);
+  return el("div", { class: "turn " + lane.side }, av, col);
+}
+function sysEl(title, bodyHtml) {
+  const card = el("div", { class: "card" });
+  if (title) card.append(el("h3", {}, title));
+  const body = el("div", { class: "body" });
+  body.innerHTML = bodyHtml;
+  card.append(body);
+  return el("div", { class: "sys" }, card);
+}
+function noteEl(text) {
+  return el("div", { class: "note" }, text);
+}
+// Trailing "(...)" lines on a turn are moderator asides written between turns
+// (only moderated discussions emit them). Lift them out so they read as
+// centered notes rather than tacked onto the previous speaker's bubble.
+function peelNotes(lines) {
+  const body = lines.slice(); const notes = [];
+  while (body.length) {
+    const last = body[body.length - 1].trim();
+    if (last === "") { body.pop(); continue; }
+    if (/^\(.*\)$/.test(last)) { notes.unshift(last); body.pop(); continue; }
+    break;
+  }
+  return { body, notes };
+}
+
+function render(data) {
+  const chat = document.getElementById("chat");
+  chat.textContent = "";
+  const md = (data && data.md) || "";
+  const kind = (data && data.kind) || "discuss";
+  document.getElementById("sub").textContent =
+    kind === "rally" ? T["result.kind.rally"] : T["result.kind.discuss"];
+  if (!md.trim()) { chat.append(el("div", { class: "empty" }, T["result.empty"])); return; }
+  const { pre, blocks } = parseBlocks(md);
+  const preTxt = pre.filter(l => l.trim() !== "" && !/^#/.test(l));
+  if (preTxt.length) chat.append(el("div", { class: "caption" }, preTxt.join(" · ")));
+  for (const b of blocks) {
+    if (b.level === 1) continue;  // the document title; the header already names the view
+    if (b.level === 2) { chat.append(sysEl(b.title, renderBody(b.body))); continue; }
+    const sp = splitSpeaker(b.title);
+    const { body, notes } = peelNotes(b.body);
+    chat.append(turnEl(sp.name, sp.round, renderBody(body)));
+    for (const n of notes) chat.append(noteEl(n));
+  }
+  requestAnimationFrame(clampTall);
+}
+
+// Clamp bubbles taller than MAXH and give each a show-all toggle.
+function clampTall() {
+  let any = false;
+  document.querySelectorAll(".bubble").forEach(b => {
+    const body = b.querySelector(".body");
+    if (body.scrollHeight > MAXH + 40 && !b.classList.contains("clampable")) {
+      b.classList.add("clampable", "clamped");
+      b.append(el("button", { class: "more ghost", onclick: () => {
+        const open = b.classList.toggle("clamped") === false;
+        b.querySelector(".more").textContent = open ? T["result.collapse"] : T["result.expand"];
+      } }, T["result.expand"]));
+      any = true;
+    }
+  });
+  const tg = document.getElementById("toggleall");
+  tg.style.display = any ? "" : "none";
+  tg.textContent = T["result.expand_all"];
+}
+function toggleAll() {
+  allOpen = !allOpen;
+  document.querySelectorAll(".bubble.clampable").forEach(b => {
+    b.classList.toggle("clamped", !allOpen);
+    const m = b.querySelector(".more");
+    if (m) m.textContent = allOpen ? T["result.collapse"] : T["result.expand"];
+  });
+  document.getElementById("toggleall").textContent =
+    allOpen ? T["result.collapse_all"] : T["result.expand_all"];
+}
+
+async function download() {
+  try {
+    const url = "/api/rally/download" + (RUN ? "?run=" + encodeURIComponent(RUN) : "");
+    const r = await fetch(url, { headers: { "X-Token": TOKEN } });
+    if (!r.ok) { toast(T["result.empty"], true); return; }
+    const blob = await r.blob();
+    const u = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = u; a.download = "shikisha-" + (RUN || "result") + ".md";
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(u), 1000);
+    toast(T["result.downloaded"]);
+  } catch (e) {
+    toast(fill(T["result.download_failed"], { e: e.message || e }), true);
+  }
+}
+
+async function load() {
+  document.getElementById("dl").textContent = T["result.download"];
+  document.getElementById("dl").addEventListener("click", download);
+  document.getElementById("toggleall").addEventListener("click", toggleAll);
+  document.getElementById("chat").append(el("div", { class: "empty" }, T["result.loading"]));
+  try {
+    const r = await fetch("/api/rally/transcript?run=" + encodeURIComponent(RUN), { headers: { "X-Token": TOKEN } });
+    render(await r.json());
+  } catch (e) {
+    document.getElementById("chat").textContent = "";
+    document.getElementById("chat").append(el("div", { class: "empty" }, T["result.empty"]));
+  }
+}
+load();
+</script></body></html>
+"##;
+
 /// The manual display page (a simple renderer that only handles the Markdown subset needed here)
 const HELP_PAGE: &str = r##"<!doctype html>
 <html lang="{{__lang__}}"><head><meta charset="utf-8">
@@ -3544,7 +3937,7 @@ mod tests {
     /// A forgotten substitution would only be caught at runtime, so it's stopped here instead
     #[test]
     fn pages_are_fully_rendered() {
-        for (name, page) in [("PAGE", PAGE), ("HELP_PAGE", HELP_PAGE)] {
+        for (name, page) in [("PAGE", PAGE), ("HELP_PAGE", HELP_PAGE), ("RESULT_PAGE", RESULT_PAGE)] {
             assert_no_duplicate_bindings(name, page);
             let html = crate::i18n::render(page)
                 .replace("__TOKEN__", "t")
@@ -3560,11 +3953,13 @@ mod tests {
     #[test]
     fn page_script_only_uses_known_keys() {
         let en: serde_json::Value = serde_json::from_str(include_str!("../lang/en.json")).unwrap();
-        let mut rest = PAGE;
-        while let Some(i) = rest.find("T[\"") {
-            rest = &rest[i + 3..];
-            let key = &rest[..rest.find('"').unwrap()];
-            assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
+        for page in [PAGE, RESULT_PAGE] {
+            let mut rest = page;
+            while let Some(i) = rest.find("T[\"") {
+                rest = &rest[i + 3..];
+                let key = &rest[..rest.find('"').unwrap()];
+                assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
+            }
         }
     }
 

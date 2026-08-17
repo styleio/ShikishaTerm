@@ -728,6 +728,24 @@ impl HookEngine {
                 )
                 .map_err(lerr)?;
         }
+        {
+            // Open the result view for a finished run (discussion / rally).
+            // Hands the run folder over; the main loop turns its transcript.md
+            // into the chat-style result tab and switches to it. A thin signal,
+            // not a merged primitive: the orchestrator decides *when* a run is
+            // done, the main loop decides *how* the page is shown.
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "open_result",
+                    lua.create_function(move |_, run: String| {
+                        c.request_open_result(&run);
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
         // ── Browser ──────────────────────────────
         // Selector / on_missing interpretation lives in the module functions
         // sel_of / check (the sandboxed run_scoped uses the same ones)
@@ -1673,6 +1691,7 @@ function on_done(tab)
         .. " (code=" .. (v.code or 0) .. ")\n" .. (v.reason or "") .. "\n")
       shikisha.show(v.outcome == "success" and ai or BR)
       shikisha.set_result(v.code or 0, v.reason or v.outcome)
+      shikisha.open_result(run)
       shikisha.send_to_tab(ai, shikisha.t("agent.verdict.label") .. ": " .. (v.reason or v.outcome)
         .. " (code=" .. (v.code or 0) .. ")" .. shikisha.t("agent.browser.next_instruction"))
       return
@@ -1702,6 +1721,7 @@ function on_done(tab)
     if is_done(said) then
       tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. shikisha.t("agent.verdict.success") .. "\n")
       shikisha.set_result(0, shikisha.t("agent.verdict.success"))
+      shikisha.open_result(run)
       return
     end
     -- Neither code nor DONE: remind, but cap consecutive empty turns so a
@@ -1932,6 +1952,7 @@ function on_done(tab)
       else
         shikisha.set_result(0, shikisha.t("agent.discuss.result.mod_closed"))
         shikisha.set_var("discuss_done", true)
+        shikisha.open_result(run)
       end
       return
     end
@@ -1966,6 +1987,7 @@ function on_done(tab)
     shikisha.show(tab.index)
     shikisha.set_result(0, shikisha.t("agent.discuss.result.judge_ruled"))
     shikisha.set_var("discuss_done", true)
+    shikisha.open_result(run)
     return
   end
 
@@ -1976,6 +1998,7 @@ function on_done(tab)
       .. " (code=" .. (agg.code or 0) .. ")\n" .. (agg.reason or "") .. "\n")
     shikisha.set_result(agg.code or 0, agg.reason or shikisha.t("agent.discuss.agg_met"))
     shikisha.set_var("discuss_done", true)
+    shikisha.open_result(run)
     return
   end
 
@@ -1992,6 +2015,7 @@ function on_done(tab)
       tx("\n## " .. shikisha.t("agent.verdict.label") .. "\n" .. shikisha.t("agent.discuss.round_limit_no_judge") .. "\n")
       shikisha.set_result(0, shikisha.t("agent.discuss.result.round_limit"))
       shikisha.set_var("discuss_done", true)
+      shikisha.open_result(run)
     end
     return
   end
