@@ -177,7 +177,8 @@ docs/AUTOMATION.md     自動化の書き方
 ## 貢献
 
 翻訳、未対応のAI CLI用プロファイル、バグ報告、どれも歓迎です。
-[CONTRIBUTING.md](CONTRIBUTING.md) からどうぞ。
+[CONTRIBUTING.md](CONTRIBUTING.md) からどうぞ（[行動規範](CODE_OF_CONDUCT.md) にご協力ください）。
+質問やアイデアは [Discussions](https://github.com/styleio/ShikishaTerm/discussions) へ。
 
 ## ビルド
 
@@ -193,6 +194,10 @@ Rust（MSVC）が必要です。生成物は単一の実行ファイルで、追
 - [翻訳の手引き](docs/TRANSLATING.md) — 言語を追加したい方へ
 - [設計書](DESIGN.md) — 用語・アーキテクチャ・安全設計
 - [セキュリティ](SECURITY.md) — 脅威モデルと報告方法
+
+## 応援
+
+SHIKISHA-TERM が役に立ったら、[Ko-fi](https://ko-fi.com/styleio) で開発を応援いただけます。ありがとうございます。
 
 ## ライセンス
 

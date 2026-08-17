@@ -199,7 +199,9 @@ It is deliberately narrow, and honest about it:
 ## Contributing
 
 Translations, profiles for AI CLIs it does not know yet, bug reports — all welcome.
-Start with [CONTRIBUTING.md](CONTRIBUTING.md).
+Start with [CONTRIBUTING.md](CONTRIBUTING.md), and please keep to the
+[Code of Conduct](CODE_OF_CONDUCT.md). Questions or ideas? Open a
+[Discussion](https://github.com/styleio/ShikishaTerm/discussions).
 
 ## Building
 
@@ -216,6 +218,11 @@ dependencies.
 - [Translating](docs/TRANSLATING.md) — how to add a language
 - [Design notes](DESIGN.md) — terminology, architecture, safety design (Japanese)
 - [Security](SECURITY.md) — threat model and how to report an issue
+
+## Support
+
+If SHIKISHA-TERM saves you time, you can support its development on
+[Ko-fi](https://ko-fi.com/styleio). Thank you.
 
 ## License
 
