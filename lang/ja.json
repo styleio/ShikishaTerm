@@ -689,6 +689,7 @@
   "settings.rally.title": "ラリー結果",
   "result.title": "結果",
   "result.kind.discuss": "AI×AI 議論の記録",
+  "result.verdict": "判定",
   "result.kind.rally": "ブラウザ操作の記録",
   "result.download": "この記録をダウンロード",
   "result.downloaded": "ダウンロードしました",

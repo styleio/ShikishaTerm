@@ -3540,12 +3540,19 @@ const RESULT_PAGE: &str = r##"<!doctype html>
    pointer-events:none; background:linear-gradient(transparent, var(--panel)); }
  .bubble .more { margin-top:8px; font-size:12px; padding:4px 10px; }
 
- .sys { text-align:center; margin:20px auto; max-width:80%; }
- .sys .card { display:inline-block; text-align:left; background:var(--sys);
-   border:1px solid var(--line); border-radius:12px; padding:10px 16px; max-width:100%; overflow:hidden; }
- .sys .card h3 { margin:0 0 6px; font-size:12px; letter-spacing:.05em; text-transform:uppercase;
-   color:var(--accent); }
- .sys .card .body { overflow-x:auto; }
+ /* The verdict / judge ruling: a full-width report, not a chat bubble. */
+ .report { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent);
+   border-radius:12px; padding:14px 20px; margin:24px 0 12px; overflow:hidden; }
+ .report > h3 { margin:0 0 10px; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--accent); }
+ .report .body { overflow-x:auto; }
+ /* Speakers' own Markdown, rendered inside a bubble or report. */
+ .body .mh { font-weight:700; margin:12px 0 5px; }
+ .body .mh1, .body .mh2 { font-size:15px; color:var(--text); }
+ .body .mh3, .body .mh4, .body .mh5, .body .mh6 { font-size:13px; color:var(--muted);
+   letter-spacing:.03em; }
+ .body table { border-collapse:collapse; margin:8px 0; font-size:12.5px; max-width:100%; }
+ .body th, .body td { border:1px solid var(--line); padding:4px 11px; text-align:left; white-space:nowrap; }
+ .body th { background:var(--panel2); font-weight:600; }
  .note { text-align:center; color:var(--muted); font-size:12px; margin:12px auto; font-style:italic; }
  .empty { text-align:center; color:var(--muted); margin-top:60px; font-size:14px; }
  #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(16px);
@@ -3625,11 +3632,24 @@ function inline(s) {
     .replace(/`([^`]+)`/g, '<code class="inline">$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 }
+function isTableSep(l) { return /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(l) && l.indexOf("-") >= 0 && l.indexOf("|") >= 0; }
+function tableBlock(rows) {
+  const cells = r => r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
+  const head = cells(rows[0]);
+  let h = "<table><thead><tr>" + head.map(c => "<th>" + inline(c) + "</th>").join("") + "</tr></thead><tbody>";
+  for (const r of rows.slice(1)) h += "<tr>" + cells(r).map(c => "<td>" + inline(c) + "</td>").join("") + "</tr>";
+  return h + "</tbody></table>";
+}
 function renderBody(lines) {
   const out = [];
   let i = 0;
   while (i < lines.length) {
     const ln = lines[i];
+    // A Markdown heading INSIDE a statement is the speaker's own subheading —
+    // real transcript boundaries were split off before we got here, so render
+    // it as a subheading rather than treating it as a new bubble.
+    const h = /^(#{1,6})\s+(.*)$/.exec(ln);
+    if (h) { out.push('<div class="mh mh' + h[1].length + '">' + inline(h[2]) + "</div>"); i++; continue; }
     const fence = /^```(\w*)\s*$/.exec(ln.trim());
     if (fence) {
       const lang = fence[1]; const code = []; i++;
@@ -3651,11 +3671,18 @@ function renderBody(lines) {
       while (i < lines.length && lines[i].trim() !== "") { code.push(lines[i]); i++; }
       out.push(codeBlock(code, true)); continue;
     }
+    // A Markdown table: a "| … |" row followed by a "|---|" separator.
+    if (/^\s*\|.*\|\s*$/.test(ln) && isTableSep(lines[i + 1] || "")) {
+      const rows = [lines[i]]; i += 2;
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(lines[i]); i++; }
+      out.push(tableBlock(rows)); continue;
+    }
     if (ln.trim() === "") { i++; continue; }
     const para = [];
     while (i < lines.length && lines[i].trim() !== ""
-        && !/^```/.test(lines[i].trim()) && !/^ {4}\S/.test(lines[i])
-        && !/^diff --git /.test(lines[i]) && !/^@@ /.test(lines[i])) {
+        && !/^#{1,6}\s/.test(lines[i]) && !/^```/.test(lines[i].trim()) && !/^ {4}\S/.test(lines[i])
+        && !/^diff --git /.test(lines[i]) && !/^@@ /.test(lines[i])
+        && !(/^\s*\|.*\|\s*$/.test(lines[i]) && isTableSep(lines[i + 1] || ""))) {
       para.push(lines[i]); i++;
     }
     if (para.length) out.push("<p>" + para.map(inline).join("<br>") + "</p>");
@@ -3663,26 +3690,41 @@ function renderBody(lines) {
   return out.join("");
 }
 
-// Split the transcript into heading-led blocks. Level 3 (###) = a turn,
-// level 2 (##) = a verdict/system card, level 1 (#) = the document title.
-function parseBlocks(md) {
-  const lines = md.split(/\r?\n/);
-  const blocks = []; let cur = null; const pre = [];
+// The one heading a speaker can't forge: the judge's verdict carries the
+// judge's name — "判定（審判 X）". No-judge endings use the aggregate / round-
+// limit label. Everything else that looks like a heading is a speaker's own
+// Markdown, not a transcript boundary. Returns the boundary line index, or -1.
+function verdictBoundary(lines) {
+  const vj = (T["transcript.discuss.verdict_judge"] || "").split("{me}")[0].replace(/^#+\s*/, "").trim();
+  const va = (T["agent.discuss.verdict_agg"] || "").trim();
+  const vl = (T["agent.verdict.label"] || "").trim();
+  const lastMatch = pred => { let idx = -1; for (let i = 0; i < lines.length; i++) { const m = /^##\s+(.*)$/.exec(lines[i]); if (m && pred(m[1].trim())) idx = i; } return idx; };
+  let i = vj ? lastMatch(t => t.indexOf(vj) === 0) : -1;
+  if (i < 0 && va) i = lastMatch(t => t.indexOf(va) === 0);
+  if (i < 0 && vl) i = lastMatch(t => t === vl || t.indexOf(vl + ":") === 0 || t.indexOf(vl + " ") === 0);
+  return i;
+}
+
+// Split into turns on speaker headings only. Matched tightly so a speaker's
+// own heading Markdown inside their statement is never taken for a turn: a
+// discussion turn is a level-3 heading ending in a round number — Name（3） —
+// while a rally logs looser Action 1 / Human request, so for a rally any
+// level-3 heading begins a turn.
+function parseTurns(lines, kind) {
+  const strict = /^###\s+(.*?)\s*[(（]\s*(\d+)\s*[)）]\s*$/;
+  const loose = /^###\s+(.*)$/;
+  const turns = []; const pre = []; let cur = null;
   for (const ln of lines) {
-    const m = /^(#{1,3})\s+(.*)$/.exec(ln);
-    if (m) { if (cur) blocks.push(cur); cur = { level: m[1].length, title: m[2].trim(), body: [] }; }
+    let name = null, round = null;
+    const s = strict.exec(ln);
+    if (s) { name = s[1].trim(); round = s[2]; }
+    else if (kind === "rally") { const l = loose.exec(ln); if (l) { name = l[1].trim(); } }
+    if (name !== null) { if (cur) turns.push(cur); cur = { name, round, body: [] }; }
     else if (cur) cur.body.push(ln);
     else pre.push(ln);
   }
-  if (cur) blocks.push(cur);
-  return { pre, blocks };
-}
-function splitSpeaker(title) {
-  let m = /^(.*?)\s*\((\d+)\)\s*$/.exec(title);      // discussion: "Name (3)"
-  if (m) return { name: m[1].trim(), round: m[2] };
-  m = /^(.*?)\s+(\d+)\s*$/.exec(title);              // rally: "Action 3"
-  if (m) return { name: m[1].trim(), round: m[2] };
-  return { name: title, round: null };
+  if (cur) turns.push(cur);
+  return { pre, turns };
 }
 
 function turnEl(name, round, bodyHtml) {
@@ -3697,13 +3739,15 @@ function turnEl(name, round, bodyHtml) {
   const col = el("div", { class: "col" }, who, bubble);
   return el("div", { class: "turn " + lane.side }, av, col);
 }
-function sysEl(title, bodyHtml) {
-  const card = el("div", { class: "card" });
+// The verdict (and the judge's structured ruling) reads as a full-width report,
+// not a chat bubble — it argues with headings, scores, and tables.
+function reportEl(title, bodyHtml) {
+  const card = el("div", { class: "report" });
   if (title) card.append(el("h3", {}, title));
   const body = el("div", { class: "body" });
   body.innerHTML = bodyHtml;
   card.append(body);
-  return el("div", { class: "sys" }, card);
+  return card;
 }
 function noteEl(text) {
   return el("div", { class: "note" }, text);
@@ -3730,17 +3774,29 @@ function render(data) {
   document.getElementById("sub").textContent =
     kind === "rally" ? T["result.kind.rally"] : T["result.kind.discuss"];
   if (!md.trim()) { chat.append(el("div", { class: "empty" }, T["result.empty"])); return; }
-  const { pre, blocks } = parseBlocks(md);
+  const lines = md.split(/\r?\n/);
+  const vb = verdictBoundary(lines);
+  const mainLines = vb >= 0 ? lines.slice(0, vb) : lines;
+  const verdict = vb >= 0
+    ? { title: (/^##\s+(.*)$/.exec(lines[vb]) || [])[1] || T["result.verdict"], body: lines.slice(vb + 1) }
+    : null;
+  const { pre, turns } = parseTurns(mainLines, kind);
+  // A judge speaks its ruling as a turn, then the orchestrator repeats it as
+  // the verdict. Drop the duplicate turn so the ruling shows once, as a report.
+  const norm = s => s.replace(/\s+/g, " ").trim();
+  if (verdict && turns.length) {
+    const lb = norm(turns[turns.length - 1].body.join("\n"));
+    const vbody = norm(verdict.body.join("\n"));
+    if (lb && vbody && (lb === vbody || vbody.indexOf(lb) === 0 || lb.indexOf(vbody) === 0)) turns.pop();
+  }
   const preTxt = pre.filter(l => l.trim() !== "" && !/^#/.test(l));
   if (preTxt.length) chat.append(el("div", { class: "caption" }, preTxt.join(" · ")));
-  for (const b of blocks) {
-    if (b.level === 1) continue;  // the document title; the header already names the view
-    if (b.level === 2) { chat.append(sysEl(b.title, renderBody(b.body))); continue; }
-    const sp = splitSpeaker(b.title);
-    const { body, notes } = peelNotes(b.body);
-    chat.append(turnEl(sp.name, sp.round, renderBody(body)));
+  for (const t of turns) {
+    const { body, notes } = peelNotes(t.body);
+    chat.append(turnEl(t.name, t.round, renderBody(body)));
     for (const n of notes) chat.append(noteEl(n));
   }
+  if (verdict) chat.append(reportEl(verdict.title, renderBody(verdict.body)));
   requestAnimationFrame(clampTall);
 }
 

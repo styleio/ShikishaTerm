@@ -689,6 +689,7 @@
   "settings.rally.title": "Rally result",
   "result.title": "Result",
   "result.kind.discuss": "AI × AI discussion",
+  "result.verdict": "Verdict",
   "result.kind.rally": "Browser operation log",
   "result.download": "Download this record",
   "result.downloaded": "Downloaded.",
