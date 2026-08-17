@@ -33,7 +33,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     height:100%; }
 
   /* ── Left tab bar ───────────────────────── */
-  #tabs { grid-row:1/3; width:210px; background:var(--panel);
+  #tabs { grid-row:1/3; width:290px; background:var(--panel);
     border-right:1px solid var(--line); overflow-y:auto; padding:6px 0;
     display:flex; flex-direction:column; }
   /* Settings lives here as a fixed gear pinned to the very bottom, not a tab */
