@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="SHIKISHA-TERM — Run Claude Code, Codex and Gemini side by side" width="820">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/banner.png" alt="SHIKISHA-TERM — Run Claude Code, Codex and Gemini side by side" width="820">
 </p>
 
 <p align="center">

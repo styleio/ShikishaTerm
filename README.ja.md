@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="SHIKISHA-TERM — 複数のAI CLIを並べて動かし、仕事を渡し合わせる" width="820">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/banner.png" alt="SHIKISHA-TERM — 複数のAI CLIを並べて動かし、仕事を渡し合わせる" width="820">
 </p>
 
 <p align="center">
