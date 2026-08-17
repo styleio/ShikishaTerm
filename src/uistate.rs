@@ -47,6 +47,11 @@ pub struct TabState {
     /// shell keeps it out of the tab strip and reaches it via a fixed gear.
     #[serde(default)]
     pub settings: bool,
+    /// Which AI this tab runs (claude / codex / gemini / deepseek / …), if any.
+    /// A plain identity, not a look: the display side turns it into a brand
+    /// colour so the "run several AIs side by side" story reads at a glance.
+    #[serde(default)]
+    pub ai: Option<String>,
 }
 
 /// Current position of the automation ring
@@ -161,6 +166,7 @@ impl TabState {
             model: t.is_model(),
             busy: t.is_generating(),
             settings: false,
+            ai: t.ai_kind(),
         }
     }
 
@@ -183,6 +189,7 @@ impl TabState {
             model: false,
             busy: false,
             settings: key == "settings",
+            ai: None,
         }
     }
 }
@@ -253,6 +260,7 @@ mod tests {
             model: false,
             busy: false,
             settings: false,
+            ai: None,
         }
     }
 

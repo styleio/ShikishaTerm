@@ -1846,10 +1846,19 @@ function aiCommandOf(key, model) {
     const p = key.slice(6);
     return "model " + p + "/" + ((model || "").trim() || DEFAULT_MODEL[p] || "");
   }
-  if (key === "claude") return "claude --dangerously-skip-permissions";
-  if (key === "codex")  return "codex --dangerously-bypass-approvals-and-sandbox";
-  if (key === "gemini") return "gemini --yolo";
+  if (key === "claude") return "claude " + cliFlagOf("claude");
+  if (key === "codex")  return "codex " + cliFlagOf("codex");
+  if (key === "gemini") return "gemini " + cliFlagOf("gemini");
   return key || "";  // kimi and anything else: bare command (no known bypass flag)
+}
+// The "act without asking" flag each CLI needs to run autonomously (a
+// discussion / automation stalls without it). Surfaced explicitly in the tab
+// editor as a checkbox with a risk note — never injected silently.
+function cliFlagOf(head) {
+  if (head === "claude") return "--dangerously-skip-permissions";
+  if (head === "codex")  return "--dangerously-bypass-approvals-and-sandbox";
+  if (head === "gemini") return "--yolo";
+  return "";  // aider / kimi / others: no known bypass flag
 }
 // AI selection + (only for a model API) a model name. Writes back to st={key,model}
 // "Candidates" button: lists a provider's real models via {base_url}/models so
@@ -2872,7 +2881,29 @@ function aiPanel(t, cmdInput, rebuild) {
   const drawDetail = () => {
     detail.textContent = "";
     const m = parseModel(t.command);
-    if (!m) return;                       // a CLI is selected → nothing else to set
+    if (!m) {
+      // A CLI is selected. If it has an "act without asking" flag, surface it
+      // as an explicit, explained checkbox — required for autonomous discussion
+      // / automation, but it lets the AI edit files and run commands unattended.
+      // Toggling only adds/removes that one token, so other args are preserved.
+      const flag = cliFlagOf(headOf(t.command));
+      if (!flag) return;
+      const cb = el("input", {type:"checkbox"});
+      cb.checked = (t.command || "").split(/\s+/).includes(flag);
+      cb.addEventListener("change", () => {
+        let c = (t.command || "").trim();
+        const parts = c.split(/\s+/).filter(Boolean);
+        if (cb.checked) { if (!parts.includes(flag)) parts.push(flag); }
+        else { for (let i = parts.length - 1; i >= 0; i--) if (parts[i] === flag) parts.splice(i, 1); }
+        t.command = parts.join(" "); cmdInput.value = t.command; renderNav();
+      });
+      detail.append(
+        el("label", {class:"row", style:"cursor:pointer;gap:8px"}, cb,
+          el("span", {}, T["settings.tab.ai.autoapprove"])),
+        el("div", {class:"row"}, el("label", {}, ""),
+          el("span", {class:"hint", style:"color:var(--danger)"}, T["settings.tab.ai.autoapprove_risk"])));
+      return;
+    }
     const modelIn = el("input", {type:"text", class:"mono", style:"width:260px",
       placeholder:T["settings.model.name_ph"]});
     modelIn.value = m.model || "";
@@ -2902,7 +2933,7 @@ function aiPanel(t, cmdInput, rebuild) {
       rebuild();                          // redraw: the new provider now appears (and its model field)
       return;
     }
-    if (v.startsWith("cli:")) t.command = v.slice(4);
+    if (v.startsWith("cli:")) { const h = v.slice(4); const f = cliFlagOf(h); t.command = f ? h + " " + f : h; }
     else if (v.startsWith("prov:")) t.command = "model " + v.slice(5) + "/";
     cmdInput.value = t.command; renderNav();
     drawDetail();

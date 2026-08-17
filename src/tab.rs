@@ -1319,6 +1319,26 @@ impl Tab {
         self.detector.profile_name()
     }
 
+    /// Which AI this tab runs, as a lowercase identity the UI can brand: a
+    /// model bridge's provider (deepseek / qwen / …), or a CLI's command head
+    /// (claude / codex / gemini / aider / kimi). None for shells and anything
+    /// unrecognized. This is a fact about the tab, not a look — the display
+    /// side maps it to a colour.
+    pub fn ai_kind(&self) -> Option<String> {
+        if let Some(conn) = self.model.as_ref() {
+            let p = conn.provider.trim().to_ascii_lowercase();
+            return (!p.is_empty()).then_some(p);
+        }
+        let head = self.argv.first()?;
+        let head = std::path::Path::new(head)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(head)
+            .to_ascii_lowercase();
+        matches!(head.as_str(), "claude" | "codex" | "gemini" | "aider" | "kimi")
+            .then_some(head)
+    }
+
     /// Fingerprint of the launch conditions. If this changes, the session needs to be recreated
     pub fn signature(&self) -> String {
         signature_of(&self.argv, &self.opts)

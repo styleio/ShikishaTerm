@@ -69,6 +69,22 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   .spark { display:flex; align-items:flex-end; gap:1px; height:14px; flex:none; }
   .spark i { width:2px; background:var(--brand); opacity:.75; }
 
+  /* AI tabs, branded per model. --ai is kept separate from --brand so the
+     status dot (--brand for DONE) never loses its meaning. Running several
+     AIs side by side is the headline feature, so let each one wear its colour. */
+  .tab.aitab { border-left-color:var(--ai); }
+  .tab.aitab.sel { border-left-color:var(--ai); }
+  .tab.aitab .nm { color:var(--ai); font-weight:600; }
+  .aichip { width:7px; height:7px; border-radius:2px; flex:none;
+    background:var(--ai); box-shadow:0 0 6px var(--ai); }
+  .ai-claude   { --ai:#d97757; }
+  .ai-codex    { --ai:#19c37d; }
+  .ai-gemini   { --ai:#4285f4; }
+  .ai-deepseek { --ai:#5b7cff; }
+  .ai-qwen     { --ai:#a06bff; }
+  .ai-aider    { --ai:#e5644d; }
+  .ai-kimi     { --ai:#12b3a8; }
+
   /* Hamburger and scrim. Not shown on wide screens (sidebar stays visible) */
   #hamburger { display:none; position:fixed; top:6px; left:6px; z-index:40;
     width:34px; height:30px; align-items:center; justify-content:center;
@@ -517,8 +533,13 @@ function drawTabs() {
   for (const t of S.tabs) {
     // Settings isn't a tab — it's reached via the gear pinned at the bottom.
     if (t.settings) continue;
-    nav.append(el("div", {class:"tab" + (S.active === t.index ? " sel" : ""),
+    // Running several AIs side by side is the headline feature, so brand each
+    // AI tab in its own colour (a left bar + a glowing chip + a tinted name).
+    // The status dot stays separate — colour = which AI, dot = what it's doing.
+    const brand = t.ai ? " aitab ai-" + t.ai : "";
+    nav.append(el("div", {class:"tab" + (S.active === t.index ? " sel" : "") + brand,
         onclick:() => send({kind:"select", tab:t.index})},
+      t.ai ? el("span", {class:"aichip"}) : null,
       el("span", {class:"dot " + t.state}),
       el("span", {class:"num"}, String(t.index)),
       el("span", {class:"nm", title:t.profile}, t.name),
