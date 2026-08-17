@@ -1045,6 +1045,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
             if let Some(newcfg) = config::load() {
                 let (new_ws, errs) = newcfg.resolve_workspaces();
                 startup_errors.extend(errs);
+                // Which workspace was active before this reload. Its live tabs are
+                // in `tabs` (not the cache), so it's skipped when re-keying below.
+                let prev_ws_index = ws_index;
                 // The language is only read at startup, so changing it in settings
                 // doesn't apply to the current screen. Add a note to the board's
                 // notification prompting the user to close and reopen.
@@ -1066,8 +1069,36 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // (pages already open are left untouched).
                     open_declared_browsers(w, &caps, &mut startup_errors);
                 }
-                // Leave other workspaces to be rebuilt on demand (don't touch tabs running in the background)
-                ws_tabs.resize_with(new_ws.len().max(1), Vec::new);
+                // Re-key the cached background tabs by workspace NAME, not by
+                // position. A reload can reorder workspaces (adding/moving one),
+                // and a position-indexed cache would then hand a workspace another
+                // one's tabs — the bug where switching to a freshly added workspace
+                // showed a different one's tabs. Tabs whose workspace survives move
+                // with it; a removed workspace's background tabs are killed; the
+                // active workspace's tabs live in `tabs`, so its slot stays empty.
+                let mut cached_by_name: std::collections::HashMap<String, Vec<Tab>> =
+                    std::collections::HashMap::new();
+                for (i, w) in workspaces.iter().enumerate() {
+                    if i == prev_ws_index {
+                        continue;
+                    }
+                    if let Some(slot) = ws_tabs.get_mut(i) {
+                        let cached = std::mem::take(slot);
+                        if !cached.is_empty() {
+                            cached_by_name.insert(w.name.clone(), cached);
+                        }
+                    }
+                }
+                ws_tabs = new_ws
+                    .iter()
+                    .map(|w| cached_by_name.remove(&w.name).unwrap_or_default())
+                    .collect();
+                // Workspaces that vanished from config: their background tabs are done.
+                for mut orphaned in cached_by_name.into_values() {
+                    for t in orphaned.iter_mut() {
+                        t.kill();
+                    }
+                }
                 // The per-workspace Lua engine cache is indexed by position, and that
                 // position shifts whenever workspaces are added/removed here. Reset it
                 // to match the new count (all None) so switching to a newly added
@@ -1163,6 +1194,23 @@ fn run(mut surface: WinSurface) -> Result<()> {
             for (i, t) in tabs.iter_mut().enumerate() {
                 let (old, new) = t.tick(start);
                 transitions.push((i + 1, old, new));
+            }
+
+            // A tab whose launch command changed in settings is flagged for
+            // restart, but only actually restarted here once it is idle — so a
+            // running AI is never cut off. This makes "swap the AI in settings"
+            // take effect on an idle tab on its own, instead of quietly keeping
+            // the old process alive. The new session is treated as a fresh
+            // launch (started_fired cleared) so its on_start briefing fires again.
+            for (i, t) in tabs.iter_mut().enumerate() {
+                if t.needs_restart
+                    && t.state != TabState::Busy
+                    && t.restart(rows, cols).is_ok()
+                {
+                    if let Some(f) = started_fired.get_mut(i) {
+                        *f = false;
+                    }
+                }
             }
 
             // Fire hooks -> resume waiting coroutines -> run the queued operations
