@@ -1898,7 +1898,6 @@ function on_done(tab)
     -- per-round state so the next topic starts clean.
     if IS_FIRST and tab.chain_depth == 0 then
       shikisha.set_var("discuss_done", nil)
-      shikisha.set_var("discuss_log", nil)
       shikisha.set_var("discuss_says", nil)
       shikisha.set_var("discuss_round", 0)
       shikisha.set_var("discuss_ask_judge", nil)
@@ -1915,6 +1914,14 @@ function on_done(tab)
   -- uses this line as the turn signal
   local function speak(pane, msg)
     shikisha.send_to_tab(pane, msg .. "\nSHIKISHA_SAY=" .. say)
+  end
+  -- Hand the next speaker the record file to READ, never the transcript pasted
+  -- inline. The record grows without bound while the prompt must not, and any
+  -- inline excerpt would just tempt the AI to skip the fuller context. With
+  -- nothing but the file to go on, it has to read to take part.
+  local tx_path = shikisha.get_var("discuss_tx")
+  local function ctx_ref()
+    return shikisha.tf("agent.discuss.read_ctx", { path = tx_path })
   end
 
   local msg = shikisha.exchange_take(say)
@@ -1939,15 +1946,13 @@ function on_done(tab)
 
   -- The moderator's turn: not a statement but a "next speaker or END" instruction. Not recorded as a participant statement
   if IS_MOD then
-    local ctx = shikisha.get_var("discuss_log") or ""
-    if #ctx > 4000 then ctx = shikisha.t("agent.discuss.truncated_short") .. "\n" .. ctx:sub(#ctx - 4000) end
     if msg:upper():find("END") then
       tx("\n" .. shikisha.tf("transcript.discuss.mod_close", { me = nm(ME) }) .. "\n")
       if JUDGE ~= nil and #JUDGE > 0 then
         shikisha.set_var("discuss_ask_judge", true)
         shikisha.show(JUDGE)
         speak(JUDGE, table.concat({
-          shikisha.t("agent.discuss.judge_request"), "----", ctx, "----",
+          ctx_ref(), shikisha.t("agent.discuss.judge_request"),
         }, "\n"))
       else
         shikisha.set_result(0, shikisha.t("agent.discuss.result.mod_closed"))
@@ -1964,18 +1969,18 @@ function on_done(tab)
     tx("\n" .. shikisha.tf("transcript.discuss.mod_next", { me = nm(ME), pick = nm(pick) }) .. "\n")
     shikisha.show(pick)
     speak(pick, table.concat({
-      shikisha.t("agent.discuss.so_far"), "----", ctx, "----",
+      ctx_ref(),
       shikisha.t("agent.discuss.your_turn.before") .. nm(pick) .. shikisha.t("agent.discuss.your_turn.mid") .. say .. shikisha.t("agent.discuss.your_turn.after"),
     }, "\n"))
     return
   end
 
-  -- Record the statement (both the human-readable transcript and the log passed to the next speaker)
+  -- Record the statement to the human-readable transcript. That file is also
+  -- the full history the next speaker is told to read — there is no second,
+  -- pasted copy to keep in sync.
   local r = (shikisha.get_var("discuss_round") or 0) + 1
   shikisha.set_var("discuss_round", r)
   tx("\n### " .. shikisha.tf("transcript.discuss.entry", { me = nm(ME), r = tostring(r) }) .. "\n" .. msg .. "\n")
-  local log = (shikisha.get_var("discuss_log") or "") .. shikisha.tf("agent.discuss.log_speaker", { me = nm(ME) }) .. "\n" .. msg .. "\n\n"
-  shikisha.set_var("discuss_log", log)
   -- Keep each participant's latest statement (material for the aggregate stops)
   local says = shikisha.get_var("discuss_says")
   if not says then says = {}; shikisha.set_var("discuss_says", says) end
@@ -2008,8 +2013,7 @@ function on_done(tab)
       shikisha.set_var("discuss_ask_judge", true)
       shikisha.show(JUDGE)
       speak(JUDGE, table.concat({
-        shikisha.t("agent.discuss.judge_request_final"),
-        "----", log, "----",
+        ctx_ref(), shikisha.t("agent.discuss.judge_request_final"),
       }, "\n"))
     else
       tx("\n## " .. shikisha.t("agent.verdict.label") .. "\n" .. shikisha.t("agent.discuss.round_limit_no_judge") .. "\n")
@@ -2024,19 +2028,17 @@ function on_done(tab)
   -- spectating).
   -- If moderated, ask the moderator "who's next"; otherwise (round-robin,
   -- the default) go to the static NEXT
-  local ctx = log
-  if #ctx > 4000 then ctx = shikisha.t("agent.discuss.truncated") .. "\n" .. ctx:sub(#ctx - 4000) end
   if ORDER == "moderated" and MODERATOR ~= nil and #MODERATOR > 0 then
     shikisha.show(MODERATOR)
     speak(MODERATOR, table.concat({
-      shikisha.t("agent.discuss.so_far"), "----", ctx, "----",
+      ctx_ref(),
       shikisha.t("agent.discuss.mod.pick_before") .. say
         .. shikisha.t("agent.discuss.mod.pick_after") .. table.concat(agent_names(), ", "),
     }, "\n"))
   else
     shikisha.show(NEXT)
     speak(NEXT, table.concat({
-      shikisha.t("agent.discuss.so_far"), "----", ctx, "----",
+      ctx_ref(),
       shikisha.t("agent.discuss.next_turn.before") .. nm(NEXT) .. shikisha.t("agent.discuss.next_turn.mid") .. say .. shikisha.t("agent.discuss.next_turn.after"),
     }, "\n"))
   end
