@@ -8,7 +8,9 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
-The project is pre-1.0 and evolving quickly. Highlights of the current build:
+## [0.1.0] - 2026-08-18
+
+The first public release. It is pre-1.0 and evolving quickly. Highlights:
 
 ### Added
 - Run multiple AI CLIs side by side in one window (Claude Code, Codex CLI,
@@ -28,4 +30,5 @@ The project is pre-1.0 and evolving quickly. Highlights of the current build:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/commits/main
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/styleio/ShikishaTerm/releases/tag/v0.1.0
