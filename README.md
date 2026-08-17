@@ -14,15 +14,15 @@
   <a href="README.ja.md"><img alt="日本語" src="https://img.shields.io/badge/README-日本語-red.svg"></a>
 </p>
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM in action — several AIs side by side, an AI-vs-AI debate, and a downloadable result" width="820">
+</p>
+
 ---
 
 > **Check on your AI from your phone — and tell it to carry on.**
 > Scan a QR code and you can see what every tab is doing and send instructions,
 > from the train, from a café, from bed.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM in action — several AIs side by side, an AI-vs-AI debate, and a downloadable result" width="820">
-</p>
 
 ## Why
 

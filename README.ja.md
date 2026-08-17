@@ -13,14 +13,14 @@
   <a href="README.md"><img alt="English" src="https://img.shields.io/badge/README-English-blue.svg"></a>
 </p>
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM の動作 — 複数AIの並走、AI同士の討論、そしてダウンロードできる結果" width="820">
+</p>
+
 ---
 
 > **外出先からスマホで、AIの様子を見て「続きをやっといて」と言える。**
 > QRコードを読むだけで、全タブの状況確認と指示送信ができます。
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM の動作 — 複数AIの並走、AI同士の討論、そしてダウンロードできる結果" width="820">
-</p>
 
 ## なぜ作ったか
 
