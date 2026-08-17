@@ -34,3 +34,8 @@ Take-Screenshot.ps1
 
 # 実用テスト機への配置 (このマシン固有のパスを含むため git 管理外)
 Deploy.cmd
+# demo/scratch artifacts (not source)
+/demo*.mp4
+/demo*.gif
+/_*.png
+/scratch_*
