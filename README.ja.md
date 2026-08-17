@@ -18,6 +18,10 @@
 > **外出先からスマホで、AIの様子を見て「続きをやっといて」と言える。**
 > QRコードを読むだけで、全タブの状況確認と指示送信ができます。
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM の動作 — 複数AIの並走、AI同士の討論、そしてダウンロードできる結果" width="820">
+</p>
+
 ## なぜ作ったか
 
 ターミナルのAIを1つ動かすのは簡単です。**4つ**動かすと途端に破綻します。
@@ -27,7 +31,7 @@
 **処理中 / 完了 / 確認待ち** を区別できるターミナルで、AI同士で仕事を渡すこともできます。
 
 ターミナルで動くものなら何でも扱えるので、特定のベンダーに縛られません。
-Claude Code、Codex CLI、Gemini CLI、Ollama、Aider、SSH越しの素のシェルも同じように扱えます。
+Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの素のシェルも同じように扱えます。
 
 ## 導入
 

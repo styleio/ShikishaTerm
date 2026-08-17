@@ -20,13 +20,9 @@
 > Scan a QR code and you can see what every tab is doing and send instructions,
 > from the train, from a café, from bed.
 
-<!--
-TODO before launch: record a 15s demo and drop it at docs/demo.gif, then uncomment.
-It should show three tabs working, a status going BUSY -> DONE, and the result
-being handed to the review tab automatically.
-
-<p align="center"><img src="docs/demo.gif" alt="SHIKISHA-TERM in action" width="800"></p>
--->
+<p align="center">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM in action — several AIs side by side, an AI-vs-AI debate, and a downloadable result" width="820">
+</p>
 
 ## Why
 
@@ -38,7 +34,7 @@ between *working*, *finished* and *waiting for a human* — and can move work be
 on its own.
 
 It talks to whatever runs in a terminal, so it is not tied to one vendor: Claude Code,
-Codex CLI, Gemini CLI, Ollama, Aider, or a plain shell over SSH.
+Codex CLI, Gemini CLI, DeepSeek, Ollama, Aider, or a plain shell over SSH.
 
 ## Install
 
