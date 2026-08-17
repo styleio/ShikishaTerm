@@ -28,6 +28,20 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 **ポータブルな単一の `.exe`。インストール不要・管理者権限不要・APIキー不要** —
 すでにログイン済みのAI CLIをそのまま動かします。
 
+{/* DEMO: ここにデモ動画/GIFを置く。ファイルは `site/public/` に入れて次のいずれかで：
+     <video src="/demo.mp4" autoplay loop muted playsinline style="width:100%;border-radius:12px" />
+     ![動作の様子](/demo.gif)
+*/}
+
+## AIたちを同じ部屋に集めて議論させる
+
+**Claude・Codex・Gemini・DeepSeek に一つのお題を討論させたり**、1つに実装させて他に
+レビューさせたり。審判が総括し、そのやり取りは**「結果」タブにチャット形式で描画**され、
+全記録を**ワンクリックでMarkdownダウンロード**できます。
+
+内部エンジンは同じで、討論もコードレビューもブラウザ操作も、すべて後から読める
+トランスクリプトとして残ります。
+
 ## 外出先からスマホで、AIの様子を見て「続きをやっといて」
 
 QRコードを読むだけで、全タブの状況を見て指示を送れます。電車の中でも、カフェでも、ベッドからでも。
@@ -62,7 +76,7 @@ QRコードを読むだけで、全タブの状況を見て指示を送れます
 **処理中 / 完了 / 確認待ち** を区別できるターミナルで、AI同士で仕事を渡すこともできます。
 
 ターミナルで動くものなら何でも扱えるので、特定のベンダーに縛られません。
-Claude Code、Codex CLI、Gemini CLI、Ollama、Aider、SSH越しの素のシェルも同じように扱えます。
+Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの素のシェルも同じように扱えます。
 
 ## 使いはじめ
 
