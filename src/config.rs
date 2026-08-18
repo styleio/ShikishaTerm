@@ -206,14 +206,36 @@ impl Config {
         Option<String>,
     ) {
         let mut map = self.notify.clone();
+        let mut tokens: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let mut err = None;
         if let Some(path) = self.secrets_path().filter(|p| p.exists()) {
             match crate::crypto::read_maybe_encrypted(&path, password).and_then(|t| {
                 serde_json::from_str::<Secrets>(&t)
                     .with_context(|| crate::i18n::t("err.config.secrets_json_invalid"))
             }) {
-                Ok(s) => map.extend(s.notify),
+                Ok(s) => {
+                    map.extend(s.notify);
+                    tokens = s.tokens;
+                }
                 Err(e) => err = Some(format!("secrets: {e:#}")),
+            }
+        }
+        // A "@name" webhook/token is expanded from the tokens store, so the
+        // sensitive value stays encrypted in secrets.json rather than sitting in
+        // config.json (same convention as a provider's api_key).
+        let deref = |v: &str| -> String {
+            match v.strip_prefix('@') {
+                Some(k) => tokens.get(k).cloned().unwrap_or_default(),
+                None => v.to_string(),
+            }
+        };
+        for d in map.values_mut() {
+            match d {
+                crate::notify::Destination::Slack { webhook } => *webhook = deref(webhook),
+                crate::notify::Destination::Telegram { token, chat_id } => {
+                    *token = deref(token);
+                    *chat_id = deref(chat_id);
+                }
             }
         }
         (map, err)

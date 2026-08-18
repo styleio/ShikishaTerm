@@ -69,7 +69,7 @@ impl Notifier {
     }
 }
 
-fn send_blocking(dest: &Destination, text: &str) -> Result<(), String> {
+pub fn send_blocking(dest: &Destination, text: &str) -> Result<(), String> {
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(10)))
         .build()

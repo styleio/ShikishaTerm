@@ -784,6 +784,44 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // Sends a test notification to one destination described in the body
+        // ({"type":"slack","webhook":…} etc). "@name" fields are expanded from
+        // the secret store, so a saved destination can be tested too.
+        ("POST", "/api/notify/test") => {
+            let mut req = req;
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body)?;
+            let resp = match serde_json::from_str::<crate::notify::Destination>(&body) {
+                Ok(mut dest) => {
+                    let pw = password.lock().unwrap().clone();
+                    let tokens = crate::config::load()
+                        .map(|c| c.resolve_tokens(pw.as_deref()))
+                        .unwrap_or_default();
+                    let deref = |v: &str| -> String {
+                        match v.strip_prefix('@') {
+                            Some(k) => tokens.get(k).cloned().unwrap_or_default(),
+                            None => v.to_string(),
+                        }
+                    };
+                    match &mut dest {
+                        crate::notify::Destination::Slack { webhook } => *webhook = deref(webhook),
+                        crate::notify::Destination::Telegram { token, chat_id } => {
+                            *token = deref(token);
+                            *chat_id = deref(chat_id);
+                        }
+                    }
+                    match crate::notify::send_blocking(
+                        &dest,
+                        &crate::i18n::t("err.main.test_notify_body"),
+                    ) {
+                        Ok(()) => serde_json::json!({ "ok": true }),
+                        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                    }
+                }
+                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+            };
+            req.respond(json_resp(resp))?;
+        }
         // Recent rally history (newest first). Returns the id plus an excerpt to help a human tell them apart
         ("GET", "/api/rally/list") => {
             let mut arr: Vec<serde_json::Value> = Vec::new();
@@ -2335,6 +2373,7 @@ function globalPane() {
         el("span", {class:"hint"}, T["settings.secrets.hint"]))));
   box.append(secretsCard());
   box.append(providersCard());
+  box.append(notifyCard());
   box.append(rallyResultCard());
   return box;
 }
@@ -2478,6 +2517,89 @@ function providersCard() {
       T["settings.providers.hint"]),
     listBox,
     el("div", {class:"row", style:"gap:10px;margin-top:12px;align-items:flex-end"}, nameIn, addBtn));
+  setTimeout(draw, 0);
+  return c;
+}
+
+// Notification destinations (Slack / Telegram). The sensitive webhook/token is
+// stored straight into the secret store (like a provider's api_key) — the user
+// never has to register a secret by hand first — and config keeps only "@name".
+function notifyCard() {
+  current.notify = current.notify || {};
+  const listBox = el("div", {id:"notifylist"});
+  const draw = () => {
+    listBox.textContent = "";
+    const names = Object.keys(current.notify);
+    if (!names.length) listBox.append(el("div", {class:"hint"}, T["settings.notify.empty"]));
+    for (const name of names) {
+      const d = (current.notify[name] = current.notify[name] || {type:"slack"});
+      const fields = el("div", {class:"row", style:"flex:1 1 0;gap:8px;flex-wrap:wrap;align-items:center;min-width:180px"});
+      let saveSecret, testPayload;
+      if (d.type === "telegram") {
+        const hasTok = (d.token || "").startsWith("@");
+        const tokIn = el("input", {type:"password", style:"flex:1 1 0;min-width:120px",
+          placeholder: hasTok ? T["settings.providers.key_set_ph"] : T["settings.notify.token_ph"]});
+        const chatIn = el("input", {class:"mono", style:"width:120px",
+          value: (d.chat_id || "").startsWith("@") ? "" : (d.chat_id || ""), placeholder:T["settings.notify.chat_ph"]});
+        chatIn.addEventListener("input", () => { d.chat_id = chatIn.value.trim(); refreshSave(); });
+        fields.append(tokIn, chatIn);
+        // Test what's typed now if present, otherwise the saved "@ref".
+        testPayload = () => ({type:"telegram", token: tokIn.value.trim() || d.token || "", chat_id: chatIn.value.trim() || d.chat_id || ""});
+        saveSecret = async () => {
+          const v = tokIn.value.trim();
+          if (!v) { toast(T["settings.secrets.value_required"], true); return false; }
+          const sk = "notify_" + name + "_token";
+          const r = await fetch("/api/secrets/set", {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+            body: JSON.stringify({key: sk, description: "notify " + name, value: v})}).then(r=>r.json());
+          if (r.ok) { d.token = "@" + sk; tokIn.value = ""; refreshSave(); return true; }
+          toast(r.error || T["settings.secrets.save_failed"], true); return false;
+        };
+      } else {
+        const hasHook = (d.webhook || "").startsWith("@");
+        const hookIn = el("input", {type:"password", style:"flex:1 1 0;min-width:180px",
+          placeholder: hasHook ? T["settings.providers.key_set_ph"] : T["settings.notify.webhook_ph"]});
+        fields.append(hookIn);
+        testPayload = () => ({type:"slack", webhook: hookIn.value.trim() || d.webhook || ""});
+        saveSecret = async () => {
+          const v = hookIn.value.trim();
+          if (!v) { toast(T["settings.secrets.value_required"], true); return false; }
+          const sk = "notify_" + name;
+          const r = await fetch("/api/secrets/set", {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+            body: JSON.stringify({key: sk, description: "notify " + name, value: v})}).then(r=>r.json());
+          if (r.ok) { d.webhook = "@" + sk; hookIn.value = ""; refreshSave(); return true; }
+          toast(r.error || T["settings.secrets.save_failed"], true); return false;
+        };
+      }
+      const saveBtn = el("button", {class:"quiet", onclick: async () => {
+        if (await saveSecret()) { toast(T["settings.notify.saved"]); draw(); } }}, T["settings.notify.save"]);
+      const testBtn = el("button", {class:"quiet", onclick: async () => {
+        const r = await fetch("/api/notify/test", {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+          body: JSON.stringify(testPayload())}).then(r=>r.json()).catch(()=>null);
+        toast((r && r.ok) ? T["settings.notify.test_ok"] : ((r && r.error) || T["settings.notify.test_failed"]), !(r && r.ok));
+      }}, T["settings.notify.test"]);
+      const del = el("button", {class:"quiet", style:"flex:none", onclick: () => {
+        if (confirm(fill(T["settings.notify.delete_confirm"], {name}))) { delete current.notify[name]; refreshSave(); draw(); } }}, T["common.delete"]);
+      listBox.append(el("div", {class:"row",
+        style:"align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:wrap"},
+        el("span", {class:"mono", style:"flex:none;min-width:64px;color:var(--text)"}, name),
+        el("span", {class:"hint", style:"flex:none;text-transform:uppercase"}, d.type),
+        fields, saveBtn, testBtn, del));
+    }
+  };
+  const nameIn = el("input", {class:"mono", placeholder:T["settings.notify.name_ph"], style:"width:120px"});
+  const typeSel = el("select", {style:"width:120px"});
+  typeSel.append(el("option", {value:"slack"}, "Slack"), el("option", {value:"telegram"}, "Telegram"));
+  const addBtn = el("button", {class:"primary", onclick: () => {
+    const n = nameIn.value.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "");
+    if (!n) { toast(T["settings.notify.name_required"], true); return; }
+    if (current.notify[n]) { toast(T["settings.notify.name_dup"], true); return; }
+    current.notify[n] = { type: typeSel.value };
+    nameIn.value = ""; refreshSave(); draw();
+  }}, T["settings.notify.add"]);
+  const c = card(T["settings.notify.title"],
+    el("div", {class:"hint"}, T["settings.notify.hint"]),
+    listBox,
+    el("div", {class:"row", style:"gap:10px;margin-top:12px;align-items:flex-end"}, nameIn, typeSel, addBtn));
   setTimeout(draw, 0);
   return c;
 }
