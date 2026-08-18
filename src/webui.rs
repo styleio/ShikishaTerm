@@ -2548,7 +2548,7 @@ function notifyCard() {
         saveSecret = async () => {
           const v = tokIn.value.trim();
           if (!v) { toast(T["settings.secrets.value_required"], true); return false; }
-          const sk = "notify_" + name + "_token";
+          const sk = "notify_" + slugId(name) + "_token";
           const r = await fetch("/api/secrets/set", {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
             body: JSON.stringify({key: sk, description: "notify " + name, value: v})}).then(r=>r.json());
           if (r.ok) { d.token = "@" + sk; tokIn.value = ""; refreshSave(); return true; }
@@ -2563,7 +2563,7 @@ function notifyCard() {
         saveSecret = async () => {
           const v = hookIn.value.trim();
           if (!v) { toast(T["settings.secrets.value_required"], true); return false; }
-          const sk = "notify_" + name;
+          const sk = "notify_" + slugId(name);
           const r = await fetch("/api/secrets/set", {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
             body: JSON.stringify({key: sk, description: "notify " + name, value: v})}).then(r=>r.json());
           if (r.ok) { d.webhook = "@" + sk; hookIn.value = ""; refreshSave(); return true; }
@@ -2590,7 +2590,9 @@ function notifyCard() {
   const typeSel = el("select", {style:"width:120px"});
   typeSel.append(el("option", {value:"slack"}, "Slack"), el("option", {value:"telegram"}, "Telegram"));
   const addBtn = el("button", {class:"primary", onclick: () => {
-    const n = nameIn.value.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "");
+    // The display name may be anything (Japanese included); it's only the
+    // derived secret key that has to be ASCII (see slugId below).
+    const n = nameIn.value.trim();
     if (!n) { toast(T["settings.notify.name_required"], true); return; }
     if (current.notify[n]) { toast(T["settings.notify.name_dup"], true); return; }
     current.notify[n] = { type: typeSel.value };
