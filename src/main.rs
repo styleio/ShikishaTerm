@@ -929,6 +929,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
     if let Some(c) = &cfg {
         if password.is_some() {
             bridge::set_providers(c, password.as_deref());
+            // Tabs already spawned (before the prompt) with keys that couldn't be
+            // decrypted yet. Now that the providers hold the real keys, refresh
+            // each model tab so it stops sending an empty bearer token (→ 401).
+            for t in &mut tabs {
+                t.refresh_model_conn();
+            }
         }
     }
 

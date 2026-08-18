@@ -1375,6 +1375,24 @@ impl Tab {
         Ok(())
     }
 
+    /// Re-resolve a model tab's connection from the current provider table,
+    /// keeping the persona and browser-drive role it was launched with.
+    ///
+    /// Model tabs are resolved at spawn, which happens before the master
+    /// password is entered. With an encrypted secrets file the api_key can't be
+    /// read yet, so the tab starts with an empty key (→ HTTP 401). Once the
+    /// password unlocks the providers, call this to pick up the real key.
+    pub fn refresh_model_conn(&mut self) {
+        let Some(old) = self.model.as_ref() else {
+            return;
+        };
+        if let Some(mut fresh) = crate::bridge::launch_for(&self.argv) {
+            fresh.persona = old.persona.clone();
+            fresh.drives = old.drives.clone();
+            self.model = Some(fresh);
+        }
+    }
+
     /// Explains, in plain language, why this tab failed to (re)start — a missing
     /// program or a missing working folder, the two things a portable build runs
     /// into when it lands on a PC that isn't the one it was configured on.
