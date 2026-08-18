@@ -43,6 +43,54 @@ fn rel_is_safe(rel: &str) -> bool {
             .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
 }
 
+/// Resolve `target` to its real location (following symlinks/junctions) and
+/// confirm it stays within one of `roots`, then run the forbidden-file check on
+/// that real path. A not-yet-existing write target is handled by canonicalizing
+/// its deepest existing ancestor and re-appending the missing tail, so a
+/// symlinked parent can't escape either. Rejecting on the *real* path also stops
+/// an innocuously-named link (e.g. "notes.txt" -> secrets.json) from slipping
+/// through the name-only forbidden check. `label` is only used for error text.
+/// The real (symlink/junction-resolved) location a path *would* have, even if it
+/// doesn't exist yet: canonicalize the deepest existing ancestor and re-append
+/// the missing tail. Returns None if a ".." would climb past an existing dir or
+/// there's no anchorable ancestor.
+fn real_path(path: &Path) -> Option<PathBuf> {
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = path.to_path_buf();
+    let mut real = loop {
+        if let Ok(c) = cur.canonicalize() {
+            break c;
+        }
+        let name = cur.file_name()?.to_os_string();
+        if name == *std::ffi::OsStr::new("..") {
+            return None;
+        }
+        rest.push(name);
+        cur = cur.parent()?.to_path_buf();
+    };
+    for c in rest.iter().rev() {
+        real.push(c);
+    }
+    Some(real)
+}
+
+fn resolve_within(target: &Path, roots: &[PathBuf], label: &str) -> Result<PathBuf> {
+    let Some(real) = real_path(target) else {
+        bail!(crate::i18n::tp("err.caps.location_not_allowed", &[("p", label)]));
+    };
+    let within = roots
+        .iter()
+        .filter_map(|r| real_path(r))
+        .any(|rr| real.starts_with(&rr));
+    if !within {
+        bail!(crate::i18n::tp("err.caps.location_not_allowed", &[("p", label)]));
+    }
+    if is_forbidden(&real) {
+        bail!(crate::i18n::tp("err.caps.file_forbidden", &[("rel", label)]));
+    }
+    Ok(real)
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct CapabilitySpec {
     /// Named file gateways
@@ -261,11 +309,10 @@ impl Capabilities {
         if !rel_is_safe(rel) {
             bail!(crate::i18n::tp("err.caps.bad_filename", &[("rel", rel)]));
         }
-        let path = self.base.join(&cap.dir).join(rel);
-        if is_forbidden(&path) {
-            bail!(crate::i18n::tp("err.caps.file_forbidden", &[("rel", rel)]));
-        }
-        Ok(path)
+        let root = self.base.join(&cap.dir);
+        // Follow symlinks/junctions and confirm the real target stays under the
+        // capability's directory (a string ".." check alone doesn't).
+        resolve_within(&root.join(rel), std::slice::from_ref(&root), rel)
     }
 
     /// A raw path (must be within allow_dirs)
@@ -274,28 +321,10 @@ impl Capabilities {
         if spec.allow_dirs.is_empty() {
             bail!(crate::i18n::t("err.caps.raw_path_not_allowed"));
         }
-        let target = self.base.join(p);
-        let parent = target.parent().unwrap_or(Path::new("."));
-        let canon_parent = parent.canonicalize().map_err(|_| {
-            anyhow::anyhow!(crate::i18n::tp(
-                "err.caps.folder_missing",
-                &[("path", &parent.display().to_string())]
-            ))
-        })?;
-        let ok = spec.allow_dirs.iter().any(|d| {
-            self.base
-                .join(d)
-                .canonicalize()
-                .map(|c| canon_parent.starts_with(c))
-                .unwrap_or(false)
-        });
-        if !ok {
-            bail!(crate::i18n::tp("err.caps.location_not_allowed", &[("p", p)]));
-        }
-        if is_forbidden(&target) {
-            bail!(crate::i18n::tp("err.caps.file_forbidden", &[("rel", p)]));
-        }
-        Ok(target)
+        let roots: Vec<PathBuf> = spec.allow_dirs.iter().map(|d| self.base.join(d)).collect();
+        // Follow symlinks/junctions and confirm the real target stays under an
+        // allowed directory, then apply the forbidden-file check to it.
+        resolve_within(&self.base.join(p), &roots, p)
     }
 
     pub fn read(&self, name: &str, rel: &str) -> Result<String> {
@@ -930,6 +959,37 @@ mod tests {
         assert!(c.write("reports", "C:/windows/x.md", "x").is_err());
         // An unregistered gateway can't be used
         assert!(c.write("other", "a.md", "x").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A symlink/junction inside the window that points outside must not let the
+    /// real target escape, and a benign-looking link name must not slip past the
+    /// forbidden-file check (both resolved via the real path).
+    #[test]
+    #[cfg(windows)]
+    fn a_symlink_out_of_the_window_is_rejected() {
+        let dir = std::env::temp_dir().join("shikisha-caps-symlink");
+        let _ = std::fs::remove_dir_all(&dir);
+        let reports = dir.join("reports");
+        std::fs::create_dir_all(&reports).unwrap();
+        let outside = dir.join("outside.txt");
+        std::fs::write(&outside, "secret").unwrap();
+        let link = reports.join("link.txt");
+        if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
+            // No symlink privilege here (needs Developer Mode/admin) — skip.
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let mut spec = CapabilitySpec::default();
+        spec.files.insert(
+            "reports".into(),
+            FileCap { dir: "reports".into(), read: true, write: true },
+        );
+        let c = caps(spec, dir.clone());
+        assert!(
+            c.read("reports", "link.txt").is_err(),
+            "a symlink escaping the window must be rejected"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
