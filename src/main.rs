@@ -1383,7 +1383,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 "msg.notify.on_done",
                                 &[("name", &tabs[idx - 1].title)],
                             );
-                            let _ = notifier.send(&dest, &msg);
+                            let status = notifier.send(&dest, &msg);
+                            append_hook_log(&format!("notify_on_done tab{idx} \"{dest}\": {status}"));
                         }
                     }
 
@@ -2659,7 +2660,13 @@ fn build_engine(
     let has_discuss = ws
         .and_then(|w| w.discuss.as_ref())
         .is_some_and(|d| d.agents.len() >= 2);
-    if base.is_none() && ws_lua.is_none() && tab_luas.is_empty() && !has_discuss {
+    // Keep the engine even with no Lua hooks when a tab wants a completion
+    // notification: the on_done detection loop only runs when an engine exists,
+    // so without this a notify-only workspace would never fire on_done.
+    let wants_notify = ws
+        .map(|w| w.tabs.iter().any(|t| t.cfg.notify_on_done.is_some()))
+        .unwrap_or(false);
+    if base.is_none() && ws_lua.is_none() && tab_luas.is_empty() && !has_discuss && !wants_notify {
         return None;
     }
 
@@ -2863,7 +2870,10 @@ fn build_engine(
             }
         }
     }
-    (!engine.is_empty()).then_some(engine)
+    // Keep the engine even with no Lua hooks when a tab wants a completion
+    // notification: the on_done detection loop lives behind `Some(engine)`, so
+    // without this a notify-only workspace would never detect "done" at all.
+    (!engine.is_empty() || wants_notify).then_some(engine)
 }
 
 /// Converts a rebuilt tab config into TabOptions.
