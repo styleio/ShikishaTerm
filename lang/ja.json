@@ -203,6 +203,8 @@
   "settings.browser.nav.hint": "ページの上に横並びで出ます。人が自分でページを選んでから、帯のボタンで解析させたいときに使います。要らなければ全部外してください（そのぶん画面が広くなります）",
   "settings.back": "INDEXへ戻る",
   "settings.close": "設定を閉じる",
+  "settings.report_bug": "バグを報告",
+  "settings.discussions": "質問・アイデア",
   "settings.back.confirm": "保存していない変更があります。破棄して戻りますか？",
   "settings.browser.ask": "帯（ボタン）",
   "settings.browser.ask.on": "出す",

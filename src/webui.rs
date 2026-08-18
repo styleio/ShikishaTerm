@@ -106,6 +106,77 @@ fn query_token(url: &str) -> String {
         .to_string()
 }
 
+/// Reads one raw query-string value. Callers use known ASCII keys.
+fn query_param(url: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    url.split_once('?')?
+        .1
+        .split('&')
+        .find_map(|kv| kv.strip_prefix(&prefix).map(|v| v.to_string()))
+}
+
+/// Minimal percent-encoding for a query-string value.
+fn pct(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Opens a URL in the user's default browser instead of the in-app WebView.
+/// Uses ShellExecuteW so the whole URL — query string, '&' and percent-escapes
+/// included — is handed to the shell verbatim (explorer.exe mis-parses those
+/// and falls back to opening a file window instead).
+fn open_external(url: &str) {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let op: Vec<u16> = "open\0".encode_utf16().collect();
+    let file: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+/// Best-effort Windows version string for a bug report (the field is optional).
+fn windows_version() -> String {
+    std::process::Command::new("cmd")
+        .args(["/C", "ver"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// The GitHub "new bug report" URL, pre-filled with the build and OS so the
+/// reporter does not have to dig those out by hand.
+fn bug_report_url() -> String {
+    let version = format!(
+        "v{} (build {}, {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("BUILD_TIME"),
+        env!("BUILD_REV")
+    );
+    format!(
+        "https://github.com/styleio/ShikishaTerm/issues/new?template=bug_report.yml&version={}&windows={}",
+        pct(&version),
+        pct(&windows_version())
+    )
+}
+
 /// Safely resolves the ?file=... path.
 /// Only allows .json files under the same directory as the config file,
 /// and rejects absolute paths or parent-directory references (..) (path traversal countermeasure)
@@ -624,6 +695,27 @@ fn handle(
                     .unwrap(),
             );
             req.respond(resp)?;
+        }
+        // Opens an external help/report page in the user's real browser (not
+        // the in-app WebView). Destinations are whitelisted, so the page can
+        // never be talked into acting as an open redirect.
+        ("GET", "/api/open") => {
+            let url = match query_param(req.url(), "dest").as_deref() {
+                Some("bug") => Some(bug_report_url()),
+                Some("discussions") => {
+                    Some("https://github.com/styleio/ShikishaTerm/discussions".to_string())
+                }
+                _ => None,
+            };
+            match url {
+                Some(u) => {
+                    open_external(&u);
+                    req.respond(json_resp(serde_json::json!({ "ok": true })))?;
+                }
+                None => {
+                    req.respond(Response::from_string("bad dest").with_status_code(400))?;
+                }
+            }
         }
         // Recent rally history (newest first). Returns the id plus an excerpt to help a human tell them apart
         ("GET", "/api/rally/list") => {
@@ -1295,6 +1387,8 @@ const PAGE: &str = r##"<!doctype html>
  button.primary { background:var(--accent); border-color:var(--accent); color:#04121c; font-weight:600; }
  button.quiet { background:none; border-color:transparent; color:var(--muted); padding:6px 8px; }
  button.quiet:hover { color:var(--text); background:var(--panel2); }
+ a.quiet { font-size:13px; border-radius:7px; padding:6px 8px; color:var(--muted); text-decoration:none; align-self:center; white-space:nowrap; }
+ a.quiet:hover { color:var(--text); background:var(--panel2); }
  button.danger { color:var(--danger); background:none; border-color:transparent; }
  button.danger:hover { background:rgba(229,83,75,.1); }
 
@@ -1342,6 +1436,8 @@ const PAGE: &str = r##"<!doctype html>
   <h1>{{settings.title}}</h1>
   <div class="spacer"></div>
   <span id="msg"></span>
+  <a class="quiet" href="#" onclick="openExt('bug');return false" title="{{settings.report_bug}}">{{settings.report_bug}}</a>
+  <a class="quiet" href="#" onclick="openExt('discussions');return false" title="{{settings.discussions}}">{{settings.discussions}}</a>
   <button class="quiet" onclick="load()">{{common.reload}}</button>
   <button class="quiet" id="backbtn" onclick="closeSettings()">{{settings.close}}</button>
   <button class="primary" id="savebtn" onclick="save()">{{common.save}}</button>
@@ -3490,6 +3586,12 @@ function goIndex() {
 function closeSettings() {
   if (snapshot() !== savedSnapshot && !confirm(T["settings.back.confirm"])) return;
   try { window.ipc.postMessage(JSON.stringify({kind:"closesettings"})); } catch (e) { goIndex(); }
+}
+
+// Opens a help/report page in the real browser. The server whitelists `dest`
+// and pre-fills the bug template with this build and the OS version.
+function openExt(dest) {
+  fetch("/api/open?dest=" + dest, {headers:{"X-Token":TOKEN}}).catch(()=>{});
 }
 
 // If the URL has addtab=<workspace-index>, start with one tab already added
