@@ -2557,8 +2557,12 @@ fn scroll_by(t: &Tab, by: i32, row: u16, col: u16) {
         )
     };
     if wants_mouse {
+        // The cap used to be 16 — plenty for a wheel notch or two from the
+        // window. The phone's page buttons ask for a whole screenful at once
+        // (and a full-screen TUI may only move a line or two per wheel tick),
+        // so allow a larger burst; parse_intent still clamps `by` to 64.
         let mut bytes = Vec::new();
-        for _ in 0..by.unsigned_abs().min(16) {
+        for _ in 0..by.unsigned_abs().min(64) {
             bytes.extend_from_slice(&wheel_bytes(by > 0, row, col, enc));
         }
         let _ = t.write_bytes(&bytes);
