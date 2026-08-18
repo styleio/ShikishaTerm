@@ -1376,6 +1376,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             log_excerpt(&ctx.output, 100)
                         ));
                         eng.fire("on_done", &ctx, None);
+                        // Beginner-friendly "notify me when this AI answers": a
+                        // per-tab shortcut for an on_done that calls notify.
+                        if let Some(dest) = tabs[idx - 1].notify_on_done.clone() {
+                            let msg = i18n::tp(
+                                "msg.notify.on_done",
+                                &[("name", &tabs[idx - 1].title)],
+                            );
+                            let _ = notifier.send(&dest, &msg);
+                        }
                     }
 
                     // Automation addresses things by screen number; the contents live in sessions
@@ -2968,6 +2977,7 @@ fn apply_ws_config(
                     ft.cfg.locked,
                     ft.cfg.auto_restart,
                     ft.depth,
+                    ft.cfg.notify_on_done.clone(),
                 );
                 // Changes to command, encoding, or line count require a rebuild
                 if t.signature() != tab::signature_of(&argv, &opts) {
@@ -2982,6 +2992,7 @@ fn apply_ws_config(
                     t.auto_restart = ft.cfg.auto_restart;
                     t.depth = ft.depth;
                     t.id = ft.cfg.id.clone();
+                    t.notify_on_done = ft.cfg.notify_on_done.clone();
                     ordered.push(t);
                     added += 1;
                 }
@@ -3187,6 +3198,7 @@ fn spawn_workspace(
                 tab.auto_restart = ft.cfg.auto_restart;
                 tab.depth = ft.depth;
                 tab.id = ft.cfg.id.clone();
+                tab.notify_on_done = ft.cfg.notify_on_done.clone();
                 tabs.push(tab);
             }
             Err(e) => errors.push(tab::launch_problem(

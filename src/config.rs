@@ -704,6 +704,10 @@ pub struct TabConfig {
     /// Save the session log under logs/
     #[serde(default)]
     pub log: bool,
+    /// Notification destination to ping each time this tab's AI finishes a
+    /// response (a beginner-friendly shortcut for an on_done that calls notify).
+    #[serde(default)]
+    pub notify_on_done: Option<String>,
     /// Automation dedicated to this tab (matched with the highest priority).
     /// A directory means per-event files; a .lua file means function definitions
     #[serde(default)]

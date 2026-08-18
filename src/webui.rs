@@ -3096,6 +3096,18 @@ function tabPane(ws, t) {
     }
   }
 
+  // Notify on answer: a beginner-friendly way to get a Slack/Telegram ping when
+  // this tab's AI finishes, without writing on_done Lua. Lists the destinations
+  // registered under General → Notifications.
+  {
+    const dests = Object.keys(current.notify || {});
+    const opts = [["", T["settings.tab.notify.none"]]].concat(dests.map(n => [n, n]));
+    const sel = choose(t, "notify_on_done", opts, v => { if (!v) delete t.notify_on_done; refreshSave(); });
+    const hint = dests.length ? T["settings.tab.notify.hint"] : T["settings.tab.notify.none_hint"];
+    box.append(card(T["settings.tab.notify.title"],
+      row(T["settings.tab.notify.label"], sel, el("span", {class:"hint"}, hint))));
+  }
+
   // Automation: make it visible at a glance what's already configured
   const ev = el("div", {class:"events"});
   for (const [id, label, hint] of eventsFor(t).filter(e => e[0] !== "_shared")) {

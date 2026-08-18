@@ -905,6 +905,8 @@ pub struct Tab {
     pub locked: bool,
     /// Whether to auto-restart when the child process exits
     pub auto_restart: bool,
+    /// Notification destination to ping when this tab finishes a response.
+    pub notify_on_done: Option<String>,
     /// Settings changed, but taking effect requires the session to be
     /// recreated
     /// (restart is left to the user so a running AI is never cut off unexpectedly)
@@ -1174,6 +1176,7 @@ impl Tab {
             chain_depth: 0,
             locked: false,
             auto_restart: false,
+            notify_on_done: None,
             needs_restart: false,
             depth: 0,
             argv: argv.to_vec(),
@@ -1370,6 +1373,7 @@ impl Tab {
         fresh.depth = self.depth;
         fresh.auto_restart = self.auto_restart;
         fresh.id = self.id.clone();
+        fresh.notify_on_done = self.notify_on_done.clone();
         // Since it was recreated, any pending config changes are now in effect
         *self = fresh;
         Ok(())
@@ -1443,7 +1447,7 @@ impl Tab {
     }
 
     /// Swap in settings that can take effect without a restart
-    pub fn apply_live_config(&mut self, profile_spec: Option<String>, locked: bool, auto_restart: bool, depth: u16) {
+    pub fn apply_live_config(&mut self, profile_spec: Option<String>, locked: bool, auto_restart: bool, depth: u16, notify_on_done: Option<String>) {
         if self.profile_spec != profile_spec {
             self.profile_spec = profile_spec;
             self.detector = Detector::new(Self::resolve_profile(&self.argv, &self.profile_spec));
@@ -1451,6 +1455,7 @@ impl Tab {
         self.locked = locked;
         self.auto_restart = auto_restart;
         self.depth = depth;
+        self.notify_on_done = notify_on_done;
     }
 
     /// Stash the launch conditions to use on the next restart (keeps running with the current settings until then)
