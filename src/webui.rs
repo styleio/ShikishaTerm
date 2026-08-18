@@ -177,6 +177,42 @@ fn bug_report_url() -> String {
     )
 }
 
+/// Runs `<prog> --help` and returns its output, for the settings "Show flags"
+/// button. Asking the tool itself keeps the list accurate for whatever version
+/// is installed, with no per-CLI knowledge to maintain. Bounded by a timeout so
+/// a command that treats --help as "start" can't hang the settings page.
+fn cli_help(prog: &str) -> Result<String, String> {
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    if prog.trim().is_empty() {
+        return Err("no command".into());
+    }
+    let prog = prog.to_string();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let out = Command::new(&prog)
+            .arg("--help")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(Duration::from_secs(8)) {
+        Ok(Ok(out)) => {
+            let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+            // Some tools print their help to stderr instead.
+            if s.trim().is_empty() {
+                s = String::from_utf8_lossy(&out.stderr).into_owned();
+            }
+            Ok(s)
+        }
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("timed out".into()),
+    }
+}
+
 /// Safely resolves the ?file=... path.
 /// Only allows .json files under the same directory as the config file,
 /// and rejects absolute paths or parent-directory references (..) (path traversal countermeasure)
@@ -716,6 +752,19 @@ fn handle(
                     req.respond(Response::from_string("bad dest").with_status_code(400))?;
                 }
             }
+        }
+        // Runs `<cmd> --help` so the settings page can show a CLI's real flags.
+        // The program is the first token of the tab's command.
+        ("GET", "/api/cli-help") => {
+            let prog = query_param(req.url(), "cmd")
+                .map(|c| percent_decode(&c))
+                .and_then(|c| c.split_whitespace().next().map(str::to_string))
+                .unwrap_or_default();
+            let resp = match cli_help(&prog) {
+                Ok(help) => serde_json::json!({ "ok": true, "help": help }),
+                Err(e) => serde_json::json!({ "ok": false, "error": e }),
+            };
+            req.respond(json_resp(resp))?;
         }
         // Recent rally history (newest first). Returns the id plus an excerpt to help a human tell them apart
         ("GET", "/api/rally/list") => {
@@ -2961,6 +3010,25 @@ function moveTab(ws, d) {
 // with a "(not installed)" note if missing) and every registered API provider,
 // side by side, plus "＋ Add AI" at the bottom. Picking a provider (API) reveals
 // a model-name field whose candidates are auto-loaded (no hardcoded guess).
+// Show a CLI's own `--help` in a modal. Asked live from the tool, so it always
+// matches the installed version; the output stays in the tool's own language.
+async function showCliHelp(head) {
+  if (!head) return;
+  const pre = el("pre", {class:"mono",
+    style:"max-height:60vh;overflow:auto;white-space:pre-wrap;font-size:12px;line-height:1.5;margin:0;padding:12px;background:var(--panel);border-radius:8px"},
+    T["settings.tab.ai.flags_loading"]);
+  let back;
+  const close = el("button", {class:"quiet", onclick:() => back && back.remove()}, T["common.close"]);
+  back = openModal(el("h2", {}, head + " --help"), pre,
+    el("div", {class:"row", style:"justify-content:flex-end;margin-top:10px"}, close));
+  try {
+    const r = await fetch("/api/cli-help?cmd=" + encodeURIComponent(head),
+      {headers:{"X-Token":TOKEN}}).then(r => r.json());
+    pre.textContent = (r && r.ok && (r.help || "").trim())
+      ? r.help : ((r && r.error) || T["settings.tab.ai.flags_failed"]);
+  } catch (e) { pre.textContent = T["settings.tab.ai.flags_failed"]; }
+}
+
 function aiPanel(t, cmdInput, rebuild) {
   const box = el("div");
   const sel = el("select");
@@ -2978,9 +3046,14 @@ function aiPanel(t, cmdInput, rebuild) {
   else { const h = headOf(t.command); sel.value = AI_CLIS.some(c => c.cmd === h) ? "cli:" + h : ""; }
 
   const detail = el("div");
+  // "Show flags" runs the selected CLI's --help. Hidden for API model tabs
+  // (those talk to an endpoint, so there is no local --help to show).
+  const helpBtn = el("button", {class:"quiet"}, T["settings.tab.ai.flags"]);
+  helpBtn.onclick = () => showCliHelp(headOf(t.command));
   const drawDetail = () => {
     detail.textContent = "";
     const m = parseModel(t.command);
+    helpBtn.hidden = !!m || !headOf(t.command);
     if (!m) {
       // A CLI is selected. If it has an "act without asking" flag, surface it
       // as an explicit, explained checkbox — required for autonomous discussion
@@ -3039,7 +3112,7 @@ function aiPanel(t, cmdInput, rebuild) {
     drawDetail();
   });
 
-  box.append(el("div", {class:"row"}, el("label", {}, T["settings.tab.ai.pick"]), sel));
+  box.append(el("div", {class:"row"}, el("label", {}, T["settings.tab.ai.pick"]), sel, helpBtn));
   if (!provs.length)
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.tab.ai.api_hint"])));
