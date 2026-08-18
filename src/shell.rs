@@ -1279,6 +1279,9 @@ function pgCount() {
 // dir +1 = older (into the past), -1 = newer (toward the present)
 function pageBy(dir) {
   if (!document.getElementById("pageui").classList.contains("on")) return;
+  // Reviewing history needs the whole screen — put the soft keyboard away
+  // (and keep it away; the tap-to-focus handlers already skip the buttons).
+  if (REMOTE && kbd) kbd.blur();
   pgPending += dir;
   pgCount();
   clearTimeout(pgTimer);
@@ -1446,7 +1449,9 @@ scr.addEventListener("touchcancel", () => { swY = null; }, {passive:true});
 // The top bar's input needs to behave like an ordinary text field. If
 // merely selecting text copied it, or right-click pasted into the
 // terminal, editing the URL would be impossible
-const inBar = e => e.target && e.target.closest && e.target.closest("#nav");
+// Taps on the top bar or the page buttons must not pull focus into the hidden
+// #kbd — on a phone that would pop the soft keyboard up over the screen.
+const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #pageui");
 document.addEventListener("mouseup", e => {
   if (inBar(e)) return;
   const s = window.getSelection();
