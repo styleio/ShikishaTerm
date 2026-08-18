@@ -2320,6 +2320,10 @@ async function downloadRally(runId) {
 // Encrypted if a master password is set, plaintext otherwise (at the user's own risk) — both handled through the same UI
 function secretsCard() {
   const status = el("div", {class:"hint", id:"secretsmode"});
+  // Where the master password is set. The password itself is only ever typed
+  // into the native app (never this page), so point the user at [k] on INDEX.
+  const pwhint = el("div", {class:"hint"}, T["settings.secrets.master_hint"]);
+  const head = el("div", {}, status, pwhint);
   const listBox = el("div", {id:"secretslist"}, el("div", {class:"hint"}, T["common.reload"] ? "…" : "…"));
   const keyIn = el("input", {class:"mono", placeholder:T["settings.secrets.key_ph"], style:"width:200px"});
   const descIn = el("input", {placeholder:T["settings.secrets.desc_ph"], style:"width:220px"});
@@ -2344,7 +2348,7 @@ function secretsCard() {
     labeled(T["settings.secrets.desc_label"], T["settings.secrets.desc_hint"], descIn),
     labeled(T["settings.secrets.value_label"], T["settings.secrets.value_hint"], valIn),
     addBtn);
-  const c = card(T["settings.secrets.title"], status, listBox, form);
+  const c = card(T["settings.secrets.title"], head, listBox, form);
   // Load only after the card is in the DOM (so getElementById works)
   setTimeout(loadSecrets, 0);
   return c;
