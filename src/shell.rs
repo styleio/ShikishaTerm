@@ -1320,11 +1320,15 @@ function pgShift(oldRows, newRows, dir) {
   }
   return { shift: bestD, score: bestScore };
 }
+// Just the terminal frame — deliberately NOT a full UI rebuild. A page turn
+// reads this several times, and running __state (which redraws the whole
+// dashboard) each time made a single turn take ~2s on a phone: the screen sat
+// frozen and the slide played far too late. The 900ms poll keeps the rest of
+// the UI current; here we only need the pixels to align and animate.
 async function pgFetch() {
   try {
     const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
     const d = await r.json();
-    if (d.ui) window.__state(JSON.stringify(d.ui));
     return d.screen_html || null;
   } catch (e) { return null; }
 }
