@@ -384,9 +384,9 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
 
   /* ── Remote history paging (phone only) ──────────────────────────────
      A phone can't scroll a full-screen TUI smoothly over the network, so
-     instead of continuous swipe it pages a screenful at a time with two
-     buttons. Rapid taps coalesce (see the ×N count); each move is one clean,
-     animated slide. Hidden by default; shown only on a terminal tab, remote. */
+     instead of continuous swipe it pages one screenful at a time with two
+     buttons — each tap is one clean, animated slide. Hidden by default;
+     shown only on a terminal tab, remote. */
   #pageui { position:absolute; right:12px; top:50%; transform:translateY(-50%);
     display:none; flex-direction:column; align-items:center; gap:10px; z-index:8; }
   #pageui.on { display:flex; }
@@ -396,8 +396,6 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     display:flex; align-items:center; justify-content:center; cursor:pointer;
     user-select:none; -webkit-user-select:none; touch-action:manipulation; }
   .pagebtn:active { background:rgba(46,62,78,.92); }
-  #pageCount { min-height:15px; font-size:12px; font-weight:700; color:var(--brand);
-    text-shadow:0 0 6px rgba(0,0,0,.6); }
   /* The outgoing frame, laid over the terminal for the slide. Mirrors #screen. */
   #slidePrev { position:absolute; inset:0; margin:0; padding:8px; white-space:pre;
     font-family:var(--mono); font-size:14px; line-height:1.25; overflow:hidden;
@@ -477,7 +475,6 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     <div id="anchor" hidden></div>
     <div id="pageui">
       <button id="pageUp" class="pagebtn" aria-label="older">&#9650;</button>
-      <div id="pageCount"></div>
       <button id="pageDown" class="pagebtn" aria-label="newer">&#9660;</button>
     </div>
   </div>
@@ -1253,71 +1250,60 @@ scr.addEventListener("wheel", e => {
 
 // ── Remote history pager (phone only) ────────────────────────────────
 // Smooth continuous scrolling can't survive the network round-trip to a
-// full-screen TUI, so the phone turns history a screenful at a time: two
-// buttons (or a vertical swipe) each move one "block" = a screenful minus a
-// few kept rows. Rapid taps coalesce into one clean move (shown as ×N). Each
-// turn is a single animated slide, with the line you were reading marked so
-// your eye can ride it to its new place. All of this is remote-only; the window
-// keeps its native wheel.
-const OVERLAP = 3;            // rows kept across a turn, so you never lose your place
-// notchesPerBlock self-calibrates (see pgAnimate). The start is a deliberate
-// under-guess: the first tap moves a bit short — safe, never past your place —
-// then it converges up within a tap or two.
-let pgPending = 0, pgTimer = 0, pgBusy = false, notchesPerBlock = 24;
+// full-screen TUI, so the phone turns history one screenful at a time. Two
+// buttons (or a vertical swipe) each move exactly ONE page — the whole screen
+// minus a couple of kept rows, so the edge you were just reading carries over
+// to the other side instead of vanishing. One tap is one page (never a multi-
+// screen jump); a tap during a turn just queues the next. The line you were
+// reading is marked and rides the slide to its new spot. Remote-only; the
+// window keeps its native wheel.
+const OVERLAP = 2;           // rows kept across a turn — the edge you were reading
+// The page distance is computed from THIS phone's height every turn (gRows), so
+// it's correct on any screen. What we can't know up front is how many wheel
+// ticks the TUI scrolls per row, so that one ratio self-calibrates (pgAnimate).
+// It starts high on purpose: the first tap lands a little short — never past
+// your place — then it settles onto the real rate within a tap or two.
+let pgBusy = false, pgNext = 0, rowsPerNotch = 1.4;
 
 function pgReset() {
-  pgPending = 0; pgBusy = false;
-  clearTimeout(pgTimer);
-  const c = document.getElementById("pageCount"); if (c) c.textContent = "";
+  pgBusy = false; pgNext = 0;
   const a = document.getElementById("anchor"); if (a) a.hidden = true;
   const p = document.getElementById("slidePrev"); if (p) { p.hidden = true; p.innerHTML = ""; }
-}
-function pgCount() {
-  const c = document.getElementById("pageCount");
-  if (c) c.textContent = pgPending === 0 ? "" : (pgPending > 0 ? "▲×" : "▼×") + Math.abs(pgPending);
 }
 // dir +1 = older (into the past), -1 = newer (toward the present)
 function pageBy(dir) {
   if (!document.getElementById("pageui").classList.contains("on")) return;
   // Reviewing history needs the whole screen — put the soft keyboard away
-  // (and keep it away; the tap-to-focus handlers already skip the buttons).
+  // (the tap-to-focus handlers already skip the buttons, so it stays away).
   if (REMOTE && kbd) kbd.blur();
-  pgPending += dir;
-  pgCount();
-  clearTimeout(pgTimer);
-  pgTimer = setTimeout(pgFire, 180);   // coalesce a flurry of taps into one move
+  if (pgBusy) { pgNext = dir; return; }   // a tap mid-turn queues just the next page
+  pgFire(dir);
 }
 function pgLines(html) {
   const d = document.createElement("div"); d.innerHTML = html;
   return d.textContent.split("\n");
 }
-// A line from the top (or bottom) to use as the reading anchor. Prefers a
-// longish, distinctive line so it can be found unambiguously in the next frame;
-// falls back to any non-trivial line. (Short lines like "7" or "---" recur and
-// would match in the wrong place, throwing off both the anchor and calibration.)
-function pgAnchorLine(rows, fromTop) {
-  const n = rows.length;
-  for (const minLen of [6, 2]) {
-    for (let i = 0; i < n; i++) {
-      const idx = fromTop ? i : n - 1 - i;
-      const t = (rows[idx] || "").trim();
-      if (t.length >= minLen) return { idx, text: t };
+// How far the frame moved, found by sliding the old lines against the new and
+// keeping the offset that lines up the most of them. Using every line (not one
+// "anchor") is what makes it steady: a repeated line can't drag it off, and a
+// spinner or timer redrawing costs at most one matched row. Returns the shift
+// and how strong the winning alignment was (so a weak, untrustworthy match can
+// be ignored). For older (dir>0) the new frame is the old pushed DOWN by d.
+function pgShift(oldRows, newRows, dir) {
+  const R = Math.min(oldRows.length, newRows.length);
+  let bestD = 0, bestScore = -1;
+  for (let d = 0; d <= R; d++) {
+    let score = 0;
+    for (let i = 0; i < R; i++) {
+      const j = dir > 0 ? i - d : i + d;
+      if (j < 0 || j >= R) continue;
+      const a = (oldRows[j] || "").trim();
+      if (a.length < 2) continue;               // skip blank/trivial rows
+      if (a === (newRows[i] || "").trim()) score++;
     }
+    if (score > bestScore) { bestScore = score; bestD = d; }   // ties keep the smaller move
   }
-  return null;
-}
-// Where `text` reappears in `rows`, preferring the occurrence nearest `near`.
-// A match further than a screenful away is almost certainly a coincidence
-// (a repeated line), so it's rejected rather than trusted.
-function pgFind(rows, text, near) {
-  let best = -1, bestD = 1e9;
-  for (let i = 0; i < rows.length; i++) {
-    if ((rows[i] || "").trim() === text) {
-      const d = Math.abs(i - near);
-      if (d < bestD) { bestD = d; best = i; }
-    }
-  }
-  return bestD <= gRows ? best : -1;
+  return { shift: bestD, score: bestScore };
 }
 async function pgFetch() {
   try {
@@ -1329,97 +1315,89 @@ async function pgFetch() {
 }
 const pgSleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function pgFire() {
-  if (pgBusy || pgPending === 0) return;
-  const dir = pgPending > 0 ? 1 : -1;
-  const blocks = Math.abs(pgPending);
-  pgPending = 0; pgCount();
+function pgDone() {
+  pgBusy = false;
+  if (pgNext !== 0) { const d = pgNext; pgNext = 0; pgFire(d); }   // the queued page
+}
+
+async function pgFire(dir) {
   pgBusy = true;
   if (!cellH) measure();
   const oldHtml = scr.innerHTML;
   const oldRows = pgLines(oldHtml);
-  const notches = Math.max(1, Math.min(64, Math.round(blocks * notchesPerBlock)));
+  // one page = a screenful minus the kept rows, in wheel ticks for this rate
+  const notches = Math.max(1, Math.min(250, Math.round((gRows - OVERLAP) / rowsPerNotch)));
   send({kind:"scroll", by: dir > 0 ? notches : -notches, row: 0, col: 0});
-  // Ask for the fresh frame right away instead of waiting for the 900ms poll
+  // Grab the fresh frame right away rather than waiting for the 900ms poll.
   let newHtml = null;
-  for (let i = 0; i < 9; i++) {
-    await pgSleep(i === 0 ? 130 : 85);
+  for (let i = 0; i < 12; i++) {
+    await pgSleep(i === 0 ? 90 : 55);
     const h = await pgFetch();
     if (h && h !== oldHtml) { newHtml = h; break; }
   }
-  if (!newHtml) { pgBusy = false; if (pgPending !== 0) pgFire(); return; }  // already at an edge
-  pgAnimate(oldHtml, oldRows, newHtml, dir);
+  if (!newHtml) { pgDone(); return; }     // already at an edge — nothing moved
+  pgAnimate(oldHtml, oldRows, newHtml, dir, notches);
 }
 
-function pgAnimate(oldHtml, oldRows, newHtml, dir) {
+function pgAnimate(oldHtml, oldRows, newHtml, dir, notches) {
   scr.innerHTML = newHtml;
   const newRows = pgLines(newHtml);
-  const target = Math.max(1, gRows - OVERLAP);   // how far one block should move
-  let shift, anchorRow, found;
-  if (dir > 0) {                     // older: an old top line lands lower
-    const a = pgAnchorLine(oldRows, true);
-    found = a ? pgFind(newRows, a.text, a.idx + target) : -1;
-    shift = found >= 0 ? Math.max(1, found - a.idx) : target;
-    anchorRow = found >= 0 ? found : Math.min(gRows - 1, shift);
-  } else {                           // newer: an old bottom line lands higher
-    const a = pgAnchorLine(oldRows, false);
-    found = a ? pgFind(newRows, a.text, a.idx - target) : -1;
-    shift = found >= 0 ? Math.max(1, a.idx - found) : target;
-    anchorRow = found >= 0 ? found : Math.max(0, gRows - 1 - shift);
+  const { shift, score } = pgShift(oldRows, newRows, dir);
+  // Barely moved? We're at an edge (top/bottom of history), or only a live line
+  // (a spinner, a timer) redrew. Show the fresh frame but DON'T animate a non-
+  // move, and — crucial — don't let a zero-shift corrupt the rate estimate into
+  // sending a huge burst next time. Just settle and take any queued tap.
+  if (shift < 2) { pgDone(); return; }
+  // With a confident alignment, learn the true rows-per-tick (damped, so one odd
+  // frame can't swing it) — that's what pulls each turn onto "a screenful minus
+  // OVERLAP". A weak alignment (the frame changed too much to line up) isn't
+  // trusted for calibration, but we still slide by whatever it measured.
+  if (score >= 4) {
+    const measured = shift / notches;
+    rowsPerNotch += (measured - rowsPerNotch) * 0.45;
+    rowsPerNotch = Math.max(0.2, Math.min(8, rowsPerNotch));
   }
-  shift = Math.min(shift, gRows);
-  // We can't tell the TUI to move an exact number of rows, so measure how far it
-  // actually went and nudge next time's request toward the target — but only in
-  // small, bounded steps. An aggressive gain oscillates: one short move asks for
-  // far more, which over-shoots past your place (the worst outcome), which asks
-  // for far less, and so on. Capping the change per turn (and the ceiling) makes
-  // it settle gently and, when in doubt, err a little short rather than too far.
-  if (found >= 0 && shift > 0) {
-    const ideal = notchesPerBlock * (target / shift);
-    notchesPerBlock += Math.max(-6, Math.min(6, ideal - notchesPerBlock));
-  } else {
-    notchesPerBlock -= 6;               // anchor lost => moved too far, ease off
-  }
-  notchesPerBlock = Math.max(4, Math.min(40, notchesPerBlock));
-  pgCarousel(oldHtml, dir, shift, anchorRow);
+  // The kept edge you were reading: old top lands `shift` down (older), or old
+  // bottom lands `shift` up from the bottom (newer). Mark it so the eye follows.
+  const anchorRow = dir > 0 ? Math.min(gRows - 1, shift) : Math.max(0, gRows - 1 - shift);
+  pgSlide(oldHtml, dir, shift, anchorRow);
 }
 
-function pgCarousel(oldHtml, dir, shift, anchorRow) {
+function pgSlide(oldHtml, dir, shift, anchorRow) {
   const dist = shift * cellH;
   const prev = document.getElementById("slidePrev");
   const an = document.getElementById("anchor");
   const pad = parseFloat(getComputedStyle(scr).paddingTop) || 8;
   prev.innerHTML = oldHtml;
   prev.style.setProperty("--cw", getComputedStyle(scr).getPropertyValue("--cw"));
-  const from = dir > 0 ? -dist : dist;    // where #screen begins so the anchor lines up seamlessly
+  const from = dir > 0 ? -dist : dist;    // where #screen begins so the kept edge lines up seamlessly
   for (const el of [scr, prev, an]) el.style.transition = "none";
   scr.style.transform = "translateY(" + from + "px)";
   prev.style.transform = "translateY(0px)";
-  prev.style.opacity = "1";
   prev.hidden = false;
   an.style.height = cellH + "px";
   an.style.top = (pad + anchorRow * cellH) + "px";
   an.style.transform = "translateY(" + from + "px)";
-  an.style.opacity = "0.85";
+  an.style.opacity = "0.8";
   an.hidden = false;
   void scr.offsetHeight;                  // commit the start state before animating
-  const dur = "220ms";
+  const dur = "200ms";
+  // A clean push, like a real scroll: the outgoing frame slides out fully
+  // opaque. No cross-fade — the dissolve read as a ghosted double image.
   scr.style.transition = "transform " + dur + " ease-out";
-  prev.style.transition = "transform " + dur + " ease-out, opacity " + dur + " ease-out";
+  prev.style.transition = "transform " + dur + " ease-out";
   an.style.transition = "transform " + dur + " ease-out";
   scr.style.transform = "translateY(0px)";
   prev.style.transform = "translateY(" + (dir > 0 ? dist : -dist) + "px)";
-  prev.style.opacity = "0";
   an.style.transform = "translateY(0px)";
   setTimeout(() => {
     prev.hidden = true; prev.innerHTML = "";
-    prev.style.transition = ""; prev.style.transform = ""; prev.style.opacity = "";
+    prev.style.transition = ""; prev.style.transform = "";
     scr.style.transition = ""; scr.style.transform = "";
-    an.style.transition = "opacity .5s ease"; an.style.opacity = "0";   // fade the marker out
-    setTimeout(() => { an.hidden = true; an.style.transition = ""; an.style.transform = ""; }, 520);
-    pgBusy = false;
-    if (pgPending !== 0) pgFire();         // taps that arrived mid-slide
-  }, 235);
+    an.style.transition = "opacity .45s ease"; an.style.opacity = "0";   // let the marker fade
+    setTimeout(() => { an.hidden = true; an.style.transition = ""; an.style.transform = ""; }, 470);
+    pgDone();
+  }, 210);
 }
 
 document.getElementById("pageUp").addEventListener("click", () => pageBy(1));

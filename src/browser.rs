@@ -342,8 +342,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("openws") => Ev::OpenWs,
         Some("stop") => Ev::Stop,
         Some("scroll") => Ev::Scroll {
-            // The tick count is a count of human finger movements. An absurdly large number carries no meaning
-            by: v.get("by").and_then(|x| x.as_i64()).unwrap_or(0).clamp(-64, 64) as i32,
+            // A wheel tick or two from the window; up to a tall phone's whole
+            // screen (≈ one row per tick) when the pager turns a page.
+            by: v.get("by").and_then(|x| x.as_i64()).unwrap_or(0).clamp(-250, 250) as i32,
             row: v.get("row").and_then(|x| x.as_u64()).unwrap_or(0).min(9999) as u16,
             col: v.get("col").and_then(|x| x.as_u64()).unwrap_or(0).min(9999) as u16,
         },
@@ -1912,10 +1913,10 @@ mod nav_tests {
         ));
         // With no amount it doesn't move (0 means "do nothing", not "discard")
         assert!(matches!(read(r#"{"kind":"scroll"}"#), Some(Ev::Scroll { by: 0, .. })));
-        // Clamp amounts that make no sense as a count of finger movements
+        // Clamp amounts beyond a tall phone's page turn (≈ one tick per row)
         assert!(matches!(
             read(r#"{"kind":"scroll","by":999999}"#),
-            Some(Ev::Scroll { by: 64, .. })
+            Some(Ev::Scroll { by: 250, .. })
         ));
     }
 
