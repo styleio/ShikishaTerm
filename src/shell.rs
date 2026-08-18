@@ -1338,7 +1338,9 @@ function pgSettle() {
 async function pgFire() {
   if (pgBusy || pgPending === 0) return;
   const dir = pgPending > 0 ? 1 : -1;
-  const blocks = Math.abs(pgPending);     // how many pages this coalesced move covers
+  // How many pages this coalesced move covers. Capped: if the pager ever falls
+  // a little behind, taps shouldn't pile into a jump across the whole history.
+  const blocks = Math.min(8, Math.abs(pgPending));
   pgPending = 0; pgCount();
   pgBusy = true;
   if (!cellH) measure();
@@ -1347,21 +1349,23 @@ async function pgFire() {
   // N pages = N screenfuls minus the kept rows, in wheel ticks for this rate
   const notches = Math.max(1, Math.min(250, Math.round(blocks * (gRows - OVERLAP) / rowsPerNotch)));
   send({kind:"scroll", by: dir > 0 ? notches : -notches, row: 0, col: 0});
-  // Grab the fresh frame right away rather than waiting for the 900ms poll.
-  let newHtml = null;
-  for (let i = 0; i < 12; i++) {
-    await pgSleep(i === 0 ? 90 : 55);
+  // Wait for the scroll to land — but keep the whole thing SHORT and bounded.
+  // (An earlier version polled for up to ~2s per turn; presses couldn't keep up,
+  // pgBusy never cleared, and taps piled into runaway coalesced jumps.) The
+  // scroll settles in a few hundred ms, so: a first read after a beat, a couple
+  // of quick retries if it hasn't moved yet, then one more read to catch the
+  // final position of a chunked redraw. A move that never appears = an edge.
+  let cur = null;
+  for (let i = 0; i < 5; i++) {
+    await pgSleep(i === 0 ? 180 : 110);
     const h = await pgFetch();
-    if (h && h !== oldHtml) { newHtml = h; break; }
+    if (h && pgShift(oldRows, pgLines(h), dir).shift >= 2) { cur = h; break; }
   }
-  if (!newHtml) { pgSettle(); return; }   // already at an edge — nothing moved
-  // The TUI redraws a big scroll in chunks, so the first changed frame may be
-  // only half-scrolled. Take one more a beat later, so we animate the SETTLED
-  // position — otherwise the shift looks tiny (no slide) and the next poll jumps.
-  await pgSleep(100);
-  const settled = await pgFetch();
-  if (settled) newHtml = settled;
-  pgAnimate(oldHtml, oldRows, newHtml, dir, notches, blocks);
+  if (!cur) { pgSettle(); return; }   // at an edge — nothing moved
+  await pgSleep(120);
+  const fin = await pgFetch();
+  if (fin) cur = fin;
+  pgAnimate(oldHtml, oldRows, cur, dir, notches, blocks);
 }
 
 function pgAnimate(oldHtml, oldRows, newHtml, dir, notches, blocks) {
@@ -1373,11 +1377,14 @@ function pgAnimate(oldHtml, oldRows, newHtml, dir, notches, blocks) {
   // move, and — crucial — don't let a zero-shift corrupt the rate estimate into
   // sending a huge burst next time. Just settle and take any queued tap.
   if (shift < 2) { pgSettle(); return; }
-  // With a confident single-page alignment, learn the true rows-per-tick (damped,
-  // so one odd frame can't swing it) — that's what pulls each turn onto "a
-  // screenful minus OVERLAP". A multi-page jump can't line up (its shift exceeds
-  // one screen), and a weak match isn't trusted; neither is used to calibrate.
-  if (blocks === 1 && score >= 4) {
+  // Learn the true rows-per-tick from a clean single-page move (damped, so one
+  // odd frame can't swing it) — that's what pulls each turn onto "a screenful
+  // minus OVERLAP". Skip it unless the move covered most of a page: a short move
+  // usually means we ran into the top/bottom of history (out of room, NOT a slow
+  // rate), and calibrating off that would crank the tick count up and up. A
+  // multi-page jump and a weak alignment are likewise not trusted.
+  const target = blocks * (gRows - OVERLAP);
+  if (blocks === 1 && score >= 4 && shift >= target * 0.6) {
     const measured = shift / notches;
     rowsPerNotch += (measured - rowsPerNotch) * 0.45;
     rowsPerNotch = Math.max(0.2, Math.min(8, rowsPerNotch));
