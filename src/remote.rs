@@ -222,9 +222,24 @@ fn query_value(url: &str, key: &str) -> String {
 }
 
 fn json_response(v: serde_json::Value) -> Response<std::io::Cursor<Vec<u8>>> {
-    Response::from_string(v.to_string()).with_header(
-        Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
-    )
+    Response::from_string(v.to_string())
+        .with_header(
+            Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
+                .unwrap(),
+        )
+        .with_header(Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+}
+
+/// Maximum accepted request-body size (see webui::read_body).
+const MAX_BODY: usize = 1 << 20; // 1 MiB
+
+/// Read a request body, capped at `max` bytes; None if it would exceed the cap.
+fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option<String>> {
+    use std::io::Read as _;
+    let mut body = String::new();
+    req.as_reader().take(max as u64 + 1).read_to_string(&mut body)?;
+    Ok((body.len() <= max).then_some(body))
 }
 
 fn handle(
@@ -272,6 +287,10 @@ fn handle(
                     // Never show a stale page after an update
                     .with_header(
                         Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
+                    )
+                    // Keep the URL token out of the Referer header
+                    .with_header(
+                        Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap(),
                     ),
             )?;
         }
@@ -358,8 +377,10 @@ fn handle(
         }
         ("POST", "/api/send") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let tab = v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
             if let Some(text) = v.get("text").and_then(|x| x.as_str()) {
@@ -379,8 +400,10 @@ fn handle(
         // same vocabulary, as the window
         ("POST", "/api/intent") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let mut took = false;
             if let Some(ev) = crate::browser::parse_intent(&v) {
@@ -393,8 +416,10 @@ fn handle(
         }
         ("POST", "/api/auto") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let on = v.get("on").and_then(|x| x.as_bool()).unwrap_or(false);
             let _ = tx.send(RemoteCmd::SetAuto(on));

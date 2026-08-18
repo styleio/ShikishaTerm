@@ -395,7 +395,7 @@
   "phone.answer.no": "No",
   "help.page.title": "How to write automation",
   "remote.err.no_network": "No reachable network was found. To use this from outside you need a private network such as Tailscale, or to be on the same local network",
-  "remote.err.lan_only": "Tailscale was not found, so your home network is used. Anyone on it who has the token can operate this",
+  "remote.err.lan_only": "Tailscale was not found, so your home LAN is used — traffic is NOT encrypted, and anyone on the same network who sees the URL/token can operate this. Use Tailscale for an encrypted connection; never enable this on shared or public Wi-Fi",
   "remote.err.public": "{ip} is reachable from outside. If you really need this, set remote.allow_public to true (note that this lets anyone with the token run commands through your AI)",
   "remote.err.bad_address": "The listening address is invalid: {addr}",
   "remote.err.start": "Could not start the phone feature ({addr}): {error}",

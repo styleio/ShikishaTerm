@@ -96,6 +96,19 @@ fn header_value(req: &tiny_http::Request, name: &'static str) -> String {
         .unwrap_or_default()
 }
 
+/// Maximum accepted request-body size. Big enough for any real config/secrets
+/// payload, small enough that a giant or slow body can't exhaust memory.
+const MAX_BODY: usize = 1 << 20; // 1 MiB
+
+/// Read a request body, capped at `max` bytes. Returns None if it would exceed
+/// the cap (the caller answers 413), so an oversized body is never buffered.
+fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option<String>> {
+    use std::io::Read as _;
+    let mut body = String::new();
+    req.as_reader().take(max as u64 + 1).read_to_string(&mut body)?;
+    Ok((body.len() <= max).then_some(body))
+}
+
 fn query_token(url: &str) -> String {
     url.split_once('?')
         .map(|(_, q)| q)
@@ -666,10 +679,17 @@ fn percent_decode(s: &str) -> String {
 }
 
 /// Responds with JSON
+/// Add privacy headers: keep the URL token out of the Referer header on any
+/// outbound request, and out of any on-disk cache (shared-computer hygiene).
+fn secure<R: std::io::Read>(resp: Response<R>) -> Response<R> {
+    resp.with_header(Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+}
+
 fn json_resp(v: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
-    Response::from_string(v.to_string()).with_header(
+    secure(Response::from_string(v.to_string()).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
-    )
+    ))
 }
 
 /// Path to the secrets file. Uses config's setting if present, otherwise secrets.json next to config.json
@@ -715,9 +735,9 @@ fn handle(
             let html = crate::i18n::render(PAGE)
                 .replace("__TOKEN__", token)
                 .replace("__DICT__", &crate::i18n::dict_json());
-            let resp = Response::from_string(html).with_header(
+            let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
-            );
+            ));
             req.respond(resp)?;
         }
         // The result view: a finished run's transcript.md rendered as a chat
@@ -727,9 +747,9 @@ fn handle(
             let html = crate::i18n::render(RESULT_PAGE)
                 .replace("__TOKEN__", token)
                 .replace("__DICT__", &crate::i18n::dict_json());
-            let resp = Response::from_string(html).with_header(
+            let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
-            );
+            ));
             req.respond(resp)?;
         }
         // How-to-write documentation (openable from the GUI, so the user doesn't have to hunt for the file)
@@ -737,9 +757,9 @@ fn handle(
             let md = load_manual(config_path);
             let html = crate::i18n::render(HELP_PAGE)
                 .replace("__MD__", &serde_json::to_string(&md)?);
-            let resp = Response::from_string(html).with_header(
+            let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
-            );
+            ));
             req.respond(resp)?;
         }
         ("GET", "/api/config") => {
@@ -789,8 +809,10 @@ fn handle(
         // the secret store, so a saved destination can be tested too.
         ("POST", "/api/notify/test") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let resp = match serde_json::from_str::<crate::notify::Destination>(&body) {
                 Ok(mut dest) => {
                     let pw = password.lock().unwrap().clone();
@@ -972,8 +994,10 @@ fn handle(
                     .map_err(Into::into);
             };
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             match serde_json::from_str::<serde_json::Value>(&body) {
                 Ok(_) => {
                     if let Some(dir) = p.parent() {
@@ -1021,8 +1045,10 @@ fn handle(
         }
         ("POST", "/api/secrets/set") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let s = |k| p.get(k).and_then(|v| v.as_str()).unwrap_or("");
             let (key, desc, value) = (s("key").trim(), s("description"), s("value"));
@@ -1040,8 +1066,10 @@ fn handle(
         }
         ("POST", "/api/secrets/delete") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let key = p.get("key").and_then(|v| v.as_str()).unwrap_or("");
             let path = secrets_file(config_path);
@@ -1058,8 +1086,10 @@ fn handle(
         // any custom headers just like resolve_provider does.
         ("POST", "/api/provider/models") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let s = |k| p.get(k).and_then(|v| v.as_str()).unwrap_or("");
             let base_url = s("base_url").trim();
@@ -1099,8 +1129,10 @@ fn handle(
         // Addressed by index into the saved config — not the screen's in-progress edits
         ("POST", "/api/workspace/export") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let index = p.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let resp = match crate::wspack::pack(config_path, index) {
@@ -1205,8 +1237,10 @@ fn handle(
                     .map_err(Into::into);
             };
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let parsed: serde_json::Value = serde_json::from_str(&body)?;
             std::fs::create_dir_all(&dir)?;
             for name in EVENT_FILES {
@@ -1227,8 +1261,10 @@ fn handle(
         // The browser can't hand over a real file path for safety reasons, so we open it on this side
         ("POST", "/api/pick") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("file");
             let fallback = crate::i18n::t("settings.pick.title");
@@ -1324,8 +1360,10 @@ fn handle(
         // Generates Lua from natural language (one-shot run of a local AI CLI)
         ("POST", "/api/generate") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let event = parsed.get("event").and_then(|v| v.as_str()).unwrap_or("on_done");
             let want = parsed.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
@@ -1359,8 +1397,10 @@ fn handle(
         }
         ("POST", "/api/config") => {
             let mut req = req;
-            let mut body = String::new();
-            req.as_reader().read_to_string(&mut body)?;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
             // Always validate before saving, so broken JSON never wipes out the config
             match serde_json::from_str::<serde_json::Value>(&body) {
                 Ok(_) => {

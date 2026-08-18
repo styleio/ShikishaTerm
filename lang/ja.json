@@ -395,7 +395,7 @@
   "phone.answer.no": "いいえ",
   "help.page.title": "自動化の書き方",
   "remote.err.no_network": "接続できるネットワークが見つかりません。外から使うにはTailscale等のプライベートネットワーク、または同一LAN内での利用が必要です",
-  "remote.err.lan_only": "Tailscaleが見つからないため家庭内LANのアドレスで待ち受けます。同じネットワークにいる人はトークンがあれば操作できます",
+  "remote.err.lan_only": "Tailscaleが見つからないため家庭内LANで待ち受けます。通信は暗号化されず、同じネットワークでURL/トークンを見た人は操作できます。暗号化したい場合はTailscaleを使い、共用・公衆Wi-Fiでは有効にしないでください",
   "remote.err.public": "{ip} は外部に公開されるアドレスです。本当に必要なら remote.allow_public を true にしてください（遠隔から任意のコマンドを実行できる機能である点に注意）",
   "remote.err.bad_address": "待ち受けアドレスが不正です: {addr}",
   "remote.err.start": "リモートUIを開始できません（{addr}）: {error}",
