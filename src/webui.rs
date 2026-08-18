@@ -3617,6 +3617,7 @@ function flatten(tabs, depth, out) {
                browser_profile: t.browser_profile || "", private: !!t.private,
                locked: !!t.locked, auto_restart: !!t.auto_restart, cwd: t.cwd || "",
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
+               notify_on_done: t.notify_on_done || "",
                nav: t.nav || null, ask: t.ask || null, depth });
     flatten(t.children, depth + 1, out);
   }
@@ -3638,6 +3639,7 @@ function nest(flat) {
     if (f.encoding) node.encoding = f.encoding;
     if (f.scrollback) node.scrollback = Number(f.scrollback);
     if (f.log) node.log = true;
+    if (f.notify_on_done) node.notify_on_done = f.notify_on_done;
     // Don't write it if none are enabled. Leaving a block of all-false values just hurts readability
     if (f.nav && Object.values(f.nav).some(Boolean)) {
       node.nav = {};
