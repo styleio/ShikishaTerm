@@ -847,7 +847,11 @@ window.__password = function (title, note) {
     if (e.key === "Enter") { e.preventDefault(); done(inp.value); }
     if (e.key === "Escape") { e.preventDefault(); done(null); }
   };
-  box.append(el("h3", {}, title), note ? el("div", {class:"row"}, note) : null, inp);
+  // Append the note only when there is one. Passing null to Element.append()
+  // would stringify it and render the literal text "null".
+  box.append(el("h3", {}, title));
+  if (note) box.append(el("div", {class:"row"}, note));
+  box.append(inp);
   v.onclick = e => { if (e.target === v) done(null); };
   v.append(box);
   inp.focus();
