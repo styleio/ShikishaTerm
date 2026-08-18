@@ -52,9 +52,10 @@ Nothing is written outside that folder. There is no installer and no runtime to 
 
 ### About the Windows warning
 
-The first run shows **"Windows protected your PC"**. The executable is not code-signed:
-a certificate that removes that dialog immediately costs several hundred dollars a year,
-which is hard to justify for a free tool.
+Release binaries are being set up for **code signing with a free certificate from
+[SignPath Foundation](https://signpath.org/)** — see the [code signing policy](SIGNING.md).
+Until signed builds ship, the first run shows **"Windows protected your PC"** because the
+executable is not yet code-signed.
 
 Click **More info → Run anyway** to continue. If you would rather check first — and being
 wary of an unsigned executable from the internet is the right instinct:
