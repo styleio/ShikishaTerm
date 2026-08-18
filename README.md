@@ -214,6 +214,7 @@ dependencies.
 - [Translating](docs/TRANSLATING.md) — how to add a language
 - [Design notes](DESIGN.md) — terminology, architecture, safety design (Japanese)
 - [Security](SECURITY.md) — threat model and how to report an issue
+- [Code signing policy](SIGNING.md) — how release binaries are built and signed
 
 ## Support
 
