@@ -1431,7 +1431,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             append_hook_log(&format!("auto-restart tab{}", i + 1));
                             flash = Some(i18n::tp("msg.restarted", &[("name", &t.title)]));
                         }
-                        Err(e) => flash = Some(i18n::tp("msg.restart_failed", &[("error", &e.to_string())])),
+                        Err(e) => flash = Some(i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))])),
                     }
                 }
             }
@@ -2050,7 +2050,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             if let Some(t) = session_mut(&mut tabs, &layout, active) {
                                 flash = Some(match t.restart(rows, cols) {
                                     Ok(()) => i18n::tp("msg.restarted", &[("name", &t.title)]),
-                                    Err(e) => i18n::tp("msg.restart_failed", &[("error", &e.to_string())]),
+                                    Err(e) => i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))]),
                                 });
                             }
                         }
@@ -2933,6 +2933,7 @@ fn apply_ws_config(
             ft.cfg.id.as_deref(),
             ft.cfg.drives.as_deref(),
         );
+        let cwd = opts.cwd.clone();
         match tabs.iter().position(|t| t.title == title) {
             Some(i) => {
                 let mut t = tabs.remove(i);
@@ -2958,7 +2959,12 @@ fn apply_ws_config(
                     ordered.push(t);
                     added += 1;
                 }
-                Err(e) => errors.push(format!("{title}: {e}")),
+                Err(e) => errors.push(tab::launch_problem(
+                    &title,
+                    argv.first().map(String::as_str).unwrap_or(""),
+                    cwd.as_deref(),
+                    &e.to_string(),
+                )),
             },
         }
     }
@@ -3141,6 +3147,7 @@ fn spawn_workspace(
             ft.cfg.id.as_deref(),
             ft.cfg.drives.as_deref(),
         );
+        let cwd = opts.cwd.clone();
         match Tab::spawn(
             title.clone(),
             &argv,
@@ -3156,7 +3163,12 @@ fn spawn_workspace(
                 tab.id = ft.cfg.id.clone();
                 tabs.push(tab);
             }
-            Err(e) => errors.push(format!("{title}: {e}")),
+            Err(e) => errors.push(tab::launch_problem(
+                &title,
+                argv.first().map(String::as_str).unwrap_or(""),
+                cwd.as_deref(),
+                &e.to_string(),
+            )),
         }
     }
 }
@@ -3787,7 +3799,7 @@ fn exec_commands(
                             append_hook_log(&format!("restart tab{target} (lua)"));
                             *flash = Some(i18n::tp("msg.restarted", &[("name", &t.title)]));
                         }
-                        Err(e) => *flash = Some(i18n::tp("msg.restart_failed", &[("error", &e.to_string())])),
+                        Err(e) => *flash = Some(i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))])),
                     }
                 }
             }

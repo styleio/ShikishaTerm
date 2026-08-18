@@ -279,6 +279,38 @@ fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
     std::env::split_paths(&path_var).find_map(|dir| try_base(dir.join(prog)))
 }
 
+/// Turns a raw process-spawn failure into a gentle, plain-language explanation.
+///
+/// A portable build is often carried to a PC that doesn't have the configured
+/// tool installed, or where a saved absolute folder no longer exists. Both come
+/// back from the OS as a bare "file not found", so instead of surfacing that,
+/// name the likely cause and point at the setting to change.
+pub fn launch_problem(
+    name: &str,
+    prog: &str,
+    cwd: Option<&std::path::Path>,
+    raw: &str,
+) -> String {
+    // A missing working folder and a missing program both surface as
+    // "file not found", so check the folder directly rather than guess from the
+    // OS error code.
+    if let Some(dir) = cwd {
+        if !dir.as_os_str().is_empty() && !dir.exists() {
+            return crate::i18n::tp(
+                "msg.start.no_folder",
+                &[("name", name), ("path", &dir.display().to_string())],
+            );
+        }
+    }
+    if !prog.is_empty() && resolve_command(prog).is_none() {
+        return crate::i18n::tp("msg.start.no_command", &[("name", name), ("cmd", prog)]);
+    }
+    crate::i18n::tp(
+        "msg.start.other",
+        &[("name", name), ("error", &raw.replace('\0', ""))],
+    )
+}
+
 /// Return the range to extract as the answer, expressed as depth from the
 /// bottom of the screen (depth 0 = bottom row).
 ///
@@ -512,6 +544,34 @@ mod capture_range_tests {
 #[cfg(test)]
 mod tests {
     use super::screen_hash;
+
+    /// A portable build meeting a PC without the tool installed should get a
+    /// plain-language pointer to Settings, not the raw CreateProcessW error.
+    #[test]
+    fn a_missing_command_is_explained_not_dumped() {
+        let msg = super::launch_problem(
+            "GEMINI",
+            "shikisha-not-a-real-program-xyz",
+            None,
+            "CreateProcessW `\"x\\0\"` failed: os error 2",
+        );
+        assert!(msg.contains("GEMINI"), "names the tab: {msg}");
+        assert!(msg.contains("shikisha-not-a-real-program-xyz"), "names the command: {msg}");
+        assert!(!msg.contains("CreateProcessW"), "no raw error leaks: {msg}");
+        assert!(!msg.contains("os error"), "no raw error leaks: {msg}");
+    }
+
+    /// A missing working folder is diagnosed before the command, since both
+    /// come back from the OS as the same "file not found".
+    #[test]
+    fn a_missing_folder_wins_over_an_installed_command() {
+        let missing = std::path::Path::new("Z:/shikisha/no/such/folder");
+        // cmd.exe is present, so only the missing folder can produce this message
+        let msg = super::launch_problem("SHELL", "cmd.exe", Some(missing), "os error 2");
+        assert!(msg.contains("SHELL"), "names the tab: {msg}");
+        assert!(msg.contains("Z:") && msg.contains("folder"), "explains the folder: {msg}");
+        assert!(!msg.contains("os error"), "no raw error leaks: {msg}");
+    }
 
     /// A row drawn all the way to the edge of the screen must not collapse
     /// into a single line.
@@ -1313,6 +1373,18 @@ impl Tab {
         // Since it was recreated, any pending config changes are now in effect
         *self = fresh;
         Ok(())
+    }
+
+    /// Explains, in plain language, why this tab failed to (re)start — a missing
+    /// program or a missing working folder, the two things a portable build runs
+    /// into when it lands on a PC that isn't the one it was configured on.
+    pub fn launch_hint(&self, raw: &str) -> String {
+        launch_problem(
+            &self.title,
+            self.argv.first().map(String::as_str).unwrap_or(""),
+            self.opts.cwd.as_deref(),
+            raw,
+        )
     }
 
     pub fn profile_name(&self) -> &str {
