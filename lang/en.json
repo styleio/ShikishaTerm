@@ -56,6 +56,7 @@
   "tui.menu.settings": "Edit settings",
   "tui.menu.password": "Master password",
   "tui.menu.help": "Help / key list",
+  "tui.splash.starting": "Starting…",
   "tui.menu.quit": "Quit",
   "tui.index.hint": "Press a key to run a menu item / Ctrl+B q: quit",
   "tui.help.title": "HELP",

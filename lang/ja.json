@@ -56,6 +56,7 @@
   "tui.menu.settings": "設定を編集",
   "tui.menu.password": "マスターパスワード",
   "tui.menu.help": "ヘルプ / キー一覧",
+  "tui.splash.starting": "起動中…",
   "tui.menu.quit": "終了",
   "tui.index.hint": "メニューはキー押下で実行 / Ctrl+B q: 終了",
   "tui.help.title": "ヘルプ",

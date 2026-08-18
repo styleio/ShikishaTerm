@@ -350,6 +350,16 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   /* hidden defaults to display:none, but declaring display yourself wins
      over that default. Since we declared it, we also own hiding it */
   #veil[hidden] { display:none; }
+  /* Startup splash. Visible on load, hidden once the first board state arrives.
+     Sits below the password veil (z-index 50) so the prompt shows on top of it. */
+  #splash { position:fixed; inset:0; z-index:40; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:20px; background:#0b0e12; }
+  #splash[hidden] { display:none; }
+  #splash .logo { font-size:26px; letter-spacing:3px; font-weight:700; color:var(--brand); }
+  #splash .spin { width:34px; height:34px; border:3px solid #232b36;
+    border-top-color:var(--brand); border-radius:50%; animation:splashspin .8s linear infinite; }
+  #splash .msg { font-size:13px; color:var(--dim); }
+  @keyframes splashspin { to { transform:rotate(360deg); } }
 
   #veil .box { background:var(--panel); border:1px solid var(--brand);
     border-radius:12px; padding:20px 24px; max-width:min(760px,86vw);
@@ -415,6 +425,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   }
 </style></head><body>
 <div id="app">
+  <div id="splash"><div class="logo">SHIKISHA-TERM</div><div class="spin"></div><div class="msg"></div></div>
   <div id="hamburger">&#9776;</div>
   <div id="backdrop"></div>
   <nav id="tabs"></nav>
@@ -447,6 +458,7 @@ window.onerror = function (msg, src, line, col) {
   } catch (e) {}
 };
 const T = {{DICT}};
+{ const _sm = document.querySelector("#splash .msg"); if (_sm) _sm.textContent = T["tui.splash.starting"] || ""; }
 const BUILD = {{BUILD}};
 // The menu the dashboard shows. When a key is pressed, that character is delivered to INDEX as-is
 const MENU_KEYS = {{MENU_KEYS}};
@@ -925,6 +937,9 @@ function layout() {
 
 window.__state = function (json) {
   if (holding) { queued = json; return; }
+  // The board is live now — take down the startup splash.
+  const _sp = document.getElementById("splash");
+  if (_sp && !_sp.hidden) _sp.hidden = true;
   S = JSON.parse(json);
   drawTabs();
   drawStatus();

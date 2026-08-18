@@ -30,7 +30,26 @@ pub struct Envelope {
 }
 
 /// Derive a 256-bit key from a password and salt.
+///
+/// Argon2id is deliberately slow (~hundreds of ms). The secrets file is one
+/// envelope, but startup reads it several times (providers, tokens, notify,
+/// remote token), and re-deriving each time added up to seconds of a black
+/// screen after the password prompt. Memoize the last (password, salt) → key so
+/// only the first derivation pays the cost and the rest are instant AES.
+///
+/// The cached key and password live for the process lifetime, which is no worse
+/// than the master password we already hold resident in memory for the session.
 fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<(String, Vec<u8>, [u8; 32])>> = Mutex::new(None);
+    if let Ok(g) = CACHE.lock() {
+        if let Some((p, s, k)) = g.as_ref() {
+            if p == password && s.as_slice() == salt {
+                return Ok(*k);
+            }
+        }
+    }
+
     use argon2::{Algorithm, Argon2, Params, Version};
     let mut key = [0u8; 32];
     // Recommended values for interactive-login use (64MiB, 3 passes)
@@ -43,6 +62,9 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
                 &[("e", &format!("{e}"))]
             ))
         })?;
+    if let Ok(mut g) = CACHE.lock() {
+        *g = Some((password.to_string(), salt.to_vec(), key));
+    }
     Ok(key)
 }
 

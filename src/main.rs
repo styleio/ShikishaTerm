@@ -3652,13 +3652,16 @@ fn log_excerpt(text: &str, max: usize) -> String {
 }
 
 pub fn append_hook_log(msg: &str) {
+    use std::sync::OnceLock;
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    let t = START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(config::logs_dir().join("hooks.log"))
     {
         use std::io::Write as _;
-        let _ = writeln!(f, "{msg}");
+        let _ = writeln!(f, "[{t:>8.3}] {msg}");
     }
 }
 
