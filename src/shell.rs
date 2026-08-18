@@ -1055,7 +1055,22 @@ function report() {
           Math.round(area.width), Math.round(area.height)]});
 }
 let rt = 0;
-window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(report, 80); });
+const scheduleReport = () => { clearTimeout(rt); rt = setTimeout(report, 80); };
+window.addEventListener("resize", scheduleReport);
+// A window 'resize' is not the only thing that changes the terminal's size,
+// and relying on it alone leaves a stale, too-narrow `cols` frozen in — so the
+// AI keeps wrapping its output at a fraction of the real width, with a wide
+// black margin on the right. #main can resize with no window 'resize' at all:
+// the startup splash being removed, the mobile layout settling in a frame late,
+// the drawer opening/closing, switching back from a browser tab, or an
+// orientation change some WebViews never report as a window resize. Observe the
+// element itself so ANY change to its rendered size re-reports the true
+// row/column count and the screen always fills the available width. Reporting
+// the accurate width also keeps ASCII art aligned — it only breaks when `cols`
+// disagrees with the space actually drawn.
+if (window.ResizeObserver) {
+  new ResizeObserver(scheduleReport).observe(document.getElementById("main"));
+}
 
 window.__cursor = function (row, col, shown) {
   lastCur = [row, col, shown];
