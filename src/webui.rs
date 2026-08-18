@@ -186,18 +186,36 @@ fn cli_help(prog: &str) -> Result<String, String> {
     use std::sync::mpsc;
     use std::time::Duration;
     if prog.trim().is_empty() {
-        return Err("no command".into());
+        return Err(String::new());
     }
-    let prog = prog.to_string();
+    // Resolve exactly like a tab launch: search PATH + .exe/.cmd/.bat and route
+    // a .cmd/.bat shim (how npm installs claude/gemini/…) through cmd.exe. A bare
+    // Command::new("claude") only looks for claude.exe and reports "not found".
+    // An empty error string tells the page to show its own "is it installed?" note.
+    let Some(path) = crate::tab::resolve_command(prog) else {
+        return Err(String::new());
+    };
+    let is_script = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            let e = e.to_ascii_lowercase();
+            e == "cmd" || e == "bat"
+        })
+        .unwrap_or(false);
+    let mut cmd = if is_script {
+        let mut c = Command::new("cmd.exe");
+        c.arg("/c").arg(&path).arg("--help");
+        c
+    } else {
+        let mut c = Command::new(&path);
+        c.arg("--help");
+        c
+    };
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let out = Command::new(&prog)
-            .arg("--help")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output();
-        let _ = tx.send(out);
+        let _ = tx.send(cmd.output());
     });
     match rx.recv_timeout(Duration::from_secs(8)) {
         Ok(Ok(out)) => {
