@@ -1537,6 +1537,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::Go { go }) => {
                         surface.gos.push(go);
                     }
+                    // Scrolling back through history isn't a keystroke, so keys_for()
+                    // can't carry it — it would be dropped, leaving the phone stuck on
+                    // the current screen with no way to review earlier output. Push it
+                    // onto the very queue the window's own wheel feeds, so both are
+                    // applied identically below (into a full-screen TUI's own scroll,
+                    // or our kept scrollback for a plain shell).
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Scroll { by, row, col }) => {
+                        surface.scrolls.push((by, row, col));
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         for e in keys_for(&ev) {

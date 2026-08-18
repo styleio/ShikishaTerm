@@ -98,6 +98,13 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         Ev::OpenWs => true,
         // Chatting with a model tab from the phone is just like typing into it.
         Ev::Chat { .. } => true,
+        // Scrolling back through the history is the whole point of monitoring
+        // from afar — without it the phone is stuck on the current screen and
+        // can't review what was said earlier. It only moves the viewport, never
+        // injecting input, and scroll_by() already routes it correctly: into a
+        // full-screen TUI's own scroll (Claude Code) or our kept scrollback (a
+        // plain shell). Typing returns to the live screen, as it does at the window.
+        Ev::Scroll { .. } => true,
         // Size is decided by the window. There's no reason to collapse the
         // other person's terminal to fit the phone's screen.
         // Same for paste — one long-press would flow straight into the AI's input box
@@ -456,6 +463,11 @@ mod tests {
             go: crate::browser::Go::To("example.com".into())
         }));
         assert!(menu("a") && menu("?") && menu("w"), "普通の操作が通らない");
+        // Scrolling back to review earlier output is core to monitoring from afar
+        assert!(
+            super::allowed_from_afar(&Ev::Scroll { by: 3, row: 0, col: 0 }),
+            "遠くから履歴を遡れない"
+        );
 
         assert!(!menu("k"), "マスターパスワードを遠くから呼べてしまう");
         assert!(!menu("e") && !menu("o"), "窓の中にしか出ないものを呼べる");

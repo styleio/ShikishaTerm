@@ -1204,6 +1204,37 @@ scr.addEventListener("wheel", e => {
   send({kind:"scroll", by: e.deltaY < 0 ? n : -n, row: row, col: col});
 }, {passive:false});
 
+// A phone has no wheel, so a one-finger drag on the terminal scrolls its history
+// instead — otherwise the remote viewer is stuck on the current screen and can't
+// review anything said earlier. Dragging the finger down pulls older lines into
+// view (the same direction as scrolling a page up). A near-stationary touch is
+// left alone so tap-to-focus and long-press-to-select still work; only once the
+// finger has clearly moved do we take over and suppress the browser's own scroll.
+let touchY = null, touchAccum = 0, touchDist = 0;
+scr.addEventListener("touchstart", e => {
+  if (!S || S.active === 0 || scr.hidden || e.touches.length !== 1) { touchY = null; return; }
+  touchY = e.touches[0].clientY; touchAccum = 0; touchDist = 0;
+}, {passive:true});
+scr.addEventListener("touchmove", e => {
+  if (touchY === null || e.touches.length !== 1) return;
+  if (!cellH) measure();
+  const y = e.touches[0].clientY;
+  const dy = y - touchY;               // finger down (dy > 0) reveals older lines
+  touchY = y;
+  touchDist += Math.abs(dy);
+  if (touchDist <= 8) return;          // still might be a tap or a long-press
+  e.preventDefault();                  // it's a scroll — don't let the page move too
+  touchAccum += dy;
+  const step = cellH || 18;
+  const steps = Math.trunc(touchAccum / step);
+  if (steps !== 0) {
+    touchAccum -= steps * step;
+    send({kind:"scroll", by: steps, row: 0, col: 0});
+  }
+}, {passive:false});
+scr.addEventListener("touchend", () => { touchY = null; }, {passive:true});
+scr.addEventListener("touchcancel", () => { touchY = null; }, {passive:true});
+
 // The top bar's input needs to behave like an ordinary text field. If
 // merely selecting text copied it, or right-click pasted into the
 // terminal, editing the URL would be impossible
