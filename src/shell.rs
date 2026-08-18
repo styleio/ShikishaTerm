@@ -1682,12 +1682,13 @@ fn box_of(out: &mut String, style: &str, body: &str, span: usize, center: bool) 
 /// A pressed key is delivered verbatim as a keystroke while INDEX is in
 /// view. Adding a key here that the receiver (INDEX's dispatch) doesn't
 /// know about produces "it's shown, but pressing it does nothing".
-pub const MENU: [(&str, &str); 6] = [
+pub const MENU: [(&str, &str); 7] = [
     ("e", "tui.menu.settings"),
     ("i", "tui.menu.phone"),
     ("r", "tui.menu.restart"),
     ("w", "tui.menu.workspace"),
     ("t", "tui.menu.notify"),
+    ("k", "tui.menu.password"),
     ("?", "tui.menu.help"),
 ];
 

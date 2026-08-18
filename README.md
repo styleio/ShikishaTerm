@@ -124,6 +124,7 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B [` | Copy mode (`c` copies the latest response) |
 | `Ctrl+B a` / `x` | Automation on/off / emergency stop |
 | `Ctrl+B 0` → `i` | Show the QR code for phone access |
+| `Ctrl+B 0` → `k` | Set or change the master password (encrypts `secrets.json`) |
 
 The mouse works too: wheel to scroll, drag to copy, right click to paste, click a tab name
 to switch.

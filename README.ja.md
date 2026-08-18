@@ -117,6 +117,7 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 | `Ctrl+B [` | コピーモード（`c` で最新の応答をコピー） |
 | `Ctrl+B a` / `x` | 自動化のON/OFF / 緊急停止 |
 | `Ctrl+B 0` → `i` | スマホ接続用のQRコードを表示 |
+| `Ctrl+B 0` → `k` | マスターパスワードの設定・変更（`secrets.json` を暗号化） |
 
 マウスでも操作できます（ホイールでスクロール、ドラッグでコピー、右クリックで貼り付け、
 タブ名クリックで切替）。

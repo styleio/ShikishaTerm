@@ -38,8 +38,11 @@ sent automatically within 5 seconds of you touching a tab. `Ctrl+B x` stops all 
 immediately.
 
 **Secrets at rest.** `secrets.json` can be encrypted with a master password
-(Argon2id → AES-256-GCM), written atomically. Running without a password is allowed and
-is your call; the file is then plain text on disk.
+(Argon2id → AES-256-GCM), written atomically. Set or change it from the INDEX screen with
+`k` ("Master password" in the menu); it is asked for again at startup while encrypted, and
+never travels to the settings web page or over the network. Running without a password is
+allowed and is your call; the file is then plain text on disk, and the app nudges you once
+at startup if a plaintext secret is sitting there without one.
 
 **Settings screen.** Bound to `127.0.0.1` on a random port, with a random one-time token
 required on every request. It is not reachable from other machines.

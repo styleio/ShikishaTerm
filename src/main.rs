@@ -321,6 +321,23 @@ fn manage_master_password(
     }
 }
 
+/// A gentle, optional nudge shown once at startup when secrets are stored but
+/// left unencrypted. Silent when nothing is stored yet (nothing to protect) or
+/// the file is already encrypted, so it only speaks up when there is a real
+/// plaintext secret sitting on disk without a master password.
+fn plaintext_secrets_warning(cfg: Option<&config::Config>) -> Option<String> {
+    let path = cfg?.secrets_path()?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    if crypto::is_encrypted(&text) {
+        return None;
+    }
+    let has_secret = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.as_object().map(|o| !o.is_empty()))
+        .unwrap_or(false);
+    has_secret.then(|| i18n::t("msg.secrets.unencrypted"))
+}
+
 /// The set of things needed to draw into our own window
 struct WinSurface {
     win: std::rc::Rc<crate::browser::Browser>,
@@ -1001,7 +1018,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut last_ui_state: Option<crate::uistate::UiState> = None;
     // Whether an overlaid browser is currently being shown. Leaving it up would
     // permanently hide the terminal, so it's hidden by default.
-    let mut flash: Option<String> = startup_errors.first().map(|e| i18n::tp("msg.startup_failed", &[("error", e)]));
+    let mut flash: Option<String> = startup_errors
+        .first()
+        .map(|e| i18n::tp("msg.startup_failed", &[("error", e)]))
+        .or_else(|| plaintext_secrets_warning(cfg.as_ref()));
     let mut last_detect = Instant::now() - Duration::from_secs(1);
     // The browser currently being screen-relayed (only streams while someone's watching)
     let mut casting: Option<String> = None;
