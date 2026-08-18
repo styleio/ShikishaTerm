@@ -214,11 +214,23 @@ pub struct Rect {
     pub height: u16,
 }
 
-/// The terminal size passed to the PTY (rows, cols), excluding the tab bar, borders, and status bar
-fn pty_dims(size: Size, tab_w: u16) -> (u16, u16) {
-    let cols = size.width.saturating_sub(tab_w + 2).max(10);
-    let rows = size.height.saturating_sub(STATUS_BAR_HEIGHT + 2).max(3);
-    (rows, cols)
+/// The terminal size (rows, cols) passed to the PTY.
+///
+/// `size` already IS the content area: the page measures `#main` — the region
+/// to the right of the tab bar and above the status bar — and reports the
+/// rows/columns that fit there directly (see the shell's `report()`), which is
+/// what `surface.size()` and the resize event carry. So this only guards the
+/// floor; it must NOT subtract the tab bar or status bar again.
+///
+/// It used to. Back when `size` was the whole window in character cells, the
+/// app drew its own tab bar and status bar, so it carved them out here. Once the
+/// WebView took over that chrome and started measuring the content area itself,
+/// the subtraction became a *second* one: every AI was handed ~`tab_w` fewer
+/// columns than it had, rendering into only part of the width with a wide blank
+/// margin on the right — and on a phone-narrow screen, where the total column
+/// count is barely above `tab_w`, it collapsed almost to nothing.
+fn pty_dims(size: Size, _tab_w: u16) -> (u16, u16) {
+    (size.height.max(3), size.width.max(10))
 }
 
 /// Auto-computes the tab bar width to fit the tab names.
