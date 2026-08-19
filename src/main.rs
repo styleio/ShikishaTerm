@@ -625,7 +625,7 @@ fn run_in_window() -> Result<()> {
         .to_ip()
         .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.main.no_port")))?
         .port();
-    let page = shell::page("");
+    let page = shell::page();
     std::thread::spawn(move || {
         for req in server.incoming_requests() {
             // Only serves the shell page. The QR image rides along inside the state,

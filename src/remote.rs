@@ -329,20 +329,20 @@ fn handle(
             h
         }
     };
-    if !token_eq(&supplied, &token) {
-        return req
-            .respond(Response::from_string("forbidden").with_status_code(403))
-            .map_err(Into::into);
-    }
-
     let method = req.method().as_str().to_string();
     let path = req.url().split('?').next().unwrap_or("/").to_string();
-    match (method.as_str(), path.as_str()) {
-        // Same shell as the window. One entry point so the appearance
-        // isn't written twice
-        ("GET", "/") | ("GET", "/shell") => {
-            req.respond(
-                Response::from_string(crate::shell::page(&token))
+
+    // The shell page carries no secrets and no state — it is the same inert HTML
+    // for everyone, and every data route below still requires the token. Serving
+    // it WITHOUT a token is what lets a paired phone drop `?t=…` from its URL (the
+    // token moves into sessionStorage) and still survive a reload: the reload
+    // fetches "/" with no token, gets the shell, and re-auths its data sockets
+    // from storage. An unpaired visitor gets the same inert shell and can read
+    // nothing — its state socket and every intent answer 403 just below.
+    if method == "GET" && (path == "/" || path == "/shell") {
+        return req
+            .respond(
+                Response::from_string(crate::shell::page())
                     .with_header(
                         Header::from_bytes(
                             &b"Content-Type"[..],
@@ -354,12 +354,22 @@ fn handle(
                     .with_header(
                         Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
                     )
-                    // Keep the URL token out of the Referer header
+                    // Keep any URL token out of the Referer header
                     .with_header(
                         Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap(),
                     ),
-            )?;
-        }
+            )
+            .map_err(Into::into);
+    }
+
+    // Everything past here is data or control — require the token.
+    if !token_eq(&supplied, &token) {
+        return req
+            .respond(Response::from_string("forbidden").with_status_code(403))
+            .map_err(Into::into);
+    }
+
+    match (method.as_str(), path.as_str()) {
         ("GET", "/api/state") => {
             let snap = snapshot.lock().unwrap().clone();
             req.respond(json_response(serde_json::to_value(snap)?))?;
@@ -666,12 +676,14 @@ mod tests {
             other => panic!("想定外: {other:?}"),
         }
 
-        // The entry point serves the same shell as the window.
-        // There used to be a separate, old page just for the phone that,
-        // even after being fixed, never once reached the phone side
+        // The entry point serves the same shell as the window — and now WITHOUT a
+        // token, so a paired phone can strip `?t=…` from its URL yet still reload.
+        // The page is inert (no secrets, no state); every data route stays gated,
+        // asserted above (/api/state with no token = 403). There used to be a
+        // separate, old phone-only page that never once reached the phone side.
         for entry in ["/", "/shell"] {
             let page = agent
-                .get(&format!("{base}{entry}?t=tok123456789012"))
+                .get(&format!("{base}{entry}"))
                 .call()
                 .unwrap()
                 .body_mut()
@@ -679,7 +691,7 @@ mod tests {
                 .unwrap();
             assert!(
                 page.contains("api/intent") && page.contains("window.__state"),
-                "{entry} が窓と同じ外皮を配っていない"
+                "{entry} が（トークン無しで）窓と同じ外皮を配っていない"
             );
         }
 

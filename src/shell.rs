@@ -507,7 +507,26 @@ const MENU_KEYS = {{MENU_KEYS}};
 const MENU_WORDS = {{MENU_WORDS}};
 // The auxiliary key row shown in the screen relay (customizable via config)
 const CAST_KEYS = {{CAST_KEYS}};
-const TOKEN = {{TOKEN}};
+// The access token is never baked into the page. On first pair it rides in the
+// URL (?t=…, straight from the QR); we lift it into sessionStorage and then
+// immediately strip it from the address bar and this history entry with
+// history.replaceState — so the token stops lingering where it can leak: browser
+// history, an autocompleted address bar, a bookmark, cross-device sync, a glance
+// over the shoulder. A reload finds it again in sessionStorage (survives reload,
+// cleared when the tab closes); a fresh tab has none and must re-pair from the QR.
+// The window (not REMOTE) loads over its own loopback origin with no ?t= and no
+// sessionStorage, so TOKEN is "" there and never used.
+const TOKEN = (function () {
+  try {
+    const t = new URLSearchParams(location.search).get("t");
+    if (t) {
+      try { sessionStorage.setItem("shikisha_token", t); } catch (e) {}
+      try { history.replaceState({}, "", location.pathname); } catch (e) {}
+      return t;
+    }
+    return sessionStorage.getItem("shikisha_token") || "";
+  } catch (e) { return ""; }
+})();
 // Inside the window, messages can be handed over directly. From a phone
 // they arrive over HTTP. Both use the same page (so the UI isn't written twice)
 const REMOTE = !window.ipc;
@@ -878,7 +897,11 @@ function drawVeil() {
     // window/phone pair sharing this same page — a broken link on the other
     const qr = el("div", {class:"qr"});
     qr.innerHTML = S.qr_svg || "";
-    box.append(qr, el("div", {class:"url"}, S.qr));
+    // Show only the address, never the token. The token is a full-machine
+    // credential now, so printing it as plain text under the QR would put it a
+    // screenshot / OCR / shoulder-glance away from leaking. The QR image itself
+    // still carries the token for scanning, which is the intended pairing path.
+    box.append(qr, el("div", {class:"url"}, String(S.qr).split("?")[0]));
   } else {
     box.append(el("h3", {}, T["tui.help.title"] || "HELP"));
     // The translated strings are stored one line per key. This is where display order is decided
@@ -2018,7 +2041,7 @@ pub const MENU: [(&str, &str); 7] = [
     ("?", "tui.menu.help"),
 ];
 
-pub fn page(token: &str) -> String {
+pub fn page() -> String {
     let dict = crate::i18n::dict_json();
     let keys: Vec<&str> = MENU.iter().map(|(k, _)| *k).collect();
     let words: std::collections::BTreeMap<&str, &str> = MENU.iter().copied().collect();
@@ -2034,10 +2057,6 @@ pub fn page(token: &str) -> String {
         .replace(
             "{{CAST_KEYS}}",
             &serde_json::to_string(&crate::config::cast_keys()).unwrap_or_else(|_| "[]".into()),
-        )
-        .replace(
-            "{{TOKEN}}",
-            &serde_json::to_string(token).unwrap_or_else(|_| "\"\"".into()),
         )
         .replace(
         "{{BUILD}}",
@@ -2068,7 +2087,7 @@ mod tests {
     fn every_word_the_page_asks_for_is_in_the_dictionary() {
         let en: serde_json::Value =
             serde_json::from_str(include_str!("../lang/en.json")).unwrap();
-        let p = super::page("");
+        let p = super::page();
         let mut rest = p.as_str();
         let mut checked = 0;
         // Pick up every place the page reads T["..."]
@@ -2110,7 +2129,7 @@ mod tests {
     /// This is the kind of bug you can only notice by watching it happen, so it's pinned down here.
     #[test]
     fn a_press_is_not_interrupted_by_a_redraw() {
-        let p = super::page("");
+        let p = super::page();
         // The redraw entry point must hold back updates while a press is in progress
         let at = p.find("window.__state = function").expect("状態の入口が無い");
         let head = &p[at..at + 200];
@@ -2140,7 +2159,7 @@ mod tests {
         // Don't initialize the language here — doing so would change the
         // language for other tests running concurrently (a dashboard test
         // once failed this way looking for CHAIN)
-        let p = super::page("");
+        let p = super::page();
         assert!(!p.contains("{{"), "差し込み先が残っている");
         assert!(p.contains("const T = {"), "訳語が入っていない");
         assert!(p.contains("const BUILD = \""), "ビルド刻印が入っていない");
