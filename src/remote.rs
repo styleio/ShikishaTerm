@@ -115,6 +115,9 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
 /// Destinations for relay frames (one per connected WS client).
 /// A line that can no longer send is cleaned up on the next frame
 type FrameClients = Arc<Mutex<Vec<Sender<Vec<u8>>>>>;
+/// Destinations for state pushes — the terminal screen and UI, sent over a
+/// WebSocket instead of the phone polling. One text sender per connected viewer.
+type StateClients = Arc<Mutex<Vec<Sender<String>>>>;
 
 pub struct RemoteUi {
     pub url: String,
@@ -124,6 +127,8 @@ pub struct RemoteUi {
     stop: Arc<AtomicBool>,
     /// Destinations for relay frames. JPEGs arriving from the browser flow here
     frame_clients: FrameClients,
+    /// Destinations for state pushes (screen HTML / UI JSON) over /ws-state
+    state_clients: StateClients,
     /// A new viewer joined. The main loop will emit one frame of the current
     /// screen at the next opportunity (so a static page doesn't stay blank
     /// waiting for the next change)
@@ -158,19 +163,21 @@ impl RemoteUi {
         let (tx, rx) = channel::<RemoteCmd>();
         let stop = Arc::new(AtomicBool::new(false));
         let frame_clients: FrameClients = Arc::new(Mutex::new(Vec::new()));
+        let state_clients: StateClients = Arc::new(Mutex::new(Vec::new()));
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
 
         {
             let snapshot = Arc::clone(&snapshot);
             let stop = Arc::clone(&stop);
             let clients = Arc::clone(&frame_clients);
+            let states = Arc::clone(&state_clients);
             let kf = Arc::clone(&keyframe_wanted);
             std::thread::spawn(move || {
                 for req in server.incoming_requests() {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
-                    if let Err(e) = handle(req, &token, &snapshot, &tx, &clients, &kf) {
+                    if let Err(e) = handle(req, &token, &snapshot, &tx, &clients, &states, &kf) {
                         crate::append_hook_log(&crate::i18n::tp(
                             "err.remote.hook_log",
                             &[("e", &e.to_string())],
@@ -186,6 +193,7 @@ impl RemoteUi {
             rx,
             stop,
             frame_clients,
+            state_clients,
             keyframe_wanted,
         })
     }
@@ -207,6 +215,19 @@ impl RemoteUi {
     /// watching, the relay can be stopped)
     pub fn has_frame_clients(&self) -> bool {
         !self.frame_clients.lock().unwrap().is_empty()
+    }
+
+    /// Whether at least one viewer is connected on the state socket. When none
+    /// is, the main loop skips building and pushing state entirely.
+    pub fn has_state_clients(&self) -> bool {
+        !self.state_clients.lock().unwrap().is_empty()
+    }
+
+    /// Push one state message (a small JSON object with `ui` or `screen_html`)
+    /// to every connected viewer. Drop lines whose peer has gone.
+    pub fn push_state(&self, msg: String) {
+        let mut clients = self.state_clients.lock().unwrap();
+        clients.retain(|tx| tx.send(msg.clone()).is_ok());
     }
 
     pub fn shutdown(&self) {
@@ -255,6 +276,7 @@ fn handle(
     snapshot: &Arc<Mutex<Snapshot>>,
     tx: &Sender<RemoteCmd>,
     frame_clients: &FrameClients,
+    state_clients: &StateClients,
     keyframe_wanted: &Arc<AtomicBool>,
 ) -> Result<()> {
     let supplied = {
@@ -304,6 +326,49 @@ fn handle(
         ("GET", "/api/state") => {
             let snap = snapshot.lock().unwrap().clone();
             req.respond(json_response(serde_json::to_value(snap)?))?;
+        }
+        // State push. Same data as /api/state, but sent over a WebSocket the
+        // moment it changes (the main loop calls push_state) instead of the
+        // phone polling. Download-only; the write thread owns the socket.
+        ("GET", "/ws-state") => {
+            let key = req
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("Sec-WebSocket-Key"))
+                .map(|h| h.value.as_str().to_string())
+                .unwrap_or_default();
+            if key.is_empty() {
+                return req
+                    .respond(Response::from_string("expected websocket").with_status_code(400))
+                    .map_err(Into::into);
+            }
+            let accept = crate::ws::accept_key(&key);
+            let resp = Response::empty(101).with_header(
+                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
+            );
+            let stream = req.upgrade("websocket", resp);
+            let (stx, srx) = channel::<String>();
+            // Give the new viewer the current screen and UI right away, so it
+            // isn't blank until something next changes.
+            {
+                let snap = snapshot.lock().unwrap();
+                if let Ok(ui) = serde_json::to_string(&snap.ui) {
+                    let _ = stx.send(format!("{{\"ui\":{ui}}}"));
+                }
+                if let Ok(scr) = serde_json::to_string(&snap.screen_html) {
+                    let _ = stx.send(format!("{{\"screen_html\":{scr}}}"));
+                }
+            }
+            state_clients.lock().unwrap().push(stx);
+            std::thread::spawn(move || {
+                let mut w = crate::ws::WsWriter::new(stream);
+                while let Ok(msg) = srx.recv() {
+                    if w.send_text(&msg).is_err() {
+                        break;
+                    }
+                }
+                let _ = w.send_close();
+            });
         }
         // Entry point for the screen relay. Handshake, upgrade to WebSocket,
         // and from then on JPEG frames flow over this line (download-only;

@@ -1048,6 +1048,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // The last state drawn. This is what gets handed to the phone (keeps the
     // assembly point to a single spot).
     let mut last_ui_state: Option<crate::uistate::UiState> = None;
+    // What we last pushed to remote viewers over the state socket, so we only
+    // send on change. The screen is also rate-limited (see below) so a burst of
+    // AI output doesn't flood a slow phone link the way pushing every frame would.
+    let mut last_remote_ui: Option<String> = None;
+    let mut last_remote_screen = String::new();
+    let mut last_remote_push = Instant::now() - Duration::from_secs(1);
     // Whether an overlaid browser is currently being shown. Leaving it up would
     // permanently hide the terminal, so it's hidden by default.
     let mut flash: Option<String> = startup_errors
@@ -1211,6 +1217,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                     remote_ui = start_remote(Some(&newcfg), password.as_deref(), &mut startup_errors);
                     publish_remote(&remote_info, &remote_ui);
+                    // Fresh server = fresh viewers; forget what the old one pushed.
+                    last_remote_ui = None;
+                    last_remote_screen = String::new();
                     remote_changed = Some(if remote_ui.is_some() {
                         i18n::t("msg.remote_enabled")
                     } else {
@@ -1446,7 +1455,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
             // Hand the current status to the remote UI and run any operations it sent
             if let Some(r) = remote_ui.as_ref() {
-                *r.snapshot.lock().unwrap() = remote::Snapshot {
+                let snap = remote::Snapshot {
                     // Pass along what was built at draw time. `ui` doesn't exist here yet,
                     // and rebuilding it would create a second place that assembles state.
                     ui: last_ui_state.clone(),
@@ -1483,6 +1492,25 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         })
                         .collect(),
                 };
+                // Push what changed to any state-socket viewers. The UI goes out
+                // whenever it changes; the screen is rate-limited to ~7Hz so a
+                // burst of output can't saturate a slow link (idle = nothing sent).
+                if r.has_state_clients() {
+                    let ui_json = serde_json::to_string(&snap.ui).unwrap_or_default();
+                    if last_remote_ui.as_deref() != Some(ui_json.as_str()) {
+                        r.push_state(format!("{{\"ui\":{ui_json}}}"));
+                        last_remote_ui = Some(ui_json);
+                    }
+                    if snap.screen_html != last_remote_screen
+                        && last_remote_push.elapsed() >= Duration::from_millis(140)
+                    {
+                        let scr = serde_json::to_string(&snap.screen_html).unwrap_or_default();
+                        r.push_state(format!("{{\"screen_html\":{scr}}}"));
+                        last_remote_screen = snap.screen_html.clone();
+                        last_remote_push = Instant::now();
+                    }
+                }
+                *r.snapshot.lock().unwrap() = snap;
             }
 
             // auto_restart: automatically bring exited tabs back

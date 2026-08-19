@@ -1274,17 +1274,6 @@ function pageBy(dir) {
   clearTimeout(pgTimer);
   pgTimer = setTimeout(pgFire, 160);
 }
-// Just the terminal frame — no dashboard rebuild (the periodic poll does that).
-// A turn reads this a few times; keeping it lean is what stops a turn from
-// wedging on a slow connection.
-async function pgFetch() {
-  try {
-    const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
-    const d = await r.json();
-    return d.screen_html || null;
-  } catch (e) { return null; }
-}
-
 function pgFire() {
   if (pgPending === 0) return;
   const dir = pgPending > 0 ? 1 : -1;
@@ -1301,14 +1290,8 @@ function pgFire() {
   const PAGE_STEP = Math.max(1, gRows - OVERLAP);
   const notches = Math.min(250, blocks * PAGE_STEP);
   send({kind:"scroll", by: dir > 0 ? notches : -notches, row: 0, col: 0});
-  // No blocking loop and no animation. Just refresh the frame a few times as the
-  // scroll lands — each is a fire-and-forget timer, so a slow read can never
-  // wedge the pager (that was the "only the first tap works" bug). The periodic
-  // poll is the final backstop.
-  const refresh = async () => { const h = await pgFetch(); if (h) window.__screen(h); };
-  setTimeout(refresh, 220);
-  setTimeout(refresh, 480);
-  setTimeout(refresh, 820);
+  // Nothing else to do: the scrolled screen arrives on its own over the state
+  // socket (or the fallback poll if the socket is down).
 }
 
 document.getElementById("pageUp").addEventListener("click", () => pageBy(1));
@@ -1359,19 +1342,38 @@ focus();
 measure();
 report();
 
-// A phone polls for state; the window instead receives it pushed from the other side
+// The window is handed its state directly. A phone instead receives it PUSHED
+// over a WebSocket the moment the screen or UI changes — no constant polling, so
+// it's quiet when idle and updates instantly when active (a scrolled page, a new
+// line of output). If the socket can't hold — a flaky link, an older server — a
+// slow poll takes over until it reconnects.
 if (REMOTE) {
-  const pull = async () => {
+  let wsUp = false, sws = null;
+  const applyState = (d) => {
+    if (d.ui) window.__state(typeof d.ui === "string" ? d.ui : JSON.stringify(d.ui));
+    if (d.screen_html != null) window.__screen(d.screen_html);
+  };
+  const connectState = () => {
     try {
-      const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN),
-        {cache:"no-store"});
-      const d = await r.json();
-      if (d.ui) window.__state(JSON.stringify(d.ui));
-      if (d.screen_html) window.__screen(d.screen_html);
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN));
+    } catch (e) { setTimeout(connectState, 1500); return; }
+    sws.onopen = () => { wsUp = true; };
+    sws.onmessage = (e) => { try { applyState(JSON.parse(e.data)); } catch (x) {} };
+    sws.onclose = () => { wsUp = false; setTimeout(connectState, 1500); };
+    sws.onerror = () => { try { sws.close(); } catch (x) {} };
+  };
+  connectState();
+  // Fallback poll — only does anything while the socket is down.
+  const pull = async () => {
+    if (wsUp) return;
+    try {
+      const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
+      applyState(await r.json());
     } catch (e) {}
   };
   pull();
-  setInterval(pull, 900);
+  setInterval(pull, 1500);
 }
 
 // ── Screen relay (viewing and touching a browser tab from a phone) ──────────────
