@@ -363,6 +363,19 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #splash .msg { font-size:13px; color:var(--dim); }
   @keyframes splashspin { to { transform:rotate(360deg); } }
 
+  /* Phone-only overlay shown when the feed stops — a revoked token (a deliberate
+     disconnect from the PC) or a dropped link. Above everything so a stale screen
+     can't be mistaken for a live one. */
+  #netveil { position:fixed; inset:0; z-index:60; display:flex; align-items:center;
+    justify-content:center; padding:28px; text-align:center;
+    background:rgba(6,10,14,.93); -webkit-backdrop-filter:blur(3px); backdrop-filter:blur(3px); }
+  #netveil[hidden] { display:none; }
+  #netveil .nvbox { max-width:340px; }
+  #netveil .nvicon { font-size:46px; line-height:1; margin-bottom:14px; }
+  #netveil .nvtitle { font-size:17px; font-weight:700; color:var(--text); margin-bottom:10px; }
+  #netveil .nvsub { font-size:13px; color:var(--dim); line-height:1.55; }
+  #netveil.cut .nvtitle { color:var(--warn); }
+
   #veil .box { background:var(--panel); border:1px solid var(--brand);
     border-radius:12px; padding:20px 24px; max-width:min(760px,86vw);
     max-height:84vh; overflow:auto; }
@@ -1409,29 +1422,71 @@ report();
 // line of output). If the socket can't hold — a flaky link, an older server — a
 // slow poll takes over until it reconnects.
 if (REMOTE) {
-  let wsUp = false, sws = null;
+  let wsUp = false, sws = null, cut = false, downSince = 0;
+  // Say what happened when the feed stops. The token can be revoked from the PC
+  // (a deliberate "disconnect" — every request then answers 403 and this page,
+  // holding the old token, can never come back), or the link can simply drop.
+  // Either way the stale screen would otherwise just sit there looking live.
+  const showNet = (kind) => {
+    let v = document.getElementById("netveil");
+    if (!kind) { if (v) v.hidden = true; return; }
+    if (!v) {
+      v = el("div", {id:"netveil"},
+        el("div", {class:"nvbox"},
+          el("div", {class:"nvicon"}, kind === "cut" ? "⛔" : "⚠"),
+          el("div", {class:"nvtitle"}, ""),
+          el("div", {class:"nvsub"}, "")));
+      document.body.append(v);
+    }
+    v.hidden = false;
+    v.classList.toggle("cut", kind === "cut");
+    v.querySelector(".nvicon").textContent = kind === "cut" ? "⛔" : "⚠";
+    v.querySelector(".nvtitle").textContent = kind === "cut"
+      ? (T["tui.net.cut.title"] || "Disconnected from this PC")
+      : (T["tui.net.down.title"] || "Connection lost");
+    v.querySelector(".nvsub").textContent = kind === "cut"
+      ? (T["tui.net.cut.sub"] || "The PC ended this session (its access code changed). Scan the new QR code on the PC to reconnect.")
+      : (T["tui.net.down.sub"] || "Reconnecting…");
+  };
+  const connected = () => { downSince = 0; showNet(null); };
   const applyState = (d) => {
+    connected();
     if (d.ui) window.__state(typeof d.ui === "string" ? d.ui : JSON.stringify(d.ui));
     if (d.screen_html != null) { window.__screen(d.screen_html); pgArrived(); }
   };
   const connectState = () => {
+    if (cut) return;
     try {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN));
     } catch (e) { setTimeout(connectState, 1500); return; }
-    sws.onopen = () => { wsUp = true; };
+    sws.onopen = () => { wsUp = true; connected(); };
     sws.onmessage = (e) => { try { applyState(JSON.parse(e.data)); } catch (x) {} };
-    sws.onclose = () => { wsUp = false; setTimeout(connectState, 1500); };
+    sws.onclose = () => { wsUp = false; if (!cut) setTimeout(connectState, 1500); };
     sws.onerror = () => { try { sws.close(); } catch (x) {} };
   };
   connectState();
-  // Fallback poll — only does anything while the socket is down.
+  // Fallback poll — only does anything while the socket is down. It's also the
+  // reliable place to notice a revoked token: a WS handshake failure is opaque,
+  // but a plain fetch returns the 403 outright.
   const pull = async () => {
-    if (wsUp) return;
+    if (wsUp || cut) return;
     try {
       const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
+      if (r.status === 403) {   // token revoked from the PC — this page is done
+        cut = true; wsUp = false;
+        try { if (sws) sws.close(); } catch (x) {}
+        showNet("cut");
+        return;
+      }
+      if (!r.ok) throw new Error("status " + r.status);
       applyState(await r.json());
-    } catch (e) {}
+    } catch (e) {
+      // A plain network drop. Give the socket a couple of seconds to reconnect
+      // before crying wolf — a one-frame blip shouldn't flash a scary banner.
+      if (!downSince) downSince = Date.now();
+      else if (Date.now() - downSince > 3000) showNet("down");
+    }
   };
   pull();
   setInterval(pull, 1500);
