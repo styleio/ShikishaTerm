@@ -1253,9 +1253,10 @@ scr.addEventListener("wheel", e => {
 // refresh and mostly stalled, and it added load for nothing. The frame just
 // updates in place — which is what actually works reliably. Remote-only; the
 // window keeps its native wheel.
-const OVERLAP = 4;           // rows kept across a turn — the edge you were reading
-// The page distance is computed from THIS phone's height (gRows), so it's right
-// on any screen. No blocking, no animation, no per-turn calibration.
+// One tap moves about a THIRD of a screen (of this phone's height, gRows), not a
+// whole one. Coalesced taps (×N) build up from there, so tapping once nudges and
+// tapping a few times travels — finer control than a full page per tap.
+const STEP_FRACTION = 3;
 let pgPending = 0, pgTimer = 0, pgWaiting = false, pgWaitTimer = 0;
 
 function pgReset() {
@@ -1300,12 +1301,11 @@ function pgFire() {
   const blocks = Math.min(8, Math.abs(pgPending));
   pgPending = 0; pgCount();
   if (!cellH) measure();
-  // One page = a screenful minus the kept rows, at ~one wheel tick per row. A
-  // FIXED step on purpose: trying to auto-tune the tick rate per turn oscillated
-  // (a stray reading flung the count around). Fixed is deterministic — every tap
-  // moves the same amount; if a screen turns out to move a bit more or less, it's
-  // one number (PAGE_STEP) to nudge, not a feedback loop that can run away.
-  const PAGE_STEP = Math.max(1, gRows - OVERLAP);
+  // A fraction of a screen, in wheel ticks (~one tick per row). A FIXED step on
+  // purpose: auto-tuning the tick rate per turn oscillated and flung the count
+  // around. Fixed is deterministic — every tap moves the same amount; if it turns
+  // out a touch too much or too little, it's one number (STEP_FRACTION) to nudge.
+  const PAGE_STEP = Math.max(1, Math.round(gRows / STEP_FRACTION));
   const notches = Math.min(250, blocks * PAGE_STEP);
   send({kind:"scroll", by: dir > 0 ? notches : -notches, row: 0, col: 0});
   // The scrolled screen arrives on its own over the state socket (pgArrived
