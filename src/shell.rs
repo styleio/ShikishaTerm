@@ -1019,7 +1019,19 @@ window.__state = function (json) {
 
 // The terminal's own contents. This is the one place a grid of cells is correct, so accept it as-is
 window.__screen = function (html) {
-  document.getElementById("screen").innerHTML = html;
+  const s = document.getElementById("screen");
+  // A phone shows the window's own terminal size (it can't resize it from afar),
+  // which is often taller than the phone's viewport. The bottom of the frame —
+  // a TUI's input line and its newest output — then falls below the fold, and
+  // the pager only moves the app's own scrollback, never THIS viewport. So on a
+  // phone keep the viewport pinned to the live bottom, unless the reader has
+  // scrolled up to look back within the current frame (then hold their place —
+  // innerHTML would otherwise snap it to the top on every update).
+  const unit = cellH || 16;
+  const nearBottom = (s.scrollHeight - s.clientHeight - s.scrollTop) <= unit * 1.5;
+  const prevTop = s.scrollTop;
+  s.innerHTML = html;
+  if (REMOTE) s.scrollTop = nearBottom ? s.scrollHeight : prevTop;
 };
 
 // ── Input handling starts here ────────────────────────────

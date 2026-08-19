@@ -1588,6 +1588,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::Scroll { by, row, col }) => {
                         surface.scrolls.push((by, row, col));
                     }
+                    // The phone fits the terminal to its own screen. Take its rows/cols,
+                    // but NOT its `area`: that positions the window's own browser child
+                    // view, which the phone doesn't use (it watches the relay), so the
+                    // window keeps the placement it measured for itself.
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Resize { rows, cols, .. }) => {
+                        surface.rows = rows;
+                        surface.cols = cols;
+                        surface.pending.push_back(Event::Resize(cols, rows));
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         for e in keys_for(&ev) {

@@ -105,9 +105,14 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // full-screen TUI's own scroll (Claude Code) or our kept scrollback (a
         // plain shell). Typing returns to the live screen, as it does at the window.
         Ev::Scroll { .. } => true,
-        // Size is decided by the window. There's no reason to collapse the
-        // other person's terminal to fit the phone's screen.
-        // Same for paste — one long-press would flow straight into the AI's input box
+        // Fit the terminal to whoever is actually looking. This is a single-person
+        // setup, and the phone is often the one being used — a terminal sized to the
+        // window is clipped on a phone, with its bottom input line and newest output
+        // off-screen. Each side re-reports only when ITS OWN measured size changes,
+        // so they don't fight in a loop: they hand off, the side that last actually
+        // changed size wins, and the other holds until it changes.
+        Ev::Resize { .. } => true,
+        // Paste stays local — one long-press would flow straight into the AI's input box
         _ => false,
     }
 }
@@ -513,9 +518,10 @@ mod tests {
     /// Operations sendable from afar are counted on the allow side.
     ///
     /// Since the same page is served, it can in principle send the same
-    /// intents as the window. But size is decided by the window, and calling
-    /// the master password from afar would block the app until the person
-    /// in front of the window answers
+    /// intents as the window. The master password, asked inside the window,
+    /// would block the app until the person in front of it answers, so that
+    /// stays local. Sizing, by contrast, is allowed — a phone needs a terminal
+    /// that fits it, and the two sides hand off rather than oscillate.
     #[test]
     fn the_phone_cannot_reach_what_only_the_window_can_answer() {
         use crate::browser::Ev;
@@ -536,13 +542,16 @@ mod tests {
 
         assert!(!menu("k"), "マスターパスワードを遠くから呼べてしまう");
         assert!(!menu("e") && !menu("o"), "窓の中にしか出ないものを呼べる");
+        // Sizing from afar is intentionally allowed: a phone needs a terminal that
+        // fits it, and the two sides hand off (each re-reports only on its own size
+        // change) rather than fight in a loop.
         assert!(
-            !super::allowed_from_afar(&Ev::Resize {
+            super::allowed_from_afar(&Ev::Resize {
                 rows: 10,
                 cols: 20,
                 area: (0, 0, 0, 0)
             }),
-            "手元の画面に合わせて相手のターミナルを畳めてしまう"
+            "スマホから端末をスマホ寸法に合わせられない"
         );
         assert!(
             !super::allowed_from_afar(&Ev::Paste),
