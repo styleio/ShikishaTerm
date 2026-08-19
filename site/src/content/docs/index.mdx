@@ -29,10 +29,13 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 **A single portable `.exe`. No install, no admin rights, no API keys** — it drives the AI
 CLIs you already have logged in.
 
-{/* DEMO: drop the demo video/GIF here. Put the file in `site/public/` and use one of:
-     <video src="/demo.mp4" autoplay loop muted playsinline style="width:100%;border-radius:12px" />
-     ![SHIKISHA-TERM in action](/demo.gif)
-*/}
+<video src="/demo.mp4" autoplay loop muted playsinline style="width:100%;border-radius:12px" />
+
+<p style="text-align:center;opacity:.72;font-size:.9em;margin:.7em 0 0">
+  Works with Claude Code · Codex · Gemini · Aider · Ollama · DeepSeek · Qwen — or any shell over SSH
+</p>
+
+<img src="/desktop.png" alt="SHIKISHA-TERM desktop — a mission-control dashboard of several AI agents, each showing whether it is working, waiting or done" style="width:100%;border-radius:12px;margin-top:1.2em" />
 
 ## Put your AIs in a room together
 
@@ -48,6 +51,8 @@ as a readable transcript you can keep.
 Scan a QR code and you can see what every tab is doing and send instructions — from the
 train, from a café, from bed. Over [Tailscale](https://tailscale.com/) only your own devices
 can reach it, encrypted, from anywhere.
+
+<img src="/phone.png" alt="SHIKISHA-TERM on a phone — a live dashboard of several agents, each showing whether it is working, waiting or done" style="display:block;margin:1.4em auto 0;width:340px;max-width:100%" />
 
 <CardGrid>
   <Card title="Status you can trust" icon="approve-check">
@@ -86,6 +91,8 @@ Codex CLI, Gemini CLI, DeepSeek, Ollama, Aider, or a plain shell over SSH.
 2. Run `SHIKISHA-TERM.exe`
 3. Press `[e]` to open the settings screen in your browser and pick which AI runs where
 
+<img src="/settings.png" alt="SHIKISHA-TERM settings — configure each tab (name, command or SSH host, working folder, automation) in a form, with no JSON editing" style="width:100%;border-radius:12px;margin:.4em 0 1em" />
+
 Nothing is written outside that folder.
 
 :::note[Where it fits]
@@ -96,6 +103,8 @@ terminal, not an IDE.
 
 ---
 
-_Windows release binaries are code-signed with a free certificate from
-[SignPath Foundation](https://signpath.org/). See the
+_Every Windows release is built by public GitHub Actions from this source, with a SHA256
+published next to the zip. Code signing (a free certificate from
+[SignPath Foundation](https://signpath.org/)) is being set up; until signed builds ship, the
+first run shows a SmartScreen warning — choose **More info → Run anyway**. See the
 [code signing policy](https://github.com/styleio/ShikishaTerm/blob/main/SIGNING.md)._

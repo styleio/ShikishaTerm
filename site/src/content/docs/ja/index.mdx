@@ -28,10 +28,13 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 **ポータブルな単一の `.exe`。インストール不要・管理者権限不要・APIキー不要** —
 すでにログイン済みのAI CLIをそのまま動かします。
 
-{/* DEMO: ここにデモ動画/GIFを置く。ファイルは `site/public/` に入れて次のいずれかで：
-     <video src="/demo.mp4" autoplay loop muted playsinline style="width:100%;border-radius:12px" />
-     ![動作の様子](/demo.gif)
-*/}
+<video src="/demo.mp4" autoplay loop muted playsinline style="width:100%;border-radius:12px" />
+
+<p style="text-align:center;opacity:.72;font-size:.9em;margin:.7em 0 0">
+  対応: Claude Code · Codex · Gemini · Aider · Ollama · DeepSeek · Qwen — SSH越しの素のシェルも
+</p>
+
+<img src="/desktop.png" alt="SHIKISHA-TERM デスクトップ — 複数AIエージェントのダッシュボード（処理中／待ち／完了）" style="width:100%;border-radius:12px;margin-top:1.2em" />
 
 ## AIたちを同じ部屋に集めて議論させる
 
@@ -47,6 +50,8 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 QRコードを読むだけで、全タブの状況を見て指示を送れます。電車の中でも、カフェでも、ベッドからでも。
 [Tailscale](https://tailscale.com/)（無料）を入れておけば、暗号化された経路で
 **自分の端末だけ**がどこからでも繋がります。
+
+<img src="/phone.png" alt="SHIKISHA-TERM スマホ画面 — 複数エージェントの状態ダッシュボード（処理中／待ち／完了）" style="display:block;margin:1.4em auto 0;width:340px;max-width:100%" />
 
 <CardGrid>
   <Card title="信用できる状態表示" icon="approve-check">
@@ -85,6 +90,8 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 2. `SHIKISHA-TERM.exe` を起動
 3. `[e]` を押すとブラウザで設定画面が開くので、どのAIをどのフォルダで動かすか決める
 
+<img src="/settings.png" alt="SHIKISHA-TERM 設定画面 — タブ（名前・コマンド／SSH・作業フォルダ・自動化）をフォームで設定、JSON編集不要" style="width:100%;border-radius:12px;margin:.4em 0 1em" />
+
 そのフォルダの外には何も書きません。
 
 :::note[向き・不向き]
@@ -95,6 +102,7 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 
 ---
 
-_Windows版のリリースバイナリは、[SignPath Foundation](https://signpath.org/) から提供される
-無償の証明書でコード署名されています。詳細は
+_Windows版のリリースは、公開された GitHub Actions がソースからビルドし、zip の隣に SHA256 を
+公開しています。コード署名（[SignPath Foundation](https://signpath.org/) の無償証明書）は準備中で、
+署名版が出るまでは初回起動時に SmartScreen の警告が出ます（「詳細情報 → 実行」で進めます）。詳細は
 [コード署名ポリシー](https://github.com/styleio/ShikishaTerm/blob/main/SIGNING.md)。_
