@@ -91,10 +91,18 @@ On the first run the screen tells you to press `[e]`, which opens the settings s
 inside the same window. There you pick which AI runs in which folder — no JSON editing
 required.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/settings.png" alt="SHIKISHA-TERM settings — configure each tab (name, command or SSH host, working folder, automation) in a form, with no JSON editing" width="880">
+</p>
+
 To open just the settings (also the way back in if a broken config stops the app from
 starting), double-click **`Settings.cmd`**.
 
 ## What it does
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/desktop.png" alt="SHIKISHA-TERM desktop — a mission-control dashboard of several AI agents, each showing whether it is working, waiting or done" width="880">
+</p>
 
 - **Tabs with real status** — every tab shows whether it is working, done, or waiting for
   you, detected from the screen itself rather than from any vendor API
