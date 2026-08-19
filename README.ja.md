@@ -197,7 +197,7 @@ Rust（MSVC）が必要です。生成物は単一の実行ファイルで、追
 
 - [自動化リファレンス](docs/AUTOMATION.ja.md) — イベント・変数・命令・例
 - [翻訳の手引き](docs/TRANSLATING.md) — 言語を追加したい方へ
-- [設計書](DESIGN.md) — 用語・アーキテクチャ・安全設計
+- [設計書](DESIGN.ja.md) — 用語・アーキテクチャ・安全設計（[English](DESIGN.md)）
 - [セキュリティ](SECURITY.md) — 脅威モデルと報告方法
 - [コード署名ポリシー](SIGNING.md) — リリースの署名方針（英語）
 

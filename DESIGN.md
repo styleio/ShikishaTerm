@@ -1,177 +1,201 @@
-# SHIKISHA-TERM 設計書
+# SHIKISHA-TERM — Design
 
-コンセプト: ポータブル・マルチセッションAIオーケストレーションTUI —「高性能AI用のPuTTY」
+> 🌐 **English** (this page) · [日本語](DESIGN.ja.md)
 
-Claude Code / Codex 等のCLIエージェントと、KIMI / DeepSeek / Ollama 等のLLM APIを、
-一つのサイバー風TUIから複数タブで監視・操作・連携させるWindowsポータブルツール。
+Concept: a portable, multi-session AI-orchestration desktop app — "PuTTY for high-powered AIs."
+
+A portable Windows tool that monitors, drives and connects CLI agents (Claude Code,
+Codex, etc.) and LLM APIs (KIMI, DeepSeek, Ollama, etc.) across several tabs, from one
+cyberpunk-styled window.
+
+> Note: this document tracks the current implementation. A few things moved since the
+> original plan — the UI is rendered in WebView2 (not a terminal TUI), the local HTTP
+> server is `tiny_http`, and the phone view pushes over a WebSocket. Those sections are
+> written as built. The design rationale (state detection, profiles, the Lua sandbox,
+> the security model, workspace portability) is unchanged.
 
 ---
 
-## 0. 用語定義
+## 0. Terminology
 
-| 用語 | 意味 |
+| Term | Meaning |
 |---|---|
-| **セッション** | 1つの子プロセス (Claude Code / SSH / シェル等) とその画面。1タブ=1セッション |
-| **タブ** | セッションを表示・操作する単位。左バーに縦に並ぶ |
-| **ワークスペース** | 切り替える単位。仮想デスクトップ相当で、複数タブをまとめたもの（例: ProjectX、雑用）|
-| **ワークスペース定義ファイル** | ワークスペースの中身 (タブ定義) を外部化したJSON。`workspaces/*.json`。コピー・共有できる単位 |
-| **プロファイル** | ツール毎の状態検出ルール。`profiles/*.json` |
-| **フック** | 状態遷移で発火するLuaスクリプト。`scripts/*.lua` |
-| **チェーン深度** | 自動送信が何回連鎖したかのカウンタ。人間の手動入力で0に戻る |
+| **Session** | One child process (Claude Code / SSH / a shell, …) and its screen. One tab = one session |
+| **Tab** | The unit that shows and drives a session. Listed vertically in the left bar |
+| **Workspace** | The unit you switch between — like a virtual desktop, a set of tabs grouped together (e.g. ProjectX, Chores) |
+| **Workspace definition file** | A workspace's contents (its tab definitions) externalized as JSON: `workspaces/*.json`. The unit you copy and share |
+| **Profile** | Per-tool state-detection rules: `profiles/*.json` |
+| **Hook** | A Lua script fired on a state transition: `scripts/*.lua` |
+| **Chain depth** | A counter of how many times auto-send has chained. Reset to 0 by manual human input |
 
-config.json の `workspaces` は**ワークスペースの一覧（目次）**で、各項目は中身を
-`file` で外部参照するか `tabs` で直書きするかを選べる（両者は等価）。
+`workspaces` in `config.json` is the **index of workspaces**; each entry can either point
+at its contents with `file` or inline them with `tabs` (the two are equivalent).
 
-## 1. システム概要
+## 1. System overview
 
-- 複数のAIセッション（CLIエージェント / APIチャット）をタブで並行管理
-- タブ間のデータ転送・自動パイプライン・Luaスクリプトによる柔軟な加工
-- Google Drive / USBメモリから解凍即起動する完全ポータブル動作
-- 映画のハッカー画面風（CRT / ネオン）の可視化UI
+- Runs several AI sessions (CLI agents / API chats) in parallel, as tabs
+- Moves data between tabs, builds automatic pipelines, and reshapes text with Lua
+- Fully portable: unzip from Google Drive or a USB stick and run — no install
+- A "hacker movie" visualization (CRT / neon)
 
-## 2. 動作環境・配布形式
+## 2. Environment & distribution
 
-| 項目 | 内容 |
+| Item | Detail |
 |---|---|
-| 対応OS | Windows 10 (1809以降) / 11 (64bit) ※ConPTY要件 |
-| 配布形態 | 単一実行ファイル `SHIKISHA-TERM.exe` ＋ 設定・スクリプトフォルダ |
-| 実行要件 | インストール不要・管理者権限不要・ランタイム依存なし |
-| ポータブル要件 | exeからの相対パスのみ使用、データはフォルダ内で完結 |
-| 前提 | ラップ対象のCLIエージェント（Claude Code等）は各PCにインストール済みであること（PuTTYにとってのSSHサーバーと同じ位置づけ） |
+| OS | Windows 10 (1809+) / 11 (64-bit) — ConPTY is required |
+| Form | A single executable `SHIKISHA-TERM.exe` plus config / script folders |
+| Requirements | No install, no admin rights, no runtime dependencies |
+| Portability | Uses only paths relative to the exe; all data stays inside the folder |
+| Assumption | The CLI agents it wraps (Claude Code, etc.) are already installed on the machine — the same relationship PuTTY has with an SSH server |
 
-## 3. 技術スタック（Rust）
+## 3. Tech stack (Rust)
 
-| 領域 | 採用技術 | 備考 |
+| Area | Choice | Notes |
 |---|---|---|
-| 言語 | Rust | 単一静的リンクexe（約10MB）、依存ゼロ |
-| TUI | ratatui + crossterm | |
-| ターミナル埋め込み | tui-term + vt100 | TUIペイン内に子プロセス端末を描画 |
-| PTY | portable-pty (WezTerm由来) | Windows ConPTY対応 |
-| 非同期ランタイム | tokio | |
-| スクリプト | mlua (Lua 5.4, vendored静的リンク) | サンドボックス実行 |
-| HTTP(API/通知) | reqwest + rustls | OpenSSL非依存 |
-| Web GUI | axum | 内蔵ローカルサーバー |
-| 設定 | serde / serde_json (config.json) | |
-| 暗号化 | argon2 + aes-gcm | APIキー保護 |
-| 文字幅 | unicode-width | 全角(日本語)対応 |
+| Language | Rust | A single, statically linked exe (~18 MB), no runtime deps |
+| UI | wry + tao (WebView2) | The interface is HTML/JS rendered in an OS WebView2 window |
+| Terminal parsing | vt100 | Parses each child's output into a screen buffer for display + detection |
+| PTY | portable-pty (from WezTerm) | Windows ConPTY support |
+| Scripting | mlua (Lua 5.4, vendored & statically linked) | Sandboxed execution |
+| Local HTTP | tiny_http | The built-in settings server and the phone relay |
+| HTTP client | ureq + rustls | For LLM APIs / notifications; no OpenSSL dependency |
+| Config | serde / serde_json (`config.json`) | |
+| Encryption | argon2 + aes-gcm | Protects API keys / tokens |
+| Character width | unicode-width | Full-width (CJK) correctness |
 
-選定理由: ターミナルエミュレータを0から書かず、WezTerm/実績クレートを組み込むため。
-Go案はエコシステム上、成熟した組み込み用端末エミュレータが無く断念。
+Rationale: rather than write a terminal emulator from scratch, reuse the proven WezTerm
+PTY crate and the `vt100` parser, and render the interface as HTML/JS in a WebView2 window
+so the whole thing ships as one dependency-free exe.
 
-## 4. セッションアーキテクチャ
+## 4. Session architecture
 
-**設計原則: ベンダー非依存。ターミナルで動くAIは全部使えること。**
-特定ツールのヘッドレスAPI（stream-json等）には依存しない。
+**Design principle: vendor-neutral. Anything that runs in a terminal must work.**
+It does not depend on any one tool's headless API (stream-json, etc.).
 
-### 4.0 接続設定（PuTTY相当の機能）
-接続まわりはSSHクライアント（OpenSSH）をそのまま起動することで実現する。
-ポート・鍵・ポート転送・踏み台・エージェント転送などは全てコマンド引数で表現でき、
-複雑な構成は `~/.ssh/config` に書くのが定石（PuTTYの保存済みセッションに相当）。
+### 4.0 Connection settings (the PuTTY-equivalent)
 
-初心者向けにGUIで構造化入力できるようにする（接続先・ポート・ユーザー名・鍵ファイル・
-ポート転送・踏み台・接続維持）。入力からコマンド文字列を生成し、既存のコマンド文字列は
-逆に解析してフォームへ復元する（コマンド文字列が唯一の真実であり、玄人は直接書ける）。
+Connections are made by launching the real SSH client (OpenSSH) directly. Ports, keys,
+port-forwarding, jump hosts, agent forwarding — all of it can be expressed as command-line
+arguments, and complex setups belong in `~/.ssh/config` (the equivalent of PuTTY's saved
+sessions).
 
-端末側の設定（PuTTYが自前で持っている領域）はタブ設定として持つ:
+For beginners, a GUI offers a structured form (host, port, user, key file, port forwarding,
+jump host, keep-alive). It generates a command string from the form, and parses an existing
+command string back into the form — the command string is the single source of truth, and
+power users can just write it.
 
-| 設定 | キー | 既定 |
+The terminal-side settings (the part PuTTY keeps for itself) are held per tab:
+
+| Setting | Key | Default |
 |---|---|---|
-| 作業フォルダ | `cwd` | アプリと同じ場所（相対指定は設定ファイルの場所が基準） |
-| 文字コード | `encoding` | UTF-8（`shift_jis` / `euc-jp` 等を指定可） |
-| スクロールバック行数 | `scrollback` | 5000 |
-| セッションログ保存 | `log` | 無効（有効時 `logs/<タブ名>-<日付>.log`） |
+| Working folder | `cwd` | The app's own location (relative paths are resolved from the config file) |
+| Encoding | `encoding` | UTF-8 (`shift_jis` / `euc-jp` etc. can be set) |
+| Scrollback lines | `scrollback` | 5000 |
+| Session log | `log` | Off (when on: `logs/<tab>-<date>.log`) |
 
-`cwd` はAI CLIがどのプロジェクトを見るかを決めるため重要。存在しないフォルダを
-指定した場合は起動失敗させず、アプリの場所にフォールバックする。
+`cwd` matters because it decides which project the AI CLI sees. Pointing it at a folder that
+does not exist does not fail the launch — it falls back to the app's location.
 
-**Docker / WSL の中のフォルダ**は `cwd`（Windows側）では指定できないため、
-コマンド側のオプションで指定する。GUIには入力補助を用意する:
+**Folders inside Docker / WSL** can't be set via `cwd` (which is Windows-side), so they go
+on the command instead. The GUI provides input helpers:
 
-| 種類 | コマンド |
+| Kind | Command |
 |---|---|
-| Docker | `docker exec -it -w /app <コンテナ> bash` |
+| Docker | `docker exec -it -w /app <container> bash` |
 | WSL | `wsl -d Ubuntu --cd /home/me/proj -- bash` |
 
-未対応: シリアル接続 / Telnet、`.ppk` 鍵（`puttygen`でOpenSSH形式へ変換して使う）、
-配色・フォントの個別変更。
+Not supported: serial / Telnet, `.ppk` keys (convert to OpenSSH format with `puttygen`),
+and per-tab color/font overrides.
 
-### 4.1 ターミナルタブ（コア）
-- portable-pty で任意のCLI AI（claude / codex / gemini / aider / ollama run / 未知の
-  新ツール）を起動し、tui-term でタブ内に端末画面をそのまま表示・対話操作
-- 状態検出・応答取得・自動操作は4.2の検出エンジンが担う
+### 4.1 Terminal tabs (the core)
 
-### 4.2 状態検出エンジン（本システムの心臓部）
-複数の独立した信号を重ねて、タブ状態（BUSY / DONE / QUESTION / WAIT / ERROR）を
-状態機械で判定する:
+- `portable-pty` launches any CLI AI (claude / codex / gemini / aider / `ollama run` /
+  some unknown new tool) and its terminal is shown and driven inside the tab
+- State detection, response capture and automation are handled by the detection engine (4.2)
 
-| 信号 | 内容 | 信頼度 |
+### 4.2 State-detection engine (the heart of the system)
+
+It layers several independent signals and runs a state machine to decide a tab's state
+(BUSY / DONE / QUESTION / WAIT / ERROR):
+
+| Signal | What it is | Confidence |
 |---|---|---|
-| 画面パターン | vt100画面バッファへのプロファイル定義正規表現（例: "esc to interrupt"=BUSY、"❯ 1."等の選択肢リスト=QUESTION） | 高（ルール次第） |
-| 端末制御シーケンス | ベル文字(BEL)、ウィンドウタイトル変更(OSC)、代替スクリーン切替、カーソル表示/非表示 | 中 |
-| 出力沈黙タイマー | N秒間出力なし＋カーソル入力位置 → 入力待ちとみなす | 中（汎用フォールバック） |
-| プロセス終了 | 子プロセスのexitコード | 確実 |
+| Screen patterns | Profile-defined regexes against the vt100 screen buffer (e.g. "esc to interrupt" = BUSY; a choice list like "❯ 1." = QUESTION) | High (depends on the rule) |
+| Terminal control sequences | The bell (BEL), window-title changes (OSC), alt-screen switches, cursor show/hide | Medium |
+| Output-silence timer | No output for N seconds + the cursor at an input position → assume it's waiting | Medium (generic fallback) |
+| Process exit | The child's exit code | Certain |
 
-ヘッドレスJSON連携の「100%確実」に対し本方式はヒューリスティックであるため、
-誤検知しても事故に至らないよう7.5の自動実行バジェットと「迷ったら止まって
-人間に返す」既定（9章）を前提に組む。
+Because this is heuristic (versus the "100% certain" of a headless JSON integration), the
+whole thing is built so a misdetection can't cause an accident: the auto-run budget (7.5)
+and a "when in doubt, stop and hand back to the human" default (§9) are assumed throughout.
 
-### 4.3 エージェントプロファイル（./profiles/*.json）
-ツール毎の検出・操作ルールを宣言的に外部定義し、コード変更なしで新ツール対応:
+### 4.3 Agent profiles (`./profiles/*.json`)
+
+Per-tool detection and driving rules are declared externally, so a new tool works without
+touching the code:
 
 ```jsonc
-// profiles/claude.json（イメージ）
+// profiles/claude.json (illustrative)
 {
   "name": "Claude Code",
-  "launch": "claude {args}",              // 起動コマンドはユーザー編集可
+  "launch": "claude {args}",              // launch command is user-editable
   "busy_patterns":  ["esc to interrupt"],
   "question_patterns": ["Do you want", "❯ \\d+\\."],
   "done_signals":   ["bell", "silence:2s"],
-  "answer": { "style": "number_enter" },  // 選択肢への回答方法(数字+Enter/矢印+Enter)
-  "capture_cleanup": ["spinner_lines"],   // 応答キャプチャ時の除去ルール
-  "detector_lua": null                    // 複雑な判定はLuaに委譲可(detect(screen))
+  "answer": { "style": "number_enter" },  // how to answer a choice (number+Enter / arrows+Enter)
+  "capture_cleanup": ["spinner_lines"],   // cleanup rules when capturing a response
+  "detector_lua": null                    // complex logic can defer to Lua: detect(screen)
 }
 ```
 
-- 同梱プロファイル: claude / codex / gemini / aider / ollama（ユーザー編集可・Driveで持ち運び可）
-- ツールのUI変更で壊れた場合もプロファイル修正のみで復旧
-- プロファイル未定義の未知ツールは汎用ヒューリスティック（沈黙タイマー＋BEL＋exit）で動作
-- 各ツールの自動許可フラグ（`--full-auto` 等）は `launch` にユーザーが書けばよく、
-  アプリ本体はその意味を知る必要がない（ベンダー非依存原則と両立）
+- Bundled profiles: claude / codex / gemini / aider / ollama (user-editable, carry on Drive)
+- If a tool changes its UI and detection breaks, only the profile needs fixing
+- An unknown tool with no profile still runs on the generic heuristic (silence timer + BEL + exit)
+- Each tool's auto-approve flag (`--full-auto`, etc.) is just written into `launch` by the
+  user; the app never needs to understand its meaning (consistent with vendor-neutrality)
 
-### 4.4 ヘッドレスアダプタ（オプションの精度アップグレード）
-主要CLIはサブスク認証のまま使える公式ヘッドレスモードを持つ
-（Claude Code `claude -p` / Codex `codex exec` / Gemini CLI）。
-プロファイルに `headless` 定義があるツールに限り、パイプライン・自動フック用途で
-ヘッドレス実行を選択でき、状態検出・応答取得が100%正確になる。
+### 4.4 Headless adapter (an optional accuracy upgrade)
 
-- あくまでオプション。未対応ツールは常にPTY＋検出エンジンで動く（汎用性の原則は不変）
-- アプリ本体は各社形式を知らず、パース規則もプロファイル側に記述する
-- 注意: Claude Codeは環境変数 `ANTHROPIC_API_KEY` が存在するとサブスク(OAuth)より
-  APIキー課金が優先される。子プロセス起動時の環境変数を明示制御して事故を防ぐ
+The major CLIs have official headless modes that still use your subscription auth
+(Claude Code `claude -p`, Codex `codex exec`, Gemini CLI). Only for tools whose profile
+defines `headless`, a pipeline / auto-hook may run headless, making state detection and
+response capture 100% accurate.
 
-### 4.5 APIチャットタブ（補助）
-OpenAI互換API（KIMI / DeepSeek / Ollama serve等）を直接叩くチャットタブも提供する。
-CLIを介さないぶん状態検出が正確で、軽量な下請けセッションに向く。
+- Strictly optional. Unsupported tools always run on PTY + the detection engine (the
+  generality principle is invariant)
+- The app knows nothing of each vendor's format; the parse rules live in the profile
+- Caution: if `ANTHROPIC_API_KEY` is set, Claude Code bills the API instead of the
+  subscription (OAuth). The child process's environment is controlled explicitly to prevent that
 
-### 4.6 Session抽象化
+### 4.5 API chat tabs (auxiliary)
+
+There are also chat tabs that hit an OpenAI-compatible API directly (KIMI / DeepSeek /
+`ollama serve`, …). Skipping the CLI makes state detection exact — good for lightweight
+sub-sessions.
+
+### 4.6 The Session abstraction
+
 ```
 trait Session {
     fn send(&mut self, input: Input);
     fn events(&mut self) -> EventStream;  // StateChanged / Question / Done / Error ...
 }
 ```
-実装: `PtySession`（コア） / `HeadlessSession`（オプション） / `ApiChatSession`（補助）
 
-## 5. 画面レイアウト & UI仕様 (Cyber/Hacker Theme)
+Implementations: `PtySession` (core) / `HeadlessSession` (optional) / `ApiChatSession` (auxiliary).
 
-CRTモニター調ネオンカラー（グリーン/イエロー/ブルー/ブラック）、左側縦タブ構成。
+## 5. Layout & UI (cyber / hacker theme)
+
+The interface is HTML/JS rendered in a WebView2 window — CRT-style neon (green / yellow /
+blue / black), tabs down the left. It is not a terminal TUI; it's a real UI that happens to
+look like one. The conceptual layout:
 
 ```
 ┌─────────────────┬────────────────────────────────────────────────────────┐
 │ [≡] 0. INDEX    │  [ACTIVE SESSION MAP & HOST CONNECTIVITY]              │
 ├─────────────────┼────────────────────────────────────────────────────────┤
-│ [●] 1. Claude   │  User: タブ1の出力を踏まえてリファクタリングして        │
-│ [●] 2. Codex    │  AI  : 了解しました。コード構造を整理します...          │
+│ [●] 1. Claude   │  User: refactor this using tab 1's output              │
+│ [●] 2. Codex    │  AI  : Got it. Tidying the structure...                │
 │ [●] 3. Local-Q4 │                                                        │
 │                 │  >>>[RESPONSE COMPLETE]                                │
 ├─────────────────┴────────────────────────────────────────────────────────┤
@@ -179,55 +203,55 @@ CRTモニター調ネオンカラー（グリーン/イエロー/ブルー/ブ�
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### ステータスインジケータ
-- `0. INDEX`: 全体ダッシュボード（最上部固定）
-- 🟡 黄 BUSY: スピナー（⠋⠙⠹）、AI応答受信中
-- 🟢 緑 DONE: 応答受領・処理完了
-- 🔵 青 WAIT: 転送待ち / 人間の判断待ち（自動応答が判断保留した場合を含む）
-- `A` マーク: オートパイロット（自動YES）有効タブの常時表示
+### Status indicators
+- `0. INDEX`: the whole-system dashboard (pinned at the top)
+- 🟡 BUSY: spinner (⠋⠙⠹) — receiving an AI response
+- 🟢 DONE: response received / work complete
+- 🔵 WAIT: waiting to hand off / waiting on a human decision (including when auto-answer held back)
+- `A` mark: shown on tabs with autopilot (auto-YES) enabled
 
-### キー入力ルーティング
-ターミナルタブでは打鍵を子プロセスへ透過し、アプリ操作（タブ切替等）は
-プレフィックスキー方式（tmux風、例: Ctrl+B）で分離する。
+### Key routing
+On a terminal tab, keystrokes pass through to the child process; app actions (switching tabs,
+etc.) are separated behind a prefix key (tmux-style, e.g. `Ctrl+B`).
 
-## 6. INDEX（ダッシュボード）
+## 6. INDEX (dashboard)
 
-- 全タブの一覧: モデル / 役割 / ステータス / オートパイロット状態
-- 接続ホスト疎通状態の可視化（登録API・ローカルLLM）
-- 自動実行バジェットの残量表示
-- 緊急停止キー: 全タブの自動動作を即時停止
-- 設定Web GUI起動（`e` キー）
+- A list of every tab: model / role / status / autopilot state
+- Reachability of connected hosts (registered APIs, local LLMs)
+- The remaining auto-run budget
+- Emergency-stop key: halts every tab's automation at once
+- Opens the settings web GUI (the `e` key)
 
-## 7. パイプライン & 自動フック
+## 7. Pipelines & auto-hooks
 
-### 7.1 手動パイプ（ワンショット）
-プロンプト欄の構文で即時転送:
-- `@tab2 このログを要約して` → タブ2に送信
-- `@tab1 | @tab2` → タブ1に投げ、結果をタブ2へ連鎖
+### 7.1 Manual pipe (one-shot)
+Immediate transfer via a prompt-line syntax:
+- `@tab2 summarize this log` → send to tab 2
+- `@tab1 | @tab2` → send to tab 1, then chain the result to tab 2
 
-### 7.2 自動フック（常設ルール・イベントドリブン）
-config.jsonで「タブNのイベントに `scripts/*.lua` を紐付け」。
-タブ完了(DONE)時に加工→転送→自動実行までを無人実行できる。
+### 7.2 Auto-hooks (standing, event-driven rules)
+`config.json` binds "a `scripts/*.lua` to tab N's events." On a tab's completion (DONE), it
+can reshape → transfer → auto-run, unattended.
 
-### 7.3 応答テキストのキャプチャ（パイプラインの入力源）
-「最新の応答だけ」を取り出すための送信境界マーカー方式:
+### 7.3 Capturing the response text (the pipeline's input)
+A send-boundary marker scheme, so only the *latest* response is taken:
 
-- BUSY遷移時 (送信直後) のスクロールバック蓄積位置をマーカーとして記録
-- DONE遷移時にマーカー以降の行だけを抽出し `tab.output` として保持
-  （過去の応答・履歴はマーカーより前なので混入しない）
-- プロファイルの `capture_cleanup`（スピナー行・プロンプトエコー除去等）を適用
-- 全画面TUI (alt screen) はスクロールしないため可視画面スナップショットで代替
-  （UI枠が混ざり得る。Lua側の string.match 抽出で補正、精密さが必要なら
-  ヘッドレスアダプタ(4.4)を使う）
-- `Ctrl+B c` で最新キャプチャをクリップボードへコピー（動作確認・手動利用）
-- ヘッドレスアダプタ有効時: 構造化出力から正確に取得
-- APIチャットタブ: APIレスポンスをそのまま使用（正確）
+- On the BUSY transition (right after sending), the scrollback position is recorded as a marker
+- On the DONE transition, only the lines after the marker are extracted and kept as `tab.output`
+  (older responses and history are before the marker, so they can't leak in)
+- The profile's `capture_cleanup` is applied (strip spinner lines, prompt echoes, …)
+- A full-screen TUI (alt-screen) doesn't scroll, so a snapshot of the visible screen is used
+  instead (UI frames can bleed in; correct with `string.match` on the Lua side, or use the
+  headless adapter (4.4) when precision matters)
+- `Ctrl+B c` copies the latest capture to the clipboard (for checking / manual use)
+- With the headless adapter on: taken exactly from structured output
+- API chat tabs: the API response is used directly (exact)
 
-### 7.4 スタートアップ自動化（Expect）
-「アプリを起動するだけで前日の作業状態まで自動復旧する」ためのタブ毎の自動入力機能。
-例: SSHログイン → 作業フォルダへcd → `claude --resume` → 一番上のセッションを選択。
+### 7.4 Startup automation (Expect)
+Per-tab auto-input so that "just launching the app restores yesterday's working state."
+Example: SSH login → cd into the working folder → `claude --resume` → pick the top session.
 
-タブはconfig.jsonで定義し、`startup` に「画面待ち→送信」のステップを並べる:
+Tabs are defined in `config.json`, and `startup` lists "wait for the screen → send" steps:
 
 ```jsonc
 {
@@ -235,7 +259,7 @@ config.jsonで「タブNのイベントに `scripts/*.lua` を紐付け」。
     {
       "name": "dev-server",
       "command": "ssh root@example.com",
-      "profile": "claude",          // 検出プロファイルの手動指定 (ssh先のAI用)
+      "profile": "claude",          // manually pin the detection profile (for the AI on the far side)
       "startup": [
         { "wait_for": "\\$ $",            "send": "cd /srv/myproj\r" },
         { "wait_for": "\\$ $",            "send": "claude --resume\r" },
@@ -246,7 +270,7 @@ config.jsonで「タブNのイベントに `scripts/*.lua` を紐付け」。
 }
 ```
 
-より複雑な分岐 (初回だけ--resumeが無い、等) はLuaスタートアップスクリプトで:
+More complex branching (no `--resume` on the first run, etc.) goes in a Lua startup script:
 
 ```jsonc
 { "startup_lua": "scripts/resume_work.lua" }
@@ -254,281 +278,285 @@ config.jsonで「タブNのイベントに `scripts/*.lua` を紐付け」。
 
 ```lua
 function on_start(tab)
-  if not shikisha.wait(tab, "\\$ $", 15000) then return end  -- ms。falseならタイムアウト
+  if not shikisha.wait(tab, "\\$ $", 15000) then return end  -- ms; false on timeout
   shikisha.send(tab, "cd /srv/myproj\r")
   shikisha.wait(tab, "\\$ $", 5000)
   shikisha.send(tab, "claude --resume\r")
   if shikisha.wait(tab, "Select a session", 5000) then
-    shikisha.send(tab, "\r")                                 -- 一番上のセッションを選択
+    shikisha.send(tab, "\r")                                 -- pick the top session
   end
 end
 ```
 
-- `wait_for` は検出エンジンの画面バッファに対する正規表現
-- 各ステップにタイムアウト (既定10秒)。超過時は自動入力を中断して青WAITで人間に引き渡す
-  (誤爆で暴走しない「迷ったら止まる」原則を踏襲)
-- 自動入力中はタブに専用インジケータを表示し、任意のキー入力で即座に人間が介入できる
-- パスワードの平文埋め込みは非推奨 (SSHは鍵認証を推奨)。どうしても必要な場合は
-  10章の暗号化ストアから参照する形とし、config.json平文には書かせない
+- `wait_for` is a regex against the detection engine's screen buffer
+- Each step has a timeout (default 10 s). On overrun, auto-input aborts and hands off to a
+  human as a blue WAIT (the same "when in doubt, stop" rule, so a misfire can't run away)
+- During auto-input the tab shows a dedicated indicator, and any keystroke lets the human
+  take over instantly
+- Embedding a plaintext password is discouraged (prefer SSH key auth). If it's truly needed,
+  reference it from the encrypted store (§10) — never in plaintext `config.json`
 
-### 7.5 暴走対策（自動実行バジェット）
-自動フック連鎖・自動YES・時間あたりAPI呼び出しを単一バジェットで統合管理:
-- パイプライン定義時の循環検出（DAG強制）＋ 実行時最大チェーン深度（既定10）
-- 連続自動応答の上限回数（既定10、超過で青WAITに落とし人間へ返す）
-- 緊急停止キーで全自動動作を即時停止
-- 上限・既定値はconfig.jsonで変更可（自己責任）
+### 7.5 Runaway protection (the auto-run budget)
+Auto-hook chains, auto-YES and API calls per unit time are all managed under one budget:
+- Cycle detection at pipeline-definition time (a DAG is enforced) + a runtime max chain depth (default 10)
+- A cap on consecutive auto-answers (default 10; over it, drop to blue WAIT and hand to a human)
+- The emergency-stop key halts all automation at once
+- The caps and defaults are changeable in `config.json` (at your own risk)
 
-## 8. Luaスクリプト（フックエンジン）
+## 8. Lua scripting (the hook engine)
 
-フックの唯一の実行エンジンはLua。テンプレートモード（`{{ .TabA.Output }}` 等）は
-初心者向けの糖衣であり、内部的にはLua相当に展開される。
+Lua is the one and only execution engine for hooks. Template mode (`{{ .TabA.Output }}`
+etc.) is beginner sugar and expands to the equivalent Lua internally.
 
-### 8.1 サンドボックス（ケーパビリティ注入パターン）
-- mluaで `os` / `io` / 生ソケットを一切ロードしない
-- メモリ上限・命令数フック・タイムアウトで無限ループを遮断
-- Go...Rust側が実装した安全な関数のみを注入。任意URL通信・ファイル操作は不可能
+### 8.1 Sandbox (the capability-injection pattern)
+- mlua loads no `os` / `io` / raw sockets at all
+- A memory cap, an instruction-count hook and a timeout cut off infinite loops
+- Only safe functions the Rust side implemented are injected. Arbitrary-URL traffic and file
+  operations are impossible
 
 ### 8.2 Lua API
-| API | 内容 |
+| API | What it does |
 |---|---|
-| `tab.output` / `tab.model` / `tab.name` | イベント発生タブの情報 |
-| `shikisha.send_to_tab(tab, text)` | 他タブへ送信＋自動実行。tabは**タブ名**または番号（名前推奨: 並べ替えで壊れない） |
-| `shikisha.notify(dest, text)` | 登録済みSlack/Telegramへ通知（登録先限定） |
-| `shikisha.log(text)` | logs/ への記録 |
-| `shikisha.get_var(k)` / `set_var(k, v)` | フック間共有変数 |
-| `shikisha.wait(tab, pattern, timeout_ms)` | 画面に正規表現が現れるまで待つ (Expect) |
-| `shikisha.send(tab, text)` | タブへキー入力を送信 |
-| `shikisha.sleep(ms)` | 待機 |
+| `tab.output` / `tab.model` / `tab.name` | Info about the tab that fired the event |
+| `shikisha.send_to_tab(tab, text)` | Send to another tab + run it. `tab` is a **tab name** or number (name preferred: reordering won't break it) |
+| `shikisha.notify(dest, text)` | Notify a registered Slack/Telegram (registered targets only) |
+| `shikisha.log(text)` | Write to `logs/` |
+| `shikisha.get_var(k)` / `set_var(k, v)` | Variables shared across hooks |
+| `shikisha.wait(tab, pattern, timeout_ms)` | Wait until a regex appears on the screen (Expect) |
+| `shikisha.send(tab, text)` | Send keystrokes to a tab |
+| `shikisha.sleep(ms)` | Wait |
 
-### 8.3 フックイベント (検出エンジンの状態遷移に紐づくイベント駆動)
+### 8.3 Hook events (driven by the detection engine's state transitions)
 
-| フック | 発火タイミング | 用途例 |
+| Hook | Fires when | Example use |
 |---|---|---|
-| `on_start(tab)` | タブ起動直後 | resume自動化 (7.4章) |
-| `on_question(tab, screen)` | QUESTION検出時 | 自動承認。キー文字列を返すと送信、nilで人間へ |
-| `on_busy(tab)` | BUSY遷移時 (応答開始) | 開始ログ・経過タイマー |
-| `on_done(tab)` | BUSY→DONE遷移時 | 通知・`tab.output`の加工・他タブへ転送 |
-| `on_exit(tab, code)` | 子プロセス終了時 | SSH切断の自動再接続、異常終了通知 |
+| `on_start(tab)` | Right after a tab launches | resume automation (§7.4) |
+| `on_question(tab, screen)` | On QUESTION | Auto-approve. Return a key string to send it, `nil` to hand to a human |
+| `on_busy(tab)` | On BUSY (a response starts) | Start log, elapsed timer |
+| `on_done(tab)` | On BUSY→DONE | Notify / reshape `tab.output` / transfer to another tab |
+| `on_exit(tab, code)` | When the child exits | Auto-reconnect a dropped SSH, notify on abnormal exit |
 
-定期実行は専用フックを設けず、**フック内のループ + `shikisha.sleep()`** で表現する
-（間隔を利用者が決められ、検出ティックの実装都合を露出させないため）。
-ループの終了条件には `shikisha.state(tab)`（現在値）を使う。
-タブの終了・再起動・緊急停止では待機中のコルーチンを破棄する。
+There is no dedicated "periodic" hook; recurring work is expressed with a **loop inside a hook
++ `shikisha.sleep()`** (so the interval is the user's to choose, and the detection-tick
+implementation isn't exposed). Use `shikisha.state(tab)` (the current value) as the loop's exit
+condition. Pending coroutines are discarded on a tab's exit, restart, or an emergency stop.
 
-**呼称**: 利用者向けの名称は「**自動化**」。Luaという語は実際にコードを書く画面
-でのみ使う（利用者は設定したいと思うまで実装言語を意識しなくてよい）。
+**Naming**: the user-facing term is "**automation**." The word "Lua" appears only on the screen
+where you actually write code (users needn't think about the language until they want to).
 
-**ファイル構成**: 指定先がフォルダなら「イベント別ファイル方式」。
-ファイル名がそのままイベント名になり、中身は**処理の本体だけ**を書く
-（`function ... end` はRust側が包む）。`.lua` ファイル指定なら従来の関数定義方式。
+**File layout**: if the target is a folder, it's the "one file per event" scheme. The file
+name *is* the event name, and the file contains **just the body** (`function ... end` is wrapped
+by the Rust side). A `.lua` file target uses the classic function-definition style.
 
 ```
 scripts/projectx/reviewer/
-  ├── on_start.lua      起動したとき
-  ├── on_done.lua       応答が完了したとき
-  ├── on_question.lua   確認を聞かれたとき
-  ├── on_exit.lua       終了したとき
-  └── _shared.lua       共通の下請け関数 (先に読まれ、同一フォルダ内で共有)
+  ├── on_start.lua      when it launches
+  ├── on_done.lua       when a response completes
+  ├── on_question.lua   when it asks for confirmation
+  ├── on_exit.lua       when it exits
+  └── _shared.lua       shared helpers (read first, shared within the folder)
 ```
 
-**アタッチ階層**: 自動化は3階層のどこにでも紐づけられる。
+**Attachment levels**: automation can be bound at any of three levels.
 
-| 階層 | 書く場所 | 用途 |
+| Level | Where it's written | Purpose |
 |---|---|---|
-| タブ | タブ定義の `"automation"` | そのタブ専用の振る舞い (例: レビュー役) |
-| ワークスペース | ワークスペース定義の `"automation"` | そのプロジェクト固有のパイプライン |
-| 全体 | config.json の `"automation"` | 全タブ共通のフォールバック |
+| Tab | the tab definition's `"automation"` | Behavior specific to that tab (e.g. a reviewer) |
+| Workspace | the workspace definition's `"automation"` | A pipeline specific to that project |
+| Global | `config.json`'s `"automation"` | A fallback shared by all tabs |
 
-パスはGUIが規約（`scripts/<ワークスペース>/<タブ>`）で自動命名し、
-**結果を設定に保存する**。利用者はパスを意識せず、リネームしても壊れず、
-別タブに同じパスを指定すれば自動化を共有できる。旧称 `"lua"` も読める。
+The GUI auto-names the path by convention (`scripts/<workspace>/<tab>`) and **saves the result
+into the config**. The user never thinks about the path, renaming won't break it, and pointing a
+different tab at the same path shares the automation. The old key `"lua"` is still read.
 
-引き当ては**より具体的な方が勝つ**（タブ > ワークスペース > 全体）。あるフックを
-タブ用スクリプトが定義していなければ上位へフォールバックし、両方は実行しない。
-これにより `tab.index` での分岐が不要になり、スクリプトを使い回せる。
+Resolution: **the more specific wins** (Tab > Workspace > Global). If a tab-level script doesn't
+define a given hook, it falls back to the level above — never both. This removes the need to
+branch on `tab.index` and lets scripts be reused.
 
-実行モデル: フックはLuaコルーチンとして実行され、`shikisha.wait()` は
-UIをブロックせず検出ティックで条件成立を待つ (見た目は同期・実体は非同期)。
-Lua環境は**ワークスペース単位**で1つ。各スクリプトは独立した名前空間で読まれるので
-`on_done` を複数ファイルで定義しても衝突せず、共有変数 (`get_var`/`set_var`) は
-ワークスペース内で共有される (A⇔Bループの往復カウンタ等が成立する)。
+Execution model: hooks run as Lua coroutines, and `shikisha.wait()` doesn't block the UI — it
+waits for its condition on the detection tick (looks synchronous, is actually async). There is one
+Lua environment **per workspace**. Each script is read in its own namespace, so defining `on_done`
+in several files doesn't clash, and shared variables (`get_var`/`set_var`) are shared within the
+workspace (so an A⇔B loop's round-trip counter works).
 
-安全ルール (全フック共通):
-- 自動送信は自動実行バジェット (7.5章) でカウント、超過で青WAIT
-- 人間がそのタブへキー入力すると自動化を一時停止 (打鍵の混線防止)。再開キーあり
-- `wait` タイムアウトで自動化中断→人間へ引き渡し
+Safety rules (all hooks):
+- Auto-sends are counted against the auto-run budget (§7.5); over it, blue WAIT
+- A human typing into a tab pauses its automation (so keystrokes don't cross); there's a resume key
+- A `wait` timeout aborts the automation and hands off to a human
 
-パイプラインループ例 — A(Claude実装) ⇔ B(Codexレビュー) ⇔ C(分岐先):
+Pipeline-loop example — A (Claude implements) ⇔ B (Codex reviews) ⇔ C (a branch target):
 ```lua
 function on_done(tab)
-  local out = tab.output                    -- 最新応答のみ (7.3章のマーカー方式)
-  if tab.index == 1 then                    -- A: 実装タブ
+  local out = tab.output                    -- latest response only (the §7.3 marker scheme)
+  if tab.index == 1 then                    -- A: the implementing tab
     local rounds = (shikisha.get_var("rounds") or 0)
     if out:match("LGTM") or rounds >= 5 then
-      shikisha.notify("slack", "自動ループ完了 (" .. rounds .. "往復)")
-      return                                -- 何もしない = ループ停止
+      shikisha.notify("slack", "auto-loop done (" .. rounds .. " rounds)")
+      return                                -- do nothing = stop the loop
     end
     shikisha.set_var("rounds", rounds + 1)
-    shikisha.send_to_tab(2, "このコードをレビューして:\n" .. out)
-  elseif tab.index == 2 then                -- B: レビュータブ
-    if out:match("要修正") then
-      shikisha.send_to_tab(1, "指摘を修正して:\n" .. out)
+    shikisha.send_to_tab(2, "review this code:\n" .. out)
+  elseif tab.index == 2 then                -- B: the review tab
+    if out:match("NEEDS FIX") then
+      shikisha.send_to_tab(1, "fix these points:\n" .. out)
     else
-      shikisha.send_to_tab(3, "ドキュメント化して:\n" .. out)  -- C へ分岐
+      shikisha.send_to_tab(3, "write docs for it:\n" .. out)  -- branch to C
     end
   end
 end
 ```
 
-### 8.5 ファイル・通信の能力付与（既定オフ）
-サンドボックスは「利用者自身」ではなく「利用者が書いていないスクリプト」から守るための
-ものである（AI生成コード・共有されたワークスペース定義・ネットで拾った自動化）。
-そのため能力は**既定で全て無効**とし、設定ファイルに明示したものだけを有効にする。
-GUIからは編集させない（玄人向け機能であり、誤操作の影響が大きい）。
+### 8.5 File / network capabilities (off by default)
+The sandbox exists to protect against **scripts the user did not write** — not against the user
+themselves (AI-generated code, a shared workspace definition, an automation grabbed off the net).
+So capabilities are **all disabled by default**, and only what's explicitly named in the config is
+enabled. The GUI doesn't edit these (it's a power-user feature where a mistake is costly).
 
-方式は「名前付きの窓口」（通知と同じケーパビリティ注入）:
+The scheme is "named gateways" (the same capability injection as notifications):
 
-- `capabilities.files` … 名前とフォルダの対応。`shikisha.write_file(窓口, 名前, 文字列)`
-- `capabilities.http` … 名前とURL・認証の対応。`shikisha.http(窓口, 本文)`
-- スクリプトはパスもURLも組み立てられず、**認証情報を見ることもできない**
-- 玄人向けに生パス・生URL（`allow_dirs` / `allow_hosts`）も用意するが既定は空
+- `capabilities.files` … a name → folder mapping. `shikisha.write_file(gateway, name, string)`
+- `capabilities.http`  … a name → URL + auth mapping. `shikisha.http(gateway, body)`
+- A script can't assemble a path or a URL, and **can't see the credentials**
+- Raw paths / raw URLs (`allow_dirs` / `allow_hosts`) exist for power users but default to empty
 
-不変条件:
-- Luaの `io` / `os` は決して有効にしない（`io.popen` 等の抜け穴があるため、
-  Rust側の専用関数のみを注入する）
-- `config.json` / `secrets.json` / `.env` / `*.lua` / `*.enc` は許可フォルダ内でも
-  常に拒否（自己書き換えと資格情報の吸い出しの防止）
-- ホスト照合は完全一致、`https` のみ。`user@host` 形式のURLは拒否
-- ファイル書き込み・通信は必ず `logs/hooks.log` に記録
+Invariants:
+- Lua's `io` / `os` are never enabled (they have escape hatches like `io.popen`; only the Rust-side
+  dedicated functions are injected)
+- `config.json` / `secrets.json` / `.env` / `*.lua` / `*.enc` are always refused, even inside an
+  allowed folder (prevents self-modification and credential exfiltration)
+- Host matching is exact, `https` only. `user@host`-style URLs are refused
+- Every file write / network call is recorded to `logs/hooks.log`
 
-### 8.4 通知（Slack / Telegram）
-- 実体はRust側notifier。config.jsonに登録したSlack Webhook / Telegram Bot APIへのみ送信
-- Luaを書かなくても、タブ設定のチェックボックスで「完了時に通知」をON可能
-  （内部的に同じnotifierを呼ぶ）
+### 8.4 Notifications (Slack / Telegram)
+- The real work is a Rust-side notifier. It only sends to a Slack Webhook / Telegram Bot API
+  registered in `config.json`
+- Without writing any Lua, a tab's "notify on done" checkbox turns it on (calling the same notifier
+  internally)
 
-## 9. 自動YES（オートパイロット）
+## 9. Auto-YES (autopilot)
 
-対象: AIが「1: OK, 2: NG」等の選択肢型確認を出してくるケース。
+Target: when the AI presents a choice-style confirmation ("1: OK, 2: NG", etc.).
 
-### 検出と応答（ターミナルタブ・汎用）
-- 検出エンジンがプロファイルの選択肢パターンでQUESTION状態を判定
-- 回答はプロファイルの `answer.style` に従いキー入力を送信
-  （数字＋Enter / 矢印キー＋Enter / y＋Enter）
-- APIチャットタブでは応答末尾の選択肢パターン（`1:` `2:` / `[Y/n]` 等）を検出し、
-  設定定型文（既定「はい、続けてください」）を自動送信
+### Detection and answering (terminal tab, generic)
+- The detection engine decides QUESTION from the profile's choice patterns
+- The answer is sent as keystrokes per the profile's `answer.style` (number+Enter / arrows+Enter / y+Enter)
+- On API chat tabs, a trailing choice pattern in the response (`1:` `2:` / `[Y/n]`, …) is detected and
+  a configured canned phrase (default "Yes, please continue") is sent automatically
 
-### 回答決定ポリシー
-1. シンプルモード: 肯定的選択肢（OK/はい/Yes/続行）が明確な時のみ自動応答。
-   判別不能なら青WAITで人間に返す（「迷ったら止まる」が既定）
-2. Luaモード: `on_question` で判断を委譲。`nil` 返却で人間へ
-   （例: 「削除」「上書き」を含む確認だけ人間に回す等のルールが書ける）
+### Answer policy
+1. Simple mode: auto-answer only when a positive choice (OK / Yes / continue) is unambiguous. If it
+   can't tell, hand to a human as blue WAIT ("when in doubt, stop" is the default)
+2. Lua mode: defer the decision to `on_question`. Return `nil` to hand to a human (e.g. a rule that
+   routes only confirmations containing "delete" / "overwrite" to a person)
 
-### 補助手段
-- 各ツールの許可フラグ（`--full-auto`、`--permission-mode acceptEdits` 等）を
-  プロファイルの起動コマンドに書く方法も併用可
-  （アプリはフラグの意味を知らない＝ベンダー非依存原則と両立）
-- 全モード共通で7.5の自動実行バジェットが適用される
+### Assistive means
+- You can also write each tool's approve flag (`--full-auto`, `--permission-mode acceptEdits`, …) into
+  the profile's launch command (the app doesn't know the flag's meaning — consistent with vendor-neutrality)
+- The §7.5 auto-run budget applies in every mode
 
-## 10. セキュリティ
+## 10. Security
 
-### 10.1 APIキー保管
-- 標準: マスターパスワード方式（Argon2idで鍵導出 → AES-GCMでキー部分を暗号化）。
-  起動時にパスワード入力
-- 自己責任: `"encryption": "none"` で平文保存を許可。平文時は起動時に警告表示
+### 10.1 API-key storage
+- Standard: a master-password scheme (Argon2id derives the key → AES-GCM encrypts the key material).
+  You enter the password at startup
+- At your own risk: `"encryption": "none"` allows plaintext storage. Plaintext shows a warning at startup
 
-### 10.2 Web GUI設定サーバー
-- `127.0.0.1` バインド ＋ ランダムポート ＋ 起動毎ワンタイムトークン付きURL
-  （`http://127.0.0.1:PORT/?token=...`）
-- CSRF / DNS rebinding / 他ローカルプロセスからの設定API叩きを遮断
-- localhostバインドのためWindowsファイアウォールのポップアップも回避
+### 10.2 The settings web server
+- Binds `127.0.0.1` + a random port + a per-launch one-time token in the URL
+  (`http://127.0.0.1:PORT/?token=...`)
+- Blocks CSRF / DNS rebinding / another local process poking the settings API
+- Binding to localhost also avoids the Windows Firewall pop-up
 
-### 10.3 GUIの構成
-初心者がマウスとキーボードだけで完結できることを最優先とする。
+### 10.3 The GUI's shape
+The top priority is that a beginner can do everything with just a mouse and keyboard.
 
-**サイドバー＋詳細ペイン**（Apple System Settings / VS Code / Termius 等に共通の形）。
-一覧は「何があるか」だけを見せ、編集は選択した1つに集中させる。行にボタンを
-詰め込む構造は、機能が増えるほど破綻するため採らない。
+**A sidebar + a detail pane** (the shape common to Apple System Settings / VS Code / Termius). The
+list shows only "what exists"; editing focuses on the one thing you selected. Cramming buttons into
+each row breaks down as features grow, so it isn't done.
 
 ```
-┌ 全体設定 ────┬──────────────────────────┐
-│ PROJECTX     │  基本    表示名 / 呼び名(ID)   │
-│  実装        │  起動するもの  種類・接続先…   │
-│  検査        │  自動化  イベント別に設定状況   │
-│  サーバー    │  ▸ 詳細設定                   │
-│  ＋タブを追加 │  このタブを削除               │
-└──────────────┴──────────────────────────┘
+┌ Global settings ─┬──────────────────────────┐
+│ PROJECTX         │  Basic   display name / id     │
+│  implement       │  Launch  kind / destination…   │
+│  review          │  Automation  status per event  │
+│  server          │  ▸ Advanced                    │
+│  + add tab       │  Delete this tab               │
+└──────────────────┴──────────────────────────┘
 ```
 
-- 一覧の各行は**名前＋コマンド（識別用の副題）**のみ。ボタンは置かない
-- 表示名とID（自動化での呼び名）は identity なので**隣接**させる
-- 自動化は**イベントごとに設定状況（設定あり/未設定）を一覧表示**し、その場で編集
-- 並べ替え・階層変更・削除など低頻度の操作は詳細ペイン側に置く
-- 配色は本体のサイバー調と分け、可読性を優先した静かなダークUIとする
-  （アクセント色は保存ボタン等に限定）
-- **テンプレートから開始**（Claude 1つ / 実装＋レビュー往復 / SSH先のAI）
-  — 白紙から始めさせない
-- 自動化はイベント別（起動したとき / 完了したとき / …）の編集画面で編集
-- **自然言語からの生成**: ローカルのAI CLI (claude / codex / gemini) を
-  ワンショット実行してLuaを生成する。APIキー不要（利用者のサブスク認証を利用）。
-  `docs/AUTOMATION.md` を仕様書としてAIに渡すことで独自APIを正しく使わせる。
-  生成結果は必ず表示し、利用者が承認するまで保存しない
-- 通知先（Slack Webhook / Telegram Bot）の登録
-- JSONの直接編集はGUIでは行わない（玄人は設定ファイルを直接編集する）
+- Each list row is only **a name + the command (a subtitle to identify it)** — no buttons
+- The display name and the id (its name in automation) are identity, so they sit **adjacent**
+- Automation shows **each event's status (set / unset) as a list**, editable in place
+- Low-frequency actions (reorder, re-parent, delete) live in the detail pane
+- The palette is separate from the app's cyber look — a quiet, readable dark UI (accent color is
+  reserved for the save button, etc.)
+- **Start from a template** (one Claude / an implement↔review loop / an AI on the far side of SSH) —
+  never from a blank page
+- Automation is edited per event (on start / on done / …)
+- **Generation from natural language**: run a local AI CLI (claude / codex / gemini) one-shot to write
+  the Lua. No API key needed (it uses your subscription auth). Handing the AI `docs/AUTOMATION.md` as
+  the spec makes it use the API correctly. The result is always shown and never saved until you approve it
+- Registering notification targets (Slack Webhook / Telegram Bot)
+- The GUI never edits JSON directly (power users edit the config files by hand)
 
-### 10.4 リモートUI (スマホから監視・指示)
-Tailscale等のプライベートネットワーク経由で、スマホや他PCのブラウザから
-タブの状況を見て指示を送る。RDP/VNC無しで「昨日の続きやっといて」ができる。
+### 10.4 Remote UI (monitor & instruct from a phone)
+See tab status and send instructions from a phone or another PC's browser, over a private network
+like Tailscale. "Carry on from yesterday" without RDP/VNC.
 
-**端末画面の再現ではなく「監視＋指示」に振る。** スマホで80桁の端末を操作するのは
-現実的でなく、実際にやりたいのは状況確認と一言の指示だから。既存の材料
-(状態検出・応答キャプチャ・画面テキスト) をJSONで返し0.7秒ごとに取得するだけで、
-WebSocketも端末エミュレータも要らない。
+**It goes for "monitor + instruct," not a reproduction of the terminal screen.** Driving an 80-column
+terminal on a phone isn't realistic; what you actually want is to check status and drop a one-line
+instruction. It reuses the material already there (detection state, captured responses, screen text)
+and serves it as JSON.
 
-- タブ一覧に状態（処理中/完了/確認待ち）を色で表示。タップで詳細へ
-- 確認待ちのときだけ `1` `2` `はい` `いいえ` `Enter` の返答ボタンを出す
-- 自動化の停止/再開もできる（緊急停止を手元で持てる）
-- 画面テキストは末尾の空行を落とし、直近200行に制限して送る
+The screen is **pushed over a WebSocket** (`/ws-state`): the server sends the current state once on
+connect, then pushes on change (screen updates are rate-limited to ~7 Hz so a burst of output can't
+saturate a slow link; nothing is sent when idle). The client auto-reconnects and falls back to a slow
+poll only while the socket is down. Browser (relay) tabs use the same discipline over `/ws`.
 
-**安全設計** (遠隔から任意コマンドを実行できる機能なので設定画面より厳しくする):
+- The tab list shows state (working / done / waiting) by color; tap for detail
+- Only while waiting does it show `1` `2` `Yes` `No` `Enter` answer buttons
+- Automation can be stopped / resumed (you hold the emergency stop in your hand)
+- Screen text drops trailing blank lines and is capped at the last ~200 lines
+
+**Safety design** (stricter than the settings screen, since it can run arbitrary commands remotely):
 
 | | |
 |---|---|
-| 既定 | **無効**。`remote.enabled` を明示的に立てたときだけ待ち受ける |
-| 待ち受け先 | `auto` は Tailscale → LAN の順に自動検出。プライベート網以外は `allow_public` を立てない限り拒否 |
-| 認証 | 32桁以上のトークン必須（定数時間比較）。`secrets.json` の `remote_token` で固定でき、無ければ起動毎に生成 |
-| 経路 | Tailscale上はWireGuardで暗号化済みのため平文HTTPで足りる。LANバインド時は注意書きを表示 |
-| 表示 | 待ち受け中はTUIのステータスバーに `REMOTE:ON` を常時表示 |
-| 扱い | リモートからの入力は**人間の操作**として扱う（自動チェーンをリセット、ロック中のタブは拒否） |
+| Default | **Off**. Listens only when `remote.enabled` is explicitly set |
+| Bind | `auto` detects Tailscale → LAN, in that order. Anything but a private network is refused unless `allow_public` is set |
+| Auth | A 32+ char token required (constant-time compare). Fixable via `remote_token` in `secrets.json`; generated per launch otherwise. **Rotating it cuts every connected session** |
+| Path | On Tailscale it's already WireGuard-encrypted, so plain HTTP suffices. A LAN bind shows a warning |
+| Display | While listening, the status bar shows `REMOTE:ON` at all times |
+| Handling | Remote input is treated as **a human's action** (resets the auto-chain; a locked tab is refused) |
 
-接続はQRコードで行う（URLとトークンを手入力させない）。設定画面の「スマホから使う」に
-その場で表示され、TUIの `[i]` でも出る。トークンは `data\remote-token` に保存して使い回すため、
-再起動してもスマホを繋ぎ直す必要がない。
+Connecting is done by QR code (no typing a URL and token by hand). It appears in the settings screen's
+"Use from your phone" and via the TUI's `[i]`. The token is saved to `data\remote-token` and reused, so
+a restart doesn't force you to re-pair.
 
-**利用者が使えなければ意味がない**ので、有効化は設定画面のチェックボックス1つで済ませ、
-保存すると本体が待ち受けを開始する（再起動不要）。Tailscaleは必須にせず、
-未導入ならLANで使えることと、そのときの注意点を画面に明記する
-（禁止ではなく説明で伝える。ただしインターネットへの直接公開だけは設定ファイルでの
-明示を要求する）。
+**It's pointless if people can't use it**, so enabling is a single checkbox in the settings; saving it
+starts the listener (no restart). Tailscale isn't required — the screen states plainly that it works on
+the LAN without it, and what to watch out for then (explained, not forbidden; only direct exposure to
+the internet requires an explicit setting in the config file).
 
-## 10.5 設定のホットリロード
-設定変更のたびにアプリを再起動させない。設定ファイル・ワークスペース定義・
-自動化スクリプト・secretsの更新時刻を1秒ごとに見て、変更を検知したら読み直す。
+## 10.5 Config hot-reload
+Don't make the user restart on every change. The modified times of the config files, workspace
+definitions, automation scripts and secrets are checked once a second, and a change triggers a reload.
 
-| 変更内容 | 反映 |
+| Change | Effect |
 |---|---|
-| ロック / 自動再起動 / プロファイル / 階層 / タブ名 | 即時 |
-| タブの追加・削除 | 即時（追加は起動、削除は終了） |
-| 自動化スクリプト・通知先・能力・チェーン上限・タブバー幅 | 即時 |
-| コマンド / 文字コード / スクロールバック行数 | **保留**。タブに「⟳」を表示し `Ctrl+B r` で反映 |
+| Lock / auto-restart / profile / hierarchy / tab name | Immediate |
+| Add / remove a tab | Immediate (add = launch, remove = terminate) |
+| Automation script / notify target / capabilities / chain cap / tab-bar width | Immediate |
+| Command / encoding / scrollback lines | **Deferred**. The tab shows a "⟳"; apply with `Ctrl+B r` |
 
-コマンド等の変更で自動再起動しないのは、実行中のAIセッションを勝手に切らないため。
-新しい設定は控えておき、利用者が選んだタイミングで作り直す。
+Command changes don't auto-restart so a running AI session isn't cut without warning. The new settings
+are held, and the tab is rebuilt at a time the user chooses.
 
-## 10.6 ワークスペースの持ち出し・取り込み
+## 10.6 Exporting / importing a workspace
 
-ワークスペースはタブの並びだけではない。タブが指す自動化スクリプトが別の場所にあり、
-それが無ければ渡した先では動かない。だから設定とスクリプトを1枚のファイル
-（`*.stws.json`）に入れる。
+A workspace isn't just a tab order. Its tabs point at automation scripts that live elsewhere, and
+without those it won't run on the machine you handed it to. So the settings and the scripts go into one
+file (`*.stws.json`).
 
 ```json
 {
@@ -539,70 +567,69 @@ WebSocketも端末エミュレータも要らない。
 }
 ```
 
-- `roots` は**貼り直す単位**。中のフォルダは親と一緒に動くので、単位には含めない
-- 別ファイルに切り出したワークスペース (`file`) も、その場に展開して1枚で完結させる
-- 対象は**保存済みの設定**。編集中の姿を書き出すと、渡した相手だけが持つ設定ができる
+- `roots` is the **unit that gets re-pasted**. Folders inside move with their parent, so they aren't part of the unit
+- A workspace split into a separate file (`file`) is expanded in place, so the one file is self-contained
+- The subject is **the saved settings**. Exporting the mid-edit state produces settings only the recipient has
 
-取り込み側の決まり:
+Rules on the import side:
 
-| 事情 | 振る舞い |
+| Situation | Behavior |
 |---|---|
-| 置き場所が埋まっている | `scripts/ws1` → `scripts/ws1-2` と別名にし、指している側も書き換える |
-| 表示名が既にある | `編集部` → `編集部-2` |
-| 設定フォルダの外を指す / Lua以外 / 既存ファイルへの上書き | **断る**。1つでも駄目なら何も書かない |
-| 知らない版・書式 | 断る（半分だけ取り込まない） |
+| The slot is taken | `scripts/ws1` → `scripts/ws1-2`; the reference is rewritten too |
+| The display name exists | `editors` → `editors-2` |
+| Points outside the config folder / non-Lua / overwrites an existing file | **Refuse**. If any one item is bad, nothing is written |
+| An unknown version / format | Refuse (never a half import) |
 
-入らないもの: 通知先・`secrets.json`・能力(capabilities)。これらは全体の設定であって
-ワークスペースの持ち物ではないし、資格情報を配って回ることになる。
-コマンドや作業フォルダはそのまま入るので、渡す前に中身を確かめること。
+What doesn't come in: notification targets, `secrets.json`, capabilities. Those are global settings, not
+a workspace's belongings, and it would mean handing credentials around. Commands and working folders come
+in as-is, so check the contents before you hand it over.
 
-## 11. ポータブル動作 & Google Drive競合対策
+## 11. Portable operation & Google-Drive conflict handling
 
-- 書き込みは「一時ファイル → アトミックリネーム」方式
-- ログはセッション毎の追記専用JSONL（`logs/`）— 同期競合してもマージ不要
-- 起動時ロックファイルで多重起動検出
-- 全パスはexe基準の相対パス、設定・ログ・スクリプトはフォルダ内完結
+- Writes use "temp file → atomic rename"
+- Logs are per-session append-only JSONL (`logs/`) — no merge needed even on a sync conflict
+- A lock file at startup detects a second instance
+- Every path is relative to the exe; config / logs / scripts stay inside the folder
 
-## 12. マルチバイト（日本語）対応
+## 12. Multibyte (CJK) support
 
-- unicode-widthによる全角幅計算、罫線レイアウトは日本語入りでテスト
-- config / logs / スクリプトは全てUTF-8
-- 日本語IME入力はWindows Terminal推奨（素のconhostはIME挙動に癖あり）と明記
+- Full-width sizing via `unicode-width`; box-drawing layouts are tested with CJK content
+- config / logs / scripts are all UTF-8
+- Japanese IME input is documented as best on Windows Terminal (bare conhost has quirks)
 
-## 13. ディレクトリ構成
+## 13. Directory layout
 
 ```
 [SHIKISHA-TERM Directory]
- ├── SHIKISHA-TERM.exe   # アプリ本体（単一バイナリ）
- ├── config.json            # 全体設定 + ワークスペース一覧（相対パス）
- ├── secrets.json           # 資格情報（暗号化可・共有厳禁）
- ├── workspaces/            # ワークスペース定義ファイル（プロジェクト毎に配布可）
+ ├── SHIKISHA-TERM.exe   # the app (single binary)
+ ├── config.json            # global settings + the workspace index (relative paths)
+ ├── secrets.json           # credentials (encryptable; never share)
+ ├── workspaces/            # workspace definition files (shippable per project)
  │     ├── projectx.json
- │     └── zatsuyo.json
- ├── profiles/              # エージェントプロファイル（検出ルール）
+ │     └── chores.json
+ ├── profiles/              # agent profiles (detection rules)
  │     ├── claude.json
  │     ├── codex.json
  │     └── gemini.json
- ├── scripts/               # ユーザー作成のLuaフック
+ ├── scripts/               # user-written Lua hooks
  │     └── hooks.lua
- └── logs/                  # 対話履歴・フック実行ログ
+ └── logs/                  # conversation history / hook logs
 ```
 
-## 14. 開発フェーズ
+## 14. Development phases
 
-| Phase | 内容 | 主なリスク検証 |
+| Phase | Content | Main risk checked |
 |---|---|---|
-| 1 | PTYスパイク: 単一タブでClaude Codeを表示・対話。日本語幅検証 | tui-term描画品質（本計画の最大リスクを最初に潰す） |
-| 2 | 状態検出エンジン＋プロファイル（claude / codex / gemini） | 検出精度、沈黙タイマー調整（第二のリスク） |
-| 3 | マルチタブ＋INDEX＋ステータスインジケータ | キー入力ルーティング |
-| 4 | パイプライン・応答キャプチャ・Luaフック・通知・自動YES・スタートアップ自動化(Expect) | キャプチャ品質、バジェット制御 |
-| 5 | ヘッドレスアダプタ（オプション）・Web GUI・暗号化・仕上げ | 配布と署名 |
+| 1 | PTY spike: show and drive Claude Code in a single tab; verify CJK width | Rendering quality (kill the biggest risk first) |
+| 2 | State-detection engine + profiles (claude / codex / gemini) | Detection accuracy, silence-timer tuning (the second risk) |
+| 3 | Multi-tab + INDEX + status indicators | Key routing |
+| 4 | Pipelines, response capture, Lua hooks, notifications, auto-YES, startup automation (Expect) | Capture quality, budget control |
+| 5 | Headless adapter (optional), settings GUI, encryption, polish | Distribution & signing |
 
-## 15. 既知の注意事項
+## 15. Known caveats
 
-- 未署名exeはSmartScreen / アンチウイルスに誤検知されがち。配布時はコード署名を検討
-- ラップ対象CLIのバージョンアップで画面表示・出力形式が変わる可能性があるため、
-  検出ルールはプロファイル（外部ファイル）に置き、修正をバイナリ更新から切り離す
-- Claude Codeは `ANTHROPIC_API_KEY` が設定されているとサブスク(OAuth)よりAPI課金が
-  優先される（高額請求の報告事例あり）。ヘッドレスアダプタ使用時は子プロセスの
-  環境変数を明示的に制御する
+- An unsigned exe is easily flagged by SmartScreen / antivirus. Consider code signing for distribution
+- A wrapped CLI's version bump can change its screen output / format, so detection rules live in the
+  profile (an external file), decoupling fixes from a binary update
+- If `ANTHROPIC_API_KEY` is set, Claude Code bills the API instead of the subscription (OAuth) — there
+  are reports of large bills. When using the headless adapter, control the child's environment explicitly

@@ -236,7 +236,7 @@ dependencies.
 
 - [Automation reference](docs/AUTOMATION.md) — events, variables, commands, examples
 - [Translating](docs/TRANSLATING.md) — how to add a language
-- [Design notes](DESIGN.md) — terminology, architecture, safety design (Japanese)
+- [Design notes](DESIGN.md) — terminology, architecture, and the safety model ([日本語](DESIGN.ja.md))
 - [Security](SECURITY.md) — threat model and how to report an issue
 - [Code signing policy](SIGNING.md) — how release binaries are built and signed
 
