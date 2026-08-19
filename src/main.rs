@@ -1101,8 +1101,28 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // within the same process. Kept in sync on change.
     let web_password: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(password.clone()));
     let config_file = config::config_file_path();
+    // Whether the remote server's settings reverse-proxy has been pointed at the
+    // local config server yet. Done once per remote instance (reset when remote
+    // is (re)started), so a phone's `/cfg` can reach the config UI.
+    let mut settings_linked = false;
 
     loop {
+        // Point the remote settings proxy at the (loopback) config server. Starting
+        // it here, lazily but eagerly-once, means the phone can open settings even
+        // before anyone has opened it on the PC. The config UI stays on loopback.
+        if !settings_linked {
+            if let Some(r) = remote_ui.as_ref() {
+                if let Ok(u) = ensure_web_url(&mut web, &config_file, &remote_info, &web_password) {
+                    if let (Some(origin), Some(tok)) =
+                        (u.split("/?").next(), u.split("token=").nth(1))
+                    {
+                        r.set_settings_backend(origin.to_string(), tok.to_string());
+                        settings_linked = true;
+                    }
+                }
+            }
+        }
+
         // What's laid out on screen, in the order written in config.
         // The upper bound of pressable numbers needs more than just the session count.
         let hosted = caps.hosted_names();
@@ -1228,6 +1248,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                     remote_ui = start_remote(Some(&newcfg), password.as_deref(), &mut startup_errors);
                     publish_remote(&remote_info, &remote_ui);
+                    // A fresh remote server needs its settings proxy re-pointed.
+                    settings_linked = false;
                     // Fresh server = fresh viewers; forget what the old one pushed.
                     last_remote_ui = None;
                     last_remote_screen = String::new();

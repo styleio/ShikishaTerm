@@ -627,7 +627,12 @@ function drawTabs() {
   const settingsOpen = S.tabs.some(t => t.settings && S.active === t.index);
   nav.append(el("div", {class:"tab gearrow" + (settingsOpen ? " sel" : ""),
       title:T["tui.menu.settings"] || "SETTINGS",
-      onclick:() => send({kind:"opensettings"})},
+      // On the phone, settings is served by reverse-proxy at /cfg and rendered
+      // natively (responsive) — navigate there, handing over the token once in
+      // the URL (it's traded for a cookie and stripped on arrival). In the window
+      // it opens as the child WebView, as before.
+      onclick:() => { if (REMOTE) location.href = "cfg?t=" + encodeURIComponent(TOKEN);
+                      else send({kind:"opensettings"}); }},
     el("span", {class:"gear"}, "⚙️")));
 }
 

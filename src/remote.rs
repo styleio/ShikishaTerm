@@ -144,6 +144,11 @@ pub struct RemoteUi {
     /// screen at the next opportunity (so a static page doesn't stay blank
     /// waiting for the next change)
     keyframe_wanted: Arc<AtomicBool>,
+    /// The local settings web server to reverse-proxy the phone's `/cfg` (and the
+    /// settings `/api/*`) to, as (origin, token). The config UI stays bound to
+    /// loopback and never faces the network — the phone reaches it only through
+    /// this proxy, authenticated by the remote token. None until it is up.
+    settings: Arc<Mutex<Option<(String, String)>>>,
 }
 
 impl RemoteUi {
@@ -181,6 +186,7 @@ impl RemoteUi {
         let frame_clients: FrameClients = Arc::new(Mutex::new(Vec::new()));
         let state_clients: StateClients = Arc::new(Mutex::new(Vec::new()));
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
+        let settings = Arc::new(Mutex::new(None));
 
         {
             let token = Arc::clone(&token);
@@ -189,12 +195,13 @@ impl RemoteUi {
             let clients = Arc::clone(&frame_clients);
             let states = Arc::clone(&state_clients);
             let kf = Arc::clone(&keyframe_wanted);
+            let settings = Arc::clone(&settings);
             std::thread::spawn(move || {
                 for req in server.incoming_requests() {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
-                    if let Err(e) = handle(req, &token, &snapshot, &tx, &clients, &states, &kf) {
+                    if let Err(e) = handle(req, &token, &snapshot, &tx, &clients, &states, &kf, &settings) {
                         crate::append_hook_log(&crate::i18n::tp(
                             "err.remote.hook_log",
                             &[("e", &e.to_string())],
@@ -214,7 +221,15 @@ impl RemoteUi {
             frame_clients,
             state_clients,
             keyframe_wanted,
+            settings,
         })
+    }
+
+    /// Point the settings reverse-proxy at the local (loopback) settings web
+    /// server: its origin (`http://127.0.0.1:<port>`) and its own token, which
+    /// the proxy injects server-side. The phone never sees this token.
+    pub fn set_settings_backend(&self, origin: String, token: String) {
+        *self.settings.lock().unwrap() = Some((origin, token));
     }
 
     /// Cut every current remote session, honestly. Rotating the token makes the
@@ -310,12 +325,18 @@ fn handle(
     frame_clients: &FrameClients,
     state_clients: &StateClients,
     keyframe_wanted: &Arc<AtomicBool>,
+    settings: &Arc<Mutex<Option<(String, String)>>>,
 ) -> Result<()> {
     // Snapshot the current token for this request. It can be rotated at runtime
     // (the PC's "disconnect" cuts every existing session by changing the token),
     // so each request compares against, and each served page embeds, the token
     // as it stands right now.
     let token = token.lock().unwrap().clone();
+    // The token may arrive as the X-Token header, the `?t=` query, or the `sst`
+    // cookie. The cookie is for the reverse-proxied settings page: its absolute
+    // `/api/*` fetches can't carry a query token and a top-level navigation can't
+    // set a header, so `/cfg` trades the URL token once for a SameSite=Strict
+    // cookie and every following settings request authenticates by that cookie.
     let supplied = {
         let h = req
             .headers()
@@ -323,10 +344,15 @@ fn handle(
             .find(|h| h.field.equiv("X-Token"))
             .map(|h| h.value.as_str().to_string())
             .unwrap_or_default();
-        if h.is_empty() {
-            query_value(req.url(), "t")
-        } else {
+        if !h.is_empty() {
             h
+        } else {
+            let q = query_value(req.url(), "t");
+            if !q.is_empty() {
+                q
+            } else {
+                cookie_value(&req, "sst")
+            }
         }
     };
     let method = req.method().as_str().to_string();
@@ -360,6 +386,19 @@ fn handle(
                     ),
             )
             .map_err(Into::into);
+    }
+
+    // The settings screen, reverse-proxied to the loopback config server. The
+    // phone reaches the config UI only through here, authenticated by the remote
+    // token; the config server itself never faces the network. Handled before the
+    // generic gate so its `/api/*` don't collide with the remote's own routes.
+    if is_settings_path(&path) {
+        if !token_eq(&supplied, &token) {
+            return req
+                .respond(Response::from_string("forbidden").with_status_code(403))
+                .map_err(Into::into);
+        }
+        return proxy_settings(req, settings, &token, &method, &path);
     }
 
     // Everything past here is data or control — require the token.
@@ -551,6 +590,132 @@ fn handle(
     Ok(())
 }
 
+/// Read a named cookie from the request's `Cookie` header (empty if absent).
+fn cookie_value(req: &tiny_http::Request, name: &str) -> String {
+    req.headers()
+        .iter()
+        .find(|h| h.field.equiv("Cookie"))
+        .map(|h| h.value.as_str().to_string())
+        .unwrap_or_default()
+        .split(';')
+        .find_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            (k.trim() == name).then(|| v.trim().to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// Paths served by reverse-proxy to the loopback settings server. The remote UI
+/// owns exactly its own four `/api/*` verbs; every other `/api/*`, plus the
+/// settings / result / help pages, belongs to the config server.
+fn is_settings_path(path: &str) -> bool {
+    if path == "/cfg" || path == "/help" || path == "/result" {
+        return true;
+    }
+    if let Some(rest) = path.strip_prefix("/api/") {
+        let seg = rest.split(['/', '?']).next().unwrap_or("");
+        return !matches!(seg, "state" | "send" | "auto" | "intent");
+    }
+    false
+}
+
+/// Reverse-proxy one request to the loopback settings server, injecting its token
+/// server-side so the phone never holds it. `/cfg` maps to the settings root;
+/// every other path is kept as-is. On the first hop the URL still carries `?t=`,
+/// which is traded for a SameSite=Strict cookie and a clean redirect.
+fn proxy_settings(
+    mut req: tiny_http::Request,
+    settings: &Arc<Mutex<Option<(String, String)>>>,
+    remote_token: &str,
+    method: &str,
+    path: &str,
+) -> Result<()> {
+    // First hop: swap the URL token for a cookie, then bounce to a clean `/cfg`
+    // so the config credential never lingers in the address bar or history.
+    if path == "/cfg" && !query_value(req.url(), "t").is_empty() {
+        let cookie = format!("sst={remote_token}; Path=/; HttpOnly; SameSite=Strict");
+        let resp = Response::empty(302)
+            .with_header(Header::from_bytes(&b"Location"[..], &b"/cfg"[..]).unwrap())
+            .with_header(Header::from_bytes(&b"Set-Cookie"[..], cookie.as_bytes()).unwrap());
+        return req.respond(resp).map_err(Into::into);
+    }
+
+    let Some((origin, sett_token)) = settings.lock().unwrap().clone() else {
+        return req
+            .respond(Response::from_string("settings unavailable").with_status_code(503))
+            .map_err(Into::into);
+    };
+
+    let query = req.url().split_once('?').map(|(_, q)| q.to_string());
+    let sub = if path == "/cfg" { "/" } else { path };
+    let url = match &query {
+        Some(q) if !q.is_empty() => format!("{origin}{sub}?{q}"),
+        _ => format!("{origin}{sub}"),
+    };
+    let req_ctype = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Content-Type"))
+        .map(|h| h.value.as_str().to_string());
+    let body = if method == "GET" {
+        None
+    } else {
+        match read_body(&mut req, MAX_BODY)? {
+            Some(b) => Some(b),
+            None => {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            }
+        }
+    };
+
+    // Loopback only. Treat any HTTP status as a normal response so an upstream 4xx
+    // body (e.g. a validation error) reaches the phone rather than being swallowed.
+    let agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(std::time::Duration::from_secs(120)))
+        .build()
+        .new_agent();
+    let result = if method == "GET" {
+        agent.get(&url).header("X-Token", &sett_token).call()
+    } else {
+        let mut rb = agent.post(&url).header("X-Token", &sett_token);
+        if let Some(ct) = &req_ctype {
+            rb = rb.header("Content-Type", ct);
+        }
+        rb.send(body.unwrap_or_default())
+    };
+
+    match result {
+        Ok(mut resp) => {
+            let status = resp.status().as_u16();
+            let ctype = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let mut text = resp.body_mut().read_to_string().unwrap_or_default();
+            // The settings HTML embeds its own token; scrub it so the phone never
+            // sees it. (Getting back to the board is the page's own sticky "Close",
+            // which navigates to "/" on the phone — with the unsaved-changes guard.)
+            if path == "/cfg" && ctype.contains("text/html") {
+                text = text.replace(&sett_token, "");
+            }
+            let resp = Response::from_string(text)
+                .with_status_code(status)
+                .with_header(Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).unwrap())
+                .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap());
+            req.respond(resp).map_err(Into::into)
+        }
+        Err(e) => req
+            .respond(
+                Response::from_string(format!("settings proxy error: {e}")).with_status_code(502),
+            )
+            .map_err(Into::into),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -736,6 +901,55 @@ mod tests {
             }
             other => panic!("窓にしか答えられないものが通った: {other:?}"),
         }
+        ui.shutdown();
+    }
+
+    /// `/api/*` routing: the remote UI owns exactly its own four verbs; every
+    /// other `/api/*`, plus the settings pages, is the config server's.
+    #[test]
+    fn settings_paths_are_told_apart_from_the_remotes_own() {
+        for p in ["/cfg", "/help", "/result", "/api/config", "/api/secrets", "/api/secrets/set"] {
+            assert!(is_settings_path(p), "{p} should proxy to settings");
+        }
+        for p in ["/api/state", "/api/send", "/api/auto", "/api/intent", "/", "/shell", "/ws-state"] {
+            assert!(!is_settings_path(p), "{p} is the remote's own route");
+        }
+    }
+
+    /// The settings proxy: no token is refused; the first hop with `?t=` is traded
+    /// for a SameSite=Strict cookie and a clean redirect; a cookie-authed hop with
+    /// no backend wired yet answers 503 (never falls through to the shell).
+    #[test]
+    fn settings_proxy_gates_and_hands_off_a_cookie() {
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into()).unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        // A client that does NOT follow redirects, so we can inspect the 302.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .build()
+            .new_agent();
+
+        // No token → 403
+        let r = agent.get(&format!("{base}/cfg")).call().unwrap();
+        assert_eq!(r.status().as_u16(), 403, "unauthenticated /cfg must be refused");
+
+        // First hop with ?t= → 302 + Set-Cookie sst=<token>, Location /cfg
+        let r = agent.get(&format!("{base}/cfg?t=tok123456789012")).call().unwrap();
+        assert_eq!(r.status().as_u16(), 302, "the pairing hop should redirect");
+        let cookie = r.headers().get("set-cookie").and_then(|v| v.to_str().ok()).unwrap_or("");
+        assert!(cookie.contains("sst=tok123456789012"), "cookie not set: {cookie}");
+        assert!(cookie.contains("SameSite=Strict") && cookie.contains("HttpOnly"), "weak cookie: {cookie}");
+        let loc = r.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or("");
+        assert_eq!(loc, "/cfg", "should bounce to a clean /cfg");
+
+        // Cookie-authed hop, but no backend wired → 503 (not the shell, not a 404)
+        let r = agent
+            .get(&format!("{base}/cfg"))
+            .header("Cookie", "sst=tok123456789012")
+            .call()
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 503, "no backend yet → 503");
         ui.shutdown();
     }
 

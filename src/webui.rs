@@ -1575,6 +1575,38 @@ const PAGE: &str = r##"<!doctype html>
  .bar > i { display:block; height:100%; width:35%; border-radius:2px;
    background:var(--accent); animation:slide 1.3s ease-in-out infinite; }
  @keyframes slide { from { margin-left:-35%; } to { margin-left:100%; } }
+
+ /* ── Narrow screens (a phone reaching the settings over the remote proxy) ──
+    The desktop layout is a fixed 260px sidebar next to the content. On a phone
+    that overflows sideways and is unreadable, so below 760px stack them: the nav
+    becomes a full-width strip that scrolls on its own, the content takes the rest,
+    and every form control is capped to the viewport so nothing spills off-screen
+    (a mis-tap on a config field you can't fully see is how you save a broken
+    setup from the train). */
+ @media (max-width: 760px) {
+   .layout { flex-direction:column; }
+   nav { width:auto; position:static; min-height:0; max-height:38vh;
+     border-right:none; border-bottom:1px solid var(--line); top:0; }
+   main { padding:16px 14px; max-width:100%; }
+   /* The header's action buttons (reload / close / save) don't fit on one phone
+      row next to the title, so let it wrap: the spacer becomes a full-width break
+      that drops the controls onto their own line under the title, and the row
+      itself wraps rather than pushing off-screen. The header stays sticky, so
+      Save and Close are always a thumb away however far the form is scrolled. */
+   header { padding:10px 14px; gap:8px 10px; flex-wrap:wrap; }
+   header .spacer { flex-basis:100%; height:0; }
+   header h1 { font-size:14px; }
+   .card { padding:6px 12px 12px; }
+   /* Fixed pixel widths on inputs/selects overflow a phone; cap them all. */
+   input, select, textarea, .row > input, .row > select { max-width:100%; }
+   input.mono { width:100%; }
+   /* Long field/label rows wrap instead of forcing a horizontal scrollbar. */
+   .row { flex-wrap:wrap; }
+   /* Keep the save button reachable with a thumb while scrolling a long form. */
+   #savebtn { position:sticky; top:8px; }
+ }
+ /* Never let the page itself scroll sideways, whatever a stray wide child does. */
+ @media (max-width: 760px) { body { overflow-x:hidden; } }
 </style></head><body>
 
 <header>
@@ -3858,7 +3890,12 @@ function goIndex() {
 // If there are unsaved changes, warns first that they'll be lost
 function closeSettings() {
   if (snapshot() !== savedSnapshot && !confirm(T["settings.back.confirm"])) return;
-  try { window.ipc.postMessage(JSON.stringify({kind:"closesettings"})); } catch (e) { goIndex(); }
+  // In the window this rides the ipc bridge back to the board. On a phone (served
+  // over the remote proxy) there is no bridge, so navigate to "/" — the shell,
+  // which re-authenticates from its stored token. The unsaved-changes guard above
+  // runs first either way.
+  if (window.ipc) { try { window.ipc.postMessage(JSON.stringify({kind:"closesettings"})); } catch (e) { goIndex(); } }
+  else { location.href = "/"; }
 }
 
 // Opens a help/report page in the real browser. The server whitelists `dest`
