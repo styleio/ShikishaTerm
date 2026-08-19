@@ -396,8 +396,13 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     display:flex; align-items:center; justify-content:center; cursor:pointer;
     user-select:none; -webkit-user-select:none; touch-action:manipulation; }
   .pagebtn:active { background:rgba(46,62,78,.92); }
-  #pageCount { min-height:15px; font-size:12px; font-weight:700; color:var(--brand);
-    text-shadow:0 0 6px rgba(0,0,0,.6); }
+  #pageCount { min-height:16px; font-size:12px; font-weight:700; color:var(--brand);
+    text-shadow:0 0 6px rgba(0,0,0,.6);
+    display:flex; align-items:center; justify-content:center; }
+  /* Shown from the moment a page turn fires until its screen arrives. */
+  .pgspin { width:14px; height:14px; border:2px solid rgba(74,158,255,.30);
+    border-top-color:var(--brand); border-radius:50%; animation:pgspin .7s linear infinite; }
+  @keyframes pgspin { to { transform:rotate(360deg); } }
 
   /* ── Narrow/tall responsive layout (phones, small PCs, portrait displays) ──
      Must always come after all the base rules. Placed earlier, a later
@@ -1251,15 +1256,28 @@ scr.addEventListener("wheel", e => {
 const OVERLAP = 4;           // rows kept across a turn — the edge you were reading
 // The page distance is computed from THIS phone's height (gRows), so it's right
 // on any screen. No blocking, no animation, no per-turn calibration.
-let pgPending = 0, pgTimer = 0;
+let pgPending = 0, pgTimer = 0, pgWaiting = false, pgWaitTimer = 0;
 
 function pgReset() {
-  pgPending = 0; clearTimeout(pgTimer);
+  pgPending = 0; pgWaiting = false; clearTimeout(pgTimer); clearTimeout(pgWaitTimer);
   const c = document.getElementById("pageCount"); if (c) c.textContent = "";
 }
+// The little indicator between the buttons: the pending count while you tap,
+// then a spinner from the moment a move fires until the new screen lands. On a
+// good link the spinner flashes for a fraction of a second; on a slow one it
+// stays, so a tap never feels like it did nothing.
 function pgCount() {
   const c = document.getElementById("pageCount");
-  if (c) c.textContent = pgPending === 0 ? "" : (pgPending > 0 ? "▲×" : "▼×") + Math.abs(pgPending);
+  if (!c) return;
+  if (pgPending !== 0) c.textContent = (pgPending > 0 ? "▲×" : "▼×") + Math.abs(pgPending);
+  else if (pgWaiting) c.innerHTML = '<span class="pgspin"></span>';
+  else c.textContent = "";
+}
+// The awaited screen arrived (called from the state socket / poll): stop waiting.
+function pgArrived() {
+  if (!pgWaiting) return;
+  pgWaiting = false; clearTimeout(pgWaitTimer);
+  pgCount();
 }
 // A tap adds to the pending count (shown as ×N) and re-arms a short timer, so a
 // flurry of taps becomes one move of N pages instead of a stutter of round
@@ -1290,8 +1308,13 @@ function pgFire() {
   const PAGE_STEP = Math.max(1, gRows - OVERLAP);
   const notches = Math.min(250, blocks * PAGE_STEP);
   send({kind:"scroll", by: dir > 0 ? notches : -notches, row: 0, col: 0});
-  // Nothing else to do: the scrolled screen arrives on its own over the state
-  // socket (or the fallback poll if the socket is down).
+  // The scrolled screen arrives on its own over the state socket (pgArrived
+  // stops the wait). Show a spinner in the meantime so the gap never reads as a
+  // dead tap; a safety timer clears it if a frame somehow never comes.
+  pgWaiting = true;
+  pgCount();
+  clearTimeout(pgWaitTimer);
+  pgWaitTimer = setTimeout(() => { pgWaiting = false; pgCount(); }, 3000);
 }
 
 document.getElementById("pageUp").addEventListener("click", () => pageBy(1));
@@ -1351,7 +1374,7 @@ if (REMOTE) {
   let wsUp = false, sws = null;
   const applyState = (d) => {
     if (d.ui) window.__state(typeof d.ui === "string" ? d.ui : JSON.stringify(d.ui));
-    if (d.screen_html != null) window.__screen(d.screen_html);
+    if (d.screen_html != null) { window.__screen(d.screen_html); pgArrived(); }
   };
   const connectState = () => {
     try {
