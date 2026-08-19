@@ -20,3 +20,23 @@
 .card .title {
   line-height: 1.3;
 }
+
+/* 狭い画面ではヒーローの一次ボタンのラベルを短くする（長いと隣のボタンと回り込む）。
+   Starlight のアクションは「テキストノード＋アイコン」構成なので、テキストを
+   font-size:0 で畳み、::before で短い語を入れる。padding とアイコンは rem 基準なので
+   崩れない。en/ja は <html lang> で出し分け。 */
+@media (max-width: 37.5rem) {
+  .sl-link-button.primary[href*="releases/latest"] {
+    font-size: 0;
+  }
+  .sl-link-button.primary[href*="releases/latest"]::before {
+    font-size: 1rem;
+    margin-right: 0.4em;
+  }
+  html[lang="en"] .sl-link-button.primary[href*="releases/latest"]::before {
+    content: "Download";
+  }
+  html[lang="ja"] .sl-link-button.primary[href*="releases/latest"]::before {
+    content: "ダウンロード";
+  }
+}
