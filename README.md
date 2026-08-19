@@ -18,6 +18,10 @@
   <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM in action — several AIs side by side, an AI-vs-AI debate, and a downloadable result" width="820">
 </p>
 
+<p align="center">
+  <sub>⭐ If this is useful, a <b>star</b> helps other people find it.</sub>
+</p>
+
 ---
 
 > **Check on your AI from your phone — and tell it to carry on.**
@@ -35,6 +39,8 @@ on its own.
 
 It talks to whatever runs in a terminal, so it is not tied to one vendor: Claude Code,
 Codex CLI, Gemini CLI, DeepSeek, Ollama, Aider, or a plain shell over SSH.
+
+**Most AI terminals run a single agent. This one runs several — and moves work between them.**
 
 ## Install
 
@@ -94,6 +100,10 @@ starting), double-click **`Settings.cmd`**.
   logs, legacy encodings, IME input and mouse support
 
 ## Use it from your phone
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/phone.png" alt="SHIKISHA-TERM on a phone — a live dashboard of several AI agents, each showing whether it is working, waiting or done" width="340">
+</p>
 
 Turn on "Use from your phone" in the settings and a QR code appears. Scan it and you get a
 small web page listing every tab, its status, and a box to send instructions.
