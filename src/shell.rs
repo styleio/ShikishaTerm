@@ -993,6 +993,13 @@ window.__state = function (json) {
     pager.classList.toggle("on", showPager);
     if (!showPager) pgReset();
   }
+  // The phone's terminal sub-input bar belongs only over a real terminal tab.
+  // Switching to INDEX, a browser relay, or a model chat closes it (a stray
+  // relay dock is handled separately, by castStop → exitCast).
+  if (REMOTE && !castMode && castDock && castDock.style.display !== "none") {
+    const onTermTab = !screen.hidden && !web && !modelTabNow && S.active !== 0;
+    if (!onTermTab) closeBar();
+  }
   if (S.active === 0) drawBoard();
   drawTopicBar();
   drawModelChat();
@@ -1203,6 +1210,11 @@ kbd.addEventListener("keydown", e => {
 // Whether a terminal tab (session) is currently in view. False for INDEX(0), browser tabs, and unknown state
 const onTerminal = () => S && S.active !== 0 && S.tabs &&
   S.tabs.some(t => t.index === S.active && t.kind !== "browser");
+// A real PTY terminal tab (AI CLI, shell, SSH) — where the phone shows its
+// sub-input bar. Excludes INDEX(0), browser relays, and model-chat tabs: those
+// carry their own composer textarea, so the bar would just be in the way there.
+const onTermPty = () => onTerminal() &&
+  !S.tabs.some(t => t.index === S.active && t.model);
 const focus = () => {
   const a = document.activeElement;
   if (a && a.closest && a.closest("#nav")) return;
@@ -1216,11 +1228,11 @@ const focus = () => {
     const ta = document.querySelector("#modelchat textarea");
     if (ta) { ta.focus(); return; }
   }
-  // On a phone, only show the keyboard while a terminal tab is in view.
-  // Not right after load (S not yet fetched), and not on INDEX or a browser
-  // tab — the keyboard popping up uninvited would just get in the way.
-  // The window (PC) keeps its previous behavior (#kbd is needed for menu key handling)
-  if (REMOTE && !onTerminal()) return;
+  // On a phone, terminal typing never goes through the hidden #kbd (which would
+  // pop the soft keyboard up over the screen). It goes through the sub-input bar,
+  // opened on a tap — see the mouseup handler and openTermBar(). The window (PC)
+  // keeps its previous behavior (#kbd is needed for its menu keys and inline caret).
+  if (REMOTE) return;
   kbd.focus();
 };
 // Scroll back through history with the wheel.
@@ -1346,12 +1358,15 @@ scr.addEventListener("touchcancel", () => { swY = null; }, {passive:true});
 // terminal, editing the URL would be impossible
 // Taps on the top bar or the page buttons must not pull focus into the hidden
 // #kbd — on a phone that would pop the soft keyboard up over the screen.
-const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #pageui");
+const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #pageui, #castdock");
 document.addEventListener("mouseup", e => {
   if (inBar(e)) return;
   const s = window.getSelection();
   const t = s ? s.toString() : "";
   if (t) { send({kind:"copy", text:t}); return; }
+  // On a phone, tapping a terminal tab opens the sub-input bar (see openTermBar)
+  // rather than the hidden #kbd, so the keyboard never lands on top of the screen.
+  if (REMOTE && onTermPty()) { openTermBar(); return; }
   focus();
 });
 document.addEventListener("contextmenu", e => {
@@ -1434,7 +1449,11 @@ function castStart() {
 function castStop() {
   if (castWs) { castWs.close(); castWs = null; }
   if (castIn) { castIn.close(); castIn = null; }
-  exitCast();
+  // Only tear down browser CONTROL mode. On a terminal tab castMode is already
+  // false, and its sub-input bar must survive the per-update __state redraws
+  // (this runs on every terminal tab, once per state push) — closing it here
+  // would make the bar vanish the moment any output arrived.
+  if (castMode) exitCast();
 }
 function sendIn(o) {
   if (castIn && castIn.readyState === 1) castIn.send(JSON.stringify(o));
@@ -1499,9 +1518,20 @@ const CAST_LABEL = {
   left:"←", up:"↑", down:"↓", right:"→",
   home:"Home", end:"End", pageup:"PgUp", pagedown:"PgDn", ctrl:"Ctrl", alt:"Alt" };
 function castKeyLabel(name) { return CAST_LABEL[name] || name.toUpperCase(); }
-// Send a single auxiliary key press. If Ctrl/Alt is latched on, combine it in, then release the latch
+// Cast key names → the terminal's own named-key vocabulary (what the #kbd path
+// sends). Anything not listed passes through unchanged (esc/tab/enter/arrows/home/end).
+const TERM_KEY = { backspace:"bs", delete:"del", pageup:"pgup", pagedown:"pgdn" };
+// Send a single auxiliary key press. In browser control mode it goes to the relay
+// (latching Ctrl/Alt combine in); over a terminal it sends the very intents #kbd
+// would send. Either way, any latch is released afterwards.
 function sendCastKey(name) {
-  sendIn({kind:"inject", what:"key", named:name, ctrl:modCtrl, alt:modAlt});
+  if (castMode) {
+    sendIn({kind:"inject", what:"key", named:name, ctrl:modCtrl, alt:modAlt});
+  } else if (name === "space") {
+    send({kind:"key", text:" "});
+  } else if (name !== "ctrl" && name !== "alt") {
+    send({kind:"key", named: TERM_KEY[name] || name});
+  }
   if (modCtrl || modAlt) { modCtrl = false; modAlt = false; refreshMods(); }
 }
 // Sync the latching toggles' appearance with their current state
@@ -1541,7 +1571,13 @@ function ensureBar() {
   const send = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "Send");
   const bs = el("button", {class:"castbtn", onclick:() => sendCastKey("backspace")}, "⌫");
   // ✕ only dismisses the keyboard (the sub-input bar itself stays visible throughout control mode)
-  const close = el("button", {class:"castbtn", onclick:() => { if (castInput) castInput.blur(); }}, "✕");
+  // In browser control mode ✕ only drops the keyboard (the bar stays — the relay
+  // cursor is still in control). Over a terminal it closes the bar entirely, back
+  // to a full-screen reading view.
+  const close = el("button", {class:"castbtn", onclick:() => {
+    if (castInput) castInput.blur();
+    if (!castMode) closeBar();
+  }}, "✕");
   // ⌫ and Send keep the input field's focus (= the keyboard) in place. If
   // the default pointerdown action weren't prevented, focus would shift to
   // the button, the keyboard would close, and typing couldn't continue.
@@ -1578,10 +1614,20 @@ function closeBar() { if (castDock) castDock.style.display = "none"; if (castInp
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
-  if (t) {
-    sendIn({kind:"inject", what:"text", text:t});   // send the confirmed text as one batch
+  if (castMode) {
+    // Browser relay: inject the confirmed text as one batch, or a bare Enter
+    if (t) sendIn({kind:"inject", what:"text", text:t});
+    else sendCastKey("enter");
+  } else if (modCtrl && t) {
+    // Terminal: Ctrl latched + a typed letter = a control chord (e.g. Ctrl+C to
+    // interrupt). Takes the first character; no trailing Enter — a chord isn't a line.
+    send({kind:"key", ctrl: t.slice(0, 1).toLowerCase()});
+    modCtrl = false; modAlt = false; refreshMods();
   } else {
-    sendCastKey("enter");   // sending with nothing typed = Enter (confirms a search, submits a form, etc.)
+    // Terminal: type the line, then Enter to submit it (an AI prompt, a command).
+    // Empty + Send = a bare Enter (accept a prompt, insert a newline, etc.)
+    if (t) send({kind:"key", text:t});
+    send({kind:"key", named:"enter"});
   }
   castInput.value = "";
   castInput.focus();
@@ -1601,7 +1647,17 @@ function posCursor() {
 }
 // Once control mode is entered, keep the sub-input bar shown at all times
 // (so the auxiliary keys work without needing to press a button first)
-function enterCast() { ensureCursor(); castMode = true; cursorEl.style.display = "block"; showDock(); posCursor(); }
+function enterCast() { ensureCursor(); castMode = true; if (modeEl) modeEl.style.display = ""; cursorEl.style.display = "block"; showDock(); posCursor(); }
+// Open the sub-input bar over a phone terminal tab. No relay cursor and no "in
+// control" banner — just the auxiliary keys and the text field. Like the browser
+// bar, the keyboard only opens once the user taps the field itself, so a stray
+// tap never throws the keyboard up over the screen.
+function openTermBar() {
+  castMode = false;
+  showDock();
+  if (modeEl) modeEl.style.display = "none";
+  modCtrl = false; modAlt = false; refreshMods();
+}
 function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; closeBar(); }
 // The element directly under the arrow's tip. The synthetic arrow and
 // ripple both use pointer-events:none, so they're transparent to hit
