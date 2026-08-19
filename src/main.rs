@@ -358,6 +358,10 @@ struct WinSurface {
     /// The last state we sent. Only send again when it changes.
     last: Option<crate::uistate::UiState>,
     last_screen: String,
+    /// The last cursor (row, col, shown) we sent. Placing the cursor forces the
+    /// page to recompute layout, so re-sending an unchanged one every frame kept
+    /// the WebView busy at ~60Hz for nothing. Only send again when it moves.
+    last_cursor: Option<(u16, u16, bool)>,
     /// The content area (x, y, width, height). Where the browser gets placed.
     area: (i32, i32, i32, i32),
     /// Intents that arrived from the window, converted into the form the loop reads.
@@ -639,6 +643,7 @@ fn run_in_window() -> Result<()> {
         cols: 120,
         last: None,
         last_screen: String::new(),
+        last_cursor: None,
         area: (0, 0, 0, 0),
         pending: std::collections::VecDeque::new(),
         presses: Vec::new(),
@@ -786,6 +791,9 @@ impl WinSurface {
                     let html = crate::shell::screen_html(s);
                     if html != w.last_screen {
                         w.last_screen = html.clone();
+                        // The screen was redrawn (new content, or a switched tab),
+                        // so re-place the cursor once even if its row/col is the same.
+                        w.last_cursor = None;
                         let _ = w.win.eval(&format!(
                             "return window.__screen({});",
                             serde_json::to_string(&html).unwrap_or_default()
@@ -793,9 +801,15 @@ impl WinSurface {
                     }
                     let (r, c) = s.cursor_position();
                     let on = !s.hide_cursor();
-                    let _ = w
-                        .win
-                        .eval(&format!("return window.__cursor({r},{c},{on});"));
+                    // Placing the cursor forces a layout recompute in the page,
+                    // so only do it when the cursor actually moved — not 60x a
+                    // second onto an unchanged position.
+                    if w.last_cursor != Some((r, c, on)) {
+                        w.last_cursor = Some((r, c, on));
+                        let _ = w
+                            .win
+                            .eval(&format!("return window.__cursor({r},{c},{on});"));
+                    }
                 }
                 Ok(())
             }
