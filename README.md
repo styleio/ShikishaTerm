@@ -8,6 +8,11 @@
 </p>
 
 <p align="center">
+  <sub><b>Works with</b> Claude Code · Codex · Gemini · Aider · Ollama · DeepSeek · Qwen — or any shell over SSH</sub>
+</p>
+
+<p align="center">
+  <a href="https://github.com/styleio/ShikishaTerm/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/styleio/ShikishaTerm?style=social"></a>
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <a href="https://github.com/styleio/ShikishaTerm/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/styleio/ShikishaTerm?include_prereleases"></a>
   <a href="https://github.com/styleio/ShikishaTerm/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/styleio/ShikishaTerm/actions/workflows/ci.yml/badge.svg"></a>
@@ -41,6 +46,12 @@ It talks to whatever runs in a terminal, so it is not tied to one vendor: Claude
 Codex CLI, Gemini CLI, DeepSeek, Ollama, Aider, or a plain shell over SSH.
 
 **Most AI terminals run a single agent. This one runs several — and moves work between them.**
+
+For example:
+
+- A **code → review loop**: one agent writes, another reviews, back and forth until it passes — then a Slack ping.
+- An **AI-vs-AI debate** you can watch play out, with the verdict saved to a file.
+- Kick off a long job and **check on it from your phone** on the way home — and tell it to carry on.
 
 ## Install
 
@@ -199,7 +210,8 @@ See [docs/TRANSLATING.md](docs/TRANSLATING.md).
 
 It is deliberately narrow, and honest about it:
 
-- **Windows only** today. It is built on ConPTY; other platforms are not supported yet
+- **Windows only** today. It is built on ConPTY; other platforms are not supported yet —
+  [★ star the repo](https://github.com/styleio/ShikishaTerm) to hear if that changes
 - **It drives CLIs, it does not replace them.** Your AI subscriptions, logins and settings
   stay exactly as they are
 - **It is a terminal, not an IDE.** It manages sessions and moves text between them
