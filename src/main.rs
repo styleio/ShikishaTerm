@@ -389,6 +389,9 @@ struct WinSurface {
     close_settings: bool,
     /// The sidebar gear was pressed. The loop opens the settings page (from any tab).
     open_settings: bool,
+    /// The status bar's "remote connected" control was pressed. The loop cuts every
+    /// remote session (rotates the token, drops the connections).
+    remote_cut: bool,
     /// Lines typed into a model tab's chat box, awaiting delivery to the bridge.
     chats: Vec<String>,
 }
@@ -414,6 +417,11 @@ impl WinSurface {
     /// True if the settings gear was pressed (and clears the flag if so)
     fn take_open_settings(&mut self) -> bool {
         std::mem::take(&mut self.open_settings)
+    }
+
+    /// True if the "remote connected" control was pressed (and clears the flag if so)
+    fn take_remote_cut(&mut self) -> bool {
+        std::mem::take(&mut self.remote_cut)
     }
 
     /// Takes ownership of pages that finished loading (id, URL, whether settled)
@@ -469,6 +477,7 @@ impl WinSurface {
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.close_settings = true,
                 Ev::OpenSettings => self.open_settings = true,
+                Ev::RemoteCut => self.remote_cut = true,
                 // The top bar was pressed. The destination is "whatever page is currently
                 // showing", so the loop decides (only one bar is ever displayed).
                 Ev::Go { go } => self.gos.push(go),
@@ -656,6 +665,7 @@ fn run_in_window() -> Result<()> {
         closed: false,
         close_settings: false,
         open_settings: false,
+        remote_cut: false,
         chats: Vec::new(),
     })
 }
@@ -673,6 +683,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         active: ui.active,
         auto_enabled: ui.auto.unwrap_or(true),
         remote_on: ui.remote_on,
+        remote_conn: ui.remote_conn,
         first_run: ui.first_run,
         // Keep the order exactly as written in the config.
         // Listing sessions and browsers separately would push the browser
@@ -1838,6 +1849,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             help_open,
             qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
             remote_on: remote_ui.is_some(),
+            remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
             nav,
             scrolled: session_at(&layout, active)
                 .and_then(|i| tabs.get(i))
@@ -1972,6 +1984,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     Err(e) => i18n::tp("msg.settings_failed", &[("error", &e.to_string())]),
                 },
             );
+        }
+
+        // The status bar's "remote connected" control. Cut every remote session
+        // honestly: rotate the token so a phone that already loaded the old URL
+        // fails auth on its next request, and drop the connections it holds open.
+        // The window reclaims its own terminal width on the page side (its click
+        // also fires a fresh resize report), so nothing to do for width here.
+        if surface.take_remote_cut() && remote_ui.is_some() {
+            if let Some(r) = remote_ui.as_mut() {
+                r.rotate_token(random_hex(24));
+            }
+            publish_remote(&remote_info, &remote_ui);
+            last_remote_ui = None;
+            flash = Some(i18n::t("msg.remote_cut"));
         }
 
         // A built-in orchestrator (discussion / code review / browser rally)
@@ -4184,6 +4210,8 @@ struct Ui {
     qr: Option<String>,
     /// Whether the remote UI is listening (shown at all times so it's never a mystery)
     remote_on: bool,
+    /// Whether a phone/browser is connected over the remote link right now
+    remote_conn: bool,
     /// Where the auto-chain currently is (the invisible ball, made visible)
     ball: ball::Ball,
     /// The chain cap. Represents how close the ball's color is to that cap.

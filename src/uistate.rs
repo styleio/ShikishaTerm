@@ -106,6 +106,10 @@ pub struct UiState {
     pub active: usize,
     pub auto_enabled: bool,
     pub remote_on: bool,
+    /// Whether at least one phone/browser is currently connected over the remote
+    /// link. Drives the window's "remote connected — click to disconnect" pill.
+    #[serde(default)]
+    pub remote_conn: bool,
     /// First launch, before any settings exist yet
     pub first_run: bool,
     pub tabs: Vec<TabState>,

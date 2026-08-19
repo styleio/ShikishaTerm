@@ -325,6 +325,8 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   .pill { padding:1px 8px; border-radius:9px; border:1px solid var(--line); }
   .pill.on { color:var(--live); border-color:#1f3d2b; }
   .pill.off { color:var(--dim); }
+  .pill.live { color:var(--brand); border-color:var(--brand); cursor:pointer; }
+  .pill.live:hover { background:#0d2a3a; }
   #stop { cursor:pointer; color:var(--stop); border:1px solid #3d2020;
     padding:2px 10px; border-radius:7px; font-weight:700; }
   #stop:hover { background:var(--stop); color:#0a0c0e; }
@@ -824,6 +826,15 @@ function drawStatus() {
     el("span", {class:"pill " + (S.auto_enabled ? "on" : "off")},
       "AUTO " + (S.auto_enabled ? "ON" : "OFF")),
     S.remote_on ? el("span", {class:"pill on"}, "REMOTE") : null,
+    // A phone is connected right now. Only shown at the window (a phone must not
+    // be able to disconnect itself). Clicking it cuts every remote session — the
+    // window sends the cut (rotates the token, drops the sockets) and reclaims its
+    // own terminal width (a forced resize report), so the name matches the deed.
+    (!REMOTE && S.remote_conn) ? el("span",
+      {class:"pill live", id:"remotecut",
+       title:T["tui.remote.cut.title"] || "A phone is connected — click to disconnect",
+       onclick:() => { send({kind:"remotecut"}); lastRC = ""; report(); }},
+      T["tui.remote.live"] || "REMOTE ✕") : null,
     el("span", {class:"grow"}),
     el("span", {class:"build"}, BUILD),
     el("span", {id:"stop", onclick:() => send({kind:"stop"})},

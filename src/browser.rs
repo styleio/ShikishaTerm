@@ -341,6 +341,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("openws") => Ev::OpenWs,
         Some("stop") => Ev::Stop,
+        Some("remotecut") => Ev::RemoteCut,
         Some("scroll") => Ev::Scroll {
             // A wheel tick or two from the window; up to a tall phone's whole
             // screen (≈ one row per tick) when the pager turns a page.
@@ -495,6 +496,10 @@ pub enum Ev {
     OpenWs,
     /// Emergency stop
     Stop,
+    /// Cut every remote session from the window's side: rotate the access token
+    /// and drop the open connections. Window-only — a phone can't disconnect
+    /// itself (allowed_from_afar leaves it on the reject side).
+    RemoteCut,
     /// The wheel was turned (positive = scroll back into the log, negative
     /// = return to the present). The number is a count of ticks.
     /// `row`/`col` is the cell it was over (needed to pass through to

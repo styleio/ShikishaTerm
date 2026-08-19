@@ -126,6 +126,12 @@ type StateClients = Arc<Mutex<Vec<Sender<String>>>>;
 
 pub struct RemoteUi {
     pub url: String,
+    /// The origin (scheme://host:port) without the token, kept so `url` can be
+    /// rebuilt when the token is rotated.
+    origin: String,
+    /// The access token, shared with the server thread's request handlers so a
+    /// runtime rotation takes effect immediately.
+    token: Arc<Mutex<String>>,
     pub note: Option<String>,
     pub snapshot: Arc<Mutex<Snapshot>>,
     pub rx: Receiver<RemoteCmd>,
@@ -163,7 +169,12 @@ impl RemoteUi {
             .to_ip()
             .with_context(|| crate::i18n::t("err.remote.no_port"))?
             .port();
-        let url = format!("http://{bind}:{real_port}/?t={token}");
+        // The origin without the token, so the URL can be rebuilt when the token
+        // is rotated (see rotate_token).
+        let origin = format!("http://{bind}:{real_port}");
+        let url = format!("{origin}/?t={token}");
+        // Shared so a runtime rotation is seen by the server thread's handlers.
+        let token = Arc::new(Mutex::new(token));
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let (tx, rx) = channel::<RemoteCmd>();
         let stop = Arc::new(AtomicBool::new(false));
@@ -172,6 +183,7 @@ impl RemoteUi {
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
 
         {
+            let token = Arc::clone(&token);
             let snapshot = Arc::clone(&snapshot);
             let stop = Arc::clone(&stop);
             let clients = Arc::clone(&frame_clients);
@@ -193,6 +205,8 @@ impl RemoteUi {
         }
         Ok(Self {
             url,
+            origin,
+            token,
             note: None,
             snapshot,
             rx,
@@ -201,6 +215,19 @@ impl RemoteUi {
             state_clients,
             keyframe_wanted,
         })
+    }
+
+    /// Cut every current remote session, honestly. Rotating the token makes the
+    /// old URL (already loaded on a phone) fail auth on its next request, and
+    /// dropping the client channels closes the sockets it holds open right now —
+    /// so a phone that was told it's disconnected really is, and can't reconnect
+    /// until it re-pairs with the new URL. `url` is rebuilt so the pairing QR,
+    /// which reads it every frame, shows the new token.
+    pub fn rotate_token(&mut self, new: String) {
+        *self.token.lock().unwrap() = new.clone();
+        self.url = format!("{}/?t={}", self.origin, new);
+        self.frame_clients.lock().unwrap().clear();
+        self.state_clients.lock().unwrap().clear();
     }
 
     /// Whether a new viewer joined and we should emit one frame of the
@@ -277,13 +304,18 @@ fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option
 
 fn handle(
     req: tiny_http::Request,
-    token: &str,
+    token: &Arc<Mutex<String>>,
     snapshot: &Arc<Mutex<Snapshot>>,
     tx: &Sender<RemoteCmd>,
     frame_clients: &FrameClients,
     state_clients: &StateClients,
     keyframe_wanted: &Arc<AtomicBool>,
 ) -> Result<()> {
+    // Snapshot the current token for this request. It can be rotated at runtime
+    // (the PC's "disconnect" cuts every existing session by changing the token),
+    // so each request compares against, and each served page embeds, the token
+    // as it stands right now.
+    let token = token.lock().unwrap().clone();
     let supplied = {
         let h = req
             .headers()
@@ -297,7 +329,7 @@ fn handle(
             h
         }
     };
-    if !token_eq(&supplied, token) {
+    if !token_eq(&supplied, &token) {
         return req
             .respond(Response::from_string("forbidden").with_status_code(403))
             .map_err(Into::into);
@@ -310,7 +342,7 @@ fn handle(
         // isn't written twice
         ("GET", "/") | ("GET", "/shell") => {
             req.respond(
-                Response::from_string(crate::shell::page(token))
+                Response::from_string(crate::shell::page(&token))
                     .with_header(
                         Header::from_bytes(
                             &b"Content-Type"[..],
@@ -566,6 +598,29 @@ mod tests {
         assert!(!token_eq("abc", "abcd"));
         assert_eq!(query_value("/?t=xyz", "t"), "xyz");
         assert_eq!(query_value("/api/state", "t"), "");
+    }
+
+    /// The window's "disconnect" rotates the token: a phone still holding the old
+    /// URL stops working on its very next request, only the new URL does, and the
+    /// published URL (which the pairing QR reads) carries the new token.
+    #[test]
+    fn rotating_the_token_cuts_the_old_session() {
+        let mut ui =
+            RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "old-token-000000".into()).unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let agent = ureq::Agent::new_with_defaults();
+        let status = |r: Result<ureq::http::Response<ureq::Body>, ureq::Error>| match r {
+            Ok(x) => x.status().as_u16(),
+            Err(ureq::Error::StatusCode(c)) => c,
+            Err(e) => panic!("unexpected: {e}"),
+        };
+        let get = |t: &str| status(agent.get(&format!("{base}/api/state?t={t}")).call());
+
+        assert_eq!(get("old-token-000000"), 200, "old token should work before the cut");
+        ui.rotate_token("new-token-111111".into());
+        assert_eq!(get("old-token-000000"), 403, "old token must be dead after the cut");
+        assert_eq!(get("new-token-111111"), 200, "the new token must work");
+        assert!(ui.url.ends_with("t=new-token-111111"), "url not rebuilt: {}", ui.url);
     }
 
     /// Actually starts the server and confirms auth and command delivery
