@@ -721,7 +721,7 @@
   "settings.rally.downloaded": "Downloaded the rally result.",
   "settings.rally.empty": "No rally records yet.",
   "settings.rally.hint": "Saves the flow, verdict, and executable Lua of a rally (browser operation / AI discussion, etc.) as a single Markdown file. You can also pick past runs. Includes Lua you can paste to reproduce it.",
-  "settings.rally.latest_prefix": "Latest ・",
+  "settings.rally.latest_prefix": "Latest · ",
   "settings.rally.no_record": "No record found.",
   "settings.rally.title": "Rally result",
   "result.title": "Result",
