@@ -403,6 +403,10 @@ struct WinSurface {
     /// "Operate a target tab" requests from the 🎯 panel: (target tab index, goal).
     /// target 0 = detach. The loop attaches the active AI as the target's operator.
     operates: Vec<(usize, String)>,
+    /// Text/keys typed into the composer while viewing a browser tab. The loop
+    /// injects them into the shown browser — the very same caps.browser_inject the
+    /// phone's relay uses, so the desktop composer and the phone share one path.
+    injects: Vec<crate::browser::Input>,
 }
 
 impl WinSurface {
@@ -471,6 +475,11 @@ impl WinSurface {
         std::mem::take(&mut self.run_actions)
     }
 
+    /// Takes the composer inputs bound for the shown browser since the last drain.
+    fn take_injects(&mut self) -> Vec<crate::browser::Input> {
+        std::mem::take(&mut self.injects)
+    }
+
     /// Takes the pending operate-a-target requests (target index, goal).
     fn take_operates(&mut self) -> Vec<(usize, String)> {
         std::mem::take(&mut self.operates)
@@ -509,6 +518,10 @@ impl WinSurface {
                 Ev::RunAction { index } => self.run_actions.push(index),
                 // Operate-a-target request; the loop has the engine to attach it.
                 Ev::Operate { target, goal } => self.operates.push((target, goal)),
+                // Composer input while viewing a browser tab. Stash it; the loop
+                // injects it into the shown browser via caps.browser_inject — the
+                // same call the phone's relay makes, not a desktop-only path.
+                Ev::Inject { input, .. } => self.injects.push(input),
                 // A file attached in the desktop composer. Save it beside the
                 // active tab (the folder its AI runs in) and hand the path back to
                 // the page. Same saver the phone's /api/attach route uses.
@@ -710,6 +723,7 @@ fn run_in_window() -> Result<()> {
         chats: Vec::new(),
         run_actions: Vec::new(),
         operates: Vec::new(),
+        injects: Vec::new(),
     })
 }
 
@@ -2072,6 +2086,18 @@ fn run(mut surface: WinSurface) -> Result<()> {
             };
             if let Some(eng) = engine.as_mut() {
                 eng.fire_action(&code, &ctx);
+            }
+        }
+
+        // Composer text/keys typed while viewing a browser tab go straight into that
+        // browser — the same caps.browser_inject the phone's relay drives, so the two
+        // share one injection path rather than each growing its own.
+        let injects = surface.take_injects();
+        if !injects.is_empty() {
+            if let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) {
+                for input in injects {
+                    let _ = caps.browser_inject(key, input);
+                }
             }
         }
 

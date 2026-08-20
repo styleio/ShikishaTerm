@@ -1650,6 +1650,13 @@ function sendIn(o) {
   if (castIn && castIn.readyState === 1) { castIn.send(JSON.stringify(o)); return true; }
   return false;
 }
+// Are we sending into a browser right now? The phone's relay (castMode) and the
+// window's native browser tab are the same case — both inject into the shown page.
+function drivingBrowser() { return castMode || onBrowserTab(); }
+// Inject an intent into the shown browser. The phone has a low-latency relay
+// socket (sendIn); the window has none, so the identical intent rides ipc (send)
+// instead, reaching the very same caps.browser_inject. One path, two transports.
+function injectIn(o) { if (!sendIn(o)) send(o); }
 // ── Pinch zoom of the relay view ──────────────
 // Display-side magnification only (the page itself is untouched): a CSS
 // transform on the canvas. castRect() reads getBoundingClientRect(), which
@@ -1737,8 +1744,8 @@ const TERM_KEY = { backspace:"bs", delete:"del", pageup:"pgup", pagedown:"pgdn" 
 // (latching Ctrl/Alt combine in); over a terminal it sends the very intents #kbd
 // would send. Either way, any latch is released afterwards.
 function sendCastKey(name) {
-  if (castMode) {
-    sendIn({kind:"inject", what:"key", named:name, ctrl:modCtrl, alt:modAlt});
+  if (drivingBrowser()) {
+    injectIn({kind:"inject", what:"key", named:name, ctrl:modCtrl, alt:modAlt});
   } else if (name === "space") {
     send({kind:"key", text:" "});
   } else if (name !== "ctrl" && name !== "alt") {
@@ -2118,9 +2125,10 @@ function closeBar() { if (castDock) castDock.style.display = "none"; if (castInp
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
-  if (castMode) {
-    // Browser relay: inject the confirmed text as one batch, or a bare Enter
-    if (t) sendIn({kind:"inject", what:"text", text:t});
+  if (drivingBrowser()) {
+    // Browser (phone relay or window native): inject the confirmed text as one
+    // batch into the shown page, or a bare Enter. Same path for both surfaces.
+    if (t) injectIn({kind:"inject", what:"text", text:t});
     else sendCastKey("enter");
   } else if (castTarget) {
     // 🎯 operate mode: hand the text to the active AI as a goal, and it drives the
