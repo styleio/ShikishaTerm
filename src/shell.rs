@@ -145,7 +145,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     display:none; flex-direction:column; }
   #attachtoast { position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
     z-index:30; max-width:86%; padding:9px 14px; border-radius:9px; font-size:13px;
-    background:#0f2a3d; color:#dceeff; border:1px solid var(--accent);
+    background:#0f2a3d; color:#dceeff; border:1px solid var(--brand);
     box-shadow:0 8px 24px rgba(0,0,0,.5); opacity:0; pointer-events:none;
     transition:opacity .18s ease; word-break:break-all; }
   #attachtoast.bad { background:#3a1418; color:#ffd7d7; border-color:#e5534b; }
@@ -153,6 +153,14 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     padding:6px 8px; background:var(--panel); border-top:1px solid var(--line);
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }
   #castkeys::-webkit-scrollbar { display:none; }
+  #castactions { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
+    padding:6px 8px; background:var(--panel); border-top:1px solid var(--line);
+    -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+  #castactions::-webkit-scrollbar { display:none; }
+  .castaction { flex:0 0 auto; max-width:60vw; overflow:hidden; text-overflow:ellipsis;
+    padding:7px 12px; font-size:13px; border:1px solid var(--brand); border-radius:14px;
+    background:rgba(0,170,255,.10); color:var(--text); cursor:pointer; user-select:none; }
+  .castaction:active { background:var(--brand); color:#04121c; }
   .castkey { flex:0 0 auto; min-width:40px; padding:8px 10px; font-size:14px;
     border:1px solid var(--line); border-radius:8px; background:var(--bg);
     color:var(--text); cursor:pointer; user-select:none; }
@@ -513,6 +521,9 @@ const MENU_KEYS = {{MENU_KEYS}};
 const MENU_WORDS = {{MENU_WORDS}};
 // The auxiliary key row shown in the screen relay (customizable via config)
 const CAST_KEYS = {{CAST_KEYS}};
+// Quick actions for the sub-input bar: [{label, text, lua}]. text!=null = insert
+// that string on click (beginner); lua=true = fire server-side Lua (advanced).
+const ACTIONS = {{ACTIONS}};
 // The access token is never baked into the page. On first pair it rides in the
 // URL (?t=…, straight from the QR); we lift it into sessionStorage and then
 // immediately strip it from the address bar and this history entry with
@@ -1674,6 +1685,30 @@ function buildCastKeys() {
   });
   return row;
 }
+// The quick-actions row for the sub-input bar. A text action inserts its string
+// into the composer on click (a reviewable "auto-fill", not an immediate send);
+// Lua actions are carried but not fired yet, so only text ones are shown for now
+// (no dead buttons). Returns null when there are none, so the row is omitted.
+function buildActions() {
+  const items = (typeof ACTIONS !== "undefined" ? ACTIONS : []).filter(a => a && a.text != null);
+  if (!items.length) return null;
+  const row = el("div", {id:"castactions"});
+  items.forEach(a => {
+    const b = el("button", {class:"castaction", title:a.text}, a.label || a.text);
+    // Keep the composer's focus (= the keyboard) when tapping an action.
+    b.addEventListener("pointerdown", (e) => e.preventDefault());
+    b.onclick = (e) => {
+      e.stopPropagation();
+      if (!castInput) return;
+      const cur = castInput.value;
+      const sep = (cur && !cur.endsWith(" ") && !cur.endsWith("\n")) ? " " : "";
+      castInput.value = cur + sep + a.text;
+      castInput.focus();
+    };
+    row.append(b);
+  });
+  return row;
+}
 // A short-lived toast for attach results (client-side, independent of S.flash
 // so a state push can't wipe it mid-message).
 function attachToast(text, bad) {
@@ -1754,13 +1789,15 @@ function ensureBar() {
   [bs, send].forEach(b => b.addEventListener("pointerdown", (e) => e.preventDefault()));
   castBar = el("div", {id:"castbar"}, att, fileIn, bs, castInput, send, close);
   castKeysEl = buildCastKeys();
+  const actionsEl = buildActions();
   // The release banner. Placed just above the auxiliary key panel, and
   // shifts up together with the whole dock once the keyboard appears
   // (pinned to the bottom it hides under the keyboard, pinned to the top it gets in the way)
   modeEl = el("div", {id:"castmode"}, el("span", {}, T["tui.cast.control"] || "In control — tap to release"));
   modeEl.onclick = exitCast;
-  // Top row = release banner, middle row = auxiliary keys, bottom row = text input bar. All lifted together
-  castDock = el("div", {id:"castdock"}, modeEl, castKeysEl, castBar);
+  // Top row = release banner, then quick actions, auxiliary keys, and the text
+  // input bar at the bottom. All lifted together above the keyboard.
+  castDock = el("div", {id:"castdock"}, modeEl, actionsEl, castKeysEl, castBar);
   document.getElementById("main").append(castDock);
   castInput.addEventListener("keydown", (e) => {
     if (e.isComposing) return;
@@ -2114,6 +2151,23 @@ pub const MENU: [(&str, &str); 7] = [
     ("?", "tui.menu.help"),
 ];
 
+/// The sub-input bar's quick actions, as the shell wants them: `text` is the
+/// string to insert for a plain action, or null for a Lua one (whose source
+/// stays server-side — the shell fires it, it never holds the code).
+fn actions_json() -> String {
+    let list: Vec<serde_json::Value> = crate::config::actions()
+        .into_iter()
+        .map(|a| {
+            serde_json::json!({
+                "label": a.label,
+                "text": if a.lua { serde_json::Value::Null } else { serde_json::Value::String(a.body) },
+                "lua": a.lua,
+            })
+        })
+        .collect();
+    serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())
+}
+
 pub fn page() -> String {
     let dict = crate::i18n::dict_json();
     let keys: Vec<&str> = MENU.iter().map(|(k, _)| *k).collect();
@@ -2131,6 +2185,7 @@ pub fn page() -> String {
             "{{CAST_KEYS}}",
             &serde_json::to_string(&crate::config::cast_keys()).unwrap_or_else(|_| "[]".into()),
         )
+        .replace("{{ACTIONS}}", &actions_json())
         .replace(
         "{{BUILD}}",
         &serde_json::to_string(&format!(

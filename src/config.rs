@@ -66,6 +66,10 @@ pub struct Config {
     /// Bounds for files pasted/attached into the sub-input bar (saved beside the tab)
     #[serde(default)]
     pub attach: AttachSpec,
+    /// Quick actions shown in the sub-input bar. Each inserts text (beginner) or,
+    /// when `lua` is set, runs Lua (advanced).
+    #[serde(default)]
+    pub actions: Vec<ActionSpec>,
     /// Display language ("ja" etc). Follows the OS setting if omitted
     #[serde(default)]
     pub language: Option<String>,
@@ -199,6 +203,26 @@ impl Default for AttachSpec {
 
 fn default_attach_mb() -> u32 {
     25
+}
+
+/// A one-click action in the sub-input bar. `body` is text to insert into the
+/// composer (the beginner default) or, when `lua` is true, Lua run in the scoped
+/// sandbox (advanced). Advanced is per-action, so a list can mix both freely.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActionSpec {
+    /// Button label shown in the bar.
+    pub label: String,
+    /// Text to insert, or Lua source when `lua` is set.
+    #[serde(default)]
+    pub body: String,
+    /// Advanced: `body` is Lua run in the sandbox, not text to insert.
+    #[serde(default)]
+    pub lua: bool,
+}
+
+/// The quick actions for the sub-input bar (empty if none configured).
+pub fn actions() -> Vec<ActionSpec> {
+    load().map(|c| c.actions).unwrap_or_default()
 }
 
 fn default_attach_ext() -> Vec<String> {
