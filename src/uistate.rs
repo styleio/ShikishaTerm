@@ -52,6 +52,12 @@ pub struct TabState {
     /// colour so the "run several AIs side by side" story reads at a glance.
     #[serde(default)]
     pub ai: Option<String>,
+    /// Whether this tab acts without pausing for confirmation — the prerequisite
+    /// for driving another tab (operate). The shell greys out / blocks picking an
+    /// operate target when the operator (active tab) can't. Always false for a
+    /// browser or the settings pane.
+    #[serde(default)]
+    pub auto: bool,
 }
 
 /// Current position of the automation ring
@@ -171,6 +177,7 @@ impl TabState {
             busy: t.is_generating(),
             settings: false,
             ai: t.ai_kind(),
+            auto: t.auto_runs(),
         }
     }
 
@@ -194,6 +201,7 @@ impl TabState {
             busy: false,
             settings: key == "settings",
             ai: None,
+            auto: false,
         }
     }
 }
@@ -265,6 +273,7 @@ mod tests {
             busy: false,
             settings: false,
             ai: None,
+            auto: false,
         }
     }
 

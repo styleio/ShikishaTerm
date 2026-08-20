@@ -121,11 +121,12 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     animation:rip .48s ease-out forwards; }
   @keyframes rip { from { transform:scale(.4); opacity:.9 } to { transform:scale(4.5); opacity:0 } }
   /* Text input bar (bottom-of-screen input field with an IME preview) */
-  #castbar { display:flex; align-items:center; gap:6px; padding:6px 8px;
+  #castbar { display:flex; align-items:flex-end; gap:6px; padding:6px 8px;
     background:var(--panel); border-top:1px solid var(--brand); }
-  #castinput { flex:1; min-width:0; font-size:16px; padding:8px 10px;
-    background:var(--bg); color:var(--text); border:1px solid var(--line);
-    border-radius:8px; outline:none; }
+  #castinput { flex:1; min-width:0; font-family:inherit; font-size:16px;
+    line-height:1.35; padding:8px 10px; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:8px; outline:none;
+    resize:none; overflow-y:auto; max-height:40vh; }
   #castbar .castsend { padding:8px 14px; border:0; border-radius:8px;
     background:var(--brand); color:#04121c; font-weight:700; cursor:pointer; }
   #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);
@@ -670,8 +671,7 @@ function drawTabs() {
       // natively (responsive) — navigate there, handing over the token once in
       // the URL (it's traded for a cookie and stripped on arrival). In the window
       // it opens as the child WebView, as before.
-      onclick:() => { if (REMOTE) location.href = "cfg?t=" + encodeURIComponent(TOKEN);
-                      else send({kind:"opensettings"}); }},
+      onclick:openSettings},
     el("span", {class:"gear"}, "⚙️")));
 }
 
@@ -1091,6 +1091,14 @@ window.__state = function (json) {
     const onTermTab = !screen.hidden && !web && !modelTabNow && S.active !== 0;
     if (!onTermTab) closeBar();
   }
+  // The 🎯 target panel is gated on the operator = the active tab. If the active
+  // tab changed while it's open, rebuild it so its enabled/disabled state, hint,
+  // and target list follow the new operator instead of going stale.
+  if (castDock && castDock.style.display === "flex" && castPanel === "target"
+      && S.active !== lastCastActive) {
+    renderPanel();
+  }
+  lastCastActive = S.active;
   if (S.active === 0) drawBoard();
   drawTopicBar();
   drawModelChat();
@@ -1784,6 +1792,7 @@ function buildActions() {
         const sep = (cur && !cur.endsWith(" ") && !cur.endsWith("\n")) ? " " : "";
         castInput.value = cur + sep + a.text;
         castInput.focus();
+        growCastInput();
       }
     };
     row.append(b);
@@ -1827,6 +1836,14 @@ function insertIntoComposer(path) {
   const cur = castInput.value;
   castInput.value = (cur && !cur.endsWith(" ") && !cur.endsWith("\n") ? cur + " " : cur) + path + " ";
   castInput.focus();
+  growCastInput();
+}
+// Size the sub-input textarea to its content, up to the CSS max-height (then it
+// scrolls). Called on typing and after any programmatic value change.
+function growCastInput() {
+  if (!castInput) return;
+  castInput.style.height = "auto";
+  castInput.style.height = Math.min(castInput.scrollHeight, Math.round(window.innerHeight * 0.4)) + "px";
 }
 // The window has no remote HTTP server, so it saves over the ipc bridge: post the
 // bytes, and Rust replies by eval-ing window.__attachDone(id, result). Correlate
@@ -1878,6 +1895,9 @@ async function attachFile(file) {
   }
 }
 let castDock = null, castBar = null, castInput = null, castKeysEl = null;
+// The active tab the 🎯 target panel was last built for, so __state can rebuild it
+// when the operator changes (its enabled/disabled gate depends on that tab).
+let lastCastActive = null;
 // The bar's upper area is a single switchable panel: a fixed switcher on the left
 // picks what fills the (horizontally scrolling) rest — the special keys, the quick
 // actions, or (later) the operate-target picker. Default: keys on the phone (no
@@ -1886,12 +1906,25 @@ let castPanel = null, castPanelEl = null;
 // The tab the "operate" (🎯) panel is aimed at, or null. Step 1 = choosing it;
 // the operate engine (the active AI writes Lua to drive it) is layered on next.
 let castTarget = null;
+// Open the settings screen: the child WebView in the window, or the reverse-proxied
+// /cfg page (native + responsive) on the phone, handing the token over once.
+function openSettings() {
+  if (typeof REMOTE !== "undefined" && REMOTE) location.href = "cfg?t=" + encodeURIComponent(TOKEN);
+  else send({kind:"opensettings"});
+}
 // The picker for the 🎯 panel: choose another tab to operate. Browsers, AI tabs
-// and plain terminals are all candidates; the active one and INDEX are not.
+// and plain terminals are all candidates; the operator itself and INDEX are not.
+// Driving requires the operator (the active tab) to act WITHOUT confirmation — a
+// model tab always does, a CLI only with its bypass flag. When it can't, the
+// picker is disabled and a jump to settings is offered instead of a dead end.
 function buildTargetPanel() {
   const wrap = el("div", {id:"casttarget"});
-  const tabs = (S && S.tabs) ? S.tabs.filter(t => t && t.index !== 0 && !t.settings) : [];
+  const operator = (S && S.tabs) ? S.tabs.find(t => t && t.index === S.active) : null;
+  const canOperate = !!(operator && operator.auto);
+  const tabs = (S && S.tabs)
+    ? S.tabs.filter(t => t && t.index !== 0 && !t.settings && t.index !== S.active) : [];
   const sel = el("select", {class:"castswitch"});
+  sel.disabled = !canOperate;
   sel.append(el("option", {value:""}, T["tui.cast.target.none"] || "— none —"));
   tabs.forEach(t => {
     const icon = t.kind === "browser" ? "🌐" : (t.model ? "🤖" : "▷");
@@ -1900,13 +1933,23 @@ function buildTargetPanel() {
     sel.append(o);
   });
   sel.onchange = () => {
+    if (!canOperate) { sel.value = ""; return; }
     const idx = parseInt(sel.value, 10);
     const t = tabs.find(x => x.index === idx);
     if (t) { castTarget = { index: t.index, name: t.name || ("#" + idx), kind: t.kind, model: !!t.model }; }
     else { if (castTarget) send({kind:"operate", target: 0}); castTarget = null; }  // detach
   };
-  wrap.append(el("span", {class:"hint", style:"flex:none"}, T["tui.cast.target.label"] || "Operate:"), sel,
-    el("span", {class:"hint", style:"flex:1 1 0;min-width:0"}, T["tui.cast.target.hint"] || ""));
+  wrap.append(el("span", {class:"hint", style:"flex:none"}, T["tui.cast.target.label"] || "Operate:"), sel);
+  if (!canOperate) {
+    castTarget = null;  // an unusable operator can't be aimed at anything
+    wrap.append(
+      el("span", {class:"hint", style:"flex:1 1 0;min-width:0;color:var(--danger)"},
+        T["tui.cast.target.needauto"] || "This AI must be allowed to act without confirmation."),
+      el("button", {class:"castbtn", style:"flex:none", onclick:openSettings},
+        T["tui.cast.target.settings"] || "Settings"));
+  } else {
+    wrap.append(el("span", {class:"hint", style:"flex:1 1 0;min-width:0"}, T["tui.cast.target.hint"] || ""));
+  }
   return wrap;
 }
 // Panels available on this surface. "target" (operate a tab) shows a placeholder
@@ -1949,7 +1992,9 @@ function renderPanel() {
 }
 function ensureBar() {
   if (castDock) return;
-  castInput = el("input", {id:"castinput", autocomplete:"off", autocorrect:"off",
+  // A textarea (not <input>) so it can hold newlines: Shift+Enter inserts one and
+  // multi-line text pastes intact. It starts one row tall and grows with the text.
+  castInput = el("textarea", {id:"castinput", rows:"1", autocomplete:"off",
     autocapitalize:"off", spellcheck:"false",
     placeholder: T["tui.cast.type.ph"] || "Type here to send"});
   const send = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "Send");
@@ -1992,10 +2037,13 @@ function ensureBar() {
   // Rows top-to-bottom: release banner, the switchable panel, the input row.
   castDock = el("div", {id:"castdock"}, modeEl, castPanelEl, castBar);
   document.getElementById("main").append(castDock);
+  // Enter sends; Shift+Enter (or an active IME) inserts a newline instead.
   castInput.addEventListener("keydown", (e) => {
     if (e.isComposing) return;
-    if (e.key === "Enter") { sendBar(); e.preventDefault(); }
+    if (e.key === "Enter" && !e.shiftKey) { sendBar(); e.preventDefault(); }
   });
+  // Grow the field with its content (up to the CSS max-height, then it scrolls).
+  castInput.addEventListener("input", growCastInput);
   // Paste an image straight into the composer — it's saved and its path inserted.
   castInput.addEventListener("paste", (e) => {
     const fs = e.clipboardData && e.clipboardData.files;
@@ -2040,6 +2088,7 @@ function sendBar() {
   }
   castInput.value = "";
   castInput.focus();
+  growCastInput();
 }
 // The cursor is absolutely positioned within #main. Compute #cast's content
 // position relative to #main via castRect() — getBoundingClientRect() already

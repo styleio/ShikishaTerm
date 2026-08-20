@@ -545,6 +545,39 @@ mod capture_range_tests {
 mod tests {
     use super::screen_hash;
 
+    fn argv(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn auto_runs_needs_the_bypass_flag_for_a_cli() {
+        // A bare CLI still asks for confirmation, so it can't drive a tab...
+        assert!(!super::argv_auto_runs(&argv("claude"), false));
+        assert!(!super::argv_auto_runs(&argv("codex --model o3"), false));
+        // ...but with its own bypass flag it runs unattended.
+        assert!(super::argv_auto_runs(&argv("claude --dangerously-skip-permissions"), false));
+        assert!(super::argv_auto_runs(
+            &argv("codex --dangerously-bypass-approvals-and-sandbox"),
+            false
+        ));
+        assert!(super::argv_auto_runs(&argv("gemini --yolo"), false));
+        // A path-qualified head still resolves (file_stem), and flag order is free.
+        assert!(super::argv_auto_runs(
+            &argv("/usr/bin/claude --foo --dangerously-skip-permissions"),
+            false
+        ));
+    }
+
+    #[test]
+    fn auto_runs_is_true_for_a_model_and_false_for_others() {
+        // A model bridge writes replies in-process — no flag, always autonomous.
+        assert!(super::argv_auto_runs(&argv("anything"), true));
+        // Shells and CLIs without a known bypass flag never auto-run.
+        assert!(!super::argv_auto_runs(&argv("cmd.exe"), false));
+        assert!(!super::argv_auto_runs(&argv("aider --yes"), false));
+        assert!(!super::argv_auto_runs(&[], false));
+    }
+
     /// A portable build meeting a PC without the tool installed should get a
     /// plain-language pointer to Settings, not the raw CreateProcessW error.
     #[test]
@@ -879,6 +912,39 @@ pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
             .map(|p| p.display().to_string())
             .unwrap_or_default()
     )
+}
+
+/// The "act without asking" flag a CLI needs to run unattended, or None if it has
+/// none. Single source of truth for the operator-readiness gate; the settings JS
+/// (webui `cliFlagOf`) mirrors these strings for the editable checkbox.
+fn bypass_flag(head: &str) -> Option<&'static str> {
+    match head {
+        "claude" => Some("--dangerously-skip-permissions"),
+        "codex" => Some("--dangerously-bypass-approvals-and-sandbox"),
+        "gemini" => Some("--yolo"),
+        _ => None,
+    }
+}
+
+/// Whether a launch (its argv, plus whether it's a model bridge) acts without
+/// per-action confirmation. A model always does; a CLI only with its bypass flag
+/// present; everything else never does.
+pub fn argv_auto_runs(argv: &[String], is_model: bool) -> bool {
+    if is_model {
+        return true;
+    }
+    let Some(head) = argv.first() else {
+        return false;
+    };
+    let head = std::path::Path::new(head)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(head)
+        .to_ascii_lowercase();
+    match bypass_flag(&head) {
+        Some(flag) => argv.iter().any(|a| a == flag),
+        None => false,
+    }
 }
 
 /// Waveform width (number of samples). Advances by one per tick
@@ -1438,6 +1504,15 @@ impl Tab {
             .to_ascii_lowercase();
         matches!(head.as_str(), "claude" | "codex" | "gemini" | "aider" | "kimi")
             .then_some(head)
+    }
+
+    /// Whether this tab runs without pausing for per-action confirmation — the
+    /// prerequisite for driving another tab (operate), autonomous discussion, and
+    /// automation. A model bridge always does (it writes replies in-process); a
+    /// CLI does only when launched with its "act without asking" flag. Anything
+    /// else (aider / kimi / a plain shell) has no such flag, so it never does.
+    pub fn auto_runs(&self) -> bool {
+        argv_auto_runs(&self.argv, self.model.is_some())
     }
 
     /// Fingerprint of the launch conditions. If this changes, the session needs to be recreated

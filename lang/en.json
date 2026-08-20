@@ -907,6 +907,9 @@
   "settings.actions.lua_ph": "Lua to run on tap, e.g. shikisha.send_to_tab(\"reviewer\", tab.output)",
   "tui.cast.target.none": "— none —",
   "tui.cast.target.label": "Operate:",
-  "tui.cast.target.hint": "Pick a tab to operate from here (driving it comes next).",
-  "msg.operate.browser_only": "The operate target must be a browser tab (for now)."
+  "tui.cast.target.hint": "Give this AI a goal and it drives the chosen tab for you.",
+  "tui.cast.target.needauto": "This AI isn't allowed to act without confirmation, so it can't drive a tab. Turn that on to operate.",
+  "tui.cast.target.settings": "Settings",
+  "msg.operate.browser_only": "The operate target must be a browser tab (for now).",
+  "msg.operate.needs_autoapprove": "This AI must be allowed to act without confirmation to drive a tab. Turn it on in settings."
 }

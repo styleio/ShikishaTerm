@@ -907,6 +907,9 @@
   "settings.actions.lua_ph": "タップで実行するLua 例: shikisha.send_to_tab(\"reviewer\", tab.output)",
   "tui.cast.target.none": "— なし —",
   "tui.cast.target.label": "操作対象:",
-  "tui.cast.target.hint": "ここから操作するタブを選択（操作の実行は次段）。",
-  "msg.operate.browser_only": "操作対象はブラウザタブにしてください（現状）。"
+  "tui.cast.target.hint": "このAIに目標を伝えると、選んだタブを操作します。",
+  "tui.cast.target.needauto": "このAIは『確認なしで自動実行』が無効なため、タブを操作できません。有効にすると操作できます。",
+  "tui.cast.target.settings": "設定",
+  "msg.operate.browser_only": "操作対象はブラウザタブにしてください（現状）。",
+  "msg.operate.needs_autoapprove": "タブを操作するには、このAIの『確認なしで自動実行』を有効にしてください。設定で切り替えられます。"
 }

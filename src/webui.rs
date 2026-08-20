@@ -2645,6 +2645,20 @@ function actionsCard() {
   return c;
 }
 
+// The built-in starter actions (Continue / Explain / Review / Fix), mirrored from
+// the sub-input bar's fallback so settings can show them as editable rows when the
+// config has none. Kept as data (not persisted) unless the user edits them.
+function defaultActions() {
+  // Full literal keys (not built by concatenation) so the key-existence test can
+  // see them, and so a missing translation fails loudly rather than silently.
+  return [
+    { label: T["actions.default.continue.label"], body: T["actions.default.continue.body"] },
+    { label: T["actions.default.explain.label"],  body: T["actions.default.explain.body"] },
+    { label: T["actions.default.review.label"],   body: T["actions.default.review.body"] },
+    { label: T["actions.default.fix.label"],      body: T["actions.default.fix.body"] },
+  ].map(a => ({ label: a.label || "", body: a.body || "", lua: false }));
+}
+
 // Operate (🎯) runaway limits + stall policy, saved into config.operate. The three
 // limits are a safety net (0 = no limit); on_limit picks "stop" (halt and hand back
 // to the human) or "continue" (reset the budget and keep going, trusting the
@@ -3820,6 +3834,12 @@ async function loadAi() {
 async function load() {
   await loadAi();
   current = await (await api("GET")).json();
+  // Show the built-in starter actions as editable rows when none are configured,
+  // matching what the sub-input bar displays out of the box. They're dropped again
+  // on save unless the user changes them (see payload), so config stays tidy.
+  if (!Array.isArray(current.actions) || !current.actions.length) {
+    current.actions = defaultActions();
+  }
   loadedLanguage = (current.language || "").trim().toLowerCase();
   const list = (Array.isArray(current.workspaces) && current.workspaces.length)
       ? current.workspaces
@@ -3879,7 +3899,12 @@ function payload() {
   // Quick actions: drop rows left without a label, and omit the key entirely if none remain.
   if (out.actions) {
     out.actions = out.actions.filter(a => a && (a.label || "").trim());
-    if (!out.actions.length) delete out.actions;
+    // Drop the block when empty, or when it's still exactly the seeded starter set
+    // (so an untouched default config isn't written out with the shown rows).
+    const def = defaultActions();
+    const sameAsDefault = out.actions.length === def.length && out.actions.every((a, i) =>
+      a.label === def[i].label && (a.body || "") === (def[i].body || "") && !a.lua === !def[i].lua);
+    if (!out.actions.length || sameAsDefault) delete out.actions;
   }
   // Operate limits/policy: coerce to numbers, then drop the block entirely when
   // it still matches the defaults (keeps config tidy). 0 = "no limit" is kept.

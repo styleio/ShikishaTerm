@@ -2080,6 +2080,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     continue;
                 }
             };
+            // The operator (the active tab) must act without confirmation, or every
+            // step would stall waiting for a human. The shell already greys the
+            // picker out; this backs it up for anything that posts operate directly.
+            let operator_ready = session_at(&layout, active)
+                .and_then(|i| tabs.get(i))
+                .map(|t| t.auto_runs())
+                .unwrap_or(false);
+            if !operator_ready {
+                flash = Some(i18n::t("msg.operate.needs_autoapprove"));
+                continue;
+            }
             // Operating needs an engine to run in; make a bare one if this
             // workspace didn't otherwise have any Lua (same gap as Lua actions).
             if engine.is_none() {
