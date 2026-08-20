@@ -36,6 +36,7 @@
   "tui.cast.panel.keys": "特殊キー",
   "tui.cast.panel.actions": "アクション",
   "tui.cast.panel.target": "対象",
+  "tui.cast.panel.target.soon": "ここから他タブを操作する機能は近日対応します。",
   "attach.err.empty": "添付ファイルが空でした。",
   "attach.err.too_large": "ファイルが大きすぎます（{size} MB > {max} MB）。",
   "attach.err.executable": "実行ファイルは添付できません。",

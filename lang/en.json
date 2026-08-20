@@ -36,6 +36,7 @@
   "tui.cast.panel.keys": "Keys",
   "tui.cast.panel.actions": "Actions",
   "tui.cast.panel.target": "Target",
+  "tui.cast.panel.target.soon": "Operating another tab from here is coming soon.",
   "attach.err.empty": "The attachment was empty.",
   "attach.err.too_large": "That file is too large ({size} MB > {max} MB).",
   "attach.err.executable": "Refusing to attach an executable file.",

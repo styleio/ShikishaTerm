@@ -1856,9 +1856,10 @@ let castDock = null, castBar = null, castInput = null, castKeysEl = null;
 // actions, or (later) the operate-target picker. Default: keys on the phone (no
 // physical keyboard), actions on the desktop.
 let castPanel = null, castPanelEl = null;
-// Panels available on this surface. "target" arrives with the operate-a-tab
-// feature; until then the desktop has a single panel (no switcher shown).
-function panelOptions() { return (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"]; }
+// Panels available on this surface. "target" (operate a tab) shows a placeholder
+// until that feature lands, but it's listed now so the switcher is present on both
+// the phone (keys/actions/target) and the desktop (actions/target).
+function panelOptions() { return (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions", "target"] : ["actions", "target"]; }
 function panelLabel(p) {
   return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
     : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
@@ -1867,6 +1868,7 @@ function panelLabel(p) {
 function panelContent(p) {
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
+  if (p === "target") { return el("div", {class:"castpanelhint"}, T["tui.cast.panel.target.soon"] || "Coming soon"); }
   return null;
 }
 // (Re)fill the panel area: the fixed switcher (only when there's more than one
