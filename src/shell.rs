@@ -157,14 +157,18 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     border:1px solid var(--brand); background:var(--panel); color:var(--brand);
     box-shadow:0 4px 16px rgba(0,0,0,.45); opacity:.85; transition:opacity .15s ease; }
   #composerfab:hover { opacity:1; }
-  #castkeys { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
-    padding:6px 8px; background:var(--panel); border-top:1px solid var(--line);
+  /* The switchable panel: a fixed switcher (left) + the scrolling content (right). */
+  #castpanel { display:flex; align-items:center; gap:8px; padding:0 8px;
+    background:var(--panel); border-top:1px solid var(--line); }
+  .castswitch { flex:none; margin:6px 0; padding:6px 8px; font-size:13px;
+    background:var(--bg); color:var(--text); border:1px solid var(--line);
+    border-radius:8px; }
+  .castpanelhint { flex:1 1 0; padding:10px 4px; color:var(--dim); font-size:13px; }
+  /* Keys / actions rows fill the rest and scroll horizontally under the switcher. */
+  #castkeys, #castactions { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
+    flex:1 1 0; min-width:0; padding:6px 0;
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }
-  #castkeys::-webkit-scrollbar { display:none; }
-  #castactions { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
-    padding:6px 8px; background:var(--panel); border-top:1px solid var(--line);
-    -webkit-overflow-scrolling:touch; scrollbar-width:none; }
-  #castactions::-webkit-scrollbar { display:none; }
+  #castkeys::-webkit-scrollbar, #castactions::-webkit-scrollbar { display:none; }
   .castaction { flex:0 0 auto; max-width:60vw; overflow:hidden; text-overflow:ellipsis;
     padding:7px 12px; font-size:13px; border:1px solid var(--brand); border-radius:14px;
     background:rgba(0,170,255,.10); color:var(--text); cursor:pointer; user-select:none; }
@@ -1847,6 +1851,41 @@ async function attachFile(file) {
   }
 }
 let castDock = null, castBar = null, castInput = null, castKeysEl = null;
+// The bar's upper area is a single switchable panel: a fixed switcher on the left
+// picks what fills the (horizontally scrolling) rest — the special keys, the quick
+// actions, or (later) the operate-target picker. Default: keys on the phone (no
+// physical keyboard), actions on the desktop.
+let castPanel = null, castPanelEl = null;
+// Panels available on this surface. "target" arrives with the operate-a-tab
+// feature; until then the desktop has a single panel (no switcher shown).
+function panelOptions() { return (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"]; }
+function panelLabel(p) {
+  return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
+    : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
+    : (T["tui.cast.panel.target"] || "Target");
+}
+function panelContent(p) {
+  if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
+  if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
+  return null;
+}
+// (Re)fill the panel area: the fixed switcher (only when there's more than one
+// choice) plus the current panel's content. The switcher sits outside the
+// scrolling content, so it stays put while the chips/keys scroll under it.
+function renderPanel() {
+  if (!castPanelEl) return;
+  const opts = panelOptions();
+  if (opts.indexOf(castPanel) < 0) castPanel = opts[0];
+  castPanelEl.textContent = "";
+  if (opts.length > 1) {
+    const sel = el("select", {class:"castswitch"});
+    opts.forEach(p => { const o = el("option", {value:p}, panelLabel(p)); if (p === castPanel) o.selected = true; sel.append(o); });
+    sel.onchange = () => { castPanel = sel.value; renderPanel(); };
+    castPanelEl.append(sel);
+  }
+  const content = panelContent(castPanel);
+  if (content) castPanelEl.append(content);
+}
 function ensureBar() {
   if (castDock) return;
   castInput = el("input", {id:"castinput", autocomplete:"off", autocorrect:"off",
@@ -1879,18 +1918,18 @@ function ensureBar() {
   // key is only useful on the phone, whose on-screen keyboard the composer
   // sometimes covers; the window has a real keyboard. el() skips nulls.
   castBar = el("div", {id:"castbar"}, att, fileIn, (REMOTE ? bs : null), castInput, send, close);
-  castKeysEl = buildCastKeys();
-  const actionsEl = buildActions();
-  // The release banner. Placed just above the auxiliary key panel, and
-  // shifts up together with the whole dock once the keyboard appears
-  // (pinned to the bottom it hides under the keyboard, pinned to the top it gets in the way)
+  // One switchable panel above the input row (keys / actions / target), chosen by
+  // a fixed switcher, instead of stacking every row at once. Default: keys on the
+  // phone, actions on the desktop.
+  castPanel = panelOptions()[0];
+  castPanelEl = el("div", {id:"castpanel"});
+  renderPanel();
+  // The release banner (browser-relay control mode only). Shifts up with the dock
+  // once the keyboard appears.
   modeEl = el("div", {id:"castmode"}, el("span", {}, T["tui.cast.control"] || "In control — tap to release"));
   modeEl.onclick = exitCast;
-  // Top row = release banner, then quick actions, then the text input bar. The
-  // auxiliary key row (Esc/Tab/arrows/F-keys) is a phone-only crutch — the window
-  // has a real keyboard, so there the bar is purely the convenience surface
-  // (attach + actions + composer), not a soft keyboard.
-  castDock = el("div", {id:"castdock"}, modeEl, actionsEl, (REMOTE ? castKeysEl : null), castBar);
+  // Rows top-to-bottom: release banner, the switchable panel, the input row.
+  castDock = el("div", {id:"castdock"}, modeEl, castPanelEl, castBar);
   document.getElementById("main").append(castDock);
   castInput.addEventListener("keydown", (e) => {
     if (e.isComposing) return;
