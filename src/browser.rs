@@ -1617,6 +1617,12 @@ fn run_window(
                     }
                 }
                 Cmd::AddChild { name, url, rect, profile } => {
+                    // Creating a WebView2 controller runs synchronously ON THIS
+                    // event-loop thread, and this thread also pumps the whole
+                    // window's messages — while it runs, every click is frozen.
+                    // Log how long it took so a "dead window right after
+                    // startup" report can be matched against it.
+                    let born = std::time::Instant::now();
                     let bounds = to_rect(rect);
                     // Decide this page's data storage (profile/private).
                     // Same folder = same cookies/login, different folder = different profile.
@@ -1699,6 +1705,11 @@ fn run_window(
                             if let Some(arm) = cdp::arm_dialogs(&wvh) {
                                 dialogs.insert(Some(name.clone()), arm);
                             }
+                            crate::append_hook_log(&format!(
+                                "[browser] placed page '{}' in {} ms (window input is frozen while a page is being created)",
+                                name,
+                                born.elapsed().as_millis()
+                            ));
                             children.insert(name, v);
                         }
                         Err(e) => crate::append_hook_log(&crate::i18n::tp(
