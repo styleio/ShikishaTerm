@@ -1364,6 +1364,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         .map(|t| (t.key(), t.state.label().to_string()))
                         .collect(),
                 );
+                // ...and each tab's latest reply, so an operator can read the AI
+                // tab it's driving (shikisha.tab_output).
+                eng.set_outputs(
+                    tabs.iter()
+                        .map(|t| (t.key(), t.last_response.clone().unwrap_or_default()))
+                        .collect(),
+                );
                 // Discard waiting loops belonging to exited tabs (don't leave infinite loops behind)
                 for &(idx, old, new) in &transitions {
                     if new == TabState::Exited && old != TabState::Exited {
@@ -2075,10 +2082,19 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 continue;
             }
             // First slice: browser targets only. Its id comes from the layout.
-            let br = match layout.get(target.wrapping_sub(1)) {
-                Some(Pane::Browser { name, .. }) => name.clone(),
+            // Resolve the target: a browser (driven with browser_* Lua) or another
+            // AI tab (driven by relaying prompts). INDEX / settings / unknown panes
+            // can't be operated.
+            let (is_browser, target_id) = match layout.get(target.wrapping_sub(1)) {
+                Some(Pane::Browser { name, .. }) => (true, name.clone()),
+                Some(Pane::Session(s)) if Some(*s) != session_at(&layout, active) => {
+                    match tabs.get(*s) {
+                        Some(t) => (false, t.id.clone().unwrap_or_else(|| t.title.clone())),
+                        None => continue,
+                    }
+                }
                 _ => {
-                    flash = Some(i18n::t("msg.operate.browser_only"));
+                    flash = Some(i18n::t("msg.operate.bad_target"));
                     continue;
                 }
             };
@@ -2105,7 +2121,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     .and_then(|i| tabs.get(i))
                     .map(|t| tab_ctx(t, active))
                     .zip(engine.as_mut())
-                    .map(|(ctx, eng)| eng.start_operate(src_pane, &br, &ctx));
+                    .map(|(ctx, eng)| {
+                        if is_browser {
+                            eng.start_operate(src_pane, &target_id, &ctx)
+                        } else {
+                            eng.start_operate_ai(src_pane, &target_id, &ctx)
+                        }
+                    });
                 match started {
                     Some(Ok(())) => {
                         operating = Some((src_pane, target));

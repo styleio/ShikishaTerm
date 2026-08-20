@@ -249,6 +249,18 @@ pub struct OperateSpec {
     ///                  judge DONE itself (never stop on the user mid-task)
     #[serde(default = "default_operate_on_limit")]
     pub on_limit: String,
+    /// After each browser action, how long to wait for the page to settle (its
+    /// text to stop changing) before reading it back, in milliseconds. Guards
+    /// against reading a half-rendered page. 0 disables the wait.
+    #[serde(default = "default_operate_settle_ms")]
+    pub settle_ms: u32,
+    /// A brake before the operator acts, so a person can hold a risky step:
+    ///   "off"   ... run every action immediately (default)
+    ///   "sends" ... pause for approval only before a submit/click/auth step
+    ///   "all"   ... pause for approval before every action
+    /// Approval is a button shown on the target page; declining holds the run.
+    #[serde(default = "default_operate_confirm")]
+    pub confirm: String,
 }
 
 impl Default for OperateSpec {
@@ -258,6 +270,8 @@ impl Default for OperateSpec {
             max_seconds: default_operate_seconds(),
             max_tokens: default_operate_tokens(),
             on_limit: default_operate_on_limit(),
+            settle_ms: default_operate_settle_ms(),
+            confirm: default_operate_confirm(),
         }
     }
 }
@@ -273,6 +287,12 @@ fn default_operate_tokens() -> u32 {
 }
 fn default_operate_on_limit() -> String {
     "stop".into()
+}
+fn default_operate_settle_ms() -> u32 {
+    1800
+}
+fn default_operate_confirm() -> String {
+    "off".into()
 }
 
 /// The operate limits/policy (defaults if none configured).
@@ -1312,6 +1332,8 @@ mod tests {
         assert_eq!(cfg.operate.max_seconds, 900);
         assert_eq!(cfg.operate.max_tokens, 400_000);
         assert_eq!(cfg.operate.on_limit, "stop");
+        assert_eq!(cfg.operate.settle_ms, 1800);
+        assert_eq!(cfg.operate.confirm, "off");
     }
 
     #[test]

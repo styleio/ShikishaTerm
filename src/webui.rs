@@ -2771,12 +2771,23 @@ function operateCard() {
     pol.append(opt);
   }
   pol.addEventListener("change", () => { o.on_limit = pol.value; refreshSave(); });
+  // The brake: hold before the operator acts (off / only sending steps / every step).
+  const conf = el("select", {style:"width:220px"});
+  for (const [v, label] of [["off", T["settings.operate.confirm.off"]],
+                            ["sends", T["settings.operate.confirm.sends"]],
+                            ["all", T["settings.operate.confirm.all"]]]) {
+    const opt = el("option", {value:v}, label); if ((o.confirm || "off") === v) opt.selected = true;
+    conf.append(opt);
+  }
+  conf.addEventListener("change", () => { o.confirm = conf.value; refreshSave(); });
   return card(T["settings.operate.title"],
     el("div", {class:"hint"}, T["settings.operate.hint"]),
     row(T["settings.operate.max_rounds"], num("max_rounds", 40), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
     row(T["settings.operate.max_seconds"], num("max_seconds", 900), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
     row(T["settings.operate.max_tokens"], num("max_tokens", 400000), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
-    row(T["settings.operate.on_limit"], pol, el("span", {class:"hint"}, T["settings.operate.on_limit.hint"])));
+    row(T["settings.operate.on_limit"], pol, el("span", {class:"hint"}, T["settings.operate.on_limit.hint"])),
+    row(T["settings.operate.settle"], num("settle_ms", 1800), el("span", {class:"hint"}, T["settings.operate.settle.hint"])),
+    row(T["settings.operate.confirm"], conf, el("span", {class:"hint"}, T["settings.operate.confirm.hint"])));
 }
 
 function notifyCard() {
@@ -4019,14 +4030,16 @@ function payload() {
   // it still matches the defaults (keeps config tidy). 0 = "no limit" is kept.
   if (out.operate) {
     const o = Object.assign({}, out.operate);
-    ["max_rounds","max_seconds","max_tokens"].forEach(k => {
+    ["max_rounds","max_seconds","max_tokens","settle_ms"].forEach(k => {
       o[k] = (o[k] === "" || o[k] === null || o[k] === undefined) ? undefined : Number(o[k]);
     });
     const isDefault = (o.max_rounds ?? 40) === 40 && (o.max_seconds ?? 900) === 900
-      && (o.max_tokens ?? 400000) === 400000 && (o.on_limit || "stop") === "stop";
+      && (o.max_tokens ?? 400000) === 400000 && (o.on_limit || "stop") === "stop"
+      && (o.settle_ms ?? 1800) === 1800 && (o.confirm || "off") === "off";
     if (isDefault) delete out.operate;
     else out.operate = { max_rounds:(o.max_rounds ?? 40), max_seconds:(o.max_seconds ?? 900),
-                         max_tokens:(o.max_tokens ?? 400000), on_limit:(o.on_limit || "stop") };
+                         max_tokens:(o.max_tokens ?? 400000), on_limit:(o.on_limit || "stop"),
+                         settle_ms:(o.settle_ms ?? 1800), confirm:(o.confirm || "off") };
   }
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
   // Don't save a provider with an empty base_url (avoids leaving leftover junk from a still-in-progress add)

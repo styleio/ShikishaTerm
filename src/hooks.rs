@@ -594,6 +594,10 @@ pub struct HookEngine {
     current_origin: Rc<Cell<usize>>,
     /// Each tab's (identifier, current state). Made readable from inside loops
     states: Rc<RefCell<Vec<(TabKey, String)>>>,
+    /// Each tab's (identifier, latest captured reply), same order as `states`. Lets
+    /// an operator read the tab it's driving (shikisha.tab_output) when that tab is
+    /// another AI rather than a browser.
+    outputs: Rc<RefCell<Vec<(TabKey, String)>>>,
     pending: Vec<Pending>,
     scripts: Vec<Script>,
     attach: Attach,
@@ -634,6 +638,7 @@ impl HookEngine {
         let commands: Rc<RefCell<Vec<Command>>> = Rc::new(RefCell::new(Vec::new()));
         let current_origin = Rc::new(Cell::new(1usize));
         let states: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let outputs: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
 
         let shikisha = lua.create_table().map_err(lerr)?;
         {
@@ -650,6 +655,25 @@ impl HookEngine {
                         Ok(r.resolve(&keys)
                             .and_then(|i| states.get(i - 1).map(|(_, st)| st.clone()))
                             .unwrap_or_else(|| "EXIT".to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // Read another tab's latest reply — used by an operator driving a
+            // second AI tab to see what it answered. Empty string if unknown.
+            let o = Rc::clone(&outputs);
+            shikisha
+                .set(
+                    "tab_output",
+                    lua.create_function(move |_, tab: Value| {
+                        let r = tab_ref_of(&tab)?;
+                        let outputs = o.borrow();
+                        let keys: Vec<TabKey> = outputs.iter().map(|(k, _)| k.clone()).collect();
+                        Ok(r.resolve(&keys)
+                            .and_then(|i| outputs.get(i - 1).map(|(_, out)| out.clone()))
+                            .unwrap_or_default())
                     })
                     .map_err(lerr)?,
                 )
@@ -1314,6 +1338,18 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
+            // exchange_write: overwrite a file (stage the current screen for a
+            // file-reading CLI operator). Same raw-string handling as append.
+            shikisha
+                .set(
+                    "exchange_write",
+                    lua.create_function(|_, (path, text): (String, mlua::LuaString)| {
+                        crate::exchange::write(std::path::Path::new(&path), &text.to_string_lossy())
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
             // lint: syntax-check the Lua only (never executes it). Returns
             // an error string if broken, nil if sound. The actual
             // permission sandboxing is enforced at run time by
@@ -1354,6 +1390,7 @@ impl HookEngine {
             commands,
             current_origin,
             states,
+            outputs,
             pending: Vec::new(),
             scripts: Vec::new(),
             attach: Attach::default(),
@@ -1363,6 +1400,12 @@ impl HookEngine {
     /// Reflect every tab's (identifier, state) on each detection tick
     pub fn set_states(&self, states: Vec<(TabKey, String)>) {
         *self.states.borrow_mut() = states;
+    }
+
+    /// Reflect every tab's (identifier, latest reply) on each detection tick, so an
+    /// operator can read the AI tab it's driving via shikisha.tab_output.
+    pub fn set_outputs(&self, outputs: Vec<(TabKey, String)>) {
+        *self.outputs.borrow_mut() = outputs;
     }
 
     /// Drop any loop waiting on that tab (on exit / restart)
@@ -1501,8 +1544,8 @@ impl HookEngine {
         // the cache key so editing them in settings yields a fresh script.
         let op = crate::config::operate();
         let key = format!(
-            "<browser-agent:{browser}>{stops_lua}|{}|{}|{}|{}",
-            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit
+            "<browser-agent:{browser}>{stops_lua}|{}|{}|{}|{}|{}|{}",
+            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit, op.settle_ms, op.confirm
         );
         if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
             return Ok(i);
@@ -1617,6 +1660,28 @@ local function next_hint(tab, infile)
   return shikisha.t("agent.browser.next_action.before") .. infile .. shikisha.t("agent.browser.next_action.after")
 end
 
+-- Does this move submit/click/authenticate (vs. only read)? Used by the brake in
+-- CONFIRM="sends" mode to pause before a step that changes the page.
+local function touches_send(code)
+  code = code or ""
+  return code:find("browser_press", 1, true) ~= nil
+    or code:find("browser_click", 1, true) ~= nil
+    or code:find("browser_auth", 1, true) ~= nil
+    or code:find("browser_fill_secret", 1, true) ~= nil
+end
+
+-- The brake (CONFIRM). Before a move runs, optionally hold for a person to approve
+-- it via a button on the page. Returns true to proceed, false if it wasn't approved.
+local function brake_ok(code)
+  if CONFIRM ~= "all" and not (CONFIRM == "sends" and touches_send(code)) then return true end
+  shikisha.show(BR)
+  local r = shikisha.browser_wait(BR, {
+    ask = shikisha.tf("agent.brake.ask", { code = code }),
+    label = shikisha.t("agent.brake.go"),
+  })
+  return r == "button"
+end
+
 function on_start(tab)
   local run = shikisha.exchange_new()
   shikisha.set_var("rally_run", run)
@@ -1679,6 +1744,12 @@ function on_done(tab)
       shikisha.send_to_tab(ai, shikisha.t("agent.browser.lint.error") .. "\n" .. lint .. "\n" .. fix_hint(tab, infile))
       return
     end
+    -- Brake: optionally hold for a person to approve this move before it runs.
+    if not brake_ok(code) then
+      shikisha.show(ai)
+      shikisha.send_to_tab(ai, shikisha.t("agent.brake.declined") .. "\n" .. next_hint(tab, infile))
+      return
+    end
     shikisha.show(BR)
     local err = shikisha.run_scoped(BR, code)
     if err then
@@ -1692,18 +1763,25 @@ function on_done(tab)
     shikisha.set_var("rally_round", n)
     -- Record the executed move in the human-readable transcript (4-space indent = Markdown code block)
     tx("\n### " .. shikisha.t("transcript.rally.action") .. " " .. n .. "\n    " .. code:gsub("\n", "\n    ") .. "\n")
-    -- After navigating, poll briefly until the body appears and a
-    -- verdict is reached. This avoids missing stop conditions whose
-    -- elements (e.g. buttons) render late; proceed the moment it appears
+    -- Settle: wait until the page's body text stops changing (stable across two
+    -- reads) or SETTLE_MS elapses, watching stop conditions meanwhile. Reading a
+    -- half-rendered page would otherwise feed the operator a partial screen. The
+    -- loop is skipped entirely when SETTLE_MS = 0.
     local v = nil
-    for _ = 1, 10 do
+    local prev = nil
+    local waited = 0
+    while waited < SETTLE_MS do
       shikisha.sleep(180)
+      waited = waited + 180
       local t = shikisha.browser_text(BR, "body")
       if t and #(t:gsub("%s", "")) > 0 then
         v = judge(said)
         if v then break end
+        if prev and t == prev then break end   -- unchanged => settled
+        prev = t
       end
     end
+    if not v then v = judge(said) end   -- evaluate stops even when settle was off/short
     local body0 = shikisha.browser_text(BR, "body") or ""
     tx("- " .. shikisha.t("transcript.rally.screen") .. ": " .. body0:sub(1, 400):gsub("%s+", " ") .. "\n")
     -- The judge (configured stop conditions). Once satisfied, emit an exit code and pause (back to waiting)
@@ -1734,14 +1812,27 @@ function on_done(tab)
         return
       end
     end
-    -- Return the screen and prompt for the next move
+    -- Return the screen and prompt for the next move. The full, untruncated screen
+    -- is staged to a file each round: a CLI operator reads it there (no truncation),
+    -- while a model brain — which can't read files — gets it inline (capped).
     shikisha.show(ai)
     local text = shikisha.browser_text(BR, "body") or ""
-    if #text > 3000 then text = text:sub(1, 3000) .. shikisha.t("agent.browser.truncated") end
-    shikisha.send_to_tab(ai, table.concat({
-      shikisha.t("agent.browser.executed_screen"), "----", text, "----",
-      next_hint(tab, infile),
-    }, "\n"))
+    local screenfile = run .. "/screen.txt"
+    pcall(shikisha.exchange_write, screenfile, text)
+    if tab.is_model then
+      local inline = text
+      if #inline > 3000 then inline = inline:sub(1, 3000) .. shikisha.t("agent.browser.truncated") end
+      shikisha.send_to_tab(ai, table.concat({
+        shikisha.t("agent.browser.executed_screen"), "----", inline, "----", next_hint(tab, infile),
+      }, "\n"))
+    else
+      local preview = text:sub(1, 800)
+      if #text > 800 then preview = preview .. " …" end
+      shikisha.send_to_tab(ai, table.concat({
+        shikisha.tf("agent.browser.executed_file", { file = screenfile }),
+        preview, next_hint(tab, infile),
+      }, "\n"))
+    end
     return
   end
 
@@ -1777,6 +1868,136 @@ end
 "##;
         let src = format!(
             "local BR = {browser:?}\nlocal STOPS = {stops_lua}\n\
+             local MAX_ROUNDS, MAX_SEC, MAX_TOK = {}, {}, {}\nlocal ON_LIMIT = {:?}\n\
+             local SETTLE_MS = {}\nlocal CONFIRM = {:?}\n{SRC}",
+            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit, op.settle_ms, op.confirm
+        );
+        self.load_source(&key, &src)
+    }
+
+    /// Attach the built-in "operate another AI tab" orchestrator to the operator.
+    /// The operator writes one instruction per turn (to in.txt, or inline for a
+    /// model brain); it's relayed to the target AI `target`, whose reply is read
+    /// back and handed to the operator, until the operator replies DONE. Shares the
+    /// operate limits/policy with the browser agent. Cached per (target, limits).
+    pub fn load_ai_agent(&mut self, target: &str) -> Result<usize> {
+        let op = crate::config::operate();
+        let key = format!(
+            "<ai-agent:{target}>|{}|{}|{}|{}",
+            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit
+        );
+        if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
+            return Ok(i);
+        }
+        // TARGET (the AI tab being driven) and the limits are injected below.
+        const SRC: &str = r##"
+local function is_done(reply)
+  if not reply then return false end
+  for line in (reply .. "\n"):gmatch("(.-)\n") do
+    local w = line:gsub("[%s%p]", "")
+    if w == "DONE" or w == "done" then return true end
+  end
+  return false
+end
+local function reset_budget()
+  shikisha.set_var("op_round", 0)
+  shikisha.set_var("op_t0", shikisha.epoch_ms())
+  shikisha.set_var("op_tok", 0)
+end
+local function tx(entry)
+  local p = shikisha.get_var("op_tx")
+  if p then shikisha.exchange_append(p, entry) end
+end
+
+function on_start(tab)
+  local run = shikisha.exchange_new()
+  shikisha.set_var("op_run", run)
+  shikisha.set_var("op_tx", run .. "/transcript.md")
+  shikisha.set_var("op_nocode", 0)
+  reset_budget()
+  tx(shikisha.tf("transcript.ai.header", { target = TARGET }) .. "\n")
+  -- A model brain carries its rules in the system prompt and can't write files,
+  -- so it just waits for the human's goal. A CLI gets the file-handoff brief.
+  if not tab.is_model then
+    shikisha.send_to_tab(tab.index,
+      shikisha.tf("agent.ai.brief", { target = TARGET, infile = run .. "/in.txt" }))
+  end
+end
+
+function on_done(tab)
+  local ai = tab.index
+  local run = shikisha.get_var("op_run")
+  if not run then return end
+  local infile = run .. "/in.txt"
+  local said = tab.reply or tab.output or ""
+  -- A human typed into the input (chain 0) = a fresh goal. Reset the safety budget.
+  if tab.chain_depth == 0 then reset_budget(); shikisha.set_var("op_nocode", 0) end
+  shikisha.set_var("op_tok", (shikisha.get_var("op_tok") or 0) + #said)
+
+  -- The operator's next instruction: a CLI writes in.txt; a model replies inline.
+  local instr = shikisha.exchange_take(infile)
+  if (not instr or #instr == 0) and tab.is_model and not is_done(said) then
+    instr = said
+  end
+  if instr and #(instr:gsub("%s", "")) > 0 and not is_done(instr) then
+    shikisha.set_var("op_nocode", 0)
+    local n = (shikisha.get_var("op_round") or 0) + 1
+    shikisha.set_var("op_round", n)
+    tx("\n### " .. shikisha.t("transcript.ai.instruction") .. " " .. n .. "\n" .. instr .. "\n")
+    -- Relay to the target AI and wait for its reply.
+    shikisha.show(TARGET)
+    shikisha.send_to_tab(TARGET, instr)
+    shikisha.sleep(1500)                          -- let the target begin
+    shikisha.wait_state(TARGET, "DONE", 300000)   -- ...then finish
+    local reply = ""
+    for _ = 1, 10 do
+      reply = shikisha.tab_output(TARGET) or ""
+      if #(reply:gsub("%s", "")) > 0 then break end
+      shikisha.sleep(300)
+    end
+    tx("- " .. shikisha.t("transcript.ai.reply") .. ": " .. reply:sub(1, 400):gsub("%s+", " ") .. "\n")
+    -- Safety net (same policy as the browser agent).
+    local t0 = shikisha.get_var("op_t0") or shikisha.epoch_ms()
+    local over = (MAX_ROUNDS > 0 and n >= MAX_ROUNDS)
+      or (MAX_SEC > 0 and (shikisha.epoch_ms() - t0) >= MAX_SEC * 1000)
+      or (MAX_TOK > 0 and (shikisha.get_var("op_tok") or 0) >= MAX_TOK)
+    if over then
+      if ON_LIMIT == "continue" then
+        reset_budget()
+      else
+        shikisha.show(ai)
+        shikisha.send_to_tab(ai, shikisha.t("agent.browser.safety_net"))
+        return
+      end
+    end
+    shikisha.show(ai)
+    shikisha.send_to_tab(ai, shikisha.tf("agent.ai.replied",
+      { target = TARGET, reply = reply, infile = infile }))
+    return
+  end
+
+  -- No instruction.
+  if is_done(said) then
+    tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. shikisha.t("agent.verdict.success") .. "\n")
+    shikisha.set_result(0, shikisha.t("agent.verdict.success"))
+    shikisha.open_result(run)
+    return
+  end
+  if tab.is_model then
+    local nc = (shikisha.get_var("op_nocode") or 0) + 1
+    shikisha.set_var("op_nocode", nc)
+    if nc >= 3 then shikisha.send_to_tab(ai, shikisha.t("agent.browser.model.stuck")) return end
+    shikisha.send_to_tab(ai, shikisha.t("agent.browser.model.remind"))
+    return
+  end
+  -- CLI no-code: nudge once right after the goal; otherwise wait for the human.
+  if tab.chain_depth == 0 then
+    shikisha.send_to_tab(ai, shikisha.tf("agent.ai.first", { infile = infile }))
+  end
+end
+"##;
+        let src = format!(
+            "local TARGET = {target:?}\n\
              local MAX_ROUNDS, MAX_SEC, MAX_TOK = {}, {}, {}\nlocal ON_LIMIT = {:?}\n{SRC}",
             op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit
         );
@@ -2189,6 +2410,19 @@ end
         self.set_tab(source_pane, id);
         crate::append_hook_log(&format!(
             "operate: briefing operator pane{source_pane} on browser {browser:?}"
+        ));
+        self.fire("on_start", ctx, None);
+        Ok(())
+    }
+
+    /// Start an ad-hoc "operate another AI tab" session: attach the AI-operate
+    /// agent to `source_pane` (the driver), targeting the AI tab `target` (its
+    /// id/name), and brief the operator. The goal is delivered separately.
+    pub fn start_operate_ai(&mut self, source_pane: usize, target: &str, ctx: &TabCtx) -> Result<()> {
+        let id = self.load_ai_agent(target)?;
+        self.set_tab(source_pane, id);
+        crate::append_hook_log(&format!(
+            "operate: briefing operator pane{source_pane} on AI tab {target:?}"
         ));
         self.fire("on_start", ctx, None);
         Ok(())
@@ -2685,6 +2919,22 @@ mod tests {
             "on_start should brief the operator with the browser protocol: {cmds:?}"
         );
         // After detaching, the tab is plain again: on_done runs nothing for it.
+        e.stop_operate(1);
+        e.fire("on_done", &ctx(1, "DONE"), None);
+        assert!(e.drain_commands().is_empty(), "a detached tab must not run the operate loop");
+    }
+
+    #[test]
+    fn ad_hoc_ai_operate_briefs_the_operator_about_the_target() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let mut e = HookEngine::new().unwrap();
+        // Drive the AI tab "helper" from pane 1.
+        e.start_operate_ai(1, "helper", &ctx(1, "")).expect("ai operate should start");
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c, Command::SendPrompt { text, .. } if text.contains("helper"))),
+            "on_start should brief the operator about driving the target AI: {cmds:?}"
+        );
         e.stop_operate(1);
         e.fire("on_done", &ctx(1, "DONE"), None);
         assert!(e.drain_commands().is_empty(), "a detached tab must not run the operate loop");

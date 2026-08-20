@@ -99,6 +99,21 @@ pub fn append(path: &Path, text: &str) -> std::io::Result<()> {
     writeln!(f, "{}", text.trim_end())
 }
 
+/// Overwrite a file in the exchange with `text` (create or truncate). Used to
+/// stage the current screen/state for a file-reading CLI operator each round.
+pub fn write(path: &Path, text: &str) -> std::io::Result<()> {
+    if !within_root(path) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            crate::i18n::t("err.exchange.outside_root"),
+        ));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, text)
+}
+
 /// Return the newest run folder (by modification time). Used for result
 /// downloads.
 pub fn latest_run() -> Option<PathBuf> {
