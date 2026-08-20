@@ -545,6 +545,18 @@ window.onerror = function (msg, src, line, col) {
 };
 const T = {{DICT}};
 { const _sm = document.querySelector("#splash .msg"); if (_sm) _sm.textContent = T["tui.splash.starting"] || ""; }
+// If the splash lingers, say why instead of spinning silently. The long pole
+// is WebView2 itself warming up (before this script even ran) plus the first
+// board state; a cold first launch can take several seconds.
+(function () {
+  const say = (t) => {
+    const s = document.getElementById("splash");
+    const m = document.querySelector("#splash .msg");
+    if (s && !s.hidden && m) m.textContent = t;
+  };
+  setTimeout(() => say(T["tui.splash.tabs"] || "Starting the tabs…"), 2000);
+  setTimeout(() => say(T["tui.splash.slow"] || "Almost there — a cold start takes a little longer…"), 6000);
+})();
 const BUILD = {{BUILD}};
 // The menu the dashboard shows. When a key is pressed, that character is delivered to INDEX as-is
 const MENU_KEYS = {{MENU_KEYS}};
@@ -1947,6 +1959,12 @@ let castPanel = null, castPanelEl = null;
 // 📼's chosen mode ("rec" | "run"). "run" until the user opts into recording —
 // arming a recorder is never a side effect of merely opening the panel.
 let luaMode = "run";
+// The composer is ONE box holding TWO documents: the ordinary draft (text
+// bound for the page/terminal — on the phone it's the only way to type into
+// a browser) and 📼's Lua sheet (recorded steps; editable, runnable,
+// copyable). Which one is loaded follows the active panel, so recording can
+// never eat the input box. Same rule on every surface.
+let luaSheet = "", castDraft = "", castSlot = "draft";
 // The tab the "operate" (🎯) panel is aimed at, or null. Step 1 = choosing it;
 // the operate engine (the active AI writes Lua to drive it) is layered on next.
 let castTarget = null;
@@ -2107,14 +2125,20 @@ function copyComposer() {
     navigator.clipboard.writeText(castInput.value).then(done, fallback);
   } else { fallback(); }
 }
-// A recorded step arrived (window: eval'd in; phone: over /ws-state). Append
-// it to the composer as one Lua line.
+// A recorded step arrived (window: eval'd in; phone: over /ws-state). It goes
+// on the Lua sheet — visible right away if 📼 is showing, quietly collected
+// otherwise (e.g. the phone is on ⌨️ typing into the very page being recorded).
 window.__recorded = function (line) {
   try {
     ensureBar();
-    const cur = castInput.value;
-    castInput.value = cur + (cur && !cur.endsWith("\n") ? "\n" : "") + line + "\n";
-    growCastInput();
+    if (castSlot === "lua") {
+      const cur = castInput.value;
+      castInput.value = cur + (cur && !cur.endsWith("\n") ? "\n" : "") + line + "\n";
+      luaSheet = castInput.value;
+      growCastInput();
+    } else {
+      luaSheet += (luaSheet && !luaSheet.endsWith("\n") ? "\n" : "") + line + "\n";
+    }
   } catch (e) {}
 };
 // The verdict of a ▶ run: null = ran clean, a string = the error text.
@@ -2127,6 +2151,21 @@ window.__luaDone = function (err) {
 // composer to hand over. While the composer feeds a browser page (window native
 // or phone relay) a path is just text typed into the site, so the button hides.
 function syncAttach() { if (castAttEl) castAttEl.style.display = drivingBrowser() ? "none" : ""; }
+// Load the composer with the document the active panel owns (see the luaSheet
+// comment): 📼 shows the Lua sheet, every other panel the ordinary draft.
+// Edits made while a slot is loaded are stashed when switching away.
+function syncComposerSlot() {
+  if (!castInput) return;
+  const want = castPanel === "lua" ? "lua" : "draft";
+  if (want === castSlot) return;
+  if (castSlot === "lua") { luaSheet = castInput.value; } else { castDraft = castInput.value; }
+  castInput.value = want === "lua" ? luaSheet : castDraft;
+  castInput.placeholder = want === "lua"
+    ? (T["tui.cast.lua.ph"] || "Lua lands here as you operate — edit, run, copy")
+    : (T["tui.cast.type.ph"] || "Type here to send");
+  castSlot = want;
+  growCastInput();
+}
 // The Send button doubles as 📼's verb: Copy while recording (the recorded Lua
 // is a deliverable, not something to send), Run in run mode, plain Send elsewhere.
 function syncSendLabel() {
@@ -2164,7 +2203,9 @@ function renderPanel() {
       title: T["tui.cast.actions.edit"] || "Edit quick actions",
       onclick: () => openSettings("actions", true)}, "⚙️"));
   }
-  // After the reset above, castPanel is final for this render — relabel Send.
+  // After the reset above, castPanel is final for this render — load the
+  // panel's composer document and relabel Send to its verb.
+  syncComposerSlot();
   syncSendLabel();
 }
 function ensureBar() {

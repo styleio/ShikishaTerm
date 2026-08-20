@@ -1126,10 +1126,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // Restrict which secrets this workspace is allowed to use (deny-all by default)
         caps.set_secret_allow(w.secrets_allow.clone(), w.secrets_allow_all);
         engines[ws_index] = build_engine(cfg.as_ref(), Some(w), &mut startup_errors, &caps);
-        open_declared_browsers(w, &caps, &mut startup_errors);
+        // Declared browsers are NOT opened here: placing a page occupies the
+        // window thread, and at startup the person is often already clicking.
+        // The board goes up first; the loop opens them right after (below).
     } else {
         engines[0] = build_engine(cfg.as_ref(), None, &mut startup_errors, &caps);
     }
+    let mut open_browsers_after_first_paint = true;
+    let mut first_paint_done = false;
     let slot = ws_index.min(engines.len().saturating_sub(1));
     let mut engine = engines[slot].take();
     // The current ad-hoc "operate a target" attachment, as (source pane, target),
@@ -1140,7 +1144,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // enabled in config. Status is also handed to the settings page so the QR code
     // can be viewed in a browser.
     let remote_info: Arc<Mutex<webui::RemoteInfo>> = Arc::new(Mutex::new(Default::default()));
-    let mut remote_ui = start_remote(cfg.as_ref(), password.as_deref(), &mut startup_errors);
+    // The network bind can stall — a lingering earlier instance can hold the
+    // port for up to a second — and nothing else at startup needs it. Bind on
+    // a background thread; the loop installs the server when it lands, and
+    // every click in between gets answered instead of waiting on a socket.
+    let mut remote_ui: Option<remote::RemoteUi> = None;
+    let mut remote_rx = start_remote_bg(cfg.as_ref(), password.as_deref());
     publish_remote(&remote_info, &remote_ui);
 
     // Where focus is currently directed. None = never moved it yet.
@@ -1231,6 +1240,34 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut settings_linked = false;
 
     loop {
+        // Install the remote server the moment its background bind lands.
+        // Errors and notes surface exactly as the old synchronous path did.
+        if let Some(rx) = &remote_rx {
+            if let Ok((ui, mut errs)) = rx.try_recv() {
+                remote_ui = ui;
+                remote_rx = None;
+                publish_remote(&remote_info, &remote_ui);
+                last_remote_ui = None;
+                if flash.is_none() {
+                    flash = errs
+                        .first()
+                        .map(|e| i18n::tp("msg.startup_failed", &[("error", e)]));
+                }
+                startup_errors.append(&mut errs);
+            }
+        }
+
+        // Open the workspace's declared browsers on the iteration AFTER the
+        // first full draw: the board answers clicks first, then the window
+        // thread pays the (brief) cost of placing pages.
+        if open_browsers_after_first_paint && first_paint_done {
+            open_browsers_after_first_paint = false;
+            if let Some(w) = workspaces.get(ws_index) {
+                open_declared_browsers(w, &caps, &mut startup_errors);
+            }
+        }
+        first_paint_done = true;
+
         // Point the remote settings proxy at the (loopback) config server. Starting
         // it here, lazily but eagerly-once, means the phone can open settings even
         // before anyone has opened it on the PC. The config UI stays on loopback.
@@ -1370,14 +1407,19 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     if let Some(r) = &remote_ui {
                         r.shutdown();
                     }
-                    remote_ui = start_remote(Some(&newcfg), password.as_deref(), &mut startup_errors);
+                    // Same background bind as startup — the QR/status appear a
+                    // moment later when the loop installs the result.
+                    remote_ui = None;
+                    remote_rx = start_remote_bg(Some(&newcfg), password.as_deref());
                     publish_remote(&remote_info, &remote_ui);
                     // A fresh remote server needs its settings proxy re-pointed.
                     settings_linked = false;
                     // Fresh server = fresh viewers; forget what the old one pushed.
                     last_remote_ui = None;
                     last_remote_screen = String::new();
-                    remote_changed = Some(if remote_ui.is_some() {
+                    // Announce the INTENT (the bind hasn't landed yet); a bind
+                    // failure still surfaces as a flash from the install above.
+                    remote_changed = Some(if want.enabled {
                         i18n::t("msg.remote_enabled")
                     } else {
                         i18n::t("msg.remote_stopped")
@@ -3903,40 +3945,52 @@ pub fn remote_token(cfg: &config::Config, password: Option<&str>) -> String {
 }
 
 /// Starts the remote UI according to config (None if disabled)
-fn start_remote(
+/// Start the remote server WITHOUT making the caller wait for the bind (a
+/// lingering earlier instance can hold the port for up to a second, and the
+/// caller is the loop that answers every click). Returns None when remote is
+/// disabled; otherwise a channel that delivers (the server if it came up,
+/// error/note lines for the flash) once the bind settles.
+fn start_remote_bg(
     cfg: Option<&config::Config>,
     password: Option<&str>,
-    errors: &mut Vec<String>,
-) -> Option<remote::RemoteUi> {
+) -> Option<std::sync::mpsc::Receiver<(Option<remote::RemoteUi>, Vec<String>)>> {
     let c = cfg.filter(|c| c.remote.enabled)?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Resolving the address and token is local and quick — done here, so the
+    // thread owns only the part that can actually stall (the bind itself).
     match netaddr::resolve_bind(&c.remote.bind, c.remote.allow_public) {
         Ok((ip, note)) => {
             let token = remote_token(c, password);
-            match remote::RemoteUi::start(ip, c.remote.port, token) {
-                Ok(mut r) => {
-                    if let Some(n) = &note {
-                        errors.push(n.clone());
+            let port = c.remote.port;
+            std::thread::spawn(move || {
+                let mut errors = Vec::new();
+                let ui = match remote::RemoteUi::start(ip, port, token) {
+                    Ok(mut r) => {
+                        if let Some(n) = &note {
+                            errors.push(n.clone());
+                        }
+                        r.note = note;
+                        Some(r)
                     }
-                    r.note = note;
-                    Some(r)
-                }
-                Err(e) => {
-                    errors.push(crate::i18n::tp(
-                        "err.ws.remote_ui",
-                        &[("e", &e.to_string())],
-                    ));
-                    None
-                }
-            }
+                    Err(e) => {
+                        errors.push(crate::i18n::tp(
+                            "err.ws.remote_ui",
+                            &[("e", &e.to_string())],
+                        ));
+                        None
+                    }
+                };
+                let _ = tx.send((ui, errors));
+            });
         }
         Err(e) => {
-            errors.push(crate::i18n::tp(
-                "err.ws.remote_ui",
-                &[("e", &e.to_string())],
+            let _ = tx.send((
+                None,
+                vec![crate::i18n::tp("err.ws.remote_ui", &[("e", &e.to_string())])],
             ));
-            None
         }
     }
+    Some(rx)
 }
 
 /// Passes the current listening status along so the settings screen can show the QR code
