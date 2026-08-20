@@ -214,6 +214,7 @@
   "tui.nav.forward": "進む",
   "tui.nav.reload": "更新",
   "tui.nav.url": "URL欄",
+  "tui.nav.url.ph": "検索または URL を入力",
   "settings.browser.nav.hint": "ページの上に横並びで出ます。人が自分でページを選んでから、帯のボタンで解析させたいときに使います。要らなければ全部外してください（そのぶん画面が広くなります）",
   "settings.back": "INDEXへ戻る",
   "settings.close": "設定を閉じる",

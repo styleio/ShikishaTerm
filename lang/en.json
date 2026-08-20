@@ -214,6 +214,7 @@
   "tui.nav.forward": "Forward",
   "tui.nav.reload": "Reload",
   "tui.nav.url": "Address",
+  "tui.nav.url.ph": "Search or enter address",
   "settings.browser.nav.hint": "Shown in a row above the page. Use it when a person picks the page first and then hands it over with the banner button. Turn them all off if you don't need them — the page gets that space back",
   "settings.back": "Back to INDEX",
   "settings.close": "Close settings",

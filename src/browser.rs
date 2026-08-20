@@ -1181,28 +1181,56 @@ fn to_rect((x, y, w, h): (i32, i32, i32, i32)) -> wry::Rect {
 
 /// Turn text a human typed into a destination we're allowed to open.
 ///
-/// Only fills in a scheme when it's missing (`example.com` -> `https://example.com`).
-/// Otherwise it's taken exactly as written, and won't open unless it's
-/// http/https. `file:` can read local files and `javascript:` can hijack
-/// the current page, so we can't let either through an address bar — a
-/// "gateway to anywhere"
+/// Works like a browser's combined address/search box: text that reads as a
+/// web address goes there (`example.com` -> `https://example.com`), and
+/// anything else — words with spaces, Japanese text, a lone word — becomes a
+/// Google search. `file:` can read local files and `javascript:` can hijack
+/// the current page, so neither passes through an address bar — a "gateway
+/// to anywhere"; they too fall through to search, which is inert.
 pub fn openable(raw: &str) -> Option<String> {
     let s = raw.trim();
     if s.is_empty() {
         return None;
     }
-    // Anything without a scheme is treated purely as a destination.
-    // `javascript:alert(1)` becomes the broken destination
-    // https://javascript:alert(1) and ends up failing to open.
-    // Rather than guessing whether it's a scheme, pick the option that's
-    // safe even when the guess is wrong
-    let with_scheme = if s.contains("://") {
-        s.to_string()
+    if let Some((scheme, rest)) = s.split_once("://") {
+        // An explicit scheme means the writer wanted a URL, not a search.
+        // Normalize its case so a pasted HTTPS:// still opens.
+        if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
+            return Some(format!("{}://{rest}", scheme.to_ascii_lowercase()));
+        }
+        // file:// and friends never open here — hand them to search instead
+        return Some(search_url(s));
+    }
+    // Scheme-less: a single token whose host part has a dot (example.com,
+    // 127.0.0.1) or is localhost reads as an address; everything else —
+    // including `javascript:alert(1)`, which has no dot — reads as words
+    let host = s.split(['/', '?', '#']).next().unwrap_or("");
+    let address_like = !s.chars().any(char::is_whitespace)
+        && (host.contains('.') || host == "localhost" || host.starts_with("localhost:"));
+    if address_like {
+        Some(format!("https://{s}"))
     } else {
-        format!("https://{s}")
-    };
-    let low = with_scheme.to_ascii_lowercase();
-    (low.starts_with("http://") || low.starts_with("https://")).then_some(with_scheme)
+        Some(search_url(s))
+    }
+}
+
+/// A Google search for the given words, with every byte outside the URL-safe
+/// set percent-encoded (UTF-8), so Japanese and symbols survive the trip
+fn search_url(words: &str) -> String {
+    use std::fmt::Write as _;
+    let mut u = String::from("https://www.google.com/search?q=");
+    for b in words.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                u.push(*b as char)
+            }
+            b' ' => u.push('+'),
+            _ => {
+                let _ = write!(u, "%{b:02X}");
+            }
+        }
+    }
+    u
 }
 
 fn ask_js(text: &str, label: &str) -> String {
@@ -1889,14 +1917,53 @@ mod nav_tests {
             openable("http://127.0.0.1:8080/").as_deref(),
             Some("http://127.0.0.1:8080/")
         );
-        for bad in ["", "   ", "file:///C:/secret.txt", "ftp://x/y"] {
-            assert!(openable(bad).is_none(), "開けてしまう: {bad}");
+        assert_eq!(
+            openable("HTTPS://Example.com/A").as_deref(),
+            Some("https://Example.com/A"),
+            "貼り付けた大文字スキームも通す（後段の検査は小文字前提）"
+        );
+        for empty in ["", "   "] {
+            assert!(openable(empty).is_none(), "開けてしまう: {empty}");
         }
-        // Since it's not treated as a scheme, it becomes a broken destination and fails to open
-        let js = openable("javascript:alert(1)").unwrap_or_default();
-        assert!(
-            js.starts_with("https://"),
-            "そのままの綴りで渡している: {js}"
+        // Dangerous schemes never reach the page — they become an inert search instead
+        for bad in ["file:///C:/secret.txt", "ftp://x/y", "javascript:alert(1)"] {
+            let got = openable(bad).unwrap_or_default();
+            assert!(
+                got.starts_with("https://www.google.com/search?q="),
+                "検索に落ちていない: {bad} -> {got}"
+            );
+        }
+    }
+
+    /// Text that doesn't read as an address searches Google instead — same
+    /// habit as Chrome's box. Japanese (multibyte) must survive as UTF-8
+    /// percent-encoding, and spaces split words with `+`
+    #[test]
+    fn the_address_box_searches_words() {
+        assert_eq!(
+            openable("エラー処理").as_deref(),
+            Some("https://www.google.com/search?q=%E3%82%A8%E3%83%A9%E3%83%BC%E5%87%A6%E7%90%86")
+        );
+        assert_eq!(
+            openable("rust async 使い方").as_deref(),
+            Some("https://www.google.com/search?q=rust+async+%E4%BD%BF%E3%81%84%E6%96%B9")
+        );
+        // A dot inside a phrase with spaces is still a search, not an address
+        assert_eq!(
+            openable("tokio.rs とは").as_deref(),
+            Some("https://www.google.com/search?q=tokio.rs+%E3%81%A8%E3%81%AF")
+        );
+        // A lone word with no dot searches; localhost is the address exception
+        let one = openable("rust").unwrap_or_default();
+        assert!(one.starts_with("https://www.google.com/search?q=rust"), "{one}");
+        assert_eq!(
+            openable("localhost:8080/x").as_deref(),
+            Some("https://localhost:8080/x")
+        );
+        // Query characters that would break the search URL are encoded
+        assert_eq!(
+            openable("a&b=c").as_deref(),
+            Some("https://www.google.com/search?q=a%26b%3Dc")
         );
     }
 

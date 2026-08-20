@@ -982,7 +982,7 @@ function drawNav() {
     }
     if (want.edit) {
       const box = el("input", {type:"text", spellcheck:"false",
-        title:T["tui.nav.url"], placeholder:T["tui.nav.url"], value:want.at || ""});
+        title:T["tui.nav.url.ph"], placeholder:T["tui.nav.url.ph"], value:want.at || ""});
       box.onkeydown = e => {
         if (e.key === "Enter") { e.preventDefault(); goTo(); }
         // Keystrokes here never flow to the terminal — this is where the destination URL is typed
