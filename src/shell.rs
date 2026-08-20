@@ -1860,11 +1860,14 @@ let castPanel = null, castPanelEl = null;
 // until that feature lands, but it's listed now so the switcher is present on both
 // the phone (keys/actions/target) and the desktop (actions/target).
 function panelOptions() { return (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions", "target"] : ["actions", "target"]; }
-function panelLabel(p) {
+// Full name (for the switcher's hover title / accessibility).
+function panelName(p) {
   return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
     : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
     : (T["tui.cast.panel.target"] || "Target");
 }
+// A compact emoji for the switcher itself — text labels ate horizontal width.
+function panelLabel(p) { return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : "🎯"; }
 function panelContent(p) {
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
@@ -1880,8 +1883,11 @@ function renderPanel() {
   if (opts.indexOf(castPanel) < 0) castPanel = opts[0];
   castPanelEl.textContent = "";
   if (opts.length > 1) {
-    const sel = el("select", {class:"castswitch"});
-    opts.forEach(p => { const o = el("option", {value:p}, panelLabel(p)); if (p === castPanel) o.selected = true; sel.append(o); });
+    const sel = el("select", {class:"castswitch", title: panelName(castPanel)});
+    // Emoji-only options: a native select shows the selected option's text when
+    // collapsed, so the label has to BE the emoji to stay narrow. The full name
+    // rides along as each option's title for hover / accessibility.
+    opts.forEach(p => { const o = el("option", {value:p, title: panelName(p)}, panelLabel(p)); if (p === castPanel) o.selected = true; sel.append(o); });
     sel.onchange = () => { castPanel = sel.value; renderPanel(); };
     castPanelEl.append(sel);
   }
