@@ -29,11 +29,11 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; overflow:hidden;
     background:var(--bg); color:var(--text); font-family:var(--mono); font-size:14px; }
-  #app { display:grid; grid-template-columns:auto 1fr; grid-template-rows:1fr auto auto;
+  #app { display:grid; grid-template-columns:auto 1fr; grid-template-rows:1fr auto;
     height:100%; }
 
   /* ── Left tab bar ───────────────────────── */
-  #tabs { grid-row:1/4; width:290px; background:var(--panel);
+  #tabs { grid-row:1/3; width:290px; background:var(--panel);
     border-right:1px solid var(--line); overflow-y:auto; padding:6px 0;
     display:flex; flex-direction:column; }
   /* Settings lives here as a fixed gear pinned to the very bottom, not a tab */
@@ -93,7 +93,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #backdrop { display:none; }
 
   /* ── Content area ───────────────────────── */
-  #main { grid-column:2; grid-row:1; position:relative; overflow:hidden; }
+  #main { position:relative; overflow:hidden; }
   /* Declaring font-family here isn't cosmetic. Browsers apply their own
      monospace to <pre>, and that wins over whatever body inherits.
      Skip it, and the chosen font only ever applies to the terminal contents */
@@ -169,17 +169,6 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   .castgear { flex:none; margin:6px 0; padding:6px 8px; font-size:14px; cursor:pointer;
     background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; }
   .castgear:active { background:var(--brand); color:#04121c; }
-  /* Window-only actions bar shown under a browser tab. It's its own grid row (row 2,
-     between #main and #status), so #main shrinks to make room — the native browser
-     never covers it. Lua quick actions here can drive the browser. */
-  #browseractions { grid-column:2; grid-row:2; display:none;
-    align-items:center; gap:8px; padding:6px 10px;
-    background:var(--panel); border-top:1px solid var(--brand); }
-  #browseractions .balabel { flex:none; color:var(--dim); font-size:14px; }
-  #browseractions .barow { display:flex; gap:6px; flex:1 1 0; min-width:0;
-    overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
-  #browseractions .barow::-webkit-scrollbar { display:none; }
-  #browseractions .bahint { flex:1 1 0; color:var(--dim); font-size:13px; }
   /* Keys / actions rows fill the rest and scroll horizontally under the switcher. */
   #castkeys, #castactions { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
     flex:1 1 0; min-width:0; padding:6px 0;
@@ -362,7 +351,7 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     font-size:10px; color:var(--dim); font-weight:400; white-space:nowrap; }
 
   /* ── Status line ─────────────────────────── */
-  #status { grid-column:2; grid-row:3; display:flex; align-items:center; gap:12px;
+  #status { grid-column:2; display:flex; align-items:center; gap:12px;
     padding:5px 12px; border-top:1px solid var(--line); background:var(--panel);
     font-size:12px; color:var(--dim); flex-wrap:nowrap; }
   #status .grow { flex:1; }
@@ -535,7 +524,6 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
       <button id="pageDown" class="pagebtn" aria-label="newer">&#9660;</button>
     </div>
   </div>
-  <div id="browseractions"></div>
   <div id="veil" hidden></div>
   <div id="status"></div>
 </div>
@@ -1091,9 +1079,9 @@ window.__state = function (json) {
   const cast = document.getElementById("cast");
   cast.hidden = !(web && REMOTE);
   if (web && REMOTE) castStart(); else castStop();
-  // Window only: show the browser-actions strip over a browser tab (and shrink the
-  // browser to reveal it); hide it elsewhere.
-  syncBrowserBar();
+  // Window only: over a browser tab, reuse the sub-input bar (composer) — actions
+  // only, no target — and reserve room so the native browser doesn't hide it.
+  syncBrowserDock();
   // Page buttons: only on a phone, only over a real terminal tab (not INDEX,
   // not a browser relay, not a model chat — those have their own controls).
   const modelTabNow = S.tabs.some(t => t.index === S.active && t.model);
@@ -1820,51 +1808,8 @@ function buildActions() {
   });
   return row;
 }
-// The window's browser-actions bar: a slim strip shown over a browser tab so Lua
-// quick actions can drive the browser. Only Lua actions appear — text actions have
-// no composer to fill here. The native browser is shrunk (see report) to reveal it.
-let browserBar = null;
-function ensureBrowserBar() {
-  if (!browserBar) browserBar = document.getElementById("browseractions");
-}
-function renderBrowserBar() {
-  ensureBrowserBar();
-  if (!browserBar) return;
-  const items = (curActions || []).map((a, i) => ({a, i})).filter(x => x.a && x.a.lua);
-  browserBar.textContent = "";
-  browserBar.append(el("span", {class:"balabel"}, "⚡"));
-  if (!items.length) {
-    browserBar.append(el("div", {class:"bahint"},
-      T["tui.browser.actions.empty"] || "Add a Lua quick action in settings to drive the browser."));
-  } else {
-    const row = el("div", {class:"barow"});
-    items.forEach(({a, i}) => {
-      const b = el("button", {class:"castaction lua", title:a.label || ""}, a.label || "•");
-      b.onclick = (e) => { e.stopPropagation(); send({kind:"runaction", index:i}); attachToast("▶ " + (a.label || "")); };
-      row.append(b);
-    });
-    browserBar.append(row);
-  }
-  browserBar.append(el("button", {class:"castgear", title:T["tui.cast.actions.edit"] || "Edit quick actions",
-    onclick:() => openSettings("actions", true)}, "⚙️"));
-}
-// True while the window is showing a browser tab (the strip belongs only there).
+// True while the window is showing a browser tab.
 function onBrowserTab() { return S && S.tabs && S.tabs.some(t => t.index === S.active && t.kind === "browser"); }
-// Show the strip over a browser tab and shrink the browser; hide it otherwise.
-function syncBrowserBar() {
-  if (typeof REMOTE !== "undefined" && REMOTE) return;
-  const show = onBrowserTab();
-  if (show) {
-    renderBrowserBar();
-    browserBar.style.display = "flex";
-    if (fab) fab.style.display = "none";   // the composer FAB is covered by the browser anyway
-  } else if (browserBar) {
-    browserBar.style.display = "none";
-    // Restore the composer FAB unless the composer bar itself is open.
-    if (fab && !(castDock && castDock.style.display === "flex")) fab.style.display = "";
-  }
-  scheduleReport();   // the browser area depends on whether the strip is showing
-}
 
 // The config changed (a settings save): swap in the new actions and re-render the
 // panel if it's the one showing, so an edit reflects without reloading the window.
@@ -1872,7 +1817,6 @@ window.__setActions = function (arr) {
   try {
     curActions = arr || [];
     if (castPanel === "actions" && castDock && castDock.style.display === "flex") renderPanel();
-    if (browserBar && browserBar.style.display === "flex") renderBrowserBar();
   } catch (e) {}
 };
 // A short-lived toast for attach results (client-side, independent of S.flash
@@ -2029,7 +1973,33 @@ function buildTargetPanel() {
 // Panels available on this surface. "target" (operate a tab) shows a placeholder
 // until that feature lands, but it's listed now so the switcher is present on both
 // the phone (keys/actions/target) and the desktop (actions/target).
-function panelOptions() { return (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions", "target"] : ["actions", "target"]; }
+function panelOptions() {
+  const opts = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions", "target"] : ["actions", "target"];
+  // A browser tab is operated, not an operator, so it has no 🎯 target panel —
+  // otherwise it's the same sub-input bar as an AI tab.
+  return onBrowserTab() ? opts.filter(p => p !== "target") : opts;
+}
+// Window only: over a browser tab, reuse the composer (the sub-input bar) and
+// reserve room on #page so the native browser — which is layered on top of the
+// HTML — doesn't hide it. The composer FAB opens/closes it just like on an AI tab;
+// the reserve follows that open/closed state (enough for the FAB, or for the dock).
+function syncBrowserDock() {
+  if (typeof REMOTE !== "undefined" && REMOTE) return;
+  const page = document.getElementById("page");
+  if (!onBrowserTab()) {
+    if (page.style.bottom) { page.style.bottom = ""; scheduleReport(); }
+    return;
+  }
+  ensureBar();
+  if (panelOptions().indexOf(castPanel) < 0) castPanel = panelOptions()[0];
+  renderPanel();
+  const dockOpen = castDock && castDock.style.display === "flex";
+  const reserve = dockOpen
+    ? Math.round(castDock.getBoundingClientRect().height)
+    : (fab ? Math.round(fab.getBoundingClientRect().height) + 28 : 64);
+  const want = reserve + "px";
+  if (page.style.bottom !== want) { page.style.bottom = want; scheduleReport(); }
+}
 // Full name (for the switcher's hover title / accessibility).
 function panelName(p) {
   return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
@@ -2214,6 +2184,8 @@ function toggleComposer() {
     // buttons, and the ✕ already closes the bar.
     if (fab) fab.style.display = "none";
   }
+  // Over a browser tab, the reserved room on #page follows the open/closed state.
+  syncBrowserDock();
 }
 let fab = null;
 // Only the window gets the floating toggle; the phone opens the bar by tapping a
