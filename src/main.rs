@@ -2101,17 +2101,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     None => continue,
                 }
             }
-            // Deliver the goal to the operator, like a human instruction.
+            // Deliver the goal to the operator. Queued as a command (like the
+            // on_start brief) so it lands after the protocol, not before it.
             if !goal.is_empty() {
-                let now_ms = start.elapsed().as_millis() as u64;
-                if let Some(t) = session_at(&layout, active).and_then(|i| tabs.get_mut(i)) {
-                    if !t.locked {
-                        t.chain_depth = 0;
-                        t.last_manual_ms = Some(now_ms);
-                        let seen = t.output_count();
-                        write_prompt(t, &goal);
-                        pending_submit.push(PendingSubmit::new(active, seen, now_ms));
-                    }
+                if let Some(eng) = engine.as_mut() {
+                    eng.deliver_goal(active, &goal);
                 }
             }
         }

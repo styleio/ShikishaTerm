@@ -2163,6 +2163,16 @@ end
         self.attach.tabs.remove(&source_pane);
     }
 
+    /// Hand a goal to the operator, queued as a command like on_start's brief —
+    /// so it arrives after the protocol (not before it, which a raw write would).
+    pub fn deliver_goal(&self, pane: usize, text: &str) {
+        self.commands.borrow_mut().push(Command::SendPrompt {
+            target: TabRef::Index(pane),
+            text: text.to_string(),
+            origin: self.current_origin.get(),
+        });
+    }
+
     /// Call a browser hook.
     ///
     /// What's passed is a page, not a tab. A page has no state and no
