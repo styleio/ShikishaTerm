@@ -2143,6 +2143,26 @@ end
         }
     }
 
+    /// Start an ad-hoc "operate a browser" session: attach the built-in browser
+    /// agent to `source_pane` (the AI that will drive) targeting browser `browser`,
+    /// and run its on_start so the operator is briefed. This is the same script a
+    /// configured Agent tab uses; the goal is delivered separately by the caller,
+    /// and from then on the normal on_done cycle runs the loop. Idempotent per
+    /// browser (the script is cached), with no stop conditions (the AI judges DONE).
+    pub fn start_operate(&mut self, source_pane: usize, browser: &str, ctx: &TabCtx) -> Result<()> {
+        let stops = crate::config::stops_to_lua(&[]);
+        let id = self.load_browser_agent(browser, &stops)?;
+        self.set_tab(source_pane, id);
+        self.fire("on_start", ctx, None);
+        Ok(())
+    }
+
+    /// Detach an ad-hoc operate: the source tab goes back to being a plain tab
+    /// (its on_done no longer runs the browser loop).
+    pub fn stop_operate(&mut self, source_pane: usize) {
+        self.attach.tabs.remove(&source_pane);
+    }
+
     /// Call a browser hook.
     ///
     /// What's passed is a page, not a tab. A page has no state and no
@@ -2591,6 +2611,23 @@ mod tests {
                         && text.contains("input field"))),
             "on_start がブラウザ操作プロトコル(入力欄でゴール)を送っていない: {cmds:?}"
         );
+    }
+
+    #[test]
+    fn ad_hoc_operate_attaches_the_agent_and_detaches() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let mut e = HookEngine::new().unwrap();
+        // Start operating browser "br" from the tab in pane 1 (no config needed).
+        e.start_operate(1, "br", &ctx(1, "")).expect("operate should start");
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c, Command::SendPrompt { text, .. } if text.contains("browser_go"))),
+            "on_start should brief the operator with the browser protocol: {cmds:?}"
+        );
+        // After detaching, the tab is plain again: on_done runs nothing for it.
+        e.stop_operate(1);
+        e.fire("on_done", &ctx(1, "DONE"), None);
+        assert!(e.drain_commands().is_empty(), "a detached tab must not run the operate loop");
     }
 
     fn ctx_model(index: usize, reply: &str) -> TabCtx {

@@ -897,5 +897,6 @@
   "settings.actions.lua_ph": "Lua to run on tap, e.g. shikisha.send_to_tab(\"reviewer\", tab.output)",
   "tui.cast.target.none": "— none —",
   "tui.cast.target.label": "Operate:",
-  "tui.cast.target.hint": "Pick a tab to operate from here (driving it comes next)."
+  "tui.cast.target.hint": "Pick a tab to operate from here (driving it comes next).",
+  "msg.operate.browser_only": "The operate target must be a browser tab (for now)."
 }

@@ -1902,7 +1902,8 @@ function buildTargetPanel() {
   sel.onchange = () => {
     const idx = parseInt(sel.value, 10);
     const t = tabs.find(x => x.index === idx);
-    castTarget = t ? { index: t.index, name: t.name || ("#" + idx), kind: t.kind, model: !!t.model } : null;
+    if (t) { castTarget = { index: t.index, name: t.name || ("#" + idx), kind: t.kind, model: !!t.model }; }
+    else { if (castTarget) send({kind:"operate", target: 0}); castTarget = null; }  // detach
   };
   wrap.append(el("span", {class:"hint", style:"flex:none"}, T["tui.cast.target.label"] || "Operate:"), sel,
     el("span", {class:"hint", style:"flex:1 1 0;min-width:0"}, T["tui.cast.target.hint"] || ""));
@@ -2021,6 +2022,11 @@ function sendBar() {
     // Browser relay: inject the confirmed text as one batch, or a bare Enter
     if (t) sendIn({kind:"inject", what:"text", text:t});
     else sendCastKey("enter");
+  } else if (castTarget) {
+    // 🎯 operate mode: hand the text to the active AI as a goal, and it drives the
+    // chosen target (writes Lua). Not typed into the terminal we're viewing.
+    send({kind:"operate", target: castTarget.index, goal: t});
+    attachToast("🎯 " + (castTarget.name || ""));
   } else if (modCtrl && t) {
     // Terminal: Ctrl latched + a typed letter = a control chord (e.g. Ctrl+C to
     // interrupt). Takes the first character; no trailing Enter — a chord isn't a line.

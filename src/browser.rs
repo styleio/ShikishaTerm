@@ -351,6 +351,17 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("runaction") => Ev::RunAction {
             index: v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },
+        // "Operate a target tab" (🎯): make the active AI drive tab `target`.
+        // target 0 detaches. An optional `goal` (natural language) is handed to
+        // the AI, which then writes Lua to operate the target.
+        Some("operate") => Ev::Operate {
+            target: v.get("target").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+            goal: v
+                .get("goal")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+        },
         // A file pasted/attached in the desktop composer. Saved beside the active
         // tab; the result is handed back by eval-ing window.__attachDone(id, …).
         // (The phone uses the /api/attach HTTP route instead, so this window-only
@@ -534,6 +545,10 @@ pub enum Ev {
     /// config.actions; the code is looked up and run server-side (the page never
     /// holds Lua source). Allowed from afar — it runs the user's own action.
     RunAction { index: usize },
+    /// Operate a target tab (🎯): attach the active AI as the operator of tab
+    /// `target` (0 = detach) and, if `goal` is non-empty, hand it that goal. The
+    /// AI then writes Lua to drive the target (reuses the browser-agent loop).
+    Operate { target: usize, goal: String },
     /// A file attached in the desktop composer. `id` correlates the async reply
     /// (`window.__attachDone(id, …)`), `name` is the declared filename, `data` is
     /// the base64 bytes. Saved beside the active tab. Window-only — the phone

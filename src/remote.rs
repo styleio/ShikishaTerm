@@ -105,6 +105,9 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // Firing one of the user's own quick actions (its Lua runs sandboxed).
         // No different in reach than typing the same instruction from the phone.
         Ev::RunAction { .. } => true,
+        // Aiming the active AI at another tab and handing it a goal — the same
+        // reach as typing that instruction into the AI from the phone.
+        Ev::Operate { .. } => true,
         // Scrolling back through the history is the whole point of monitoring
         // from afar — without it the phone is stuck on the current screen and
         // can't review what was said earlier. It only moves the viewport, never

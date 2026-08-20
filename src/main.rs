@@ -398,6 +398,9 @@ struct WinSurface {
     /// Quick-action chips (Lua) fired from the bar, by index into config.actions.
     /// The loop looks up the code and runs it against the active tab.
     run_actions: Vec<usize>,
+    /// "Operate a target tab" requests from the 🎯 panel: (target tab index, goal).
+    /// target 0 = detach. The loop attaches the active AI as the target's operator.
+    operates: Vec<(usize, String)>,
 }
 
 impl WinSurface {
@@ -466,6 +469,11 @@ impl WinSurface {
         std::mem::take(&mut self.run_actions)
     }
 
+    /// Takes the pending operate-a-target requests (target index, goal).
+    fn take_operates(&mut self) -> Vec<(usize, String)> {
+        std::mem::take(&mut self.operates)
+    }
+
     /// Push the current quick actions into the shell page so a settings edit
     /// reflects live — the window isn't reloaded on a config change. (The phone
     /// re-reads them on its next page load, i.e. when it returns to the board.)
@@ -497,6 +505,8 @@ impl WinSurface {
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
                 Ev::RunAction { index } => self.run_actions.push(index),
+                // Operate-a-target request; the loop has the engine to attach it.
+                Ev::Operate { target, goal } => self.operates.push((target, goal)),
                 // A file attached in the desktop composer. Save it beside the
                 // active tab (the folder its AI runs in) and hand the path back to
                 // the page. Same saver the phone's /api/attach route uses.
@@ -697,6 +707,7 @@ fn run_in_window() -> Result<()> {
         remote_cut: false,
         chats: Vec::new(),
         run_actions: Vec::new(),
+        operates: Vec::new(),
     })
 }
 
@@ -1041,6 +1052,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     }
     let slot = ws_index.min(engines.len().saturating_sub(1));
     let mut engine = engines[slot].take();
+    // The current ad-hoc "operate a target" attachment, as (source pane, target),
+    // so a repeated goal to the same target doesn't re-brief from scratch.
+    let mut operating: Option<(usize, usize)> = None;
 
     // Remote UI (monitor/control from a phone, etc). Only starts listening when
     // enabled in config. Status is also handed to the settings page so the QR code
@@ -1670,6 +1684,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::RunAction { index }) => {
                         surface.run_actions.push(index);
                     }
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Operate { target, goal }) => {
+                        surface.operates.push((target, goal));
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         for e in keys_for(&ev) {
@@ -2040,6 +2057,62 @@ fn run(mut surface: WinSurface) -> Result<()> {
             let ctx = tab_ctx(t, active);
             if let Some(eng) = engine.as_mut() {
                 eng.fire_action(&code, &ctx);
+            }
+        }
+
+        // "Operate a target tab" (🎯): aim the active AI at another tab and, if a
+        // goal was given, hand it over. Browser targets reuse the built-in
+        // browser-operate loop; the AI then writes Lua to drive the target.
+        for (target, goal) in surface.take_operates() {
+            let src_pane = active;
+            if target == 0 {
+                if let Some(eng) = engine.as_mut() {
+                    eng.stop_operate(src_pane);
+                }
+                operating = None;
+                continue;
+            }
+            // First slice: browser targets only. Its id comes from the layout.
+            let br = match layout.get(target.wrapping_sub(1)) {
+                Some(Pane::Browser { name, .. }) => name.clone(),
+                _ => {
+                    flash = Some(i18n::t("msg.operate.browser_only"));
+                    continue;
+                }
+            };
+            // Operating needs an engine to run in; make a bare one if this
+            // workspace didn't otherwise have any Lua (same gap as Lua actions).
+            if engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
+            // Attach the active AI as the operator once per (source, target).
+            if operating != Some((src_pane, target)) {
+                let started = session_at(&layout, active)
+                    .and_then(|i| tabs.get(i))
+                    .map(|t| tab_ctx(t, active))
+                    .zip(engine.as_mut())
+                    .map(|(ctx, eng)| eng.start_operate(src_pane, &br, &ctx));
+                match started {
+                    Some(Ok(())) => operating = Some((src_pane, target)),
+                    Some(Err(e)) => {
+                        append_hook_log(&format!("operate start failed: {e:#}"));
+                        continue;
+                    }
+                    None => continue,
+                }
+            }
+            // Deliver the goal to the operator, like a human instruction.
+            if !goal.is_empty() {
+                let now_ms = start.elapsed().as_millis() as u64;
+                if let Some(t) = session_at(&layout, active).and_then(|i| tabs.get_mut(i)) {
+                    if !t.locked {
+                        t.chain_depth = 0;
+                        t.last_manual_ms = Some(now_ms);
+                        let seen = t.output_count();
+                        write_prompt(t, &goal);
+                        pending_submit.push(PendingSubmit::new(active, seen, now_ms));
+                    }
+                }
             }
         }
 
