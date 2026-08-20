@@ -1010,6 +1010,13 @@ pub struct Tab {
 }
 
 impl Tab {
+    /// The tab's working folder (where its process was launched). Attachments are
+    /// written here — under `.SHIKISHA/tmp/` — so the AI running in this folder
+    /// can reach them by the path we hand back.
+    pub fn cwd(&self) -> Option<&std::path::Path> {
+        self.opts.cwd.as_deref()
+    }
+
     /// The profile is resolved fresh each time, either from a name (given in
     /// config) or from the command name.
     /// Because it's re-resolved on restart, edits to profiles/*.json take effect immediately

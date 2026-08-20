@@ -30,6 +30,10 @@ pub struct RemoteTab {
     pub output: String,
     /// Screen contents while waiting for confirmation (to read the choices)
     pub screen: String,
+    /// The tab's working folder (absolute). Where a pasted/attached file is saved
+    /// so the AI running here can reach it. Empty if the tab has no folder set.
+    #[serde(default)]
+    pub cwd: String,
 }
 
 #[derive(Clone, Serialize, Default)]
@@ -308,6 +312,10 @@ fn json_response(v: serde_json::Value) -> Response<std::io::Cursor<Vec<u8>>> {
 
 /// Maximum accepted request-body size (see webui::read_body).
 const MAX_BODY: usize = 1 << 20; // 1 MiB
+/// Body cap for the attach route (a base64-encoded file, ~1.33x its raw size).
+/// Comfortably covers the default 25 MB attachment; a much larger `attach.max_mb`
+/// would need this raised too.
+const MAX_ATTACH: usize = 96 << 20; // 96 MiB
 
 /// Read a request body, capped at `max` bytes; None if it would exceed the cap.
 fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option<String>> {
@@ -583,11 +591,61 @@ fn handle(
             let _ = tx.send(RemoteCmd::SetAuto(on));
             req.respond(json_response(serde_json::json!({"ok": true})))?;
         }
+        // A file pasted/dropped/attached in the sub-input bar. Saved beside the
+        // target tab (so its AI can read it) and the saved path handed back to
+        // type into the prompt. Larger cap than the other routes — this carries a
+        // base64 file, not a short command.
+        ("POST", "/api/attach") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_ATTACH)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let tab = v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+            let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("file");
+            let data = v.get("data").and_then(|x| x.as_str()).unwrap_or("");
+            // The target tab's working folder, as it stands in the current snapshot.
+            let cwd = snapshot
+                .lock()
+                .unwrap()
+                .tabs
+                .iter()
+                .find(|t| t.index == tab)
+                .map(|t| t.cwd.clone())
+                .unwrap_or_default();
+            req.respond(json_response(attach_save(&cwd, name, data)))?;
+        }
         _ => {
             req.respond(Response::from_string("not found").with_status_code(404))?;
         }
     }
     Ok(())
+}
+
+/// Decode a base64 attachment and save it beside the target tab, returning a
+/// JSON result (`{ok, path}` or `{ok:false, error}`). The size cap and allowed
+/// extensions come from config; nothing here runs the file (see `attach`).
+fn attach_save(cwd: &str, name: &str, data_b64: &str) -> serde_json::Value {
+    use base64::Engine as _;
+    if cwd.is_empty() {
+        return serde_json::json!({ "ok": false, "error": crate::i18n::t("attach.err.no_folder") });
+    }
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(data_b64.as_bytes()) {
+        Ok(b) => b,
+        Err(_) => {
+            return serde_json::json!({ "ok": false, "error": crate::i18n::t("attach.err.empty") })
+        }
+    };
+    let cfg = crate::config::load().unwrap_or_default();
+    let limits = crate::attach::Limits {
+        max_bytes: (cfg.attach.max_mb as usize).saturating_mul(1024 * 1024),
+        allowed_ext: cfg.attach.extensions,
+    };
+    match crate::attach::save(std::path::Path::new(cwd), name, &bytes, &limits) {
+        Ok(path) => serde_json::json!({ "ok": true, "path": path.to_string_lossy() }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
 }
 
 /// Read a named cookie from the request's `Cookie` header (empty if absent).
@@ -614,7 +672,7 @@ fn is_settings_path(path: &str) -> bool {
     }
     if let Some(rest) = path.strip_prefix("/api/") {
         let seg = rest.split(['/', '?']).next().unwrap_or("");
-        return !matches!(seg, "state" | "send" | "auto" | "intent");
+        return !matches!(seg, "state" | "send" | "auto" | "intent" | "attach");
     }
     false
 }

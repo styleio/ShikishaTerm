@@ -63,6 +63,9 @@ pub struct Config {
     /// Remote UI viewable from a phone etc. Disabled by default
     #[serde(default)]
     pub remote: RemoteSpec,
+    /// Bounds for files pasted/attached into the sub-input bar (saved beside the tab)
+    #[serde(default)]
+    pub attach: AttachSpec,
     /// Display language ("ja" etc). Follows the OS setting if omitted
     #[serde(default)]
     pub language: Option<String>,
@@ -170,6 +173,39 @@ impl Default for RemoteSpec {
             allow_public: false,
         }
     }
+}
+
+/// Bounds for a pasted/attached file. Nothing here executes the file (it is saved
+/// beside the tab and only its path is handed to the AI), so `extensions` is a UX
+/// guard and a nudge to be deliberate — power users can widen it at their own risk.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AttachSpec {
+    /// Max size of one attachment, in megabytes.
+    #[serde(default = "default_attach_mb")]
+    pub max_mb: u32,
+    /// Extensions the user opted into (lowercase, no dot).
+    #[serde(default = "default_attach_ext")]
+    pub extensions: Vec<String>,
+}
+
+impl Default for AttachSpec {
+    fn default() -> Self {
+        Self {
+            max_mb: default_attach_mb(),
+            extensions: default_attach_ext(),
+        }
+    }
+}
+
+fn default_attach_mb() -> u32 {
+    25
+}
+
+fn default_attach_ext() -> Vec<String> {
+    ["jpg", "jpeg", "png", "gif", "webp", "pdf"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn default_bind() -> String {

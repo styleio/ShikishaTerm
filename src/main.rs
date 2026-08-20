@@ -15,6 +15,7 @@
 // Windows allocate one. (Only the terminal-facing --settings mode opens one itself, on demand.)
 #![windows_subsystem = "windows"]
 
+mod attach;
 mod ball;
 mod bridge;
 mod browser;
@@ -1522,6 +1523,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 &tab::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()),
                                 200,
                             ),
+                            cwd: tab_cwd_abs(t),
                         })
                         .collect(),
                 };
@@ -3634,6 +3636,17 @@ fn open_settings(
         &format!("{url}{query}"),
         browser::BrowserProfile::shared_default(),
     )
+}
+
+/// The tab's working folder as an absolute path string, for attachments. Falls
+/// back to the app's own working folder when the tab has none configured.
+fn tab_cwd_abs(t: &Tab) -> String {
+    let abs = match t.cwd().map(std::path::Path::to_path_buf) {
+        Some(p) if p.is_absolute() => Some(p),
+        Some(p) => std::env::current_dir().ok().map(|c| c.join(p)),
+        None => std::env::current_dir().ok(),
+    };
+    abs.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// Ensure the local settings/result web server is running and hand back its

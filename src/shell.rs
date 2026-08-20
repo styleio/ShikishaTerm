@@ -143,6 +143,12 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
      scrolls horizontally, the input sits on the bottom row */
   #castdock { position:absolute; left:0; right:0; bottom:0; z-index:18;
     display:none; flex-direction:column; }
+  #attachtoast { position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
+    z-index:30; max-width:86%; padding:9px 14px; border-radius:9px; font-size:13px;
+    background:#0f2a3d; color:#dceeff; border:1px solid var(--accent);
+    box-shadow:0 8px 24px rgba(0,0,0,.5); opacity:0; pointer-events:none;
+    transition:opacity .18s ease; word-break:break-all; }
+  #attachtoast.bad { background:#3a1418; color:#ffd7d7; border-color:#e5534b; }
   #castkeys { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
     padding:6px 8px; background:var(--panel); border-top:1px solid var(--line);
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }
@@ -1668,6 +1674,55 @@ function buildCastKeys() {
   });
   return row;
 }
+// A short-lived toast for attach results (client-side, independent of S.flash
+// so a state push can't wipe it mid-message).
+function attachToast(text, bad) {
+  let t = document.getElementById("attachtoast");
+  if (!t) { t = el("div", {id:"attachtoast"}); document.getElementById("main").append(t); }
+  t.textContent = text;
+  t.className = bad ? "bad" : "";
+  t.style.opacity = "1";
+  clearTimeout(t._to);
+  t._to = setTimeout(() => { t.style.opacity = "0"; }, 3200);
+}
+// Base64-encode an ArrayBuffer without blowing the call stack on large files.
+function bufToB64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+// Save a picked/pasted/dropped file next to the active tab, then drop the saved
+// path into the composer. The tab a file belongs to is whichever one the bar is
+// over (S.active); the server writes it and hands back an absolute path.
+async function attachFile(file) {
+  if (!file) return;
+  const tab = (S && S.active) || 0;
+  if (!tab) { attachToast(T["attach.err.no_tab"] || "Pick a tab first", true); return; }
+  attachToast("…");
+  try {
+    const data = bufToB64(await file.arrayBuffer());
+    const r = await fetch("api/attach?t=" + encodeURIComponent(TOKEN), {
+      method: "POST", body: JSON.stringify({ tab: tab, name: file.name || "file", data: data })
+    });
+    const j = await r.json();
+    if (j && j.ok && j.path) {
+      const cur = castInput ? castInput.value : "";
+      if (castInput) {
+        castInput.value = (cur && !cur.endsWith(" ") ? cur + " " : cur) + j.path + " ";
+        castInput.focus();
+      }
+      attachToast((T["attach.saved"] || "Attached {name}").replace("{name}", file.name || ""));
+    } else {
+      attachToast((j && j.error) || T["attach.err.failed"] || "Attach failed", true);
+    }
+  } catch (e) {
+    attachToast(T["attach.err.failed"] || "Attach failed", true);
+  }
+}
 let castDock = null, castBar = null, castInput = null, castKeysEl = null;
 function ensureBar() {
   if (castDock) return;
@@ -1684,12 +1739,20 @@ function ensureBar() {
     if (castInput) castInput.blur();
     if (!castMode) closeBar();
   }}, "✕");
+  // Attach a file: pick or paste an image / PDF. It's saved beside the target
+  // tab (under .SHIKISHA/tmp) and its path is dropped into the composer to hand
+  // to the AI — a CLI can't take an attachment, you give it a path.
+  const fileIn = el("input", {type:"file", accept:"image/*,application/pdf",
+    style:"display:none",
+    onchange:(e) => { const f = e.target.files && e.target.files[0]; if (f) attachFile(f); e.target.value = ""; }});
+  const att = el("button", {class:"castbtn", title: T["tui.cast.attach"] || "Attach a file",
+    onclick:() => fileIn.click()}, "📎");
   // ⌫ and Send keep the input field's focus (= the keyboard) in place. If
   // the default pointerdown action weren't prevented, focus would shift to
   // the button, the keyboard would close, and typing couldn't continue.
   // ✕ is deliberately excluded since closing it is the whole point
   [bs, send].forEach(b => b.addEventListener("pointerdown", (e) => e.preventDefault()));
-  castBar = el("div", {id:"castbar"}, bs, castInput, send, close);
+  castBar = el("div", {id:"castbar"}, att, fileIn, bs, castInput, send, close);
   castKeysEl = buildCastKeys();
   // The release banner. Placed just above the auxiliary key panel, and
   // shifts up together with the whole dock once the keyboard appears
@@ -1702,6 +1765,11 @@ function ensureBar() {
   castInput.addEventListener("keydown", (e) => {
     if (e.isComposing) return;
     if (e.key === "Enter") { sendBar(); e.preventDefault(); }
+  });
+  // Paste an image straight into the composer — it's saved and its path inserted.
+  castInput.addEventListener("paste", (e) => {
+    const fs = e.clipboardData && e.clipboardData.files;
+    if (fs && fs.length) { attachFile(fs[0]); e.preventDefault(); }
   });
   // Lift the dock by the keyboard's height (so it doesn't hide underneath it)
   if (window.visualViewport) {
