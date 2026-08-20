@@ -2443,6 +2443,7 @@ function globalPane() {
     row("secrets", ...pathField(current, "secrets", "secrets.json", "file",
         T["settings.secrets"]),
         el("span", {class:"hint"}, T["settings.secrets.hint"]))));
+  box.append(actionsCard());
   box.append(secretsCard());
   box.append(providersCard());
   box.append(notifyCard());
@@ -2596,6 +2597,42 @@ function providersCard() {
 // Notification destinations (Slack / Telegram). The sensitive webhook/token is
 // stored straight into the secret store (like a provider's api_key) — the user
 // never has to register a secret by hand first — and config keeps only "@name".
+// Quick actions for the sub-input bar. An editable list saved into config.actions
+// (the main save() already writes `current` wholesale). Text-only for now — each
+// action inserts its text into the composer; a Lua-per-action toggle arrives with
+// Lua firing. Empty-label rows are dropped on save (see payload()).
+function actionsCard() {
+  current.actions = current.actions || [];
+  const listBox = el("div", {id:"actionslist"});
+  const draw = () => {
+    listBox.textContent = "";
+    if (!current.actions.length) listBox.append(el("div", {class:"hint"}, T["settings.actions.empty"]));
+    current.actions.forEach((a, i) => {
+      a.label = a.label || ""; a.body = a.body || "";
+      const labelIn = el("input", {value:a.label, placeholder:T["settings.actions.label_ph"], style:"width:130px;flex:none"});
+      labelIn.addEventListener("input", () => { a.label = labelIn.value; refreshSave(); });
+      const bodyIn = el("textarea", {rows:2, placeholder:T["settings.actions.text_ph"],
+        style:"flex:1 1 0;min-width:200px;resize:vertical"});
+      bodyIn.value = a.body;
+      bodyIn.addEventListener("input", () => { a.body = bodyIn.value; refreshSave(); });
+      const up = el("button", {class:"quiet", style:"flex:none", title:T["settings.actions.up"], onclick:() => {
+        if (i > 0) { const t = current.actions[i-1]; current.actions[i-1] = current.actions[i]; current.actions[i] = t; refreshSave(); draw(); } }}, "↑");
+      const del = el("button", {class:"quiet", style:"flex:none", onclick:() => {
+        current.actions.splice(i, 1); refreshSave(); draw(); }}, T["common.delete"]);
+      listBox.append(el("div", {class:"row",
+        style:"align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap"},
+        labelIn, bodyIn, up, del));
+    });
+  };
+  const addBtn = el("button", {class:"primary", onclick:() => {
+    current.actions.push({label:"", body:""}); refreshSave(); draw(); }}, T["settings.actions.add"]);
+  const c = card(T["settings.actions.title"],
+    el("div", {class:"hint"}, T["settings.actions.hint"]),
+    listBox, el("div", {class:"row", style:"margin-top:10px"}, addBtn));
+  draw();
+  return c;
+}
+
 function notifyCard() {
   current.notify = current.notify || {};
   const listBox = el("div", {id:"notifylist"});
@@ -3799,6 +3836,11 @@ function payload() {
     const v = out[k]; if (v === "" || v === null || v === undefined) delete out[k]; else out[k] = Number(v);
   });
   ["automation","secrets","ai_engine","browser_data","language"].forEach(k => { if (!out[k]) delete out[k]; });
+  // Quick actions: drop rows left without a label, and omit the key entirely if none remain.
+  if (out.actions) {
+    out.actions = out.actions.filter(a => a && (a.label || "").trim());
+    if (!out.actions.length) delete out.actions;
+  }
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
   // Don't save a provider with an empty base_url (avoids leaving leftover junk from a still-in-progress add)
   if (out.providers) {
