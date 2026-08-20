@@ -395,6 +395,9 @@ struct WinSurface {
     remote_cut: bool,
     /// Lines typed into a model tab's chat box, awaiting delivery to the bridge.
     chats: Vec<String>,
+    /// Quick-action chips (Lua) fired from the bar, by index into config.actions.
+    /// The loop looks up the code and runs it against the active tab.
+    run_actions: Vec<usize>,
 }
 
 impl WinSurface {
@@ -458,6 +461,11 @@ impl WinSurface {
         std::mem::take(&mut self.chats)
     }
 
+    /// Takes the indices of Lua quick-actions fired since the last drain.
+    fn take_run_actions(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.run_actions)
+    }
+
     /// Push the current quick actions into the shell page so a settings edit
     /// reflects live — the window isn't reloaded on a config change. (The phone
     /// re-reads them on its next page load, i.e. when it returns to the board.)
@@ -486,6 +494,9 @@ impl WinSurface {
                 Ev::CloseSettings => self.close_settings = true,
                 Ev::OpenSettings => self.open_settings = true,
                 Ev::RemoteCut => self.remote_cut = true,
+                // A Lua quick-action was tapped. Remember its index; the loop looks
+                // up the code and runs it (it has the hook engine and config).
+                Ev::RunAction { index } => self.run_actions.push(index),
                 // A file attached in the desktop composer. Save it beside the
                 // active tab (the folder its AI runs in) and hand the path back to
                 // the page. Same saver the phone's /api/attach route uses.
@@ -685,6 +696,7 @@ fn run_in_window() -> Result<()> {
         open_settings: false,
         remote_cut: false,
         chats: Vec::new(),
+        run_actions: Vec::new(),
     })
 }
 
@@ -1652,6 +1664,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         surface.cols = cols;
                         surface.pending.push_back(Event::Resize(cols, rows));
                     }
+                    // A Lua quick-action fired from the phone. It's not a keystroke,
+                    // so route it straight to the same queue the window's ipc path
+                    // fills (drained and run against the active tab below).
+                    remote::RemoteCmd::Ui(crate::browser::Ev::RunAction { index }) => {
+                        surface.run_actions.push(index);
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         for e in keys_for(&ev) {
@@ -2002,6 +2020,26 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     t.chain_depth = 0;
                     t.chat_send(line);
                 }
+            }
+        }
+
+        // Lua quick-actions tapped in the bar: look up the code (kept server-side)
+        // and run it against the active tab. Its commands drain with the hooks'.
+        for index in surface.take_run_actions() {
+            let Some(code) = cfg
+                .as_ref()
+                .and_then(|c| c.actions.get(index))
+                .filter(|a| a.lua)
+                .map(|a| a.body.clone())
+            else {
+                continue;
+            };
+            let Some(t) = session_at(&layout, active).and_then(|i| tabs.get(i)) else {
+                continue;
+            };
+            let ctx = tab_ctx(t, active);
+            if let Some(eng) = engine.as_mut() {
+                eng.fire_action(&code, &ctx);
             }
         }
 
@@ -2812,7 +2850,17 @@ fn build_engine(
     let wants_notify = ws
         .map(|w| w.tabs.iter().any(|t| t.cfg.notify_on_done.is_some()))
         .unwrap_or(false);
-    if base.is_none() && ws_lua.is_none() && tab_luas.is_empty() && !has_discuss && !wants_notify {
+    // A Lua quick-action needs an engine to run in, even when nothing else does.
+    let has_lua_actions = cfg
+        .map(|c| c.actions.iter().any(|a| a.lua))
+        .unwrap_or(false);
+    if base.is_none()
+        && ws_lua.is_none()
+        && tab_luas.is_empty()
+        && !has_discuss
+        && !wants_notify
+        && !has_lua_actions
+    {
         return None;
     }
 
@@ -3017,9 +3065,9 @@ fn build_engine(
         }
     }
     // Keep the engine even with no Lua hooks when a tab wants a completion
-    // notification: the on_done detection loop lives behind `Some(engine)`, so
-    // without this a notify-only workspace would never detect "done" at all.
-    (!engine.is_empty() || wants_notify).then_some(engine)
+    // notification (the on_done detection loop lives behind `Some(engine)`), or
+    // when there are Lua quick-actions to run in it.
+    (!engine.is_empty() || wants_notify || has_lua_actions).then_some(engine)
 }
 
 /// Converts a rebuilt tab config into TabOptions.

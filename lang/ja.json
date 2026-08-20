@@ -650,12 +650,14 @@
   "agent.discuss.read_ctx": "ここまでの討論の全文はこのファイルに記録されています。まず必ずこれを読み、流れと各自の主張を把握してから発言してください:\n  {path}",
   "agent.discuss.your_turn.before": "あなた(",
   "agent.discuss.your_turn.mid": ")の番です。意見を ",
-  "agent.discuss.your_turn.after": " に端的に書いてください。",  "agent.discuss.result.judge_ruled": "審判が裁定しました",
+  "agent.discuss.your_turn.after": " に端的に書いてください。",
+  "agent.discuss.result.judge_ruled": "審判が裁定しました",
   "agent.discuss.verdict_agg": "判定（集合条件）",
   "agent.discuss.agg_met": "集合条件が成立",
   "agent.discuss.judge_request_final": "上記の記録ファイルを最後まで読み、議論を審判してください。勝敗(または統合)と理由を say.txt に。",
   "agent.discuss.round_limit_no_judge": "(周回上限。審判なし)",
-  "agent.discuss.result.round_limit": "議論終了(周回上限)",  "agent.discuss.mod.pick_before": "次に発言すべき参加者の id を1つ、または END を ",
+  "agent.discuss.result.round_limit": "議論終了(周回上限)",
+  "agent.discuss.mod.pick_before": "次に発言すべき参加者の id を1つ、または END を ",
   "agent.discuss.mod.pick_after": " に書いてください。参加者: ",
   "agent.discuss.next_turn.before": "あなた(",
   "agent.discuss.next_turn.mid": ")の意見を ",
@@ -890,5 +892,7 @@
   "wizard.review.role.test": "テスト",
   "wizard.review.role.ui": "UIデザイナー",
   "wizard.review.stop_reason": "全員承認(LGTM)",
-  "wizard.review.title": "👨‍💻 AI×AI コードレビュー（Git連携）をつくる"
+  "wizard.review.title": "👨‍💻 AI×AI コードレビュー（Git連携）をつくる",
+  "settings.actions.lua": "Lua",
+  "settings.actions.lua_ph": "タップで実行するLua 例: shikisha.send_to_tab(\"reviewer\", tab.output)"
 }

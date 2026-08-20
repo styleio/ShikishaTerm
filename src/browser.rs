@@ -346,6 +346,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("openws") => Ev::OpenWs,
         Some("stop") => Ev::Stop,
         Some("remotecut") => Ev::RemoteCut,
+        // A quick-action chip whose payload is Lua (the code stays server-side —
+        // the page only knows the index). Runs it against the active tab.
+        Some("runaction") => Ev::RunAction {
+            index: v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        },
         // A file pasted/attached in the desktop composer. Saved beside the active
         // tab; the result is handed back by eval-ing window.__attachDone(id, …).
         // (The phone uses the /api/attach HTTP route instead, so this window-only
@@ -525,6 +530,10 @@ pub enum Ev {
     /// and drop the open connections. Window-only — a phone can't disconnect
     /// itself (allowed_from_afar leaves it on the reject side).
     RemoteCut,
+    /// A Lua quick-action fired from the bar. `index` is its position in
+    /// config.actions; the code is looked up and run server-side (the page never
+    /// holds Lua source). Allowed from afar — it runs the user's own action.
+    RunAction { index: usize },
     /// A file attached in the desktop composer. `id` correlates the async reply
     /// (`window.__attachDone(id, …)`), `name` is the declared filename, `data` is
     /// the base64 bytes. Saved beside the active tab. Window-only — the phone

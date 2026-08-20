@@ -650,12 +650,14 @@
   "agent.discuss.read_ctx": "The full discussion so far is recorded in this file — read it first to catch up on the flow and every argument, then take your turn:\n  {path}",
   "agent.discuss.your_turn.before": "Your turn (",
   "agent.discuss.your_turn.mid": "). Write your opinion concisely to",
-  "agent.discuss.your_turn.after": ".",  "agent.discuss.result.judge_ruled": "The judge has ruled",
+  "agent.discuss.your_turn.after": ".",
+  "agent.discuss.result.judge_ruled": "The judge has ruled",
   "agent.discuss.verdict_agg": "Verdict (aggregate condition)",
   "agent.discuss.agg_met": "An aggregate condition was met",
   "agent.discuss.judge_request_final": "Read the whole record above, then judge the discussion. Write the outcome (or synthesis) and the reasons to say.txt.",
   "agent.discuss.round_limit_no_judge": "(Round limit reached. No judge.)",
-  "agent.discuss.result.round_limit": "Discussion ended (round limit)",  "agent.discuss.mod.pick_before": "Write either the id of the single participant who should speak next, or END, to",
+  "agent.discuss.result.round_limit": "Discussion ended (round limit)",
+  "agent.discuss.mod.pick_before": "Write either the id of the single participant who should speak next, or END, to",
   "agent.discuss.mod.pick_after": ". Participants:",
   "agent.discuss.next_turn.before": "Your turn (",
   "agent.discuss.next_turn.mid": "). Write your opinion concisely to",
@@ -890,5 +892,7 @@
   "wizard.review.role.test": "Testing",
   "wizard.review.role.ui": "UI designer",
   "wizard.review.stop_reason": "Everyone approved (LGTM)",
-  "wizard.review.title": "👨‍💻 Build an AI x AI code review (Git-connected)"
+  "wizard.review.title": "👨‍💻 Build an AI x AI code review (Git-connected)",
+  "settings.actions.lua": "Lua",
+  "settings.actions.lua_ph": "Lua to run on tap, e.g. shikisha.send_to_tab(\"reviewer\", tab.output)"
 }

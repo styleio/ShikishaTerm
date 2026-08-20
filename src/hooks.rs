@@ -2113,6 +2113,36 @@ end
         }
     }
 
+    /// Run a quick-action's Lua on demand, in the same environment automations
+    /// use (a fresh scope whose __index is the globals, so the shikisha API and
+    /// standard library are available), with `tab` bound to the active tab. Its
+    /// commands are collected like a hook's and drained by the caller.
+    pub fn fire_action(&mut self, code: &str, ctx: &TabCtx) {
+        self.current_origin.set(ctx.index);
+        let result = (|| -> mlua::Result<()> {
+            let env = self.lua.create_table()?;
+            let mt = self.lua.create_table()?;
+            mt.set("__index", self.lua.globals())?;
+            env.set_metatable(Some(mt))?;
+            env.set("tab", self.make_tab_table(ctx)?)?;
+            let func = self
+                .lua
+                .load(code)
+                .set_name("action")
+                .set_environment(env)
+                .into_function()?;
+            let thread = self.lua.create_thread(func)?;
+            self.resume_thread(thread, "action", ctx.index, MultiValue::from_vec(vec![]));
+            Ok(())
+        })();
+        if let Err(e) = result {
+            self.push_log(crate::i18n::tp(
+                "err.hooks.lua_error",
+                &[("hook", "action"), ("e", &format!("{e}"))],
+            ));
+        }
+    }
+
     /// Call a browser hook.
     ///
     /// What's passed is a page, not a tab. A page has no state and no

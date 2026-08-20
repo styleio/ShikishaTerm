@@ -173,6 +173,9 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     padding:7px 12px; font-size:13px; border:1px solid var(--brand); border-radius:14px;
     background:rgba(0,170,255,.10); color:var(--text); cursor:pointer; user-select:none; }
   .castaction:active { background:var(--brand); color:#04121c; }
+  /* Lua actions run on tap (rather than filling the composer) — mark them. */
+  .castaction.lua { border-style:dashed; }
+  .castaction.lua::before { content:"▶"; margin-right:4px; opacity:.85; }
   .castkey { flex:0 0 auto; min-width:40px; padding:8px 10px; font-size:14px;
     border:1px solid var(--line); border-radius:8px; background:var(--bg);
     color:var(--text); cursor:pointer; user-select:none; }
@@ -1756,20 +1759,29 @@ function buildCastKeys() {
 // Lua actions are carried but not fired yet, so only text ones are shown for now
 // (no dead buttons). Returns null when there are none, so the row is omitted.
 function buildActions() {
-  const items = (curActions || []).filter(a => a && a.text != null);
+  // Keep each action's original index (Lua actions are fired server-side by it).
+  const items = (curActions || []).map((a, i) => ({a, i})).filter(x => x.a && (x.a.text != null || x.a.lua));
   if (!items.length) return null;
   const row = el("div", {id:"castactions"});
-  items.forEach(a => {
-    const b = el("button", {class:"castaction", title:a.text}, a.label || a.text);
+  items.forEach(({a, i}) => {
+    const isLua = !!a.lua;
+    const b = el("button", {class:"castaction" + (isLua ? " lua" : ""),
+      title: isLua ? (a.label || "") : (a.text || "")}, a.label || a.text || "•");
     // Keep the composer's focus (= the keyboard) when tapping an action.
     b.addEventListener("pointerdown", (e) => e.preventDefault());
     b.onclick = (e) => {
       e.stopPropagation();
-      if (!castInput) return;
-      const cur = castInput.value;
-      const sep = (cur && !cur.endsWith(" ") && !cur.endsWith("\n")) ? " " : "";
-      castInput.value = cur + sep + a.text;
-      castInput.focus();
+      if (isLua) {
+        // The code lives server-side; fire it by index and note that it ran.
+        send({kind:"runaction", index: i});
+        attachToast("▶ " + (a.label || ""));
+      } else {
+        if (!castInput) return;
+        const cur = castInput.value;
+        const sep = (cur && !cur.endsWith(" ") && !cur.endsWith("\n")) ? " " : "";
+        castInput.value = cur + sep + a.text;
+        castInput.focus();
+      }
     };
     row.append(b);
   });

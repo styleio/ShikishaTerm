@@ -2608,20 +2608,27 @@ function actionsCard() {
     listBox.textContent = "";
     if (!current.actions.length) listBox.append(el("div", {class:"hint"}, T["settings.actions.empty"]));
     current.actions.forEach((a, i) => {
-      a.label = a.label || ""; a.body = a.body || "";
+      a.label = a.label || ""; a.body = a.body || ""; a.lua = !!a.lua;
       const labelIn = el("input", {value:a.label, placeholder:T["settings.actions.label_ph"], style:"width:130px;flex:none"});
       labelIn.addEventListener("input", () => { a.label = labelIn.value; refreshSave(); });
-      const bodyIn = el("textarea", {rows:2, placeholder:T["settings.actions.text_ph"],
+      const bodyIn = el("textarea", {rows:a.lua ? 4 : 2,
+        placeholder: a.lua ? T["settings.actions.lua_ph"] : T["settings.actions.text_ph"],
+        class: a.lua ? "mono" : "",
         style:"flex:1 1 0;min-width:200px;resize:vertical"});
       bodyIn.value = a.body;
       bodyIn.addEventListener("input", () => { a.body = bodyIn.value; refreshSave(); });
+      // Advanced, per action: the body is Lua run on tap, not text to insert.
+      const luaChk = el("input", {type:"checkbox"}); luaChk.checked = a.lua;
+      luaChk.addEventListener("change", () => { a.lua = luaChk.checked; refreshSave(); draw(); });
+      const luaLbl = el("label", {class:"hint", style:"display:flex;align-items:center;gap:4px;flex:none"},
+        luaChk, T["settings.actions.lua"]);
       const up = el("button", {class:"quiet", style:"flex:none", title:T["settings.actions.up"], onclick:() => {
         if (i > 0) { const t = current.actions[i-1]; current.actions[i-1] = current.actions[i]; current.actions[i] = t; refreshSave(); draw(); } }}, "↑");
       const del = el("button", {class:"quiet", style:"flex:none", onclick:() => {
         current.actions.splice(i, 1); refreshSave(); draw(); }}, T["common.delete"]);
       listBox.append(el("div", {class:"row",
         style:"align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap"},
-        labelIn, bodyIn, up, del));
+        labelIn, bodyIn, luaLbl, up, del));
     });
   };
   const addBtn = el("button", {class:"primary", onclick:() => {
