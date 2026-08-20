@@ -2087,13 +2087,23 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             // Attach the active AI as the operator once per (source, target).
             if operating != Some((src_pane, target)) {
-                let started = session_at(&layout, active)
+                let tab_idx = session_at(&layout, active);
+                let started = tab_idx
                     .and_then(|i| tabs.get(i))
                     .map(|t| tab_ctx(t, active))
                     .zip(engine.as_mut())
                     .map(|(ctx, eng)| eng.start_operate(src_pane, &br, &ctx));
                 match started {
-                    Some(Ok(())) => operating = Some((src_pane, target)),
+                    Some(Ok(())) => {
+                        operating = Some((src_pane, target));
+                        // start_operate briefs the operator itself (it fires on_start
+                        // with the browser protocol). Mark this tab's startup hook as
+                        // already fired so the generic on_start machinery above doesn't
+                        // brief it a SECOND time now that the agent is attached.
+                        if let Some(f) = tab_idx.and_then(|i| started_fired.get_mut(i)) {
+                            *f = true;
+                        }
+                    }
                     Some(Err(e)) => {
                         append_hook_log(&format!("operate start failed: {e:#}"));
                         continue;

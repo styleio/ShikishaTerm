@@ -2153,6 +2153,9 @@ end
         let stops = crate::config::stops_to_lua(&[]);
         let id = self.load_browser_agent(browser, &stops)?;
         self.set_tab(source_pane, id);
+        crate::append_hook_log(&format!(
+            "operate: briefing operator pane{source_pane} on browser {browser:?}"
+        ));
         self.fire("on_start", ctx, None);
         Ok(())
     }
