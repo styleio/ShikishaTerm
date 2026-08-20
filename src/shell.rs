@@ -157,7 +157,6 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     border:1px solid var(--brand); background:var(--panel); color:var(--brand);
     box-shadow:0 4px 16px rgba(0,0,0,.45); opacity:.85; transition:opacity .15s ease; }
   #composerfab:hover { opacity:1; }
-  #composerfab.on { background:var(--brand); color:#04121c; opacity:1; }
   #castkeys { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
     padding:6px 8px; background:var(--panel); border-top:1px solid var(--line);
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }
@@ -1915,7 +1914,7 @@ function ensureBar() {
 // Show the sub-input bar (auxiliary key row + input field). Never focused
 // automatically — the keyboard never pops up uninvited. It only opens when the user taps the input field
 function showDock() { ensureBar(); castDock.style.display = "flex"; }
-function closeBar() { if (castDock) castDock.style.display = "none"; if (castInput) castInput.blur(); if (fab) fab.classList.remove("on"); }
+function closeBar() { if (castDock) castDock.style.display = "none"; if (castInput) castInput.blur(); if (fab) fab.style.display = ""; }
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
@@ -1971,11 +1970,13 @@ function toggleComposer() {
   // showDock sets "flex", closeBar sets "none"; a fresh dock has "" (CSS hides it),
   // so test for the shown value rather than "!== none" (which a blank string passes).
   const showing = castDock && castDock.style.display === "flex";
-  if (showing) { closeBar(); if (fab) fab.classList.remove("on"); }
+  if (showing) { closeBar(); }
   else {
     openTermBar();
     if (castInput) castInput.focus();
-    if (fab) fab.classList.add("on");
+    // Hide the ✎ button while the bar is open — it sits over the bar's ✕/Send
+    // buttons, and the ✕ already closes the bar.
+    if (fab) fab.style.display = "none";
   }
 }
 let fab = null;
