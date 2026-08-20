@@ -169,6 +169,9 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     flex:1 1 0; min-width:0; padding:6px 0;
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }
   #castkeys::-webkit-scrollbar, #castactions::-webkit-scrollbar { display:none; }
+  #casttarget { display:flex; align-items:center; gap:8px; flex:1 1 0; min-width:0;
+    padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
+  #casttarget::-webkit-scrollbar { display:none; }
   .castaction { flex:0 0 auto; max-width:60vw; overflow:hidden; text-overflow:ellipsis;
     padding:7px 12px; font-size:13px; border:1px solid var(--brand); border-radius:14px;
     background:rgba(0,170,255,.10); color:var(--text); cursor:pointer; user-select:none; }
@@ -1880,6 +1883,31 @@ let castDock = null, castBar = null, castInput = null, castKeysEl = null;
 // actions, or (later) the operate-target picker. Default: keys on the phone (no
 // physical keyboard), actions on the desktop.
 let castPanel = null, castPanelEl = null;
+// The tab the "operate" (🎯) panel is aimed at, or null. Step 1 = choosing it;
+// the operate engine (the active AI writes Lua to drive it) is layered on next.
+let castTarget = null;
+// The picker for the 🎯 panel: choose another tab to operate. Browsers, AI tabs
+// and plain terminals are all candidates; the active one and INDEX are not.
+function buildTargetPanel() {
+  const wrap = el("div", {id:"casttarget"});
+  const tabs = (S && S.tabs) ? S.tabs.filter(t => t && t.index !== 0 && !t.settings) : [];
+  const sel = el("select", {class:"castswitch"});
+  sel.append(el("option", {value:""}, T["tui.cast.target.none"] || "— none —"));
+  tabs.forEach(t => {
+    const icon = t.kind === "browser" ? "🌐" : (t.model ? "🤖" : "▷");
+    const o = el("option", {value:String(t.index)}, icon + " " + (t.name || ("#" + t.index)));
+    if (castTarget && castTarget.index === t.index) o.selected = true;
+    sel.append(o);
+  });
+  sel.onchange = () => {
+    const idx = parseInt(sel.value, 10);
+    const t = tabs.find(x => x.index === idx);
+    castTarget = t ? { index: t.index, name: t.name || ("#" + idx), kind: t.kind, model: !!t.model } : null;
+  };
+  wrap.append(el("span", {class:"hint", style:"flex:none"}, T["tui.cast.target.label"] || "Operate:"), sel,
+    el("span", {class:"hint", style:"flex:1 1 0;min-width:0"}, T["tui.cast.target.hint"] || ""));
+  return wrap;
+}
 // Panels available on this surface. "target" (operate a tab) shows a placeholder
 // until that feature lands, but it's listed now so the switcher is present on both
 // the phone (keys/actions/target) and the desktop (actions/target).
@@ -1895,7 +1923,7 @@ function panelLabel(p) { return p === "keys" ? "⌨️" : p === "actions" ? "⚡
 function panelContent(p) {
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
-  if (p === "target") { return el("div", {class:"castpanelhint"}, T["tui.cast.panel.target.soon"] || "Coming soon"); }
+  if (p === "target") { return buildTargetPanel(); }
   return null;
 }
 // (Re)fill the panel area: the fixed switcher (only when there's more than one

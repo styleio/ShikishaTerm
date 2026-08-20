@@ -894,5 +894,8 @@
   "wizard.review.stop_reason": "全員承認(LGTM)",
   "wizard.review.title": "👨‍💻 AI×AI コードレビュー（Git連携）をつくる",
   "settings.actions.lua": "Lua",
-  "settings.actions.lua_ph": "タップで実行するLua 例: shikisha.send_to_tab(\"reviewer\", tab.output)"
+  "settings.actions.lua_ph": "タップで実行するLua 例: shikisha.send_to_tab(\"reviewer\", tab.output)",
+  "tui.cast.target.none": "— なし —",
+  "tui.cast.target.label": "操作対象:",
+  "tui.cast.target.hint": "ここから操作するタブを選択（操作の実行は次段）。"
 }

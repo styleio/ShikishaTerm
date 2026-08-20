@@ -894,5 +894,8 @@
   "wizard.review.stop_reason": "Everyone approved (LGTM)",
   "wizard.review.title": "👨‍💻 Build an AI x AI code review (Git-connected)",
   "settings.actions.lua": "Lua",
-  "settings.actions.lua_ph": "Lua to run on tap, e.g. shikisha.send_to_tab(\"reviewer\", tab.output)"
+  "settings.actions.lua_ph": "Lua to run on tap, e.g. shikisha.send_to_tab(\"reviewer\", tab.output)",
+  "tui.cast.target.none": "— none —",
+  "tui.cast.target.label": "Operate:",
+  "tui.cast.target.hint": "Pick a tab to operate from here (driving it comes next)."
 }
