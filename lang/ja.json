@@ -33,6 +33,7 @@
   "tui.cast.send": "送信",
   "tui.cast.attach": "ファイルを添付",
   "tui.cast.compose": "入力バー",
+  "tui.browser.actions.empty": "このブラウザを操作するには、設定(⚙)でLuaのクイックアクションを追加してください。",
   "tui.cast.panel.keys": "特殊キー",
   "tui.cast.panel.actions": "アクション",
   "tui.cast.panel.target": "対象",

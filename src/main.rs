@@ -2060,10 +2060,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
             else {
                 continue;
             };
-            let Some(t) = session_at(&layout, active).and_then(|i| tabs.get(i)) else {
-                continue;
+            // Run with the active tab as context — a session tab, or a browser
+            // (so a Lua action can drive the browser it's shown over). INDEX and
+            // settings have no action context, so drop it there.
+            let ctx = match session_at(&layout, active).and_then(|i| tabs.get(i)) {
+                Some(t) => tab_ctx(t, active),
+                None => match layout.get(active.wrapping_sub(1)) {
+                    Some(Pane::Browser { key, .. }) => browser_ctx(active, key),
+                    _ => continue,
+                },
             };
-            let ctx = tab_ctx(t, active);
             if let Some(eng) = engine.as_mut() {
                 eng.fire_action(&code, &ctx);
             }
@@ -3947,6 +3953,23 @@ fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
         // pull ```lua out of it without the terminal's line-wrapping mangling
         // long URLs. None for CLI tabs and plain chat.
         reply: t.model_reply(),
+    }
+}
+
+/// A minimal context for a browser pane, so a quick action's Lua can run while a
+/// browser tab is active. `tab.name` is the browser's key, ready to hand to the
+/// browser_* functions (e.g. `shikisha.browser_go(tab.name, "to", url)`).
+fn browser_ctx(index: usize, key: &str) -> TabCtx {
+    TabCtx {
+        index,
+        name: key.to_string(),
+        state: "WEB".into(),
+        profile: String::new(),
+        output: String::new(),
+        chain_depth: 0,
+        locked: false,
+        is_model: false,
+        reply: None,
     }
 }
 

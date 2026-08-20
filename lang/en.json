@@ -33,6 +33,7 @@
   "tui.cast.send": "Send",
   "tui.cast.attach": "Attach a file",
   "tui.cast.compose": "Composer",
+  "tui.browser.actions.empty": "Add a Lua quick action in settings (⚙) to drive this browser.",
   "tui.cast.panel.keys": "Keys",
   "tui.cast.panel.actions": "Actions",
   "tui.cast.panel.target": "Target",
