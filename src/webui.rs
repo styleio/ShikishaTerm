@@ -2057,9 +2057,10 @@ function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
   // Global settings: a collapsible group whose children are the flat, self-named
-  // cards. Open while you're in it (like a workspace group), so its sections are
-  // one click away and the selected one is highlighted.
-  const gOpen = navGlobalOpen || sel.global;
+  // cards. Its ▸/▾ caret toggles it freely (unlike a workspace group, it is NOT
+  // forced open while a section is selected) — so it can be collapsed even while
+  // you're viewing a section, and it starts collapsed when you arrive via the gear.
+  const gOpen = navGlobalOpen;
   nav.append(el("button", {class:"navitem navgrouphead",
     onclick:() => { navGlobalOpen = !navGlobalOpen; render(); }},
     el("span", {class:"caret"}, gOpen ? "▾" : "▸"),
@@ -4169,14 +4170,28 @@ load().then(() => {
   }
   const wi = idx("addtab");
   if (wss[wi]) {
+    navGlobalOpen = false;
     sel = {ws:wi, tab:addTabTo(wss[wi]), global:false};
     render();
     const s = document.querySelector(".navitem.sel");
     if (s) s.scrollIntoView({block:"center"});
     return;
   }
+  // "Edit settings" (?gen=1), or an open with no workspace to focus, lands on the
+  // General group expanded. The sidebar gear (?ws=N, no gen) lands on the workspace
+  // it came from with General collapsed — press its ▸ to open it.
   const cur = idx("ws");
-  if (wss[cur]) { navOpen.add(cur); renderNav(); }
+  if (q.get("gen") === "1" || !wss[cur]) {
+    navGlobalOpen = true;
+    sel = {ws:(wss[cur] ? cur : sel.ws), tab:null, global:true, section:"basic"};
+  } else {
+    navGlobalOpen = false;
+    navOpen.add(cur);
+    sel = {ws:cur, tab:null, global:false};
+  }
+  render();
+  const s = document.querySelector(".navitem.sel");
+  if (s) s.scrollIntoView({block:"center"});
 });
 </script></body></html>
 "##;

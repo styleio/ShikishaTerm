@@ -2570,9 +2570,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // Settings: open inside our own window.
                         // Throwing it at an external browser would leave no way to
                         // tell which window belongs to whom.
-                        // The workspace being viewed rides along so its group opens expanded.
+                        // "Edit settings" wants the General group open (gen=1); the
+                        // workspace being viewed rides along too, so its group expands.
                         KeyCode::Char('e') => {
-                            let query = format!("&ws={ws_index}");
+                            let query = format!("&ws={ws_index}&gen=1");
                             flash = Some(
                                 match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, &query)
                                 {
