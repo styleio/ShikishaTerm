@@ -1913,7 +1913,7 @@ async function attachFile(file) {
     attachToast(T["attach.err.failed"] || "Attach failed", true);
   }
 }
-let castDock = null, castBar = null, castInput = null, castKeysEl = null;
+let castDock = null, castBar = null, castInput = null, castKeysEl = null, castAttEl = null;
 // The active tab the 🎯 target panel was last built for, so __state can rebuild it
 // when the operator changes (its enabled/disabled gate depends on that tab).
 let lastCastActive = null;
@@ -2021,11 +2021,16 @@ function panelContent(p) {
   if (p === "target") { return buildTargetPanel(); }
   return null;
 }
+// 📎 attaches a file FOR AN AI — it's saved and its path dropped into the
+// composer to hand over. While the composer feeds a browser page (window native
+// or phone relay) a path is just text typed into the site, so the button hides.
+function syncAttach() { if (castAttEl) castAttEl.style.display = drivingBrowser() ? "none" : ""; }
 // (Re)fill the panel area: the fixed switcher (only when there's more than one
 // choice) plus the current panel's content. The switcher sits outside the
 // scrolling content, so it stays put while the chips/keys scroll under it.
 function renderPanel() {
   if (!castPanelEl) return;
+  syncAttach();
   const opts = panelOptions();
   if (opts.indexOf(castPanel) < 0) castPanel = opts[0];
   castPanelEl.textContent = "";
@@ -2072,7 +2077,7 @@ function ensureBar() {
   const fileIn = el("input", {type:"file", accept:"image/*,application/pdf",
     style:"display:none",
     onchange:(e) => { const f = e.target.files && e.target.files[0]; if (f) attachFile(f); e.target.value = ""; }});
-  const att = el("button", {class:"castbtn", title: T["tui.cast.attach"] || "Attach a file",
+  castAttEl = el("button", {class:"castbtn", title: T["tui.cast.attach"] || "Attach a file",
     onclick:() => fileIn.click()}, "📎");
   // ⌫ and Send keep the input field's focus (= the keyboard) in place. If
   // the default pointerdown action weren't prevented, focus would shift to
@@ -2082,7 +2087,7 @@ function ensureBar() {
   // Attach works on both now (phone over HTTP, window over ipc). The backspace
   // key is only useful on the phone, whose on-screen keyboard the composer
   // sometimes covers; the window has a real keyboard. el() skips nulls.
-  castBar = el("div", {id:"castbar"}, att, fileIn, (REMOTE ? bs : null), castInput, send, close);
+  castBar = el("div", {id:"castbar"}, castAttEl, fileIn, (REMOTE ? bs : null), castInput, send, close);
   // One switchable panel above the input row (keys / actions / target), chosen by
   // a fixed switcher, instead of stacking every row at once. Default: keys on the
   // phone, actions on the desktop.
@@ -2104,7 +2109,9 @@ function ensureBar() {
   // Grow the field with its content (up to the CSS max-height, then it scrolls).
   castInput.addEventListener("input", growCastInput);
   // Paste an image straight into the composer — it's saved and its path inserted.
+  // Not while feeding a browser (same reason the 📎 button hides there).
   castInput.addEventListener("paste", (e) => {
+    if (drivingBrowser()) return;
     const fs = e.clipboardData && e.clipboardData.files;
     if (fs && fs.length) { attachFile(fs[0]); e.preventDefault(); }
   });
@@ -2120,7 +2127,7 @@ function ensureBar() {
 }
 // Show the sub-input bar (auxiliary key row + input field). Never focused
 // automatically — the keyboard never pops up uninvited. It only opens when the user taps the input field
-function showDock() { ensureBar(); castDock.style.display = "flex"; }
+function showDock() { ensureBar(); syncAttach(); castDock.style.display = "flex"; }
 function closeBar() { if (castDock) castDock.style.display = "none"; if (castInput) castInput.blur(); if (fab) fab.style.display = ""; }
 function sendBar() {
   if (!castInput) return;
