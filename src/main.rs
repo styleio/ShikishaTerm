@@ -2086,7 +2086,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // AI tab (driven by relaying prompts). INDEX / settings / unknown panes
             // can't be operated.
             let (is_browser, target_id) = match layout.get(target.wrapping_sub(1)) {
-                Some(Pane::Browser { name, .. }) => (true, name.clone()),
+                // Drive by the browser's KEY, not its display name: the display name
+                // may be localized ("ブラウザ") while browser_* resolves by key, so
+                // passing the name yields "that browser isn't open".
+                Some(Pane::Browser { key, .. }) => (true, key.clone()),
                 Some(Pane::Session(s)) if Some(*s) != session_at(&layout, active) => {
                     match tabs.get(*s) {
                         Some(t) => (false, t.id.clone().unwrap_or_else(|| t.title.clone())),
