@@ -1962,8 +1962,9 @@ let luaMode = "run";
 // The composer is ONE box holding TWO documents: the ordinary draft (text
 // bound for the page/terminal — on the phone it's the only way to type into
 // a browser) and 📼's Lua sheet (recorded steps; editable, runnable,
-// copyable). Which one is loaded follows the active panel, so recording can
-// never eat the input box. Same rule on every surface.
+// copyable). The sheet is loaded ONLY in ▶ run mode. While ⏺ recording, the
+// composer stays the ordinary input — typing into the page keeps working AND
+// that very input is what gets recorded. Same rule on every surface.
 let luaSheet = "", castDraft = "", castSlot = "draft";
 // The tab the "operate" (🎯) panel is aimed at, or null. Step 1 = choosing it;
 // the operate engine (the active AI writes Lua to drive it) is layered on next.
@@ -2103,31 +2104,43 @@ function buildLuaPanel() {
   };
   const hint = luaNote ? luaNote.text
     : luaMode === "rec"
-      ? (T["tui.cast.lua.rechint"] || "Operate the page — each step lands here as Lua.")
-      : (T["tui.cast.lua.runhint"] || "Type or paste Lua, then press Run.");
+      ? (T["tui.cast.lua.rechint"] || "Type and tap as usual — every step is recorded. ▶ shows the Lua.")
+      : (T["tui.cast.lua.runhint"] || "The recorded Lua — edit it, Run it, 📋 copies it.");
   const tone = luaNote ? (luaNote.bad ? ";color:var(--danger)" : ";color:var(--brand)") : "";
   wrap.append(
     mk("rec", "⏺", T["tui.cast.lua.rec"] || "Record"),
     mk("run", "▶", T["tui.cast.lua.run"] || "Run"),
+    el("button", {class:"castbtn", style:"flex:none",
+      title: T["tui.cast.lua.copy"] || "Copy the recorded Lua",
+      onclick: copySheet}, "📋"),
     el("span", {class:"hint", style:"flex:1 1 0;min-width:0" + tone, title: hint}, hint));
   return wrap;
 }
-// 📼 copy: the composer's Lua to the clipboard. navigator.clipboard needs a
-// secure context, which the phone (plain http) doesn't have — fall back to the
-// selection route there.
-function copyComposer() {
-  if (!castInput || !castInput.value) return;
+// 📋: the Lua sheet to the clipboard (whether or not it's currently loaded in
+// the composer). navigator.clipboard needs a secure context, which the phone
+// (plain http) doesn't have — fall back to a temporary selection there.
+function copySheet() {
+  const text = castSlot === "lua" && castInput ? castInput.value : luaSheet;
+  if (!text) return;
   const done = () => luaFlash("📋 " + (T["tui.cast.lua.copied"] || "Copied"));
   const fallback = () => {
-    try { castInput.focus(); castInput.select(); document.execCommand("copy"); done(); } catch (e) {}
+    try {
+      const tmp = el("textarea", {style:"position:fixed;left:-9999px;top:0"});
+      tmp.value = text;
+      document.body.append(tmp);
+      tmp.select();
+      document.execCommand("copy");
+      tmp.remove();
+      done();
+    } catch (e) {}
   };
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(castInput.value).then(done, fallback);
+    navigator.clipboard.writeText(text).then(done, fallback);
   } else { fallback(); }
 }
 // A recorded step arrived (window: eval'd in; phone: over /ws-state). It goes
-// on the Lua sheet — visible right away if 📼 is showing, quietly collected
-// otherwise (e.g. the phone is on ⌨️ typing into the very page being recorded).
+// on the Lua sheet (shown in ▶ run mode); while ⏺ recording, the panel's hint
+// echoes the newest line so there's live proof the recorder is listening.
 window.__recorded = function (line) {
   try {
     ensureBar();
@@ -2138,6 +2151,7 @@ window.__recorded = function (line) {
       growCastInput();
     } else {
       luaSheet += (luaSheet && !luaSheet.endsWith("\n") ? "\n" : "") + line + "\n";
+      if (castPanel === "lua") luaFlash("⏺ " + line);
     }
   } catch (e) {}
 };
@@ -2156,12 +2170,12 @@ function syncAttach() { if (castAttEl) castAttEl.style.display = drivingBrowser(
 // Edits made while a slot is loaded are stashed when switching away.
 function syncComposerSlot() {
   if (!castInput) return;
-  const want = castPanel === "lua" ? "lua" : "draft";
+  const want = (castPanel === "lua" && luaMode === "run") ? "lua" : "draft";
   if (want === castSlot) return;
   if (castSlot === "lua") { luaSheet = castInput.value; } else { castDraft = castInput.value; }
   castInput.value = want === "lua" ? luaSheet : castDraft;
   castInput.placeholder = want === "lua"
-    ? (T["tui.cast.lua.ph"] || "Lua lands here as you operate — edit, run, copy")
+    ? (T["tui.cast.lua.ph"] || "Recorded Lua appears here — edit, Run, or write your own")
     : (T["tui.cast.type.ph"] || "Type here to send");
   castSlot = want;
   growCastInput();
@@ -2170,9 +2184,11 @@ function syncComposerSlot() {
 // is a deliverable, not something to send), Run in run mode, plain Send elsewhere.
 function syncSendLabel() {
   if (!castSendEl) return;
+  // Only ▶ run mode takes the button over; ⏺ recording leaves Send as the
+  // ordinary page/terminal input (that input is exactly what gets recorded).
   castSendEl.textContent =
-    castPanel === "lua"
-      ? (luaMode === "rec" ? (T["tui.cast.lua.copy"] || "Copy") : (T["tui.cast.lua.exec"] || "Run"))
+    castPanel === "lua" && luaMode === "run"
+      ? (T["tui.cast.lua.exec"] || "Run")
       : (T["tui.cast.send"] || "Send");
 }
 // (Re)fill the panel area: the fixed switcher (only when there's more than one
@@ -2286,11 +2302,11 @@ function closeBar() { if (castDock) castDock.style.display = "none"; if (castInp
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
-  // 📼 owns the button while its panel is up: Copy the recorded Lua, or Run
-  // the composer's Lua on the shown page. The text stays put in both cases —
-  // it's a document being built/iterated, not a message being fired off.
-  if (castPanel === "lua") {
-    if (luaMode === "rec") { copyComposer(); return; }
+  // 📼's ▶ run mode owns the button: Run the sheet on the shown page. The
+  // text stays put — it's a document being iterated, not a message. In ⏺
+  // record mode the button is NOT taken over: Send keeps feeding the page
+  // (and that injection is what the recorder captures).
+  if (castPanel === "lua" && luaMode === "run") {
     if (t) { luaNote = null; renderPanel(); send({kind:"runlua", code: t}); }
     return;
   }
