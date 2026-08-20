@@ -4000,14 +4000,24 @@ function openExt(dest) {
 }
 
 // If the URL has addtab=<workspace-index>, start with one tab already added
-// to that workspace after loading (this is where the tab bar's + comes from)
+// to that workspace after loading (this is where the tab bar's + comes from).
+// ws=<workspace-index> only expands that group (the gear passes the workspace
+// being viewed, so the settings open onto the one you came from).
+// Careful: Number(null) is 0, so a missing parameter must be rejected as text
+// first — otherwise every plain open would start editing workspace 0
 load().then(() => {
-  const wi = Number(new URLSearchParams(location.search).get("addtab"));
-  if (!Number.isInteger(wi) || !wss[wi]) return;
-  sel = {ws:wi, tab:addTabTo(wss[wi]), global:false};
-  render();
-  const s = document.querySelector(".navitem.sel");
-  if (s) s.scrollIntoView({block:"center"});
+  const q = new URLSearchParams(location.search);
+  const idx = k => /^\d+$/.test(q.get(k) || "") ? Number(q.get(k)) : -1;
+  const wi = idx("addtab");
+  if (wss[wi]) {
+    sel = {ws:wi, tab:addTabTo(wss[wi]), global:false};
+    render();
+    const s = document.querySelector(".navitem.sel");
+    if (s) s.scrollIntoView({block:"center"});
+    return;
+  }
+  const cur = idx("ws");
+  if (wss[cur]) { navOpen.add(cur); renderNav(); }
 });
 </script></body></html>
 "##;

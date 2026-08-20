@@ -2132,9 +2132,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
         // The sidebar gear. Opens settings from any tab (the menu "e" key only
         // fires while INDEX is in view, so the gear needs its own path).
+        // The workspace being viewed rides along so its group opens expanded.
         if surface.take_open_settings() {
+            let query = format!("&ws={ws_index}");
             flash = Some(
-                match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, "") {
+                match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, &query) {
                     Ok(()) => {
                         active = settings_active(&layout);
                         settings_open = true;
@@ -2525,9 +2527,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // Settings: open inside our own window.
                         // Throwing it at an external browser would leave no way to
                         // tell which window belongs to whom.
+                        // The workspace being viewed rides along so its group opens expanded.
                         KeyCode::Char('e') => {
+                            let query = format!("&ws={ws_index}");
                             flash = Some(
-                                match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, "")
+                                match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, &query)
                                 {
                                     Ok(()) => {
                                         // Once opened, switch to that tab.
