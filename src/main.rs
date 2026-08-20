@@ -458,6 +458,13 @@ impl WinSurface {
         std::mem::take(&mut self.chats)
     }
 
+    /// Push the current quick actions into the shell page so a settings edit
+    /// reflects live — the window isn't reloaded on a config change. (The phone
+    /// re-reads them on its next page load, i.e. when it returns to the board.)
+    fn push_actions(&self, actions_json: &str) {
+        let _ = self.win.eval(&format!("window.__setActions({actions_json});"));
+    }
+
     fn take_events(&mut self, active_tab: Option<&Tab>) {
         use crate::browser::Ev;
         for ev in self.win.drain() {
@@ -1281,6 +1288,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     note.push_str(&i18n::t("msg.lang_restart"));
                 }
                 flash = Some(format!(">> {note}"));
+                // A settings save may have changed the quick actions — push them
+                // into the shell so the composer updates without a reload.
+                surface.push_actions(&crate::shell::actions_json());
             }
         }
 

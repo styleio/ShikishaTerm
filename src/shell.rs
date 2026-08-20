@@ -535,7 +535,11 @@ const MENU_WORDS = {{MENU_WORDS}};
 const CAST_KEYS = {{CAST_KEYS}};
 // Quick actions for the sub-input bar: [{label, text, lua}]. text!=null = insert
 // that string on click (beginner); lua=true = fire server-side Lua (advanced).
+// ACTIONS is the value baked in at page load; curActions is the live copy the bar
+// renders, swapped by __setActions when the config changes (so a settings edit
+// reflects without reloading the window).
 const ACTIONS = {{ACTIONS}};
+let curActions = (typeof ACTIONS !== "undefined" && ACTIONS) ? ACTIONS : [];
 // The access token is never baked into the page. On first pair it rides in the
 // URL (?t=…, straight from the QR); we lift it into sessionStorage and then
 // immediately strip it from the address bar and this history entry with
@@ -1752,7 +1756,7 @@ function buildCastKeys() {
 // Lua actions are carried but not fired yet, so only text ones are shown for now
 // (no dead buttons). Returns null when there are none, so the row is omitted.
 function buildActions() {
-  const items = (typeof ACTIONS !== "undefined" ? ACTIONS : []).filter(a => a && a.text != null);
+  const items = (curActions || []).filter(a => a && a.text != null);
   if (!items.length) return null;
   const row = el("div", {id:"castactions"});
   items.forEach(a => {
@@ -1771,6 +1775,14 @@ function buildActions() {
   });
   return row;
 }
+// The config changed (a settings save): swap in the new actions and re-render the
+// panel if it's the one showing, so an edit reflects without reloading the window.
+window.__setActions = function (arr) {
+  try {
+    curActions = arr || [];
+    if (castPanel === "actions" && castDock && castDock.style.display === "flex") renderPanel();
+  } catch (e) {}
+};
 // A short-lived toast for attach results (client-side, independent of S.flash
 // so a state push can't wipe it mid-message).
 function attachToast(text, bad) {
@@ -2357,7 +2369,7 @@ pub const MENU: [(&str, &str); 7] = [
 /// The sub-input bar's quick actions, as the shell wants them: `text` is the
 /// string to insert for a plain action, or null for a Lua one (whose source
 /// stays server-side — the shell fires it, it never holds the code).
-fn actions_json() -> String {
+pub(crate) fn actions_json() -> String {
     let configured = crate::config::actions();
     let list: Vec<serde_json::Value> = if configured.is_empty() {
         // A localized starter set, so the bar isn't empty out of the box (this was
