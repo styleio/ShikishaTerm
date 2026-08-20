@@ -61,6 +61,7 @@
   "settings.actions.text_ph": "Text to insert…",
   "settings.actions.add": "Add an action",
   "settings.actions.up": "Move up",
+  "settings.actions.lint_blocked": "A quick action's Lua has a syntax error — fix the highlighted one before saving.",
   "settings.operate.title": "Operate a tab (🎯)",
   "settings.operate.hint": "Limits for when one tab drives another (the 🎯 target bar). They are a runaway safety net; the operator itself decides when the job is done.",
   "settings.operate.max_rounds": "Max turns",

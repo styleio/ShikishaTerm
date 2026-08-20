@@ -173,6 +173,21 @@ fn fetch_opts_json(opts: &Option<Table>) -> serde_json::Value {
 /// don't exist in the environment (`_ENV` is replaced, with no __index
 /// fallback to globals). Returns nil on success, or an error string on
 /// failure (so the orchestrator can relay it back to the AI)
+/// Syntax-check a Lua snippet without running it — the same compile-only check
+/// `shikisha.lint` exposes to automations, callable off the engine (the settings
+/// server lints a quick action's Lua before letting it be saved). Returns the
+/// compiler's message, or None if it parses. Catches broken syntax only, not
+/// calls to names that don't exist at run time (Lua resolves those lazily).
+pub fn lint_lua(code: &str) -> Option<String> {
+    let lua = mlua::Lua::new();
+    // Name the chunk "action" so a syntax error reads cleanly, instead of citing
+    // this Rust file:line (mlua's default names the chunk after the caller).
+    match lua.load(code).set_name("action").into_function() {
+        Ok(_) => None,
+        Err(e) => Some(e.to_string()),
+    }
+}
+
 fn run_scoped(lua: &mlua::Lua, caps: &Caps, browser: &str, code: &str) -> mlua::Result<Value> {
     let env = build_sandbox_env(lua, caps, browser)?;
     match lua.load(code).set_name("ai-lua").set_environment(env).exec() {
@@ -2416,6 +2431,19 @@ mod tests {
 
     /// Tests touching data/last-rally.lua share the same file, so serialize them
     static RALLY_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn lint_lua_flags_broken_syntax_only() {
+        // Sound code parses (nil), including calls to names that won't exist at run
+        // time — lint is syntax-only, so undefined-name misuse isn't its job.
+        assert!(super::lint_lua("local x = 1 return x + 1").is_none());
+        assert!(super::lint_lua("shikisha.draft_to_tab(tab.index, 'hi')").is_none());
+        assert!(super::lint_lua("os.date('%Y')").is_none());
+        // Broken syntax is reported.
+        assert!(super::lint_lua("if true then").is_some());
+        assert!(super::lint_lua("local = = 3").is_some());
+        assert!(super::lint_lua("send_to_tab(tab,").is_some());
+    }
 
     fn ctx(index: usize, output: &str) -> TabCtx {
         TabCtx {

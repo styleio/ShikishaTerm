@@ -844,6 +844,24 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // Syntax-check a Lua snippet ({"code":"…"}) so the settings UI can refuse
+        // to save a quick action whose Lua is broken. Compile-only, never runs it.
+        ("POST", "/api/lint") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let code = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("code").and_then(|c| c.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            let resp = match crate::hooks::lint_lua(&code) {
+                None => serde_json::json!({ "ok": true }),
+                Some(e) => serde_json::json!({ "ok": false, "error": e }),
+            };
+            req.respond(json_resp(resp))?;
+        }
         // Recent rally history (newest first). Returns the id plus an excerpt to help a human tell them apart
         ("GET", "/api/rally/list") => {
             let mut arr: Vec<serde_json::Value> = Vec::new();
@@ -2643,10 +2661,35 @@ function providersCard() {
 // Notification destinations (Slack / Telegram). The sensitive webhook/token is
 // stored straight into the secret store (like a provider's api_key) — the user
 // never has to register a secret by hand first — and config keeps only "@name".
+// Broken-Lua guard for quick actions. `actionErrors` maps an action object to its
+// last lint message; the settings server compiles the Lua (/api/lint), and a save
+// is refused until every Lua action parses. Keyed by object so reordering is safe.
+const actionErrors = new Map();
+async function lintLuaCode(code) {
+  try {
+    const r = await fetch("/api/lint", {method:"POST",
+      headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
+      body: JSON.stringify({code})});
+    const j = await r.json();
+    return j.ok ? null : (j.error || "Lua error");
+  } catch (e) { return null; }  // a network hiccup shouldn't block saving
+}
+async function lintAction(a) {
+  if (!a || !a.lua || !(a.body || "").trim()) { actionErrors.delete(a); return null; }
+  const err = await lintLuaCode(a.body);
+  if (err) actionErrors.set(a, err); else actionErrors.delete(a);
+  return err;
+}
+// Lint every Lua action; resolves true only when all of them parse. Gates saving.
+async function actionsLintClean() {
+  await Promise.all((current.actions || []).map(lintAction));
+  return (current.actions || []).every(a => !actionErrors.has(a));
+}
+
 // Quick actions for the sub-input bar. An editable list saved into config.actions
-// (the main save() already writes `current` wholesale). Text-only for now — each
-// action inserts its text into the composer; a Lua-per-action toggle arrives with
-// Lua firing. Empty-label rows are dropped on save (see payload()).
+// (the main save() already writes `current` wholesale). Each action inserts its
+// text into the composer, or — with the Lua toggle — runs Lua on tap; that Lua is
+// syntax-checked before it can be saved. Empty-label rows are dropped on save.
 function actionsCard() {
   current.actions = current.actions || [];
   const listBox = el("div", {id:"actionslist"});
@@ -2671,10 +2714,19 @@ function actionsCard() {
       const up = el("button", {class:"quiet", style:"flex:none", title:T["settings.actions.up"], onclick:() => {
         if (i > 0) { const t = current.actions[i-1]; current.actions[i-1] = current.actions[i]; current.actions[i] = t; refreshSave(); draw(); } }}, "↑");
       const del = el("button", {class:"quiet", style:"flex:none", onclick:() => {
-        current.actions.splice(i, 1); refreshSave(); draw(); }}, T["common.delete"]);
+        current.actions.splice(i, 1); actionErrors.delete(a); refreshSave(); draw(); }}, T["common.delete"]);
+      // A full-width line under the row shows this action's Lua syntax error, if any.
+      const errEl = el("div", {class:"hint",
+        style:"flex-basis:100%;color:var(--danger);white-space:pre-wrap;font-family:ui-monospace,monospace"});
+      const showErr = () => { errEl.textContent = actionErrors.get(a) || ""; };
+      showErr();
+      if (a.lua) {
+        lintAction(a).then(showErr);   // lint on render so an existing break shows at once
+        bodyIn.addEventListener("blur", () => lintAction(a).then(() => { showErr(); refreshSave(); }));
+      }
       listBox.append(el("div", {class:"row",
         style:"align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap"},
-        labelIn, bodyIn, luaLbl, up, del));
+        labelIn, bodyIn, luaLbl, up, del, errEl));
     });
   };
   const addBtn = el("button", {class:"primary", onclick:() => {
@@ -3913,6 +3965,15 @@ async function load() {
 }
 
 async function save() {
+  // Refuse to write a quick action whose Lua doesn't even parse (compile-checked
+  // server-side). Jump to the actions card so the red errors are in view.
+  if ((current.actions || []).some(a => a.lua)) {
+    if (!(await actionsLintClean())) {
+      if (sel.global) { sel.section = "actions"; render(); }
+      result(T["settings.actions.lint_blocked"], true);
+      return;
+    }
+  }
   const btn = document.getElementById("savebtn");
   btn.disabled = true;
   btn.classList.remove("dirty");

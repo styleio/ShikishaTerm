@@ -295,6 +295,7 @@ end
 |---|---|
 | `tab.output` / `tab.model` / `tab.name` | イベント発生タブの情報 |
 | `shikisha.send_to_tab(tab, text)` | 他タブへ送信＋自動実行。tabは**タブ名**または番号（名前推奨: 並べ替えで壊れない） |
+| `shikisha.draft_to_tab(tab, text)` | 送信せずにタブの入力欄へ`text`を置く。人が確認して自分で送る。AI CLI限定（シェル不可） |
 | `shikisha.notify(dest, text)` | 登録済みSlack/Telegramへ通知（登録先限定） |
 | `shikisha.log(text)` | logs/ への記録 |
 | `shikisha.get_var(k)` / `set_var(k, v)` | フック間共有変数 |

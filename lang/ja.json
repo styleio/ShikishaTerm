@@ -61,6 +61,7 @@
   "settings.actions.text_ph": "入力する文章…",
   "settings.actions.add": "アクションを追加",
   "settings.actions.up": "上へ",
+  "settings.actions.lint_blocked": "クイックアクションのLuaに構文エラーがあります。赤字の箇所を直してから保存してください。",
   "settings.operate.title": "タブを操作（🎯）",
   "settings.operate.hint": "あるタブが別タブを操作するとき（🎯対象バー）の上限です。暴走の安全網であり、完了の判断は操作役AI自身が行います。",
   "settings.operate.max_rounds": "最大ターン数",

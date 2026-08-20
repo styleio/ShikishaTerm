@@ -319,6 +319,7 @@ etc.) is beginner sugar and expands to the equivalent Lua internally.
 |---|---|
 | `tab.output` / `tab.model` / `tab.name` | Info about the tab that fired the event |
 | `shikisha.send_to_tab(tab, text)` | Send to another tab + run it. `tab` is a **tab name** or number (name preferred: reordering won't break it) |
+| `shikisha.draft_to_tab(tab, text)` | Place `text` in the tab's input **without sending** — a person reviews and sends it. An AI CLI only; never a shell |
 | `shikisha.notify(dest, text)` | Notify a registered Slack/Telegram (registered targets only) |
 | `shikisha.log(text)` | Write to `logs/` |
 | `shikisha.get_var(k)` / `set_var(k, v)` | Variables shared across hooks |
