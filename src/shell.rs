@@ -106,7 +106,8 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
      touch-action:none stops the default scroll so finger movement can be
      forwarded as a raw motion trail instead */
   #cast { position:absolute; inset:0; width:100%; height:100%;
-    object-fit:contain; object-position:top center; background:#000; touch-action:none; }
+    object-fit:contain; object-position:top center; background:#000; touch-action:none;
+    transform-origin:0 0; }
   /* Trackpad-style synthetic cursor: a Windows-like arrow whose tip is the
      click point. The negative margin aligns the arrow tip (SVG coords 2,1)
      exactly with left/top */
@@ -1550,6 +1551,20 @@ if (REMOTE) {
 // them as two separate one-directional sockets means neither one can
 // clog the other. Coordinates are sent as a 0..1 fraction, independent of the device's screen size
 let castWs = null, castIn = null, castCtx = null, castBound = false;
+// The screen shape already reported to the PC (it re-shapes the page's
+// viewport to match, so a portrait phone gets a full screen, not a
+// letterboxed strip). Width-keyed: the keyboard opening only changes the
+// height, and re-shaping the page for that would make it jump around
+let castShaped = false, shapeW = 0, shapeT = 0;
+function sendShape(force) {
+  const cv = document.getElementById("cast");
+  const w = Math.round(cv.clientWidth), h = Math.round(cv.clientHeight);
+  if (!w || !h) return false;
+  if (!force && w === shapeW) return true;
+  if (!sendIn({kind:"inject", what:"view", w:w, h:h})) return false;
+  shapeW = w;
+  return true;
+}
 function castStart() {
   if (!REMOTE || castWs) return;
   const cv = document.getElementById("cast");
@@ -1567,7 +1582,14 @@ function castStart() {
         // If a frame changes the canvas dimensions, recompute the cursor
         // position too (before the first frame it defaults to 300x150, which throws things off)
         if (castMode) posCursor();
+        // A new frame shape = a different page is being cast (tab switch) or
+        // its window was resized — report our screen shape again. Re-reporting
+        // is idempotent on the PC side, so this can't ping-pong
+        castShaped = false;
       }
+      // Report the screen shape only once a frame exists: the PC computes
+      // the new viewport from the current one, so it must have seen a frame
+      if (!castShaped) castShaped = sendShape(true);
       castCtx.drawImage(bmp, 0, 0);
       if (bmp.close) bmp.close();
     } catch (err) {}
@@ -1577,9 +1599,17 @@ function castStart() {
   castIn.onclose = () => { castIn = null; };
   bindCastInput(cv);
 }
+// Rotating the phone changes the width — tell the PC the new shape (debounced)
+window.addEventListener("resize", () => {
+  if (!castWs) return;
+  clearTimeout(shapeT);
+  shapeT = setTimeout(() => { if (castWs) sendShape(false); }, 300);
+});
 function castStop() {
   if (castWs) { castWs.close(); castWs = null; }
   if (castIn) { castIn.close(); castIn = null; }
+  castShaped = false; shapeW = 0;
+  zoomReset();
   // Only tear down browser CONTROL mode. On a terminal tab castMode is already
   // false, and its sub-input bar must survive the per-update __state redraws
   // (this runs on every terminal tab, once per state push) — closing it here
@@ -1587,7 +1617,27 @@ function castStop() {
   if (castMode) exitCast();
 }
 function sendIn(o) {
-  if (castIn && castIn.readyState === 1) castIn.send(JSON.stringify(o));
+  if (castIn && castIn.readyState === 1) { castIn.send(JSON.stringify(o)); return true; }
+  return false;
+}
+// ── Pinch zoom of the relay view ──────────────
+// Display-side magnification only (the page itself is untouched): a CSS
+// transform on the canvas. castRect() reads getBoundingClientRect(), which
+// already reflects transforms, so cursor/tap coordinate math needs nothing extra
+let zs = 1, zx = 0, zy = 0;
+function applyZoom() {
+  const cv = document.getElementById("cast");
+  if (zs <= 1.001) { zs = 1; zx = 0; zy = 0; cv.style.transform = ""; return; }
+  // Keep the view inside the canvas box: no gap may open on any edge
+  const mw = cv.clientWidth, mh = cv.clientHeight;
+  zx = Math.min(0, Math.max(mw - mw * zs, zx));
+  zy = Math.min(0, Math.max(mh - mh * zs, zy));
+  cv.style.transform = "translate(" + zx + "px," + zy + "px) scale(" + zs + ")";
+}
+function zoomReset() {
+  zs = 1; zx = 0; zy = 0;
+  const cv = document.getElementById("cast");
+  if (cv) cv.style.transform = "";
 }
 // Returns the letterboxed content rect (from object-fit:contain) in client
 // coordinates. The image uses object-position:top center, so it's
@@ -1625,14 +1675,15 @@ function ensureCursor() {
     document.getElementById("main").append(cursorEl);
   }
 }
-// Show a ripple at the click location (confirms the tap registered)
+// Show a ripple at the click location (confirms the tap registered).
+// Computed from castRect() so it lands right even while pinch-zoomed
 function spawnRipple() {
   const cv = document.getElementById("cast");
-  const cw = cv.width || 1, ch = cv.height || 1, mw = cv.clientWidth, mh = cv.clientHeight;
-  const s = Math.min(mw / cw, mh / ch), dw = cw * s, dh = ch * s, ox = (mw - dw) / 2;
+  const m = document.getElementById("main").getBoundingClientRect();
+  const c = castRect(cv);
   const r = el("div", {class:"ripple"});
-  r.style.left = (cv.offsetLeft + ox + cx * dw) + "px";
-  r.style.top = (cv.offsetTop + cy * dh) + "px";
+  r.style.left = (c.ox - m.left + cx * c.dw) + "px";
+  r.style.top = (c.oy - m.top + cy * c.dh) + "px";
   document.getElementById("main").append(r);
   setTimeout(() => r.remove(), 480);
 }
@@ -1887,17 +1938,14 @@ function sendBar() {
   castInput.focus();
 }
 // The cursor is absolutely positioned within #main. Compute #cast's content
-// position (contain, top-aligned) relative to #main, independent of the viewport or the top bar's height
+// position relative to #main via castRect() — getBoundingClientRect() already
+// reflects the pinch-zoom transform, so the arrow stays glued to the page
 function posCursor() {
   const cv = document.getElementById("cast");
-  const cw = cv.width || 1, ch = cv.height || 1;
-  const mw = cv.clientWidth, mh = cv.clientHeight;
-  const s = Math.min(mw / cw, mh / ch);
-  const dw = cw * s, dh = ch * s;
-  const ox = (mw - dw) / 2;   // horizontally centered
-  // Add the canvas's own position (offset down by the bar) to convert into #main-relative coordinates
-  cursorEl.style.left = (cv.offsetLeft + ox + cx * dw) + "px";
-  cursorEl.style.top = (cv.offsetTop + cy * dh) + "px";   // top-aligned vertically (oy=0)
+  const m = document.getElementById("main").getBoundingClientRect();
+  const c = castRect(cv);
+  cursorEl.style.left = (c.ox - m.left + cx * c.dw) + "px";
+  cursorEl.style.top = (c.oy - m.top + cy * c.dh) + "px";
 }
 // Once control mode is entered, keep the sub-input bar shown at all times
 // (so the auxiliary keys work without needing to press a button first)
@@ -1967,11 +2015,22 @@ const click = () => {
 function bindCastInput(cv) {
   if (castBound) return; castBound = true;
   const pts = new Map(); let lastTapT = 0, moved = false, startT = 0;
+  // A two-finger gesture starts undecided ("?") and commits to one meaning:
+  // fingers moving apart/together = pinch zoom; sliding in parallel = pan the
+  // zoomed view when magnified, otherwise scroll the page (the old behavior)
+  let gest = null, gd = 0, gmx = 0, gmy = 0;
+  const two = () => {
+    const a = [...pts.values()];
+    return { d: Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y),
+             mx: (a[0].x + a[1].x) / 2, my: (a[0].y + a[1].y) / 2 };
+  };
   cv.addEventListener("pointerdown", (e) => {
-    pts.set(e.pointerId, 1); try { cv.setPointerCapture(e.pointerId); } catch (x) {}
+    pts.set(e.pointerId, {x: e.clientX, y: e.clientY});
+    try { cv.setPointerCapture(e.pointerId); } catch (x) {}
     e.preventDefault();
+    if (pts.size === 2) { const t = two(); gest = "?"; gd = t.d; gmx = t.mx; gmy = t.my; }
     if (!castMode) { enterCast(); return; }   // the very first tap only enters control mode
-    if (pts.size >= 2) return;                 // two fingers means scroll
+    if (pts.size >= 2) return;                 // two fingers: zoom / pan / scroll
     startT = Date.now(); moved = false;
     if (Date.now() - lastTapT < 300) {         // tap-then-drag = grab
       dragging = true;
@@ -1980,9 +2039,36 @@ function bindCastInput(cv) {
   });
   cv.addEventListener("pointermove", (e) => {
     if (!castMode) return; e.preventDefault();
-    if (pts.size >= 2) {                        // two fingers: vertical movement becomes wheel scroll
-      const dy = e.movementY || 0;
-      if (dy) sendIn({kind:"inject", what:"wheel", x:cx, y:cy, dx:0, dy:-dy * 3});
+    const p = pts.get(e.pointerId);
+    if (p) { p.x = e.clientX; p.y = e.clientY; }
+    if (pts.size >= 2) {
+      const t = two();
+      if (gest === "?") {  // undecided: commit once the fingers clearly do one or the other
+        if (Math.abs(t.d - gd) > 14) gest = "zoom";
+        else if (Math.hypot(t.mx - gmx, t.my - gmy) > 14) gest = (zs > 1.001) ? "pan" : "scroll";
+        else return;
+      }
+      if (gest === "zoom") {
+        // Scale about the fingers' midpoint: the content point under it before
+        // the change must sit under it after (the standard pinch feel)
+        const ns = Math.min(5, Math.max(1, zs * (t.d / (gd || t.d))));
+        const rr = cv.getBoundingClientRect();
+        const ex = rr.left - zx, ey = rr.top - zy;   // the canvas's untransformed origin
+        const u = (gmx - ex - zx) / zs, v = (gmy - ey - zy) / zs;
+        zx = t.mx - ex - u * ns;
+        zy = t.my - ey - v * ns;
+        zs = ns;
+        applyZoom();
+        posCursor();
+      } else if (gest === "pan") {
+        zx += t.mx - gmx; zy += t.my - gmy;
+        applyZoom();
+        posCursor();
+      } else {                                  // "scroll": vertical movement becomes wheel scroll
+        const dy = t.my - gmy;
+        if (dy) sendIn({kind:"inject", what:"wheel", x:cx, y:cy, dx:0, dy:-dy * 6});
+      }
+      gd = t.d; gmx = t.mx; gmy = t.my;
       return;
     }
     const mx = e.movementX || 0, my = e.movementY || 0;
@@ -1995,6 +2081,7 @@ function bindCastInput(cv) {
   });
   const up = (e) => {
     pts.delete(e.pointerId);
+    if (pts.size < 2) gest = null;
     if (!castMode) return; e.preventDefault();
     if (pts.size >= 1) return;                  // another finger is still down
     if (dragging) { sendIn({kind:"inject", what:"mouse", phase:"released", x:cx, y:cy, down:false}); dragging = false; return; }

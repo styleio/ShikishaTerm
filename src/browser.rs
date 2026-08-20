@@ -285,6 +285,10 @@ pub enum Input {
     /// ctrl/alt can be composed from the fixed toggles in the auxiliary
     /// key row (e.g. Ctrl+C)
     Key { named: String, ctrl: bool, alt: bool },
+    /// The viewer's screen shape in CSS pixels. The page's viewport gets
+    /// re-shaped to the same aspect ratio (keeping the PC-side width) so a
+    /// portrait phone sees a full screen instead of a letterboxed strip
+    View { w: f64, h: f64 },
 }
 
 /// A navigation request sent to the browser.
@@ -436,6 +440,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                     named: v.get("named").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
                     ctrl: v.get("ctrl").and_then(|x| x.as_bool()).unwrap_or(false),
                     alt: v.get("alt").and_then(|x| x.as_bool()).unwrap_or(false),
+                },
+                "view" => Input::View {
+                    w: f("w").max(1.0),
+                    h: f("h").max(1.0),
                 },
                 _ => return None,
             };
@@ -1319,6 +1327,11 @@ fn run_window(
     // Screencasts. One per target. Frames only arrive while this is held
     let mut casts: std::collections::HashMap<Option<String>, cdp::Cast> =
         std::collections::HashMap::new();
+    // Each cast target's own (pre-override) viewport in CSS px. Held for the
+    // life of the cast so a phone rotating back and forth always re-shapes
+    // from the real size, and torn down (override cleared) with the cast
+    let mut naturals: std::collections::HashMap<Option<String>, (f64, f64)> =
+        std::collections::HashMap::new();
     // Basic-auth arming. One per target. Only answers 401s while this is held
     let mut auths: std::collections::HashMap<Option<String>, cdp::AuthArm> =
         std::collections::HashMap::new();
@@ -1560,6 +1573,16 @@ fn run_window(
                             }
                         }
                     } else if let Some(cast) = casts.remove(&to) {
+                        // Give the page its own shape back before the stream goes away
+                        if naturals.remove(&to).is_some() {
+                            if let Some(view) = target(&webview, &children, &to) {
+                                cdp::call(
+                                    &cdp::webview_of(view),
+                                    "Emulation.clearDeviceMetricsOverride",
+                                    "{}",
+                                );
+                            }
+                        }
                         cdp::stop(cast);
                     }
                 }
@@ -1609,6 +1632,33 @@ fn run_window(
                                     let params =
                                         serde_json::json!({ "type": "char", "text": s }).to_string();
                                     cdp::call(&wv, "Input.dispatchKeyEvent", &params);
+                                }
+                            }
+                            Input::View { w, h } => {
+                                // A phone reported its screen shape. Re-shape this page's
+                                // viewport to that aspect while keeping the PC-side width,
+                                // so the relay fills the phone's screen instead of leaving
+                                // the bottom black. Cleared when the cast ends. The first
+                                // report must come after a frame (cast_dims filled), which
+                                // the sender guarantees
+                                let (cw, ch) = cast_dims.get();
+                                if cw >= 1.0 && ch >= 1.0 {
+                                    let nat = *naturals.entry(to.clone()).or_insert((cw, ch));
+                                    let want_h = (nat.0 * (h / w).clamp(0.2, 3.0)).round();
+                                    if want_h > nat.1 * 1.02 {
+                                        cdp::call(
+                                            &wv,
+                                            "Emulation.setDeviceMetricsOverride",
+                                            &format!(
+                                                "{{\"width\":{},\"height\":{},\"deviceScaleFactor\":0,\"mobile\":false}}",
+                                                nat.0.round(),
+                                                want_h
+                                            ),
+                                        );
+                                    } else {
+                                        // e.g. rotated to landscape — the real shape is fine
+                                        cdp::call(&wv, "Emulation.clearDeviceMetricsOverride", "{}");
+                                    }
                                 }
                             }
                             Input::Key { named, ctrl, alt } => {
@@ -1670,6 +1720,11 @@ mod cdp {
         CallDevToolsProtocolMethodCompletedHandler, DevToolsProtocolEventReceivedEventHandler,
     };
     use windows::core::{HSTRING, PCWSTR};
+
+    /// Screencast parameters. maxHeight leaves headroom for a portrait-shaped
+    /// (phone-viewer) viewport, so tall frames aren't scaled down and blurred
+    const CAST_PARAMS: &str =
+        "{\"format\":\"jpeg\",\"quality\":60,\"maxWidth\":1600,\"maxHeight\":2400,\"everyNthFrame\":1}";
 
     /// What's needed to tear down a screencast (notifications only arrive while this is held)
     pub struct Cast {
@@ -1758,11 +1813,7 @@ mod cdp {
                 .add_DevToolsProtocolEventReceived(&handler, &mut token)
                 .ok()?;
             call(webview, "Page.enable", "{}");
-            call(
-                webview,
-                "Page.startScreencast",
-                "{\"format\":\"jpeg\",\"quality\":60,\"maxWidth\":1600,\"maxHeight\":1200,\"everyNthFrame\":1}",
-            );
+            call(webview, "Page.startScreencast", CAST_PARAMS);
             Some(Cast {
                 receiver,
                 token,
@@ -1899,11 +1950,7 @@ mod cdp {
     /// Force the current screen out as one frame (re-issues startScreencast).
     /// Used when a new viewer joins but the page is static and no new change is coming
     pub fn kick(webview: &ICoreWebView2) {
-        call(
-            webview,
-            "Page.startScreencast",
-            "{\"format\":\"jpeg\",\"quality\":60,\"maxWidth\":1600,\"maxHeight\":1200,\"everyNthFrame\":1}",
-        );
+        call(webview, "Page.startScreencast", CAST_PARAMS);
     }
 
     /// Stop the screencast and unsubscribe its notifications too
@@ -2036,6 +2083,28 @@ mod nav_tests {
         // Discard unknown instructions. Doing nothing is better than silently doing something else
         assert!(read(r#"{"kind":"go","what":"quit"}"#).is_none());
         assert!(read(r#"{"kind":"go"}"#).is_none());
+    }
+
+    /// A phone reporting its screen shape parses into a View input, and a
+    /// nonsense size can never divide by zero downstream (floors at 1)
+    #[test]
+    fn a_viewer_screen_shape_parses() {
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"kind":"inject","what":"view","w":390,"h":780}"#).unwrap();
+        match parse_intent(&v) {
+            Some(Ev::Inject { input: Input::View { w, h }, .. }) => {
+                assert_eq!((w, h), (390.0, 780.0));
+            }
+            other => panic!("画面の形が読めていない: {other:?}"),
+        }
+        let z: serde_json::Value =
+            serde_json::from_str(r#"{"kind":"inject","what":"view","w":0,"h":-5}"#).unwrap();
+        match parse_intent(&z) {
+            Some(Ev::Inject { input: Input::View { w, h }, .. }) => {
+                assert!(w >= 1.0 && h >= 1.0, "ゼロ割りの芽: {w}x{h}");
+            }
+            other => panic!("画面の形が読めていない: {other:?}"),
+        }
     }
 
     /// The workspace button and the model-chat box parse into their own intents,
