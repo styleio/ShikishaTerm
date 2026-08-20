@@ -342,6 +342,23 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("openws") => Ev::OpenWs,
         Some("stop") => Ev::Stop,
         Some("remotecut") => Ev::RemoteCut,
+        // A file pasted/attached in the desktop composer. Saved beside the active
+        // tab; the result is handed back by eval-ing window.__attachDone(id, …).
+        // (The phone uses the /api/attach HTTP route instead, so this window-only
+        // intent is never accepted from afar.)
+        Some("attach") => Ev::Attach {
+            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
+            name: v
+                .get("name")
+                .and_then(|x| x.as_str())
+                .unwrap_or("file")
+                .to_string(),
+            data: v
+                .get("data")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        },
         Some("scroll") => Ev::Scroll {
             // A wheel tick or two from the window; up to a tall phone's whole
             // screen (≈ one row per tick) when the pager turns a page.
@@ -500,6 +517,11 @@ pub enum Ev {
     /// and drop the open connections. Window-only — a phone can't disconnect
     /// itself (allowed_from_afar leaves it on the reject side).
     RemoteCut,
+    /// A file attached in the desktop composer. `id` correlates the async reply
+    /// (`window.__attachDone(id, …)`), `name` is the declared filename, `data` is
+    /// the base64 bytes. Saved beside the active tab. Window-only — the phone
+    /// attaches over the /api/attach HTTP route, so this never comes from afar.
+    Attach { id: u64, name: String, data: String },
     /// The wheel was turned (positive = scroll back into the log, negative
     /// = return to the present). The number is a count of ticks.
     /// `row`/`col` is the cell it was over (needed to pass through to

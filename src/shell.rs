@@ -1741,24 +1741,54 @@ function bufToB64(buf) {
 // Save a picked/pasted/dropped file next to the active tab, then drop the saved
 // path into the composer. The tab a file belongs to is whichever one the bar is
 // over (S.active); the server writes it and hands back an absolute path.
+function insertIntoComposer(path) {
+  if (!castInput) return;
+  const cur = castInput.value;
+  castInput.value = (cur && !cur.endsWith(" ") && !cur.endsWith("\n") ? cur + " " : cur) + path + " ";
+  castInput.focus();
+}
+// The window has no remote HTTP server, so it saves over the ipc bridge: post the
+// bytes, and Rust replies by eval-ing window.__attachDone(id, result). Correlate
+// the async reply by id.
+let __attachSeq = 0;
+const __attachPending = {};
+window.__attachDone = function (id, result) {
+  const cb = __attachPending[id];
+  if (cb) { delete __attachPending[id]; cb(result); }
+};
+function attachViaIpc(name, data) {
+  return new Promise((res) => {
+    const id = ++__attachSeq;
+    __attachPending[id] = res;
+    setTimeout(() => {
+      if (__attachPending[id]) { delete __attachPending[id]; res({ ok: false, error: T["attach.err.failed"] || "timeout" }); }
+    }, 20000);
+    send({ kind: "attach", id: id, name: name, data: data });
+  });
+}
+// Save a picked/pasted file next to the active tab, then drop the saved path into
+// the composer. The phone posts to the /api/attach HTTP route; the window hands
+// it to Rust over ipc. Either way the tab is the active one the bar sits over.
 async function attachFile(file) {
   if (!file) return;
   const tab = (S && S.active) || 0;
   if (!tab) { attachToast(T["attach.err.no_tab"] || "Pick a tab first", true); return; }
   attachToast("…");
   try {
+    const name = file.name || "file";
     const data = bufToB64(await file.arrayBuffer());
-    const r = await fetch("api/attach?t=" + encodeURIComponent(TOKEN), {
-      method: "POST", body: JSON.stringify({ tab: tab, name: file.name || "file", data: data })
-    });
-    const j = await r.json();
+    let j;
+    if (REMOTE) {
+      const r = await fetch("api/attach?t=" + encodeURIComponent(TOKEN), {
+        method: "POST", body: JSON.stringify({ tab: tab, name: name, data: data })
+      });
+      j = await r.json();
+    } else {
+      j = await attachViaIpc(name, data);
+    }
     if (j && j.ok && j.path) {
-      const cur = castInput ? castInput.value : "";
-      if (castInput) {
-        castInput.value = (cur && !cur.endsWith(" ") ? cur + " " : cur) + j.path + " ";
-        castInput.focus();
-      }
-      attachToast((T["attach.saved"] || "Attached {name}").replace("{name}", file.name || ""));
+      insertIntoComposer(j.path);
+      attachToast((T["attach.saved"] || "Attached {name}").replace("{name}", name));
     } else {
       attachToast((j && j.error) || T["attach.err.failed"] || "Attach failed", true);
     }
@@ -1795,9 +1825,10 @@ function ensureBar() {
   // the button, the keyboard would close, and typing couldn't continue.
   // ✕ is deliberately excluded since closing it is the whole point
   [bs, send].forEach(b => b.addEventListener("pointerdown", (e) => e.preventDefault()));
-  // Attach posts to the remote HTTP endpoint, so it's phone-only for now; on the
-  // desktop window it will move to the ipc bridge (a later step). el() skips nulls.
-  castBar = el("div", {id:"castbar"}, (REMOTE ? att : null), (REMOTE ? fileIn : null), bs, castInput, send, close);
+  // Attach works on both now (phone over HTTP, window over ipc). The backspace
+  // key is only useful on the phone, whose on-screen keyboard the composer
+  // sometimes covers; the window has a real keyboard. el() skips nulls.
+  castBar = el("div", {id:"castbar"}, att, fileIn, (REMOTE ? bs : null), castInput, send, close);
   castKeysEl = buildCastKeys();
   const actionsEl = buildActions();
   // The release banner. Placed just above the auxiliary key panel, and
@@ -1805,9 +1836,11 @@ function ensureBar() {
   // (pinned to the bottom it hides under the keyboard, pinned to the top it gets in the way)
   modeEl = el("div", {id:"castmode"}, el("span", {}, T["tui.cast.control"] || "In control — tap to release"));
   modeEl.onclick = exitCast;
-  // Top row = release banner, then quick actions, auxiliary keys, and the text
-  // input bar at the bottom. All lifted together above the keyboard.
-  castDock = el("div", {id:"castdock"}, modeEl, actionsEl, castKeysEl, castBar);
+  // Top row = release banner, then quick actions, then the text input bar. The
+  // auxiliary key row (Esc/Tab/arrows/F-keys) is a phone-only crutch — the window
+  // has a real keyboard, so there the bar is purely the convenience surface
+  // (attach + actions + composer), not a soft keyboard.
+  castDock = el("div", {id:"castdock"}, modeEl, actionsEl, (REMOTE ? castKeysEl : null), castBar);
   document.getElementById("main").append(castDock);
   castInput.addEventListener("keydown", (e) => {
     if (e.isComposing) return;

@@ -479,6 +479,16 @@ impl WinSurface {
                 Ev::CloseSettings => self.close_settings = true,
                 Ev::OpenSettings => self.open_settings = true,
                 Ev::RemoteCut => self.remote_cut = true,
+                // A file attached in the desktop composer. Save it beside the
+                // active tab (the folder its AI runs in) and hand the path back to
+                // the page. Same saver the phone's /api/attach route uses.
+                Ev::Attach { id, name, data } => {
+                    let cwd = active_tab.map(tab_cwd_abs).unwrap_or_default();
+                    let result = crate::remote::attach_save(&cwd, &name, &data);
+                    let _ = self
+                        .win
+                        .eval(&format!("window.__attachDone({id}, {result});"));
+                }
                 // The top bar was pressed. The destination is "whatever page is currently
                 // showing", so the loop decides (only one bar is ever displayed).
                 Ev::Go { go } => self.gos.push(go),
