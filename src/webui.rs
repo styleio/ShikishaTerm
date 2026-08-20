@@ -1686,10 +1686,15 @@ const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(
 
 let current = {};        // Contents of config.json (holds the base settings)
 let wss = [];            // Workspaces and tabs
-let sel = {ws:0, tab:null, global:true};
+let sel = {ws:0, tab:null, global:true, section:"basic"};
 // Which workspace groups are expanded in the sidebar. Collapsed by default so
 // the nav stays tidy; the workspace you're editing auto-expands.
 const navOpen = new Set();
+// The global-settings group is expanded by default (the page opens onto it).
+let navGlobalOpen = true;
+// When opened via a deep-link shortcut (?ret=1), returning to the board after a
+// successful save is the natural finish, so the caller doesn't have to close it.
+let returnOnSave = false;
 let aiEngines = [];
 // The language setting as of when the page was opened. Used at save time to check "did it change = is a restart needed?"
 let loadedLanguage = "";
@@ -2033,8 +2038,22 @@ const CAT_LIST = [
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
-  nav.append(el("button", {class:"navitem" + (sel.global ? " sel" : ""),
-    onclick:() => { sel = {ws:sel.ws, tab:null, global:true}; render(); }}, T["settings.global"]));
+  // Global settings: a collapsible group whose children are the flat, self-named
+  // cards. Open while you're in it (like a workspace group), so its sections are
+  // one click away and the selected one is highlighted.
+  const gOpen = navGlobalOpen || sel.global;
+  nav.append(el("button", {class:"navitem navgrouphead",
+    onclick:() => { navGlobalOpen = !navGlobalOpen; render(); }},
+    el("span", {class:"caret"}, gOpen ? "▾" : "▸"),
+    el("span", {}, T["settings.global"])));
+  if (gOpen) globalSections().forEach(s => {
+    const b = el("button", {class:"navitem navtab" + (sel.global && sel.section === s.id ? " sel" : ""),
+      onclick:() => { navGlobalOpen = true; sel = {ws:sel.ws, tab:null, global:true, section:s.id}; render();
+                      const cur = document.querySelector(".navitem.sel"); if (cur) cur.scrollIntoView({block:"nearest"}); }});
+    b.append(el("span", {}, s.label));
+    if (s.sub) b.append(el("span", {class:"sub"}, s.sub));
+    nav.append(b);
+  });
 
   wss.forEach((ws, wi) => {
     // The group you're editing counts as open even without an explicit toggle.
@@ -2397,12 +2416,21 @@ function wizardReview() {
 }
 
 // ── Detail pane ───────────────────────────────────────
-function render() { renderNav(); renderDetail(); }
+function render() {
+  if (sel.global && !sel.section) sel.section = globalSections()[0].id;
+  renderNav();
+  renderDetail();
+}
 
 function renderDetail() {
   const d = document.getElementById("detail");
   d.textContent = "";
-  if (sel.global) return d.append(globalPane());
+  if (sel.global) {
+    const secs = globalSections();
+    const sec = secs.find(s => s.id === sel.section) || secs[0];
+    sel.section = sec.id;
+    return d.append(sec.build());
+  }
   const ws = wss[sel.ws];
   if (!ws) return;
   if (sel.tab === null) return d.append(wsPane(ws));
@@ -2411,9 +2439,13 @@ function renderDetail() {
   d.append(tabPane(ws, t));
 }
 
-function globalPane() {
-  const box = el("div");
-  box.append(card(T["settings.tab.basic"],
+// The global settings are a FLAT list of self-named cards, not a themed
+// hierarchy: each card is its own nav item, so nothing has to be hunted across
+// categories, and adding a feature just adds one more named card (no "which
+// bucket does this go in?"). Each nav item carries a one-line subtitle so the
+// stumble-onto-it discovery a single long scroll used to give isn't lost.
+function basicCard() {
+  return card(T["settings.tab.basic"],
     row(T["settings.tabbar_width"], field(current, "tab_bar_width", T["settings.tab.automation_dir.ph"], {type:"number", width:110, grow:false}),
         el("span", {class:"hint"}, T["settings.tabbar_width.hint"])),
     row(T["settings.max_chain"], field(current, "max_chain", "10", {type:"number", width:110, grow:false}),
@@ -2438,22 +2470,31 @@ function globalPane() {
           ["ja", "日本語"],
           ["en", "English"],
         ]),
-        el("span", {class:"hint"}, T["settings.language.hint"]))));
-  box.append(remoteCard());
-  box.append(card(T["settings.section.files"],
+        el("span", {class:"hint"}, T["settings.language.hint"])));
+}
+function filesCard() {
+  return card(T["settings.section.files"],
     row(T["settings.automation_global"], ...pathField(current, "automation", "scripts/common", "dir",
         T["settings.tab.automation_dir.pick"]),
         el("span", {class:"hint"}, T["settings.automation_global.hint"])),
     row("secrets", ...pathField(current, "secrets", "secrets.json", "file",
         T["settings.secrets"]),
-        el("span", {class:"hint"}, T["settings.secrets.hint"]))));
-  box.append(actionsCard());
-  box.append(operateCard());
-  box.append(secretsCard());
-  box.append(providersCard());
-  box.append(notifyCard());
-  box.append(rallyResultCard());
-  return box;
+        el("span", {class:"hint"}, T["settings.secrets.hint"])));
+}
+// Ordered flat list of the global cards. `id` is the stable deep-link handle
+// (the sub-input bar's ⚙ opens ?section=actions, for instance).
+function globalSections() {
+  return [
+    {id:"basic",     label:T["settings.sec.basic"],     sub:T["settings.sec.basic.sub"],     build:basicCard},
+    {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
+    {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
+    {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},
+    {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:notifyCard},
+    {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
+    {id:"files",     label:T["settings.sec.files"],     sub:T["settings.sec.files.sub"],     build:filesCard},
+    {id:"secrets",   label:T["settings.sec.secrets"],   sub:T["settings.sec.secrets.sub"],   build:secretsCard},
+    {id:"results",   label:T["settings.sec.results"],   sub:T["settings.sec.results.sub"],   build:rallyResultCard},
+  ];
 }
 
 // Downloads the latest rally result.
@@ -3876,8 +3917,10 @@ async function save() {
   btn.disabled = true;
   btn.classList.remove("dirty");
   btn.textContent = T["common.saving"];
+  let ok = false;
   try {
     await doSave();
+    ok = true;
   } catch (e) {
     // Previously, if the request itself failed, it would end with nothing shown at all
     result(fill(T["settings.save_failed"], {error: e.message || e}), true);
@@ -3886,6 +3929,11 @@ async function save() {
     btn.textContent = T["common.save"];
     refreshSave();
   }
+  // Opened via a deep-link shortcut (?ret=1): a successful save is the finish, so
+  // bounce back to the board it was launched from. closeSettings covers both the
+  // window and the phone, and its unsaved-changes guard is a no-op right after a
+  // save (markClean already ran inside doSave).
+  if (ok && returnOnSave) { returnOnSave = false; closeSettings(); }
 }
 
 // Assembles what gets written. Used by both saving and unsaved-change detection.
@@ -4033,6 +4081,18 @@ function openExt(dest) {
 load().then(() => {
   const q = new URLSearchParams(location.search);
   const idx = k => /^\d+$/.test(q.get(k) || "") ? Number(q.get(k)) : -1;
+  // A shortcut may ask to bounce back to the board once saved (?ret=1).
+  returnOnSave = q.get("ret") === "1";
+  // ?section=<id> deep-links straight to one global card (the ⚙ shortcuts).
+  const sec = q.get("section");
+  if (sec && globalSections().some(s => s.id === sec)) {
+    navGlobalOpen = true;
+    sel = {ws:sel.ws, tab:null, global:true, section:sec};
+    render();
+    const s = document.querySelector(".navitem.sel");
+    if (s) s.scrollIntoView({block:"center"});
+    return;
+  }
   const wi = idx("addtab");
   if (wss[wi]) {
     sel = {ws:wi, tab:addTabTo(wss[wi]), global:false};

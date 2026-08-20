@@ -388,8 +388,10 @@ struct WinSurface {
     closed: bool,
     /// The settings page's "close settings" button was pressed. The loop closes the settings tab.
     close_settings: bool,
-    /// The sidebar gear was pressed. The loop opens the settings page (from any tab).
-    open_settings: bool,
+    /// The sidebar gear (or a deep-link shortcut) was pressed. The loop opens the
+    /// settings page. Carries an optional section to land on and whether to return
+    /// to the board once saved (Some = requested, None = not requested).
+    open_settings: Option<(Option<String>, bool)>,
     /// The status bar's "remote connected" control was pressed. The loop cuts every
     /// remote session (rotates the token, drops the connections).
     remote_cut: bool,
@@ -421,9 +423,9 @@ impl WinSurface {
         std::mem::take(&mut self.close_settings)
     }
 
-    /// True if the settings gear was pressed (and clears the flag if so)
-    fn take_open_settings(&mut self) -> bool {
-        std::mem::take(&mut self.open_settings)
+    /// The pending "open settings" request (section, return-on-save), if any, clearing it.
+    fn take_open_settings(&mut self) -> Option<(Option<String>, bool)> {
+        self.open_settings.take()
     }
 
     /// True if the "remote connected" control was pressed (and clears the flag if so)
@@ -500,7 +502,7 @@ impl WinSurface {
                 // The settings page's "close settings" button. Where the tab actually
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.close_settings = true,
-                Ev::OpenSettings => self.open_settings = true,
+                Ev::OpenSettings { section, ret } => self.open_settings = Some((section, ret)),
                 Ev::RemoteCut => self.remote_cut = true,
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
@@ -703,7 +705,7 @@ fn run_in_window() -> Result<()> {
         frames: Vec::new(),
         closed: false,
         close_settings: false,
-        open_settings: false,
+        open_settings: None,
         remote_cut: false,
         chats: Vec::new(),
         run_actions: Vec::new(),
@@ -2144,8 +2146,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // The sidebar gear. Opens settings from any tab (the menu "e" key only
         // fires while INDEX is in view, so the gear needs its own path).
         // The workspace being viewed rides along so its group opens expanded.
-        if surface.take_open_settings() {
-            let query = format!("&ws={ws_index}");
+        if let Some((section, ret)) = surface.take_open_settings() {
+            // The gear passes the workspace being viewed; a deep-link shortcut may
+            // also name a section to land on and ask to return once saved.
+            let mut query = format!("&ws={ws_index}");
+            if let Some(s) = section {
+                query += &format!("&section={s}");
+            }
+            if ret {
+                query += "&ret=1";
+            }
             flash = Some(
                 match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, &query) {
                     Ok(()) => {

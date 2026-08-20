@@ -165,6 +165,10 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     background:var(--bg); color:var(--text); border:1px solid var(--line);
     border-radius:8px; }
   .castpanelhint { flex:1 1 0; padding:10px 4px; color:var(--dim); font-size:13px; }
+  /* Fixed ⚙ at the right of the actions panel — edit the quick actions in settings. */
+  .castgear { flex:none; margin:6px 0; padding:6px 8px; font-size:14px; cursor:pointer;
+    background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; }
+  .castgear:active { background:var(--brand); color:#04121c; }
   /* Keys / actions rows fill the rest and scroll horizontally under the switcher. */
   #castkeys, #castactions { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
     flex:1 1 0; min-width:0; padding:6px 0;
@@ -1908,9 +1912,15 @@ let castPanel = null, castPanelEl = null;
 let castTarget = null;
 // Open the settings screen: the child WebView in the window, or the reverse-proxied
 // /cfg page (native + responsive) on the phone, handing the token over once.
-function openSettings() {
-  if (typeof REMOTE !== "undefined" && REMOTE) location.href = "cfg?t=" + encodeURIComponent(TOKEN);
-  else send({kind:"opensettings"});
+// section: deep-link to one settings card (e.g. "actions"). ret: come back to the
+// board once it's saved. Both optional — the sidebar gear passes neither.
+function openSettings(section, ret) {
+  if (typeof REMOTE !== "undefined" && REMOTE) {
+    const q = (section ? "&section=" + encodeURIComponent(section) : "") + (ret ? "&ret=1" : "");
+    location.href = "cfg?t=" + encodeURIComponent(TOKEN) + q;
+  } else {
+    send({kind:"opensettings", section: section || null, ret: !!ret});
+  }
 }
 // The picker for the 🎯 panel: choose another tab to operate. Browsers, AI tabs
 // and plain terminals are all candidates; the operator itself and INDEX are not.
@@ -1989,6 +1999,14 @@ function renderPanel() {
   }
   const content = panelContent(castPanel);
   if (content) castPanelEl.append(content);
+  // A fixed ⚙ at the right edge of the actions panel jumps straight to the Quick
+  // Actions settings card (and returns here once saved). Stays put while the chips
+  // scroll under it, mirroring the switcher on the left.
+  if (castPanel === "actions") {
+    castPanelEl.append(el("button", {class:"castgear",
+      title: T["tui.cast.actions.edit"] || "Edit quick actions",
+      onclick: () => openSettings("actions", true)}, "⚙️"));
+  }
 }
 function ensureBar() {
   if (castDock) return;

@@ -335,7 +335,16 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("addtab") => Ev::AddTab,
         Some("closesettings") => Ev::CloseSettings,
-        Some("opensettings") => Ev::OpenSettings,
+        Some("opensettings") => Ev::OpenSettings {
+            // A deep-link may name a section to land on and ask to return to the
+            // board once saved (the sub-input bar's ⚙ shortcut does both).
+            section: v
+                .get("section")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            ret: v.get("ret").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
         Some("menu") => Ev::Menu {
             key: v
                 .get("key")
@@ -527,7 +536,12 @@ pub enum Ev {
     /// Open the settings page. A dedicated intent for the sidebar gear so it
     /// works from any tab (the menu "e" key only fires while INDEX is in view).
     /// Window-internal, so not accepted from a phone (allowed_from_afar).
-    OpenSettings,
+    /// `section` deep-links to one settings card; `ret` asks the page to return
+    /// to the board once it's saved (used by the sub-input bar's ⚙ shortcut).
+    OpenSettings {
+        section: Option<String>,
+        ret: bool,
+    },
     /// The operating board's menu was pressed
     Menu { key: String },
     /// Open the workspace switcher. A dedicated intent (rather than reusing the
