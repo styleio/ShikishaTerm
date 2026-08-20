@@ -159,26 +159,47 @@ pub struct RemoteUi {
     /// loopback and never faces the network — the phone reaches it only through
     /// this proxy, authenticated by the remote token. None until it is up.
     settings: Arc<Mutex<Option<(String, String)>>>,
+    /// The HTTP server itself (owns the listening socket). Held so shutdown()
+    /// can unblock the accept loop and close the socket; taken (dropped) there
+    server: Mutex<Option<Arc<Server>>>,
+    /// The accept thread, joined in shutdown() so the port is truly released
+    /// before shutdown() returns
+    accept_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl RemoteUi {
     pub fn start(bind: std::net::Ipv4Addr, port: u16, token: String) -> Result<Self> {
-        let server = Server::http((bind, port)).map_err(|e| {
-            let addr = format!("{bind}:{port}");
-            // "In use" is a long OS message that doesn't say what to do about
-            // it. The culprit is usually your own previous instance still running
-            let in_use = e
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse);
-            if in_use {
-                anyhow::anyhow!(crate::i18n::tp("remote.err.in_use", &[("addr", &addr)]))
-            } else {
-                anyhow::anyhow!(crate::i18n::tp(
-                    "remote.err.start",
-                    &[("addr", &addr), ("error", &e.to_string())]
-                ))
+        let addr = format!("{bind}:{port}");
+        let in_use = |e: &(dyn std::error::Error + Send + Sync + 'static)| {
+            e.downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse)
+        };
+        // The previous server's socket closes a moment AFTER shutdown()
+        // returns (tiny_http's accept thread exits asynchronously on drop),
+        // so an off→on flip can hit AddrInUse for a few more milliseconds.
+        // Wait those out; only a port that stays taken is a real error
+        let mut waited_ms = 0u64;
+        let server = loop {
+            match Server::http((bind, port)) {
+                Ok(s) => break s,
+                Err(e) if in_use(e.as_ref()) && waited_ms < 1000 => {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                    waited_ms += 25;
+                }
+                Err(e) => {
+                    // "In use" is a long OS message that doesn't say what to do about
+                    // it. The culprit is usually your own previous instance still running
+                    return Err(if in_use(e.as_ref()) {
+                        anyhow::anyhow!(crate::i18n::tp("remote.err.in_use", &[("addr", &addr)]))
+                    } else {
+                        anyhow::anyhow!(crate::i18n::tp(
+                            "remote.err.start",
+                            &[("addr", &addr), ("error", &e.to_string())]
+                        ))
+                    });
+                }
             }
-        })?;
+        };
         let real_port = server
             .server_addr()
             .to_ip()
@@ -198,7 +219,9 @@ impl RemoteUi {
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
         let settings = Arc::new(Mutex::new(None));
 
-        {
+        let server = Arc::new(server);
+        let accept_thread = {
+            let server = Arc::clone(&server);
             let token = Arc::clone(&token);
             let snapshot = Arc::clone(&snapshot);
             let stop = Arc::clone(&stop);
@@ -218,8 +241,8 @@ impl RemoteUi {
                         ));
                     }
                 }
-            });
-        }
+            })
+        };
         Ok(Self {
             url,
             origin,
@@ -232,6 +255,8 @@ impl RemoteUi {
             state_clients,
             keyframe_wanted,
             settings,
+            server: Mutex::new(Some(server)),
+            accept_thread: Mutex::new(Some(accept_thread)),
         })
     }
 
@@ -287,8 +312,25 @@ impl RemoteUi {
         clients.retain(|tx| tx.send(msg.clone()).is_ok());
     }
 
+    /// Stop accepting and release the port before returning.
+    ///
+    /// Setting the flag alone left the accept thread blocked inside
+    /// `incoming_requests()` — still owning the socket — until the next
+    /// request happened to arrive. Toggling the feature off and on then
+    /// failed to rebind (AddrInUse) until the app was restarted, with the
+    /// settings toggle reporting "stopped" no matter which way it was flipped
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        let server = self.server.lock().unwrap().take();
+        if let Some(s) = &server {
+            s.unblock();
+        }
+        if let Some(h) = self.accept_thread.lock().unwrap().take() {
+            let _ = h.join();
+        }
+        // The thread is gone; dropping the last Arc closes the listener, so
+        // the port is free for an immediate rebind by the time this returns
+        drop(server);
     }
 }
 
@@ -861,6 +903,28 @@ mod tests {
         assert_eq!(get("old-token-000000"), 403, "old token must be dead after the cut");
         assert_eq!(get("new-token-111111"), 200, "the new token must work");
         assert!(ui.url.ends_with("t=new-token-111111"), "url not rebuilt: {}", ui.url);
+    }
+
+    /// Off→on must rebind at once: shutdown() may only return after the
+    /// accept thread is gone and the socket is closed. A stop flag alone left
+    /// the port held until the next request happened to arrive, so re-enabling
+    /// failed with AddrInUse (the settings toggle then reported "stopped" no
+    /// matter which way it was flipped) until the app was restarted
+    #[test]
+    fn shutdown_releases_the_port_for_an_immediate_restart() {
+        let ui =
+            RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into()).unwrap();
+        let port: u16 = ui
+            .origin
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .expect("originにポートが無い");
+        ui.shutdown();
+        let again = RemoteUi::start("127.0.0.1".parse().unwrap(), port, "tok123456789012".into())
+            .expect("ポートが解放されていない");
+        again.shutdown();
     }
 
     /// Actually starts the server and confirms auth and command delivery
