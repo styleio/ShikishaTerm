@@ -2448,6 +2448,7 @@ function globalPane() {
         T["settings.secrets"]),
         el("span", {class:"hint"}, T["settings.secrets.hint"]))));
   box.append(actionsCard());
+  box.append(operateCard());
   box.append(secretsCard());
   box.append(providersCard());
   box.append(notifyCard());
@@ -2642,6 +2643,33 @@ function actionsCard() {
     listBox, el("div", {class:"row", style:"margin-top:10px"}, addBtn));
   draw();
   return c;
+}
+
+// Operate (🎯) runaway limits + stall policy, saved into config.operate. The three
+// limits are a safety net (0 = no limit); on_limit picks "stop" (halt and hand back
+// to the human) or "continue" (reset the budget and keep going, trusting the
+// operator to judge DONE — so it never stops on the user mid-task).
+function operateCard() {
+  const o = current.operate = current.operate || {};
+  const num = (key, def) => {
+    const e = el("input", {type:"number", min:"0", step:"1", style:"width:110px"});
+    e.value = (o[key] ?? def);
+    e.addEventListener("input", () => { o[key] = e.value; refreshSave(); });
+    return e;
+  };
+  const pol = el("select", {style:"width:220px"});
+  for (const [v, label] of [["stop", T["settings.operate.on_limit.stop"]],
+                            ["continue", T["settings.operate.on_limit.continue"]]]) {
+    const opt = el("option", {value:v}, label); if ((o.on_limit || "stop") === v) opt.selected = true;
+    pol.append(opt);
+  }
+  pol.addEventListener("change", () => { o.on_limit = pol.value; refreshSave(); });
+  return card(T["settings.operate.title"],
+    el("div", {class:"hint"}, T["settings.operate.hint"]),
+    row(T["settings.operate.max_rounds"], num("max_rounds", 40), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
+    row(T["settings.operate.max_seconds"], num("max_seconds", 900), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
+    row(T["settings.operate.max_tokens"], num("max_tokens", 400000), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
+    row(T["settings.operate.on_limit"], pol, el("span", {class:"hint"}, T["settings.operate.on_limit.hint"])));
 }
 
 function notifyCard() {
@@ -3852,6 +3880,19 @@ function payload() {
   if (out.actions) {
     out.actions = out.actions.filter(a => a && (a.label || "").trim());
     if (!out.actions.length) delete out.actions;
+  }
+  // Operate limits/policy: coerce to numbers, then drop the block entirely when
+  // it still matches the defaults (keeps config tidy). 0 = "no limit" is kept.
+  if (out.operate) {
+    const o = Object.assign({}, out.operate);
+    ["max_rounds","max_seconds","max_tokens"].forEach(k => {
+      o[k] = (o[k] === "" || o[k] === null || o[k] === undefined) ? undefined : Number(o[k]);
+    });
+    const isDefault = (o.max_rounds ?? 40) === 40 && (o.max_seconds ?? 900) === 900
+      && (o.max_tokens ?? 400000) === 400000 && (o.on_limit || "stop") === "stop";
+    if (isDefault) delete out.operate;
+    else out.operate = { max_rounds:(o.max_rounds ?? 40), max_seconds:(o.max_seconds ?? 900),
+                         max_tokens:(o.max_tokens ?? 400000), on_limit:(o.on_limit || "stop") };
   }
   if (out.remote && !out.remote.enabled && !out.remote.allow_public) delete out.remote;
   // Don't save a provider with an empty base_url (avoids leaving leftover junk from a still-in-progress add)

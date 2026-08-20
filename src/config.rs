@@ -70,6 +70,9 @@ pub struct Config {
     /// when `lua` is set, runs Lua (advanced).
     #[serde(default)]
     pub actions: Vec<ActionSpec>,
+    /// Bounds and stall behavior for ad-hoc "operate a tab" (🎯) sessions.
+    #[serde(default)]
+    pub operate: OperateSpec,
     /// Display language ("ja" etc). Follows the OS setting if omitted
     #[serde(default)]
     pub language: Option<String>,
@@ -223,6 +226,58 @@ pub struct ActionSpec {
 /// The quick actions for the sub-input bar (empty if none configured).
 pub fn actions() -> Vec<ActionSpec> {
     load().map(|c| c.actions).unwrap_or_default()
+}
+
+/// Bounds and stall behavior for an "operate a tab" (🎯) session. The limits are
+/// a runaway safety net; `on_limit` decides what happens when one is reached.
+/// Every limit accepts 0 to mean "no limit". These also feed a configured
+/// browser Agent tab and browser rallies (same built-in orchestrator).
+#[derive(Debug, Clone, Deserialize)]
+pub struct OperateSpec {
+    /// Operator turns before the safety net trips. 0 = unlimited.
+    #[serde(default = "default_operate_rounds")]
+    pub max_rounds: u32,
+    /// Wall-clock seconds before the safety net trips. 0 = unlimited.
+    #[serde(default = "default_operate_seconds")]
+    pub max_seconds: u32,
+    /// Operator output characters (a rough token proxy) before the net trips. 0 = unlimited.
+    #[serde(default = "default_operate_tokens")]
+    pub max_tokens: u32,
+    /// What to do when a limit is reached:
+    ///   "stop"     ... halt and tell the operator (default; the safe textbook choice)
+    ///   "continue" ... reset the budget and keep going, trusting the operator to
+    ///                  judge DONE itself (never stop on the user mid-task)
+    #[serde(default = "default_operate_on_limit")]
+    pub on_limit: String,
+}
+
+impl Default for OperateSpec {
+    fn default() -> Self {
+        Self {
+            max_rounds: default_operate_rounds(),
+            max_seconds: default_operate_seconds(),
+            max_tokens: default_operate_tokens(),
+            on_limit: default_operate_on_limit(),
+        }
+    }
+}
+
+fn default_operate_rounds() -> u32 {
+    40
+}
+fn default_operate_seconds() -> u32 {
+    900
+}
+fn default_operate_tokens() -> u32 {
+    400_000
+}
+fn default_operate_on_limit() -> String {
+    "stop".into()
+}
+
+/// The operate limits/policy (defaults if none configured).
+pub fn operate() -> OperateSpec {
+    load().map(|c| c.operate).unwrap_or_default()
 }
 
 fn default_attach_ext() -> Vec<String> {
@@ -1246,6 +1301,28 @@ mod tests {
         let (ws, errs) = cfg.resolve_workspaces();
         assert_eq!(ws.len(), 1, "壊れた定義は飛ばして続行");
         assert_eq!(errs.len(), 1);
+    }
+
+    #[test]
+    fn operate_defaults_match_the_baked_in_safety_net() {
+        // A config with no `operate` block falls back to the historical limits and
+        // the safe "stop" policy, so behavior is unchanged until the user opts in.
+        let cfg: Config = serde_json::from_str(r#"{"workspaces":[]}"#).unwrap();
+        assert_eq!(cfg.operate.max_rounds, 40);
+        assert_eq!(cfg.operate.max_seconds, 900);
+        assert_eq!(cfg.operate.max_tokens, 400_000);
+        assert_eq!(cfg.operate.on_limit, "stop");
+    }
+
+    #[test]
+    fn operate_accepts_partial_overrides_and_unlimited_zeros() {
+        // Only some fields set: the rest keep their defaults. 0 means "no limit".
+        let cfg: Config =
+            serde_json::from_str(r#"{"workspaces":[],"operate":{"max_rounds":0,"on_limit":"continue"}}"#)
+                .unwrap();
+        assert_eq!(cfg.operate.max_rounds, 0, "0 = unlimited rounds");
+        assert_eq!(cfg.operate.on_limit, "continue");
+        assert_eq!(cfg.operate.max_seconds, 900, "untouched field keeps its default");
     }
 }
 

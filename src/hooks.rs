@@ -1482,13 +1482,19 @@ impl HookEngine {
     /// safety net. BR (the id of the browser being operated) is injected up
     /// front
     pub fn load_browser_agent(&mut self, browser: &str, stops_lua: &str) -> Result<usize> {
-        let key = format!("<browser-agent:{browser}>{stops_lua}");
+        // Runaway limits and the on-limit policy come from config; fold them into
+        // the cache key so editing them in settings yields a fresh script.
+        let op = crate::config::operate();
+        let key = format!(
+            "<browser-agent:{browser}>{stops_lua}|{}|{}|{}|{}",
+            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit
+        );
         if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
             return Ok(i);
         }
-        // Built-in orchestrator (function-definition layout). BR and STOPS are injected below
+        // Built-in orchestrator (function-definition layout). BR, STOPS and the
+        // limits (MAX_ROUNDS/MAX_SEC/MAX_TOK) plus ON_LIMIT are injected below.
         const SRC: &str = r##"
-local MAX_ROUNDS, MAX_SEC, MAX_TOK = 40, 900, 400000
 
 -- Judge: evaluate the configured stop conditions (STOPS) top to bottom and
 -- return the one that matched (nil if none did).
@@ -1696,13 +1702,22 @@ function on_done(tab)
         .. " (code=" .. (v.code or 0) .. ")" .. shikisha.t("agent.browser.next_instruction"))
       return
     end
-    -- Safety net (runaway insurance). The budget resets per goal
+    -- Safety net (runaway insurance). Each limit is off when set to 0. When one
+    -- is hit, ON_LIMIT decides: "continue" resets the budget and carries on
+    -- (never stop on the user; the operator still judges DONE), anything else
+    -- ("stop") halts and hands back to the human.
     local t0 = shikisha.get_var("rally_t0") or shikisha.epoch_ms()
-    if n >= MAX_ROUNDS or (shikisha.epoch_ms() - t0) >= MAX_SEC * 1000
-        or (shikisha.get_var("rally_tok") or 0) >= MAX_TOK then
-      shikisha.show(ai)
-      shikisha.send_to_tab(ai, shikisha.t("agent.browser.safety_net"))
-      return
+    local over = (MAX_ROUNDS > 0 and n >= MAX_ROUNDS)
+      or (MAX_SEC > 0 and (shikisha.epoch_ms() - t0) >= MAX_SEC * 1000)
+      or (MAX_TOK > 0 and (shikisha.get_var("rally_tok") or 0) >= MAX_TOK)
+    if over then
+      if ON_LIMIT == "continue" then
+        reset_budget()
+      else
+        shikisha.show(ai)
+        shikisha.send_to_tab(ai, shikisha.t("agent.browser.safety_net"))
+        return
+      end
     end
     -- Return the screen and prompt for the next move
     shikisha.show(ai)
@@ -1745,7 +1760,11 @@ function on_done(tab)
   end
 end
 "##;
-        let src = format!("local BR = {browser:?}\nlocal STOPS = {stops_lua}\n{SRC}");
+        let src = format!(
+            "local BR = {browser:?}\nlocal STOPS = {stops_lua}\n\
+             local MAX_ROUNDS, MAX_SEC, MAX_TOK = {}, {}, {}\nlocal ON_LIMIT = {:?}\n{SRC}",
+            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit
+        );
         self.load_source(&key, &src)
     }
 
