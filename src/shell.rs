@@ -2310,16 +2310,33 @@ pub const MENU: [(&str, &str); 7] = [
 /// string to insert for a plain action, or null for a Lua one (whose source
 /// stays server-side — the shell fires it, it never holds the code).
 fn actions_json() -> String {
-    let list: Vec<serde_json::Value> = crate::config::actions()
-        .into_iter()
-        .map(|a| {
-            serde_json::json!({
-                "label": a.label,
-                "text": if a.lua { serde_json::Value::Null } else { serde_json::Value::String(a.body) },
-                "lua": a.lua,
+    let configured = crate::config::actions();
+    let list: Vec<serde_json::Value> = if configured.is_empty() {
+        // A localized starter set, so the bar isn't empty out of the box (this was
+        // the "where are the features?" gap). A user's own `actions` in config
+        // replaces these entirely.
+        ["continue", "explain", "review", "fix"]
+            .iter()
+            .map(|k| {
+                serde_json::json!({
+                    "label": crate::i18n::t(&format!("actions.default.{k}.label")),
+                    "text": crate::i18n::t(&format!("actions.default.{k}.body")),
+                    "lua": false,
+                })
             })
-        })
-        .collect();
+            .collect()
+    } else {
+        configured
+            .into_iter()
+            .map(|a| {
+                serde_json::json!({
+                    "label": a.label,
+                    "text": if a.lua { serde_json::Value::Null } else { serde_json::Value::String(a.body) },
+                    "lua": a.lua,
+                })
+            })
+            .collect()
+    };
     serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())
 }
 
