@@ -32,6 +32,7 @@
   "tui.cast.type.ph": "Type here to send",
   "tui.cast.send": "Send",
   "tui.cast.attach": "Attach a file",
+  "tui.cast.compose": "Composer",
   "attach.err.empty": "The attachment was empty.",
   "attach.err.too_large": "That file is too large ({size} MB > {max} MB).",
   "attach.err.executable": "Refusing to attach an executable file.",

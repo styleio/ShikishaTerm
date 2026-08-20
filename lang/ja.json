@@ -32,6 +32,7 @@
   "tui.cast.type.ph": "ここで入力して送信 (日本語は変換してから)",
   "tui.cast.send": "送信",
   "tui.cast.attach": "ファイルを添付",
+  "tui.cast.compose": "入力バー",
   "attach.err.empty": "添付ファイルが空でした。",
   "attach.err.too_large": "ファイルが大きすぎます（{size} MB > {max} MB）。",
   "attach.err.executable": "実行ファイルは添付できません。",

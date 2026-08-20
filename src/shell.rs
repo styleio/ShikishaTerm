@@ -149,6 +149,14 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     box-shadow:0 8px 24px rgba(0,0,0,.5); opacity:0; pointer-events:none;
     transition:opacity .18s ease; word-break:break-all; }
   #attachtoast.bad { background:#3a1418; color:#ffd7d7; border-color:#e5534b; }
+  /* Desktop-only summon button for the composer bar (bottom-right, above the bar). */
+  #composerfab { position:absolute; right:16px; bottom:16px; z-index:19;
+    width:44px; height:44px; border-radius:50%; font-size:19px; line-height:1;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    border:1px solid var(--brand); background:var(--panel); color:var(--brand);
+    box-shadow:0 4px 16px rgba(0,0,0,.45); opacity:.85; transition:opacity .15s ease; }
+  #composerfab:hover { opacity:1; }
+  #composerfab.on { background:var(--brand); color:#04121c; opacity:1; }
   #castkeys { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
     padding:6px 8px; background:var(--panel); border-top:1px solid var(--line);
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }
@@ -1787,7 +1795,9 @@ function ensureBar() {
   // the button, the keyboard would close, and typing couldn't continue.
   // ✕ is deliberately excluded since closing it is the whole point
   [bs, send].forEach(b => b.addEventListener("pointerdown", (e) => e.preventDefault()));
-  castBar = el("div", {id:"castbar"}, att, fileIn, bs, castInput, send, close);
+  // Attach posts to the remote HTTP endpoint, so it's phone-only for now; on the
+  // desktop window it will move to the ipc bridge (a later step). el() skips nulls.
+  castBar = el("div", {id:"castbar"}, (REMOTE ? att : null), (REMOTE ? fileIn : null), bs, castInput, send, close);
   castKeysEl = buildCastKeys();
   const actionsEl = buildActions();
   // The release banner. Placed just above the auxiliary key panel, and
@@ -1821,7 +1831,7 @@ function ensureBar() {
 // Show the sub-input bar (auxiliary key row + input field). Never focused
 // automatically — the keyboard never pops up uninvited. It only opens when the user taps the input field
 function showDock() { ensureBar(); castDock.style.display = "flex"; }
-function closeBar() { if (castDock) castDock.style.display = "none"; if (castInput) castInput.blur(); }
+function closeBar() { if (castDock) castDock.style.display = "none"; if (castInput) castInput.blur(); if (fab) fab.classList.remove("on"); }
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
@@ -1870,6 +1880,31 @@ function openTermBar() {
   modCtrl = false; modAlt = false; refreshMods();
 }
 function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl.style.display = "none"; closeBar(); }
+// The desktop window's summonable composer. Direct typing into the terminal
+// stays the default (the hidden #kbd); this bar is opened on demand for editing
+// a longer instruction, the quick actions, and (later) attachments. sendBar()
+// posts the very same {kind:"key",…} intents #kbd does, so it reaches the active
+// tab's PTY with no extra wiring.
+function toggleComposer() {
+  ensureBar();
+  // showDock sets "flex", closeBar sets "none"; a fresh dock has "" (CSS hides it),
+  // so test for the shown value rather than "!== none" (which a blank string passes).
+  const showing = castDock && castDock.style.display === "flex";
+  if (showing) { closeBar(); if (fab) fab.classList.remove("on"); }
+  else {
+    openTermBar();
+    if (castInput) castInput.focus();
+    if (fab) fab.classList.add("on");
+  }
+}
+let fab = null;
+// Only the window gets the floating toggle; the phone opens the bar by tapping a
+// terminal tab (and its bar carries the attach button).
+if (!REMOTE) {
+  fab = el("button", {id:"composerfab", title: T["tui.cast.compose"] || "Composer",
+    onclick: toggleComposer}, "✎");
+  document.getElementById("main").append(fab);
+}
 // The element directly under the arrow's tip. The synthetic arrow and
 // ripple both use pointer-events:none, so they're transparent to hit
 // testing, and the real thing beneath them (a bar button/URL field, or the relay canvas) is returned instead
