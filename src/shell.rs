@@ -1098,11 +1098,11 @@ window.__state = function (json) {
     const onTermTab = !screen.hidden && !web && !modelTabNow && S.active !== 0;
     if (!onTermTab) closeBar();
   }
-  // The 🎯 target panel is gated on the operator = the active tab. If the active
-  // tab changed while it's open, rebuild it so its enabled/disabled state, hint,
-  // and target list follow the new operator instead of going stale.
-  if (castDock && castDock.style.display === "flex" && castPanel === "target"
-      && S.active !== lastCastActive) {
+  // The panel area follows the active tab: which panels exist (a browser tab has
+  // no 🎯 target panel, so the switcher itself comes and goes) and the target
+  // panel's operator gating both depend on it. If the active tab changed while
+  // the dock is open, rebuild whatever is showing so none of it goes stale.
+  if (castDock && castDock.style.display === "flex" && S.active !== lastCastActive) {
     renderPanel();
   }
   lastCastActive = S.active;
