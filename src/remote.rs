@@ -108,6 +108,11 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // Aiming the active AI at another tab and handing it a goal — the same
         // reach as typing that instruction into the AI from the phone.
         Ev::Operate { .. } => true,
+        // 📼 arming the page recorder and ▶ running composer Lua. Both stay
+        // inside the run_scoped jail on the shown browser — no more reach than
+        // the input injection and quick actions already allowed above.
+        Ev::Record { .. } => true,
+        Ev::RunLua { .. } => true,
         // Scrolling back through the history is the whole point of monitoring
         // from afar — without it the phone is stuck on the current screen and
         // can't review what was said earlier. It only moves the viewport, never

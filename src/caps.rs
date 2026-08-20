@@ -618,6 +618,20 @@ impl Capabilities {
         self.with(name, |b, to| b.unask(to))
     }
 
+    /// Arm/disarm the Lua recorder (📼) on a page. One recorder at a time:
+    /// arming moves it (everything else goes quiet first), disarming silences
+    /// it everywhere — so "off" needs no page name and can't miss.
+    pub fn browser_record(&self, name: &str, on: bool) -> Result<()> {
+        if let Some(host) = self.host.borrow().as_ref() {
+            host.record_all_off();
+        }
+        if on {
+            self.with(name, |b, to| b.record(to, true))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Show controls above a page. If there's nothing to show, it's as if nothing were shown at all
     pub fn browser_nav(&self, name: &str, spec: crate::config::NavSpec) -> Result<()> {
         // Can't show controls on a page that isn't open. Rejected here

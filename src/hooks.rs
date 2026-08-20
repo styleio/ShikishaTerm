@@ -601,6 +601,9 @@ pub struct HookEngine {
     pending: Vec<Pending>,
     scripts: Vec<Script>,
     attach: Attach,
+    /// Kept so composer-typed Lua (▶ run mode) can enter the same run_scoped
+    /// sandbox the rally uses, without threading capabilities through the loop.
+    caps: Caps,
 }
 
 const HOOK_NAMES: [&str; 5] = ["on_start", "on_question", "on_busy", "on_done", "on_exit"];
@@ -1394,7 +1397,19 @@ impl HookEngine {
             pending: Vec::new(),
             scripts: Vec::new(),
             attach: Attach::default(),
+            caps,
         })
+    }
+
+    /// Run composer-typed Lua (▶ run mode) against one browser, in the very
+    /// sandbox the rally runs AI-authored code in: browser functions on that
+    /// one tab, nothing else. None on success, the error text on failure
+    pub fn run_browser_lua(&self, browser: &str, code: &str) -> Option<String> {
+        match run_scoped(&self.lua, &self.caps, browser, code) {
+            Ok(Value::String(s)) => Some(s.to_string_lossy().to_string()),
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
+        }
     }
 
     /// Reflect every tab's (identifier, state) on each detection tick

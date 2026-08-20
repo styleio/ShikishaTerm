@@ -22,7 +22,7 @@ use anyhow::{Result, anyhow};
 /// redirects, there's always a way to show the bar. But whether it
 /// *should* show right now is something the Rust side remembers and
 /// re-issues on every navigation (the JS world disappears on navigation).
-const INIT_JS: &str = r#"
+const INIT_JS: &str = r##"
 (function () {
   if (window.__shikisha) return;
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -118,7 +118,9 @@ const INIT_JS: &str = r#"
       const proto =
         el instanceof HTMLTextAreaElement
           ? HTMLTextAreaElement.prototype
-          : HTMLInputElement.prototype;
+          : el instanceof HTMLSelectElement
+            ? HTMLSelectElement.prototype
+            : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, "value");
       if (setter && setter.set) setter.set.call(el, value);
       else el.value = value;
@@ -160,6 +162,98 @@ const INIT_JS: &str = r#"
     }
   };
 
+  // ---- The Lua recorder ----------------------------------------------------
+  // Turns what a human does on this page into calls of the very primitives the
+  // automation uses (browser_fill / browser_click / browser_press). Semantic
+  // events only: the committed value (change / Enter), and clicks on things
+  // that aren't text fields. Only trusted input is recorded — the automation's
+  // own synthetic events (isTrusted:false) are ignored, so a running script
+  // never records itself, while relayed phone input (real CDP input) does.
+  // Whether recording is on is remembered by the Rust side and re-issued on
+  // every new document, exactly like the ask bar above.
+  let recOn = false;
+  window.__shikisha_rec = function (on) { recOn = !!on; };
+
+  // Selector generation: readable first, unique always. #id, then a stable
+  // attribute, then a structural nth-of-type path extended upward until it
+  // matches exactly one element.
+  function recSel(el) {
+    const esc = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : s;
+    const uniq = (s) => { try { return document.querySelectorAll(s).length === 1; } catch (e) { return false; } };
+    if (el.id) { const s = "#" + esc(el.id); if (uniq(s)) return s; }
+    const tag = el.tagName.toLowerCase();
+    for (const a of ["name", "aria-label", "placeholder", "data-testid"]) {
+      const v = el.getAttribute(a);
+      if (v) { const s = tag + "[" + a + "=" + JSON.stringify(v) + "]"; if (uniq(s)) return s; }
+    }
+    let s = "", cur = el;
+    while (cur && cur.nodeType === 1 && cur.tagName !== "HTML") {
+      const par = cur.parentElement;
+      let seg;
+      if (cur.id) seg = "#" + esc(cur.id);
+      else {
+        seg = cur.tagName.toLowerCase();
+        if (par) {
+          const same = Array.prototype.filter.call(par.children, (c) => c.tagName === cur.tagName);
+          if (same.length > 1) seg += ":nth-of-type(" + (same.indexOf(cur) + 1) + ")";
+        }
+      }
+      s = seg + (s ? " > " + s : "");
+      if (uniq(s)) return s;
+      cur = par;
+    }
+    return s || tag;
+  }
+
+  // Text-like editables commit on change/Enter; everything else commits on
+  // click. A click that merely focuses a field isn't an action, so it's skipped.
+  function recEditable(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.isContentEditable || el.tagName === "TEXTAREA") return true;
+    return el.tagName === "INPUT" &&
+      !/^(button|submit|reset|checkbox|radio|file|image|range|color)$/.test(el.type);
+  }
+  // Enter reports the fill itself (program order: value, then the key), so the
+  // change event that follows the same commit must not report it again.
+  let recLast = "";
+  function recFill(el) {
+    const sel = recSel(el);
+    // Never the password itself — report a fill-from-secrets step instead
+    if (el.tagName === "INPUT" && el.type === "password") {
+      send({ kind: "recorded", act: "secret", sel: sel, value: "" });
+      return;
+    }
+    const v = el.isContentEditable ? el.textContent : el.value;
+    if (sel + "\n" + v === recLast) return;
+    recLast = sel + "\n" + v;
+    send({ kind: "recorded", act: "fill", sel: sel, value: v });
+  }
+  document.addEventListener("click", function (e) {
+    if (!recOn || !e.isTrusted) return;
+    let el = e.target;
+    if (el && el.closest) el = el.closest("a,button,[role=button],input,select,summary,label") || el;
+    if (!el || el.nodeType !== 1) return;
+    if (recEditable(el) || el.tagName === "SELECT") return;
+    if (el.id === "__shikisha_bar") return;
+    send({ kind: "recorded", act: "click", sel: recSel(el) });
+  }, true);
+  document.addEventListener("change", function (e) {
+    if (!recOn || !e.isTrusted) return;
+    const el = e.target;
+    if (el.tagName === "SELECT") {
+      send({ kind: "recorded", act: "fill", sel: recSel(el), value: el.value });
+    } else if (recEditable(el)) {
+      recFill(el);
+    }
+  }, true);
+  document.addEventListener("keydown", function (e) {
+    if (!recOn || !e.isTrusted || e.isComposing || e.key !== "Enter" || e.shiftKey) return;
+    if (recEditable(e.target)) {
+      recFill(e.target);
+      send({ kind: "recorded", act: "press", sel: "", value: "enter" });
+    }
+  }, true);
+
   window.__shikisha = true;
 
   // "Loading finished" waits for `load`. At DOMContentLoaded, images and
@@ -189,7 +283,7 @@ const INIT_JS: &str = r#"
     }
   }
 })();
-"#;
+"##;
 
 /// An instruction from the conductor to the browser
 #[derive(Debug, Clone)]
@@ -359,6 +453,38 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         // the page only knows the index). Runs it against the active tab.
         Some("runaction") => Ev::RunAction {
             index: v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        },
+        // 📼 record mode toggled in the composer (see `Ev::Record`).
+        Some("record") => Ev::Record {
+            on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        // ▶ composer Lua to run sandboxed against the shown browser (see `Ev::RunLua`).
+        Some("runlua") => Ev::RunLua {
+            code: v
+                .get("code")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        },
+        // A recorded step from a page (who it came from is stamped by the pane's
+        // ipc handler, like "button").
+        Some("recorded") => Ev::Recorded {
+            from: None,
+            act: v
+                .get("act")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            sel: v
+                .get("sel")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            value: v
+                .get("value")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
         },
         // "Operate a target tab" (🎯): make the active AI drive tab `target`.
         // target 0 detaches. An optional `goal` (natural language) is handed to
@@ -563,6 +689,24 @@ pub enum Ev {
     /// `target` (0 = detach) and, if `goal` is non-empty, hand it that goal. The
     /// AI then writes Lua to drive the target (reuses the browser-agent loop).
     Operate { target: usize, goal: String },
+    /// 📼 record mode toggled in the composer. On arms the Lua recorder on the
+    /// shown browser (the loop resolves which one that is); off silences it
+    /// everywhere — there's only ever one recorder.
+    Record { on: bool },
+    /// ▶ run mode: Lua typed into the composer, to run against the shown
+    /// browser in the same sandbox as the rally's AI-authored code (browser
+    /// functions on that one tab, nothing else).
+    RunLua { code: String },
+    /// One recorded step reported by a page being recorded. The pane's ipc
+    /// handler stamps `from` with the page's name (same as `Button`).
+    /// `act` is fill/click/press/secret; `value` is the committed text
+    /// (fill), the key name (press), or empty.
+    Recorded {
+        from: Option<String>,
+        act: String,
+        sel: String,
+        value: String,
+    },
     /// A file attached in the desktop composer. `id` correlates the async reply
     /// (`window.__attachDone(id, …)`), `name` is the declared filename, `data` is
     /// the base64 bytes. Saved beside the active tab. Window-only — the phone
@@ -632,6 +776,10 @@ pub struct Browser {
     /// The bar we keep showing. One per page.
     /// A `None` key means the main view
     pending_ask: std::sync::Mutex<std::collections::HashMap<Option<String>, (String, String)>>,
+    /// Pages whose Lua recorder is armed (📼). The same navigation problem as
+    /// the bar: the JS world (and its recOn flag) dies on every navigation, so
+    /// membership here is what's true, re-issued per new document.
+    pending_rec: std::sync::Mutex<std::collections::HashSet<Option<String>>>,
     /// A different signal that arrived while we were waiting on something.
     ///
     /// Skipping and discarding it means anything sent before the wait
@@ -776,6 +924,7 @@ impl Browser {
             events: ev_rx,
             next_id: AtomicU64::new(1),
             pending_ask: std::sync::Mutex::new(std::collections::HashMap::new()),
+            pending_rec: std::sync::Mutex::new(std::collections::HashSet::new()),
             spare: std::sync::Mutex::new(Vec::new()),
         };
         // Don't return until the document is ready. Returning as soon as
@@ -1031,16 +1180,47 @@ impl Browser {
         evs
     }
 
-    /// Re-show a bar that navigation wiped out. Only re-shown for the page that navigated
+    /// Arm/disarm the Lua recorder (📼) on a page. Like the bar, "should it be
+    /// recording" lives here and is re-issued on every new document.
+    pub fn record(&self, to: Option<&str>, on: bool) -> Result<()> {
+        let key = to.map(str::to_string);
+        if on {
+            self.pending_rec.lock().unwrap().insert(key);
+        } else {
+            self.pending_rec.lock().unwrap().remove(&key);
+        }
+        self.eval_in(to, &format!("window.__shikisha_rec && window.__shikisha_rec({on});"))
+            .map(|_| ())
+    }
+
+    /// Silence the recorder everywhere (there's only ever one recorder — arming
+    /// a page goes through this first, so two pages never record at once)
+    pub fn record_all_off(&self) {
+        let keys: Vec<Option<String>> =
+            self.pending_rec.lock().unwrap().drain().collect();
+        for k in keys {
+            let _ = self.eval_in(
+                k.as_deref(),
+                "window.__shikisha_rec && window.__shikisha_rec(false);",
+            );
+        }
+    }
+
+    /// Re-dress a document that navigation just wiped: the ask bar and the
+    /// recorder arming are both Rust-remembered state, re-issued per new
+    /// document. Only for the page that navigated
     fn reask(&self, to: Option<&str>) {
         let key = to.map(str::to_string);
         let want = self.pending_ask.lock().unwrap().get(&key).cloned();
         if let Some((t, l)) = want {
             let _ = self.send(Cmd::Ask {
-                to: key,
+                to: key.clone(),
                 text: t,
                 label: l,
             });
+        }
+        if self.pending_rec.lock().unwrap().contains(&key) {
+            let _ = self.eval_in(to, "window.__shikisha_rec && window.__shikisha_rec(true);");
         }
     }
 
@@ -1491,6 +1671,12 @@ fn run_window(
                             let ev = match ev {
                                 Ev::Button { .. } => Ev::Button {
                                     from: Some(who.clone()),
+                                },
+                                Ev::Recorded { act, sel, value, .. } => Ev::Recorded {
+                                    from: Some(who.clone()),
+                                    act,
+                                    sel,
+                                    value,
                                 },
                                 Ev::Ready { url, complete, .. } => Ev::Ready {
                                     from: Some(who.clone()),

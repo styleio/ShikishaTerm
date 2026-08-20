@@ -177,6 +177,13 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   #casttarget { display:flex; align-items:center; gap:8px; flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #casttarget::-webkit-scrollbar { display:none; }
+  /* 📼 record/run: two radios + a hint, same row shape as 🎯. */
+  #castlua { display:flex; align-items:center; gap:12px; flex:1 1 0; min-width:0;
+    padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
+  #castlua::-webkit-scrollbar { display:none; }
+  .castradio { flex:none; display:flex; align-items:center; gap:5px; font-size:13px;
+    color:var(--text); cursor:pointer; user-select:none; }
+  .castradio input { accent-color:var(--brand); margin:0; }
   .castaction { flex:0 0 auto; max-width:60vw; overflow:hidden; text-overflow:ellipsis;
     padding:7px 12px; font-size:13px; border:1px solid var(--brand); border-radius:14px;
     background:rgba(0,170,255,.10); color:var(--text); cursor:pointer; user-select:none; }
@@ -1098,6 +1105,13 @@ window.__state = function (json) {
     const onTermTab = !screen.hidden && !web && !modelTabNow && S.active !== 0;
     if (!onTermTab) closeBar();
   }
+  // 📼 recording is "record what I do on THIS page": leaving the tab ends it,
+  // so the radio never claims a recording that moved out from under it. The
+  // server side disarms every page on off, so this can't miss the right one.
+  if (S.active !== lastCastActive && luaMode === "rec") {
+    luaMode = "run";
+    send({kind:"record", on:false});
+  }
   // The panel area follows the active tab: which panels exist (a browser tab has
   // no 🎯 target panel, so the switcher itself comes and goes) and the target
   // panel's operator gating both depend on it. If the active tab changed while
@@ -1537,6 +1551,10 @@ if (REMOTE) {
     connected();
     if (d.ui) window.__state(typeof d.ui === "string" ? d.ui : JSON.stringify(d.ui));
     if (d.screen_html != null) { window.__screen(d.screen_html); pgArrived(); }
+    // 📼 pushes: a recorded Lua line for the composer, or a ▶ run's verdict
+    // (null = clean, so test for the key's presence, not its truthiness).
+    if (d.recorded != null) window.__recorded(d.recorded);
+    if ("luadone" in d) window.__luaDone(d.luadone);
   };
   const connectState = () => {
     if (cut) return;
@@ -1863,6 +1881,10 @@ function growCastInput() {
   if (!castInput) return;
   castInput.style.height = "auto";
   castInput.style.height = Math.min(castInput.scrollHeight, Math.round(window.innerHeight * 0.4)) + "px";
+  // Over a browser tab the dock's height decides how much of #page the native
+  // browser may cover — a grown textarea must push that reserve up too, or the
+  // panel row slides in under the browser layer and can't be clicked.
+  if (typeof syncBrowserReserve === "function") syncBrowserReserve();
 }
 // The window has no remote HTTP server, so it saves over the ipc bridge: post the
 // bytes, and Rust replies by eval-ing window.__attachDone(id, result). Correlate
@@ -1913,7 +1935,7 @@ async function attachFile(file) {
     attachToast(T["attach.err.failed"] || "Attach failed", true);
   }
 }
-let castDock = null, castBar = null, castInput = null, castKeysEl = null, castAttEl = null;
+let castDock = null, castBar = null, castInput = null, castKeysEl = null, castAttEl = null, castSendEl = null;
 // The active tab the 🎯 target panel was last built for, so __state can rebuild it
 // when the operator changes (its enabled/disabled gate depends on that tab).
 let lastCastActive = null;
@@ -1922,6 +1944,9 @@ let lastCastActive = null;
 // actions, or (later) the operate-target picker. Default: keys on the phone (no
 // physical keyboard), actions on the desktop.
 let castPanel = null, castPanelEl = null;
+// 📼's chosen mode ("rec" | "run"). "run" until the user opts into recording —
+// arming a recorder is never a side effect of merely opening the panel.
+let luaMode = "run";
 // The tab the "operate" (🎯) panel is aimed at, or null. Step 1 = choosing it;
 // the operate engine (the active AI writes Lua to drive it) is layered on next.
 let castTarget = null;
@@ -1983,8 +2008,9 @@ function buildTargetPanel() {
 function panelOptions() {
   const opts = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions", "target"] : ["actions", "target"];
   // A browser tab is operated, not an operator, so it has no 🎯 target panel —
-  // otherwise it's the same sub-input bar as an AI tab.
-  return onBrowserTab() ? opts.filter(p => p !== "target") : opts;
+  // instead it gains 📼 (record page actions as Lua / run composer Lua on the
+  // page). Otherwise it's the same sub-input bar as an AI tab.
+  return onBrowserTab() ? opts.filter(p => p !== "target").concat("lua") : opts;
 }
 // Window only: over a browser tab, reuse the composer (the sub-input bar) and
 // reserve room on #page so the native browser — which is layered on top of the
@@ -1992,14 +2018,23 @@ function panelOptions() {
 // the reserve follows that open/closed state (enough for the FAB, or for the dock).
 function syncBrowserDock() {
   if (typeof REMOTE !== "undefined" && REMOTE) return;
+  if (!onBrowserTab()) { syncBrowserReserve(); return; }
+  ensureBar();
+  if (panelOptions().indexOf(castPanel) < 0) castPanel = panelOptions()[0];
+  renderPanel();
+  syncBrowserReserve();
+}
+// Just the reserve: how much of #page the native browser must leave to the
+// dock. Split out because the dock's height also changes when the composer
+// textarea grows (a recorded line landing, a long paste) — that path needs the
+// reserve refreshed without rebuilding the panel on every keystroke.
+function syncBrowserReserve() {
+  if (typeof REMOTE !== "undefined" && REMOTE) return;
   const page = document.getElementById("page");
   if (!onBrowserTab()) {
     if (page.style.bottom) { page.style.bottom = ""; scheduleReport(); }
     return;
   }
-  ensureBar();
-  if (panelOptions().indexOf(castPanel) < 0) castPanel = panelOptions()[0];
-  renderPanel();
   const dockOpen = castDock && castDock.style.display === "flex";
   const reserve = dockOpen
     ? Math.round(castDock.getBoundingClientRect().height)
@@ -2011,20 +2046,96 @@ function syncBrowserDock() {
 function panelName(p) {
   return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
     : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
+    : p === "lua" ? (T["tui.cast.panel.lua"] || "Lua record / run")
     : (T["tui.cast.panel.target"] || "Target");
 }
 // A compact emoji for the switcher itself — text labels ate horizontal width.
-function panelLabel(p) { return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : "🎯"; }
+function panelLabel(p) { return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼" : "🎯"; }
 function panelContent(p) {
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
   if (p === "target") { return buildTargetPanel(); }
+  if (p === "lua") { return buildLuaPanel(); }
   return null;
 }
+// The 📼 panel: ⏺ turns what happens on the shown page into Lua lines in the
+// composer (Send becomes Copy); ▶ runs the composer's Lua against the page in
+// the same sandbox the rally's AI code runs in (Send becomes Run). Recording
+// is armed server-side and survives panel switches (the phone needs ⌨️ while
+// recording); a TAB switch turns it off — see the __state handler.
+// 📼's transient status, shown in the panel's hint slot until the next action.
+// A toast can't do this job: over a browser tab the native page is layered on
+// top of the HTML, so anything outside the dock's reserved band is invisible.
+let luaNote = null;
+function luaFlash(text, bad) { luaNote = {text: text, bad: !!bad}; if (castPanel === "lua") renderPanel(); }
+function buildLuaPanel() {
+  const wrap = el("div", {id:"castlua"});
+  const mk = (mode, glyph, label) => {
+    const lab = el("label", {class:"castradio"});
+    const r = el("input", {type:"radio", name:"luamode", value:mode});
+    if (luaMode === mode) r.checked = true;
+    r.onchange = () => {
+      luaMode = mode;
+      luaNote = null;
+      send({kind:"record", on: mode === "rec"});
+      renderPanel();
+    };
+    lab.append(r, document.createTextNode(glyph + " " + label));
+    return lab;
+  };
+  const hint = luaNote ? luaNote.text
+    : luaMode === "rec"
+      ? (T["tui.cast.lua.rechint"] || "Operate the page — each step lands here as Lua.")
+      : (T["tui.cast.lua.runhint"] || "Type or paste Lua, then press Run.");
+  const tone = luaNote ? (luaNote.bad ? ";color:var(--danger)" : ";color:var(--brand)") : "";
+  wrap.append(
+    mk("rec", "⏺", T["tui.cast.lua.rec"] || "Record"),
+    mk("run", "▶", T["tui.cast.lua.run"] || "Run"),
+    el("span", {class:"hint", style:"flex:1 1 0;min-width:0" + tone, title: hint}, hint));
+  return wrap;
+}
+// 📼 copy: the composer's Lua to the clipboard. navigator.clipboard needs a
+// secure context, which the phone (plain http) doesn't have — fall back to the
+// selection route there.
+function copyComposer() {
+  if (!castInput || !castInput.value) return;
+  const done = () => luaFlash("📋 " + (T["tui.cast.lua.copied"] || "Copied"));
+  const fallback = () => {
+    try { castInput.focus(); castInput.select(); document.execCommand("copy"); done(); } catch (e) {}
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(castInput.value).then(done, fallback);
+  } else { fallback(); }
+}
+// A recorded step arrived (window: eval'd in; phone: over /ws-state). Append
+// it to the composer as one Lua line.
+window.__recorded = function (line) {
+  try {
+    ensureBar();
+    const cur = castInput.value;
+    castInput.value = cur + (cur && !cur.endsWith("\n") ? "\n" : "") + line + "\n";
+    growCastInput();
+  } catch (e) {}
+};
+// The verdict of a ▶ run: null = ran clean, a string = the error text.
+window.__luaDone = function (err) {
+  try {
+    luaFlash(err ? ("⚠ " + String(err).slice(0, 300)) : ("✔ " + (T["tui.cast.lua.ok"] || "Ran")), !!err);
+  } catch (e) {}
+};
 // 📎 attaches a file FOR AN AI — it's saved and its path dropped into the
 // composer to hand over. While the composer feeds a browser page (window native
 // or phone relay) a path is just text typed into the site, so the button hides.
 function syncAttach() { if (castAttEl) castAttEl.style.display = drivingBrowser() ? "none" : ""; }
+// The Send button doubles as 📼's verb: Copy while recording (the recorded Lua
+// is a deliverable, not something to send), Run in run mode, plain Send elsewhere.
+function syncSendLabel() {
+  if (!castSendEl) return;
+  castSendEl.textContent =
+    castPanel === "lua"
+      ? (luaMode === "rec" ? (T["tui.cast.lua.copy"] || "Copy") : (T["tui.cast.lua.exec"] || "Run"))
+      : (T["tui.cast.send"] || "Send");
+}
 // (Re)fill the panel area: the fixed switcher (only when there's more than one
 // choice) plus the current panel's content. The switcher sits outside the
 // scrolling content, so it stays put while the chips/keys scroll under it.
@@ -2053,6 +2164,8 @@ function renderPanel() {
       title: T["tui.cast.actions.edit"] || "Edit quick actions",
       onclick: () => openSettings("actions", true)}, "⚙️"));
   }
+  // After the reset above, castPanel is final for this render — relabel Send.
+  syncSendLabel();
 }
 function ensureBar() {
   if (castDock) return;
@@ -2061,7 +2174,7 @@ function ensureBar() {
   castInput = el("textarea", {id:"castinput", rows:"1", autocomplete:"off",
     autocapitalize:"off", spellcheck:"false",
     placeholder: T["tui.cast.type.ph"] || "Type here to send"});
-  const send = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "Send");
+  castSendEl = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "Send");
   const bs = el("button", {class:"castbtn", onclick:() => sendCastKey("backspace")}, "⌫");
   // ✕ only dismisses the keyboard (the sub-input bar itself stays visible throughout control mode)
   // In browser control mode ✕ only drops the keyboard (the bar stays — the relay
@@ -2083,11 +2196,11 @@ function ensureBar() {
   // the default pointerdown action weren't prevented, focus would shift to
   // the button, the keyboard would close, and typing couldn't continue.
   // ✕ is deliberately excluded since closing it is the whole point
-  [bs, send].forEach(b => b.addEventListener("pointerdown", (e) => e.preventDefault()));
+  [bs, castSendEl].forEach(b => b.addEventListener("pointerdown", (e) => e.preventDefault()));
   // Attach works on both now (phone over HTTP, window over ipc). The backspace
   // key is only useful on the phone, whose on-screen keyboard the composer
   // sometimes covers; the window has a real keyboard. el() skips nulls.
-  castBar = el("div", {id:"castbar"}, castAttEl, fileIn, (REMOTE ? bs : null), castInput, send, close);
+  castBar = el("div", {id:"castbar"}, castAttEl, fileIn, (REMOTE ? bs : null), castInput, castSendEl, close);
   // One switchable panel above the input row (keys / actions / target), chosen by
   // a fixed switcher, instead of stacking every row at once. Default: keys on the
   // phone, actions on the desktop.
@@ -2132,6 +2245,14 @@ function closeBar() { if (castDock) castDock.style.display = "none"; if (castInp
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
+  // 📼 owns the button while its panel is up: Copy the recorded Lua, or Run
+  // the composer's Lua on the shown page. The text stays put in both cases —
+  // it's a document being built/iterated, not a message being fired off.
+  if (castPanel === "lua") {
+    if (luaMode === "rec") { copyComposer(); return; }
+    if (t) { luaNote = null; renderPanel(); send({kind:"runlua", code: t}); }
+    return;
+  }
   if (drivingBrowser()) {
     // Browser (phone relay or window native): inject the confirmed text as one
     // batch into the shown page, or a bare Enter. Same path for both surfaces.

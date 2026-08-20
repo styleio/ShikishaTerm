@@ -403,6 +403,15 @@ struct WinSurface {
     /// "Operate a target tab" requests from the 🎯 panel: (target tab index, goal).
     /// target 0 = detach. The loop attaches the active AI as the target's operator.
     operates: Vec<(usize, String)>,
+    /// 📼 record-mode toggles from the composer (true = arm the shown browser's
+    /// recorder, false = silence recording everywhere).
+    record_arms: Vec<bool>,
+    /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
+    /// shown browser.
+    run_luas: Vec<String>,
+    /// Recorded steps reported by pages ((in-window name, act, sel, value)).
+    /// The loop turns each into one Lua line for the composer.
+    recorded: Vec<(String, String, String, String)>,
     /// Text/keys typed into the composer while viewing a browser tab. The loop
     /// injects them into the shown browser — the very same caps.browser_inject the
     /// phone's relay uses, so the desktop composer and the phone share one path.
@@ -475,6 +484,31 @@ impl WinSurface {
         std::mem::take(&mut self.run_actions)
     }
 
+    /// Takes the 📼 record-mode toggles since the last drain.
+    fn take_record_arms(&mut self) -> Vec<bool> {
+        std::mem::take(&mut self.record_arms)
+    }
+
+    /// Takes the composer Lua awaiting a sandboxed run (▶) since the last drain.
+    fn take_run_luas(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.run_luas)
+    }
+
+    /// Takes the recorded steps reported by pages since the last drain.
+    fn take_recorded(&mut self) -> Vec<(String, String, String, String)> {
+        std::mem::take(&mut self.recorded)
+    }
+
+    /// Deliver one recorded Lua line (already JSON-encoded) to the composer.
+    fn push_recorded(&self, line_json: &str) {
+        let _ = self.win.eval(&format!("window.__recorded({line_json});"));
+    }
+
+    /// Deliver the verdict of a ▶ run (JSON: null = clean, string = the error).
+    fn push_lua_done(&self, err_json: &str) {
+        let _ = self.win.eval(&format!("window.__luaDone({err_json});"));
+    }
+
     /// Takes the composer inputs bound for the shown browser since the last drain.
     fn take_injects(&mut self) -> Vec<crate::browser::Input> {
         std::mem::take(&mut self.injects)
@@ -518,6 +552,16 @@ impl WinSurface {
                 Ev::RunAction { index } => self.run_actions.push(index),
                 // Operate-a-target request; the loop has the engine to attach it.
                 Ev::Operate { target, goal } => self.operates.push((target, goal)),
+                // 📼 / ▶ from the composer, and recorded steps from pages. All
+                // resolved by the loop (it knows the shown browser and the engine).
+                Ev::Record { on } => self.record_arms.push(on),
+                Ev::RunLua { code } => self.run_luas.push(code),
+                Ev::Recorded {
+                    from: Some(child),
+                    act,
+                    sel,
+                    value,
+                } => self.recorded.push((child, act, sel, value)),
                 // Composer input while viewing a browser tab. Stash it; the loop
                 // injects it into the shown browser via caps.browser_inject — the
                 // same call the phone's relay makes, not a desktop-only path.
@@ -590,6 +634,23 @@ impl WinSurface {
             }
         }
     }
+}
+
+/// One recorded step → one line of the dialect every Lua surface here speaks
+/// (the rally, quick actions, ▶ run mode). JSON escaping is used for the
+/// strings — Lua's double-quoted literals accept everything the recorder will
+/// realistically produce (\n, \t, \", \\).
+fn recorded_lua(name: &str, act: &str, sel: &str, value: &str) -> Option<String> {
+    let n = serde_json::to_string(name).ok()?;
+    let s = serde_json::to_string(sel).ok()?;
+    Some(match act {
+        "fill" => format!("browser_fill({n}, {s}, {})", serde_json::to_string(value).ok()?),
+        "click" => format!("browser_click({n}, {s})"),
+        "press" => format!("browser_press({n}, {})", serde_json::to_string(value).ok()?),
+        // Never the typed password itself — a fill-from-secrets step to finish by hand
+        "secret" => format!("browser_fill_secret({n}, {s}, \"KEY\") -- set your secrets key name"),
+        _ => return None,
+    })
 }
 
 /// Converts an intent from the screen into keystrokes the loop already understands.
@@ -722,6 +783,9 @@ fn run_in_window() -> Result<()> {
         remote_cut: false,
         chats: Vec::new(),
         run_actions: Vec::new(),
+        record_arms: Vec::new(),
+        run_luas: Vec::new(),
+        recorded: Vec::new(),
         operates: Vec::new(),
         injects: Vec::new(),
     })
@@ -1710,6 +1774,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::Operate { target, goal }) => {
                         surface.operates.push((target, goal));
                     }
+                    // 📼 / ▶ from the phone's composer: same queues as the window's.
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Record { on }) => {
+                        surface.record_arms.push(on);
+                    }
+                    remote::RemoteCmd::Ui(crate::browser::Ev::RunLua { code }) => {
+                        surface.run_luas.push(code);
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         for e in keys_for(&ev) {
@@ -2086,6 +2157,56 @@ fn run(mut surface: WinSurface) -> Result<()> {
             };
             if let Some(eng) = engine.as_mut() {
                 eng.fire_action(&code, &ctx);
+            }
+        }
+
+        // 📼 record-mode toggles: arm the shown browser's recorder (off silences
+        // recording everywhere — caps keeps it to one recorder at a time).
+        for on in surface.take_record_arms() {
+            if let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) {
+                let _ = caps.browser_record(key, on);
+            } else if !on {
+                // "Off" must land even when the browser tab is no longer shown
+                // (e.g. the tab switch that caused it) — it names no page.
+                let _ = caps.browser_record("", false);
+            }
+        }
+
+        // ▶ run mode: composer Lua against the shown browser, in the rally's
+        // sandbox (browser functions on that one tab, nothing else). The verdict
+        // returns as a toast on both surfaces.
+        for code in surface.take_run_luas() {
+            let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) else {
+                continue;
+            };
+            // Running needs an engine; make a bare one if this workspace didn't
+            // otherwise have any Lua (same gap-filler as 🎯 operate).
+            if engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
+            let Some(eng) = engine.as_mut() else { continue };
+            let err = eng.run_browser_lua(key, &code);
+            let js = serde_json::to_string(&err).unwrap_or_else(|_| "null".into());
+            surface.push_lua_done(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"luadone\":{js}}}"));
+            }
+        }
+
+        // Recorded steps → one Lua line each, appended to the composer on both
+        // surfaces. Each line calls the same primitives the automation uses,
+        // addressed by the browser's Lua name, so record → paste → run round-trips.
+        for (child, act, sel, value) in surface.take_recorded() {
+            let Some(name) = caps.name_of_child(&child) else {
+                continue;
+            };
+            let Some(line) = recorded_lua(&name, &act, &sel, &value) else {
+                continue;
+            };
+            let js = serde_json::to_string(&line).unwrap_or_default();
+            surface.push_recorded(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"recorded\":{js}}}"));
             }
         }
 
@@ -4636,6 +4757,46 @@ fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A recorded step must come out as ONE line of the shared Lua dialect,
+    /// runnable by run_scoped as-is (record → paste → run must round-trip).
+    #[test]
+    fn recorded_steps_become_runnable_lua_lines() {
+        assert_eq!(
+            recorded_lua("web", "fill", "#q", "hello").as_deref(),
+            Some(r##"browser_fill("web", "#q", "hello")"##)
+        );
+        assert_eq!(
+            recorded_lua("web", "click", "#go", "").as_deref(),
+            Some(r##"browser_click("web", "#go")"##)
+        );
+        assert_eq!(
+            recorded_lua("web", "press", "", "enter").as_deref(),
+            Some(r##"browser_press("web", "enter")"##)
+        );
+        // A typed password never lands in the line — only a secrets-store stub
+        let secret = recorded_lua("web", "secret", "#pw", "hunter2").unwrap();
+        assert!(!secret.contains("hunter2"), "password leaked: {secret}");
+        assert!(secret.contains("browser_fill_secret"));
+        // Unknown acts are dropped, not guessed at
+        assert_eq!(recorded_lua("web", "hover", "#x", ""), None);
+        // Quotes and newlines in values survive as valid Lua escapes
+        assert_eq!(
+            recorded_lua("web", "fill", "#q", "a\"b\nc").as_deref(),
+            Some("browser_fill(\"web\", \"#q\", \"a\\\"b\\nc\")")
+        );
+    }
+
+    /// The recorded dialect must actually run in the sandbox it claims to
+    /// round-trip into (bare browser_* names, that browser only).
+    #[test]
+    fn recorded_lines_parse_in_the_run_sandbox_dialect() {
+        let line = recorded_lua("web", "fill", "#q", "あいうえお").unwrap();
+        assert!(
+            hooks::lint_lua(&line).is_none(),
+            "recorded line does not compile: {line}"
+        );
+    }
 
     fn parser_with_lines(rows: u16, cols: u16, n: usize) -> vt100::Parser {
         let mut p = vt100::Parser::new(rows, cols, 100);
