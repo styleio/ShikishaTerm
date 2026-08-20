@@ -1310,9 +1310,13 @@ fn handle(
             let info = effective_remote(remote);
             let ts = crate::netaddr::tailscale_ip().map(|i| i.to_string());
             let lan = crate::netaddr::lan_ip().map(|i| i.to_string());
+            // The full URL embeds the access token (= full-machine control),
+            // so it never leaves the server as text. The page gets the origin
+            // only; the token reaches the phone solely inside the QR image
+            let origin = info.url.split("/?").next().unwrap_or("").to_string();
             let resp = serde_json::json!({
                 "running": info.running,
-                "url": info.url,
+                "origin": origin,
                 "note": info.note,
                 "tailscale": ts,
                 "lan": lan,
@@ -2805,12 +2809,13 @@ function remoteCard() {
     status.textContent = head + " — " + net + (j.note ? " / " + j.note : "");
     status.style.color = j.running ? "var(--accent)" : "var(--muted)";
     qrbox.textContent = "";
-    if (j.running && j.url) {
+    if (j.running && j.origin) {
       // The image is loaded directly rather than via fetch, so pass auth as the token in the URL
       const img = el("img", {src:"/api/remote/qr?token=" + encodeURIComponent(TOKEN),
         style:"width:200px;height:200px;border-radius:8px;background:#fff;padding:6px"});
+      // Only the origin is printed — the access token stays inside the QR image
       qrbox.append(el("div", {class:"hint"}, T["settings.phone.scan"]), img,
-        el("div", {class:"hint mono", style:"word-break:break-all"}, j.url));
+        el("div", {class:"hint mono", style:"word-break:break-all"}, j.origin));
     }
   }
   return box;
