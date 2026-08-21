@@ -9,6 +9,15 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A broken `config.json` says so, instead of showing an empty screen.** The
+  settings page now names the file, quotes the line, marks the character the
+  parser stopped at, and holds Save until it's fixed and reloaded — previously
+  the parse failure was swallowed, the form came up blank, and pressing Save
+  would have written that blankness over the real configuration. A broken
+  workspace file is handled the same way, for the same reason.
+- **Opening the Quick actions card no longer counts as an edit.** Drawing it
+  filled in `lua: false`, which lit up "unsaved" on arrival and wrote that
+  default into `config.json` on the next save.
 - **Phone: "Edit settings" on INDEX actually opens the settings.** The board was
   forwarding it as a keystroke, which only ever lands in the window, so from a
   phone the entry looked alive and did nothing. It now walks to the phone's own

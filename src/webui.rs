@@ -692,6 +692,78 @@ fn json_resp(v: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
     ))
 }
 
+/// What one of the user's JSON files amounts to right now: usable text, or a
+/// refusal to hand it over with the reason attached.
+///
+/// Split out from the responding so the decision can be tested on its own —
+/// what counts as "missing" versus "broken" is the whole point of this.
+enum UserJson {
+    /// The file's text (or `empty` when it simply isn't there yet).
+    Text(String),
+    /// It exists but can't be used. Carries the HTTP status and the body that
+    /// says why, so the settings page can point at the mistake.
+    Refused(u16, serde_json::Value),
+}
+
+fn read_user_json(path: &std::path::Path, empty: &str) -> UserJson {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        // Not there yet is not a refusal: that's a fresh install, and `empty` is
+        // what it should look like.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return UserJson::Text(empty.into()),
+        Err(e) => {
+            return UserJson::Refused(
+                500,
+                serde_json::json!({
+                    "ok": false,
+                    "path": path.to_string_lossy(),
+                    "error": e.to_string(),
+                }),
+            );
+        }
+    };
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(_) => UserJson::Text(text),
+        // The text rides along so the page can show the offending line itself,
+        // rather than making someone count to line 24 in an editor.
+        Err(e) => UserJson::Refused(
+            409,
+            serde_json::json!({
+                "ok": false,
+                "path": path.to_string_lossy(),
+                "error": e.to_string(),
+                "line": e.line(),
+                "column": e.column(),
+                "text": text,
+            }),
+        ),
+    }
+}
+
+/// Hands one of the user's JSON files to the settings page — and refuses plainly
+/// when the file is there but unusable.
+///
+/// A file that doesn't exist yet is not a refusal: that's a fresh install, and
+/// `empty` is what it should look like. A file that exists but won't parse used
+/// to be answered with 200 and its broken text, which left the page with a
+/// thrown parse, an empty form and no explanation — and Save would then write
+/// that emptiness over the real thing. So say what's wrong and where, and let
+/// the page hold Save until it's fixed.
+fn serve_user_json(req: tiny_http::Request, path: &std::path::Path, empty: &str) -> Result<()> {
+    match read_user_json(path, empty) {
+        UserJson::Text(text) => {
+            let resp = secure(Response::from_string(text).with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
+                    .unwrap(),
+            ));
+            req.respond(resp).map_err(Into::into)
+        }
+        UserJson::Refused(status, body) => req
+            .respond(json_resp(body).with_status_code(status))
+            .map_err(Into::into),
+    }
+}
+
 /// Path to the secrets file. Uses config's setting if present, otherwise secrets.json next to config.json
 fn secrets_file(config_path: &std::path::Path) -> std::path::PathBuf {
     crate::config::load()
@@ -762,14 +834,7 @@ fn handle(
             ));
             req.respond(resp)?;
         }
-        ("GET", "/api/config") => {
-            let text = std::fs::read_to_string(config_path).unwrap_or_else(|_| "{}".into());
-            let resp = Response::from_string(text).with_header(
-                Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
-                    .unwrap(),
-            );
-            req.respond(resp)?;
-        }
+        ("GET", "/api/config") => serve_user_json(req, config_path, "{}")?,
         // Opens an external help/report page in the user's real browser (not
         // the in-app WebView). Destinations are whitelisted, so the page can
         // never be talked into acting as an open redirect.
@@ -998,12 +1063,7 @@ fn handle(
                     .respond(Response::from_string("bad path").with_status_code(400))
                     .map_err(Into::into);
             };
-            let text = std::fs::read_to_string(&p).unwrap_or_else(|_| r#"{"tabs":[]}"#.into());
-            let resp = Response::from_string(text).with_header(
-                Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
-                    .unwrap(),
-            );
-            req.respond(resp)?;
+            serve_user_json(req, &p, r#"{"tabs":[]}"#)?;
         }
         ("POST", "/api/workspace") => {
             let Some(p) = safe_workspace_path(req.url(), config_path) else {
@@ -1613,6 +1673,8 @@ const PAGE: &str = r##"<!doctype html>
  .modal-inner { background:var(--panel); border:1px solid var(--line); border-radius:12px;
    width:min(880px,92vw); max-height:88vh; overflow:auto; padding:20px 24px; }
  .modal-inner h2 { text-transform:none; font-size:15px; color:var(--text); margin:0 0 4px; }
+ /* The exact character a parser stopped at, inside an excerpt. */
+ pre .at { background:var(--danger); color:#fff; border-radius:2px; padding:0 1px; }
  pre { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:12px;
    overflow:auto; max-height:240px; font-size:12.5px; }
  a { color:var(--accent); }
@@ -1796,6 +1858,11 @@ let navGlobalOpen = true;
 // When opened via a deep-link shortcut (?ret=1), returning to the board after a
 // successful save is the natural finish, so the caller doesn't have to close it.
 let returnOnSave = false;
+// Set when one of the user's files came back unusable (broken JSON, unreadable).
+// While it's held, the screen shows what's wrong and Save is off: the form has
+// nothing in it, and writing it out would put that emptiness where the real
+// configuration used to be.
+let loadFailure = null;
 let aiEngines = [];
 // The language setting as of when the page was opened. Used at save time to check "did it change = is a restart needed?"
 let loadedLanguage = "";
@@ -1819,6 +1886,22 @@ const msg = (t, warn) => {
   void m.offsetWidth;
   if (!warn) m.classList.add("flash");
 };
+
+// Reads one of the user's JSON files. The server answers plainly when a file is
+// there but unusable, so a broken file arrives as something to show rather than
+// as a thrown parse and a blank screen.
+async function readUserJson(res) {
+  if (res.ok) {
+    try { return {value: await res.json()}; }
+    catch (e) { return {failure: {error: String(e)}}; }
+  }
+  const info = await res.json().catch(() => ({}));
+  return {failure: {
+    path: info.path || "",
+    error: info.error || (res.status + " " + res.statusText),
+    line: info.line || 0, column: info.column || 0, text: info.text || "",
+  }};
+}
 
 let toastTimer = null;
 function toast(text, warn) {
@@ -2545,6 +2628,7 @@ function placeHeadLinks() {
 // Returns [what encloses it, what's open] — the first half is the one that gets
 // squeezed when the name is long, so the section or tab you're editing survives.
 function crumbParts() {
+  if (loadFailure) return ["", T["settings.broken.title"]];
   if (sel.global) {
     const s = globalSections().find(x => x.id === sel.section);
     return ["", s ? s.label : T["settings.global"]];
@@ -2584,8 +2668,72 @@ document.getElementById("nav").addEventListener("click", e => {
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeNav(); });
 narrow.addEventListener("change", () => { placeHeadLinks(); closeNav(); measureHeader(); });
 
+// ── A file we can't use ───────────────────────────────
+// The settings screen is the editor for these files, so it's the right place to
+// say what's wrong with one. It shows the path, what the parser objected to, and
+// the offending line itself — then holds Save until the file is fixed and
+// reloaded, because everything the form would write is missing.
+function showLoadFailure(f) {
+  loadFailure = f;
+  const btn = document.getElementById("savebtn");
+  btn.disabled = true;
+  btn.classList.remove("dirty");
+  btn.title = T["settings.broken.save_blocked"];
+  document.getElementById("nav").textContent = "";
+  const d = document.getElementById("detail");
+  d.textContent = "";
+  d.append(card(T["settings.broken.title"],
+    f.path ? el("div", {class:"hint mono"}, f.path) : null,
+    el("div", {style:"color:var(--danger);margin:8px 0"}, f.error),
+    brokenExcerpt(f),
+    el("div", {class:"hint"}, T["settings.broken.body"]),
+    el("div", {class:"row", style:"margin-top:10px"},
+      el("button", {class:"primary", onclick:() => load()}, T["common.reload"]))));
+  renderCrumb();
+  placeHeadLinks();
+  result(T["settings.broken.title"], true);
+}
+
+// Back to a working screen: whatever held Save is gone, so give it back.
+function clearLoadFailure() {
+  if (!loadFailure) return;
+  loadFailure = null;
+  const btn = document.getElementById("savebtn");
+  btn.disabled = false;
+  btn.title = "";
+}
+
+// The offending line, with its neighbours for bearings and a caret under the
+// column the parser stopped at.
+function brokenExcerpt(f) {
+  if (!f.line || !f.text) return null;
+  const lines = f.text.split(/\r?\n/);
+  const from = Math.max(0, f.line - 3), to = Math.min(lines.length, f.line + 2);
+  const width = String(to).length;
+  const pre = el("pre");
+  for (let i = from; i < to; i++) {
+    const gutter = String(i + 1).padStart(width, " ") + " | ";
+    if (i + 1 !== f.line) { pre.append(gutter + lines[i] + "\n"); continue; }
+    // The parser counts the column in BYTES, so the line is cut by bytes and the
+    // character itself is marked. A caret placed by counting columns would drift
+    // the moment the line holds a tab name in Japanese — and a pointer that lies
+    // is worse than none. Marking it lets the browser do the placing.
+    const bytes = new TextEncoder().encode(lines[i]);
+    const at = Math.max(0, f.column - 1);
+    const head = new TextDecoder().decode(bytes.slice(0, at));
+    const rest = new TextDecoder().decode(bytes.slice(at));
+    const bad = [...rest][0] || " ";
+    pre.append(gutter, head, el("span", {class:"at"}, bad), rest.slice(bad.length), "\n");
+  }
+  return pre;
+}
+
 // ── Detail pane ───────────────────────────────────────
 function render() {
+  // Nothing loaded, so there is nothing true to draw. Guarding here rather than
+  // at each caller means a deep link, a nav click or a later entry point can't
+  // paint an empty form over the explanation.
+  if (loadFailure) return showLoadFailure(loadFailure);
   if (sel.global && !sel.section) sel.section = globalSections()[0].id;
   renderNav();
   renderDetail();
@@ -2849,17 +2997,20 @@ function actionsCard() {
     listBox.textContent = "";
     if (!current.actions.length) listBox.append(el("div", {class:"hint"}, T["settings.actions.empty"]));
     current.actions.forEach((a, i) => {
-      a.label = a.label || ""; a.body = a.body || ""; a.lua = !!a.lua;
-      const labelIn = el("input", {value:a.label, placeholder:T["settings.actions.label_ph"], style:"width:130px;flex:none"});
+      // Read, never write: filling in defaults here would count as an edit, and
+      // merely opening this card would light up "unsaved" and then write those
+      // defaults into config.json. Same rule as payload() — no side effects.
+      const label = a.label || "", body = a.body || "", isLua = !!a.lua;
+      const labelIn = el("input", {value:label, placeholder:T["settings.actions.label_ph"], style:"width:130px;flex:none"});
       labelIn.addEventListener("input", () => { a.label = labelIn.value; refreshSave(); });
-      const bodyIn = el("textarea", {rows:a.lua ? 4 : 2,
-        placeholder: a.lua ? T["settings.actions.lua_ph"] : T["settings.actions.text_ph"],
-        class: a.lua ? "mono" : "",
+      const bodyIn = el("textarea", {rows:isLua ? 4 : 2,
+        placeholder: isLua ? T["settings.actions.lua_ph"] : T["settings.actions.text_ph"],
+        class: isLua ? "mono" : "",
         style:"flex:1 1 0;min-width:200px;resize:vertical"});
-      bodyIn.value = a.body;
+      bodyIn.value = body;
       bodyIn.addEventListener("input", () => { a.body = bodyIn.value; refreshSave(); });
       // Advanced, per action: the body is Lua run on tap, not text to insert.
-      const luaChk = el("input", {type:"checkbox"}); luaChk.checked = a.lua;
+      const luaChk = el("input", {type:"checkbox"}); luaChk.checked = isLua;
       luaChk.addEventListener("change", () => { a.lua = luaChk.checked; refreshSave(); draw(); });
       const luaLbl = el("label", {class:"hint", style:"display:flex;align-items:center;gap:4px;flex:none"},
         luaChk, T["settings.actions.lua"]);
@@ -2872,7 +3023,7 @@ function actionsCard() {
         style:"flex-basis:100%;color:var(--danger);white-space:pre-wrap;font-family:ui-monospace,monospace"});
       const showErr = () => { errEl.textContent = actionErrors.get(a) || ""; };
       showErr();
-      if (a.lua) {
+      if (isLua) {
         lintAction(a).then(showErr);   // lint on render so an existing break shows at once
         bodyIn.addEventListener("blur", () => lintAction(a).then(() => { showErr(); refreshSave(); }));
       }
@@ -4085,8 +4236,11 @@ async function loadAi() {
 }
 
 async function load() {
+  clearLoadFailure();
   await loadAi();
-  current = await (await api("GET")).json();
+  const cfg = await readUserJson(await api("GET"));
+  if (cfg.failure) return showLoadFailure(cfg.failure);
+  current = cfg.value;
   // Show the built-in starter actions as editable rows when none are configured,
   // matching what the sub-input bar displays out of the box. They're dropped again
   // on save unless the user changes them (see payload), so config stays tidy.
@@ -4108,7 +4262,11 @@ async function load() {
                  stops: Array.isArray(w.stops) ? w.stops : [],
                  discuss: w.discuss || null };
     if (ws.file) {
-      const f = await (await wsApi("GET", ws.file)).json().catch(() => ({}));
+      const got = await readUserJson(await wsApi("GET", ws.file));
+      // A workspace file is loaded to be written back. If it can't be read, the
+      // tabs would come out empty and saving would erase them, so stop here too.
+      if (got.failure) return showLoadFailure(got.failure);
+      const f = got.value;
       ws.tabs = flatten(f.tabs, 0, []);
       if (!ws.automation) ws.automation = f.automation || f.lua || "";
       if (!ws.secrets_allow.length) ws.secrets_allow = f.secrets_allow || [];
@@ -4125,6 +4283,9 @@ async function load() {
 }
 
 async function save() {
+  // Never write over a file we couldn't read. The form is empty because loading
+  // failed, not because the user emptied it.
+  if (loadFailure) { result(T["settings.broken.save_blocked"], true); return; }
   // Refuse to write a quick action whose Lua doesn't even parse (compile-checked
   // server-side). Jump to the actions card so the red errors are in view.
   if ((current.actions || []).some(a => a.lua)) {
@@ -4167,7 +4328,10 @@ function payload() {
   ["automation","secrets","ai_engine","browser_data","language"].forEach(k => { if (!out[k]) delete out[k]; });
   // Quick actions: drop rows left without a label, and omit the key entirely if none remain.
   if (out.actions) {
-    out.actions = out.actions.filter(a => a && (a.label || "").trim());
+    out.actions = out.actions
+      .filter(a => a && (a.label || "").trim())
+      // `lua` is off unless it's on, so only the exception is worth writing down.
+      .map(a => { const o = Object.assign({}, a); if (!o.lua) delete o.lua; return o; });
     // Drop the block when empty, or when it's still exactly the seeded starter set
     // (so an untouched default config isn't written out with the shown rows).
     const def = defaultActions();
@@ -4280,7 +4444,8 @@ function goIndex() {
 // Closes settings. Returns to the operating board (INDEX), folding the settings tab away and removing it from the list on the left too.
 // If there are unsaved changes, warns first that they'll be lost
 function closeSettings() {
-  if (snapshot() !== savedSnapshot && !confirm(T["settings.back.confirm"])) return;
+  // Nothing was loaded, so there is nothing to lose — don't ask.
+  if (!loadFailure && snapshot() !== savedSnapshot && !confirm(T["settings.back.confirm"])) return;
   // In the window this rides the ipc bridge back to the board. On a phone (served
   // over the remote proxy) there is no bridge, so navigate to "/" — the shell,
   // which re-authenticates from its stored token. The unsaved-changes guard above
@@ -4809,6 +4974,82 @@ document.getElementById("doc").innerHTML = render(MD);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file that isn't there yet is a fresh install; a file that's there but
+    /// broken is an emergency. Telling those two apart is the whole job here.
+    ///
+    /// The broken case used to reach the page as 200 with invalid JSON in the
+    /// body: the parse threw, the form stayed empty, and pressing Save would
+    /// then write that emptiness over the real configuration. So the refusal is
+    /// explicit, and it carries enough to point at the mistake.
+    #[test]
+    fn a_broken_file_is_refused_with_the_spot_it_broke_at() {
+        let dir = std::env::temp_dir().join(format!("shikisha-userjson-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let _ = std::fs::remove_file(&path);
+
+        // Missing: hand over the empty shape, no fuss.
+        match read_user_json(&path, "{}") {
+            UserJson::Text(t) => assert_eq!(t, "{}", "未作成のファイルは空の形で渡す"),
+            UserJson::Refused(..) => panic!("未作成なだけで拒否してはいけない"),
+        }
+
+        // Fine: hand it over verbatim, so unknown keys and "//" notes survive.
+        let good = "{\n  \"//note\": \"kept\",\n  \"max_chain\": 10\n}";
+        std::fs::write(&path, good).unwrap();
+        match read_user_json(&path, "{}") {
+            UserJson::Text(t) => assert_eq!(t, good, "読めたファイルは原文のまま渡す"),
+            UserJson::Refused(..) => panic!("正しい JSON を拒否した"),
+        }
+
+        // Broken: refuse, and say where. Naming the line is the point — a bare
+        // "failed to load" would leave someone hunting through their own file.
+        let bad = "{\n  \"name\": \"実装\",\n  \"cwd\": \"D:\\very\"\n}";
+        std::fs::write(&path, bad).unwrap();
+        let UserJson::Refused(status, body) = read_user_json(&path, "{}") else {
+            panic!("壊れた JSON を通してしまった");
+        };
+        assert_eq!(status, 409);
+        assert_eq!(body["ok"], serde_json::json!(false));
+        assert_eq!(body["line"], serde_json::json!(3), "壊れた行を指していない");
+        assert!(body["column"].as_u64().unwrap() > 0, "壊れた桁を指していない");
+        assert_eq!(
+            body["text"],
+            serde_json::json!(bad),
+            "原文が付いていないと、画面が該当行を見せられない"
+        );
+        assert!(
+            body["path"].as_str().unwrap().ends_with("config.json"),
+            "どのファイルの話か分からない"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Opening a card must never count as an edit.
+    ///
+    /// The quick-actions card used to fill in `lua: false` while drawing, so
+    /// merely looking at it lit up "unsaved" and then wrote that default into
+    /// config.json on the next save. payload() already states this rule for
+    /// itself; the card that feeds it has to live by it too.
+    #[test]
+    fn drawing_the_actions_card_writes_nothing() {
+        let from = PAGE.find("function actionsCard()").expect("actionsCard が無い");
+        let body = &PAGE[from..from + 2400];
+        for write in ["a.label =", "a.body =", "a.lua ="] {
+            for (i, _) in body.match_indices(write) {
+                let start = body[..i].rfind('\n').map(|n| n + 1).unwrap_or(0);
+                let end = body[i..].find('\n').map(|n| i + n).unwrap_or(body.len());
+                let line = body[start..end].trim();
+                // An assignment inside a handler is a human editing, and is fine.
+                // One sitting in the drawing path is the bug.
+                assert!(
+                    line.contains("addEventListener"),
+                    "描画中に書き込んでいる: {line}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn manual_is_embedded_and_usable() {
