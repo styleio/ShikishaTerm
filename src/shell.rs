@@ -338,6 +338,11 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
   .mi { display:flex; gap:9px; align-items:center; padding:7px 9px; border-radius:7px;
     cursor:pointer; }
   .mi:hover { background:#161c23; }
+  /* Only the window can carry this one out. Shown, but plainly not tappable
+     from here — a silent no-op would just look broken. */
+  .mi.windowonly { cursor:default; opacity:.45; }
+  .mi.windowonly:hover { background:none; }
+  .mi .only { font-size:11px; color:var(--dim); }
   .row.dim { color:var(--dim); margin-top:8px; }
   .key { font-size:11px; color:#04121c; background:var(--brand); border-radius:4px;
     padding:1px 6px; font-weight:700; }
@@ -561,6 +566,12 @@ const BUILD = {{BUILD}};
 // The menu the dashboard shows. When a key is pressed, that character is delivered to INDEX as-is
 const MENU_KEYS = {{MENU_KEYS}};
 const MENU_WORDS = {{MENU_WORDS}};
+// Menu entries only the window can carry out (the remote gate refuses them too).
+const MENU_WINDOW_ONLY = {{MENU_WINDOW_ONLY}};
+// Menu entries the board carries out itself rather than forwarding as a keystroke.
+// Keyed by the entry's translation key, so the letter on the button can change
+// without this quietly falling back to the keystroke path.
+const MENU_OWN = {"tui.menu.settings": () => openSettings()};
 // The auxiliary key row shown in the screen relay (customizable via config)
 const CAST_KEYS = {{CAST_KEYS}};
 // Quick actions for the sub-input bar: [{label, text, lua}]. text!=null = insert
@@ -694,7 +705,7 @@ function drawTabs() {
       // natively (responsive) — navigate there, handing over the token once in
       // the URL (it's traded for a cookie and stripped on arrival). In the window
       // it opens as the child WebView, as before.
-      onclick:openSettings},
+      onclick:() => openSettings()},
     el("span", {class:"gear"}, "⚙️")));
 }
 
@@ -765,8 +776,16 @@ function drawBoard() {
   const m = el("div", {class:"menu"});
   for (const [k, label] of items) {
     if (!label) continue;
-    m.append(el("div", {class:"mi", onclick:() => send({kind:"menu", key:k})},
-      el("span", {class:"key"}, k), el("span", {}, label)));
+    // An entry the shell performs itself beats a keystroke: settings has a real
+    // destination on both surfaces (the window's child WebView, the phone's own
+    // /cfg page), and a bare 'e' would only ever reach the window.
+    const own = MENU_OWN[MENU_WORDS[k]];
+    const stuck = REMOTE && !own && MENU_WINDOW_ONLY.includes(k);
+    m.append(el("div", {class:"mi" + (stuck ? " windowonly" : ""),
+        title: stuck ? T["tui.menu.window_only"] : label,
+        onclick: stuck ? null : (own || (() => send({kind:"menu", key:k})))},
+      el("span", {class:"key"}, k), el("span", {}, label),
+      stuck ? el("span", {class:"only"}, T["tui.menu.window_only"]) : null));
   }
   b.append(el("div", {class:"card"}, el("h2", {}, "MENU"), m));
 }
@@ -2717,6 +2736,22 @@ pub const MENU: [(&str, &str); 7] = [
     ("?", "tui.menu.help"),
 ];
 
+/// Menu keys only the window can carry out, and which the remote gate therefore
+/// refuses. Settings ("e") is here because a keystroke would only ever reach the
+/// window — the phone doesn't send one, it walks to its own `/cfg` page, so the
+/// board shows that entry as live from afar all the same.
+///
+/// One list, two readers: `remote::allowed_from_afar` refuses these, and the
+/// board dims the ones it can't perform itself. Adding a window-only item here
+/// is all it takes for both sides to agree.
+pub const WINDOW_ONLY_MENU: [&str; 3] = [
+    // Settings and the browser open as child WebViews inside the window.
+    "e", "o",
+    // The master password is asked in the TUI, where answering it blocks the app
+    // until the person at the window replies.
+    "k",
+];
+
 /// The sub-input bar's quick actions, as the shell wants them: `text` is the
 /// string to insert for a plain action, or null for a Lua one (whose source
 /// stays server-side — the shell fires it, it never holds the code).
@@ -2762,6 +2797,10 @@ pub fn page() -> String {
     .replace(
         "{{MENU_WORDS}}",
         &serde_json::to_string(&words).unwrap_or_else(|_| "{}".into()),
+    )
+    .replace(
+        "{{MENU_WINDOW_ONLY}}",
+        &serde_json::to_string(&WINDOW_ONLY_MENU).unwrap_or_else(|_| "[]".into()),
     )
     .replace("{{DICT}}", &dict)
         .replace(
@@ -2825,6 +2864,66 @@ mod tests {
             }
         }
         assert!(checked > 20, "訳語をほとんど読んでいない ({checked}件)");
+    }
+
+    /// The board's "edit settings" entry must never be forwarded as a keystroke.
+    ///
+    /// A keystroke for it only ever lands in the window, so from a phone the
+    /// entry looked alive and did nothing at all: the remote gate refused it and
+    /// the board had no other way to open settings. The board now performs that
+    /// entry itself (the window opens its child WebView, the phone walks to the
+    /// reverse-proxied /cfg page), and this pins the three pieces that has to
+    /// stand on: the entry exists, its keystroke is still window-only (the gate
+    /// reads the same list), and the board claims it by name.
+    #[test]
+    fn the_board_opens_settings_itself_rather_than_sending_a_key() {
+        let (key, word) = super::MENU
+            .iter()
+            .find(|(_, w)| *w == "tui.menu.settings")
+            .copied()
+            .expect("盤面に設定の項目が無い");
+        assert!(
+            super::WINDOW_ONLY_MENU.contains(&key),
+            "設定の打鍵は窓にしか届かない。遠隔の門は {key} を通してはいけない"
+        );
+        assert!(
+            super::page().contains(&format!("MENU_OWN = {{\"{word}\": () => openSettings()}}")),
+            "盤面が設定の項目を自前で担っていない"
+        );
+    }
+
+    /// An entry the window alone can carry out, and which the board can't perform
+    /// itself either, must be visibly unavailable from afar. Anything else is a
+    /// button that silently does nothing, which reads as a broken app.
+    ///
+    /// The master password is the standing case: it's asked in the TUI, where
+    /// answering it blocks the app until the person at the window replies.
+    #[test]
+    fn an_entry_the_phone_cannot_reach_is_marked_as_such() {
+        let page = super::page();
+        let unreachable: Vec<&str> = super::WINDOW_ONLY_MENU
+            .iter()
+            .filter(|key| super::MENU.iter().any(|(k, _)| k == *key))
+            .filter(|key| {
+                let (_, word) = super::MENU.iter().find(|(k, _)| k == *key).unwrap();
+                !page.contains(&format!("\"{word}\": () => "))
+            })
+            .copied()
+            .collect();
+        assert!(
+            !unreachable.is_empty(),
+            "窓専用の項目が盤面から消えたなら、この検査ごと畳んでよい"
+        );
+        for key in unreachable {
+            assert!(
+                page.contains("MENU_WINDOW_ONLY.includes(k)"),
+                "{key}: 遠くからは押せないのに、盤面がそれを見せていない"
+            );
+        }
+        assert!(
+            page.contains("windowonly") && page.contains("tui.menu.window_only"),
+            "印(見た目と但し書き)が page から失われている"
+        );
     }
 
     /// While a press is in progress, the dashboard must not be rebuilt.

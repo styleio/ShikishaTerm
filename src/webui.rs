@@ -1460,6 +1460,10 @@ const PAGE: &str = r##"<!doctype html>
  :root {
    --bg:#0f1115; --panel:#161a20; --panel2:#1b2027; --line:#262d37;
    --text:#e6e9ef; --muted:#8b95a5; --accent:#00aaff; --danger:#ff6b6b;
+   /* Measured from the real header (it wraps at some widths, so a fixed number
+      would leave the sidebar tucked under it). Everything that has to start
+      below the sticky header reads it from here. */
+   --headh:53px;
    color-scheme: dark;
  }
  * { box-sizing:border-box; }
@@ -1472,6 +1476,21 @@ const PAGE: &str = r##"<!doctype html>
    border-bottom:1px solid var(--line); }
  header h1 { font-size:15px; font-weight:600; margin:0; letter-spacing:.02em; }
  header .spacer { flex:1; }
+ /* The secondary links live in one element so a narrow screen can MOVE them into
+    the drawer instead of a second copy being written for the phone. */
+ .headlinks { display:flex; align-items:center; gap:12px; }
+ /* Drawer handle and current-section label: phone only (see the narrow block). */
+ .navtoggle { display:none; font-size:17px; line-height:1; padding:6px 10px; }
+ /* Where you are, in two parts: the workspace gives way first (it ellipsises),
+    the thing actually being edited always stays whole. */
+ #crumb { display:none; align-items:baseline; gap:6px; min-width:0;
+   font-weight:600; font-size:14px; white-space:nowrap; }
+ #crumb .up { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
+   font-weight:400; color:var(--muted); }
+ #crumb .cur { flex:0 0 auto; overflow:hidden; text-overflow:ellipsis; }
+ #navscrim { display:none; }
+ /* Label on a desktop, icon on a phone — one button, two skins. */
+ .atnarrow { display:none; }
  #msg { color:var(--muted); font-size:13px; border-radius:6px; padding:4px 10px; }
  #msg.warn { color:var(--danger); }
  /* Replay the animation every time, so a click still registers even if the message text repeats */
@@ -1504,9 +1523,9 @@ const PAGE: &str = r##"<!doctype html>
  @media (prefers-reduced-motion: reduce) { #savebtn.dirty { animation:none; } }
 
  .layout { display:flex; align-items:flex-start; }
- nav { width:260px; flex:none; border-right:1px solid var(--line); min-height:calc(100vh - 53px);
-   padding:12px 10px; position:sticky; top:53px; max-height:calc(100vh - 53px); overflow:auto; }
- main { flex:1; padding:24px 28px; max-width:820px; }
+ nav { width:260px; flex:none; border-right:1px solid var(--line); min-height:calc(100vh - var(--headh));
+   padding:12px 10px; position:sticky; top:var(--headh); max-height:calc(100vh - var(--headh)); overflow:auto; }
+ main { flex:1; min-width:0; padding:24px 28px; max-width:820px; }
 
  .navitem { display:block; width:100%; text-align:left; border:0; background:none; color:var(--text);
    padding:7px 10px; border-radius:7px; cursor:pointer; font-size:13.5px; font-family:inherit; }
@@ -1529,7 +1548,21 @@ const PAGE: &str = r##"<!doctype html>
    margin:14px 0 10px; text-transform:uppercase; }
  .row { display:flex; align-items:center; gap:12px; padding:7px 0; flex-wrap:wrap; }
  .row > label:first-child { width:150px; flex:none; color:var(--muted); font-size:13px; }
+ /* A second (or third) label inside one row — "port", "user" next to a host.
+    It names the field that follows it, so it sits tight against it rather than
+    claiming the row's label column. */
+ .row > label.beside { width:auto; }
  .hint { color:var(--muted); font-size:12px; }
+ /* One row per entry in an editable list (quick actions, providers, notify
+    targets, secrets): its name, its fields, then its buttons, divided by a
+    hairline. It wraps, so a narrow screen stacks the parts instead of pushing
+    them off the edge — which is also why this is a class and not four copies
+    of the same inline style. */
+ .listrow { display:flex; align-items:center; flex-wrap:wrap; gap:10px;
+   padding:7px 0; border-bottom:1px solid var(--line); }
+ /* For entries whose fields are taller than their buttons (a quick action's
+    body box), so the buttons sit at the top rather than floating mid-height. */
+ .listrow.tall { align-items:flex-start; gap:8px; padding:8px 0; }
  .grow { flex:1; min-width:180px; }
  .stoprow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px;
    margin:6px 0; border:1px solid var(--line); border-radius:8px; }
@@ -1599,49 +1632,99 @@ const PAGE: &str = r##"<!doctype html>
  @keyframes slide { from { margin-left:-35%; } to { margin-left:100%; } }
 
  /* ── Narrow screens (a phone reaching the settings over the remote proxy) ──
-    The desktop layout is a fixed 260px sidebar next to the content. On a phone
-    that overflows sideways and is unreadable, so below 760px stack them: the nav
-    becomes a full-width strip that scrolls on its own, the content takes the rest,
-    and every form control is capped to the viewport so nothing spills off-screen
-    (a mis-tap on a config field you can't fully see is how you save a broken
-    setup from the train). */
+    The desktop layout is a fixed 260px sidebar next to the content. A phone has
+    room for exactly one of the two, so below 760px the sidebar becomes a drawer
+    behind the header's ☰ and the content gets the whole width. The header keeps
+    only what a thumb needs there — ☰, where you are, Close, Save — and the
+    secondary links MOVE into the drawer (the same element, not a second copy).
+
+    align-items:stretch is what actually keeps the page inside the screen: the
+    column layout's cross axis is horizontal, so flex-start would size `main` to
+    its widest child and push the text off the edge instead of wrapping it. */
  @media (max-width: 760px) {
-   .layout { flex-direction:column; }
-   nav { width:auto; position:static; min-height:0; max-height:38vh;
-     border-right:none; border-bottom:1px solid var(--line); top:0; }
-   main { padding:16px 14px; max-width:100%; }
-   /* The header's action buttons (reload / close / save) don't fit on one phone
-      row next to the title, so let it wrap: the spacer becomes a full-width break
-      that drops the controls onto their own line under the title, and the row
-      itself wraps rather than pushing off-screen. The header stays sticky, so
-      Save and Close are always a thumb away however far the form is scrolled. */
-   header { padding:10px 14px; gap:8px 10px; flex-wrap:wrap; }
-   header .spacer { flex-basis:100%; height:0; }
-   header h1 { font-size:14px; }
+   header { padding:10px 12px; gap:10px; flex-wrap:nowrap; }
+   header h1 { display:none; }
+   /* Where you are beats what the app is called when the screen is this narrow. */
+   #crumb { display:flex; flex:1; }
+   .navtoggle { display:inline-flex; flex:none; }
+   .atwide { display:none; }
+   .atnarrow { display:inline; }
+   /* The toast already announces every result, so the header line stays clear. */
+   #msg { display:none; }
+   header .spacer { display:none; }
+   #backbtn, #savebtn { flex:none; }
+
+   .layout { flex-direction:column; align-items:stretch; }
+   /* The drawer: off-canvas, slid in over the content, dismissed by the scrim,
+      by Escape, or by picking a section (a group's ▸ caret keeps it open). */
+   nav { position:fixed; z-index:30; left:0; top:var(--headh); bottom:0;
+     width:min(300px,84vw); min-height:0; max-height:none; overflow:auto;
+     padding:12px 10px 28px; background:var(--panel);
+     border-right:1px solid var(--line); border-bottom:none;
+     transform:translateX(-102%); transition:transform .18s ease;
+     box-shadow:0 0 30px rgba(0,0,0,.5); }
+   body.navopen nav { transform:none; }
+   /* Hold the page still while the drawer is over it. */
+   body.navopen { overflow:hidden; }
+   #navscrim { display:block; position:fixed; inset:0; z-index:25;
+     background:rgba(0,0,0,.5); opacity:0; pointer-events:none;
+     transition:opacity .18s ease; }
+   body.navopen #navscrim { opacity:1; pointer-events:auto; }
+   @media (prefers-reduced-motion: reduce) {
+     nav, #navscrim { transition:none; }
+   }
+   /* In the drawer the links stack at the bottom, under a divider. */
+   .headlinks { flex-direction:column; align-items:stretch; gap:2px;
+     margin-top:14px; padding-top:10px; border-top:1px solid var(--line); }
+   /* a.quiet centres itself in the header row; in the drawer it lines up with
+      the nav items above it instead. */
+   .headlinks > * { align-self:stretch; text-align:left; }
+
+   main { padding:14px 14px 40px; max-width:100%; }
    .card { padding:6px 12px 12px; }
-   /* Fixed pixel widths on inputs/selects overflow a phone; cap them all. */
+   /* One field per line: the label above, then the control, then its hint.
+      A 150px label column next to a control leaves neither enough room. Every
+      label breaks the line, not just the row's first — a row with several
+      fields (host / port / user) would otherwise leave each label stranded at
+      the end of the previous field's line, reading as if it named that one.
+      A checkbox's own label is the exception: it belongs beside its box. */
+   .row { flex-wrap:wrap; gap:6px 10px; }
+   .row > label:not(.check), .row > label.beside { width:100%; }
+   .hint { flex-basis:100%; }
+   /* Fixed pixel widths on inputs/selects overflow a phone; cap them all, and
+      let flex children shrink below their content (min-width:auto is what turns
+      a long value into a page that scrolls sideways). */
    input, select, textarea, .row > input, .row > select { max-width:100%; }
-   input.mono { width:100%; }
-   /* Long field/label rows wrap instead of forcing a horizontal scrollbar. */
-   .row { flex-wrap:wrap; }
-   /* Keep the save button reachable with a thumb while scrolling a long form. */
-   #savebtn { position:sticky; top:8px; }
+   .row > *, .listrow > *, .stoprow > * { min-width:0; }
+   input.mono, .grow { width:100%; }
+   textarea { min-height:150px; }
+   /* Paths, URLs and ids have no spaces to break at — break them anyway. */
+   .hint, .event .name, code { overflow-wrap:anywhere; }
+   .modal-inner { width:96vw; max-height:92vh; padding:16px 14px; }
  }
  /* Never let the page itself scroll sideways, whatever a stray wide child does. */
  @media (max-width: 760px) { body { overflow-x:hidden; } }
 </style></head><body>
 
 <header>
+  <button class="quiet navtoggle" id="navtoggle" onclick="toggleNav()"
+          aria-controls="nav" aria-expanded="false" title="{{settings.nav.open}}">☰</button>
   <h1>{{settings.title}}</h1>
+  <span id="crumb"></span>
   <div class="spacer"></div>
   <span id="msg"></span>
-  <a class="quiet" href="#" onclick="openExt('bug');return false" title="{{settings.report_bug}}">{{settings.report_bug}}</a>
-  <a class="quiet" href="#" onclick="openExt('discussions');return false" title="{{settings.discussions}}">{{settings.discussions}}</a>
-  <button class="quiet" onclick="load()">{{common.reload}}</button>
-  <button class="quiet" id="backbtn" onclick="closeSettings()">{{settings.close}}</button>
+  <div class="headlinks" id="headlinks">
+    <a class="quiet" href="#" onclick="openExt('bug');return false" title="{{settings.report_bug}}">{{settings.report_bug}}</a>
+    <a class="quiet" href="#" onclick="openExt('discussions');return false" title="{{settings.discussions}}">{{settings.discussions}}</a>
+    <button class="quiet" onclick="load()">{{common.reload}}</button>
+  </div>
+  <button class="quiet" id="backbtn" onclick="closeSettings()" title="{{settings.close}}"
+          aria-label="{{settings.close}}"><span class="atwide">{{settings.close}}</span><span
+          class="atnarrow">✕</span></button>
   <button class="primary" id="savebtn" onclick="save()">{{common.save}}</button>
 </header>
 
+<div id="navscrim" onclick="closeNav()"></div>
 <div class="layout">
   <nav id="nav"></nav>
   <main id="detail"></main>
@@ -2317,7 +2400,7 @@ function wizardDiscuss() {
     row(T["settings.workspace.name"], nameIn),
     el("div", {style:"margin-top:10px;color:var(--text);font-size:13px"}, T["wizard.discuss.participants_label"]), list, addBtn,
     el("div", {class:"row", style:"margin-top:12px"}, el("label", {}, T["wizard.discuss.judge_label"]), judgeSel,
-      el("label", {style:"width:auto"}, T["wizard.discuss.verdict_label"]), verdictSel),
+      el("label", {class:"beside"}, T["wizard.discuss.verdict_label"]), verdictSel),
     el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["wizard.discuss.note"])),
     el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:14px"},
@@ -2434,11 +2517,80 @@ function wizardReview() {
       el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
 }
 
+// ── Narrow screens: the sidebar as a drawer ─────────────────────
+// One phone-width layout, driven from here so the CSS and the DOM never disagree
+// about where things are. The same nav, the same links, the same header — moved,
+// never duplicated, so a card added later needs no phone-specific counterpart.
+const narrow = window.matchMedia("(max-width: 760px)");
+// Held as a node, not looked up by id: renderNav() empties the drawer on every
+// render, which detaches this element from the document.
+const headLinks = document.getElementById("headlinks");
+
+function setNav(open) {
+  document.body.classList.toggle("navopen", !!open);
+  document.getElementById("navtoggle").setAttribute("aria-expanded", open ? "true" : "false");
+}
+const closeNav = () => setNav(false);
+const toggleNav = () => setNav(!document.body.classList.contains("navopen"));
+
+// The secondary header links belong beside the title on a desktop and at the
+// foot of the drawer on a phone. Re-homed after every render (which clears the
+// drawer) and on every breakpoint change.
+function placeHeadLinks() {
+  if (narrow.matches) document.getElementById("nav").append(headLinks);
+  else document.getElementById("backbtn").before(headLinks);
+}
+
+// What the phone header shows instead of the app's name: where you actually are.
+// Returns [what encloses it, what's open] — the first half is the one that gets
+// squeezed when the name is long, so the section or tab you're editing survives.
+function crumbParts() {
+  if (sel.global) {
+    const s = globalSections().find(x => x.id === sel.section);
+    return ["", s ? s.label : T["settings.global"]];
+  }
+  const ws = wss[sel.ws];
+  if (!ws) return ["", ""];
+  const name = ws.name || T["settings.tab.unnamed"];
+  if (sel.tab === null) return ["", name];
+  const t = (ws.tabs || [])[sel.tab];
+  return [name, (t && t.name) || T["settings.tab.unnamed"]];
+}
+
+function renderCrumb() {
+  const [up, cur] = crumbParts();
+  const box = document.getElementById("crumb");
+  box.textContent = "";
+  if (up) box.append(el("span", {class:"up"}, up + " /"));
+  box.append(el("span", {class:"cur"}, cur));
+  box.setAttribute("title", up ? up + " / " + cur : cur);
+}
+
+// The sticky header wraps at some widths, so its height is measured rather than
+// assumed — the sidebar and the drawer both start immediately below it.
+const headerEl = document.querySelector("header");
+const measureHeader = () =>
+  document.documentElement.style.setProperty("--headh", headerEl.offsetHeight + "px");
+try { new ResizeObserver(measureHeader).observe(headerEl); } catch (e) { measureHeader(); }
+window.addEventListener("resize", measureHeader);
+
+// Picking a destination closes the drawer; expanding a group (the ▸ caret) does
+// not — that is still choosing. One delegated listener, so every nav item added
+// later behaves the same without remembering to wire it up.
+document.getElementById("nav").addEventListener("click", e => {
+  const item = e.target.closest(".navitem");
+  if (item && !item.classList.contains("navgrouphead")) closeNav();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeNav(); });
+narrow.addEventListener("change", () => { placeHeadLinks(); closeNav(); measureHeader(); });
+
 // ── Detail pane ───────────────────────────────────────
 function render() {
   if (sel.global && !sel.section) sel.section = globalSections()[0].id;
   renderNav();
   renderDetail();
+  renderCrumb();
+  placeHeadLinks();
 }
 
 function renderDetail() {
@@ -2634,8 +2786,7 @@ function providersCard() {
       const del = el("button", {class:"quiet", style:"flex:none", onclick: () => {
         if (confirm(fill(T["settings.providers.delete_confirm"], {name}))) { delete current.providers[name]; refreshSave(); draw(); }
       }}, T["common.delete"]);
-      listBox.append(el("div", {class:"row",
-        style:"align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:nowrap"},
+      listBox.append(el("div", {class:"listrow"},
         el("span", {class:"mono", style:"flex:none;min-width:70px;color:var(--text)"}, name),
         urlIn, keyIn,
         el("span", {class:"mono", style:"flex:none;width:14px"}, hasKey ? "🔑" : ""),
@@ -2725,8 +2876,7 @@ function actionsCard() {
         lintAction(a).then(showErr);   // lint on render so an existing break shows at once
         bodyIn.addEventListener("blur", () => lintAction(a).then(() => { showErr(); refreshSave(); }));
       }
-      listBox.append(el("div", {class:"row",
-        style:"align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap"},
+      listBox.append(el("div", {class:"listrow tall"},
         labelIn, bodyIn, luaLbl, up, del, errEl));
     });
   };
@@ -2846,8 +2996,7 @@ function notifyCard() {
       }}, T["settings.notify.test"]);
       const del = el("button", {class:"quiet", style:"flex:none", onclick: () => {
         if (confirm(fill(T["settings.notify.delete_confirm"], {name}))) { delete current.notify[name]; refreshSave(); draw(); } }}, T["common.delete"]);
-      listBox.append(el("div", {class:"row",
-        style:"align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:wrap"},
+      listBox.append(el("div", {class:"listrow"},
         el("span", {class:"mono", style:"flex:none;min-width:64px;color:var(--text)"}, name),
         el("span", {class:"hint", style:"flex:none;text-transform:uppercase"}, d.type),
         fields, saveBtn, testBtn, del));
@@ -2903,8 +3052,7 @@ async function loadSecrets() {
       if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: s.key})); loadSecrets(); }
       else toast(r.error || T["settings.secrets.delete_failed"], true);
     }}, T["common.delete"]);
-    listBox.append(el("div", {class:"row",
-      style:"align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)"},
+    listBox.append(el("div", {class:"listrow"},
       el("span", {class:"mono", style:"min-width:180px;color:var(--text)"}, s.key),
       el("span", {class:"hint", style:"flex:1"}, s.description || T["settings.secrets.no_desc"]),
       el("span", {class:"hint mono", title:T["settings.secrets.value_hidden"]}, "••••"),
@@ -3577,11 +3725,11 @@ function kindPanel(t, cmdInput, rebuild) {
   if (ssh) {
     const upd = sync(buildSsh, ssh);
     box.append(el("div", {class:"row"}, ...f(ssh, "host", T["settings.ssh.host"], "example.com", upd, 240),
-      el("label", {style:"width:auto"}, T["settings.phone.port"]),
+      el("label", {class:"beside"}, T["settings.phone.port"]),
       (() => { const i = el("input", {type:"text", class:"mono", style:"width:70px"});
                i.value = ssh.port || ""; i.placeholder = "22";
                i.addEventListener("input", () => { ssh.port = i.value.trim(); upd(); }); return i; })(),
-      el("label", {style:"width:auto"}, T["settings.ssh.user"]),
+      el("label", {class:"beside"}, T["settings.ssh.user"]),
       (() => { const i = el("input", {type:"text", class:"mono", style:"width:130px"});
                i.value = ssh.user || ""; i.placeholder = "root";
                i.addEventListener("input", () => { ssh.user = i.value.trim(); upd(); }); return i; })()));
@@ -4146,6 +4294,11 @@ function closeSettings() {
 function openExt(dest) {
   fetch("/api/open?dest=" + dest, {headers:{"X-Token":TOKEN}}).catch(()=>{});
 }
+
+// Lay the header out for this screen width before the first paint, so the page
+// doesn't flash the desktop arrangement on the way in.
+placeHeadLinks();
+measureHeader();
 
 // If the URL has addtab=<workspace-index>, start with one tab already added
 // to that workspace after loading (this is where the tab bar's + comes from).

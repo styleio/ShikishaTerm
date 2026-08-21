@@ -8,6 +8,18 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **Phone: "Edit settings" on INDEX actually opens the settings.** The board was
+  forwarding it as a keystroke, which only ever lands in the window, so from a
+  phone the entry looked alive and did nothing. It now walks to the phone's own
+  reverse-proxied settings page. An entry the window alone can carry out (the
+  master password) is shown dimmed instead of silently doing nothing.
+- **Phone: the settings screen fits the screen.** The sidebar became a drawer
+  behind a ☰, the header keeps only what a thumb needs (where you are, Close,
+  Save) with the rest moved into the drawer, and long labels, hints and paths
+  wrap instead of running off the edge — the page no longer scrolls sideways at
+  any width down to 320px. The desktop layout is unchanged.
+
 ## [0.1.2] - 2026-08-21
 
 ### Added

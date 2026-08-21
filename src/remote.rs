@@ -86,16 +86,12 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         Ev::Go { .. } => true,
         // Copy the selected text. Keep the same manners as the window (same as PuTTY)
         Ev::Copy { .. } => true,
-        Ev::Menu { key } => !matches!(
-            key.as_str(),
-            // Settings and the browser appear inside the window. Nothing
-            // happens on the remote side
-            "e" | "o"
-            // The master password is asked inside the window.
-            // Calling it from afar would block the app until the person
-            // in front of the window answers
-            | "k"
-        ),
+        // Entries only the window can carry out. The board keeps the same list
+        // (crate::shell::WINDOW_ONLY_MENU), so what it offers from afar and what
+        // this lets through can't drift apart. Settings is on that list yet still
+        // reachable from a phone: the board doesn't send a keystroke for it, it
+        // walks to the reverse-proxied /cfg page instead.
+        Ev::Menu { key } => !crate::shell::WINDOW_ONLY_MENU.contains(&key.as_str()),
         // Opening the workspace switcher is allowed (it was allowed before as
         // Menu "w"). It only shows the list; picking a workspace is a separate
         // digit intent, so this alone doesn't disrupt the window.
@@ -853,6 +849,11 @@ mod tests {
             go: crate::browser::Go::To("example.com".into())
         }));
         assert!(menu("a") && menu("?") && menu("w"), "普通の操作が通らない");
+        // The board and this gate read one list, so nothing the window alone can
+        // do slips through, and nothing the phone can reach gets refused.
+        for k in crate::shell::WINDOW_ONLY_MENU {
+            assert!(!menu(k), "{k} は窓専用なのに遠隔から通ってしまう");
+        }
         // Scrolling back to review earlier output is core to monitoring from afar
         assert!(
             super::allowed_from_afar(&Ev::Scroll { by: 3, row: 0, col: 0 }),
