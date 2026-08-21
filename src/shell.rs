@@ -2035,12 +2035,21 @@ function panelOptions() {
 // reserve room on #page so the native browser — which is layered on top of the
 // HTML — doesn't hide it. The composer FAB opens/closes it just like on an AI tab;
 // the reserve follows that open/closed state (enough for the FAB, or for the dock).
+// NOT rebuilt on every state push: replacing the panel's DOM kills a native
+// <select> popup instantly, so while an AI tab streamed (state pushes every
+// frame) the switcher's dropdown could never stay open. Rebuild only when the
+// set of panels actually changed (entering/leaving a browser tab, first open).
+let lastPanelSig = "";
 function syncBrowserDock() {
   if (typeof REMOTE !== "undefined" && REMOTE) return;
-  if (!onBrowserTab()) { syncBrowserReserve(); return; }
+  if (!onBrowserTab()) { lastPanelSig = ""; syncBrowserReserve(); return; }
   ensureBar();
-  if (panelOptions().indexOf(castPanel) < 0) castPanel = panelOptions()[0];
-  renderPanel();
+  const sig = panelOptions().join();
+  if (sig !== lastPanelSig) {
+    lastPanelSig = sig;
+    if (panelOptions().indexOf(castPanel) < 0) castPanel = panelOptions()[0];
+    renderPanel();
+  }
   syncBrowserReserve();
 }
 // Just the reserve: how much of #page the native browser must leave to the
