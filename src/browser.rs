@@ -174,23 +174,42 @@ const INIT_JS: &str = r##"
   let recOn = false;
   window.__shikisha_rec = function (on) { recOn = !!on; };
 
-  // Selector generation: readable first, unique always. #id, then a stable
-  // attribute, then a structural nth-of-type path extended upward until it
-  // matches exactly one element.
-  function recSel(el) {
-    const esc = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : s;
-    const uniq = (s) => { try { return document.querySelectorAll(s).length === 1; } catch (e) { return false; } };
-    if (el.id) { const s = "#" + esc(el.id); if (uniq(s)) return s; }
+  // Selector generation: readable first, unique always, durable when the site
+  // allows it. A machine-generated id (Google's #ti6dpd, React's :r1:) changes
+  // on every load, so anchoring to it records a selector that is dead by
+  // tomorrow — such ids are refused and the stable attributes get their turn.
+  const recEsc = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : s;
+  const recUniq = (s) => { try { return document.querySelectorAll(s).length === 1; } catch (e) { return false; } };
+  function recGenId(id) {
+    if (id.indexOf(":") >= 0) return true;                    // React useId and kin
+    if (/^(ember|yui_|ext-)/.test(id)) return true;           // framework counters
+    if (/^[0-9a-f-]{8,}$/i.test(id) && /\d/.test(id)) return true;  // hex / uuid
+    if (/^[A-Za-z0-9]{4,12}$/.test(id) && !/[_-]/.test(id)) {
+      if (/\d/.test(id)) return true;                         // letter-digit mash
+      const upper = (id.match(/[A-Z]/g) || []).length;
+      const lower = (id.match(/[a-z]/g) || []).length;
+      if (upper >= 2 && lower >= 2) return true;              // case-mash (APjFqb)
+    }
+    return false;
+  }
+  // A durable address: a human-made unique id, else a unique stable attribute.
+  function recSelStable(el) {
+    if (el.id && !recGenId(el.id)) { const s = "#" + recEsc(el.id); if (recUniq(s)) return s; }
     const tag = el.tagName.toLowerCase();
     for (const a of ["name", "aria-label", "placeholder", "data-testid"]) {
       const v = el.getAttribute(a);
-      if (v) { const s = tag + "[" + a + "=" + JSON.stringify(v) + "]"; if (uniq(s)) return s; }
+      if (v) { const s = tag + "[" + a + "=" + JSON.stringify(v) + "]"; if (recUniq(s)) return s; }
     }
+    return null;
+  }
+  // Last resort: a structural nth-of-type path, extended upward until unique.
+  // Position-based, so it survives reloads but not layout changes.
+  function recSelPath(el) {
     let s = "", cur = el;
     while (cur && cur.nodeType === 1 && cur.tagName !== "HTML") {
       const par = cur.parentElement;
       let seg;
-      if (cur.id) seg = "#" + esc(cur.id);
+      if (cur.id && !recGenId(cur.id)) seg = "#" + recEsc(cur.id);
       else {
         seg = cur.tagName.toLowerCase();
         if (par) {
@@ -199,10 +218,29 @@ const INIT_JS: &str = r##"
         }
       }
       s = seg + (s ? " > " + s : "");
-      if (uniq(s)) return s;
+      if (recUniq(s)) return s;
       cur = par;
     }
-    return s || tag;
+    return s || el.tagName.toLowerCase();
+  }
+  function recSel(el) { return recSelStable(el) || recSelPath(el); }
+  // The visible text, flattened to one line (an anchor and a human hint).
+  function recText(el) {
+    return (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+  }
+  // For clicks on things WITH a face (links, buttons): address them by their
+  // visible text via XPath — the one anchor that survives both random ids and
+  // layout reshuffles. Only when that text matches exactly one element.
+  function recXpathByText(el) {
+    const tag = el.tagName.toLowerCase();
+    if (!/^(a|button|summary)$/.test(tag) && el.getAttribute("role") !== "button") return null;
+    const t = recText(el);
+    if (!t || t.length > 60 || t.indexOf('"') >= 0) return null;
+    const xp = "//" + tag + "[normalize-space(.)=\"" + t + "\"]";
+    try {
+      const n = document.evaluate("count(" + xp + ")", document, null, 1, null).numberValue;
+      return n === 1 ? xp : null;
+    } catch (e) { return null; }
   }
 
   // Text-like editables commit on change/Enter; everything else commits on
@@ -235,7 +273,20 @@ const INIT_JS: &str = r##"
     if (!el || el.nodeType !== 1) return;
     if (recEditable(el) || el.tagName === "SELECT") return;
     if (el.id === "__shikisha_bar") return;
-    send({ kind: "recorded", act: "click", sel: recSel(el) });
+    // Durable CSS first; a text-anchored XPath beats a positional path; the
+    // path travels with a human hint (the text) so a broken line can be
+    // repaired by a person or an AI without re-recording.
+    const stable = recSelStable(el);
+    if (stable) {
+      send({ kind: "recorded", act: "click", sel: stable, hint: recText(el).slice(0, 40) });
+      return;
+    }
+    const byText = recXpathByText(el);
+    if (byText) {
+      send({ kind: "recorded", act: "click", sel: byText, xpath: true });
+      return;
+    }
+    send({ kind: "recorded", act: "click", sel: recSelPath(el), hint: recText(el).slice(0, 40) });
   }, true);
   document.addEventListener("change", function (e) {
     if (!recOn || !e.isTrusted) return;
@@ -485,6 +536,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_string(),
+            xpath: v.get("xpath").and_then(|x| x.as_bool()).unwrap_or(false),
+            hint: v
+                .get("hint")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
         },
         // "Operate a target tab" (🎯): make the active AI drive tab `target`.
         // target 0 detaches. An optional `goal` (natural language) is handed to
@@ -700,12 +757,17 @@ pub enum Ev {
     /// One recorded step reported by a page being recorded. The pane's ipc
     /// handler stamps `from` with the page's name (same as `Button`).
     /// `act` is fill/click/press/secret; `value` is the committed text
-    /// (fill), the key name (press), or empty.
+    /// (fill), the key name (press), or empty. `xpath` says whether `sel` is
+    /// an XPath (a text-anchored click) rather than CSS; `hint` is the
+    /// element's visible text, carried into the Lua line as a comment so a
+    /// broken selector can be repaired without re-recording.
     Recorded {
         from: Option<String>,
         act: String,
         sel: String,
         value: String,
+        xpath: bool,
+        hint: String,
     },
     /// A file attached in the desktop composer. `id` correlates the async reply
     /// (`window.__attachDone(id, …)`), `name` is the declared filename, `data` is
@@ -1678,11 +1740,13 @@ fn run_window(
                                 Ev::Button { .. } => Ev::Button {
                                     from: Some(who.clone()),
                                 },
-                                Ev::Recorded { act, sel, value, .. } => Ev::Recorded {
+                                Ev::Recorded { act, sel, value, xpath, hint, .. } => Ev::Recorded {
                                     from: Some(who.clone()),
                                     act,
                                     sel,
                                     value,
+                                    xpath,
+                                    hint,
                                 },
                                 Ev::Ready { url, complete, .. } => Ev::Ready {
                                     from: Some(who.clone()),

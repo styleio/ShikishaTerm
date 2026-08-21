@@ -409,9 +409,9 @@ struct WinSurface {
     /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
     /// shown browser.
     run_luas: Vec<String>,
-    /// Recorded steps reported by pages ((in-window name, act, sel, value)).
-    /// The loop turns each into one Lua line for the composer.
-    recorded: Vec<(String, String, String, String)>,
+    /// Recorded steps reported by pages. The loop turns each into one Lua
+    /// line for the composer.
+    recorded: Vec<RecordedStep>,
     /// Text/keys typed into the composer while viewing a browser tab. The loop
     /// injects them into the shown browser — the very same caps.browser_inject the
     /// phone's relay uses, so the desktop composer and the phone share one path.
@@ -495,7 +495,7 @@ impl WinSurface {
     }
 
     /// Takes the recorded steps reported by pages since the last drain.
-    fn take_recorded(&mut self) -> Vec<(String, String, String, String)> {
+    fn take_recorded(&mut self) -> Vec<RecordedStep> {
         std::mem::take(&mut self.recorded)
     }
 
@@ -561,7 +561,9 @@ impl WinSurface {
                     act,
                     sel,
                     value,
-                } => self.recorded.push((child, act, sel, value)),
+                    xpath,
+                    hint,
+                } => self.recorded.push(RecordedStep { child, act, sel, value, xpath, hint }),
                 // Composer input while viewing a browser tab. Stash it; the loop
                 // injects it into the shown browser via caps.browser_inject — the
                 // same call the phone's relay makes, not a desktop-only path.
@@ -636,17 +638,45 @@ impl WinSurface {
     }
 }
 
+/// One recorded step as reported by a page: which pane it came from, what
+/// happened, and how the element was addressed (CSS, or a text-anchored
+/// XPath). `hint` is the element's visible text, kept as a repair aid.
+struct RecordedStep {
+    child: String,
+    act: String,
+    sel: String,
+    value: String,
+    xpath: bool,
+    hint: String,
+}
+
 /// One recorded step → one line of the dialect every Lua surface here speaks
 /// (the rally, quick actions, ▶ run mode). JSON escaping is used for the
 /// strings — Lua's double-quoted literals accept everything the recorder will
-/// realistically produce (\n, \t, \", \\).
-fn recorded_lua(name: &str, act: &str, sel: &str, value: &str) -> Option<String> {
+/// realistically produce (\n, \t, \", \\). An XPath selector becomes the
+/// `{xpath=...}` table form `sel_of` already understands; a click keeps its
+/// element's text as a trailing comment so a selector broken by a site change
+/// can be repaired (by a person or an AI) without re-recording.
+fn recorded_lua(name: &str, step: &RecordedStep) -> Option<String> {
     let n = serde_json::to_string(name).ok()?;
-    let s = serde_json::to_string(sel).ok()?;
-    Some(match act {
-        "fill" => format!("browser_fill({n}, {s}, {})", serde_json::to_string(value).ok()?),
-        "click" => format!("browser_click({n}, {s})"),
-        "press" => format!("browser_press({n}, {})", serde_json::to_string(value).ok()?),
+    let s = serde_json::to_string(&step.sel).ok()?;
+    let s = if step.xpath { format!("{{xpath={s}}}") } else { s };
+    let hint = step.hint.replace(['\n', '\r'], " ");
+    let comment = if hint.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" -- {}", hint.trim())
+    };
+    Some(match step.act.as_str() {
+        "fill" => format!(
+            "browser_fill({n}, {s}, {})",
+            serde_json::to_string(&step.value).ok()?
+        ),
+        "click" => format!("browser_click({n}, {s}){comment}"),
+        "press" => format!(
+            "browser_press({n}, {})",
+            serde_json::to_string(&step.value).ok()?
+        ),
         // Never the typed password itself — a fill-from-secrets step to finish by hand
         "secret" => format!("browser_fill_secret({n}, {s}, \"KEY\") -- set your secrets key name"),
         _ => return None,
@@ -2238,11 +2268,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // Recorded steps → one Lua line each, appended to the composer on both
         // surfaces. Each line calls the same primitives the automation uses,
         // addressed by the browser's Lua name, so record → paste → run round-trips.
-        for (child, act, sel, value) in surface.take_recorded() {
-            let Some(name) = caps.name_of_child(&child) else {
+        for step in surface.take_recorded() {
+            let Some(name) = caps.name_of_child(&step.child) else {
                 continue;
             };
-            let Some(line) = recorded_lua(&name, &act, &sel, &value) else {
+            let Some(line) = recorded_lua(&name, &step) else {
                 continue;
             };
             let js = serde_json::to_string(&line).unwrap_or_default();
@@ -4812,32 +4842,60 @@ fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    fn step(act: &str, sel: &str, value: &str, xpath: bool, hint: &str) -> RecordedStep {
+        RecordedStep {
+            child: "0/web".into(),
+            act: act.into(),
+            sel: sel.into(),
+            value: value.into(),
+            xpath,
+            hint: hint.into(),
+        }
+    }
+
     /// A recorded step must come out as ONE line of the shared Lua dialect,
     /// runnable by run_scoped as-is (record → paste → run must round-trip).
     #[test]
     fn recorded_steps_become_runnable_lua_lines() {
         assert_eq!(
-            recorded_lua("web", "fill", "#q", "hello").as_deref(),
+            recorded_lua("web", &step("fill", "#q", "hello", false, "")).as_deref(),
             Some(r##"browser_fill("web", "#q", "hello")"##)
         );
         assert_eq!(
-            recorded_lua("web", "click", "#go", "").as_deref(),
+            recorded_lua("web", &step("click", "#go", "", false, "")).as_deref(),
             Some(r##"browser_click("web", "#go")"##)
         );
         assert_eq!(
-            recorded_lua("web", "press", "", "enter").as_deref(),
+            recorded_lua("web", &step("press", "", "enter", false, "")).as_deref(),
             Some(r##"browser_press("web", "enter")"##)
         );
         // A typed password never lands in the line — only a secrets-store stub
-        let secret = recorded_lua("web", "secret", "#pw", "hunter2").unwrap();
+        let secret = recorded_lua("web", &step("secret", "#pw", "hunter2", false, "")).unwrap();
         assert!(!secret.contains("hunter2"), "password leaked: {secret}");
         assert!(secret.contains("browser_fill_secret"));
         // Unknown acts are dropped, not guessed at
-        assert_eq!(recorded_lua("web", "hover", "#x", ""), None);
+        assert_eq!(recorded_lua("web", &step("hover", "#x", "", false, "")), None);
         // Quotes and newlines in values survive as valid Lua escapes
         assert_eq!(
-            recorded_lua("web", "fill", "#q", "a\"b\nc").as_deref(),
+            recorded_lua("web", &step("fill", "#q", "a\"b\nc", false, "")).as_deref(),
             Some("browser_fill(\"web\", \"#q\", \"a\\\"b\\nc\")")
+        );
+        // A text-anchored click becomes the {xpath=...} table form
+        assert_eq!(
+            recorded_lua(
+                "web",
+                &step("click", r##"//a[normalize-space(.)="Sign in"]"##, "", true, "")
+            )
+            .as_deref(),
+            Some(
+                r##"browser_click("web", {xpath="//a[normalize-space(.)=\"Sign in\"]"})"##
+            )
+        );
+        // A positional click carries its element's text as a repair hint,
+        // flattened to one line so the comment can't swallow the next step
+        assert_eq!(
+            recorded_lua("web", &step("click", "div:nth-of-type(11) > a", "", false, "俳句\nとは")).as_deref(),
+            Some(r##"browser_click("web", "div:nth-of-type(11) > a") -- 俳句 とは"##)
         );
     }
 
@@ -4845,11 +4903,17 @@ mod tests {
     /// round-trip into (bare browser_* names, that browser only).
     #[test]
     fn recorded_lines_parse_in_the_run_sandbox_dialect() {
-        let line = recorded_lua("web", "fill", "#q", "あいうえお").unwrap();
-        assert!(
-            hooks::lint_lua(&line).is_none(),
-            "recorded line does not compile: {line}"
-        );
+        for s in [
+            step("fill", "#q", "あいうえお", false, ""),
+            step("click", r##"//a[normalize-space(.)="次へ \"仮\""]"##, "", true, ""),
+            step("click", "div:nth-of-type(3) > a", "", false, "リンクの見出し"),
+        ] {
+            let line = recorded_lua("web", &s).unwrap();
+            assert!(
+                hooks::lint_lua(&line).is_none(),
+                "recorded line does not compile: {line}"
+            );
+        }
     }
 
     fn parser_with_lines(rows: u16, cols: u16, n: usize) -> vt100::Parser {
