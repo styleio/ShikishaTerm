@@ -3409,10 +3409,18 @@ function remoteCard() {
         tok.disabled = !on.checked;
         if (on.checked && !tok.value.trim()) { tok.value = gen(); r.fixed_token = tok.value; }
       });
-      tok.addEventListener("input", () => { r.fixed_token = tok.value.trim(); });
+      const bad = el("span", {class:"hint", style:"color:var(--bad,#e5534b)"});
+      const check = () => {
+        const short = on.checked && tok.value.trim().length < 16;
+        bad.textContent = short ? fill(T["settings.phone.sticky.short"], {n: 16}) : "";
+        tok.style.borderColor = short ? "var(--bad,#e5534b)" : "";
+      };
+      tok.addEventListener("input", () => { r.fixed_token = tok.value.trim(); check(); });
+      on.addEventListener("change", check);
       const l = el("label", {class:"check"});
       l.append(on, document.createTextNode(T["settings.phone.sticky.label"]));
-      wrap.append(l, tok, el("span", {class:"hint"}, T["settings.phone.sticky.hint"]));
+      wrap.append(l, tok, bad, el("span", {class:"hint"}, T["settings.phone.sticky.hint"]));
+      check();
       return wrap;
     })()));
   box.append(el("div", {class:"row"}, status));
@@ -4463,6 +4471,13 @@ async function save() {
   // Never write over a file we couldn't read. The form is empty because loading
   // failed, not because the user emptied it.
   if (loadFailure) { result(T["settings.broken.save_blocked"], true); return; }
+  // A fixed phone token shorter than a secret is refused here, before it can
+  // land in the file (the app would refuse to start the remote on it anyway)
+  if (current.remote && current.remote.sticky_token && String(current.remote.fixed_token || "").trim().length < 16) {
+    if (sel.global) { sel.section = "remote"; render(); }
+    result(fill(T["settings.phone.sticky.short"], {n: 16}), true);
+    return;
+  }
   // Refuse to write a quick action whose Lua doesn't even parse (compile-checked
   // server-side). Jump to the actions card so the red errors are in view.
   if ((current.actions || []).some(a => a.lua)) {

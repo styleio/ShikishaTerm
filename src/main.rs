@@ -4179,9 +4179,14 @@ fn trim_for_phone(s: &str, max_lines: usize) -> String {
 /// Uses the one in secrets if present; otherwise saves one to data\remote-token
 /// and reuses it (a token that changes every time would force reconnecting
 /// phones each time and make it impossible to show the QR from settings).
+/// Shortest fixed token accepted (hex chars of a 64-bit secret; anything
+/// shorter is guessable from the open internet a Tailscale-less LAN may be)
+pub const FIXED_TOKEN_MIN: usize = 16;
+
 pub fn remote_token(cfg: &config::Config, password: Option<&str>) -> String {
-    // A sticky pairing with a written token: the person's own string wins
-    if cfg.remote.sticky_token && cfg.remote.fixed_token.trim().len() >= 16 {
+    // A sticky pairing with a written token: the person's own string wins.
+    // (A shorter string never reaches here — start_remote_bg refuses to start)
+    if cfg.remote.sticky_token && cfg.remote.fixed_token.trim().len() >= FIXED_TOKEN_MIN {
         return cfg.remote.fixed_token.trim().to_string();
     }
     if let Some(t) = cfg.remote_token(password) {
@@ -4213,6 +4218,13 @@ fn start_remote_bg(
     let (tx, rx) = std::sync::mpsc::channel();
     // Resolving the address and token is local and quick — done here, so the
     // thread owns only the part that can actually stall (the bind itself).
+    // A fixed token that is too short to be a secret must never quietly
+    // become "the usual token instead": the person believes the string they
+    // wrote is the key. Refuse to start and say why (status + settings note)
+    if c.remote.sticky_token && c.remote.fixed_token.trim().len() < FIXED_TOKEN_MIN {
+        let _ = tx.send((None, vec![i18n::tp("err.remote.fixed_short", &[("n", &FIXED_TOKEN_MIN.to_string())])]));
+        return Some(rx);
+    }
     match netaddr::resolve_bind(&c.remote.bind, c.remote.allow_public) {
         Ok((ip, note)) => {
             let token = remote_token(c, password);
@@ -4540,9 +4552,17 @@ mod remote_token_tests {
         cfg.remote.sticky_token = true;
         cfg.remote.fixed_token = "  my-own-token-0123456789  ".into();
         assert_eq!(remote_token(&cfg, None), "my-own-token-0123456789");
+        // Too short to be a secret: never becomes the token (start_remote_bg
+        // refuses to bring the server up at all in that state)
         cfg.remote.fixed_token = "short".into();
         assert_ne!(remote_token(&cfg, None), "short");
-        assert!(remote_token(&cfg, None).len() >= 16);
+        assert!(remote_token(&cfg, None).len() >= FIXED_TOKEN_MIN);
+        cfg.remote.enabled = true;
+        assert!(start_remote_bg(Some(&cfg), None)
+            .and_then(|rx| rx.recv().ok())
+            .is_some_and(|(ui, errs)| ui.is_none() && errs.iter().any(|e| e.contains("16"))),
+            "短い固定トークンではリモートを起動しない");
+        cfg.remote.enabled = false;
         // Off: the written string is ignored even if usable
         cfg.remote.sticky_token = false;
         cfg.remote.fixed_token = "my-own-token-0123456789".into();
