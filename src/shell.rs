@@ -165,6 +165,15 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     background:var(--bg); color:var(--text); border:1px solid var(--line);
     border-radius:8px; }
   .castpanelhint { flex:1 1 0; padding:10px 4px; color:var(--dim); font-size:13px; }
+  /* The "🎯 still aimed" chip: visible on EVERY panel while a target is set,
+     because the composer's Send goes to the operate goal, not the terminal.
+     Its ✕ releases the target. */
+  .castchip { flex:none; display:inline-flex; align-items:center; gap:6px; margin:6px 0;
+    padding:4px 6px 4px 10px; font-size:13px; color:var(--text);
+    background:var(--bg); border:1px solid var(--brand); border-radius:999px; }
+  .castchipx { flex:none; border:0; background:none; color:var(--dim); font-size:13px;
+    cursor:pointer; padding:2px 6px; border-radius:999px; }
+  .castchipx:hover { color:var(--text); background:var(--line); }
   /* Fixed ⚙ at the right of the actions panel — edit the quick actions in settings. */
   .castgear { flex:none; margin:6px 0; padding:6px 8px; font-size:14px; cursor:pointer;
     background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; }
@@ -1101,6 +1110,32 @@ window.__state = function (json) {
   const _sp = document.getElementById("splash");
   if (_sp && !_sp.hidden) _sp.hidden = true;
   S = JSON.parse(json);
+  // A page older than the app it's talking to keeps rendering yesterday's
+  // UI — a phone leaves the board open across app updates, and every "the
+  // button is still the old one" report traces back to that. The state
+  // carries the app's build stamp; on mismatch, one reload heals it (the
+  // token survives in sessionStorage, so the page comes back signed in)
+  if (S && S.build && BUILD && S.build !== BUILD && !window.__reloading) {
+    window.__reloading = true;
+    location.reload();
+    return;
+  }
+  // The composer is the workbench on the phone too: any terminal tab shows
+  // it by default (opened WITHOUT focus, so the soft keyboard stays down
+  // until the person taps the field). Only their own ✕ keeps it collapsed —
+  // and then the ✏️ pen stays visible as the way back in
+  if (typeof REMOTE !== "undefined" && REMOTE) {
+    if (onTermPty()) {
+      let collapsed = false;
+      try { collapsed = localStorage.getItem("shikishaCastClosed2") === "1"; } catch (e) {}
+      if (!collapsed && !(castDock && castDock.style.display === "flex")) openTermBar();
+    }
+    // showDock/closeBar own the open-state side of the pen's visibility; this
+    // owns the where-are-we side (no pen over browser/model tabs — they carry
+    // their own composer, summoning the terminal bar there would be nonsense)
+    if (fab && !(castDock && castDock.style.display === "flex"))
+      fab.style.display = onTermPty() ? "" : "none";
+  }
   drawTabs();
   drawStatus();
   drawNav();
@@ -1531,7 +1566,8 @@ document.addEventListener("mouseup", e => {
   if (t) { send({kind:"copy", text:t}); return; }
   // On a phone, tapping a terminal tab opens the sub-input bar (see openTermBar)
   // rather than the hidden #kbd, so the keyboard never lands on top of the screen.
-  if (REMOTE && onTermPty()) { openTermBar(); return; }
+  // A tap is the phone's ✎ pen: summoning the bar also clears a ✕-collapse
+  if (REMOTE && onTermPty()) { openTermBar(); rememberCastClosed(false); return; }
   focus();
 });
 document.addEventListener("contextmenu", e => {
@@ -1586,6 +1622,8 @@ if (REMOTE) {
     // (null = clean, so test for the key's presence, not its truthiness).
     if (d.recorded != null) window.__recorded(d.recorded);
     if ("luadone" in d) window.__luaDone(d.luadone);
+    if ("suggested" in d) window.__suggested(d.suggested);
+    if ("surveyed" in d) window.__surveyed(d.surveyed);
   };
   const connectState = () => {
     if (cut) return;
@@ -1606,8 +1644,21 @@ if (REMOTE) {
     if (wsUp || cut) return;
     try {
       const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
-      if (r.status === 403) {   // token revoked from the PC — this page is done
-        cut = true; wsUp = false;
+      if (r.status === 403) {
+        // Two different refusals share the status: the optional password
+        // gate (body "password") wants the person to unlock this device
+        // once; anything else means the token was revoked from the PC.
+        const body = await r.text().catch(() => "");
+        if (body === "password") {
+          const pw = prompt(T["tui.remote.password_prompt"] || "パスワード");
+          if (pw !== null && pw !== "") {
+            const a = await fetch("auth?t=" + encodeURIComponent(TOKEN) + "&p=" + encodeURIComponent(pw), {cache:"no-store"});
+            if (a.ok) { location.reload(); return; }
+            alert(T["tui.remote.password_wrong"] || "パスワードが違います");
+          }
+          return;
+        }
+        cut = true; wsUp = false;   // token revoked from the PC — this page is done
         try { if (sws) sws.close(); } catch (x) {}
         showNet("cut");
         return;
@@ -1975,6 +2026,9 @@ let lastCastActive = null;
 // actions, or (later) the operate-target picker. Default: keys on the phone (no
 // physical keyboard), actions on the desktop.
 let castPanel = null, castPanelEl = null;
+// The panel the PERSON last picked. Renders fall back when a tab switch makes
+// it unavailable, but never overwrite this — only an explicit pick does
+let userPanel = null;
 // 📼's chosen mode ("rec" | "run"). "run" until the user opts into recording —
 // arming a recorder is never a side effect of merely opening the panel.
 let luaMode = "run";
@@ -2000,8 +2054,36 @@ function openSettings(section, ret) {
     send({kind:"opensettings", section: section || null, ret: !!ret});
   }
 }
-// The picker for the 🎯 panel: choose another tab to operate. Browsers, AI tabs
-// and plain terminals are all candidates; the operator itself and INDEX are not.
+// Fetch the newest run's portable replay (durable anchors, no digest refs).
+// The phone downloads it over HTTP; the window board has no HTTP downloads,
+// so it asks the app to save the file into Downloads instead.
+async function downloadReplayLua() {
+  if (typeof REMOTE !== "undefined" && REMOTE) {
+    try {
+      const r = await fetch("api/replay?t=" + encodeURIComponent(TOKEN));
+      if (!r.ok) { attachToast(T["tui.cast.replay.none"] || "No macro yet", true); return; }
+      const blob = await r.blob();
+      const u = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = u; a.download = "shikisha-macro.lua";
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(u), 1000);
+      // A silent success reads as a failure — say it landed
+      attachToast(T["tui.cast.replay.downloaded"] || "Downloaded");
+    } catch (e) {
+      attachToast(String(e && e.message || e), true);
+    }
+  } else {
+    // The app answers with the saved path (or the reason it couldn't) via
+    // the flash bar; this toast is the immediate "the press registered"
+    send({kind:"replaysave"});
+    attachToast(T["tui.cast.replay.saving"] || "Saving…");
+  }
+}
+// The picker for the 🎯 panel: choose another tab to operate. Candidates are
+// browsers and AI tabs only — the operate engine relays natural-language
+// instructions, and typed into a plain shell/SSH/WSL those would execute as
+// commands. The operator itself and INDEX are never candidates.
 // Driving requires the operator (the active tab) to act WITHOUT confirmation — a
 // model tab always does, a CLI only with its bypass flag. When it can't, the
 // picker is disabled and a jump to settings is offered instead of a dead end.
@@ -2010,7 +2092,8 @@ function buildTargetPanel() {
   const operator = (S && S.tabs) ? S.tabs.find(t => t && t.index === S.active) : null;
   const canOperate = !!(operator && operator.auto);
   const tabs = (S && S.tabs)
-    ? S.tabs.filter(t => t && t.index !== 0 && !t.settings && t.index !== S.active) : [];
+    ? S.tabs.filter(t => t && t.index !== 0 && !t.settings && t.index !== S.active
+        && (t.kind === "browser" || t.ai)) : [];
   const sel = el("select", {class:"castswitch"});
   sel.disabled = !canOperate;
   sel.append(el("option", {value:""}, T["tui.cast.target.none"] || "— none —"));
@@ -2026,8 +2109,13 @@ function buildTargetPanel() {
     const t = tabs.find(x => x.index === idx);
     if (t) { castTarget = { index: t.index, name: t.name || ("#" + idx), kind: t.kind, model: !!t.model }; }
     else { if (castTarget) send({kind:"operate", target: 0}); castTarget = null; }  // detach
+    renderPanel();   // the 🎯 chip appears/disappears with the choice
   };
   wrap.append(el("span", {class:"hint", style:"flex:none"}, T["tui.cast.target.label"] || "Operate:"), sel);
+  // The finished operation's portable script, right where the target was
+  // chosen. Always present: before any run exists, pressing it just says so
+  wrap.append(el("button", {class:"castbtn", style:"flex:none", onclick: downloadReplayLua},
+    T["tui.cast.target.replay"] || "⬇ Lua"));
   if (!canOperate) {
     castTarget = null;  // an unusable operator can't be aimed at anything
     wrap.append(
@@ -2044,11 +2132,21 @@ function buildTargetPanel() {
 // until that feature lands, but it's listed now so the switcher is present on both
 // the phone (keys/actions/target) and the desktop (actions/target).
 function panelOptions() {
-  const opts = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions", "target"] : ["actions", "target"];
+  const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];
   // A browser tab is operated, not an operator, so it has no 🎯 target panel —
   // instead it gains 📼 (record page actions as Lua / run composer Lua on the
   // page). Otherwise it's the same sub-input bar as an AI tab.
-  return onBrowserTab() ? opts.filter(p => p !== "target").concat("lua") : opts;
+  if (onBrowserTab()) return base.concat("lua");
+  const t = (S && S.tabs) ? S.tabs.find(x => x && x.index === S.active) : null;
+  // 🎯 exists ONLY where an AI can be the operator (the active tab drives
+  // the chosen target). A plain terminal has no AI to drive anything, so it
+  // gets no target panel at all — it gains 🤖 instead: natural language in,
+  // one reviewed command out.
+  if (t && t.ai) return base.concat("target");
+  if (t && t.index !== 0 && !t.settings && t.kind !== "browser") {
+    return base.concat("suggest");
+  }
+  return base;
 }
 // Window only: over a browser tab, reuse the composer (the sub-input bar) and
 // reserve room on #page so the native browser — which is layered on top of the
@@ -2094,17 +2192,85 @@ function panelName(p) {
   return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
     : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
     : p === "lua" ? (T["tui.cast.panel.lua"] || "Lua record / run")
+    : p === "suggest" ? (T["tui.cast.panel.suggest"] || "AI command suggest")
     : (T["tui.cast.panel.target"] || "Target");
 }
 // A compact emoji for the switcher itself — text labels ate horizontal width.
-function panelLabel(p) { return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼" : "🎯"; }
+function panelLabel(p) {
+  return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼"
+    : p === "suggest" ? "🤖" : "🎯";
+}
 function panelContent(p) {
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
   if (p === "target") { return buildTargetPanel(); }
   if (p === "lua") { return buildLuaPanel(); }
+  if (p === "suggest") { return buildSuggestPanel(); }
   return null;
 }
+// The ✨ panel: natural language in, ONE command out — drafted into the
+// composer for the person to review and Send. Nothing runs on its own.
+let suggestBusy = false, suggestDraft = "";
+function buildSuggestPanel() {
+  const wrap = el("div", {id:"castsuggest", style:"display:flex;flex:1 1 0;gap:8px;align-items:center;min-width:0;padding:6px 0"});
+  const inp = el("input", {type:"text", style:"flex:1 1 0;min-width:120px;padding:6px 10px;font-size:13px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px",
+    placeholder: T["tui.cast.suggest.ph"] || "What do you want to do?"});
+  inp.value = suggestDraft;
+  inp.addEventListener("input", () => { suggestDraft = inp.value; });
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  const btn = el("button", {class:"castbtn", style:"flex:none", onclick: go},
+    suggestBusy ? "…" : ("🤖 " + (T["tui.cast.suggest.go"] || "Suggest")));
+  function go() {
+    const t = inp.value.trim();
+    if (!t || suggestBusy) return;
+    suggestBusy = true;
+    renderPanel();
+    send({kind:"suggest", text: t});
+  }
+  // 🩺 the environment survey (the "doctor" idiom — flutter doctor, brew
+  // doctor): DRAFTS a fixed read-only probe into the composer for the person
+  // to review and send — even a canned probe never types itself. Its output
+  // becomes the tab's environment card, carried into every ✨ suggestion.
+  // For bastion hops, press it again after landing on the new host
+  const doc = el("button", {class:"castbtn", style:"flex:none",
+    title: T["tui.cast.survey.hint"] || "Survey this terminal's environment",
+    onclick: () => { send({kind:"survey"}); }},
+    "🩺 " + (T["tui.cast.survey.go"] || "Survey"));
+  wrap.append(inp, btn, doc);
+  return wrap;
+}
+// 🩺 progress from the loop (or the phone's state push)
+window.__surveyed = (r) => {
+  if (r && r.stage === "draft" && r.cmd) {
+    ensureBar();
+    if (castDock && castDock.style.display !== "flex") openTermBar();
+    castSlot = "draft";
+    castDraft = r.cmd;
+    if (castInput) { castInput.value = r.cmd; growCastInput(); }
+    attachToast(T["tui.cast.survey.drafted"] || "🩺 Review the survey command, then Send");
+  } else if (r && r.ok) {
+    attachToast(T["tui.cast.survey.done"] || "🩺 Environment recorded — suggestions now use it");
+  } else {
+    attachToast((r && r.error) || (T["tui.cast.survey.failed"] || "Survey failed"), true);
+  }
+};
+// The finished suggestion (or its failure) — from the window loop or the
+// phone's state push. The command lands in the composer as a DRAFT: the
+// person reads it and presses Send themselves
+window.__suggested = (r) => {
+  suggestBusy = false;
+  if (r && r.ok && r.cmd) {
+    ensureBar();
+    if (castDock && castDock.style.display !== "flex") openTermBar();
+    castSlot = "draft";
+    castDraft = r.cmd;
+    if (castInput) { castInput.value = r.cmd; growCastInput(); }
+    attachToast(T["tui.cast.suggest.ready"] || "✨ Review the command, then Send");
+  } else {
+    attachToast((r && r.error) || (T["tui.cast.suggest.failed"] || "Suggestion failed"), true);
+  }
+  renderPanel();
+};
 // The 📼 panel: ⏺ turns what happens on the shown page into Lua lines in the
 // composer (Send becomes Copy); ▶ runs the composer's Lua against the page in
 // the same sandbox the rally's AI code runs in (Send becomes Run). Recording
@@ -2226,7 +2392,12 @@ function renderPanel() {
   if (!castPanelEl) return;
   syncAttach();
   const opts = panelOptions();
-  if (opts.indexOf(castPanel) < 0) castPanel = opts[0];
+  // The panel only changes when the PERSON changes it. Tab switches (the
+  // rally flipping between the AI and the browser) can make the chosen
+  // panel temporarily unavailable — fall back for the render, but keep the
+  // choice and restore it the moment it's available again.
+  if (userPanel && opts.indexOf(userPanel) >= 0) castPanel = userPanel;
+  else if (opts.indexOf(castPanel) < 0) castPanel = opts[0];
   castPanelEl.textContent = "";
   if (opts.length > 1) {
     const sel = el("select", {class:"castswitch", title: panelName(castPanel)});
@@ -2234,8 +2405,25 @@ function renderPanel() {
     // collapsed, so the label has to BE the emoji to stay narrow. The full name
     // rides along as each option's title for hover / accessibility.
     opts.forEach(p => { const o = el("option", {value:p, title: panelName(p)}, panelLabel(p)); if (p === castPanel) o.selected = true; sel.append(o); });
-    sel.onchange = () => { castPanel = sel.value; renderPanel(); };
+    sel.onchange = () => { castPanel = sel.value; userPanel = sel.value; renderPanel(); };
     castPanelEl.append(sel);
+  }
+  // While a 🎯 target is aimed, every panel says so — the person switching
+  // panels otherwise assumes the targeting ended, then their next Send goes
+  // to the operate goal instead of the terminal. ✕ releases the target
+  if (castTarget) {
+    const chip = el("span", {class:"castchip",
+      title: T["tui.cast.target.active_hint"] || "Send goes to the AI as a goal for this tab"});
+    chip.append(document.createTextNode("🎯 " + (castTarget.name || "")));
+    chip.append(el("button", {class:"castchipx",
+      title: T["tui.cast.target.clear"] || "Release",
+      onclick: () => {
+        send({kind:"operate", target: 0});
+        castTarget = null;
+        attachToast(T["tui.cast.target.cleared"] || "🎯 released");
+        renderPanel();
+      }}, "✕"));
+    castPanelEl.append(chip);
   }
   const content = panelContent(castPanel);
   if (content) castPanelEl.append(content);
@@ -2267,7 +2455,10 @@ function ensureBar() {
   // to a full-screen reading view.
   const close = el("button", {class:"castbtn", onclick:() => {
     if (castInput) castInput.blur();
-    if (!castMode) closeBar();
+    // Over a terminal this ✕ is the person saying "out of my way" (vi and
+    // friends) — remember it, so the bar stays collapsed on this machine
+    // until the ✎ pen summons it again
+    if (!castMode) { closeBar(); rememberCastClosed(true); }
   }}, "✕");
   // Attach a file: pick or paste an image / PDF. It's saved beside the target
   // tab (under .SHIKISHA/tmp) and its path is dropped into the composer to hand
@@ -2325,7 +2516,7 @@ function ensureBar() {
 }
 // Show the sub-input bar (auxiliary key row + input field). Never focused
 // automatically — the keyboard never pops up uninvited. It only opens when the user taps the input field
-function showDock() { ensureBar(); syncAttach(); castDock.style.display = "flex"; }
+function showDock() { ensureBar(); syncAttach(); castDock.style.display = "flex"; if (fab) fab.style.display = "none"; }
 function closeBar() { if (castDock) castDock.style.display = "none"; if (castInput) castInput.blur(); if (fab) fab.style.display = ""; }
 function sendBar() {
   if (!castInput) return;
@@ -2347,7 +2538,9 @@ function sendBar() {
     // 🎯 operate mode: hand the text to the active AI as a goal, and it drives the
     // chosen target (writes Lua). Not typed into the terminal we're viewing.
     send({kind:"operate", target: castTarget.index, goal: t});
-    attachToast("🎯 " + (castTarget.name || ""));
+    // A bare tab name reads as noise — say what actually happened to the text
+    attachToast((T["tui.cast.target.sent"] || "🎯 Asked the AI to drive {name}")
+      .replace("{name}", castTarget.name || ""));
   } else if (modCtrl && t) {
     // Terminal: Ctrl latched + a typed letter = a control chord (e.g. Ctrl+C to
     // interrupt). Takes the first character; no trailing Enter — a chord isn't a line.
@@ -2392,29 +2585,47 @@ function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl
 // a longer instruction, the quick actions, and (later) attachments. sendBar()
 // posts the very same {kind:"key",…} intents #kbd does, so it reaches the active
 // tab's PTY with no extra wiring.
+// The person's "keep the composer out of my way" choice, per machine
+function rememberCastClosed(v) {
+  try { localStorage.setItem("shikishaCastClosed2", v ? "1" : ""); } catch (e) {}
+}
 function toggleComposer() {
   ensureBar();
   // showDock sets "flex", closeBar sets "none"; a fresh dock has "" (CSS hides it),
   // so test for the shown value rather than "!== none" (which a blank string passes).
   const showing = castDock && castDock.style.display === "flex";
-  if (showing) { closeBar(); }
+  if (showing) { closeBar(); rememberCastClosed(true); }
   else {
     openTermBar();
     if (castInput) castInput.focus();
     // Hide the ✎ button while the bar is open — it sits over the bar's ✕/Send
     // buttons, and the ✕ already closes the bar.
     if (fab) fab.style.display = "none";
+    rememberCastClosed(false);
   }
   // Over a browser tab, the reserved room on #page follows the open/closed state.
   syncBrowserDock();
 }
 let fab = null;
-// Only the window gets the floating toggle; the phone opens the bar by tapping a
-// terminal tab (and its bar carries the attach button).
+// Both surfaces get the ✏️ pen: with the composer collapsed there must be a
+// VISIBLE way back in (on the phone, "tap the terminal" also works, but an
+// invisible affordance is no affordance). It hides while the bar is open
+fab = el("button", {id:"composerfab", title: T["tui.cast.compose"] || "Composer",
+  onclick: toggleComposer}, "✏️");
+document.getElementById("main").append(fab);
 if (!REMOTE) {
-  fab = el("button", {id:"composerfab", title: T["tui.cast.compose"] || "Composer",
-    onclick: toggleComposer}, "✎");
-  document.getElementById("main").append(fab);
+  // The composer is the workbench, not a popup: shown by default. Only the
+  // person's own ✕ (recorded above) keeps it collapsed behind the pen.
+  // Opened without stealing focus — direct typing still goes to the terminal
+  let closed = false;
+  try { closed = localStorage.getItem("shikishaCastClosed2") === "1"; } catch (e) {}
+  if (!closed) {
+    ensureBar();
+    openTermBar();
+    fab.style.display = "none";
+    if (castInput) castInput.blur();
+    syncBrowserDock();
+  }
 }
 // The element directly under the arrow's tip. The synthetic arrow and
 // ripple both use pointer-events:none, so they're transparent to hit
@@ -2973,6 +3184,22 @@ mod tests {
         assert!(!p.contains("{{"), "差し込み先が残っている");
         assert!(p.contains("const T = {"), "訳語が入っていない");
         assert!(p.contains("const BUILD = \""), "ビルド刻印が入っていない");
+        // A stale page (a phone keeping the board open across app updates)
+        // must reload itself, and the 🎯 picker must exclude plain terminals
+        assert!(p.contains("S.build !== BUILD"), "古いページの自動リロードが無い");
+        assert!(
+            p.contains("t.kind === \"browser\" || t.ai"),
+            "🎯候補がAI/ブラウザに絞られていない"
+        );
+        // The 🎯 panel itself exists only on AI-operator tabs; a plain
+        // terminal gets 🤖 instead, and its pen is a color emoji (the text
+        // glyph ✎ has no glyph in some fonts — pressable but invisible)
+        assert!(
+            p.contains("if (t && t.ai) return base.concat(\"target\")"),
+            "🎯パネルがAIタブ限定になっていない"
+        );
+        assert!(p.contains("✏️"), "ペンがカラー絵文字になっていない");
+        assert!(!p.contains("\"✎\""), "見えない文字グリフのペンが残っている");
     }
 
 
