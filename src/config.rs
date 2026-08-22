@@ -180,6 +180,20 @@ pub struct RemoteSpec {
     /// carry only the token, never this
     #[serde(default)]
     pub password: String,
+    /// Keep the pairing on the phone: the token stays in the URL (bookmarkable)
+    /// and in persistent storage, so a discarded tab or a closed browser does
+    /// not cost a QR scan. The "disconnect" control then only drops live
+    /// connections and password sessions — a new token is an explicit
+    /// re-issue from settings. Off (default) = the token lives only in the
+    /// tab's session storage and every disconnect rotates it
+    #[serde(default)]
+    pub sticky_token: bool,
+    /// The token itself when sticky: written by the person (or generated
+    /// into the settings field for them). Plain text in config.json — the
+    /// trade they accepted. Used only when `sticky_token` is on and it is at
+    /// least 16 characters; otherwise the usual persisted random token
+    #[serde(default)]
+    pub fixed_token: String,
 }
 
 impl Default for RemoteSpec {
@@ -190,6 +204,8 @@ impl Default for RemoteSpec {
             port: default_remote_port(),
             allow_public: false,
             password: String::new(),
+            sticky_token: false,
+            fixed_token: String::new(),
         }
     }
 }

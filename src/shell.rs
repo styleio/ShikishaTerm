@@ -599,9 +599,21 @@ let curActions = (typeof ACTIONS !== "undefined" && ACTIONS) ? ACTIONS : [];
 // cleared when the tab closes); a fresh tab has none and must re-pair from the QR.
 // The window (not REMOTE) loads over its own loopback origin with no ?t= and no
 // sessionStorage, so TOKEN is "" there and never used.
+// STICKY (config remote.sticky_token) trades that caution for a pairing that
+// survives: the token stays in the URL (so the page can be bookmarked and a
+// discarded mobile tab comes straight back) and in localStorage (a bookmark
+// without ?t= still signs in). The person opted into that trade knowingly.
+const STICKY = {{STICKY}};
 const TOKEN = (function () {
   try {
     const t = new URLSearchParams(location.search).get("t");
+    if (STICKY) {
+      // Switching the mode off must also stop the lingering copy — handled by
+      // the non-sticky branch below, which clears localStorage on every load
+      if (t) { try { localStorage.setItem("shikisha_token", t); } catch (e) {} return t; }
+      return localStorage.getItem("shikisha_token") || "";
+    }
+    try { localStorage.removeItem("shikisha_token"); } catch (e) {}
     if (t) {
       try { sessionStorage.setItem("shikisha_token", t); } catch (e) {}
       try { history.replaceState({}, "", location.pathname); } catch (e) {}
@@ -3000,6 +3012,13 @@ pub(crate) fn actions_json() -> String {
 }
 
 pub fn page() -> String {
+    page_for(false)
+}
+
+/// The shell with the phone's pairing mode baked in (sticky: keep the
+/// token in the URL and persistent storage — see RemoteSpec::sticky_token).
+/// The window never pairs, so page() serves it the cautious default
+pub fn page_for(sticky: bool) -> String {
     let dict = crate::i18n::dict_json();
     let keys: Vec<&str> = MENU.iter().map(|(k, _)| *k).collect();
     let words: std::collections::BTreeMap<&str, &str> = MENU.iter().copied().collect();
@@ -3021,6 +3040,7 @@ pub fn page() -> String {
             &serde_json::to_string(&crate::config::cast_keys()).unwrap_or_else(|_| "[]".into()),
         )
         .replace("{{ACTIONS}}", &actions_json())
+        .replace("{{STICKY}}", if sticky { "true" } else { "false" })
         .replace(
         "{{BUILD}}",
         &serde_json::to_string(&format!(

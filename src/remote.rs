@@ -193,6 +193,20 @@ impl RemoteUi {
         token: String,
         password: String,
     ) -> Result<Self> {
+        Self::start_with(bind, port, token, password, false)
+    }
+
+    /// sticky: the phone keeps its pairing (token in the URL and in
+    /// persistent storage) — see config::RemoteSpec::sticky_token. The
+    /// flag only shapes the served shell page; a config change restarts the
+    /// server, so it needs no runtime switch
+    pub fn start_with(
+        bind: std::net::Ipv4Addr,
+        port: u16,
+        token: String,
+        password: String,
+        sticky: bool,
+    ) -> Result<Self> {
         let addr = format!("{bind}:{port}");
         let in_use = |e: &(dyn std::error::Error + Send + Sync + 'static)| {
             e.downcast_ref::<std::io::Error>()
@@ -268,7 +282,7 @@ impl RemoteUi {
                         break;
                     }
                     if let Err(e) =
-                        handle(req, &token, &snapshot, &tx, &clients, &states, &kf, &settings, &auth)
+                        handle(req, &token, &snapshot, &tx, &clients, &states, &kf, &settings, &auth, sticky)
                     {
                         crate::append_hook_log(&crate::i18n::tp(
                             "err.remote.hook_log",
@@ -310,10 +324,17 @@ impl RemoteUi {
     /// until it re-pairs with the new URL. `url` is rebuilt so the pairing QR,
     /// which reads it every frame, shows the new token.
     pub fn rotate_token(&mut self, new: String) {
-        // Cutting sessions must cut password sessions too
-        self.auth.sessions.lock().unwrap().clear();
         *self.token.lock().unwrap() = new.clone();
         self.url = format!("{}/?t={}", self.origin, new);
+        self.cut_sessions();
+    }
+
+    /// Drop every live connection and every password session WITHOUT changing
+    /// the token — the sticky-token "disconnect": a paired phone stays paired
+    /// (its bookmark still opens the board) but must present the password
+    /// again, and whatever it held open is gone now
+    pub fn cut_sessions(&self) {
+        self.auth.sessions.lock().unwrap().clear();
         self.frame_clients.lock().unwrap().clear();
         self.state_clients.lock().unwrap().clear();
     }
@@ -422,6 +443,7 @@ fn handle(
     keyframe_wanted: &Arc<AtomicBool>,
     settings: &Arc<Mutex<Option<(String, String)>>>,
     auth: &Arc<PwAuth>,
+    sticky: bool,
 ) -> Result<()> {
     // Snapshot the current token for this request. It can be rotated at runtime
     // (the PC's "disconnect" cuts every existing session by changing the token),
@@ -464,7 +486,7 @@ fn handle(
     if method == "GET" && (path == "/" || path == "/shell") {
         return req
             .respond(
-                Response::from_string(crate::shell::page())
+                Response::from_string(crate::shell::page_for(sticky))
                     .with_header(
                         Header::from_bytes(
                             &b"Content-Type"[..],

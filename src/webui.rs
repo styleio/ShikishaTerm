@@ -3390,6 +3390,31 @@ function remoteCard() {
       return i;
     })(),
     el("span", {class:"hint"}, T["settings.phone.password.hint"])));
+  // Sticky pairing: the token is a string the person writes (or we generate
+  // into the field so it is never blank while on). The phone then keeps it in
+  // its URL and storage — bookmarkable, survives a discarded tab — and the
+  // disconnect control no longer rotates it. Changing the string is the way
+  // to shut a phone out. Plain text in config.json: the trade they accept
+  box.append(el("div", {class:"row"}, el("label", {}, T["settings.phone.sticky"]),
+    (() => {
+      const wrap = el("div", {style:"display:flex;flex-direction:column;gap:6px;min-width:0"});
+      const on = el("input", {type:"checkbox"});
+      on.checked = !!r.sticky_token;
+      const tok = el("input", {type:"text", style:"width:340px;max-width:100%;font-family:monospace",
+        value: r.fixed_token || "", spellcheck: "false", autocomplete: "off"});
+      tok.disabled = !on.checked;
+      const gen = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, "0")).join("");
+      on.addEventListener("change", () => {
+        r.sticky_token = on.checked;
+        tok.disabled = !on.checked;
+        if (on.checked && !tok.value.trim()) { tok.value = gen(); r.fixed_token = tok.value; }
+      });
+      tok.addEventListener("input", () => { r.fixed_token = tok.value.trim(); });
+      const l = el("label", {class:"check"});
+      l.append(on, document.createTextNode(T["settings.phone.sticky.label"]));
+      wrap.append(l, tok, el("span", {class:"hint"}, T["settings.phone.sticky.hint"]));
+      return wrap;
+    })()));
   box.append(el("div", {class:"row"}, status));
   box.append(qrbox);
   box.append(el("div", {class:"hint", style:"margin-top:6px"},

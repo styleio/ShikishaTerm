@@ -1481,8 +1481,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 let mut remote_changed: Option<String> = None;
                 let want = newcfg.remote.clone();
                 let now = cfg.as_ref().map(|c| c.remote.clone()).unwrap_or_default();
-                if (want.enabled, &want.bind, want.port, want.allow_public, &want.password)
-                    != (now.enabled, &now.bind, now.port, now.allow_public, &now.password)
+                if (want.enabled, &want.bind, want.port, want.allow_public, &want.password, want.sticky_token, &want.fixed_token)
+                    != (now.enabled, &now.bind, now.port, now.allow_public, &now.password, now.sticky_token, &now.fixed_token)
                 {
                     if let Some(r) = &remote_ui {
                         r.shutdown();
@@ -2630,13 +2630,27 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // fails auth on its next request, and drop the connections it holds open.
         // The window reclaims its own terminal width on the page side (its click
         // also fires a fresh resize report), so nothing to do for width here.
+        // With a sticky pairing (remote.sticky_token) the token is the string the
+        // person wrote into settings, so the cut only drops connections and
+        // password sessions; revoking a phone means changing that string.
+        let sticky = cfg.as_ref().is_some_and(|c| c.remote.sticky_token);
         if surface.take_remote_cut() && remote_ui.is_some() {
             if let Some(r) = remote_ui.as_mut() {
-                r.rotate_token(random_hex(24));
+                if sticky {
+                    r.cut_sessions();
+                } else {
+                    let new = random_hex(24);
+                    // Persisted, or the old token would come back with the next
+                    // launch and a cut phone with it. (A token pinned in
+                    // secrets.json still wins at launch — that pin is the
+                    // person's explicit choice; the rotation holds until then)
+                    let _ = crypto::write_atomic(&config::state_path("remote-token"), &new);
+                    r.rotate_token(new);
+                }
             }
             publish_remote(&remote_info, &remote_ui);
             last_remote_ui = None;
-            flash = Some(i18n::t("msg.remote_cut"));
+            flash = Some(i18n::t(if sticky { "msg.remote_cut_sticky" } else { "msg.remote_cut" }));
         }
 
         // A built-in orchestrator (discussion / code review / browser rally)
@@ -4166,6 +4180,10 @@ fn trim_for_phone(s: &str, max_lines: usize) -> String {
 /// and reuses it (a token that changes every time would force reconnecting
 /// phones each time and make it impossible to show the QR from settings).
 pub fn remote_token(cfg: &config::Config, password: Option<&str>) -> String {
+    // A sticky pairing with a written token: the person's own string wins
+    if cfg.remote.sticky_token && cfg.remote.fixed_token.trim().len() >= 16 {
+        return cfg.remote.fixed_token.trim().to_string();
+    }
     if let Some(t) = cfg.remote_token(password) {
         return t;
     }
@@ -4200,9 +4218,10 @@ fn start_remote_bg(
             let token = remote_token(c, password);
             let port = c.remote.port;
             let remote_password = c.remote.password.clone();
+            let sticky = c.remote.sticky_token;
             std::thread::spawn(move || {
                 let mut errors = Vec::new();
-                let ui = match remote::RemoteUi::start(ip, port, token, remote_password) {
+                let ui = match remote::RemoteUi::start_with(ip, port, token, remote_password, sticky) {
                     Ok(mut r) => {
                         if let Some(n) = &note {
                             errors.push(n.clone());
@@ -4506,6 +4525,29 @@ fn extract_env_block(screen: &str) -> Option<String> {
         + 1;
     let body = lines[start..end].join("\n");
     (end > start + 1).then(|| body.trim().chars().take(1500).collect())
+}
+
+#[cfg(test)]
+mod remote_token_tests {
+    use super::*;
+
+    /// A sticky pairing uses the person's own string — and only a usable one
+    /// (16+ chars); a short or blank string falls back to the ordinary token
+    /// instead of turning the board into a guessable one
+    #[test]
+    fn sticky_fixed_token_wins_only_when_usable() {
+        let mut cfg = config::Config::default();
+        cfg.remote.sticky_token = true;
+        cfg.remote.fixed_token = "  my-own-token-0123456789  ".into();
+        assert_eq!(remote_token(&cfg, None), "my-own-token-0123456789");
+        cfg.remote.fixed_token = "short".into();
+        assert_ne!(remote_token(&cfg, None), "short");
+        assert!(remote_token(&cfg, None).len() >= 16);
+        // Off: the written string is ignored even if usable
+        cfg.remote.sticky_token = false;
+        cfg.remote.fixed_token = "my-own-token-0123456789".into();
+        assert_ne!(remote_token(&cfg, None), "my-own-token-0123456789");
+    }
 }
 
 #[cfg(test)]
