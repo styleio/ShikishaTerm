@@ -15,8 +15,15 @@
 //! only "how to show it".
 
 /// The shell page. `{{DICT}}` gets the translated strings, `{{BUILD}}` gets the build stamp.
-pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
+pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate="no"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Never let a browser machine-translate this page. The terminal is a grid of
+     fixed-width cells (see box_of): swapping a run's text for a translation of a
+     different length leaves the box the same size, so the rows pile up on top of
+     each other. The shell's own wording is already in the user's language, so
+     there is nothing here worth translating anyway. The lang attribute above
+     stops the mis-detection that sets the offer off in the first place -->
+<meta name="google" content="notranslate">
 <title>SHIKISHA-TERM</title>
 <style>
   :root {
@@ -528,7 +535,9 @@ pub const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
     <div id="nav" hidden></div>
     <div id="page"></div>
     <div id="board" hidden></div>
-    <pre id="screen" hidden></pre>
+    <!-- notranslate as well as the page-wide opt-out above: this is the one
+         element a forced "translate this page" would wreck outright -->
+    <pre id="screen" class="notranslate" translate="no" hidden></pre>
     <canvas id="cast" hidden></canvas>
     <div id="cur" hidden></div>
     <textarea id="kbd" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
@@ -3034,6 +3043,7 @@ pub fn page_for(sticky: bool) -> String {
         "{{MENU_WINDOW_ONLY}}",
         &serde_json::to_string(&WINDOW_ONLY_MENU).unwrap_or_else(|_| "[]".into()),
     )
+    .replace("{{__lang__}}", &crate::i18n::lang())
     .replace("{{DICT}}", &dict)
         .replace(
             "{{CAST_KEYS}}",
@@ -3312,6 +3322,35 @@ mod tests {
         ] {
             assert!(PAGE.contains(field), "状態の {field} を誰も見ていない");
         }
+    }
+
+    /// A browser must never machine-translate this page.
+    ///
+    /// Chrome on a phone read the terminal's English output, decided the whole
+    /// page was English, and translated it — which swapped the text inside runs
+    /// that `box_of` had given a fixed cell width, so the rows landed on top of
+    /// one another. The served page has to say no, and say which language it is
+    /// so the mis-detection doesn't start.
+    #[test]
+    fn the_page_is_never_machine_translated() {
+        let html = super::page();
+        assert!(html.contains("translate=\"no\""), "ページ全体の翻訳拒否が無い");
+        assert!(
+            html.contains(r#"<meta name="google" content="notranslate">"#),
+            "翻訳の申し出を止める meta が無い"
+        );
+        assert!(
+            html.contains(r#"<pre id="screen" class="notranslate""#),
+            "端末の中身が個別に守られていない"
+        );
+        // A real language code, not the raw placeholder
+        let lang = crate::i18n::lang();
+        assert!(!lang.is_empty() && !lang.contains('{'), "lang が空/未置換: {lang}");
+        assert!(
+            html.contains(&format!("<html lang=\"{lang}\"")),
+            "lang 属性が入っていない (翻訳の誤検出はここから始まる)"
+        );
+        assert!(!html.contains("{{__lang__}}"), "lang のプレースホルダが残っている");
     }
 
     /// Text selection is limited to the terminal's contents.
