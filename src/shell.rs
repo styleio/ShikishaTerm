@@ -134,6 +134,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     line-height:1.35; padding:8px 10px; background:var(--bg); color:var(--text);
     border:1px solid var(--line); border-radius:8px; outline:none;
     resize:none; overflow-y:auto; max-height:40vh; }
+  /* The hint is one line or it is nothing. The field is the narrowest thing in
+     the row (the clip, backspace, send and close buttons around it are fixed), so
+     a wrapped placeholder does not grow the field - its second line is simply cut
+     in half. Held to one line, the overflow is cut cleanly at the right edge
+     instead, whatever a given language's wording came out to */
+  #castinput::placeholder { white-space:nowrap; }
   #castbar .castsend { padding:8px 14px; border:0; border-radius:8px;
     background:var(--brand); color:#04121c; font-weight:700; cursor:pointer; }
   #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);

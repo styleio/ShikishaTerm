@@ -29,7 +29,7 @@
   "tui.index": "INDEX",
   "tui.tab.add": "タブを追加",
   "tui.cast.control": "操作中 — タップで解除",
-  "tui.cast.type.ph": "ここで入力して送信 (日本語は変換してから)",
+  "tui.cast.type.ph": "ここに入力",
   "tui.cast.send": "送信",
   "tui.cast.attach": "ファイルを添付",
   "tui.cast.compose": "入力バー",
