@@ -386,7 +386,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Only the workspace name gets truncated when space is tight — pills and STOP never shrink */
   #status > span:first-child { min-width:0; white-space:nowrap;
     overflow:hidden; text-overflow:ellipsis; }
-  #status .pill, #status .build, #stop { flex:none; white-space:nowrap; }
+  #status .pill, #status .build, #stop, #restart { flex:none; white-space:nowrap; }
   .pill { padding:1px 8px; border-radius:9px; border:1px solid var(--line); }
   .pill.on { color:var(--live); border-color:#1f3d2b; }
   .pill.off { color:var(--dim); }
@@ -395,6 +395,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #stop { cursor:pointer; color:var(--stop); border:1px solid #3d2020;
     padding:2px 10px; border-radius:7px; font-weight:700; }
   #stop:hover { background:var(--stop); color:#0a0c0e; }
+  /* Relaunch the tab in view. Same shape as the stop button but a notch quieter:
+     they sit side by side, and the red one has to stay the one that catches the eye */
+  #restart { cursor:pointer; color:var(--dim); border:1px solid var(--line);
+    padding:2px 10px; border-radius:7px; font-weight:700; }
+  #restart:hover { background:var(--line); color:var(--text); }
+  /* Armed - the next press kills and relaunches what is running */
+  #restart.armed { color:var(--warn); border-color:#4a3a12; background:#241d09; }
   /* Where input is captured, layered over the cursor.
      The IME candidate window follows this element, so its position becomes
      the candidate window's position too. Text mid-conversion is drawn
@@ -505,6 +512,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     /* Save width on the emergency stop by showing just a red ■ (a universal stop symbol) */
     #stop { font-size:0; padding:2px 9px; }
     #stop::after { content:"\25A0"; font-size:13px; }
+    /* Same trade for the restart button: the word goes, the circular arrow stays */
+    #restart { font-size:0; padding:2px 9px; }
+    #restart::after { content:"\21BB"; font-size:15px; }
     /* Hide the build stamp — it takes up space, and STOP must stay visible */
     #status .build { display:none; }
 
@@ -963,6 +973,34 @@ function drawModelChat() {
 }
 
 // ── Status line ──────────────────────────────
+// Until when the restart button is armed (wall clock, ms). Kept out here on
+// purpose: the status line is rebuilt from scratch on every state push, so
+// anything held on the element itself would be wiped a moment after arming
+let restartArmed = 0;
+
+// The restart button beside the stop button: relaunch the tab being viewed.
+// Sends the intent that Ctrl+B r stands for, so there is one restart in the app.
+//
+// Shown only on a terminal tab - the board has no single tab to restart, and a
+// browser pane has its own reload. A tab that has already exited (the SSH that
+// dropped) holds nothing to lose, so it goes on the first press. A live one asks
+// twice: this sits next to the emergency stop, and a stray tap must not take a
+// running conversation down with it. The arming lapses on its own.
+function restartBtn() {
+  if (!onTerminal()) { restartArmed = 0; return null; }
+  const t = S.tabs.find(x => x.index === S.active);
+  const armed = Date.now() < restartArmed;
+  return el("span", {id:"restart", class: armed ? "armed" : "",
+    title:T["tui.restart.title"] || "",
+    onclick:() => {
+      if (armed || (t && t.state === "EXIT")) { restartArmed = 0; send({kind:"restart"}); }
+      // Redraw once the arming lapses, in case no state push arrives to do it
+      else { restartArmed = Date.now() + 4000; setTimeout(drawStatus, 4100); }
+      drawStatus();
+    }},
+    armed ? (T["tui.restart.arm"] || "SURE?") : (T["tui.restart"] || "RESTART"));
+}
+
 function drawStatus() {
   const s = document.getElementById("status");
   s.textContent = "";
@@ -985,6 +1023,7 @@ function drawStatus() {
       T["tui.remote.live"] || "REMOTE ✕") : null,
     el("span", {class:"grow"}),
     el("span", {class:"build"}, BUILD),
+    restartBtn(),
     el("span", {id:"stop", onclick:() => send({kind:"stop"})},
       T["tui.stop"] || "STOP"),
   ].forEach(x => { if (x) s.append(x); });

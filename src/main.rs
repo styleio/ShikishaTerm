@@ -749,6 +749,9 @@ fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
         // the visible session instead (the old Menu "w" bug: "wwww").
         Ev::OpenWs => prefixed('w'),
         Ev::Stop => prefixed('x'),
+        // The status bar's ↻. Same key a person at the window would press, so the
+        // restart itself (cancel this tab's loops, kill, relaunch) lives in one place
+        Ev::Restart => prefixed('r'),
         Ev::Key { text, named, ctrl } => {
             if let Some(n) = named {
                 named_key(n)
@@ -5388,6 +5391,28 @@ mod tests {
         let Event::Key(k) = &evs[1] else { panic!("本体が打鍵でない") };
         assert_eq!(k.code, KeyCode::Char('w'));
         assert!(k.modifiers.is_empty());
+    }
+
+    /// The status bar's restart button must land on the same keystroke a person
+    /// at the window would press, and must carry the prefix so it works from
+    /// whichever tab is showing. Without the prefix an 'r' would simply be typed
+    /// into the session (the "wwww" bug the workspace button already ran into).
+    #[test]
+    fn the_restart_button_arrives_prefixed() {
+        let evs = super::keys_for(&crate::browser::Ev::Restart);
+        assert_eq!(evs.len(), 2, "前置キー + 'r' の2打鍵");
+        let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
+        assert_eq!(k.code, KeyCode::Char('b'));
+        assert!(k.modifiers.contains(KeyModifiers::CONTROL));
+        let Event::Key(k) = &evs[1] else { panic!("本体が打鍵でない") };
+        assert_eq!(k.code, KeyCode::Char('r'));
+        assert!(k.modifiers.is_empty());
+        // Ctrl+B r has to still be the tab restart on the receiving side
+        let body = include_str!("main.rs");
+        assert!(
+            body.contains("// Ctrl+B r restarts this tab"),
+            "受け手の Ctrl+B r が消えている"
+        );
     }
 
     /// The board's menu must arrive as a plain keystroke, without the prefix key attached.

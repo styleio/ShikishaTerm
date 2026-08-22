@@ -77,6 +77,10 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
     match ev {
         // Pick/type into/stop the tab you want to view. The core of remote control
         Ev::Select { .. } | Ev::Key { .. } | Ev::Stop => true,
+        // Relaunching the tab you are looking at. A phone watching an SSH tab that
+        // dropped is exactly who needs this, and it reaches no further than the
+        // keystroke (Ctrl+B r) it stands for — one tab, the one on screen.
+        Ev::Restart => true,
         // Input into the relay screen (finger trail / swipe / characters). The
         // heart of remote control, so let it through
         Ev::Inject { .. } => true,
@@ -986,6 +990,10 @@ mod tests {
         let menu = |k: &str| super::allowed_from_afar(&Ev::Menu { key: k.into() });
         assert!(super::allowed_from_afar(&Ev::Select { tab: 2 }));
         assert!(super::allowed_from_afar(&Ev::Stop));
+        // Relaunching the tab on screen: a phone watching an SSH session that
+        // dropped is precisely who needs it, and it reaches no further than the
+        // keystroke it stands for
+        assert!(super::allowed_from_afar(&Ev::Restart), "見ているタブを遠くから直せない");
         // Back/forward/reload/navigate must work from remote, or the top bar is just decoration
         assert!(super::allowed_from_afar(&Ev::Go { go: crate::browser::Go::Back }));
         assert!(super::allowed_from_afar(&Ev::Go {

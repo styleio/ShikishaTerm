@@ -648,6 +648,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("openws") => Ev::OpenWs,
         Some("stop") => Ev::Stop,
+        Some("restart") => Ev::Restart,
         Some("remotecut") => Ev::RemoteCut,
         // A quick-action chip whose payload is Lua (the code stays server-side —
         // the page only knows the index). Runs it against the active tab.
@@ -903,6 +904,10 @@ pub enum Ev {
     OpenWs,
     /// Emergency stop
     Stop,
+    /// Relaunch the tab being viewed. The status bar's ↻ next to the stop button
+    /// sends this; `keys_for` turns it into the Ctrl+B r that already does the
+    /// job, so there is one restart in the app rather than two that can drift.
+    Restart,
     /// Cut every remote session from the window's side: rotate the access token
     /// and drop the open connections. Window-only — a phone can't disconnect
     /// itself (allowed_from_afar leaves it on the reject side).
