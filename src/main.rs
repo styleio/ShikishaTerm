@@ -23,6 +23,7 @@ mod caps;
 mod config;
 mod crypto;
 mod detect;
+mod digest;
 mod exchange;
 mod hooks;
 mod i18n;
@@ -416,6 +417,14 @@ struct WinSurface {
     /// injects them into the shown browser — the very same caps.browser_inject the
     /// phone's relay uses, so the desktop composer and the phone share one path.
     injects: Vec<crate::browser::Input>,
+    /// The 🎯 panel's "save the replay" button. The loop copies the newest
+    /// run's replay.lua into Downloads and answers with a flash message.
+    replay_saves: bool,
+    /// ✨ natural-language requests awaiting a command suggestion from the
+    /// assistant AI, aimed at the active terminal tab.
+    suggests: Vec<String>,
+    /// 🔍 environment-survey button presses (the loop types the probe).
+    surveys: usize,
 }
 
 impl WinSurface {
@@ -504,6 +513,26 @@ impl WinSurface {
         let _ = self.win.eval(&format!("window.__recorded({line_json});"));
     }
 
+    /// Takes the pending ✨ suggestion requests since the last drain.
+    fn take_suggests(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.suggests)
+    }
+
+    /// Deliver a finished ✨ suggestion (JSON: {ok, cmd?/error?}) to the composer.
+    fn push_suggested(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__suggested({json});"));
+    }
+
+    /// Takes the pending 🔍 survey presses since the last drain.
+    fn take_surveys(&mut self) -> usize {
+        std::mem::take(&mut self.surveys)
+    }
+
+    /// Deliver 🔍 survey progress (JSON: {stage} / {ok, error?}) to the board.
+    fn push_surveyed(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__surveyed({json});"));
+    }
+
     /// Deliver the verdict of a ▶ run (JSON: null = clean, string = the error).
     fn push_lua_done(&self, err_json: &str) {
         let _ = self.win.eval(&format!("window.__luaDone({err_json});"));
@@ -552,6 +581,13 @@ impl WinSurface {
                 Ev::RunAction { index } => self.run_actions.push(index),
                 // Operate-a-target request; the loop has the engine to attach it.
                 Ev::Operate { target, goal } => self.operates.push((target, goal)),
+                // Save the newest replay.lua to Downloads (the board can't
+                // download over HTTP; the loop owns the answer message).
+                Ev::ReplaySave => self.replay_saves = true,
+                // ✨ suggestion request; the loop owns the assistant AI call.
+                Ev::Suggest { text } => self.suggests.push(text),
+                // 🔍 survey request; the loop types the probe and captures it.
+                Ev::Survey => self.surveys += 1,
                 // 📼 / ▶ from the composer, and recorded steps from pages. All
                 // resolved by the loop (it knows the shown browser and the engine).
                 Ev::Record { on } => self.record_arms.push(on),
@@ -817,6 +853,9 @@ fn run_in_window() -> Result<()> {
         run_luas: Vec::new(),
         recorded: Vec::new(),
         operates: Vec::new(),
+        replay_saves: false,
+        suggests: Vec::new(),
+        surveys: 0,
         injects: Vec::new(),
     })
 }
@@ -1134,9 +1173,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
             if let Some(e) = err {
                 startup_errors.push(e);
             }
-            notify::Notifier::new(dests)
+            notify::Notifier::new(dests, c.primary_notify.clone())
         }
-        None => notify::Notifier::new(Default::default()),
+        None => notify::Notifier::new(Default::default(), None),
     };
     // Capabilities granted to automation (empty by default). An advanced feature that
     // can only be enabled by writing it into the config file.
@@ -1169,6 +1208,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // The current ad-hoc "operate a target" attachment, as (source pane, target),
     // so a repeated goal to the same target doesn't re-brief from scratch.
     let mut operating: Option<(usize, usize)> = None;
+    // ✨ finished command suggestions arrive from worker threads (the
+    // assistant AI call takes seconds); polled once per tick below
+    let (suggest_tx, suggest_rx) = std::sync::mpsc::channel::<String>();
+    // 🔍 environment cards: per tab (by id), the captured output of the last
+    // survey the person ran. Ride along with every ✨ suggestion so the AI
+    // keeps knowing the environment long after the survey scrolled away
+    let mut env_cards: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    // A survey in flight: (tab id, give-up time). The tick below watches the
+    // tab's screen for the probe's end marker — event-paced, no sleeps
+    let mut pending_survey: Option<(String, std::time::Instant)> = None;
 
     // Remote UI (monitor/control from a phone, etc). Only starts listening when
     // enabled in config. Status is also handed to the settings page so the QR code
@@ -1406,7 +1456,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 if let Some(e) = err {
                     startup_errors.push(e);
                 }
-                notifier = notify::Notifier::new(dests);
+                notifier = notify::Notifier::new(dests, newcfg.primary_notify.clone());
                 // Only swap out the parts that come from config. Rebuilding it
                 // entirely would leave nobody aware of pages already placed in the
                 // window, so they'd stay stuck on screen with no way to remove them
@@ -1431,8 +1481,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 let mut remote_changed: Option<String> = None;
                 let want = newcfg.remote.clone();
                 let now = cfg.as_ref().map(|c| c.remote.clone()).unwrap_or_default();
-                if (want.enabled, &want.bind, want.port, want.allow_public)
-                    != (now.enabled, &now.bind, now.port, now.allow_public)
+                if (want.enabled, &want.bind, want.port, want.allow_public, &want.password)
+                    != (now.enabled, &now.bind, now.port, now.allow_public, &now.password)
                 {
                     if let Some(r) = &remote_ui {
                         r.shutdown();
@@ -1521,6 +1571,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         .map(|t| (t.key(), t.last_response.clone().unwrap_or_default()))
                         .collect(),
                 );
+                // ...and where a phone can reach this app, for "a human is
+                // needed" notifications (shikisha.remote_url)
+                eng.set_remote_url(remote_ui.as_ref().map(|r| r.url.clone()));
                 // Discard waiting loops belonging to exited tabs (don't leave infinite loops behind)
                 for &(idx, old, new) in &transitions {
                     if new == TabState::Exited && old != TabState::Exited {
@@ -1853,9 +1906,27 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::RunLua { code }) => {
                         surface.run_luas.push(code);
                     }
+                    // ✨ a suggestion request from the phone: same queue as the
+                    // window's (keys_for would silently drop it, like Go once was)
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Suggest { text }) => {
+                        surface.suggests.push(text);
+                    }
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Survey) => {
+                        surface.surveys += 1;
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
-                        for e in keys_for(&ev) {
+                        let keys = keys_for(&ev);
+                        if keys.is_empty() {
+                            // Every new intent kind must be routed above
+                            // explicitly — a fall-through here has silently
+                            // swallowed Go, Suggest and Survey before. Never
+                            // let the next one vanish without a trace
+                            append_hook_log(&format!(
+                                "remote UI event fell through unrouted: {ev:?}"
+                            ));
+                        }
+                        for e in keys {
                             surface.inject(e);
                         }
                     }
@@ -2265,6 +2336,117 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
+        // 🩺 environment survey: DRAFT the fixed read-only probe (syntax
+        // picked from the tab's launch command / prompt shape) into the
+        // composer — the person reviews and sends it themselves, exactly
+        // like a ✨ suggestion. Nothing types itself into a terminal. The
+        // watcher below waits for the marker-wrapped output to appear
+        if surface.take_surveys() > 0 {
+            match session_at(&layout, active).and_then(|i| tabs.get(i)) {
+                Some(t) if t.ai_kind().is_none() => {
+                    let screen =
+                        t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
+                    let probe = survey_probe(&t.command_line(), &screen);
+                    let tab_id = t.id.clone().unwrap_or_else(|| t.title.clone());
+                    // A generous window: the person may take their time
+                    // pressing Send — or decide not to (then this just lapses)
+                    append_hook_log(&format!("survey drafted for tab {tab_id}"));
+                    pending_survey = Some((
+                        tab_id,
+                        std::time::Instant::now() + std::time::Duration::from_secs(300),
+                    ));
+                    let js = serde_json::json!({"stage": "draft", "cmd": probe}).to_string();
+                    surface.push_surveyed(&js);
+                    if let Some(r) = remote_ui.as_ref() {
+                        r.push_state(format!("{{\"surveyed\":{js}}}"));
+                    }
+                }
+                _ => {
+                    append_hook_log("survey refused: active pane is not a plain terminal");
+                    let js = serde_json::json!({"ok": false, "error": i18n::t("msg.suggest.no_tab")})
+                        .to_string();
+                    surface.push_surveyed(&js);
+                    if let Some(r) = remote_ui.as_ref() {
+                        r.push_state(format!("{{\"surveyed\":{js}}}"));
+                    }
+                }
+            }
+        }
+        // Watch for the survey's end marker (event-paced: the loop's normal
+        // tick, no sleeps). Lapses silently if the person never sent it
+        if let Some((tab_id, deadline)) = pending_survey.clone() {
+            let block = tabs
+                .iter()
+                .find(|t| t.id.as_deref() == Some(tab_id.as_str()) || t.title == tab_id)
+                .and_then(|t| {
+                    let s =
+                        t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
+                    extract_env_block(&s)
+                });
+            if let Some(env) = block {
+                append_hook_log(&format!("survey [{tab_id}]: {}", log_excerpt(&env, 160)));
+                env_cards.insert(tab_id, env);
+                pending_survey = None;
+                let js = r#"{"ok":true}"#;
+                surface.push_surveyed(js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"surveyed\":{js}}}"));
+                }
+            } else if std::time::Instant::now() > deadline {
+                pending_survey = None;
+            }
+        }
+
+        // ✨ NL → command suggestions for the active terminal tab. The
+        // assistant AI reads the tab's launch command plus the recent screen
+        // (prompt strings, login banners, recent I/O — the environment's own
+        // fingerprint), and — when the person ran 🔍 — the captured
+        // environment card; the call runs on a worker thread and the answer
+        // is polled right below
+        for want in surface.take_suggests() {
+            let target = session_at(&layout, active).and_then(|i| tabs.get(i));
+            let Some(t) = target else {
+                surface.push_suggested(
+                    &serde_json::json!({"ok": false, "error": i18n::t("msg.suggest.no_tab")})
+                        .to_string(),
+                );
+                continue;
+            };
+            let shell = t.command_line();
+            let screen = {
+                let s = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
+                let tail: Vec<&str> = s.lines().rev().take(40).collect();
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+            };
+            let tab_id = t.id.clone().unwrap_or_else(|| t.title.clone());
+            let env = env_cards.get(&tab_id).cloned().unwrap_or_default();
+            let engine = cfg
+                .as_ref()
+                .and_then(|c| c.ai_engine.clone())
+                .filter(|s| !s.is_empty());
+            let tx = suggest_tx.clone();
+            std::thread::spawn(move || {
+                let out = match webui::suggest_with_local_ai(
+                    &want,
+                    &shell,
+                    &screen,
+                    &env,
+                    engine.as_deref(),
+                ) {
+                    Ok(cmd) => serde_json::json!({"ok": true, "cmd": cmd}),
+                    Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
+                };
+                let _ = tx.send(out.to_string());
+            });
+        }
+        while let Ok(js) = suggest_rx.try_recv() {
+            append_hook_log(&format!("suggest: {}", log_excerpt(&js, 200)));
+            surface.push_suggested(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"suggested\":{js}}}"));
+            }
+        }
+
         // Recorded steps → one Lua line each, appended to the composer on both
         // surfaces. Each line calls the same primitives the automation uses,
         // addressed by the browser's Lua name, so record → paste → run round-trips.
@@ -2294,6 +2476,18 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
+        // The 🎯 panel's replay button: put the newest run's durable script
+        // where the user can grab it (the board itself can't download files)
+        if std::mem::take(&mut surface.replay_saves) {
+            flash = Some(match save_replay_to_downloads() {
+                Ok(Some(path)) => {
+                    i18n::tp("msg.replay.saved", &[("path", &path.display().to_string())])
+                }
+                Ok(None) => i18n::t("msg.replay.none"),
+                Err(e) => i18n::tp("msg.replay.failed", &[("e", &e.to_string())]),
+            });
+        }
+
         // "Operate a target tab" (🎯): aim the active AI at another tab and, if a
         // goal was given, hand it over. Browser targets reuse the built-in
         // browser-operate loop; the AI then writes Lua to drive the target.
@@ -2317,7 +2511,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 Some(Pane::Browser { key, .. }) => (true, key.clone()),
                 Some(Pane::Session(s)) if Some(*s) != session_at(&layout, active) => {
                     match tabs.get(*s) {
-                        Some(t) => (false, t.id.clone().unwrap_or_else(|| t.title.clone())),
+                        // Only an AI can be operated by relaying instructions.
+                        // Typed into a plain shell/SSH/WSL they would execute
+                        // as commands — refuse, don't relay
+                        Some(t) if t.ai_kind().is_some() => {
+                            (false, t.id.clone().unwrap_or_else(|| t.title.clone()))
+                        }
+                        Some(_) => {
+                            flash = Some(i18n::t("msg.operate.bad_target"));
+                            continue;
+                        }
                         None => continue,
                     }
                 }
@@ -3992,9 +4195,10 @@ fn start_remote_bg(
         Ok((ip, note)) => {
             let token = remote_token(c, password);
             let port = c.remote.port;
+            let remote_password = c.remote.password.clone();
             std::thread::spawn(move || {
                 let mut errors = Vec::new();
-                let ui = match remote::RemoteUi::start(ip, port, token) {
+                let ui = match remote::RemoteUi::start(ip, port, token, remote_password) {
                     Ok(mut r) => {
                         if let Some(n) = &note {
                             errors.push(n.clone());
@@ -4037,7 +4241,7 @@ fn publish_remote(info: &Arc<Mutex<webui::RemoteInfo>>, ui: &Option<remote::Remo
 }
 
 /// A random hex string (for the remote UI's token)
-fn random_hex(bytes: usize) -> String {
+pub fn random_hex(bytes: usize) -> String {
     use rand::TryRng as _;
     let mut buf = vec![0u8; bytes];
     if rand::rngs::SysRng.try_fill_bytes(&mut buf).is_err() {
@@ -4266,6 +4470,134 @@ fn log_excerpt(text: &str, max: usize) -> String {
     out
 }
 
+/// The 🔍 environment survey: one fixed, read-only probe per shell family.
+/// Curated on purpose — OS/distro, key tool availability, and the running
+/// middleware that matters for command suggestions. A full package dump
+/// (dpkg -l and friends) floods both the terminal and the AI's context for
+/// no accuracy gain. Output is wrapped in markers so the loop can capture it
+const POSIX_PROBE: &str = r#"echo "===SHIKISHA ENV==="; uname -a; cat /etc/os-release 2>/dev/null | head -4; sw_vers 2>/dev/null; echo "--- tools ---"; for c in docker kubectl git python3 node java nginx mysql psql redis-cli systemctl apt-get yum dnf; do command -v $c >/dev/null 2>&1 && echo $c; done; echo "--- running ---"; ps -eo comm= 2>/dev/null | sort -u | grep -iE "nginx|httpd|apache|mysqld|mariadb|postgres|redis|php|java|node|docker|containerd|tomcat" | head -15; echo "===ENV END===""#;
+const PS_PROBE: &str = r#""===SHIKISHA ENV==="; $PSVersionTable.PSVersion.ToString(); (Get-CimInstance Win32_OperatingSystem).Caption; "--- tools ---"; foreach ($c in "docker","kubectl","git","python","node","java","mysql","psql") { if (Get-Command $c -ErrorAction SilentlyContinue) { $c } }; "--- running ---"; (Get-Service | Where-Object Status -eq "Running" | Select-Object -ExpandProperty Name) -match "sql|nginx|apache|redis|docker|iis|w3svc|tomcat" | Select-Object -First 15; "===ENV END===""#;
+const CMD_PROBE: &str =
+    "echo ===SHIKISHA ENV=== & ver & echo --- tools --- & where docker git python node java mysql 2>nul & echo ===ENV END===";
+
+/// Pull the survey's output block off a screen. The drafted command itself
+/// echoes on screen too (with both markers inside one command line), so the
+/// capture insists on the shape only real output has: the start marker ALONE
+/// on its line, with content lines underneath, ending at the bare end marker
+fn extract_env_block(screen: &str) -> Option<String> {
+    // Walk marker lines, not raw indices: the echoed command line contains
+    // the marker mid-line and must never match
+    let mut start_line: Option<usize> = None;
+    let lines: Vec<&str> = screen.lines().collect();
+    for (i, l) in lines.iter().enumerate() {
+        if l.trim() == "===SHIKISHA ENV===" {
+            start_line = Some(i);
+        }
+    }
+    let start = start_line?;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.trim().starts_with("===ENV END==="))?
+        + start
+        + 1;
+    let body = lines[start..end].join("\n");
+    (end > start + 1).then(|| body.trim().chars().take(1500).collect())
+}
+
+#[cfg(test)]
+mod survey_tests {
+    use super::*;
+
+    /// The echoed command line carries BOTH markers inside one line and must
+    /// never be captured; the real output block (bare marker on its own
+    /// line) must be. And an echo alone (not sent yet) captures nothing
+    #[test]
+    fn env_block_comes_from_output_not_echo() {
+        let echo_only = "D:\\run>echo ===SHIKISHA ENV=== & ver & echo ===ENV END===";
+        assert!(extract_env_block(echo_only).is_none(), "エコー行だけでは捕捉しない");
+
+        let screen = "D:\\run>echo ===SHIKISHA ENV=== & ver & echo --- tools --- & where git 2>nul & echo ===ENV END===\n\
+                      ===SHIKISHA ENV=== \n\
+                      \n\
+                      Microsoft Windows [Version 10.0.26200]\n\
+                      --- tools --- \n\
+                      C:\\Program Files\\Git\\cmd\\git.exe\n\
+                      ===ENV END=== \n\
+                      \n\
+                      D:\\run>";
+        let got = extract_env_block(screen).expect("出力ブロックを捕捉する");
+        assert!(got.contains("Microsoft Windows"), "{got}");
+        assert!(got.contains("git.exe"), "{got}");
+        assert!(!got.contains("where git"), "エコー行は含めない: {got}");
+    }
+
+    /// The probe picker follows argv first, then the prompt's shape
+    #[test]
+    fn probe_matches_the_shell() {
+        assert_eq!(survey_probe("powershell", ""), PS_PROBE);
+        assert_eq!(survey_probe("C:\\Windows\\System32\\cmd.exe", ""), CMD_PROBE);
+        assert_eq!(survey_probe("wsl", ""), POSIX_PROBE);
+        assert_eq!(survey_probe("ssh user@host", "user@host:~$ "), POSIX_PROBE);
+        assert_eq!(survey_probe("ssh user@host", "PS C:\\Users\\a> "), PS_PROBE);
+        assert_eq!(survey_probe("ssh user@host", "C:\\Users\\a> "), CMD_PROBE);
+    }
+}
+
+/// Pick the probe whose syntax matches the terminal: the launch command for
+/// local tabs, the prompt's shape for SSH and other indirections (a POSIX
+/// shell being the overwhelming default on the far side)
+fn survey_probe(cmdline: &str, screen: &str) -> &'static str {
+    let head = cmdline.split_whitespace().next().unwrap_or("");
+    let base = std::path::Path::new(head)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(head)
+        .to_ascii_lowercase();
+    match base.as_str() {
+        "powershell" | "pwsh" => return PS_PROBE,
+        "cmd" => return CMD_PROBE,
+        "wsl" | "bash" | "sh" | "zsh" | "fish" => return POSIX_PROBE,
+        _ => {}
+    }
+    let last = screen
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
+    if last.trim_start().starts_with("PS ") {
+        PS_PROBE
+    } else if last.contains(":\\") && last.trim_end().ends_with('>') {
+        CMD_PROBE
+    } else {
+        POSIX_PROBE
+    }
+}
+
+/// Copy the newest run's replay.lua into the user's Downloads folder.
+/// `Ok(None)` = no run has recorded anything replayable yet
+fn save_replay_to_downloads() -> std::io::Result<Option<std::path::PathBuf>> {
+    let Some(dir) = exchange::latest_run() else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(dir.join("replay.lua")).unwrap_or_default();
+    let live = text
+        .lines()
+        .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"));
+    if !live {
+        return Ok(None);
+    }
+    let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("run");
+    // Downloads is where a "download button" is expected to land things;
+    // fall back to the logs folder rather than failing when it's missing
+    let base = std::env::var_os("USERPROFILE")
+        .map(|p| std::path::PathBuf::from(p).join("Downloads"))
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(config::logs_dir);
+    let dest = base.join(format!("shikisha-macro-{name}.lua"));
+    std::fs::write(&dest, text)?;
+    Ok(Some(dest))
+}
+
 pub fn append_hook_log(msg: &str) {
     use std::sync::OnceLock;
     static START: OnceLock<std::time::Instant> = OnceLock::new();
@@ -4442,8 +4774,11 @@ fn exec_commands(
                 }
             }
             Command::Notify { dest, text } => {
-                append_hook_log(&format!("NOTIFY[{dest}] {text}"));
-                *flash = Some(notifier.send(&dest, &text));
+                append_hook_log(&format!(
+                    "NOTIFY[{}] {text}",
+                    dest.as_deref().unwrap_or("(primary)")
+                ));
+                *flash = Some(notifier.send_opt(dest.as_deref(), &text));
             }
             Command::SendKeys { target, keys } => {
                 if !auto_enabled {
@@ -5038,7 +5373,7 @@ mod tests {
 
         for other in [
             Command::Restart { target: TabRef::Index(1) },
-            Command::Notify { dest: "slack".into(), text: "x".into() },
+            Command::Notify { dest: Some("slack".into()), text: "x".into() },
             Command::Log("x".into()),
             Command::SendKeys { target: TabRef::Index(1), keys: "y".into() },
         ] {

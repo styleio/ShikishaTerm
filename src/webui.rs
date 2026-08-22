@@ -581,6 +581,82 @@ fn generate_with_local_ai(
     extract_lua(&text)
 }
 
+/// One-shot "natural language → one shell command" via the assistant AI
+/// (config's ai_engine, auto-detected when unset). The terminal's own launch
+/// command and recent screen ride along as the environment fingerprint: the
+/// prompt string, login banners, and recent output tell the model whether
+/// it's cmd / PowerShell / bash and which OS or distro sits behind an SSH —
+/// no probing protocol required
+pub fn suggest_with_local_ai(
+    want: &str,
+    shell: &str,
+    screen: &str,
+    env: &str,
+    engine: Option<&str>,
+) -> Result<String> {
+    if want.trim().is_empty() {
+        anyhow::bail!("{}", crate::i18n::t("ai.suggest.want"));
+    }
+    // The environment card (🩺's captured survey) outranks screen guesswork
+    let env_block = if env.trim().is_empty() {
+        crate::i18n::t("ai.suggest.env_none")
+    } else {
+        env.to_string()
+    };
+    let prompt = crate::i18n::tp(
+        "ai.suggest.prompt",
+        &[("want", want), ("shell", shell), ("screen", screen), ("env", &env_block)],
+    );
+    let (cmd, args) = pick_local_ai(engine)?;
+    let mut spawner = std::process::Command::new(&cmd);
+    spawner
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = crate::detach_console(&mut spawner)
+        .spawn()
+        .with_context(|| crate::i18n::tp("ai.err.cannot_run", &[("cmd", &cmd)]))?;
+    {
+        use std::io::Write as _;
+        let mut stdin = child.stdin.take().context(crate::i18n::t("webui.err.stdin"))?;
+        stdin.write_all(prompt.as_bytes())?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "{}",
+            crate::i18n::tp(
+                "ai.err.failed",
+                &[("cmd", &cmd), ("error", String::from_utf8_lossy(&out.stderr).trim())]
+            )
+        );
+    }
+    extract_cmd(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Extracts the contents of <<<CMD ... >>> (falling back to a lone code
+/// fence). Conversational text must never be typed into a terminal as-is
+fn extract_cmd(text: &str) -> Result<String> {
+    if let Some((_, rest)) = text.split_once("<<<CMD") {
+        let body = rest.split_once(">>>").map(|(b, _)| b).unwrap_or(rest);
+        let cmd = body.trim();
+        if !cmd.is_empty() {
+            return Ok(cmd.to_string());
+        }
+    }
+    if let Some((_, rest)) = text.split_once("```") {
+        if let Some((body, _)) = rest.split_once("```") {
+            let body = body.trim_start_matches(|c: char| c.is_ascii_alphanumeric());
+            let cmd = body.trim();
+            if !cmd.is_empty() {
+                return Ok(cmd.to_string());
+            }
+        }
+    }
+    anyhow::bail!("{}", crate::i18n::t("ai.suggest.no_cmd"))
+}
+
 /// Extracts the contents of <<<LUA ... >>> from the AI's output.
 /// If there's no marker, strips a code fence and returns that instead; if there's no fence either, errors out
 /// (so conversational text doesn't get saved as code as-is)
@@ -644,6 +720,13 @@ fn strip_code_fence(s: &str) -> String {
         .unwrap_or(rest)
         .trim()
         .to_string()
+}
+
+/// Whether a replay.lua holds anything actually replayable (not just the
+/// header comments an empty run leaves behind)
+fn has_replay_code(text: &str) -> bool {
+    text.lines()
+        .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"))
 }
 
 fn percent_decode(s: &str) -> String {
@@ -989,7 +1072,14 @@ fn handle(
                         "discuss"
                     };
                     let id = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    let body = serde_json::json!({ "md": md, "kind": kind, "id": id }).to_string();
+                    // Whether a durable replay exists (beyond its header comments) —
+                    // the view shows its download button only when there is one
+                    let replay = std::fs::read_to_string(dir.join("replay.lua"))
+                        .map(|s| has_replay_code(&s))
+                        .unwrap_or(false);
+                    let body =
+                        serde_json::json!({ "md": md, "kind": kind, "id": id, "replay": replay })
+                            .to_string();
                     let resp = Response::from_string(body).with_header(
                         Header::from_bytes(
                             &b"Content-Type"[..],
@@ -1007,6 +1097,44 @@ fn handle(
                         )
                         .unwrap(),
                     ))?;
+                }
+            }
+        }
+        // The durable replay script: css/xpath anchors only, no digest/ref
+        // dependency — paste into ▶ run mode or an automation, on any PC.
+        // ?run=<id> for a specific run, otherwise the latest. 404 when the
+        // run recorded nothing replayable
+        ("GET", "/api/rally/replay") => {
+            let picked = req
+                .url()
+                .split_once('?')
+                .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("run=")))
+                .map(percent_decode)
+                .and_then(|id| crate::exchange::run_by_id(&id));
+            let found = picked.or_else(crate::exchange::latest_run).and_then(|dir| {
+                let text = std::fs::read_to_string(dir.join("replay.lua")).unwrap_or_default();
+                let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("run").to_string();
+                has_replay_code(&text).then_some((text, name))
+            });
+            match found {
+                Some((text, name)) => {
+                    let cd = format!("attachment; filename=\"shikisha-macro-{name}.lua\"");
+                    let resp = Response::from_string(text)
+                        .with_header(
+                            Header::from_bytes(
+                                &b"Content-Type"[..],
+                                &b"text/plain; charset=utf-8"[..],
+                            )
+                            .unwrap(),
+                        )
+                        .with_header(
+                            Header::from_bytes(&b"Content-Disposition"[..], cd.as_bytes())
+                                .unwrap(),
+                        );
+                    req.respond(resp)?;
+                }
+                None => {
+                    req.respond(Response::from_string("no replay").with_status_code(404))?;
                 }
             }
         }
@@ -3147,10 +3275,24 @@ function notifyCard() {
       }}, T["settings.notify.test"]);
       const del = el("button", {class:"quiet", style:"flex:none", onclick: () => {
         if (confirm(fill(T["settings.notify.delete_confirm"], {name}))) { delete current.notify[name]; refreshSave(); draw(); } }}, T["common.delete"]);
+      // The primary: where an unnamed shikisha.notify(text) — e.g. the
+      // "a human is needed" ring from an operate rally — gets delivered
+      const prim = el("input", {type:"radio", name:"notifyprimary"});
+      prim.checked = current.primary_notify === name
+        || (!current.primary_notify && names.length === 1);
+      prim.addEventListener("change", () => {
+        if (prim.checked) { current.primary_notify = name; refreshSave(); }
+      });
+      const primLabel = el("label", {class:"check", style:"flex:none", title:T["settings.notify.primary_hint"]});
+      primLabel.append(prim, document.createTextNode(T["settings.notify.primary"]));
       listBox.append(el("div", {class:"listrow"},
         el("span", {class:"mono", style:"flex:none;min-width:64px;color:var(--text)"}, name),
         el("span", {class:"hint", style:"flex:none;text-transform:uppercase"}, d.type),
-        fields, saveBtn, testBtn, del));
+        primLabel, fields, saveBtn, testBtn, del));
+    }
+    // A deleted destination must not linger as the primary
+    if (current.primary_notify && !current.notify[current.primary_notify]) {
+      delete current.primary_notify;
     }
   };
   const nameIn = el("input", {class:"mono", placeholder:T["settings.notify.name_ph"], style:"width:120px"});
@@ -3238,6 +3380,16 @@ function remoteCard() {
       return i;
     })(),
     el("span", {class:"hint"}, T["settings.phone.port.hint"])));
+  // Optional second factor: the URL token travels through notification
+  // channels in plain text, so the security-conscious can require a
+  // password that the phone enters once per app run. Empty = off
+  box.append(el("div", {class:"row"}, el("label", {}, T["settings.phone.password"]),
+    (() => {
+      const i = el("input", {type:"password", style:"width:180px", value: r.password || ""});
+      i.addEventListener("input", () => { r.password = i.value; });
+      return i;
+    })(),
+    el("span", {class:"hint"}, T["settings.phone.password.hint"])));
   box.append(el("div", {class:"row"}, status));
   box.append(qrbox);
   box.append(el("div", {class:"hint", style:"margin-top:6px"},
@@ -4610,6 +4762,7 @@ const RESULT_PAGE: &str = r##"<!doctype html>
   </div>
   <span class="spacer"></span>
   <button class="ghost" id="toggleall" style="display:none"></button>
+  <button id="dlr" style="display:none"></button>
   <button class="primary" id="dl"></button>
 </header>
 <main id="chat"></main>
@@ -4869,15 +5022,14 @@ function toggleAll() {
     allOpen ? T["result.collapse_all"] : T["result.expand_all"];
 }
 
-async function download() {
+async function saveFrom(url, filename) {
   try {
-    const url = "/api/rally/download" + (RUN ? "?run=" + encodeURIComponent(RUN) : "");
     const r = await fetch(url, { headers: { "X-Token": TOKEN } });
     if (!r.ok) { toast(T["result.empty"], true); return; }
     const blob = await r.blob();
     const u = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = u; a.download = "shikisha-" + (RUN || "result") + ".md";
+    a.href = u; a.download = filename;
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(u), 1000);
     toast(T["result.downloaded"]);
@@ -4885,15 +5037,27 @@ async function download() {
     toast(fill(T["result.download_failed"], { e: e.message || e }), true);
   }
 }
+function download() {
+  saveFrom("/api/rally/download" + (RUN ? "?run=" + encodeURIComponent(RUN) : ""),
+           "shikisha-" + (RUN || "result") + ".md");
+}
+function downloadReplay() {
+  saveFrom("/api/rally/replay" + (RUN ? "?run=" + encodeURIComponent(RUN) : ""),
+           "shikisha-macro-" + (RUN || "latest") + ".lua");
+}
 
 async function load() {
   document.getElementById("dl").textContent = T["result.download"];
   document.getElementById("dl").addEventListener("click", download);
+  document.getElementById("dlr").textContent = T["result.download_replay"];
+  document.getElementById("dlr").addEventListener("click", downloadReplay);
   document.getElementById("toggleall").addEventListener("click", toggleAll);
   document.getElementById("chat").append(el("div", { class: "empty" }, T["result.loading"]));
   try {
     const r = await fetch("/api/rally/transcript?run=" + encodeURIComponent(RUN), { headers: { "X-Token": TOKEN } });
-    render(await r.json());
+    const data = await r.json();
+    if (data.replay) document.getElementById("dlr").style.display = "";
+    render(data);
   } catch (e) {
     document.getElementById("chat").textContent = "";
     document.getElementById("chat").append(el("div", { class: "empty" }, T["result.empty"]));
@@ -4974,6 +5138,19 @@ document.getElementById("doc").innerHTML = render(MD);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Conversational text must never be typed into a terminal — only what
+    /// the markers (or a lone fence) carry gets through
+    #[test]
+    fn suggested_commands_come_only_from_markers() {
+        assert_eq!(
+            extract_cmd("環境はUbuntuと推定します。\n<<<CMD\nfree -h\n>>>\n以上です").unwrap(),
+            "free -h"
+        );
+        assert_eq!(extract_cmd("```bash\nfree -h\n```").unwrap(), "free -h");
+        assert!(extract_cmd("メモリを見るには free -h を使います").is_err(), "地の文は拒否");
+        assert!(extract_cmd("<<<CMD\n\n>>>").is_err(), "空の提案は拒否");
+    }
 
     /// A file that isn't there yet is a fresh install; a file that's there but
     /// broken is an emergency. Telling those two apart is the whole job here.
