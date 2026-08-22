@@ -1185,11 +1185,8 @@ window.__state = function (json) {
   // until the person taps the field). Only their own ✕ keeps it collapsed —
   // and then the ✏️ pen stays visible as the way back in
   if (typeof REMOTE !== "undefined" && REMOTE) {
-    if (onTermPty()) {
-      let collapsed = false;
-      try { collapsed = localStorage.getItem("shikishaCastClosed2") === "1"; } catch (e) {}
-      if (!collapsed && !(castDock && castDock.style.display === "flex")) openTermBar();
-    }
+    if (onTermPty() && !castClosed()
+        && !(castDock && castDock.style.display === "flex")) openTermBar();
     // showDock/closeBar own the open-state side of the pen's visibility; this
     // owns the where-are-we side (no pen over browser/model tabs — they carry
     // their own composer, summoning the terminal bar there would be nonsense)
@@ -1628,8 +1625,11 @@ document.addEventListener("mouseup", e => {
   if (t) { send({kind:"copy", text:t}); return; }
   // On a phone, tapping a terminal tab opens the sub-input bar (see openTermBar)
   // rather than the hidden #kbd, so the keyboard never lands on top of the screen.
-  // A tap is the phone's ✎ pen: summoning the bar also clears a ✕-collapse
-  if (REMOTE && onTermPty()) { openTermBar(); rememberCastClosed(false); return; }
+  //
+  // Except after the person's own ✕. That press means "out of my way", and a tap
+  // used to undo it on the spot — so the bar came straight back the moment the
+  // screen was touched, and the ✕ meant nothing. The ✎ pen is the way back in.
+  if (REMOTE && onTermPty()) { if (!castClosed()) openTermBar(); return; }
   focus();
 });
 document.addEventListener("contextmenu", e => {
@@ -2506,8 +2506,10 @@ function ensureBar() {
   if (castDock) return;
   // A textarea (not <input>) so it can hold newlines: Shift+Enter inserts one and
   // multi-line text pastes intact. It starts one row tall and grows with the text.
+  // Everything the phone keyboard likes to "help" with is turned off: what goes
+  // in here is a command or a password, and a corrected one is a wrong one
   castInput = el("textarea", {id:"castinput", rows:"1", autocomplete:"off",
-    autocapitalize:"off", spellcheck:"false",
+    autocapitalize:"off", autocorrect:"off", spellcheck:"false",
     placeholder: T["tui.cast.type.ph"] || "Type here to send"});
   castSendEl = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "Send");
   const bs = el("button", {class:"castbtn", onclick:() => sendCastKey("backspace")}, "⌫");
@@ -2651,6 +2653,11 @@ function exitCast() { castMode = false; dragging = false; if (cursorEl) cursorEl
 function rememberCastClosed(v) {
   try { localStorage.setItem("shikishaCastClosed2", v ? "1" : ""); } catch (e) {}
 }
+// ...and the one place that reads it back. Every path that might open the bar on
+// its own asks here first, so the meaning of the ✕ can't differ between them
+function castClosed() {
+  try { return localStorage.getItem("shikishaCastClosed2") === "1"; } catch (e) { return false; }
+}
 function toggleComposer() {
   ensureBar();
   // showDock sets "flex", closeBar sets "none"; a fresh dock has "" (CSS hides it),
@@ -2679,9 +2686,7 @@ if (!REMOTE) {
   // The composer is the workbench, not a popup: shown by default. Only the
   // person's own ✕ (recorded above) keeps it collapsed behind the pen.
   // Opened without stealing focus — direct typing still goes to the terminal
-  let closed = false;
-  try { closed = localStorage.getItem("shikishaCastClosed2") === "1"; } catch (e) {}
-  if (!closed) {
+  if (!castClosed()) {
     ensureBar();
     openTermBar();
     fab.style.display = "none";
@@ -3361,6 +3366,33 @@ mod tests {
         ] {
             assert!(PAGE.contains(field), "状態の {field} を誰も見ていない");
         }
+    }
+
+    /// The ✕ on the sub-input bar has to stick.
+    ///
+    /// On a phone, tapping the terminal summons the composer — and that tap used
+    /// to clear the ✕ as well, so the bar came back the instant the screen was
+    /// touched and the ✕ meant nothing (there was no way to reach the screen
+    /// without it). Every path that opens the bar on its own asks castClosed()
+    /// first; only the ✎ pen clears the choice, and only when pressed.
+    #[test]
+    fn dismissing_the_composer_survives_a_tap() {
+        assert!(
+            PAGE.contains("if (REMOTE && onTermPty()) { if (!castClosed()) openTermBar(); return; }"),
+            "画面タップが✕を無視して入力欄を開き直す"
+        );
+        // One reader, so the meaning of the ✕ can't drift between callers
+        assert_eq!(
+            PAGE.matches(r#"localStorage.getItem("shikishaCastClosed2")"#).count(),
+            1,
+            "✕の記憶を読む場所が複数ある (食い違いのもと)"
+        );
+        // Clearing it stays a deliberate act: the pen's toggle, nothing else
+        assert_eq!(
+            PAGE.matches("rememberCastClosed(false)").count(),
+            1,
+            "✕の解除が増えている (勝手に開き直る道が復活している)"
+        );
     }
 
     /// A browser must never machine-translate this page.
