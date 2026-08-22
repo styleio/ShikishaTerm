@@ -1764,11 +1764,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         .unwrap_or_default(),
                     auto_enabled,
                     cols,
+                    // Numbered by SCREEN position (the 1-based index the phone
+                    // shows and sends back, e.g. /api/attach's `tab`), not by
+                    // session slot: browser panes sit in the layout too, so the
+                    // two numberings drift apart after the first browser tab
                     tabs: tabs
                         .iter()
                         .enumerate()
                         .map(|(i, t)| remote::RemoteTab {
-                            index: i + 1,
+                            index: pane_at(&layout, i + 1),
                             name: t.title.clone(),
                             state: t.state.label().to_string(),
                             locked: t.locked,

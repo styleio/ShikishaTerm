@@ -1558,7 +1558,9 @@ scr.addEventListener("touchcancel", () => { swY = null; }, {passive:true});
 // terminal, editing the URL would be impossible
 // Taps on the top bar or the page buttons must not pull focus into the hidden
 // #kbd — on a phone that would pop the soft keyboard up over the screen.
-const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #pageui, #castdock");
+// The ✏️ pen counts as "the bar": otherwise the phone's tap-on-terminal rule
+// below opened the bar on mouseup and the pen's own click toggled it shut again
+const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #pageui, #castdock, #composerfab");
 document.addEventListener("mouseup", e => {
   if (inBar(e)) return;
   const s = window.getSelection();
