@@ -88,6 +88,24 @@ fn token_eq(a: &str, b: &str) -> bool {
     a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// Marks a request that reached this loopback server through the remote proxy —
+/// i.e. the person operating it is on a phone, not at this PC. The proxy builds
+/// a fresh request and never forwards the phone's own headers, so this can only
+/// be set by us. Anything that would put a window on the PC's screen has to know
+/// (see `NATIVE_DIALOG_PATHS`).
+pub const REMOTE_CLIENT_HEADER: &str = "X-Remote-Client";
+
+/// Endpoints whose whole job is to open a native dialog on this PC. From a phone
+/// there is nobody standing at that screen to answer it, so the request would sit
+/// there until it timed out — the app looking frozen from the phone's side. These
+/// are refused outright when the caller is remote, and the buttons that call them
+/// are left off the page.
+const NATIVE_DIALOG_PATHS: [&str; 3] = [
+    "/api/pick",
+    "/api/workspace/export",
+    "/api/workspace/import",
+];
+
 fn header_value(req: &tiny_http::Request, name: &'static str) -> String {
     req.headers()
         .iter()
@@ -885,10 +903,27 @@ fn handle(
 
     let method = req.method().as_str().to_string();
     let path = req.url().split('?').next().unwrap_or("/").to_string();
+    // Whoever is asking: this PC's own window, or a phone coming in over the proxy
+    let remote_client = header_value(&req, REMOTE_CLIENT_HEADER) == "1";
+    // Say no before a dialog can be opened at a screen nobody is looking at. The
+    // page hides these buttons for a remote caller, so reaching here means a page
+    // that was already open, or something calling the API directly
+    if remote_client && NATIVE_DIALOG_PATHS.contains(&path.as_str()) {
+        let mut req = req;
+        // Drain the body first so the response isn't written over an unread request
+        let _ = read_body(&mut req, MAX_BODY)?;
+        return req
+            .respond(json_resp(serde_json::json!({
+                "ok": false,
+                "error": crate::i18n::t("settings.pick.no_remote"),
+            })))
+            .map_err(Into::into);
+    }
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => {
             let html = crate::i18n::render(PAGE)
                 .replace("__TOKEN__", token)
+                .replace("__REMOTE__", if remote_client { "true" } else { "false" })
                 .replace("__DICT__", &crate::i18n::dict_json());
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
@@ -1966,6 +2001,10 @@ const PAGE: &str = r##"<!doctype html>
 
 <script>
 const TOKEN = "__TOKEN__";
+// True when this page is being read on a phone, over the remote proxy. Native
+// dialogs (folder/file pickers, export/import) open a window on the PC instead
+// of here, so the buttons that would summon one are left out entirely
+const REMOTE = __REMOTE__;
 const T = __DICT__;
 // {name} substitution (same rule as tp on the Rust side)
 const fill = (s, args) => Object.entries(args)
@@ -2187,6 +2226,8 @@ async function pickPath(kind, title, start) {
 }
 function pathField(obj, key, ph, kind, title) {
   const i = field(obj, key, ph, {mono:true});
+  // On a phone the path is typed in; the picker would open on the PC
+  if (REMOTE) return [i];
   const b = el("button", {class:"quiet", onclick: async () => {
     const p = await pickPath(kind, title, obj[key]);
     if (p !== null) { obj[key] = p; i.value = p; }
@@ -2393,7 +2434,7 @@ function renderNav() {
   });
   nav.append(el("div", {class:"navgroup"}, ""));
   nav.append(el("button", {class:"navitem navadd", onclick:addWs}, T["settings.workspace.add"]));
-  nav.append(el("button", {class:"navitem navadd", onclick:importWs}, T["settings.ws.import.nav"]));
+  if (!REMOTE) nav.append(el("button", {class:"navitem navadd", onclick:importWs}, T["settings.ws.import.nav"]));
 }
 
 const newTab = (o = {}) => Object.assign(
@@ -2675,7 +2716,7 @@ function wizardReview() {
                 {role:T["wizard.review.role.security"], key:"claude", model:""}];
   const repoIn = el("input", {class:"mono", placeholder:T["wizard.review.repo_ph"], style:"width:100%;box-sizing:border-box"});
   repoIn.addEventListener("input", () => repo.dir = repoIn.value.trim());
-  const repoBtn = el("button", {class:"quiet", onclick: async () => {
+  const repoBtn = REMOTE ? null : el("button", {class:"quiet", onclick: async () => {
     const p = await pickPath("dir", T["wizard.review.pick_repo_title"], repo.dir);
     if (p !== null) { repo.dir = p; repoIn.value = p; }
   }}, T["common.browse"]);
@@ -3493,7 +3534,9 @@ function wsPane(ws) {
   box.append(wsStopsCard(ws));
   box.append(wsSecretsCard(ws));
 
-  box.append(card(T["settings.ws.share"],
+  // Both halves of this end in a file dialog on the PC, so from a phone the whole
+  // card would be two buttons that can't do anything
+  if (!REMOTE) box.append(card(T["settings.ws.share"],
     el("div", {class:"row"},
       el("button", {onclick:() => exportWs(sel.ws)}, T["settings.ws.export"]),
       el("button", {onclick:importWs}, T["settings.ws.import"])),
@@ -4073,7 +4116,7 @@ function kindPanel(t, cmdInput, rebuild) {
     keyIn.value = ssh.key || "";
     keyIn.addEventListener("input", () => { ssh.key = keyIn.value.trim(); upd(); });
     box.append(el("div", {class:"row"}, el("label", {}, T["settings.ssh.key"]), keyIn,
-      el("button", {class:"quiet", onclick: async () => {
+      REMOTE ? null : el("button", {class:"quiet", onclick: async () => {
         const p = await pickPath("key", T["settings.ssh.key.pick"], ssh.key);
         if (p !== null) { ssh.key = p; keyIn.value = p; upd(); }
       }}, T["common.browse"])));
@@ -5330,6 +5373,7 @@ mod tests {
             assert_no_duplicate_bindings(name, page);
             let html = crate::i18n::render(page)
                 .replace("__TOKEN__", "t")
+                .replace("__REMOTE__", "false")
                 .replace("__DICT__", "{}")
                 .replace("__MD__", "\"\"");
             assert!(!html.contains("{{"), "{name} に未置換の {{{{key}}}} が残っている");
@@ -5350,6 +5394,74 @@ mod tests {
                 assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
             }
         }
+    }
+
+    /// A phone reaching the settings over the proxy must never make a window
+    /// appear on the PC. The page is served without the buttons, and the
+    /// endpoints behind them answer with a refusal instead of a dialog that
+    /// would hold the request open until someone walked over to the PC.
+    #[test]
+    fn a_phone_gets_no_native_dialogs() {
+        let dir = std::env::temp_dir().join(format!("shikitest_{}", crate::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.json");
+        std::fs::write(&cfg, "{}").unwrap();
+        let ui = WebUi::start_with(
+            cfg,
+            Arc::new(std::sync::Mutex::new(RemoteInfo::default())),
+            Arc::new(std::sync::Mutex::new(None)),
+        )
+        .unwrap();
+        let (base, token) = ui.url.split_once("/?token=").unwrap();
+        let (base, token) = (base.to_string(), token.to_string());
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
+
+        // The page tells itself apart: same HTML, one flag
+        let own = agent
+            .get(&format!("{base}/"))
+            .header("X-Token", &token)
+            .call()
+            .unwrap()
+            .body_mut()
+            .read_to_string()
+            .unwrap();
+        assert!(own.contains("const REMOTE = false;"), "the PC's own window is not remote");
+        let phone = agent
+            .get(&format!("{base}/"))
+            .header("X-Token", &token)
+            .header(REMOTE_CLIENT_HEADER, "1")
+            .call()
+            .unwrap()
+            .body_mut()
+            .read_to_string()
+            .unwrap();
+        assert!(phone.contains("const REMOTE = true;"), "a proxied page must know it is remote");
+
+        // Every dialog endpoint answers, rather than opening a window and waiting.
+        // A timeout here (not a failed assert) is the bug this guards against
+        for path in NATIVE_DIALOG_PATHS {
+            let mut r = agent
+                .post(&format!("{base}{path}"))
+                .header("X-Token", &token)
+                .header(REMOTE_CLIENT_HEADER, "1")
+                .header("Content-Type", "application/json")
+                .send(r#"{"kind":"dir"}"#)
+                .unwrap();
+            let v: serde_json::Value =
+                serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap();
+            assert_eq!(v["ok"], serde_json::json!(false), "{path} should refuse a phone");
+            assert_eq!(
+                v["error"].as_str().unwrap_or(""),
+                crate::i18n::t("settings.pick.no_remote"),
+                "{path} should say why"
+            );
+        }
+        ui.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -441,6 +441,7 @@
   "settings.phone.stopped": "停止中",
   "settings.phone.only_while_running": "本体を起動している間だけ繋がります",
   "settings.pick.title": "選択",
+  "settings.pick.no_remote": "フォルダの選択はパソコン側に窓が開くため、スマホからは行えません。パスを直接入力してください。",
   "settings.phone.tailscale": "Tailscale（{ip}）が使えます",
   "settings.phone.lan": "Tailscaleは未導入。家庭内LAN（{ip}）で使えます",
   "settings.phone.none": "接続できるネットワークが見つかりません",

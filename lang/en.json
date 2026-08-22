@@ -441,6 +441,7 @@
   "settings.phone.stopped": "Stopped",
   "settings.phone.only_while_running": "Reachable only while the app is running",
   "settings.pick.title": "Choose",
+  "settings.pick.no_remote": "Choosing a folder opens a window on the PC, so it cannot be done from a phone. Type the path in instead.",
   "settings.phone.tailscale": "Tailscale ({ip}) is available",
   "settings.phone.lan": "Tailscale not found. Your home network ({ip}) can be used",
   "settings.phone.none": "No usable network was found",

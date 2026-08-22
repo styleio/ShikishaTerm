@@ -917,10 +917,20 @@ fn proxy_settings(
         .timeout_global(Some(std::time::Duration::from_secs(120)))
         .build()
         .new_agent();
+    // Tell the settings server the operator is on a phone, not at this PC's screen.
+    // Built here rather than forwarded, so the phone can never claim otherwise.
+    let remote_hdr = crate::webui::REMOTE_CLIENT_HEADER;
     let result = if method == "GET" {
-        agent.get(&url).header("X-Token", &sett_token).call()
+        agent
+            .get(&url)
+            .header("X-Token", &sett_token)
+            .header(remote_hdr, "1")
+            .call()
     } else {
-        let mut rb = agent.post(&url).header("X-Token", &sett_token);
+        let mut rb = agent
+            .post(&url)
+            .header("X-Token", &sett_token)
+            .header(remote_hdr, "1");
         if let Some(ct) = &req_ctype {
             rb = rb.header("Content-Type", ct);
         }
@@ -1276,6 +1286,59 @@ mod tests {
             .unwrap();
         assert_eq!(r.status().as_u16(), 503, "no backend yet → 503");
         ui.shutdown();
+    }
+
+    /// End to end, phone → proxy → settings server: pressing what used to be the
+    /// folder button must come back as a refusal. Before this, the settings server
+    /// opened a native picker on the PC and the phone's request hung until it was
+    /// dismissed — the phone looking frozen. The proxy is what marks the caller as
+    /// remote, so this is the piece the settings-side test can't see.
+    #[test]
+    fn the_phone_never_opens_a_picker_on_the_pc() {
+        let dir = std::env::temp_dir().join(format!("shikitest_{}", crate::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.json");
+        std::fs::write(&cfg, "{}").unwrap();
+        let settings = crate::webui::WebUi::start_with(
+            cfg,
+            Arc::new(Mutex::new(crate::webui::RemoteInfo::default())),
+            Arc::new(Mutex::new(None)),
+        )
+        .unwrap();
+        let (origin, sett_token) = settings.url.split_once("/?token=").unwrap();
+
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
+        ui.set_settings_backend(origin.to_string(), sett_token.to_string());
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            // Well under the proxy's own 120s: a hang must fail the test, not stall it
+            .timeout_global(Some(std::time::Duration::from_secs(15)))
+            .build()
+            .new_agent();
+
+        let mut r = agent
+            .post(&format!("{base}/api/pick"))
+            .header("Cookie", "sst=tok123456789012")
+            .header("Content-Type", "application/json")
+            .send(r#"{"kind":"dir"}"#)
+            .unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(false), "the picker answered a phone: {v}");
+
+        // ...and the page the phone reads knows to leave the button off
+        let mut r = agent
+            .get(&format!("{base}/cfg"))
+            .header("Cookie", "sst=tok123456789012")
+            .call()
+            .unwrap();
+        let html = r.body_mut().read_to_string().unwrap();
+        assert!(html.contains("const REMOTE = true;"), "the phone's settings page must know it is remote");
+
+        ui.shutdown();
+        settings.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Confirms /ws handshakes and that a JPEG pushed via push_frame arrives
