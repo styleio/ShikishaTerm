@@ -191,11 +191,23 @@ pub struct Capabilities {
     /// (folder name) whose transcript.md should be shown. Drained by the main
     /// loop, which owns the webui server and window placement. Cleared on read.
     open_result: std::cell::RefCell<Option<String>>,
+    /// The replay journal: each executed browser op, rewritten in its durable
+    /// (digest-free) form — `{ref=N}` becomes the anchor derived from the
+    /// element it actually touched. Accumulated by the sandbox bindings,
+    /// drained by whoever assembles a replay.lua. Execution and recording
+    /// stay independent: refs are the interactive currency, this is the
+    /// portable one
+    replay: std::cell::RefCell<Vec<String>>,
 }
 
 /// Default wait time when touching a page.
 /// Just checking whether an element exists, so there's no point making this longer
 const OP_MS: u64 = 5_000;
+
+/// Wait window for actions (click/fill). Actions auto-wait for the element
+/// to appear and become actionable — across a navigation if need be — so
+/// they get a longer leash than a read
+const ACT_MS: u64 = 10_000;
 
 impl Capabilities {
     /// The nothing-allowed state (default)
@@ -216,7 +228,18 @@ impl Capabilities {
             secret_allow: std::cell::RefCell::new(std::collections::HashSet::new()),
             secret_allow_all: std::cell::Cell::new(false),
             open_result: std::cell::RefCell::new(None),
+            replay: std::cell::RefCell::new(Vec::new()),
         }
+    }
+
+    /// Append one durable line to the replay journal
+    pub fn push_replay(&self, line: String) {
+        self.replay.borrow_mut().push(line);
+    }
+
+    /// Take everything journaled so far (clears the journal)
+    pub fn take_replay(&self) -> Vec<String> {
+        std::mem::take(&mut *self.replay.borrow_mut())
     }
 
     pub fn new(spec: CapabilitySpec, base: PathBuf, tokens: HashMap<String, String>) -> Self {
@@ -569,17 +592,24 @@ impl Capabilities {
         self.with(name, |b, to| Ok(b.find(to, sel, OP_MS)?.as_str()))
     }
 
-    pub fn browser_click(&self, name: &str, sel: &crate::browser::Sel) -> Result<&'static str> {
-        self.with(name, |b, to| Ok(b.click(to, sel, OP_MS)?.as_str()))
+    /// Click. The report carries the ref-path echo (what was really clicked)
+    /// and the durable anchor for the replay journal
+    pub fn browser_click(
+        &self,
+        name: &str,
+        sel: &crate::browser::Sel,
+    ) -> Result<crate::browser::OpReport> {
+        self.with(name, |b, to| b.click(to, sel, ACT_MS))
     }
 
+    /// Fill. The report echoes which field was written (never the value)
     pub fn browser_fill(
         &self,
         name: &str,
         sel: &crate::browser::Sel,
         value: &str,
-    ) -> Result<&'static str> {
-        self.with(name, |b, to| Ok(b.fill(to, sel, value, OP_MS)?.as_str()))
+    ) -> Result<crate::browser::OpReport> {
+        self.with(name, |b, to| b.fill(to, sel, value, ACT_MS))
     }
 
     pub fn browser_text(&self, name: &str, sel: &crate::browser::Sel) -> Result<Option<String>> {
@@ -588,6 +618,13 @@ impl Capabilities {
 
     pub fn browser_html(&self, name: &str) -> Result<String> {
         self.with(name, |b, to| b.html(to, 30_000))
+    }
+
+    /// The page distilled to its operable elements, numbered for `{ref=N}`
+    /// operations (see `crate::digest`). Generous timeout: three CDP round
+    /// trips, and the accessibility tree of a heavy page takes a moment
+    pub fn browser_digest(&self, name: &str) -> Result<String> {
+        self.with(name, |b, to| b.digest(to, 20_000))
     }
 
     /// Make a request from inside the page, returning a `{status,ok,url,headers,body}` JSON string

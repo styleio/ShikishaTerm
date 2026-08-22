@@ -360,9 +360,60 @@ shikisha.browser_click("br", { xpath = '//button[text()="Save"]' })
 local html = shikisha.browser_html("br")
 ```
 
-A selector is either `"#id"` (CSS) or `{ xpath = "..." }`. XPath earns its place on
-forms and admin pages, where "the cell beside the label that reads 名前" has no CSS
-spelling.
+A selector is `"#id"` (CSS), `{ xpath = "..." }`, or `{ ref = N }`. XPath earns its
+place on forms and admin pages, where "the cell beside the label that reads 名前" has
+no CSS spelling.
+
+The numbers for `{ ref = N }` come from `browser_digest`:
+
+```lua
+local list = shikisha.browser_digest("br")
+-- [1] textbox "Search" placeholder="Search"
+-- [2] button "Search"
+-- [3] link "Help" https://example.com/help
+shikisha.browser_fill("br", { ref = 1 }, "haiku")
+shikisha.browser_click("br", { ref = 2 })
+```
+
+The digest distills the page down to **only its operable elements**. Roles and names
+come from the browser's own accessibility tree (the same computation a screen reader
+sees), and JS-clickables with no standard role (a `cursor:pointer` `<div>`, say) are
+supplemented with a `*` mark, like `div*`. It is orders of magnitude shorter than raw
+HTML, and removes the need to guess selectors.
+
+Operations on `{ ref = N }` are **genuine input** (trusted mouse/key events over CDP):
+sites that ignore synthetic events cannot tell them from a human's click or typing.
+Multibyte text lands one committed character at a time, no IME involved.
+
+Numbers are bound to the page as it was digested. Navigation or a re-render voids
+them, and an operation on a stale number stops with a clear "take a new digest"
+error — it never silently clicks something else.
+
+On top of that, click / fill on `{ ref = N }` return **an echo of what was really
+operated on as their second value** (e.g. `visible, link 「Help」`; a fill's echo names
+the field by its attributes only, never the value). A mixed-up number denounces
+itself in its own answer.
+
+**On replay and portability**: `{ ref = N }` is an ordinary selector with the same
+meaning in every execution mode (automation scripts, the composer's ▶ Lua run mode,
+an operate rally). But the numbers refer to "the latest `browser_digest` listing" —
+they are not what you carry around.
+
+That is why **execution and recording are independent**. During an operate rally,
+every executed op is **rewritten in a durable form** and appended to the run's
+`replay.lua`: a `{ ref = N }` becomes an anchor derived from the element it actually
+touched (a human-made `#id`, else a unique text/attribute XPath — same hygiene as the
+📼 recorder, machine-minted ids refused), and `browser_digest` never appears. So:
+
+- **the currency of execution = refs** (maximum capability: shadow DOM reach,
+  genuine input, friendly to small models)
+- **the currency of portability = replay.lua** (plain css / xpath only; paste it into
+  the ▶ run mode, wire it into an automation, or run it on another PC's SHIKISHA as-is)
+
+Download replay.lua from the "⬇ Replay Lua" button beside the 🎯 target dropdown, or
+from the same button at the top right of the result view that opens when an operation
+finishes. An op with no derivable durable anchor is never silently dropped — it stays
+as a `-- click (…): what was clicked` comment.
 
 Looking for an element answers with three states — `visible`, `off_screen`,
 `not_found` — because which one it is decides whether to doubt the selector or the
@@ -376,6 +427,15 @@ sometimes absent is not a failure, and only the caller knows that.
 condition that stops matching after a site redesign should cost a click, not a hang.
 And since the wait reports which of the three ended it, a selector that has quietly
 stopped working shows up as every wait ending on the button.
+
+**click / fill auto-wait.** An action waits until the element **appears → is
+visible → stops moving (identical rect on consecutive frames) → is enabled**
+before acting. Retries back off 0/20/100/100/500ms
+and cycle scroll alignments to shake off sticky overlays; when navigation destroys
+the JS world, an outer retry re-enters the new document. That is why a replay.lua
+fired line-after-line with no pauses — acting on the next page right after
+`browser_go` — just works. The wait is capped at 10s per action, and an element that
+exists but never settles is acted on anyway (no new failure modes).
 
 **Values are never spliced into code.** Everything handed to `fill` goes to the page
 as data, so an answer full of quotes and angle brackets arrives intact and stays

@@ -95,19 +95,150 @@ const INIT_JS: &str = r##"
     return el ? (el.value !== undefined ? el.value : el.innerText) : null;
   };
 
-  window.__shikisha_click = function (sel) {
-    const el = window.__shikisha_q(sel);
+  // ---- Auto-wait (actionability engine) ------------------------------------
+  // An action waits until its element is genuinely operable:
+  //  - visible  = non-empty box AND the computed visibility chain is visible
+  //               (display:contents looks through to a visible child)
+  //  - stable   = the bounding rect is identical on two consecutive animation
+  //               frames; frames shorter than 15ms are dropped (some engines
+  //               deliver bogus extra frames)
+  //  - enabled  = not natively disabled (:disabled covers fieldset
+  //               inheritance) and not inside [aria-disabled="true"]
+  //  - hit      = elementFromPoint at the action point, pierced through open
+  //               shadow roots, climbs (via slots/hosts) back to the target
+  //  - retries back off 0/20/100/100/500ms, and each retry tries the next
+  //    scrollIntoView alignment (shakes off position:sticky overlays)
+  const __rafTick = () => new Promise((f) => requestAnimationFrame(f));
+  const __pause = (ms) => new Promise((f) => setTimeout(f, ms));
+  const __BACKOFF = [0, 20, 100, 100, 500];
+  function __visible(el) {
+    const style = getComputedStyle(el);
+    if (!style) return true;
+    if (style.display === "contents") {
+      for (let child = el.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType === 1 && __visible(child)) return true;
+      }
+      return false;
+    }
+    if (style.visibility !== "visible") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  async function __stable(el) {
+    let last = null;
+    let lastTime = 0;
+    for (let frames = 0; frames < 12; frames++) {
+      await __rafTick();
+      if (!el.isConnected) return false;
+      const t = performance.now();
+      if (t - lastTime < 15) continue;
+      lastTime = t;
+      const r = el.getBoundingClientRect();
+      const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
+      if (last) {
+        return rect.x === last.x && rect.y === last.y && rect.w === last.w && rect.h === last.h;
+      }
+      last = rect;
+    }
+    return false;
+  }
+  function __hitOk(el, x, y) {
+    let hit = document.elementFromPoint(x, y);
+    while (hit && hit.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    // The hit target must be the element or live inside it, judged on the
+    // composed tree (slotted content climbs to its slot's host)
+    let cur = hit;
+    while (cur && cur !== el) {
+      const root = cur.getRootNode && cur.getRootNode();
+      cur = cur.assignedSlot || cur.parentElement
+        || (root && root.host ? root.host : null);
+    }
+    return cur === el;
+  }
+  // Wait until the element is actionable (or the deadline runs out) and
+  // report the action point. `o`: { deadline (ms from now), enabled, hit }.
+  // Failures name the state that never arrived
+  window.__shikisha_ready = async function (el, o) {
+    const deadline = performance.now() + ((o && o.deadline) || 4000);
+    const scrolls = [
+      { block: "center", inline: "center" },
+      { block: "end", inline: "end" },
+      { block: "start", inline: "start" },
+      { block: "nearest", inline: "nearest" },
+    ];
+    let retry = 0;
+    let why = "hidden";
+    while (true) {
+      if (!el.isConnected) return { ok: false, why: "not_found" };
+      if (!__visible(el)) {
+        why = "hidden";
+      } else if (o && o.enabled && el.closest(':disabled, [aria-disabled="true"]')) {
+        why = "disabled";
+      } else {
+        el.scrollIntoView(scrolls[retry % scrolls.length]);
+        if (!(await __stable(el))) {
+          why = "unstable";
+        } else {
+          const r = el.getBoundingClientRect();
+          const x = r.x + r.width / 2;
+          const y = r.y + r.height / 2;
+          if (o && o.hit && !__hitOk(el, x, y)) {
+            why = "covered";
+          } else {
+            return { ok: true, x: x, y: y };
+          }
+        }
+      }
+      const wait = __BACKOFF[Math.min(retry, __BACKOFF.length - 1)];
+      retry++;
+      if (performance.now() + wait > deadline) return { ok: false, why: why };
+      await __pause(wait);
+    }
+  };
+  // Resolve a selector, retrying until the deadline — the half of auto-wait
+  // that lets a replayed script address elements the page hasn't built yet
+  window.__shikisha_resolve = async function (sel, deadline) {
+    let retry = 0;
+    while (true) {
+      const el = window.__shikisha_q(sel);
+      if (el) return el;
+      const wait = __BACKOFF[Math.min(retry, __BACKOFF.length - 1)] || 100;
+      retry++;
+      if (performance.now() + wait > deadline) return null;
+      await __pause(wait);
+    }
+  };
+
+  window.__shikisha_click = async function (sel, deadline_ms) {
+    const deadline = performance.now() + (deadline_ms || 4000);
+    const el = await window.__shikisha_resolve(sel, deadline);
     if (!el) return "not_found";
-    el.scrollIntoView({ block: "center" });
+    // Wait for actionability; when the deadline passes with the element
+    // present, degrade to the pre-auto-wait behavior (honor the caller's
+    // intent) instead of inventing a new failure mode. No hit check here —
+    // a synthetic click() doesn't hit-test anyway
+    const r = await window.__shikisha_ready(el, {
+      deadline: deadline - performance.now(),
+      enabled: true,
+    });
+    if (!r.ok) el.scrollIntoView({ block: "center" });
     el.click();
     // If we touched it, it was reachable. Keep the same vocabulary as find
     return "visible";
   };
 
-  window.__shikisha_fill = function (sel, value) {
-    const el = window.__shikisha_q(sel);
+  window.__shikisha_fill = async function (sel, value, deadline_ms) {
+    const deadline = performance.now() + (deadline_ms || 4000);
+    const el = await window.__shikisha_resolve(sel, deadline);
     if (!el) return "not_found";
-    el.scrollIntoView({ block: "center" });
+    await window.__shikisha_ready(el, {
+      deadline: deadline - performance.now(),
+      enabled: true,
+    });
     el.focus();
     if (el.isContentEditable) {
       el.textContent = value;
@@ -346,6 +477,15 @@ pub enum Cmd {
         to: Option<String>,
         js: String,
     },
+    /// Call one CDP method and send its result back (matched up by `id`).
+    /// The JS path (`Eval`) can't see the DevTools protocol, and CDP is
+    /// where the accessibility tree, layout snapshot, and genuine input live
+    Cdp {
+        id: u64,
+        to: Option<String>,
+        method: String,
+        params: String,
+    },
     /// Show a bar calling out to the human
     Ask {
         to: Option<String>,
@@ -369,6 +509,15 @@ pub enum Cmd {
     },
     /// Remove a placed page
     RemoveChild { name: String },
+    /// Keep a hidden page's compositor running (`on=true`) for the duration
+    /// of genuine-input operations, and release it again (`on=false`).
+    ///
+    /// A page that isn't on screen (bounds 0×0) stops compositing, and mouse
+    /// input is the one kind that needs the compositor — its ack never comes.
+    /// A tiny screencast forces frame production (the same mechanism the
+    /// phone relay rides), so input lands and acks deterministically; the
+    /// synchronization is the CDP completion itself, never a timer
+    Wake { to: Option<String>, on: bool },
     /// Move keyboard focus to this page. `None` for `to` means the main view.
     ///
     /// Focus inside the page (activeElement) and the focus the OS sees are
@@ -669,6 +818,19 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .unwrap_or_default()
                 .to_string(),
         },
+        // Save the latest run's replay.lua where the user can grab it
+        // (the window board can't download over HTTP, so it asks the app)
+        Some("replaysave") => Ev::ReplaySave,
+        // ✨ ask the assistant AI to turn natural language into one shell
+        // command for the active terminal tab
+        Some("suggest") => Ev::Suggest {
+            text: v
+                .get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        },
+        Some("survey") => Ev::Survey,
         Some("result") => Ev::Result {
             id: v.get("id").and_then(|i| i.as_u64()).unwrap_or(0),
             ok: v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false),
@@ -725,6 +887,13 @@ pub enum Ev {
         section: Option<String>,
         ret: bool,
     },
+    /// Save the newest run's replay.lua to the user's Downloads folder
+    ReplaySave,
+    /// ✨ natural language in, one suggested shell command out (assistant AI)
+    Suggest { text: String },
+    /// 🔍 run the environment survey in the active terminal (deterministic
+    /// probe; its output becomes the tab's environment card)
+    Survey,
     /// The operating board's menu was pressed
     Menu { key: String },
     /// Open the workspace switcher. A dedicated intent (rather than reusing the
@@ -848,6 +1017,10 @@ pub struct Browser {
     /// began vanishes forever. That's exactly how the window's column
     /// count once never arrived
     spare: std::sync::Mutex<Vec<Ev>>,
+    /// The latest digest per page: position N-1 holds the backendNodeId
+    /// behind `{ref=N}`. Cleared when that page navigates (backend ids die
+    /// with the document, and a stale ref must say so, not click thin air)
+    digests: std::sync::Mutex<std::collections::HashMap<Option<String>, Vec<i64>>>,
 }
 
 /// Is this a URL we're allowed to open? Only http/https pass.
@@ -988,6 +1161,7 @@ impl Browser {
             pending_ask: std::sync::Mutex::new(std::collections::HashMap::new()),
             pending_rec: std::sync::Mutex::new(std::collections::HashSet::new()),
             spare: std::sync::Mutex::new(Vec::new()),
+            digests: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         // Don't return until the document is ready. Returning as soon as
         // the window exists would leave the caller touching an empty
@@ -1164,6 +1338,9 @@ impl Browser {
 
     /// Where that element currently is
     pub fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {
+        if let Sel::Ref(r) = sel {
+            return self.find_ref(to, *r, timeout_ms);
+        }
         Ok(Found::parse(&self.call(
             to,
             "__shikisha_state",
@@ -1174,32 +1351,100 @@ impl Browser {
 
     /// Read text (an input field's contents, or the displayed string otherwise)
     pub fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Option<String>> {
+        if let Sel::Ref(r) = sel {
+            return self.text_ref(to, *r, timeout_ms);
+        }
         let v = self.call(to, "__shikisha_text", &[sel.json()], timeout_ms)?;
         Ok(serde_json::from_str::<Option<String>>(&v).unwrap_or(None))
     }
 
-    /// Click it
-    pub fn click(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {
-        Ok(Found::parse(&self.call(
+    /// Run one auto-waiting in-page action (`__shikisha_click` / `_fill`) in
+    /// slices until `timeout_ms` is spent.
+    ///
+    /// The in-page half of auto-wait (rAF polling) dies with its document,
+    /// so a single long wait would keep polling a page that navigation
+    /// already replaced. Short slices re-enter the *current* document each
+    /// time. A slice that errors (context destroyed mid-navigation) or
+    /// times out is retried while time remains
+    fn act_with_wait(
+        &self,
+        to: Option<&str>,
+        func: &str,
+        mut args: Vec<serde_json::Value>,
+        timeout_ms: u64,
+    ) -> Result<Found> {
+        const SLICE_MS: u64 = 1_200;
+        // The JS answers a bit before the slice so the result beats the wait
+        const CUSHION_MS: u64 = 300;
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        let mut last_err: Option<anyhow::Error> = None;
+        loop {
+            let left = until
+                .saturating_duration_since(std::time::Instant::now())
+                .as_millis() as u64;
+            if left < CUSHION_MS + 100 {
+                return match last_err {
+                    Some(e) => Err(e),
+                    None => Ok(Found::NotFound),
+                };
+            }
+            let slice = left.min(SLICE_MS);
+            args.push(serde_json::json!(slice - CUSHION_MS));
+            let res = self.call(to, func, &args, slice + CUSHION_MS);
+            args.pop();
+            match res {
+                Ok(v) => match Found::parse(&v) {
+                    Found::NotFound => {
+                        last_err = None;
+                        continue;
+                    }
+                    found => return Ok(found),
+                },
+                // Mid-navigation the evaluation context dies — that's the
+                // moment auto-wait exists for, not a failure yet. Pace the
+                // re-entry so a page stuck erroring doesn't get hammered
+                Err(e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Click it. A `{ref=N}` clicks with a genuine (trusted) mouse event and
+    /// reports what was clicked plus a durable anchor; selectors keep the
+    /// synthetic in-page `el.click()` and report the state alone. Both paths
+    /// auto-wait for the element to appear and settle (see `act_with_wait`)
+    pub fn click(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<OpReport> {
+        if let Sel::Ref(r) = sel {
+            return self.click_ref(to, *r, timeout_ms);
+        }
+        Ok(OpReport::bare(self.act_with_wait(
             to,
             "__shikisha_click",
-            &[sel.json()],
+            vec![sel.json()],
             timeout_ms,
         )?))
     }
 
-    /// Put a value into an input field
+    /// Put a value into an input field. A `{ref=N}` types genuine key events
+    /// and reports which field was written; selectors keep the value-setter
+    /// route. Both paths auto-wait (see `act_with_wait`)
     pub fn fill(
         &self,
         to: Option<&str>,
         sel: &Sel,
         value: &str,
         timeout_ms: u64,
-    ) -> Result<Found> {
-        Ok(Found::parse(&self.call(
+    ) -> Result<OpReport> {
+        if let Sel::Ref(r) = sel {
+            return self.fill_ref(to, *r, value, timeout_ms);
+        }
+        Ok(OpReport::bare(self.act_with_wait(
             to,
             "__shikisha_fill",
-            &[sel.json(), serde_json::Value::String(value.to_string())],
+            vec![sel.json(), serde_json::Value::String(value.to_string())],
             timeout_ms,
         )?))
     }
@@ -1273,6 +1518,10 @@ impl Browser {
     /// document. Only for the page that navigated
     fn reask(&self, to: Option<&str>) {
         let key = to.map(str::to_string);
+        // The digest died with the document (backendNodeIds are per-document).
+        // Dropping it here turns a later `{ref=N}` into a clear "take a new
+        // digest" instead of a click on a node that no longer exists
+        self.digests.lock().unwrap().remove(&key);
         let want = self.pending_ask.lock().unwrap().get(&key).cloned();
         if let Some((t, l)) = want {
             let _ = self.send(Cmd::Ask {
@@ -1308,22 +1557,27 @@ impl Browser {
 
     /// Wait until a specific evaluation's result arrives
     pub fn wait_result(&self, id: u64, timeout: std::time::Duration) -> Result<String> {
+        let (ok, value) = self.wait_ev(id, timeout)?;
+        if ok {
+            Ok(value)
+        } else {
+            Err(anyhow!(crate::i18n::tp(
+                "err.browser.js_eval_failed",
+                &[("value", &value)]
+            )))
+        }
+    }
+
+    /// The shared wait behind `Eval` and `Cdp`: the raw (ok, payload) pair for
+    /// one id, so each caller can word its own failure
+    fn wait_ev(&self, id: u64, timeout: std::time::Duration) -> Result<(bool, String)> {
         let until = std::time::Instant::now() + timeout;
         loop {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.no_result")))?;
             match self.events.recv_timeout(left) {
-                Ok(Ev::Result { id: got, ok, value }) if got == id => {
-                    return if ok {
-                        Ok(value)
-                    } else {
-                        Err(anyhow!(crate::i18n::tp(
-                            "err.browser.js_eval_failed",
-                            &[("value", &value)]
-                        )))
-                    };
-                }
+                Ok(Ev::Result { id: got, ok, value }) if got == id => return Ok((ok, value)),
                 Ok(Ev::Ready { from, .. }) => {
                     self.reask(from.as_deref());
                     continue;
@@ -1335,6 +1589,607 @@ impl Browser {
                 Err(_) => return Err(anyhow!(crate::i18n::t("err.browser.no_result"))),
             }
         }
+    }
+
+    // ── CDP-backed operations (digest and {ref=N}) ──────────────────────
+    //
+    // The JS world can only see what a page chooses to expose; the DevTools
+    // protocol sees what the browser itself knows (accessibility tree, layout,
+    // and genuine input injection). The digest and every ref operation live on
+    // this side so that names come from the browser's accname computation and
+    // clicks/keys are real input events, indistinguishable from a human's.
+
+    /// Call one CDP method on a page and wait for its result (parsed JSON)
+    fn cdp(
+        &self,
+        to: Option<&str>,
+        method: &str,
+        params: serde_json::Value,
+        timeout_ms: u64,
+    ) -> Result<serde_json::Value> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.send(Cmd::Cdp {
+            id,
+            to: to.map(str::to_string),
+            method: method.to_string(),
+            params: params.to_string(),
+        })?;
+        let (ok, value) = self.wait_ev(id, std::time::Duration::from_millis(timeout_ms))?;
+        if !ok {
+            return Err(anyhow!(crate::i18n::tp(
+                "err.browser.cdp_failed",
+                &[("method", method), ("e", &value)]
+            )));
+        }
+        Ok(serde_json::from_str(&value).unwrap_or(serde_json::Value::Null))
+    }
+
+    /// Distill the page into its operable elements (see `crate::digest`), and
+    /// remember the ref-number → backendNodeId mapping for `{ref=N}` calls
+    pub fn digest(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> {
+        let metrics = self.cdp(to, "Page.getLayoutMetrics", serde_json::json!({}), timeout_ms)?;
+        let snap = self.cdp(
+            to,
+            "DOMSnapshot.captureSnapshot",
+            serde_json::json!({ "computedStyles": ["cursor"] }),
+            timeout_ms,
+        )?;
+        // Roles and accessible names, as the browser itself computed them
+        let ax = self.cdp(
+            to,
+            "Accessibility.getFullAXTree",
+            serde_json::json!({}),
+            timeout_ms,
+        )?;
+        let d = crate::digest::build(&ax, &snap, &metrics);
+        self.digests
+            .lock()
+            .unwrap()
+            .insert(to.map(str::to_string), d.refs);
+        Ok(d.text)
+    }
+
+    /// Resolve `{ref=N}` against the latest digest of that page
+    fn ref_backend(&self, to: Option<&str>, r: u32) -> Result<i64> {
+        let map = self.digests.lock().unwrap();
+        let refs = map
+            .get(&to.map(str::to_string))
+            .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.ref_no_digest")))?;
+        (r as usize)
+            .checked_sub(1)
+            .and_then(|i| refs.get(i))
+            .copied()
+            .ok_or_else(|| {
+                anyhow!(crate::i18n::tp(
+                    "err.browser.ref_unknown",
+                    &[("ref", &r.to_string()), ("max", &refs.len().to_string())]
+                ))
+            })
+    }
+
+    /// Word a CDP failure on a ref as what it almost always is: the element
+    /// (or the whole document) is gone since the digest was taken
+    fn ref_stale(r: u32, e: anyhow::Error) -> anyhow::Error {
+        anyhow!(crate::i18n::tp(
+            "err.browser.ref_stale",
+            &[("ref", &r.to_string()), ("e", &e.to_string())]
+        ))
+    }
+
+    /// The center of the first non-degenerate content quad, in viewport CSS px
+    fn quad_center(q: &serde_json::Value) -> Option<(f64, f64)> {
+        for quad in q.get("quads")?.as_array()? {
+            let p: Vec<f64> = quad
+                .as_array()?
+                .iter()
+                .filter_map(serde_json::Value::as_f64)
+                .collect();
+            if p.len() == 8 {
+                let x = (p[0] + p[2] + p[4] + p[6]) / 4.0;
+                let y = (p[1] + p[3] + p[5] + p[7]) / 4.0;
+                // A zero-area quad is a collapsed (invisible) box
+                if (p[0] - p[2]).abs() + (p[1] - p[7]).abs() > 0.5 {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    }
+
+    /// Ask the window to keep this page's compositor running (or release it).
+    /// Fire-and-forget: the command channel preserves order, and the input
+    /// call that follows synchronizes on its own CDP completion
+    fn wake(&self, to: Option<&str>, on: bool) {
+        let _ = self.send(Cmd::Wake {
+            to: to.map(str::to_string),
+            on,
+        });
+    }
+
+    /// Click a digest ref with genuine mouse events. Returns the state plus
+    /// an echo — what was actually clicked (`link 「…」`) — so a wrong ref
+    /// number is exposed by its own answer instead of failing silently.
+    ///
+    /// A hidden webview (bounds 0×0 — e.g. another tab is showing) stops
+    /// compositing, and mouse events are the one input kind that needs the
+    /// compositor — their ack never arrives. The wake (an off-client-area
+    /// surface plus a tiny throwaway screencast) forces frames back on for
+    /// the duration of the click, so genuine input lands whether or not the
+    /// page is on screen. The synchronization is the CDP completion itself —
+    /// no timers. Should input still not land (unknown edge), the element's
+    /// own `click()` is the last-resort fallback rather than a dead move
+    fn click_ref(&self, to: Option<&str>, r: u32, timeout_ms: u64) -> Result<OpReport> {
+        self.wake(to, true);
+        let out = self.click_ref_inner(to, r, timeout_ms);
+        self.wake(to, false);
+        out
+    }
+
+    /// A durable, digest-free address for the element behind `oid`, derived
+    /// from the element itself at the moment it was touched. Priority: a
+    /// human-made unique id, a unique text anchor, a unique stable attribute,
+    /// then — when a candidate matches several elements (Google keeps two
+    /// btnK buttons, result links repeat their href) — the same candidate
+    /// pinned to this element's position, `(xpath)[k]`. Last resort is the
+    /// 📼 recorder's structural nth-of-type path. Machine-minted ids are
+    /// refused (recorder hygiene). None only when the element is beyond a
+    /// selector's reach at all (shadow DOM) — the journal says so rather
+    /// than record a lie
+    fn element_anchor(
+        &self,
+        to: Option<&str>,
+        oid: &str,
+        timeout_ms: u64,
+    ) -> Option<(String, String)> {
+        const ANCHOR: &str = r##"function () {
+            const uniqCss = (s) => { try { return document.querySelectorAll(s).length === 1; } catch (e) { return false; } };
+            // -1 = unique and it's me; k>0 = me at position k of several; 0 = no use
+            const place = (xp) => {
+                try {
+                    const r = document.evaluate(xp, document, null, 7, null);
+                    if (r.snapshotLength === 1) return r.snapshotItem(0) === this ? -1 : 0;
+                    for (let i = 0; i < r.snapshotLength; i++) {
+                        if (r.snapshotItem(i) === this) return i + 1;
+                    }
+                } catch (e) {}
+                return 0;
+            };
+            // XPath string literals can hold either quote kind, not both
+            const xq = (s) => !s.includes('"') ? '"' + s + '"' : (!s.includes("'") ? "'" + s + "'" : null);
+            const generated = (id) => {
+                if (id.indexOf(":") >= 0) return true;
+                if (/^(ember|yui_|ext-)/.test(id)) return true;
+                if (/^[0-9a-f-]{8,}$/i.test(id) && /\d/.test(id)) return true;
+                if (/^[A-Za-z0-9]{4,12}$/.test(id) && !/[_-]/.test(id)) {
+                    if (/\d/.test(id)) return true;
+                    const u = (id.match(/[A-Z]/g) || []).length;
+                    const l = (id.match(/[a-z]/g) || []).length;
+                    if (u >= 2 && l >= 2) return true;
+                }
+                return false;
+            };
+            const esc = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : s;
+            const id = this.id || "";
+            if (id && !generated(id) && uniqCss("#" + esc(id))) {
+                return JSON.stringify({ kind: "css", v: "#" + id });
+            }
+            const tag = this.tagName.toLowerCase();
+            const cands = [];
+            const txt = (this.innerText || "").replace(/\s+/g, " ").trim();
+            if (txt && txt.length <= 60) {
+                const q = xq(txt);
+                if (q) cands.push("//" + tag + "[normalize-space()=" + q + "]");
+            }
+            for (const a of ["name", "aria-label", "placeholder", "data-testid", "value", "title", "alt", "href"]) {
+                const v = this.getAttribute(a);
+                if (v && v.length <= 120) {
+                    const q = xq(v);
+                    if (q) cands.push("//" + tag + "[@" + a + "=" + q + "]");
+                }
+            }
+            let pinned = null;
+            for (const xp of cands) {
+                const p = place(xp);
+                if (p === -1) return JSON.stringify({ kind: "xpath", v: xp });
+                if (p > 0 && !pinned) pinned = "(" + xp + ")[" + p + "]";
+            }
+            if (pinned) return JSON.stringify({ kind: "xpath", v: pinned });
+            // Structural nth-of-type path, extended upward until unique —
+            // survives reloads, not layout changes (the recorder's trade-off)
+            let s = "", cur = this;
+            while (cur && cur.nodeType === 1 && cur.tagName !== "HTML") {
+                const par = cur.parentElement;
+                let seg;
+                if (cur.id && !generated(cur.id)) {
+                    seg = "#" + esc(cur.id);
+                } else {
+                    seg = cur.tagName.toLowerCase();
+                    if (par) {
+                        const same = Array.prototype.filter.call(par.children, (c) => c.tagName === cur.tagName);
+                        if (same.length > 1) seg += ":nth-of-type(" + (same.indexOf(cur) + 1) + ")";
+                    }
+                }
+                s = seg + (s ? " > " + s : "");
+                if (uniqCss(s)) return JSON.stringify({ kind: "css", v: s });
+                cur = par;
+            }
+            return "null";
+        }"##;
+        let v = self
+            .cdp(
+                to,
+                "Runtime.callFunctionOn",
+                serde_json::json!({ "objectId": oid, "functionDeclaration": ANCHOR,
+                                   "returnByValue": true }),
+                timeout_ms,
+            )
+            .ok()?;
+        let parsed: serde_json::Value = v
+            .get("result")
+            .and_then(|x| x.get("value"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| serde_json::from_str(s).ok())?;
+        Some((
+            parsed.get("kind")?.as_str()?.to_string(),
+            parsed.get("v")?.as_str()?.to_string(),
+        ))
+    }
+
+    /// Wait (in-page — see `__shikisha_ready` in the INIT script) until the
+    /// element behind `oid` is actionable, and get its
+    /// action point. Uses CDP's awaitPromise: the renderer resolves when the
+    /// element settles, so the synchronization is the promise itself.
+    /// Returns (ok, x, y, why)
+    fn ref_ready(
+        &self,
+        to: Option<&str>,
+        oid: &str,
+        hit: bool,
+        deadline_ms: u64,
+        timeout_ms: u64,
+    ) -> Result<(bool, f64, f64, String)> {
+        const READY: &str = r#"function (deadline, hit) {
+            return window.__shikisha_ready(this, { deadline: deadline, enabled: true, hit: hit })
+                .then((r) => JSON.stringify(r));
+        }"#;
+        let v = self.cdp(
+            to,
+            "Runtime.callFunctionOn",
+            serde_json::json!({ "objectId": oid, "functionDeclaration": READY,
+                               "arguments": [{ "value": deadline_ms }, { "value": hit }],
+                               "returnByValue": true, "awaitPromise": true }),
+            timeout_ms,
+        )?;
+        let r: serde_json::Value = v
+            .get("result")
+            .and_then(|x| x.get("value"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        Ok((
+            r.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            r.get("x").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+            r.get("y").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+            r.get("why").and_then(serde_json::Value::as_str).unwrap_or("").to_string(),
+        ))
+    }
+
+    /// The element's identity for the click echo (tag + visible text)
+    fn click_desc(&self, to: Option<&str>, oid: &str, timeout_ms: u64) -> Option<String> {
+        const DESC: &str = r#"function () {
+            const t = this.innerText || this.value || this.getAttribute("aria-label")
+                   || this.getAttribute("alt") || "";
+            return this.tagName.toLowerCase() + " 「"
+                 + Array.from(String(t).replace(/\s+/g, " ").trim()).slice(0, 60).join("") + "」";
+        }"#;
+        self.cdp(
+            to,
+            "Runtime.callFunctionOn",
+            serde_json::json!({ "objectId": oid, "functionDeclaration": DESC,
+                               "returnByValue": true }),
+            timeout_ms,
+        )
+        .ok()
+        .and_then(|v| {
+            v.get("result")
+                .and_then(|x| x.get("value"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+    }
+
+    fn click_ref_inner(&self, to: Option<&str>, r: u32, timeout_ms: u64) -> Result<OpReport> {
+        let oid = self.ref_object(to, r, timeout_ms)?;
+        // Auto-wait for visible/enabled/stable and a clean hit target
+        // (scrolling happens inside, cycling alignments per retry)
+        let deadline = timeout_ms.saturating_sub(1_500).max(1_000);
+        let (ok, x, y, why) = self
+            .ref_ready(to, &oid, true, deadline, timeout_ms)
+            .map_err(|e| Self::ref_stale(r, e))?;
+        let desc = self.click_desc(to, &oid, timeout_ms);
+        let anchor = self.element_anchor(to, &oid, timeout_ms);
+
+        let synthetic_click = || {
+            self.cdp(
+                to,
+                "Runtime.callFunctionOn",
+                serde_json::json!({ "objectId": oid,
+                                   "functionDeclaration": "function () { this.click(); return true; }",
+                                   "returnByValue": true }),
+                timeout_ms,
+            )
+            .map(|_| ())
+        };
+
+        if !ok {
+            if why == "not_found" {
+                return Err(anyhow!(crate::i18n::tp(
+                    "err.browser.ref_stale",
+                    &[("ref", &r.to_string()), ("e", "detached")]
+                )));
+            }
+            // Never actionable within the deadline (covered / unstable /
+            // hidden): honor the ref with the element's own click() — the
+            // pre-auto-wait behavior — and record why
+            crate::append_hook_log(&format!(
+                "ref click {r}: not actionable ({why}) — using the element's own click()"
+            ));
+            synthetic_click()?;
+            return Ok(OpReport { state: Found::Visible, echo: desc, anchor });
+        }
+
+        const ACK_MS: u64 = 1_500;
+        let probe = self.cdp(
+            to,
+            "Input.dispatchMouseEvent",
+            serde_json::json!({ "type": "mouseMoved", "x": x, "y": y,
+                               "button": "left", "buttons": 0, "clickCount": 0 }),
+            ACK_MS,
+        );
+        if probe.is_ok() {
+            for (kind, buttons) in [("mousePressed", 1), ("mouseReleased", 0)] {
+                self.cdp(
+                    to,
+                    "Input.dispatchMouseEvent",
+                    serde_json::json!({ "type": kind, "x": x, "y": y,
+                                       "button": "left", "buttons": buttons, "clickCount": 1 }),
+                    timeout_ms,
+                )?;
+            }
+            return Ok(OpReport { state: Found::Visible, echo: desc, anchor });
+        }
+        crate::append_hook_log(&format!(
+            "ref click {r}: no input ack — falling back to synthetic click"
+        ));
+        synthetic_click()?;
+        Ok(OpReport { state: Found::Visible, echo: desc, anchor })
+    }
+
+    /// Resolve a ref to a JS object handle (for focus/read, not for input)
+    fn ref_object(&self, to: Option<&str>, r: u32, timeout_ms: u64) -> Result<String> {
+        let b = self.ref_backend(to, r)?;
+        let node = self
+            .cdp(
+                to,
+                "DOM.resolveNode",
+                serde_json::json!({ "backendNodeId": b }),
+                timeout_ms,
+            )
+            .map_err(|e| Self::ref_stale(r, e))?;
+        node.get("object")
+            .and_then(|o| o.get("objectId"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow!(crate::i18n::tp(
+                    "err.browser.ref_stale",
+                    &[("ref", &r.to_string()), ("e", "resolveNode")]
+                ))
+            })
+    }
+
+    /// Fill a digest ref: focus + select-all, then type the value as genuine
+    /// per-character key events. The same path the phone relay uses — sites
+    /// like Google that ignore synthetic input events accept these.
+    /// Wrapped in a compositor wake like clicks: a hidden page swallows
+    /// keystrokes too (focus never lands without it). Returns the state plus
+    /// an echo of which field was written (never its value — it may be secret)
+    fn fill_ref(&self, to: Option<&str>, r: u32, value: &str, timeout_ms: u64) -> Result<OpReport> {
+        self.wake(to, true);
+        let out = self.fill_ref_inner(to, r, value, timeout_ms);
+        self.wake(to, false);
+        out
+    }
+
+    /// The field's identity for the echo: tag plus its label-ish attribute.
+    /// Deliberately attribute-only — the field's value never appears here
+    fn field_desc(&self, to: Option<&str>, oid: &str, timeout_ms: u64) -> Option<String> {
+        const DESC: &str = r#"function () {
+            const t = this.getAttribute("placeholder") || this.getAttribute("aria-label")
+                   || this.getAttribute("name") || this.id || "";
+            return this.tagName.toLowerCase()
+                 + (t ? " 「" + Array.from(String(t)).slice(0, 40).join("") + "」" : "");
+        }"#;
+        self.cdp(
+            to,
+            "Runtime.callFunctionOn",
+            serde_json::json!({ "objectId": oid, "functionDeclaration": DESC,
+                               "returnByValue": true }),
+            timeout_ms,
+        )
+        .ok()
+        .and_then(|v| {
+            v.get("result")
+                .and_then(|x| x.get("value"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+    }
+
+    fn fill_ref_inner(&self, to: Option<&str>, r: u32, value: &str, timeout_ms: u64) -> Result<OpReport> {
+        // Make the page believe it has focus even when its window doesn't
+        // (hidden or unfocused pages otherwise drop keystrokes). Sticky per
+        // session and harmless when visible, so arming is idempotent
+        let _ = self.cdp(
+            to,
+            "Emulation.setFocusEmulationEnabled",
+            serde_json::json!({ "enabled": true }),
+            timeout_ms,
+        );
+        let oid = self.ref_object(to, r, timeout_ms)?;
+        // Auto-wait for visible/enabled/stable (scrolls into view inside).
+        // A field that never settles degrades to acting anyway — the value
+        // write is verified afterwards either way
+        let deadline = timeout_ms.saturating_sub(1_500).max(1_000);
+        let (ok, _, _, why) = self
+            .ref_ready(to, &oid, false, deadline, timeout_ms)
+            .map_err(|e| Self::ref_stale(r, e))?;
+        if !ok && why == "not_found" {
+            return Err(anyhow!(crate::i18n::tp(
+                "err.browser.ref_stale",
+                &[("ref", &r.to_string()), ("e", "detached")]
+            )));
+        }
+        // Select everything so the typed characters replace the current value
+        const FOCUS_SELECT: &str = r#"function () {
+            this.focus();
+            if (typeof this.select === "function") {
+                this.select();
+            } else if (this.isContentEditable) {
+                const r = document.createRange();
+                r.selectNodeContents(this);
+                const s = window.getSelection();
+                s.removeAllRanges();
+                s.addRange(r);
+            }
+            return true;
+        }"#;
+        self.cdp(
+            to,
+            "Runtime.callFunctionOn",
+            serde_json::json!({ "objectId": oid, "functionDeclaration": FOCUS_SELECT,
+                               "returnByValue": true }),
+            timeout_ms,
+        )?;
+        // The framework-aware write __shikisha_fill also uses: the native
+        // setter plus input/change events. Works regardless of visibility
+        const SET_VALUE: &str = r#"function (v) {
+            if (this.isContentEditable) {
+                this.textContent = v;
+            } else {
+                const proto =
+                    this instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+                    : this instanceof HTMLSelectElement ? HTMLSelectElement.prototype
+                    : HTMLInputElement.prototype;
+                const d = Object.getOwnPropertyDescriptor(proto, "value");
+                if (d && d.set) d.set.call(this, v); else this.value = v;
+            }
+            this.dispatchEvent(new Event("input", { bubbles: true }));
+            this.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+        }"#;
+        let set_native = || {
+            self.cdp(
+                to,
+                "Runtime.callFunctionOn",
+                serde_json::json!({ "objectId": oid, "functionDeclaration": SET_VALUE,
+                                   "arguments": [{ "value": value }],
+                                   "returnByValue": true }),
+                timeout_ms,
+            )
+            .map(|_| ())
+        };
+        let desc = self.field_desc(to, &oid, timeout_ms);
+        let anchor = self.element_anchor(to, &oid, timeout_ms);
+        if value.is_empty() {
+            set_native()?;
+            return Ok(OpReport { state: Found::Visible, echo: desc, anchor });
+        }
+        for ch in value.chars() {
+            self.cdp(
+                to,
+                "Input.dispatchKeyEvent",
+                serde_json::json!({ "type": "char", "text": ch.to_string() }),
+                timeout_ms,
+            )?;
+        }
+        // Keystrokes can be silently swallowed (a hidden page acks them but
+        // inserts nothing, since focus never lands). Verify what's in the
+        // field; if the typing didn't take, write through the native setter
+        // so the fill never "succeeds" while the field stays empty
+        const READ: &str = r#"function () {
+            return this.value !== undefined ? String(this.value)
+                 : (this.innerText || this.textContent || "");
+        }"#;
+        let got = self
+            .cdp(
+                to,
+                "Runtime.callFunctionOn",
+                serde_json::json!({ "objectId": oid, "functionDeclaration": READ,
+                                   "returnByValue": true }),
+                timeout_ms,
+            )
+            .ok()
+            .and_then(|v| {
+                v.get("result")
+                    .and_then(|x| x.get("value"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            });
+        if got.as_deref() != Some(value) {
+            // Never log the value itself (it may be sensitive) — only the fact
+            crate::append_hook_log(&format!(
+                "ref fill {r}: keystrokes didn't land (page hidden?) — falling back to native setter"
+            ));
+            set_native()?;
+        }
+        Ok(OpReport { state: Found::Visible, echo: desc, anchor })
+    }
+
+    /// Where a digest ref currently is, in the same three-state vocabulary
+    /// selectors use: gone = `not_found`, outside the viewport = `off_screen`
+    fn find_ref(&self, to: Option<&str>, r: u32, timeout_ms: u64) -> Result<Found> {
+        let b = self.ref_backend(to, r)?;
+        let Ok(q) = self.cdp(
+            to,
+            "DOM.getContentQuads",
+            serde_json::json!({ "backendNodeId": b }),
+            timeout_ms,
+        ) else {
+            return Ok(Found::NotFound);
+        };
+        let Some((x, y)) = Self::quad_center(&q) else {
+            return Ok(Found::NotFound);
+        };
+        let m = self.cdp(to, "Page.getLayoutMetrics", serde_json::json!({}), timeout_ms)?;
+        let vp = m.get("cssVisualViewport");
+        let w = vp.and_then(|v| v.get("clientWidth")).and_then(serde_json::Value::as_f64);
+        let h = vp.and_then(|v| v.get("clientHeight")).and_then(serde_json::Value::as_f64);
+        let on = match (w, h) {
+            (Some(w), Some(h)) => x >= 0.0 && y >= 0.0 && x < w && y < h,
+            _ => true,
+        };
+        Ok(if on { Found::Visible } else { Found::OffScreen })
+    }
+
+    /// Read a digest ref's text (an input's value, or the displayed string)
+    fn text_ref(&self, to: Option<&str>, r: u32, timeout_ms: u64) -> Result<Option<String>> {
+        let oid = self.ref_object(to, r, timeout_ms)?;
+        const READ: &str = r#"function () {
+            return this.value !== undefined ? String(this.value)
+                 : (this.innerText || this.textContent || "");
+        }"#;
+        let v = self.cdp(
+            to,
+            "Runtime.callFunctionOn",
+            serde_json::json!({ "objectId": oid, "functionDeclaration": READ,
+                               "returnByValue": true }),
+            timeout_ms,
+        )?;
+        Ok(v.get("result")
+            .and_then(|x| x.get("value"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string))
     }
 }
 
@@ -1371,6 +2226,10 @@ fn wrap_eval(id: u64, js: &str) -> String {
 pub enum Sel {
     Css(String),
     Xpath(String),
+    /// A number from the latest `browser_digest` of that page. Resolved to a
+    /// CDP backendNodeId, and operated on with genuine (trusted) input —
+    /// synthetic-event blind spots don't apply to it
+    Ref(u32),
 }
 
 impl Sel {
@@ -1378,7 +2237,29 @@ impl Sel {
         match self {
             Sel::Css(s) => serde_json::json!({ "css": s }),
             Sel::Xpath(s) => serde_json::json!({ "xpath": s }),
+            // Never sent to the page (ref operations go through CDP); kept
+            // total so a stray call still serializes to something readable
+            Sel::Ref(n) => serde_json::json!({ "ref": n }),
         }
+    }
+}
+
+/// What a click/fill reports back. `state` keeps the three-state vocabulary;
+/// the rest exists only on the `{ref=N}` path: `echo` is the human-readable
+/// "what was really touched", and `anchor` is a durable, digest-free address
+/// (id or text/attribute anchor) derived from the element itself — the raw
+/// material for a portable replay script
+#[derive(Debug)]
+pub struct OpReport {
+    pub state: Found,
+    pub echo: Option<String>,
+    /// ("css" | "xpath", value)
+    pub anchor: Option<(String, String)>,
+}
+
+impl OpReport {
+    fn bare(state: Found) -> Self {
+        Self { state, echo: None, anchor: None }
     }
 }
 
@@ -1607,6 +2488,20 @@ fn run_window(
     // Screencasts. One per target. Frames only arrive while this is held
     let mut casts: std::collections::HashMap<Option<String>, cdp::Cast> =
         std::collections::HashMap::new();
+    // Compositor wakes for genuine input on hidden pages. A page hidden the
+    // normal way (bounds 0×0) has no surface, and mouse input needs one to
+    // hit-test against — its ack never comes. For the duration of a wake the
+    // page gets a real-sized surface parked outside the client area (never
+    // painted, so nothing flickers), plus a tiny throwaway screencast to
+    // keep frames flowing. The bool remembers whether the bounds were
+    // borrowed, so release restores exactly the layout's last word. Kept
+    // separate from `casts` so a phone relay and a wake never fight
+    let mut wakes: std::collections::HashMap<Option<String>, (cdp::Cast, bool)> =
+        std::collections::HashMap::new();
+    // Each child's last layout-given rect: how a wake tells hidden (0×0)
+    // from merely unfocused, and what it restores on release
+    let mut child_sizes: std::collections::HashMap<String, (i32, i32, i32, i32)> =
+        std::collections::HashMap::new();
     // Each cast target's own (pre-override) viewport in CSS px. Held for the
     // life of the cast so a phone rotating back and forth always re-shapes
     // from the real size, and torn down (override cleared) with the cast
@@ -1650,6 +2545,76 @@ fn run_window(
                         });
                     }
                 }
+                Cmd::Wake { to, on } => {
+                    if on {
+                        // A live relay cast already keeps the compositor
+                        // running; arming a second screencast would replace
+                        // its parameters and stopping it later would kill
+                        // the relay's frames. So wake only when nothing casts
+                        if !wakes.contains_key(&to) && !casts.contains_key(&to) {
+                            if let Some(v) = target(&webview, &children, &to) {
+                                let wv = cdp::webview_of(v);
+                                // Hidden = this child is currently sized 0.
+                                // Borrow it a real surface, parked outside
+                                // the client area (clipped, never painted)
+                                let hidden = to.as_ref().is_some_and(|name| {
+                                    child_sizes
+                                        .get(name)
+                                        .is_none_or(|&(_, _, w, h)| w <= 0 || h <= 0)
+                                });
+                                if hidden {
+                                    let _ = v.set_bounds(to_rect((-4000, 0, 1280, 900)));
+                                }
+                                if let Some(cast) =
+                                    cdp::start_with(&wv, cdp::WAKE_PARAMS, |_, _, _| {})
+                                {
+                                    wakes.insert(to.clone(), (cast, hidden));
+                                } else if hidden {
+                                    if let Some(&r) =
+                                        to.as_ref().and_then(|n| child_sizes.get(n))
+                                    {
+                                        let _ = v.set_bounds(to_rect(r));
+                                    }
+                                }
+                            }
+                        }
+                    } else if let Some((cast, borrowed)) = wakes.remove(&to) {
+                        cdp::stop(cast);
+                        if borrowed {
+                            // Give back whatever the layout last decreed —
+                            // including a rect that changed mid-wake
+                            if let (Some(v), Some(&r)) = (
+                                target(&webview, &children, &to),
+                                to.as_ref().and_then(|n| child_sizes.get(n)),
+                            ) {
+                                let _ = v.set_bounds(to_rect(r));
+                            }
+                        }
+                    }
+                }
+                Cmd::Cdp { id, to, method, params } => {
+                    // Same guard as Eval: an unplaced page must answer, not hang
+                    if let Some(v) = target(&webview, &children, &to) {
+                        let tx = ev_tx.clone();
+                        cdp::call_result(
+                            &cdp::webview_of(v),
+                            &method,
+                            &params,
+                            move |ok, json| {
+                                let _ = tx.send(Ev::Result { id, ok, value: json });
+                            },
+                        );
+                    } else {
+                        let _ = ev_tx.send(Ev::Result {
+                            id,
+                            ok: false,
+                            value: crate::i18n::tp(
+                                "err.browser.page_not_placed",
+                                &[("to", &to.unwrap_or_default())],
+                            ),
+                        });
+                    }
+                }
                 Cmd::BasicAuth { to, user, pass } => {
                     // If credentials are already armed, swap them; otherwise enable Fetch and arm them
                     if let Some(arm) = auths.get(&to) {
@@ -1686,6 +2651,7 @@ fn run_window(
                     // startup" report can be matched against it.
                     let born = std::time::Instant::now();
                     let bounds = to_rect(rect);
+                    child_sizes.insert(name.clone(), rect);
                     // Decide this page's data storage (profile/private).
                     // Same folder = same cookies/login, different folder = different profile.
                     // All tabs, including "default", are isolated under
@@ -1785,10 +2751,15 @@ fn run_window(
                 Cmd::ChildBounds { name, rect } => {
                     if let Some(v) = children.get(&name) {
                         let _ = v.set_bounds(to_rect(rect));
+                        child_sizes.insert(name.clone(), rect);
                     }
                 }
                 Cmd::RemoveChild { name } => {
                     children.remove(&name);
+                    child_sizes.remove(&name);
+                    if let Some((cast, _)) = wakes.remove(&Some(name.clone())) {
+                        cdp::stop(cast);
+                    }
                     dialogs.remove(&Some(name.clone()));
                     auths.remove(&Some(name.clone()));
                     // If this child was placed in private mode, clean up
@@ -2025,6 +2996,12 @@ mod cdp {
     const CAST_PARAMS: &str =
         "{\"format\":\"jpeg\",\"quality\":60,\"maxWidth\":1600,\"maxHeight\":2400,\"everyNthFrame\":1}";
 
+    /// Wake parameters: the cheapest cast that still forces the compositor
+    /// to produce frames. The frames themselves are thrown away — the point
+    /// is that a hidden page becomes able to process (and ack) mouse input
+    pub const WAKE_PARAMS: &str =
+        "{\"format\":\"jpeg\",\"quality\":10,\"maxWidth\":32,\"maxHeight\":32,\"everyNthFrame\":10}";
+
     /// What's needed to tear down a screencast (notifications only arrive while this is held)
     pub struct Cast {
         pub receiver: ICoreWebView2DevToolsProtocolEventReceiver,
@@ -2047,6 +3024,46 @@ mod cdp {
         }
     }
 
+    /// Call one CDP method and hand its result to `done(ok, json)`.
+    ///
+    /// `done` is guaranteed to run exactly once: either from the completion
+    /// handler, or right here when the call can't even be issued (in which
+    /// case the handler would never fire and a waiter would hang until its
+    /// timeout for no reason)
+    pub fn call_result<F>(webview: &ICoreWebView2, method: &str, params_json: &str, done: F)
+    where
+        F: FnOnce(bool, String) + 'static,
+    {
+        let method_h = HSTRING::from(method);
+        let params = HSTRING::from(params_json);
+        let done = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
+        let in_handler = std::rc::Rc::clone(&done);
+        let context = format!("{method}");
+        let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+            move |hr: windows::core::Result<()>, json: String| {
+                if let Some(f) = in_handler.borrow_mut().take() {
+                    match hr {
+                        Ok(()) => f(true, json),
+                        Err(e) => f(false, format!("{context}: {e:?} {json}")),
+                    }
+                }
+                Ok(())
+            },
+        ));
+        let issued = unsafe {
+            webview.CallDevToolsProtocolMethod(
+                PCWSTR(method_h.as_ptr()),
+                PCWSTR(params.as_ptr()),
+                &handler,
+            )
+        };
+        if let Err(e) = issued {
+            if let Some(f) = done.borrow_mut().take() {
+                f(false, format!("{method}: {e:?}"));
+            }
+        }
+    }
+
     /// Pull the underlying `ICoreWebView2` out of a wry `WebView`
     pub fn webview_of(view: &wry::WebView) -> ICoreWebView2 {
         use wry::WebViewExtWindows;
@@ -2057,6 +3074,14 @@ mod cdp {
     /// every time a frame arrives.
     /// This also sends the frame ack automatically (without it, the next frame never comes)
     pub fn start<F>(webview: &ICoreWebView2, on_frame: F) -> Option<Cast>
+    where
+        F: FnMut(String, f64, f64) + 'static,
+    {
+        start_with(webview, CAST_PARAMS, on_frame)
+    }
+
+    /// `start` with explicit cast parameters (the wake path wants tiny frames)
+    pub fn start_with<F>(webview: &ICoreWebView2, params: &str, on_frame: F) -> Option<Cast>
     where
         F: FnMut(String, f64, f64) + 'static,
     {
@@ -2112,7 +3137,7 @@ mod cdp {
                 .add_DevToolsProtocolEventReceived(&handler, &mut token)
                 .ok()?;
             call(webview, "Page.enable", "{}");
-            call(webview, "Page.startScreencast", CAST_PARAMS);
+            call(webview, "Page.startScreencast", params);
             Some(Cast {
                 receiver,
                 token,
@@ -2485,7 +3510,7 @@ mod tests {
         assert_eq!(name.as_deref(), Some("山田"), "XPathで隣のセルが取れない");
 
         // Click it
-        assert_eq!(b.click(None, &Sel::Css("#go".into()), t).unwrap(), Found::Visible);
+        assert_eq!(b.click(None, &Sel::Css("#go".into()), t).unwrap().state, Found::Visible);
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert_eq!(
             b.text(None, &Sel::Css("#log".into()), t).unwrap().as_deref(),
@@ -2496,7 +3521,7 @@ mod tests {
         // Fill it. Not just writing the value — the `input` event must fire too
         // (frameworks like React won't update state otherwise)
         assert_eq!(
-            b.fill(None, &Sel::Css("#q".into()), "ふつうの値", t).unwrap(),
+            b.fill(None, &Sel::Css("#q".into()), "ふつうの値", t).unwrap().state,
             Found::Visible
         );
         assert_eq!(
@@ -2514,7 +3539,7 @@ mod tests {
         // Even AI output or text read straight off a page arrives as a plain value
         let nasty = "'; window.__pwned = 1; //\"</script><img src=x onerror=alert(1)>\\";
         assert_eq!(
-            b.fill(None, &Sel::Css("#q".into()), nasty, t).unwrap(),
+            b.fill(None, &Sel::Css("#q".into()), nasty, t).unwrap().state,
             Found::Visible
         );
         assert_eq!(
@@ -2528,7 +3553,7 @@ mod tests {
         // through a `textarea`. The value isn't corrupted — the container just can't hold it
         let multi = format!("1行目\n2行目\t{nasty}");
         assert_eq!(
-            b.fill(None, &Sel::Css("#multi".into()), &multi, t).unwrap(),
+            b.fill(None, &Sel::Css("#multi".into()), &multi, t).unwrap().state,
             Found::Visible
         );
         assert_eq!(
@@ -2654,8 +3679,498 @@ mod tests {
         println!("帯が出ているか = {v}");
         assert_eq!(v, "true", "呼びかけの帯が出ていない");
 
+        // The banner button lives in a shadow root — the digest must still
+        // list it, and a ref click on it must fire the button's own handler
+        // (that's how a human's proxy — or a phone — presses it)
+        let text = b.digest(None, 20_000).expect("digestが取れない");
+        let bar = text
+            .lines()
+            .find(|l| l.contains("できました"))
+            .unwrap_or_else(|| panic!("帯のボタンがdigestに載らない:\n{text}"));
+        println!("banner line: {bar}");
+        let br: u32 = bar
+            .strip_prefix('[')
+            .and_then(|l| l.split(']').next())
+            .and_then(|n| n.parse().ok())
+            .expect("帯ボタンのref");
+        let rep = b.click(None, &Sel::Ref(br), 10_000).unwrap();
+        println!("banner click echo: {:?}", rep.echo);
+        // The press reports Ev::Button — the same signal a human's tap sends
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut pressed = false;
+        while std::time::Instant::now() < deadline && !pressed {
+            pressed = b.drain().iter().any(|e| matches!(e, Ev::Button { .. }));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(pressed, "refクリックで帯のボタンが押せていない (Ev::Buttonが来ない)");
+
         drop(b);
         std::thread::sleep(Duration::from_millis(600));
         println!("閉じてもここまで来た (プロセスは生きている)");
+    }
+
+    /// The CDP lane end-to-end: digest lists the operable elements (AX lane
+    /// and JS-clickable lane both), `{ref=N}` clicks with a genuine mouse
+    /// event that fires the page's own onclick, and ref-fill types multibyte
+    /// text as real key events.
+    ///
+    ///   cargo test digest_round_trip -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn digest_round_trip() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let body = r#"<title>t</title><body>
+                  <button id="b" onclick="document.getElementById('log').textContent='clicked'">押す</button>
+                  <a href="https://example.com/x">リンク</a>
+                  <input id="i" placeholder="名前">
+                  <div id="d" style="cursor:pointer" onclick="void 0">丸いやつ</div>
+                  <a href="https://example.com/dup" onclick="return false">重複</a>
+                  <a href="https://example.com/dup" onclick="return false">重複</a>
+                  <div id="log"></div>"#;
+                let _ = req.respond(
+                    tiny_http::Response::from_string(body).with_header(
+                        tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"text/html; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    ),
+                );
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        let b = Browser::spawn(&url, "SHIKISHA-TERM digest probe").expect("窓が開かない");
+
+        let text = b.digest(None, 20_000).expect("digestが取れない");
+        println!("{text}");
+        assert!(text.contains("button \"押す\""), "ボタンがAXレーンから載る:\n{text}");
+        assert!(text.contains("リンク") && text.contains("https://example.com/x"), "{text}");
+        assert!(text.contains("名前"), "入力欄の名前(placeholder由来)が載る:\n{text}");
+        assert!(text.contains("div*") && text.contains("丸いやつ"), "JSクリッカブルが補完される:\n{text}");
+
+        // A line reads `[N] role "name" …` — pull N for the line matching `needle`
+        let ref_of = |needle: &str| -> u32 {
+            text.lines()
+                .find(|l| l.contains(needle))
+                .and_then(|l| l.strip_prefix('['))
+                .and_then(|l| l.split(']').next())
+                .and_then(|n| n.parse().ok())
+                .unwrap_or_else(|| panic!("refが取れない: {needle}"))
+        };
+
+        // A genuine click fires the page's own onclick, and the echo names
+        // what was clicked (a wrong ref number would answer for itself)
+        let rb = ref_of("押す");
+        let rep = b.click(None, &Sel::Ref(rb), 10_000).unwrap();
+        assert_eq!(rep.state, Found::Visible);
+        let echo = rep.echo.expect("refクリックはエコーを返す");
+        assert!(
+            echo.contains("button") && echo.contains("押す"),
+            "何を押したか名乗る: {echo}"
+        );
+        // The durable anchor for the replay journal: the button has a
+        // human-made id, so the anchor is its css form
+        assert_eq!(
+            rep.anchor,
+            Some(("css".to_string(), "#b".to_string())),
+            "idを持つ要素のアンカーは #id"
+        );
+        std::thread::sleep(Duration::from_millis(400));
+        let id = b.eval("return document.getElementById('log').textContent;").unwrap();
+        let v = b.wait_result(id, Duration::from_secs(10)).unwrap();
+        assert_eq!(v, "\"clicked\"", "本物のマウスイベントがonclickを発火させる");
+
+        // Ref-fill types multibyte as char key events; ref-text reads it back
+        let ri = ref_of("名前");
+        assert_eq!(b.fill(None, &Sel::Ref(ri), "俳句テスト", 10_000).unwrap().state, Found::Visible);
+        std::thread::sleep(Duration::from_millis(400));
+        let id = b.eval("return document.getElementById('i').value;").unwrap();
+        let v = b.wait_result(id, Duration::from_secs(10)).unwrap();
+        assert_eq!(v, "\"俳句テスト\"", "charキーイベントでマルチバイトが入る");
+        assert_eq!(
+            b.text(None, &Sel::Ref(ri), 10_000).unwrap().as_deref(),
+            Some("俳句テスト")
+        );
+
+        // A stale/unknown ref refuses with guidance instead of clicking air
+        let err = b.click(None, &Sel::Ref(999), 10_000).unwrap_err().to_string();
+        println!("999 -> {err}");
+        assert!(err.contains("999"), "どのrefが悪いか言う: {err}");
+
+        // A duplicated element (same text, same href — the Google-btnK shape)
+        // still gets an anchor: the candidate pinned to its own position
+        let dup2 = text
+            .lines()
+            .filter(|l| l.contains("重複"))
+            .nth(1)
+            .and_then(|l| l.strip_prefix('['))
+            .and_then(|l| l.split(']').next())
+            .and_then(|n| n.parse::<u32>().ok())
+            .expect("2つ目の重複リンクのref");
+        let rep = b.click(None, &Sel::Ref(dup2), 10_000).unwrap();
+        let (kind, v) = rep.anchor.expect("重複でもアンカーが出る");
+        println!("dup anchor = {kind} {v}");
+        assert_eq!(kind, "xpath");
+        assert!(
+            v.starts_with('(') && v.ends_with(")[2]"),
+            "2つ目の要素は位置ピン留めになる: {v}"
+        );
+
+        drop(b);
+        std::thread::sleep(Duration::from_millis(600));
+    }
+
+    /// A hidden page (bounds 0×0, as during an operate rally showing the AI
+    /// tab) has no compositor, so genuine mouse acks never come — the click
+    /// must fall back to the synthetic path and still land. Key events and
+    /// digest must work hidden as-is.
+    ///
+    ///   cargo test hidden_page_ref_click -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn hidden_page_ref_click_falls_back() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                // mousedown fires only for genuine mouse input (a synthetic
+                // el.click() skips it); beforeinput fires only for genuine
+                // typing (the native-setter fallback dispatches `input` only).
+                // Counting them tells WHICH path the operation really took
+                let body = r#"<title>t</title><body>
+                  <button id="b" onclick="document.getElementById('log').textContent='clicked'">押す</button>
+                  <input id="i" placeholder="名前">
+                  <div id="log"></div>
+                  <script>
+                    window.__ev = { md: 0, bi: 0 };
+                    document.getElementById('b').addEventListener('mousedown', () => __ev.md++);
+                    document.getElementById('i').addEventListener('beforeinput', () => __ev.bi++);
+                  </script>"#;
+                let _ = req.respond(
+                    tiny_http::Response::from_string(body).with_header(
+                        tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"text/html; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    ),
+                );
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        let b = Browser::spawn(&url, "SHIKISHA-TERM hidden probe").expect("窓が開かない");
+        // A page placed at zero size = hidden (how the app hides pages)
+        b.open_child("c", &url, (0, 0, 0, 0), BrowserProfile::new("", true)).unwrap();
+        std::thread::sleep(Duration::from_millis(2500));
+
+        let text = b.digest(Some("c"), 20_000).expect("非表示ページのdigestが取れない");
+        println!("{text}");
+        let ref_of = |needle: &str| -> u32 {
+            text.lines()
+                .find(|l| l.contains(needle))
+                .and_then(|l| l.strip_prefix('['))
+                .and_then(|l| l.split(']').next())
+                .and_then(|n| n.parse().ok())
+                .unwrap_or_else(|| panic!("refが取れない: {needle}"))
+        };
+
+        let t0 = std::time::Instant::now();
+        assert_eq!(
+            b.click(Some("c"), &Sel::Ref(ref_of("押す")), 10_000).unwrap().state,
+            Found::Visible,
+            "非表示でもクリックは成立する"
+        );
+        println!("click took {}ms", t0.elapsed().as_millis());
+        std::thread::sleep(Duration::from_millis(400));
+        let id = b.eval_in(Some("c"), "return document.getElementById('log').textContent;").unwrap();
+        assert_eq!(
+            b.wait_result(id, Duration::from_secs(10)).unwrap(),
+            "\"clicked\"",
+            "onclickが発火する"
+        );
+
+        assert_eq!(
+            b.fill(Some("c"), &Sel::Ref(ref_of("名前")), "俳句", 10_000).unwrap().state,
+            Found::Visible
+        );
+        std::thread::sleep(Duration::from_millis(400));
+        let id = b.eval_in(Some("c"), "return document.getElementById('i').value;").unwrap();
+        let v = b.wait_result(id, Duration::from_secs(10)).unwrap();
+        assert_eq!(v, "\"俳句\"", "非表示でも値は必ず入る");
+
+        // The wake must have made GENUINE input land — not the fallbacks
+        let id = b.eval_in(Some("c"), "return JSON.stringify(window.__ev);").unwrap();
+        let ev = b.wait_result(id, Duration::from_secs(10)).unwrap();
+        println!("genuine-input evidence = {ev}");
+        assert!(
+            ev.contains("\\\"md\\\":1") || ev.contains("md\":1"),
+            "本物マウス (mousedown) が非表示ページに届くはず: {ev}"
+        );
+        assert!(
+            !ev.contains("bi\":0"),
+            "本物の打鍵 (beforeinput) が非表示ページに届くはず: {ev}"
+        );
+
+        drop(b);
+        std::thread::sleep(Duration::from_millis(600));
+    }
+
+    /// Auto-wait (the actionability engine) end-to-end:
+    /// a click waits for an element the page hasn't built yet, waits out an
+    /// animation, and — the replay.lua case — ops fired back-to-back with no
+    /// pauses survive a navigation in between, because the outer retry
+    /// re-enters the new document.
+    ///
+    ///   cargo test auto_wait_round_trip -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn auto_wait_round_trip() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let body = if req.url().starts_with("/two") {
+                    // The input arrives 600ms late — a client-rendered page
+                    r#"<title>two</title><body>
+                      <div id="slot"></div>
+                      <button id="ok" onclick="document.getElementById('out').textContent =
+                        document.getElementById('name').value">OK</button>
+                      <div id="out"></div>
+                      <script>
+                        setTimeout(() => {
+                          document.getElementById('slot').innerHTML =
+                            '<input id="name" placeholder="なまえ">';
+                        }, 600);
+                      </script>"#
+                } else {
+                    // #late appears after 700ms; #move slides for ~500ms first
+                    r#"<title>one</title><body>
+                      <button id="move" style="transition:margin-left .5s" onclick="this.dataset.hit='1'">動く</button>
+                      <div id="slot"></div>
+                      <a id="go" href="/two">つぎへ</a>
+                      <script>
+                        requestAnimationFrame(() => { document.getElementById('move').style.marginLeft = '120px'; });
+                        setTimeout(() => {
+                          document.getElementById('slot').innerHTML =
+                            '<button id="late" onclick="this.dataset.hit=1">遅れて出る</button>';
+                        }, 700);
+                      </script>"#
+                };
+                let _ = req.respond(
+                    tiny_http::Response::from_string(body).with_header(
+                        tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"text/html; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    ),
+                );
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        let b = Browser::spawn(&url, "SHIKISHA-TERM auto-wait probe").expect("窓が開かない");
+
+        // Back-to-back, replay-style: no pauses between any of these
+        let t0 = std::time::Instant::now();
+        let r = b.click(None, &Sel::Css("#late".into()), 10_000).unwrap();
+        let waited = t0.elapsed().as_millis();
+        assert_eq!(r.state, Found::Visible, "まだ無い要素を待ってクリックできる");
+        println!("late click waited {waited}ms");
+        assert!(waited >= 500, "700ms後に現れる要素を待ったはず: {waited}ms");
+
+        assert_eq!(
+            b.click(None, &Sel::Css("#move".into()), 10_000).unwrap().state,
+            Found::Visible,
+            "アニメーション中の要素は安定を待ってクリック"
+        );
+
+        // Navigate, then immediately act on the next page's late element
+        assert_eq!(b.click(None, &Sel::Css("#go".into()), 10_000).unwrap().state, Found::Visible);
+        assert_eq!(
+            b.fill(None, &Sel::Css("#name".into()), "俳句", 10_000).unwrap().state,
+            Found::Visible,
+            "遷移直後+遅延生成の入力欄に、待ち無しの連打で書ける"
+        );
+        assert_eq!(b.click(None, &Sel::Css("#ok".into()), 10_000).unwrap().state, Found::Visible);
+        std::thread::sleep(Duration::from_millis(300));
+        let id = b.eval("return document.getElementById('out').textContent + ' @ ' + location.pathname;").unwrap();
+        let v = b.wait_result(id, Duration::from_secs(10)).unwrap();
+        println!("final: {v}");
+        assert_eq!(v, "\"俳句 @ /two\"", "連打リプレイが最後まで通る");
+
+        // A truly absent element still says not_found — after the full wait
+        let t0 = std::time::Instant::now();
+        let r = b.click(None, &Sel::Css("#never".into()), 2_500).unwrap();
+        assert_eq!(r.state, Found::NotFound);
+        println!("absent verdict after {}ms", t0.elapsed().as_millis());
+
+        drop(b);
+        std::thread::sleep(Duration::from_millis(600));
+    }
+
+    /// The full task an operator AI is asked to do, walked with the primitives
+    /// alone against the live Google: digest → fill the search box by ref →
+    /// Enter → digest the results → click the Wikipedia link by ref → land on
+    /// ja.wikipedia.org. If this passes, every mechanical link in the chain
+    /// (digest quality included) is sound and only the AI's judgment remains.
+    ///
+    ///   cargo test haiku_task_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn haiku_task_probe() {
+        let b = Browser::spawn("https://www.google.com/", "SHIKISHA-TERM task probe")
+            .expect("窓が開かない");
+        std::thread::sleep(Duration::from_millis(1500));
+
+        let ref_of = |text: &str, needle: &str| -> Option<u32> {
+            text.lines()
+                .find(|l| l.contains(needle))
+                .and_then(|l| l.strip_prefix('['))
+                .and_then(|l| l.split(']').next())
+                .and_then(|n| n.parse().ok())
+        };
+
+        // 1. Find and fill the search box
+        let d1 = b.digest(None, 20_000).expect("digest 1");
+        let q = ref_of(&d1, "combobox").or_else(|| ref_of(&d1, "textbox")).expect("検索窓");
+        let rep = b.fill(None, &Sel::Ref(q), "俳句", 10_000).expect("fill");
+        println!("fill -> {:?} {:?}", rep.state, rep.echo);
+        assert_eq!(rep.state, Found::Visible);
+
+        // 2. Submit with Enter (the key goes to the focused element = the box)
+        b.inject(None, Input::Key { named: "enter".into(), ctrl: false, alt: false }).unwrap();
+        let url = b.wait_ready(Duration::from_secs(20)).expect("検索結果が来ない");
+        println!("results: {url}");
+        assert!(url.contains("/search"), "検索結果ページに遷移: {url}");
+        std::thread::sleep(Duration::from_millis(1200));
+
+        // 3. Digest the results and click the Wikipedia link by number
+        let d2 = b.digest(None, 20_000).expect("digest 2");
+        println!("---- results digest ----\n{d2}\n----");
+        // Read like a careful operator: the real result link lives under the
+        // results-section heading; the same URL quoted inside an AI summary
+        // (§AI…) opens a citation panel instead of navigating
+        let wiki_links: Vec<&str> = d2
+            .lines()
+            .filter(|l| {
+                l.starts_with('[') && l.contains("link") && l.contains("ja.wikipedia.org/wiki")
+            })
+            .collect();
+        let wiki = wiki_links
+            .iter()
+            .find(|l| l.contains("§ウェブ検索結果") || l.contains("§検索結果"))
+            .or_else(|| wiki_links.iter().find(|l| !l.contains("§AI")))
+            .copied()
+            .expect("結果セクションのWikipediaリンクがdigestに載る");
+        println!("wiki line: {wiki}");
+        let r: u32 = wiki
+            .strip_prefix('[')
+            .and_then(|l| l.split(']').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap();
+        let rep = b.click(None, &Sel::Ref(r), 10_000).expect("click");
+        println!("click -> {:?} {:?} anchor={:?}", rep.state, rep.echo, rep.anchor);
+        let echo = rep.echo.clone().unwrap_or_default();
+        assert!(
+            echo.contains("俳句") || echo.to_lowercase().contains("wikipedia"),
+            "エコーがWikipediaリンクを名乗る: {echo}"
+        );
+        let url = b.wait_ready(Duration::from_secs(20)).expect("Wikipediaへ遷移しない");
+        println!("landed: {url}");
+        assert!(url.contains("ja.wikipedia.org/wiki"), "Wikipediaに着地: {url}");
+
+        drop(b);
+        std::thread::sleep(Duration::from_millis(600));
+    }
+
+    /// Field probe against the real Google homepage: where exactly does a
+    /// ref-click stall? Prints per-step timings instead of asserting, so the
+    /// failing CDP call names itself.
+    ///
+    ///   cargo test google_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn google_probe() {
+        let b = Browser::spawn("https://www.google.com/", "SHIKISHA-TERM google probe")
+            .expect("窓が開かない");
+        std::thread::sleep(Duration::from_millis(1500));
+
+        let t0 = std::time::Instant::now();
+        let text = b.digest(None, 20_000).expect("digestが取れない");
+        println!("digest: {}ms, {} lines\n{text}", t0.elapsed().as_millis(), text.lines().count());
+
+        let ref_of = |needle: &str| -> Option<u32> {
+            text.lines()
+                .find(|l| l.contains(needle))
+                .and_then(|l| l.strip_prefix('['))
+                .and_then(|l| l.split(']').next())
+                .and_then(|n| n.parse().ok())
+        };
+        let box_ref = ref_of("combobox")
+            .or_else(|| ref_of("textbox"))
+            .expect("検索窓が見つからない");
+        println!("search box = ref {box_ref}");
+
+        let t0 = std::time::Instant::now();
+        let r = b.fill(None, &Sel::Ref(box_ref), "俳句", 10_000);
+        println!("fill: {:?} in {}ms", r, t0.elapsed().as_millis());
+
+        std::thread::sleep(Duration::from_millis(800));
+        let text2 = b.digest(None, 20_000).expect("2度目のdigestが取れない");
+        let btn = text2
+            .lines()
+            .find(|l| l.contains("button") && l.contains("検索") && !l.contains("画像"))
+            .map(str::to_string)
+            .expect("検索ボタンが見つからない");
+        println!("button line: {btn}");
+        let btn_ref: u32 = btn
+            .strip_prefix('[')
+            .and_then(|l| l.split(']').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap();
+
+        // What would the replay journal record for this button?
+        let oid = b.ref_object(None, btn_ref, 8_000).unwrap();
+        println!("button anchor = {:?}", b.element_anchor(None, &oid, 8_000));
+
+        // The same steps click_ref takes, timed one by one
+        let backend = b.ref_backend(None, btn_ref).unwrap();
+        for (what, method, params) in [
+            ("scroll", "DOM.scrollIntoViewIfNeeded", serde_json::json!({"backendNodeId": backend})),
+            ("quads", "DOM.getContentQuads", serde_json::json!({"backendNodeId": backend})),
+        ] {
+            let t0 = std::time::Instant::now();
+            let r = b.cdp(None, method, params, 8_000);
+            println!("{what}: {}ms ok={}", t0.elapsed().as_millis(), r.is_ok());
+        }
+        let q = b
+            .cdp(None, "DOM.getContentQuads", serde_json::json!({"backendNodeId": backend}), 8_000)
+            .unwrap();
+        let (x, y) = Browser::quad_center(&q).unwrap();
+        for (kind, buttons, clicks) in
+            [("mouseMoved", 0, 0), ("mousePressed", 1, 1), ("mouseReleased", 0, 1)]
+        {
+            let t0 = std::time::Instant::now();
+            let r = b.cdp(
+                None,
+                "Input.dispatchMouseEvent",
+                serde_json::json!({"type": kind, "x": x, "y": y,
+                                   "button": "left", "buttons": buttons, "clickCount": clicks}),
+                8_000,
+            );
+            println!(
+                "{kind}: {}ms ok={} {:?}",
+                t0.elapsed().as_millis(),
+                r.is_ok(),
+                r.err().map(|e| e.to_string())
+            );
+        }
+        std::thread::sleep(Duration::from_millis(2500));
+        let id = b.eval("return location.href;").unwrap();
+        println!("after click url = {:?}", b.wait_result(id, Duration::from_secs(10)));
+        drop(b);
     }
 }
