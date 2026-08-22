@@ -686,6 +686,60 @@ mod tests {
         t.kill();
     }
 
+    /// A working indicator that was never observed must not turn a real
+    /// answer into a permanent "no response" — CLIs restyle their status
+    /// line, and a short turn can finish between polls. Output that keeps
+    /// moving well after the submit is accepted as the secondary evidence
+    /// (the submit's own echo can't fake it: that burst ends immediately).
+    #[test]
+    fn sustained_output_after_submit_counts_as_answered() {
+        use super::{Tab, TabOptions};
+        use std::time::{Duration, Instant};
+
+        let argv = vec!["cmd.exe".to_string()];
+        let mut t = Tab::spawn(
+            "shell".into(),
+            &argv,
+            Some("claude".into()),
+            12,
+            60,
+            TabOptions::default(),
+        )
+        .unwrap();
+        let start = Instant::now();
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(50));
+            t.tick(start);
+        }
+
+        t.write_bytes(b"echo REPLY\r").unwrap();
+        // The echo burst lands right away, then goes quiet: even after the
+        // grace window it must not count as an answer on its own
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(50));
+            t.tick(start);
+        }
+        assert!(
+            !t.answered_since_submit(),
+            "エコーだけ (直後の一瞬で止まった出力) は応答にしない"
+        );
+
+        // Output arriving well after the submit = the peer actually said
+        // something, indicator or not
+        t.write_passthrough(b"echo LATE-REPLY\r").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !t.answered_since_submit() {
+            std::thread::sleep(Duration::from_millis(50));
+            t.tick(start);
+        }
+        assert!(
+            t.answered_since_submit(),
+            "働き表示を見逃しても、submitのずっと後に動いた出力で応答と分かる"
+        );
+
+        t.kill();
+    }
+
     /// The start of a response must be fixed at "the moment execution was submitted."
     ///
     /// If it were "the first position where the screen moved" instead, a
@@ -950,6 +1004,11 @@ pub fn argv_auto_runs(argv: &[String], is_model: bool) -> bool {
 /// Waveform width (number of samples). Advances by one per tick
 pub const ACTIVITY_LEN: usize = 24;
 
+/// How long after a submit its own echo/redraw burst is still expected.
+/// Screen changes later than this are the peer actually producing output —
+/// the secondary "it answered" evidence when the working indicator was missed
+const POST_SUBMIT_ECHO_MS: u64 = 2_000;
+
 pub struct Tab {
     pub title: String,
     /// ID referenced by automation (optional). If unset, the tab name is used to reference it
@@ -1009,6 +1068,11 @@ pub struct Tab {
     /// redrawing into the `[Pasted Content …]` form changes the screen, but
     /// the AI hasn't done anything
     saw_working: AtomicBool,
+    /// When (on the tick clock) the current submit was first observed.
+    /// `u64::MAX` = no submit pending. Latched by the first tick after a
+    /// submit, so "how long after the submit did output still move" can be
+    /// answered on the same clock `last_change_ms` uses
+    submit_tick_ms: AtomicU64,
     /// Hash of the screen content at the moment of execution.
     ///
     /// Using output byte count instead would count cursor blinking or frame
@@ -1266,6 +1330,7 @@ impl Tab {
             submitted_output: AtomicU64::new(0),
             submitted_screen: AtomicU64::new(0),
             saw_working: AtomicBool::new(false),
+            submit_tick_ms: AtomicU64::new(u64::MAX),
             last_resize_ms: AtomicU64::new(0),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
@@ -1315,9 +1380,24 @@ impl Tab {
     /// judgment, and a mere paste redraw alone would count as "answered"
     pub fn answered_since_submit(&self) -> bool {
         if self.detector.shows_working() {
-            // For a peer that shows a working indicator, judge by whether it
-            // appeared. More reliable than whether the screen moved, and not fooled by redraws
-            return self.saw_working.load(Ordering::Relaxed);
+            // For a peer that shows a working indicator, its appearance is
+            // the primary evidence. More reliable than whether the screen
+            // moved, and not fooled by redraws
+            if self.saw_working.load(Ordering::Relaxed) {
+                return true;
+            }
+            // Secondary evidence: output kept moving well after the submit.
+            // The indicator is a UI string that CLIs restyle between
+            // versions, and a short turn can slip between polls; treating
+            // its absence as final turns a real answer into a permanent
+            // "no response" and deadlocks whoever is waiting on it. The
+            // echo of the submitted prompt can't fake this signal — it's a
+            // one-shot burst right at the submit, while an actual answer
+            // streams in afterwards
+            let submit_ms = self.submit_tick_ms.load(Ordering::Relaxed);
+            return submit_ms != u64::MAX
+                && self.last_change_ms > submit_ms.saturating_add(POST_SUBMIT_ECHO_MS)
+                && self.screen_fingerprint() != self.submitted_screen.load(Ordering::Relaxed);
         }
         // For a peer that doesn't show one (plain shell, no profile
         // configured), fall back to the screen change. The baseline is the
@@ -1360,6 +1440,7 @@ impl Tab {
             self.submitted_screen
                 .store(self.screen_fingerprint(), Ordering::Relaxed);
             self.saw_working.store(false, Ordering::Relaxed);
+            self.submit_tick_ms.store(u64::MAX, Ordering::Relaxed);
             self.resized_while_waiting.store(false, Ordering::Relaxed);
             *self.submitted_rows.lock().unwrap() = self.visible_rows();
         }
@@ -1491,6 +1572,12 @@ impl Tab {
     /// (claude / codex / gemini / aider / kimi). None for shells and anything
     /// unrecognized. This is a fact about the tab, not a look — the display
     /// side maps it to a colour.
+    /// The command line this tab was started with ("ssh user@host", "wsl", …).
+    /// Context for the ✨ command suggester: what the terminal connects to
+    pub fn command_line(&self) -> String {
+        self.argv.join(" ")
+    }
+
     pub fn ai_kind(&self) -> Option<String> {
         if let Some(conn) = self.model.as_ref() {
             let p = conn.provider.trim().to_ascii_lowercase();
@@ -1573,6 +1660,14 @@ impl Tab {
             }
         }
         let since = now.saturating_sub(self.last_change_ms);
+        // Stamp the pending submit with this clock (write_bytes can't — it
+        // doesn't see the tick epoch), so "did output move well after the
+        // submit" is answerable in answered_since_submit
+        if self.prompted.load(Ordering::Relaxed)
+            && self.submit_tick_ms.load(Ordering::Relaxed) == u64::MAX
+        {
+            self.submit_tick_ms.store(now, Ordering::Relaxed);
+        }
         let old_state = self.state;
         self.state = self
             .detector
@@ -1815,6 +1910,7 @@ impl Tab {
         self.submitted_screen
             .store(self.screen_fingerprint(), Ordering::Relaxed);
         self.saw_working.store(false, Ordering::Relaxed);
+        self.submit_tick_ms.store(u64::MAX, Ordering::Relaxed);
         self.resized_while_waiting.store(false, Ordering::Relaxed);
         *self.submitted_rows.lock().unwrap() = self.visible_rows();
     }
@@ -2535,6 +2631,49 @@ mod draft_target_tests {
 mod resize_survival_tests {
     use super::{Tab, TabOptions};
     use std::time::{Duration, Instant};
+
+    /// The stock vt100 0.16.2 panicked when a resize stranded a full-width
+    /// character at the row edge (row.rs `clear_wide` indexing past the end,
+    /// screen.rs `text_common` unwrapping a missing continuation cell). The
+    /// vendored patch must survive the whole neighborhood of that state —
+    /// no catch_unwind here on purpose: a panic IS the failure
+    #[test]
+    fn vendored_vt100_survives_resize_with_wide_chars() {
+        let line = "全角テキストの帯あいうえお漢字カナ混在1２３ｗ日本語";
+        for &cols in &[51u16, 50, 34, 33, 21, 7, 3, 2, 1] {
+            let mut p = vt100::Parser::new(30, 80, 200);
+            for _ in 0..35 {
+                p.process(line.as_bytes());
+                p.process(b"\r\n");
+            }
+            // Narrow mid-stream, then keep writing wide chars over the
+            // stranded halves, erase across wide boundaries, and add
+            // combining characters (the zero-width path)
+            p.screen_mut().set_size(30, cols);
+            for row in 1..12u16 {
+                p.process(format!("\x1b[{row};{cols}H").as_bytes());
+                p.process("漢".as_bytes());
+                p.process(b"\x1b[K");
+                p.process(format!("\x1b[{row};1H").as_bytes());
+                p.process("か\u{3099}き\u{3099}".as_bytes());
+                p.process(b"\x1b[1K");
+            }
+            p.process(line.repeat(6).as_bytes());
+            // Insert/delete/erase sequences across wide-char boundaries
+            // (they reach Row::remove / erase / insert / truncate)
+            for row in 1..8u16 {
+                p.process(format!("\x1b[{row};1H漢字カナ").as_bytes());
+                p.process(b"\x1b[3@");
+                p.process(b"\x1b[2P");
+                p.process(b"\x1b[4X");
+                p.process(format!("\x1b[{row};{cols}H\x1b[1P\x1b[2@").as_bytes());
+            }
+            // ...and widen again, over the same content
+            p.screen_mut().set_size(30, 80);
+            p.process(line.as_bytes());
+            let _ = p.screen().contents();
+        }
+    }
 
     fn settle(tab: &Tab, ms: u64) {
         let start = Instant::now();

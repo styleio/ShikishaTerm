@@ -101,8 +101,15 @@ fn rally_record_append(text: &str) -> std::io::Result<()> {
 fn sel_of(v: &Value) -> mlua::Result<crate::browser::Sel> {
     match v {
         Value::String(s) => Ok(crate::browser::Sel::Css(s.to_str()?.to_string())),
+        // A bare number is a digest ref — the friendliest spelling for a
+        // small model: browser_click(BR, 12)
+        Value::Integer(n) => u32::try_from(*n)
+            .map(crate::browser::Sel::Ref)
+            .map_err(|_| mlua::Error::runtime(crate::i18n::t("err.hooks.selector"))),
         Value::Table(t) => {
-            if let Ok(x) = t.get::<String>("xpath") {
+            if let Ok(n) = t.get::<u32>("ref") {
+                Ok(crate::browser::Sel::Ref(n))
+            } else if let Ok(x) = t.get::<String>("xpath") {
                 Ok(crate::browser::Sel::Xpath(x))
             } else if let Ok(x) = t.get::<String>("css") {
                 Ok(crate::browser::Sel::Css(x))
@@ -141,6 +148,43 @@ fn check(what: &str, state: &str, opts: &Option<Table>) -> mlua::Result<String> 
         )));
     }
     Ok(state.to_string())
+}
+
+/// A Lua string literal for `s`, safe for any content (quotes, newlines, \)
+fn lua_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The durable Lua spelling of a selector, for the replay journal.
+/// css/xpath pass through as they were written; a `{ref=N}` is replaced by
+/// the anchor derived from the element it actually touched. None = a ref
+/// with nothing durable to anchor to (the journal notes it instead of lying)
+fn sel_replay(sel: &crate::browser::Sel, anchor: &Option<(String, String)>) -> Option<String> {
+    use crate::browser::Sel;
+    match sel {
+        Sel::Css(s) => Some(lua_str(s)),
+        Sel::Xpath(x) => Some(format!("{{xpath={}}}", lua_str(x))),
+        Sel::Ref(_) => anchor.as_ref().map(|(kind, v)| {
+            if kind == "css" {
+                lua_str(v)
+            } else {
+                format!("{{xpath={}}}", lua_str(v))
+            }
+        }),
+    }
 }
 
 /// Convert browser_fetch's opts (a Lua table) into JSON
@@ -184,15 +228,111 @@ pub fn lint_lua(code: &str) -> Option<String> {
     // this Rust file:line (mlua's default names the chunk after the caller).
     match lua.load(code).set_name("action").into_function() {
         Ok(_) => None,
-        Err(e) => Some(e.to_string()),
+        // A bare expression is accepted at run time (run_scoped compiles it
+        // REPL-style), so it must pass lint too — the two disagreeing would
+        // reject code that actually runs
+        Err(e) => match lua.load(format!("return {code}")).set_name("action").into_function() {
+            Ok(_) => None,
+            Err(_) => Some(e.to_string()),
+        },
     }
 }
 
-fn run_scoped(lua: &mlua::Lua, caps: &Caps, browser: &str, code: &str) -> mlua::Result<Value> {
+/// Render one Lua value for the AI's eyes (the "what came back" trace).
+/// Tables are walked a few levels deep; beyond that, `{…}` says "there was
+/// more" instead of pretending there wasn't
+fn stringify_lua(v: &Value, depth: usize, out: &mut String) {
+    match v {
+        Value::Nil => out.push_str("nil"),
+        Value::Boolean(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Integer(i) => out.push_str(&i.to_string()),
+        Value::Number(n) => out.push_str(&n.to_string()),
+        Value::String(s) => out.push_str(&s.to_string_lossy()),
+        Value::Table(t) => {
+            if depth == 0 {
+                out.push_str("{…}");
+                return;
+            }
+            out.push('{');
+            let mut first = true;
+            let mut count = 0;
+            for pair in t.clone().pairs::<Value, Value>() {
+                let Ok((k, val)) = pair else { continue };
+                if count >= 40 {
+                    out.push_str(", …");
+                    break;
+                }
+                if !first {
+                    out.push_str(", ");
+                }
+                first = false;
+                count += 1;
+                match &k {
+                    // The array part reads best without its indexes
+                    Value::Integer(_) => {}
+                    other => {
+                        stringify_lua(other, 1, out);
+                        out.push('=');
+                    }
+                }
+                stringify_lua(&val, depth - 1, out);
+            }
+            out.push('}');
+        }
+        other => {
+            out.push('<');
+            out.push_str(other.type_name());
+            out.push('>');
+        }
+    }
+}
+
+/// Run AI-authored Lua in the browser sandbox. Returns `(err, out)`:
+/// `err` is the error text (nil on success), `out` is what the code returned,
+/// rendered as text (nil when it returned nothing).
+///
+/// A bare expression is worth its value — `browser_text(BR, "body")` on its
+/// own line should answer, not vanish — so the chunk is first compiled
+/// REPL-style with `return` prepended, falling back to the plain statement
+/// form when that isn't valid Lua
+fn run_scoped(
+    lua: &mlua::Lua,
+    caps: &Caps,
+    browser: &str,
+    code: &str,
+) -> mlua::Result<(Value, Value)> {
     let env = build_sandbox_env(lua, caps, browser)?;
-    match lua.load(code).set_name("ai-lua").set_environment(env).exec() {
-        Ok(()) => Ok(Value::Nil),
-        Err(e) => Ok(Value::String(lua.create_string(e.to_string())?)),
+    let func = lua
+        .load(format!("return {code}"))
+        .set_name("ai-lua")
+        .set_environment(env.clone())
+        .into_function()
+        .or_else(|_| {
+            lua.load(code)
+                .set_name("ai-lua")
+                .set_environment(env)
+                .into_function()
+        });
+    match func.and_then(|f| f.call::<MultiValue>(())) {
+        Ok(vals) => {
+            let mut out = String::new();
+            for (i, v) in vals.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                stringify_lua(v, 3, &mut out);
+            }
+            // A lone `nil` return says nothing worth relaying
+            if out.is_empty() || out == "nil" {
+                Ok((Value::Nil, Value::Nil))
+            } else {
+                Ok((Value::Nil, Value::String(lua.create_string(&out)?)))
+            }
+        }
+        Err(e) => Ok((
+            Value::String(lua.create_string(e.to_string())?),
+            Value::Nil,
+        )),
     }
 }
 
@@ -242,12 +382,21 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             private.unwrap_or(false),
         );
         c.browser_open(&name, &url, prof)
-            .map_err(|e| mlua::Error::runtime(e.to_string()))
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        c.push_replay(format!("browser_open({}, {})", lua_str(&name), lua_str(&url)));
+        Ok(())
     });
     bind!("browser_go", (String, String, Option<String>), |lua_, c, al, (name, what, url)| {
         guard(&name, &al)?;
-        c.browser_go(&name, go_of(&what, url)?)
-            .map_err(|e| mlua::Error::runtime(e.to_string()))
+        c.browser_go(&name, go_of(&what, url.clone())?)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        let mut line = format!("browser_go({}, {}", lua_str(&name), lua_str(&what));
+        if let Some(u) = &url {
+            line.push_str(&format!(", {}", lua_str(u)));
+        }
+        line.push(')');
+        c.push_replay(line);
+        Ok(())
     });
     bind!("browser_find", (String, Value), |lua_, c, al, (name, sel)| {
         guard(&name, &al)?;
@@ -255,19 +404,47 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             .map(|s| s.to_string())
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
+    // Click/fill return two values: the state, and — on the {ref=N} path —
+    // an echo of what was really operated on. A wrong ref number answers
+    // for itself instead of failing silently. Each executed op is also
+    // journaled in its durable spelling for replay.lua (a ref becomes the
+    // anchor of the element it touched; digest never appears in a replay)
     bind!("browser_click", (String, Value, Option<Table>), |lua_, c, al, (name, sel, opts)| {
         guard(&name, &al)?;
-        let st = c
-            .browser_click(&name, &sel_of(&sel)?)
+        let sel = sel_of(&sel)?;
+        let rep = c
+            .browser_click(&name, &sel)
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-        check("browser_click", st, &opts)
+        match sel_replay(&sel, &rep.anchor) {
+            Some(s) => c.push_replay(format!("browser_click({}, {})", lua_str(&name), s)),
+            None => c.push_replay(format!(
+                "-- click ({}): {}",
+                crate::i18n::t("replay.no_anchor"),
+                rep.echo.clone().unwrap_or_default()
+            )),
+        }
+        Ok((check("browser_click", rep.state.as_str(), &opts)?, rep.echo))
     });
     bind!("browser_fill", (String, Value, String, Option<Table>), |lua_, c, al, (name, sel, value, opts)| {
         guard(&name, &al)?;
-        let st = c
-            .browser_fill(&name, &sel_of(&sel)?, &value)
+        let sel = sel_of(&sel)?;
+        let rep = c
+            .browser_fill(&name, &sel, &value)
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-        check("browser_fill", st, &opts)
+        match sel_replay(&sel, &rep.anchor) {
+            Some(s) => c.push_replay(format!(
+                "browser_fill({}, {}, {})",
+                lua_str(&name),
+                s,
+                lua_str(&value)
+            )),
+            None => c.push_replay(format!(
+                "-- fill ({}): {}",
+                crate::i18n::t("replay.no_anchor"),
+                rep.echo.clone().unwrap_or_default()
+            )),
+        }
+        Ok((check("browser_fill", rep.state.as_str(), &opts)?, rep.echo))
     });
     // Press a single named key (enter/tab/escape/…) on the focused element.
     // browser_fill only sets a value; this is how the AI submits a form or
@@ -275,7 +452,9 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
     bind!("browser_press", (String, String), |lua_, c, al, (name, key)| {
         guard(&name, &al)?;
         c.browser_press(&name, &key)
-            .map_err(|e| mlua::Error::runtime(e.to_string()))
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        c.push_replay(format!("browser_press({}, {})", lua_str(&name), lua_str(&key)));
+        Ok(())
     });
     // Fill a field with a secret value. The value is referenced by name and
     // resolved/filled by Rust. The AI never sees the value (only the state
@@ -285,9 +464,22 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
         let value = c
             .secret_value(&secret_key)
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-        c.browser_fill(&name, &sel_of(&sel)?, &value)
-            .map(|s| s.to_string())
-            .map_err(|e| mlua::Error::runtime(e.to_string()))
+        let sel = sel_of(&sel)?;
+        // The echo names only the field (attributes), never its value —
+        // still safe to relay for a secret fill. The journal keeps the key
+        // NAME, exactly like the human recorder does
+        let rep = c
+            .browser_fill(&name, &sel, &value)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        if let Some(s) = sel_replay(&sel, &rep.anchor) {
+            c.push_replay(format!(
+                "browser_fill_secret({}, {}, {})",
+                lua_str(&name),
+                s,
+                lua_str(&secret_key)
+            ));
+        }
+        Ok((rep.state.as_str().to_string(), rep.echo))
     });
     // Set up basic auth (credentials come from an allowlisted secret; the value never reaches the AI)
     bind!("browser_auth", (String, String), |lua_, c, al, (name, secret_key)| {
@@ -306,6 +498,14 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
         guard(&name, &al)?;
         c.browser_html(&name)
             .map(|h| c.redact(&h))
+            .map_err(|e| mlua::Error::runtime(e.to_string()))
+    });
+    // The page distilled to its operable elements, each numbered for
+    // {ref=N} clicks/fills. The intended first move on any new page
+    bind!("browser_digest", String, |lua_, c, al, name| {
+        guard(&name, &al)?;
+        c.browser_digest(&name)
+            .map(|s| c.redact(&s))
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
     bind!("browser_fetch", (String, String, Option<Table>), |lua_, c, al, (name, url, opts)| {
@@ -456,8 +656,9 @@ pub enum Command {
         reason: String,
         origin: usize,
     },
-    /// Notify a registered destination (Slack/Telegram implemented in Phase 4-3; currently log + display only)
-    Notify { dest: String, text: String },
+    /// Notify a destination. `None` = the primary (config's primary_notify,
+    /// or the single configured destination)
+    Notify { dest: Option<String>, text: String },
     /// Restart a tab (recovery from an SSH disconnect or a CLI self-update)
     Restart { target: TabRef },
     Log(String),
@@ -604,6 +805,9 @@ pub struct HookEngine {
     /// Kept so composer-typed Lua (▶ run mode) can enter the same run_scoped
     /// sandbox the rally uses, without threading capabilities through the loop.
     caps: Caps,
+    /// The phone board's URL (with token), pushed in by the main loop.
+    /// None while remote is off
+    remote_url: Rc<RefCell<Option<String>>>,
 }
 
 const HOOK_NAMES: [&str; 5] = ["on_start", "on_question", "on_busy", "on_done", "on_exit"];
@@ -642,8 +846,21 @@ impl HookEngine {
         let current_origin = Rc::new(Cell::new(1usize));
         let states: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
         let outputs: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let remote_url: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
         let shikisha = lua.create_table().map_err(lerr)?;
+        {
+            // Where a phone can reach this app (None while remote is off).
+            // Lets a "human needed" notification carry a tappable way in
+            let u = Rc::clone(&remote_url);
+            shikisha
+                .set(
+                    "remote_url",
+                    lua.create_function(move |_, ()| Ok(u.borrow().clone()))
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
         {
             // Read the current state. Used as a loop's exit condition
             // (the tab.state hook argument is a snapshot at fire time and never changes)
@@ -846,10 +1063,10 @@ impl HookEngine {
                     "browser_click",
                     lua.create_function(
                         move |_, (name, sel, opts): (String, Value, Option<Table>)| {
-                            let st = c
+                            let rep = c
                                 .browser_click(&name, &sel_of(&sel)?)
                                 .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-                            check("browser_click", st, &opts)
+                            Ok((check("browser_click", rep.state.as_str(), &opts)?, rep.echo))
                         },
                     )
                     .map_err(lerr)?,
@@ -863,10 +1080,10 @@ impl HookEngine {
                     "browser_fill",
                     lua.create_function(
                         move |_, (name, sel, value, opts): (String, Value, String, Option<Table>)| {
-                            let st = c
+                            let rep = c
                                 .browser_fill(&name, &sel_of(&sel)?, &value)
                                 .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-                            check("browser_fill", st, &opts)
+                            Ok((check("browser_fill", rep.state.as_str(), &opts)?, rep.echo))
                         },
                     )
                     .map_err(lerr)?,
@@ -886,8 +1103,9 @@ impl HookEngine {
                         let value = c
                             .secret_value(&key)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        // The echo names only the field, never its value
                         c.browser_fill(&name, &sel_of(&sel)?, &value)
-                            .map(|s| s.to_string())
+                            .map(|rep| (rep.state.as_str().to_string(), rep.echo))
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,
@@ -951,6 +1169,23 @@ impl HookEngine {
                             ));
                             Ok(Value::Nil)
                         }
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The page distilled to its operable elements, numbered for
+            // {ref=N} operations. Raises on failure (unlike browser_html:
+            // an automation asking for a digest wants to know why it failed)
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_digest",
+                    lua.create_function(move |_, name: String| {
+                        c.browser_digest(&name)
+                            .map(|s| c.redact(&s))
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,
                 )
@@ -1125,7 +1360,14 @@ impl HookEngine {
             shikisha
                 .set(
                     "notify",
-                    lua.create_function(move |_, (dest, text): (String, String)| {
+                    // notify(text) reaches the primary destination;
+                    // notify(dest, text) names one (the original two-arg
+                    // spelling keeps working unchanged)
+                    lua.create_function(move |_, (a, b): (String, Option<String>)| {
+                        let (dest, text) = match b {
+                            Some(text) => (Some(a), text),
+                            None => (None, a),
+                        };
                         c.borrow_mut().push(Command::Notify { dest, text });
                         Ok(())
                     })
@@ -1360,9 +1602,9 @@ impl HookEngine {
             shikisha
                 .set(
                     "lint",
-                    lua.create_function(|lua, code: String| match lua.load(&code).into_function() {
-                        Ok(_) => Ok(Value::Nil),
-                        Err(e) => Ok(Value::String(lua.create_string(e.to_string())?)),
+                    lua.create_function(|lua, code: String| match lint_lua(&code) {
+                        None => Ok(Value::Nil),
+                        Some(e) => Ok(Value::String(lua.create_string(e)?)),
                     })
                     .map_err(lerr)?,
                 )
@@ -1385,6 +1627,25 @@ impl HookEngine {
                 )
                 .map_err(lerr)?;
         }
+        {
+            // Drain the replay journal: the durable spellings of every op
+            // executed since the last take. The orchestrator appends them to
+            // the run's replay.lua — a script with no digest/ref dependency
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "take_replay",
+                    lua.create_function(move |lua, ()| {
+                        let t = lua.create_table()?;
+                        for (i, line) in c.take_replay().into_iter().enumerate() {
+                            t.set(i + 1, line)?;
+                        }
+                        Ok(t)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
         lua.globals().set("shikisha", shikisha).map_err(lerr)?;
         lua.load(PRELUDE).exec().map_err(lerr)?;
 
@@ -1398,6 +1659,7 @@ impl HookEngine {
             scripts: Vec::new(),
             attach: Attach::default(),
             caps,
+            remote_url,
         })
     }
 
@@ -1405,11 +1667,21 @@ impl HookEngine {
     /// sandbox the rally runs AI-authored code in: browser functions on that
     /// one tab, nothing else. None on success, the error text on failure
     pub fn run_browser_lua(&self, browser: &str, code: &str) -> Option<String> {
-        match run_scoped(&self.lua, &self.caps, browser, code) {
-            Ok(Value::String(s)) => Some(s.to_string_lossy().to_string()),
+        let out = match run_scoped(&self.lua, &self.caps, browser, code) {
+            Ok((Value::String(s), _)) => Some(s.to_string_lossy().to_string()),
             Ok(_) => None,
             Err(e) => Some(e.to_string()),
+        };
+        // The composer shows this error too, but the composer's display is
+        // ephemeral — a failed ▶ run that leaves no trace is undebuggable
+        // after the fact (only the error, never the code's output/values)
+        if let Some(e) = &out {
+            crate::append_hook_log(&format!("run lua error: {e}"));
         }
+        // Composer-run code is already durable Lua in the user's hands —
+        // discard its journal so it never bleeds into a rally's replay.lua
+        let _ = self.caps.take_replay();
+        out
     }
 
     /// Reflect every tab's (identifier, state) on each detection tick
@@ -1421,6 +1693,13 @@ impl HookEngine {
     /// operator can read the AI tab it's driving via shikisha.tab_output.
     pub fn set_outputs(&self, outputs: Vec<(TabKey, String)>) {
         *self.outputs.borrow_mut() = outputs;
+    }
+
+    /// The phone board's URL (token included), or None while remote is off.
+    /// Orchestrators put it into "a human is needed" notifications so the
+    /// person can act from wherever the notification reached them
+    pub fn set_remote_url(&self, url: Option<String>) {
+        *self.remote_url.borrow_mut() = url;
     }
 
     /// Drop any loop waiting on that tab (on exit / restart)
@@ -1638,10 +1917,13 @@ local function protocol(run)
     "  " .. infile,
     shikisha.tf("agent.browser.proto.funcs_header", { br = BR }),
     "    browser_go(\"" .. BR .. "\", \"to\"|\"reload\"|\"back\"|\"forward\", url?)",
+    "    browser_digest(\"" .. BR .. "\")",
     "    browser_click(\"" .. BR .. "\", sel)   browser_fill(\"" .. BR .. "\", sel, value)   browser_press(\"" .. BR .. "\", key)",
     "    browser_fill_secret(\"" .. BR .. "\", sel, " .. shikisha.t("agent.browser.secret_name") .. ")   browser_auth(\"" .. BR .. "\", " .. shikisha.t("agent.browser.secret_name") .. ")",
     "    browser_text(\"" .. BR .. "\", sel)   browser_find(\"" .. BR .. "\", sel)",
     shikisha.t("agent.browser.proto.sel_note"),
+    shikisha.t("agent.browser.proto.digest_note"),
+    shikisha.tf("agent.browser.proto.result_note", { br = BR }),
     shikisha.t("agent.browser.proto.press_note"),
     shikisha.t("agent.browser.proto.human_before") .. humanfile .. shikisha.t("agent.browser.proto.human_after"),
     shikisha.t("agent.browser.proto.done_note"),
@@ -1658,6 +1940,19 @@ end
 local function tx(entry)
   local p = shikisha.get_var("rally_tx")
   if p then shikisha.exchange_append(p, entry) end
+end
+
+-- Cut a string to at most n bytes without splitting a UTF-8 character
+-- (a naive sub() would leave a broken half-character at the cut)
+local function clip(s, n)
+  if #s <= n then return s end
+  local cut = n
+  while cut > 0 do
+    local b = s:byte(cut + 1)
+    if not b or b < 0x80 or b >= 0xC0 then break end
+    cut = cut - 1
+  end
+  return s:sub(1, cut) .. "…"
 end
 
 -- Where to tell the AI to put its next move. A CLI agent writes a file; a
@@ -1704,6 +1999,16 @@ function on_start(tab)
   shikisha.set_var("rally_tx", run .. "/transcript.md")
   shikisha.set_var("rally_nocode", 0)
   reset_budget()
+  -- Start the durable replay fresh: drop journal lines left over from any
+  -- earlier context, and stamp the header
+  shikisha.take_replay()
+  pcall(shikisha.exchange_write, run .. "/replay.lua", shikisha.t("transcript.replay.header") .. "\n")
+  -- Stage the opening digest too, so a task on an already-open page can act
+  -- on move one without spending it on browser_digest
+  local okd, dg = pcall(shikisha.browser_digest, BR)
+  if okd and type(dg) == "string" then
+    pcall(shikisha.exchange_write, run .. "/digest.txt", dg)
+  end
   tx(shikisha.t("transcript.rally.header") .. "\n")
   tx(shikisha.tf("transcript.rally.mode", { br = BR }) .. "\n")
   -- A model brain already carries the operating rules in its system prompt and
@@ -1738,8 +2043,25 @@ function on_done(tab)
   local human = shikisha.exchange_take(run .. "/human.txt")
   if human and #human > 0 then
     tx("\n### " .. shikisha.t("transcript.rally.human_request") .. "\n" .. human .. "\n")
+    -- The person may be away from the machine: ring the primary
+    -- notification, with the phone board's URL when remote is on, so they
+    -- can come and do their part (login, CAPTCHA, …)
+    local note = shikisha.tf("agent.browser.human.notify", { text = human })
+    local url = shikisha.remote_url()
+    if url then note = note .. "\n" .. url end
+    shikisha.notify(note)
     shikisha.show(BR)
-    shikisha.browser_wait(BR, { ask = human, label = shikisha.t("agent.browser.human.label") })
+    -- A notified human needs time to get here — wait up to 30 minutes,
+    -- not the 5-minute default
+    local why = shikisha.browser_wait(BR, {
+      ask = human, label = shikisha.t("agent.browser.human.label"), timeout_ms = 1800000,
+    })
+    if why == "timeout" then
+      tx(shikisha.t("transcript.rally.human_timeout") .. "\n")
+      shikisha.show(ai)
+      shikisha.send_to_tab(ai, shikisha.t("agent.browser.human.timeout") .. "\n" .. next_hint(tab, infile))
+      return
+    end
     tx(shikisha.t("transcript.rally.human_done") .. "\n")
     shikisha.show(ai)
     shikisha.send_to_tab(ai, shikisha.t("agent.browser.human.resumed_before") .. infile .. shikisha.t("agent.browser.human.resumed_after"))
@@ -1766,7 +2088,13 @@ function on_done(tab)
       return
     end
     shikisha.show(BR)
-    local err = shikisha.run_scoped(BR, code)
+    local err, out = shikisha.run_scoped(BR, code)
+    -- Ops that ran before an error still happened; the replay keeps them.
+    -- These are the durable spellings (anchors, not refs) journaled per op
+    local rl = shikisha.take_replay()
+    if rl and #rl > 0 then
+      pcall(shikisha.exchange_append, shikisha.get_var("rally_run") .. "/replay.lua", table.concat(rl, "\n") .. "\n")
+    end
     if err then
       shikisha.show(ai)
       shikisha.send_to_tab(ai, shikisha.t("agent.browser.run.error") .. "\n" .. err .. "\n" .. retry_hint(tab, infile))
@@ -1798,7 +2126,10 @@ function on_done(tab)
     end
     if not v then v = judge(said) end   -- evaluate stops even when settle was off/short
     local body0 = shikisha.browser_text(BR, "body") or ""
-    tx("- " .. shikisha.t("transcript.rally.screen") .. ": " .. body0:sub(1, 400):gsub("%s+", " ") .. "\n")
+    tx("- " .. shikisha.t("transcript.rally.screen") .. ": " .. (clip(body0, 400):gsub("%s+", " ")) .. "\n")
+    if out and #out > 0 then
+      tx("- " .. shikisha.t("transcript.rally.result") .. ": " .. (clip(out, 400):gsub("%s+", " ")) .. "\n")
+    end
     -- The judge (configured stop conditions). Once satisfied, emit an exit code and pause (back to waiting)
     if v then
       tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. (v.outcome == "success" and shikisha.t("agent.verdict.success") or shikisha.t("agent.verdict.fail"))
@@ -1827,27 +2158,61 @@ function on_done(tab)
         return
       end
     end
-    -- Return the screen and prompt for the next move. The full, untruncated screen
-    -- is staged to a file each round: a CLI operator reads it there (no truncation),
-    -- while a model brain — which can't read files — gets it inline (capped).
+    -- Return what the move gave back, plus the screen, and prompt for the
+    -- next move. The full, untruncated screen is staged to a file each round:
+    -- a CLI operator reads it there (no truncation), while a model brain —
+    -- which can't read files — gets it inline (capped). A long return value
+    -- gets the same file treatment (out.txt) so a digest never floods the chat
     shikisha.show(ai)
     local text = shikisha.browser_text(BR, "body") or ""
     local screenfile = run .. "/screen.txt"
     pcall(shikisha.exchange_write, screenfile, text)
+    -- A fresh digest every round, taken after the settle so it reflects the
+    -- page as it now stands. The operator never needs to spend a move on
+    -- browser_digest: the numbered element list is simply always current
+    local okd, dg = pcall(shikisha.browser_digest, BR)
+    if not okd or type(dg) ~= "string" then dg = nil end
+    local digestfile = run .. "/digest.txt"
+    if dg then pcall(shikisha.exchange_write, digestfile, dg) end
+    local outline = nil
+    if out and #out > 0 then
+      if not tab.is_model and #out > 1500 then
+        local outfile = run .. "/out.txt"
+        pcall(shikisha.exchange_write, outfile, out)
+        outline = shikisha.tf("agent.browser.result_file", { file = outfile }) .. "\n" .. clip(out, 700)
+      elseif tab.is_model and #out > 3000 then
+        outline = shikisha.t("agent.browser.result") .. "\n" .. clip(out, 3000) .. shikisha.t("agent.browser.truncated")
+      else
+        outline = shikisha.t("agent.browser.result") .. "\n" .. out
+      end
+    end
+    local msg = {}
+    if outline then msg[#msg + 1] = outline end
     if tab.is_model then
       local inline = text
-      if #inline > 3000 then inline = inline:sub(1, 3000) .. shikisha.t("agent.browser.truncated") end
-      shikisha.send_to_tab(ai, table.concat({
-        shikisha.t("agent.browser.executed_screen"), "----", inline, "----", next_hint(tab, infile),
-      }, "\n"))
+      if #inline > 3000 then inline = clip(inline, 3000) .. shikisha.t("agent.browser.truncated") end
+      msg[#msg + 1] = shikisha.t("agent.browser.executed_screen")
+      msg[#msg + 1] = "----"
+      msg[#msg + 1] = inline
+      msg[#msg + 1] = "----"
+      if dg then
+        -- A model brain can't read files: the digest rides inline (capped)
+        msg[#msg + 1] = shikisha.t("agent.browser.digest_inline")
+        local dgi = dg
+        if #dgi > 3500 then dgi = clip(dgi, 3500) .. shikisha.t("agent.browser.truncated") end
+        msg[#msg + 1] = dgi
+      end
+      msg[#msg + 1] = next_hint(tab, infile)
     else
-      local preview = text:sub(1, 800)
-      if #text > 800 then preview = preview .. " …" end
-      shikisha.send_to_tab(ai, table.concat({
-        shikisha.tf("agent.browser.executed_file", { file = screenfile }),
-        preview, next_hint(tab, infile),
-      }, "\n"))
+      msg[#msg + 1] = shikisha.tf("agent.browser.executed_file", { file = screenfile })
+      msg[#msg + 1] = clip(text, 800)
+      if dg then
+        msg[#msg + 1] = shikisha.tf("agent.browser.digest_file", { file = digestfile })
+        msg[#msg + 1] = clip(dg, 1200)
+      end
+      msg[#msg + 1] = next_hint(tab, infile)
     end
+    shikisha.send_to_tab(ai, table.concat(msg, "\n"))
     return
   end
 
@@ -1873,11 +2238,20 @@ function on_done(tab)
   end
 
   -- CLI no-code: if a human just typed the goal (chain 0), nudge once.
-  -- Otherwise (the AI reported/waited), send nothing and wait for the
-  -- human's next input
   if tab.chain_depth == 0 then
     shikisha.send_to_tab(ai,
       shikisha.t("agent.browser.first_action.before") .. infile .. shikisha.t("agent.browser.first_action.after"))
+    return
+  end
+  -- Mid-rally, a turn with no move is usually the AI narrating ("I wrote
+  -- the move") without actually writing the file this turn — left silent,
+  -- both sides wait on each other forever. Remind a couple of times (the
+  -- counter resets whenever a move actually runs), then go quiet so an AI
+  -- that genuinely finished and reported isn't pestered endlessly
+  local nc = (shikisha.get_var("rally_nocode") or 0) + 1
+  shikisha.set_var("rally_nocode", nc)
+  if nc <= 2 then
+    shikisha.send_to_tab(ai, next_hint(tab, infile))
   end
 end
 "##;
@@ -3143,6 +3517,74 @@ mod tests {
             find("badkey=").contains("Unknown key"),
             "不正なキー名を弾いていない: {:?}",
             find("badkey=")
+        );
+    }
+
+    #[test]
+    fn replay_spelling_is_durable_and_quoted() {
+        use crate::browser::Sel;
+        // Values survive quoting untouched (quotes, backslashes, newlines)
+        assert_eq!(lua_str("a\"b\\c\nd"), "\"a\\\"b\\\\c\\nd\"");
+        // css/xpath pass through as written
+        assert_eq!(sel_replay(&Sel::Css("#x".into()), &None).as_deref(), Some("\"#x\""));
+        assert_eq!(
+            sel_replay(&Sel::Xpath("//a[@href='x']".into()), &None).as_deref(),
+            Some("{xpath=\"//a[@href='x']\"}")
+        );
+        // a ref becomes the anchor derived from the element it touched
+        assert_eq!(
+            sel_replay(&Sel::Ref(3), &Some(("css".into(), "#go".into()))).as_deref(),
+            Some("\"#go\"")
+        );
+        assert_eq!(
+            sel_replay(
+                &Sel::Ref(3),
+                &Some(("xpath".into(), "//button[normalize-space()=\"押す\"]".into()))
+            )
+            .as_deref(),
+            Some("{xpath=\"//button[normalize-space()=\\\"押す\\\"]\"}")
+        );
+        // no durable anchor = nothing to record (the journal notes it instead)
+        assert_eq!(sel_replay(&Sel::Ref(3), &None), None);
+    }
+
+    #[test]
+    fn run_scoped_hands_back_what_the_code_returned() {
+        // The operator relays run_scoped's second value to the AI, so a move
+        // that returns something must produce it — and a bare expression
+        // (REPL-style) must count as returning
+        let mut e = HookEngine::from_source(
+            r##"
+            function on_done(t)
+              local err, out = shikisha.run_scoped("br", "return 1 + 1")
+              shikisha.log("ret=" .. tostring(err) .. "/" .. tostring(out))
+              local err2, out2 = shikisha.run_scoped("br", "('あ') .. ('い')")
+              shikisha.log("expr=" .. tostring(err2) .. "/" .. tostring(out2))
+              local err3, out3 = shikisha.run_scoped("br", "local x = 1")
+              shikisha.log("stmt=" .. tostring(err3) .. "/" .. tostring(out3))
+              local err4, out4 = shikisha.run_scoped("br", "return {1, 'a', k='v'}")
+              shikisha.log("tbl=" .. tostring(err4) .. "/" .. tostring(out4))
+            end
+            "##,
+        )
+        .unwrap();
+        e.fire("on_done", &ctx(1, ""), None);
+        let logs: Vec<String> = e
+            .drain_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Log(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        let find = |k: &str| logs.iter().find(|l| l.starts_with(k)).cloned().unwrap_or_default();
+        assert_eq!(find("ret="), "ret=nil/2", "returnの値が返る");
+        assert_eq!(find("expr="), "expr=nil/あい", "裸の式もREPL式に値になる");
+        assert_eq!(find("stmt="), "stmt=nil/nil", "何も返さない文はout=nil");
+        let tbl = find("tbl=");
+        assert!(
+            tbl.starts_with("tbl=nil/{") && tbl.contains('1') && tbl.contains("k=v"),
+            "テーブルは中身が見える形で文字列化される: {tbl}"
         );
     }
 

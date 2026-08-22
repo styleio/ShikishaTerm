@@ -109,6 +109,12 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // the input injection and quick actions already allowed above.
         Ev::Record { .. } => true,
         Ev::RunLua { .. } => true,
+        // ✨ command suggestion: the reply is a draft the person still has to
+        // send — same reach as typing the command from the phone themselves
+        Ev::Suggest { .. } => true,
+        // 🔍 the environment survey types a fixed read-only probe — the same
+        // reach as the person typing that probe from the phone
+        Ev::Survey => true,
         // Scrolling back through the history is the whole point of monitoring
         // from afar — without it the phone is stuck on the current screen and
         // can't review what was said earlier. It only moves the viewport, never
@@ -166,10 +172,27 @@ pub struct RemoteUi {
     /// The accept thread, joined in shutdown() so the port is truly released
     /// before shutdown() returns
     accept_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The optional password gate (see PwAuth)
+    auth: Arc<PwAuth>,
+}
+
+/// The remote's optional second factor. The URL token alone is convenient
+/// but travels through notification channels in plain text; a password —
+/// entered once per app run on the phone itself — never does. Empty
+/// password = the gate is off (the user's own risk to accept)
+struct PwAuth {
+    password: String,
+    /// Session ids handed to phones that presented the password
+    sessions: Mutex<std::collections::HashSet<String>>,
 }
 
 impl RemoteUi {
-    pub fn start(bind: std::net::Ipv4Addr, port: u16, token: String) -> Result<Self> {
+    pub fn start(
+        bind: std::net::Ipv4Addr,
+        port: u16,
+        token: String,
+        password: String,
+    ) -> Result<Self> {
         let addr = format!("{bind}:{port}");
         let in_use = |e: &(dyn std::error::Error + Send + Sync + 'static)| {
             e.downcast_ref::<std::io::Error>()
@@ -219,6 +242,14 @@ impl RemoteUi {
         let state_clients: StateClients = Arc::new(Mutex::new(Vec::new()));
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
         let settings = Arc::new(Mutex::new(None));
+        // The optional second factor: the password itself (compared in
+        // constant time) and the session ids handed out to phones that
+        // presented it. In memory only — an app restart re-asks, and a
+        // token rotation clears them (cutting sessions must cut everything)
+        let auth = Arc::new(PwAuth {
+            password,
+            sessions: Mutex::new(std::collections::HashSet::new()),
+        });
 
         let server = Arc::new(server);
         let accept_thread = {
@@ -230,12 +261,15 @@ impl RemoteUi {
             let states = Arc::clone(&state_clients);
             let kf = Arc::clone(&keyframe_wanted);
             let settings = Arc::clone(&settings);
+            let auth = Arc::clone(&auth);
             std::thread::spawn(move || {
                 for req in server.incoming_requests() {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
-                    if let Err(e) = handle(req, &token, &snapshot, &tx, &clients, &states, &kf, &settings) {
+                    if let Err(e) =
+                        handle(req, &token, &snapshot, &tx, &clients, &states, &kf, &settings, &auth)
+                    {
                         crate::append_hook_log(&crate::i18n::tp(
                             "err.remote.hook_log",
                             &[("e", &e.to_string())],
@@ -256,6 +290,7 @@ impl RemoteUi {
             state_clients,
             keyframe_wanted,
             settings,
+            auth,
             server: Mutex::new(Some(server)),
             accept_thread: Mutex::new(Some(accept_thread)),
         })
@@ -275,6 +310,8 @@ impl RemoteUi {
     /// until it re-pairs with the new URL. `url` is rebuilt so the pairing QR,
     /// which reads it every frame, shows the new token.
     pub fn rotate_token(&mut self, new: String) {
+        // Cutting sessions must cut password sessions too
+        self.auth.sessions.lock().unwrap().clear();
         *self.token.lock().unwrap() = new.clone();
         self.url = format!("{}/?t={}", self.origin, new);
         self.frame_clients.lock().unwrap().clear();
@@ -374,6 +411,7 @@ fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option
     Ok((body.len() <= max).then_some(body))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle(
     req: tiny_http::Request,
     token: &Arc<Mutex<String>>,
@@ -383,6 +421,7 @@ fn handle(
     state_clients: &StateClients,
     keyframe_wanted: &Arc<AtomicBool>,
     settings: &Arc<Mutex<Option<(String, String)>>>,
+    auth: &Arc<PwAuth>,
 ) -> Result<()> {
     // Snapshot the current token for this request. It can be rotated at runtime
     // (the PC's "disconnect" cuts every existing session by changing the token),
@@ -449,6 +488,44 @@ fn handle(
     // phone reaches the config UI only through here, authenticated by the remote
     // token; the config server itself never faces the network. Handled before the
     // generic gate so its `/api/*` don't collide with the remote's own routes.
+    // The optional password gate on top of the token. A phone that has the
+    // token but hasn't presented the password yet may do exactly one thing:
+    // trade the password for a session cookie at /auth. Everything else
+    // answers 403 with the body "password", which the shell reads as
+    // "prompt the person and try again"
+    let pw_ok = auth.password.is_empty()
+        || auth.sessions.lock().unwrap().contains(&cookie_value(&req, "rp"));
+    if !pw_ok && token_eq(&supplied, &token) {
+        if method == "GET" && path == "/auth" {
+            let given = query_value(req.url(), "p");
+            if token_eq(&given, &auth.password) {
+                let id = crate::random_hex(24);
+                auth.sessions.lock().unwrap().insert(id.clone());
+                let cookie = format!(
+                    "rp={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"
+                );
+                return req
+                    .respond(
+                        Response::from_string("ok")
+                            .with_header(
+                                Header::from_bytes(&b"Set-Cookie"[..], cookie.as_bytes()).unwrap(),
+                            )
+                            .with_header(
+                                Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..])
+                                    .unwrap(),
+                            ),
+                    )
+                    .map_err(Into::into);
+            }
+            return req
+                .respond(Response::from_string("forbidden").with_status_code(403))
+                .map_err(Into::into);
+        }
+        return req
+            .respond(Response::from_string("password").with_status_code(403))
+            .map_err(Into::into);
+    }
+
     if is_settings_path(&path) {
         if !token_eq(&supplied, &token) {
             return req
@@ -469,6 +546,40 @@ fn handle(
         ("GET", "/api/state") => {
             let snap = snapshot.lock().unwrap().clone();
             req.respond(json_response(serde_json::to_value(snap)?))?;
+        }
+        // The latest run's durable replay script (css/xpath anchors, no
+        // digest refs) — the 🎯 panel's download button on the phone.
+        // 404 while no run has recorded anything replayable yet
+        ("GET", "/api/replay") => {
+            let found = crate::exchange::latest_run().and_then(|dir| {
+                let text = std::fs::read_to_string(dir.join("replay.lua")).unwrap_or_default();
+                let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("run").to_string();
+                let live = text
+                    .lines()
+                    .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"));
+                live.then_some((text, name))
+            });
+            match found {
+                Some((text, name)) => {
+                    let cd = format!("attachment; filename=\"shikisha-macro-{name}.lua\"");
+                    let resp = Response::from_string(text)
+                        .with_header(
+                            Header::from_bytes(
+                                &b"Content-Type"[..],
+                                &b"text/plain; charset=utf-8"[..],
+                            )
+                            .unwrap(),
+                        )
+                        .with_header(
+                            Header::from_bytes(&b"Content-Disposition"[..], cd.as_bytes())
+                                .unwrap(),
+                        );
+                    req.respond(resp)?;
+                }
+                None => {
+                    req.respond(Response::from_string("no replay").with_status_code(404))?;
+                }
+            }
         }
         // State push. Same data as /api/state, but sent over a WebSocket the
         // moment it changes (the main loop calls push_state) instead of the
@@ -894,7 +1005,7 @@ mod tests {
     #[test]
     fn rotating_the_token_cuts_the_old_session() {
         let mut ui =
-            RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "old-token-000000".into()).unwrap();
+            RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "old-token-000000".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
         let agent = ureq::Agent::new_with_defaults();
         let status = |r: Result<ureq::http::Response<ureq::Body>, ureq::Error>| match r {
@@ -919,7 +1030,7 @@ mod tests {
     #[test]
     fn shutdown_releases_the_port_for_an_immediate_restart() {
         let ui =
-            RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into()).unwrap();
+            RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let port: u16 = ui
             .origin
             .rsplit(':')
@@ -928,15 +1039,72 @@ mod tests {
             .parse()
             .expect("originにポートが無い");
         ui.shutdown();
-        let again = RemoteUi::start("127.0.0.1".parse().unwrap(), port, "tok123456789012".into())
+        let again = RemoteUi::start("127.0.0.1".parse().unwrap(), port, "tok123456789012".into(), String::new())
             .expect("ポートが解放されていない");
         again.shutdown();
     }
 
     /// Actually starts the server and confirms auth and command delivery
     #[test]
+    fn password_gate_requires_the_second_factor() {
+        // With remote.password set, the URL token alone opens nothing:
+        // data routes say "password" until /auth trades it for a cookie
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "tok123456789012".into(),
+            "aikotoba".into(),
+        )
+        .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let agent = ureq::Agent::new_with_defaults();
+
+        // Token only → refused, with the body that tells the shell to prompt
+        let err = agent.get(&format!("{base}/api/state?t=tok123456789012")).call();
+        match err {
+            Err(ureq::Error::StatusCode(c)) => assert_eq!(c, 403),
+            other => panic!("パスワード未提示で通ってしまう: {other:?}"),
+        }
+
+        // Wrong password → refused
+        match agent.get(&format!("{base}/auth?t=tok123456789012&p=chigau")).call() {
+            Err(ureq::Error::StatusCode(c)) => assert_eq!(c, 403),
+            other => panic!("誤パスワードで通ってしまう: {other:?}"),
+        }
+
+        // Right password → a session cookie, and data routes open with it
+        let resp = agent
+            .get(&format!("{base}/auth?t=tok123456789012&p=aikotoba"))
+            .call()
+            .expect("正しいパスワードが通らない");
+        let cookie = resp
+            .headers()
+            .get("set-cookie")
+            .expect("セッションクッキーが出ない")
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        let ok = agent
+            .get(&format!("{base}/api/state?t=tok123456789012"))
+            .header("Cookie", &cookie)
+            .call()
+            .expect("クッキー提示でも開かない");
+        assert_eq!(ok.status().as_u16(), 200);
+
+        // No token at all stays refused even with the cookie
+        match agent.get(&format!("{base}/api/state")).header("Cookie", &cookie).call() {
+            Err(ureq::Error::StatusCode(c)) => assert_eq!(c, 403, "トークン無しは常に拒否"),
+            other => panic!("トークン無しで通ってしまう: {other:?}"),
+        }
+        ui.shutdown();
+    }
+
+    #[test]
     fn serves_state_and_forwards_commands() {
-        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into()).unwrap();
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
         let agent = ureq::Agent::new_with_defaults();
         let status = |r: Result<ureq::http::Response<ureq::Body>, ureq::Error>| match r {
@@ -1056,7 +1224,7 @@ mod tests {
     /// no backend wired yet answers 503 (never falls through to the shell).
     #[test]
     fn settings_proxy_gates_and_hands_off_a_cookie() {
-        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into()).unwrap();
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
         // A client that does NOT follow redirects, so we can inspect the 302.
         let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -1096,7 +1264,7 @@ mod tests {
         use std::io::{Read, Write};
         use std::net::TcpStream;
 
-        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into()).unwrap();
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let hostport = ui
             .url
             .trim_start_matches("http://")
@@ -1154,7 +1322,7 @@ mod tests {
         use std::io::{Read, Write};
         use std::net::TcpStream;
 
-        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into()).unwrap();
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let hostport = ui
             .url
             .trim_start_matches("http://")

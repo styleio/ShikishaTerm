@@ -21,12 +21,16 @@ pub enum Destination {
 
 pub struct Notifier {
     dests: HashMap<String, Destination>,
+    /// The destination an unnamed `notify(text)` reaches (config's
+    /// primary_notify). With exactly one destination configured, that one
+    /// stands in when no primary was chosen
+    primary: Option<String>,
     /// Sending happens on a separate thread, so it doesn't block the UI.
     tx: mpsc::Sender<(Destination, String)>,
 }
 
 impl Notifier {
-    pub fn new(dests: HashMap<String, Destination>) -> Self {
+    pub fn new(dests: HashMap<String, Destination>, primary: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel::<(Destination, String)>();
         std::thread::spawn(move || {
             while let Ok((dest, text)) = rx.recv() {
@@ -38,7 +42,23 @@ impl Notifier {
                 }
             }
         });
-        Self { dests, tx }
+        Self { dests, primary, tx }
+    }
+
+    /// Send to a named destination, or — with `None` — to the primary.
+    /// The return value is a message for on-screen display
+    pub fn send_opt(&self, name: Option<&str>, text: &str) -> String {
+        let resolved = name
+            .map(str::to_string)
+            .or_else(|| self.primary.clone())
+            .or_else(|| {
+                // A single configured destination is unambiguous
+                (self.dests.len() == 1).then(|| self.dests.keys().next().unwrap().clone())
+            });
+        match resolved {
+            Some(n) => self.send(&n, text),
+            None => crate::i18n::t("err.notify.no_primary"),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -94,8 +114,32 @@ mod tests {
 
     #[test]
     fn unknown_destination_is_reported() {
-        let n = Notifier::new(HashMap::new());
+        let n = Notifier::new(HashMap::new(), None);
         assert!(n.send("slack", "hi").contains("not registered"));
+    }
+
+    #[test]
+    fn unnamed_send_resolves_the_primary() {
+        let two: HashMap<String, Destination> = serde_json::from_str(
+            r#"{"a":{"type":"slack","webhook":"https://example.com/a"},
+                "b":{"type":"slack","webhook":"https://example.com/b"}}"#,
+        )
+        .unwrap();
+        // An explicit primary wins
+        let n = Notifier::new(two.clone(), Some("b".into()));
+        assert!(n.send_opt(None, "hi").contains("NOTIFY[b]"), "明示プライマリへ");
+        // A named destination overrides the primary
+        assert!(n.send_opt(Some("a"), "hi").contains("NOTIFY[a]"), "名指しが勝つ");
+        // No primary + two destinations = ambiguous, refused with guidance
+        let n = Notifier::new(two, None);
+        assert!(!n.send_opt(None, "hi").contains("NOTIFY["), "曖昧なら送らない");
+        // No primary + exactly one destination = unambiguous
+        let one: HashMap<String, Destination> = serde_json::from_str(
+            r#"{"solo":{"type":"slack","webhook":"https://example.com/x"}}"#,
+        )
+        .unwrap();
+        let n = Notifier::new(one, None);
+        assert!(n.send_opt(None, "hi").contains("NOTIFY[solo]"), "1件ならそれがプライマリ");
     }
 
     #[test]

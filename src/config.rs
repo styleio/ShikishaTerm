@@ -49,6 +49,11 @@ pub struct Config {
     /// Recommended to keep tokens separated out in secrets.json (gitignored)
     #[serde(default)]
     pub notify: std::collections::HashMap<String, crate::notify::Destination>,
+    /// The destination `shikisha.notify(text)` reaches when none is named —
+    /// like the default assistant AI, but for notifications. Unset with
+    /// exactly one destination configured, that one serves as the primary
+    #[serde(default)]
+    pub primary_notify: Option<String>,
     /// Load secrets such as notification destinations from a separate file (e.g. "secrets.json")
     #[serde(default)]
     pub secrets: Option<String>,
@@ -169,6 +174,12 @@ pub struct RemoteSpec {
     /// Explicitly allow exposing this outside the private network
     #[serde(default)]
     pub allow_public: bool,
+    /// Optional second factor on top of the URL token. Empty = off (the
+    /// token alone opens the board — the user's own risk to accept). Set,
+    /// the phone must enter it once per app run; notification URLs then
+    /// carry only the token, never this
+    #[serde(default)]
+    pub password: String,
 }
 
 impl Default for RemoteSpec {
@@ -178,6 +189,7 @@ impl Default for RemoteSpec {
             bind: default_bind(),
             port: default_remote_port(),
             allow_public: false,
+            password: String::new(),
         }
     }
 }

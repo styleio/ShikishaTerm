@@ -248,9 +248,10 @@ AIはCLI（claude/codex等）なので、決まった書式で読み書きする
 |---|---|---|
 | `browser_go(name, what, url?)` | – | `what`=`"to"`/`"reload"`/`"back"`/`"forward"`。その場で移動（webviewは作り直さない） |
 | `browser_open(name, url)` | – | タブを開く/差し替え（webviewを作り直す。仕込んだ認証は消える） |
+| `browser_digest(name)` | 文字列 | 操作可能要素の番号つき一覧（A11yツリー＋JSクリッカブル補完。秘密値はマスク） |
 | `browser_find(name, sel)` | `"visible"`/`"off_screen"`/`"not_found"` | 要素の在否 |
-| `browser_click(name, sel, opts?)` | 状態 | クリック。`opts.on_missing="continue"`で無くても進む |
-| `browser_fill(name, sel, value)` | 状態 | 値を入れる |
+| `browser_click(name, sel, opts?)` | 状態, エコー | クリック。`{ref=N}` では2値目に「実際に押した要素」(例: `link 「ヘルプ」`)が返る。`opts.on_missing="continue"`で無くても進む |
+| `browser_fill(name, sel, value)` | 状態, エコー | 値を入れる。`{ref=N}` では2値目にどの欄か(属性由来・値は含まない)が返る |
 | `browser_fill_secret(name, sel, 秘密名)` | 状態 | 秘密の値を入れる（値はAIに渡らない・記録は鍵名だけ） |
 | `browser_text(name, sel)` | 文字列/nil | 要素のテキスト（秘密値はマスク） |
 | `browser_html(name)` | 文字列 | ページ全体のHTML（秘密値はマスク） |
@@ -266,7 +267,7 @@ AIはCLI（claude/codex等）なので、決まった書式で読み書きする
 | `record(text)` / `record_reset()` | 実行Luaを `data/last-rally.lua` に追記／始め直し（貼れば再生） |
 | `set_result(code, reason)` | 終了コードと理由（`data/last-result.json`＋ログ＋UI） |
 | `sleep(ms)` / `wait(tab, 正規表現, ms)` / `browser_wait(name, opts)` | 待機（コルーチンでyield） |
-| `run_scoped(name, code)` | AI製Luaを browser限定サンドボックスで実行。成功=nil / 失敗=エラー文字列 |
+| `run_scoped(name, code)` | AI製Luaを browser限定サンドボックスで実行。返りは `err, out` の2値（成功=`nil`＋返り値の文字列化、失敗=エラー文字列＋`nil`）。裸の式はREPL式に値になる |
 | `send_to_tab(tab, text)` / `get_var` / `set_var` | タブへ送信 / スクリプト間共有変数 |
 
 **サンドボックス（`run_scoped`）で見えるのは browser系＋log だけ**。`os/io/load/require`、
