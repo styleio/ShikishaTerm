@@ -59,10 +59,43 @@ fn main() {
     // ビルドのたびに日時を入れ直す
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=assets/icon.ico");
-    println!("cargo:rerun-if-changed=.git/HEAD");
+    watch_git_head();
     println!("cargo:rerun-if-changed=lang");
     println!("cargo:rerun-if-changed=docs");
     println!("cargo:rerun-if-changed=profiles");
+}
+
+/// コミットし直したらラベルも取り直す。
+///
+/// `.git/HEAD` の中身は "ref: refs/heads/main" のままなので、そこだけを見張って
+/// いるとコミットしても build.rs が再実行されない。結果、古いハッシュと "+" が
+/// 残り続け、「動かしているものが最新かを見分ける」という目的そのものが崩れる。
+/// HEAD が指している先 (refs/heads/main) も一緒に見張る。
+fn watch_git_head() {
+    // worktree / submodule でも正しい場所を指す
+    let Some(git) = run("git", &["rev-parse", "--absolute-git-dir"]) else {
+        return;
+    };
+    let git = std::path::Path::new(&git);
+    println!("cargo:rerun-if-changed={}", git.join("HEAD").display());
+    let Ok(head) = std::fs::read_to_string(git.join("HEAD")) else {
+        return;
+    };
+    // detached HEAD なら HEAD 自体が書き換わるので、これ以上見張るものは無い
+    let Some(r) = head.strip_prefix("ref:") else {
+        return;
+    };
+    let refpath = git.join(r.trim());
+    if refpath.exists() {
+        println!("cargo:rerun-if-changed={}", refpath.display());
+    } else {
+        // 束ねられていると refs/heads/... のファイルは無い。無いパスを見張らせると
+        // 毎回再実行されて増分ビルドが遅くなるので、実在するものだけを渡す
+        let packed = git.join("packed-refs");
+        if packed.exists() {
+            println!("cargo:rerun-if-changed={}", packed.display());
+        }
+    }
 }
 
 /// リポジトリのフォルダを、そのまま exe の隣へ置く。
