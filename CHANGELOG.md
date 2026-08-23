@@ -8,7 +8,86 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-24
+
+### Breaking
+- **Handing work to a tab no longer moves the screen.** `send_to_tab` did two
+  jobs — pass the work, and pull your eyes along with it — and the second one
+  obeyed different rules from `shikisha.show`, which ignored both your setting
+  and the quiet moment after you move the view yourself. During a rally, where
+  the screen switches several times a round, "don't switch on me" was a promise
+  the app did not keep. `show` is now the only thing that moves the view, and it
+  asks first. **Automation that relied on the old behaviour needs a
+  `shikisha.show(tab)` line before its `send_to_tab`** — the built-in
+  orchestrators already have one.
+- **The `follow_ball` setting is now `auto_switch`** ("Auto-switch"), because it
+  no longer follows a ball: it decides whether automation may switch tabs at all.
+  A `follow_ball` left in `config.json` is ignored; the default is on either way.
+- **Browser data moved into the folder the config names.** Every page shares one
+  cookie jar until you say otherwise, and each profile now gets its own — see
+  below. Existing browser logins do not carry over; sign in again once.
+
+### Added
+- **A restart beside the emergency stop.** It relaunches the one tab you are
+  looking at, rather than every exited tab at once. A tab that has already
+  exited (the SSH that dropped) goes on the first press; a live one asks twice,
+  because a stray tap next to the stop button must not take a running
+  conversation with it. Browser panes are included: a page has no reload that
+  can take it back to where it started, and some have no reload at all.
+- **A rally digests the page for you.** Every round stages a numbered list of the
+  operable elements, so an operator never spends a move asking what is on screen.
+  Clicks are anchored to their text rather than to ids that change, waiting for
+  the page to settle is automatic, and the whole run can be downloaded as a
+  replay macro.
+- **The rally can hand a login back to a person.** When a site needs a human —
+  sign-in, CAPTCHA — the run notifies you (carrying the phone's URL when remote
+  is on), waits up to half an hour, and picks up where it left off.
+- **✨ Ask for a shell command in plain words**, and 🔍 an optional one-shot
+  survey of the machine so those suggestions know what is installed. The command
+  arrives as a draft in the composer; you still press Send.
+- **A bookmarkable phone link.** Set a fixed access token and the phone keeps
+  working across restarts without re-reading the QR. Cutting the phone off still
+  cuts it off.
+- **The complete command reference, in both manuals.** Half of what automation
+  can call — 55 commands, `shikisha.show` among them — had never been written
+  down, and those manuals are what the app hands an AI as the specification when
+  it writes automation: a command that is not in them does not exist. Both
+  languages now carry the full list, and a test fails if any command, or anything
+  on the `tab` table, goes missing from either.
+- **`tab.id`** — a hook can finally tell which tab it is on by the automation
+  name that survives a rename, rather than by the display name a person edits or
+  the number that shifts when tabs are reordered.
+
+### Changed
+- **Separate browser profiles are now actually separate.** Each page carried its
+  own data folder and none of them were ever used, so "separate profile" and
+  "private" were settings that did nothing — a private page came back to a site
+  still logged in, and a throwaway one left nothing to throw away. Each gets its
+  own store now, all under the one folder the config names, and a closed private
+  page is erased the moment the browser lets go of it.
+- **The phone shows the sub-input bar on a terminal tab by default**, and the ✏️
+  pen is the way back once you close it.
+- An attachment is saved beside its own tab even when a browser pane sits between
+  them.
+
 ### Fixed
+- **A browser no longer machine-translates the terminal.** Chrome on a phone read
+  the terminal's English output, decided the page was English, and translated it
+  — and since every run of cells is a box sized in columns, text of another
+  length simply piled up on its neighbours. The page now says which language it
+  is and refuses translation outright.
+- **Phone: choosing a folder no longer freezes the app.** The button opened a
+  file dialog on the PC and held the request until someone dismissed it there.
+  Those buttons are left off the phone, and the endpoints behind them answer with
+  a refusal rather than a window nobody can see.
+- **Phone: the composer stays shut once you shut it.** Tapping the terminal
+  summoned it back and erased your ✕ at the same time, so the ✕ meant nothing.
+  The composer also stops the phone keyboard correcting what it is handed: a
+  corrected password is a wrong password.
+- **Phone: the tab bar's + works again.** It sent an intent that becomes a
+  keystroke only the window can carry out, so the button did nothing at all. It
+  now walks to the settings page and asks for the same thing. The hop that trades
+  the URL token for a cookie was also throwing away which screen to open.
 - **A broken `config.json` says so, instead of showing an empty screen.** The
   settings page now names the file, quotes the line, marks the character the
   parser stopped at, and holds Save until it's fixed and reloaded — previously
@@ -28,6 +107,16 @@ once it reaches its first tagged release.
   Save) with the rest moved into the drawer, and long labels, hints and paths
   wrap instead of running off the edge — the page no longer scrolls sideways at
   any width down to 320px. The desktop layout is unchanged.
+- **The terminal survives being resized mid-draw.** Narrowing the window while a
+  full-width character sat on the fold could take the whole app down (vt100
+  0.16.2).
+- **The build stamp follows the commit.** It watched only `.git/HEAD`, whose
+  contents never change when you commit, so the label kept naming the previous
+  commit — defeating the one thing it exists for.
+- A phone access token too short to be a secret now refuses to start rather than
+  quietly falling back to a generated one.
+- The composer's hint fits on one line on a narrow phone, where it used to wrap
+  and have its second line sliced in half.
 
 ## [0.1.2] - 2026-08-21
 
@@ -110,7 +199,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/styleio/ShikishaTerm/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/styleio/ShikishaTerm/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/styleio/ShikishaTerm/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/styleio/ShikishaTerm/releases/tag/v0.1.0
