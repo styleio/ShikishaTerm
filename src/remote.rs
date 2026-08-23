@@ -411,6 +411,28 @@ fn query_value(url: &str, key: &str) -> String {
         .to_string()
 }
 
+/// The caller's query with the token taken out, ready to go back on a URL.
+///
+/// This lands in a Location header, so a parameter carrying anything but plain
+/// query text is dropped rather than escaped: the settings page reads its own
+/// parameters and has no use for the rest, and a response header is no place to
+/// be generous about what it will carry.
+fn carried_query(url: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "-_.~%+=".contains(c);
+    let kept: Vec<&str> = url
+        .split_once('?')
+        .map(|(_, q)| q)
+        .unwrap_or("")
+        .split('&')
+        .filter(|kv| !kv.is_empty() && !kv.starts_with("t=") && kv.chars().all(plain))
+        .collect();
+    if kept.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", kept.join("&"))
+    }
+}
+
 fn json_response(v: serde_json::Value) -> Response<std::io::Cursor<Vec<u8>>> {
     Response::from_string(v.to_string())
         .with_header(
@@ -875,12 +897,16 @@ fn proxy_settings(
     method: &str,
     path: &str,
 ) -> Result<()> {
-    // First hop: swap the URL token for a cookie, then bounce to a clean `/cfg`
-    // so the config credential never lingers in the address bar or history.
+    // First hop: swap the URL token for a cookie, then bounce to a `/cfg` with the
+    // credential gone, so it never lingers in the address bar or history. What the
+    // caller asked to land on rides along — `?section=` / `?addtab=` / `?ret=`
+    // say which screen to open. Dropping them here landed every walk to the
+    // settings on a plain page, which is how the tab bar's + came to do nothing.
     if path == "/cfg" && !query_value(req.url(), "t").is_empty() {
         let cookie = format!("sst={remote_token}; Path=/; HttpOnly; SameSite=Strict");
+        let location = format!("/cfg{}", carried_query(req.url()));
         let resp = Response::empty(302)
-            .with_header(Header::from_bytes(&b"Location"[..], &b"/cfg"[..]).unwrap())
+            .with_header(Header::from_bytes(&b"Location"[..], location.as_bytes()).unwrap())
             .with_header(Header::from_bytes(&b"Set-Cookie"[..], cookie.as_bytes()).unwrap());
         return req.respond(resp).map_err(Into::into);
     }
@@ -1347,6 +1373,30 @@ mod tests {
         ui.shutdown();
         settings.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hop that trades the token for a cookie must not eat the deep-link.
+    ///
+    /// The phone reaches the settings as a page, so "open it already adding a tab"
+    /// travels as `?addtab=`. Bouncing to a bare `/cfg` threw that away and the
+    /// tab bar's + looked broken. The token itself still has to be gone.
+    #[test]
+    fn the_pairing_hop_keeps_which_screen_to_open() {
+        assert_eq!(carried_query("/cfg?t=secret123&addtab=2"), "?addtab=2");
+        assert_eq!(carried_query("/cfg?t=secret123&section=actions&ret=1"), "?section=actions&ret=1");
+        assert_eq!(carried_query("/cfg?t=secret123"), "", "トークンだけなら何も残さない");
+        assert_eq!(carried_query("/cfg"), "");
+        // The result goes into a Location header, so nothing that isn't plain
+        // query text is carried over — dropped outright rather than escaped
+        assert_eq!(carried_query("/cfg?t=a&x=1&bad=a b"), "?x=1");
+        assert_eq!(
+            carried_query("/cfg?t=a&evil=%0d%0aSet-Cookie:%20x"),
+            "",
+            "ヘッダを割りに来る細工は丸ごと落とす"
+        );
+        // Percent-encoded text survives (it is literal text in a header, not a
+        // break), so ordinary encoded values still reach the page
+        assert_eq!(carried_query("/cfg?t=a&section=a%2Db"), "?section=a%2Db");
     }
 
     /// Confirms /ws handshakes and that a JPEG pushed via push_frame arrives

@@ -740,7 +740,7 @@ function drawTabs() {
       spark(t.activity)));
   }
   // A "+" at the end of the list. Opens the settings page already in the "add tab" state
-  nav.append(el("div", {class:"tab addtab", onclick:() => send({kind:"addtab"})},
+  nav.append(el("div", {class:"tab addtab", onclick:addTabHere},
     el("span", {class:"num"}, "+"),
     el("span", {class:"nm"}, T["tui.tab.add"] || "ADD TAB")));
   // The settings gear, pinned to the very bottom of the sidebar. Always visible.
@@ -2116,11 +2116,28 @@ let castTarget = null;
 // board once it's saved. Both optional — the sidebar gear passes neither.
 function openSettings(section, ret) {
   if (typeof REMOTE !== "undefined" && REMOTE) {
-    const q = (section ? "&section=" + encodeURIComponent(section) : "") + (ret ? "&ret=1" : "");
-    location.href = "cfg?t=" + encodeURIComponent(TOKEN) + q;
+    const p = {};
+    if (section) p.section = section;
+    if (ret) p.ret = "1";
+    walkToSettings(p);
   } else {
     send({kind:"opensettings", section: section || null, ret: !!ret});
   }
+}
+// The phone's only way in: hand the token over once (the proxy trades it for a
+// cookie and bounces to a URL without it), carrying which screen to land on.
+function walkToSettings(params) {
+  const q = new URLSearchParams(params).toString();
+  location.href = "cfg?t=" + encodeURIComponent(TOKEN) + (q ? "&" + q : "");
+}
+// The tab bar's +. In the window this becomes Ctrl+B t, which opens the settings
+// as a child WebView already adding a tab to the workspace in view. A phone has
+// no such WebView and no keystroke that could summon one — the intent was simply
+// refused from afar, so the + did nothing at all. It walks to the same page and
+// asks for the same thing instead.
+function addTabHere() {
+  if (typeof REMOTE !== "undefined" && REMOTE) walkToSettings({addtab: (S && S.ws_index) || 0});
+  else send({kind:"addtab"});
 }
 // Fetch the newest run's portable replay (durable anchors, no digest refs).
 // The phone downloads it over HTTP; the window board has no HTTP downloads,
@@ -3372,6 +3389,26 @@ mod tests {
         ] {
             assert!(PAGE.contains(field), "状態の {field} を誰も見ていない");
         }
+    }
+
+    /// The tab bar's + has to work on a phone too.
+    ///
+    /// It used to send the addtab intent on every surface, but that intent turns
+    /// into the keystroke that opens the settings as a child WebView — something
+    /// only the window has. `allowed_from_afar` refused it, so from a phone the +
+    /// did nothing at all, silently. The phone walks to the settings page instead.
+    #[test]
+    fn the_tab_bar_plus_reaches_the_settings_from_a_phone() {
+        assert!(
+            PAGE.contains("walkToSettings({addtab: (S && S.ws_index) || 0})"),
+            "スマホの + が設定ページへ歩いて行かない"
+        );
+        // The window still takes the keystroke path (the WebView is its to open)
+        assert!(PAGE.contains(r#"else send({kind:"addtab"});"#), "窓側の道が消えている");
+        assert!(
+            !PAGE.contains(r#"onclick:() => send({kind:"addtab"})"#),
+            "+ が全surface共通で intent を送る古い配線に戻っている"
+        );
     }
 
     /// The ✕ on the sub-input bar has to stick.
