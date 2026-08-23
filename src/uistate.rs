@@ -142,6 +142,12 @@ pub struct UiState {
     pub scrolled: usize,
     /// Which build this is (lets you confirm you're not looking at a stale executable)
     pub build: String,
+    /// Whether what's being viewed can be put back the way it started: a session
+    /// relaunches its command, a page reopens exactly as it was opened. False on
+    /// the board, and on the app's own screens (settings, results). The screen
+    /// shows its restart button from this rather than working it out again
+    #[serde(default)]
+    pub restartable: bool,
     /// If the current workspace is an AI-vs-AI discussion, the session number
     /// (1-based) of the opening speaker. The dashboard shows a "start the
     /// discussion" card that sends the typed topic there. None = not a discussion.

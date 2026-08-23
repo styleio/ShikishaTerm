@@ -905,6 +905,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         nav: ui.nav.clone(),
         scrolled: ui.scrolled,
         build: format!("build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
+        restartable: ui.restartable,
         discuss_start: ui.discuss_start,
         discuss_start_name: ui.discuss_start_name.clone(),
         // "At rest" = a discussion workspace where every participant's screen
@@ -2188,6 +2189,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
             max_chain,
             now_ms: start.elapsed().as_millis() as u64,
             panes: layout.clone(),
+            // Whether the thing in view can be put back the way it started. A
+            // session always can; a page only if we know how it was opened.
+            // Decided here so the button the screen draws and the keystroke it
+            // stands for can never disagree about where it applies
+            restartable: session_at(&layout, active).is_some()
+                || restartable_page(&layout, active, &caps).is_some(),
             discuss_start,
             discuss_start_name,
         };
@@ -2842,6 +2849,23 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     Ok(()) => i18n::tp("msg.restarted", &[("name", &t.title)]),
                                     Err(e) => i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))]),
                                 });
+                            } else if let Some(name) = restartable_page(&layout, active, &caps) {
+                                // A page has no process to relaunch. Opening it again
+                                // exactly as it was opened is the same act: a fresh
+                                // page object, back at the URL it started on, with
+                                // whatever the page had built up gone. Not yet a fresh
+                                // identity — see `browser_spec` on why the private
+                                // profile isn't reaching WebView2.
+                                flash = Some(match caps
+                                    .browser_spec(&name)
+                                    .ok_or_else(|| anyhow::anyhow!("no spec"))
+                                    .and_then(|(url, profile)| {
+                                        caps.browser_close(&name)?;
+                                        caps.browser_open(&name, &url, profile)
+                                    }) {
+                                    Ok(()) => i18n::tp("msg.restarted", &[("name", &name)]),
+                                    Err(e) => i18n::tp("msg.restart_failed", &[("error", &format!("{e:#}"))]),
+                                });
                             }
                         }
                         // Ctrl+B l toggles the input lock / w workspace list / ? help
@@ -3220,6 +3244,26 @@ const SETTINGS_TAB: &str = "settings";
 /// in the tab strip, and it is reused (re-pointed) on each new result rather
 /// than piling up copies.
 const RESULT_TAB: &str = "result";
+
+/// The page in view, when putting it back the way it started is a thing that
+/// makes sense — otherwise None.
+///
+/// The settings screen and the result view ride in the pane list like any other
+/// page, but they are the app's own furniture: they are opened and closed by the
+/// app, and restarting them means nothing. Anything else placed in the window is
+/// the user's, and `browser_spec` is what says it can be opened again.
+///
+/// One rule, read by both the keystroke and the button the screen draws, so the
+/// button can never appear where the key does nothing.
+fn restartable_page(layout: &[Pane], active: usize, caps: &hooks::Caps) -> Option<String> {
+    let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) else {
+        return None;
+    };
+    if key == SETTINGS_TAB || key == RESULT_TAB {
+        return None;
+    }
+    caps.browser_spec(key).map(|_| key.clone())
+}
 
 /// The screen number (1-based) to switch to for a placed local page (settings
 /// or result). If already open, its own slot; otherwise the slot right after
@@ -5089,6 +5133,9 @@ fn handle_copy_key(
 struct Ui {
     /// First-ever run, before config exists (shows onboarding on INDEX)
     first_run: bool,
+    /// Whether what's in view can be put back the way it started (see
+    /// `restartable_page`). Drives the restart button beside the stop button
+    restartable: bool,
     active: usize,
     auto: Option<bool>,
     ws_names: Vec<String>,
@@ -5391,6 +5438,35 @@ mod tests {
         let Event::Key(k) = &evs[1] else { panic!("本体が打鍵でない") };
         assert_eq!(k.code, KeyCode::Char('w'));
         assert!(k.modifiers.is_empty());
+    }
+
+    /// Which page the restart applies to.
+    ///
+    /// A page has no process, so "put it back the way it started" is only possible
+    /// where we recorded how it was opened. The settings screen and the result
+    /// view ride in the pane list like any other page, but they are the app's own
+    /// furniture — restarting them means nothing, so they are refused by name.
+    #[test]
+    fn the_apps_own_screens_are_not_restartable_pages() {
+        let caps: crate::hooks::Caps = std::rc::Rc::new(crate::caps::Capabilities::new(
+            Default::default(),
+            std::path::PathBuf::from("."),
+            std::collections::HashMap::new(),
+        ));
+        let page = |k: &str| Pane::Browser { key: k.into(), name: k.into() };
+        let layout = vec![
+            page(SETTINGS_TAB),
+            page(RESULT_TAB),
+            page("shop"),
+            Pane::Session(0),
+        ];
+        // active is 1-based over the panes
+        assert_eq!(restartable_page(&layout, 1, &caps), None, "設定画面は対象外");
+        assert_eq!(restartable_page(&layout, 2, &caps), None, "実行結果は対象外");
+        // A user's page only qualifies once we know how it was opened
+        assert_eq!(restartable_page(&layout, 3, &caps), None, "開き方を知らないうちは対象外");
+        assert_eq!(restartable_page(&layout, 4, &caps), None, "セッションはここではなく session_mut の担当");
+        assert_eq!(restartable_page(&layout, 0, &caps), None, "盤面(INDEX)には戻す先が無い");
     }
 
     /// The status bar's restart button must land on the same keystroke a person

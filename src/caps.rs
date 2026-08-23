@@ -165,6 +165,13 @@ pub struct Capabilities {
     /// Pages placed in the window (owning workspace, display name).
     /// A Vec so the placement order is preserved
     hosted: std::cell::RefCell<Vec<(usize, String)>>,
+    /// How each placed page was opened (its URL and where its data is stored),
+    /// keyed the same way as everything else here.
+    ///
+    /// A page has no process to relaunch, so "put it back the way it started" has
+    /// to be reconstructed — and only whoever opened it knows what that was. Kept
+    /// past the close so an open can be undone and redone (see `browser_spec`)
+    opened: std::cell::RefCell<HashMap<String, (String, crate::browser::BrowserProfile)>>,
     /// The workspace currently being viewed. Names are only meaningful within it
     ws: std::cell::Cell<usize>,
     /// Which page is currently shown in which area. Skipped if unchanged
@@ -221,6 +228,7 @@ impl Capabilities {
             host: std::cell::RefCell::new(None),
             area: std::cell::Cell::new((0, 0, 0, 0)),
             hosted: std::cell::RefCell::new(Vec::new()),
+            opened: std::cell::RefCell::new(HashMap::new()),
             ws: std::cell::Cell::new(0),
             shown: std::cell::RefCell::new((None, (0, 0, 0, 0))),
             nav: std::cell::RefCell::new(HashMap::new()),
@@ -474,6 +482,10 @@ impl Capabilities {
             .map(std::rc::Rc::clone)
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.caps.no_host_window")))?;
         let ws = self.ws.get();
+        self.opened.borrow_mut().insert(
+            Self::key(ws, name),
+            (url.to_string(), profile.clone()),
+        );
         host.open_child(&Self::key(ws, name), url, self.area.get(), profile)?;
         let mut hosted = self.hosted.borrow_mut();
         if !hosted.iter().any(|(w, x)| *w == ws && x == name) {
@@ -486,6 +498,20 @@ impl Capabilities {
             &[("name", name), ("url", url)],
         ));
         Ok(())
+    }
+
+    /// What this page was opened with: its URL and its data store.
+    ///
+    /// Kept so an open can be repeated — closing and opening again with the very
+    /// same spec is how a page gets put back the way it started.
+    ///
+    /// Note what this does NOT currently buy: a private (throwaway) page does not
+    /// come back as a stranger, because the profile isn't reaching WebView2 at all
+    /// yet. `WEBVIEW2_USER_DATA_FOLDER` is set once for the whole process, so every
+    /// page shares one cookie jar and the per-profile folders sit empty. Until that
+    /// is untangled, reopening gets a fresh page, not a fresh identity.
+    pub fn browser_spec(&self, name: &str) -> Option<(String, crate::browser::BrowserProfile)> {
+        self.opened.borrow().get(&Self::key(self.ws.get(), name)).cloned()
     }
 
     /// Names of pages placed inside the window (in placement order).

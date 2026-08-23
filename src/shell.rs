@@ -987,13 +987,17 @@ let restartArmed = 0;
 // The restart button beside the stop button: relaunch the tab being viewed.
 // Sends the intent that Ctrl+B r stands for, so there is one restart in the app.
 //
-// Shown only on a terminal tab - the board has no single tab to restart, and a
-// browser pane has its own reload. A tab that has already exited (the SSH that
-// dropped) holds nothing to lose, so it goes on the first press. A live one asks
-// twice: this sits next to the emergency stop, and a stray tap must not take a
-// running conversation down with it. The arming lapses on its own.
+// Where it applies is the app's call, carried in the state (`restartable`): a
+// session relaunches its command, a page reopens exactly as it was opened (back
+// to its starting URL, with everything the page had built up gone). The board
+// and the app's own screens have nothing to put back.
+//
+// A tab that has already exited (the SSH that dropped) holds nothing to lose, so
+// it goes on the first press. A live one asks twice: this sits next to the
+// emergency stop, and a stray tap must not take a running conversation — or a
+// filled-in form — down with it. The arming lapses on its own.
 function restartBtn() {
-  if (!onTerminal()) { restartArmed = 0; return null; }
+  if (!(S && S.restartable)) { restartArmed = 0; return null; }
   const t = S.tabs.find(x => x.index === S.active);
   const armed = Date.now() < restartArmed;
   return el("span", {id:"restart", class: armed ? "armed" : "",
@@ -3389,6 +3393,25 @@ mod tests {
         ] {
             assert!(PAGE.contains(field), "状態の {field} を誰も見ていない");
         }
+    }
+
+    /// Where the restart button appears is the app's call, not the screen's.
+    ///
+    /// It first showed only on terminal tabs, on the reasoning that a page has its
+    /// own reload — but a reload cannot take a page back to where it started, and
+    /// some panes have no reload wired at all. The app now says which panes can be
+    /// put back (`restartable`), and the screen must read that rather than working
+    /// it out again and disagreeing.
+    #[test]
+    fn the_restart_button_follows_what_the_app_says() {
+        assert!(
+            PAGE.contains("if (!(S && S.restartable)) { restartArmed = 0; return null; }"),
+            "再起動ボタンが本体の判断を読んでいない"
+        );
+        assert!(
+            !PAGE.contains("if (!onTerminal()) { restartArmed = 0; return null; }"),
+            "画面側が独自に判断する古い配線に戻っている"
+        );
     }
 
     /// The tab bar's + has to work on a phone too.
