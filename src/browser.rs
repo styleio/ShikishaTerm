@@ -1080,14 +1080,24 @@ impl BrowserProfile {
     }
 }
 
-/// Where browser profiles live. WebView2's data (SQLite, cache) is heavy
-/// and clashes with Drive sync, so it goes under %LOCALAPPDATA%, same as
-/// exchange (not next to the app binary)
+/// Where browser data lives — every last byte of it, under the one folder the
+/// config names (`browser_data`). WebView2's store is heavy SQLite and cache, so
+/// the default keeps it out of a Drive-synced folder.
+///
+/// One root matters more than it looks: each page is handed its own folder under
+/// here, and that folder is the ONLY thing that separates one page's cookies from
+/// another's. Point two pages at the same folder and they are the same visitor.
 fn profiles_root() -> std::path::PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("ShikishaTerm").join("browser-profiles")
+    crate::config::browser_data_dir()
+}
+
+/// The window's own shell page (tab bar, board, terminal). It is our HTML, not
+/// the web, so it shares nothing with the pages placed inside it — and it still
+/// needs a folder of its own, or WebView2 drops one beside the exe
+pub fn shell_data_dir() -> std::path::PathBuf {
+    let dir = profiles_root().join("shell");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 /// Turn a profile name into a safe folder name (strips path separators and `..`). Empty becomes "default"
@@ -1114,10 +1124,29 @@ fn profile_dir(p: &BrowserProfile) -> std::path::PathBuf {
         let n = PRIVATE_SEQ.fetch_add(1, Ordering::Relaxed);
         profiles_root().join("_private").join(format!("{ms:013}-{n:04}"))
     } else {
-        profiles_root().join(sanitize_profile(&p.name))
+        profiles_root().join("profiles").join(sanitize_profile(&p.name))
     };
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// Delete a closed private page's folder as soon as WebView2 lets go of it.
+///
+/// "Vanishes on close" is the whole promise of private mode, and the folder now
+/// holds real cookies — so it can't be left lying about until the next launch.
+/// WebView2 keeps its files locked for a moment after the view is gone, and the
+/// window's own thread must not sit and wait (it pumps every message the window
+/// gets), so the waiting happens off to the side. Startup's sweep is still the
+/// backstop for anything this misses — a kill, a crash, a stubborn lock.
+fn erase_when_released(dir: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        for _ in 0..20 {
+            if std::fs::remove_dir_all(&dir).is_ok() || !dir.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    });
 }
 
 /// At startup, sweep away any private areas left behind by a previous
@@ -1125,6 +1154,31 @@ fn profile_dir(p: &BrowserProfile) -> std::path::PathBuf {
 /// anything still there is garbage
 pub fn sweep_private() {
     let _ = std::fs::remove_dir_all(profiles_root().join("_private"));
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    /// Two pages are the same visitor exactly when they are handed the same
+    /// folder. Nothing else separates them, so this is worth pinning down.
+    #[test]
+    fn every_profile_gets_its_own_folder() {
+        let a = profile_dir(&BrowserProfile::new("work", false));
+        let b = profile_dir(&BrowserProfile::new("home", false));
+        let same = profile_dir(&BrowserProfile::new("work", false));
+        assert_ne!(a, b, "別プロファイルが同じ入れ物を使っている");
+        assert_eq!(a, same, "同じ名前なら同じ入れ物 (ログインが残る)");
+        // Private is a fresh area EVERY time, which is what makes reopening one a
+        // reset rather than a reload — the site meets someone it has never seen
+        let p1 = profile_dir(&BrowserProfile::new("", true));
+        let p2 = profile_dir(&BrowserProfile::new("", true));
+        assert_ne!(p1, p2, "プライベートが同じ入れ物を使い回している");
+        assert!(p1.starts_with(profiles_root().join("_private")), "掃除の対象から外れている: {p1:?}");
+        // The shell is not one of the profiles, and never collides with a named one
+        assert_ne!(shell_data_dir(), a);
+        assert_ne!(shell_data_dir(), profile_dir(&BrowserProfile::shared_default()));
+    }
 }
 
 impl Browser {
@@ -2464,7 +2518,11 @@ fn run_window(
         .build(&ev_loop)?;
 
     let ipc = ev_tx.clone();
-    let webview = WebViewBuilder::new()
+    // The shell gets an explicit folder for the same reason the pages do: without
+    // one, WebView2 writes "<exe>.WebView2" next to the binary — into the folder
+    // that is meant to hold nothing but the exe
+    let mut shell_ctx = WebContext::new(Some(shell_data_dir()));
+    let webview = WebViewBuilder::new_with_web_context(&mut shell_ctx)
         .with_url(url)
         .with_initialization_script(INIT_JS)
         .with_ipc_handler(move |req| {
@@ -2773,7 +2831,7 @@ fn run_window(
                     // (anything missed gets swept up by sweep_private at startup)
                     if let Some(dir) = ephemeral_dirs.remove(&name) {
                         web_ctxs.remove(&dir);
-                        let _ = std::fs::remove_dir_all(&dir);
+                        erase_when_released(dir);
                     }
                 }
                 Cmd::Focus { to } => {

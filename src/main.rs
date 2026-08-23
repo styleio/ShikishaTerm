@@ -99,13 +99,11 @@ fn main() -> Result<()> {
     // disappears when closed, so if anything is left from a previous abnormal exit, it's
     // all garbage.
     browser::sweep_private();
-    // Decide where WebView2's user data (cookies, cache, etc.) lives, based on config.
-    // Default is local (%LOCALAPPDATA%) — putting it in a Drive-synced folder would cause
-    // the cache to sync endlessly and trigger notifications/conflicts. This must be set
-    // before the first WebView is created.
-    unsafe {
-        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", config::browser_data_dir());
-    }
+    // Where WebView2's user data (cookies, cache) lives is decided per WebView, from
+    // the folder config names — see browser::profiles_root. It is NOT set process-wide
+    // here: WEBVIEW2_USER_DATA_FOLDER applies to every WebView at once, which quietly
+    // undid the whole point of per-page profiles. Every tab shared one cookie jar, so
+    // "separate profile" and "private" were settings that did nothing.
     // Decide the display language (config, then OS; falls back to English if untranslated)
     i18n::init(
         config::load().and_then(|c| c.language).as_deref(),
