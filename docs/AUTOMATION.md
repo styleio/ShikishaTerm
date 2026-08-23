@@ -55,6 +55,8 @@ shikisha.send_to_tab(2, "Please review this code:\n" .. tab.output)
 | `tab.profile` | Name of the profile in effect |
 | `tab.chain_depth` | How many times this was handed on automatically. **0 means a human started it** |
 | `tab.locked` | Whether input is locked |
+| `tab.is_model` | Whether this tab talks to a model over an API rather than running a CLI |
+| `tab.reply` | A model tab's reply, exactly as it came back (only on such a tab). `tab.output` is the same text as the screen drew it, wrapped |
 
 Only `on_question.lua` gets a second variable, `screen`, holding the whole screen text.
 
@@ -239,10 +241,23 @@ recorded in `logs/hooks.log` so a short answer is not a mystery.
 
 ### Watching it happen
 
-The view follows the ball: when one tab hands work to another, the screen switches to
-whichever tab was just given it. Turn it off in the general settings if you would rather
-stay put. It holds off for a few seconds after you move around yourself, so it will not
-pull you away from something you are reading.
+Handing work to a tab does not move the screen. Say so when you want to be watched:
+
+```lua
+shikisha.show("Review")             -- put this tab on screen
+shikisha.send_to_tab("Review", msg) -- ...and hand it the work
+```
+
+Two lines, in that order, and nothing moves behind your back. `shikisha.show(0)` goes
+back to the board.
+
+The person always outranks the script. `show` does nothing if they turned **Auto-switch**
+off in the general settings, if they moved the view themselves in the last few seconds,
+or while the settings screen is open — you are never pulled away from something you are
+reading.
+
+The ball still flies on the board whether or not the screen follows it: it shows who is
+holding the work, which is not the same question as where you are looking.
 
 ---
 
@@ -529,3 +544,99 @@ Every file and network operation is recorded in `logs/hooks.log`.
   Write `%d`, not `\d`
 - **When you want to do nothing, write `return`** and it stops right there
 - If you get lost, sprinkle `shikisha.log()` and read `logs/hooks.log`
+
+---
+
+## 8. Every command
+
+Everything automation can call, in one place. The sections above teach the common
+ones; this is the complete list.
+
+### Tabs and turns
+
+| Command | Description |
+|---|---|
+| `shikisha.send_to_tab(tab, "text")` | **Give a tab an instruction and run it.** Works on this tab too (chain +1) |
+| `shikisha.send(tab, "text")` | Raw keystrokes (newline is `\r`). For answering a prompt, not for instructing |
+| `shikisha.draft_to_tab(tab, "text")` | Leave the text in the tab's input box **without** running it — a person finishes and sends |
+| `shikisha.state(tab)` | The state right now: `WAIT` / `BUSY` / `DONE` / `ASK` / `EXIT` |
+| `shikisha.wait_state(tab, "DONE", ms)` | Wait until it reaches that state; `true` if it did |
+| `shikisha.tab_output(tab)` | Another tab's latest reply (`""` if there is none yet) |
+| `shikisha.restart(tab)` | Restart that tab |
+
+### The screen
+
+| Command | Description |
+|---|---|
+| `shikisha.show(tab)` | Put that tab on screen. `0` is the board. Ignored if the person turned Auto-switch off, just moved the view themselves, or is in the settings |
+| `shikisha.open_result(run)` | Open that run's transcript as a result page and go to it |
+
+### Waiting and time
+
+| Command | Description |
+|---|---|
+| `shikisha.wait(tab, "pattern", ms)` | Wait until the text appears on that tab's screen; `true` if it did |
+| `shikisha.sleep(ms)` | Wait (other tabs keep running) |
+| `shikisha.now("%Y-%m-%d")` | The local date/time, formatted. Sorts chronologically by default — good in file names |
+| `shikisha.epoch_ms()` | Milliseconds since the epoch, as a number, for measuring elapsed time |
+
+### Remembering, logging, telling someone
+
+| Command | Description |
+|---|---|
+| `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared within the workspace |
+| `shikisha.log("text")` | Write a line to `logs/hooks.log` |
+| `shikisha.notify("text")` | Notify Slack / Telegram (only targets you configured) |
+| `shikisha.remote_url()` | The URL a phone can reach this app on, or `nil` while remote is off. Put it in a notification so "come and help" is one tap away |
+| `shikisha.t("key")` / `shikisha.tf("key", {name="..."})` | Look up a translated string (`tf` also substitutes `{name}`). Used by the built-in orchestrators so they speak the app's language |
+
+### Browsing
+
+A page is addressed by the id you gave it. See "Driving a browser" above.
+
+| Command | Description |
+|---|---|
+| `shikisha.browser_open(id, url, profile, private)` | Open a page. `profile` names its cookie store; `private` makes a throwaway one |
+| `shikisha.browser_close(id)` | Close it |
+| `shikisha.browser_go(id, "back"/"forward"/"reload"/"to", url)` | Navigate |
+| `shikisha.browser_nav(id, {...})` / `shikisha.browser_unnav(id)` | Show / hide back-forward-reload-address above the page |
+| `shikisha.browser_find(id, sel)` | Is it there? `"visible"` / `"hidden"` / `"missing"` |
+| `shikisha.browser_click(id, sel)` | Click it |
+| `shikisha.browser_fill(id, sel, "text")` | Type into it. **Does not submit** — follow with `browser_press` |
+| `shikisha.browser_fill_secret(id, sel, "KEY")` | Fill from a registered secret. The value never reaches the script |
+| `shikisha.browser_press(id, "enter")` | Press a key on the page |
+| `shikisha.browser_text(id, sel)` | The visible text |
+| `shikisha.browser_html(id)` | The whole document |
+| `shikisha.browser_digest(id)` | The operable elements, numbered — what to read before deciding a move |
+| `shikisha.browser_fetch(id, url, opts)` | Request from inside the page (keeps its cookies). Returns `{status, ok, url, headers, body}` |
+| `shikisha.browser_auth(id, "KEY")` | Answer basic-auth from a registered secret |
+| `shikisha.browser_ask(id, "text", "label")` | Put a banner with a button along the bottom of the page |
+| `shikisha.browser_pressed(id)` | Has it been pressed? |
+| `shikisha.browser_unask(id)` | Take the banner away |
+| `shikisha.browser_wait(id, {ask=..., selector=..., timeout_ms=...})` | Wait for whichever comes first. Returns `"selector"` / `"button"` / `"timeout"` |
+
+### Handing a run between participants
+
+How the rally works: files in and out, plus a judge. You can build your own the same way.
+
+| Command | Description |
+|---|---|
+| `shikisha.exchange_new()` | Make a folder for this run and return its path |
+| `shikisha.exchange_write(path, "text")` | Write a file (overwrites) |
+| `shikisha.exchange_append(path, "text")` | Append to one |
+| `shikisha.exchange_take(path)` | Read it, delete it, return it. `nil` if absent — this is the hand-over |
+| `shikisha.lint(code)` | Compile-check Lua without running it. An error string, or `nil` if sound |
+| `shikisha.run_scoped(id, code)` | Run AI-written Lua against one page, in a jail: no files, no network, no other tabs. Returns `err, out` |
+| `shikisha.record(text)` / `shikisha.record_reset()` | Keep a pasteable record of the run |
+| `shikisha.take_replay()` | Drain the replay journal — the durable spelling of every operation since the last drain |
+| `shikisha.set_result(code, "reason")` | The run's verdict. Written to `data/last-result.json` and shown on screen |
+
+### Files and the network
+
+Off unless you register a gateway — see section 6.
+
+| Command | Description |
+|---|---|
+| `shikisha.read_file(name, rel)` / `shikisha.write_file(name, rel, data)` | Through a registered file gateway |
+| `shikisha.http(name, body)` | Through a registered HTTP gateway |
+| `shikisha.read_path(p)` / `shikisha.write_path(p, data)` / `shikisha.http_raw(url, body)` | Raw path / raw URL. Always fails unless `allow_dirs` / `allow_hosts` says otherwise |

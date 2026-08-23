@@ -1980,6 +1980,15 @@ local function touches_send(code)
     or code:find("browser_fill_secret", 1, true) ~= nil
 end
 
+-- Hand the turn back to the AI, with the screen on it. These two go together on
+-- every path here: the AI is about to work and watching it is the whole point.
+-- Passing work no longer moves the screen by itself, so asking for it is the job
+-- of whoever wants to be watched
+local function back_to_ai(ai, msg)
+  shikisha.show(ai)
+  shikisha.send_to_tab(ai, msg)
+end
+
 -- The brake (CONFIRM). Before a move runs, optionally hold for a person to approve
 -- it via a button on the page. Returns true to proceed, false if it wasn't approved.
 local function brake_ok(code)
@@ -2058,13 +2067,11 @@ function on_done(tab)
     })
     if why == "timeout" then
       tx(shikisha.t("transcript.rally.human_timeout") .. "\n")
-      shikisha.show(ai)
-      shikisha.send_to_tab(ai, shikisha.t("agent.browser.human.timeout") .. "\n" .. next_hint(tab, infile))
+      back_to_ai(ai, shikisha.t("agent.browser.human.timeout") .. "\n" .. next_hint(tab, infile))
       return
     end
     tx(shikisha.t("transcript.rally.human_done") .. "\n")
-    shikisha.show(ai)
-    shikisha.send_to_tab(ai, shikisha.t("agent.browser.human.resumed_before") .. infile .. shikisha.t("agent.browser.human.resumed_after"))
+    back_to_ai(ai, shikisha.t("agent.browser.human.resumed_before") .. infile .. shikisha.t("agent.browser.human.resumed_after"))
     return
   end
 
@@ -2078,13 +2085,12 @@ function on_done(tab)
   if code and #code > 0 then
     local lint = shikisha.lint(code)
     if lint then
-      shikisha.send_to_tab(ai, shikisha.t("agent.browser.lint.error") .. "\n" .. lint .. "\n" .. fix_hint(tab, infile))
+      back_to_ai(ai, shikisha.t("agent.browser.lint.error") .. "\n" .. lint .. "\n" .. fix_hint(tab, infile))
       return
     end
     -- Brake: optionally hold for a person to approve this move before it runs.
     if not brake_ok(code) then
-      shikisha.show(ai)
-      shikisha.send_to_tab(ai, shikisha.t("agent.brake.declined") .. "\n" .. next_hint(tab, infile))
+      back_to_ai(ai, shikisha.t("agent.brake.declined") .. "\n" .. next_hint(tab, infile))
       return
     end
     shikisha.show(BR)
@@ -2096,8 +2102,7 @@ function on_done(tab)
       pcall(shikisha.exchange_append, shikisha.get_var("rally_run") .. "/replay.lua", table.concat(rl, "\n") .. "\n")
     end
     if err then
-      shikisha.show(ai)
-      shikisha.send_to_tab(ai, shikisha.t("agent.browser.run.error") .. "\n" .. err .. "\n" .. retry_hint(tab, infile))
+      back_to_ai(ai, shikisha.t("agent.browser.run.error") .. "\n" .. err .. "\n" .. retry_hint(tab, infile))
       return
     end
     shikisha.exchange_append(shikisha.get_var("rally_record"), code)
@@ -2153,8 +2158,7 @@ function on_done(tab)
       if ON_LIMIT == "continue" then
         reset_budget()
       else
-        shikisha.show(ai)
-        shikisha.send_to_tab(ai, shikisha.t("agent.browser.safety_net"))
+        back_to_ai(ai, shikisha.t("agent.browser.safety_net"))
         return
       end
     end
@@ -2230,16 +2234,16 @@ function on_done(tab)
     local nc = (shikisha.get_var("rally_nocode") or 0) + 1
     shikisha.set_var("rally_nocode", nc)
     if nc >= 3 then
-      shikisha.send_to_tab(ai, shikisha.t("agent.browser.model.stuck"))
+      back_to_ai(ai, shikisha.t("agent.browser.model.stuck"))
       return
     end
-    shikisha.send_to_tab(ai, shikisha.t("agent.browser.model.remind"))
+    back_to_ai(ai, shikisha.t("agent.browser.model.remind"))
     return
   end
 
   -- CLI no-code: if a human just typed the goal (chain 0), nudge once.
   if tab.chain_depth == 0 then
-    shikisha.send_to_tab(ai,
+    back_to_ai(ai,
       shikisha.t("agent.browser.first_action.before") .. infile .. shikisha.t("agent.browser.first_action.after"))
     return
   end
@@ -2251,7 +2255,7 @@ function on_done(tab)
   local nc = (shikisha.get_var("rally_nocode") or 0) + 1
   shikisha.set_var("rally_nocode", nc)
   if nc <= 2 then
-    shikisha.send_to_tab(ai, next_hint(tab, infile))
+    back_to_ai(ai, next_hint(tab, infile))
   end
 end
 "##;
@@ -2293,6 +2297,15 @@ local function reset_budget()
   shikisha.set_var("op_t0", shikisha.epoch_ms())
   shikisha.set_var("op_tok", 0)
 end
+-- Hand the turn back to the AI, with the screen on it. These two go together on
+-- every path here: the AI is about to work and watching it is the whole point.
+-- Passing work no longer moves the screen by itself, so asking for it is the job
+-- of whoever wants to be watched
+local function back_to_ai(ai, msg)
+  shikisha.show(ai)
+  shikisha.send_to_tab(ai, msg)
+end
+
 local function tx(entry)
   local p = shikisha.get_var("op_tx")
   if p then shikisha.exchange_append(p, entry) end
@@ -2354,13 +2367,11 @@ function on_done(tab)
       if ON_LIMIT == "continue" then
         reset_budget()
       else
-        shikisha.show(ai)
-        shikisha.send_to_tab(ai, shikisha.t("agent.browser.safety_net"))
+        back_to_ai(ai, shikisha.t("agent.browser.safety_net"))
         return
       end
     end
-    shikisha.show(ai)
-    shikisha.send_to_tab(ai, shikisha.tf("agent.ai.replied",
+    back_to_ai(ai, shikisha.tf("agent.ai.replied",
       { target = TARGET, reply = reply, infile = infile }))
     return
   end
@@ -2375,13 +2386,13 @@ function on_done(tab)
   if tab.is_model then
     local nc = (shikisha.get_var("op_nocode") or 0) + 1
     shikisha.set_var("op_nocode", nc)
-    if nc >= 3 then shikisha.send_to_tab(ai, shikisha.t("agent.browser.model.stuck")) return end
-    shikisha.send_to_tab(ai, shikisha.t("agent.browser.model.remind"))
+    if nc >= 3 then back_to_ai(ai, shikisha.t("agent.browser.model.stuck")) return end
+    back_to_ai(ai, shikisha.t("agent.browser.model.remind"))
     return
   end
   -- CLI no-code: nudge once right after the goal; otherwise wait for the human.
   if tab.chain_depth == 0 then
-    shikisha.send_to_tab(ai, shikisha.tf("agent.ai.first", { infile = infile }))
+    back_to_ai(ai, shikisha.tf("agent.ai.first", { infile = infile }))
   end
 end
 "##;
@@ -3056,6 +3067,119 @@ mod tests {
     static RALLY_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    /// Every command automation can call must be in both manuals.
+    ///
+    /// The manuals are not just for people: the settings screen hands them to an
+    /// AI as the specification when it writes automation. A command missing from
+    /// them does not exist as far as that AI is concerned — which is how half of
+    /// them, `show` included, ended up unreachable. English is the base and
+    /// Japanese is laid over it, so both have to carry the same list.
+    #[test]
+    fn every_command_is_in_both_manuals() {
+        let src = include_str!("hooks.rs");
+        let mut names: Vec<String> = Vec::new();
+        let mut push = |n: &str| {
+            let n = n.to_string();
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        };
+        // Registered from Rust: on the shikisha table, through the browser macro,
+        // or defined in the Lua prelude
+        for (open, close) in [
+            ("shikisha
+                .set(
+                    \"", "\""),
+            ("sh.set(
+            \"", "\""),
+            ("bind!(\"", "\""),
+            ("function shikisha.", "("),
+        ] {
+            for part in src.split(open).skip(1) {
+                if let Some(name) = part.split(close).next() {
+                    if !name.is_empty()
+                        && name.len() < 32
+                        && name.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+                    {
+                        push(name);
+                    }
+                }
+            }
+        }
+        assert!(names.len() > 40, "命令の抽出に失敗している ({} 件)", names.len());
+
+        // The `tab` table an event receives, built in tab_table below
+        let mut fields: Vec<&str> = Vec::new();
+        for part in src.split("t.set(\"").skip(1) {
+            if let Some(f) = part.split('"').next() {
+                // __index is the metatable link that lets a hook see the globals,
+                // not something anyone reads off `tab`
+                if !f.is_empty() && f != "__index" && !fields.contains(&f) {
+                    fields.push(f);
+                }
+            }
+        }
+        assert!(fields.len() > 5, "tab の項目の抽出に失敗している");
+
+        for (doc, text) in [
+            ("AUTOMATION.md", include_str!("../docs/AUTOMATION.md")),
+            ("AUTOMATION.ja.md", include_str!("../docs/AUTOMATION.ja.md")),
+        ] {
+            let missing: Vec<&String> = names
+                .iter()
+                .filter(|n| !text.contains(&format!("shikisha.{n}")))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "{doc} に載っていない命令: {missing:?} (AIに渡す仕様書なので、無い＝使えない)"
+            );
+            let no_var: Vec<&&str> = fields
+                .iter()
+                .filter(|f| !text.contains(&format!("tab.{f}")))
+                .collect();
+            assert!(no_var.is_empty(), "{doc} に載っていない tab の項目: {no_var:?}");
+        }
+    }
+
+    /// Every built-in orchestrator must actually compile.
+    ///
+    /// The user never writes these — they are the app's own Lua, edited in Rust
+    /// string literals where no editor checks them. A typo, or a helper called in
+    /// one template but defined only in another, would surface as an orchestrator
+    /// that silently does nothing on the first real rally.
+    #[test]
+    fn the_built_in_orchestrators_compile() {
+        let caps: crate::hooks::Caps = std::rc::Rc::new(crate::caps::Capabilities::new(
+            Default::default(),
+            std::path::PathBuf::from("."),
+            std::collections::HashMap::new(),
+        ));
+        let mut eng = super::HookEngine::with_caps(caps).expect("engine");
+        eng.load_browser_agent("BR", "{}").expect("browser rally template");
+        eng.load_ai_agent("target").expect("operate template");
+
+        // ...and each must define every local helper it calls. Templates are
+        // separate Lua worlds, so a helper borrowed from the one above compiles
+        // fine and blows up only when that path is actually walked — which, for
+        // a branch like "the AI got stuck", can be weeks later
+        let file = include_str!("hooks.rs");
+        let mut checked = 0;
+        for chunk in file.split("const SRC: &str = r##\"").skip(1) {
+            let body = chunk.split("\"##;").next().unwrap_or("");
+            for helper in ["back_to_ai", "next_hint", "fix_hint", "retry_hint", "clip"] {
+                if !body.contains(&format!("{helper}(")) {
+                    continue;
+                }
+                assert!(
+                    body.contains(&format!("local function {helper}(")),
+                    "テンプレートが {helper} を呼んでいるのに、そのテンプレート内に定義が無い"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "テンプレートを1つも見ていない (目印が変わった?)");
+    }
+
     fn lint_lua_flags_broken_syntax_only() {
         // Sound code parses (nil), including calls to names that won't exist at run
         // time — lint is syntax-only, so undefined-name misuse isn't its job.

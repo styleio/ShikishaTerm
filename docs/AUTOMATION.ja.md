@@ -55,6 +55,8 @@ shikisha.send_to_tab(2, "このコードをレビューして:\n" .. tab.output)
 | `tab.profile` | 適用中のプロファイル名 |
 | `tab.chain_depth` | 自動転送が何回連鎖したか。**0なら人間が始めた会話** |
 | `tab.locked` | 入力ロック中かどうか |
+| `tab.is_model` | CLIではなく、APIでモデルと話すタブかどうか |
+| `tab.reply` | モデルタブの返答そのもの（そのタブでのみ）。`tab.output` は同じ内容が画面に描かれたもの（折り返し済み） |
 
 `on_question.lua` だけ、2つめの変数 `screen` に画面テキスト全体が入ります。
 
@@ -234,9 +236,21 @@ CLI が下端に出し続けるヒント行やステータス行 (`? for shortcu
 
 ### 動いている様子を見る
 
-画面はボールを追います。あるタブが別のタブへ仕事を渡すと、**渡された側へ自動で切り替わります**。
-基本設定で切れます。**自分で画面を動かした直後は数秒間追いません**ので、
+**タブに仕事を渡しても画面は動きません。**見せたいときは、そう書きます。
+
+```lua
+shikisha.show("検査")             -- このタブを画面に出す
+shikisha.send_to_tab("検査", msg) -- そのうえで仕事を渡す
+```
+
+この2行の順で書けば、勝手に切り替わることはありません。`shikisha.show(0)` で盤面へ戻ります。
+
+**人間のほうが常に優先されます。**基本設定の「自動切り替え」を切っているとき、
+直前に自分で画面を動かしたとき、設定画面を開いているときは `show` は何もしません。
 読んでいる途中で引き剥がされることはありません。
+
+なお、画面が追わなくても**ボール自体は盤面を飛びます**。ボールは「今どのタブが仕事を持っているか」
+を示すもので、「自分がどこを見ているか」とは別の話だからです。
 
 ---
 
@@ -571,3 +585,99 @@ shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
   `\d` ではなく `%d` と書きます
 - **何もしたくないときは `return`** と書けば、その場で終わります
 - 迷ったら `shikisha.log()` を仕込んで `logs/hooks.log` を見てください
+
+---
+
+## 8. 命令の一覧
+
+自動化から呼べるものを、すべてここに置きます。上の章はよく使うものの説明で、
+こちらが全部です。
+
+### タブと手番
+
+| 命令 | 説明 |
+|---|---|
+| `shikisha.send_to_tab(タブ, "文字列")` | **タブに指示を渡して実行させる。** 自分自身にも使えます（チェーン+1） |
+| `shikisha.send(タブ, "文字列")` | 生のキー入力（改行は `\r`）。指示ではなく、確認への返答用 |
+| `shikisha.draft_to_tab(タブ, "文字列")` | 入力欄に置くだけで**実行しない**。人が書き足して送ります |
+| `shikisha.state(タブ)` | 今の状態: `WAIT` / `BUSY` / `DONE` / `ASK` / `EXIT` |
+| `shikisha.wait_state(タブ, "DONE", ミリ秒)` | その状態になるまで待つ。なれば `true` |
+| `shikisha.tab_output(タブ)` | 他のタブの最新の返答（まだ無ければ `""`） |
+| `shikisha.restart(タブ)` | そのタブを再起動する |
+
+### 画面
+
+| 命令 | 説明 |
+|---|---|
+| `shikisha.show(タブ)` | そのタブを画面に出す。`0` は盤面。「自動切り替え」を切っているとき、直前に人が画面を動かしたとき、設定画面を開いているときは何もしません |
+| `shikisha.open_result(run)` | その実行の記録を結果ページとして開き、そこへ移動する |
+
+### 待つ・時刻
+
+| 命令 | 説明 |
+|---|---|
+| `shikisha.wait(タブ, "正規表現", ミリ秒)` | そのタブの画面にその文字が出るまで待つ。出れば `true` |
+| `shikisha.sleep(ミリ秒)` | 待つ（待っている間も他のタブは動きます） |
+| `shikisha.now("%Y-%m-%d")` | 現地の日時を整形して返す。既定は時系列に並ぶ形なので、ファイル名向き |
+| `shikisha.epoch_ms()` | エポックからのミリ秒（数値）。経過時間の計測用 |
+
+### 覚える・記録する・知らせる
+
+| 命令 | 説明 |
+|---|---|
+| `shikisha.get_var("キー")` / `shikisha.set_var("キー", 値)` | 記憶しておける変数。ワークスペース内で共有 |
+| `shikisha.log("文字列")` | `logs/hooks.log` に1行書く |
+| `shikisha.notify("文字列")` | Slack / Telegram へ通知（設定済みの宛先のみ） |
+| `shikisha.remote_url()` | スマホからこのアプリに繋がるURL。リモートが切れているときは `nil`。通知に入れておくと「手伝いに来て」がワンタップになります |
+| `shikisha.t("キー")` / `shikisha.tf("キー", {name="…"})` | 訳語を引く（`tf` は `{name}` も差し込む）。組み込みの進行役がアプリの言語で話すために使っています |
+
+### ブラウザを動かす
+
+ページは付けた id で指します。上の「ブラウザを動かす」も参照してください。
+
+| 命令 | 説明 |
+|---|---|
+| `shikisha.browser_open(id, url, profile, private)` | ページを開く。`profile` はcookieの入れ物の名前、`private` は使い捨て |
+| `shikisha.browser_close(id)` | 閉じる |
+| `shikisha.browser_go(id, "back"/"forward"/"reload"/"to", url)` | 移動する |
+| `shikisha.browser_nav(id, {…})` / `shikisha.browser_unnav(id)` | ページの上に戻る・進む・更新・URL欄を出す／消す |
+| `shikisha.browser_find(id, セレクタ)` | あるか: `"visible"` / `"hidden"` / `"missing"` |
+| `shikisha.browser_click(id, セレクタ)` | 押す |
+| `shikisha.browser_fill(id, セレクタ, "文字列")` | 入力する。**送信はしません** — 続けて `browser_press` |
+| `shikisha.browser_fill_secret(id, セレクタ, "キー")` | 登録済みの秘密情報から入力する。値はスクリプトに渡りません |
+| `shikisha.browser_press(id, "enter")` | ページ上でキーを押す |
+| `shikisha.browser_text(id, セレクタ)` | 見えている文字 |
+| `shikisha.browser_html(id)` | 文書全体 |
+| `shikisha.browser_digest(id)` | 操作できる要素の一覧（番号付き）。次の手を決める前に読むもの |
+| `shikisha.browser_fetch(id, url, opts)` | ページの中から通信する（cookieを引き継ぐ）。`{status, ok, url, headers, body}` を返す |
+| `shikisha.browser_auth(id, "キー")` | 登録済みの秘密情報でBasic認証に答える |
+| `shikisha.browser_ask(id, "文字列", "ラベル")` | ページの下端にボタン付きの帯を出す |
+| `shikisha.browser_pressed(id)` | 押されたか |
+| `shikisha.browser_unask(id)` | 帯を消す |
+| `shikisha.browser_wait(id, {ask=…, selector=…, timeout_ms=…})` | 早い者勝ちで待つ。`"selector"` / `"button"` / `"timeout"` を返す |
+
+### 参加者のあいだで実行を受け渡す
+
+ラリーの仕組みそのものです。ファイルの受け渡しと審判。同じ道具で自作もできます。
+
+| 命令 | 説明 |
+|---|---|
+| `shikisha.exchange_new()` | この実行用のフォルダを作り、その場所を返す |
+| `shikisha.exchange_write(パス, "文字列")` | ファイルに書く（上書き） |
+| `shikisha.exchange_append(パス, "文字列")` | 追記する |
+| `shikisha.exchange_take(パス)` | 読んで、消して、返す。無ければ `nil` — これが受け渡しの本体 |
+| `shikisha.lint(コード)` | Luaを実行せずに構文検査する。壊れていればエラー文字列、健全なら `nil` |
+| `shikisha.run_scoped(id, コード)` | AIが書いたLuaを1つのページに対してだけ実行する牢屋。ファイルも通信も他のタブも触れません。`err, out` を返す |
+| `shikisha.record(文字列)` / `shikisha.record_reset()` | 貼り直せる形で実行の記録を残す |
+| `shikisha.take_replay()` | 再生用の記録を取り出す（前回取り出して以降の全操作を、壊れにくい書き方で） |
+| `shikisha.set_result(コード, "理由")` | この実行の判定。`data/last-result.json` に書かれ、画面にも出ます |
+
+### ファイル・通信
+
+「窓口」を登録しない限り使えません。6章を参照してください。
+
+| 命令 | 説明 |
+|---|---|
+| `shikisha.read_file(名前, 相対パス)` / `shikisha.write_file(名前, 相対パス, データ)` | 登録済みのファイル窓口を通して |
+| `shikisha.http(名前, 本文)` | 登録済みのHTTP窓口を通して |
+| `shikisha.read_path(パス)` / `shikisha.write_path(パス, データ)` / `shikisha.http_raw(url, 本文)` | 生のパス・生のURL。`allow_dirs` / `allow_hosts` が空のあいだは必ず失敗します |

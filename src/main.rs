@@ -1260,12 +1260,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // We hold off firing until we've verified it stayed quiet, so we don't fire on a
     // mid-response pause for breath.
     let mut pending_done: Vec<(usize, u64)> = Vec::new();
-    // Whether to follow the ball by switching screens
-    let mut follow_ball = cfg.as_ref().and_then(|c| c.follow_ball).unwrap_or(true);
+    // Whether automation may switch which tab is on screen (see ViewMove)
+    let mut auto_switch = cfg.as_ref().and_then(|c| c.auto_switch).unwrap_or(true);
     // The last time a human touched the screen. Don't auto-follow right after that.
     let mut view_touched_ms: u64 = 0;
-    // Where we last auto-followed to. Remembered so we don't jump to the same place repeatedly.
-    let mut followed: usize = 0;
     // Clickable spots on INDEX. Rebuilt every frame at draw time.
 
     // 0 = INDEX, 1.. = sessions. Start on INDEX (the screen with onboarding guidance) at first.
@@ -1439,7 +1437,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 engines = (0..new_ws.len().max(1)).map(|_| None).collect();
                 workspaces = new_ws;
                 max_chain = newcfg.max_chain.unwrap_or(10);
-                follow_ball = newcfg.follow_ball.unwrap_or(true);
+                auto_switch = newcfg.auto_switch.unwrap_or(true);
                 done_confirm_ms = newcfg
                     .done_confirm_ms
                     .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
@@ -1742,7 +1740,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         &mut pending_submit,
                         &mut waiting,
                         &mut active,
-                        settings_open,
+                        ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
                     );
                 }
             }
@@ -2026,7 +2024,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     &mut pending_submit,
                     &mut waiting,
                     &mut active,
-                    settings_open,
+                    ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
                 );
             }
         }
@@ -2050,36 +2048,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 ));
                 false
             });
-        }
-
-        // Move the screen to wherever the ball was passed.
-        // Don't follow right after a human touches the screen (so they're not
-        // yanked away mid-read).
-        {
-            let now_ms = start.elapsed().as_millis() as u64;
-            if let Some(to) = follow_target(
-                follow_ball,
-                ball.holder,
-                followed,
-                // Count against what's laid out on screen. Counting sessions instead
-                // would make tabs behind any browsers look like "numbers that don't
-                // exist", and the ball passed there would never be followed.
-                layout.len(),
-                now_ms,
-                view_touched_ms,
-            ) {
-                followed = to;
-                // Don't follow while the settings overlay is up — the human is
-                // reading settings, not spectating the ball. (followed is still
-                // advanced above, so we don't re-jump the instant it closes.)
-                if active != to && !settings_open {
-                    // Keep this so "it was passed but the screen didn't move" can be
-                    // traced. This was removed once during cleanup, and that exact
-                    // investigation got stuck because of it.
-                    append_hook_log(&format!("Following tab{active} -> tab{to}"));
-                    active = to;
-                }
-            }
         }
 
         // chain_depth resets to 0 when a human types. Make the ball follow that too
@@ -4509,25 +4477,35 @@ fn starting_workspace(enabled: bool, last: Option<&str>, names: &[String]) -> us
         .unwrap_or(0)
 }
 
-fn follow_target(
-    enabled: bool,
-    holder: usize,
-    already: usize,
-    tab_count: usize,
-    now_ms: u64,
-    view_touched_ms: u64,
-) -> Option<usize> {
-    if !enabled || holder == 0 || holder == already || holder > tab_count {
-        return None;
-    }
-    (now_ms.saturating_sub(view_touched_ms) >= FOLLOW_GUARD_MS).then_some(holder)
+/// When automation may move what the person is looking at.
+///
+/// `shikisha.show()` is the only thing that moves the view, so this is the only
+/// gate it has to pass — one rule rather than one per path. Handing work to a tab
+/// (`send_to_tab`) no longer moves anything by itself: a script that wants to be
+/// watched says so, and the person's answer to that request lives here.
+#[derive(Clone, Copy)]
+struct ViewMove {
+    /// Their standing answer: may automation switch tabs at all
+    allowed: bool,
+    /// When they last moved the view themselves
+    touched_ms: u64,
+    /// The settings screen is up. Never pull someone out of what they are reading
+    settings_open: bool,
 }
 
-/// The delay after a human touches the screen before auto-follow resumes.
+impl ViewMove {
+    fn may(&self, now_ms: u64) -> bool {
+        self.allowed
+            && !self.settings_open
+            && now_ms.saturating_sub(self.touched_ms) >= VIEW_GUARD_MS
+    }
+}
+
+/// How long the screen is left alone after a person moves it themselves.
 ///
-/// Getting yanked away mid-read is the worst outcome, so once someone touches
-/// it, stay quiet and follow along for a while.
-const FOLLOW_GUARD_MS: u64 = 8_000;
+/// Getting yanked away mid-read is the worst outcome, so once someone takes the
+/// wheel, automation waits its turn.
+const VIEW_GUARD_MS: u64 = 8_000;
 
 /// Whether a human touched it recently. False if never touched at all.
 ///
@@ -4796,9 +4774,8 @@ fn exec_commands(
     pending_submit: &mut Vec<PendingSubmit>,
     waiting: &mut Vec<Waiting>,
     active: &mut usize,
-    // When true, the settings overlay is showing; ShowTab is ignored so
-    // automation can't pull the screen off settings.
-    settings_open: bool,
+    // Whether automation may move the view right now (see ViewMove)
+    view: ViewMove,
 ) {
     let keys = pane_keys(panes, tabs);
     let index_of = |r: &hooks::TabRef| r.resolve(&keys);
@@ -4830,10 +4807,15 @@ fn exec_commands(
             // Switch the displayed tab (spectator mode). 0 is the operating board (INDEX).
             // The target, whether a session or a browser, is addressed by screen number.
             Command::ShowTab { target } => {
-                if settings_open {
-                    // The human is in settings; don't yank them out of it.
+                if !view.may(now_ms) {
+                    // The person said no, or is mid-read, or is in the settings.
+                    // Kept in the log so "it said show and the screen didn't move"
+                    // can be traced rather than guessed at.
                     append_hook_log(&format!(
-                        "ShowTab {target:?} ignored: settings overlay is open"
+                        "ShowTab {target:?} ignored (allowed={}, settings={}, {}ms since they moved it)",
+                        view.allowed,
+                        view.settings_open,
+                        now_ms.saturating_sub(view.touched_ms),
                     ));
                 } else if matches!(target, hooks::TabRef::Index(0)) {
                     *active = 0;
@@ -5897,27 +5879,30 @@ mod tests {
         assert!(p.ready(out, SUBMIT_GIVE_UP_MS), "上限に達したら送る");
     }
 
-    /// The view must follow the ball, but yield to a human operating it.
+    /// Automation may move the view, but the person outranks it.
+    ///
+    /// This is the ONLY gate: `show()` is the only thing that moves the screen,
+    /// and handing work to a tab no longer moves anything by itself. Before, the
+    /// two lived on different paths with different rules — `show()` obeyed
+    /// neither the setting nor the guard, so "don't switch on me" was a promise
+    /// the app did not keep during a rally.
     #[test]
-    fn the_view_follows_the_ball_but_yields_to_the_person() {
-        let g = FOLLOW_GUARD_MS;
+    fn the_person_outranks_automation_over_the_view() {
+        let g = VIEW_GUARD_MS;
+        let gate = |allowed, touched_ms, settings_open| ViewMove { allowed, touched_ms, settings_open };
 
-        // Moves to wherever the ball was passed
-        assert_eq!(follow_target(true, 2, 1, 3, g, 0), Some(2));
-        // Doesn't jump to the same place repeatedly
-        assert_eq!(follow_target(true, 2, 2, 3, g, 0), None);
-        // Doesn't move if nobody holds it
-        assert_eq!(follow_target(true, 0, 1, 3, g, 0), None);
-        // Doesn't go to a tab that doesn't exist (e.g. right after a workspace switch)
-        assert_eq!(follow_target(true, 5, 1, 3, g, 0), None);
-        // Doesn't move if disabled in config
-        assert_eq!(follow_target(false, 2, 1, 3, g, 0), None);
+        // Long since they touched it, and they allow it: automation may move the view
+        assert!(gate(true, 0, false).may(g));
+        // They said no
+        assert!(!gate(false, 0, false).may(g), "設定を無視して切り替えている");
+        // They are reading the settings screen
+        assert!(!gate(true, 0, true).may(g), "設定画面から引き剥がしている");
 
-        // Doesn't follow right after a human touches the screen (don't yank them away mid-read)
-        assert_eq!(follow_target(true, 2, 1, 3, 1_000, 1_000), None);
-        assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g - 1, 1_000), None);
-        // Follows again once enough time has passed
-        assert_eq!(follow_target(true, 2, 1, 3, 1_000 + g, 1_000), Some(2));
+        // They just moved the view themselves — stay out of the way
+        assert!(!gate(true, 1_000, false).may(1_000), "読んでいる最中に引き剥がしている");
+        assert!(!gate(true, 1_000, false).may(1_000 + g - 1));
+        // ...and step back in once enough time has passed
+        assert!(gate(true, 1_000, false).may(1_000 + g));
     }
 
     /// The wheel scrolls back, and typing brings you back to the present.
@@ -5961,24 +5946,28 @@ mod tests {
         );
     }
 
-    /// The ball must still be followable even in a layout with a browser mixed in.
+    /// A browser in the row must not hide the tabs behind it.
     ///
-    /// The ball moves by screen number. If the count used the session number
-    /// instead, tabs behind however many browsers there are would look like
-    /// "numbers that don't exist", and a ball passed there would never be
-    /// followed again.
-    /// (With the layout Analysis=1 browser / AI=2 session, passing to AI didn't move the screen.)
+    /// Everything that points at a tab counts by screen number, browsers
+    /// included. Counting sessions instead would make the tabs sitting behind
+    /// however many browsers there are look like "numbers that don't exist".
+    /// (With the layout Analysis=1 browser / AI=2 session, the AI was unreachable.)
     #[test]
     fn a_browser_in_the_row_does_not_hide_the_tabs_behind_it() {
         let panes = vec![
             Pane::Browser { key: "html".into(), name: "解析".into() },
             Pane::Session(0),
         ];
-        // Only one session. Counting against the wrong thing gets it rejected by 2 > 1.
+        let keys = pane_keys(&panes, &[]);
         assert_eq!(
-            follow_target(true, 2, 0, panes.len(), FOLLOW_GUARD_MS, 0),
+            hooks::TabRef::Index(2).resolve(&keys),
             Some(2),
-            "ブラウザの後ろのタブへ追従できていない"
+            "ブラウザの後ろのタブを指せていない"
+        );
+        assert_eq!(
+            hooks::TabRef::Name("解析".into()).resolve(&keys),
+            Some(1),
+            "ブラウザを名前で指せていない"
         );
     }
 

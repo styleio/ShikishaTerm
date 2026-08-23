@@ -31,8 +31,11 @@ pub struct Config {
     /// Incremented by 1 each time it auto-forwards between tabs; reset to 0 by manual human input
     #[serde(default)]
     pub max_chain: Option<u32>,
-    /// Whether to automatically switch the screen to wherever the ball was passed (default: yes)
-    pub follow_ball: Option<bool>,
+    /// Whether automation may switch which tab is on screen (default: yes).
+    ///
+    /// Only `shikisha.show()` ever moves the view; handing work to a tab does not.
+    /// This is the person's answer to that request — see main::ViewMove
+    pub auto_switch: Option<bool>,
     /// Whether to start from the last-opened workspace (default: yes)
     pub restore_workspace: Option<bool>,
     /// Whether to overlay the browser on the terminal (default: overlay).
