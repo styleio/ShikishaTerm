@@ -50,6 +50,7 @@ shikisha.send_to_tab(2, "このコードをレビューして:\n" .. tab.output)
 |---|---|
 | `tab.index` | タブ番号（1から） |
 | `tab.name` | タブ名 |
+| `tab.id` | 設定で付けた「自動化での呼び名」。付いていなければ `nil`。名前を変えても壊れない唯一の手がかりなので、条件分岐はこれで書きます |
 | `tab.output` | **直前の応答テキスト**（過去の履歴は含まれない） |
 | `tab.state` | `"BUSY"` / `"DONE"` / `"QUESTION"` / `"WAIT"` / `"EXIT"` |
 | `tab.profile` | 適用中のプロファイル名 |

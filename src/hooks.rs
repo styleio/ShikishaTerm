@@ -684,6 +684,11 @@ pub struct PageCtx {
 pub struct TabCtx {
     pub index: usize,
     pub name: String,
+    /// The automation name given in the settings, when there is one. This is the
+    /// one handle that survives a rename, so it is what a hook should branch on
+    /// ("is this the reviewer?") — the number shifts when tabs are reordered and
+    /// the display name is the very thing a person changes. `nil` when unset
+    pub id: Option<String>,
     pub state: String,
     pub profile: String,
     pub output: String,
@@ -2995,6 +3000,11 @@ end
         let t = self.lua.create_table()?;
         t.set("index", ctx.index)?;
         t.set("name", ctx.name.as_str())?;
+        // Left unset (nil in Lua) rather than "" when the tab has no id: an empty
+        // string would quietly equal another id-less tab's
+        if let Some(id) = ctx.id.as_deref() {
+            t.set("id", id)?;
+        }
         t.set("state", ctx.state.as_str())?;
         t.set("profile", ctx.profile.as_str())?;
         t.set("output", ctx.output.as_str())?;
@@ -3067,6 +3077,30 @@ mod tests {
     static RALLY_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    /// The tab a hook receives must carry its automation name.
+    ///
+    /// It is the only handle that survives a rename — the number shifts when tabs
+    /// are reordered and the display name is the very thing a person edits — yet
+    /// it was the one thing `tab` did not carry, so `if tab.id == "reviewer"` was
+    /// silently always false. Unset stays nil rather than "", or two tabs without
+    /// one would compare equal.
+    #[test]
+    fn a_hook_can_tell_which_tab_it_is_on() {
+        let eng = super::HookEngine::new().expect("engine");
+        let named = eng
+            .make_tab_table(&TabCtx { id: Some("reviewer".into()), ..ctx(2, "") })
+            .expect("table");
+        assert_eq!(named.get::<String>("id").ok().as_deref(), Some("reviewer"));
+
+        let plain = eng
+            .make_tab_table(&TabCtx { id: None, ..ctx(3, "") })
+            .expect("table");
+        assert!(
+            plain.get::<mlua::Value>("id").map(|v| v.is_nil()).unwrap_or(false),
+            "id が無いタブは nil であるべき (空文字だと id無し同士が一致してしまう)"
+        );
+    }
+
     /// Every command automation can call must be in both manuals.
     ///
     /// The manuals are not just for people: the settings screen hands them to an
@@ -3196,6 +3230,7 @@ mod tests {
         TabCtx {
             index,
             name: format!("tab{index}"),
+            id: Some(format!("id{index}")),
             state: "DONE".into(),
             profile: "test".into(),
             is_model: false,

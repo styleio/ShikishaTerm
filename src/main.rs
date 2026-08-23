@@ -4426,6 +4426,7 @@ fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
     TabCtx {
         index,
         name: t.title.clone(),
+        id: t.id.clone(),
         state: t.state.label().to_string(),
         profile: t.profile_name().to_string(),
         output: t.last_response.clone().unwrap_or_default(),
@@ -4445,7 +4446,10 @@ fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
 fn browser_ctx(index: usize, key: &str) -> TabCtx {
     TabCtx {
         index,
+        // A page is addressed by its key, which IS its id — the same string the
+        // browser_* calls take
         name: key.to_string(),
+        id: Some(key.to_string()),
         state: "WEB".into(),
         profile: String::new(),
         output: String::new(),

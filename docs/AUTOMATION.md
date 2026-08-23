@@ -50,6 +50,7 @@ shikisha.send_to_tab(2, "Please review this code:\n" .. tab.output)
 |---|---|
 | `tab.index` | Tab number (starting at 1) |
 | `tab.name` | Tab name |
+| `tab.id` | The automation name from the settings, if it has one. The one handle that survives a rename — branch on this, not the number or the display name. `nil` when unset |
 | `tab.output` | **The latest response text** (no earlier history) |
 | `tab.state` | `"BUSY"` / `"DONE"` / `"QUESTION"` / `"WAIT"` / `"EXIT"` |
 | `tab.profile` | Name of the profile in effect |
