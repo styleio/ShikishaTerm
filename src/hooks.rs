@@ -3110,36 +3110,42 @@ mod tests {
     /// Japanese is laid over it, so both have to carry the same list.
     #[test]
     fn every_command_is_in_both_manuals() {
-        let src = include_str!("hooks.rs");
-        let mut names: Vec<String> = Vec::new();
-        let mut push = |n: &str| {
-            let n = n.to_string();
-            if !names.contains(&n) {
-                names.push(n);
-            }
-        };
-        // Registered from Rust: on the shikisha table, through the browser macro,
-        // or defined in the Lua prelude
-        for (open, close) in [
-            ("shikisha
-                .set(
-                    \"", "\""),
-            ("sh.set(
-            \"", "\""),
-            ("bind!(\"", "\""),
-            ("function shikisha.", "("),
-        ] {
-            for part in src.split(open).skip(1) {
-                if let Some(name) = part.split(close).next() {
-                    if !name.is_empty()
-                        && name.len() < 32
-                        && name.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
-                    {
-                        push(name);
+        // Every command automation can call, read off this file. Line by line on
+        // purpose: a pattern spanning lines would carry whatever ending the
+        // checkout used, and a CRLF checkout then finds 21 of the 55 — which is
+        // exactly how this passed here and failed on CI.
+        let collect = |text: &str| {
+            let mut names: Vec<String> = Vec::new();
+            let mut add = |n: &str| {
+                let ok = !n.is_empty()
+                    && n.len() < 32
+                    && n.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit());
+                if ok && !names.iter().any(|x| x == n) {
+                    names.push(n.to_string());
+                }
+            };
+            let rows: Vec<&str> = text.lines().map(str::trim).collect();
+            for (i, row) in rows.iter().enumerate() {
+                // `.set(` on the line above, the name alone on this one
+                if i > 0 && rows[i - 1].ends_with(".set(") {
+                    if let Some(n) = row.strip_prefix("\"").and_then(|r| r.strip_suffix("\",")) {
+                        add(n);
+                    }
+                }
+                // ...or all on one line
+                for open in ["bind!(\"", "function shikisha."] {
+                    if let Some(rest) = row.strip_prefix(open) {
+                        let close = if open.starts_with("bind") { "\"" } else { "(" };
+                        if let Some(n) = rest.split(close).next() {
+                            add(n);
+                        }
                     }
                 }
             }
-        }
+            names
+        };
+        let src = include_str!("hooks.rs");
+        let names = collect(src);
         assert!(names.len() > 40, "命令の抽出に失敗している ({} 件)", names.len());
 
         // The `tab` table an event receives, built in tab_table below
