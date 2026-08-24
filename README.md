@@ -153,6 +153,7 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B %` / `"` | Split the view beside / below (`<` `>` resize) |
 | `Ctrl+B o` / arrows | Move between panes |
 | `Ctrl+B X` | Close this pane (the tab keeps running) |
+| `Ctrl+B =` | Put every divider back to even halves |
 | `Ctrl+B l` | Toggle input lock |
 | `Ctrl+B r` | Restart the tab |
 | `Ctrl+B [` | Copy mode (`c` copies the latest response) |

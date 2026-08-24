@@ -54,6 +54,14 @@ once it reaches its first tagged release.
   a native layer over the page, and flush against the line it would swallow the
   half of the grab handle that overhangs it.
 
+  **Automation can divide the screen too**, in the same words the keys use:
+  `split_pane("right")`, `close_pane()`, `focus_pane("left")`,
+  `equalize_panes()` — and, since the external API is the same table of
+  commands, from outside the app as well. Putting a browser beside the agent
+  driving it is `split_pane("right")` then `show("br")`: two commands that each
+  do one thing, rather than one that only ever makes the arrangement whoever
+  wrote it had in mind. `Ctrl+B =` does the equalizing from the keyboard.
+
 ### Fixed
 - **Lua that never returns no longer takes the window with it.** The engine runs
   on the main loop, so a `while true do end` typed into the composer — or sent

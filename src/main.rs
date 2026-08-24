@@ -2000,6 +2000,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         cmds,
                         &mut tabs,
                         &surfaces,
+                        &mut pane_layout,
+                        surface_count,
                         max_chain,
                         auto_enabled,
                         now_ms,
@@ -2316,6 +2318,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     ready,
                     &mut tabs,
                     &surfaces,
+                    &mut pane_layout,
+                    surface_count,
                     max_chain,
                     auto_enabled,
                     now_ms,
@@ -3303,6 +3307,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             active = split_focused(&mut pane_layout, dir, surface_count, active);
                             view_touched_ms = start.elapsed().as_millis() as u64;
                         }
+                        // Ctrl+B = puts the dividers back to even halves. The
+                        // mouse can do it by double-clicking one; this does the
+                        // whole screen at once
+                        KeyCode::Char('=') => pane_layout.equalize(),
                         // Ctrl+B < / > move the divider the focused pane sits
                         // against. There is no drag yet, and a split you cannot
                         // adjust is only half of one — a browser and a terminal
@@ -5191,6 +5199,8 @@ fn exec_commands(
     cmds: Vec<Command>,
     tabs: &mut [Tab],
     surfaces: &[Surface],
+    panes: &mut crate::layout::Layout,
+    surface_count: usize,
     max_chain: u32,
     auto_enabled: bool,
     now_ms: u64,
@@ -5292,6 +5302,31 @@ fn exec_commands(
                         }
                         Err(e) => *flash = Some(i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))])),
                     }
+                }
+            }
+            // The division of the screen. Carried out at once: whoever asked
+            // said so in as many words, unlike ShowTab, which is a side effect
+            // of automation running elsewhere and so has to ask first
+            Command::Pane(op) => {
+                use crate::hooks::PaneOp;
+                match op {
+                    PaneOp::Split(dir) => {
+                        *active = split_focused(panes, dir, surface_count, *active);
+                        append_hook_log(&format!("pane split {dir:?} (lua) -> surface {active}"));
+                    }
+                    PaneOp::Close => {
+                        if panes.close(panes.focus()) {
+                            *active = panes.focused_surface();
+                        } else {
+                            *flash = Some(i18n::t("msg.pane_last"));
+                        }
+                    }
+                    PaneOp::Focus(dir) => {
+                        if panes.focus_move(dir) {
+                            *active = panes.focused_surface();
+                        }
+                    }
+                    PaneOp::Equalize => panes.equalize(),
                 }
             }
             Command::Notify { dest, text } => {

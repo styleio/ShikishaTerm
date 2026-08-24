@@ -740,7 +740,57 @@ pub enum Command {
     Notify { dest: Option<String>, text: String },
     /// Restart a tab (recovery from an SSH disconnect or a CLI self-update)
     Restart { target: TabRef },
+    /// Rearrange the panes. One request, because they are one subject: the
+    /// division of the screen belongs to the main loop, which owns the tree
+    Pane(PaneOp),
     Log(String),
+}
+
+/// What a pane request asks for. Each one is a Lua primitive of the same name,
+/// so what is written and what happens are the same idea.
+///
+/// Deliberately NOT one command per compound gesture: "divide and put the
+/// browser there" is `split_pane` followed by `show`, written by whoever wants
+/// it. Two primitives compose; a fused `split_with_browser` would only ever be
+/// the one arrangement somebody thought of first
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PaneOp {
+    /// Divide the focused pane. The new half takes the surface nothing else shows
+    Split(crate::layout::Dir),
+    /// Close the focused pane. The tab behind it keeps running
+    Close,
+    /// Move focus to the neighbour in a direction
+    Focus(crate::layout::Move),
+    /// Put every divider back to even halves
+    Equalize,
+}
+
+/// Read a direction the way a person would write it.
+///
+/// Both spellings of each axis are taken: "right" is what you mean, "row" is
+/// what the tree calls it, and refusing either would be pedantry
+fn split_dir_of(word: Option<String>) -> mlua::Result<crate::layout::Dir> {
+    match word.unwrap_or_else(|| "right".into()).to_ascii_lowercase().as_str() {
+        "right" | "row" | "side" => Ok(crate::layout::Dir::Row),
+        "down" | "col" | "below" => Ok(crate::layout::Dir::Col),
+        other => Err(mlua::Error::runtime(crate::i18n::tp(
+            "err.hooks.split_dir",
+            &[("other", other)],
+        ))),
+    }
+}
+
+fn move_dir_of(word: &str) -> mlua::Result<crate::layout::Move> {
+    match word.to_ascii_lowercase().as_str() {
+        "left" => Ok(crate::layout::Move::Left),
+        "right" => Ok(crate::layout::Move::Right),
+        "up" => Ok(crate::layout::Move::Up),
+        "down" => Ok(crate::layout::Move::Down),
+        other => Err(mlua::Error::runtime(crate::i18n::tp(
+            "err.hooks.focus_dir",
+            &[("other", other)],
+        ))),
+    }
 }
 
 /// Page state passed to browser hooks
@@ -1803,6 +1853,56 @@ impl HookEngine {
                             t.set(i + 1, line)?;
                         }
                         Ok(t)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The division of the screen, in the same words the keys use.
+            // Composable on purpose: "divide, and put the browser in the new
+            // half" is these two lines, not a command of its own —
+            //   shikisha.split_pane("right"); shikisha.show("br")
+            let c = Rc::clone(&commands);
+            shikisha
+                .set(
+                    "split_pane",
+                    lua.create_function(move |_, dir: Option<String>| {
+                        c.borrow_mut().push(Command::Pane(PaneOp::Split(split_dir_of(dir)?)));
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            let c = Rc::clone(&commands);
+            shikisha
+                .set(
+                    "close_pane",
+                    lua.create_function(move |_, ()| {
+                        c.borrow_mut().push(Command::Pane(PaneOp::Close));
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            let c = Rc::clone(&commands);
+            shikisha
+                .set(
+                    "focus_pane",
+                    lua.create_function(move |_, dir: String| {
+                        c.borrow_mut().push(Command::Pane(PaneOp::Focus(move_dir_of(&dir)?)));
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            let c = Rc::clone(&commands);
+            shikisha
+                .set(
+                    "equalize_panes",
+                    lua.create_function(move |_, ()| {
+                        c.borrow_mut().push(Command::Pane(PaneOp::Equalize));
+                        Ok(())
                     })
                     .map_err(lerr)?,
                 )
@@ -3985,6 +4085,63 @@ mod tests {
         );
         // no durable anchor = nothing to record (the journal notes it instead)
         assert_eq!(sel_replay(&Sel::Ref(3), &None), None);
+    }
+
+    #[test]
+    fn the_screen_divides_from_lua_and_composes_with_show() {
+        // The arrangement this exists for — an agent with the browser it is
+        // driving beside it — is two primitives in the order you would say
+        // them, not one command that only ever makes that one arrangement
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_done(t)
+              shikisha.split_pane("right")
+              shikisha.show("br")
+              shikisha.split_pane("down")
+              shikisha.focus_pane("left")
+              shikisha.equalize_panes()
+              shikisha.close_pane()
+            end
+            "#,
+        )
+        .unwrap();
+        e.fire("on_done", &ctx(1, ""), None);
+        let got: Vec<String> = e
+            .drain_commands()
+            .into_iter()
+            .map(|c| match c {
+                Command::Pane(op) => format!("{op:?}"),
+                Command::ShowTab { target } => format!("show {target:?}"),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                "Split(Row)".to_string(),
+                "show Name(\"br\")".to_string(),
+                "Split(Col)".to_string(),
+                "Focus(Left)".to_string(),
+                "Equalize".to_string(),
+                "Close".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_direction_nobody_recognises_is_refused_out_loud() {
+        let e = HookEngine::new().unwrap();
+        let err = e
+            .call_primitive("split_pane", &[serde_json::json!("sideways")])
+            .unwrap_err();
+        assert!(err.contains("sideways"), "{err}");
+        // ...while the words a person would actually reach for are all taken
+        for word in ["right", "row", "down", "col"] {
+            assert!(
+                e.call_primitive("split_pane", &[serde_json::json!(word)]).is_ok(),
+                "{word} が通らない"
+            );
+        }
     }
 
     #[test]

@@ -672,6 +672,8 @@
   "err.hooks.yield_only": "yield is only supported via shikisha.wait/sleep",
   "err.hooks.wait_regex": "Invalid regular expression for wait: {pattern}",
   "err.hooks.unknown_yield": "Unknown yield op: {other}",
+  "err.hooks.split_dir": "split_pane takes \"right\" or \"down\" (got {other})",
+  "err.hooks.focus_dir": "focus_pane takes \"left\", \"right\", \"up\" or \"down\" (got {other})",
   "err.hooks.step_limit": "Stopped: this code ran too long without calling anything (a loop that never ends?)",
   "err.hooks.tab_ref": "Specify a tab by its number or name",
   "transcript.record.header": "-- SHIKISHA rally record: the browser-operation Lua that was executed.\n-- Paste this into on_done.lua (or on_load.lua) to replay the same actions without an AI.",

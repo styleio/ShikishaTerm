@@ -643,6 +643,23 @@ ones; this is the complete list.
 |---|---|
 | `shikisha.show(tab)` | Put that tab on screen. `0` is the board. Ignored if the person turned Auto-switch off, just moved the view themselves, or is in the settings |
 | `shikisha.open_result(run)` | Open that run's transcript as a result page and go to it |
+| `shikisha.split_pane("right")` | Divide the pane in focus. `"right"` beside, `"down"` below. The new half takes focus |
+| `shikisha.close_pane()` | Close the pane in focus. The tab behind it keeps running |
+| `shikisha.focus_pane("left")` | Move focus to the neighbouring pane (`"left"` `"right"` `"up"` `"down"`) |
+| `shikisha.equalize_panes()` | Put every divider back to even halves |
+
+**Put a browser beside the agent** — two commands, in the order you would say them:
+
+```lua
+shikisha.split_pane("right")   -- divide, and the new half takes focus
+shikisha.show("br")            -- ...so this puts the browser there
+```
+
+There is no one command for that on purpose. `split_pane` and `show` each do one
+thing, and every arrangement anyone wants is some order of the two — a combined
+"split and open a browser" would only ever be the first arrangement somebody
+thought of.
+
 
 ### Waiting and time
 

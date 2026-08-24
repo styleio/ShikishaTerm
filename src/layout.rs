@@ -278,6 +278,18 @@ impl Layout {
         done
     }
 
+    /// Puts every divider back to even halves.
+    ///
+    /// After a few drags a layout drifts, and putting it right by hand means
+    /// finding each divider in turn. This is the one gesture that undoes all
+    /// of that, so it is worth having even though nothing else calls it.
+    pub fn equalize(&mut self) {
+        walk_splits_mut(&mut self.root, &mut |r| {
+            *r = 0.5;
+            false
+        });
+    }
+
     /// The surface shown in a given pane.
     pub fn surface_of(&self, id: PaneId) -> Option<usize> {
         self.leaves().into_iter().find(|(p, _)| *p == id).map(|(_, s)| s)
@@ -524,6 +536,19 @@ mod tests {
         assert!((inner.x - 0.25).abs() < 0.001, "内側は残りの領域を分ける: {inner:?}");
 
         assert!(!l.set_divider(9, 0.5), "存在しない仕切りは動かせない");
+    }
+
+    #[test]
+    fn equalizing_puts_every_divider_back() {
+        let mut l = Layout::single(1);
+        l.split(Dir::Row, 2);
+        l.split(Dir::Col, 3);
+        l.set_divider(0, 0.8);
+        l.set_divider(1, 0.15);
+        l.equalize();
+        for (r, _, ratio) in l.dividers() {
+            assert!((ratio - 0.5).abs() < 0.001, "半々に戻る: {r:?} {ratio}");
+        }
     }
 
     #[test]

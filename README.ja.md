@@ -117,6 +117,7 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 | `Ctrl+B %` / `"` | 画面を横に割る / 下に割る (`<` `>` で幅を変える) |
 | `Ctrl+B o` / 矢印 | ペインを移動 |
 | `Ctrl+B X` | このペインを閉じる (タブは動いたまま) |
+| `Ctrl+B =` | 仕切りを全部半々に戻す |
 | `Ctrl+B l` | 入力ロック切替 |
 | `Ctrl+B r` | タブの再起動 |
 | `Ctrl+B [` | コピーモード（`c` で最新の応答をコピー） |

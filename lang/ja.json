@@ -672,6 +672,8 @@
   "err.hooks.yield_only": "yieldはshikisha.wait/sleep経由のみ対応",
   "err.hooks.wait_regex": "waitの正規表現が不正: {pattern}",
   "err.hooks.unknown_yield": "不明なyield op: {other}",
+  "err.hooks.split_dir": "split_pane は \"right\" か \"down\" (受け取った値: {other})",
+  "err.hooks.focus_dir": "focus_pane は \"left\" \"right\" \"up\" \"down\" のいずれか (受け取った値: {other})",
   "err.hooks.step_limit": "停止: 何も呼ばずに長く回り続けています (終わらないループ?)",
   "err.hooks.tab_ref": "タブは番号かタブ名で指定してください",
   "transcript.record.header": "-- SHIKISHA ラリー記録: 実行したブラウザ操作Lua。\n-- これを on_done.lua (または on_load.lua) に貼れば、AI無しで同じ動きを再生できる。\n\n",
