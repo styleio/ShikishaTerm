@@ -14,7 +14,7 @@
 #>
 param([switch]$Verify)
 
-$root = Split-Path -Parent $PSScriptRoot
+$root = Join-Path (Split-Path -Parent $PSScriptRoot) '.private'
 $envFile = Join-Path $root '.env'
 $example = Join-Path $root '.env.example'
 
