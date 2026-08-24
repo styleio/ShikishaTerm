@@ -1420,7 +1420,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // Each workspace keeps its own set of tabs, launched the first time it's activated.
     // Launched tabs live in `tabs`; the shelf reserves space for the remaining workspaces.
     let mut ws_tabs: Vec<Vec<Tab>> = Vec::new();
+    // One pane tree per workspace, parked here while that workspace is off screen
+    let mut ws_panes: Vec<crate::layout::Layout> = Vec::new();
     ws_tabs.resize_with(workspaces.len(), Vec::new);
+    ws_panes.resize_with(workspaces.len(), || crate::layout::Layout::single(0));
     // Watch the config file for changes (saving takes effect without a restart)
     let mut watcher = watch::Watcher::new(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
     // Check once in the background for whether a newer version is out (only notifies; doesn't update)
@@ -1600,6 +1603,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // workspace can't index out of bounds; each inactive workspace's engine
                 // is rebuilt on demand on the next switch (the active one is rebuilt below).
                 engines = (0..new_ws.len().max(1)).map(|_| None).collect();
+                // The parked pane trees are indexed the same way, so they shift
+                // with it. A tree kept against a moved position would divide the
+                // wrong workspace into panes pointing at the wrong tabs, which
+                // looks deliberate and is not — start those over instead.
+                ws_panes = (0..new_ws.len().max(1))
+                    .map(|_| crate::layout::Layout::single(0))
+                    .collect();
                 workspaces = new_ws;
                 max_chain = newcfg.max_chain.unwrap_or(10);
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
@@ -2962,6 +2972,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     &mut ws_tabs,
                                     &workspaces,
                                     &mut active,
+                                    &mut pane_layout,
+                                    &mut ws_panes,
                                     rows,
                                     cols,
                                     &mut startup_errors,
@@ -3063,6 +3075,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     &mut ws_tabs,
                                     &workspaces,
                                     &mut active,
+                                    &mut pane_layout,
+                                    &mut ws_panes,
                                     rows,
                                     cols,
                                     &mut startup_errors,
@@ -4270,6 +4284,8 @@ fn switch_workspace(
     ws_tabs: &mut [Vec<Tab>],
     workspaces: &[config::Workspace],
     active: &mut usize,
+    panes: &mut crate::layout::Layout,
+    ws_panes: &mut [crate::layout::Layout],
     rows: u16,
     cols: u16,
     errors: &mut Vec<String>,
@@ -4286,11 +4302,18 @@ fn switch_workspace(
         || to >= workspaces.len()
         || to >= engines.len()
         || to >= ws_tabs.len()
+        || to >= ws_panes.len()
         || *ws_index >= ws_tabs.len()
+        || *ws_index >= ws_panes.len()
     {
         return;
     }
     ws_tabs[*ws_index] = std::mem::take(tabs);
+    // How a workspace is divided belongs to that workspace. Carrying one
+    // layout across the switch would leave a project split into panes that
+    // point at another project's tab numbers — the screen would look
+    // deliberate and mean nothing.
+    ws_panes[*ws_index] = panes.clone();
     // The Lua environment is kept per workspace (so shared variables survive switching)
     engines[*ws_index] = engine.take();
     *ws_index = to;
@@ -4314,6 +4337,8 @@ fn switch_workspace(
     started_fired.clear();
     started_fired.resize(tabs.len(), false);
     *active = if tabs.is_empty() { 0 } else { 1 };
+    *panes = std::mem::replace(&mut ws_panes[to], crate::layout::Layout::single(*active));
+    panes.show(*active);
 }
 
 /// What's laid out on screen, in exactly the order written in config.
