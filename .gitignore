@@ -22,22 +22,26 @@ logs/
 run/
 
 
-_material
+
+
+
+#AI
+.claude
+
+# demo/scratch artifacts (not source)
+/demo*.mp4
+/demo*.gif
+/_*.png
+/scratch_*
+
+# 私物ひとまとめ (設定・資格情報・このPC専用の道具・ロゴ原本)。
+# GitLab のプライベート側が面倒を見る -- .private.git がその git ディレクトリで、
+# 同じ作業フォルダに重ねてある。公開側からはどちらも見えない
+/local/
+/.private.git/
 
 # 起動ランチャは exe と同じ場所にだけ置く (ルートに置くと何も起動しない)
 Window.cmd
 
 #デバッグ用
 /screenshot
-Take-Screenshot.ps1
-
-#AI
-.claude
-
-# 実用テスト機への配置 (このマシン固有のパスを含むため git 管理外)
-Deploy.cmd
-# demo/scratch artifacts (not source)
-/demo*.mp4
-/demo*.gif
-/_*.png
-/scratch_*
