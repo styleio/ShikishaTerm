@@ -1,0 +1,37 @@
+# What gets handed out, and the only place it is written down.
+#
+# Four things distribute this app — build.rs (beside the dev exe), the deploy
+# hook and Deploy.cmd (the test machine), and release.yml (the download) — and
+# they used to each carry their own list. They drifted, quietly: the hook was
+# copying lang and nothing else, and no one could see it. A payload named here
+# reaches every one of them; anything not named here reaches none.
+#
+# Lines are `dir/pattern`. Blank lines and # comments are ignored.
+
+# --- Read from beside the exe at run time ---------------------------------
+# These OVERRIDE what is embedded in the binary, so a stale copy here wins over
+# a correct one inside. Every destination must refresh them together or an old
+# file silently outranks the new build.
+[beside-exe]
+# UI wording. English is embedded; everything else is only ever read from here
+lang/*.json
+# State-detection profiles. Without them every AI is judged GENERIC and the
+# per-AI busy/question patterns never fire
+profiles/*.json
+# The automation manual. Not just for people: the settings screen hands it to an
+# AI as the specification when it writes automation, so an old copy here teaches
+# it that half the commands do not exist
+docs/AUTOMATION*.md
+
+# --- Carried by the download only -----------------------------------------
+# Nothing here is read by the app; it is what makes an unzipped folder usable.
+[package]
+Settings.cmd
+README.md
+README.ja.md
+LICENSE
+SECURITY.md
+config.example.json
+secrets.example.json
+scripts/**
+workspaces/**

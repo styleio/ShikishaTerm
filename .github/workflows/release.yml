@@ -32,21 +32,15 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
-      # 展開してすぐ動く形にまとめる。設定ファイルは example のみ同梱する
-      # (利用者の config.json / secrets.json を上書きしないため)
+      # 展開してすぐ動く形にまとめる。何を同梱するかは dist.list ただ1つが決める
+      # (配る側が各自リストを持っていた頃は、静かに食い違った)。
+      # 設定ファイルは example のみ同梱する — 利用者の config.json / secrets.json
+      # を上書きしないため。logs/ は初回書き込み時に本体が作るので同梱しない
       - name: Stage the portable folder
         shell: pwsh
         run: |
-          $dir = "dist/SHIKISHA-TERM"
-          New-Item -ItemType Directory -Force $dir | Out-Null
-          Copy-Item "target/release/SHIKISHA-TERM.exe" $dir
-          Copy-Item "Settings.cmd"                        $dir
-          Copy-Item "README.md", "README.ja.md", "LICENSE", "SECURITY.md" $dir
-          Copy-Item "config.example.json", "secrets.example.json"         $dir
-          Copy-Item -Recurse "lang", "profiles", "scripts", "workspaces"  $dir
-          New-Item -ItemType Directory -Force "$dir/docs" | Out-Null
-          Copy-Item "docs/AUTOMATION.md", "docs/AUTOMATION.ja.md" "$dir/docs"
-          # logs/ は初回書き込み時に本体が作るので同梱しない
+          ./tools/stage.ps1 -Dest "dist/SHIKISHA-TERM" -Package `
+                            -Exe "target/release/SHIKISHA-TERM.exe"
 
       - name: Zip
         shell: pwsh

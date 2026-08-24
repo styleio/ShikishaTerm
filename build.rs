@@ -39,16 +39,11 @@ fn main() {
         }
     }
 
-    // 訳語は exe の隣の lang/ から読む。手で置いたままだと、
-    // 直しても動かしたものには届かない (「あなた」が YOU のままだった)
-    copy_beside_exe("lang", "json");
-    // 書き方の説明も同じ。こちらは人が読むだけでなく、
-    // 自動化を書かせるAIへそのまま渡している。古いものが隣に残っていると、
-    // AIは「その機能は仕様に無い」と正しく答えてしまう
-    copy_beside_exe("docs", "md");
-    // 状態検出プロファイル (profiles/*.json) も exe の隣から読む
-    // (profile::candidate_dirs)。配らないと配布版が全AIをGENERIC判定にしてしまう
-    copy_beside_exe("profiles", "json");
+    // exe の隣に置くものは dist.list に書いてある。配る側 (ここ・Deploy.cmd・
+    // deploy-hook・release.yml) が各自リストを持っていた頃は、静かに食い違った
+    for pattern in beside_exe_patterns() {
+        copy_beside_exe(&pattern);
+    }
 
     println!("cargo:rustc-env=BUILD_TIME={built}");
     println!(
@@ -98,14 +93,42 @@ fn watch_git_head() {
     }
 }
 
-/// リポジトリのフォルダを、そのまま exe の隣へ置く。
+/// dist.list の [beside-exe] に並んだ `dir/pattern` を読む。
+///
+/// わざと素朴な形式にしてある。同じファイルを PowerShell 側 (tools/stage.ps1)
+/// も読むので、両方にライブラリが要る形式にすると、いつか解釈がずれる
+fn beside_exe_patterns() -> Vec<String> {
+    println!("cargo:rerun-if-changed=dist.list");
+    let Ok(text) = std::fs::read_to_string("dist.list") else {
+        println!("cargo:warning=dist.list が読めません。exe の隣に何も配れません");
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut in_section = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if let Some(name) = t.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+            in_section = name == "beside-exe";
+            continue;
+        }
+        if in_section {
+            out.push(t.to_string());
+        }
+    }
+    out
+}
+
+/// `dir/pattern` にあたるものを、そのまま exe の隣へ置く。
 ///
 /// 隣に置かれたものは埋め込みより優先される。置きっぱなしにすると、
 /// 直したはずのものが動かしたものへ届かない
 ///
 /// OUT_DIR は target/<profile>/build/<pkg>-<hash>/out なので、
 /// 3つ上が exe の置き場になる
-fn copy_beside_exe(dir_name: &str, ext: &str) {
+fn copy_beside_exe(pattern: &str) {
     let Ok(out) = std::env::var("OUT_DIR") else {
         return;
     };
@@ -113,6 +136,10 @@ fn copy_beside_exe(dir_name: &str, ext: &str) {
     for _ in 0..3 {
         dir.pop();
     }
+    let Some((dir_name, file_pat)) = pattern.rsplit_once('/') else {
+        println!("cargo:warning=dist.list の書き方が読めません: {pattern}");
+        return;
+    };
     let dest = dir.join(dir_name);
     if std::fs::create_dir_all(&dest).is_err() {
         return;
@@ -122,13 +149,26 @@ fn copy_beside_exe(dir_name: &str, ext: &str) {
     };
     for e in entries.flatten() {
         let from = e.path();
-        if from.extension().is_some_and(|x| x == ext) {
-            if let Some(name) = from.file_name() {
-                // 配れなくても止めない。埋め込んだもので動く
-                if let Err(err) = std::fs::copy(&from, dest.join(name)) {
-                    println!("cargo:warning={dir_name} を配れませんでした {name:?}: {err}");
-                }
-            }
+        let Some(name) = from.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !matches_pattern(name, file_pat) {
+            continue;
         }
+        // 配れなくても止めない。埋め込んだもので動く
+        if let Err(err) = std::fs::copy(&from, dest.join(name)) {
+            println!("cargo:warning={dir_name} を配れませんでした {name}: {err}");
+        }
+    }
+}
+
+/// `*` を1つだけ含む形 (`*.json`, `AUTOMATION*.md`) に対する照合。
+/// それ以上は要らない。要るようになったら、その時に足す
+fn matches_pattern(name: &str, pat: &str) -> bool {
+    match pat.split_once('*') {
+        Some((head, tail)) => {
+            name.len() >= head.len() + tail.len() && name.starts_with(head) && name.ends_with(tail)
+        }
+        None => name == pat,
     }
 }

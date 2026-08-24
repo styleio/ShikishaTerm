@@ -5424,6 +5424,58 @@ mod tests {
         assert!(k.modifiers.is_empty());
     }
 
+    /// What gets handed out is written down once, and everyone reads that.
+    ///
+    /// Four things distribute this app and each used to carry its own list. They
+    /// drifted without a sound: the deploy hook was copying the wording files and
+    /// nothing else, so the detection profiles and the automation manual never
+    /// reached the test machine at all, and no one could have noticed. A payload
+    /// that is named once cannot arrive in some places and not others.
+    #[test]
+    fn one_list_says_what_gets_handed_out() {
+        let list = include_str!("../dist.list");
+        let mut patterns: Vec<&str> = Vec::new();
+        for line in list.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') || t.starts_with('[') {
+                continue;
+            }
+            patterns.push(t);
+        }
+        assert!(patterns.len() > 5, "dist.list を読めていない ({} 件)", patterns.len());
+
+        // A pattern matching nothing is a typo that deploys quietly and forever
+        for p in &patterns {
+            let rel = p.trim_end_matches("/**");
+            let (dir, file_pat) = rel.rsplit_once('/').unwrap_or((".", rel));
+            // cargo test runs from the crate root, which is where these live
+            let hit = std::fs::read_dir(dir).ok().is_some_and(|mut e| {
+                e.any(|f| {
+                    f.ok().is_some_and(|f| {
+                        let name = f.file_name().to_string_lossy().to_string();
+                        match file_pat.split_once('*') {
+                            Some((h, t)) => name.starts_with(h) && name.ends_with(t),
+                            None => name == file_pat || file_pat.is_empty(),
+                        }
+                    })
+                })
+            });
+            assert!(hit, "dist.list の `{p}` に当てはまるものが1つも無い (綴り間違い?)");
+        }
+
+        // ...and the consumers must go through it rather than keeping their own copy
+        let build_rs = include_str!("../build.rs");
+        assert!(build_rs.contains("dist.list"), "build.rs が dist.list を読んでいない");
+        let release = include_str!("../.github/workflows/release.yml");
+        assert!(release.contains("stage.ps1"), "release.yml が共通の配布処理を呼んでいない");
+        for hardcoded in ["Copy-Item -Recurse \"lang\"", "docs/AUTOMATION.md\", \"docs/AUTOMATION.ja.md\""] {
+            assert!(
+                !release.contains(hardcoded),
+                "release.yml が独自の配布物リストを持っている: {hardcoded}"
+            );
+        }
+    }
+
     /// Which page the restart applies to.
     ///
     /// A page has no process, so "put it back the way it started" is only possible
