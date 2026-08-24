@@ -612,6 +612,9 @@ shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
 
 ### 誰が入れるか
 
+設定画面では **「外部制御」** のカードです。保存した瞬間に切り替わります（再起動は不要）。
+設定ファイルなら1行です。
+
 ```jsonc
 "external_api": { "access": "children" }   // 既定
 ```

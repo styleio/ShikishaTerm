@@ -21,8 +21,11 @@ once it reaches its first tagged release.
   `SHIKISHA_TOKEN`, and `SHIKISHA_TAB` — so an agent in a tab can drive the app
   with no setup, and because the key is the tab's own, what it sends counts
   against the same chain limit as work handed over on screen. The pipe carries
-  an access list naming your account alone; `"external_api": {"access": …}`
-  chooses between `children` (the default), `user`, and `off`.
+  an access list naming your account alone. The **External control** card in
+  the settings screen chooses between `children` (the default), `user`, and
+  `off`, and takes effect the moment it is saved — the pipe opens or closes
+  without a restart, while the keys already handed to running tabs stay valid
+  across the switch.
 
 - **Split panes.** The content area divides into a tree of panes, and each pane
   shows one tab: `Ctrl+B %` beside, `Ctrl+B "` below, arrows or `Ctrl+B o` to

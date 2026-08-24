@@ -1539,6 +1539,21 @@ fn handle(
             )?;
         }
         // Status of the phone-usable feature (also returns which network is available)
+        // Where the external API is listening, so the settings screen can show
+        // the pipe by name — a person writing a script against it needs the
+        // exact string, and it carries the process id, so it is not guessable
+        // from the docs alone. No token is ever handed out here: in `user` mode
+        // it sits in data\api-token, and in `children` mode it exists only in
+        // the environment of what this app started
+        ("GET", "/api/external") => {
+            let path = crate::api::listening_on();
+            let resp = serde_json::json!({
+                "running": path.is_some(),
+                "path": path,
+                "token_file": crate::config::state_path("api-token").display().to_string(),
+            });
+            req.respond(json_resp(resp))?;
+        }
         ("GET", "/api/remote") => {
             let info = effective_remote(remote);
             let ts = crate::netaddr::tailscale_ip().map(|i| i.to_string());
@@ -2971,6 +2986,7 @@ function globalSections() {
     {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},
     {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:notifyCard},
     {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
+    {id:"api",       label:T["settings.sec.api"],       sub:T["settings.sec.api.sub"],       build:apiCard},
     {id:"files",     label:T["settings.sec.files"],     sub:T["settings.sec.files.sub"],     build:filesCard},
     {id:"secrets",   label:T["settings.sec.secrets"],   sub:T["settings.sec.secrets.sub"],   build:secretsCard},
     {id:"results",   label:T["settings.sec.results"],   sub:T["settings.sec.results.sub"],   build:rallyResultCard},
@@ -3386,6 +3402,58 @@ async function loadSecrets() {
   }
 }
 // The phone-usage setting. Explains the risk plainly, but still lets it be enabled with one click
+// External control. One setting with three values, and the two things a person
+// needs in order to actually use it: the exact pipe name (it carries the process
+// id, so no document can print it) and, in `user` mode, where the key is kept.
+// The key itself is never shown here — reading it is the point of the file.
+function apiCard() {
+  current.external_api = current.external_api || {};
+  const a = current.external_api;
+  // Show what is actually in force. An unset value means the default is
+  // running, and a blank dropdown would say "nothing is chosen" about a door
+  // that is currently open
+  if (!a.access) a.access = "children";
+  const status = el("div", {class:"hint"}, "…");
+  const where = el("div", {class:"row"});
+  const keyfile = el("div", {class:"hint", style:"margin-top:6px"});
+
+  const box = card(T["settings.section.api"],
+    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.api.intro"]),
+    row(T["settings.api.access"],
+        choose(a, "access", [
+          ["children", T["settings.api.access.children"]],
+          ["user",     T["settings.api.access.user"]],
+          ["off",      T["settings.api.access.off"]],
+        ], async () => { await save(); setTimeout(refreshApi, 600); }),
+        el("span", {class:"hint"}, T["settings.api.access.hint"])),
+    el("div", {class:"row"}, status),
+    where,
+    keyfile,
+    el("div", {class:"hint", style:"margin-top:10px"}, T["settings.api.note"]),
+    el("div", {style:"margin-top:8px"},
+      el("a", {href:"/help?token=" + encodeURIComponent(TOKEN), target:"_blank"},
+        T["settings.api.help"])));
+
+  refreshApi();
+  async function refreshApi() {
+    let j = {};
+    try { j = await (await fetch("/api/external", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    status.textContent = j.running ? T["settings.api.listening"] : T["settings.api.stopped"];
+    status.style.color = j.running ? "var(--accent)" : "var(--muted)";
+    where.textContent = "";
+    if (j.running && j.path) {
+      where.append(el("label", {}, T["settings.api.where"]),
+                   el("code", {class:"mono", style:"user-select:all"}, j.path));
+    }
+    // Only said when the key is actually written down. In the default mode
+    // there is no file to warn about
+    keyfile.textContent = (j.running && (a.access || "children") === "user")
+      ? fill(T["settings.api.tokenfile"], {path: j.token_file}) : "";
+  }
+  return box;
+}
+
 function remoteCard() {
   current.remote = current.remote || {};
   const r = current.remote;

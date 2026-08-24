@@ -572,6 +572,9 @@ chunk ran**, followed by whatever it returned.
 
 ### Who is allowed in
 
+On the settings screen it is the **External control** card; changing it there takes
+effect the moment you save, with no restart. In the file it is one line:
+
 ```jsonc
 "external_api": { "access": "children" }   // the default
 ```

@@ -1694,6 +1694,23 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         i18n::t("msg.remote_stopped")
                     });
                 }
+                // The external API answers the same way: saving is the switch.
+                // Tabs already running keep the keys they were born with (the
+                // keys outlive the server, the pipe does not), so turning it
+                // off and back on doesn't strand the agents mid-task
+                let want_api = newcfg.external_api.access;
+                if want_api != cfg.as_ref().map(|c| c.external_api.access).unwrap_or_default() {
+                    if let Some(a) = api_server.as_mut() {
+                        a.shutdown();
+                    }
+                    api_server = match api::ApiServer::start(want_api) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            append_hook_log(&format!("external API did not start: {e}"));
+                            None
+                        }
+                    };
+                }
                 cfg = Some(newcfg);
                 // Re-resolve the model bridge's connection info (picks up providers/secret changes)
                 if let Some(c) = &cfg {

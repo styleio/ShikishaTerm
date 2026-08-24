@@ -90,14 +90,20 @@ pub struct ApiCall {
 /// token -> the tab that owns it (`None` for the shared `user` token)
 type Tokens = Arc<Mutex<HashMap<String, Option<String>>>>;
 
-/// What a tab's child needs to find the door. Set once at startup, read from
-/// `Tab::spawn`, which is the one place every tab's process is born
-struct Handle {
-    path: String,
-    tokens: Tokens,
-}
+/// Every key minted this run.
+///
+/// Belongs to the process, not to one server: the setting can be turned off and
+/// on again from the settings screen, and the tabs already running would
+/// otherwise be left holding keys to a door that no longer recognises them.
+static TOKENS: OnceLock<Tokens> = OnceLock::new();
 
-static HANDLE: OnceLock<Handle> = OnceLock::new();
+/// The pipe currently being listened on, or `None` while the API is off — which
+/// is also how `child_env` knows to hand a new tab nothing at all
+static PIPE: Mutex<Option<String>> = Mutex::new(None);
+
+fn tokens() -> &'static Tokens {
+    TOKENS.get_or_init(Tokens::default)
+}
 
 /// The environment a tab's child process is launched with.
 ///
@@ -107,17 +113,22 @@ static HANDLE: OnceLock<Handle> = OnceLock::new();
 /// AIs handing work to each other through the API is counted the same way as
 /// one doing it through the screen
 pub fn child_env(tab: &str) -> Vec<(String, String)> {
-    let Some(h) = HANDLE.get() else {
+    let Some(path) = PIPE.lock().ok().and_then(|p| p.clone()) else {
         return Vec::new();
     };
     // A restart is the same tab with a new process. Its old key belonged to
     // the process that is gone, and nothing should still be able to use it
-    forget_in(&h.tokens, tab);
+    forget_in(tokens(), tab);
     vec![
-        (ENV_PIPE.to_string(), h.path.clone()),
-        (ENV_TOKEN.to_string(), mint_into(&h.tokens, tab)),
+        (ENV_PIPE.to_string(), path),
+        (ENV_TOKEN.to_string(), mint_into(tokens(), tab)),
         (ENV_TAB.to_string(), tab.to_string()),
     ]
+}
+
+/// Where the pipe is, for the settings screen to show. `None` while off
+pub fn listening_on() -> Option<String> {
+    PIPE.lock().ok().and_then(|p| p.clone())
 }
 
 fn mint_into(tokens: &Tokens, tab: &str) -> String {
@@ -153,7 +164,10 @@ impl ApiServer {
             let _ = std::fs::remove_file(crate::config::state_path(TOKEN_FILE));
             return Ok(None);
         }
-        let server = Self::listen(format!(r"\\.\pipe\shikisha-{}", std::process::id()))?;
+        let server = Self::listen(
+            format!(r"\\.\pipe\shikisha-{}", std::process::id()),
+            Arc::clone(tokens()),
+        )?;
 
         if access == Access::User {
             // Rotated every launch. The folder beside the exe may well sit
@@ -163,14 +177,16 @@ impl ApiServer {
             server.tokens.lock().unwrap().insert(shared.clone(), None);
             crate::crypto::write_atomic(&crate::config::state_path(TOKEN_FILE), &shared)?;
         } else {
+            // Coming down from `user`: deleting the file is not enough, since
+            // whoever read it still holds what was in it
+            server.tokens.lock().unwrap().retain(|_, owner| owner.is_some());
             let _ = std::fs::remove_file(crate::config::state_path(TOKEN_FILE));
         }
 
         // From here on, `child_env` can hand a tab's child the way in
-        let _ = HANDLE.set(Handle {
-            path: server.path.clone(),
-            tokens: Arc::clone(&server.tokens),
-        });
+        if let Ok(mut p) = PIPE.lock() {
+            *p = Some(server.path.clone());
+        }
         crate::append_hook_log(&format!(
             "external API listening on {} ({access:?})",
             server.path
@@ -179,9 +195,9 @@ impl ApiServer {
     }
 
     /// Open the pipe and start accepting. Split out from `start` so a test can
-    /// run one under a name of its own — the production name is the process
-    /// id, and two servers can no more share that than two apps could
-    fn listen(path: String) -> anyhow::Result<Self> {
+    /// run one under a name and a key set of its own — the production name is
+    /// the process id, and two servers can no more share that than two apps could
+    fn listen(path: String, tokens: Tokens) -> anyhow::Result<Self> {
         // Refused rather than fallen back on: no API is a better outcome than
         // one with no access list
         let sd = SecurityDescriptor::only_me()
@@ -191,7 +207,6 @@ impl ApiServer {
         let first = PipeStream::create(&path, &sd, true)
             .ok_or_else(|| anyhow::anyhow!("could not create {path}"))?;
 
-        let tokens: Tokens = Arc::new(Mutex::new(HashMap::new()));
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let accept = {
@@ -240,12 +255,18 @@ impl ApiServer {
     /// Stop listening. The accept thread is parked inside ConnectNamedPipe, so
     /// it is woken the only way it can be: by connecting to it once ourselves
     pub fn shutdown(&mut self) {
+        // A tab started from here on gets no key: there is nothing to unlock
+        if let Ok(mut p) = PIPE.lock() {
+            *p = None;
+        }
         self.stop.store(true, Ordering::SeqCst);
         let _ = std::fs::File::open(&self.path);
         if let Some(t) = self.accept.take() {
             let _ = t.join();
         }
         let _ = std::fs::remove_file(crate::config::state_path(TOKEN_FILE));
+        // The log said when the door opened; it should say when it closed
+        crate::append_hook_log(&format!("external API stopped listening on {}", self.path));
     }
 }
 
@@ -618,7 +639,7 @@ mod tests {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
         let path = format!(r"\\.\pipe\shikisha-test-{}-{n}", std::process::id());
-        let mut server = ApiServer::listen(path).unwrap();
+        let mut server = ApiServer::listen(path, Tokens::default()).unwrap();
         let rx = std::mem::replace(&mut server.rx, channel().1);
         std::thread::spawn(move || {
             while let Ok(call) = rx.recv() {
@@ -700,6 +721,32 @@ mod tests {
         let refused = c.call("show", vec![]);
         assert!(refused.is_err() || refused.unwrap()["ok"] == serde_json::json!(false));
         server.shutdown();
+    }
+
+    #[test]
+    fn a_key_outlives_the_server_that_issued_it() {
+        // The setting can be switched off and on again from the settings
+        // screen. The pipe goes away and comes back; the keys must not, or
+        // every agent already running would be locked out of a door it was
+        // given the key to, with nothing on screen to say why
+        let keys = Tokens::default();
+        let path = format!(r"\\.\pipe\shikisha-test-restart-{}", std::process::id());
+        let mut first = ApiServer::listen(path.clone(), Arc::clone(&keys)).unwrap();
+        let token = first.mint("worker");
+        first.shutdown();
+
+        let mut second = ApiServer::listen(path, Arc::clone(&keys)).unwrap();
+        let rx = std::mem::replace(&mut second.rx, channel().1);
+        std::thread::spawn(move || {
+            while let Ok(call) = rx.recv() {
+                let _ = call.reply.send(Ok(serde_json::json!(call.caller)));
+            }
+        });
+        let mut c = ApiClient::connect(&second.path, &token).unwrap();
+        let got = c.call("state", vec![]).unwrap();
+        assert_eq!(got["ok"], serde_json::json!(true), "{got}");
+        assert_eq!(got["result"], "worker", "誰の鍵かも覚えている");
+        second.shutdown();
     }
 
     #[test]
