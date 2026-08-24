@@ -579,7 +579,7 @@ chunk ran**, followed by whatever it returned.
 | Value | Who can call |
 |---|---|
 | `children` | Only what the app started — a tab's CLI, and whatever that starts in turn |
-| `user` | Anything running as you. The token is also written to `datapi-token` |
+| `user` | Anything running as you. The token is also written to `data\api-token` |
 | `off` | Nothing. The pipe is not created at all |
 
 Every tab's process is launched knowing three things, so an AI sitting in a tab needs no
