@@ -677,7 +677,15 @@ let holding = false, queued = null, holdTimer = 0;
 const release = () => {
   holding = false;
   clearTimeout(holdTimer);
-  if (queued !== null) { const j = queued; queued = null; window.__state(j); }
+  if (queued === null) return;
+  const j = queued; queued = null;
+  // Hand the held-back redraw to the NEXT task rather than running it here.
+  // A click has not been delivered yet at pointerup — the browser dispatches it
+  // immediately afterwards — so rebuilding from this handler removes the very
+  // element the click was about to land on, and the press vanishes with it.
+  // That is the same "started and ended on the same element" rule the guard
+  // above exists for; it simply has to hold one step longer than the press.
+  setTimeout(() => window.__state(j), 0);
 };
 addEventListener("pointerdown", () => {
   holding = true;
@@ -691,8 +699,13 @@ addEventListener("pointerdown", () => {
 }, true);
 addEventListener("pointerup", release, true);
 addEventListener("pointercancel", release, true);
-// Covers the case where the pointer is released outside the window — better than staying stuck "held"
-addEventListener("blur", release, true);
+// Covers the case where the pointer is released outside the window — better than
+// staying stuck "held". The window's own blur and nothing else: with capture this
+// caught EVERY element's blur, and clicking a tab blurs whatever had focus, so the
+// guard was disarmed in the middle of the very press it exists to protect — the
+// next redraw then took the element out from under the click and the press was
+// lost. blur does not bubble, so a plain listener here hears only the window.
+addEventListener("blur", release);
 
 // Drawer-style tab bar (narrow/tall screens). Inert on wide screens since the bar stays visible there
 {
@@ -3393,6 +3406,53 @@ mod tests {
         ] {
             assert!(PAGE.contains(field), "状態の {field} を誰も見ていない");
         }
+    }
+
+    /// Only the window losing focus may end a press.
+    ///
+    /// The guard was released on a CAPTURING blur listener, which hears every
+    /// element's blur, not the window's. Clicking a tab blurs whatever had focus,
+    /// so the guard was disarmed in the middle of the very press it protects: the
+    /// next state push rebuilt the tab bar, the element went out from under the
+    /// click, and the press was never delivered. Measured at 3 in 10 on a real
+    /// window, worse right after switching to a browser tab, where the page load,
+    /// the nav bar and the screencast all push at once. blur does not bubble, so
+    /// a plain listener hears the window alone.
+    #[test]
+    fn a_press_ends_only_when_the_window_does() {
+        assert!(
+            PAGE.contains(r#"addEventListener("blur", release);"#),
+            "ウィンドウ以外の blur でも押下ガードを解除している"
+        );
+        assert!(
+            !PAGE.contains(r#"addEventListener("blur", release, true);"#),
+            "capture 付きの blur に戻っている (要素の blur でガードが外れる)"
+        );
+        // The presses themselves still have to be seen before anything else
+        for armed in [r#"addEventListener("pointerdown""#, r#"addEventListener("pointerup", release, true)"#] {
+            assert!(PAGE.contains(armed), "押下の検知が消えている: {armed}");
+        }
+    }
+
+    /// A press must survive the redraw that ends it.
+    ///
+    /// State arriving mid-press is held back, because rebuilding the tab bar
+    /// between pointerdown and pointerup destroys the element and the press goes
+    /// nowhere. But the click is delivered AFTER pointerup, so releasing the hold
+    /// and redrawing in the same handler recreated the very bug the hold exists
+    /// to prevent — a tab click was swallowed whenever a push happened to land
+    /// during the press, which is most of the time just after switching to a
+    /// browser tab (its load, nav bar and screencast all push at once).
+    #[test]
+    fn a_press_outlives_the_redraw_that_ends_it() {
+        assert!(
+            PAGE.contains("setTimeout(() => window.__state(j), 0);"),
+            "押している間に溜めた再描画を、その場で流している (クリックが消える)"
+        );
+        assert!(
+            !PAGE.contains("queued = null; window.__state(j); }"),
+            "pointerup と同じ処理の中で再描画する古い配線に戻っている"
+        );
     }
 
     /// Where the restart button appears is the app's call, not the screen's.
