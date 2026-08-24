@@ -17,6 +17,11 @@
     "port": 8787
   },
 
+  "//external_api": "外部から操るための名前付きパイプ。children=このアプリが起動したプロセスのみ(既定) / user=あなたの権限で動くもの全部(合言葉が data/api-token に書かれる) / off=作らない",
+  "external_api": {
+    "access": "children"
+  },
+
   "//workspaces": "切り替える単位。file で定義ファイルを参照するか、tabs を直書きする",
   "workspaces": [
     {

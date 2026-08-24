@@ -15,6 +15,7 @@
 // Windows allocate one. (Only the terminal-facing --settings mode opens one itself, on demand.)
 #![windows_subsystem = "windows"]
 
+mod api;
 mod attach;
 mod ball;
 mod bridge;
@@ -1175,6 +1176,21 @@ fn run(mut surface: WinSurface) -> Result<()> {
         bridge::set_providers(c, None);
     }
 
+    // The external control API. Opened before the first tab, because a tab's
+    // process is handed the way in as it is launched — one started earlier
+    // would spend its whole life unable to call back
+    let mut api_server = match api::ApiServer::start(
+        cfg.as_ref().map(|c| c.external_api.access).unwrap_or_default(),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            // Not worth refusing to start over. Say so plainly in the log
+            // rather than leaving a silent absence
+            append_hook_log(&format!("external API did not start: {e}"));
+            None
+        }
+    };
+
     let mut tabs: Vec<Tab> = Vec::new();
     let remembered = config::load_last_workspace();
     let mut ws_index = starting_workspace(
@@ -1357,6 +1373,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut remote_ui: Option<remote::RemoteUi> = None;
     let mut remote_rx = start_remote_bg(cfg.as_ref(), password.as_deref());
     publish_remote(&remote_info, &remote_ui);
+
 
     // Where focus is currently directed. None = never moved it yet.
     let mut focused: Option<Option<String>> = None;
@@ -1728,6 +1745,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 }
             }
 
+            // Retire the API keys of tabs that are gone. Told the live set
+            // rather than each closure: tabs leave in several ways, and a key
+            // that outlives its tab is a working key nobody is watching
+            if let Some(a) = api_server.as_ref() {
+                a.retain_tabs(&tabs.iter().map(|t| t.title.clone()).collect::<Vec<_>>());
+            }
+
             // Fire hooks -> resume waiting coroutines -> run the queued operations
             if let Some(eng) = engine.as_mut() {
                 // Let the loop read the current state (shikisha.state)
@@ -1993,6 +2017,38 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         Err(e) => flash = Some(i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))])),
                     }
                 }
+            }
+        }
+
+        // Calls waiting on the external API's pipe. Answered here, on the loop,
+        // because the Lua state belongs to this thread — the caller is holding
+        // its line open for the answer, so this is drained every turn (16ms)
+        // rather than on the 200ms detection tick
+        if let Some(a) = api_server.as_ref() {
+            while let Ok(call) = a.rx.try_recv() {
+                let answer = match engine.as_ref() {
+                    Some(eng) => {
+                        eng.call_primitive_as(call.caller.as_deref(), &call.method, &call.params)
+                    }
+                    // A workspace with no Lua of its own still has an engine's
+                    // worth of commands to offer; make one rather than answer
+                    // "not available" (the same gap-filler as 🎯 operate and ▶)
+                    None => match crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(
+                        &caps,
+                    )) {
+                        Ok(eng) => {
+                            let out = eng.call_primitive_as(
+                                call.caller.as_deref(),
+                                &call.method,
+                                &call.params,
+                            );
+                            engine = Some(eng);
+                            out
+                        }
+                        Err(e) => Err(e.to_string()),
+                    },
+                };
+                let _ = call.reply.send(answer);
             }
         }
 
@@ -3369,6 +3425,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     }
     if let Some(r) = &remote_ui {
         r.shutdown();
+    }
+    if let Some(a) = api_server.as_mut() {
+        a.shutdown();
     }
     for t in tabs.iter_mut() {
         t.kill();

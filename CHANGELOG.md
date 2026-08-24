@@ -9,6 +9,21 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **An external control API.** A program outside the app can call the same
+  commands automations are written with, over a named pipe
+  (`\\.\pipe\shikisha-<pid>`, one JSON object per line). The method name is the
+  Lua command with the `shikisha.` taken off — there is no second vocabulary,
+  and `list` answers with the app's own table of commands, so it cannot fall
+  behind what the app can really do. `lua` hands over a whole chunk, for a loop
+  or a branch in one round trip.
+
+  Every tab's process is launched knowing `SHIKISHA_PIPE`, its own
+  `SHIKISHA_TOKEN`, and `SHIKISHA_TAB` — so an agent in a tab can drive the app
+  with no setup, and because the key is the tab's own, what it sends counts
+  against the same chain limit as work handed over on screen. The pipe carries
+  an access list naming your account alone; `"external_api": {"access": …}`
+  chooses between `children` (the default), `user`, and `off`.
+
 - **Split panes.** The content area divides into a tree of panes, and each pane
   shows one tab: `Ctrl+B %` beside, `Ctrl+B "` below, arrows or `Ctrl+B o` to
   move between them, `<` `>` to move the divider, `Ctrl+B X` to close the view
@@ -24,6 +39,19 @@ once it reaches its first tagged release.
   A surface is only ever in one pane: picking a tab that is already showing
   elsewhere swaps the two panes rather than running the same terminal at two
   different widths. Undivided, everything looks and behaves exactly as before.
+
+### Fixed
+- **Lua that never returns no longer takes the window with it.** The engine runs
+  on the main loop, so a `while true do end` typed into the composer — or sent
+  from a phone, which could already be done — froze the app outright, with no
+  keystroke and no redraw until it was killed from the task manager. An entry
+  into Lua now has an instruction budget and comes back with an explanation
+  instead. It counts instructions, not time, so a command that legitimately
+  waits half a minute on a page is never mistaken for a runaway.
+- **A `config.json` saved by a Windows editor is read again.** Notepad's "UTF-8"
+  and PowerShell's `Set-Content -Encoding utf8` both write a byte-order mark;
+  the parser rejected the file, loading moved on to the next candidate, and the
+  app came up on someone else's settings while the edit appeared to do nothing.
 
 ## [0.2.0] - 2026-08-24
 

@@ -184,6 +184,17 @@ pub fn encrypt_file(path: &std::path::Path, password: &str) -> Result<()> {
     write_atomic(path, &serde_json::to_string_pretty(&env)?)
 }
 
+/// Constant-time comparison, for anything that gates access on a secret
+/// string. Bailing out at the first differing byte tells whoever is guessing
+/// how much of their guess was right, one byte at a time.
+///
+/// Lives here, in one place, because three doors need it now (the phone's
+/// token, the settings server's, and the external API's) and three copies
+/// would be three chances to write the fast, leaky version.
+pub fn token_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 /// Write via a temp file then rename (avoids conflicts with Google Drive
 /// sync; see DESIGN section 11).
 pub fn write_atomic(path: &std::path::Path, content: &str) -> Result<()> {

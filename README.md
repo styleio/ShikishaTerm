@@ -184,6 +184,11 @@ shikisha.send_to_tab("reviewer", "Please fix these points:\n" .. tab.output)
 Automations run in a sandbox: **no file access and no network by default**, and
 notifications can only go to targets you registered.
 
+The same commands can be called **from outside the app**, over a named pipe, by anything
+this app started — so a CLI sitting in a tab can split a pane, drive the browser, or hand
+work to another tab without a human at the keyboard. Same names as in Lua, nothing new to
+learn. See section 7 of the reference.
+
 Full reference: **[docs/AUTOMATION.md](docs/AUTOMATION.md)** — also reachable from the
 settings screen.
 

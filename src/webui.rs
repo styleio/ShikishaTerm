@@ -80,14 +80,6 @@ fn random_token() -> Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Constant-time comparison (rejects token brute-forcing without leaking timing info)
-fn token_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 /// Marks a request that reached this loopback server through the remote proxy —
 /// i.e. the person operating it is on a phone, not at this PC. The proxy builds
 /// a fresh request and never forwards the phone's own headers, so this can only
@@ -895,7 +887,7 @@ fn handle(
             h
         }
     };
-    if !host_ok || !token_eq(&supplied, token) {
+    if !host_ok || !crate::crypto::token_eq(&supplied, token) {
         return req
             .respond(Response::from_string("forbidden").with_status_code(403))
             .map_err(Into::into);
@@ -5466,9 +5458,9 @@ mod tests {
 
     #[test]
     fn token_compare_rejects_mismatch() {
-        assert!(token_eq("abc123", "abc123"));
-        assert!(!token_eq("abc123", "abc124"));
-        assert!(!token_eq("abc", "abc123"));
+        assert!(crate::crypto::token_eq("abc123", "abc123"));
+        assert!(!crate::crypto::token_eq("abc123", "abc124"));
+        assert!(!crate::crypto::token_eq("abc", "abc123"));
     }
 
     #[test]

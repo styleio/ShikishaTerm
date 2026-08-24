@@ -1186,6 +1186,12 @@ impl Tab {
             argv
         };
         let mut cmd = build_command(spawn_argv);
+        // Where the external API is, the key to it, and which tab this is.
+        // Done here because this is the one place a tab's process is born —
+        // a CLI started anywhere else would silently have no way to call home
+        for (k, v) in crate::api::child_env(&title) {
+            cmd.env(k, v);
+        }
         // If unspecified/nonexistent, launch in the app's folder
         // (passing a nonexistent folder would make the launch itself fail)
         let cwd = opts

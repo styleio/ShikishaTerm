@@ -537,7 +537,76 @@ Every file and network operation is recorded in `logs/hooks.log`.
 
 ---
 
-## 7. Tips for writing it
+## 7. Driving it from outside (the external API)
+
+A program outside the app can call the same commands you write in Lua. Same names, same
+arguments — there is no second vocabulary to learn.
+
+The door is a **named pipe**, `\\.\pipe\shikisha-<pid>`. One JSON object per line, one
+line of answer back:
+
+```text
+→ {"token":"…"}                                                  the handshake, once
+← {"ok":true,"result":"hello"}
+
+→ {"id":"1","method":"send_to_tab","params":["reviewer","status?"]}
+← {"id":"1","ok":true,"result":null}
+
+→ {"id":"2","method":"list"}
+← {"id":"2","ok":true,"result":["browser_click","browser_close", … ]}
+```
+
+`method` is a command from section 9 with the `shikisha.` taken off. `params` are its
+arguments in order. `list` answers with every command there is, read off the app's own
+table — so it can never fall behind what the app can actually do.
+
+For loops and branches, hand over a whole chunk in one call:
+
+```text
+→ {"id":"3","method":"lua","params":["for i=1,3 do shikisha.send_to_tab(i,'ping') end"]}
+← {"id":"3","ok":true,"result":[null,null]}
+```
+
+The answer to `lua` is always a pair: **the first value is the error, or `null` when the
+chunk ran**, followed by whatever it returned.
+
+### Who is allowed in
+
+```jsonc
+"external_api": { "access": "children" }   // the default
+```
+
+| Value | Who can call |
+|---|---|
+| `children` | Only what the app started — a tab's CLI, and whatever that starts in turn |
+| `user` | Anything running as you. The token is also written to `datapi-token` |
+| `off` | Nothing. The pipe is not created at all |
+
+Every tab's process is launched knowing three things, so an AI sitting in a tab needs no
+setup at all:
+
+| Variable | Holds |
+|---|---|
+| `SHIKISHA_PIPE` | The pipe to connect to |
+| `SHIKISHA_TOKEN` | That tab's own key, minted for it at launch |
+| `SHIKISHA_TAB` | Which tab it is sitting in |
+
+Because the key is the tab's own, a call arrives already knowing who is making it — and
+what that tab sends counts against **the same chain limit** (section 5) as work handed over
+on screen. The API is not a way around the brakes.
+
+**What the token protects, and what it does not.** The pipe is created with an access list
+naming your account and nobody else, so another account cannot reach it. Another program
+running as *you* can read the environment of your own processes, and an AI in a tab can
+copy its key into its own log. What this stops is an accident, and another account — not
+someone who is already you.
+
+The first caller of each session is written to `logs/hooks.log`, along with any connection
+that presented no valid key.
+
+---
+
+## 8. Tips for writing it
 
 - **Join strings with `..`** (not `+`)
 - **`tab.output` holds only the latest response**, never the earlier conversation
@@ -548,7 +617,7 @@ Every file and network operation is recorded in `logs/hooks.log`.
 
 ---
 
-## 8. Every command
+## 9. Every command
 
 Everything automation can call, in one place. The sections above teach the common
 ones; this is the complete list.
@@ -628,6 +697,8 @@ How the rally works: files in and out, plus a judge. You can build your own the 
 | `shikisha.exchange_take(path)` | Read it, delete it, return it. `nil` if absent — this is the hand-over |
 | `shikisha.lint(code)` | Compile-check Lua without running it. An error string, or `nil` if sound |
 | `shikisha.run_scoped(id, code)` | Run AI-written Lua against one page, in a jail: no files, no network, no other tabs. Returns `err, out` |
+| `shikisha.lua(code)` | Run a whole chunk with everything in reach — loops, branches, several commands at once. Returns `err` (`nil` when it ran) followed by whatever the chunk returned. The unwalled twin of `run_scoped`, so never hand it code you didn't write |
+| `shikisha.list()` | Every command that exists, by name. Read off the table itself, so it is never out of date |
 | `shikisha.record(text)` / `shikisha.record_reset()` | Keep a pasteable record of the run |
 | `shikisha.take_replay()` | Drain the replay journal — the durable spelling of every operation since the last drain |
 | `shikisha.set_result(code, "reason")` | The run's verdict. Written to `data/last-result.json` and shown on screen |

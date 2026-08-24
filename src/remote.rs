@@ -397,10 +397,6 @@ impl RemoteUi {
     }
 }
 
-fn token_eq(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 fn query_value(url: &str, key: &str) -> String {
     url.split_once('?')
         .map(|(_, q)| q)
@@ -543,10 +539,10 @@ fn handle(
     // "prompt the person and try again"
     let pw_ok = auth.password.is_empty()
         || auth.sessions.lock().unwrap().contains(&cookie_value(&req, "rp"));
-    if !pw_ok && token_eq(&supplied, &token) {
+    if !pw_ok && crate::crypto::token_eq(&supplied, &token) {
         if method == "GET" && path == "/auth" {
             let given = query_value(req.url(), "p");
-            if token_eq(&given, &auth.password) {
+            if crate::crypto::token_eq(&given, &auth.password) {
                 let id = crate::random_hex(24);
                 auth.sessions.lock().unwrap().insert(id.clone());
                 let cookie = format!(
@@ -575,7 +571,7 @@ fn handle(
     }
 
     if is_settings_path(&path) {
-        if !token_eq(&supplied, &token) {
+        if !crate::crypto::token_eq(&supplied, &token) {
             return req
                 .respond(Response::from_string("forbidden").with_status_code(403))
                 .map_err(Into::into);
@@ -584,7 +580,7 @@ fn handle(
     }
 
     // Everything past here is data or control — require the token.
-    if !token_eq(&supplied, &token) {
+    if !crate::crypto::token_eq(&supplied, &token) {
         return req
             .respond(Response::from_string("forbidden").with_status_code(403))
             .map_err(Into::into);
@@ -1059,9 +1055,9 @@ mod tests {
 
     #[test]
     fn token_is_required_and_compared_safely() {
-        assert!(token_eq("abc", "abc"));
-        assert!(!token_eq("abc", "abd"));
-        assert!(!token_eq("abc", "abcd"));
+        assert!(crate::crypto::token_eq("abc", "abc"));
+        assert!(!crate::crypto::token_eq("abc", "abd"));
+        assert!(!crate::crypto::token_eq("abc", "abcd"));
         assert_eq!(query_value("/?t=xyz", "t"), "xyz");
         assert_eq!(query_value("/api/state", "t"), "");
     }

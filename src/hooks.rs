@@ -287,6 +287,95 @@ fn stringify_lua(v: &Value, depth: usize, out: &mut String) {
     }
 }
 
+/// The environment a whole script runs in: an empty table that falls through
+/// to the globals for reading, so two scripts defining `on_done` don't collide
+/// and neither can overwrite the other's world by assigning a global.
+///
+/// Shared by the two places that run full-powered Lua — loading a script file
+/// and `shikisha.lua(code)`. One builder on purpose: two would drift, and the
+/// day they drift is the day one of them is handing out something the other
+/// deliberately withholds.
+fn full_env(lua: &mlua::Lua) -> mlua::Result<Table> {
+    let env = lua.create_table()?;
+    let mt = lua.create_table()?;
+    mt.set("__index", lua.globals())?;
+    env.set_metatable(Some(mt))?;
+    Ok(env)
+}
+
+/// Compile a chunk REPL-style: a bare expression is worth its value.
+///
+/// `browser_text(BR, "body")` on its own line should answer, not vanish, so
+/// `return` is prepended first and the plain statement form is the fallback
+fn compile_repl(
+    lua: &mlua::Lua,
+    env: Table,
+    name: &str,
+    code: &str,
+) -> mlua::Result<mlua::Function> {
+    lua.load(format!("return {code}"))
+        .set_name(name)
+        .set_environment(env.clone())
+        .into_function()
+        .or_else(|_| {
+            lua.load(code)
+                .set_name(name)
+                .set_environment(env)
+                .into_function()
+        })
+}
+
+/// The name of every primitive that exists, read off the `shikisha` table.
+///
+/// This table *is* the registry. Registering a primitive for Lua is what makes
+/// it callable from outside, and renaming one renames it for both — there is no
+/// second list, no mapping table, nothing to forget to update. Keys that don't
+/// hold a function (`__vars`) are not commands and are left out.
+fn primitive_names(lua: &mlua::Lua) -> mlua::Result<Vec<String>> {
+    let sh: Table = lua.globals().get("shikisha")?;
+    let mut names = Vec::new();
+    for pair in sh.pairs::<Value, Value>() {
+        if let Ok((Value::String(k), Value::Function(_))) = pair {
+            names.push(k.to_string_lossy().to_string());
+        }
+    }
+    Ok(names)
+}
+
+/// Lua in, JSON out. A table numbered 1..n comes back as an array and anything
+/// else as an object; a value with no JSON counterpart (a function, userdata)
+/// comes back as null rather than as a lie about what it was
+fn lua_to_json(v: &Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    match v {
+        Value::Boolean(b) => J::Bool(*b),
+        Value::Integer(i) => J::from(*i),
+        Value::Number(n) => serde_json::Number::from_f64(*n).map_or(J::Null, J::Number),
+        Value::String(s) => J::String(s.to_string_lossy().to_string()),
+        Value::Table(t) => {
+            let len = t.raw_len();
+            let pairs: Vec<(Value, Value)> =
+                t.clone().pairs::<Value, Value>().filter_map(|p| p.ok()).collect();
+            if len > 0 && pairs.len() == len {
+                J::Array((1..=len).map(|i| lua_to_json(&t.get(i).unwrap_or(Value::Nil))).collect())
+            } else {
+                let mut o = serde_json::Map::new();
+                for (k, val) in pairs {
+                    let key = match &k {
+                        Value::String(s) => s.to_string_lossy().to_string(),
+                        Value::Integer(i) => i.to_string(),
+                        Value::Number(n) => n.to_string(),
+                        _ => continue,
+                    };
+                    o.insert(key, lua_to_json(&val));
+                }
+                J::Object(o)
+            }
+        }
+        _ => J::Null,
+    }
+}
+
 /// Run AI-authored Lua in the browser sandbox. Returns `(err, out)`:
 /// `err` is the error text (nil on success), `out` is what the code returned,
 /// rendered as text (nil when it returned nothing).
@@ -302,17 +391,7 @@ fn run_scoped(
     code: &str,
 ) -> mlua::Result<(Value, Value)> {
     let env = build_sandbox_env(lua, caps, browser)?;
-    let func = lua
-        .load(format!("return {code}"))
-        .set_name("ai-lua")
-        .set_environment(env.clone())
-        .into_function()
-        .or_else(|_| {
-            lua.load(code)
-                .set_name("ai-lua")
-                .set_environment(env)
-                .into_function()
-        });
+    let func = compile_repl(lua, env, "ai-lua", code);
     match func.and_then(|f| f.call::<MultiValue>(())) {
         Ok(vals) => {
             let mut out = String::new();
@@ -561,8 +640,8 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
 }
 
 /// Map a JSON value directly to a Lua value (so browser_fetch results can be
-/// returned as a table). Objects become keyed tables, arrays become
-/// 1-indexed sequences
+/// returned as a table, and so the external API can hand a call its arguments).
+/// Objects become keyed tables, arrays become 1-indexed sequences
 fn json_to_lua(lua: &mlua::Lua, v: &serde_json::Value) -> mlua::Result<Value> {
     Ok(match v {
         serde_json::Value::Null => Value::Nil,
@@ -794,6 +873,69 @@ struct Attach {
 /// Capabilities granted to automation (default is empty = no file or network access)
 pub type Caps = std::rc::Rc<crate::caps::Capabilities>;
 
+/// How often the VM stops to let us count, and how much one entry into Lua
+/// may spend before it is called a runaway.
+///
+/// Nothing this app runs in Lua is compute — it is glue that calls straight
+/// back into Rust — so a chunk burning tens of millions of VM instructions is
+/// not working, it is spinning. Without a ceiling, `while true do end` freezes
+/// the window outright: the engine runs on the main loop, and the loop cannot
+/// come back until Lua returns. Three doors accept hand-written code (the
+/// composer's ▶, the same ▶ from a phone over the network, and the external
+/// API), and all of them pass through here.
+///
+/// The budget counts *instructions*, never wall time. Waiting inside a
+/// primitive — an auto-waiting click is allowed 30 seconds — executes no VM
+/// instructions at all, so a slow page can never be mistaken for a loop.
+const LUA_STEP_TRIGGER: u32 = 500_000;
+const LUA_STEP_BUDGET: u64 = 20_000_000;
+
+/// The instruction allowance of the entry into Lua that is currently running.
+///
+/// Shared with the VM hook, which charges it every `LUA_STEP_TRIGGER`
+/// instructions and raises once it is overdrawn. `depth` is what makes the
+/// allowance belong to the *entry* rather than to each call: a primitive that
+/// runs more Lua (`shikisha.run_scoped`) must not hand the loop it is nested
+/// in a fresh budget, or the ceiling never arrives.
+#[derive(Clone, Default)]
+struct StepBudget {
+    spent: Rc<Cell<u64>>,
+    depth: Rc<Cell<u32>>,
+}
+
+impl StepBudget {
+    /// Arm the budget for one entry into Lua. Dropping the guard disarms it
+    fn arm(&self) -> StepGuard {
+        if self.depth.get() == 0 {
+            self.spent.set(0);
+        }
+        self.depth.set(self.depth.get() + 1);
+        StepGuard(self.clone())
+    }
+
+    /// Charge one trigger interval to the running entry
+    fn charge(&self) -> mlua::Result<()> {
+        // Lua running outside any armed entry is not ours to police
+        if self.depth.get() == 0 {
+            return Ok(());
+        }
+        let spent = self.spent.get() + LUA_STEP_TRIGGER as u64;
+        self.spent.set(spent);
+        if spent > LUA_STEP_BUDGET {
+            return Err(mlua::Error::runtime(crate::i18n::t("err.hooks.step_limit")));
+        }
+        Ok(())
+    }
+}
+
+struct StepGuard(StepBudget);
+
+impl Drop for StepGuard {
+    fn drop(&mut self) {
+        self.0.depth.set(self.0.depth.get().saturating_sub(1));
+    }
+}
+
 pub struct HookEngine {
     lua: Lua,
     commands: Rc<RefCell<Vec<Command>>>,
@@ -813,6 +955,8 @@ pub struct HookEngine {
     /// The phone board's URL (with token), pushed in by the main loop.
     /// None while remote is off
     remote_url: Rc<RefCell<Option<String>>>,
+    /// The runaway ceiling, armed at every door that enters Lua
+    budget: StepBudget,
 }
 
 const HOOK_NAMES: [&str; 5] = ["on_start", "on_question", "on_busy", "on_done", "on_exit"];
@@ -846,6 +990,19 @@ impl HookEngine {
         )
         .map_err(lerr)?;
         lua.set_memory_limit(64 * 1024 * 1024).map_err(lerr)?;
+
+        // The runaway ceiling. Set globally rather than per-thread so every
+        // coroutine mlua makes later (wait/sleep run inside one) inherits it —
+        // a per-thread hook would leave exactly the long-running code unguarded
+        let budget = StepBudget::default();
+        {
+            let b = budget.clone();
+            lua.set_global_hook(
+                mlua::HookTriggers::new().every_nth_instruction(LUA_STEP_TRIGGER),
+                move |_, _| b.charge().map(|()| mlua::VmState::Continue),
+            )
+            .map_err(lerr)?;
+        }
 
         let commands: Rc<RefCell<Vec<Command>>> = Rc::new(RefCell::new(Vec::new()));
         let current_origin = Rc::new(Cell::new(1usize));
@@ -1651,6 +1808,63 @@ impl HookEngine {
                 )
                 .map_err(lerr)?;
         }
+        {
+            // Run a whole chunk with everything in reach — loops, branches and
+            // several primitives in one go. `run_scoped` is the walled version
+            // of this (one browser, nothing else) and stays the one AI-authored
+            // code gets; this one is for the people and programs that already
+            // hold the keys: a script file, and the external API.
+            //
+            // Returns `(err, ...)`: the error text (nil when it ran) followed by
+            // whatever the chunk returned — the values themselves, not a
+            // rendering of them, so a caller can go on using them.
+            //
+            // Always at least two values, even when there is nothing to say.
+            // Over the external API those become a JSON array, and a lone value
+            // would collapse to a bare one: an answer of `"..."` would then read
+            // as either an error or a returned string, with no way to tell
+            shikisha
+                .set(
+                    "lua",
+                    lua.create_function(move |lua, code: String| {
+                        let mut out = MultiValue::new();
+                        match compile_repl(lua, full_env(lua)?, "lua", &code)
+                            .and_then(|f| f.call::<MultiValue>(()))
+                        {
+                            Ok(vals) => {
+                                out.push_back(Value::Nil);
+                                out.extend(vals);
+                            }
+                            Err(e) => {
+                                out.push_back(Value::String(lua.create_string(e.to_string())?));
+                            }
+                        }
+                        while out.len() < 2 {
+                            out.push_back(Value::Nil);
+                        }
+                        Ok(out)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // Every primitive there is, read off the table itself at the moment
+            // it is asked. Not a hand-kept list: one written by hand would
+            // answer for the day it was written, and the external API's idea of
+            // what exists would drift from what Lua actually has
+            shikisha
+                .set(
+                    "list",
+                    lua.create_function(move |lua, ()| {
+                        let mut names = primitive_names(lua)?;
+                        names.sort();
+                        lua.create_sequence_from(names)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
         lua.globals().set("shikisha", shikisha).map_err(lerr)?;
         lua.load(PRELUDE).exec().map_err(lerr)?;
 
@@ -1665,13 +1879,72 @@ impl HookEngine {
             attach: Attach::default(),
             caps,
             remote_url,
+            budget,
         })
     }
 
     /// Run composer-typed Lua (▶ run mode) against one browser, in the very
     /// sandbox the rally runs AI-authored code in: browser functions on that
     /// one tab, nothing else. None on success, the error text on failure
+    /// Call one primitive by the name Lua calls it by, with positional
+    /// arguments. The door the external API knocks on.
+    ///
+    /// Dispatch is a lookup in the `shikisha` table, not a list of arms: a
+    /// primitive written for Lua is reachable from outside the same minute,
+    /// and nothing here has to be told about it. Several return values come
+    /// back as an array, since that is what the caller was handed.
+    /// The same call, made in the name of the tab whose token opened the
+    /// connection.
+    ///
+    /// What that tab sends then inherits its chain depth, exactly as it would
+    /// if it had gone through the screen — the runaway brake counts AI handing
+    /// work to AI, and this door must not be the way around it. A caller from
+    /// outside every tab counts as a person: the chain starts over.
+    pub fn call_primitive_as(
+        &self,
+        caller: Option<&str>,
+        method: &str,
+        params: &[serde_json::Value],
+    ) -> std::result::Result<serde_json::Value, String> {
+        let previously = self.current_origin.get();
+        let origin = caller
+            .and_then(|c| {
+                let states = self.states.borrow();
+                let keys: Vec<TabKey> = states.iter().map(|(k, _)| k.clone()).collect();
+                TabRef::Name(c.to_string()).resolve(&keys)
+            })
+            .unwrap_or(0);
+        self.current_origin.set(origin);
+        let out = self.call_primitive(method, params);
+        self.current_origin.set(previously);
+        out
+    }
+
+    pub fn call_primitive(
+        &self,
+        method: &str,
+        params: &[serde_json::Value],
+    ) -> std::result::Result<serde_json::Value, String> {
+        let _budget = self.budget.arm();
+        let sh: Table = self.lua.globals().get("shikisha").map_err(|e| e.to_string())?;
+        let Ok(Value::Function(f)) = sh.get::<Value>(method) else {
+            return Err(format!("no such primitive: {method}"));
+        };
+        let mut args = MultiValue::new();
+        for p in params {
+            args.push_back(json_to_lua(&self.lua, p).map_err(|e| e.to_string())?);
+        }
+        let vals: MultiValue = f.call(args).map_err(|e| e.to_string())?;
+        let mut out: Vec<serde_json::Value> = vals.iter().map(lua_to_json).collect();
+        Ok(match out.len() {
+            0 => serde_json::Value::Null,
+            1 => out.remove(0),
+            _ => serde_json::Value::Array(out),
+        })
+    }
+
     pub fn run_browser_lua(&self, browser: &str, code: &str) -> Option<String> {
+        let _budget = self.budget.arm();
         let out = match run_scoped(&self.lua, &self.caps, browser, code) {
             Ok((Value::String(s), _)) => Some(s.to_string_lossy().to_string()),
             Ok(_) => None,
@@ -1797,10 +2070,10 @@ impl HookEngine {
     /// etc.), so standard functions and the API are usable, but hook
     /// functions stay scoped to their own script
     fn load_source(&mut self, path: &str, source: &str) -> Result<usize> {
-        let env = self.lua.create_table().map_err(lerr)?;
-        let mt = self.lua.create_table().map_err(lerr)?;
-        mt.set("__index", self.lua.globals()).map_err(lerr)?;
-        env.set_metatable(Some(mt)).map_err(lerr)?;
+        // A script's top level is code too — a loop there would hang the app
+        // before a single hook had a chance to fire
+        let _budget = self.budget.arm();
+        let env = full_env(&self.lua).map_err(lerr)?;
         self.lua
             .load(source)
             .set_environment(env.clone())
@@ -2925,6 +3198,7 @@ end
     }
 
     fn resume_thread(&mut self, thread: Thread, hook: &str, origin: usize, args: MultiValue) {
+        let _budget = self.budget.arm();
         match thread.resume::<MultiValue>(args) {
             Ok(vals) => {
                 if thread.status() == ThreadStatus::Resumable {
@@ -3711,6 +3985,114 @@ mod tests {
         );
         // no durable anchor = nothing to record (the journal notes it instead)
         assert_eq!(sel_replay(&Sel::Ref(3), &None), None);
+    }
+
+    #[test]
+    fn the_outside_calls_primitives_by_the_name_lua_uses() {
+        // The external API invents no vocabulary of its own: the method name
+        // is what comes after `shikisha.` and nothing translates in between
+        let e = HookEngine::new().unwrap();
+        assert_eq!(
+            e.call_primitive("set_var", &[serde_json::json!("round"), serde_json::json!(3)]),
+            Ok(serde_json::Value::Null)
+        );
+        assert_eq!(
+            e.call_primitive("get_var", &[serde_json::json!("round")]),
+            Ok(serde_json::json!(3))
+        );
+        // A name that was made up (an earlier sketch of this API said
+        // "tab.send") is refused out loud rather than doing nothing
+        let err = e.call_primitive("tab.send", &[]).unwrap_err();
+        assert!(err.contains("no such primitive"), "{err}");
+    }
+
+    #[test]
+    fn the_command_list_is_the_table_itself() {
+        // Nobody keeps a second list. Whatever Lua has, the outside can call
+        let e = HookEngine::new().unwrap();
+        let mut names = primitive_names(&e.lua).unwrap();
+        names.sort();
+        for expected in [
+            "send_to_tab", // registered from Rust
+            "get_var",     // defined in the Lua prelude
+            "run_scoped",  // the walled evaluator
+            "lua",         // the full-powered one
+        ] {
+            assert!(names.contains(&expected.to_string()), "{expected} が一覧に無い");
+        }
+        assert_eq!(
+            e.call_primitive("list", &[]).unwrap(),
+            serde_json::to_value(&names).unwrap(),
+            "内側から見た一覧と外側から見た一覧は同じもの"
+        );
+    }
+
+    #[test]
+    fn a_chunk_from_outside_loops_and_names_its_own_target() {
+        // The point of handing over a whole chunk: branches and loops in one
+        // round trip. And with nothing bound to "the tab on screen" — every
+        // call inside says who it is talking to, because the caller isn't
+        // standing in front of the window
+        let mut e = HookEngine::new().unwrap();
+        let code = "for i = 1, 3 do shikisha.send_to_tab(i, 'ping ' .. i) end                     shikisha.set_var('sent', 3) return shikisha.get_var('sent')";
+        assert_eq!(
+            e.call_primitive("lua", &[serde_json::json!(code)]).unwrap(),
+            serde_json::json!([null, 3]),
+            "エラー無し(nil)に続いて、チャンクが返した値そのもの"
+        );
+        let targets: Vec<usize> = e
+            .drain_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::SendPrompt { target: TabRef::Index(i), .. } => Some(i),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(targets, vec![1, 2, 3]);
+
+        // A chunk that fails answers with the reason in the first value, in
+        // the same shape as a chunk that worked — so one place always says
+        // whether it ran, whatever the chunk itself had to say
+        let answer = e
+            .call_primitive("lua", &[serde_json::json!("error('nope')")])
+            .unwrap();
+        assert!(answer[0].as_str().unwrap_or_default().contains("nope"), "{answer}");
+        assert_eq!(answer[1], serde_json::json!(null));
+        // ...and one that ran, but returned nothing, still says so in the same place
+        assert_eq!(
+            e.call_primitive("lua", &[serde_json::json!("local x = 1")]).unwrap(),
+            serde_json::json!([null, null])
+        );
+    }
+
+    #[test]
+    fn a_runaway_loop_is_stopped_instead_of_holding_the_whole_app() {
+        // The engine runs on the main loop, so Lua that never returns freezes
+        // the window — no keystroke, no redraw, no way out but the task
+        // manager. Every door that takes hand-written code (composer ▶, the
+        // same ▶ from a phone, the external API) arrives through here
+        let e = HookEngine::new().unwrap();
+        let err = e
+            .run_browser_lua("br", "while true do end")
+            .expect("an endless loop has to come back as an error");
+        assert!(
+            err.contains(&crate::i18n::t("err.hooks.step_limit")),
+            "止めた理由が読み手に伝わる文言で返る: {err}"
+        );
+        // ...and the ceiling belongs to the entry, not to the process: the
+        // very next run starts with a full allowance (None = no error)
+        assert_eq!(e.run_browser_lua("br", "for _ = 1, 100000 do end"), None);
+    }
+
+    #[test]
+    fn a_script_that_loops_at_its_top_level_is_stopped_too() {
+        // A loop outside any hook would hang the app at startup, before a
+        // single hook had a chance to fire
+        let err = match HookEngine::from_source("while true do end") {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a top-level endless loop has to be refused"),
+        };
+        assert!(err.contains(&crate::i18n::t("err.hooks.step_limit")), "{err}");
     }
 
     #[test]
