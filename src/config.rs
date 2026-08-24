@@ -71,6 +71,10 @@ pub struct Config {
     /// Remote UI viewable from a phone etc. Disabled by default
     #[serde(default)]
     pub remote: RemoteSpec,
+    /// Who may drive this app from outside, over its named pipe. The default
+    /// is the processes this app started and nothing else — see api.rs
+    #[serde(default)]
+    pub external_api: crate::api::ApiSpec,
     /// Bounds for files pasted/attached into the sub-input bar (saved beside the tab)
     #[serde(default)]
     pub attach: AttachSpec,
@@ -1013,6 +1017,18 @@ fn flatten(tabs: &[TabConfig], depth: u16, out: &mut Vec<FlatTab>) {
     }
 }
 
+/// A byte-order mark is not JSON.
+///
+/// Windows puts one there without being asked — Notepad's "UTF-8" and
+/// PowerShell's `Set-Content -Encoding utf8` both write it — and the parser
+/// then refuses the whole file at "line 1 column 1". For `config.json` that is
+/// worse than an error: loading moves on to the next candidate, so the app
+/// comes up with settings from somewhere else entirely and the edit the person
+/// just made appears to have done nothing.
+fn without_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
 fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T> {
     let text = std::fs::read_to_string(path).with_context(|| {
         crate::i18n::tp(
@@ -1020,7 +1036,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T
             &[("path", &path.display().to_string())],
         )
     })?;
-    serde_json::from_str(&text).with_context(|| {
+    serde_json::from_str(without_bom(&text)).with_context(|| {
         crate::i18n::tp(
             "err.config.json_invalid",
             &[("path", &path.display().to_string())],
@@ -1234,7 +1250,7 @@ pub fn load() -> Option<Config> {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        match serde_json::from_str::<Config>(&text) {
+        match serde_json::from_str::<Config>(without_bom(&text)) {
             Ok(c) if !c.tabs.is_empty() || !c.workspaces.is_empty() => return Some(c),
             _ => continue,
         }
@@ -1245,6 +1261,17 @@ pub fn load() -> Option<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_saved_by_a_windows_editor_still_loads() {
+        // Notepad and PowerShell both write a BOM when told "UTF-8". Before
+        // this, such a config parsed as nothing and the app silently ran on
+        // whatever config.json it found next — looking, to the person who had
+        // just edited theirs, as though the edit had not taken
+        let cfg: Config =
+            serde_json::from_str(without_bom("\u{feff}{\"max_chain\": 7}")).unwrap();
+        assert_eq!(cfg.max_chain, Some(7));
+    }
 
     #[test]
     fn secret_store_roundtrips_and_never_reveals_values() {
