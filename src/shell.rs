@@ -100,19 +100,51 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #backdrop { display:none; }
 
   /* ── Content area ───────────────────────── */
-  #main { position:relative; overflow:hidden; }
+  /* --fx/--fy/--fw/--fh are the focused pane's rectangle. Undivided they are
+     the whole area, which is what every layer below used to hard-code, so a
+     single pane renders exactly as it always did. --navh is the browser bar's
+     height, reserved out of the top of that rectangle. */
+  /* The focused pane as four insets from the content area's edges. Insets
+     rather than a position and a size, because most of the chrome below is
+     anchored to an edge (the composer to the bottom, the browser bar to the
+     top) and would otherwise need its own arithmetic. Undivided they are all
+     zero, which is exactly what these rules hard-coded before panes existed. */
+  #main { position:relative; overflow:hidden;
+    --fx:0px; --fy:0px; --fr:0px; --fb:0px; --navh:0px; }
+  /* The panes themselves. Only the ones that aren't focused draw anything here
+     — the focused pane's rectangle is filled by the full renderer above. */
+  #panes { position:absolute; inset:0; }
+  .pane { position:absolute; overflow:hidden; background:var(--bg); }
+  .pane.focused { pointer-events:none; }
+  .pane .phead { pointer-events:auto; display:none; align-items:center; gap:6px;
+    height:22px; padding:0 8px; font-size:11px; cursor:pointer; user-select:none;
+    background:var(--panel); border-bottom:1px solid var(--line); color:var(--dim); }
+  .pane.focused .phead { color:var(--text); background:#16202b;
+    border-bottom-color:var(--brand); }
+  .pane .phead .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pane .phead .cl { opacity:.6; padding:0 2px; }
+  .pane .phead .cl:hover { opacity:1; color:var(--stop); }
+  .pane .pbody { position:absolute; left:0; right:0; top:0; bottom:0; overflow:hidden; }
+  .pane.headed .phead { display:flex; }
+  .pane.headed .pbody { top:22px; }
+  /* A pane that isn't focused shows its terminal read-only. Same cell grid as
+     the real one — it is the same HTML, from the same renderer */
+  .pscreen { margin:0; padding:8px; white-space:pre; line-height:1.25;
+    font-family:var(--mono); --cw:1ch; }
   /* Declaring font-family here isn't cosmetic. Browsers apply their own
      monospace to <pre>, and that wins over whatever body inherits.
      Skip it, and the chosen font only ever applies to the terminal contents */
   /* --cw is the width of a single cell, measured and set by the page
      (so the content and the cursor are placed using the same number) */
-  #screen { position:absolute; inset:0; margin:0; padding:8px; white-space:pre;
+  #screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:var(--fb); margin:0; padding:8px; white-space:pre;
     overflow:auto; line-height:1.25; font-family:var(--mono); --cw:1ch; }
   /* Screen relay. While viewing a browser tab, this shows in place of the
      terminal. Keeps the aspect ratio while fitting the frame.
      touch-action:none stops the default scroll so finger movement can be
      forwarded as a raw motion trail instead */
-  #cast { position:absolute; inset:0; width:100%; height:100%;
+  #cast { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--navh));
+    right:var(--fr); bottom:var(--fb); width:auto; height:auto;
     object-fit:contain; object-position:top center; background:#000; touch-action:none;
     transform-origin:0 0; }
   /* Trackpad-style synthetic cursor: a Windows-like arrow whose tip is the
@@ -156,7 +188,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Bottom dock combining the auxiliary key row and the text input bar.
      visualViewport lifts it above the on-screen keyboard. The key row
      scrolls horizontally, the input sits on the bottom row */
-  #castdock { position:absolute; left:0; right:0; bottom:0; z-index:18;
+  #castdock { position:absolute; left:var(--fx); right:var(--fr); bottom:var(--fb); z-index:18;
     display:none; flex-direction:column; }
   #attachtoast { position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
     z-index:30; max-width:86%; padding:9px 14px; border-radius:9px; font-size:13px;
@@ -165,7 +197,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     transition:opacity .18s ease; word-break:break-all; }
   #attachtoast.bad { background:#3a1418; color:#ffd7d7; border-color:#e5534b; }
   /* Desktop-only summon button for the composer bar (bottom-right, above the bar). */
-  #composerfab { position:absolute; right:16px; bottom:16px; z-index:19;
+  #composerfab { position:absolute; right:calc(var(--fr) + 16px);
+    bottom:calc(var(--fb) + 16px); z-index:19;
     width:44px; height:44px; border-radius:50%; font-size:19px; line-height:1;
     display:flex; align-items:center; justify-content:center; cursor:pointer;
     border:1px solid var(--brand); background:var(--panel); color:var(--brand);
@@ -227,7 +260,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      is drawn in the space that opens up. Drawing inside the page would
      fight with the site's own CSS, disappear on every navigation, and
      cover the site's own fixed header from above */
-  #nav { position:absolute; left:0; right:0; top:0; height:36px; z-index:5;
+  #nav { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr); height:36px; z-index:5;
     display:flex; align-items:center; gap:6px; padding:0 8px;
     border-bottom:1px solid var(--line); background:var(--panel);
     transition:background .15s, border-color .15s; }
@@ -256,7 +289,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #nav button.spin .ico { display:inline-block; animation:spin .8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg) } }
   /* Where the page sits. Pushed down by exactly the height of the bar above it */
-  #page { position:absolute; inset:0; pointer-events:none; }
+  #page { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--navh));
+    right:var(--fr); bottom:var(--fb); pointer-events:none; }
 
   /* ── Discussion topic banner ─────────────────────
      A prominent prompt floated over whatever tab is in view while an AI-vs-AI
@@ -265,7 +299,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      so the AI screens are never covered, and returns when the round finishes so
      the next topic can be posed. Placed at the very top: the AI CLIs keep their
      input line at the bottom, so this never sits on top of it. */
-  #topicbar { position:absolute; left:0; right:0; top:0; z-index:24;
+  #topicbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:24;
     display:flex; align-items:center; gap:10px; flex-wrap:wrap;
     padding:11px 16px; background:linear-gradient(180deg,#12242e,var(--panel));
     border-bottom:2px solid var(--live); box-shadow:0 8px 22px rgba(0,0,0,.55); }
@@ -291,7 +325,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Claude-Code-style composer: a divider on top, a ">" prompt, and a
      multi-line textarea that grows with the text. Enter sends, Shift+Enter
      inserts a newline. A faint hint sits below, mirroring Claude's CLI. */
-  #modelchat { position:absolute; left:0; right:0; bottom:0; z-index:23;
+  #modelchat { position:absolute; left:var(--fx); right:var(--fr); bottom:var(--fb); z-index:23;
     padding:9px 16px 7px; background:var(--panel);
     border-top:1px solid var(--line); }
   #modelchat[hidden] { display:none; }
@@ -334,7 +368,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #thinking .th-dots span, #thinking .th-text { animation:none } }
 
   /* ── Dashboard ─────────────────────────────── */
-  #board { position:absolute; inset:0; overflow:auto; padding:22px 26px; }
+  #board { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:var(--fb); overflow:auto; padding:22px 26px; }
   .mark { color:var(--brand); font-weight:700; letter-spacing:.5px;
     font-size:13px; line-height:1.15; white-space:pre; }
   /* Plain title for narrow screens (hidden by default) */
@@ -467,7 +502,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #veil .url { font-size:12px; color:var(--dim); margin-top:10px;
     word-break:break-all; user-select:text; }
   /* Marker shown while scrolled back through history. Without it, the output looks like it has frozen */
-  #back { position:absolute; right:14px; top:10px; z-index:6;
+  #back { position:absolute; right:calc(var(--fr) + 14px); top:calc(var(--fy) + 10px); z-index:6;
     background:#16202b; border:1px solid var(--brand); color:var(--text);
     padding:4px 12px; border-radius:14px; font-size:12px; cursor:pointer; }
   #back:hover { background:var(--brand); color:#04121c; }
@@ -480,7 +515,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      instead of continuous swipe it pages one screenful at a time with two
      buttons — the frame just updates in place (no slide). Hidden by default;
      shown only on a terminal tab, remote. */
-  #pageui { position:absolute; right:12px; top:50%; transform:translateY(-50%);
+  #pageui { position:absolute; right:calc(var(--fr) + 12px);
+    top:calc(var(--fy) + (100% - var(--fy) - var(--fb)) / 2); transform:translateY(-50%);
     display:none; flex-direction:column; align-items:center; gap:10px; z-index:8; }
   #pageui.on { display:flex; }
   .pagebtn { width:50px; height:50px; border-radius:50%; border:1px solid var(--line);
@@ -548,6 +584,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="backdrop"></div>
   <nav id="tabs"></nav>
   <div id="main">
+    <div id="panes"></div>
     <div id="nav" hidden></div>
     <div id="page"></div>
     <div id="board" hidden></div>
@@ -1083,7 +1120,8 @@ function drawVeil() {
   } else {
     box.append(el("h3", {}, T["tui.help.title"] || "HELP"));
     // The translated strings are stored one line per key. This is where display order is decided
-    for (const k of ["quit", "tabs", "ws", "lock", "restart", "copy", "auto", "raw",
+    for (const k of ["quit", "tabs", "panes", "panefocus", "paneclose", "ws",
+                     "lock", "restart", "copy", "auto", "raw",
                      "mouse", "mouse.wheel", "mouse.drag", "mouse.right",
                      "mouse.tab", "mouse.divider"]) {
       box.append(el("div", {class:"row"}, T["tui.help." + k]));
@@ -1181,9 +1219,10 @@ function drawNav() {
 // canvas's position, so they follow along automatically
 function layout() {
   const n = document.getElementById("nav");
-  const top = n.hidden ? "0" : "36px";
-  document.getElementById("page").style.top = top;
-  document.getElementById("cast").style.top = top;
+  // Reserved out of the focused pane's rectangle rather than pushed onto each
+  // layer by hand: with panes, "the top of the screen" is no longer the top of
+  // the window, and two layers being told different tops is how they drift
+  document.getElementById("main").style.setProperty("--navh", n.hidden ? "0px" : "36px");
   report();
 }
 
@@ -1281,6 +1320,95 @@ window.__state = function (json) {
   const f = document.getElementById("flash");
   f.hidden = !S.flash;
   if (S.flash) f.textContent = S.flash;
+  paintPaneHeads();
+};
+
+// How the content area is divided. Panes arrive as fractions of it, so the
+// page can lay them out with percentages and let the browser do the arithmetic
+// at whatever the window's real size happens to be.
+//
+// Only the focused pane gets the full renderer (the terminal with its cursor,
+// the dashboard, a placed browser and its bar). The rest get a read-only view
+// of their terminal, which is all a pane you are not typing into can show.
+let PANES = null;
+window.__panes = function (json) {
+  const P = JSON.parse(json);
+  PANES = P;
+  const host = document.getElementById("panes");
+  const seen = new Set();
+  for (const p of P.panes) {
+    seen.add(String(p.id));
+    let el = host.querySelector('.pane[data-pid="' + p.id + '"]');
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "pane";
+      el.dataset.pid = p.id;
+      el.innerHTML = '<div class="phead"><span class="dot"></span>' +
+        '<span class="nm"></span><span class="cl">&#10005;</span></div>' +
+        '<div class="pbody"><pre class="pscreen notranslate" translate="no"></pre></div>';
+      // Clicking anywhere in a pane you are not in moves you there. The close
+      // control is the one thing inside it that means something else.
+      el.onmousedown = (e) => {
+        if (p.id === (PANES && PANES.focus)) return;
+        send({kind:"focuspane", id:p.id});
+      };
+      el.querySelector(".cl").onclick = (e) => {
+        e.stopPropagation();
+        send({kind:"closepane", id:p.id});
+      };
+      host.append(el);
+    }
+    el.style.left = (p.x * 100) + "%";
+    el.style.top = (p.y * 100) + "%";
+    el.style.width = (p.w * 100) + "%";
+    el.style.height = (p.h * 100) + "%";
+    el.classList.toggle("focused", !!p.focused);
+    // Undivided, a pane is the whole content area and captions nothing — the
+    // tab bar already says what you are looking at
+    el.classList.toggle("headed", !P.single);
+    if (p.focused) el.querySelector(".pscreen").textContent = "";
+  }
+  for (const el of [...host.querySelectorAll(".pane")]) {
+    if (!seen.has(el.dataset.pid)) el.remove();
+  }
+  paintPaneHeads();
+  // The layers above draw into the focused pane, so hand them its rectangle
+  const f = host.querySelector(".pane.focused .pbody");
+  const main = document.getElementById("main");
+  if (f) {
+    const b = f.getBoundingClientRect(), m = main.getBoundingClientRect();
+    const set = (l, t, r, bo) => {
+      main.style.setProperty("--fx", l + "px");
+      main.style.setProperty("--fy", t + "px");
+      main.style.setProperty("--fr", r + "px");
+      main.style.setProperty("--fb", bo + "px");
+    };
+    if (P.single) set(0, 0, 0, 0);
+    else set(b.left - m.left, b.top - m.top, m.right - b.right, m.bottom - b.bottom);
+  }
+  lastRC = "";
+  report();
+  if (lastCur) window.__cursor(lastCur[0], lastCur[1], lastCur[2]);
+};
+
+// What each pane is captioned with. Read from the same state the tab bar uses
+// rather than sent along with the tree: one copy cannot go stale against the other.
+function paintPaneHeads() {
+  if (!PANES) return;
+  for (const p of PANES.panes) {
+    const el = document.querySelector('#panes .pane[data-pid="' + p.id + '"]');
+    if (!el) continue;
+    const t = S && S.tabs ? S.tabs.find(x => x.index === p.surface) : null;
+    el.querySelector(".nm").textContent =
+      t ? t.name : (p.surface === 0 ? "SHIKISHA-TERM" : "");
+    el.querySelector(".dot").className = "dot " + (t ? t.state : "");
+  }
+}
+
+// One unfocused pane's terminal contents.
+window.__panescreen = function (id, html) {
+  const el = document.querySelector('#panes .pane[data-pid="' + id + '"] .pscreen');
+  if (el) el.innerHTML = html;
 };
 
 // The terminal's own contents. This is the one place a grid of cells is correct, so accept it as-is
@@ -1357,27 +1485,47 @@ let lastRC = "";
 function report() {
   measure();
   if (!cellW || !cellH) return;
-  const box = document.getElementById("main").getBoundingClientRect();
   const pad = (parseFloat(getComputedStyle(scr).paddingLeft) || 0) * 2;
-  const cols = Math.max(20, Math.floor((box.width - pad) / cellW));
-  const rows = Math.max(5, Math.floor((box.height - pad) / cellH));
-  gRows = rows;   // remembered so the remote pager knows one screenful's height
-  // Rows/columns come from #main; the browser view's placement comes from
-  // #page. Deriving both from a single rectangle would shrink the terminal
-  // just because the top bar appeared, or re-wrap the AI's screen just
+  const fit = (b) => ({
+    cols: Math.max(20, Math.floor((b.width - pad) / cellW)),
+    rows: Math.max(5, Math.floor((b.height - pad) / cellH)),
+  });
+  const main = document.getElementById("main");
+  // Every pane is measured, not just the one in front. A terminal that isn't
+  // focused is still running, and a wrong column count there is just as wrong —
+  // it only looks harmless because nobody is typing into it at that moment.
+  const boxes = [...document.querySelectorAll("#panes .pane")];
+  // Rows/columns come from the pane's own body; the browser view's placement
+  // comes from #page. Deriving both from a single rectangle would shrink the
+  // terminal just because the top bar appeared, or re-wrap the AI's screen just
   // because a browser tab was switched to
   const area = document.getElementById("page").getBoundingClientRect();
-  // Where the browser view sits. Even if the shell's CSS changes, only the
-  // page itself knows this — never let Rust guess the coordinates.
-  // When the browser-actions strip is showing (window only), reserve its height at
-  // the bottom so the native browser doesn't cover the strip (HTML behind it).
-  const key = rows + "x" + cols + "@" + Math.round(area.left) + "," +
-    Math.round(area.top) + "," + Math.round(area.width) + "," + Math.round(area.height);
+  const panes = boxes.map((el) => {
+    const b = el.querySelector(".pbody").getBoundingClientRect();
+    const d = fit(b);
+    // Where a browser placed in this pane sits. Even if the shell's CSS
+    // changes, only the page itself knows this — never let Rust guess the
+    // coordinates. In the focused pane that rectangle is #page, which already
+    // has the browser bar's height taken out of it.
+    const r = el.classList.contains("focused") ? area : b;
+    return {id: +el.dataset.pid, rows: d.rows, cols: d.cols,
+      rect: [Math.round(r.left), Math.round(r.top),
+             Math.round(r.width), Math.round(r.height)]};
+  });
+  // The focused pane's numbers are the ones the rest of the app still speaks in
+  const box = boxes.find((el) => el.classList.contains("focused"));
+  const f = fit(box ? box.querySelector(".pbody").getBoundingClientRect()
+                    : main.getBoundingClientRect());
+  gRows = f.rows;   // remembered so the remote pager knows one screenful's height
+  const key = f.rows + "x" + f.cols + "@" + Math.round(area.left) + "," +
+    Math.round(area.top) + "," + Math.round(area.width) + "," + Math.round(area.height) +
+    "|" + panes.map(p => p.id + ":" + p.rows + "x" + p.cols + ":" + p.rect.join(",")).join(";");
   if (key === lastRC) return;
   lastRC = key;
-  send({kind:"resize", rows:rows, cols:cols,
+  send({kind:"resize", rows:f.rows, cols:f.cols,
     area:[Math.round(area.left), Math.round(area.top),
-          Math.round(area.width), Math.round(area.height)]});
+          Math.round(area.width), Math.round(area.height)],
+    panes:panes});
 }
 let rt = 0;
 const scheduleReport = () => { clearTimeout(rt); rt = setTimeout(report, 80); };
@@ -3577,16 +3725,19 @@ mod tests {
     fn the_bar_is_drawn_by_the_app_not_injected_into_the_page() {
         assert!(PAGE.contains("id=\"nav\""), "バーの置き場所が無い");
         assert!(PAGE.contains("id=\"page\""), "ページを置く場所が無い");
-        // Where the page sits is pushed down by exactly the bar's height
+        // Where the page sits is pushed down by exactly the bar's height.
+        // Reserved out of the focused pane's rectangle rather than written onto
+        // each layer: with panes, "the top" is no longer the top of the window
         assert!(
-            PAGE.contains("const top = n.hidden ? \"0\" : \"36px\"")
-                && PAGE.contains("getElementById(\"page\").style.top = top"),
+            PAGE.contains("setProperty(\"--navh\", n.hidden ? \"0px\" : \"36px\")"),
             "バーを出してもページが下がらない"
         );
-        // The relay canvas is pushed down by the same amount (otherwise the browser's top edge would hide behind the bar)
-        assert!(
-            PAGE.contains("getElementById(\"cast\").style.top = top"),
-            "バーを出しても中継キャンバスが下がらず、ブラウザ上端が隠れる"
+        // The page and the relay canvas are pushed down by the same amount
+        // (otherwise the browser's top edge would hide behind the bar)
+        assert_eq!(
+            PAGE.matches("top:calc(var(--fy) + var(--navh))").count(),
+            2,
+            "バーを出しても #page と中継キャンバスの両方は下がらない"
         );
         // Rows/columns come from #main; the browser view's placement comes
         // from #page. Deriving both from one rectangle would shrink the

@@ -174,8 +174,9 @@ pub struct Capabilities {
     opened: std::cell::RefCell<HashMap<String, (String, crate::browser::BrowserProfile)>>,
     /// The workspace currently being viewed. Names are only meaningful within it
     ws: std::cell::Cell<usize>,
-    /// Which page is currently shown in which area. Skipped if unchanged
-    shown: std::cell::RefCell<(Option<String>, (i32, i32, i32, i32))>,
+    /// Which pages are currently shown, and where. Skipped if unchanged.
+    /// More than one at a time once the content area is split into panes
+    shown: std::cell::RefCell<Vec<(String, (i32, i32, i32, i32))>>,
     /// Controls shown above a page (per name).
     ///
     /// Unlike the banner, these aren't drawn inside the page. The page is pushed
@@ -230,7 +231,7 @@ impl Capabilities {
             hosted: std::cell::RefCell::new(Vec::new()),
             opened: std::cell::RefCell::new(HashMap::new()),
             ws: std::cell::Cell::new(0),
-            shown: std::cell::RefCell::new((None, (0, 0, 0, 0))),
+            shown: std::cell::RefCell::new(Vec::new()),
             nav: std::cell::RefCell::new(HashMap::new()),
             declared: std::cell::RefCell::new(std::collections::HashSet::new()),
             secret_allow: std::cell::RefCell::new(std::collections::HashSet::new()),
@@ -492,7 +493,7 @@ impl Capabilities {
             hosted.push((ws, name.to_string()));
         }
         // Newly placed items get their position decided on the next redraw
-        *self.shown.borrow_mut() = (None, (0, 0, 0, 0));
+        self.shown.borrow_mut().clear();
         crate::append_hook_log(&crate::i18n::tp(
             "err.caps.log_browser_open",
             &[("name", name), ("url", url)],
@@ -542,15 +543,16 @@ impl Capabilities {
         self.area.set(area);
     }
 
-    /// Show only one page, and collapse the rest.
+    /// Show these pages at these rectangles, and collapse everything else.
     ///
-    /// It's a tab bar, so only one page needs to be visible at a time.
-    /// "Collapse" means setting width and height to 0. Removing it outright would force a reload.
+    /// One entry while the content area is undivided; one per browser pane once
+    /// it is split. "Collapse" means setting width and height to 0 — removing
+    /// the page outright would force a reload, and a page reloading every time
+    /// you glance at another tab is not a tab at all.
     ///
-    /// Redraws happen 60 times a second. Sends nothing if nothing changed
-    pub fn show_only(&self, name: Option<&str>) {
-        let want = (name.map(str::to_string), self.area.get());
-        if *self.shown.borrow() == want {
+    /// Redraws happen many times a second. Sends nothing if nothing changed.
+    pub fn show_at(&self, want: &[(String, (i32, i32, i32, i32))]) {
+        if self.shown.borrow().as_slice() == want {
             return;
         }
         let Some(h) = self.host.borrow().as_ref().map(std::rc::Rc::clone) else {
@@ -559,15 +561,20 @@ impl Capabilities {
         let ws = self.ws.get();
         for (w, held) in self.hosted.borrow().iter() {
             // Pages from other workspaces are kept alive but collapsed
-            let r = if *w == ws && Some(held.as_str()) == name {
-                want.1
+            let r = if *w == ws {
+                want
+                    .iter()
+                    .find(|(n, _)| n == held)
+                    .map(|(_, r)| *r)
+                    .unwrap_or((0, 0, 0, 0))
             } else {
                 (0, 0, 0, 0)
             };
             let _ = h.child_bounds(&Self::key(*w, held), r);
         }
-        *self.shown.borrow_mut() = want;
+        *self.shown.borrow_mut() = want.to_vec();
     }
+
 
     /// Look up a page by name and hand it the operation.
     ///
@@ -828,7 +835,7 @@ impl Capabilities {
         self.pressed.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
         self.declared.borrow_mut().remove(&key);
-        *self.shown.borrow_mut() = (None, (0, 0, 0, 0));
+        self.shown.borrow_mut().clear();
         Ok(())
     }
 

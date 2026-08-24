@@ -106,6 +106,8 @@ starting), double-click **`Settings.cmd`**.
 
 - **Tabs with real status** — every tab shows whether it is working, done, or waiting for
   you, detected from the screen itself rather than from any vendor API
+- **Split panes** — put an agent next to the browser it is driving, or two agents side by
+  side, and watch both at once. Each pane is sized for what is in it
 - **Workspaces** — swap the whole tab layout per project, like virtual desktops. Export one
   to a single file, automation scripts included, and hand it to another machine or person
 - **Automation** — "when this finishes, hand the result to the review tab", "answer this
@@ -148,6 +150,9 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B q` | Quit |
 | `Ctrl+B 0`–`9` | Switch tab (0 = INDEX) |
 | `Ctrl+B w` / `W` | Workspace list / next |
+| `Ctrl+B %` / `"` | Split the view beside / below (`<` `>` resize) |
+| `Ctrl+B o` / arrows | Move between panes |
+| `Ctrl+B X` | Close this pane (the tab keeps running) |
 | `Ctrl+B l` | Toggle input lock |
 | `Ctrl+B r` | Restart the tab |
 | `Ctrl+B [` | Copy mode (`c` copies the latest response) |

@@ -8,6 +8,23 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **Split panes.** The content area divides into a tree of panes, and each pane
+  shows one tab: `Ctrl+B %` beside, `Ctrl+B "` below, arrows or `Ctrl+B o` to
+  move between them, `<` `>` to move the divider, `Ctrl+B X` to close the view
+  (the tab behind it keeps running). Clicking a pane focuses it; its caption
+  carries the tab's name and state dot.
+
+  A pane is sized for what is in it — a terminal is told the rows and columns
+  its own pane actually has, not the whole window's, and a browser placed in a
+  pane is placed at that pane's rectangle. So an agent can sit beside the
+  browser it is driving, or two agents beside each other, and both stay
+  correctly laid out.
+
+  A surface is only ever in one pane: picking a tab that is already showing
+  elsewhere swaps the two panes rather than running the same terminal at two
+  different widths. Undivided, everything looks and behaves exactly as before.
+
 ## [0.2.0] - 2026-08-24
 
 ### Breaking

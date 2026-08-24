@@ -1046,7 +1046,8 @@ mod tests {
             super::allowed_from_afar(&Ev::Resize {
                 rows: 10,
                 cols: 20,
-                area: (0, 0, 0, 0)
+                area: (0, 0, 0, 0),
+                panes: Vec::new()
             }),
             "スマホから端末をスマホ寸法に合わせられない"
         );

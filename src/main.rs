@@ -27,6 +27,7 @@ mod digest;
 mod exchange;
 mod hooks;
 mod i18n;
+mod layout;
 mod netaddr;
 mod notify;
 mod profile;
@@ -364,6 +365,21 @@ struct WinSurface {
     last_cursor: Option<(u16, u16, bool)>,
     /// The content area (x, y, width, height). Where the browser gets placed.
     area: (i32, i32, i32, i32),
+    /// Every pane as the page last measured it. One entry while the content
+    /// area is undivided, one per pane once it is split. The page is the only
+    /// one that can measure this, so it is reported rather than computed here
+    pane_geom: Vec<crate::browser::PaneGeom>,
+    /// Panes clicked in the window. The loop moves focus to them
+    focus_panes: Vec<u32>,
+    /// Panes whose ✕ was pressed. The loop closes the view, not the tab
+    close_panes: Vec<u32>,
+    /// Dividers dragged in the window, as (pane, its split's new first share)
+    pane_ratios: Vec<(u32, f32)>,
+    /// The pane tree as last sent to the page. Only send it again when it changes
+    last_layout: String,
+    /// The terminal contents last sent for each unfocused pane. The focused
+    /// pane goes through `last_screen`, since it keeps the full renderer
+    last_pane_screens: std::collections::HashMap<u32, String>,
     /// Intents that arrived from the window, converted into the form the loop reads.
     /// The loop only understands terminal key input, so everything gets funneled there.
     pending: std::collections::VecDeque<Event>,
@@ -439,6 +455,18 @@ impl WinSurface {
     }
 
     /// True if "close settings" was pressed (and clears the flag if so)
+    fn take_focus_panes(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.focus_panes)
+    }
+
+    fn take_close_panes(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.close_panes)
+    }
+
+    fn take_pane_ratios(&mut self) -> Vec<(u32, f32)> {
+        std::mem::take(&mut self.pane_ratios)
+    }
+
     fn take_close_settings(&mut self) -> bool {
         std::mem::take(&mut self.close_settings)
     }
@@ -557,12 +585,16 @@ impl WinSurface {
         use crate::browser::Ev;
         for ev in self.win.drain() {
             match ev {
-                Ev::Resize { rows, cols, area } => {
+                Ev::Resize { rows, cols, area, panes } => {
                     self.rows = rows;
                     self.cols = cols;
                     self.area = area;
+                    self.pane_geom = panes;
                     self.pending.push_back(Event::Resize(cols, rows));
                 }
+                Ev::FocusPane { id } => self.focus_panes.push(id),
+                Ev::ClosePane { id } => self.close_panes.push(id),
+                Ev::PaneRatio { id, ratio } => self.pane_ratios.push((id, ratio)),
                 Ev::JsError { msg } => {
                     crate::append_hook_log(&format!("Screen failure: {msg}"));
                 }
@@ -836,6 +868,12 @@ fn run_in_window() -> Result<()> {
         last_screen: String::new(),
         last_cursor: None,
         area: (0, 0, 0, 0),
+        pane_geom: Vec::new(),
+        focus_panes: Vec::new(),
+        close_panes: Vec::new(),
+        pane_ratios: Vec::new(),
+        last_layout: String::new(),
+        last_pane_screens: std::collections::HashMap::new(),
         pending: std::collections::VecDeque::new(),
         presses: Vec::new(),
         loads: Vec::new(),
@@ -862,6 +900,55 @@ fn run_in_window() -> Result<()> {
 }
 
 /// Summarizes the current state into a form with no presentation attached
+/// What a newly split pane should show.
+///
+/// The next surface that isn't already on screen, counting on from the one
+/// being split — so splitting twice walks down the tab bar instead of asking
+/// the same question twice. With nothing spare it falls back to the dashboard,
+/// which is never wrong and never a duplicate.
+fn free_surface(l: &crate::layout::Layout, surface_count: usize, from: usize) -> usize {
+    (1..=surface_count)
+        .map(|n| (from + n) % (surface_count + 1))
+        .find(|n| *n != 0 && l.pane_of(*n).is_none())
+        .unwrap_or(0)
+}
+
+/// The pane tree in the form the page draws it: one rectangle per pane, in
+/// fractions of the content area.
+///
+/// Only geometry and identity travel here. What a pane *shows* — the name, the
+/// state dot, whether it is a browser — the page already has from `__state`,
+/// looked up by surface number. Sending it twice would let the two copies
+/// disagree, and the pane would caption itself with a stale name.
+fn panes_json(l: &crate::layout::Layout) -> String {
+    #[derive(serde::Serialize)]
+    struct Pane {
+        id: crate::layout::PaneId,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        surface: usize,
+        focused: bool,
+    }
+    let focus = l.focus();
+    let surfaces: std::collections::HashMap<_, _> = l.leaves().into_iter().collect();
+    let panes: Vec<Pane> = l
+        .rects()
+        .into_iter()
+        .map(|(id, r)| Pane {
+            id,
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+            surface: surfaces.get(&id).copied().unwrap_or(0),
+            focused: id == focus,
+        })
+        .collect();
+    serde_json::json!({ "single": l.is_single(), "focus": focus, "panes": panes }).to_string()
+}
+
 fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
     crate::uistate::UiState {
         workspace: ui
@@ -880,12 +967,12 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         // Listing sessions and browsers separately would push the browser
         // written first to the back.
         tabs: ui
-            .panes
+            .surfaces
             .iter()
             .enumerate()
             .filter_map(|(i, p)| match p {
-                Pane::Session(s) => tabs.get(*s).map(|t| crate::uistate::TabState::of(i + 1, t)),
-                Pane::Browser { key, name } => {
+                Surface::Session(s) => tabs.get(*s).map(|t| crate::uistate::TabState::of(i + 1, t)),
+                Surface::Browser { key, name } => {
                     Some(crate::uistate::TabState::browser(i + 1, key, name))
                 }
             })
@@ -917,12 +1004,12 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         // still in flight — without it the banner would flicker mid-round.
         discuss_idle: ui.discuss_start.is_some() && {
             const QUIET_MS: u64 = 2000;
-            let anyone_active = ui.panes.iter().any(|p| match p {
-                Pane::Session(s) => tabs
+            let anyone_active = ui.surfaces.iter().any(|p| match p {
+                Surface::Session(s) => tabs
                     .get(*s)
                     .map(|t| t.ms_since_change(ui.now_ms) < QUIET_MS)
                     .unwrap_or(false),
-                Pane::Browser { .. } => false,
+                Surface::Browser { .. } => false,
             });
             let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
             !anyone_active && ring_idle
@@ -987,8 +1074,45 @@ impl WinSurface {
                     ));
                     w.last = Some(state);
                 }
+                // The division of the content area. The focused pane keeps the
+                // full renderer below (cursor, composer, board, browser chrome);
+                // this only tells the page where each pane sits.
+                let lay = panes_json(&ui.layout);
+                if w.last_layout != lay {
+                    w.last_layout = lay.clone();
+                    let live: std::collections::HashSet<_> =
+                        ui.layout.leaves().into_iter().map(|(id, _)| id).collect();
+                    w.last_pane_screens.retain(|id, _| live.contains(id));
+                    let _ = w.win.eval(&format!(
+                        "return window.__panes({});",
+                        serde_json::to_string(&lay).unwrap_or_default()
+                    ));
+                }
+                // Every pane that isn't focused gets a read-only view of its
+                // terminal. A browser pane needs nothing here — the page placed
+                // in the window covers that rectangle itself.
+                for (id, surface) in ui.layout.leaves() {
+                    if id == ui.layout.focus() {
+                        continue;
+                    }
+                    let html = match session_at(&ui.surfaces, surface).and_then(|i| tabs.get(i)) {
+                        Some(t) => {
+                            let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                            crate::shell::screen_html(p.screen())
+                        }
+                        None => String::new(),
+                    };
+                    if w.last_pane_screens.get(&id) != Some(&html) {
+                        let _ = w.win.eval(&format!(
+                            "return window.__panescreen({},{});",
+                            id,
+                            serde_json::to_string(&html).unwrap_or_default()
+                        ));
+                        w.last_pane_screens.insert(id, html);
+                    }
+                }
                 // Only send the terminal contents for the tab currently being viewed
-                if let Some(t) = session_at(&ui.panes, ui.active).and_then(|i| tabs.get(i)) {
+                if let Some(t) = session_at(&ui.surfaces, ui.active).and_then(|i| tabs.get(i)) {
                     let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
                     let s = p.screen();
                     let html = crate::shell::screen_html(s);
@@ -1268,6 +1392,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
     // 0 = INDEX, 1.. = sessions. Start on INDEX (the screen with onboarding guidance) at first.
     let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
+    // How the content area is divided. It starts undivided, which is the shape
+    // every code path that knows only `active` was written for: the focused
+    // pane's surface *is* `active`, and the two are re-synced once per frame
+    // below, so splitting the screen adds panes without rewriting the loop.
+    let mut pane_layout = crate::layout::Layout::single(active);
     let mut prefix_active = false;
     // The last state drawn. This is what gets handed to the phone (keeps the
     // assembly point to a single spot).
@@ -1368,8 +1497,44 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // The upper bound of pressable numbers needs more than just the session count.
         let hosted = caps.hosted_names();
         let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
-        let layout = panes_of(workspaces.get(ws_index), &titles, &hosted);
-        let panes = layout.len();
+        let surfaces = surfaces_of(workspaces.get(ws_index), &titles, &hosted);
+        let surface_count = surfaces.len();
+        // Keep the tree and `active` in step. Anything in the loop may set
+        // `active` (a digit, an automation, the settings screen closing); the
+        // focused pane follows it, and moving focus between panes sets `active`
+        // at the point it happens. One sync point, so neither can drift.
+        pane_layout.clamp(surface_count);
+        if pane_layout.focused_surface() != active {
+            pane_layout.show(active);
+        }
+        // The pane a tab sits in decides its size; a tab in no pane keeps the
+        // whole content area, so it is already the right shape the moment it
+        // appears. This is the only place a terminal is resized — two places
+        // deciding meant a split pane was told its size twice per frame, and
+        // whichever ran last won.
+        {
+            let mut want = vec![(rows, cols); tabs.len()];
+            for (id, sf) in pane_layout.leaves() {
+                let (Some(i), Some(g)) = (
+                    session_at(&surfaces, sf),
+                    surface.pane_geom.iter().find(|g| g.id == id),
+                ) else {
+                    continue;
+                };
+                if let Some(w) = want.get_mut(i) {
+                    *w = (g.rows, g.cols);
+                }
+            }
+            for (t, (r, c)) in tabs.iter().zip(want) {
+                let now = {
+                    let pr = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                    pr.screen().size()
+                };
+                if now != (r, c) {
+                    let _ = t.resize(r, c);
+                }
+            }
+        }
         // Reload and apply once the config is saved (no app restart needed)
         if watcher.changed() {
             if let Some(newcfg) = config::load() {
@@ -1446,9 +1611,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     if w != tab_w {
                         tab_w = w;
                         (rows, cols) = pty_dims(surface.size()?, tab_w);
-                        for t in &tabs {
-                            let _ = t.resize(rows, cols);
-                        }
                     }
                 }
                 // Rebuild notification destinations, capabilities, and automation scripts
@@ -1577,7 +1739,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // Discard waiting loops belonging to exited tabs (don't leave infinite loops behind)
                 for &(idx, old, new) in &transitions {
                     if new == TabState::Exited && old != TabState::Exited {
-                        eng.cancel_tab(pane_at(&layout, idx));
+                        eng.cancel_tab(surface_at(&surfaces, idx));
                     }
                 }
                 let now_ms = start.elapsed().as_millis() as u64;
@@ -1590,7 +1752,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             *fired = true;
                             eng.fire(
                                 "on_start",
-                                &tab_ctx(&tabs[i], pane_at(&layout, i + 1)),
+                                &tab_ctx(&tabs[i], surface_at(&surfaces, i + 1)),
                                 None,
                             );
                         }
@@ -1628,7 +1790,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 *f = false;
                             }
                         }
-                        let ctx = tab_ctx(&tabs[idx - 1], pane_at(&layout, idx));
+                        let ctx = tab_ctx(&tabs[idx - 1], surface_at(&surfaces, idx));
                         // Even just the startup banner's output makes the screen move
                         // then settle, so every tab is guaranteed to pass through DONE
                         // once with nobody having asked anything. To avoid forwarding
@@ -1686,7 +1848,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             // One response per submit. Waiting for the next one requires another submit.
                             t.finish_response();
                         }
-                        let ctx = tab_ctx(&tabs[idx - 1], pane_at(&layout, idx));
+                        let ctx = tab_ctx(&tabs[idx - 1], surface_at(&surfaces, idx));
                         // Narrowing the width makes vt100 truncate each line to that
                         // width, so if it got narrower while waiting for a response,
                         // the text is missing pieces. We can't undo that, but keeping
@@ -1717,7 +1879,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
                     // Automation addresses things by screen number; the contents live in sessions
                     eng.tick_pending(&|pane| {
-                        session_at(&layout, pane)
+                        session_at(&surfaces, pane)
                             .and_then(|i| tabs.get(i))
                             .map(|t| t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents())
                     });
@@ -1728,7 +1890,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     exec_commands(
                         cmds,
                         &mut tabs,
-                        &layout,
+                        &surfaces,
                         max_chain,
                         auto_enabled,
                         now_ms,
@@ -1752,7 +1914,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // and rebuilding it would create a second place that assembles state.
                     ui: last_ui_state.clone(),
                     screen_html: tabs
-                        .get(session_at(&layout, active).unwrap_or(usize::MAX))
+                        .get(session_at(&surfaces, active).unwrap_or(usize::MAX))
                         .map(|t| {
                             let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
                             shell::screen_html(p.screen())
@@ -1766,13 +1928,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     cols,
                     // Numbered by SCREEN position (the 1-based index the phone
                     // shows and sends back, e.g. /api/attach's `tab`), not by
-                    // session slot: browser panes sit in the layout too, so the
+                    // session slot: browser surfaces sit in the list too, so the
                     // two numberings drift apart after the first browser tab
                     tabs: tabs
                         .iter()
                         .enumerate()
                         .map(|(i, t)| remote::RemoteTab {
-                            index: pane_at(&layout, i + 1),
+                            index: surface_at(&surfaces, i + 1),
                             name: t.title.clone(),
                             state: t.state.label().to_string(),
                             locked: t.locked,
@@ -1829,8 +1991,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if let Some(r) = remote_ui.as_ref() {
             let now_ms = start.elapsed().as_millis() as u64;
             // The browser currently being viewed (target for Inject / relay)
-            let shown_browser = match layout.get(active.wrapping_sub(1)) {
-                Some(Pane::Browser { key, .. }) => Some(key.clone()),
+            let shown_browser = match surfaces.get(active.wrapping_sub(1)) {
+                Some(Surface::Browser { key, .. }) => Some(key.clone()),
                 _ => None,
             };
             while let Ok(cmd) = r.rx.try_recv() {
@@ -1838,7 +2000,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // Treat input from remote as a human operation
                     // (resets the auto-chain, and is rejected while locked)
                     remote::RemoteCmd::Send { tab, text } => {
-                        if let Some(t) = session_at(&layout, tab).and_then(|i| tabs.get_mut(i)) {
+                        if let Some(t) = session_at(&surfaces, tab).and_then(|i| tabs.get_mut(i)) {
                             if t.locked {
                                 continue;
                             }
@@ -1854,7 +2016,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                     }
                     remote::RemoteCmd::Keys { tab, keys } => {
-                        if let Some(t) = session_at(&layout, tab).and_then(|i| tabs.get_mut(i)) {
+                        if let Some(t) = session_at(&surfaces, tab).and_then(|i| tabs.get_mut(i)) {
                             if t.locked {
                                 continue;
                             }
@@ -1984,13 +2146,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // is for something to vanish without a trace.
         if !waiting.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
-            let keys = pane_keys(&layout, &tabs);
+            let keys = surface_keys(&surfaces, &tabs);
             let mut ready: Vec<Command> = Vec::new();
             let mut keep: Vec<Waiting> = Vec::new();
             for w in std::mem::take(&mut waiting) {
                 let can = target_of(&w.cmd)
                     .and_then(|r| r.resolve(&keys))
-                    .and_then(|p| session_at(&layout, p))
+                    .and_then(|p| session_at(&surfaces, p))
                     .and_then(|i| tabs.get(i))
                     .map(ready_to_receive)
                     .unwrap_or(false);
@@ -2012,7 +2174,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 exec_commands(
                     ready,
                     &mut tabs,
-                    &layout,
+                    &surfaces,
                     max_chain,
                     auto_enabled,
                     now_ms,
@@ -2033,7 +2195,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if !pending_submit.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
             pending_submit.retain_mut(|p| {
-                let Some(t) = session_at(&layout, p.tab).and_then(|i| tabs.get(i)) else {
+                let Some(t) = session_at(&surfaces, p.tab).and_then(|i| tabs.get(i)) else {
                     return false;
                 };
                 if !p.ready(t.output_count(), now_ms) {
@@ -2057,14 +2219,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // touched side once a human touches it.
         if ball.holder > 0
             && !ball.awaiting_human
-            && !session_at(&layout, ball.holder)
+            && !session_at(&surfaces, ball.holder)
                 .and_then(|i| tabs.get(i))
                 .map(|t| t.chain_depth > 0)
                 .unwrap_or(false)
         {
             ball.reset();
         }
-        ball.clamp_to(layout.len());
+        ball.clamp_to(surfaces.len());
 
         // The controls shown over the browser being viewed.
         //
@@ -2072,8 +2234,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // is answered by the window. The answer arrives with a delay, so show them
         // looking unpressable until it comes in.
         let drawn_ms = start.elapsed().as_millis() as u64;
-        let showing = match layout.get(active.wrapping_sub(1)) {
-            Some(Pane::Browser { key, .. }) => Some(key.clone()),
+        let showing = match surfaces.get(active.wrapping_sub(1)) {
+            Some(Surface::Browser { key, .. }) => Some(key.clone()),
             _ => None,
         };
         let nav = showing.as_deref().and_then(|key| {
@@ -2115,7 +2277,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     return None;
                 }
                 let first = d.agents.iter().find(|s| !s.trim().is_empty())?;
-                let pane = pane_of_id(w, first)?;
+                let pane = surface_of_id(w, first)?;
                 let name = w
                     .tabs
                     .iter()
@@ -2141,7 +2303,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             remote_on: remote_ui.is_some(),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
             nav,
-            scrolled: session_at(&layout, active)
+            scrolled: session_at(&surfaces, active)
                 .and_then(|i| tabs.get(i))
                 .map(|t| {
                     t.parser
@@ -2154,13 +2316,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
             ball,
             max_chain,
             now_ms: start.elapsed().as_millis() as u64,
-            panes: layout.clone(),
+            surfaces: surfaces.clone(),
+            layout: pane_layout.clone(),
             // Whether the thing in view can be put back the way it started. A
             // session always can; a page only if we know how it was opened.
             // Decided here so the button the screen draws and the keystroke it
             // stands for can never disagree about where it applies
-            restartable: session_at(&layout, active).is_some()
-                || restartable_page(&layout, active, &caps).is_some(),
+            restartable: session_at(&surfaces, active).is_some()
+                || restartable_page(&surfaces, active, &caps).is_some(),
             discuss_start,
             discuss_start_name,
         };
@@ -2181,8 +2344,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // sign; moving the window even slightly fixes it). Re-set focus from our
         // side every time what's visible changes.
         {
-            let want = match layout.get(active.wrapping_sub(1)) {
-                Some(Pane::Browser { key, .. }) => Some(key.clone()),
+            let want = match surfaces.get(active.wrapping_sub(1)) {
+                Some(Surface::Browser { key, .. }) => Some(key.clone()),
                 _ => None,
             };
             if focused.as_ref() != Some(&want) {
@@ -2197,10 +2360,50 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 }
             }
         }
-        caps.show_only(match layout.get(active.wrapping_sub(1)) {
-            Some(Pane::Browser { key, .. }) => Some(key.as_str()),
-            _ => None,
-        });
+        // Focus follows a click on a pane, the way it follows a click in the
+        // tab bar. `active` moves with it so every existing path stays right.
+        for id in surface.take_focus_panes() {
+            if pane_layout.focus_pane(id) {
+                active = pane_layout.focused_surface();
+                view_touched_ms = start.elapsed().as_millis() as u64;
+            }
+        }
+        for (id, ratio) in surface.take_pane_ratios() {
+            pane_layout.set_ratio(id, ratio);
+        }
+        for id in surface.take_close_panes() {
+            if pane_layout.close(id) {
+                active = pane_layout.focused_surface();
+                view_touched_ms = start.elapsed().as_millis() as u64;
+            } else {
+                flash = Some(i18n::t("msg.pane_last"));
+            }
+        }
+        // Place every browser that has a pane, at that pane's rectangle.
+        // Collapsed to nothing when it has no pane — the page stays alive, so
+        // coming back to it doesn't reload it.
+        {
+            let geom = &surface.pane_geom;
+            let shown: Vec<(String, (i32, i32, i32, i32))> = pane_layout
+                .leaves()
+                .into_iter()
+                .filter_map(|(id, s)| {
+                    let Some(Surface::Browser { key, .. }) = surfaces.get(s.wrapping_sub(1)) else {
+                        return None;
+                    };
+                    // Before the page has measured anything (the very first
+                    // frames), the whole content area is the only rectangle we
+                    // know, and it is the right one while undivided.
+                    let rect = geom
+                        .iter()
+                        .find(|g| g.id == id)
+                        .map(|g| g.rect)
+                        .unwrap_or(surface.area);
+                    Some((key.clone(), rect))
+                })
+                .collect();
+            caps.show_at(&shown);
+        }
         // Hand off that a bar button was pressed.
         // Only the main app can receive the window's reports, so it goes through here.
         for child in surface.take_presses() {
@@ -2217,7 +2420,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             let Some((eng, page)) = engine
                 .as_mut()
-                .zip(page_ctx(&layout, &name, String::new(), true))
+                .zip(page_ctx(&surfaces, &name, String::new(), true))
             else {
                 continue;
             };
@@ -2235,7 +2438,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             if by == 0 {
                 continue;
             }
-            if let Some(t) = session_at(&layout, active).and_then(|i| tabs.get(i)) {
+            if let Some(t) = session_at(&surfaces, active).and_then(|i| tabs.get(i)) {
                 scroll_by(t, by, row, col);
                 // If the screen jumps while scrolling back, you lose track of what you were reading
                 view_touched_ms = start.elapsed().as_millis() as u64;
@@ -2246,7 +2449,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // model tab is in view; a line typed while a non-model tab is up is
         // dropped (the box is only shown over model tabs anyway).
         for line in surface.take_chats() {
-            if let Some(t) = session_at(&layout, active).and_then(|i| tabs.get_mut(i)) {
+            if let Some(t) = session_at(&surfaces, active).and_then(|i| tabs.get_mut(i)) {
                 if t.is_model() {
                     // A line typed by the human is a fresh turn (chain 0), so a
                     // rally brain resets its per-goal budget instead of treating
@@ -2271,10 +2474,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // Run with the active tab as context — a session tab, or a browser
             // (so a Lua action can drive the browser it's shown over). INDEX and
             // settings have no action context, so drop it there.
-            let ctx = match session_at(&layout, active).and_then(|i| tabs.get(i)) {
+            let ctx = match session_at(&surfaces, active).and_then(|i| tabs.get(i)) {
                 Some(t) => tab_ctx(t, active),
-                None => match layout.get(active.wrapping_sub(1)) {
-                    Some(Pane::Browser { key, .. }) => browser_ctx(active, key),
+                None => match surfaces.get(active.wrapping_sub(1)) {
+                    Some(Surface::Browser { key, .. }) => browser_ctx(active, key),
                     _ => continue,
                 },
             };
@@ -2286,7 +2489,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // 📼 record-mode toggles: arm the shown browser's recorder (off silences
         // recording everywhere — caps keeps it to one recorder at a time).
         for on in surface.take_record_arms() {
-            if let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) {
+            if let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) {
                 let _ = caps.browser_record(key, on);
             } else if !on {
                 // "Off" must land even when the browser tab is no longer shown
@@ -2299,7 +2502,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // sandbox (browser functions on that one tab, nothing else). The verdict
         // returns as a toast on both surfaces.
         for code in surface.take_run_luas() {
-            let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) else {
+            let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
                 continue;
             };
             // Running needs an engine; make a bare one if this workspace didn't
@@ -2322,7 +2525,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // like a ✨ suggestion. Nothing types itself into a terminal. The
         // watcher below waits for the marker-wrapped output to appear
         if surface.take_surveys() > 0 {
-            match session_at(&layout, active).and_then(|i| tabs.get(i)) {
+            match session_at(&surfaces, active).and_then(|i| tabs.get(i)) {
                 Some(t) if t.ai_kind().is_none() => {
                     let screen =
                         t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
@@ -2384,7 +2587,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // environment card; the call runs on a worker thread and the answer
         // is polled right below
         for want in surface.take_suggests() {
-            let target = session_at(&layout, active).and_then(|i| tabs.get(i));
+            let target = session_at(&surfaces, active).and_then(|i| tabs.get(i));
             let Some(t) = target else {
                 surface.push_suggested(
                     &serde_json::json!({"ok": false, "error": i18n::t("msg.suggest.no_tab")})
@@ -2449,7 +2652,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // share one injection path rather than each growing its own.
         let injects = surface.take_injects();
         if !injects.is_empty() {
-            if let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) {
+            if let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) {
                 for input in injects {
                     let _ = caps.browser_inject(key, input);
                 }
@@ -2482,14 +2685,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             // First slice: browser targets only. Its id comes from the layout.
             // Resolve the target: a browser (driven with browser_* Lua) or another
-            // AI tab (driven by relaying prompts). INDEX / settings / unknown panes
+            // AI tab (driven by relaying prompts). INDEX / settings / unknown surfaces
             // can't be operated.
-            let (is_browser, target_id) = match layout.get(target.wrapping_sub(1)) {
+            let (is_browser, target_id) = match surfaces.get(target.wrapping_sub(1)) {
                 // Drive by the browser's KEY, not its display name: the display name
                 // may be localized ("ブラウザ") while browser_* resolves by key, so
                 // passing the name yields "that browser isn't open".
-                Some(Pane::Browser { key, .. }) => (true, key.clone()),
-                Some(Pane::Session(s)) if Some(*s) != session_at(&layout, active) => {
+                Some(Surface::Browser { key, .. }) => (true, key.clone()),
+                Some(Surface::Session(s)) if Some(*s) != session_at(&surfaces, active) => {
                     match tabs.get(*s) {
                         // Only an AI can be operated by relaying instructions.
                         // Typed into a plain shell/SSH/WSL they would execute
@@ -2512,7 +2715,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // The operator (the active tab) must act without confirmation, or every
             // step would stall waiting for a human. The shell already greys the
             // picker out; this backs it up for anything that posts operate directly.
-            let operator_ready = session_at(&layout, active)
+            let operator_ready = session_at(&surfaces, active)
                 .and_then(|i| tabs.get(i))
                 .map(|t| t.auto_runs())
                 .unwrap_or(false);
@@ -2527,7 +2730,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             // Attach the active AI as the operator once per (source, target).
             if operating != Some((src_pane, target)) {
-                let tab_idx = session_at(&layout, active);
+                let tab_idx = session_at(&surfaces, active);
                 let started = tab_idx
                     .and_then(|i| tabs.get(i))
                     .map(|t| tab_ctx(t, active))
@@ -2592,7 +2795,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             flash = Some(
                 match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, &query) {
                     Ok(()) => {
-                        active = settings_active(&layout);
+                        active = settings_active(&surfaces);
                         settings_open = true;
                         i18n::t("msg.settings_here")
                     }
@@ -2639,7 +2842,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 ));
             } else {
                 match open_result(&mut web, &config_file, &remote_info, &web_password, &caps, &run_id) {
-                    Ok(()) => active = placed_active(&layout, RESULT_TAB),
+                    Ok(()) => active = placed_active(&surfaces, RESULT_TAB),
                     Err(e) => append_hook_log(&format!("open_result failed: {e}")),
                 }
             }
@@ -2649,7 +2852,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // viewed (only one bar is ever shown). Don't touch chain depth — that's
         // only counted when work is passed to another tab.
         for go in surface.take_gos() {
-            let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) else {
+            let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
                 continue;
             };
             // Reject operations that aren't shown. It would be strange for
@@ -2714,7 +2917,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             ));
             if auto_enabled {
                 if let (Some(eng), Some(page)) =
-                    (engine.as_mut(), page_ctx(&layout, &name, url, complete))
+                    (engine.as_mut(), page_ctx(&surfaces, &name, url, complete))
                 {
                     eng.fire_page("on_load", &page);
                 }
@@ -2723,7 +2926,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
         let polled = surface.poll(
             Duration::from_millis(16),
-            session_at(&layout, active).and_then(|i| tabs.get(i)),
+            session_at(&surfaces, active).and_then(|i| tabs.get(i)),
         )?;
         // Once the window is gone, fall through to the same place as Ctrl+B q.
         // We want cleanup to live in exactly one place.
@@ -2784,7 +2987,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         KeyCode::Char('q') => break,
                         KeyCode::Char(c @ '0'..='9') => {
                             let n = c as usize - '0' as usize;
-                            if n <= panes {
+                            if n <= surface_count {
                                 active = n;
                                 view_touched_ms = start.elapsed().as_millis() as u64;
                                 // An explicit tab pick is a deliberate exit from settings.
@@ -2792,16 +2995,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                         }
                         KeyCode::Char('n') => {
-                            active = if active >= panes { 0 } else { active + 1 };
+                            active = if active >= surface_count { 0 } else { active + 1 };
                             view_touched_ms = start.elapsed().as_millis() as u64;
                         }
                         KeyCode::Char('p') => {
-                            active = if active == 0 { panes } else { active - 1 };
+                            active = if active == 0 { surface_count } else { active - 1 };
                             view_touched_ms = start.elapsed().as_millis() as u64;
                         }
                         // Ctrl+B b sends a literal Ctrl+B through to the child process
                         KeyCode::Char('b') => {
-                            if let Some(t) = session_mut(&mut tabs, &layout, active) {
+                            if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
                                 t.write_bytes(&[0x02])?;
                             }
                         }
@@ -2810,12 +3013,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             if let Some(eng) = engine.as_mut() {
                                 eng.cancel_tab(active);
                             }
-                            if let Some(t) = session_mut(&mut tabs, &layout, active) {
+                            if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
                                 flash = Some(match t.restart(rows, cols) {
                                     Ok(()) => i18n::tp("msg.restarted", &[("name", &t.title)]),
                                     Err(e) => i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))]),
                                 });
-                            } else if let Some(name) = restartable_page(&layout, active, &caps) {
+                            } else if let Some(name) = restartable_page(&surfaces, active, &caps) {
                                 // A page has no process to relaunch. Opening it again
                                 // exactly as it was opened is the same act: a fresh
                                 // page object, back at the URL it started on, with
@@ -2836,7 +3039,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         // Ctrl+B l toggles the input lock / w workspace list / ? help
                         KeyCode::Char('l') => {
-                            if let Some(t) = session_mut(&mut tabs, &layout, active) {
+                            if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
                                 t.locked = !t.locked;
                                 flash = Some(i18n::t(if t.locked {
                                     "msg.lock_on"
@@ -2892,7 +3095,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     &query,
                                 ) {
                                     Ok(()) => {
-                                        active = settings_active(&layout);
+                                        active = settings_active(&surfaces);
                                         settings_open = true;
                                         i18n::t("msg.settings_here")
                                     }
@@ -2926,17 +3129,74 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         // Ctrl+B c copies the latest captured response to the clipboard
                         KeyCode::Char('c') => {
-                            if let Some(t) = session_mut(&mut tabs, &layout, active) {
+                            if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
                                 flash = Some(match &t.last_response {
                                     Some(r) if !r.trim().is_empty() => copy_to_clipboard(r),
                                     _ => i18n::t("msg.no_response"),
                                 });
                             }
                         }
+                        // Ctrl+B % / | splits side by side, Ctrl+B " / - stacks.
+                        // The tmux characters, because the prefix is tmux's; the
+                        // second pair because nobody remembers which quote is which.
+                        KeyCode::Char('%') | KeyCode::Char('|') | KeyCode::Char('"')
+                        | KeyCode::Char('-') => {
+                            let dir = match key.code {
+                                KeyCode::Char('%') | KeyCode::Char('|') => layout::Dir::Row,
+                                _ => layout::Dir::Col,
+                            };
+                            let next = free_surface(&pane_layout, surface_count, active);
+                            pane_layout.split(dir, next);
+                            active = pane_layout.focused_surface();
+                            view_touched_ms = start.elapsed().as_millis() as u64;
+                        }
+                        // Ctrl+B < / > move the divider the focused pane sits
+                        // against. There is no drag yet, and a split you cannot
+                        // adjust is only half of one — a browser and a terminal
+                        // rarely want the same half of the window.
+                        KeyCode::Char('<') | KeyCode::Char('>') => {
+                            let by = if key.code == KeyCode::Char('>') { 0.05 } else { -0.05 };
+                            pane_layout.grow(pane_layout.focus(), by);
+                        }
+                        // Ctrl+B o cycles panes; the arrows go where you point
+                        KeyCode::Char('o') => {
+                            let order = pane_layout.leaves();
+                            let at = order.iter().position(|(p, _)| *p == pane_layout.focus());
+                            if let Some((id, _)) = at.and_then(|i| order.get((i + 1) % order.len()))
+                            {
+                                pane_layout.focus_pane(*id);
+                                active = pane_layout.focused_surface();
+                                view_touched_ms = start.elapsed().as_millis() as u64;
+                            }
+                        }
+                        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                            let dir = match key.code {
+                                KeyCode::Left => layout::Move::Left,
+                                KeyCode::Right => layout::Move::Right,
+                                KeyCode::Up => layout::Move::Up,
+                                _ => layout::Move::Down,
+                            };
+                            if pane_layout.focus_move(dir) {
+                                active = pane_layout.focused_surface();
+                                view_touched_ms = start.elapsed().as_millis() as u64;
+                            }
+                        }
+                        // Ctrl+B X closes the pane (capital, because lowercase x
+                        // is the emergency stop and the two must never be a slip
+                        // of the finger apart). The tab itself keeps running —
+                        // this closes the view, not the work.
+                        KeyCode::Char('X') => {
+                            if pane_layout.close(pane_layout.focus()) {
+                                active = pane_layout.focused_surface();
+                                view_touched_ms = start.elapsed().as_millis() as u64;
+                            } else {
+                                flash = Some(i18n::t("msg.pane_last"));
+                            }
+                        }
                         // Ctrl+B [ enters copy mode (tmux copy-mode style)
                         KeyCode::Char('[') => {
                             let rows = pty_dims(surface.size()?, tab_w).0;
-                            if let Some(t) = session_mut(&mut tabs, &layout, active) {
+                            if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
                                 t.copy = Some(CopyState {
                                     cursor_row: rows.saturating_sub(1),
                                     anchor: None,
@@ -2956,7 +3216,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     match key.code {
                         KeyCode::Char(c @ '0'..='9') => {
                             let n = c as usize - '0' as usize;
-                            if n <= panes {
+                            if n <= surface_count {
                                 active = n;
                             }
                         }
@@ -3023,7 +3283,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                         // Once opened, switch to that tab.
                                         // Don't leave it opened but invisible.
                                         // If already open, switch to its existing location.
-                                        active = settings_active(&layout);
+                                        active = settings_active(&surfaces);
                                         settings_open = true;
                                         i18n::t("msg.settings_here")
                                     }
@@ -3042,7 +3302,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     let size = surface.size()?;
                     let now_ms = start.elapsed().as_millis() as u64;
                     let mut locked_hit = false;
-                    if let Some(t) = session_mut(&mut tabs, &layout, active) {
+                    if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
                         if t.copy.is_some() {
                             handle_copy_key(t, &key, size, tab_w, &mut flash)?;
                         } else if t.locked {
@@ -3074,7 +3334,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             Event::Paste(text) => {
                 let now_ms = start.elapsed().as_millis() as u64;
-                if let Some(t) = session_mut(&mut tabs, &layout, active) {
+                if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
                     if !t.locked {
                         t.chain_depth = 0;
                         t.last_manual_ms = Some(now_ms);
@@ -3085,9 +3345,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             Event::Resize(width, height) => {
                 (rows, cols) = pty_dims(Size { width, height }, tab_w);
-                for t in &tabs {
-                    let _ = t.resize(rows, cols);
-                }
             }
             _ => {}
         }
@@ -3221,8 +3478,8 @@ const RESULT_TAB: &str = "result";
 ///
 /// One rule, read by both the keystroke and the button the screen draws, so the
 /// button can never appear where the key does nothing.
-fn restartable_page(layout: &[Pane], active: usize, caps: &hooks::Caps) -> Option<String> {
-    let Some(Pane::Browser { key, .. }) = layout.get(active.wrapping_sub(1)) else {
+fn restartable_page(surfaces: &[Surface], active: usize, caps: &hooks::Caps) -> Option<String> {
+    let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
         return None;
     };
     if key == SETTINGS_TAB || key == RESULT_TAB {
@@ -3233,18 +3490,18 @@ fn restartable_page(layout: &[Pane], active: usize, caps: &hooks::Caps) -> Optio
 
 /// The screen number (1-based) to switch to for a placed local page (settings
 /// or result). If already open, its own slot; otherwise the slot right after
-/// the end (`layout.len() + 1`). Using `len()+1` while it is already in the
+/// the end (`surfaces.len() + 1`). Using `len()+1` while it is already in the
 /// layout would point one slot too far and paint the screen solid black.
-fn placed_active(layout: &[Pane], key_want: &str) -> usize {
-    layout
+fn placed_active(surfaces: &[Surface], key_want: &str) -> usize {
+    surfaces
         .iter()
-        .position(|p| matches!(p, Pane::Browser { key, .. } if key == key_want))
+        .position(|p| matches!(p, Surface::Browser { key, .. } if key == key_want))
         .map(|i| i + 1)
-        .unwrap_or(layout.len() + 1)
+        .unwrap_or(surfaces.len() + 1)
 }
 
-fn settings_active(layout: &[Pane]) -> usize {
-    placed_active(layout, SETTINGS_TAB)
+fn settings_active(surfaces: &[Surface]) -> usize {
+    placed_active(surfaces, SETTINGS_TAB)
 }
 
 /// Writes out the signal for one wheel tick, in terminal convention.
@@ -3386,7 +3643,7 @@ enum TabAuto {
 /// Returns the screen number (1-based) of the tab in a workspace whose id
 /// (or name, if no id) matches. Used to resolve discussion participants/referee
 /// from a tab id to a screen number.
-fn pane_of_id(ws: &config::Workspace, id: &str) -> Option<usize> {
+fn surface_of_id(ws: &config::Workspace, id: &str) -> Option<usize> {
     let mut pane = 0;
     for t in &ws.tabs {
         if t.cfg.command.argv().is_empty() {
@@ -3492,7 +3749,7 @@ fn build_engine(
                     .chain(d.judge.iter())
                     .chain(d.moderator.iter())
                     .filter(|s| !s.trim().is_empty())
-                    .filter_map(|id| pane_of_id(w, id))
+                    .filter_map(|id| surface_of_id(w, id))
                     .collect()
             })
         })
@@ -3574,7 +3831,7 @@ fn build_engine(
                 };
                 let moderator = d.moderator.as_deref().filter(|s| !s.trim().is_empty());
                 for (i, id) in agents.iter().enumerate() {
-                    let Some(pane) = pane_of_id(w, id) else {
+                    let Some(pane) = surface_of_id(w, id) else {
                         errors.push(crate::i18n::tp(
                             "err.ws.discuss_tab_missing",
                             &[("id", id)],
@@ -3608,7 +3865,7 @@ fn build_engine(
                 }
                 if let Some(j) = d.judge.as_deref().filter(|s| !s.trim().is_empty()) {
                     let persona = d.personas.get(j).map(String::as_str).unwrap_or("");
-                    match pane_of_id(w, j) {
+                    match surface_of_id(w, j) {
                         Some(pane) => match engine.load_discuss_agent(
                             j, j, false, true, None, max_turns, &agents_lua, &names_lua,
                             &stops_lua,
@@ -3629,7 +3886,7 @@ fn build_engine(
                 // The moderator tab: nominates the next speaker when order="moderated"
                 if let Some(m) = moderator {
                     let persona = d.personas.get(m).map(String::as_str).unwrap_or("");
-                    match pane_of_id(w, m) {
+                    match surface_of_id(w, m) {
                         Some(pane) => match engine.load_discuss_agent(
                             m, m, false, false, d.judge.as_deref(), max_turns, &agents_lua,
                             &names_lua, &stops_lua, &d.verdict, &d.order, moderator, true, persona,
@@ -4064,7 +4321,7 @@ fn switch_workspace(
 /// Keeping sessions and browsers as separate variants is purely an internal
 /// concern; it has nothing to do with whoever wrote the config.
 #[derive(Clone, Debug, PartialEq)]
-enum Pane {
+enum Surface {
     /// Which index into `tabs` (0-based)
     Session(usize),
     /// A page placed inside the window
@@ -4081,8 +4338,8 @@ enum Pane {
 /// Things not in config (a browser automation opened later, a tab launched
 /// via arguments) get appended at the end. There's no way to decide a
 /// position for something that was never written down.
-fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) -> Vec<Pane> {
-    let mut out: Vec<Pane> = Vec::new();
+fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) -> Vec<Surface> {
+    let mut out: Vec<Surface> = Vec::new();
     let mut used_tabs = vec![false; titles.len()];
     let mut used_web: Vec<&str> = Vec::new();
     if let Some(ws) = ws {
@@ -4105,7 +4362,7 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
                     used_web.push(h);
                 }
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                out.push(Pane::Browser { key, name });
+                out.push(Surface::Browser { key, name });
                 continue;
             }
             let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
@@ -4117,14 +4374,14 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
                 .map(|(i, _)| i);
             if let Some(i) = found {
                 used_tabs[i] = true;
-                out.push(Pane::Session(i));
+                out.push(Surface::Session(i));
             }
         }
     }
     // Things not written in config
     for (i, used) in used_tabs.iter().enumerate() {
         if !used {
-            out.push(Pane::Session(i));
+            out.push(Surface::Session(i));
         }
     }
     // Things not in config (opened later by automation, the settings screen, etc.) — the name is all there is
@@ -4137,7 +4394,7 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
             } else {
                 h.clone()
             };
-            out.push(Pane::Browser {
+            out.push(Surface::Browser {
                 key: h.clone(),
                 name,
             });
@@ -4147,26 +4404,26 @@ fn panes_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) 
 }
 
 /// Looks up a session's location from its screen number (1-based)
-fn session_at(panes: &[Pane], active: usize) -> Option<usize> {
-    match panes.get(active.checked_sub(1)?)? {
-        Pane::Session(i) => Some(*i),
-        Pane::Browser { .. } => None,
+fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
+    match surfaces.get(active.checked_sub(1)?)? {
+        Surface::Session(i) => Some(*i),
+        Surface::Browser { .. } => None,
     }
 }
 
 /// Looks up the screen number (1-based) from a session's location.
 /// The ball moves by session number, so route it through here when displaying it.
-fn pane_at(panes: &[Pane], session: usize) -> usize {
-    panes
+fn surface_at(surfaces: &[Surface], session: usize) -> usize {
+    surfaces
         .iter()
-        .position(|p| *p == Pane::Session(session.wrapping_sub(1)))
+        .position(|p| *p == Surface::Session(session.wrapping_sub(1)))
         .map(|i| i + 1)
         .unwrap_or(0)
 }
 
 /// The session currently being viewed. None if viewing a browser.
-fn session_mut<'a>(tabs: &'a mut [Tab], panes: &[Pane], active: usize) -> Option<&'a mut Tab> {
-    let i = session_at(panes, active)?;
+fn session_mut<'a>(tabs: &'a mut [Tab], surfaces: &[Surface], active: usize) -> Option<&'a mut Tab> {
+    let i = session_at(surfaces, active)?;
     tabs.get_mut(i)
 }
 
@@ -4405,13 +4662,13 @@ pub(crate) fn resolve_data_path(p: &str) -> std::path::PathBuf {
 /// Builds a placed page's context from the screen layout.
 /// Returns None for a page that's not in the layout (e.g. after it's closed).
 fn page_ctx(
-    panes: &[Pane],
+    surfaces: &[Surface],
     key: &str,
     url: String,
     complete: bool,
 ) -> Option<hooks::PageCtx> {
-    panes.iter().enumerate().find_map(|(i, p)| match p {
-        Pane::Browser { key: k, name } if k == key => Some(hooks::PageCtx {
+    surfaces.iter().enumerate().find_map(|(i, p)| match p {
+        Surface::Browser { key: k, name } if k == key => Some(hooks::PageCtx {
             index: i + 1,
             id: k.clone(),
             name: name.clone(),
@@ -4709,13 +4966,13 @@ pub fn append_hook_log(msg: &str) {
 ///
 /// Targets are counted by screen position. A name and a number both point to
 /// the same thing (numbers shift with reordering, so using names when writing is recommended).
-fn pane_keys(panes: &[Pane], tabs: &[Tab]) -> Vec<hooks::TabKey> {
-    panes
+fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
+    surfaces
         .iter()
         .map(|p| match p {
-            Pane::Session(i) => tabs.get(*i).map(|t| t.key()).unwrap_or_default(),
+            Surface::Session(i) => tabs.get(*i).map(|t| t.key()).unwrap_or_default(),
             // Browsers give priority to the id too; still lookup-able by display name
-            Pane::Browser { key, name } => hooks::TabKey {
+            Surface::Browser { key, name } => hooks::TabKey {
                 id: Some(key.clone()),
                 name: name.clone(),
             },
@@ -4766,7 +5023,7 @@ const WAIT_FOR_TAB_MS: u64 = 30_000;
 fn exec_commands(
     cmds: Vec<Command>,
     tabs: &mut [Tab],
-    panes: &[Pane],
+    surfaces: &[Surface],
     max_chain: u32,
     auto_enabled: bool,
     now_ms: u64,
@@ -4781,10 +5038,10 @@ fn exec_commands(
     // Whether automation may move the view right now (see ViewMove)
     view: ViewMove,
 ) {
-    let keys = pane_keys(panes, tabs);
+    let keys = surface_keys(surfaces, tabs);
     let index_of = |r: &hooks::TabRef| r.resolve(&keys);
     // From a screen number to its location in the tabs array. None for a browser.
-    let session_of = |pane: usize| session_at(panes, pane);
+    let session_of = |surface: usize| session_at(surfaces, surface);
     for cmd in cmds {
         // If the recipient can't accept input yet, hold onto it and deliver it later.
         // Sending it now would be silently dropped, invisible to whoever wrote it.
@@ -5138,8 +5395,11 @@ struct Ui {
     max_chain: u32,
     /// Draw timestamp (relative ms). Used to drive the ball's animation.
     now_ms: u64,
-    /// What's laid out on screen, in the order written in config
-    panes: Vec<Pane>,
+    /// The surfaces on screen (one per tab-bar row), in the order written in config
+    surfaces: Vec<Surface>,
+    /// How the content area is divided, and which pane the keyboard is aimed at.
+    /// `active` is always the surface in the focused pane
+    layout: crate::layout::Layout,
     /// If the current workspace is a discussion, the opening speaker's session
     /// number (1-based) and display name — for the dashboard's "start" card
     discuss_start: Option<usize>,
@@ -5489,20 +5749,20 @@ mod tests {
             std::path::PathBuf::from("."),
             std::collections::HashMap::new(),
         ));
-        let page = |k: &str| Pane::Browser { key: k.into(), name: k.into() };
-        let layout = vec![
+        let page = |k: &str| Surface::Browser { key: k.into(), name: k.into() };
+        let surfaces = vec![
             page(SETTINGS_TAB),
             page(RESULT_TAB),
             page("shop"),
-            Pane::Session(0),
+            Surface::Session(0),
         ];
-        // active is 1-based over the panes
-        assert_eq!(restartable_page(&layout, 1, &caps), None, "設定画面は対象外");
-        assert_eq!(restartable_page(&layout, 2, &caps), None, "実行結果は対象外");
+        // active is 1-based over the surfaces
+        assert_eq!(restartable_page(&surfaces, 1, &caps), None, "設定画面は対象外");
+        assert_eq!(restartable_page(&surfaces, 2, &caps), None, "実行結果は対象外");
         // A user's page only qualifies once we know how it was opened
-        assert_eq!(restartable_page(&layout, 3, &caps), None, "開き方を知らないうちは対象外");
-        assert_eq!(restartable_page(&layout, 4, &caps), None, "セッションはここではなく session_mut の担当");
-        assert_eq!(restartable_page(&layout, 0, &caps), None, "盤面(INDEX)には戻す先が無い");
+        assert_eq!(restartable_page(&surfaces, 3, &caps), None, "開き方を知らないうちは対象外");
+        assert_eq!(restartable_page(&surfaces, 4, &caps), None, "セッションはここではなく session_mut の担当");
+        assert_eq!(restartable_page(&surfaces, 0, &caps), None, "盤面(INDEX)には戻す先が無い");
     }
 
     /// The status bar's restart button must land on the same keystroke a person
@@ -5590,11 +5850,11 @@ mod tests {
     /// human-readable one, distinct from the id automation addresses it by.
     #[test]
     fn a_page_knows_its_number_and_both_of_its_names() {
-        let layout = vec![
-            Pane::Browser { key: "html".into(), name: "HTML解析".into() },
-            Pane::Session(0),
+        let surfaces = vec![
+            Surface::Browser { key: "html".into(), name: "HTML解析".into() },
+            Surface::Session(0),
         ];
-        let page = page_ctx(&layout, "html", "https://example.com/".into(), true)
+        let page = page_ctx(&surfaces, "html", "https://example.com/".into(), true)
             .expect("並びにあるのに見つからない");
         assert_eq!(page.index, 1, "画面の番号と違う");
         assert_eq!(page.id, "html", "自動化から指す呼び名が違う");
@@ -5602,7 +5862,7 @@ mod tests {
         assert!(page.complete);
 
         // Nothing is passed for a page not in the layout (e.g. after it's closed)
-        assert!(page_ctx(&layout, "shop", String::new(), true).is_none());
+        assert!(page_ctx(&surfaces, "shop", String::new(), true).is_none());
     }
 
     /// Automation assignments must be numbered the way the screen is.
@@ -5641,12 +5901,12 @@ mod tests {
             ("参加B", "ai2", "codex"),
             ("審判", "ref", "claude"),
         ]);
-        assert_eq!(pane_of_id(&ws, "ai1"), Some(1));
-        assert_eq!(pane_of_id(&ws, "ai2"), Some(2));
-        assert_eq!(pane_of_id(&ws, "ref"), Some(3));
-        assert_eq!(pane_of_id(&ws, "いない"), None);
+        assert_eq!(surface_of_id(&ws, "ai1"), Some(1));
+        assert_eq!(surface_of_id(&ws, "ai2"), Some(2));
+        assert_eq!(surface_of_id(&ws, "ref"), Some(3));
+        assert_eq!(surface_of_id(&ws, "いない"), None);
         // Also lookup-able by name
-        assert_eq!(pane_of_id(&ws, "審判"), Some(3));
+        assert_eq!(surface_of_id(&ws, "審判"), Some(3));
     }
 
     /// A tab with `drives` (browser-driving mode) written on it must be assigned the built-in agent
@@ -5681,17 +5941,17 @@ mod tests {
         let tabs = ["エンジニア"];
         let hosted = vec!["html".to_string()];
 
-        let panes = panes_of(Some(&ws), &tabs, &hosted);
+        let surfaces = surfaces_of(Some(&ws), &tabs, &hosted);
         assert_eq!(
-            panes,
-            vec![Pane::Browser { key: "html".into(), name: "HTML解析".into() }, Pane::Session(0)],
+            surfaces,
+            vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
             "設定の順に並んでいない"
         );
         // A session must be resolvable from its screen number
-        assert_eq!(session_at(&panes, 1), None, "1番はブラウザのはず");
-        assert_eq!(session_at(&panes, 2), Some(0));
+        assert_eq!(session_at(&surfaces, 1), None, "1番はブラウザのはず");
+        assert_eq!(session_at(&surfaces, 2), Some(0));
         // The ball moves by session number; what's displayed is the screen number
-        assert_eq!(pane_at(&panes, 1), 2);
+        assert_eq!(surface_at(&surfaces, 1), 2);
     }
 
     fn ws_from(rows: &[(&str, &str, &str)]) -> config::Workspace {
@@ -5733,10 +5993,10 @@ mod tests {
             ("エンジニア", "ai", "claude"),
         ]);
         let tabs = ["エンジニア"];
-        let panes = panes_of(Some(&ws), &tabs, &[]);
+        let surfaces = surfaces_of(Some(&ws), &tabs, &[]);
         assert_eq!(
-            panes,
-            vec![Pane::Browser { key: "html".into(), name: "HTML解析".into() }, Pane::Session(0)],
+            surfaces,
+            vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
             "開く前だと番号がずれる"
         );
     }
@@ -5749,13 +6009,13 @@ mod tests {
         let ws = ws_from(&[("エンジニア", "ai", "claude")]);
         let tabs = ["エンジニア", "あとから"];
         let hosted = vec!["settings".to_string()];
-        let panes = panes_of(Some(&ws), &tabs, &hosted);
+        let surfaces = surfaces_of(Some(&ws), &tabs, &hosted);
         assert_eq!(
-            panes,
+            surfaces,
             vec![
-                Pane::Session(0),
-                Pane::Session(1),
-                Pane::Browser { key: "settings".into(), name: "settings".into() }
+                Surface::Session(0),
+                Surface::Session(1),
+                Surface::Browser { key: "settings".into(), name: "settings".into() }
             ]
         );
     }
@@ -5763,20 +6023,20 @@ mod tests {
     /// The number that switches to the settings tab must point at its
     /// existing location if it's already open.
     ///
-    /// Using `layout.len() + 1` points one slot too far, since settings is
+    /// Using `surfaces.len() + 1` points one slot too far, since settings is
     /// already in the layout — this used to leave the screen solid black when pressed
     /// (this happens when pressing "add tab" while settings is already open).
     #[test]
     fn settings_active_points_at_the_open_settings_tab() {
         // Not open yet: points to the slot right after the end
-        let before = vec![Pane::Session(0), Pane::Session(1)];
+        let before = vec![Surface::Session(0), Surface::Session(1)];
         assert_eq!(settings_active(&before), 3, "開く前は末尾の次");
 
         // Already open: points to its existing location (the end). Not one slot further.
         let after = vec![
-            Pane::Session(0),
-            Pane::Session(1),
-            Pane::Browser { key: "settings".into(), name: "settings".into() },
+            Surface::Session(0),
+            Surface::Session(1),
+            Surface::Browser { key: "settings".into(), name: "settings".into() },
         ];
         assert_eq!(settings_active(&after), 3, "開いていればその場所");
     }
@@ -6010,11 +6270,11 @@ mod tests {
     /// (With the layout Analysis=1 browser / AI=2 session, the AI was unreachable.)
     #[test]
     fn a_browser_in_the_row_does_not_hide_the_tabs_behind_it() {
-        let panes = vec![
-            Pane::Browser { key: "html".into(), name: "解析".into() },
-            Pane::Session(0),
+        let surfaces = vec![
+            Surface::Browser { key: "html".into(), name: "解析".into() },
+            Surface::Session(0),
         ];
-        let keys = pane_keys(&panes, &[]);
+        let keys = surface_keys(&surfaces, &[]);
         assert_eq!(
             hooks::TabRef::Index(2).resolve(&keys),
             Some(2),

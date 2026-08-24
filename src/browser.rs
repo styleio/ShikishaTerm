@@ -760,12 +760,48 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                     .and_then(|x| x.as_i64())
                     .unwrap_or(0) as i32
             };
+            // Every pane's own measurements ride along with the focused one's.
+            // They arrive together because they are measured together: one
+            // reflow of the page decides all of them, and splitting them into
+            // two messages would let a pane act on a size the others no longer
+            // agree with.
+            let panes = v
+                .get("panes")
+                .and_then(|x| x.as_array())
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|p| {
+                            let r = p.get("rect").and_then(|x| x.as_array());
+                            let n = |i: usize| {
+                                r.and_then(|r| r.get(i)).and_then(|x| x.as_i64()).unwrap_or(0) as i32
+                            };
+                            Some(PaneGeom {
+                                id: p.get("id").and_then(|x| x.as_u64())? as u32,
+                                rows: p.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
+                                cols: p.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,
+                                rect: (n(0), n(1), n(2), n(3)),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             Ev::Resize {
                 rows: v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
                 cols: v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,
                 area: (num(0), num(1), num(2), num(3)),
+                panes,
             }
         }
+        Some("focuspane") => Ev::FocusPane {
+            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+        },
+        Some("closepane") => Ev::ClosePane {
+            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+        },
+        Some("paneratio") => Ev::PaneRatio {
+            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            ratio: v.get("ratio").and_then(|x| x.as_f64()).unwrap_or(0.5) as f32,
+        },
         Some("copy") => Ev::Copy {
             text: v
                 .get("text")
@@ -844,6 +880,20 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
     })
 }
 
+/// One pane as the page measured it.
+///
+/// Rows and columns are what the terminal in that pane must be resized to;
+/// the rect is where a browser placed in that pane has to sit. Only the page
+/// can work these out — it owns the font metrics and the dividers — so they
+/// are reported, never guessed on this side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneGeom {
+    pub id: u32,
+    pub rows: u16,
+    pub cols: u16,
+    pub rect: (i32, i32, i32, i32),
+}
+
 /// A report from the browser to the conductor
 #[derive(Debug, Clone)]
 pub enum Ev {
@@ -870,7 +920,16 @@ pub enum Ev {
         cols: u16,
         /// The content area (x, y, width, height). The browser is placed here
         area: (i32, i32, i32, i32),
+        /// Every pane's own measurements. One entry while the content area is
+        /// undivided; one per pane once it is split
+        panes: Vec<PaneGeom>,
     },
+    /// A pane was clicked. Focus follows the click, the way it does in the tab bar
+    FocusPane { id: u32 },
+    /// A pane's ✕ was pressed. Closes the view, never the tab behind it
+    ClosePane { id: u32 },
+    /// A divider was dragged. `ratio` is the first child's new share of the split
+    PaneRatio { id: u32, ratio: f32 },
     /// Wants to view this tab (0 = the operating board)
     Select { tab: usize },
     /// The + on the tab bar was pressed (opens the settings screen in add-tab mode)
