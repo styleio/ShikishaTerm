@@ -375,7 +375,9 @@ struct WinSurface {
     /// Panes whose ✕ was pressed. The loop closes the view, not the tab
     close_panes: Vec<u32>,
     /// Dividers dragged in the window, as (pane, its split's new first share)
-    pane_ratios: Vec<(u32, f32)>,
+    pane_ratios: Vec<(usize, f32)>,
+    /// Panes whose ⊞ / ⊟ caption button was pressed (pane, split downwards?)
+    pane_splits: Vec<(u32, bool)>,
     /// The pane tree as last sent to the page. Only send it again when it changes
     last_layout: String,
     /// The terminal contents last sent for each unfocused pane. The focused
@@ -464,8 +466,12 @@ impl WinSurface {
         std::mem::take(&mut self.close_panes)
     }
 
-    fn take_pane_ratios(&mut self) -> Vec<(u32, f32)> {
+    fn take_pane_ratios(&mut self) -> Vec<(usize, f32)> {
         std::mem::take(&mut self.pane_ratios)
+    }
+
+    fn take_pane_splits(&mut self) -> Vec<(u32, bool)> {
+        std::mem::take(&mut self.pane_splits)
     }
 
     fn take_close_settings(&mut self) -> bool {
@@ -595,7 +601,8 @@ impl WinSurface {
                 }
                 Ev::FocusPane { id } => self.focus_panes.push(id),
                 Ev::ClosePane { id } => self.close_panes.push(id),
-                Ev::PaneRatio { id, ratio } => self.pane_ratios.push((id, ratio)),
+                Ev::PaneRatio { divider, ratio } => self.pane_ratios.push((divider, ratio)),
+                Ev::SplitPane { id, down } => self.pane_splits.push((id, down)),
                 Ev::JsError { msg } => {
                     crate::append_hook_log(&format!("Screen failure: {msg}"));
                 }
@@ -891,6 +898,7 @@ fn run_in_window() -> Result<()> {
         run_actions: Vec::new(),
         record_arms: Vec::new(),
         run_luas: Vec::new(),
+        pane_splits: Vec::new(),
         recorded: Vec::new(),
         operates: Vec::new(),
         replay_saves: false,
@@ -907,6 +915,22 @@ fn run_in_window() -> Result<()> {
 /// being split — so splitting twice walks down the tab bar instead of asking
 /// the same question twice. With nothing spare it falls back to the dashboard,
 /// which is never wrong and never a duplicate.
+/// Divide the focused pane and answer with the surface now under the cursor.
+///
+/// Two doors ask for this — `Ctrl+B %` and the ⊞ / ⊟ in a pane's caption — and
+/// they must divide identically: which surface the new half shows, and where
+/// focus lands, are decisions, not details of whichever door was used
+fn split_focused(
+    l: &mut crate::layout::Layout,
+    dir: crate::layout::Dir,
+    surface_count: usize,
+    active: usize,
+) -> usize {
+    let next = free_surface(l, surface_count, active);
+    l.split(dir, next);
+    l.focused_surface()
+}
+
 fn free_surface(l: &crate::layout::Layout, surface_count: usize, from: usize) -> usize {
     (1..=surface_count)
         .map(|n| (from + n) % (surface_count + 1))
@@ -932,6 +956,20 @@ fn panes_json(l: &crate::layout::Layout) -> String {
         surface: usize,
         focused: bool,
     }
+    /// One divider, in the same fractions. `i` is its position in
+    /// `Layout::dividers()`, which is how a drag names it coming back
+    #[derive(serde::Serialize)]
+    struct Divider {
+        i: usize,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        /// The first half's share, so the page can draw the handle on the line
+        ratio: f32,
+        /// true = the halves are stacked, so the divider lies across
+        down: bool,
+    }
     let focus = l.focus();
     let surfaces: std::collections::HashMap<_, _> = l.leaves().into_iter().collect();
     let panes: Vec<Pane> = l
@@ -947,7 +985,27 @@ fn panes_json(l: &crate::layout::Layout) -> String {
             focused: id == focus,
         })
         .collect();
-    serde_json::json!({ "single": l.is_single(), "focus": focus, "panes": panes }).to_string()
+    let dividers: Vec<Divider> = l
+        .dividers()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (r, dir, ratio))| Divider {
+            i,
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+            ratio,
+            down: dir == crate::layout::Dir::Col,
+        })
+        .collect();
+    serde_json::json!({
+        "single": l.is_single(),
+        "focus": focus,
+        "panes": panes,
+        "dividers": dividers,
+    })
+    .to_string()
 }
 
 fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
@@ -2451,8 +2509,18 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
         }
-        for (id, ratio) in surface.take_pane_ratios() {
-            pane_layout.set_ratio(id, ratio);
+        for (divider, ratio) in surface.take_pane_ratios() {
+            pane_layout.set_divider(divider, ratio);
+        }
+        // ⊞ / ⊟ in a pane's caption. Divides that pane, not whichever one had
+        // focus: the button is attached to a pane, so it must mean that one
+        for (id, down) in surface.take_pane_splits() {
+            if !pane_layout.focus_pane(id) {
+                continue;
+            }
+            let dir = if down { layout::Dir::Col } else { layout::Dir::Row };
+            active = split_focused(&mut pane_layout, dir, surface_count, active);
+            view_touched_ms = start.elapsed().as_millis() as u64;
         }
         for id in surface.take_close_panes() {
             if pane_layout.close(id) {
@@ -3232,9 +3300,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 KeyCode::Char('%') | KeyCode::Char('|') => layout::Dir::Row,
                                 _ => layout::Dir::Col,
                             };
-                            let next = free_surface(&pane_layout, surface_count, active);
-                            pane_layout.split(dir, next);
-                            active = pane_layout.focused_surface();
+                            active = split_focused(&mut pane_layout, dir, surface_count, active);
                             view_touched_ms = start.elapsed().as_millis() as u64;
                         }
                         // Ctrl+B < / > move the divider the focused pane sits

@@ -112,20 +112,24 @@ impl Node {
         match self {
             Node::Leaf { id, .. } => out.push((*id, at)),
             Node::Split { dir, ratio, a, b } => {
-                let r = ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO);
-                let (ra, rb) = match dir {
-                    Dir::Row => (
-                        FRect { w: at.w * r, ..at },
-                        FRect { x: at.x + at.w * r, w: at.w * (1.0 - r), ..at },
-                    ),
-                    Dir::Col => (
-                        FRect { h: at.h * r, ..at },
-                        FRect { y: at.y + at.h * r, h: at.h * (1.0 - r), ..at },
-                    ),
-                };
+                let (ra, rb) = Node::halves(at, *dir, *ratio);
                 a.walk_rects(ra, out);
                 b.walk_rects(rb, out);
             }
+        }
+    }
+
+    fn halves(at: FRect, dir: Dir, ratio: f32) -> (FRect, FRect) {
+        let r = ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+        match dir {
+            Dir::Row => (
+                FRect { w: at.w * r, ..at },
+                FRect { x: at.x + at.w * r, w: at.w * (1.0 - r), ..at },
+            ),
+            Dir::Col => (
+                FRect { h: at.h * r, ..at },
+                FRect { y: at.y + at.h * r, h: at.h * (1.0 - r), ..at },
+            ),
         }
     }
 
@@ -161,6 +165,36 @@ impl Node {
             Node::Split { a, b, .. } => a.count() + b.count(),
         }
     }
+}
+
+/// Visits every split, first child first, handing over the area it divides.
+/// Stops early once `f` says it is finished.
+///
+/// Paired with `walk_splits_mut` below, and the pairing is the point: the page
+/// names a divider by its position in this walk, so the two must agree on the
+/// order forever. They are kept next to each other so a change to one is a
+/// change in front of the other.
+fn walk_splits(node: &Node, at: FRect, f: &mut impl FnMut(FRect, Dir, f32) -> bool) -> bool {
+    let Node::Split { dir, ratio, a, b } = node else {
+        return false;
+    };
+    if f(at, *dir, *ratio) {
+        return true;
+    }
+    let (ra, rb) = Node::halves(at, *dir, *ratio);
+    walk_splits(a, ra, f) || walk_splits(b, rb, f)
+}
+
+/// The same walk, for changing a ratio. No rectangles: whoever is changing one
+/// already knows where it is
+fn walk_splits_mut(node: &mut Node, f: &mut impl FnMut(&mut f32) -> bool) -> bool {
+    let Node::Split { ratio, a, b, .. } = node else {
+        return false;
+    };
+    if f(ratio) {
+        return true;
+    }
+    walk_splits_mut(a, f) || walk_splits_mut(b, f)
 }
 
 /// The whole division of the content area, plus which pane the keyboard is aimed at.
@@ -205,6 +239,43 @@ impl Layout {
         let mut out = Vec::new();
         self.root.walk_rects(FRect::FULL, &mut out);
         out
+    }
+
+    /// Every divider: the area it divides, which way, and where it currently
+    /// sits in that area.
+    ///
+    /// Handed to the page so a drag can address a divider **by position in this
+    /// list** rather than by the panes either side of it. Two panes can look
+    /// adjacent while belonging to splits several levels apart, and a divider
+    /// whose children are themselves splits has no pane touching it at all —
+    /// working the answer back out from rectangles would move the wrong
+    /// divider, on a screen where every divider looks the same. The tree knows;
+    /// this says so. `set_divider` walks in exactly this order.
+    pub fn dividers(&self) -> Vec<(FRect, Dir, f32)> {
+        let mut out = Vec::new();
+        walk_splits(&self.root, FRect::FULL, &mut |at, dir, ratio| {
+            out.push((at, dir, ratio));
+            false
+        });
+        out
+    }
+
+    /// Moves one divider, named by its position in `dividers()`.
+    ///
+    /// `ratio` is the first half's share — the left of a side-by-side split,
+    /// the top of a stacked one
+    pub fn set_divider(&mut self, index: usize, ratio: f32) -> bool {
+        let mut seen = 0usize;
+        let mut done = false;
+        walk_splits_mut(&mut self.root, &mut |r| {
+            if seen == index {
+                *r = ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+                done = true;
+            }
+            seen += 1;
+            done
+        });
+        done
     }
 
     /// The surface shown in a given pane.
@@ -428,6 +499,40 @@ mod tests {
         assert!(l.is_single());
         assert_eq!(l.focused_surface(), 1);
         assert_eq!(l.rects()[0].1, FRect::FULL);
+    }
+
+    #[test]
+    fn a_divider_can_be_moved_even_when_no_pane_touches_it() {
+        // left | (top / bottom): the outer divider has a split on one side, so
+        // no pane is its direct child. The mouse can still be on it, and
+        // dragging it must move THAT divider — addressing it by the panes
+        // either side would move the inner one instead, halfway across the
+        // screen from where the hand is
+        let mut l = Layout::single(1);
+        l.split(Dir::Row, 2); // focus is now the right half
+        l.split(Dir::Col, 3); // ...which becomes a stack
+        let dividers = l.dividers();
+        assert_eq!(dividers.len(), 2, "仕切りは2本");
+        assert_eq!(dividers[0].1, Dir::Row, "先に外側 (縦の仕切り)");
+        assert_eq!(dividers[1].1, Dir::Col);
+
+        assert!(l.set_divider(0, 0.25));
+        let left = l.rects()[0].1;
+        assert!((left.w - 0.25).abs() < 0.001, "左は 1/4 になった: {left:?}");
+        // ...and the inner divider now lives in the area that is left over
+        let inner = l.dividers()[1].0;
+        assert!((inner.x - 0.25).abs() < 0.001, "内側は残りの領域を分ける: {inner:?}");
+
+        assert!(!l.set_divider(9, 0.5), "存在しない仕切りは動かせない");
+    }
+
+    #[test]
+    fn a_divider_never_squeezes_a_pane_to_nothing() {
+        let mut l = Layout::single(1);
+        l.split(Dir::Row, 2);
+        l.set_divider(0, 0.0);
+        let w = l.rects()[0].1.w;
+        assert!(w >= MIN_RATIO, "掴んで端まで引いても消えない: {w}");
     }
 
     #[test]

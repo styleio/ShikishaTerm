@@ -124,6 +124,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .pane .phead .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .pane .phead .cl { opacity:.6; padding:0 2px; }
   .pane .phead .cl:hover { opacity:1; color:var(--stop); }
+  /* Divide this pane. Next to the ✕ because the pair is the same thought:
+     one makes a pane, the other unmakes it */
+  .pane .phead .sp { opacity:.55; padding:0 2px; font-size:12px; line-height:1; }
+  .pane .phead .sp:hover { opacity:1; color:var(--brand); }
+  /* The dividers. Drawn wider than they look so they can actually be grabbed:
+     a 1px line is a line, not a handle. The visible mark is the pane borders
+     either side; this only takes the pointer */
+  .pdiv { position:absolute; z-index:3; }
+  .pdiv.v { cursor:col-resize; }
+  .pdiv.h { cursor:row-resize; }
+  .pdiv:hover, .pdiv.dragging { background:var(--brand); opacity:.35; }
+  /* While a divider is being dragged the pointer must not be stolen by an
+     iframe, a browser layer, or a text selection that starts mid-drag */
+  body.dragdiv { user-select:none; }
+  body.dragdiv * { pointer-events:none; }
+  body.dragdiv .pdiv { pointer-events:auto; }
   .pane .pbody { position:absolute; left:0; right:0; top:0; bottom:0; overflow:hidden; }
   .pane.headed .phead { display:flex; }
   .pane.headed .pbody { top:22px; }
@@ -1344,7 +1360,13 @@ window.__panes = function (json) {
       el.className = "pane";
       el.dataset.pid = p.id;
       el.innerHTML = '<div class="phead"><span class="dot"></span>' +
-        '<span class="nm"></span><span class="cl">&#10005;</span></div>' +
+        '<span class="nm"></span>' +
+        // ▥ lines running down = a division down the middle; ▤ lines running
+        // across = a division across. A matched pair, so the two read as one
+        // choice with two directions rather than as two unrelated icons
+        '<span class="sp sr" title="' + (T["tui.pane.split_right"] || "") + '">&#9637;</span>' +
+        '<span class="sp sd" title="' + (T["tui.pane.split_down"] || "") + '">&#9636;</span>' +
+        '<span class="cl">&#10005;</span></div>' +
         '<div class="pbody"><pre class="pscreen notranslate" translate="no"></pre></div>';
       // Clicking anywhere in a pane you are not in moves you there. The close
       // control is the one thing inside it that means something else.
@@ -1356,6 +1378,13 @@ window.__panes = function (json) {
         e.stopPropagation();
         send({kind:"closepane", id:p.id});
       };
+      // Same two divisions the keyboard makes, on the pane you pressed them on
+      for (const [cls, down] of [[".sr", false], [".sd", true]]) {
+        el.querySelector(cls).onclick = (e) => {
+          e.stopPropagation();
+          send({kind:"splitpane", id:p.id, down});
+        };
+      }
       host.append(el);
     }
     el.style.left = (p.x * 100) + "%";
@@ -1371,6 +1400,7 @@ window.__panes = function (json) {
   for (const el of [...host.querySelectorAll(".pane")]) {
     if (!seen.has(el.dataset.pid)) el.remove();
   }
+  paintDividers(P.dividers || []);
   paintPaneHeads();
   // The layers above draw into the focused pane, so hand them its rectangle
   const f = host.querySelector(".pane.focused .pbody");
@@ -1403,6 +1433,91 @@ function paintPaneHeads() {
       t ? t.name : (p.surface === 0 ? "SHIKISHA-TERM" : "");
     el.querySelector(".dot").className = "dot " + (t ? t.state : "");
   }
+}
+
+// The grab handles between panes.
+//
+// Rust names each divider by its position in its own list and hands over the
+// area it divides; the page only turns that into pixels and hands a new ratio
+// back. Which split a boundary belongs to is never guessed from the way the
+// screen looks — two panes can look adjacent and belong to splits several
+// levels apart, and guessing would move a divider elsewhere on the screen.
+const DIV_GRAB = 9;   // px: what the pointer can catch, not what the eye sees
+function paintDividers(list) {
+  const host = document.getElementById("panes");
+  const live = new Set();
+  for (const d of list) {
+    live.add(String(d.i));
+    let el = host.querySelector('.pdiv[data-di="' + d.i + '"]');
+    if (!el) {
+      el = document.createElement("div");
+      el.dataset.di = d.i;
+      el.title = T["tui.pane.divider"] || "";
+      el.onmousedown = (e) => startDividerDrag(e, el);
+      // Back to even halves. The keyboard has no word for this, and after a
+      // few drags "put it back" is the thing people want most
+      el.ondblclick = (e) => {
+        e.preventDefault();
+        send({kind:"paneratio", divider: Number(el.dataset.di), ratio: 0.5});
+      };
+      host.append(el);
+    }
+    el.className = "pdiv " + (d.down ? "h" : "v");
+    // The handle straddles the line, so half of it hangs over each side
+    if (d.down) {
+      const at = (d.y + d.h * d.ratio) * 100;
+      el.style.left = (d.x * 100) + "%";
+      el.style.width = (d.w * 100) + "%";
+      el.style.top = "calc(" + at + "% - " + (DIV_GRAB / 2) + "px)";
+      el.style.height = DIV_GRAB + "px";
+    } else {
+      const at = (d.x + d.w * d.ratio) * 100;
+      el.style.top = (d.y * 100) + "%";
+      el.style.height = (d.h * 100) + "%";
+      el.style.left = "calc(" + at + "% - " + (DIV_GRAB / 2) + "px)";
+      el.style.width = DIV_GRAB + "px";
+    }
+    el._span = d;
+  }
+  for (const el of [...host.querySelectorAll(".pdiv")]) {
+    if (!live.has(el.dataset.di)) el.remove();
+  }
+}
+
+// Dragging one. The ratio is recomputed from where the pointer is inside the
+// area that divider owns, so the divider follows the pointer exactly instead
+// of drifting by however much the first movement missed the line by.
+function startDividerDrag(e, el) {
+  e.preventDefault();
+  const host = document.getElementById("panes");
+  const span = el._span;
+  if (!span) return;
+  el.classList.add("dragging");
+  document.body.classList.add("dragdiv");
+  const move = (ev) => {
+    const box = host.getBoundingClientRect();
+    const frac = span.down
+      ? ((ev.clientY - box.top) / box.height - span.y) / span.h
+      : ((ev.clientX - box.left) / box.width - span.x) / span.w;
+    const ratio = Math.max(0.1, Math.min(0.9, frac));
+    // Draw it where the pointer is right away. The tree will come back with
+    // the same number a frame later; waiting for that first would make the
+    // divider lag behind the hand
+    if (span.down) {
+      el.style.top = "calc(" + ((span.y + span.h * ratio) * 100) + "% - " + (DIV_GRAB / 2) + "px)";
+    } else {
+      el.style.left = "calc(" + ((span.x + span.w * ratio) * 100) + "% - " + (DIV_GRAB / 2) + "px)";
+    }
+    send({kind:"paneratio", divider: Number(el.dataset.di), ratio});
+  };
+  const up = () => {
+    el.classList.remove("dragging");
+    document.body.classList.remove("dragdiv");
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
 }
 
 // One unfocused pane's terminal contents.
@@ -1508,9 +1623,18 @@ function report() {
     // coordinates. In the focused pane that rectangle is #page, which already
     // has the browser bar's height taken out of it.
     const r = el.classList.contains("focused") ? area : b;
+    // A placed browser is a native layer ON TOP of this page, so wherever it
+    // sits, the page underneath stops receiving the pointer. Left flush against
+    // the divider, it would swallow the half of the grab handle that overhangs
+    // it — the divider between a terminal and the browser it is driving could
+    // then only be caught from the terminal side. Hold the browser back by the
+    // handle's overhang so the whole width of it stays reachable. Undivided,
+    // there is no divider and nothing to hold back from
+    const in_ = (PANES && !PANES.single) ? Math.ceil(DIV_GRAB / 2) : 0;
     return {id: +el.dataset.pid, rows: d.rows, cols: d.cols,
-      rect: [Math.round(r.left), Math.round(r.top),
-             Math.round(r.width), Math.round(r.height)]};
+      rect: [Math.round(r.left) + in_, Math.round(r.top) + in_,
+             Math.max(1, Math.round(r.width) - in_ * 2),
+             Math.max(1, Math.round(r.height) - in_ * 2)]};
   });
   // The focused pane's numbers are the ones the rest of the app still speaks in
   const box = boxes.find((el) => el.classList.contains("focused"));

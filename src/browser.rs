@@ -799,8 +799,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
         },
         Some("paneratio") => Ev::PaneRatio {
-            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            divider: v.get("divider").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
             ratio: v.get("ratio").and_then(|x| x.as_f64()).unwrap_or(0.5) as f32,
+        },
+        Some("splitpane") => Ev::SplitPane {
+            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            down: v.get("down").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("copy") => Ev::Copy {
             text: v
@@ -928,8 +932,14 @@ pub enum Ev {
     FocusPane { id: u32 },
     /// A pane's ✕ was pressed. Closes the view, never the tab behind it
     ClosePane { id: u32 },
-    /// A divider was dragged. `ratio` is the first child's new share of the split
-    PaneRatio { id: u32, ratio: f32 },
+    /// A divider was dragged (or double-clicked, which asks for an even half).
+    /// `divider` is its position in `Layout::dividers()` — the page is handed
+    /// that list and hands the number back, so neither side has to work out
+    /// which split a boundary belongs to from the way it looks.
+    /// `ratio` is the first half's new share
+    PaneRatio { divider: usize, ratio: f32 },
+    /// A pane's ⊞ / ⊟ was pressed: divide that pane, the same as the keyboard
+    SplitPane { id: u32, down: bool },
     /// Wants to view this tab (0 = the operating board)
     Select { tab: usize },
     /// The + on the tab bar was pressed (opens the settings screen in add-tab mode)

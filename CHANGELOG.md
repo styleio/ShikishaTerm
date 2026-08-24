@@ -43,6 +43,17 @@ once it reaches its first tagged release.
   elsewhere swaps the two panes rather than running the same terminal at two
   different widths. Undivided, everything looks and behaves exactly as before.
 
+  **The mouse can do all of it too.** A pane's caption carries ▥ and ▤ beside
+  its ✕, so a pane can be divided where it stands without knowing a key. The
+  divider between panes is draggable — the thing anyone tries first, and until
+  now the one thing that answered nothing — and double-clicking it puts the
+  halves back to even. A divider is addressed by its place in the tree rather
+  than by the panes either side of it, so dragging the boundary of a nested
+  layout moves that boundary and not another one elsewhere on the screen. A
+  browser placed in a pane is held back from the divider by a few pixels: it is
+  a native layer over the page, and flush against the line it would swallow the
+  half of the grab handle that overhangs it.
+
 ### Fixed
 - **Lua that never returns no longer takes the window with it.** The engine runs
   on the main loop, so a `while true do end` typed into the composer — or sent
