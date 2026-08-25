@@ -79,6 +79,11 @@ pub struct TabState {
     /// short precious parts beside it must not be the ones that get cut
     #[serde(default)]
     pub place: Option<PlaceState>,
+    /// What it is costing right now: processor and memory. Its own value, not
+    /// part of `place` -- where a tab is and what it is spending are different
+    /// questions, and this one changes every couple of seconds
+    #[serde(default)]
+    pub cost: Option<String>,
 }
 
 /// Where a tab is, in the parts it is made of.
@@ -230,6 +235,7 @@ impl TabState {
                 pr: t.place.pr.clone(),
                 ports: t.place.ports.clone(),
             }),
+            cost: t.usage.line(),
         }
     }
 
@@ -252,8 +258,9 @@ impl TabState {
             status: None,
             progress: None,
             // A browser is not in a folder and starts nothing, so it has
-            // nowhere to be
+            // nowhere to be, and nothing of its own to cost
             place: None,
+            cost: None,
             model: false,
             busy: false,
             settings: key == "settings",
@@ -334,6 +341,7 @@ mod tests {
             status: None,
             progress: None,
             place: None,
+            cost: None,
         }
     }
 

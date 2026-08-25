@@ -44,6 +44,7 @@ mod sessionfind;
 mod shell;
 mod tab;
 mod theme;
+mod usage;
 mod uistate;
 mod update;
 mod watch;
@@ -1684,6 +1685,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // When to look again at where the tabs are. Starts now so the first frame
     // already knows, rather than showing a sidebar that fills in a beat later
     let mut place_at = std::time::Instant::now();
+    // What each tab costs the machine, measured on the same 2-second beat as
+    // where it is. The meter keeps last time's totals so processor use comes
+    // out as a rate rather than a running sum
+    let mut meter = crate::usage::Meter::default();
     // Somewhere to ask about pull requests, on its own thread. Quiet and
     // harmless when the person has no GitHub token: it simply never knows
     // anything, and no row grows a line
@@ -2099,7 +2104,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     .filter_map(|(i, t)| t.pid.map(|p| (i, p)))
                     .collect();
                 let ports = crate::repo::ports_below(&roots);
+                let cost = meter.sample(&roots);
                 for (i, t) in tabs.iter_mut().enumerate() {
+                    t.usage = cost.get(&i).copied().unwrap_or_default();
                     let branch = t.cwd().and_then(crate::repo::branch_of);
                     // Where it pushes to is only worth working out when there
                     // is a branch to ask about, and only worth asking about

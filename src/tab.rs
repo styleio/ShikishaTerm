@@ -1375,6 +1375,10 @@ pub struct Tab {
     /// one look at the whole machine and paying for that per tab would be
     /// paying several times for the same reply
     pub place: crate::repo::Place,
+    /// What this tab is costing the machine -- processor and memory across the
+    /// agent and everything it started. Also filled in by the loop, from the
+    /// same process-tree walk the ports come from
+    pub usage: crate::usage::Usage,
     /// The model bridge's endpoint. If Some, this tab is an OpenAI-compatible
     /// API rather than an AI CLI.
     /// When its turn comes, the main process hits complete() on a thread and injects the response into the screen
@@ -1707,6 +1711,7 @@ impl Tab {
             progress: None,
             pid,
             place: crate::repo::Place::default(),
+            usage: crate::usage::Usage::default(),
             born: std::time::SystemTime::now(),
             // Look for it shortly: a CLI writes its record as the conversation
             // begins, which is a moment after the process starts

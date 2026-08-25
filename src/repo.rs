@@ -190,7 +190,7 @@ pub fn ports_below(roots: &[(usize, u32)]) -> HashMap<usize, Vec<u16>> {
 }
 
 /// A process and everything it started, however deep.
-fn descendants(root: u32, children: &HashMap<u32, Vec<u32>>) -> Vec<u32> {
+pub(crate) fn descendants(root: u32, children: &HashMap<u32, Vec<u32>>) -> Vec<u32> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     let mut todo = vec![root];
@@ -213,7 +213,7 @@ fn descendants(root: u32, children: &HashMap<u32, Vec<u32>>) -> Vec<u32> {
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 
 /// Parent to children, for every process on the machine.
-fn child_map() -> HashMap<u32, Vec<u32>> {
+pub(crate) fn child_map() -> HashMap<u32, Vec<u32>> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,

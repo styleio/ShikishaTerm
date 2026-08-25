@@ -120,6 +120,18 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **The dashboard says what each agent is costing.** The SESSIONS table on the
+  board now has a COST column: processor use and memory for each tab, summed
+  over the agent and everything it started — because a tab's cost is the dev
+  server and the language server three processes down, not the shell we
+  launched. With several agents running, "which one is pinning a core or eating
+  a gigabyte" was a question that needed a task manager and a hunt through
+  processes that all show the same program's name; now it is a column. Read
+  from the same process-tree walk the ports come from, on a two-second beat.
+  Processor use is a real rate (two readings and the gap between them), so the
+  first look shows memory but never a made-up percentage. A tab costing nothing
+  — a browser, an idle shell — shows nothing.
+
 - **A browser login can be saved once and reused.** Sign in on a browser tab,
   and `browser_state_save` keeps that login under a name; a later rally loads it
   with `browser_state_load` instead of signing in from scratch — the real cost

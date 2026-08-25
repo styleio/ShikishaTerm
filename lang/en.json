@@ -98,6 +98,7 @@
   "tui.col.name": "NAME",
   "tui.col.state": "STATE",
   "tui.col.profile": "PROFILE",
+  "tui.col.cost": "COST",
   "tui.col.activity": "ACTIVITY",
   "tui.chain": "CHAIN",
   "tui.discuss.start.title": "Start the discussion",

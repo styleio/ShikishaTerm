@@ -126,6 +126,10 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 | `Ctrl+B 0` → `i` | スマホ接続用のQRコードを表示 |
 | `Ctrl+B 0` → `k` | マスターパスワードの設定・変更（`secrets.json` を暗号化） |
 
+INDEX 盤面の SESSIONS 表に **COST 列**が出ます（エージェントごとのCPUとメモリを、
+そのエージェントが起こした全プロセス分まで合算）。複数動かしているとき「どれが重いか」が
+端末を離れずに分かります。
+
 ブラウザのログインは一度保存すれば（`browser_state_save`）後のラリーが読み込めます
 （`browser_state_load`）。ラリーが毎回ログインから始まらずに済みます。保存するのは
 こちらのブラウザプロファイルの cookie（httpOnly も含む）で、Chrome や Firefox の保管庫を

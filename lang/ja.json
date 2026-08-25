@@ -98,6 +98,7 @@
   "tui.col.name": "名前",
   "tui.col.state": "状態",
   "tui.col.profile": "プロファイル",
+  "tui.col.cost": "負荷",
   "tui.col.activity": "出力",
   "tui.chain": "連鎖",
   "tui.discuss.start.title": "討論を始める",

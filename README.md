@@ -161,6 +161,10 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B 0` → `i` | Show the QR code for phone access |
 | `Ctrl+B 0` → `k` | Set or change the master password (encrypts `secrets.json`) |
 
+The board's SESSIONS table shows a COST column — processor and memory per agent, summed
+over everything it started — so you can see which of several running agents is heavy without
+leaving the terminal.
+
 A browser login can be saved once (`browser_state_save`) and reloaded by a later rally
 (`browser_state_load`), so a rally does not start by logging in. It saves our own browser
 profile's cookies, httpOnly and all; it does not crack Chrome's or Firefox's stores.

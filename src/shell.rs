@@ -436,6 +436,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .rows td { padding:5px 8px; border-top:1px solid var(--line); }
   .rows tr { cursor:pointer; }
   .rows tr:hover td { background:var(--hover); }
+  /* The cost column is numbers you scan down, not prose: line them up and keep
+     them quiet until one is worth noticing */
+  .rows td.cost { font-variant-numeric:tabular-nums; color:var(--dim); white-space:nowrap; }
   .menu { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
     gap:6px; }
   .mi { display:flex; gap:9px; align-items:center; padding:7px 9px; border-radius:7px;
@@ -939,6 +942,7 @@ function drawBoard() {
     el("th", {}, "#"), el("th", {}, T["tui.col.name"] || "NAME"),
     el("th", {}, T["tui.col.state"] || "STATE"),
     el("th", {}, T["tui.col.profile"] || "PROFILE"),
+    el("th", {}, T["tui.col.cost"] || "COST"),
     el("th", {}, T["tui.col.activity"] || "ACTIVITY")));
   for (const t of S.tabs) {
     rows.append(el("tr", {onclick:() => send({kind:"select", tab:t.index})},
@@ -946,6 +950,9 @@ function drawBoard() {
       el("td", {}, t.name),
       el("td", {}, el("span", {class:"dot " + t.state}), " " + (t.state_label || t.state)),
       el("td", {}, t.profile),
+      // What it is costing the machine. Blank for a tab that costs nothing --
+      // a browser, an idle shell -- so the eye lands on the ones that do
+      el("td", {class:"cost"}, t.cost || ""),
       el("td", {}, spark(t.activity))));
   }
   b.append(el("div", {class:"card"}, el("h2", {}, "SESSIONS"), rows));
