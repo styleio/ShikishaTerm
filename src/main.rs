@@ -15,6 +15,7 @@
 // Windows allocate one. (Only the terminal-facing --settings mode opens one itself, on demand.)
 #![windows_subsystem = "windows"]
 
+mod agenthook;
 mod api;
 mod attach;
 mod ball;
@@ -34,6 +35,7 @@ mod notify;
 mod profile;
 mod remote;
 mod session_log;
+mod sessionfind;
 mod shell;
 mod tab;
 mod uistate;
@@ -1940,6 +1942,54 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 {
                     if let Some(f) = started_fired.get_mut(i) {
                         *f = false;
+                    }
+                }
+            }
+
+            // Look for the conversation a CLI started but never announced.
+            //
+            // Only for a tab that could not have been anyone else: these
+            // records say which folder they belong to and never which tab, so
+            // with two of the same CLI in one folder there is nothing here to
+            // tell them apart — and a tab that comes back holding someone
+            // else's conversation is worse than one that comes back empty
+            for i in 0..tabs.len() {
+                let alone = only_one_here(&tabs, i);
+                let Some(t) = tabs.get_mut(i) else { continue };
+                let Some((at, left)) = t.session_probe else { continue };
+                if std::time::Instant::now() < at {
+                    continue;
+                }
+                let spec = t.resume.as_ref().and_then(|r| r.record.clone());
+                let found = match (&spec, alone) {
+                    (Some(spec), true) => sessionfind::find(spec, t.cwd(), t.born()),
+                    _ => None,
+                };
+                match found {
+                    Some(id) => {
+                        let s = tab::Session { id, source: tab::SessionSource::Store };
+                        append_hook_log(&format!(
+                            "tab{} \"{}\" appears to be running {}",
+                            i + 1,
+                            t.title,
+                            s.short()
+                        ));
+                        t.session = Some(s);
+                        t.session_probe = None;
+                    }
+                    // Stop only where there is nothing that could ever be
+                    // found. NOT after a while: one of these CLIs writes its
+                    // record when the first thing is said, and a tab can sit
+                    // open for an hour before anyone says it
+                    None if !alone || spec.is_none() => t.session_probe = None,
+                    None => {
+                        // Eager at first, then patient. Looking is cheap —
+                        // yesterday's folders are skipped unread — but not free
+                        let wait = if left > 0 { 2 } else { 15 };
+                        t.session_probe = Some((
+                            std::time::Instant::now() + Duration::from_secs(wait),
+                            left.saturating_sub(1),
+                        ))
                     }
                 }
             }

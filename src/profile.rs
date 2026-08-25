@@ -101,13 +101,20 @@ pub struct HookSpec {
     pub events: Vec<String>,
 }
 
+/// How a CLI spells one hook handler.
+///
+/// Both known formats group the same way — `hooks.<Event>` is a list of groups,
+/// each with a `hooks` list of handlers — and differ only in how the command is
+/// written. That difference matters: a handler that takes a single command line
+/// has to have the path quoted, and a path with a space in it is the normal case
+/// on Windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HookFormat {
-    /// `hooks.<Event>[] = { matcher?, hooks: [ { type, command, args?, timeout? } ] }`
-    Grouped,
-    /// `hooks.<Event>[] = { command }`, plus a `version` beside it
-    Flat,
+    /// `{ "type": "command", "command": "<program>", "args": [...] }`
+    Args,
+    /// `{ "type": "command", "command": "<one command line>" }`
+    Shell,
 }
 
 fn default_silence_ms() -> u64 {
@@ -220,6 +227,40 @@ where
         }
     }
     None
+}
+
+/// Every profile there is, one per file, nearest folder first.
+///
+/// For the settings screen, which has to show what could be set up rather than
+/// answer a question about one command. A name is only listed once, so a
+/// profile beside the exe hides one further away — the same precedence the
+/// lookups use
+pub fn all() -> Vec<Profile> {
+    let mut out: Vec<Profile> = Vec::new();
+    for dir in candidate_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(pf) = serde_json::from_str::<ProfileFile>(&text) else {
+                continue;
+            };
+            if out.iter().any(|p| p.name == pf.name) {
+                continue;
+            }
+            if let Ok(p) = Profile::compile(pf) {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 
 /// Return the profile matching the command name; falls back to generic if

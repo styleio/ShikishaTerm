@@ -1539,6 +1539,76 @@ fn handle(
             )?;
         }
         // Status of the phone-usable feature (also returns which network is available)
+        // What each AI CLI can do about carrying its conversation across a
+        // restart, and — where it needs one — whether its hook is installed.
+        // The person asked "will my conversation survive?", and this answers
+        // that per CLI rather than describing a mechanism
+        ("GET", "/api/resume") => {
+            let rows: Vec<serde_json::Value> = crate::profile::all()
+                .into_iter()
+                .filter_map(|p| {
+                    let r = p.resume.as_ref()?;
+                    // In the order the app itself tries them, so what is shown
+                    // is what will actually happen
+                    let how = if !r.new_id.is_empty() {
+                        "minted"
+                    } else if r.record.is_some() {
+                        "record"
+                    } else if r.hook.is_some() {
+                        "hook"
+                    } else if !r.newest_here.is_empty() {
+                        "newest"
+                    } else {
+                        "none"
+                    };
+                    let hook = crate::agenthook::targets()
+                        .into_iter()
+                        .find(|t| t.name == p.name)
+                        .map(|t| {
+                            serde_json::json!({
+                                "file": t.file.display().to_string(),
+                                "status": format!("{:?}", crate::agenthook::status(&t))
+                                    .split('(').next().unwrap_or("").to_string(),
+                                "preview": crate::agenthook::preview(&t),
+                            })
+                        });
+                    Some(serde_json::json!({ "name": p.name, "how": how, "hook": hook }))
+                })
+                .collect();
+            req.respond(json_resp(serde_json::json!(rows)))?;
+        }
+        // Put one CLI's hook in, or take it out. Named by profile, so the page
+        // never hands over a path to write to
+        ("POST", "/api/resume/hook") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let name = v.get("name").and_then(|x| x.as_str()).unwrap_or_default();
+            let on = v.get("on").and_then(|x| x.as_bool()).unwrap_or(false);
+            let found = crate::agenthook::targets().into_iter().find(|t| t.name == name);
+            let resp = match found {
+                None => serde_json::json!({ "ok": false, "error": "no such CLI" }),
+                Some(t) => {
+                    let done = if on {
+                        crate::agenthook::install(&t)
+                    } else {
+                        crate::agenthook::uninstall(&t)
+                    };
+                    match done {
+                        Ok(()) => serde_json::json!({
+                            "ok": true,
+                            "status": format!("{:?}", crate::agenthook::status(&t))
+                                .split('(').next().unwrap_or("").to_string(),
+                        }),
+                        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+                    }
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
         // Where the external API is listening, so the settings screen can show
         // the pipe by name — a person writing a script against it needs the
         // exact string, and it carries the process id, so it is not guessable
@@ -2987,6 +3057,7 @@ function globalSections() {
     {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:notifyCard},
     {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
     {id:"api",       label:T["settings.sec.api"],       sub:T["settings.sec.api.sub"],       build:apiCard},
+    {id:"resume",    label:T["settings.sec.resume"],    sub:T["settings.sec.resume.sub"],    build:resumeCard},
     {id:"files",     label:T["settings.sec.files"],     sub:T["settings.sec.files.sub"],     build:filesCard},
     {id:"secrets",   label:T["settings.sec.secrets"],   sub:T["settings.sec.secrets.sub"],   build:secretsCard},
     {id:"results",   label:T["settings.sec.results"],   sub:T["settings.sec.results.sub"],   build:rallyResultCard},
@@ -3402,6 +3473,78 @@ async function loadSecrets() {
   }
 }
 // The phone-usage setting. Explains the risk plainly, but still lets it be enabled with one click
+// Carrying conversations. Per CLI rather than per mechanism: the question a
+// person has is "will my conversation survive a restart", and the answer
+// differs by which CLI is in the tab. Where one needs its own settings file
+// touched, exactly what would be written is shown before anything is.
+function resumeCard() {
+  // Spelled out rather than built from the value: the page's strings are
+  // checked against the language file, and a key assembled at run time cannot be
+  const HOW = {
+    minted: T["settings.resume.minted"],
+    record: T["settings.resume.record"],
+    hook: T["settings.resume.hook"],
+    newest: T["settings.resume.newest"],
+    none: T["settings.resume.none"],
+  };
+  const HOOK_STATE = {
+    Installed: T["settings.resume.status.Installed"],
+    Absent: T["settings.resume.status.Absent"],
+    NoConfig: T["settings.resume.status.NoConfig"],
+    Stale: T["settings.resume.status.Stale"],
+    Unreadable: T["settings.resume.status.Unreadable"],
+  };
+  const list = el("div", {}, el("div", {class:"hint"}, "…"));
+  const box = card(T["settings.section.resume"],
+    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.resume.intro"]),
+    list,
+    el("div", {class:"hint", style:"margin-top:12px"}, T["settings.resume.note"]));
+  load();
+  async function load() {
+    let rows = [];
+    try { rows = await (await fetch("/api/resume", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    list.textContent = "";
+    if (!rows.length) { list.append(el("div", {class:"hint"}, "—")); return; }
+    for (const r of rows) list.append(row_for(r));
+  }
+  function row_for(r) {
+    const wrap = el("div", {class:"row", style:"align-items:flex-start"});
+    const right = el("div", {style:"display:flex;flex-direction:column;gap:6px;min-width:0;flex:1"});
+    right.append(el("span", {class:"hint"}, HOW[r.how] || ""));
+    if (r.hook) {
+      const state = el("span", {class:"hint"},
+        (HOOK_STATE[r.hook.status] || r.hook.status) + " — " + r.hook.file);
+      const on = r.hook.status === "Installed";
+      const btn = el("button", {class:"btn"}, on ? T["settings.resume.remove"] : T["settings.resume.install"]);
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          const j = await (await fetch("/api/resume/hook", {
+            method:"POST", headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
+            body: JSON.stringify({name: r.name, on: !on}),
+          })).json();
+          if (!j.ok) result(j.error || "", true);
+        } catch (e) {}
+        load();
+      });
+      // What would be written, before agreeing to it — not a description of it
+      const pre = el("pre", {class:"mono", style:"display:none;white-space:pre-wrap;margin:4px 0;" +
+        "padding:8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:11px"},
+        r.hook.preview);
+      const show = el("a", {href:"#"}, T["settings.resume.show"]);
+      show.addEventListener("click", (e) => {
+        e.preventDefault();
+        pre.style.display = pre.style.display === "none" ? "block" : "none";
+      });
+      right.append(state, el("div", {style:"display:flex;gap:8px;align-items:center"}, btn, show), pre);
+    }
+    wrap.append(el("label", {}, r.name), right);
+    return wrap;
+  }
+  return box;
+}
+
 // External control. One setting with three values, and the two things a person
 // needs in order to actually use it: the exact pipe name (it carries the process
 // id, so no document can print it) and, in `user` mode, where the key is kept.

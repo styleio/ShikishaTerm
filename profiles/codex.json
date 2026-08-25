@@ -29,13 +29,6 @@
       "dir": "{home}/.codex/sessions",
       "id": "payload.session_id",
       "cwd": "payload.cwd"
-    },
-    "hook": {
-      "file": "{home}/.codex/hooks.json",
-      "format": "flat",
-      "events": [
-        "SessionStart"
-      ]
     }
   }
 }

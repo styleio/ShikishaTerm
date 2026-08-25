@@ -1212,6 +1212,14 @@ pub struct Tab {
     bytes_out: Arc<AtomicU64>,
     /// Time this session was created. Used to judge whether it just started up
     created: Instant,
+    /// The same moment on the wall clock, which is what a file's timestamp can
+    /// be compared against. A record older than this belongs to an earlier run
+    born: std::time::SystemTime,
+    /// When to next look for this tab's conversation in its CLI's own records,
+    /// and how many looks are left. `None` once there is nothing to look for —
+    /// the conversation is known, the CLI keeps no records, or it never
+    /// started one
+    pub session_probe: Option<(Instant, u8)>,
     /// Time of the most recent resize (elapsed ms since creation).
     ///
     /// A child process redraws the screen when the terminal size changes.
@@ -1484,6 +1492,12 @@ impl Tab {
         }
 
         Ok(Self {
+            born: std::time::SystemTime::now(),
+            // Look for it shortly: a CLI writes its record as the conversation
+            // begins, which is a moment after the process starts
+            session_probe: (session.is_none()
+                && resume_spec.as_ref().is_some_and(|r| r.record.is_some()))
+            .then(|| (Instant::now() + std::time::Duration::from_secs(1), 30)),
             session,
             resume: resume_spec,
             title,
@@ -1763,6 +1777,11 @@ impl Tab {
     /// Context for the ✨ command suggester: what the terminal connects to
     pub fn command_line(&self) -> String {
         self.argv.join(" ")
+    }
+
+    /// When this tab's process started, on the wall clock
+    pub fn born(&self) -> std::time::SystemTime {
+        self.born
     }
 
     /// The program this tab runs, without its arguments. Two tabs sharing this

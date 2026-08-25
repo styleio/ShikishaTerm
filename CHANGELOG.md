@@ -72,9 +72,17 @@ once it reaches its first tagged release.
   Which conversation belongs to which tab is not guessed at. Where a CLI accepts
   a session id at launch, this app hands it one, so two agents of the same kind
   in the same folder are told apart with certainty rather than by whichever
-  record happens to be newest. Where it does not, the CLI is asked to report its
-  own — and if neither is possible, the restart says so and starts fresh rather
-  than picking up somebody else's conversation.
+  record happens to be newest. Where it does not, the conversation it started is
+  read back from the CLI's own records — but only for a tab that could not have
+  been any other, since those records name a folder and never a tab. A CLI that
+  can report its own conversation as it starts is asked to; the settings screen
+  shows what would be written into its config file before writing anything, and
+  keeps the previous file beside it.
+
+  When none of that can settle it, the restart says why it started a new
+  conversation instead. Coming back holding somebody else's is worse than coming
+  back empty. The settings screen's **Carrying conversations** card says, per
+  CLI, which of these applies.
 
 ### Fixed
 - **Lua that never returns no longer takes the window with it.** The engine runs

@@ -29,7 +29,7 @@
     ],
     "hook": {
       "file": "{home}/.claude/settings.json",
-      "format": "grouped",
+      "format": "args",
       "events": [
         "SessionStart"
       ]
