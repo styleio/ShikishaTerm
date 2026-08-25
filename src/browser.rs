@@ -16,6 +16,30 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::{Result, anyhow};
 
+/// Added on top of `INIT_JS` for pages placed inside the window, and only for
+/// those: the shell's own page already knows which pane was clicked.
+///
+/// A placed page is a native layer with its own window handle, so a press that
+/// lands on it never reaches the pane underneath -- which is why a browser
+/// pane could only be focused by its caption, and why the pen that summons the
+/// composer never appeared over one.
+///
+/// What is reported is the page taking the keyboard, not a click. Automation
+/// drives these pages by dispatching input at them, and dispatched input never
+/// moves the window handle's focus -- so a rally clicking through a form
+/// cannot pull the keyboard out from under someone typing in another pane,
+/// which is exactly what reporting the click itself would have done.
+const PLACED_JS: &str = r##"
+(function () {
+  const tell = () => window.ipc.postMessage(JSON.stringify({ kind: "touched" }));
+  addEventListener("focus", tell);
+  // The press that brought the focus here arrives before the focus event on
+  // some paths and after it on others; asking whether we hold it is the same
+  // question either way, and asking twice costs a message nobody reads
+  addEventListener("pointerdown", () => { if (document.hasFocus()) tell(); }, true);
+})();
+"##;
+
 /// Always injected into every document first.
 ///
 /// It runs on every navigation, so no matter how many times a login
@@ -624,6 +648,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             busy: v.get("busy").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("button") => Ev::Button { from: None },
+        Some("touched") => Ev::Touched { from: None },
         Some("select") => Ev::Select {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },
@@ -936,6 +961,9 @@ pub enum Ev {
     /// tracking which one it was, a neighboring browser's turn could
     /// wrongly be marked as finished
     Button { from: Option<String> },
+    /// A page placed in the window has the keyboard: whoever is at the machine
+    /// is working there, so that is the pane in focus
+    Touched { from: Option<String> },
     /// The window's size changed (how many rows/columns fit)
     Resize {
         rows: u16,
@@ -2955,7 +2983,7 @@ fn run_window(
                     match WebViewBuilder::new_with_web_context(ctx)
                         .with_url(&url)
                         .with_bounds(bounds)
-                        .with_initialization_script(INIT_JS)
+                        .with_initialization_script(&format!("{INIT_JS}{PLACED_JS}"))
                         .with_navigation_handler(move |_url| {
                             let _ = nav_tx.send(Ev::Loading { from: Some(nav_who.clone()), busy: true });
                             true // Don't block the navigation. This is only here to emit a signal
@@ -2976,6 +3004,9 @@ fn run_window(
                             // There's no way to know who pressed it except here
                             let ev = match ev {
                                 Ev::Button { .. } => Ev::Button {
+                                    from: Some(who.clone()),
+                                },
+                                Ev::Touched { .. } => Ev::Touched {
                                     from: Some(who.clone()),
                                 },
                                 Ev::Recorded { act, sel, value, xpath, hint, .. } => Ev::Recorded {
