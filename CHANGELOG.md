@@ -120,8 +120,9 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
-- **Each tab says where it is.** Under its name: the git branch it sits on and
-  any ports it is listening on — `main · :3000`. Both are cheap to know and
+- **Each tab says where it is.** Under its name: the git branch it sits on, the
+  pull request that branch is on, and any ports it is listening on —
+  `main #12 :3000`. Both are cheap to know and
   expensive to ask for; with six agents running, "which one is serving on 3000"
   otherwise costs six tab switches. The branch is read from the file git keeps
   it in rather than by running git, so a huge repository costs the same as a
@@ -129,7 +130,17 @@ once it reaches its first tagged release.
   branch, which is the case that matters when several agents share a
   repository. The ports are matched against everything the tab started, since
   what listens is almost never the shell — it is the dev server three
-  processes down. Both go away when they stop being true.
+  processes down. All of it goes away when it stops being true.
+
+  Pull request numbers use the GitHub sign-in already on the PC — what `gh`
+  stored when you logged in, or `GITHUB_TOKEN` if you keep one. Nothing to set
+  up and nothing stored by this app; asking someone to paste a token into a
+  second place so a terminal can show them a number they can already see on a
+  website is not a trade worth offering. Where there is no sign-in there is no
+  number, and the settings say so rather than leaving it a silence to guess at.
+  An open one shows only `#12` — the word would be on every row and tell nobody
+  anything; `merged`, `closed` and `draft` each get one, because each means
+  "stop waiting for this".
 
 - **Which key does what can be changed**, and it is changed by naming the
   action rather than the key: you say what you want *split the screen* to be,

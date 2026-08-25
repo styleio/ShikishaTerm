@@ -68,13 +68,29 @@ pub struct TabState {
     /// How far along, 0..=1, when it has said. Shown beside the status
     #[serde(default)]
     pub progress: Option<f32>,
-    /// Where this tab is: the branch, and any ports it is listening on.
+    /// Where this tab is: the branch, its pull request, the ports it opened.
     ///
     /// A different kind of thing from `status`, which is why it gets its own
     /// line. That one is what the tab last *said*; this is where it *is*, and
-    /// it stays true while nothing is being said at all
+    /// it stays true while nothing is being said at all.
+    ///
+    /// Sent in pieces rather than as one line, because how they share a narrow
+    /// row is the display's business: a branch name can be any length, and the
+    /// short precious parts beside it must not be the ones that get cut
     #[serde(default)]
-    pub place: Option<String>,
+    pub place: Option<PlaceState>,
+}
+
+/// Where a tab is, in the parts it is made of.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct PlaceState {
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Already written the way it reads: `#12`, `#12 merged`
+    #[serde(default)]
+    pub pr: Option<String>,
+    #[serde(default)]
+    pub ports: Vec<u16>,
 }
 
 /// Current position of the automation ring
@@ -209,7 +225,11 @@ impl TabState {
             auto: t.auto_runs(),
             status: t.status_line(),
             progress: t.progress.as_ref().map(|(p, _)| *p),
-            place: t.place.line(),
+            place: (t.place != crate::repo::Place::default()).then(|| PlaceState {
+                branch: t.place.branch.clone(),
+                pr: t.place.pr.clone(),
+                ports: t.place.ports.clone(),
+            }),
         }
     }
 

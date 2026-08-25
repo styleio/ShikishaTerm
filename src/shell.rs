@@ -73,8 +73,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Where the tab is, above what it last said. Quieter than the name and
      quieter than the news: it is the thing you scan down the column for,
      not the thing you look at */
+  /* Laid out so the short precious parts survive a narrow sidebar. The branch
+     is the only piece that can be any length, so it is the only one allowed to
+     shrink; a pull request number that got clipped would be the one thing on
+     the row nobody could have guessed */
   .tab .place { flex-basis:100%; margin-left:26px; margin-top:2px; font-size:10px;
-    color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    color:var(--dim); display:flex; gap:6px; align-items:baseline; min-width:0; }
+  .tab .place .br { min-width:0; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
+  .tab .place .pr, .tab .place .pt { flex:none; white-space:nowrap; }
+  .tab .place .pr { color:var(--brand); }
   .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--dim); }
   .dot.BUSY, .dot.Working { background:var(--live); animation:pulse 1.2s ease-in-out infinite; }
   .dot.DONE { background:var(--brand); }
@@ -841,7 +849,24 @@ function drawTabs() {
     // Where it is, then what it last said. Each only when there is one: a
     // blank line on every tab would spend the sidebar saying nothing
     if (t.place) {
-      nav.lastChild.append(el("span", {class:"place", title:t.place}, t.place));
+      const p = t.place;
+      const line = el("span", {class:"place"});
+      if (p.branch) {
+        // A long branch name is shortened from the front. The end of a branch
+        // name is the part someone chose ("…/fix-login"); the front is the
+        // part a tool prepended, and cutting the tail throws away the half
+        // that says which branch this is
+        const short = p.branch.length > 28 ? "…" + p.branch.slice(-27) : p.branch;
+        line.append(el("span", {class:"br"}, short));
+      }
+      if (p.pr) line.append(el("span", {class:"pr"}, p.pr));
+      for (const port of (p.ports || [])) {
+        line.append(el("span", {class:"pt"}, ":" + port));
+      }
+      // The whole of it on hover, since the row cannot hold it all
+      line.title = [p.branch, p.pr].filter(Boolean)
+        .concat((p.ports || []).map(x => ":" + x)).join("  ");
+      nav.lastChild.append(line);
     }
     if (t.status) {
       nav.lastChild.append(el("span", {class:"said", title:t.status}, t.status));

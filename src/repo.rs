@@ -25,28 +25,17 @@ pub struct Place {
     pub branch: Option<String>,
     /// Ports this tab's processes are listening on, low to high
     pub ports: Vec<u16>,
+    /// `owner/name` on GitHub, when that is where this folder pushes to
+    pub repo: Option<String>,
+    /// The pull request this branch is on, already written out. Filled in from
+    /// elsewhere: it is the one thing here that has to be asked over a network
+    pub pr: Option<String>,
 }
 
 impl Place {
-    /// The one short line the tab row has room for: `main · :3000`.
-    ///
-    /// Ports are written the way people say them out loud, with the colon, so
-    /// a number in a row of numbers still reads as a port
-    pub fn line(&self) -> Option<String> {
-        let mut parts: Vec<String> = Vec::new();
-        if let Some(b) = &self.branch {
-            parts.push(b.clone());
-        }
-        if !self.ports.is_empty() {
-            parts.push(
-                self.ports
-                    .iter()
-                    .map(|p| format!(":{p}"))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            );
-        }
-        (!parts.is_empty()).then(|| parts.join(" · "))
+    /// Whether there is anything to say at all.
+    pub fn known(&self) -> bool {
+        self.branch.is_some() || self.pr.is_some() || !self.ports.is_empty()
     }
 }
 
@@ -67,6 +56,48 @@ pub fn branch_of(cwd: &Path) -> Option<String> {
             looks_like_a_commit.then(|| sha[..7].to_string())
         }
     }
+}
+
+/// Where this folder pushes to, as `owner/name`, when that is GitHub.
+///
+/// Only GitHub, because the only thing this is for is asking GitHub about a
+/// pull request. A repository that lives somewhere else is not a failure and
+/// gets no line, which is the same answer as a folder that is not a
+/// repository at all
+pub fn origin_of(cwd: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(git_dir(cwd)?.join("config")).ok()?;
+    // The url under [remote "origin"], and nothing under any other section
+    let mut inside = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            inside = t.replace(char::is_whitespace, "") == "[remote\"origin\"]";
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if let Some(url) = t.strip_prefix("url") {
+            if let Some(v) = url.split_once('=') {
+                return github_path(v.1.trim());
+            }
+        }
+    }
+    None
+}
+
+/// `owner/name` out of any of the ways a GitHub remote is written.
+fn github_path(url: &str) -> Option<String> {
+    let rest = ["https://github.com/", "http://github.com/", "ssh://git@github.com/",
+                "git@github.com:", "github.com/", "git://github.com/"]
+        .into_iter()
+        .find_map(|p| url.strip_prefix(p))?;
+    let rest = rest.trim_end_matches('/').trim_end_matches(".git");
+    let (owner, name) = rest.split_once('/')?;
+    // A path with more in it is not a repository url; guessing would send a
+    // token somewhere on the strength of a bad guess
+    let plain = |s: &str| !s.is_empty() && !s.contains('/');
+    (plain(owner) && plain(name)).then(|| format!("{owner}/{name}"))
 }
 
 /// The folder git keeps its own files in, for this working folder.
@@ -340,17 +371,48 @@ mod tests {
     fn a_folder_that_is_not_in_a_repository_says_nothing() {
         let root = tmp("plain");
         assert_eq!(branch_of(&root), None);
-        assert_eq!(Place::default().line(), None);
+        assert!(!Place::default().known());
     }
 
     #[test]
-    fn the_row_reads_as_a_place() {
-        let p = Place { branch: Some("main".into()), ports: vec![3000, 5173] };
-        assert_eq!(p.line().as_deref(), Some("main · :3000 :5173"));
-        let only_branch = Place { branch: Some("main".into()), ports: vec![] };
-        assert_eq!(only_branch.line().as_deref(), Some("main"));
-        let only_ports = Place { branch: None, ports: vec![8080] };
-        assert_eq!(only_ports.line().as_deref(), Some(":8080"));
+    fn a_place_knows_whether_it_has_anything_to_say() {
+        assert!(!Place::default().known());
+        assert!(Place { branch: Some("main".into()), ..Default::default() }.known());
+        assert!(Place { ports: vec![8080], ..Default::default() }.known());
+        assert!(Place { pr: Some("#12".into()), ..Default::default() }.known());
+    }
+
+    #[test]
+    fn a_remote_is_read_however_it_was_written() {
+        for url in [
+            "https://github.com/styleio/ShikishaTerm.git",
+            "https://github.com/styleio/ShikishaTerm",
+            "git@github.com:styleio/ShikishaTerm.git",
+            "ssh://git@github.com/styleio/ShikishaTerm.git",
+        ] {
+            assert_eq!(github_path(url).as_deref(), Some("styleio/ShikishaTerm"), "{url}");
+        }
+        // Somewhere else is not a failure, it is simply not GitHub
+        assert_eq!(github_path("https://gitlab.com/group/thing.git"), None);
+        assert_eq!(github_path("https://github.com/onlyowner"), None);
+        assert_eq!(github_path(""), None);
+    }
+
+    #[test]
+    fn the_origin_is_taken_from_the_origin_section_and_no_other() {
+        let root = tmp("origin");
+        let git = root.join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(
+            git.join("config"),
+            "[remote \"upstream\"]
+	url = https://github.com/someone/else.git
+             [remote \"origin\"]
+	url = git@github.com:styleio/ShikishaTerm.git
+",
+        )
+        .unwrap();
+        assert_eq!(origin_of(&root).as_deref(), Some("styleio/ShikishaTerm"));
     }
 
     #[test]

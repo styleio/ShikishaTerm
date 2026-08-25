@@ -34,6 +34,7 @@ mod keys;
 mod layout;
 mod netaddr;
 mod notify;
+mod pr;
 mod profile;
 mod remote;
 mod repo;
@@ -1682,6 +1683,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // When to look again at where the tabs are. Starts now so the first frame
     // already knows, rather than showing a sidebar that fills in a beat later
     let mut place_at = std::time::Instant::now();
+    // Somewhere to ask about pull requests, on its own thread. Quiet and
+    // harmless when the person has no GitHub token: it simply never knows
+    // anything, and no row grows a line
+    let prs = crate::pr::Watch::start();
     let (mut keymap, key_errs) = crate::keys::Keys::load(cfg.as_ref());
     startup_errors.extend(key_errs);
     let mut prefix_active = false;
@@ -2094,9 +2099,26 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     .collect();
                 let ports = crate::repo::ports_below(&roots);
                 for (i, t) in tabs.iter_mut().enumerate() {
+                    let branch = t.cwd().and_then(crate::repo::branch_of);
+                    // Where it pushes to is only worth working out when there
+                    // is a branch to ask about, and only worth asking about
+                    // when GitHub is where it lives
+                    let repo = branch
+                        .as_ref()
+                        .and_then(|_| t.cwd())
+                        .and_then(crate::repo::origin_of);
+                    // What is known right now, and a nudge to find out. The
+                    // asking happens elsewhere; a row that waited on GitHub
+                    // would be a window that stops drawing
+                    let pr = match (&repo, &branch) {
+                        (Some(r), Some(b)) => prs.of(r, b).map(|p| p.short()),
+                        _ => None,
+                    };
                     t.place = crate::repo::Place {
-                        branch: t.cwd().and_then(crate::repo::branch_of),
+                        branch,
                         ports: ports.get(&i).cloned().unwrap_or_default(),
+                        repo,
+                        pr,
                     };
                 }
             }

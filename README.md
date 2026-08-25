@@ -161,7 +161,9 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B 0` → `i` | Show the QR code for phone access |
 | `Ctrl+B 0` → `k` | Set or change the master password (encrypts `secrets.json`) |
 
-Each tab says where it is, under its name: the branch, and any ports it is listening on.
+Each tab says where it is, under its name: the branch, its pull request, and any ports it
+is listening on. Pull request numbers use the GitHub sign-in already on this PC (`gh auth
+login`, or `GITHUB_TOKEN`); without one the rest still shows.
 
 Every key can be moved, including the prefix — the settings list each action with the
 key it answers to now, and the help screen (`Ctrl+B ?`) shows what you actually have

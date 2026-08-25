@@ -1543,6 +1543,14 @@ fn handle(
         // restart, and — where it needs one — whether its hook is installed.
         // The person asked "will my conversation survive?", and this answers
         // that per CLI rather than describing a mechanism
+        // Whether this machine has a GitHub sign-in, so the settings can say
+        // why a tab shows a branch but no pull request number. Whether, never
+        // what: nothing here hands a token back out
+        ("GET", "/api/github") => {
+            req.respond(json_resp(serde_json::json!({
+                "signed_in": crate::pr::signed_in(),
+            })))?;
+        }
         // Every action the window has, with the key it answers to right now.
         // The names are the app's own, so the settings screen never has its
         // own idea of what this program can do
@@ -3123,6 +3131,8 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.font.hint"])),
     row(T["settings.theme"], themePicker(),
         el("span", {class:"hint"}, T["settings.theme.hint"])),
+    row(T["settings.pr"], githubState(),
+        el("span", {class:"hint"}, T["settings.pr.hint"])),
     row(T["settings.language"],
         choose(current, "language", [
           ["", T["settings.language.auto"]],
@@ -3131,6 +3141,23 @@ function basicCard() {
         ]),
         el("span", {class:"hint"}, T["settings.language.hint"])));
 }
+// Whether pull request numbers can be shown, and why not when they cannot.
+//
+// Read-only on purpose. There is nothing to set here: the sign-in belongs to
+// the person's own GitHub tool, and offering a second place to paste a token
+// would be offering them a second place to have one go stale
+function githubState() {
+  const out = el("span", {class:"hint"}, "…");
+  (async () => {
+    let j;
+    try { j = await (await fetch("/api/github", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    out.textContent = j.signed_in ? T["settings.pr.on"] : T["settings.pr.off"];
+    out.classList.toggle("warn", !j.signed_in);
+  })();
+  return out;
+}
+
 // The colour scheme, chosen by name from the ones this machine already has.
 //
 // The list is fetched rather than built in because most of it is not ours: it
