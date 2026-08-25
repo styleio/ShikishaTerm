@@ -71,6 +71,13 @@ pub struct ResumeSpec {
     /// won't take an id and can't be hooked
     #[serde(default)]
     pub record: Option<RecordSpec>,
+    /// Where the record of ONE conversation lives, as a path with `{id}` in
+    /// it. Checked before resuming, so a conversation that has been deleted
+    /// produces a sentence a person can act on instead of whatever the CLI
+    /// says when handed an id it has never heard of. `*` stands for one
+    /// folder name
+    #[serde(default)]
+    pub verify: Option<String>,
     /// How to ask this CLI to report its conversation as it starts
     #[serde(default)]
     pub hook: Option<HookSpec>,

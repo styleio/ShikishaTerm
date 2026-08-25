@@ -33,6 +33,7 @@
       "events": [
         "SessionStart"
       ]
-    }
+    },
+    "verify": "{home}/.claude/projects/*/{id}.jsonl"
   }
 }

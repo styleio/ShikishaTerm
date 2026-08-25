@@ -55,6 +55,71 @@ pub fn find(spec: &RecordSpec, cwd: Option<&Path>, since: SystemTime) -> Option<
     best.map(|(_, id)| id)
 }
 
+/// Whether the record of one conversation is still there.
+///
+/// `pattern` is a path with `{id}` in it and `*` standing for any run of
+/// characters within one name — `{home}/.claude/projects/*/{id}.jsonl`, or
+/// `…/rollout-*-{id}.jsonl` where the id is only part of the file name.
+///
+/// Asked before resuming, because a CLI handed an id it has never heard of
+/// says so in its own words, in its own place, and the person is left staring
+/// at a red line with no idea that the app could have told them plainly.
+pub fn exists(pattern: &str, id: &str) -> bool {
+    let full = expand(&pattern.replace("{id}", id))
+        .display()
+        .to_string()
+        .replace('/', "\\");
+    // Everything up to the first wildcard is a plain path and can be joined in
+    // one step; only from there does anything have to be listed
+    let (fixed, rest) = match full.find('*') {
+        None => return PathBuf::from(&full).exists(),
+        Some(at) => {
+            let cut = full[..at].rfind('\\').map(|i| i + 1).unwrap_or(0);
+            (full[..cut].to_string(), full[cut..].to_string())
+        }
+    };
+    let steps: Vec<String> = rest.split('\\').map(str::to_string).collect();
+    walk_glob(PathBuf::from(fixed), &steps)
+}
+
+fn walk_glob(at: PathBuf, steps: &[String]) -> bool {
+    let Some(step) = steps.first() else {
+        return at.exists();
+    };
+    if !step.contains('*') {
+        return walk_glob(at.join(step), &steps[1..]);
+    }
+    let Ok(entries) = std::fs::read_dir(&at) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        let name = e.file_name().to_string_lossy().to_string();
+        name_matches(step, &name) && walk_glob(e.path(), &steps[1..])
+    })
+}
+
+/// One name against one pattern. `*` is any run of characters, and the pieces
+/// between the stars have to appear in order — enough for "a file whose name
+/// ends with this id", which is the only thing this is asked
+fn name_matches(pattern: &str, name: &str) -> bool {
+    let pieces: Vec<&str> = pattern.split('*').collect();
+    if pieces.len() == 1 {
+        return pattern == name;
+    }
+    let (first, last) = (pieces[0], pieces[pieces.len() - 1]);
+    if !name.starts_with(first) || !name.ends_with(last) || name.len() < first.len() + last.len() {
+        return false;
+    }
+    let mut at = first.len();
+    for piece in &pieces[1..pieces.len() - 1] {
+        match name[at..].find(piece) {
+            Some(found) => at += found + piece.len(),
+            None => return false,
+        }
+    }
+    at <= name.len() - last.len()
+}
+
 /// The two fields we need, from the first line of a record.
 ///
 /// The first line is where these CLIs put what the conversation IS, before any
@@ -189,6 +254,27 @@ mod tests {
         assert_eq!(find(&spec(&root), Some(&work), since).as_deref(), Some("todays"));
         // ...and one that starts in an hour finds neither
         assert_eq!(find(&spec(&root), Some(&work), long_ago), None);
+    }
+
+    #[test]
+    fn a_conversation_is_looked_for_where_that_cli_files_it() {
+        let root = tmp("verify");
+        let day = root.join("2026/08/25");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(day.join("rollout-2026-08-25T10-00-00-abc123.jsonl"), "{}").unwrap();
+        let by_folder = root.join("proj");
+        std::fs::create_dir_all(&by_folder).unwrap();
+        std::fs::write(by_folder.join("def456.jsonl"), "{}").unwrap();
+
+        // Named by its file, in a folder we do not know the name of
+        let one = format!("{}/*/{{id}}.jsonl", root.display());
+        assert!(exists(&one, "def456"));
+        assert!(!exists(&one, "not-there"));
+
+        // Named inside a longer file name, several folders down
+        let two = format!("{}/*/*/*/rollout-*-{{id}}.jsonl", root.display());
+        assert!(exists(&two, "abc123"));
+        assert!(!exists(&two, "abc999"));
     }
 
     #[test]

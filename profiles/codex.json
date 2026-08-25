@@ -29,6 +29,7 @@
       "dir": "{home}/.codex/sessions",
       "id": "payload.session_id",
       "cwd": "payload.cwd"
-    }
+    },
+    "verify": "{home}/.codex/sessions/*/*/*/rollout-*-{id}.jsonl"
   }
 }

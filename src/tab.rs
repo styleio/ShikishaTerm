@@ -1264,6 +1264,14 @@ pub struct Tab {
     /// Notifications the program asked for through the standard escapes,
     /// waiting for the loop to pick them up
     notes: Notes,
+    /// The conversation this tab was having when the app last closed. Not
+    /// resumed on its own — that would hand back yesterday's context to
+    /// someone who quit to be rid of it — but offered to the key that already
+    /// means "carry the conversation over"
+    pub previous: Option<Session>,
+    /// Whether anything has been said in this tab since it started. Set from
+    /// the writing side, which is shared, hence the atomic
+    spoke: AtomicBool,
     /// How far along it says it is (0..=1), and what it calls the task
     pub progress: Option<(f32, String)>,
     /// The model bridge's endpoint. If Some, this tab is an OpenAI-compatible
@@ -1591,6 +1599,8 @@ impl Tab {
 
         Ok(Self {
             notes,
+            previous: None,
+            spoke: AtomicBool::new(false),
             status: Vec::new(),
             progress: None,
             born: std::time::SystemTime::now(),
@@ -1725,6 +1735,15 @@ impl Tab {
     pub fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
         if contains_submit(bytes) {
             self.prompted.store(true, Ordering::Relaxed);
+            // Something has now been said in this tab, in this run. That is
+            // what decides which conversation "carry it over" means: the one
+            // happening here, or — on a tab nobody has spoken to yet — the one
+            // that was happening when the app last closed.
+            //
+            // Said, not busy: a CLI looks busy while it merely starts up, and
+            // treating that as use would quietly discard the conversation the
+            // person came back for
+            self.spoke.store(true, Ordering::Relaxed);
             self.submitted_output
                 .store(self.output_count(), Ordering::Relaxed);
             // The response starts here. Anything before this is the
@@ -1830,6 +1849,7 @@ impl Tab {
         fresh.auto_restart = self.auto_restart;
         fresh.id = self.id.clone();
         fresh.notify_on_done = self.notify_on_done.clone();
+        fresh.previous = self.previous.clone();
         fresh.clear_said();
         // Since it was recreated, any pending config changes are now in effect
         *self = fresh;
@@ -1925,6 +1945,11 @@ impl Tab {
     fn clear_said(&mut self) {
         self.status.clear();
         self.progress = None;
+    }
+
+    /// Whether anything has been said in this tab since it started
+    pub fn spoke(&self) -> bool {
+        self.spoke.load(Ordering::Relaxed)
     }
 
     /// When this tab's process started, on the wall clock

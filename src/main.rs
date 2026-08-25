@@ -29,6 +29,7 @@ mod digest;
 mod exchange;
 mod hooks;
 mod i18n;
+mod lastsession;
 mod layout;
 mod netaddr;
 mod notify;
@@ -985,8 +986,27 @@ fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'stati
     let Some(spec) = t.resume.as_ref() else {
         return (tab::Resume::Fresh, Some("msg.resume.unsupported"));
     };
-    if let Some(s) = t.session.clone() {
+    // Nothing has happened in this tab yet, and it was having a conversation
+    // when the app last closed. "Carry the conversation over" can only mean
+    // that one — which is why this needs no key of its own
+    let want = match (t.spoke(), t.previous.clone()) {
+        (false, Some(before)) => Some(before),
+        _ => t.session.clone(),
+    };
+    if let Some(s) = want {
         if !spec.with_id.is_empty() {
+            // A conversation can be deleted between one run and the next. Ask
+            // before handing the CLI an id it has never heard of: it would say
+            // so in its own words, in red, in a place the person has no reason
+            // to connect with the key they just pressed
+            let gone = spec
+                .verify
+                .as_ref()
+                .is_some_and(|v| !sessionfind::exists(v, &s.id));
+            if gone {
+                append_hook_log(&format!("\"{}\" no longer has {}", t.title, s.short()));
+                return (tab::Resume::Fresh, Some("msg.resume.gone"));
+            }
             return (tab::Resume::Id(s), None);
         }
     }
@@ -1594,6 +1614,31 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // pane's surface *is* `active`, and the two are re-synced once per frame
     // below, so splitting the screen adds panes without rewriting the loop.
     let mut pane_layout = crate::layout::Layout::single(active);
+    // What was on screen when the app last closed. Two things are taken from
+    // it, and neither happens on its own: the division of the screen is put
+    // back (it is a shape, not a conversation, and nobody is surprised to find
+    // their panes where they left them), while the conversations are only
+    // OFFERED — see `resume_plan`. Someone who quit to be rid of a
+    // conversation must not find it waiting for them
+    let mut last_session = crate::lastsession::Saved::load();
+    if let Some(ws) = workspaces.get(ws_index) {
+        for t in tabs.iter_mut() {
+            t.previous = last_session.conversation_for(&ws.name, t);
+        }
+        if let Some(saved) = last_session.panes_for(&ws.name) {
+            // Whether those panes still point at surfaces that exist is not
+            // decided here: the loop clamps the tree to what is on screen every
+            // frame, which is the one place that knows
+            pane_layout = saved;
+            active = pane_layout.focused_surface();
+        }
+    }
+    // When to next write down what is on screen. Rare events (a conversation
+    // learned, a workspace switched) are worth writing at once; a divider being
+    // dragged is not, and a delay keeps a drag from writing a file per frame
+    let mut save_at: Option<std::time::Instant> = None;
+    // What was last written, so an unchanged screen writes nothing at all
+    let mut last_saved: Option<(crate::layout::Layout, Vec<Option<tab::Session>>)> = None;
     let mut prefix_active = false;
     // The last state drawn. This is what gets handed to the phone (keeps the
     // assembly point to a single spot).
@@ -1935,11 +1980,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // is not a reason to lose the conversation
             let alone: Vec<bool> = (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
             for (i, t) in tabs.iter_mut().enumerate() {
+                // Ask what to do about the conversation only once it is
+                // actually being restarted. Working it out first would mean
+                // deciding — and looking on disk — five times a second for
+                // every tab, to answer a question nobody had asked
+                if !(t.needs_restart && t.state != TabState::Busy) {
+                    continue;
+                }
                 let (plan, _) = resume_plan(t, alone.get(i).copied().unwrap_or(false), true);
-                if t.needs_restart
-                    && t.state != TabState::Busy
-                    && t.restart_as(rows, cols, plan).is_ok()
-                {
+                if t.restart_as(rows, cols, plan).is_ok() {
                     if let Some(f) = started_fired.get_mut(i) {
                         *f = false;
                     }
@@ -2021,6 +2070,24 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         ))
                     }
                 }
+            }
+
+            // Write down what is on screen, a moment after it last changed.
+            // Delayed on purpose: dragging a divider changes it sixty times a
+            // second, and none of those is worth a file
+            if save_at.is_none_or(|at| std::time::Instant::now() >= at) {
+                let mark = (
+                    pane_layout.clone(),
+                    tabs.iter().map(|t| t.session.clone()).collect::<Vec<_>>(),
+                );
+                if Some(&mark) != last_saved.as_ref() {
+                    if let Some(ws) = workspaces.get(ws_index) {
+                        last_session.remember(&ws.name, &tabs, Some(&pane_layout));
+                        last_session.write();
+                    }
+                    last_saved = Some(mark);
+                }
+                save_at = Some(std::time::Instant::now() + Duration::from_secs(3));
             }
 
             // Retire the API keys of tabs that are gone. Told the live set
@@ -3738,6 +3805,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
     }
     if let Some(a) = api_server.as_mut() {
         a.shutdown();
+    }
+    // The last word on what was on screen. The periodic write above may be up
+    // to a few seconds stale, and quitting is exactly when that matters
+    if let Some(ws) = workspaces.get(ws_index) {
+        last_session.remember(&ws.name, &tabs, Some(&pane_layout));
+        last_session.write();
     }
     for t in tabs.iter_mut() {
         t.kill();

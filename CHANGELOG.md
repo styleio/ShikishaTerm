@@ -84,6 +84,23 @@ once it reaches its first tagged release.
   back empty. The settings screen's **Carrying conversations** card says, per
   CLI, which of these applies.
 
+- **What was on screen last time comes back.** The division into panes is put
+  back as it was, and each tab remembers the conversation it was having — so
+  `Ctrl+B r`, on a tab nobody has spoken to yet, picks up where the last run of
+  the app left off. No new key and no new gesture: that is what the key already
+  meant, now reaching across a restart of the whole app.
+
+  Conversations are **offered, never restored on their own**. Someone who quit
+  to be rid of one should not find it waiting for them, and a tab that has been
+  used carries its own conversation rather than yesterday's. Before resuming,
+  the conversation is checked to be still on this machine — a deleted one gets
+  a plain sentence instead of whatever the CLI says when handed an id it has
+  never heard of.
+
+  What is **not** restored: anything that was not this app's to keep. A
+  terminal's contents, a shell's history, a half-typed command. Restoring the
+  photograph of a live thing invites people to trust it.
+
 - **An agent can say what it is doing.** The state dot beside a tab is read off
   its screen, so it can only ever say "busy" or "waiting". Now the thing in the
   tab can say the rest — `shikisha.set_status("build", "running tests 3/5")` and

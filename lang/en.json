@@ -170,6 +170,7 @@
   "msg.lock_off": ">> 🔓 Unlocked",
   "msg.resumed": "{name} restarted, carrying on the same conversation (Ctrl+B R starts a new one)",
   "msg.resume.unsupported": "{name} restarted. This CLI has no way to carry a conversation across a restart",
+  "msg.resume.gone": "{name} restarted with a new conversation — the one it was having is no longer on this machine",
   "msg.resume.unknown": "{name} restarted with a new conversation — we never learned which one it was running",
   "msg.resume.ambiguous": "{name} restarted with a new conversation: another tab runs the same CLI in the same folder, and picking the wrong conversation is worse than starting one",
   "msg.restarted": ">> Restarted {name}",
