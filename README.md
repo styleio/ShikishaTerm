@@ -155,7 +155,7 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B X` | Close this pane (the tab keeps running) |
 | `Ctrl+B =` | Put every divider back to even halves |
 | `Ctrl+B l` | Toggle input lock |
-| `Ctrl+B r` | Restart the tab |
+| `Ctrl+B r` / `R` | Restart the tab, carrying its conversation over / starting a new one |
 | `Ctrl+B [` | Copy mode (`c` copies the latest response) |
 | `Ctrl+B a` / `x` | Automation on/off / emergency stop |
 | `Ctrl+B 0` → `i` | Show the QR code for phone access |

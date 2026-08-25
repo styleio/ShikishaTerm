@@ -967,6 +967,74 @@ fn hook_mode(kind: String) -> Result<()> {
     Ok(())
 }
 
+/// What a restart should do about this tab's conversation, and — when it cannot
+/// carry it — the reason to put on screen.
+///
+/// The decision lives here rather than in the tab because it depends on the
+/// other tabs: continuing "whatever ran in this folder last" is only safe when
+/// nobody else could have been what ran there.
+///
+/// Resuming the wrong conversation is worse than starting a new one, so every
+/// uncertain case ends up at Fresh with something to say for itself.
+fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'static str>) {
+    if !keep {
+        return (tab::Resume::Fresh, None);
+    }
+    let Some(spec) = t.resume.as_ref() else {
+        return (tab::Resume::Fresh, Some("msg.resume.unsupported"));
+    };
+    if let Some(s) = t.session.clone() {
+        if !spec.with_id.is_empty() {
+            return (tab::Resume::Id(s), None);
+        }
+    }
+    if !spec.newest_here.is_empty() {
+        if alone {
+            return (tab::Resume::NewestHere, None);
+        }
+        return (tab::Resume::Fresh, Some("msg.resume.ambiguous"));
+    }
+    (tab::Resume::Fresh, Some("msg.resume.unknown"))
+}
+
+/// Whether this tab is the only one that could have left "the newest
+/// conversation in this folder" — same program, same folder.
+///
+/// Worked out before the tab is borrowed to restart it, because by then the
+/// others are out of reach
+fn only_one_here(tabs: &[Tab], index: usize) -> bool {
+    let Some(me) = tabs.get(index) else {
+        return false;
+    };
+    !tabs
+        .iter()
+        .enumerate()
+        .any(|(i, o)| i != index && o.program() == me.program() && o.cwd() == me.cwd())
+}
+
+/// Restart one tab, carrying its conversation when that can be done safely, and
+/// answer with what to tell the person.
+fn restart_tab(t: &mut Tab, alone: bool, keep: bool, rows: u16, cols: u16) -> String {
+    let (plan, why) = resume_plan(t, alone, keep);
+    let carried = matches!(plan, tab::Resume::Id(_) | tab::Resume::NewestHere);
+    match t.restart_as(rows, cols, plan) {
+        Ok(()) => {
+            if let Some(s) = t.session.as_ref() {
+                append_hook_log(&format!("restarted \"{}\" carrying {}", t.title, s.short()));
+            }
+            match (carried, why) {
+                // Say the way back at the moment it is wanted: the one time
+                // resuming is wrong is when the conversation is what broke the
+                // CLI, and that is exactly when this message is on screen
+                (true, _) => i18n::tp("msg.resumed", &[("name", &t.title)]),
+                (false, Some(k)) => i18n::tp(k, &[("name", &t.title)]),
+                (false, None) => i18n::tp("msg.restarted", &[("name", &t.title)]),
+            }
+        }
+        Err(e) => i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))]),
+    }
+}
+
 /// Divide the focused pane and answer with the surface now under the cursor.
 ///
 /// Two doors ask for this — `Ctrl+B %` and the ⊞ / ⊟ in a pane's caption — and
@@ -1861,10 +1929,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // take effect on an idle tab on its own, instead of quietly keeping
             // the old process alive. The new session is treated as a fresh
             // launch (started_fired cleared) so its on_start briefing fires again.
+            // A staged change to the launch conditions (encoding, scrollback…)
+            // is not a reason to lose the conversation
+            let alone: Vec<bool> = (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
             for (i, t) in tabs.iter_mut().enumerate() {
+                let (plan, _) = resume_plan(t, alone.get(i).copied().unwrap_or(false), true);
                 if t.needs_restart
                     && t.state != TabState::Busy
-                    && t.restart(rows, cols).is_ok()
+                    && t.restart_as(rows, cols, plan).is_ok()
                 {
                     if let Some(f) = started_fired.get_mut(i) {
                         *f = false;
@@ -2136,9 +2208,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
 
             // auto_restart: automatically bring exited tabs back
+            let alone: Vec<bool> = (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
             for (i, t) in tabs.iter_mut().enumerate() {
                 if t.state == TabState::Exited && t.auto_restart {
-                    match t.restart(rows, cols) {
+                    let (plan, _) = resume_plan(t, alone.get(i).copied().unwrap_or(false), true);
+                    match t.restart_as(rows, cols, plan) {
                         Ok(()) => {
                             append_hook_log(&format!("auto-restart tab{}", i + 1));
                             flash = Some(i18n::tp("msg.restarted", &[("name", &t.title)]));
@@ -3218,15 +3292,22 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                         }
                         // Ctrl+B r restarts this tab (recovers from exit/disconnect)
-                        KeyCode::Char('r') => {
+                        // and carries the conversation over; Ctrl+B R starts a
+                        // new one. The default is the way round it is because
+                        // the cases where this key is the ONLY way out — the CLI
+                        // died, hung, or updated itself — all want the
+                        // conversation back, while wanting a clean slate has an
+                        // answer inside the CLI already (/clear)
+                        KeyCode::Char('r') | KeyCode::Char('R') => {
+                            let keep = key.code == KeyCode::Char('r');
                             if let Some(eng) = engine.as_mut() {
                                 eng.cancel_tab(active);
                             }
+                            let alone = session_at(&surfaces, active)
+                                .map(|i| only_one_here(&tabs, i))
+                                .unwrap_or(false);
                             if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
-                                flash = Some(match t.restart(rows, cols) {
-                                    Ok(()) => i18n::tp("msg.restarted", &[("name", &t.title)]),
-                                    Err(e) => i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))]),
-                                });
+                                flash = Some(restart_tab(t, alone, keep, rows, cols));
                             } else if let Some(name) = restartable_page(&surfaces, active, &caps) {
                                 // A page has no process to relaunch. Opening it again
                                 // exactly as it was opened is the same act: a fresh
@@ -3451,8 +3532,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         KeyCode::Char('r') => {
                             let mut msgs = Vec::new();
-                            for t in tabs.iter_mut().filter(|t| t.state == TabState::Exited) {
-                                match t.restart(rows, cols) {
+                            let alone: Vec<bool> =
+                                (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
+                            for (i, t) in tabs.iter_mut().enumerate() {
+                                if t.state != TabState::Exited {
+                                    continue;
+                                }
+                                let (plan, _) =
+                                    resume_plan(t, alone.get(i).copied().unwrap_or(false), true);
+                                match t.restart_as(rows, cols, plan) {
                                     Ok(()) => msgs.push(t.title.clone()),
                                     Err(e) => msgs.push(format!("{}(failed:{e})", t.title)),
                                 }
@@ -4773,6 +4861,22 @@ fn publish_remote(info: &Arc<Mutex<webui::RemoteInfo>>, ui: &Option<remote::Remo
 }
 
 /// A random hex string (for the remote UI's token)
+/// A random UUID (version 4), in the spelling CLIs expect.
+///
+/// Written out here rather than pulled in: it is sixteen random bytes with six
+/// bits set to say which kind of UUID it is, and a dependency for that would
+/// weigh more than the function.
+pub fn random_uuid() -> String {
+    let hex = random_hex(16);
+    let mut b: Vec<u8> = (0..16)
+        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap_or(0))
+        .collect();
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // variant 1
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+}
+
 pub fn random_hex(bytes: usize) -> String {
     use rand::TryRng as _;
     let mut buf = vec![0u8; bytes];
@@ -5341,19 +5445,16 @@ fn exec_commands(
                     &[("code", &code.to_string()), ("reason", &reason)],
                 ));
             }
-            Command::Restart { target } => {
+            Command::Restart { target, fresh } => {
                 let Some(target) = index_of(&target) else {
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
                     continue;
                 };
-                if let Some(t) = session_of(target).and_then(|i| tabs.get_mut(i)) {
-                    match t.restart(rows, cols) {
-                        Ok(()) => {
-                            append_hook_log(&format!("restart tab{target} (lua)"));
-                            *flash = Some(i18n::tp("msg.restarted", &[("name", &t.title)]));
-                        }
-                        Err(e) => *flash = Some(i18n::tp("msg.restart_failed", &[("error", &t.launch_hint(&e.to_string()))])),
-                    }
+                let Some(at) = session_of(target) else { continue };
+                let alone = only_one_here(tabs, at);
+                if let Some(t) = tabs.get_mut(at) {
+                    append_hook_log(&format!("restart tab{target} (lua)"));
+                    *flash = Some(restart_tab(t, alone, !fresh, rows, cols));
                 }
             }
             // The division of the screen. Carried out at once: whoever asked
@@ -5814,6 +5915,58 @@ mod tests {
         }
     }
 
+    /// Two tabs running the same CLI in the same folder cannot both claim
+    /// "the newest conversation here" — and a wrong guess would hand one of
+    /// them the other's conversation, which is worse than starting a new one.
+    #[test]
+    fn a_guess_is_refused_when_another_tab_could_be_the_one() {
+        let opts = tab::TabOptions {
+            cwd: Some(std::env::temp_dir()),
+            ..Default::default()
+        };
+        let argv = vec!["powershell.exe".to_string()];
+        let mut tabs = vec![
+            Tab::spawn("A".into(), &argv, None, 10, 40, opts.clone()).unwrap(),
+            Tab::spawn("B".into(), &argv, None, 10, 40, opts).unwrap(),
+        ];
+        // A CLI that can only be told "continue the newest one here"
+        let only_newest = crate::profile::ResumeSpec {
+            newest_here: vec!["--continue".into()],
+            ..Default::default()
+        };
+        tabs[0].resume = Some(only_newest.clone());
+        assert!(!only_one_here(&tabs, 0), "同じCLI・同じフォルダの相方がいる");
+        let (plan, why) = resume_plan(&tabs[0], only_one_here(&tabs, 0), true);
+        assert_eq!(plan, tab::Resume::Fresh);
+        assert_eq!(why, Some("msg.resume.ambiguous"), "理由を言って新規にする");
+
+        // Alone, the same tab may continue what ran here last
+        let (plan, why) = resume_plan(&tabs[0], true, true);
+        assert_eq!(plan, tab::Resume::NewestHere);
+        assert_eq!(why, None);
+
+        // ...and knowing WHICH conversation it was settles it either way:
+        // this is why an id is worth minting at launch
+        tabs[0].resume = Some(crate::profile::ResumeSpec {
+            with_id: vec!["--resume".into(), "{id}".into()],
+            ..only_newest
+        });
+        let mine = tab::Session {
+            id: "1234".into(),
+            source: tab::SessionSource::Minted,
+        };
+        tabs[0].session = Some(mine.clone());
+        let (plan, why) = resume_plan(&tabs[0], false, true);
+        assert_eq!(plan, tab::Resume::Id(mine), "相方がいても取り違えようがない");
+        assert_eq!(why, None);
+
+        // Asking for a clean start is never argued with
+        assert_eq!(resume_plan(&tabs[0], true, false).0, tab::Resume::Fresh);
+        for t in tabs.iter_mut() {
+            t.kill();
+        }
+    }
+
     /// A recorded step must come out as ONE line of the shared Lua dialect,
     /// runnable by run_scoped as-is (record → paste → run must round-trip).
     #[test]
@@ -6101,7 +6254,7 @@ mod tests {
                    Some("Name(\"ai\")"));
 
         for other in [
-            Command::Restart { target: TabRef::Index(1) },
+            Command::Restart { target: TabRef::Index(1), fresh: false },
             Command::Notify { dest: Some("slack".into()), text: "x".into() },
             Command::Log("x".into()),
             Command::SendKeys { target: TabRef::Index(1), keys: "y".into() },

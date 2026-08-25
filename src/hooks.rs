@@ -738,8 +738,9 @@ pub enum Command {
     /// Notify a destination. `None` = the primary (config's primary_notify,
     /// or the single configured destination)
     Notify { dest: Option<String>, text: String },
-    /// Restart a tab (recovery from an SSH disconnect or a CLI self-update)
-    Restart { target: TabRef },
+    /// Restart a tab (recovery from an SSH disconnect or a CLI self-update).
+    /// The conversation is carried over unless `fresh` asks for a clean one
+    Restart { target: TabRef, fresh: bool },
     /// Rearrange the panes. One request, because they are one subject: the
     /// division of the screen belongs to the main loop, which owns the tree
     Pane(PaneOp),
@@ -1596,9 +1597,14 @@ impl HookEngine {
             shikisha
                 .set(
                     "restart",
-                    lua.create_function(move |_, tab: Value| {
+                    // The conversation carries over by default, because the
+                    // reasons to restart a tab (it died, it hung, it updated
+                    // itself) are reasons to want it back. `"fresh"` asks for
+                    // a clean one
+                    lua.create_function(move |_, (tab, how): (Value, Option<String>)| {
                         c.borrow_mut().push(Command::Restart {
                             target: tab_ref_of(&tab)?,
+                            fresh: how.as_deref() == Some("fresh"),
                         });
                         Ok(())
                     })

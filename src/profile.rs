@@ -38,6 +38,76 @@ pub struct ProfileFile {
     /// particular AI has its own quirks.
     #[serde(default)]
     pub done_confirm_ms: Option<u64>,
+    /// How this CLI carries a conversation across a restart. Absent means it
+    /// has none — an editor-style tool with no conversation to keep
+    #[serde(default)]
+    pub resume: Option<ResumeSpec>,
+}
+
+/// Everything about picking a conversation back up, as data.
+///
+/// Which arguments to pass is a fact about a CLI, not about this app, and CLIs
+/// change theirs between releases. Keeping it in the profile means a new
+/// release is a text edit rather than a build.
+///
+/// **The program is never named here.** These are arguments added to the
+/// command the tab already runs, so a profile can change how a CLI is asked to
+/// resume but can never point the tab at a different program. That is what
+/// makes it safe to run one unattended, with no approval to click.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ResumeSpec {
+    /// Arguments that hand OUR id over at launch, for CLIs that accept one.
+    /// The strongest form: nothing has to be attributed afterwards
+    #[serde(default)]
+    pub new_id: Vec<String>,
+    /// Arguments that resume a conversation we know the id of
+    #[serde(default)]
+    pub with_id: Vec<String>,
+    /// Arguments that continue whatever ran here last. A guess by definition —
+    /// used only when this folder and CLI belong to exactly one tab
+    #[serde(default)]
+    pub newest_here: Vec<String>,
+    /// Where this CLI keeps its own record of conversations, for CLIs that
+    /// won't take an id and can't be hooked
+    #[serde(default)]
+    pub record: Option<RecordSpec>,
+    /// How to ask this CLI to report its conversation as it starts
+    #[serde(default)]
+    pub hook: Option<HookSpec>,
+}
+
+/// A CLI's own record of its conversations, as far as we need to read it:
+/// one file per conversation, the first line of which says which one it is.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecordSpec {
+    /// Folder to look in. `{home}` is the user's home folder
+    pub dir: String,
+    /// Field holding the conversation id, in the first line's JSON.
+    /// A dotted path steps into nested objects
+    pub id: String,
+    /// Field holding the folder that conversation was started in
+    pub cwd: String,
+}
+
+/// How to install a "tell us your session id" hook into a CLI's own config.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HookSpec {
+    /// The CLI's hook config file. `{home}` is the user's home folder
+    pub file: String,
+    /// The shape of that file. Two are known; both are JSON
+    pub format: HookFormat,
+    /// The events to register for. One is usually enough — the moment a
+    /// conversation starts — but a CLI may name it differently
+    pub events: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookFormat {
+    /// `hooks.<Event>[] = { matcher?, hooks: [ { type, command, args?, timeout? } ] }`
+    Grouped,
+    /// `hooks.<Event>[] = { command }`, plus a `version` beside it
+    Flat,
 }
 
 fn default_silence_ms() -> u64 {
@@ -63,6 +133,7 @@ pub struct Profile {
     pub silence_ms: u64,
     pub ignore_bottom_rows: u16,
     pub done_confirm_ms: Option<u64>,
+    pub resume: Option<ResumeSpec>,
 }
 
 impl Profile {
@@ -76,6 +147,7 @@ impl Profile {
             silence_ms: default_silence_ms(),
             ignore_bottom_rows: default_ignore_bottom_rows(),
             done_confirm_ms: None,
+            resume: None,
         }
     }
 
@@ -96,6 +168,7 @@ impl Profile {
             silence_ms: f.silence_ms,
             done_confirm_ms: f.done_confirm_ms,
             ignore_bottom_rows: f.ignore_bottom_rows,
+            resume: f.resume,
             name: f.name,
         })
     }

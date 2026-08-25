@@ -1,13 +1,41 @@
 {
   "name": "Codex CLI",
-  "command_match": ["codex"],
-  "busy_patterns": ["[Ww]orking", "esc to interrupt", "Thinking"],
+  "command_match": [
+    "codex"
+  ],
+  "busy_patterns": [
+    "[Ww]orking",
+    "esc to interrupt",
+    "Thinking"
+  ],
   "question_patterns": [
     "Allow command\\?",
     "\\[y/N\\]",
     "\\(y/n\\)",
     "approve",
-    "\u276f\\s*[Yy]es"
+    "❯\\s*[Yy]es"
   ],
-  "silence_ms": 2000
+  "silence_ms": 2000,
+  "resume": {
+    "with_id": [
+      "resume",
+      "{id}"
+    ],
+    "newest_here": [
+      "resume",
+      "--last"
+    ],
+    "record": {
+      "dir": "{home}/.codex/sessions",
+      "id": "payload.session_id",
+      "cwd": "payload.cwd"
+    },
+    "hook": {
+      "file": "{home}/.codex/hooks.json",
+      "format": "flat",
+      "events": [
+        "SessionStart"
+      ]
+    }
+  }
 }

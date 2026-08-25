@@ -95,7 +95,7 @@ shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
 | `shikisha.state(tab)` | Read the state **right now** (use this as a loop condition) |
 | `shikisha.wait_state(tab, "DONE", ms)` | Wait until it reaches that state |
 | `shikisha.notify("target", "text")` | Notify Slack / Telegram (only configured targets) |
-| `shikisha.restart(tab)` | Restart that tab |
+| `shikisha.restart(tab)` | Restart that tab, carrying its conversation over. `shikisha.restart(tab, "fresh")` starts a new one |
 | `shikisha.log("text")` | Record in `logs/hooks.log` |
 | `shikisha.set_session("id")` | Say which conversation THIS tab's CLI is running, so a restart can pick it up. No tab argument: the caller is the tab |
 | `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared inside the workspace |
@@ -636,7 +636,7 @@ ones; this is the complete list.
 | `shikisha.state(tab)` | The state right now: `WAIT` / `BUSY` / `DONE` / `ASK` / `EXIT` |
 | `shikisha.wait_state(tab, "DONE", ms)` | Wait until it reaches that state; `true` if it did |
 | `shikisha.tab_output(tab)` | Another tab's latest reply (`""` if there is none yet) |
-| `shikisha.restart(tab)` | Restart that tab |
+| `shikisha.restart(tab)` | Restart that tab, carrying its conversation over. `shikisha.restart(tab, "fresh")` starts a new one |
 
 ### The screen
 

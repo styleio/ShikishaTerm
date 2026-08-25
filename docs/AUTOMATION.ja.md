@@ -95,7 +95,7 @@ shikisha.send_to_tab("reviewer", "レビューして")   -- 名前を変えて�
 | `shikisha.state(tab)` | **今の**状態を読む（ループの終了条件に使う） |
 | `shikisha.wait_state(tab, "DONE", ミリ秒)` | その状態になるまで待つ |
 | `shikisha.notify("宛先", "文字列")` | Slack / Telegram へ通知（設定済みの宛先のみ） |
-| `shikisha.restart(tab)` | そのタブを再起動する |
+| `shikisha.restart(tab)` | そのタブを会話ごと再起動する。`shikisha.restart(tab, "fresh")` なら新しい会話で |
 | `shikisha.log("文字列")` | `logs/hooks.log` に記録 |
 | `shikisha.set_session("id")` | **このタブ**のCLIが動かしている会話のIDを伝える（再起動で引き継ぐため）。タブを指定しないのは、呼んだ側がそのタブだから |
 | `shikisha.get_var("キー")` / `shikisha.set_var("キー", 値)` | 記憶しておける変数。ワークスペース内で共有 |
@@ -675,7 +675,7 @@ shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
 | `shikisha.state(タブ)` | 今の状態: `WAIT` / `BUSY` / `DONE` / `ASK` / `EXIT` |
 | `shikisha.wait_state(タブ, "DONE", ミリ秒)` | その状態になるまで待つ。なれば `true` |
 | `shikisha.tab_output(タブ)` | 他のタブの最新の返答（まだ無ければ `""`） |
-| `shikisha.restart(タブ)` | そのタブを再起動する |
+| `shikisha.restart(タブ)` | そのタブを会話ごと再起動する。`shikisha.restart(タブ, "fresh")` なら新しい会話で |
 
 ### 画面
 

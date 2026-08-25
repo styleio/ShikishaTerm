@@ -62,6 +62,20 @@ once it reaches its first tagged release.
   do one thing, rather than one that only ever makes the arrangement whoever
   wrote it had in mind. `Ctrl+B =` does the equalizing from the keyboard.
 
+- **A restart no longer throws the conversation away.** `Ctrl+B r` was the only
+  way out of a CLI that had died, hung, or updated itself — and it started the
+  agent again with nothing, losing everything that had been said. It now carries
+  the conversation over, and `Ctrl+B R` is there for when a clean slate is what
+  you wanted. Automation and auto-restart follow the same rule, so a tab that
+  comes back on its own comes back as itself.
+
+  Which conversation belongs to which tab is not guessed at. Where a CLI accepts
+  a session id at launch, this app hands it one, so two agents of the same kind
+  in the same folder are told apart with certainty rather than by whichever
+  record happens to be newest. Where it does not, the CLI is asked to report its
+  own — and if neither is possible, the restart says so and starts fresh rather
+  than picking up somebody else's conversation.
+
 ### Fixed
 - **Lua that never returns no longer takes the window with it.** The engine runs
   on the main loop, so a `while true do end` typed into the composer — or sent

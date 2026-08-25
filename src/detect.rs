@@ -159,6 +159,7 @@ mod tests {
 
     fn claude_like() -> Profile {
         Profile::compile(ProfileFile {
+            resume: None,
             name: "test".into(),
             command_match: vec![],
             busy_patterns: vec!["esc to interrupt".into()],

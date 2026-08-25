@@ -549,6 +549,64 @@ mod tests {
         s.split_whitespace().map(String::from).collect()
     }
 
+    fn spec(new_id: &[&str], with_id: &[&str], newest: &[&str]) -> crate::profile::ResumeSpec {
+        crate::profile::ResumeSpec {
+            new_id: new_id.iter().map(|s| s.to_string()).collect(),
+            with_id: with_id.iter().map(|s| s.to_string()).collect(),
+            newest_here: newest.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_fresh_launch_hands_over_an_id_of_ours_when_the_cli_takes_one() {
+        // The strongest form: two tabs running the same CLI in the same folder
+        // are told apart because each was given its own conversation to start
+        let s = spec(&["--session-id", "{id}"], &["--resume", "{id}"], &[]);
+        let (out, session) = super::plan_launch(Some(&s), &argv("claude"), super::Resume::Fresh);
+        let session = session.expect("a conversation was started");
+        assert_eq!(session.source, super::SessionSource::Minted);
+        assert_eq!(out, vec!["claude", "--session-id", &session.id]);
+        assert_eq!(session.id.len(), 36, "UUIDの綴りで渡す: {}", session.id);
+        assert_eq!(&session.id[14..15], "4", "version 4 と名乗る");
+    }
+
+    #[test]
+    fn resuming_puts_the_arguments_straight_after_the_program() {
+        // codex resumes by SUBCOMMAND, so "codex --search resume <id>" would be
+        // read as flags to a subcommand that hasn't been named yet
+        let s = spec(&[], &["resume", "{id}"], &[]);
+        let was = super::Session {
+            id: "0198-abc".into(),
+            source: super::SessionSource::Hook,
+        };
+        let (out, session) =
+            super::plan_launch(Some(&s), &argv("codex --search"), super::Resume::Id(was.clone()));
+        assert_eq!(out, vec!["codex", "resume", "0198-abc", "--search"]);
+        assert_eq!(session, Some(was), "引き継いだ会話をそのまま覚えている");
+    }
+
+    #[test]
+    fn a_cli_with_nothing_to_resume_is_launched_exactly_as_written() {
+        let (out, session) = super::plan_launch(None, &argv("aider --model x"), super::Resume::Fresh);
+        assert_eq!(out, argv("aider --model x"));
+        assert_eq!(session, None);
+        // ...and asking to carry a conversation over changes nothing either
+        let s = spec(&[], &[], &[]);
+        let (out, _) = super::plan_launch(Some(&s), &argv("aider"), super::Resume::NewestHere);
+        assert_eq!(out, argv("aider"));
+    }
+
+    #[test]
+    fn continuing_the_newest_here_names_no_conversation() {
+        // The CLI picks it, so afterwards we do not know which one it picked —
+        // and saying we do would be a lie the next restart would act on
+        let s = spec(&[], &[], &["--continue"]);
+        let (out, session) = super::plan_launch(Some(&s), &argv("claude"), super::Resume::NewestHere);
+        assert_eq!(out, vec!["claude", "--continue"]);
+        assert_eq!(session, None);
+    }
+
     #[test]
     fn auto_runs_needs_the_bypass_flag_for_a_cli() {
         // A bare CLI still asks for confirmation, so it can't drive a tab...
@@ -954,6 +1012,45 @@ mod tests {
     }
 }
 
+/// The arguments a launch really runs with, and the conversation it will carry.
+///
+/// `{id}` is the only thing substituted, and the arguments go **straight after
+/// the program**: a CLI that resumes by subcommand needs them there, and one
+/// that resumes by flag does not mind. The program itself is never named by a
+/// profile, so no profile can point a tab at something else to run — which is
+/// what makes running this unattended safe without anyone approving anything.
+fn plan_launch(
+    spec: Option<&crate::profile::ResumeSpec>,
+    argv: &[String],
+    plan: Resume,
+) -> (Vec<String>, Option<Session>) {
+    let Some(spec) = spec else {
+        return (argv.to_vec(), None);
+    };
+    let put = |extra: &[String], id: &str| -> Vec<String> {
+        let mut out = argv.to_vec();
+        let at = 1.min(out.len());
+        for (i, a) in extra.iter().enumerate() {
+            out.insert(at + i, a.replace("{id}", id));
+        }
+        out
+    };
+    match plan {
+        Resume::Id(s) if !spec.with_id.is_empty() => (put(&spec.with_id, &s.id), Some(s)),
+        // Asked to carry one on by a CLI that cannot be told which: the caller
+        // only offers this after checking nobody else could have been here
+        Resume::NewestHere if !spec.newest_here.is_empty() => (put(&spec.newest_here, ""), None),
+        // A new conversation. Where the CLI accepts an id, ours is the one it
+        // gets, and there is nothing left to work out later
+        _ if !spec.new_id.is_empty() => {
+            let id = crate::random_uuid();
+            let out = put(&spec.new_id, &id);
+            (out, Some(Session { id, source: SessionSource::Minted }))
+        }
+        _ => (argv.to_vec(), None),
+    }
+}
+
 /// Fingerprint of the launch conditions. If this changes, a new session must be created to take effect
 pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
     format!(
@@ -1009,6 +1106,22 @@ pub const ACTIVITY_LEN: usize = 24;
 /// the secondary "it answered" evidence when the working indicator was missed
 const POST_SUBMIT_ECHO_MS: u64 = 2_000;
 
+/// What a launch should do about the conversation.
+///
+/// Decided by the caller, not here: whether the newest conversation in a folder
+/// can safely be continued depends on what the *other* tabs are doing, and only
+/// the main loop can see them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Resume {
+    /// Start a new conversation
+    Fresh,
+    /// Carry on this exact one
+    Id(Session),
+    /// Continue whatever ran in this folder last. The caller has checked that
+    /// only this tab could have been it
+    NewestHere,
+}
+
 /// A conversation a tab is running, and how sure we are that it is this tab's.
 ///
 /// The source matters at the moment of resuming: two of these are facts, the
@@ -1053,6 +1166,10 @@ pub struct Tab {
     /// knowing it — a restart that starts the conversation over is the damage
     /// this exists to undo
     pub session: Option<Session>,
+    /// What this tab's CLI can do about carrying a conversation across a
+    /// restart, read from its profile at every launch (so editing a profile
+    /// takes effect the next time, like the detection rules do)
+    pub resume: Option<crate::profile::ResumeSpec>,
     /// The model bridge's endpoint. If Some, this tab is an OpenAI-compatible
     /// API rather than an AI CLI.
     /// When its turn comes, the main process hits complete() on a thread and injects the response into the screen
@@ -1197,6 +1314,7 @@ impl Tab {
         }
     }
 
+    /// Launch a tab with a new conversation.
     pub fn spawn(
         title: String,
         argv: &[String],
@@ -1204,6 +1322,20 @@ impl Tab {
         rows: u16,
         cols: u16,
         opts: TabOptions,
+    ) -> Result<Self> {
+        Self::spawn_as(title, argv, profile_spec, rows, cols, opts, Resume::Fresh)
+    }
+
+    /// Launch a tab, saying what should happen to the conversation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_as(
+        title: String,
+        argv: &[String],
+        profile_spec: Option<String>,
+        rows: u16,
+        cols: u16,
+        opts: TabOptions,
+        plan: Resume,
     ) -> Result<Self> {
         let profile = Self::resolve_profile(argv, &profile_spec);
         let pty_system = native_pty_system();
@@ -1219,11 +1351,15 @@ impl Tab {
         // process hitting complete() on a thread
         // (the main process is a GUI subsystem, and making the bridge a ConPTY child would leave it without I/O)
         let idle;
+        // What the conversation asks for, turned into arguments. A model tab
+        // runs no CLI at all, so there is nothing to resume
+        let resume_spec = if opts.model.is_some() { None } else { profile.resume.clone() };
+        let (resumed, session) = plan_launch(resume_spec.as_ref(), argv, plan);
         let spawn_argv: &[String] = if opts.model.is_some() {
             idle = idle_argv();
             &idle
         } else {
-            argv
+            &resumed
         };
         let mut cmd = build_command(spawn_argv);
         // Where the external API is, the key to it, and which tab this is.
@@ -1348,7 +1484,8 @@ impl Tab {
         }
 
         Ok(Self {
-            session: None,
+            session,
+            resume: resume_spec,
             title,
             id: None,
             model: opts.model.clone(),
@@ -1560,22 +1697,24 @@ impl Tab {
     /// Recreate the session with the same settings.
     /// Used to recover from a child process self-update, SSH disconnect, or crash.
     /// Lock state and hierarchy display carry over; chain depth and history are reset
-    pub fn restart(&mut self, rows: u16, cols: u16) -> Result<()> {
+    /// Relaunch, carrying the conversation over. What that means for this CLI
+    /// is decided by the caller — see `Resume`
+    pub fn restart_as(&mut self, rows: u16, cols: u16, plan: Resume) -> Result<()> {
         self.kill();
-        let mut fresh = Tab::spawn(
+        let mut fresh = Tab::spawn_as(
             self.title.clone(),
             &self.argv.clone(),
             self.profile_spec.clone(),
             rows,
             cols,
             self.opts.clone(),
+            plan,
         )?;
         fresh.locked = self.locked;
         fresh.depth = self.depth;
         fresh.auto_restart = self.auto_restart;
         fresh.id = self.id.clone();
         fresh.notify_on_done = self.notify_on_done.clone();
-        fresh.session = self.session.clone();
         // Since it was recreated, any pending config changes are now in effect
         *self = fresh;
         Ok(())
@@ -1624,6 +1763,13 @@ impl Tab {
     /// Context for the ✨ command suggester: what the terminal connects to
     pub fn command_line(&self) -> String {
         self.argv.join(" ")
+    }
+
+    /// The program this tab runs, without its arguments. Two tabs sharing this
+    /// AND a working folder are writing into the same CLI's records, which is
+    /// what makes "the newest conversation here" ambiguous
+    pub fn program(&self) -> &str {
+        self.argv.first().map(String::as_str).unwrap_or_default()
     }
 
     pub fn ai_kind(&self) -> Option<String> {
