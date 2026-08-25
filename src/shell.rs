@@ -225,9 +225,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:50%; border:2px solid var(--brand); pointer-events:none; z-index:14;
     animation:rip .48s ease-out forwards; }
   @keyframes rip { from { transform:scale(.4); opacity:.9 } to { transform:scale(4.5); opacity:0 } }
-  /* Text input bar (bottom-of-screen input field with an IME preview) */
+  /* Text input bar (bottom-of-screen input field with an IME preview).
+     Its seam with the row of buttons above is a plain rule, not the accent.
+     The accent already means one thing on a horizontal line -- "the focus is
+     here", which is how the focused pane underlines its caption -- and this
+     seam borrowing it put a second one inside the very pane the first had just
+     marked out. The eye reads a blue rule as "a pane starts here" and finds a
+     boundary that is not there. Full-strength brand is for state; structure
+     inside a panel is drawn with --line */
   #castbar { display:flex; align-items:flex-end; gap:6px; padding:6px 8px;
-    background:var(--panel); border-top:1px solid var(--brand); }
+    background:var(--panel); border-top:1px solid var(--line); }
   #castinput { flex:1; min-width:0; font-family:inherit; font-size:16px;
     line-height:1.35; padding:8px 10px; background:var(--bg); color:var(--text);
     border:1px solid var(--line); border-radius:8px; outline:none;
@@ -4086,6 +4093,18 @@ mod tests {
             "🎯パネルがAIタブ限定になっていない"
         );
         assert!(p.contains("✏️"), "ペンがカラー絵文字になっていない");
+        // A horizontal accent rule says "the focus is here" and nothing else.
+        // The composer's own seam once said it too, inside the pane the
+        // focused caption had just underlined, and the eye read a pane
+        // boundary where there was none
+        assert!(
+            !p.contains("background:var(--panel); border-top:1px solid var(--brand); }"),
+            "入力欄の継ぎ目がフォーカス線と同じ青を使っている"
+        );
+        assert!(
+            p.contains(".pane.focused .phead { color:var(--text); background:var(--raise);"),
+            "フォーカス中のペインの見出しが見分けられない"
+        );
         assert!(!p.contains("\"✎\""), "見えない文字グリフのペンが残っている");
     }
 

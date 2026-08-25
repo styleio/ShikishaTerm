@@ -177,6 +177,12 @@ impl Scheme {
         out.push_str(&format!("--live:{};", ansi[2]));
         out.push_str(&format!("--warn:{};", ansi[3]));
         out.push_str(&format!("--stop:{};", ansi[1]));
+        // On a horizontal rule this means one thing and one thing only: the
+        // focus is here. The focused pane underlines its caption with it, and
+        // nothing else may draw a plain separator in it -- the composer's own
+        // seam once did, inside the pane that underline had just marked out,
+        // and a blue rule reads as "a pane starts here" wherever it appears.
+        // Structure is drawn with --line; --brand is for state
         out.push_str("--brand:#00aaff;");
         // The settings screen grew up as its own page and calls three of these
         // by other names. They are the same values, written twice, so that one
