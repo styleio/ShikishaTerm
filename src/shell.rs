@@ -1604,19 +1604,7 @@ window.__panes = function (json) {
   }
   paintDividers(P.dividers || []);
   paintPaneHeads();
-  // The layers above draw into the focused pane, so hand them its rectangle
-  const f = host.querySelector(".pane.focused .pbody");
-  const main = document.getElementById("main");
-  if (f) {
-    const b = f.getBoundingClientRect(), m = main.getBoundingClientRect();
-    const set = (l, t, r, bo) => {
-      main.style.setProperty("--fx", l + "px");
-      main.style.setProperty("--fy", t + "px");
-      main.style.setProperty("--fr", r + "px");
-      main.style.setProperty("--fb", bo + "px");
-    };
-    set(b.left - m.left, b.top - m.top, m.right - b.right, m.bottom - b.bottom);
-  }
+  measureFocused();
   lastRC = "";
   report();
   if (lastCur) window.__cursor(lastCur[0], lastCur[1], lastCur[2]);
@@ -1872,8 +1860,31 @@ if (document.fonts && document.fonts.ready) {
 // The other side trusts this number for line-wrapping, so a mismatch
 // means it keeps writing past the edge of the screen
 let lastRC = "";
+// The focused pane's rectangle, in the pixels every layer above it draws with:
+// the placed browser, the composer, the pen.
+//
+// Measured wherever the geometry can move, not only when the pane tree
+// changes. These are pixels and the panes are laid out in percentages, so a
+// window resize -- or a drag of the tab bar's edge -- reflows the panes and
+// leaves these describing the window as it used to be. A browser placed by
+// them then landed in the old rectangle, and focusing another pane redrew the
+// tree and quietly put it right, which made it look like a focus bug.
+function measureFocused() {
+  const f = document.querySelector("#panes .pane.focused .pbody");
+  const main = document.getElementById("main");
+  if (!f || !main) return;
+  const b = f.getBoundingClientRect(), m = main.getBoundingClientRect();
+  main.style.setProperty("--fx", (b.left - m.left) + "px");
+  main.style.setProperty("--fy", (b.top - m.top) + "px");
+  main.style.setProperty("--fr", (m.right - b.right) + "px");
+  main.style.setProperty("--fb", (m.bottom - b.bottom) + "px");
+}
+
 function report() {
   measure();
+  // Before anything is read off #page: it is placed by the numbers above, so
+  // reading it first would report the rectangle the window used to have
+  measureFocused();
   if (!cellW || !cellH) return;
   const pad = (parseFloat(getComputedStyle(scr).paddingLeft) || 0) * 2;
   const fit = (b) => ({
