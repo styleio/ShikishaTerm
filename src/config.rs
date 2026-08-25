@@ -75,6 +75,9 @@ pub struct Config {
     /// is the processes this app started and nothing else — see api.rs
     #[serde(default)]
     pub external_api: crate::api::ApiSpec,
+    /// How the terminal is drawn
+    #[serde(default)]
+    pub appearance: Appearance,
     /// Bounds for files pasted/attached into the sub-input bar (saved beside the tab)
     #[serde(default)]
     pub attach: AttachSpec,
@@ -1029,6 +1032,41 @@ fn without_bom(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
+/// The look of the terminal. Two things, because two is what a terminal has:
+/// what it is written in and how big.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Appearance {
+    /// The font stack, as CSS writes it. Empty = the built-in one, chosen for
+    /// drawing box characters and Japanese in one cell each
+    #[serde(default)]
+    pub font: Option<String>,
+    /// Point size. Changed at any time with Ctrl+wheel, and kept here
+    #[serde(default)]
+    pub font_size: Option<u8>,
+}
+
+impl Appearance {
+    /// The font stack for the page, already quoted as CSS wants it
+    pub fn font_css(&self) -> String {
+        match self.font.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+            // Written by a person, so it may be one name or a whole stack.
+            // A bare name is quoted; a stack is passed through as written
+            Some(f) if f.contains(',') || f.contains('"') => f.to_string(),
+            Some(f) => format!("\"{f}\", monospace"),
+            None => {
+                // Fonts that draw box-drawing characters and symbols in one
+                // cell. Japanese falls back to the monospaced MS Gothic
+                // (Meiryo is not monospaced)
+                "\"Cascadia Mono\",\"Consolas\",\"MS Gothic\",\"MS ゴシック\",monospace".into()
+            }
+        }
+    }
+
+    pub fn size_px(&self) -> u8 {
+        self.font_size.unwrap_or(14).clamp(8, 32)
+    }
+}
+
 fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T> {
     let text = std::fs::read_to_string(path).with_context(|| {
         crate::i18n::tp(
@@ -1234,6 +1272,32 @@ pub fn load_last_workspace() -> Option<String> {
 /// (being unable to remember it is no reason for things to stop working)
 pub fn save_last_workspace(name: &str) {
     let _ = crate::crypto::write_atomic(&last_workspace_path(), name);
+}
+
+/// Write one appearance value back into the settings file, leaving the rest of
+/// it exactly as the person wrote it.
+///
+/// Read-modify-write on the parsed JSON rather than serialising our own idea of
+/// the config: a settings file is a person's own document, with their key order
+/// and anything we do not know about still in it. Rewriting it wholesale to
+/// record a font size would be a poor trade.
+pub fn save_font_size(px: u8) {
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
+    else {
+        // A file we cannot read is not one to rewrite. The size stays for this
+        // run and the person keeps their settings
+        crate::append_hook_log("could not record the font size: settings are not readable");
+        return;
+    };
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    doc["appearance"]["font_size"] = serde_json::json!(px);
+    if let Ok(out) = serde_json::to_string_pretty(&doc) {
+        let _ = crate::crypto::write_atomic(&path, &out);
+    }
 }
 
 pub fn config_file_path() -> std::path::PathBuf {

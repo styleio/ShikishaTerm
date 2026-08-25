@@ -161,8 +161,8 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B 0` → `i` | Show the QR code for phone access |
 | `Ctrl+B 0` → `k` | Set or change the master password (encrypts `secrets.json`) |
 
-The mouse works too: wheel to scroll, drag to copy, right click to paste, click a tab name
-to switch. Once the window is divided, each pane's caption carries ▥ and ▤ to divide it
+The mouse works too: wheel to scroll, **Ctrl+wheel to change the terminal's size**, drag to
+copy, right click to paste, click a tab name to switch. Once the window is divided, each pane's caption carries ▥ and ▤ to divide it
 again and ✕ to close that view, and the divider between panes can be dragged to rebalance
 them — double-click it for even halves.
 

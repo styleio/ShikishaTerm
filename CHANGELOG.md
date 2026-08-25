@@ -120,6 +120,13 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **The terminal's font can be changed.** Ctrl+wheel over the terminal makes it
+  bigger or smaller — the gesture people already try in a terminal, a browser
+  and an editor, so it costs no key and needs no telling. The size is kept in
+  the settings, where the font itself can also be named. Changing the size
+  re-measures the cell grid, so the program in the tab is told the rows and
+  columns it really has rather than being left drawing at the old shape.
+
 - **The history can be searched.** In copy mode (`Ctrl+B [`), `/` opens a line
   to type into and jumps to the match, `n` and `N` walk through the rest. The
   search wraps rather than stopping at the end — copy mode opens at the newest

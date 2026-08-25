@@ -17,6 +17,12 @@
     "port": 8787
   },
 
+  "//appearance": "端末の見た目。font は空なら既定(罫線と日本語が1マスに収まる組み合わせ)。font_size は端末の上で Ctrl+ホイールでも変えられ、その値がここに書き戻される",
+  "appearance": {
+    "font": "",
+    "font_size": 14
+  },
+
   "//external_api": "外部から操るための名前付きパイプ。children=このアプリが起動したプロセスのみ(既定) / user=あなたの権限で動くもの全部(合言葉が data/api-token に書かれる) / off=作らない",
   "external_api": {
     "access": "children"

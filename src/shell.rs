@@ -31,11 +31,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     --dim:#7a8896; --brand:#00aaff; --live:#4ade80; --warn:#ffc857; --stop:#ff6b6b;
     /* Prefer fonts that draw box-drawing characters and symbols in one cell.
        Japanese falls back to the monospaced MS Gothic (Meiryo is not monospaced) */
-    --mono:"Cascadia Mono","Consolas","MS Gothic","MS ゴシック",monospace;
+    --mono:{{FONT}};
+    /* How big the terminal draws. Changed with Ctrl+wheel and remembered in
+       the settings; everything measured from the cell grid follows it */
+    --fs:{{FONT_SIZE}}px;
   }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; overflow:hidden;
     background:var(--bg); color:var(--text); font-family:var(--mono); font-size:14px; }
+  /* The terminal itself, and the read-only copies of it in other panes */
+  #screen, .pscreen { font-size:var(--fs); }
   #app { display:grid; grid-template-columns:auto 1fr; grid-template-rows:1fr auto;
     height:100%; }
 
@@ -1810,6 +1815,9 @@ const focus = () => {
 scr.addEventListener("wheel", e => {
   if (!S || S.active === 0 || scr.hidden) return;
   e.preventDefault();
+  // Ctrl+wheel is what a person already tries in a terminal, a browser and an
+  // editor. Nothing else here uses it, so it costs no key and needs no telling
+  if (e.ctrlKey) { zoom(e.deltaY < 0 ? 1 : -1); return; }
   if (!cellW || !cellH) measure();
   // Full-screen programs handle their own scrollback. Pass along which cell it's over, too
   const pad = parseFloat(getComputedStyle(scr).paddingLeft) || 0;
@@ -1821,6 +1829,22 @@ scr.addEventListener("wheel", e => {
   const n = Math.max(1, Math.round(Math.abs(e.deltaY) / 100));
   send({kind:"scroll", by: e.deltaY < 0 ? n : -n, row: row, col: col});
 }, {passive:false});
+
+// How big the terminal is drawn. The page changes it at once — pixels are the
+// page's business — and tells the other side to remember it. Re-measuring is
+// what turns a font change into a differently-shaped terminal: the cell grid is
+// measured, and the rows and columns reported from it are what the program in
+// the tab is told to draw at
+function zoom(by) {
+  const now = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--fs")) || 14;
+  const px = Math.min(32, Math.max(8, Math.round(now + by)));
+  if (px === now) return;
+  document.documentElement.style.setProperty("--fs", px + "px");
+  cellW = 0; cellH = 0;
+  measure();
+  report();
+  send({kind:"fontsize", px});
+}
 
 // ── Remote history pager (phone only) ────────────────────────────────
 // A full-screen TUI can't be scrolled smoothly over the network, so the phone
@@ -3400,6 +3424,9 @@ pub fn page() -> String {
 /// token in the URL and persistent storage — see RemoteSpec::sticky_token).
 /// The window never pairs, so page() serves it the cautious default
 pub fn page_for(sticky: bool) -> String {
+    // Read here rather than threaded in: the page is built in several places
+    // (window, phone, tests) and every one of them wants the same look
+    let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
     let dict = crate::i18n::dict_json();
     let keys: Vec<&str> = MENU.iter().map(|(k, _)| *k).collect();
     let words: std::collections::BTreeMap<&str, &str> = MENU.iter().copied().collect();
@@ -3416,6 +3443,8 @@ pub fn page_for(sticky: bool) -> String {
         &serde_json::to_string(&WINDOW_ONLY_MENU).unwrap_or_else(|_| "[]".into()),
     )
     .replace("{{__lang__}}", &crate::i18n::lang())
+    .replace("{{FONT}}", &look.font_css())
+    .replace("{{FONT_SIZE}}", &look.size_px().to_string())
     .replace("{{DICT}}", &dict)
         .replace(
             "{{CAST_KEYS}}",

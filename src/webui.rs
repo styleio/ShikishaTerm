@@ -3029,6 +3029,22 @@ function basicCard() {
           ["portable", T["settings.browser_data.portable"] || "Share across PCs (Drive sync)"],
         ]),
         el("span", {class:"hint"}, T["settings.browser_data.hint"] || "")),
+    row(T["settings.font"],
+        (() => {
+          current.appearance = current.appearance || {};
+          const a = current.appearance;
+          const wrap = el("div", {style:"display:flex;gap:8px;min-width:0;flex:1"});
+          const fam = field(a, "font", T["settings.font.ph"], {grow:true});
+          const size = el("input", {type:"number", style:"width:80px", min:"8", max:"32"});
+          size.value = a.font_size || 14;
+          size.addEventListener("input", () => {
+            const n = Number(size.value);
+            if (n >= 8 && n <= 32) a.font_size = n;
+          });
+          wrap.append(fam, size);
+          return wrap;
+        })(),
+        el("span", {class:"hint"}, T["settings.font.hint"])),
     row(T["settings.language"],
         choose(current, "language", [
           ["", T["settings.language.auto"]],

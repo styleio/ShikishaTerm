@@ -393,6 +393,8 @@ struct WinSurface {
     pane_ratios: Vec<(usize, f32)>,
     /// Panes whose ⊞ / ⊟ caption button was pressed (pane, split downwards?)
     pane_splits: Vec<(u32, bool)>,
+    /// The size the terminal is now drawn at, when it has just been changed
+    font_size: Option<u8>,
     /// The pane tree as last sent to the page. Only send it again when it changes
     last_layout: String,
     /// The terminal contents last sent for each unfocused pane. The focused
@@ -487,6 +489,10 @@ impl WinSurface {
 
     fn take_pane_splits(&mut self) -> Vec<(u32, bool)> {
         std::mem::take(&mut self.pane_splits)
+    }
+
+    fn take_font_size(&mut self) -> Option<u8> {
+        self.font_size.take()
     }
 
     fn take_close_settings(&mut self) -> bool {
@@ -618,6 +624,7 @@ impl WinSurface {
                 Ev::ClosePane { id } => self.close_panes.push(id),
                 Ev::PaneRatio { divider, ratio } => self.pane_ratios.push((divider, ratio)),
                 Ev::SplitPane { id, down } => self.pane_splits.push((id, down)),
+                Ev::FontSize { px } => self.font_size = Some(px),
                 Ev::JsError { msg } => {
                     crate::append_hook_log(&format!("Screen failure: {msg}"));
                 }
@@ -917,6 +924,7 @@ fn run_in_window() -> Result<()> {
         record_arms: Vec::new(),
         run_luas: Vec::new(),
         pane_splits: Vec::new(),
+        font_size: None,
         recorded: Vec::new(),
         operates: Vec::new(),
         replay_saves: false,
@@ -1640,6 +1648,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // learned, a workspace switched) are worth writing at once; a divider being
     // dragged is not, and a delay keeps a drag from writing a file per frame
     let mut save_at: Option<std::time::Instant> = None;
+    // The zoom level waiting to be written down, and when to write it
+    let mut font_size: Option<u8> = None;
+    let mut font_save_at: Option<std::time::Instant> = None;
     // What was last written, so an unchanged screen writes nothing at all
     let mut last_saved: Option<(crate::layout::Layout, Vec<Option<tab::Session>>)> = None;
     let mut prefix_active = false;
@@ -2791,6 +2802,26 @@ fn run(mut surface: WinSurface) -> Result<()> {
         for (divider, ratio) in surface.take_pane_ratios() {
             pane_layout.set_divider(divider, ratio);
         }
+        // The terminal was zoomed. The page has already redrawn itself; this
+        // is only so it opens that size next time. Written on a delay because
+        // a wheel sends a notch at a time and a settings file is not a place
+        // to write sixty times a second
+        if let Some(px) = surface.take_font_size() {
+            font_size = Some(px);
+            font_save_at = Some(std::time::Instant::now() + Duration::from_secs(2));
+        }
+        if font_save_at.is_some_and(|at| std::time::Instant::now() >= at) {
+            font_save_at = None;
+            if let Some(px) = font_size.take() {
+                config::save_font_size(px);
+                // Our own write is not news. Without this the watcher sees the
+                // settings change and announces a reload, which is a strange
+                // thing to be told by a window you just zoomed
+                watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
+                append_hook_log(&format!("terminal font size is now {px}"));
+            }
+        }
+
         // ⊞ / ⊟ in a pane's caption. Divides that pane, not whichever one had
         // focus: the button is attached to a pane, so it must mean that one
         for (id, down) in surface.take_pane_splits() {

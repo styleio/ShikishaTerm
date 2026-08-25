@@ -802,6 +802,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             divider: v.get("divider").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
             ratio: v.get("ratio").and_then(|x| x.as_f64()).unwrap_or(0.5) as f32,
         },
+        Some("fontsize") => Ev::FontSize {
+            px: v.get("px").and_then(|x| x.as_u64()).unwrap_or(14).clamp(8, 32) as u8,
+        },
         Some("splitpane") => Ev::SplitPane {
             id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
             down: v.get("down").and_then(|x| x.as_bool()).unwrap_or(false),
@@ -940,6 +943,9 @@ pub enum Ev {
     PaneRatio { divider: usize, ratio: f32 },
     /// A pane's ⊞ / ⊟ was pressed: divide that pane, the same as the keyboard
     SplitPane { id: u32, down: bool },
+    /// The terminal was zoomed with Ctrl+wheel. The page has already redrawn
+    /// itself at the new size; this is so it is still that size tomorrow
+    FontSize { px: u8 },
     /// Wants to view this tab (0 = the operating board)
     Select { tab: usize },
     /// The + on the tab bar was pressed (opens the settings screen in add-tab mode)
