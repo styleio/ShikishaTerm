@@ -778,6 +778,32 @@ mod tests {
     }
 
     #[test]
+    fn a_command_that_already_resumes_is_left_exactly_as_written() {
+        // "claude --dangerously-skip-permissions --resume" plus our own
+        // "--session-id <uuid>" is a line Claude Code refuses to start:
+        // --session-id may not join --resume without --fork-session. The tab
+        // died on every restart, because every restart wrote the same line
+        let s = spec(&["--session-id", "{id}"], &["--resume", "{id}"], &["--continue"]);
+        let written = argv("claude --dangerously-skip-permissions --resume");
+        let (out, session) = super::plan_launch(Some(&s), &written, super::Resume::Fresh);
+        assert_eq!(out, written, "自分で書いた再開の指定に、こちらの指定を重ねない");
+        assert_eq!(session, None, "こちらが選んでいない会話を、覚えたことにしない");
+        // --continue is the same story, and so is a resume spelled as a
+        // subcommand
+        let (out, _) =
+            super::plan_launch(Some(&s), &argv("claude --continue"), super::Resume::Fresh);
+        assert_eq!(out, argv("claude --continue"));
+        let c = spec(&[], &["resume", "{id}"], &["resume", "--last"]);
+        let (out, _) = super::plan_launch(Some(&c), &argv("codex resume"), super::Resume::Fresh);
+        assert_eq!(out, argv("codex resume"));
+        // The program's own name is not one of those words: "codex" alone
+        // still gets everything it always got
+        let (out, session) = super::plan_launch(Some(&c), &argv("codex"), super::Resume::NewestHere);
+        assert_eq!(out, argv("codex resume --last"));
+        assert_eq!(session, None);
+    }
+
+    #[test]
     fn continuing_the_newest_here_names_no_conversation() {
         // The CLI picks it, so afterwards we do not know which one it picked —
         // and saying we do would be a lie the next restart would act on
@@ -1207,6 +1233,16 @@ fn plan_launch(
     let Some(spec) = spec else {
         return (argv.to_vec(), None);
     };
+    // A command someone wrote themselves may already say how to resume. Ours
+    // on top of theirs names two conversations in one line, and the CLI
+    // refuses to start at all -- Claude Code answers "--session-id can only be
+    // used with --continue or --resume if --fork-session is also specified",
+    // and because a restart rebuilds the same line the tab stays dead however
+    // many times it is restarted. Whoever wrote those words meant them; we
+    // stand aside, and claim no conversation we did not choose
+    if already_resumes(spec, argv) {
+        return (argv.to_vec(), None);
+    }
     let put = |extra: &[String], id: &str| -> Vec<String> {
         let mut out = argv.to_vec();
         let at = 1.min(out.len());
@@ -1229,6 +1265,23 @@ fn plan_launch(
         }
         _ => (argv.to_vec(), None),
     }
+}
+
+/// Whether the command as written already asks this CLI to resume something.
+///
+/// The words are taken from the profile's own templates rather than a list
+/// kept here, so a CLI that spells it `resume` as a subcommand is recognised
+/// by the same rule as one that spells it `--continue`. `{id}` slots are not
+/// words anybody types, so they are left out; the program itself is skipped,
+/// or `codex` would look like the `resume` in its own template.
+fn already_resumes(spec: &crate::profile::ResumeSpec, argv: &[String]) -> bool {
+    let mut words = spec
+        .new_id
+        .iter()
+        .chain(&spec.with_id)
+        .chain(&spec.newest_here)
+        .filter(|w| !w.contains("{id}"));
+    words.any(|w| argv.iter().skip(1).any(|given| given == w))
 }
 
 /// Fingerprint of the launch conditions. If this changes, a new session must be created to take effect
