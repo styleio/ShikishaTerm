@@ -3235,10 +3235,34 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // workspace's settings; the change-watcher then launches it, resumed,
         // through the ordinary reload -- the one place a tab is safely made
         for query in surface.take_vault_queries() {
+            // The present, then the past. What is on screen right now across
+            // every open tab comes first -- a live match is more likely the
+            // thing being looked for than an old conversation -- then the
+            // records on disk. One box finds both
+            let mut hits: Vec<crate::vault::Hit> = Vec::new();
+            if !query.trim().is_empty() {
+                for (i, t) in tabs.iter().enumerate() {
+                    for (_, line) in t.search_lines(&query, 6) {
+                        hits.push(crate::vault::Hit {
+                            program: String::new(),
+                            id: String::new(),
+                            cwd: None,
+                            title: t.title.clone(),
+                            snippet: line,
+                            when: 0,
+                            // The display number, not the tabs index: INDEX is
+                            // surface 0, so tab i sits at i + 1 -- the number
+                            // Select expects and a person presses
+                            tab: Some(i + 1),
+                        });
+                    }
+                }
+            }
             let found = crate::vault::search(&query, 40);
+            hits.extend(found.hits);
             vault_view = Some(crate::uistate::VaultState {
                 query,
-                hits: found.hits,
+                hits,
                 capped: found.capped,
             });
         }

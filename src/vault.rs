@@ -67,6 +67,11 @@ pub struct Hit {
     /// When the record was last written, as seconds since the epoch, for
     /// showing "how long ago" without sending a clock across
     pub when: u64,
+    /// Set when this hit is a line in an OPEN tab rather than a past record.
+    /// Selecting it switches to that tab instead of reopening a conversation --
+    /// this is the present, not the past
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<usize>,
 }
 
 /// What a search came back with, and whether it saw everything.
@@ -123,6 +128,7 @@ pub fn search(query: &str, limit: usize) -> Found {
             snippet: if needle.is_empty() { String::new() } else { snippet(&text, at, needle.len()) },
             cwd,
             when: when.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+            tab: None,
         });
     }
     // A capped scan that still filled the page is honestly complete for the
@@ -430,6 +436,7 @@ mod tests {
             title: "x".into(),
             snippet: String::new(),
             when: 0,
+            tab: None,
         };
         // With no profiles installed in the test env, reopen has nothing to
         // resolve against; the shape is what a real source produces

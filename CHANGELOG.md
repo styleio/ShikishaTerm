@@ -120,6 +120,15 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **"Find" now searches the present as well as the past.** The same box that
+  searches recorded conversations also searches the live output of every open
+  tab, so "which of my agents mentioned that error" is one search across all of
+  them at once. Matches in an open tab come first — a live one is likelier the
+  thing being looked for — and selecting one switches to that tab; matches in a
+  past conversation follow, and selecting one reopens it. Only the recent
+  stretch of each tab's history is scanned, so it stays quick with several
+  agents running.
+
 - **A command palette.** `Ctrl+B :` (or "Command palette" on the board) opens one
   box that finds and runs anything: go to a tab, open settings or the Vault, run
   any of the rebindable actions, fire one of your own quick actions — filtered

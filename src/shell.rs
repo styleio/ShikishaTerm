@@ -2486,14 +2486,18 @@ function renderVault() {
     ? (T["vault.more"] || "Showing the most recent matches — narrow the search for older ones.")
     : "";
   for (const h of hits) {
+    // A live hit is a line in an open tab: selecting it goes to that tab. A
+    // past hit is a record: selecting it reopens the conversation
+    const live = (h.tab !== undefined && h.tab !== null);
     const row = el("div", {class:"vrow", onclick:() => {
-      send({kind:"vaultopen", program:h.program, id:h.id, cwd:h.cwd || "", title:h.title});
       closeVault();
+      if (live) send({kind:"select", tab:h.tab});
+      else send({kind:"vaultopen", program:h.program, id:h.id, cwd:h.cwd || "", title:h.title});
     }});
     row.append(el("div", {class:"vr1"},
-      el("span", {class:"vprog"}, h.program),
+      el("span", {class:"vprog"}, live ? (T["vault.live"] || "open") : h.program),
       el("span", {class:"vname"}, h.title),
-      el("span", {class:"vwhen"}, ago(h.when))));
+      el("span", {class:"vwhen"}, live ? (T["vault.here"] || "on screen") : ago(h.when))));
     if (h.snippet) row.append(el("div", {class:"vsnip"}, h.snippet));
     list.append(row);
   }

@@ -2032,6 +2032,41 @@ impl Tab {
         }
     }
 
+    /// Lines in this tab's scrollback that contain `needle`, newest first.
+    ///
+    /// For searching every open tab at once: the answer to "which of my agents
+    /// mentioned that error". Bounded on both ends -- only the most recent
+    /// stretch of history, and only so many hits -- because this runs on every
+    /// keystroke across every tab, and a person is looking for something they
+    /// saw recently, not on the thousandth line back
+    pub fn search_lines(&self, needle: &str, max_hits: usize) -> Vec<(usize, String)> {
+        let needle = needle.trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let (rows, cols) = p.screen().size();
+        let back = furthest_back(&mut p);
+        let top = back + (rows as usize).saturating_sub(1);
+        // Only the recent stretch -- far enough to cover what is on screen and
+        // a good deal above it, not the whole kept history
+        let scan = top.min(3000);
+        let mut out = Vec::new();
+        for d in 0..=scan {
+            if out.len() >= max_hits {
+                break;
+            }
+            let line = line_at(&mut p, d, cols);
+            if line.to_lowercase().contains(&needle) {
+                let text = line.trim().to_string();
+                if !text.is_empty() {
+                    out.push((d, text));
+                }
+            }
+        }
+        out
+    }
+
     /// Take whatever the program asked us to notice since last time.
     ///
     /// This is the one way in that needs nothing set up: a CLI that has never

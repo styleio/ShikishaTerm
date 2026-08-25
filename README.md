@@ -164,7 +164,7 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 `Ctrl+B :` opens a command palette — one box to find and run anything: a tab, a setting,
 the Vault, any key action, your own quick actions.
 
-The board's "Find past work" searches every conversation the AI CLIs have recorded, by
+The board's "Find" searches both the live output of every open tab and every conversation the AI CLIs have recorded, by
 what was said in them, and reopening one adds a tab that resumes it in its folder.
 
 The board's SESSIONS table shows a COST column — processor and memory per agent, summed
