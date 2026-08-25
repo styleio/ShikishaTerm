@@ -1589,9 +1589,14 @@ window.__panes = function (json) {
     el.style.width = (p.w * 100) + "%";
     el.style.height = (p.h * 100) + "%";
     el.classList.toggle("focused", !!p.focused);
-    // Undivided, a pane is the whole content area and captions nothing — the
-    // tab bar already says what you are looking at
-    el.classList.toggle("headed", !P.single);
+    // Captioned even when it is the only one. The caption is where ▥ and ▤
+    // live, and without it the first division could only be asked for with the
+    // keyboard -- a whole feature with no way in for a hand on the mouse. The
+    // tab bar does say what you are looking at, but it cannot divide it
+    el.classList.add("headed");
+    // ✕ closes a pane, and the last one cannot be closed. A control that
+    // refuses is worse than one that is not offered
+    el.querySelector(".cl").hidden = !!P.single;
     if (p.focused) el.querySelector(".pscreen").textContent = "";
   }
   for (const el of [...host.querySelectorAll(".pane")]) {
@@ -1610,8 +1615,7 @@ window.__panes = function (json) {
       main.style.setProperty("--fr", r + "px");
       main.style.setProperty("--fb", bo + "px");
     };
-    if (P.single) set(0, 0, 0, 0);
-    else set(b.left - m.left, b.top - m.top, m.right - b.right, m.bottom - b.bottom);
+    set(b.left - m.left, b.top - m.top, m.right - b.right, m.bottom - b.bottom);
   }
   lastRC = "";
   report();
@@ -3011,8 +3015,21 @@ function syncBrowserDock() {
 // dock. Split out because the dock's height also changes when the composer
 // textarea grows (a recorded line landing, a long paste) — that path needs the
 // reserve refreshed without rebuilding the panel on every keystroke.
+// Whether a page placed in the window should be drawing the pen: only when the
+// composer is closed. WHICH page is the app's to work out -- it is the one in
+// the focused pane -- so only this much travels. Sent on change, because it is
+// a message and this runs on every frame
+let lastPen = null;
+function syncBrowserPen() {
+  if (typeof REMOTE !== "undefined" && REMOTE) return;
+  const want = !(castDock && castDock.style.display === "flex");
+  if (want === lastPen) return;
+  lastPen = want;
+  send({kind:"pen", on: want});
+}
 function syncBrowserReserve() {
   if (typeof REMOTE !== "undefined" && REMOTE) return;
+  syncBrowserPen();
   const page = document.getElementById("page");
   if (!onBrowserTab()) {
     if (page.style.getPropertyValue("--dock")) {
@@ -3021,10 +3038,12 @@ function syncBrowserReserve() {
     }
     return;
   }
+  // Only the composer takes room. The pen used to take some too -- the page
+  // was held up by the height of a button so that a button could be drawn
+  // beside it, which left a band of nothing under every browser. The pen is
+  // drawn by the page itself now and floats over it, so it costs nothing
   const dockOpen = castDock && castDock.style.display === "flex";
-  const reserve = dockOpen
-    ? Math.round(castDock.getBoundingClientRect().height)
-    : (fab ? Math.round(fab.getBoundingClientRect().height) + 28 : 64);
+  const reserve = dockOpen ? Math.round(castDock.getBoundingClientRect().height) : 0;
   const want = reserve + "px";
   if (page.style.getPropertyValue("--dock") !== want) {
     page.style.setProperty("--dock", want);
@@ -3365,7 +3384,13 @@ function ensureBar() {
 // Show the sub-input bar (auxiliary key row + input field). Never focused
 // automatically — the keyboard never pops up uninvited. It only opens when the user taps the input field
 function showDock() { ensureBar(); syncAttach(); castDock.style.display = "flex"; if (fab) fab.style.display = "none"; }
-function closeBar() { if (castDock) castDock.style.display = "none"; if (castInput) castInput.blur(); if (fab) fab.style.display = ""; }
+function closeBar() {
+  if (castDock) castDock.style.display = "none";
+  if (castInput) castInput.blur();
+  // Over a placed page the window's own pen would be drawn underneath it and
+  // never seen. That page draws one for itself instead
+  if (fab) fab.style.display = onBrowserTab() ? "none" : "";
+}
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
@@ -3442,6 +3467,12 @@ function rememberCastClosed(v) {
 function castClosed() {
   try { return localStorage.getItem("shikishaCastClosed2") === "1"; } catch (e) { return false; }
 }
+// The pen, pressed on a page placed in the window. Its press arrives as a
+// message rather than a click, because that page is a window of its own -- but
+// it is the same pen and goes through the same one door, so what the ✕ means
+// cannot start drifting between two ways in. That page only draws a pen while
+// the composer is shut, so the toggle can only ever open
+window.__composer = function () { toggleComposer(); };
 function toggleComposer() {
   ensureBar();
   // showDock sets "flex", closeBar sets "none"; a fresh dock has "" (CSS hides it),
@@ -4380,7 +4411,10 @@ mod tests {
     /// to clear the ✕ as well, so the bar came back the instant the screen was
     /// touched and the ✕ meant nothing (there was no way to reach the screen
     /// without it). Every path that opens the bar on its own asks castClosed()
-    /// first; only the ✎ pen clears the choice, and only when pressed.
+    /// first; only the ✎ pen clears the choice, and only when pressed -- the
+    /// one the window draws and the one a placed page draws for itself are the
+    /// same pen and go through the same door, which is why there is still
+    /// exactly one place that clears it.
     #[test]
     fn dismissing_the_composer_survives_a_tap() {
         assert!(
