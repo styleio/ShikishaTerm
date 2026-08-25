@@ -100,6 +100,18 @@ shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
 | `shikisha.set_session("id")` | Say which conversation THIS tab's CLI is running, so a restart can pick it up. No tab argument: the caller is the tab |
 | `shikisha.set_status("key", "text")` | Say what THIS tab is doing, in its own words, under its name in the tab bar. `key` lets several sources speak without overwriting each other; an empty text removes that one |
 | `shikisha.set_progress(0.4, "label")` | How far along, 0..1, shown beside the status. `nil` removes it |
+
+**A CLI that has never heard of this app can say it too.** The notification escapes
+every terminal understands land in the same place, with nothing to set up — useful
+over ssh, or inside a container, where nothing of ours is installed:
+
+```sh
+printf '\e]777;notify;Build;3 tests failed\a'    # title and body
+printf '\e]9;build finished\a'                    # body only
+```
+
+It appears under that tab's name and, if you are looking at a different tab, as a
+one-line toast. Looking at the tab already is not news, so the toast is held back.
 | `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared inside the workspace |
 
 If `on_question.lua` **returns a string**, that string is sent automatically.

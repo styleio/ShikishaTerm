@@ -1946,6 +1946,35 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 }
             }
 
+            // What a program asked us to notice, in the escapes every terminal
+            // understands. Nothing had to be set up for this: a CLI that has
+            // never heard of this app, running over ssh or in a container,
+            // still knows how to ring a terminal.
+            //
+            // It always lands on the tab that sent it, where it stays until
+            // something newer replaces it. The toast is the part that is held
+            // back when the person is already looking at that tab — telling
+            // someone what is in front of them is noise, not news
+            for i in 0..tabs.len() {
+                let showing = session_at(&surfaces, active) == Some(i);
+                let Some(t) = tabs.get_mut(i) else { continue };
+                for (title, body) in t.take_notes() {
+                    let said = match (title.trim(), body.trim()) {
+                        ("", b) => b.to_string(),
+                        (a, "") => a.to_string(),
+                        (a, b) => format!("{a}: {b}"),
+                    };
+                    if said.is_empty() {
+                        continue;
+                    }
+                    append_hook_log(&format!("tab{} \"{}\" says: {said}", i + 1, t.title));
+                    t.set_status("notify", &said);
+                    if !showing {
+                        flash = Some(format!("{} — {said}", t.title));
+                    }
+                }
+            }
+
             // Look for the conversation a CLI started but never announced.
             //
             // Only for a tab that could not have been anyone else: these

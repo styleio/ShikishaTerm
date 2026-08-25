@@ -96,6 +96,13 @@ once it reaches its first tagged release.
   finishing needs no second verb. A caller that is not a tab (a script you ran
   yourself) may name the tab it means; anything running in a tab means itself.
 
+- **A CLI that has never heard of this app can speak up too.** The notification
+  escapes every terminal understands — `\e]777;notify;Title;Body\a`, `\e]9;…`,
+  and the richer `\e]99;…` — are picked up out of the terminal stream and shown
+  under that tab's name, with a toast if you are looking somewhere else. Nothing
+  to install and no profile to write, which is the point: it works over ssh and
+  inside containers, where nothing of ours is present.
+
 ### Fixed
 - **Lua that never returns no longer takes the window with it.** The engine runs
   on the main loop, so a `while true do end` typed into the composer — or sent

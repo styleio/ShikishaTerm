@@ -74,6 +74,54 @@ pub struct CopyState {
 pub struct QueryResponder {
     writer: PtyWriter,
     bell: Arc<AtomicU64>,
+    /// Notifications the program in this tab asked for, in the standard
+    /// escape sequences every terminal understands. Drained by the main loop
+    notes: Notes,
+}
+
+/// (title, body) pairs waiting to be shown
+pub type Notes = Arc<Mutex<Vec<(String, String)>>>;
+
+/// Read a notification out of an OSC sequence, in any of the three spellings
+/// terminals have settled on.
+///
+/// Worth taking all three: this is how a CLI that has never heard of this app
+/// still gets to say "I need you" — no profile to write, no hook to install.
+/// The parts are simply named differently by each.
+fn note_of(params: &[&[u8]]) -> Option<(String, String)> {
+    let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
+    let joined = |from: usize| {
+        params[from..]
+            .iter()
+            .map(|p| text(p))
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+    match params.first().map(|p| text(p)).as_deref() {
+        // \e]9;body — the oldest and simplest: a body and nothing else
+        Some("9") if params.len() > 1 => Some((String::new(), joined(1))),
+        // \e]777;notify;title;body
+        Some("777") if params.len() > 2 && text(params[1]) == "notify" => {
+            Some((text(params[2]), joined(3)))
+        }
+        // \e]99;<key=value:…>;payload\e\ — metadata, then the text. `p=title`
+        // says the payload is the title rather than the body
+        Some("99") if params.len() > 1 => {
+            let meta = joined(1);
+            let (keys, payload) = match meta.rsplit_once(':') {
+                Some((k, v)) if k.contains('=') => (k.to_string(), v.to_string()),
+                _ => (String::new(), meta),
+            };
+            if payload.trim().is_empty() {
+                return None;
+            }
+            match keys.contains("p=title") {
+                true => Some((payload, String::new())),
+                false => Some((String::new(), payload)),
+            }
+        }
+        _ => None,
+    }
 }
 
 impl QueryResponder {
@@ -88,6 +136,18 @@ impl QueryResponder {
 impl vt100::Callbacks for QueryResponder {
     fn audible_bell(&mut self, _: &mut vt100::Screen) {
         self.bell.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A program asking to be noticed. Kept rather than dropped, and kept
+    /// bounded: a program in a loop must not be able to fill memory with its
+    /// own announcements
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        let Some(note) = note_of(params) else { return };
+        if let Ok(mut n) = self.notes.lock() {
+            if n.len() < 32 {
+                n.push(note);
+            }
+        }
     }
 
     fn unhandled_csi(
@@ -556,6 +616,34 @@ mod tests {
             newest_here: newest.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn every_spelling_of_a_terminal_notification_is_understood() {
+        let p = |parts: &[&str]| -> Option<(String, String)> {
+            let owned: Vec<Vec<u8>> = parts.iter().map(|s| s.as_bytes().to_vec()).collect();
+            let refs: Vec<&[u8]> = owned.iter().map(|v| v.as_slice()).collect();
+            super::note_of(&refs)
+        };
+        // The oldest one carries a body and nothing else
+        assert_eq!(p(&["9", "build finished"]), Some((String::new(), "build finished".into())));
+        // The common one carries both
+        assert_eq!(
+            p(&["777", "notify", "Build", "3 tests failed"]),
+            Some(("Build".into(), "3 tests failed".into()))
+        );
+        // A body with a semicolon in it survives being split on semicolons
+        assert_eq!(
+            p(&["777", "notify", "Build", "failed", "then retried"]),
+            Some(("Build".into(), "failed;then retried".into()))
+        );
+        // The rich one puts metadata first, and says when the text is a title
+        assert_eq!(p(&["99", "i=1:d=0:Hello"]), Some((String::new(), "Hello".into())));
+        assert_eq!(p(&["99", "i=1:p=title:Done"]), Some(("Done".into(), String::new())));
+        // Everything else on the wire is somebody else's business
+        assert_eq!(p(&["0", "a window title"]), None);
+        assert_eq!(p(&["777", "something-else", "x"]), None);
+        assert_eq!(p(&["99", "i=1:d=0:"]), None);
     }
 
     #[test]
@@ -1173,6 +1261,9 @@ pub struct Tab {
     /// What the thing running here says it is doing, keyed so that several
     /// sources can speak without talking over each other. Newest last
     pub status: Vec<(String, String)>,
+    /// Notifications the program asked for through the standard escapes,
+    /// waiting for the loop to pick them up
+    notes: Notes,
     /// How far along it says it is (0..=1), and what it calls the task
     pub progress: Option<(f32, String)>,
     /// The model bridge's endpoint. If Some, this tab is an OpenAI-compatible
@@ -1398,6 +1489,7 @@ impl Tab {
         // Cumulative output volume. The INDEX waveform is drawn from its deltas
         // (the change in screen hash alone doesn't tell us "how much is moving")
         let bytes_out = Arc::new(AtomicU64::new(0));
+        let notes: Notes = Arc::new(Mutex::new(Vec::new()));
         let parser: SharedParser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
@@ -1405,6 +1497,7 @@ impl Tab {
             QueryResponder {
                 writer: Arc::clone(&writer),
                 bell: Arc::clone(&bell_count),
+                notes: Arc::clone(&notes),
             },
         )));
         // A model-bridge tab launches an idle placeholder process, so its screen
@@ -1497,6 +1590,7 @@ impl Tab {
         }
 
         Ok(Self {
+            notes,
             status: Vec::new(),
             progress: None,
             born: std::time::SystemTime::now(),
@@ -1807,6 +1901,18 @@ impl Tab {
         if !value.trim().is_empty() {
             self.status.push((key.to_string(), value.trim().to_string()));
         }
+    }
+
+    /// Take whatever the program asked us to notice since last time.
+    ///
+    /// This is the one way in that needs nothing set up: a CLI that has never
+    /// heard of this app, run over ssh or inside a container, still knows how
+    /// to ring a terminal
+    pub fn take_notes(&self) -> Vec<(String, String)> {
+        self.notes
+            .lock()
+            .map(|mut n| std::mem::take(&mut *n))
+            .unwrap_or_default()
     }
 
     /// Everything said, oldest first, for the board
