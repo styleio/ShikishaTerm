@@ -120,6 +120,18 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **Past conversations can be searched and reopened.** The board's menu has
+  "Find past work": a search box over every conversation the AI CLIs have
+  recorded — claude under `~/.claude/projects`, codex under `~/.codex/sessions`
+  — matched by what was actually said in them. Reopening one adds a tab that
+  resumes it, in the folder it happened in, the same way a restart carries a
+  conversation over. Nothing is indexed ahead of time: the records are read
+  when asked, newest first, and the search says so when it stops before the end
+  rather than implying the list is the whole of the past. What makes a record
+  findable is format-blind — the text is searched as text and the id and folder
+  taken from where every one of these tools keeps them — so it survives the
+  formats changing between releases. Works from the phone too.
+
 - **The dashboard says what each agent is costing.** The SESSIONS table on the
   board now has a COST column: processor use and memory for each tab, summed
   over the agent and everything it started — because a tab's cost is the dev

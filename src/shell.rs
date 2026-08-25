@@ -539,6 +539,31 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #netveil .nvsub { font-size:13px; color:var(--dim); line-height:1.55; }
   #netveil.cut .nvtitle { color:var(--warn); }
 
+  #vault { position:fixed; inset:0; background:#00000099; display:flex;
+    align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
+  #vault[hidden] { display:none; }
+  #vault .vbox { background:var(--panel); border:1px solid var(--brand);
+    border-radius:12px; padding:16px 18px; width:min(720px,92vw); max-height:82vh;
+    display:flex; flex-direction:column; gap:10px; }
+  #vault .vhead { display:flex; align-items:center; }
+  #vault .vtitle { color:var(--brand); font-size:13px; letter-spacing:1px;
+    text-transform:uppercase; flex:1; }
+  #vault .vclose { cursor:pointer; color:var(--dim); font-size:16px; padding:2px 6px; }
+  #vault .vclose:hover { color:var(--text); }
+  #vault #vq { font:inherit; font-size:14px; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:8px; padding:9px 12px; outline:none; }
+  #vault #vq:focus { border-color:var(--brand); }
+  #vault .vhint { color:var(--dim); font-size:11.5px; }
+  #vault .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; }
+  #vault .vrow { padding:9px 10px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
+  #vault .vrow:hover { background:var(--raise); border-color:var(--line); }
+  #vault .vrow .vr1 { display:flex; gap:8px; align-items:baseline; }
+  #vault .vrow .vprog { color:var(--brand); font-size:11px; flex:none; }
+  #vault .vrow .vname { color:var(--text); font-size:13px; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  #vault .vrow .vwhen { color:var(--dim); font-size:11px; margin-left:auto; flex:none; }
+  #vault .vrow .vsnip { color:var(--dim); font-size:11.5px; margin-top:2px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #veil .box { background:var(--panel); border:1px solid var(--brand);
     border-radius:12px; padding:20px 24px; max-width:min(760px,86vw);
     max-height:84vh; overflow:auto; }
@@ -666,6 +691,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     </div>
   </div>
   <div id="veil" hidden></div>
+  <!-- The Vault: search past conversations and reopen one. Its own overlay
+       rather than the veil, because it has an input and must not close on the
+       first keystroke -->
+  <div id="vault" hidden>
+    <div class="vbox">
+      <div class="vhead">
+        <span class="vtitle"></span>
+        <span class="vclose" title="close">✕</span>
+      </div>
+      <input id="vq" type="text" autocomplete="off" spellcheck="false">
+      <div class="vhint"></div>
+      <div class="vlist"></div>
+    </div>
+  </div>
   <div id="status"></div>
 </div>
 <script>
@@ -700,7 +739,7 @@ const MENU_WINDOW_ONLY = {{MENU_WINDOW_ONLY}};
 // Menu entries the board carries out itself rather than forwarding as a keystroke.
 // Keyed by the entry's translation key, so the letter on the button can change
 // without this quietly falling back to the keystroke path.
-const MENU_OWN = {"tui.menu.settings": () => openSettings()};
+const MENU_OWN = {"tui.menu.settings": () => openSettings(), "tui.menu.vault": () => window.__openVault()};
 // The auxiliary key row shown in the screen relay (customizable via config)
 const CAST_KEYS = {{CAST_KEYS}};
 // Quick actions for the sub-input bar: [{label, text, lua}]. text!=null = insert
@@ -1407,6 +1446,7 @@ window.__state = function (json) {
   drawTopicBar();
   drawModelChat();
   drawVeil();
+  renderVault();
   // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");
   const away = !screen.hidden && S.scrolled > 0;
@@ -2381,6 +2421,84 @@ function onBrowserTab() { return S && S.tabs && S.tabs.some(t => t.index === S.a
 // Swap the whole palette without reloading. Everything the window draws with
 // is a variable, so a scheme change is one rule being replaced -- including the
 // terminal's own sixteen, which the cells name rather than carry.
+// The Vault overlay: search past conversations, reopen one as a resuming tab.
+//
+// Opening it asks for the recent ones (a blank search). Typing narrows, with a
+// short pause so a search does not fire on every letter. The results arrive in
+// the state (S.vault), so the same overlay works from the phone -- the window
+// runs the search and both sides read the answer
+let vaultTimer = 0;
+window.__openVault = function () {
+  const v = document.getElementById("vault");
+  if (!v) return;
+  v.hidden = false;
+  const q = document.getElementById("vq");
+  q.placeholder = T["vault.placeholder"] || "Search past conversations…";
+  q.value = "";
+  v.querySelector(".vtitle").textContent = T["vault.title"] || "PAST WORK";
+  renderVault();
+  send({kind:"vaultsearch", query:""});
+  setTimeout(() => q.focus(), 30);
+};
+function closeVault() {
+  const v = document.getElementById("vault");
+  if (v) v.hidden = true;
+}
+// How long ago, in the plainest words a row has space for
+function ago(sec) {
+  if (!sec) return "";
+  const d = Math.max(0, Math.floor(Date.now()/1000) - sec);
+  if (d < 3600) return Math.max(1, Math.floor(d/60)) + "m";
+  if (d < 86400) return Math.floor(d/3600) + "h";
+  if (d < 86400*30) return Math.floor(d/86400) + "d";
+  return Math.floor(d/(86400*30)) + "mo";
+}
+function renderVault() {
+  const v = document.getElementById("vault");
+  if (!v || v.hidden) return;
+  const list = v.querySelector(".vlist");
+  const hint = v.querySelector(".vhint");
+  const vs = S && S.vault;
+  list.textContent = "";
+  const hits = (vs && vs.hits) || [];
+  if (!hits.length) {
+    hint.textContent = T["vault.none"] || "Nothing found.";
+    return;
+  }
+  hint.textContent = vs.capped
+    ? (T["vault.more"] || "Showing the most recent matches — narrow the search for older ones.")
+    : "";
+  for (const h of hits) {
+    const row = el("div", {class:"vrow", onclick:() => {
+      send({kind:"vaultopen", program:h.program, id:h.id, cwd:h.cwd || "", title:h.title});
+      closeVault();
+    }});
+    row.append(el("div", {class:"vr1"},
+      el("span", {class:"vprog"}, h.program),
+      el("span", {class:"vname"}, h.title),
+      el("span", {class:"vwhen"}, ago(h.when))));
+    if (h.snippet) row.append(el("div", {class:"vsnip"}, h.snippet));
+    list.append(row);
+  }
+}
+// The input and the overlay's own keys, wired once
+(function () {
+  const q = document.getElementById("vq");
+  if (q) {
+    q.addEventListener("input", () => {
+      clearTimeout(vaultTimer);
+      const query = q.value;
+      vaultTimer = setTimeout(() => send({kind:"vaultsearch", query}), 180);
+    });
+  }
+  const v = document.getElementById("vault");
+  if (v) {
+    v.querySelector(".vclose").addEventListener("click", closeVault);
+    v.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closeVault(); } });
+    // A click on the dark surround (not the box) closes it
+    v.addEventListener("mousedown", (e) => { if (e.target === v) closeVault(); });
+  }
+})();
 window.__setTheme = function (vars, light) {
   document.getElementById("theme").textContent =
     ":root{" + vars + "color-scheme:" + (light ? "light" : "dark") + ";}";
@@ -3422,8 +3540,9 @@ fn box_of(out: &mut String, style: &str, body: &str, span: usize, center: bool) 
 /// A pressed key is delivered verbatim as a keystroke while INDEX is in
 /// view. Adding a key here that the receiver (INDEX's dispatch) doesn't
 /// know about produces "it's shown, but pressing it does nothing".
-pub const MENU: [(&str, &str); 7] = [
+pub const MENU: [(&str, &str); 8] = [
     ("e", "tui.menu.settings"),
+    ("f", "tui.menu.vault"),
     ("i", "tui.menu.phone"),
     ("r", "tui.menu.restart"),
     ("w", "tui.menu.workspace"),
@@ -3611,8 +3730,11 @@ mod tests {
             super::WINDOW_ONLY_MENU.contains(&key),
             "設定の打鍵は窓にしか届かない。遠隔の門は {key} を通してはいけない"
         );
+        // The board performs settings itself rather than forwarding a keystroke.
+        // Checked as one entry in MENU_OWN, not the whole object, so adding
+        // another self-performed entry (the Vault) does not trip this
         assert!(
-            super::page().contains(&format!("MENU_OWN = {{\"{word}\": () => openSettings()}}")),
+            super::page().contains(&format!("\"{word}\": () => openSettings()")),
             "盤面が設定の項目を自前で担っていない"
         );
     }

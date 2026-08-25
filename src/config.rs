@@ -870,6 +870,11 @@ pub struct TabConfig {
     /// A folder inside Docker/WSL cannot be specified this way (use the command's own -w / --cd)
     #[serde(default)]
     pub cwd: Option<String>,
+    /// A conversation id to resume at launch, instead of starting a new one.
+    /// Written by the Vault when a past conversation is reopened; the CLI is
+    /// asked to resume it through the same resume flags a restart would use
+    #[serde(default)]
+    pub resume: Option<String>,
     /// Scrollback line count (defaults to 5000)
     #[serde(default)]
     pub scrollback: Option<usize>,
@@ -1310,6 +1315,46 @@ pub fn save_last_workspace(name: &str) {
 /// the config: a settings file is a person's own document, with their key order
 /// and anything we do not know about still in it. Rewriting it wholesale to
 /// record a font size would be a poor trade.
+/// Add a tab to one workspace and write the settings back.
+///
+/// The reopen the Vault performs: a resumed conversation becomes a real tab in
+/// the workspace, the way dragging a past session into a workspace makes it a
+/// member of it. Read-modify-write on the parsed JSON, like every other change
+/// here, so the person's own file keeps its shape and its order -- the new tab
+/// simply lands at the end of the workspace it was reopened into.
+///
+/// Returns whether it was written. A workspace that has vanished since the
+/// page listed it is a false rather than a new tab in the wrong place.
+pub fn append_tab(workspace: &str, tab: serde_json::Value) -> bool {
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
+    else {
+        crate::append_hook_log("could not reopen into a tab: settings are not readable");
+        return false;
+    };
+    let Some(list) = doc.get_mut("workspaces").and_then(|w| w.as_array_mut()) else {
+        return false;
+    };
+    let Some(ws) = list
+        .iter_mut()
+        .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(workspace))
+    else {
+        return false;
+    };
+    let tabs = ws
+        .as_object_mut()
+        .map(|o| o.entry("tabs").or_insert_with(|| serde_json::json!([])));
+    let Some(serde_json::Value::Array(tabs)) = tabs else {
+        return false;
+    };
+    tabs.push(tab);
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
 pub fn save_appearance(key: &str, value: serde_json::Value) {
     let path = config_file_path();
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());

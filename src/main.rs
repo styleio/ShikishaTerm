@@ -45,6 +45,7 @@ mod shell;
 mod tab;
 mod theme;
 mod usage;
+mod vault;
 mod uistate;
 mod update;
 mod watch;
@@ -465,6 +466,11 @@ struct WinSurface {
     suggests: Vec<String>,
     /// 🔍 environment-survey button presses (the loop types the probe).
     surveys: usize,
+    /// Vault searches awaiting an answer -- what to look for in past
+    /// conversations. The loop runs the search and puts the hits into state
+    vault_queries: Vec<String>,
+    /// Past conversations asked to be reopened as resuming tabs
+    vault_opens: Vec<crate::browser::Ev>,
 }
 
 impl WinSurface {
@@ -508,6 +514,12 @@ impl WinSurface {
     /// The pending "open settings" request (section, return-on-save), if any, clearing it.
     fn take_open_settings(&mut self) -> Option<(Option<String>, bool)> {
         self.open_settings.take()
+    }
+
+    /// Open the Vault overlay on this window's page (the keyboard path; the
+    /// click path opens it in the page directly)
+    fn open_vault(&self) {
+        let _ = self.win.eval("window.__openVault && window.__openVault();");
     }
 
     /// True if the "remote connected" control was pressed (and clears the flag if so)
@@ -574,6 +586,24 @@ impl WinSurface {
     }
 
     /// Takes the pending ✨ suggestion requests since the last drain.
+    /// Route a Vault intent that arrived from the phone into the same queues a
+    /// window-origin one uses, so both are drained in one place
+    fn queue_vault(&mut self, ev: crate::browser::Ev) {
+        match ev {
+            crate::browser::Ev::VaultSearch { query } => self.vault_queries.push(query),
+            ev @ crate::browser::Ev::VaultOpen { .. } => self.vault_opens.push(ev),
+            _ => {}
+        }
+    }
+
+    fn take_vault_queries(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.vault_queries)
+    }
+
+    fn take_vault_opens(&mut self) -> Vec<crate::browser::Ev> {
+        std::mem::take(&mut self.vault_opens)
+    }
+
     fn take_suggests(&mut self) -> Vec<String> {
         std::mem::take(&mut self.suggests)
     }
@@ -657,6 +687,8 @@ impl WinSurface {
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.close_settings = true,
                 Ev::OpenSettings { section, ret } => self.open_settings = Some((section, ret)),
+                Ev::VaultSearch { query } => self.vault_queries.push(query),
+                ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
                 Ev::RemoteCut => self.remote_cut = true,
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
@@ -947,6 +979,8 @@ fn run_in_window() -> Result<()> {
         remote_cut: false,
         chats: Vec::new(),
         run_actions: Vec::new(),
+        vault_queries: Vec::new(),
+        vault_opens: Vec::new(),
         record_arms: Vec::new(),
         run_luas: Vec::new(),
         pane_splits: Vec::new(),
@@ -1016,6 +1050,21 @@ fn hook_mode(kind: String) -> Result<()> {
 ///
 /// Resuming the wrong conversation is worse than starting a new one, so every
 /// uncertain case ends up at Fresh with something to say for itself.
+/// The launch plan for a config tab: resume the id it names, or start fresh.
+///
+/// A tab reopened from the Vault carries the conversation's id; a plain tab
+/// carries nothing and begins a new one. The id is trusted as a Store id --
+/// it came from the CLI's own record, which is exactly what Store means
+fn resume_plan_of(id: Option<&str>) -> tab::Resume {
+    match id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => tab::Resume::Id(tab::Session {
+            id: id.to_string(),
+            source: tab::SessionSource::Store,
+        }),
+        None => tab::Resume::Fresh,
+    }
+}
+
 fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'static str>) {
     if !keep {
         return (tab::Resume::Fresh, None);
@@ -1220,6 +1269,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         flash: flash.map(str::to_string),
         help_open: ui.help_open,
         help_rows: ui.help_rows.clone(),
+        vault: ui.vault.clone(),
         ws_open: ui.ws_open,
         qr: ui.qr.clone(),
         // Build the image just once here. Both the window and the phone read the
@@ -1689,6 +1739,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // where it is. The meter keeps last time's totals so processor use comes
     // out as a rate rather than a running sum
     let mut meter = crate::usage::Meter::default();
+    // What the Vault overlay is showing right now: the last search and its
+    // hits. Kept across frames so the results stay put until the next search,
+    // and dropped from the state entirely while the overlay is closed
+    let mut vault_view: Option<crate::uistate::VaultState> = None;
     // Somewhere to ask about pull requests, on its own thread. Quiet and
     // harmless when the person has no GitHub token: it simply never knows
     // anything, and no row grows a line
@@ -2602,6 +2656,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::Survey) => {
                         surface.surveys += 1;
                     }
+                    remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultSearch { .. })
+                    | remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultOpen { .. }) => {
+                        surface.queue_vault(ev);
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         let keys = keys_for(&ev);
@@ -2833,6 +2891,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     .collect(),
                 false => Vec::new(),
             },
+            vault: vault_view.clone(),
             qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
             remote_on: remote_ui.is_some(),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
@@ -3157,6 +3216,43 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // fingerprint), and — when the person ran 🔍 — the captured
         // environment card; the call runs on a worker thread and the answer
         // is polled right below
+        // The Vault: search past conversations, and reopen one as a resuming tab.
+        //
+        // A search is answered into `vault_view`, which the state carries while
+        // the overlay is open. Reopening writes a tab into the active
+        // workspace's settings; the change-watcher then launches it, resumed,
+        // through the ordinary reload -- the one place a tab is safely made
+        for query in surface.take_vault_queries() {
+            let found = crate::vault::search(&query, 40);
+            vault_view = Some(crate::uistate::VaultState {
+                query,
+                hits: found.hits,
+                capped: found.capped,
+            });
+        }
+        for ev in surface.take_vault_opens() {
+            if let crate::browser::Ev::VaultOpen { program, id, cwd, title } = ev {
+                // The command is the program alone; the resume id rides in its
+                // own field, where the launch path turns it into the CLI's
+                // resume flags. Writing the flags into the command here would
+                // fight the auto-resume that also reads the profile
+                let mut tab = serde_json::json!({
+                    "name": title,
+                    "command": program,
+                    "resume": id,
+                });
+                if let Some(c) = cwd {
+                    tab["cwd"] = serde_json::json!(c);
+                }
+                let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
+                if config::append_tab(&ws, tab) {
+                    flash = Some(i18n::tp("msg.vault.reopened", &[("title", &title)]));
+                } else {
+                    flash = Some(i18n::t("msg.vault.reopen_failed"));
+                }
+            }
+        }
+
         for want in surface.take_suggests() {
             let target = session_at(&surfaces, active).and_then(|i| tabs.get(i));
             let Some(t) = target else {
@@ -3909,6 +4005,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 },
                             );
                         }
+                        // Open the Vault overlay on the window's own page. A
+                        // page-side action, so this only nudges it open; the
+                        // phone reaches the same overlay by tapping the entry
+                        KeyCode::Char('f') => surface.open_vault(),
                         KeyCode::Char('q') => break,
                         _ => {}
                     }
@@ -4658,7 +4758,15 @@ fn apply_ws_config(
                 }
                 ordered.push(t);
             }
-            None => match Tab::spawn(title.clone(), &argv, ft.cfg.profile.clone(), rows, cols, opts) {
+            None => match Tab::spawn_as(
+                title.clone(),
+                &argv,
+                ft.cfg.profile.clone(),
+                rows,
+                cols,
+                opts,
+                resume_plan_of(ft.cfg.resume.as_deref()),
+            ) {
                 Ok(mut t) => {
                     t.locked = ft.cfg.locked;
                     t.auto_restart = ft.cfg.auto_restart;
@@ -4857,13 +4965,14 @@ fn spawn_workspace(
             ft.cfg.drives.as_deref(),
         );
         let cwd = opts.cwd.clone();
-        match Tab::spawn(
+        match Tab::spawn_as(
             title.clone(),
             &argv,
             ft.cfg.profile.clone(),
             rows,
             cols,
             opts,
+            resume_plan_of(ft.cfg.resume.as_deref()),
         ) {
             Ok(mut tab) => {
                 tab.locked = ft.cfg.locked;
@@ -6155,6 +6264,8 @@ struct Ui {
     help_open: bool,
     /// The keys in force, for the help screen to show
     help_rows: Vec<(String, String)>,
+    /// The Vault's current search, when its overlay is open
+    vault: Option<uistate::VaultState>,
     /// The connection URL, if the QR code is being shown
     qr: Option<String>,
     /// Whether the remote UI is listening (shown at all times so it's never a mystery)

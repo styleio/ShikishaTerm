@@ -242,6 +242,36 @@ where
 /// answer a question about one command. A name is only listed once, so a
 /// profile beside the exe hides one further away — the same precedence the
 /// lookups use
+/// The profile files as written, before compiling. The Vault needs what the
+/// compiled `Profile` throws away -- the command that launches this CLI and
+/// the raw glob where it keeps its records -- so it reads the files directly.
+/// Deduplicated by name, nearest source winning, the same as `all()`
+pub fn files() -> Vec<ProfileFile> {
+    let mut out: Vec<ProfileFile> = Vec::new();
+    for dir in candidate_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(pf) = serde_json::from_str::<ProfileFile>(&text) else {
+                continue;
+            };
+            if out.iter().any(|p| p.name == pf.name) {
+                continue;
+            }
+            out.push(pf);
+        }
+    }
+    out
+}
+
 pub fn all() -> Vec<Profile> {
     let mut out: Vec<Profile> = Vec::new();
     for dir in candidate_dirs() {

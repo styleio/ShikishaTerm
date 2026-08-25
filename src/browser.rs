@@ -647,6 +647,15 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .to_string(),
         },
         Some("openws") => Ev::OpenWs,
+        Some("vaultsearch") => Ev::VaultSearch {
+            query: v.get("query").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("vaultopen") => Ev::VaultOpen {
+            program: v.get("program").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
+            title: v.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
         Some("stop") => Ev::Stop,
         Some("restart") => Ev::Restart,
         Some("remotecut") => Ev::RemoteCut,
@@ -977,6 +986,14 @@ pub enum Ev {
     /// a bare 'w' would just be typed into whatever session is showing instead
     /// of opening the list. Converted to the Ctrl+B w prefix in `keys_for`.
     OpenWs,
+    /// Search past conversations (the Vault). `query` is what to look for; a
+    /// blank one lists the recent ones. The window answers by putting the hits
+    /// into the next state
+    VaultSearch { query: String },
+    /// Reopen one past conversation as a tab, resuming it. Named by the values
+    /// a hit carries, so the window can build the tab without holding the last
+    /// search
+    VaultOpen { program: String, id: String, cwd: Option<String>, title: String },
     /// Emergency stop
     Stop,
     /// Relaunch the tab being viewed. The status bar's ↻ next to the stop button

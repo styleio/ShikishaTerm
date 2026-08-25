@@ -126,6 +126,9 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 | `Ctrl+B 0` → `i` | スマホ接続用のQRコードを表示 |
 | `Ctrl+B 0` → `k` | マスターパスワードの設定・変更（`secrets.json` を暗号化） |
 
+盤面の「過去の作業を探す」で、AI CLI が記録した過去の会話を**内容で検索**でき、選ぶと
+その会話をその folder で再開するタブが増えます。
+
 INDEX 盤面の SESSIONS 表に **COST 列**が出ます（エージェントごとのCPUとメモリを、
 そのエージェントが起こした全プロセス分まで合算）。複数動かしているとき「どれが重いか」が
 端末を離れずに分かります。

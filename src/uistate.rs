@@ -86,6 +86,16 @@ pub struct TabState {
     pub cost: Option<String>,
 }
 
+/// The Vault overlay's contents: what was searched and what turned up.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct VaultState {
+    pub query: String,
+    pub hits: Vec<crate::vault::Hit>,
+    /// True when the search stopped before the end -- so the overlay can say
+    /// "more than these" rather than implying it is the whole of the past
+    pub capped: bool,
+}
+
 /// Where a tab is, in the parts it is made of.
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct PlaceState {
@@ -162,6 +172,10 @@ pub struct UiState {
     pub flash: Option<String>,
     /// Whether help is being shown
     pub help_open: bool,
+    /// The Vault, when its overlay is open: a query and what it found. Absent
+    /// the rest of the time, so the state stays small
+    #[serde(default)]
+    pub vault: Option<VaultState>,
     /// The help itself: the keys in force, paired with the dictionary key for
     /// the line describing each. Built from the same table the window
     /// dispatches on, so a rebound key cannot leave the help telling people to
