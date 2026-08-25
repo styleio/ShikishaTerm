@@ -77,6 +77,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      is the only piece that can be any length, so it is the only one allowed to
      shrink; a pull request number that got clipped would be the one thing on
      the row nobody could have guessed */
+  .sub .selfcost { color:var(--dim); font-variant-numeric:tabular-nums; }
   .tab .place { flex-basis:100%; margin-left:26px; margin-top:2px; font-size:10px;
     color:var(--dim); display:flex; gap:6px; align-items:baseline; min-width:0; }
   .tab .place .br { min-width:0; overflow:hidden; text-overflow:ellipsis;
@@ -975,7 +976,13 @@ function drawBoard() {
            el("div", {class:"sub"},
              el("span", {class:"wslink", title:T["tui.menu.workspace"] || "WORKSPACE",
                onclick:() => send({kind:"openws"})}, S.workspace || ""),
-             el("span", {}, "   " + BUILD)));
+             el("span", {}, "   " + BUILD),
+             // What this app is costing the machine, all in -- the terminal,
+             // the agents it launched, and the browser it embeds. Its own
+             // weight, said plainly rather than left for a task manager to
+             // reveal. Only when there is a figure to show
+             S.self_cost ? el("span", {class:"selfcost", title:T["tui.self_cost"] || "this app, all processes"},
+               "   " + S.self_cost) : null));
 
   // Chain
   const heat = S.ball.max ? Math.min(1, S.ball.depth / S.ball.max) : 0;

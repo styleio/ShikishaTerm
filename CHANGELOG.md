@@ -120,6 +120,12 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **The board says what the app itself costs.** Beside the build stamp, the
+  window now shows its own footprint — processor and memory across everything
+  it is running: the terminal, the agents it launched, the browser it embeds.
+  The weight is stated plainly rather than left for a task manager to reveal,
+  the same honest figure the per-agent COST column is built from.
+
 - **A notification can now be caught by automation.** When a program rings the
   terminal — a bell, an OSC notification, even one from a CLI running over ssh
   where nothing of ours is installed — a new `on_notify(tab, text)` hook fires.

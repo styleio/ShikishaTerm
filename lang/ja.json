@@ -1139,5 +1139,6 @@
   "replay.no_anchor": "耐久アンカーを導出できず記録できませんでした",
   "msg.operate.browser_only": "操作対象はブラウザタブにしてください（現状）。",
   "msg.operate.bad_target": "そのタブは操作できません。ブラウザか別のAIタブを選んでください。",
-  "msg.operate.needs_autoapprove": "タブを操作するには、このAIの『確認なしで自動実行』を有効にしてください。設定で切り替えられます。"
+  "msg.operate.needs_autoapprove": "タブを操作するには、このAIの『確認なしで自動実行』を有効にしてください。設定で切り替えられます。",
+  "tui.self_cost": "このアプリの全プロセス合計"
 }

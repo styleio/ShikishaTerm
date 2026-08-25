@@ -172,6 +172,10 @@ pub struct UiState {
     pub flash: Option<String>,
     /// Whether help is being shown
     pub help_open: bool,
+    /// What this whole app is costing the machine, for the board header --
+    /// honest about our own weight rather than leaving it to a task manager
+    #[serde(default)]
+    pub self_cost: Option<String>,
     /// The Vault, when its overlay is open: a query and what it found. Absent
     /// the rest of the time, so the state stays small
     #[serde(default)]

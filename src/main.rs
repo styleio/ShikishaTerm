@@ -1282,6 +1282,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         help_open: ui.help_open,
         help_rows: ui.help_rows.clone(),
         vault: ui.vault.clone(),
+        self_cost: ui.self_cost.clone(),
         ws_open: ui.ws_open,
         qr: ui.qr.clone(),
         // Build the image just once here. Both the window and the phone read the
@@ -1755,6 +1756,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // hits. Kept across frames so the results stay put until the next search,
     // and dropped from the state entirely while the overlay is closed
     let mut vault_view: Option<crate::uistate::VaultState> = None;
+    // What this whole app is costing the machine, refreshed on the same beat as
+    // the per-tab figures. Shown in the board's header
+    let mut self_cost: Option<String> = None;
     // Somewhere to ask about pull requests, on its own thread. Quiet and
     // harmless when the person has no GitHub token: it simply never knows
     // anything, and no row grows a line
@@ -2211,13 +2215,19 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // changes when someone starts a server
             if std::time::Instant::now() >= place_at {
                 place_at = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                let roots: Vec<(usize, u32)> = tabs
+                let mut roots: Vec<(usize, u32)> = tabs
                     .iter()
                     .enumerate()
                     .filter_map(|(i, t)| t.pid.map(|p| (i, p)))
                     .collect();
+                // Our own process is a root too, under a key no tab can have,
+                // so the same one look measures what this app costs all in --
+                // terminal, agents, embedded browser -- as honestly as it
+                // measures each agent
+                roots.push((usize::MAX, std::process::id()));
                 let ports = crate::repo::ports_below(&roots);
                 let cost = meter.sample(&roots);
+                self_cost = cost.get(&usize::MAX).and_then(|u| u.line());
                 for (i, t) in tabs.iter_mut().enumerate() {
                     t.usage = cost.get(&i).copied().unwrap_or_default();
                     let branch = t.cwd().and_then(crate::repo::branch_of);
@@ -2951,6 +2961,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 false => Vec::new(),
             },
             vault: vault_view.clone(),
+            self_cost: self_cost.clone(),
             qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
             remote_on: remote_ui.is_some(),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
@@ -6353,6 +6364,8 @@ struct Ui {
     help_rows: Vec<(String, String)>,
     /// The Vault's current search, when its overlay is open
     vault: Option<uistate::VaultState>,
+    /// What this whole app is costing the machine, for the board header
+    self_cost: Option<String>,
     /// The connection URL, if the QR code is being shown
     qr: Option<String>,
     /// Whether the remote UI is listening (shown at all times so it's never a mystery)

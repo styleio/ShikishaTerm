@@ -1141,5 +1141,6 @@
   "replay.no_anchor": "no durable anchor could be derived, not recorded",
   "msg.operate.browser_only": "The operate target must be a browser tab (for now).",
   "msg.operate.bad_target": "That tab can't be operated — pick a browser or another AI tab.",
-  "msg.operate.needs_autoapprove": "This AI must be allowed to act without confirmation to drive a tab. Turn it on in settings."
+  "msg.operate.needs_autoapprove": "This AI must be allowed to act without confirmation to drive a tab. Turn it on in settings.",
+  "tui.self_cost": "this app, all processes"
 }
