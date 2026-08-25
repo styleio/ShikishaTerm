@@ -68,6 +68,13 @@ pub struct TabState {
     /// How far along, 0..=1, when it has said. Shown beside the status
     #[serde(default)]
     pub progress: Option<f32>,
+    /// Where this tab is: the branch, and any ports it is listening on.
+    ///
+    /// A different kind of thing from `status`, which is why it gets its own
+    /// line. That one is what the tab last *said*; this is where it *is*, and
+    /// it stays true while nothing is being said at all
+    #[serde(default)]
+    pub place: Option<String>,
 }
 
 /// Current position of the automation ring
@@ -202,6 +209,7 @@ impl TabState {
             auto: t.auto_runs(),
             status: t.status_line(),
             progress: t.progress.as_ref().map(|(p, _)| *p),
+            place: t.place.line(),
         }
     }
 
@@ -223,6 +231,9 @@ impl TabState {
             kind: "browser".into(),
             status: None,
             progress: None,
+            // A browser is not in a folder and starts nothing, so it has
+            // nowhere to be
+            place: None,
             model: false,
             busy: false,
             settings: key == "settings",
@@ -302,6 +313,7 @@ mod tests {
             auto: false,
             status: None,
             progress: None,
+            place: None,
         }
     }
 

@@ -120,6 +120,17 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **Each tab says where it is.** Under its name: the git branch it sits on and
+  any ports it is listening on — `main · :3000`. Both are cheap to know and
+  expensive to ask for; with six agents running, "which one is serving on 3000"
+  otherwise costs six tab switches. The branch is read from the file git keeps
+  it in rather than by running git, so a huge repository costs the same as a
+  small one and one mid-rebase answers anyway; a worktree reports its own
+  branch, which is the case that matters when several agents share a
+  repository. The ports are matched against everything the tab started, since
+  what listens is almost never the shell — it is the dev server three
+  processes down. Both go away when they stop being true.
+
 - **Which key does what can be changed**, and it is changed by naming the
   action rather than the key: you say what you want *split the screen* to be,
   not what `Ctrl+B %` should become. The settings screen lists every action

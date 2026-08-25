@@ -36,6 +36,7 @@ mod netaddr;
 mod notify;
 mod profile;
 mod remote;
+mod repo;
 mod session_log;
 mod sessionfind;
 mod shell;
@@ -1678,6 +1679,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut last_saved: Option<(crate::layout::Layout, Vec<Option<tab::Session>>)> = None;
     // Which key does what, this run. Read once and re-read when the settings
     // change, the same as everything else that can be edited while running
+    // When to look again at where the tabs are. Starts now so the first frame
+    // already knows, rather than showing a sidebar that fills in a beat later
+    let mut place_at = std::time::Instant::now();
     let (mut keymap, key_errs) = crate::keys::Keys::load(cfg.as_ref());
     startup_errors.extend(key_errs);
     let mut prefix_active = false;
@@ -2066,6 +2070,34 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     if !showing {
                         flash = Some(format!("{} — {said}", t.title));
                     }
+                }
+            }
+
+            // Where each tab is: the branch it sits on, the ports it opened.
+            //
+            // Both are cheap to know and expensive to ask for -- someone with
+            // six agents running has six answers to "which one is serving on
+            // 3000", and every one of them costs a tab switch and a command.
+            //
+            // Asked for all the tabs at once and only every couple of seconds.
+            // The ports come from one table of the whole machine's listeners
+            // and one walk of its process tree; doing that per tab would be
+            // paying several times over for the same reply, and doing it every
+            // frame would be paying it sixty times a second for an answer that
+            // changes when someone starts a server
+            if std::time::Instant::now() >= place_at {
+                place_at = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                let roots: Vec<(usize, u32)> = tabs
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, t)| t.pid.map(|p| (i, p)))
+                    .collect();
+                let ports = crate::repo::ports_below(&roots);
+                for (i, t) in tabs.iter_mut().enumerate() {
+                    t.place = crate::repo::Place {
+                        branch: t.cwd().and_then(crate::repo::branch_of),
+                        ports: ports.get(&i).cloned().unwrap_or_default(),
+                    };
                 }
             }
 

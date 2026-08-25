@@ -161,6 +161,8 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B 0` → `i` | Show the QR code for phone access |
 | `Ctrl+B 0` → `k` | Set or change the master password (encrypts `secrets.json`) |
 
+Each tab says where it is, under its name: the branch, and any ports it is listening on.
+
 Every key can be moved, including the prefix — the settings list each action with the
 key it answers to now, and the help screen (`Ctrl+B ?`) shows what you actually have
 rather than what shipped.

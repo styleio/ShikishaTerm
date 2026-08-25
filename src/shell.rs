@@ -70,6 +70,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab .said { flex-basis:100%; margin-left:26px; margin-top:2px; font-size:10px;
     opacity:.6; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tab.sel .said { opacity:.85; }
+  /* Where the tab is, above what it last said. Quieter than the name and
+     quieter than the news: it is the thing you scan down the column for,
+     not the thing you look at */
+  .tab .place { flex-basis:100%; margin-left:26px; margin-top:2px; font-size:10px;
+    color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--dim); }
   .dot.BUSY, .dot.Working { background:var(--live); animation:pulse 1.2s ease-in-out infinite; }
   .dot.DONE { background:var(--brand); }
@@ -833,6 +838,11 @@ function drawTabs() {
     // What it says it is doing, under its name. Only when it has said
     // something: an empty second line on every tab would spend half the
     // sidebar saying nothing
+    // Where it is, then what it last said. Each only when there is one: a
+    // blank line on every tab would spend the sidebar saying nothing
+    if (t.place) {
+      nav.lastChild.append(el("span", {class:"place", title:t.place}, t.place));
+    }
     if (t.status) {
       nav.lastChild.append(el("span", {class:"said", title:t.status}, t.status));
     }

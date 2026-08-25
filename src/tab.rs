@@ -1366,6 +1366,15 @@ pub struct Tab {
     spoke: AtomicBool,
     /// How far along it says it is (0..=1), and what it calls the task
     pub progress: Option<(f32, String)>,
+    /// The process we launched. Kept so the ports this tab opened can be
+    /// found: what listens is almost never this process, it is whatever it
+    /// started, and the only way to ask that question is to start from here
+    pub pid: Option<u32>,
+    /// Where this tab is -- the branch it sits on, the ports it opened. Filled
+    /// in by the loop rather than by the tab, because both answers come from
+    /// one look at the whole machine and paying for that per tab would be
+    /// paying several times for the same reply
+    pub place: crate::repo::Place,
     /// The model bridge's endpoint. If Some, this tab is an OpenAI-compatible
     /// API rather than an AI CLI.
     /// When its turn comes, the main process hits complete() on a thread and injects the response into the screen
@@ -1582,6 +1591,7 @@ impl Tab {
         cmd.cwd(cwd);
         let mut child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
+        let pid = child.process_id();
         let killer = child.clone_killer();
 
         let writer: PtyWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
@@ -1695,6 +1705,8 @@ impl Tab {
             spoke: AtomicBool::new(false),
             status: Vec::new(),
             progress: None,
+            pid,
+            place: crate::repo::Place::default(),
             born: std::time::SystemTime::now(),
             // Look for it shortly: a CLI writes its record as the conversation
             // begins, which is a moment after the process starts
