@@ -69,10 +69,10 @@ Nothing is written outside that folder. There is no installer and no runtime to 
 
 ### About the Windows warning
 
-Release binaries are being set up for **code signing with a free certificate from
+The project has **applied for a free code signing certificate from
 [SignPath Foundation](https://signpath.org/)** — see the [code signing policy](SIGNING.md).
-Until signed builds ship, the first run shows **"Windows protected your PC"** because the
-executable is not yet code-signed.
+That application is pending, so release binaries are not signed yet and the first run shows
+**"Windows protected your PC"**.
 
 Click **More info → Run anyway** to continue. If you would rather check first — and being
 wary of an unsigned executable from the internet is the right instinct:
