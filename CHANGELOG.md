@@ -8,6 +8,8 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-25
+
 ### Added
 - **An external control API.** A program outside the app can call the same
   commands automations are written with, over a named pipe
