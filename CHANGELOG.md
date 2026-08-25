@@ -120,6 +120,18 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **A browser login can be saved once and reused.** Sign in on a browser tab,
+  and `browser_state_save` keeps that login under a name; a later rally loads it
+  with `browser_state_load` instead of signing in from scratch — the real cost
+  of a rally is arriving logged out. It saves the login of *our own* browser
+  profile, read through the same devtools the browser uses, so httpOnly cookies
+  (which is where a login actually lives) come too. It does not reach into
+  Chrome or Firefox: current Chrome encrypts its cookies so only Chrome can
+  read them, on purpose, and impersonating it to lift them would be fragile and
+  the wrong side of a line the browser's authors drew deliberately. Saved
+  logins live beside the browser data, never leave the machine, and are listed
+  and removable under Settings → Saved logins.
+
 - **Each tab says where it is.** Under its name: the git branch it sits on, the
   pull request that branch is on, and any ports it is listening on —
   `main #12 :3000`. Both are cheap to know and

@@ -126,6 +126,11 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 | `Ctrl+B 0` → `i` | スマホ接続用のQRコードを表示 |
 | `Ctrl+B 0` → `k` | マスターパスワードの設定・変更（`secrets.json` を暗号化） |
 
+ブラウザのログインは一度保存すれば（`browser_state_save`）後のラリーが読み込めます
+（`browser_state_load`）。ラリーが毎回ログインから始まらずに済みます。保存するのは
+こちらのブラウザプロファイルの cookie（httpOnly も含む）で、Chrome や Firefox の保管庫を
+こじ開けることはしません。
+
 タブ名の下に、そのタブが**どこにいるか**が出ます（git のブランチ、そのブランチのプルリクエスト、
 開いているポート）。PR番号はこのPCに既にある GitHub のサインインを使います（`gh auth login`、
 または環境変数 `GITHUB_TOKEN`）。無くても残りはそのまま出ます。

@@ -598,6 +598,22 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
             serde_json::from_str(&json).map_err(|e| mlua::Error::runtime(e.to_string()))?;
         json_to_lua(lua_, &v)
     });
+    // Sign in once, save it, load it forever. The count comes back so a rally
+    // can tell an empty save (nothing was logged in) from a real one
+    bind!("browser_state_save", (String, String), |lua_, c, al, (name, label)| {
+        guard(&name, &al)?;
+        let n = c.browser_state_save(&name, &label)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        c.push_replay(format!("browser_state_save({}, {})", lua_str(&name), lua_str(&label)));
+        Ok(n)
+    });
+    bind!("browser_state_load", (String, String), |lua_, c, al, (name, label)| {
+        guard(&name, &al)?;
+        c.browser_state_load(&name, &label)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        c.push_replay(format!("browser_state_load({}, {})", lua_str(&name), lua_str(&label)));
+        Ok(())
+    });
     bind!("browser_ask", (String, String, Option<String>), |lua_, c, al, (name, text, label)| {
         guard(&name, &al)?;
         c.browser_ask(&name, &text, label.as_deref().unwrap_or("OK"))
@@ -1448,6 +1464,35 @@ impl HookEngine {
                             json_to_lua(lua, &v)
                         },
                     )
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // Save a page's login (its cookies) under a name, and put it back
+            // later. The count comes back so an empty save is distinguishable
+            // from a real one
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_state_save",
+                    lua.create_function(move |_, (name, label): (String, String)| {
+                        c.browser_state_save(&name, &label)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_state_load",
+                    lua.create_function(move |_, (name, label): (String, String)| {
+                        c.browser_state_load(&name, &label)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;

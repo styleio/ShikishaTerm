@@ -753,6 +753,8 @@ shikisha.show("br")            -- そこにブラウザが入る
 | `shikisha.browser_digest(id)` | 操作できる要素の一覧（番号付き）。次の手を決める前に読むもの |
 | `shikisha.browser_fetch(id, url, opts)` | ページの中から通信する（cookieを引き継ぐ）。`{status, ok, url, headers, body}` を返す |
 | `shikisha.browser_auth(id, "キー")` | 登録済みの秘密情報でBasic認証に答える |
+| `shikisha.browser_state_save(id, "名前")` | このページのログイン（cookie）を名前を付けて保存。保存した数を返す。一度ログインすれば後のラリーで読み込める |
+| `shikisha.browser_state_load(id, "名前")` | 保存済みのログインを入れ直す。ログインし直さずにサインイン状態にする |
 | `shikisha.browser_ask(id, "文字列", "ラベル")` | ページの下端にボタン付きの帯を出す |
 | `shikisha.browser_pressed(id)` | 押されたか |
 | `shikisha.browser_unask(id)` | 帯を消す |

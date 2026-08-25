@@ -21,6 +21,7 @@ mod attach;
 mod ball;
 mod bridge;
 mod browser;
+mod browserstate;
 mod caps;
 mod config;
 mod crypto;

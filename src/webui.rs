@@ -1543,6 +1543,26 @@ fn handle(
         // restart, and — where it needs one — whether its hook is installed.
         // The person asked "will my conversation survive?", and this answers
         // that per CLI rather than describing a mechanism
+        // The saved browser logins, to manage. Names and counts only -- the
+        // cookies themselves never come back out of here
+        ("GET", "/api/logins") => {
+            let rows: Vec<serde_json::Value> = crate::browserstate::list()
+                .into_iter()
+                .map(|e| serde_json::json!({ "label": e.label, "count": e.count }))
+                .collect();
+            req.respond(json_resp(serde_json::json!(rows)))?;
+        }
+        ("POST", "/api/logins/delete") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let label = v.get("label").and_then(|x| x.as_str()).unwrap_or_default();
+            let ok = crate::browserstate::delete(label).is_ok();
+            req.respond(json_resp(serde_json::json!({ "ok": ok })))?;
+        }
         // Whether this machine has a GitHub sign-in, so the settings can say
         // why a tab shows a branch but no pull request number. Whether, never
         // what: nothing here hands a token back out
@@ -3253,6 +3273,44 @@ function keysCard() {
   }
   return box;
 }
+// Saved browser logins.
+//
+// Managed here, never made here: a login is saved by signing in once in a
+// browser tab and calling browser_state_save (a rally does this). This screen
+// is where you see what is kept and throw one away. The cookies never leave
+// the machine and never come back through this page -- only the name and how
+// much is inside
+function loginsCard() {
+  const list = el("div", {}, el("div", {class:"hint"}, "…"));
+  const box = card(T["settings.sec.logins"],
+    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.logins.intro"]),
+    list);
+  load();
+  async function load() {
+    let rows = [];
+    try { rows = await (await fetch("/api/logins", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    list.textContent = "";
+    if (!rows.length) { list.append(el("div", {class:"hint"}, T["settings.logins.none"])); return; }
+    for (const r of rows) {
+      const del = el("button", {class:"btn"}, T["settings.logins.forget"]);
+      del.addEventListener("click", async () => {
+        del.disabled = true;
+        try {
+          await fetch("/api/logins/delete", {method:"POST",
+            headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
+            body: JSON.stringify({label: r.label})});
+        } catch (e) {}
+        load();
+      });
+      list.append(el("div", {class:"row"},
+        el("label", {}, r.label),
+        el("span", {class:"hint"}, T["settings.logins.count"].replace("{n}", r.count)),
+        del));
+    }
+  }
+  return box;
+}
 function filesCard() {
   return card(T["settings.section.files"],
     row(T["settings.automation_global"], ...pathField(current, "automation", "scripts/common", "dir",
@@ -3268,6 +3326,7 @@ function globalSections() {
   return [
     {id:"basic",     label:T["settings.sec.basic"],     sub:T["settings.sec.basic.sub"],     build:basicCard},
     {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],      build:keysCard},
+    {id:"logins",    label:T["settings.sec.logins"],    sub:T["settings.sec.logins.sub"],    build:loginsCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
     {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},

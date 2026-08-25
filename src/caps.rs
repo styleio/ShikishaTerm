@@ -665,6 +665,22 @@ impl Capabilities {
         self.with(name, |b, to| b.fetch(to, url, opts, 30_000))
     }
 
+    /// Save this page's login (its cookies) under a name, to be loaded later.
+    ///
+    /// The honest answer to "log in every rally": sign in once here, save it,
+    /// and load it whenever. Our own profile, so the read is complete --
+    /// httpOnly cookies and all, which is where a login actually lives
+    pub fn browser_state_save(&self, name: &str, label: &str) -> Result<usize> {
+        let cookies = self.with(name, |b, to| b.cookies_out(to, 30_000))?;
+        crate::browserstate::save(label, cookies)
+    }
+
+    /// Put a saved login back into this page's profile.
+    pub fn browser_state_load(&self, name: &str, label: &str) -> Result<()> {
+        let cookies = crate::browserstate::load(label)?;
+        self.with(name, |b, to| b.cookies_in(to, &cookies, 30_000))
+    }
+
     /// Show a banner asking the human something
     pub fn browser_ask(&self, name: &str, text: &str, label: &str) -> Result<()> {
         self.forget_press(name);

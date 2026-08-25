@@ -1589,6 +1589,39 @@ impl Browser {
         Ok(serde_json::from_str::<String>(&v).unwrap_or(v))
     }
 
+    /// Every cookie this page's profile holds, as the browser itself reports
+    /// them.
+    ///
+    /// Read through the DevTools protocol rather than from a page script,
+    /// because that is the only place the httpOnly cookies live -- and those
+    /// are exactly the ones a login is made of. What comes back is the
+    /// browser's own list, kept as-is so that loading it again asks for
+    /// nothing to be reconstructed
+    pub fn cookies_out(&self, to: Option<&str>, timeout_ms: u64) -> Result<serde_json::Value> {
+        let v = self.cdp(to, "Network.getAllCookies", serde_json::json!({}), timeout_ms)?;
+        Ok(v.get("cookies").cloned().unwrap_or(serde_json::Value::Array(vec![])))
+    }
+
+    /// Put a set of cookies back into this page's profile.
+    ///
+    /// The same shape that came out. Set against the live profile, so a page
+    /// that reloads afterwards is simply logged in -- there was never a moment
+    /// where our code decided what "logged in" meant
+    pub fn cookies_in(
+        &self,
+        to: Option<&str>,
+        cookies: &serde_json::Value,
+        timeout_ms: u64,
+    ) -> Result<()> {
+        self.cdp(
+            to,
+            "Network.setCookies",
+            serde_json::json!({ "cookies": cookies }),
+            timeout_ms,
+        )?;
+        Ok(())
+    }
+
     /// Make a request from inside the page. Returns a JSON string
     /// `{status,ok,url,headers,body,...}`.
     /// `opts` is `{method,headers,body}` (optional)
