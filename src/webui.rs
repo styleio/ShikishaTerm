@@ -1037,6 +1037,34 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // The command line a tab will really be launched with. The settings
+        // screen shows what it is given here rather than working it out for
+        // itself: a second implementation in the page would be a second answer
+        // to "what runs", and the two would drift the first time either moved
+        ("POST", "/api/launch-line") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let str_of = |k: &str| {
+                v.get(k)
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string)
+                    .filter(|s| !s.trim().is_empty())
+            };
+            let argv = crate::config::CommandSpec::Line(str_of("command").unwrap_or_default()).argv();
+            let line = crate::tab::launch_line(
+                &argv,
+                &str_of("profile"),
+                crate::resume_plan_of(str_of("resume").as_deref()),
+                &crate::i18n::t("settings.tab.command.newid"),
+            );
+            req.respond(json_resp(serde_json::json!({
+                "argv": line.argv, "added": line.added
+            })))?;
+        }
         // Recent rally history (newest first). Returns the id plus an excerpt to help a human tell them apart
         ("GET", "/api/rally/list") => {
             let mut arr: Vec<serde_json::Value> = Vec::new();
@@ -1985,6 +2013,14 @@ const PAGE: &str = r##"<!doctype html>
     claiming the row's label column. */
  .row > label.beside { width:auto; }
  .hint { color:var(--muted); font-size:12px; }
+ /* The line a tab will really be launched with. It wraps rather than scrolls:
+    an argument pushed off the right edge is exactly the argument nobody would
+    have seen otherwise */
+ .realcmd { margin:6px 0 2px 0; }
+ .realcmd code { display:block; margin:3px 0; padding:7px 9px; border-radius:6px;
+   background:var(--raise); border:1px solid var(--line);
+   white-space:pre-wrap; word-break:break-all; font-size:12px; }
+ .realcmd .added { color:var(--brand); font-weight:600; }
  /* One row per entry in an editable list (quick actions, providers, notify
     targets, secrets): its name, its fields, then its buttons, divided by a
     hairline. It wraps, so a narrow screen stacks the parts instead of pushing
@@ -2359,6 +2395,57 @@ function choose(obj, key, opts, onChange) {
   s.value = obj[key] || "";
   s.addEventListener("change", () => { obj[key] = s.value; if (onChange) onChange(s.value); });
   return s;
+}
+// Writing the command field from a button (an AI picked from the list, the
+// bypass-flag checkbox, a browser's URL) has to look exactly like typing it:
+// the value, the tab-bar preview and the real-command line below all follow
+// the field's own "input" event, so a write that skipped the event would
+// leave one of the three showing a command that is no longer there.
+function setCommand(t, input, value) {
+  t.command = value;
+  input.value = value;
+  input.dispatchEvent(new Event("input", {bubbles: true}));
+}
+
+// The line a tab will really be launched with, shown under the command field.
+//
+// A command is read one character at a time and acted on immediately, so an
+// argument nobody typed has no business being invisible: it was an invisible
+// "--session-id" beside a hand-written "--resume" that once killed a tab on
+// every restart, with nothing on screen to connect the two. The app answers
+// this -- the page never assembles it -- because a second implementation here
+// would be a second answer to "what runs", and the two would drift.
+function launchLine(t) {
+  const line = el("code", {class:"mono"});
+  const note = el("div", {class:"hint"});
+  const box = el("div", {class:"realcmd"},
+    el("div", {class:"hint"}, T["settings.tab.command.real"]), line, note);
+  let seq = 0, timer = null;
+  const refresh = async () => {
+    const mine = ++seq;
+    let r = null;
+    try {
+      r = await fetch("/api/launch-line", {method:"POST",
+        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+        body: JSON.stringify({command: t.command || "", resume: t.resume || "",
+                              profile: t.profile || ""})}).then(x => x.json());
+    } catch (e) { r = null; }
+    // A later keystroke has already asked; its answer is the current one
+    if (mine !== seq) return;
+    line.textContent = ""; note.textContent = "";
+    if (!r || !r.argv || !r.argv.length) { box.hidden = true; return; }
+    box.hidden = false;
+    r.argv.forEach((a, i) => {
+      if (i) line.append(document.createTextNode(" "));
+      line.append(el("span", {class: (i >= 1 && i <= r.added) ? "added" : ""}, a));
+    });
+    if (r.added) note.textContent = T["settings.tab.command.real_note"];
+  };
+  // Typing is not a reason to ask on every keystroke, and the answer to a
+  // half-typed command is not worth showing
+  const schedule = () => { clearTimeout(timer); timer = setTimeout(refresh, 250); };
+  refresh();
+  return { box, schedule };
 }
 function row(label, ...kids) { return el("div", {class:"row"}, el("label", {}, label), ...kids); }
 function card(title, ...kids) { return el("div", {class:"card"}, el("h2", {}, title), ...kids); }
@@ -4398,17 +4485,19 @@ function tabPane(ws, t) {
 
   // What gets launched
   const cmdRow = el("div", {class:"row"});
-  const cmdInput = field(t, "command", T["settings.tab.command.ph"], {mono:true, onInput:() => renderNav()});
+  const real = launchLine(t);
+  const cmdInput = field(t, "command", T["settings.tab.command.ph"],
+    {mono:true, onInput:() => { renderNav(); real.schedule(); }});
   cmdInput.setAttribute("list", "cmdlist");
   const detailBox = el("div");
   const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild)); };
   cmdRow.append(el("label", {}, T["settings.tab.kind"]),
     choose({k:catOf(t.command)}, "k", CAT_LIST, v => {
-      t.command = CAT_START[v] || ""; cmdInput.value = t.command; rebuild(); renderNav();
+      setCommand(t, cmdInput, CAT_START[v] || ""); rebuild();
     }));
   rebuild();
   box.append(card(T["settings.tab.launch"], cmdRow, detailBox,
-    row(T["settings.tab.command"], cmdInput),
+    row(T["settings.tab.command"], cmdInput), real.box,
     row(T["settings.tab.cwd"], ...pathField(t, "cwd", T["settings.tab.cwd.ph"], "dir",
         T["settings.tab.cwd.pick"]),
         el("span", {class:"hint"}, T["settings.tab.cwd.hint"]))));
@@ -4563,7 +4652,7 @@ function aiPanel(t, cmdInput, rebuild) {
         const parts = c.split(/\s+/).filter(Boolean);
         if (cb.checked) { if (!parts.includes(flag)) parts.push(flag); }
         else { for (let i = parts.length - 1; i >= 0; i--) if (parts[i] === flag) parts.splice(i, 1); }
-        t.command = parts.join(" "); cmdInput.value = t.command; renderNav();
+        setCommand(t, cmdInput, parts.join(" "));
       });
       detail.append(
         el("label", {class:"row", style:"cursor:pointer;gap:8px"}, cb,
@@ -4576,8 +4665,7 @@ function aiPanel(t, cmdInput, rebuild) {
       placeholder:T["settings.model.name_ph"]});
     modelIn.value = m.model || "";
     const setModel = name => {
-      t.command = "model " + m.provider + (name ? "/" + name : "");
-      cmdInput.value = t.command; renderNav();
+      setCommand(t, cmdInput, "model " + m.provider + (name ? "/" + name : ""));
     };
     modelIn.addEventListener("input", () => setModel(modelIn.value.trim()));
     const cand = modelCandidates(() => current.providers[m.provider] || {},
@@ -4597,13 +4685,12 @@ function aiPanel(t, cmdInput, rebuild) {
       const before = new Set(Object.keys(current.providers || {}));
       await openProvidersPopup();
       const added = Object.keys(current.providers || {}).find(n => !before.has(n));
-      if (added) { t.command = "model " + added + "/"; cmdInput.value = t.command; renderNav(); }
+      if (added) setCommand(t, cmdInput, "model " + added + "/");
       rebuild();                          // redraw: the new provider now appears (and its model field)
       return;
     }
-    if (v.startsWith("cli:")) { const h = v.slice(4); const f = cliFlagOf(h); t.command = f ? h + " " + f : h; }
-    else if (v.startsWith("prov:")) t.command = "model " + v.slice(5) + "/";
-    cmdInput.value = t.command; renderNav();
+    if (v.startsWith("cli:")) { const h = v.slice(4); const f = cliFlagOf(h); setCommand(t, cmdInput, f ? h + " " + f : h); }
+    else if (v.startsWith("prov:")) setCommand(t, cmdInput, "model " + v.slice(5) + "/");
     drawDetail();
   });
 
@@ -4638,7 +4725,7 @@ function kindPanel(t, cmdInput, rebuild) {
   const web = parseBrowser(t.command);
   const mdl = parseModel(t.command);
   const sync = (build, o) => () => {
-    t.command = build(o); cmdInput.value = t.command; renderNav();
+    setCommand(t, cmdInput, build(o));
   };
   const f = (obj, key, label, ph, upd, w) => {
     const i = el("input", {type:"text", placeholder:ph, class:"mono"});
@@ -4789,7 +4876,7 @@ function kindPanel(t, cmdInput, rebuild) {
     }
     s.addEventListener("change", () => {
       if (!s.value) return;
-      t.command = s.value; cmdInput.value = s.value; s.value = ""; renderNav();
+      setCommand(t, cmdInput, s.value); s.value = "";
     });
     box.append(el("div", {class:"row"}, el("label", {}, T["settings.tab.common"]), s));
   }

@@ -804,6 +804,28 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_screen_is_shown_the_line_that_will_actually_run() {
+        // Read against the profiles this repo ships, on purpose: the promise
+        // is about what really starts, so a stub here would prove nothing
+        let line = super::launch_line(&argv("claude"), &None, super::Resume::Fresh, "<new>");
+        assert_eq!(line.argv, argv("claude --session-id <new>"));
+        assert_eq!(line.added, 2, "アプリが足した語数を数えている");
+        // The id is where it comes from, not a number: redrawing the field
+        // must not show a different conversation every time
+        let again = super::launch_line(&argv("claude"), &None, super::Resume::Fresh, "<new>");
+        assert_eq!(again.argv, line.argv, "描き直すたびに違う番号を見せない");
+        // Nothing added, nothing to highlight
+        let plain = super::launch_line(&argv("powershell.exe"), &None, super::Resume::Fresh, "<x>");
+        assert_eq!(plain.argv, argv("powershell.exe"));
+        assert_eq!(plain.added, 0);
+        // And the tab this all started with: written as it was, run as it was
+        let written = argv("claude --dangerously-skip-permissions --resume");
+        let kept = super::launch_line(&written, &None, super::Resume::Fresh, "<new>");
+        assert_eq!(kept.argv, written);
+        assert_eq!(kept.added, 0);
+    }
+
+    #[test]
     fn continuing_the_newest_here_names_no_conversation() {
         // The CLI picks it, so afterwards we do not know which one it picked —
         // and saying we do would be a lie the next restart would act on
@@ -1267,6 +1289,42 @@ fn plan_launch(
     }
 }
 
+/// The command line a launch will really run, written out for a person to read.
+///
+/// A command field that shows one line while another one starts is how an
+/// argument nobody typed stays invisible until a CLI refuses it. This is the
+/// same assembly the launch itself performs -- `plan_launch` is called, never
+/// imitated -- so what the settings screen promises and what actually starts
+/// cannot drift apart.
+///
+/// An id we would mint is shown as `minted_as` rather than as a number: the
+/// number does not exist until the launch, and printing a different one each
+/// time the field is redrawn would teach nobody anything true.
+pub struct LaunchLine {
+    /// Every argument, program first, in the order it will be passed
+    pub argv: Vec<String>,
+    /// How many of them this app put there. They sit at `argv[1..1 + added]`,
+    /// because `plan_launch` inserts them in one run right after the program
+    pub added: usize,
+}
+
+pub fn launch_line(
+    argv: &[String],
+    profile_spec: &Option<String>,
+    plan: Resume,
+    minted_as: &str,
+) -> LaunchLine {
+    let spec = Tab::resolve_profile(argv, profile_spec).resume;
+    let (mut out, session) = plan_launch(spec.as_ref(), argv, plan);
+    let added = out.len().saturating_sub(argv.len());
+    if let Some(s) = session.filter(|s| s.source == SessionSource::Minted) {
+        for a in out.iter_mut().skip(1).take(added) {
+            *a = a.replace(&s.id, minted_as);
+        }
+    }
+    LaunchLine { argv: out, added }
+}
+
 /// Whether the command as written already asks this CLI to resume something.
 ///
 /// The words are taken from the profile's own templates rather than a list
@@ -1577,7 +1635,7 @@ impl Tab {
     /// The profile is resolved fresh each time, either from a name (given in
     /// config) or from the command name.
     /// Because it's re-resolved on restart, edits to profiles/*.json take effect immediately
-    fn resolve_profile(argv: &[String], spec: &Option<String>) -> Profile {
+    pub(crate) fn resolve_profile(argv: &[String], spec: &Option<String>) -> Profile {
         match spec {
             Some(name) => crate::profile::load_by_name(name),
             None => crate::profile::load_for_command(argv.first().map(String::as_str).unwrap_or("")),

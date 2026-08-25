@@ -1067,7 +1067,7 @@ fn hook_mode(kind: String) -> Result<()> {
 /// A tab reopened from the Vault carries the conversation's id; a plain tab
 /// carries nothing and begins a new one. The id is trusted as a Store id --
 /// it came from the CLI's own record, which is exactly what Store means
-fn resume_plan_of(id: Option<&str>) -> tab::Resume {
+pub(crate) fn resume_plan_of(id: Option<&str>) -> tab::Resume {
     match id.map(str::trim).filter(|s| !s.is_empty()) {
         Some(id) => tab::Resume::Id(tab::Session {
             id: id.to_string(),
