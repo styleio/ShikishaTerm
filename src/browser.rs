@@ -817,6 +817,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("fontsize") => Ev::FontSize {
             px: v.get("px").and_then(|x| x.as_u64()).unwrap_or(14).clamp(8, 32) as u8,
         },
+        Some("tabwidth") => Ev::TabWidth {
+            px: v.get("px").and_then(|x| x.as_u64()).unwrap_or(0).min(u16::MAX as u64) as u16,
+        },
         Some("splitpane") => Ev::SplitPane {
             id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
             down: v.get("down").and_then(|x| x.as_bool()).unwrap_or(false),
@@ -958,6 +961,10 @@ pub enum Ev {
     /// The terminal was zoomed with Ctrl+wheel. The page has already redrawn
     /// itself at the new size; this is so it is still that size tomorrow
     FontSize { px: u8 },
+    /// The tab bar's edge was dragged. Same story as the zoom: the page is
+    /// already drawn that way, and this is so it opens that way next time.
+    /// 0 means the bar has been put away
+    TabWidth { px: u16 },
     /// Wants to view this tab (0 = the operating board)
     Select { tab: usize },
     /// The + on the tab bar was pressed (opens the settings screen in add-tab mode)

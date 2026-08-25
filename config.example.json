@@ -4,8 +4,8 @@
   "done_confirm_ms": 10000,
   "max_chain": 10,
 
-  "//tab_bar_width": "左タブバーの幅(桁)。省略時はタブ名に合わせて自動。境界線ドラッグでも調整可",
-  "tab_bar_width": 18,
+  "//tab_bar_width": "左タブバーの幅(ピクセル)。省略時は既定の幅。画面で境界線をドラッグしても変わり、その値がここに書き戻される。0 でタブバーをしまう (Ctrl+B s でも同じ)",
+  "tab_bar_width": 290,
 
   "//secrets": "Slack/Telegramのトークンはここではなくsecretsファイルへ (共有厳禁)",
   "secrets": "secrets.json",

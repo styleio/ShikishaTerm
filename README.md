@@ -197,7 +197,10 @@ whole window follows, not only the terminal.
 The mouse works too: wheel to scroll, **Ctrl+wheel to change the terminal's size**, drag to
 copy, right click to paste, click a tab name to switch. Once the window is divided, each pane's caption carries ▥ and ▤ to divide it
 again and ✕ to close that view, and the divider between panes can be dragged to rebalance
-them — double-click it for even halves.
+them — double-click it for even halves. The tab bar on the left works the same way: drag its
+right edge to set its width, double-click for the width it ships with, and drag it shut to
+put it away and give the whole window to the terminal. `Ctrl+B s` does that too, and brings
+it back the width it was.
 
 ## Automation
 

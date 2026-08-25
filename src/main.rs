@@ -63,10 +63,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use detect::TabState;
 use hooks::{Command, HookEngine, TabCtx};
 use tab::{CopyState, Tab, extract_text};
-use unicode_width::UnicodeWidthStr as _;
 
-const TAB_BAR_MIN: u16 = 10;
-const TAB_BAR_MAX: u16 = 40;
 const STATUS_BAR_HEIGHT: u16 = 1;
 
 
@@ -249,26 +246,17 @@ pub struct Rect {
 /// It used to. Back when `size` was the whole window in character cells, the
 /// app drew its own tab bar and status bar, so it carved them out here. Once the
 /// WebView took over that chrome and started measuring the content area itself,
-/// the subtraction became a *second* one: every AI was handed ~`tab_w` fewer
-/// columns than it had, rendering into only part of the width with a wide blank
-/// margin on the right — and on a phone-narrow screen, where the total column
-/// count is barely above `tab_w`, it collapsed almost to nothing.
-fn pty_dims(size: Size, _tab_w: u16) -> (u16, u16) {
+/// the subtraction became a *second* one: every AI was handed the tab bar's
+/// width in columns fewer than it had, rendering into only part of the width
+/// with a wide blank margin on the right — and on a phone-narrow screen, where
+/// the total column count is barely above it, it collapsed almost to nothing.
+///
+/// The tab bar's width was still being carried in here long after that, unread
+/// behind an underscore, and a whole config field was computed for the sole
+/// purpose of feeding it. Both are gone: the width is the window's business,
+/// measured in pixels, and it is measured where it is drawn.
+fn pty_dims(size: Size) -> (u16, u16) {
     (size.height.max(3), size.width.max(10))
-}
-
-/// Auto-computes the tab bar width to fit the tab names.
-/// Finds the width (accounting for full-width chars) needed for "[x] 12. tab-name 🔒" and clamps it to range.
-fn auto_tab_width(tabs: &[Tab]) -> u16 {
-    let longest = tabs
-        .iter()
-        .map(|t| {
-            // 4-digit indicator + "N. " + name + indent + 2-digit lock + 1-char border
-            4 + 4 + t.title.width() as u16 + t.depth + 2 + 1
-        })
-        .max()
-        .unwrap_or(TAB_BAR_MIN);
-    longest.clamp(TAB_BAR_MIN, TAB_BAR_MAX)
 }
 
 
@@ -402,6 +390,9 @@ struct WinSurface {
     pane_splits: Vec<(u32, bool)>,
     /// The size the terminal is now drawn at, when it has just been changed
     font_size: Option<u8>,
+    /// The width the tab bar is now drawn at, when its edge has just been
+    /// dragged. 0 = put away
+    tab_width: Option<u16>,
     /// The pane tree as last sent to the page. Only send it again when it changes
     last_layout: String,
     /// The terminal contents last sent for each unfocused pane. The focused
@@ -505,6 +496,18 @@ impl WinSurface {
 
     fn take_font_size(&mut self) -> Option<u8> {
         self.font_size.take()
+    }
+
+    fn take_tab_width(&mut self) -> Option<u16> {
+        self.tab_width.take()
+    }
+
+    /// Put the tab bar away, or bring it back out.
+    ///
+    /// The page owns the width and answers with the new one, so this asks
+    /// rather than decides -- there is one number and one place that holds it
+    fn toggle_tab_bar(&self) {
+        let _ = self.win.eval("window.__toggleTabBar && window.__toggleTabBar();");
     }
 
     fn take_close_settings(&mut self) -> bool {
@@ -682,6 +685,7 @@ impl WinSurface {
                 Ev::PaneRatio { divider, ratio } => self.pane_ratios.push((divider, ratio)),
                 Ev::SplitPane { id, down } => self.pane_splits.push((id, down)),
                 Ev::FontSize { px } => self.font_size = Some(px),
+                Ev::TabWidth { px } => self.tab_width = Some(px),
                 Ev::JsError { msg } => {
                     crate::append_hook_log(&format!("Screen failure: {msg}"));
                 }
@@ -997,6 +1001,7 @@ fn run_in_window() -> Result<()> {
         run_luas: Vec::new(),
         pane_splits: Vec::new(),
         font_size: None,
+        tab_width: None,
         recorded: Vec::new(),
         operates: Vec::new(),
         replay_saves: false,
@@ -1456,8 +1461,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let start = Instant::now();
     // Width comes from config if given; otherwise it's auto-computed from tab names
     // (finalized once tabs are launched).
-    let mut tab_w = 18u16;
-    let (mut rows, mut cols) = pty_dims(surface.size()?, tab_w);
+    let (mut rows, mut cols) = pty_dims(surface.size()?);
 
     // Tab layout precedence: CLI args (debug) > config.json > default (1 PowerShell tab)
     let cfg = if cmd_args.is_empty() {
@@ -1541,12 +1545,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
         )?);
     }
 
-    // Finalize the width now that all tab names are known, and re-fit the PTY size
-    tab_w = match cfg.as_ref().and_then(|c| c.tab_bar_width) {
-        Some(w) => w.clamp(TAB_BAR_MIN, TAB_BAR_MAX),
-        None => auto_tab_width(&tabs),
-    };
-    (rows, cols) = pty_dims(surface.size()?, tab_w);
+    // Re-fit the PTY size now that every tab exists
+    (rows, cols) = pty_dims(surface.size()?);
     for t in &tabs {
         let _ = t.resize(rows, cols);
     }
@@ -1740,7 +1740,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut save_at: Option<std::time::Instant> = None;
     // The zoom level waiting to be written down, and when to write it
     let mut font_size: Option<u8> = None;
+    let mut tab_width: Option<u16> = None;
     let mut font_save_at: Option<std::time::Instant> = None;
+    let mut tab_save_at: Option<std::time::Instant> = None;
     // What was last written, so an unchanged screen writes nothing at all
     let mut last_saved: Option<(crate::layout::Layout, Vec<Option<tab::Session>>)> = None;
     // Which key does what, this run. Read once and re-read when the settings
@@ -1984,13 +1986,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 done_confirm_ms = newcfg
                     .done_confirm_ms
                     .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
-                if let Some(w) = newcfg.tab_bar_width {
-                    let w = w.clamp(TAB_BAR_MIN, TAB_BAR_MAX);
-                    if w != tab_w {
-                        tab_w = w;
-                        (rows, cols) = pty_dims(surface.size()?, tab_w);
-                    }
-                }
                 // Rebuild notification destinations, capabilities, and automation scripts
                 let (dests, err) = newcfg.resolve_notify(password.as_deref());
                 if let Some(e) = err {
@@ -3053,6 +3048,25 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 append_hook_log(&format!("terminal font size is now {px}"));
             }
         }
+        // The tab bar was dragged to a new width, or put away. Held back the
+        // same way and for the same reason: a drag is a stream of widths, and
+        // a settings file is not a place to write one per frame
+        if let Some(px) = surface.take_tab_width() {
+            tab_width = Some(config::clamp_tab_bar(px));
+            tab_save_at = Some(std::time::Instant::now() + Duration::from_secs(2));
+        }
+        if tab_save_at.is_some_and(|at| std::time::Instant::now() >= at) {
+            tab_save_at = None;
+            if let Some(px) = tab_width.take() {
+                config::save_setting(&["tab_bar_width"], serde_json::json!(px));
+                watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
+                append_hook_log(&if px == 0 {
+                    "the tab bar is put away".to_string()
+                } else {
+                    format!("the tab bar is now {px}px wide")
+                });
+            }
+        }
 
         // ⊞ / ⊟ in a pane's caption. Divides that pane, not whichever one had
         // focus: the button is attached to a pane, so it must mean that one
@@ -3941,6 +3955,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             active = split_focused(&mut pane_layout, dir, surface_count, active);
                             view_touched_ms = start.elapsed().as_millis() as u64;
                         }
+                        // Ctrl+B s puts the tab bar away, and brings it back
+                        // the width it was. The whole window is worth having
+                        // for one screen, and the list of tabs is the part you
+                        // are not reading while you read the other
+                        KeyCode::Char('s') => surface.toggle_tab_bar(),
                         // Ctrl+B = puts the dividers back to even halves. The
                         // mouse can do it by double-clicking one; this does the
                         // whole screen at once
@@ -3990,7 +4009,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         // Ctrl+B [ enters copy mode (tmux copy-mode style)
                         KeyCode::Char('[') => {
-                            let rows = pty_dims(surface.size()?, tab_w).0;
+                            let rows = pty_dims(surface.size()?).0;
                             if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
                                 t.copy = Some(CopyState {
                                     cursor_row: rows.saturating_sub(1),
@@ -4117,7 +4136,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     let mut locked_hit = false;
                     if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
                         if t.copy.is_some() {
-                            handle_copy_key(t, &key, size, tab_w, &mut flash)?;
+                            handle_copy_key(t, &key, size, &mut flash)?;
                         } else if t.locked {
                             // Soft lock: viewing and copying still work, but input is ignored
                             locked_hit = true;
@@ -4157,7 +4176,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 }
             }
             Event::Resize(width, height) => {
-                (rows, cols) = pty_dims(Size { width, height }, tab_w);
+                (rows, cols) = pty_dims(Size { width, height });
             }
             _ => {}
         }
@@ -6183,10 +6202,9 @@ fn handle_copy_key(
     t: &mut Tab,
     key: &KeyEvent,
     size: Size,
-    tab_w: u16,
     flash: &mut Option<String>,
 ) -> Result<()> {
-    let (rows_v, cols_v) = pty_dims(size, tab_w);
+    let (rows_v, cols_v) = pty_dims(size);
     let Some(mut cs) = t.copy.take() else {
         return Ok(());
     };

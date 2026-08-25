@@ -41,19 +41,34 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     /* How big the terminal draws. Changed with Ctrl+wheel and remembered in
        the settings; everything measured from the cell grid follows it */
     --fs:{{FONT_SIZE}}px;
+    /* How wide the tab bar is. Dragged by its edge, and 0 when it is put away
+       -- one number for both, so "hidden" needs no second piece of state to
+       disagree with the first */
+    --tabw:{{TAB_W}}px;
   }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; overflow:hidden;
     background:var(--bg); color:var(--text); font-family:var(--mono); font-size:14px; }
   /* The terminal itself, and the read-only copies of it in other panes */
   #screen, .pscreen { font-size:var(--fs); }
-  #app { display:grid; grid-template-columns:auto 1fr; grid-template-rows:1fr auto;
-    height:100%; }
+  #app { position:relative; display:grid; grid-template-columns:auto 1fr;
+    grid-template-rows:1fr auto; height:100%; }
 
   /* ── Left tab bar ───────────────────────── */
-  #tabs { grid-row:1/3; width:290px; background:var(--panel);
+  #tabs { grid-row:1/3; width:var(--tabw); background:var(--panel);
     border-right:1px solid var(--line); overflow-y:auto; padding:6px 0;
     display:flex; flex-direction:column; }
+  /* Put away, the bar is a width of nothing rather than a display of none: the
+     grip below stays exactly where it was, so the way back is where the way
+     out was. Its contents must not spill out of a bar that is no longer there */
+  #tabs { min-width:0; }
+  /* The edge itself. Same handle as the dividers between panes, because it is
+     the same gesture and there is no reason to teach it twice. It sits half
+     over the boundary and never goes off the left edge, so a bar that has been
+     put away can still be caught and pulled back out */
+  #tabgrip { position:absolute; top:0; bottom:0; z-index:6; width:9px;
+    left:max(0px, calc(var(--tabw) - 4px)); cursor:col-resize; }
+  #tabgrip:hover, #tabgrip.dragging { background:var(--brand); opacity:.35; }
   /* Settings lives here as a fixed gear pinned to the very bottom, not a tab */
   .tab.gearrow { margin-top:auto; color:var(--dim); border-top:1px solid var(--line);
     justify-content:center; padding:10px; }
@@ -170,7 +185,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      iframe, a browser layer, or a text selection that starts mid-drag */
   body.dragdiv { user-select:none; }
   body.dragdiv * { pointer-events:none; }
-  body.dragdiv .pdiv { pointer-events:auto; }
+  /* Everything you can take hold of has to be exempted here, not just the pane
+     dividers. The tab bar's edge was left out, and because a click begins with
+     a mousedown the grip switched itself off between the two halves of a
+     double-click -- so the one gesture that puts the width back never arrived */
+  body.dragdiv .pdiv, body.dragdiv #tabgrip { pointer-events:auto; }
   .pane .pbody { position:absolute; left:0; right:0; top:0; bottom:0; overflow:hidden; }
   .pane.headed .phead { display:flex; }
   .pane.headed .pbody { top:22px; }
@@ -684,6 +703,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="hamburger">&#9776;</div>
   <div id="backdrop"></div>
   <nav id="tabs"></nav>
+  <!-- The tab bar's edge, as something you can take hold of -->
+  <div id="tabgrip"></div>
   <div id="main">
     <div id="panes"></div>
     <div id="nav" hidden></div>
@@ -1677,6 +1698,80 @@ function startDividerDrag(e, el) {
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
 }
+
+// ── The tab bar's width ──────────────────────────────────
+// Dragged by its edge, like the dividers between panes. The bounds are the
+// app's, handed in rather than written twice: the window clamps whatever
+// arrives, and a page that guessed different numbers would show one width
+// while the next start opened another.
+const TABW_MIN = {{TAB_W_MIN}}, TABW_MAX = {{TAB_W_MAX}}, TABW_DEF = {{TAB_W_DEF}};
+// The width to come back to when the bar is brought out again. A bar that is
+// put away has no width to remember, so this holds the last real one.
+//
+// Only ever taken from a width the bar came to REST at, never from one it
+// passed through. A drag that shuts the bar sweeps through every width down to
+// the minimum on the way, and remembering those meant dragging it shut and
+// pressing the key gave you a sliver instead of the bar you had
+let lastTabW = TABW_DEF;
+
+function tabWidth() {
+  const v = parseFloat(getComputedStyle(document.documentElement)
+    .getPropertyValue("--tabw"));
+  return isFinite(v) ? Math.round(v) : TABW_DEF;
+}
+// Set it, draw it, and tell the app -- which writes it down so the next start
+// opens the same way. The terminal is re-measured because it just got wider or
+// narrower, and an AI handed the wrong column count wraps its screen wrongly.
+function setTabWidth(px) {
+  const w = px <= 0 ? 0 : Math.max(TABW_MIN, Math.min(TABW_MAX, Math.round(px)));
+  document.documentElement.style.setProperty("--tabw", w + "px");
+  send({kind:"tabwidth", px: w});
+  scheduleReport();
+}
+// The bar has come to rest at whatever it is now: that is a width worth
+// coming back to
+function settleTabWidth() {
+  const w = tabWidth();
+  if (w > 0) lastTabW = w;
+}
+// Put the bar away, or bring it back the width it was. The same one number
+// says which, so there is no second flag to fall out of step with it
+window.__toggleTabBar = function () {
+  if (tabWidth() > 0) { settleTabWidth(); setTabWidth(0); }
+  else setTabWidth(lastTabW);
+};
+
+(function () {
+  const grip = document.getElementById("tabgrip");
+  if (!grip) return;
+  grip.title = T["tui.tabbar.grip"] || "";
+  grip.onmousedown = (e) => {
+    e.preventDefault();
+    grip.classList.add("dragging");
+    document.body.classList.add("dragdiv");
+    const left = document.getElementById("app").getBoundingClientRect().left;
+    const move = (ev) => {
+      const want = ev.clientX - left;
+      // Dragged nearly shut means shut. Without this the bar would stick at
+      // its own minimum and the one thing the drag looks like it should do --
+      // get it out of the way -- would be the one thing it could not do
+      setTabWidth(want < TABW_MIN / 2 ? 0 : want);
+    };
+    const up = () => {
+      grip.classList.remove("dragging");
+      document.body.classList.remove("dragdiv");
+      settleTabWidth();
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+  // Back to the width it ships with, the way double-clicking a pane divider
+  // puts that back to even halves
+  grip.ondblclick = (e) => { e.preventDefault(); setTabWidth(TABW_DEF); settleTabWidth(); };
+  settleTabWidth();
+})();
 
 // One unfocused pane's terminal contents.
 window.__panescreen = function (id, html) {
@@ -3776,6 +3871,10 @@ pub fn page_for(sticky: bool) -> String {
     .replace("{{__lang__}}", &crate::i18n::lang())
     .replace("{{FONT}}", &look.font_css())
     .replace("{{FONT_SIZE}}", &look.size_px().to_string())
+    .replace("{{TAB_W}}", &crate::config::tab_bar_px().to_string())
+    .replace("{{TAB_W_MIN}}", &crate::config::TAB_BAR_MIN_PX.to_string())
+    .replace("{{TAB_W_MAX}}", &crate::config::TAB_BAR_MAX_PX.to_string())
+    .replace("{{TAB_W_DEF}}", &crate::config::TAB_BAR_DEFAULT_PX.to_string())
     .replace("{{THEME}}", &scheme.css_vars())
     .replace(
         "{{SCHEME}}",
@@ -4028,6 +4127,41 @@ mod tests {
         );
     }
 
+
+    /// The tab bar is a width, and putting it away is that width being zero.
+    ///
+    /// Two pieces of state -- a width and a "hidden" flag -- would be two
+    /// answers to one question, and the day they disagreed the bar would be
+    /// nowhere with a width, or somewhere with none. One number also means the
+    /// drag and the keyboard write the same thing, and the settings file holds
+    /// exactly what the window is showing.
+    #[test]
+    fn the_tab_bar_is_one_number_wide() {
+        let p = super::page();
+        assert!(p.contains("#tabs { grid-row:1/3; width:var(--tabw);"), "タブバーの幅が固定のまま");
+        // The grip never leaves the screen, or a bar put away could not be
+        // pulled back out
+        assert!(
+            p.contains("left:max(0px, calc(var(--tabw) - 4px))"),
+            "しまったタブバーを掴み直せる位置に取っ手が無い"
+        );
+        assert!(p.contains("window.__toggleTabBar"), "キーからしまう入口が無い");
+        // A drag switches off every pointer target but the handles. Leave the
+        // grip out of that list and its own double-click stops arriving
+        assert!(
+            p.contains("body.dragdiv .pdiv, body.dragdiv #tabgrip { pointer-events:auto; }"),
+            "ドラッグ中に取っ手自身がポインタを失う"
+        );
+        // The bounds are the app's, handed in rather than written twice
+        assert!(
+            !p.contains("{{TAB_W"),
+            "幅の値がページに差し込まれていない"
+        );
+        assert!(
+            p.contains(&format!("const TABW_MIN = {}", crate::config::TAB_BAR_MIN_PX)),
+            "ページとアプリで下限が食い違っている"
+        );
+    }
 
     /// Elements marked hidden must actually be hidden.
     ///

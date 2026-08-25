@@ -57,6 +57,7 @@ pub const ACTIONS: &[Action] = &[
     Action { name: "pane_next", key: 'o', also: &[], desc: "keys.pane_next" },
     Action { name: "pane_close", key: 'X', also: &[], desc: "keys.pane_close" },
     Action { name: "panes_even", key: '=', also: &[], desc: "keys.panes_even" },
+    Action { name: "tab_bar", key: 's', also: &[], desc: "keys.tab_bar" },
     Action { name: "divider_left", key: '<', also: &[], desc: "keys.divider_left" },
     Action { name: "divider_right", key: '>', also: &[], desc: "keys.divider_right" },
     Action { name: "workspace_list", key: 'w', also: &[], desc: "keys.workspace_list" },

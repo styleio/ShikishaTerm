@@ -44,8 +44,14 @@ pub struct Config {
     /// Wait time (ms) before a response is considered finished.
     /// If the profile specifies its own value, that takes priority
     pub done_confirm_ms: Option<u64>,
-    /// Width (columns) of the left tab bar. Auto-sized to fit tab names when omitted.
-    /// Can also be changed at runtime by dragging the divider
+    /// Width of the left tab bar, in pixels, or 0 when it is put away. Omitted
+    /// means the built-in width. Dragging the bar's edge writes it back here,
+    /// which is how it survives a restart.
+    ///
+    /// It used to be counted in terminal columns, from the days when the app
+    /// drew the bar itself out of characters. The window has been drawing it
+    /// for a long time now, and through all of that the number did nothing at
+    /// all -- the bar was a fixed width in the stylesheet and never asked.
     #[serde(default)]
     pub tab_bar_width: Option<u16>,
     /// Registered notification destinations (Lua can only send to destinations registered here).
@@ -130,6 +136,33 @@ pub struct ProviderSpec {
     /// "@name" secrets references. When given, the default api_key Bearer header is not sent -- these are sent instead
     #[serde(default)]
     pub headers: std::collections::HashMap<String, String>,
+}
+
+/// The tab bar's width as the window should open it, in pixels.
+///
+/// One place decides it, because three would disagree: the page is built with
+/// it, a drag sends a new one back, and the settings screen writes the same
+/// field by hand.
+pub const TAB_BAR_DEFAULT_PX: u16 = 290;
+/// Narrow enough to be a sliver, wide enough that a tab name is still a name.
+/// Below the floor there is only one honest width left, which is none at all
+pub const TAB_BAR_MIN_PX: u16 = 150;
+pub const TAB_BAR_MAX_PX: u16 = 640;
+
+/// A width as it may actually be used: put away (0), or inside the bounds.
+pub fn clamp_tab_bar(px: u16) -> u16 {
+    if px == 0 {
+        0
+    } else {
+        px.clamp(TAB_BAR_MIN_PX, TAB_BAR_MAX_PX)
+    }
+}
+
+pub fn tab_bar_px() -> u16 {
+    load()
+        .and_then(|c| c.tab_bar_width)
+        .map(clamp_tab_bar)
+        .unwrap_or(TAB_BAR_DEFAULT_PX)
 }
 
 /// Default order of the auxiliary key row. Frequently used Enter/Space/Backspace and the
@@ -1356,19 +1389,37 @@ pub fn append_tab(workspace: &str, tab: serde_json::Value) -> bool {
 }
 
 pub fn save_appearance(key: &str, value: serde_json::Value) {
+    save_setting(&["appearance", key], value);
+}
+
+/// Record one setting back into the settings file, leaving every other line of
+/// it as the person wrote it. `at` is the nesting, outermost first.
+///
+/// This is for the settings a person changes by *using* the app rather than by
+/// editing it -- the terminal's zoom, the width of the tab bar. They belong in
+/// the same file as everything else, or they would not survive the next start,
+/// and there would be two places to look for one answer.
+pub fn save_setting(at: &[&str], value: serde_json::Value) {
     let path = config_file_path();
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
     let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
     else {
         // A file we cannot read is not one to rewrite. The change stays for
         // this run and the person keeps their settings
-        crate::append_hook_log(&format!("could not record {key}: settings are not readable"));
+        crate::append_hook_log(&format!(
+            "could not record {}: settings are not readable",
+            at.join(".")
+        ));
         return;
     };
     if !doc.is_object() {
         doc = serde_json::json!({});
     }
-    doc["appearance"][key] = value;
+    let mut node = &mut doc;
+    for key in at {
+        node = &mut node[key];
+    }
+    *node = value;
     if let Ok(out) = serde_json::to_string_pretty(&doc) {
         let _ = crate::crypto::write_atomic(&path, &out);
     }
