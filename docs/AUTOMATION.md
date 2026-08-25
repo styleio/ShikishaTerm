@@ -97,6 +97,7 @@ shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
 | `shikisha.notify("target", "text")` | Notify Slack / Telegram (only configured targets) |
 | `shikisha.restart(tab)` | Restart that tab |
 | `shikisha.log("text")` | Record in `logs/hooks.log` |
+| `shikisha.set_session("id")` | Say which conversation THIS tab's CLI is running, so a restart can pick it up. No tab argument: the caller is the tab |
 | `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared inside the workspace |
 
 If `on_question.lua` **returns a string**, that string is sent automatically.

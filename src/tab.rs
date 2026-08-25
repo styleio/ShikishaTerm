@@ -1009,10 +1009,50 @@ pub const ACTIVITY_LEN: usize = 24;
 /// the secondary "it answered" evidence when the working indicator was missed
 const POST_SUBMIT_ECHO_MS: u64 = 2_000;
 
+/// A conversation a tab is running, and how sure we are that it is this tab's.
+///
+/// The source matters at the moment of resuming: two of these are facts, the
+/// third is a match, and resuming the wrong conversation is worse than starting
+/// a new one. So a match is used only when nothing else could have produced it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Session {
+    pub id: String,
+    pub source: SessionSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionSource {
+    /// We chose the id and launched the CLI with it. Nothing to attribute
+    Minted,
+    /// The CLI's own hook reported it, holding this tab's API key. Also a fact
+    Hook,
+    /// We matched the CLI's own records by folder and time. A good guess, and
+    /// only ever a guess
+    Store,
+}
+
+impl Session {
+    /// How the id is written down where a person might see it. Never the id
+    /// itself: it names a conversation, and a log is not the place for it
+    pub fn short(&self) -> String {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in self.id.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+        format!("{:?}:{:x}", self.source, h & 0xffff_ffff)
+    }
+}
+
 pub struct Tab {
     pub title: String,
     /// ID referenced by automation (optional). If unset, the tab name is used to reference it
     pub id: Option<String>,
+    /// The conversation this tab's CLI is running, and how that came to be
+    /// known. Kept across a restart on purpose: it is the whole point of
+    /// knowing it — a restart that starts the conversation over is the damage
+    /// this exists to undo
+    pub session: Option<Session>,
     /// The model bridge's endpoint. If Some, this tab is an OpenAI-compatible
     /// API rather than an AI CLI.
     /// When its turn comes, the main process hits complete() on a thread and injects the response into the screen
@@ -1308,6 +1348,7 @@ impl Tab {
         }
 
         Ok(Self {
+            session: None,
             title,
             id: None,
             model: opts.model.clone(),
@@ -1534,6 +1575,7 @@ impl Tab {
         fresh.auto_restart = self.auto_restart;
         fresh.id = self.id.clone();
         fresh.notify_on_done = self.notify_on_done.clone();
+        fresh.session = self.session.clone();
         // Since it was recreated, any pending config changes are now in effect
         *self = fresh;
         Ok(())

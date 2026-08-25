@@ -97,6 +97,7 @@ shikisha.send_to_tab("reviewer", "レビューして")   -- 名前を変えて�
 | `shikisha.notify("宛先", "文字列")` | Slack / Telegram へ通知（設定済みの宛先のみ） |
 | `shikisha.restart(tab)` | そのタブを再起動する |
 | `shikisha.log("文字列")` | `logs/hooks.log` に記録 |
+| `shikisha.set_session("id")` | **このタブ**のCLIが動かしている会話のIDを伝える（再起動で引き継ぐため）。タブを指定しないのは、呼んだ側がそのタブだから |
 | `shikisha.get_var("キー")` / `shikisha.set_var("キー", 値)` | 記憶しておける変数。ワークスペース内で共有 |
 
 `on_question.lua` で**文字列を返す**と、それが自動的に送信されます。

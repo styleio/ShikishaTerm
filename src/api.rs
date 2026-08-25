@@ -581,16 +581,16 @@ impl Write for PipeWriter {
 }
 
 /// A client of a running app's pipe: connect, present the token, then a call
-/// per line. Compiled with the tests — the shipped app is the server side —
-/// and kept as the worked example of the four lines a caller needs
-#[cfg(test)]
+/// per line.
+///
+/// The app is its own first caller: hook mode (`--hook session`) runs as a
+/// child of an AI CLI and reports back through this
 pub struct ApiClient {
     file: std::fs::File,
     reader: BufReader<std::fs::File>,
     next: u64,
 }
 
-#[cfg(test)]
 impl ApiClient {
     pub fn connect(path: &str, token: &str) -> std::io::Result<Self> {
         let file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;

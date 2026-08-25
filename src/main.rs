@@ -90,6 +90,18 @@ fn main() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--bridge") {
         return bridge::run();
     }
+    // Hook mode. An AI CLI runs this from inside its own process tree when a
+    // conversation starts, handing over its session id on stdin; this reports
+    // it back through the pipe and exits.
+    //
+    // Which tab it belongs to is not worked out here, and does not have to be:
+    // a tab's children are launched holding that tab's own API key, so the
+    // report arrives already knowing who sent it. Nothing is printed — the
+    // agent is reading this process's output, and a hook must never make a
+    // sound the agent could mistake for its own
+    if std::env::args().nth(1).as_deref() == Some("--hook") {
+        return hook_mode(std::env::args().nth(2).unwrap_or_default());
+    }
     // Move the legacy layout (config.json under the root) into the config folder (once only).
     // This must happen before loading, or we'd start up with the pre-migration empty config.
     config::migrate_legacy_config();
@@ -915,6 +927,46 @@ fn run_in_window() -> Result<()> {
 /// being split — so splitting twice walks down the tab bar instead of asking
 /// the same question twice. With nothing spare it falls back to the dashboard,
 /// which is never wrong and never a duplicate.
+/// Carry one hook event from an AI CLI back to the app.
+///
+/// Runs as a short-lived child of the agent. Reads the agent's JSON from stdin,
+/// takes the one thing worth keeping, and hands it over the API pipe. Failure is
+/// never reported to the agent — a hook that fails loudly would break the very
+/// conversation it exists to preserve — so problems go to the log instead.
+fn hook_mode(kind: String) -> Result<()> {
+    use std::io::Read as _;
+    let mut body = String::new();
+    let read = std::io::stdin().read_to_string(&mut body);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+
+    // The same fact goes by several names across the CLIs that report it, and a
+    // CLI is free to rename it in its next release. Read every spelling anyone
+    // is known to use rather than one and a shrug
+    let id = ["session_id", "sessionId", "conversation_id", "conversationId"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+        .unwrap_or_default()
+        .to_string();
+    if kind != "session" || id.is_empty() {
+        // A hook that quietly does nothing is the worst way for this to fail —
+        // the conversation is lost at the next restart and nobody finds out
+        // until then. Say what arrived, in enough detail to tell "the CLI sent
+        // nothing" from "the CLI sent something we didn't recognise"
+        append_hook_log(&format!(
+            "hook {kind}: nothing to report — stdin {read:?}, {} bytes, {} fields",
+            body.len(),
+            v.as_object().map(|o| o.len()).unwrap_or(0)
+        ));
+        return Ok(());
+    }
+    match api::ApiClient::from_env().and_then(|mut c| c.call("set_session", vec![id.into()])) {
+        Ok(answer) if answer["ok"] == serde_json::json!(true) => {}
+        Ok(answer) => append_hook_log(&format!("hook session refused: {answer}")),
+        Err(e) => append_hook_log(&format!("hook session could not report: {e}")),
+    }
+    Ok(())
+}
+
 /// Divide the focused pane and answer with the surface now under the cursor.
 ///
 /// Two doors ask for this — `Ctrl+B %` and the ⊞ / ⊟ in a pane's caption — and
@@ -5328,6 +5380,18 @@ fn exec_commands(
                     }
                     PaneOp::Equalize => panes.equalize(),
                 }
+            }
+            // A tab telling us which conversation it is running. Written down
+            // against that tab, and beside the exe, so a restart — or a restart
+            // of the whole app — can pick the conversation back up
+            Command::SetSession { id, origin } => {
+                let Some(t) = session_of(origin).and_then(|i| tabs.get_mut(i)) else {
+                    append_hook_log(&format!("set_session from tab{origin}: no such tab"));
+                    continue;
+                };
+                let s = tab::Session { id, source: tab::SessionSource::Hook };
+                append_hook_log(&format!("tab{origin} \"{}\" is running {}", t.title, s.short()));
+                t.session = Some(s);
             }
             Command::Notify { dest, text } => {
                 append_hook_log(&format!(

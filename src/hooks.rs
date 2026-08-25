@@ -743,6 +743,10 @@ pub enum Command {
     /// Rearrange the panes. One request, because they are one subject: the
     /// division of the screen belongs to the main loop, which owns the tree
     Pane(PaneOp),
+    /// "The conversation running in this tab is <id>." Reported by the tab
+    /// itself — from its own hook, or by anything else speaking for it — so the
+    /// tab is `origin`, never a name the caller chose to give
+    SetSession { id: String, origin: usize },
     Log(String),
 }
 
@@ -1853,6 +1857,26 @@ impl HookEngine {
                             t.set(i + 1, line)?;
                         }
                         Ok(t)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The tab says which conversation it is running.
+            //
+            // No tab argument: the caller IS the tab. Inside the app that is
+            // the tab whose hook fired; over the external API it is the tab
+            // whose key opened the connection. Letting a caller name someone
+            // else's tab would turn an authenticated report into a claim
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "set_session",
+                    lua.create_function(move |_, id: String| {
+                        c.borrow_mut().push(Command::SetSession { id, origin: o.get() });
+                        Ok(())
                     })
                     .map_err(lerr)?,
                 )
