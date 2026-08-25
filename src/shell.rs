@@ -175,11 +175,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .pane .phead .sp { opacity:.55; padding:0 2px; font-size:12px; line-height:1; }
   .pane .phead .sp:hover { opacity:1; color:var(--brand); }
   /* The dividers. Drawn wider than they look so they can actually be grabbed:
-     a 1px line is a line, not a handle. The visible mark is the pane borders
-     either side; this only takes the pointer */
+     a 1px line is a line, not a handle.
+     The handle takes the pointer; the hairline inside it is what the eye sees.
+     This used to say the boundary was drawn by the panes either side -- and
+     the panes have no border, so between two dark terminals there was nothing
+     drawn at all and they read as one. The only place it happened to show was
+     beside a placed browser, which is held back from the divider so the whole
+     handle stays catchable: a gap by accident, not a line by intent */
   .pdiv { position:absolute; z-index:3; }
   .pdiv.v { cursor:col-resize; }
   .pdiv.h { cursor:row-resize; }
+  .pdiv::after { content:""; position:absolute; background:var(--line); }
+  .pdiv.v::after { top:0; bottom:0; left:50%; width:1px; transform:translateX(-50%); }
+  .pdiv.h::after { left:0; right:0; top:50%; height:1px; transform:translateY(-50%); }
+  /* Under the hand it is a handle, not a rule: the whole width lights up so
+     what can be grabbed is what is shown */
+  .pdiv:hover::after, .pdiv.dragging::after { opacity:0; }
   .pdiv:hover, .pdiv.dragging { background:var(--brand); opacity:.35; }
   /* While a divider is being dragged the pointer must not be stolen by an
      iframe, a browser layer, or a text selection that starts mid-drag */
@@ -4104,6 +4115,12 @@ mod tests {
         assert!(
             p.contains(".pane.focused .phead { color:var(--text); background:var(--raise);"),
             "フォーカス中のペインの見出しが見分けられない"
+        );
+        // Two panes showing nothing must still look like two panes. The
+        // divider carries the only line there is -- the panes have no border
+        assert!(
+            p.contains(".pdiv::after { content:\"\"; position:absolute; background:var(--line); }"),
+            "ペイン同士の境目に線が引かれていない"
         );
         assert!(!p.contains("\"✎\""), "見えない文字グリフのペンが残っている");
     }
