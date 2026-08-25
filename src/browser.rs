@@ -37,6 +37,39 @@ const PLACED_JS: &str = r##"
   // some paths and after it on others; asking whether we hold it is the same
   // question either way, and asking twice costs a message nobody reads
   addEventListener("pointerdown", () => { if (document.hasFocus()) tell(); }, true);
+
+  // The pen that summons the composer, drawn HERE.
+  //
+  // The window cannot draw it over this page. A z-index orders things inside
+  // one document; this page is a window of its own, and no element of the
+  // window's page can be stacked above another window. The room for it used to
+  // be taken out of the page instead -- the page was held up by the height of
+  // a button, leaving a band of nothing under it. Drawn from inside, it floats
+  // over the page exactly as it does over a terminal, in the same corner, and
+  // costs no room at all.
+  //
+  // In a shadow root so the page's own CSS cannot reach it, and the other way
+  // about -- same as the banner above
+  let host = null;
+  window.__shikisha_pen = function (on) {
+    if (!on) { if (host) host.style.display = "none"; return; }
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "__shikisha_pen";
+      host.style.cssText =
+        "position:fixed;right:16px;bottom:16px;z-index:2147483646";
+      (document.body || document.documentElement).appendChild(host);
+      host.attachShadow({ mode: "open" });
+      host.shadowRoot.innerHTML =
+        '<button style="width:44px;height:44px;border-radius:50%;font-size:19px;' +
+        'line-height:1;display:flex;align-items:center;justify-content:center;' +
+        'cursor:pointer;border:1px solid #00aaff;background:#0a0c0e;' +
+        'box-shadow:0 4px 16px rgba(0,0,0,.45);opacity:.85">&#9999;&#65039;</button>';
+      host.shadowRoot.querySelector("button").onclick = () =>
+        window.ipc.postMessage(JSON.stringify({ kind: "compose" }));
+    }
+    host.style.display = "";
+  };
 })();
 "##;
 
@@ -649,6 +682,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("button") => Ev::Button { from: None },
         Some("touched") => Ev::Touched { from: None },
+        Some("compose") => Ev::Compose { from: None },
+        Some("pen") => Ev::Pen {
+            on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
         Some("select") => Ev::Select {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },
@@ -964,6 +1001,12 @@ pub enum Ev {
     /// A page placed in the window has the keyboard: whoever is at the machine
     /// is working there, so that is the pane in focus
     Touched { from: Option<String> },
+    /// The pen a placed page draws for itself was pressed: open the composer
+    Compose { from: Option<String> },
+    /// From the window's own page: whether a placed page should be drawing
+    /// that pen at all. Which page is the window's to work out -- it is the one
+    /// in the focused pane -- so only the open/closed state travels here
+    Pen { on: bool },
     /// The window's size changed (how many rows/columns fit)
     Resize {
         rows: u16,
@@ -3007,6 +3050,9 @@ fn run_window(
                                     from: Some(who.clone()),
                                 },
                                 Ev::Touched { .. } => Ev::Touched {
+                                    from: Some(who.clone()),
+                                },
+                                Ev::Compose { .. } => Ev::Compose {
                                     from: Some(who.clone()),
                                 },
                                 Ev::Recorded { act, sel, value, xpath, hint, .. } => Ev::Recorded {

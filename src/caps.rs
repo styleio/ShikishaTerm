@@ -695,6 +695,15 @@ impl Capabilities {
         self.with(name, |b, to| b.storage_in(to, &storage, 30_000))
     }
 
+    /// Show or hide the pen a placed page draws for itself.
+    ///
+    /// The window cannot put anything over that page -- it is a window of its
+    /// own -- so the way into the composer is drawn from inside it
+    pub fn browser_pen(&self, name: &str, on: bool) -> Result<()> {
+        let js = format!("window.__shikisha_pen && window.__shikisha_pen({on});");
+        self.with(name, |b, to| b.eval_in(to, &js).map(|_| ()))
+    }
+
     /// Show a banner asking the human something
     pub fn browser_ask(&self, name: &str, text: &str, label: &str) -> Result<()> {
         self.forget_press(name);

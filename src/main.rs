@@ -396,6 +396,8 @@ struct WinSurface {
     /// Pages placed in the window that have taken the keyboard since the last
     /// drain, by the name automation addresses them with
     touches: Vec<String>,
+    /// Whether a placed page should be drawing the pen (the composer is shut)
+    pen: Option<bool>,
     /// The pane tree as last sent to the page. Only send it again when it changes
     last_layout: String,
     /// The terminal contents last sent for each unfocused pane. The focused
@@ -507,6 +509,10 @@ impl WinSurface {
 
     fn take_touches(&mut self) -> Vec<String> {
         std::mem::take(&mut self.touches)
+    }
+
+    fn take_pen(&mut self) -> Option<bool> {
+        self.pen.take()
     }
 
     /// Put the tab bar away, or bring it back out.
@@ -763,6 +769,12 @@ impl WinSurface {
                 // which pane they landed on
                 Ev::Touched { from: Some(name) } => self.touches.push(name),
                 Ev::Touched { from: None } => {}
+                // The pen a placed page drew for itself was pressed
+                Ev::Compose { .. } => {
+                    let _ = self.win.eval("window.__composer && window.__composer();");
+                }
+                // The window's page says whether that pen should be showing
+                Ev::Pen { on } => self.pen = Some(on),
                 // A placed page finished loading (fires on every navigation)
                 Ev::Ready {
                     from: Some(name),
@@ -1015,6 +1027,7 @@ fn run_in_window() -> Result<()> {
         font_size: None,
         tab_width: None,
         touches: Vec::new(),
+        pen: None,
         recorded: Vec::new(),
         operates: Vec::new(),
         replay_saves: false,
@@ -1764,6 +1777,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut tab_width: Option<u16> = None;
     let mut font_save_at: Option<std::time::Instant> = None;
     let mut tab_save_at: Option<std::time::Instant> = None;
+    /// Whether the composer is shut, as the window's own page last said. The
+    /// pen a placed page draws for itself follows it
+    let mut composer_shut = false;
+    /// The placed page currently showing that pen, if any
+    let mut pen_shown: Option<String> = None;
     // What was last written, so an unchanged screen writes nothing at all
     let mut last_saved: Option<(crate::layout::Layout, Vec<Option<tab::Session>>)> = None;
     // Which key does what, this run. Read once and re-read when the settings
@@ -3047,6 +3065,32 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
         }
+        // The pen over a placed page is drawn by that page: nothing of ours can
+        // be stacked above a window of its own. Only one page ever shows it --
+        // the one in the focused pane, and only while the composer is shut --
+        // so this names that page and turns the previous one off. Recomputed
+        // rather than told, since focus moves for reasons the page never hears
+        if let Some(on) = surface.take_pen() {
+            composer_shut = on;
+        }
+        let wants_pen = composer_shut
+            .then(|| pane_layout.surface_of(pane_layout.focus()))
+            .flatten()
+            .and_then(|s| ui.surfaces.get(s.checked_sub(1)?))
+            .and_then(|s| match s {
+                Surface::Browser { key, .. } => Some(key.clone()),
+                Surface::Session(_) => None,
+            });
+        if wants_pen != pen_shown {
+            if let Some(old) = pen_shown.take() {
+                let _ = caps.browser_pen(&old, false);
+            }
+            if let Some(new) = wants_pen.clone() {
+                let _ = caps.browser_pen(&new, true);
+            }
+            pen_shown = wants_pen;
+        }
+
         // Someone clicked into a page placed in the window. That press never
         // reaches the pane underneath -- the page is a window of its own -- so
         // the pane it sits in is focused from the page's own report instead.
