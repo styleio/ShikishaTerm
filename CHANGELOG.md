@@ -8,6 +8,86 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-25
+
+A follow-up to the split panes of 0.3.0: the window is now divided with the
+mouse as readily as with the keyboard, everything drawn over a pane knows which
+pane it belongs to, and a tab whose command already says how to resume is left
+alone.
+
+### Added
+- **The tab bar's edge can be taken hold of.** Drag it and the bar follows; drag
+  it shut and the window is all terminal. `Ctrl+B s` does the same from the
+  keyboard and brings the bar back the width it was, double-click for the width
+  it ships with. Every one of those writes the one width in the settings file,
+  so the next start opens the way you left it — and the config field that
+  claimed to set that width, unread for as long as the window has drawn the bar,
+  finally means something.
+
+- **Every pane is captioned, the only one included.** The two divide controls
+  (▥ and ▤) live in the caption, so the first division no longer needs the
+  keyboard — you could not use the pane captions to divide until you had
+  divided. The last pane cannot be closed, so its caption offers no ✕: a control
+  that refuses is worse than one that was never there.
+
+- **An empty half invites the tab that will fill it.** A division no longer
+  refuses for want of a free tab. "+ Add a tab" opens the settings form on its
+  add-a-tab page, and the new tab lands in *that* pane — the one that was
+  pressed — with the form closing behind it. Cancel and the pane waits, as it
+  was.
+
+- **The settings screen shows the line a tab will really be launched with.**
+  Under the command field is the command itself, with the arguments the app adds
+  picked out in the accent colour and a sentence saying why they are there. The
+  app answers the question rather than imitating it, so the promise and the
+  launch cannot drift apart.
+
+### Changed
+- **INDEX and the settings form are screens, not panes.** Both are about the app
+  rather than about one of the things running in it. They cover the window now,
+  and the layout waits underneath, whole, returning the moment a running tab is
+  picked. Surface 0 no longer means the board; it means nothing is in this pane
+  yet.
+- **A blue rule means the focus is here, and nothing else.** Full-strength brand
+  colour is for state — the focused pane's underline, a bar that is loading, a
+  mode that is armed; structure inside a panel is drawn with the plain line
+  colour. The composer's inner seam was reading as the start of another pane.
+- **The divider between panes is visible.** A hairline down the middle of the
+  9px grab handle: 9px takes the pointer, 1px is what the eye sees, and under
+  the hand the hairline gives way to the handle lighting up. Two dark terminals
+  side by side used to read as one region.
+
+### Fixed
+- **A command that already says how to resume keeps its own word.** A tab
+  written as `claude --dangerously-skip-permissions --resume` had our
+  `--session-id <uuid>` pushed in beside it, which Claude Code refuses outright
+  — the tab died on launch and every restart rebuilt the same dead line. The
+  words we look for come from the profile's own resume templates, so a CLI that
+  spells it as a subcommand is recognised by the same rule as one that spells it
+  as a flag.
+- **A page placed in a pane stays inside that pane.** The room held back for the
+  composer was written over the focused pane's offset, so a placed browser
+  painted down the whole column — over the pane beneath it and over the very pen
+  it was making room for.
+- **Clicking into a placed page is clicking on its pane.** A browser pane could
+  only be entered by its caption, and the pen that summons the composer never
+  appeared over one. What the page reports is taking the keyboard, not being
+  clicked, so a rally clicking through a form cannot pull the keyboard out from
+  under someone typing in another pane.
+- **The pen is drawn by the page it has to float over.** No element can be
+  stacked above a placed page — it is a window of its own — so the page draws the
+  pen itself and nothing is reserved any more. There is no longer a band of
+  nothing under every browser.
+- **The composer opens at the foot of the pane you summoned it from**, rather
+  than at the window's floor — or, with a browser placed down there, nowhere at
+  all.
+- **The pane you just left keeps showing what was on it**, instead of sitting
+  empty until its terminal happened to print something.
+- **The focused pane is measured whenever the geometry moves.** The rectangle
+  every layer above a pane draws with is in pixels while panes are laid out in
+  percentages, so resizing the window left a browser landing in the old
+  rectangle until some other pane was focused.
+
 ## [0.3.0] - 2026-08-25
 
 ### Added
@@ -473,7 +553,9 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/styleio/ShikishaTerm/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/styleio/ShikishaTerm/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/styleio/ShikishaTerm/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/styleio/ShikishaTerm/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/styleio/ShikishaTerm/compare/v0.1.0...v0.1.1
