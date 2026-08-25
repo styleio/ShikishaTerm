@@ -528,9 +528,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:#16202b; border:1px solid var(--brand); color:var(--text);
     padding:4px 12px; border-radius:14px; font-size:12px; cursor:pointer; }
   #back:hover { background:var(--brand); color:#04121c; }
+  /* The message line. Above the sub-input bar (z-index 18) rather than behind
+     it: without a z-index of its own it stacked under the dock, so every
+     message shown while the composer was open said nothing to anybody */
   #flash { position:absolute; left:50%; bottom:52px; transform:translateX(-50%);
-    background:#16202b; border:1px solid var(--brand); color:var(--text);
-    padding:8px 16px; border-radius:8px; font-size:13px; }
+    z-index:32; background:#16202b; border:1px solid var(--brand); color:var(--text);
+    padding:8px 16px; border-radius:8px; font-size:13px; max-width:80%;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
   /* ── Remote history paging (phone only) ──────────────────────────────
      A phone can't scroll a full-screen TUI smoothly over the network, so

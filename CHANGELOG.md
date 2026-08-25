@@ -120,7 +120,17 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **The history can be searched.** In copy mode (`Ctrl+B [`), `/` opens a line
+  to type into and jumps to the match, `n` and `N` walk through the rest. The
+  search wraps rather than stopping at the end — copy mode opens at the newest
+  line, where a search that only looked one way would answer "not found" about
+  something sitting plainly above. The match is put near the middle of the
+  screen, so what came before and after it are both visible.
+
 ### Fixed
+- **Messages no longer hide behind the input bar.** The message line had no
+  place in the stacking order, so anything it said while the sub-input bar was
+  open was drawn underneath it and seen by nobody.
 - **Lua that never returns no longer takes the window with it.** The engine runs
   on the main loop, so a `while true do end` typed into the composer — or sent
   from a phone, which could already be done — froze the app outright, with no

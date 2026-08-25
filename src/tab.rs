@@ -63,6 +63,11 @@ pub struct CopyState {
     pub cursor_row: u16,
     /// Selection start position (row count from the bottom of the screen). None = no selection
     pub anchor: Option<usize>,
+    /// What is being typed into the search line, while it is open
+    pub find: Option<String>,
+    /// What was searched for last, so the search can be repeated after the
+    /// line has closed
+    pub last: String,
 }
 
 /// Responder for terminal queries (DSR/DA) from the child process.
@@ -387,6 +392,66 @@ pub fn capture_range(rows: u16, cursor_row: u16, since: usize) -> (usize, usize)
 /// Turn a row range within the scrollback (row count from the bottom of the
 /// screen, lo..=hi) into text.
 /// Wrapped rows are joined together, and trailing whitespace is trimmed.
+/// One line of history, by its distance from the newest line (0 = newest).
+///
+/// Reading history means moving the screen's own viewport, which is why this
+/// and `extract_text` both put it back afterwards: the viewport is what the
+/// person is looking at, not a cursor we own
+fn line_at<CB: vt100::Callbacks>(p: &mut vt100::Parser<CB>, d: usize, cols: u16) -> String {
+    let max = furthest_back(p);
+    let s = d.min(max);
+    let (rows, _) = p.screen().size();
+    p.screen_mut().set_scrollback(s);
+    let r = (rows as usize).saturating_sub(1).saturating_sub(d - s);
+    p.screen().rows(0, cols).nth(r).unwrap_or_default()
+}
+
+/// How far back the history goes, in lines
+fn furthest_back<CB: vt100::Callbacks>(p: &mut vt100::Parser<CB>) -> usize {
+    let saved = p.screen().scrollback();
+    p.screen_mut().set_scrollback(usize::MAX / 2);
+    let max = p.screen().scrollback();
+    p.screen_mut().set_scrollback(saved);
+    max
+}
+
+/// The nearest line containing `needle`, starting from `from` and moving in
+/// one direction, then wrapping once.
+///
+/// Wrapping is what makes one key enough. Copy mode opens at the newest line,
+/// where searching "down" has nothing below it to find — a search that
+/// answered "no matches" there would be technically right and useless. So it
+/// looks the other way rather than stopping, and either way it stops before
+/// coming back to where it began.
+pub fn find_line<CB: vt100::Callbacks>(
+    p: &mut vt100::Parser<CB>,
+    needle: &str,
+    from: usize,
+    up: bool,
+    cols: u16,
+) -> Option<usize> {
+    let needle = needle.to_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    let saved = p.screen().scrollback();
+    let (rows, _) = p.screen().size();
+    let top = furthest_back(p) + (rows as usize).saturating_sub(1);
+    // Every line exactly once, starting next to where we are and carrying on
+    // past either end
+    let order: Vec<usize> = match up {
+        true => (0..=top).map(|i| (from + 1 + i) % (top + 1)).collect(),
+        false => (0..=top)
+            .map(|i| (from + top + 1 - (i % (top + 1))) % (top + 1))
+            .collect(),
+    };
+    let hit = order
+        .into_iter()
+        .find(|d| line_at(p, *d, cols).to_lowercase().contains(&needle));
+    p.screen_mut().set_scrollback(saved);
+    hit
+}
+
 pub fn extract_text<CB: vt100::Callbacks>(
     p: &mut vt100::Parser<CB>,
     lo: usize,
@@ -616,6 +681,33 @@ mod tests {
             newest_here: newest.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn searching_the_history_wraps_instead_of_giving_up() {
+        // Copy mode opens at the newest line. A search that only looked
+        // "down" from there would have nothing below it to find and would
+        // answer "no matches" while the thing sits plainly above
+        let mut p = vt100::Parser::new(4, 20, 200);
+        for line in ["alpha", "beta", "NEEDLE here", "gamma", "delta", "epsilon"] {
+            p.process(format!("{line}
+").as_bytes());
+        }
+        let found = super::find_line(&mut p, "needle", 0, true, 20).expect("見つかる");
+        let text = super::extract_text(&mut p, found, found, 20);
+        assert!(text.contains("NEEDLE here"), "掴んだ行が違う: {text:?}");
+        // Case is not what anyone means when they search a terminal
+        assert_eq!(super::find_line(&mut p, "NeEdLe", 0, true, 20), Some(found));
+        // The other direction reaches it too, by wrapping past the newest line
+        assert_eq!(super::find_line(&mut p, "needle", 0, false, 20), Some(found));
+        // Nothing there is nothing there
+        assert_eq!(super::find_line(&mut p, "haystack", 0, true, 20), None);
+        // ...and an empty search is not a search
+        assert_eq!(super::find_line(&mut p, "", 0, true, 20), None);
+        // Starting ON the match moves off it rather than standing still, so
+        // pressing "next" repeatedly walks rather than sticks
+        let again = super::find_line(&mut p, "needle", found, true, 20);
+        assert_eq!(again, Some(found), "他に無ければ一周して同じ行に戻る");
     }
 
     #[test]

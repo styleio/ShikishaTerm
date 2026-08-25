@@ -831,7 +831,10 @@ fn named_key(n: &str) -> Option<KeyCode> {
         "enter" => KeyCode::Enter,
         "bs" => KeyCode::Backspace,
         "tab" => KeyCode::Tab,
-        "esc" => KeyCode::Esc,
+        // Both spellings: the page and the phone have always sent "escape"
+        // through their own map, and a name that works in one place and is
+        // silently ignored in another is the worst kind of half-support
+        "esc" | "escape" => KeyCode::Esc,
         "del" => KeyCode::Delete,
         "up" => KeyCode::Up,
         "down" => KeyCode::Down,
@@ -3640,7 +3643,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 t.copy = Some(CopyState {
                                     cursor_row: rows.saturating_sub(1),
                                     anchor: None,
+                                    find: None,
+                                    last: String::new(),
                                 });
+                                // Copy mode looks exactly like not being in
+                                // copy mode until you press something. Say
+                                // what it is and what it can do, once
+                                flash = Some(i18n::t("msg.copy_mode"));
                             }
                         }
                         _ => {}
@@ -5818,7 +5827,58 @@ fn handle_copy_key(
     let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
     let cur = p.screen().scrollback();
     let mut keep = true;
+    // While the search line is open it takes every key: a search for "quit"
+    // must not be read as four commands
+    if let Some(typed) = cs.find.as_mut() {
+        match key.code {
+            KeyCode::Esc => cs.find = None,
+            KeyCode::Backspace => {
+                typed.pop();
+            }
+            KeyCode::Enter => {
+                let needle = std::mem::take(typed);
+                cs.find = None;
+                if !needle.is_empty() {
+                    cs.last = needle;
+                    let from = abs_line(cur, rows_v, cs.cursor_row);
+                    match tab::find_line(&mut p, &cs.last, from, true, cols_v) {
+                        Some(d) => show_line(&mut p, &mut cs, d, rows_v),
+                        None => {
+                            *flash = Some(i18n::tp("msg.find.none", &[("what", &cs.last)]))
+                        }
+                    }
+                }
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => typed.push(c),
+            _ => {}
+        }
+        // Typing has to be visible. Copy mode borrows the message line for it
+        // rather than growing a bar of its own, which would move the terminal
+        // under the reader's eyes at the moment they are reading it
+        if let Some(typed) = cs.find.as_ref() {
+            *flash = Some(i18n::tp("msg.find.typing", &[("what", typed)]));
+        }
+        drop(p);
+        t.copy = Some(cs);
+        return Ok(());
+    }
     match key.code {
+        // Look for something in the history. Opens a line to type into; the
+        // search itself runs on Enter
+        KeyCode::Char('/') | KeyCode::Char('?') => {
+            cs.find = Some(String::new());
+            *flash = Some(i18n::tp("msg.find.typing", &[("what", "")]));
+        }
+        // The same search again, further back — or, capitalised, back the
+        // other way. The pair vi has used for fifty years
+        KeyCode::Char('n') | KeyCode::Char('N') if !cs.last.is_empty() => {
+            let up = key.code == KeyCode::Char('n');
+            let from = abs_line(cur, rows_v, cs.cursor_row);
+            match tab::find_line(&mut p, &cs.last, from, up, cols_v) {
+                Some(d) => show_line(&mut p, &mut cs, d, rows_v),
+                None => *flash = Some(i18n::tp("msg.find.none", &[("what", &cs.last)])),
+            }
+        }
         KeyCode::Esc | KeyCode::Char('q') => {
             p.screen_mut().set_scrollback(0);
             keep = false;
@@ -5885,6 +5945,26 @@ fn handle_copy_key(
         t.copy = Some(cs);
     }
     Ok(())
+}
+
+/// Bring one line of history into view, with the cursor on it.
+///
+/// Put near the middle rather than at an edge: a match at the very bottom of
+/// the screen shows what came before it and nothing of what came after, which
+/// is half the reason for looking
+fn show_line<CB: vt100::Callbacks>(
+    p: &mut vt100::Parser<CB>,
+    cs: &mut CopyState,
+    d: usize,
+    rows: u16,
+) {
+    let want = d.saturating_sub((rows / 2) as usize);
+    p.screen_mut().set_scrollback(want);
+    let at = p.screen().scrollback();
+    cs.cursor_row = (rows as usize)
+        .saturating_sub(1)
+        .saturating_sub(d.saturating_sub(at))
+        .min(rows.saturating_sub(1) as usize) as u16;
 }
 
 /// Mouse handling: click a tab bar entry to switch / wheel scroll / select-to-copy instantly / right-click to paste
