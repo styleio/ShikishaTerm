@@ -647,6 +647,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .to_string(),
         },
         Some("openws") => Ev::OpenWs,
+        Some("runkey") => Ev::RunKey {
+            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
         Some("vaultsearch") => Ev::VaultSearch {
             query: v.get("query").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
@@ -986,6 +989,10 @@ pub enum Ev {
     /// a bare 'w' would just be typed into whatever session is showing instead
     /// of opening the list. Converted to the Ctrl+B w prefix in `keys_for`.
     OpenWs,
+    /// Run a named key action -- what the command palette does. The name is a
+    /// keys.rs action; the window turns it into the same keystroke pressing it
+    /// would send, so the palette needs to know nothing about the keys
+    RunKey { name: String },
     /// Search past conversations (the Vault). `query` is what to look for; a
     /// blank one lists the recent ones. The window answers by putting the hits
     /// into the next state

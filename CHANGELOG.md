@@ -120,6 +120,15 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **A command palette.** `Ctrl+B :` (or "Command palette" on the board) opens one
+  box that finds and runs anything: go to a tab, open settings or the Vault, run
+  any of the rebindable actions, fire one of your own quick actions — filtered
+  as you type, run on Enter. The action list is the one keys table the rest of
+  the app already uses, so the palette shows exactly what the app can do and
+  nothing it cannot, and running one is the very keystroke pressing it would
+  send — a rebound key and a moved prefix are already accounted for. Works from
+  the phone too.
+
 - **Past conversations can be searched and reopened.** The board's menu has
   "Find past work": a search box over every conversation the AI CLIs have
   recorded — claude under `~/.claude/projects`, codex under `~/.codex/sessions`

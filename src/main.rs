@@ -522,6 +522,11 @@ impl WinSurface {
         let _ = self.win.eval("window.__openVault && window.__openVault();");
     }
 
+    /// Open the command palette on this window's page.
+    fn open_palette(&self) {
+        let _ = self.win.eval("window.__openPalette && window.__openPalette();");
+    }
+
     /// True if the "remote connected" control was pressed (and clears the flag if so)
     fn take_remote_cut(&mut self) -> bool {
         std::mem::take(&mut self.remote_cut)
@@ -886,6 +891,13 @@ fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
                 Vec::new()
             }
         }
+        // The palette picked an action by name. Run it as the keystroke it
+        // stands for, through the very path a button or a keypress takes -- so
+        // a rebound key and a moved prefix are both already accounted for
+        Ev::RunKey { name } => match crate::keys::char_for(name) {
+            Some(c) => prefixed(c),
+            None => Vec::new(),
+        },
         _ => Vec::new(),
     }
 }
@@ -3672,6 +3684,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 if let Some(code) = meant {
                     match code {
                         KeyCode::Char('q') => break,
+                        // Open the command palette from any tab. It is drawn by
+                        // the page, so this only nudges it open
+                        KeyCode::Char(':') => surface.open_palette(),
                         KeyCode::Char(c @ '0'..='9') => {
                             let n = c as usize - '0' as usize;
                             if n <= surface_count {
@@ -4009,6 +4024,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // page-side action, so this only nudges it open; the
                         // phone reaches the same overlay by tapping the entry
                         KeyCode::Char('f') => surface.open_vault(),
+                        KeyCode::Char('p') => surface.open_palette(),
                         KeyCode::Char('q') => break,
                         _ => {}
                     }

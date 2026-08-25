@@ -68,6 +68,7 @@ pub const ACTIONS: &[Action] = &[
     Action { name: "stop", key: 'x', also: &[], desc: "keys.stop" },
     Action { name: "literal_prefix", key: 'b', also: &[], desc: "keys.literal_prefix" },
     Action { name: "help", key: '?', also: &[], desc: "keys.help" },
+    Action { name: "palette", key: ':', also: &[], desc: "keys.palette" },
 ];
 
 /// The prefix, before anything is read from the settings.
@@ -388,6 +389,18 @@ impl Keys {
             })
             .collect()
     }
+}
+
+/// The character an action is dispatched on, by name. Used to run an action
+/// the palette picked without the palette needing to know the keys.
+pub fn char_for(name: &str) -> Option<char> {
+    ACTIONS.iter().find(|a| a.name == name).map(|a| a.key)
+}
+
+/// Every action, as (name, description key), for a launcher that lists them.
+/// The palette runs one by name; the description is what a person reads
+pub fn listing() -> Vec<(&'static str, &'static str)> {
+    ACTIONS.iter().map(|a| (a.name, a.desc)).collect()
 }
 
 fn clash(key: &str, taken_by: &char) -> String {

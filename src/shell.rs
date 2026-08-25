@@ -539,23 +539,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #netveil .nvsub { font-size:13px; color:var(--dim); line-height:1.55; }
   #netveil.cut .nvtitle { color:var(--warn); }
 
-  #vault { position:fixed; inset:0; background:#00000099; display:flex;
+  #vault, #palette { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
-  #vault[hidden] { display:none; }
-  #vault .vbox { background:var(--panel); border:1px solid var(--brand);
+  #vault[hidden], #palette[hidden] { display:none; }
+  #vault .vbox, #palette .vbox { background:var(--panel); border:1px solid var(--brand);
     border-radius:12px; padding:16px 18px; width:min(720px,92vw); max-height:82vh;
     display:flex; flex-direction:column; gap:10px; }
-  #vault .vhead { display:flex; align-items:center; }
-  #vault .vtitle { color:var(--brand); font-size:13px; letter-spacing:1px;
+  #vault .vhead, #palette .vhead { display:flex; align-items:center; }
+  #vault .vtitle, #palette .vtitle { color:var(--brand); font-size:13px; letter-spacing:1px;
     text-transform:uppercase; flex:1; }
-  #vault .vclose { cursor:pointer; color:var(--dim); font-size:16px; padding:2px 6px; }
-  #vault .vclose:hover { color:var(--text); }
-  #vault #vq { font:inherit; font-size:14px; background:var(--bg); color:var(--text);
+  #vault .vclose, #palette .vclose { cursor:pointer; color:var(--dim); font-size:16px; padding:2px 6px; }
+  #vault .vclose:hover, #palette .vclose:hover { color:var(--text); }
+  #vault #vq, #palette #pq { font:inherit; font-size:14px; background:var(--bg); color:var(--text);
     border:1px solid var(--line); border-radius:8px; padding:9px 12px; outline:none; }
-  #vault #vq:focus { border-color:var(--brand); }
+  #vault #vq:focus, #palette #pq:focus { border-color:var(--brand); }
   #vault .vhint { color:var(--dim); font-size:11.5px; }
-  #vault .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; }
-  #vault .vrow { padding:9px 10px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
+  #vault .vlist, #palette .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; }
+  #vault .vrow, #palette .prow { padding:9px 10px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
+  #palette .prow { display:flex; gap:10px; align-items:baseline; }
+  #palette .prow.sel { background:var(--raise); border-color:var(--brand); }
+  #palette .pgrp { flex:none; font-size:10px; color:var(--brand); text-transform:uppercase;
+    width:64px; letter-spacing:.5px; }
+  #palette .plabel { color:var(--text); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #vault .vrow:hover { background:var(--raise); border-color:var(--line); }
   #vault .vrow .vr1 { display:flex; gap:8px; align-items:baseline; }
   #vault .vrow .vprog { color:var(--brand); font-size:11px; flex:none; }
@@ -694,6 +699,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <!-- The Vault: search past conversations and reopen one. Its own overlay
        rather than the veil, because it has an input and must not close on the
        first keystroke -->
+  <!-- The command palette: one place to find and run anything. Same overlay
+       shape as the Vault, a different list underneath -->
+  <div id="palette" hidden>
+    <div class="vbox">
+      <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
+      <input id="pq" type="text" autocomplete="off" spellcheck="false">
+      <div class="vlist"></div>
+    </div>
+  </div>
   <div id="vault" hidden>
     <div class="vbox">
       <div class="vhead">
@@ -739,7 +753,7 @@ const MENU_WINDOW_ONLY = {{MENU_WINDOW_ONLY}};
 // Menu entries the board carries out itself rather than forwarding as a keystroke.
 // Keyed by the entry's translation key, so the letter on the button can change
 // without this quietly falling back to the keystroke path.
-const MENU_OWN = {"tui.menu.settings": () => openSettings(), "tui.menu.vault": () => window.__openVault()};
+const MENU_OWN = {"tui.menu.settings": () => openSettings(), "tui.menu.vault": () => window.__openVault(), "tui.menu.palette": () => window.__openPalette()};
 // The auxiliary key row shown in the screen relay (customizable via config)
 const CAST_KEYS = {{CAST_KEYS}};
 // Quick actions for the sub-input bar: [{label, text, lua}]. text!=null = insert
@@ -748,6 +762,9 @@ const CAST_KEYS = {{CAST_KEYS}};
 // renders, swapped by __setActions when the config changes (so a settings edit
 // reflects without reloading the window).
 const ACTIONS = {{ACTIONS}};
+// Every rebindable action, as {name, label}. The palette runs one by name;
+// the label is the translated description a person reads
+const KEY_ACTIONS = {{KEY_ACTIONS}};
 let curActions = (typeof ACTIONS !== "undefined" && ACTIONS) ? ACTIONS : [];
 // The access token is never baked into the page. On first pair it rides in the
 // URL (?t=…, straight from the QR); we lift it into sessionStorage and then
@@ -2499,6 +2516,91 @@ function renderVault() {
     v.addEventListener("mousedown", (e) => { if (e.target === v) closeVault(); });
   }
 })();
+// The command palette: find and run anything by typing. One list over the
+// things a person reaches for -- go somewhere, do something, run one of their
+// own actions -- filtered as they type, run on Enter or a click.
+let palItems = [], palSel = 0;
+window.__openPalette = function () {
+  const v = document.getElementById("palette");
+  if (!v) return;
+  v.hidden = false;
+  v.querySelector(".vtitle").textContent = T["palette.title"] || "COMMANDS";
+  const q = document.getElementById("pq");
+  q.placeholder = T["palette.placeholder"] || "Type a command…";
+  q.value = "";
+  buildPalette("");
+  setTimeout(() => q.focus(), 30);
+};
+function closePalette() {
+  const v = document.getElementById("palette");
+  if (v) v.hidden = true;
+}
+function insertComposer(text) {
+  if (typeof castInput !== "undefined" && castInput) {
+    const cur = castInput.value;
+    const sep = (cur && !/\s$/.test(cur)) ? " " : "";
+    castInput.value = cur + sep + text;
+    castInput.focus();
+  }
+}
+// Everything runnable, freshly gathered each open so tabs and quick actions
+// are current. Each item knows its own group and how to run itself
+function paletteAll() {
+  const out = [];
+  out.push({grp:"go", label:T["tui.menu.settings"] || "Settings", run:() => openSettings()});
+  out.push({grp:"go", label:T["tui.menu.vault"] || "Find past work", run:() => window.__openVault()});
+  for (const t of (S && S.tabs || [])) {
+    out.push({grp:"tab", label:(T["palette.gototab"] || "Go to") + " " + t.name,
+      run:() => send({kind:"select", tab:t.index})});
+  }
+  for (const a of (typeof KEY_ACTIONS !== "undefined" ? KEY_ACTIONS : [])) {
+    out.push({grp:"do", label:a.label, run:() => send({kind:"runkey", name:a.name})});
+  }
+  (typeof curActions !== "undefined" && curActions || []).forEach((a, i) => {
+    if (!a) return;
+    if (a.lua) out.push({grp:"run", label:a.label || "action", run:() => send({kind:"runaction", index:i})});
+    else if (a.text != null) out.push({grp:"run", label:a.label || a.text, run:() => insertComposer(a.text)});
+  });
+  return out;
+}
+function buildPalette(query) {
+  const q = (query || "").trim().toLowerCase();
+  const all = paletteAll();
+  // Plain contains-match, in the order the groups were built -- predictable is
+  // more useful here than clever ranking
+  palItems = q ? all.filter(it => it.label.toLowerCase().includes(q)) : all;
+  palSel = 0;
+  renderPalette();
+}
+function renderPalette() {
+  const v = document.getElementById("palette");
+  if (!v || v.hidden) return;
+  const list = v.querySelector(".vlist");
+  const grpName = g => T["palette.grp." + g] || g;
+  list.textContent = "";
+  palItems.forEach((it, i) => {
+    const row = el("div", {class:"prow" + (i === palSel ? " sel" : ""),
+      onclick:() => { closePalette(); it.run(); }});
+    row.append(el("span", {class:"pgrp"}, grpName(it.grp)), el("span", {class:"plabel"}, it.label));
+    list.append(row);
+  });
+  const sel = list.children[palSel];
+  if (sel) sel.scrollIntoView({block:"nearest"});
+}
+(function () {
+  const q = document.getElementById("pq");
+  const v = document.getElementById("palette");
+  if (!q || !v) return;
+  q.addEventListener("input", () => buildPalette(q.value));
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); palSel = Math.min(palSel + 1, palItems.length - 1); renderPalette(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); palSel = Math.max(palSel - 1, 0); renderPalette(); }
+    else if (e.key === "Enter") { e.preventDefault(); const it = palItems[palSel]; if (it) { closePalette(); it.run(); } }
+    else if (e.key === "Escape") { e.preventDefault(); closePalette(); }
+  });
+  v.querySelector(".vclose").addEventListener("click", closePalette);
+  v.addEventListener("mousedown", (e) => { if (e.target === v) closePalette(); });
+})();
 window.__setTheme = function (vars, light) {
   document.getElementById("theme").textContent =
     ":root{" + vars + "color-scheme:" + (light ? "light" : "dark") + ";}";
@@ -3540,8 +3642,9 @@ fn box_of(out: &mut String, style: &str, body: &str, span: usize, center: bool) 
 /// A pressed key is delivered verbatim as a keystroke while INDEX is in
 /// view. Adding a key here that the receiver (INDEX's dispatch) doesn't
 /// know about produces "it's shown, but pressing it does nothing".
-pub const MENU: [(&str, &str); 8] = [
+pub const MENU: [(&str, &str); 9] = [
     ("e", "tui.menu.settings"),
+    ("p", "tui.menu.palette"),
     ("f", "tui.menu.vault"),
     ("i", "tui.menu.phone"),
     ("r", "tui.menu.restart"),
@@ -3570,6 +3673,17 @@ pub const WINDOW_ONLY_MENU: [&str; 3] = [
 /// The sub-input bar's quick actions, as the shell wants them: `text` is the
 /// string to insert for a plain action, or null for a Lua one (whose source
 /// stays server-side — the shell fires it, it never holds the code).
+/// The rebindable actions, as the palette lists them: name to run by, and the
+/// translated description to show. Built from the one keys table, so the
+/// palette shows exactly what the app can do and nothing it cannot
+fn key_actions_json() -> String {
+    let rows: Vec<serde_json::Value> = crate::keys::listing()
+        .into_iter()
+        .map(|(name, desc)| serde_json::json!({ "name": name, "label": crate::i18n::t(desc) }))
+        .collect();
+    serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
+}
+
 pub(crate) fn actions_json() -> String {
     let configured = crate::config::actions();
     let list: Vec<serde_json::Value> = if configured.is_empty() {
@@ -3637,6 +3751,7 @@ pub fn page_for(sticky: bool) -> String {
         if crate::theme::is_light(&scheme) { "light" } else { "dark" },
     )
     .replace("{{DICT}}", &dict)
+    .replace("{{KEY_ACTIONS}}", &key_actions_json())
         .replace(
             "{{CAST_KEYS}}",
             &serde_json::to_string(&crate::config::cast_keys()).unwrap_or_else(|_| "[]".into()),

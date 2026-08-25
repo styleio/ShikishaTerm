@@ -123,6 +123,9 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // for a tab it could have asked for by hand -- the same reach as adding
         // a tab, which the person does from their own device all the time
         Ev::VaultSearch { .. } | Ev::VaultOpen { .. } => true,
+        // The command palette runs an action by name -- no more reach than
+        // pressing the key it stands for, which the phone can already do
+        Ev::RunKey { .. } => true,
         // Scrolling back through the history is the whole point of monitoring
         // from afar — without it the phone is stuck on the current screen and
         // can't review what was said earlier. It only moves the viewport, never

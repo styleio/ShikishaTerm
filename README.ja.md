@@ -126,6 +126,9 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 | `Ctrl+B 0` → `i` | スマホ接続用のQRコードを表示 |
 | `Ctrl+B 0` → `k` | マスターパスワードの設定・変更（`secrets.json` を暗号化） |
 
+`Ctrl+B :` でコマンドパレットが開きます。タブ移動・設定・Vault・キー操作・自作アクションを
+1つの入力欄から探して実行できます。
+
 盤面の「過去の作業を探す」で、AI CLI が記録した過去の会話を**内容で検索**でき、選ぶと
 その会話をその folder で再開するタブが増えます。
 

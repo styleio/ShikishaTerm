@@ -161,6 +161,9 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B 0` → `i` | Show the QR code for phone access |
 | `Ctrl+B 0` → `k` | Set or change the master password (encrypts `secrets.json`) |
 
+`Ctrl+B :` opens a command palette — one box to find and run anything: a tab, a setting,
+the Vault, any key action, your own quick actions.
+
 The board's "Find past work" searches every conversation the AI CLIs have recorded, by
 what was said in them, and reopening one adds a tab that resumes it in its folder.
 
