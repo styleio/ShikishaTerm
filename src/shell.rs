@@ -233,9 +233,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     cursor:pointer; user-select:none; }
   #castmode:active { background:var(--raise); }
   /* Bottom dock combining the auxiliary key row and the text input bar.
-     visualViewport lifts it above the on-screen keyboard. The key row
-     scrolls horizontally, the input sits on the bottom row */
-  #castdock { position:absolute; left:var(--fx); right:var(--fr); bottom:var(--fb); z-index:18;
+     It sits at the foot of the *focused* pane, so the bar you type into and
+     the pane you are typing at are the same rectangle. The phone's on-screen
+     keyboard lifts it by --kbd on top of that; that lift is a separate term
+     rather than a written-over bottom, because a keyboard height assigned
+     straight to `bottom` erased the pane offset and pinned the bar to the
+     window's floor -- summoned from the top pane, it appeared at the bottom
+     one. The key row scrolls horizontally, the input sits on the bottom row */
+  #castdock { position:absolute; left:var(--fx); right:var(--fr);
+    bottom:calc(var(--fb) + var(--kbd, 0px)); z-index:18;
     display:none; flex-direction:column; }
   #attachtoast { position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
     z-index:30; max-width:86%; padding:9px 14px; border-radius:9px; font-size:13px;
@@ -3219,11 +3225,13 @@ function ensureBar() {
     const fs = e.clipboardData && e.clipboardData.files;
     if (fs && fs.length) { attachFile(fs[0]); e.preventDefault(); }
   });
-  // Lift the dock by the keyboard's height (so it doesn't hide underneath it)
+  // Lift the dock by the keyboard's height (so it doesn't hide underneath it).
+  // As its own term, added to the pane's offset by the CSS above -- never as
+  // the whole of `bottom`, which would throw the pane away
   if (window.visualViewport) {
     const fit = () => {
       const gap = window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop;
-      castDock.style.bottom = Math.max(0, gap) + "px";
+      castDock.style.setProperty("--kbd", Math.max(0, gap) + "px");
     };
     window.visualViewport.addEventListener("resize", fit);
     window.visualViewport.addEventListener("scroll", fit);
@@ -3968,6 +3976,32 @@ mod tests {
         );
         assert!(p.contains("✏️"), "ペンがカラー絵文字になっていない");
         assert!(!p.contains("\"✎\""), "見えない文字グリフのペンが残っている");
+    }
+
+    /// The composer belongs to the pane you are typing at, not to the window.
+    ///
+    /// It was pinned to the window's floor because the phone's keyboard
+    /// handler assigned its height straight to `bottom`, overwriting the
+    /// pane offset the stylesheet had put there. Summoned from the top pane,
+    /// the bar opened at the bottom of the screen -- under a different pane
+    /// entirely, or hidden beneath a browser placed in one. The lift is a
+    /// separate term now, and nothing may write the whole of `bottom` again.
+    #[test]
+    fn the_composer_opens_at_the_foot_of_the_pane_that_summoned_it() {
+        let p = super::page();
+        assert!(
+            p.contains("bottom:calc(var(--fb) + var(--kbd, 0px))"),
+            "サブ入力欄の位置が、フォーカス中のペイン基準になっていない"
+        );
+        assert!(
+            !p.contains("castDock.style.bottom"),
+            "キーボード分の持ち上げがペインの位置を上書きしている"
+        );
+        // The pen that summons it is anchored to the same pane
+        assert!(
+            p.contains("bottom:calc(var(--fb) + 16px)"),
+            "ペンがフォーカス中のペインに付いていない"
+        );
     }
 
 
