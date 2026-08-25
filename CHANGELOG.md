@@ -170,6 +170,12 @@ once it reaches its first tagged release.
   first look shows memory but never a made-up percentage. A tab costing nothing
   — a browser, an idle shell — shows nothing.
 
+- **A saved browser login now includes localStorage, not only cookies.** Many
+  modern web apps keep the token that says you are signed in in localStorage,
+  which a cookie-only save would miss; `browser_state_save` now captures both
+  and `browser_state_load` restores both, read and written in the page's own
+  origin through the devtools protocol.
+
 - **A browser login can be saved once and reused.** Sign in on a browser tab,
   and `browser_state_save` keeps that login under a name; a later rally loads it
   with `browser_state_load` instead of signing in from scratch — the real cost

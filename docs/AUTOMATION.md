@@ -716,7 +716,7 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 | `shikisha.browser_digest(id)` | The operable elements, numbered — what to read before deciding a move |
 | `shikisha.browser_fetch(id, url, opts)` | Request from inside the page (keeps its cookies). Returns `{status, ok, url, headers, body}` |
 | `shikisha.browser_auth(id, "KEY")` | Answer basic-auth from a registered secret |
-| `shikisha.browser_state_save(id, "label")` | Save this page's login (its cookies) under a name. Returns how many were saved. Sign in once, then a later rally can load it |
+| `shikisha.browser_state_save(id, "label")` | Save this page's login — its cookies and its localStorage — under a name. Returns how many cookies were saved. Sign in once, then a later rally can load it |
 | `shikisha.browser_state_load(id, "label")` | Put a saved login back, so the page is signed in without logging in again |
 | `shikisha.browser_ask(id, "text", "label")` | Put a banner with a button along the bottom of the page |
 | `shikisha.browser_pressed(id)` | Has it been pressed? |

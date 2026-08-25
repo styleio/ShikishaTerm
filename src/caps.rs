@@ -672,13 +672,16 @@ impl Capabilities {
     /// httpOnly cookies and all, which is where a login actually lives
     pub fn browser_state_save(&self, name: &str, label: &str) -> Result<usize> {
         let cookies = self.with(name, |b, to| b.cookies_out(to, 30_000))?;
-        crate::browserstate::save(label, cookies)
+        let storage = self.with(name, |b, to| b.storage_out(to, 30_000))?;
+        crate::browserstate::save(label, cookies, storage)
     }
 
-    /// Put a saved login back into this page's profile.
+    /// Put a saved login back into this page's profile: its cookies and the
+    /// localStorage its origin was carrying.
     pub fn browser_state_load(&self, name: &str, label: &str) -> Result<()> {
-        let cookies = crate::browserstate::load(label)?;
-        self.with(name, |b, to| b.cookies_in(to, &cookies, 30_000))
+        let (cookies, storage) = crate::browserstate::load(label)?;
+        self.with(name, |b, to| b.cookies_in(to, &cookies, 30_000))?;
+        self.with(name, |b, to| b.storage_in(to, &storage, 30_000))
     }
 
     /// Show a banner asking the human something

@@ -1646,6 +1646,53 @@ impl Browser {
         Ok(())
     }
 
+    /// This page's localStorage, as `[[key, value], ...]`.
+    ///
+    /// Read in the page's own world through the devtools protocol, so it is the
+    /// origin's real storage -- where a modern web app often keeps the token
+    /// that says you are signed in, the half a cookie does not hold. Empty when
+    /// the page has none or is not one that has storage (a blank tab)
+    pub fn storage_out(&self, to: Option<&str>, timeout_ms: u64) -> Result<serde_json::Value> {
+        let v = self.cdp(
+            to,
+            "Runtime.evaluate",
+            serde_json::json!({
+                // Guarded: a page mid-navigation, or one that denies storage,
+                // must answer with nothing rather than throw
+                "expression": "(()=>{try{return JSON.stringify(Object.entries(localStorage))}catch(e){return \"[]\"}})()",
+                "returnByValue": true,
+            }),
+            timeout_ms,
+        )?;
+        let raw = v.get("result").and_then(|r| r.get("value")).and_then(|s| s.as_str());
+        Ok(raw
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Array(vec![])))
+    }
+
+    /// Put localStorage back into this page's origin.
+    ///
+    /// Set in the page's own world, the same way it was read. A reload
+    /// afterwards is what makes the app notice it and consider itself signed in
+    pub fn storage_in(
+        &self,
+        to: Option<&str>,
+        items: &serde_json::Value,
+        timeout_ms: u64,
+    ) -> Result<()> {
+        let payload = serde_json::to_string(items).unwrap_or_else(|_| "[]".into());
+        let expr = format!(
+            "(()=>{{try{{for(const [k,v] of {payload}){{localStorage.setItem(k,v)}}return true}}catch(e){{return false}}}})()"
+        );
+        self.cdp(
+            to,
+            "Runtime.evaluate",
+            serde_json::json!({ "expression": expr, "returnByValue": true }),
+            timeout_ms,
+        )?;
+        Ok(())
+    }
+
     /// Make a request from inside the page. Returns a JSON string
     /// `{status,ok,url,headers,body,...}`.
     /// `opts` is `{method,headers,body}` (optional)

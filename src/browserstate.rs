@@ -34,6 +34,11 @@ pub struct Saved {
     pub count: usize,
     /// The cookies exactly as the browser reported them
     pub cookies: serde_json::Value,
+    /// The page origin's localStorage, `[[key, value], ...]`. Where a modern
+    /// web app often keeps the token a cookie does not. Absent in older files,
+    /// which is why it defaults empty rather than being required
+    #[serde(default)]
+    pub storage: serde_json::Value,
 }
 
 /// Where saved logins live: under the browser-data root, beside the profiles
@@ -66,9 +71,9 @@ fn path(label: &str) -> PathBuf {
 ///
 /// Atomic, because a half-written login is worse than no login: it would load
 /// as an empty set and quietly sign the browser out
-pub fn save(label: &str, cookies: serde_json::Value) -> Result<usize> {
+pub fn save(label: &str, cookies: serde_json::Value, storage: serde_json::Value) -> Result<usize> {
     let count = cookies.as_array().map(|a| a.len()).unwrap_or(0);
-    let saved = Saved { version: VERSION, count, cookies };
+    let saved = Saved { version: VERSION, count, cookies, storage };
     let text = serde_json::to_string_pretty(&saved)?;
     crate::crypto::write_atomic(&path(label), &text)
         .with_context(|| crate::i18n::tp("err.login.write", &[("label", label)]))?;
@@ -77,7 +82,7 @@ pub fn save(label: &str, cookies: serde_json::Value) -> Result<usize> {
 
 /// Read a login back, refusing a file from a version this one cannot promise
 /// to understand rather than half-loading it
-pub fn load(label: &str) -> Result<serde_json::Value> {
+pub fn load(label: &str) -> Result<(serde_json::Value, serde_json::Value)> {
     let p = path(label);
     let text = std::fs::read_to_string(&p)
         .with_context(|| crate::i18n::tp("err.login.missing", &[("label", label)]))?;
@@ -86,7 +91,7 @@ pub fn load(label: &str) -> Result<serde_json::Value> {
     if saved.version > VERSION {
         anyhow::bail!(crate::i18n::tp("err.login.newer", &[("label", label)]));
     }
-    Ok(saved.cookies)
+    Ok((saved.cookies, saved.storage))
 }
 
 /// One saved login, for a listing.
@@ -156,9 +161,12 @@ mod tests {
             {"name": "sid", "value": "abc", "domain": ".example.com", "httpOnly": true},
             {"name": "theme", "value": "dark", "domain": ".example.com"}
         ]);
-        let n = save(label, cookies.clone()).unwrap();
+        let storage = serde_json::json!([["token", "xyz"], ["theme", "dark"]]);
+        let n = save(label, cookies.clone(), storage.clone()).unwrap();
         assert_eq!(n, 2);
-        assert_eq!(load(label).unwrap(), cookies);
+        // Both halves come back exactly: the cookies a login needs, and the
+        // localStorage a modern app keeps its token in
+        assert_eq!(load(label).unwrap(), (cookies, storage));
         assert!(list().iter().any(|e| e.label == label && e.count == 2));
         delete(label).unwrap();
         assert!(load(label).is_err(), "消したものは読めない");
