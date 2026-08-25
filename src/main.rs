@@ -393,6 +393,9 @@ struct WinSurface {
     /// The width the tab bar is now drawn at, when its edge has just been
     /// dragged. 0 = put away
     tab_width: Option<u16>,
+    /// Pages placed in the window that have taken the keyboard since the last
+    /// drain, by the name automation addresses them with
+    touches: Vec<String>,
     /// The pane tree as last sent to the page. Only send it again when it changes
     last_layout: String,
     /// The terminal contents last sent for each unfocused pane. The focused
@@ -500,6 +503,10 @@ impl WinSurface {
 
     fn take_tab_width(&mut self) -> Option<u16> {
         self.tab_width.take()
+    }
+
+    fn take_touches(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.touches)
     }
 
     /// Put the tab bar away, or bring it back out.
@@ -751,6 +758,11 @@ impl WinSurface {
                 // The bar on a placed page was pressed = a human finished their turn.
                 // Who pressed it can only be told from the name attached to the report.
                 Ev::Button { from: Some(name) } => self.presses.push(name),
+                // A placed page took the keyboard. Only pages placed in the
+                // window report this; the shell's own presses already say
+                // which pane they landed on
+                Ev::Touched { from: Some(name) } => self.touches.push(name),
+                Ev::Touched { from: None } => {}
                 // A placed page finished loading (fires on every navigation)
                 Ev::Ready {
                     from: Some(name),
@@ -1002,6 +1014,7 @@ fn run_in_window() -> Result<()> {
         pane_splits: Vec::new(),
         font_size: None,
         tab_width: None,
+        touches: Vec::new(),
         recorded: Vec::new(),
         operates: Vec::new(),
         replay_saves: false,
@@ -1390,6 +1403,14 @@ impl WinSurface {
                     let live: std::collections::HashSet<_> =
                         ui.layout.leaves().into_iter().map(|(id, _)| id).collect();
                     w.last_pane_screens.retain(|id, _| live.contains(id));
+                    // The page empties the focused pane's read-only copy -- the
+                    // full renderer draws over that rectangle instead. Forget
+                    // what was last sent there, or the pane would stay empty
+                    // after focus moved on: the copy it wants back is the one
+                    // already recorded as sent, so nothing would be judged to
+                    // have changed and nothing would be sent. The pane you had
+                    // just left was the one that went blank
+                    w.last_pane_screens.remove(&ui.layout.focus());
                     let _ = w.win.eval(&format!(
                         "return window.__panes({});",
                         serde_json::to_string(&lay).unwrap_or_default()
@@ -3022,6 +3043,25 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // tab bar. `active` moves with it so every existing path stays right.
         for id in surface.take_focus_panes() {
             if pane_layout.focus_pane(id) {
+                active = pane_layout.focused_surface();
+                view_touched_ms = start.elapsed().as_millis() as u64;
+            }
+        }
+        // Someone clicked into a page placed in the window. That press never
+        // reaches the pane underneath -- the page is a window of its own -- so
+        // the pane it sits in is focused from the page's own report instead.
+        // Without this a browser pane could only be entered by its caption
+        for child in surface.take_touches() {
+            let Some(key) = caps.name_of_child(&child) else {
+                continue;
+            };
+            let at = ui.surfaces.iter().position(
+                |s| matches!(s, Surface::Browser { key: k, .. } if *k == key),
+            );
+            let Some(pane) = at.and_then(|i| pane_layout.pane_of(i + 1)) else {
+                continue;
+            };
+            if pane_layout.focus_pane(pane) {
                 active = pane_layout.focused_surface();
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
