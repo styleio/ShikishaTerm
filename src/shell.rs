@@ -27,8 +27,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
 <title>SHIKISHA-TERM</title>
 <style>
   :root {
-    --bg:#0a0c0e; --panel:#11151a; --line:#1d2630; --text:#e8eef4;
-    --dim:#7a8896; --brand:#00aaff; --live:#4ade80; --warn:#ffc857; --stop:#ff6b6b;
+    /* Every colour in one place, written out by the app from the chosen
+       scheme: the window's surfaces, the status colours, and the terminal's
+       own sixteen as --c0..--c15 */
+    {{THEME}}
+    /* Which way the browser should draw the parts it draws itself --
+       scrollbars, form controls. Getting this wrong leaves white scrollbars
+       down the side of a dark window */
+    color-scheme:{{SCHEME}};
     /* Prefer fonts that draw box-drawing characters and symbols in one cell.
        Japanese falls back to the monospaced MS Gothic (Meiryo is not monospaced) */
     --mono:{{FONT}};
@@ -49,15 +55,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-right:1px solid var(--line); overflow-y:auto; padding:6px 0;
     display:flex; flex-direction:column; }
   /* Settings lives here as a fixed gear pinned to the very bottom, not a tab */
-  .tab.gearrow { margin-top:auto; color:var(--dim); border-top:1px solid #1a2129;
+  .tab.gearrow { margin-top:auto; color:var(--dim); border-top:1px solid var(--line);
     justify-content:center; padding:10px; }
   .tab.gearrow:hover { color:inherit; }
   .tab.gearrow.sel { color:var(--text); }
   .tab.gearrow .gear { font-size:17px; line-height:1; }
   .tab { display:flex; align-items:center; gap:8px; padding:7px 10px;
     cursor:pointer; border-left:3px solid transparent; user-select:none; }
-  .tab:hover { background:#161c23; }
-  .tab.sel { background:#16202b; border-left-color:var(--brand); }
+  .tab:hover { background:var(--hover); }
+  .tab.sel { background:var(--raise); border-left-color:var(--brand); }
   /* What a tab says it is doing: its own words, under its name. Wraps to a
      second line of its own so it never pushes the row's furniture around */
   .tab { flex-wrap:wrap; }
@@ -77,7 +83,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.addtab { color:var(--dim); }
   .tab.addtab:hover { color:inherit; }
   /* Workspace switcher above INDEX. Clicking it opens the workspace list popup */
-  .tab.wsrow { color:var(--dim); font-weight:700; border-bottom:1px solid #1a2129; }
+  .tab.wsrow { color:var(--dim); font-weight:700; border-bottom:1px solid var(--line); }
   .tab.wsrow:hover { color:inherit; }
   .tab.wsrow .wscaret { margin-left:auto; font-size:11px; }
   /* Make the workspace name in the header/footer clickable */
@@ -130,7 +136,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .pane .phead { pointer-events:auto; display:none; align-items:center; gap:6px;
     height:22px; padding:0 8px; font-size:11px; cursor:pointer; user-select:none;
     background:var(--panel); border-bottom:1px solid var(--line); color:var(--dim); }
-  .pane.focused .phead { color:var(--text); background:#16202b;
+  .pane.focused .phead { color:var(--text); background:var(--raise);
     border-bottom-color:var(--brand); }
   .pane .phead .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .pane .phead .cl { opacity:.6; padding:0 2px; }
@@ -208,10 +214,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      together with the auxiliary key row and the keyboard. Avoids both
      failure modes: pinned to the bottom it hides under the keyboard,
      pinned to the top it gets in the way at the top of the screen */
-  #castmode { background:#16202b; border-top:1px solid var(--brand);
+  #castmode { background:var(--raise); border-top:1px solid var(--brand);
     color:var(--text); padding:8px 14px; font-size:13px; text-align:center;
     cursor:pointer; user-select:none; }
-  #castmode:active { background:#1d2a38; }
+  #castmode:active { background:var(--raise); }
   /* Bottom dock combining the auxiliary key row and the text input bar.
      visualViewport lifts it above the on-screen keyboard. The key row
      scrolls horizontally, the input sits on the bottom row */
@@ -219,10 +225,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     display:none; flex-direction:column; }
   #attachtoast { position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
     z-index:30; max-width:86%; padding:9px 14px; border-radius:9px; font-size:13px;
-    background:#0f2a3d; color:#dceeff; border:1px solid var(--brand);
+    background:var(--tint); color:var(--text); border:1px solid var(--brand);
     box-shadow:0 8px 24px rgba(0,0,0,.5); opacity:0; pointer-events:none;
     transition:opacity .18s ease; word-break:break-all; }
-  #attachtoast.bad { background:#3a1418; color:#ffd7d7; border-color:#e5534b; }
+  #attachtoast.bad { background:color-mix(in srgb, var(--stop) 20%, var(--bg)); color:var(--text); border-color:var(--stop); }
   /* Desktop-only summon button for the composer bar (bottom-right, above the bar). */
   #composerfab { position:absolute; right:calc(var(--fr) + 16px);
     bottom:calc(var(--fb) + 16px); z-index:19;
@@ -268,7 +274,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .castradio input { accent-color:var(--brand); margin:0; }
   .castaction { flex:0 0 auto; max-width:60vw; overflow:hidden; text-overflow:ellipsis;
     padding:7px 12px; font-size:13px; border:1px solid var(--brand); border-radius:14px;
-    background:rgba(0,170,255,.10); color:var(--text); cursor:pointer; user-select:none; }
+    background:color-mix(in srgb, var(--brand) 10%, transparent); color:var(--text); cursor:pointer; user-select:none; }
   .castaction:active { background:var(--brand); color:#04121c; }
   /* Lua actions run on tap (rather than filling the composer) — mark them. */
   .castaction.lua { border-style:dashed; }
@@ -295,16 +301,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #nav button { font:inherit; font-size:13px; color:var(--text); cursor:pointer;
     background:transparent; border:1px solid var(--line); border-radius:6px;
     width:28px; height:24px; line-height:1; padding:0; flex:none; }
-  #nav button:hover:not(:disabled) { background:#16202b; border-color:var(--brand); }
-  #nav button:disabled { color:#2b3540; cursor:default; }
+  #nav button:hover:not(:disabled) { background:var(--raise); border-color:var(--brand); }
+  #nav button:disabled { color:var(--line); cursor:default; }
   #nav input { flex:1; min-width:60px; font:inherit; font-size:12px;
-    color:var(--text); background:#0a0c0e; border:1px solid var(--line);
+    color:var(--text); background:var(--bg); border:1px solid var(--line);
     border-radius:6px; padding:3px 8px; outline:none; }
   #nav input:focus { border-color:var(--brand); }
   /* While loading, tint the whole bar blue so it's obvious at a glance
      that something is in flight. Kept lit for at least 0.5s on the app
      side so even a near-instant load is visible */
-  #nav.loading { background:#0d2a3a; border-bottom-color:var(--brand); }
+  #nav.loading { background:var(--tint); border-bottom-color:var(--brand); }
   /* A band of light sweeping along the bottom edge as an added motion cue */
   #nav.loading::after { content:""; position:absolute; left:0; right:0; bottom:0;
     height:3px; background:linear-gradient(90deg,transparent,var(--brand),transparent);
@@ -312,7 +318,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     animation:navload 1s linear infinite; }
   @keyframes navload { from { background-position:-40% 0 } to { background-position:140% 0 } }
   /* The reload button glows blue and spins so it's obvious where to look */
-  #nav button.spin { color:var(--brand); border-color:var(--brand); background:#0a1f2b; }
+  #nav button.spin { color:var(--brand); border-color:var(--brand); background:var(--tint); }
   #nav button.spin .ico { display:inline-block; animation:spin .8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg) } }
   /* Where the page sits. Pushed down by exactly the height of the bar above it */
@@ -328,7 +334,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      input line at the bottom, so this never sits on top of it. */
   #topicbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:24;
     display:flex; align-items:center; gap:10px; flex-wrap:wrap;
-    padding:11px 16px; background:linear-gradient(180deg,#12242e,var(--panel));
+    padding:11px 16px; background:linear-gradient(180deg,var(--tint),var(--panel));
     border-bottom:2px solid var(--live); box-shadow:0 8px 22px rgba(0,0,0,.55); }
   #topicbar[hidden] { display:none; }
   #topicbar .tb-ico { font-size:16px; flex:none; }
@@ -342,8 +348,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     font-size:14px; animation:tbpulse 1.7s ease-in-out infinite; }
   #topicbar button:hover { filter:brightness(1.08); }
   /* A soft green ring that breathes outward, to draw the eye without motion sickness */
-  @keyframes tbpulse { 0%,100% { box-shadow:0 0 0 0 rgba(74,222,128,.55) }
-    50% { box-shadow:0 0 0 7px rgba(74,222,128,0) } }
+  @keyframes tbpulse { 0%,100% { box-shadow:0 0 0 0 color-mix(in srgb, var(--live) 55%, transparent) }
+    50% { box-shadow:0 0 0 7px color-mix(in srgb, var(--live) 0%, transparent) } }
   /* The topic hint drops onto its own line below on narrow widths */
   #topicbar .tb-hint { color:var(--dim); font-size:12px; flex:1 1 100%; margin:-2px 0 0; }
   @media (prefers-reduced-motion: reduce) { #topicbar button { animation:none; } }
@@ -408,7 +414,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .card h2 { margin:0 0 10px; font-size:12px; font-weight:600; color:var(--dim);
     letter-spacing:1px; text-transform:uppercase; }
   /* Chain gauge — a real bar, not a run of ━ characters */
-  .gauge { height:8px; border-radius:4px; background:#141a21; overflow:hidden; }
+  .gauge { height:8px; border-radius:4px; background:var(--sunk); overflow:hidden; }
   .gauge i { display:block; height:100%; background:var(--live);
     transition:width .3s ease, background .3s ease; }
   .rows { width:100%; border-collapse:collapse; font-size:13px; }
@@ -416,12 +422,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     letter-spacing:1px; padding:0 8px 6px; }
   .rows td { padding:5px 8px; border-top:1px solid var(--line); }
   .rows tr { cursor:pointer; }
-  .rows tr:hover td { background:#161c23; }
+  .rows tr:hover td { background:var(--hover); }
   .menu { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
     gap:6px; }
   .mi { display:flex; gap:9px; align-items:center; padding:7px 9px; border-radius:7px;
     cursor:pointer; }
-  .mi:hover { background:#161c23; }
+  .mi:hover { background:var(--hover); }
   /* Only the window can carry this one out. Shown, but plainly not tappable
      from here — a silent no-op would just look broken. */
   .mi.windowonly { cursor:default; opacity:.45; }
@@ -442,7 +448,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .lane { position:absolute; top:50%; height:2px; background:var(--line);
     transform:translateY(-50%); }
   .peg { position:absolute; top:50%; width:7px; height:7px; border-radius:50%;
-    background:#26313d; transform:translate(-50%,-50%); }
+    background:var(--line); transform:translate(-50%,-50%); }
   .peg b { position:absolute; top:12px; left:50%; transform:translateX(-50%);
     font-size:10px; color:var(--dim); font-weight:400; white-space:nowrap; }
 
@@ -456,20 +462,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     overflow:hidden; text-overflow:ellipsis; }
   #status .pill, #status .build, #stop, #restart { flex:none; white-space:nowrap; }
   .pill { padding:1px 8px; border-radius:9px; border:1px solid var(--line); }
-  .pill.on { color:var(--live); border-color:#1f3d2b; }
+  .pill.on { color:var(--live); border-color:color-mix(in srgb, var(--live) 40%, var(--bg)); }
   .pill.off { color:var(--dim); }
   .pill.live { color:var(--brand); border-color:var(--brand); cursor:pointer; }
-  .pill.live:hover { background:#0d2a3a; }
-  #stop { cursor:pointer; color:var(--stop); border:1px solid #3d2020;
+  .pill.live:hover { background:var(--tint); }
+  #stop { cursor:pointer; color:var(--stop); border:1px solid color-mix(in srgb, var(--stop) 40%, var(--bg));
     padding:2px 10px; border-radius:7px; font-weight:700; }
-  #stop:hover { background:var(--stop); color:#0a0c0e; }
+  #stop:hover { background:var(--stop); color:var(--bg); }
   /* Relaunch the tab in view. Same shape as the stop button but a notch quieter:
      they sit side by side, and the red one has to stay the one that catches the eye */
   #restart { cursor:pointer; color:var(--dim); border:1px solid var(--line);
     padding:2px 10px; border-radius:7px; font-weight:700; }
   #restart:hover { background:var(--line); color:var(--text); }
   /* Armed - the next press kills and relaunches what is running */
-  #restart.armed { color:var(--warn); border-color:#4a3a12; background:#241d09; }
+  #restart.armed { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 45%, var(--bg)); background:color-mix(in srgb, var(--warn) 14%, var(--bg)); }
   /* Where input is captured, layered over the cursor.
      The IME candidate window follows this element, so its position becomes
      the candidate window's position too. Text mid-conversion is drawn
@@ -478,9 +484,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:transparent; color:var(--text); caret-color:transparent;
     overflow:hidden; resize:none; white-space:pre; font:inherit;
     line-height:inherit; width:1px; }
-  #cur { position:absolute; background:var(--brand); opacity:.75;
+  #cur { position:absolute; background:var(--cursor); opacity:.75;
     pointer-events:none; animation:blink 1.06s step-end infinite; }
   @keyframes blink { 0%,50% { opacity:.75 } 50.01%,100% { opacity:0 } }
+  ::selection { background:var(--sel); }
   /* The measuring probe needs the same font declaration for the same reason
      — measuring with one thing and drawing with another defeats the point */
   #probe, #tprobe { position:absolute; visibility:hidden; white-space:pre;
@@ -495,10 +502,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Startup splash. Visible on load, hidden once the first board state arrives.
      Sits below the password veil (z-index 50) so the prompt shows on top of it. */
   #splash { position:fixed; inset:0; z-index:40; display:flex; flex-direction:column;
-    align-items:center; justify-content:center; gap:20px; background:#0b0e12; }
+    align-items:center; justify-content:center; gap:20px; background:var(--bg); }
   #splash[hidden] { display:none; }
   #splash .logo { font-size:26px; letter-spacing:3px; font-weight:700; color:var(--brand); }
-  #splash .spin { width:34px; height:34px; border:3px solid #232b36;
+  #splash .spin { width:34px; height:34px; border:3px solid var(--line);
     border-top-color:var(--brand); border-radius:50%; animation:splashspin .8s linear infinite; }
   #splash .msg { font-size:13px; color:var(--dim); }
   @keyframes splashspin { to { transform:rotate(360deg); } }
@@ -508,7 +515,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      can't be mistaken for a live one. */
   #netveil { position:fixed; inset:0; z-index:60; display:flex; align-items:center;
     justify-content:center; padding:28px; text-align:center;
-    background:rgba(6,10,14,.93); -webkit-backdrop-filter:blur(3px); backdrop-filter:blur(3px); }
+    background:color-mix(in srgb, var(--bg) 93%, transparent); -webkit-backdrop-filter:blur(3px); backdrop-filter:blur(3px); }
   #netveil[hidden] { display:none; }
   #netveil .nvbox { max-width:340px; }
   #netveil .nvicon { font-size:46px; line-height:1; margin-bottom:14px; }
@@ -524,20 +531,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #veil .row { display:flex; gap:10px; align-items:center; padding:5px 0;
     font-size:13px; }
   #veil .pick { cursor:pointer; padding:7px 10px; border-radius:7px; }
-  #veil .pick:hover { background:#16202b; }
+  #veil .pick:hover { background:var(--raise); }
   #veil .qr { background:#fff; padding:12px; border-radius:8px; }
   #veil .url { font-size:12px; color:var(--dim); margin-top:10px;
     word-break:break-all; user-select:text; }
   /* Marker shown while scrolled back through history. Without it, the output looks like it has frozen */
   #back { position:absolute; right:calc(var(--fr) + 14px); top:calc(var(--fy) + 10px); z-index:6;
-    background:#16202b; border:1px solid var(--brand); color:var(--text);
+    background:var(--raise); border:1px solid var(--brand); color:var(--text);
     padding:4px 12px; border-radius:14px; font-size:12px; cursor:pointer; }
   #back:hover { background:var(--brand); color:#04121c; }
   /* The message line. Above the sub-input bar (z-index 18) rather than behind
      it: without a z-index of its own it stacked under the dock, so every
      message shown while the composer was open said nothing to anybody */
   #flash { position:absolute; left:50%; bottom:52px; transform:translateX(-50%);
-    z-index:32; background:#16202b; border:1px solid var(--brand); color:var(--text);
+    z-index:32; background:var(--raise); border:1px solid var(--brand); color:var(--text);
     padding:8px 16px; border-radius:8px; font-size:13px; max-width:80%;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
@@ -551,16 +558,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     display:none; flex-direction:column; align-items:center; gap:10px; z-index:8; }
   #pageui.on { display:flex; }
   .pagebtn { width:50px; height:50px; border-radius:50%; border:1px solid var(--line);
-    background:rgba(20,28,36,.66); color:var(--text); font-size:19px; line-height:1;
+    background:color-mix(in srgb, var(--panel) 66%, transparent); color:var(--text); font-size:19px; line-height:1;
     -webkit-backdrop-filter:blur(4px); backdrop-filter:blur(4px);
     display:flex; align-items:center; justify-content:center; cursor:pointer;
     user-select:none; -webkit-user-select:none; touch-action:manipulation; }
-  .pagebtn:active { background:rgba(46,62,78,.92); }
+  .pagebtn:active { background:color-mix(in srgb, var(--line) 92%, transparent); }
   #pageCount { min-height:16px; font-size:12px; font-weight:700; color:var(--brand);
     text-shadow:0 0 6px rgba(0,0,0,.6);
     display:flex; align-items:center; justify-content:center; }
   /* Shown from the moment a page turn fires until its screen arrives. */
-  .pgspin { width:14px; height:14px; border:2px solid rgba(74,158,255,.30);
+  .pgspin { width:14px; height:14px; border:2px solid color-mix(in srgb, var(--brand) 30%, transparent);
     border-top-color:var(--brand); border-radius:50%; animation:pgspin .7s linear infinite; }
   @keyframes pgspin { to { transform:rotate(360deg); } }
 
@@ -608,7 +615,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     .mark { display:none; }
     .mark-lite { display:block; }
   }
-</style></head><body>
+</style>
+<!-- Where a colour scheme chosen after this page was built lands. Empty
+     until then, and a later rule of the same weight wins, so what starts in
+     :root is simply replaced -->
+<style id="theme"></style></head><body>
 <div id="app">
   <div id="splash"><div class="logo">SHIKISHA-TERM</div><div class="spin"></div><div class="msg"></div></div>
   <div id="hamburger">&#9776;</div>
@@ -1179,7 +1190,7 @@ window.__password = function (title, note) {
   v.textContent = "";
   const box = el("div", {class:"box"});
   const inp = el("input", {type:"password", autocomplete:"off"});
-  inp.style.cssText = "font:inherit;background:#0a0c0e;color:var(--text);" +
+  inp.style.cssText = "font:inherit;background:var(--bg);color:var(--text);" +
     "border:1px solid var(--line);border-radius:6px;padding:8px 10px;width:320px";
   const done = t => { v.hidden = true; v.onclick = null; send({kind:"password", text:t}); };
   inp.onkeydown = e => {
@@ -2317,6 +2328,13 @@ function onBrowserTab() { return S && S.tabs && S.tabs.some(t => t.index === S.a
 
 // The config changed (a settings save): swap in the new actions and re-render the
 // panel if it's the one showing, so an edit reflects without reloading the window.
+// Swap the whole palette without reloading. Everything the window draws with
+// is a variable, so a scheme change is one rule being replaced -- including the
+// terminal's own sixteen, which the cells name rather than carry.
+window.__setTheme = function (vars, light) {
+  document.getElementById("theme").textContent =
+    ":root{" + vars + "color-scheme:" + (light ? "light" : "dark") + ";}";
+};
 window.__setActions = function (arr) {
   try {
     curActions = arr || [];
@@ -3164,24 +3182,20 @@ send({kind:"ready"});
 // This is the one place that's fine staying a grid of cells — it really is
 // a grid. The shell (tab bar, dashboard) is written as real HTML.
 
-/// The terminal's 16 colors. Defaults to a muted palette leaning toward the
-/// logo's blue. A row of 100%-saturation pure colors on black would read as
-/// a compromised screen rather than a tool.
-const PALETTE: [&str; 16] = [
-    "#1b2027", "#ff6b6b", "#4ade80", "#ffc857", "#00aaff", "#c792ea", "#4ec9ff", "#c8d2dc",
-    "#3a4552", "#ff8f8f", "#7ceaa4", "#ffd88a", "#5cc4ff", "#dcb0ff", "#8fe0ff", "#eef3f8",
-];
-
 /// Converts a color index into a CSS color.
 ///
-/// 0-15 use the palette table, 16-231 are a 6x6x6 color cube, and 232-255
-/// are a grayscale ramp. This layout is a terminal convention, not something we can change here.
+/// 0-15 are the sixteen a theme names, and are written as the variables the
+/// page defines rather than as colours: this is the whole of what a colour
+/// scheme has to reach, and rendering a screen stays a thing that needs to
+/// know nothing about themes. 16-231 are a 6x6x6 color cube and 232-255 are a
+/// grayscale ramp -- those are arithmetic, a terminal convention, and are not
+/// a scheme's to redefine.
 fn color_css(c: vt100::Color, fallback: &'static str) -> String {
     match c {
         vt100::Color::Default => fallback.to_string(),
         vt100::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
         vt100::Color::Idx(i) => match i {
-            0..=15 => PALETTE[i as usize].to_string(),
+            0..=15 => format!("var(--c{i})"),
             16..=231 => {
                 let i = i - 16;
                 let step = |v: u8| if v == 0 { 0u8 } else { 55 + v * 40 };
@@ -3217,7 +3231,9 @@ fn esc_into(out: &mut String, s: &str) {
 /// span. Making an element per cell would produce 9000 elements for a
 /// 50-row by 180-column screen, making every frame's redraw expensive.
 pub fn screen_html(screen: &vt100::Screen) -> String {
-    const FG: &str = "#e8eef4";
+    // The two the screen already has: text that was given no colour is the
+    // window's text colour, and a cell with no background shows the window
+    const FG: &str = "var(--text)";
     const BG: &str = "transparent";
     let (rows, cols) = screen.size();
     let mut out = String::with_capacity(rows as usize * cols as usize * 2);
@@ -3427,6 +3443,7 @@ pub fn page_for(sticky: bool) -> String {
     // Read here rather than threaded in: the page is built in several places
     // (window, phone, tests) and every one of them wants the same look
     let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
+    let scheme = look.scheme();
     let dict = crate::i18n::dict_json();
     let keys: Vec<&str> = MENU.iter().map(|(k, _)| *k).collect();
     let words: std::collections::BTreeMap<&str, &str> = MENU.iter().copied().collect();
@@ -3445,6 +3462,11 @@ pub fn page_for(sticky: bool) -> String {
     .replace("{{__lang__}}", &crate::i18n::lang())
     .replace("{{FONT}}", &look.font_css())
     .replace("{{FONT_SIZE}}", &look.size_px().to_string())
+    .replace("{{THEME}}", &scheme.css_vars())
+    .replace(
+        "{{SCHEME}}",
+        if crate::theme::is_light(&scheme) { "light" } else { "dark" },
+    )
     .replace("{{DICT}}", &dict)
         .replace(
             "{{CAST_KEYS}}",
@@ -3616,6 +3638,12 @@ mod tests {
         let p = super::page();
         assert!(!p.contains("{{"), "差し込み先が残っている");
         assert!(p.contains("const T = {"), "訳語が入っていない");
+        // Every colour the page draws with, including the terminal's sixteen
+        assert!(p.contains("--bg:") && p.contains("--c15:"), "配色が入っていない");
+        assert!(
+            p.contains("color-scheme:dark") || p.contains("color-scheme:light"),
+            "ブラウザ側が描く部分の明暗が指定されていない"
+        );
         assert!(p.contains("const BUILD = \""), "ビルド刻印が入っていない");
         // A stale page (a phone keeping the board open across app updates)
         // must reload itself, and the 🎯 picker must exclude plain terminals
@@ -4056,13 +4084,15 @@ mod color_tests {
     /// diffs, and the AI's own emphasis all looked like the same shade of gray.
     #[test]
     fn colours_reach_the_screen() {
+        // One of the sixteen names a variable and the theme decides what
+        // that variable is: this is where a colour scheme reaches a cell
         let h = render("\x1b[31mred\x1b[0m plain");
-        assert!(h.contains("color:#ff6b6b"), "前景色が出ていない: {h}");
+        assert!(h.contains("color:var(--c1)"), "前景色が出ていない: {h}");
         assert!(h.contains(">red<"), "色の中身が入っていない: {h}");
         assert!(h.contains("plain"), "色なしの部分が消えている: {h}");
 
         // Background, bold, underline
-        assert!(render("\x1b[44mx").contains("background:#00aaff"), "背景色");
+        assert!(render("\x1b[44mx").contains("background:var(--c4)"), "背景色");
         assert!(render("\x1b[1mx").contains("font-weight:700"), "太字");
         assert!(render("\x1b[4mx").contains("text-decoration:underline"), "下線");
 

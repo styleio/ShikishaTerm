@@ -913,7 +913,7 @@ fn handle(
     }
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => {
-            let html = crate::i18n::render(PAGE)
+            let html = crate::i18n::render(&themed(PAGE.to_string()))
                 .replace("__TOKEN__", token)
                 .replace("__REMOTE__", if remote_client { "true" } else { "false" })
                 .replace("__DICT__", &crate::i18n::dict_json());
@@ -926,7 +926,7 @@ fn handle(
         // (AI-vs-AI discussion / code review / browser rally). Same token gate
         // as the settings page; the run id rides in the query string.
         ("GET", "/result") => {
-            let html = crate::i18n::render(RESULT_PAGE)
+            let html = crate::i18n::render(&themed(RESULT_PAGE.to_string()))
                 .replace("__TOKEN__", token)
                 .replace("__DICT__", &crate::i18n::dict_json());
             let resp = secure(Response::from_string(html).with_header(
@@ -937,7 +937,7 @@ fn handle(
         // How-to-write documentation (openable from the GUI, so the user doesn't have to hunt for the file)
         ("GET", "/help") => {
             let md = load_manual(config_path);
-            let html = crate::i18n::render(HELP_PAGE)
+            let html = crate::i18n::render(&themed(HELP_PAGE.to_string()))
                 .replace("__MD__", &serde_json::to_string(&md)?);
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
@@ -1543,6 +1543,26 @@ fn handle(
         // restart, and — where it needs one — whether its hook is installed.
         // The person asked "will my conversation survive?", and this answers
         // that per CLI rather than describing a mechanism
+        // Every colour scheme this machine can name, in the order they are
+        // found. The names come from what the person already has, so the list
+        // is the point: a scheme they cannot see the name of is one they will
+        // never type
+        ("GET", "/api/themes") => {
+            let rows: Vec<serde_json::Value> = crate::theme::available()
+                .into_iter()
+                .map(|s| serde_json::json!({ "name": s.name, "colors": s.swatch() }))
+                .collect();
+            // What is on screen right now comes back too, because a scheme
+            // written out in the settings by hand is in no list and would
+            // otherwise be a blank where the person's own colours are
+            let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
+            let now = look.scheme();
+            req.respond(json_resp(serde_json::json!({
+                "default": crate::theme::DEFAULT_NAME,
+                "current": { "name": now.name, "colors": now.swatch() },
+                "list": rows,
+            })))?;
+        }
         ("GET", "/api/resume") => {
             let rows: Vec<serde_json::Value> = crate::profile::all()
                 .into_iter()
@@ -1752,19 +1772,39 @@ fn handle(
 
 // The settings screen. Unlike the main app's cyber look, it's a quiet UI that prioritizes readability
 // (sidebar + detail pane. The list shows only "what exists"; editing stays focused on one item at a time)
+/// The colours, poured into a page.
+///
+/// Runs **before** the words are: an unknown `{{key}}` is replaced with the key
+/// itself, so a template left to that step would end up with the word THEME
+/// sitting in its stylesheet and no colours at all.
+///
+/// Every page this server serves gets the same block, because they are all the
+/// same app: the settings screen, the transcript view and the manual are not
+/// three products with three looks.
+fn themed(html: String) -> String {
+    let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
+    let scheme = look.scheme();
+    html.replace("{{THEME}}", &scheme.css_vars()).replace(
+        "{{SCHEME}}",
+        if crate::theme::is_light(&scheme) { "light" } else { "dark" },
+    )
+}
+
 const PAGE: &str = r##"<!doctype html>
 <html lang="{{__lang__}}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{settings.title}}</title>
 <style>
  :root {
-   --bg:#0f1115; --panel:#161a20; --panel2:#1b2027; --line:#262d37;
-   --text:#e6e9ef; --muted:#8b95a5; --accent:#00aaff; --danger:#ff6b6b;
+   /* The same colours the window is drawn in, written out by the app from the
+      chosen scheme. A settings screen that stayed dark while the window went
+      light would be the same app disagreeing with itself */
+   {{THEME}}
    /* Measured from the real header (it wraps at some widths, so a fixed number
       would leave the sidebar tucked under it). Everything that has to start
       below the sticky header reads it from here. */
    --headh:53px;
-   color-scheme: dark;
+   color-scheme: {{SCHEME}};
  }
  * { box-sizing:border-box; }
  body { margin:0; background:var(--bg); color:var(--text); font-size:14px; line-height:1.6;
@@ -1772,7 +1812,7 @@ const PAGE: &str = r##"<!doctype html>
  code, .mono, input.mono { font-family:ui-monospace,Consolas,"Courier New",monospace; }
 
  header { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:12px;
-   padding:12px 20px; background:rgba(15,17,21,.9); backdrop-filter:blur(8px);
+   padding:12px 20px; background:color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter:blur(8px);
    border-bottom:1px solid var(--line); }
  header h1 { font-size:15px; font-weight:600; margin:0; letter-spacing:.02em; }
  header .spacer { flex:1; }
@@ -3045,6 +3085,8 @@ function basicCard() {
           return wrap;
         })(),
         el("span", {class:"hint"}, T["settings.font.hint"])),
+    row(T["settings.theme"], themePicker(),
+        el("span", {class:"hint"}, T["settings.theme.hint"])),
     row(T["settings.language"],
         choose(current, "language", [
           ["", T["settings.language.auto"]],
@@ -3052,6 +3094,53 @@ function basicCard() {
           ["en", "English"],
         ]),
         el("span", {class:"hint"}, T["settings.language.hint"])));
+}
+// The colour scheme, chosen by name from the ones this machine already has.
+//
+// The list is fetched rather than built in because most of it is not ours: it
+// is whatever schemes the platform's terminal is carrying plus whatever the
+// person dropped in their config folder. Each one shows its own colours, since
+// nobody remembers what "Nord" looks like from the word.
+function themePicker() {
+  current.appearance = current.appearance || {};
+  const a = current.appearance;
+  const wrap = el("div", {style:"display:flex;gap:10px;align-items:center;min-width:0;flex:1;flex-wrap:wrap"});
+  const sel = el("select", {style:"min-width:190px"});
+  const strip = el("div", {style:"display:flex;gap:3px"});
+  wrap.append(sel, strip);
+  // A scheme written out in the settings by hand is not in any list, and
+  // picking from the list is how someone would replace it -- so it is offered
+  // as the current choice rather than silently dropped
+  const inline = a.theme && typeof a.theme === "object";
+  let known = [], mine = null;
+  const paint = () => {
+    const found = sel.value ? known.find(t => t.name === sel.value) : mine;
+    strip.textContent = "";
+    for (const c of (found ? found.colors : [])) {
+      strip.append(el("span", {style:"width:14px;height:14px;border-radius:3px;" +
+        "border:1px solid var(--line);background:" + c}));
+    }
+  };
+  sel.addEventListener("change", () => {
+    // Picking a name replaces whatever was there. Landing back on "written
+    // here" leaves the colours the person wrote exactly as they wrote them
+    if (sel.value) a.theme = sel.value;
+    else if (!inline) delete a.theme;
+    paint();
+  });
+  (async () => {
+    let j;
+    try { j = await (await fetch("/api/themes", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    known = j.list || [];
+    mine = j.current || null;
+    if (inline) sel.append(el("option", {value:""}, T["settings.theme.custom"]));
+    for (const t of known) sel.append(el("option", {value:t.name}, t.name));
+    // An unset theme is the app's own, not whatever happens to sort first
+    sel.value = inline ? "" : (a.theme || j.default || "");
+    paint();
+  })();
+  return wrap;
 }
 function filesCard() {
   return card(T["settings.section.files"],
@@ -4980,9 +5069,8 @@ const RESULT_PAGE: &str = r##"<!doctype html>
 <title>{{result.title}}</title>
 <style>
  :root {
-   --bg:#0f1115; --panel:#161a20; --panel2:#1b2027; --line:#262d37;
-   --text:#e6e9ef; --muted:#8b95a5; --accent:#00aaff; --danger:#ff6b6b;
-   --sys:#20272f; color-scheme: dark;
+   {{THEME}}
+   color-scheme: {{SCHEME}};
  }
  * { box-sizing:border-box; }
  body { margin:0; background:var(--bg); color:var(--text); font-size:14px; line-height:1.6;
@@ -4990,7 +5078,7 @@ const RESULT_PAGE: &str = r##"<!doctype html>
  code, pre { font-family:ui-monospace,Consolas,"Courier New",monospace; }
 
  header { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:12px;
-   padding:12px 20px; background:rgba(15,17,21,.92); backdrop-filter:blur(8px);
+   padding:12px 20px; background:color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter:blur(8px);
    border-bottom:1px solid var(--line); }
  header .ttl { display:flex; flex-direction:column; min-width:0; }
  header h1 { font-size:15px; font-weight:600; margin:0; letter-spacing:.02em; }
@@ -5374,19 +5462,19 @@ const HELP_PAGE: &str = r##"<!doctype html>
 <html lang="{{__lang__}}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{{help.page.title}}</title>
 <style>
- :root { color-scheme: dark; }
- body { background:#05080c; color:#d3e6f5; font-family:"Consolas","Meiryo",monospace;
+ :root { {{THEME}} color-scheme: {{SCHEME}}; }
+ body { background:var(--bg); color:var(--text); font-family:"Consolas","Meiryo",monospace;
         margin:0; padding:24px 32px; line-height:1.7; }
- h1,h2,h3 { color:#4ec9ff; border-bottom:1px solid #1d3a4d; padding-bottom:6px; }
+ h1,h2,h3 { color:var(--c6); border-bottom:1px solid var(--line); padding-bottom:6px; }
  h1 { font-size:20px; } h2 { font-size:17px; margin-top:32px; } h3 { font-size:15px; }
- code { background:#0a1014; color:#ffc857; padding:1px 5px; border-radius:3px; }
- pre { background:#0a1014; border:1px solid #1d3a4d; padding:12px; overflow:auto; }
- pre code { color:#4ec9ff; background:none; padding:0; }
+ code { background:var(--panel); color:var(--warn); padding:1px 5px; border-radius:3px; }
+ pre { background:var(--panel); border:1px solid var(--line); padding:12px; overflow:auto; }
+ pre code { color:var(--c6); background:none; padding:0; }
  table { border-collapse:collapse; margin:12px 0; }
- th,td { border:1px solid #1d3a4d; padding:5px 10px; text-align:left; }
- th { color:#00aaff; }
- hr { border:0; border-top:1px solid #1d3a4d; margin:28px 0; }
- a { color:#00aaff; }
+ th,td { border:1px solid var(--line); padding:5px 10px; text-align:left; }
+ th { color:var(--accent); }
+ hr { border:0; border-top:1px solid var(--line); margin:28px 0; }
+ a { color:var(--accent); }
 </style></head><body><div id="doc"></div>
 <script>
 const MD = __MD__;
@@ -5590,7 +5678,11 @@ mod tests {
     fn pages_are_fully_rendered() {
         for (name, page) in [("PAGE", PAGE), ("HELP_PAGE", HELP_PAGE), ("RESULT_PAGE", RESULT_PAGE)] {
             assert_no_duplicate_bindings(name, page);
-            let html = crate::i18n::render(page)
+            // Every page is coloured before it is worded, and each one says so
+            // by asking for the block. A page that stopped asking would come up
+            // with no colours defined and nothing would say why
+            assert!(page.contains("{{THEME}}"), "{name} が配色を受け取っていない");
+            let html = crate::i18n::render(&themed(page.to_string()))
                 .replace("__TOKEN__", "t")
                 .replace("__REMOTE__", "false")
                 .replace("__DICT__", "{}")

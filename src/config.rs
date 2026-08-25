@@ -1032,8 +1032,8 @@ fn without_bom(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
-/// The look of the terminal. Two things, because two is what a terminal has:
-/// what it is written in and how big.
+/// The look of the terminal: what it is written in, how big, and in what
+/// colours.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Appearance {
     /// The font stack, as CSS writes it. Empty = the built-in one, chosen for
@@ -1043,6 +1043,11 @@ pub struct Appearance {
     /// Point size. Changed at any time with Ctrl+wheel, and kept here
     #[serde(default)]
     pub font_size: Option<u8>,
+    /// The colour scheme. Either the name of one -- from the schemes this
+    /// machine already has, or the ones built in -- or a scheme written out
+    /// here in the shape they are published in
+    #[serde(default)]
+    pub theme: Option<serde_json::Value>,
 }
 
 impl Appearance {
@@ -1064,6 +1069,11 @@ impl Appearance {
 
     pub fn size_px(&self) -> u8 {
         self.font_size.unwrap_or(14).clamp(8, 32)
+    }
+
+    /// The colours to draw with.
+    pub fn scheme(&self) -> crate::theme::Scheme {
+        crate::theme::resolve(self.theme.as_ref())
     }
 }
 
@@ -1281,20 +1291,20 @@ pub fn save_last_workspace(name: &str) {
 /// the config: a settings file is a person's own document, with their key order
 /// and anything we do not know about still in it. Rewriting it wholesale to
 /// record a font size would be a poor trade.
-pub fn save_font_size(px: u8) {
+pub fn save_appearance(key: &str, value: serde_json::Value) {
     let path = config_file_path();
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
     let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
     else {
-        // A file we cannot read is not one to rewrite. The size stays for this
-        // run and the person keeps their settings
-        crate::append_hook_log("could not record the font size: settings are not readable");
+        // A file we cannot read is not one to rewrite. The change stays for
+        // this run and the person keeps their settings
+        crate::append_hook_log(&format!("could not record {key}: settings are not readable"));
         return;
     };
     if !doc.is_object() {
         doc = serde_json::json!({});
     }
-    doc["appearance"]["font_size"] = serde_json::json!(px);
+    doc["appearance"][key] = value;
     if let Ok(out) = serde_json::to_string_pretty(&doc) {
         let _ = crate::crypto::write_atomic(&path, &out);
     }

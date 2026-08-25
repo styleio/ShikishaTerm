@@ -120,6 +120,15 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **The colours can be changed, by the name you already call them.** The list in
+  the settings is every scheme this PC already has — the ones Windows Terminal
+  is carrying, plus any scheme file dropped into `config/themes` — so a theme
+  you already use is picked by its own name rather than rebuilt by hand. A
+  dozen well-known ones are built in for a PC that has none. The scheme reaches
+  the terminal's sixteen colours *and* the window around them, so choosing a
+  light one turns the whole app light, settings screen included, and the change
+  lands on the window that is open rather than the next one.
+
 - **The terminal's font can be changed.** Ctrl+wheel over the terminal makes it
   bigger or smaller — the gesture people already try in a terminal, a browser
   and an editor, so it costs no key and needs no telling. The size is kept in

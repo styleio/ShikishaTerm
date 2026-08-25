@@ -39,6 +39,7 @@ mod session_log;
 mod sessionfind;
 mod shell;
 mod tab;
+mod theme;
 mod uistate;
 mod update;
 mod watch;
@@ -607,6 +608,22 @@ impl WinSurface {
     /// re-reads them on its next page load, i.e. when it returns to the board.)
     fn push_actions(&self, actions_json: &str) {
         let _ = self.win.eval(&format!("window.__setActions({actions_json});"));
+    }
+
+    /// Push the colours in, for the same reason and by the same road.
+    ///
+    /// A scheme picked in the settings has to land on the window that is open,
+    /// not on the next one. Everything is a variable already, so this is one
+    /// rule being replaced -- the terminal's sixteen included, since the cells
+    /// name their colour rather than carry it
+    fn push_theme(&self) {
+        let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
+        let scheme = look.scheme();
+        let vars = serde_json::to_string(&scheme.css_vars()).unwrap_or_else(|_| "\"\"".into());
+        let light = crate::theme::is_light(&scheme);
+        let _ = self
+            .win
+            .eval(&format!("window.__setTheme({vars}, {light});"));
     }
 
     fn take_events(&mut self, active_tab: Option<&Tab>) {
@@ -1964,6 +1981,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // A settings save may have changed the quick actions — push them
                 // into the shell so the composer updates without a reload.
                 surface.push_actions(&crate::shell::actions_json());
+                surface.push_theme();
             }
         }
 
@@ -2813,7 +2831,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if font_save_at.is_some_and(|at| std::time::Instant::now() >= at) {
             font_save_at = None;
             if let Some(px) = font_size.take() {
-                config::save_font_size(px);
+                config::save_appearance("font_size", serde_json::json!(px));
                 // Our own write is not news. Without this the watcher sees the
                 // settings change and announces a reload, which is a strange
                 // thing to be told by a window you just zoomed
