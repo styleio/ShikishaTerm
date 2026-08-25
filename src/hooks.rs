@@ -1036,7 +1036,7 @@ pub struct HookEngine {
     budget: StepBudget,
 }
 
-const HOOK_NAMES: [&str; 5] = ["on_start", "on_question", "on_busy", "on_done", "on_exit"];
+const HOOK_NAMES: [&str; 6] = ["on_start", "on_question", "on_busy", "on_done", "on_exit", "on_notify"];
 
 /// Hooks available on a browser tab.
 ///

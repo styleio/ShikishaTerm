@@ -2130,10 +2130,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // something newer replaces it. The toast is the part that is held
             // back when the person is already looking at that tab — telling
             // someone what is in front of them is noise, not news
+            let mut fired_notes: Vec<(usize, String)> = Vec::new();
             for i in 0..tabs.len() {
                 let showing = session_at(&surfaces, active) == Some(i);
-                let Some(t) = tabs.get_mut(i) else { continue };
-                for (title, body) in t.take_notes() {
+                let notes = match tabs.get_mut(i) {
+                    Some(t) => t.take_notes(),
+                    None => continue,
+                };
+                for (title, body) in notes {
                     let said = match (title.trim(), body.trim()) {
                         ("", b) => b.to_string(),
                         (a, "") => a.to_string(),
@@ -2142,10 +2146,53 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     if said.is_empty() {
                         continue;
                     }
-                    append_hook_log(&format!("tab{} \"{}\" says: {said}", i + 1, t.title));
-                    t.set_status("notify", &said);
-                    if !showing {
-                        flash = Some(format!("{} — {said}", t.title));
+                    if let Some(t) = tabs.get_mut(i) {
+                        append_hook_log(&format!("tab{} \"{}\" says: {said}", i + 1, t.title));
+                        t.set_status("notify", &said);
+                        if !showing {
+                            flash = Some(format!("{} — {said}", t.title));
+                        }
+                    }
+                    fired_notes.push((i, said));
+                }
+            }
+            // A notification is an event too. When a program rings the terminal
+            // -- a bell, an OSC notify, even over ssh where nothing of ours is
+            // installed -- the automation gets an on_notify(tab, text) so it can
+            // do what the toast cannot: forward it to a phone, route it, log it.
+            // The toast still shows; this is additive. Without a hook it is a
+            // no-op, and firing it costs nothing
+            if !fired_notes.is_empty() {
+                if let Some(eng) = engine.as_mut() {
+                    for (i, said) in fired_notes {
+                        let ctx = tab_ctx(&tabs[i], surface_at(&surfaces, i + 1));
+                        eng.fire("on_notify", &ctx, Some(&said));
+                    }
+                    // Whatever the hook asked for -- forward it, set a status --
+                    // is drained and carried out here, the same way every other
+                    // hook's commands are after it fires
+                    let cmds = eng.drain_commands();
+                    if !cmds.is_empty() {
+                        let now_ms = start.elapsed().as_millis() as u64;
+                        exec_commands(
+                            cmds,
+                            &mut tabs,
+                            &surfaces,
+                            &mut pane_layout,
+                            surface_count,
+                            max_chain,
+                            auto_enabled,
+                            now_ms,
+                            rows,
+                            cols,
+                            &notifier,
+                            &mut flash,
+                            &mut ball,
+                            &mut pending_submit,
+                            &mut waiting,
+                            &mut active,
+                            ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
+                        );
                     }
                 }
             }

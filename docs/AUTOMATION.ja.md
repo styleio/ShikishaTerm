@@ -20,6 +20,7 @@
 | `on_start.lua` | タブが起動して落ち着いたとき (下記) |
 | `on_done.lua` | 聞いたことへのAIの応答が完了したとき |
 | `on_question.lua` | AIが確認・選択肢を出してきたとき |
+| `on_notify.lua` | プログラムが端末に通知を出したとき（ベル・OSC通知、ssh越しでも）。2つめの変数に本文が入る。`shikisha.notify(...)` で転送・振り分け・記録できる（画面のトーストはそのまま出る） |
 | `on_exit.lua` | セッションが終了したとき（切断・クラッシュを含む） |
 | `on_busy.lua` | 応答が始まったとき（上級者向け） |
 | `_shared.lua` | 上記より先に読まれる。共通の下請け関数を置く場所 |
@@ -59,7 +60,7 @@ shikisha.send_to_tab(2, "このコードをレビューして:\n" .. tab.output)
 | `tab.is_model` | CLIではなく、APIでモデルと話すタブかどうか |
 | `tab.reply` | モデルタブの返答そのもの（そのタブでのみ）。`tab.output` は同じ内容が画面に描かれたもの（折り返し済み） |
 
-`on_question.lua` だけ、2つめの変数 `screen` に画面テキスト全体が入ります。
+`on_question.lua` は2つめの変数 `screen` に画面テキスト全体、`on_notify.lua` は2つめの変数に通知の本文が入ります。
 
 ---
 

@@ -120,6 +120,14 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **A notification can now be caught by automation.** When a program rings the
+  terminal — a bell, an OSC notification, even one from a CLI running over ssh
+  where nothing of ours is installed — a new `on_notify(tab, text)` hook fires.
+  Until now those only became an in-app toast; the hook lets you do what the
+  toast cannot — forward it to your phone with `shikisha.notify(...)`, route it
+  by which tab it came from, log it — while the toast still shows. Without a
+  hook nothing changes.
+
 - **"Find" now searches the present as well as the past.** The same box that
   searches recorded conversations also searches the live output of every open
   tab, so "which of my agents mentioned that error" is one search across all of

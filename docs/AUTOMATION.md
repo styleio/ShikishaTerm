@@ -23,6 +23,7 @@ Only add the ones you need.
 | `on_question.lua` | When the AI asks something or offers choices |
 | `on_exit.lua` | When the session ends (including disconnects and crashes) |
 | `on_busy.lua` | When an answer starts (advanced) |
+| `on_notify.lua` | When the program rings the terminal — a bell, an OSC notification, even over ssh. The second variable holds the text. Forward it with `shikisha.notify(...)`, route it, or log it; the on-screen toast still shows |
 | `_shared.lua` | Loaded before all of the above. Put shared helper functions here |
 
 `on_done.lua` and `on_busy.lua` only run once something has been sent to the tab. Every
@@ -59,7 +60,7 @@ shikisha.send_to_tab(2, "Please review this code:\n" .. tab.output)
 | `tab.is_model` | Whether this tab talks to a model over an API rather than running a CLI |
 | `tab.reply` | A model tab's reply, exactly as it came back (only on such a tab). `tab.output` is the same text as the screen drew it, wrapped |
 
-Only `on_question.lua` gets a second variable, `screen`, holding the whole screen text.
+`on_question.lua` gets a second variable `screen` holding the whole screen text; `on_notify.lua` gets a second variable holding the notification text.
 
 ---
 

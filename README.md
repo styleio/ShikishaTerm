@@ -161,6 +161,9 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B 0` → `i` | Show the QR code for phone access |
 | `Ctrl+B 0` → `k` | Set or change the master password (encrypts `secrets.json`) |
 
+An `on_notify` automation hook catches every terminal notification (bell/OSC, even over ssh),
+so you can forward it to your phone or route it — see docs/AUTOMATION.md.
+
 `Ctrl+B :` opens a command palette — one box to find and run anything: a tab, a setting,
 the Vault, any key action, your own quick actions.
 
