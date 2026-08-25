@@ -1142,5 +1142,11 @@
   "msg.operate.browser_only": "The operate target must be a browser tab (for now).",
   "msg.operate.bad_target": "That tab can't be operated — pick a browser or another AI tab.",
   "msg.operate.needs_autoapprove": "This AI must be allowed to act without confirmation to drive a tab. Turn it on in settings.",
-  "tui.self_cost": "this app, all processes"
+  "tui.self_cost": "this app, all processes",
+  "err.browser.no_snapshot": "the page did not return a picture",
+  "err.browser.no_snapshot_decode": "the picture the page returned could not be read: {e}",
+  "settings.sec.snapshots": "Snapshots",
+  "settings.sec.snapshots.sub": "Page pictures a rally took",
+  "settings.snapshots.intro": "Pictures of browser pages, taken with browser_snapshot. A rally can keep a visual record of what it did; here you can look back and clear them out.",
+  "settings.snapshots.none": "No snapshots yet."
 }

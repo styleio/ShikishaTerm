@@ -126,6 +126,8 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 | `Ctrl+B 0` → `i` | スマホ接続用のQRコードを表示 |
 | `Ctrl+B 0` → `k` | マスターパスワードの設定・変更（`secrets.json` を暗号化） |
 
+`browser_snapshot` でブラウザページを PNG に撮れます（設定→スナップショットで確認）。ラリーの視覚記録に使えます。
+
 `on_notify` フックで端末の通知（ベル/OSC、ssh越しも）を捕まえ、スマホ転送や振り分けができます（docs/AUTOMATION.ja.md）。
 
 `Ctrl+B :` でコマンドパレットが開きます。タブ移動・設定・Vault・キー操作・自作アクションを

@@ -614,6 +614,14 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
         c.push_replay(format!("browser_state_load({}, {})", lua_str(&name), lua_str(&label)));
         Ok(())
     });
+    // Take a picture of the page and save it; returns the file path
+    bind!("browser_snapshot", (String, String), |lua_, c, al, (name, label)| {
+        guard(&name, &al)?;
+        let path = c.browser_snapshot(&name, &label)
+            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        c.push_replay(format!("browser_snapshot({}, {})", lua_str(&name), lua_str(&label)));
+        Ok(path)
+    });
     bind!("browser_ask", (String, String, Option<String>), |lua_, c, al, (name, text, label)| {
         guard(&name, &al)?;
         c.browser_ask(&name, &text, label.as_deref().unwrap_or("OK"))
@@ -1491,6 +1499,19 @@ impl HookEngine {
                     "browser_state_load",
                     lua.create_function(move |_, (name, label): (String, String)| {
                         c.browser_state_load(&name, &label)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_snapshot",
+                    lua.create_function(move |_, (name, label): (String, String)| {
+                        c.browser_snapshot(&name, &label)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,

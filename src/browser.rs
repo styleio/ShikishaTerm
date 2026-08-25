@@ -1626,6 +1626,29 @@ impl Browser {
         Ok(v.get("cookies").cloned().unwrap_or(serde_json::Value::Array(vec![])))
     }
 
+    /// A picture of the page as it looks right now, as PNG bytes.
+    ///
+    /// Taken by the browser itself through the devtools protocol, so it is what
+    /// a person would see, not a re-render of the HTML. For a rally to keep a
+    /// visual record of what it did, or for a person to glance at where an
+    /// agent got to without switching to the tab
+    pub fn snapshot(&self, to: Option<&str>, timeout_ms: u64) -> Result<Vec<u8>> {
+        use base64::Engine as _;
+        let v = self.cdp(
+            to,
+            "Page.captureScreenshot",
+            serde_json::json!({ "format": "png", "captureBeyondViewport": false }),
+            timeout_ms,
+        )?;
+        let data = v
+            .get("data")
+            .and_then(|d| d.as_str())
+            .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.no_snapshot")))?;
+        base64::engine::general_purpose::STANDARD
+            .decode(data.as_bytes())
+            .map_err(|e| anyhow!(crate::i18n::tp("err.browser.no_snapshot_decode", &[("e", &e.to_string())])))
+    }
+
     /// Put a set of cookies back into this page's profile.
     ///
     /// The same shape that came out. Set against the live profile, so a page

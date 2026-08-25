@@ -164,6 +164,9 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 An `on_notify` automation hook catches every terminal notification (bell/OSC, even over ssh),
 so you can forward it to your phone or route it — see docs/AUTOMATION.md.
 
+`browser_snapshot` captures a browser page as a PNG (see it under Settings → Snapshots) — a
+rally can keep a visual record of what it did.
+
 `Ctrl+B :` opens a command palette — one box to find and run anything: a tab, a setting,
 the Vault, any key action, your own quick actions.
 

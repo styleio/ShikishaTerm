@@ -1563,6 +1563,34 @@ fn handle(
             let ok = crate::browserstate::delete(label).is_ok();
             req.respond(json_resp(serde_json::json!({ "ok": ok })))?;
         }
+        // The saved page snapshots, newest first, each as a data URL so the
+        // card can show it without a second authenticated image request. A
+        // handful is the normal case; the newest are enough to glance at
+        ("GET", "/api/snapshots") => {
+            use base64::Engine as _;
+            let b64 = base64::engine::general_purpose::STANDARD;
+            let rows: Vec<serde_json::Value> = crate::browserstate::snapshots()
+                .into_iter()
+                .take(24)
+                .filter_map(|(label, path)| {
+                    let bytes = std::fs::read(&path).ok()?;
+                    let data = format!("data:image/png;base64,{}", b64.encode(&bytes));
+                    Some(serde_json::json!({ "label": label, "data": data }))
+                })
+                .collect();
+            req.respond(json_resp(serde_json::json!(rows)))?;
+        }
+        ("POST", "/api/snapshots/delete") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let label = v.get("label").and_then(|x| x.as_str()).unwrap_or_default();
+            let ok = crate::browserstate::delete_snapshot(label).is_ok();
+            req.respond(json_resp(serde_json::json!({ "ok": ok })))?;
+        }
         // Whether this machine has a GitHub sign-in, so the settings can say
         // why a tab shows a branch but no pull request number. Whether, never
         // what: nothing here hands a token back out
@@ -3311,6 +3339,44 @@ function loginsCard() {
   }
   return box;
 }
+// Saved page snapshots.
+//
+// Pictures a rally (or you) took of a browser page with browser_snapshot. Here
+// to glance back at what an agent was looking at, and to throw them away. The
+// image rides in as a data URL, so the card needs no second request that would
+// have to carry the token an <img> tag cannot.
+function snapshotsCard() {
+  const grid = el("div", {style:"display:flex;flex-wrap:wrap;gap:12px"}, el("div", {class:"hint"}, "…"));
+  const box = card(T["settings.sec.snapshots"],
+    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.snapshots.intro"]),
+    grid);
+  load();
+  async function load() {
+    let rows = [];
+    try { rows = await (await fetch("/api/snapshots", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    grid.textContent = "";
+    if (!rows.length) { grid.append(el("div", {class:"hint"}, T["settings.snapshots.none"])); return; }
+    for (const r of rows) {
+      const cell = el("div", {style:"width:220px"});
+      const img = el("img", {src:r.data, alt:r.label,
+        style:"width:220px;height:140px;object-fit:cover;object-position:top;border:1px solid var(--line);border-radius:8px;background:var(--bg)"});
+      const row = el("div", {style:"display:flex;align-items:center;gap:6px;margin-top:4px"});
+      const del = el("button", {class:"btn"}, T["settings.logins.forget"]);
+      del.addEventListener("click", async () => {
+        del.disabled = true;
+        try { await fetch("/api/snapshots/delete", {method:"POST",
+          headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+          body: JSON.stringify({label:r.label})}); } catch (e) {}
+        load();
+      });
+      row.append(el("span", {class:"hint", style:"flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"}, r.label), del);
+      cell.append(img, row);
+      grid.append(cell);
+    }
+  }
+  return box;
+}
 function filesCard() {
   return card(T["settings.section.files"],
     row(T["settings.automation_global"], ...pathField(current, "automation", "scripts/common", "dir",
@@ -3327,6 +3393,7 @@ function globalSections() {
     {id:"basic",     label:T["settings.sec.basic"],     sub:T["settings.sec.basic.sub"],     build:basicCard},
     {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],      build:keysCard},
     {id:"logins",    label:T["settings.sec.logins"],    sub:T["settings.sec.logins.sub"],    build:loginsCard},
+    {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
     {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},

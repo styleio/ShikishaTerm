@@ -665,6 +665,17 @@ impl Capabilities {
         self.with(name, |b, to| b.fetch(to, url, opts, 30_000))
     }
 
+    /// Take a picture of this page and save it, returning where it went.
+    ///
+    /// Under a snapshots folder beside the browser data, named by the label so
+    /// a rally can predict the path. The bytes are the browser's own PNG; a
+    /// caller gets back the file, not the image, so nothing enormous crosses
+    /// into the automation
+    pub fn browser_snapshot(&self, name: &str, label: &str) -> Result<String> {
+        let png = self.with(name, |b, to| b.snapshot(to, 30_000))?;
+        crate::browserstate::save_snapshot(label, &png)
+    }
+
     /// Save this page's login (its cookies) under a name, to be loaded later.
     ///
     /// The honest answer to "log in every rally": sign in once here, save it,

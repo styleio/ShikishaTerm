@@ -94,6 +94,57 @@ pub fn load(label: &str) -> Result<(serde_json::Value, serde_json::Value)> {
     Ok((saved.cookies, saved.storage))
 }
 
+/// Save a page's picture, returning where it went.
+///
+/// Beside the logins, under a snapshots folder. The bytes are the browser's own
+/// PNG, written whole; a half-written image is just a broken file, not a
+/// dangerous one, so this does not need the atomic care a login does -- but it
+/// gets it anyway, for free, because a torn PNG shown in a record is a puzzle
+pub fn save_snapshot(label: &str, png: &[u8]) -> anyhow::Result<String> {
+    let dir = crate::config::browser_data_dir().join("snapshots");
+    let _ = std::fs::create_dir_all(&dir);
+    let p = dir.join(format!("{}.png", safe(label)));
+    let tmp = p.with_extension("png.part");
+    std::fs::write(&tmp, png)
+        .and_then(|_| std::fs::rename(&tmp, &p))
+        .with_context(|| crate::i18n::tp("err.login.write", &[("label", label)]))?;
+    Ok(p.display().to_string())
+}
+
+/// Every saved snapshot, by name, newest first -- for a viewer that shows them.
+pub fn snapshots() -> Vec<(String, String)> {
+    let dir = crate::config::browser_data_dir().join("snapshots");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(std::time::SystemTime, String, String)> = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("png") {
+            continue;
+        }
+        let Some(label) = p.file_stem().map(|s| s.to_string_lossy().to_string()) else {
+            continue;
+        };
+        let when = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        out.push((when, label, p.display().to_string()));
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.into_iter().map(|(_, l, p)| (l, p)).collect()
+}
+
+/// Delete a saved snapshot. Missing is success.
+pub fn delete_snapshot(label: &str) -> Result<()> {
+    let p = crate::config::browser_data_dir()
+        .join("snapshots")
+        .join(format!("{}.png", safe(label)));
+    if p.exists() {
+        std::fs::remove_file(&p)
+            .with_context(|| crate::i18n::tp("err.login.delete", &[("label", label)]))?;
+    }
+    Ok(())
+}
+
 /// One saved login, for a listing.
 pub struct Entry {
     pub label: String,
