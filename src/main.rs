@@ -30,6 +30,7 @@ mod exchange;
 mod hooks;
 mod i18n;
 mod lastsession;
+mod keys;
 mod layout;
 mod netaddr;
 mod notify;
@@ -805,9 +806,13 @@ fn recorded_lua(name: &str, step: &RecordedStep) -> Option<String> {
 fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
     use crate::browser::Ev;
     let plain = |c: char| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    // The prefix a person would actually press, not the one we shipped. A
+    // button that went on pressing Ctrl+B after the prefix moved would be a
+    // button that silently stopped working
     let prefixed = |c: char| {
+        let p = crate::keys::prefix_now();
         vec![
-            Event::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL)),
+            Event::Key(KeyEvent::new(p.code, p.mods)),
             plain(c),
         ]
     };
@@ -1210,6 +1215,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
         flash: flash.map(str::to_string),
         help_open: ui.help_open,
+        help_rows: ui.help_rows.clone(),
         ws_open: ui.ws_open,
         qr: ui.qr.clone(),
         // Build the image just once here. Both the window and the phone read the
@@ -1670,6 +1676,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut font_save_at: Option<std::time::Instant> = None;
     // What was last written, so an unchanged screen writes nothing at all
     let mut last_saved: Option<(crate::layout::Layout, Vec<Option<tab::Session>>)> = None;
+    // Which key does what, this run. Read once and re-read when the settings
+    // change, the same as everything else that can be edited while running
+    let (mut keymap, key_errs) = crate::keys::Keys::load(cfg.as_ref());
+    startup_errors.extend(key_errs);
     let mut prefix_active = false;
     // The last state drawn. This is what gets handed to the phone (keeps the
     // assembly point to a single spot).
@@ -1982,6 +1992,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // into the shell so the composer updates without a reload.
                 surface.push_actions(&crate::shell::actions_json());
                 surface.push_theme();
+                let (next, errs) = crate::keys::Keys::load(cfg.as_ref());
+                keymap = next;
+                startup_errors.extend(errs);
             }
         }
 
@@ -2748,6 +2761,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
             ws_index,
             ws_open,
             help_open,
+            // Only worth carrying while it is on screen; it is the same list
+            // every frame otherwise
+            help_rows: match help_open {
+                true => keymap
+                    .help_rows()
+                    .into_iter()
+                    .map(|(k, d)| (k, d.to_string()))
+                    .collect(),
+                false => Vec::new(),
+            },
             qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
             remote_on: remote_ui.is_some(),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
@@ -2863,6 +2886,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // coming back to it doesn't reload it.
         {
             let geom = &surface.pane_geom;
+            // An overlay is drawn by the page, and a browser is not: it is a
+            // window of its own living inside ours, and no amount of stacking
+            // puts a drawn thing over it. So while something is being shown
+            // over the screen, the browsers step aside. They keep their pages;
+            // being given no rectangle is all that happens to them
+            let covered = help_open || ws_open || qr_open;
             let shown: Vec<(String, (i32, i32, i32, i32))> = pane_layout
                 .leaves()
                 .into_iter()
@@ -2880,6 +2909,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         .unwrap_or(surface.area);
                     Some((key.clone(), rect))
                 })
+                .filter(|_| !covered)
                 .collect();
             caps.show_at(&shown);
         }
@@ -3462,9 +3492,27 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                     continue;
                 }
-                if prefix_active {
+                // What this press means, if anything. One place decides, and
+                // what comes out is the action's own character -- so the arms
+                // below never learn that keys can be moved, and neither do the
+                // page's buttons, which press those characters themselves
+                // A press that belonged to the prefix is used up whatever it
+                // turned out to mean. Otherwise an unbound key after the
+                // prefix would fall through and be typed into the tab, which
+                // is how a stray "w" once ended up as "wwww" in a session
+                let mut used = true;
+                let meant = if prefix_active {
                     prefix_active = false;
-                    match key.code {
+                    keymap.after_prefix(key.code)
+                } else if keymap.is_prefix(&key) {
+                    prefix_active = true;
+                    None
+                } else {
+                    used = false;
+                    keymap.direct(&key)
+                };
+                if let Some(code) = meant {
+                    match code {
                         KeyCode::Char('q') => break,
                         KeyCode::Char(c @ '0'..='9') => {
                             let n = c as usize - '0' as usize;
@@ -3703,10 +3751,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         _ => {}
                     }
-                } else if key.code == KeyCode::Char('b')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    prefix_active = true;
+                } else if used {
+                    // Either the prefix was just pressed and the next key is
+                    // the one that says what to do, or the key after it meant
+                    // nothing. Neither is the tab's to receive
                 } else if active == 0 {
                     // INDEX = home screen: digit keys switch tabs, letter keys run menu items.
                     // Characters received here must line up with MENU_KEYS
@@ -6043,6 +6091,8 @@ struct Ui {
     ws_index: usize,
     ws_open: bool,
     help_open: bool,
+    /// The keys in force, for the help screen to show
+    help_rows: Vec<(String, String)>,
     /// The connection URL, if the QR code is being shown
     qr: Option<String>,
     /// Whether the remote UI is listening (shown at all times so it's never a mystery)

@@ -1543,6 +1543,39 @@ fn handle(
         // restart, and — where it needs one — whether its hook is installed.
         // The person asked "will my conversation survive?", and this answers
         // that per CLI rather than describing a mechanism
+        // Every action the window has, with the key it answers to right now.
+        // The names are the app's own, so the settings screen never has its
+        // own idea of what this program can do
+        ("GET", "/api/keys") => {
+            let (map, errs) = crate::keys::Keys::load(crate::config::load().as_ref());
+            let shown: std::collections::HashMap<&str, String> = crate::keys::ACTIONS
+                .iter()
+                .map(|a| (a.name, String::new()))
+                .chain(
+                    map.help_rows()
+                        .into_iter()
+                        .filter_map(|(k, d)| {
+                            let name = crate::keys::ACTIONS.iter().find(|a| a.desc == d)?.name;
+                            Some((name, k))
+                        }),
+                )
+                .collect();
+            let rows: Vec<serde_json::Value> = crate::keys::ACTIONS
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "name": a.name,
+                        "desc": crate::i18n::t(a.desc),
+                        "now": shown.get(a.name).cloned().unwrap_or_default(),
+                    })
+                })
+                .collect();
+            req.respond(json_resp(serde_json::json!({
+                "prefix": map.prefix_shown(),
+                "rows": rows,
+                "problems": errs,
+            })))?;
+        }
         // Every colour scheme this machine can name, in the order they are
         // found. The names come from what the person already has, so the list
         // is the point: a scheme they cannot see the name of is one they will
@@ -1833,6 +1866,9 @@ const PAGE: &str = r##"<!doctype html>
  .atnarrow { display:none; }
  #msg { color:var(--muted); font-size:13px; border-radius:6px; padding:4px 10px; }
  #msg.warn { color:var(--danger); }
+ /* A setting that could not be used. Said in the place it was set, not in a
+    log nobody opens */
+ .warn { color:var(--danger); font-size:13px; margin:0 0 8px; }
  /* Replay the animation every time, so a click still registers even if the message text repeats */
  #msg.flash { animation:msgflash 1.1s ease-out; }
  @keyframes msgflash {
@@ -3142,6 +3178,54 @@ function themePicker() {
   })();
   return wrap;
 }
+// Which key does what.
+//
+// The rows come from the app: it knows what it can do and what each action
+// answers to right now, so this screen never keeps its own copy of that list.
+// A key is typed the way people write keys to each other -- ctrl+shift+d -- and
+// a bare character means "after the prefix key", which is what the prefix is
+// for. Empty gives the key back.
+function keysCard() {
+  current.keys = current.keys || {};
+  const k = current.keys;
+  const list = el("div", {}, el("div", {class:"hint"}, "…"));
+  const problems = el("div", {});
+  const box = card(T["settings.sec.keys"],
+    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.keys.intro"]),
+    problems,
+    row(T["settings.keys.prefix"], field(k, "prefix", "ctrl+b", {width:150, grow:false}),
+        el("span", {class:"hint"}, T["settings.keys.prefix.hint"])),
+    list);
+  load();
+  async function load() {
+    let j;
+    try { j = await (await fetch("/api/keys", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    problems.textContent = "";
+    for (const p of (j.problems || [])) {
+      problems.append(el("div", {class:"warn"}, p));
+    }
+    list.textContent = "";
+    for (const r of (j.rows || [])) {
+      // What it does on the left, what it answers to on the right. The box is
+      // empty unless this person changed it: showing the default inside the
+      // box would make every row look edited
+      const inp = el("input", {type:"text", placeholder:r.now || T["settings.keys.off"],
+        style:"width:160px"});
+      inp.value = k[r.name] || "";
+      inp.addEventListener("input", () => {
+        const v = inp.value.trim();
+        if (v) k[r.name] = v; else delete k[r.name];
+      });
+      list.append(el("div", {class:"row"},
+        el("label", {}, r.desc),
+        inp,
+        el("span", {class:"hint"}, r.now ? T["settings.keys.now"] + " " + r.now
+                                         : T["settings.keys.off"])));
+    }
+  }
+  return box;
+}
 function filesCard() {
   return card(T["settings.section.files"],
     row(T["settings.automation_global"], ...pathField(current, "automation", "scripts/common", "dir",
@@ -3156,6 +3240,7 @@ function filesCard() {
 function globalSections() {
   return [
     {id:"basic",     label:T["settings.sec.basic"],     sub:T["settings.sec.basic.sub"],     build:basicCard},
+    {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],      build:keysCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
     {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},

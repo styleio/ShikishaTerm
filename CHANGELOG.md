@@ -120,14 +120,32 @@ once it reaches its first tagged release.
   to install and no profile to write, which is the point: it works over ssh and
   inside containers, where nothing of ours is present.
 
+- **Which key does what can be changed**, and it is changed by naming the
+  action rather than the key: you say what you want *split the screen* to be,
+  not what `Ctrl+B %` should become. The settings screen lists every action
+  with the key it answers to right now. The prefix key moves too, which is the
+  first thing anyone arriving from tmux wants. A key can also be given back, if
+  you would rather your shell had it. The help screen is built from the same
+  table the window dispatches on, so it shows the keys you actually have —
+  including the ones you moved — and an action you switched off is not listed
+  as though it still worked.
+
 - **The colours can be changed, by the name you already call them.** The list in
   the settings is every scheme this PC already has — the ones Windows Terminal
-  is carrying, plus any scheme file dropped into `config/themes` — so a theme
-  you already use is picked by its own name rather than rebuilt by hand. A
-  dozen well-known ones are built in for a PC that has none. The scheme reaches
-  the terminal's sixteen colours *and* the window around them, so choosing a
-  light one turns the whole app light, settings screen included, and the change
-  lands on the window that is open rather than the next one.
+  is carrying, plus any scheme file dropped into `config/themes`, in the format
+  colour schemes are published in — so a theme you already use is picked by its
+  own name rather than rebuilt by hand. What ships with the app is the app's
+  own colours and nothing else: other people's schemes are other people's, and
+  they arrive by being pointed at rather than copied in. The scheme reaches the
+  terminal's sixteen colours *and* the window around them, so choosing a light
+  one turns the whole app light, settings screen included, and the change lands
+  on the window that is open rather than the next one.
+
+- **An overlay is no longer hidden behind a browser tab.** The help, the
+  workspace list and the pairing QR are drawn by the page; a browser tab is a
+  window of its own living inside ours, and no amount of stacking puts a drawn
+  thing over it. Browsers now step aside while something is being shown over
+  the screen, and keep their pages while they do.
 
 - **The terminal's font can be changed.** Ctrl+wheel over the terminal makes it
   bigger or smaller — the gesture people already try in a terminal, a browser

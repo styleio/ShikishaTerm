@@ -78,6 +78,8 @@ pub struct Config {
     /// How the terminal is drawn
     #[serde(default)]
     pub appearance: Appearance,
+    #[serde(default)]
+    pub keys: KeyBinds,
     /// Bounds for files pasted/attached into the sub-input bar (saved beside the tab)
     #[serde(default)]
     pub attach: AttachSpec,
@@ -1030,6 +1032,23 @@ fn flatten(tabs: &[TabConfig], depth: u16, out: &mut Vec<FlatTab>) {
 /// just made appears to have done nothing.
 fn without_bom(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
+/// Which key does what.
+///
+/// Named by the action rather than by the key, because that is the question a
+/// person actually has: not "what does Ctrl+B % do" but "what do I press to
+/// split the screen". The list of names lives in `keys.rs` with the actions
+/// themselves; nothing about them is repeated here.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct KeyBinds {
+    /// The key pressed before the others. `ctrl+b` unless said otherwise
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// Action name to key. A bare character means "after the prefix"; anything
+    /// with a modifier stands on its own; `off` gives the key back
+    #[serde(default, flatten)]
+    pub binds: std::collections::HashMap<String, String>,
 }
 
 /// The look of the terminal: what it is written in, how big, and in what

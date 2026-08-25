@@ -7,9 +7,16 @@
 //! and a theme is asked for by the name it already has.
 //!
 //! Beyond that there are two more places, in the order a person would expect:
-//! a `config/themes` folder they can drop any scheme file into, and a handful
-//! built in so the list is never empty. Names are matched loosely -- case and
-//! spaces are how people misremember a name, not what a name is.
+//! a `config/themes` folder they can drop any scheme file into, and the app's
+//! own schemes so the list is never empty. Names are matched loosely -- case
+//! and spaces are how people misremember a name, not what a name is.
+//!
+//! **The catalogue is deliberately not ours.** The well-known schemes are
+//! other people's work, published under their own names and their own terms,
+//! and shipping copies of them inside this program would be taking something
+//! that was not offered. What we build in are colours we chose ourselves;
+//! everything else arrives by the two roads above, from wherever its author
+//! meant it to come from.
 //!
 //! What the colours reach is deliberately narrow. The sixteen become CSS
 //! variables, so the terminal grid needs to know nothing about themes: it
@@ -83,11 +90,11 @@ const DEFAULT: [&str; 16] = [
 const DEFAULT_BG: &str = "#0a0c0e";
 const DEFAULT_FG: &str = "#e8eef4";
 
-/// The few that ship with the app.
+/// The app's own schemes.
 ///
 /// Not a catalogue -- the catalogue is whatever the person already has. These
-/// exist so that the list is never empty and so the well-known names people
-/// type from memory resolve to something.
+/// are ours, chosen rather than collected, and they exist so the list is never
+/// empty on a machine that has nothing else.
 const BUILT_IN: &str = include_str!("themes.json");
 
 impl Scheme {
@@ -473,7 +480,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_built_in_list_reads_and_has_the_app_own_scheme_in_it() {
+    fn what_ships_with_the_app_is_the_app_own_and_nobody_else_s() {
         let list = built_in();
         assert!(!list.is_empty(), "組み込みのテーマが読めていない");
         assert!(
@@ -481,6 +488,14 @@ mod tests {
             "自前のテーマが一覧に無い"
         );
         for s in &list {
+            // Other people's colour schemes are other people's, published
+            // under their own names and their own terms. They reach this app
+            // by being pointed at, never by being copied into it
+            assert!(
+                s.name.starts_with(DEFAULT_NAME),
+                "他所の配色を同梱している: {}",
+                s.name
+            );
             for c in s.ansi() {
                 assert!(is_colour(&c), "{} の色がおかしい: {c}", s.name);
             }

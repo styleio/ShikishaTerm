@@ -1167,10 +1167,18 @@ function drawVeil() {
     box.append(qr, el("div", {class:"url"}, String(S.qr).split("?")[0]));
   } else {
     box.append(el("h3", {}, T["tui.help.title"] || "HELP"));
-    // The translated strings are stored one line per key. This is where display order is decided
-    for (const k of ["quit", "tabs", "panes", "panefocus", "paneclose", "ws",
-                     "lock", "restart", "copy", "auto", "raw",
-                     "mouse", "mouse.wheel", "mouse.drag", "mouse.right",
+    // The keys come from the app, not from the translations: they are whatever
+    // this person actually has, including anything they moved. Only the words
+    // beside them are translated
+    const wide = (S.help_rows || []).reduce((n, r) => Math.max(n, r[0].length), 0);
+    for (const [press, what] of (S.help_rows || [])) {
+      box.append(el("div", {class:"row"},
+        el("b", {style:"display:inline-block;min-width:" + (wide + 2) + "ch"}, press),
+        T[what] || what));
+    }
+    // The mouse has no keys to move, so those lines stay as they are written
+    box.append(el("div", {class:"row"}, T["tui.help.mouse"]));
+    for (const k of ["mouse.wheel", "mouse.drag", "mouse.right",
                      "mouse.tab", "mouse.divider"]) {
       box.append(el("div", {class:"row"}, T["tui.help." + k]));
     }
@@ -3517,13 +3525,22 @@ mod tests {
             assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
             checked += 1;
         }
-        // Also check every name in the dynamically-built form (T["tui.help." + k])
+        // The dynamically-built form (T["tui.help." + k]). The names are read
+        // out of the page's own list rather than copied into this test: a
+        // second list would be a second thing to keep in step, and the one
+        // that fell behind would be the one nobody looked at
         let head = "T[\"tui.help.\" + k]";
-        if p.contains(head) {
-            for k in [
-                "quit", "tabs", "ws", "lock", "restart", "copy", "auto", "raw", "mouse",
-                "mouse.wheel", "mouse.drag", "mouse.right", "mouse.tab", "mouse.divider",
-            ] {
+        if let Some(at) = p.find(head) {
+            let opened = p[..at]
+                .rfind("for (const k of [")
+                .expect("動的に読む一覧が見つからない");
+            let list = &p[opened..at];
+            let list = &list[list.find('[').unwrap() + 1..list.find(']').expect("閉じていない")];
+            for k in list.split(',') {
+                let k = k.trim().trim_matches('"');
+                if k.is_empty() {
+                    continue;
+                }
                 let key = format!("tui.help.{k}");
                 assert!(en.get(&key).is_some(), "lang/en.json に無いキー: {key}");
                 checked += 1;

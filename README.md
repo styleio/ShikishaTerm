@@ -161,10 +161,14 @@ The prefix is `Ctrl+B`, tmux-style. `Ctrl+B ?` opens the help.
 | `Ctrl+B 0` → `i` | Show the QR code for phone access |
 | `Ctrl+B 0` → `k` | Set or change the master password (encrypts `secrets.json`) |
 
+Every key can be moved, including the prefix — the settings list each action with the
+key it answers to now, and the help screen (`Ctrl+B ?`) shows what you actually have
+rather than what shipped.
+
 Colours are chosen in the settings, by name. The list is every scheme this PC already
 has — whatever Windows Terminal is carrying, plus any scheme file you drop into
-`config/themes` — with a dozen well-known ones built in. Pick a light one and the whole
-window follows, not only the terminal.
+`config/themes`, in the format colour schemes are published in. Pick a light one and the
+whole window follows, not only the terminal.
 
 The mouse works too: wheel to scroll, **Ctrl+wheel to change the terminal's size**, drag to
 copy, right click to paste, click a tab name to switch. Once the window is divided, each pane's caption carries ▥ and ▤ to divide it

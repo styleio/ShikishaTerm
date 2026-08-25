@@ -134,6 +134,12 @@ pub struct UiState {
     pub flash: Option<String>,
     /// Whether help is being shown
     pub help_open: bool,
+    /// The help itself: the keys in force, paired with the dictionary key for
+    /// the line describing each. Built from the same table the window
+    /// dispatches on, so a rebound key cannot leave the help telling people to
+    /// press something that no longer does anything
+    #[serde(default)]
+    pub help_rows: Vec<(String, String)>,
     /// Whether the workspace picker is being shown
     pub ws_open: bool,
     /// If a QR for phone pairing is being shown, the destination it encodes
