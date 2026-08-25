@@ -689,7 +689,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("select") => Ev::Select {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },
-        Some("addtab") => Ev::AddTab,
+        Some("addtab") => Ev::AddTab {
+            pane: v.get("pane").and_then(|x| x.as_u64()).map(|n| n as u32),
+        },
         Some("closesettings") => Ev::CloseSettings,
         Some("opensettings") => Ev::OpenSettings {
             // A deep-link may name a section to land on and ask to return to the
@@ -859,10 +861,15 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                         .collect()
                 })
                 .unwrap_or_default();
+            let f = v.get("full").and_then(|x| x.as_array());
+            let fnum = |i: usize| {
+                f.and_then(|f| f.get(i)).and_then(|x| x.as_i64()).unwrap_or(0) as i32
+            };
             Ev::Resize {
                 rows: v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
                 cols: v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,
                 area: (num(0), num(1), num(2), num(3)),
+                full: (fnum(0), fnum(1), fnum(2), fnum(3)),
                 panes,
             }
         }
@@ -1013,6 +1020,10 @@ pub enum Ev {
         cols: u16,
         /// The content area (x, y, width, height). The browser is placed here
         area: (i32, i32, i32, i32),
+        /// The whole content area, whatever the panes are doing. Where a screen
+        /// that covers the window goes -- the settings form is one, and it is a
+        /// page placed in the window, so it needs a rectangle like any other
+        full: (i32, i32, i32, i32),
         /// Every pane's own measurements. One entry while the content area is
         /// undivided; one per pane once it is split
         panes: Vec<PaneGeom>,
@@ -1038,8 +1049,11 @@ pub enum Ev {
     TabWidth { px: u16 },
     /// Wants to view this tab (0 = the operating board)
     Select { tab: usize },
-    /// The + on the tab bar was pressed (opens the settings screen in add-tab mode)
-    AddTab,
+    /// A tab has been asked for: the + on the tab bar, or the invitation in a
+    /// pane with nothing in it. `pane` is that pane, when one asked -- the new
+    /// tab goes there rather than wherever focus has wandered to by the time
+    /// the form is done with
+    AddTab { pane: Option<u32> },
     /// "Close settings" on the settings page. Collapses the settings tab
     /// and returns to the operating board. This is a window-internal
     /// action, so it's not accepted from a phone (allowed_from_afar)

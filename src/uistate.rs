@@ -156,8 +156,17 @@ pub struct UiState {
     pub workspace: String,
     pub workspaces: Vec<String>,
     pub ws_index: usize,
-    /// Tab being viewed (0 = INDEX)
+    /// What the focused pane is showing (0 = nothing is in it yet)
     pub active: usize,
+    /// Whether INDEX is covering the window. A screen, not a pane: the board
+    /// is a view OF the running things rather than one of them, so it has no
+    /// place in a layout of them
+    #[serde(default)]
+    pub board: bool,
+    /// Whether the settings form is covering the window. Also a screen rather
+    /// than a pane: it asks about the whole app, not about one corner of it
+    #[serde(default)]
+    pub settings_open: bool,
     pub auto_enabled: bool,
     pub remote_on: bool,
     /// Whether at least one phone/browser is currently connected over the remote

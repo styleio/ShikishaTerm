@@ -182,6 +182,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      drawn at all and they read as one. The only place it happened to show was
      beside a placed browser, which is held back from the divider so the whole
      handle stays catchable: a gap by accident, not a line by intent */
+  /* A pane with nothing in it. Division is not refused for want of a free
+     tab -- the room is made first and filled after, which is the order a
+     person does it in */
+  .pane .pnew { position:absolute; inset:0; display:none; align-items:center;
+    justify-content:center; cursor:pointer; color:var(--dim); font-size:13px;
+    /* The focused pane lets the pointer through to whatever is drawn over it,
+       and the layers that do that -- the terminal, the board, a placed page --
+       are painted above #panes whether or not they have anything to show. An
+       empty pane has none of them, and this is the only thing in it worth
+       pressing, so it comes up to their level and takes the pointer itself */
+    pointer-events:auto; z-index:4; }
+  .pane.empty .pnew { display:flex; }
+  .pane .pnew:hover { color:var(--brand); background:var(--hover); }
   .pdiv { position:absolute; z-index:3; }
   .pdiv.v { cursor:col-resize; }
   .pdiv.h { cursor:row-resize; }
@@ -464,8 +477,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #thinking .th-dots span, #thinking .th-text { animation:none } }
 
   /* ── Dashboard ─────────────────────────────── */
-  #board { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
-    bottom:var(--fb); overflow:auto; padding:22px 26px; }
+  /* INDEX is a screen, not a pane: it fills the content area whatever the
+     panes underneath are doing. It was drawn into the focused pane's rectangle
+     once, which is how it came to be one of them */
+  #board { position:absolute; inset:0; overflow:auto; padding:22px 26px; }
   .mark { color:var(--brand); font-weight:700; letter-spacing:.5px;
     font-size:13px; line-height:1.15; white-space:pre; }
   /* Plain title for narrow screens (hidden by default) */
@@ -935,7 +950,7 @@ function drawTabs() {
     el("span", {class:"num"}, "◇"),
     el("span", {class:"nm"}, S.workspace || ""),
     el("span", {class:"wscaret"}, "▾")));
-  nav.append(el("div", {class:"tab" + (S.active === 0 ? " sel" : ""),
+  nav.append(el("div", {class:"tab" + (S.board ? " sel" : ""),
       onclick:() => send({kind:"select", tab:0})},
     el("span", {class:"num"}, "0"),
     el("span", {class:"nm"}, T["tui.index"] || "INDEX")));
@@ -988,7 +1003,7 @@ function drawTabs() {
     el("span", {class:"num"}, "+"),
     el("span", {class:"nm"}, T["tui.tab.add"] || "ADD TAB")));
   // The settings gear, pinned to the very bottom of the sidebar. Always visible.
-  const settingsOpen = S.tabs.some(t => t.settings && S.active === t.index);
+  const settingsOpen = !!S.settings_open;
   nav.append(el("div", {class:"tab gearrow" + (settingsOpen ? " sel" : ""),
       title:T["tui.menu.settings"] || "SETTINGS",
       // On the phone, settings is served by reverse-proxy at /cfg and rendered
@@ -1476,8 +1491,17 @@ window.__state = function (json) {
   // Leaving the terminal contents in place would flash the previous tab's
   // output for a frame at the moment of switching
   const web = S.tabs.some(t => t.index === S.active && t.kind === "browser");
-  board.hidden = S.active !== 0;
-  screen.hidden = S.active === 0 || web;
+  // INDEX covers the window; the panes are still there underneath and come
+  // back the moment a running thing is picked. Nothing of the layout is drawn
+  // while it is up, or the caption of a pane would show through the board
+  // Two screens cover the window: INDEX and the settings form. Neither is a
+  // pane -- one is a view OF the running things and the other is about the app
+  // itself -- so while either is up the layout waits underneath, whole
+  const cover = !!S.board || !!S.settings_open;
+  board.hidden = !S.board;
+  document.getElementById("panes").hidden = cover;
+  // Nothing to draw for a pane with nothing in it -- it says so itself
+  screen.hidden = cover || S.active === 0 || web;
   // While viewing a browser tab, the phone shows the screen relay (canvas).
   // The window (PC) still layers the real page as before, so it never uses the relay
   const cast = document.getElementById("cast");
@@ -1517,7 +1541,7 @@ window.__state = function (json) {
     renderPanel();
   }
   lastCastActive = S.active;
-  if (S.active === 0) drawBoard();
+  if (S.board) drawBoard();
   drawTopicBar();
   drawModelChat();
   drawVeil();
@@ -1564,7 +1588,8 @@ window.__panes = function (json) {
         '<span class="sp sr" title="' + (T["tui.pane.split_right"] || "") + '">&#9637;</span>' +
         '<span class="sp sd" title="' + (T["tui.pane.split_down"] || "") + '">&#9636;</span>' +
         '<span class="cl">&#10005;</span></div>' +
-        '<div class="pbody"><pre class="pscreen notranslate" translate="no"></pre></div>';
+        '<div class="pbody"><pre class="pscreen notranslate" translate="no"></pre>' +
+        '<div class="pnew"></div></div>';
       // Clicking anywhere in a pane you are not in moves you there. The close
       // control is the one thing inside it that means something else.
       el.onmousedown = (e) => {
@@ -1574,6 +1599,15 @@ window.__panes = function (json) {
       el.querySelector(".cl").onclick = (e) => {
         e.stopPropagation();
         send({kind:"closepane", id:p.id});
+      };
+      // An empty pane invites the tab that will fill it. The settings screen
+      // opens on its add-a-tab form, and saving puts the new tab in THIS pane
+      // -- the one that was pressed, not whichever had focus by the time the
+      // form was done with
+      el.querySelector(".pnew").textContent = T["tui.pane.add"] || "+ Add tab";
+      el.querySelector(".pnew").onclick = (e) => {
+        e.stopPropagation();
+        send({kind:"addtab", pane:p.id});
       };
       // Same two divisions the keyboard makes, on the pane you pressed them on
       for (const [cls, down] of [[".sr", false], [".sd", true]]) {
@@ -1618,9 +1652,14 @@ function paintPaneHeads() {
     const el = document.querySelector('#panes .pane[data-pid="' + p.id + '"]');
     if (!el) continue;
     const t = S && S.tabs ? S.tabs.find(x => x.index === p.surface) : null;
-    el.querySelector(".nm").textContent =
-      t ? t.name : (p.surface === 0 ? "SHIKISHA-TERM" : "");
+    el.querySelector(".nm").textContent = t ? t.name : "";
     el.querySelector(".dot").className = "dot " + (t ? t.state : "");
+    // Empty means there is nothing to show here, which is the same question
+    // this line already answers. Asking the pane tree instead -- "is the
+    // surface number zero?" -- was asking a copy that can be a frame behind,
+    // and a pane holding a number that no longer names anything is just as
+    // empty as one holding none
+    el.classList.toggle("empty", !t);
   }
 }
 
@@ -1927,14 +1966,21 @@ function report() {
   const f = fit(box ? box.querySelector(".pbody").getBoundingClientRect()
                     : main.getBoundingClientRect());
   gRows = f.rows;   // remembered so the remote pager knows one screenful's height
-  const key = f.rows + "x" + f.cols + "@" + Math.round(area.left) + "," +
+  const key = f.rows + "x" + f.cols + "@" +
+    Math.round(main.getBoundingClientRect().width) + "," + Math.round(area.left) + "," +
     Math.round(area.top) + "," + Math.round(area.width) + "," + Math.round(area.height) +
     "|" + panes.map(p => p.id + ":" + p.rows + "x" + p.cols + ":" + p.rect.join(",")).join(";");
   if (key === lastRC) return;
   lastRC = key;
+  // The whole content area as well as the focused pane's share of it. A
+  // screen that covers the window -- the settings form -- is a page placed in
+  // the window like any other and needs a rectangle; it is just not a pane's
+  const whole = main.getBoundingClientRect();
   send({kind:"resize", rows:f.rows, cols:f.cols,
     area:[Math.round(area.left), Math.round(area.top),
           Math.round(area.width), Math.round(area.height)],
+    full:[Math.round(whole.left), Math.round(whole.top),
+          Math.round(whole.width), Math.round(whole.height)],
     panes:panes});
 }
 let rt = 0;
@@ -2046,7 +2092,7 @@ kbd.addEventListener("keydown", e => {
 // Same convention as PuTTY: selecting text copies it immediately, right-click pastes.
 // Except while typing in the URL bar — stealing focus there would block every keystroke
 // Whether a terminal tab (session) is currently in view. False for INDEX(0), browser tabs, and unknown state
-const onTerminal = () => S && S.active !== 0 && S.tabs &&
+const onTerminal = () => S && !S.board && S.active !== 0 && S.tabs &&
   S.tabs.some(t => t.index === S.active && t.kind !== "browser");
 // A real PTY terminal tab (AI CLI, shell, SSH) — where the phone shows its
 // sub-input bar. Excludes INDEX(0), browser relays, and model-chat tabs: those

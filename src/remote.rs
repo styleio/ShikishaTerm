@@ -1047,6 +1047,7 @@ mod tests {
         // change) rather than fight in a loop.
         assert!(
             super::allowed_from_afar(&Ev::Resize {
+                full: (0, 0, 0, 0),
                 rows: 10,
                 cols: 20,
                 area: (0, 0, 0, 0),

@@ -380,6 +380,8 @@ struct WinSurface {
     /// area is undivided, one per pane once it is split. The page is the only
     /// one that can measure this, so it is reported rather than computed here
     pane_geom: Vec<crate::browser::PaneGeom>,
+    /// The whole content area. Where a screen that covers the window goes
+    full: (i32, i32, i32, i32),
     /// Panes clicked in the window. The loop moves focus to them
     focus_panes: Vec<u32>,
     /// Panes whose ✕ was pressed. The loop closes the view, not the tab
@@ -398,6 +400,8 @@ struct WinSurface {
     touches: Vec<String>,
     /// Whether a placed page should be drawing the pen (the composer is shut)
     pen: Option<bool>,
+    /// The pane that asked for a tab, if one did. Where the new tab lands
+    add_tab_pane: Option<u32>,
     /// The pane tree as last sent to the page. Only send it again when it changes
     last_layout: String,
     /// The terminal contents last sent for each unfocused pane. The focused
@@ -513,6 +517,10 @@ impl WinSurface {
 
     fn take_pen(&mut self) -> Option<bool> {
         self.pen.take()
+    }
+
+    fn take_add_tab_pane(&mut self) -> Option<u32> {
+        self.add_tab_pane.take()
     }
 
     /// Put the tab bar away, or bring it back out.
@@ -686,10 +694,11 @@ impl WinSurface {
         use crate::browser::Ev;
         for ev in self.win.drain() {
             match ev {
-                Ev::Resize { rows, cols, area, panes } => {
+                Ev::Resize { rows, cols, area, full, panes } => {
                     self.rows = rows;
                     self.cols = cols;
                     self.area = area;
+                    self.full = full;
                     self.pane_geom = panes;
                     self.pending.push_back(Event::Resize(cols, rows));
                 }
@@ -769,6 +778,15 @@ impl WinSurface {
                 // which pane they landed on
                 Ev::Touched { from: Some(name) } => self.touches.push(name),
                 Ev::Touched { from: None } => {}
+                // A tab was asked for from a pane with nothing in it. Note
+                // which pane asked, then go on to open the form exactly as the
+                // tab bar's + does -- one door, so the two cannot drift
+                Ev::AddTab { pane: Some(id) } => {
+                    self.add_tab_pane = Some(id);
+                    for e in keys_for(&crate::browser::Ev::AddTab { pane: None }) {
+                        self.pending.push_back(e);
+                    }
+                }
                 // The pen a placed page drew for itself was pressed
                 Ev::Compose { .. } => {
                     let _ = self.win.eval("window.__composer && window.__composer();");
@@ -891,7 +909,7 @@ fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
             prefixed(char::from_digit(*tab as u32, 10).unwrap_or('0'))
         }
         // The tab bar's + is prefixed so it works no matter which tab is showing
-        Ev::AddTab => prefixed('t'),
+        Ev::AddTab { .. } => prefixed('t'),
         // The board's menu is a plain keystroke while looking at INDEX.
         // Adding the prefix key would mean only characters present on both sides work.
         Ev::Menu { key } => key.chars().next().map(plain).map(|k| vec![k]).unwrap_or_default(),
@@ -1000,6 +1018,7 @@ fn run_in_window() -> Result<()> {
         last_cursor: None,
         area: (0, 0, 0, 0),
         pane_geom: Vec::new(),
+        full: (0, 0, 0, 0),
         focus_panes: Vec::new(),
         close_panes: Vec::new(),
         pane_ratios: Vec::new(),
@@ -1028,6 +1047,7 @@ fn run_in_window() -> Result<()> {
         tab_width: None,
         touches: Vec::new(),
         pen: None,
+        add_tab_pane: None,
         recorded: Vec::new(),
         operates: Vec::new(),
         replay_saves: false,
@@ -1289,6 +1309,8 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         workspaces: ui.ws_names.clone(),
         ws_index: ui.ws_index,
         active: ui.active,
+        board: ui.board,
+        settings_open: ui.settings,
         auto_enabled: ui.auto.unwrap_or(true),
         remote_on: ui.remote_on,
         remote_conn: ui.remote_conn,
@@ -1744,6 +1766,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
     // 0 = INDEX, 1.. = sessions. Start on INDEX (the screen with onboarding guidance) at first.
     let mut active: usize = if tabs.is_empty() || first_run { 0 } else { 1 };
+    // Whether INDEX is covering the window.
+    //
+    // A screen, not a pane. The board is a view OF the running things, not
+    // one of them: it has no process, no state, no folder, nothing a pane is
+    // for. It used to be surface 0 and could be put in a pane -- usually not
+    // on purpose, because a division with no free tab to fill it reached for
+    // the board as a fallback -- and there, unfocused, it drew nothing at all,
+    // since a pane's read-only copy is a terminal's text and the board is not
+    // a terminal. It covers the window now and the panes wait underneath
+    let mut board_open = tabs.is_empty() || first_run;
     // How the content area is divided. It starts undivided, which is the shape
     // every code path that knows only `active` was written for: the focused
     // pane's surface *is* `active`, and the two are re-synced once per frame
@@ -1777,11 +1809,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut tab_width: Option<u16> = None;
     let mut font_save_at: Option<std::time::Instant> = None;
     let mut tab_save_at: Option<std::time::Instant> = None;
-    /// Whether the composer is shut, as the window's own page last said. The
-    /// pen a placed page draws for itself follows it
+    // Whether the composer is shut, as the window's own page last said. The
+    // pen a placed page draws for itself follows it
     let mut composer_shut = false;
-    /// The placed page currently showing that pen, if any
+    // The placed page currently showing that pen, if any
     let mut pen_shown: Option<String> = None;
+    // A pane waiting for the tab it asked for, and how many surfaces there
+    // were when it asked. Cleared when the tab arrives or the form is shut
+    let mut awaiting_tab: Option<(u32, usize)> = None;
     // What was last written, so an unchanged screen writes nothing at all
     let mut last_saved: Option<(crate::layout::Layout, Vec<Option<tab::Session>>)> = None;
     // Which key does what, this run. Read once and re-read when the settings
@@ -2979,6 +3014,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
         let ui = Ui {
             first_run,
             active,
+            board: board_open,
+            settings: settings_open,
             auto: engine.as_ref().map(|_| auto_enabled),
             ws_names: workspaces.iter().map(|w| w.name.clone()).collect(),
             ws_index,
@@ -3091,6 +3128,52 @@ fn run(mut surface: WinSurface) -> Result<()> {
             pen_shown = wants_pen;
         }
 
+        // A pane asked for a tab and the form has produced one. It is the
+        // surface nothing is showing yet -- newly written config is the only
+        // way a surface appears with no pane behind it -- so the pane that
+        // asked takes it, and asks for nothing more
+        // The form is a surface too, from the moment it opens. It is not the
+        // answer to the question -- it IS the question -- so it is left out of
+        // both counts below. Counting it made the baseline move under its own
+        // feet: it was already there when the wait began and gone again by the
+        // time the tab arrived, so the total came back to where it started and
+        // the new tab looked like nothing new
+        let is_form = |n: usize| {
+            matches!(ui_surface_at(&surfaces, n), Some(Surface::Browser { key, .. })
+                if key == SETTINGS_TAB)
+        };
+        let real_surfaces = (1..=surface_count).filter(|n| !is_form(*n)).count();
+        if let Some(id) = surface.take_add_tab_pane() {
+            awaiting_tab = Some((id, real_surfaces));
+        }
+        // Nothing calls the wait off. Not the form closing -- saving CLOSES it,
+        // and the tab it wrote does not exist until the settings file has been
+        // read back, so ending the wait there meant the tab arrived to find
+        // nobody waiting. Not the pane filling up either: it fills with the
+        // form itself for as long as that is open, and reading that as "filled"
+        // ended the wait one frame after it began. A wait that is never
+        // answered simply never fires, and an empty pane stays empty, which is
+        // exactly what it was before anybody asked
+        if let Some((id, was)) = awaiting_tab {
+            let taken: std::collections::HashSet<usize> =
+                pane_layout.leaves().into_iter().map(|(_, s)| s).collect();
+            let fresh = (real_surfaces > was)
+                .then(|| (1..=surface_count).rev().find(|n| !taken.contains(n) && !is_form(*n)))
+                .flatten();
+            if let Some(fresh) = fresh {
+                pane_layout.set_surface(id, fresh);
+                // Made here, so the keyboard belongs here
+                pane_layout.focus_pane(id);
+                active = pane_layout.focused_surface();
+                board_open = false;
+                awaiting_tab = None;
+                // The form was opened to make this one tab, and it has. Leaving
+                // it up would leave it sitting in the pane the tab was made for
+                let _ = caps.browser_close(SETTINGS_TAB);
+                settings_open = false;
+            }
+        }
+
         // Someone clicked into a page placed in the window. That press never
         // reaches the pane underneath -- the page is a window of its own -- so
         // the pane it sits in is focused from the page's own report instead.
@@ -3181,6 +3264,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // over the screen, the browsers step aside. They keep their pages;
             // being given no rectangle is all that happens to them
             let covered = help_open || ws_open || qr_open;
+            // The settings form is a screen, not a pane: it covers the content
+            // area and the layout waits underneath. It asks about the whole
+            // app, so seating it in one corner of the app made as little sense
+            // as seating the board there -- and once the panes were hidden to
+            // let it cover, the pane it was sitting in had no size to give it
+            if settings_open && !covered {
+                caps.show_at(&[(SETTINGS_TAB.to_string(), surface.full)]);
+            } else {
             let shown: Vec<(String, (i32, i32, i32, i32))> = pane_layout
                 .leaves()
                 .into_iter()
@@ -3201,6 +3292,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 .filter(|_| !covered)
                 .collect();
             caps.show_at(&shown);
+            }
         }
         // Hand off that a bar button was pressed.
         // Only the main app can receive the window's reports, so it goes through here.
@@ -3635,7 +3727,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if surface.take_close_settings() {
             let _ = caps.browser_close(SETTINGS_TAB);
             settings_open = false;
-            active = 0;
         }
 
         // The sidebar gear. Opens settings from any tab (the menu "e" key only
@@ -3654,7 +3745,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
             flash = Some(
                 match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, &query) {
                     Ok(()) => {
-                        active = settings_active(&surfaces);
                         settings_open = true;
                         i18n::t("msg.settings_here")
                     }
@@ -3867,22 +3957,39 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // Open the command palette from any tab. It is drawn by
                         // the page, so this only nudges it open
                         KeyCode::Char(':') => surface.open_palette(),
-                        KeyCode::Char(c @ '0'..='9') => {
+                        // 0 is the board, which is a screen over everything;
+                        // 1.. are the running things, which live in panes. One
+                        // key row, two different kinds of destination
+                        KeyCode::Char('0') => {
+                            board_open = true;
+                            view_touched_ms = start.elapsed().as_millis() as u64;
+                        }
+                        KeyCode::Char(c @ '1'..='9') => {
                             let n = c as usize - '0' as usize;
                             if n <= surface_count {
                                 active = n;
+                                board_open = false;
                                 view_touched_ms = start.elapsed().as_millis() as u64;
                                 // An explicit tab pick is a deliberate exit from settings.
                                 settings_open = false;
                             }
                         }
-                        KeyCode::Char('n') => {
-                            active = if active >= surface_count { 0 } else { active + 1 };
-                            view_touched_ms = start.elapsed().as_millis() as u64;
-                        }
-                        KeyCode::Char('p') => {
-                            active = if active == 0 { surface_count } else { active - 1 };
-                            view_touched_ms = start.elapsed().as_millis() as u64;
+                        // Cycling walks the running things only. The board is
+                        // not one of them, and stopping on it on the way past
+                        // would be stopping on a different kind of thing
+                        KeyCode::Char('n') | KeyCode::Char('p') => {
+                            if surface_count > 0 {
+                                let fwd = key.code == KeyCode::Char('n');
+                                active = match (active, fwd) {
+                                    (0, _) => 1,
+                                    (a, true) if a >= surface_count => 1,
+                                    (a, true) => a + 1,
+                                    (1, false) => surface_count,
+                                    (a, false) => a - 1,
+                                };
+                                board_open = false;
+                                view_touched_ms = start.elapsed().as_millis() as u64;
+                            }
                         }
                         // Ctrl+B b sends a literal Ctrl+B through to the child process
                         KeyCode::Char('b') => {
@@ -3986,7 +4093,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     &query,
                                 ) {
                                     Ok(()) => {
-                                        active = settings_active(&surfaces);
                                         settings_open = true;
                                         i18n::t("msg.settings_here")
                                     }
@@ -4113,15 +4219,18 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // Either the prefix was just pressed and the next key is
                     // the one that says what to do, or the key after it meant
                     // nothing. Neither is the tab's to receive
-                } else if active == 0 {
+                } else if board_open {
                     // INDEX = home screen: digit keys switch tabs, letter keys run menu items.
                     // Characters received here must line up with MENU_KEYS
                     // (prevents a case where the board shows something that does nothing when pressed)
                     match key.code {
                         KeyCode::Char(c @ '0'..='9') => {
                             let n = c as usize - '0' as usize;
-                            if n <= surface_count {
+                            if n == 0 {
+                                // Already here
+                            } else if n <= surface_count {
                                 active = n;
+                                board_open = false;
                             }
                         }
                         KeyCode::Char('?') | KeyCode::Char('h') => help_open = true,
@@ -4194,7 +4303,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                         // Once opened, switch to that tab.
                                         // Don't leave it opened but invisible.
                                         // If already open, switch to its existing location.
-                                        active = settings_active(&surfaces);
                                         settings_open = true;
                                         i18n::t("msg.settings_here")
                                     }
@@ -5349,6 +5457,12 @@ fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String
 }
 
 /// Looks up a session's location from its screen number (1-based)
+/// The surface a screen number stands for. Numbers are 1-based; 0 is no
+/// surface at all -- a pane with nothing in it yet
+fn ui_surface_at(surfaces: &[Surface], n: usize) -> Option<&Surface> {
+    surfaces.get(n.checked_sub(1)?)
+}
+
 fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
     match surfaces.get(active.checked_sub(1)?)? {
         Surface::Session(i) => Some(*i),
@@ -6457,6 +6571,11 @@ struct Ui {
     /// `restartable_page`). Drives the restart button beside the stop button
     restartable: bool,
     active: usize,
+    /// Whether INDEX is covering the window. Not a surface: the panes wait
+    /// underneath and come back the moment a running thing is picked
+    board: bool,
+    /// Whether the settings form is covering the window. A screen the same way
+    settings: bool,
     auto: Option<bool>,
     ws_names: Vec<String>,
     ws_index: usize,
@@ -6796,7 +6915,7 @@ mod tests {
     /// The tab bar's + must arrive with the prefix key attached, so it works no matter which tab is being viewed
     #[test]
     fn the_add_tab_button_arrives_prefixed() {
-        let evs = super::keys_for(&crate::browser::Ev::AddTab);
+        let evs = super::keys_for(&crate::browser::Ev::AddTab { pane: None });
         assert_eq!(evs.len(), 2, "前置キー + 本体の2打鍵");
         let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
         assert_eq!(k.code, KeyCode::Char('b'));

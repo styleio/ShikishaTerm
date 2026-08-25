@@ -260,6 +260,7 @@
   "tui.pane.split_right": "横に割る (Ctrl+B %)",
   "tui.pane.split_down": "下に割る (Ctrl+B \")",
   "tui.pane.divider": "ドラッグで幅を変える・ダブルクリックで半々に戻す",
+  "tui.pane.add": "＋タブを追加",
   "tui.tabbar.grip": "ドラッグでタブバーの幅を変える・左端まで詰めるとしまう・ダブルクリックで既定の幅に戻す",
   "settings.sec.resume": "会話の引き継ぎ",
   "settings.sec.resume.sub": "再起動で何が残るか",

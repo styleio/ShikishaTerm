@@ -260,6 +260,7 @@
   "tui.pane.split_right": "Split right (Ctrl+B %)",
   "tui.pane.split_down": "Split down (Ctrl+B \")",
   "tui.pane.divider": "Drag to resize, double-click for even halves",
+  "tui.pane.add": "+ Add a tab",
   "tui.tabbar.grip": "Drag to resize the tab bar, drag it shut to put it away, double-click for the default width",
   "settings.sec.resume": "Carrying conversations",
   "settings.sec.resume.sub": "What survives a restart",
