@@ -98,9 +98,9 @@ fn note_of(params: &[&[u8]]) -> Option<(String, String)> {
             .join(";")
     };
     match params.first().map(|p| text(p)).as_deref() {
-        // \e]9;body — the oldest and simplest: a body and nothing else
+        // \e]9;body\a — the oldest and simplest: a body and nothing else
         Some("9") if params.len() > 1 => Some((String::new(), joined(1))),
-        // \e]777;notify;title;body
+        // \e]777;notify;title;body\a
         Some("777") if params.len() > 2 && text(params[1]) == "notify" => {
             Some((text(params[2]), joined(3)))
         }
