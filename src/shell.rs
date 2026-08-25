@@ -342,8 +342,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #nav button.spin .ico { display:inline-block; animation:spin .8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg) } }
   /* Where the page sits. Pushed down by exactly the height of the bar above it */
+  /* Where a browser placed in the focused pane sits. The room held back for
+     the composer (or for the pen that summons it) is --dock, added to the
+     pane's own offset rather than written over it: a height assigned straight
+     to `bottom` threw the pane away, and the browser then painted down the
+     whole column -- over the pane below it, and over the pen it was supposed
+     to be making room for. Same lesson as #castdock above */
   #page { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--navh));
-    right:var(--fr); bottom:var(--fb); pointer-events:none; }
+    right:var(--fr); bottom:calc(var(--fb) + var(--dock, 0px)); pointer-events:none; }
 
   /* ── Discussion topic banner ─────────────────────
      A prominent prompt floated over whatever tab is in view while an AI-vs-AI
@@ -2896,7 +2902,10 @@ function syncBrowserReserve() {
   if (typeof REMOTE !== "undefined" && REMOTE) return;
   const page = document.getElementById("page");
   if (!onBrowserTab()) {
-    if (page.style.bottom) { page.style.bottom = ""; scheduleReport(); }
+    if (page.style.getPropertyValue("--dock")) {
+      page.style.removeProperty("--dock");
+      scheduleReport();
+    }
     return;
   }
   const dockOpen = castDock && castDock.style.display === "flex";
@@ -2904,7 +2913,10 @@ function syncBrowserReserve() {
     ? Math.round(castDock.getBoundingClientRect().height)
     : (fab ? Math.round(fab.getBoundingClientRect().height) + 28 : 64);
   const want = reserve + "px";
-  if (page.style.bottom !== want) { page.style.bottom = want; scheduleReport(); }
+  if (page.style.getPropertyValue("--dock") !== want) {
+    page.style.setProperty("--dock", want);
+    scheduleReport();
+  }
 }
 // Full name (for the switcher's hover title / accessibility).
 function panelName(p) {
@@ -4001,6 +4013,18 @@ mod tests {
         assert!(
             p.contains("bottom:calc(var(--fb) + 16px)"),
             "ペンがフォーカス中のペインに付いていない"
+        );
+        // A browser placed in a pane is a native window drawn over this page,
+        // so the moment it forgets its pane it covers the pen and the pane
+        // below. Its bottom is composed the same way, and the room held back
+        // for the composer is a term added to it, never the whole of it
+        assert!(
+            p.contains("bottom:calc(var(--fb) + var(--dock, 0px))"),
+            "ブラウザの位置が、フォーカス中のペイン基準になっていない"
+        );
+        assert!(
+            !p.contains("page.style.bottom"),
+            "ドックのぶんの余白がペインの位置を上書きしている"
         );
     }
 
