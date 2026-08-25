@@ -5544,6 +5544,18 @@ fn exec_commands(
                 append_hook_log(&format!("tab{origin} \"{}\" is running {}", t.title, s.short()));
                 t.session = Some(s);
             }
+            Command::SetStatus { key, value, target, origin } => {
+                let at = target.as_ref().and_then(index_of).unwrap_or(origin);
+                if let Some(t) = session_of(at).and_then(|i| tabs.get_mut(i)) {
+                    t.set_status(&key, &value);
+                }
+            }
+            Command::SetProgress { value, label, target, origin } => {
+                let at = target.as_ref().and_then(index_of).unwrap_or(origin);
+                if let Some(t) = session_of(at).and_then(|i| tabs.get_mut(i)) {
+                    t.progress = value.map(|v| (v, label.clone()));
+                }
+            }
             Command::Notify { dest, text } => {
                 append_hook_log(&format!(
                     "NOTIFY[{}] {text}",

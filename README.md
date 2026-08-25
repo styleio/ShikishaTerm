@@ -184,6 +184,10 @@ shikisha.set_var("rounds", rounds + 1)
 shikisha.send_to_tab("reviewer", "Please fix these points:\n" .. tab.output)
 ```
 
+An agent can also say what it is doing — `shikisha.set_status("build", "running tests")`
+puts that under its name in the tab bar, beside the state dot that is read off its screen.
+One is what we could tell; the other is what it chose to say.
+
 Automations run in a sandbox: **no file access and no network by default**, and
 notifications can only go to targets you registered.
 

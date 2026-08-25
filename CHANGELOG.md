@@ -84,6 +84,18 @@ once it reaches its first tagged release.
   back empty. The settings screen's **Carrying conversations** card says, per
   CLI, which of these applies.
 
+- **An agent can say what it is doing.** The state dot beside a tab is read off
+  its screen, so it can only ever say "busy" or "waiting". Now the thing in the
+  tab can say the rest — `shikisha.set_status("build", "running tests 3/5")` and
+  `shikisha.set_progress(0.6)` put that under its name in the tab bar, and on
+  the phone, which draws the same list. Detection stays for the CLIs that will
+  not tell us; this is for the ones that will.
+
+  Entries are keyed, so a build script and the agent it is watching can both
+  speak without overwriting each other, and an empty value takes one away —
+  finishing needs no second verb. A caller that is not a tab (a script you ran
+  yourself) may name the tab it means; anything running in a tab means itself.
+
 ### Fixed
 - **Lua that never returns no longer takes the window with it.** The engine runs
   on the main loop, so a `while true do end` typed into the composer — or sent

@@ -748,6 +748,12 @@ pub enum Command {
     /// itself — from its own hook, or by anything else speaking for it — so the
     /// tab is `origin`, never a name the caller chose to give
     SetSession { id: String, origin: usize },
+    /// "This is what I am doing." The caller's own tab unless it names another
+    /// — a build script run by hand is nobody's tab and still has something to
+    /// say. An empty value takes the entry away, so finishing needs no second verb
+    SetStatus { key: String, value: String, target: Option<TabRef>, origin: usize },
+    /// "This is how far along I am." `None` takes the bar away
+    SetProgress { value: Option<f32>, label: String, target: Option<TabRef>, origin: usize },
     Log(String),
 }
 
@@ -1884,6 +1890,57 @@ impl HookEngine {
                         c.borrow_mut().push(Command::SetSession { id, origin: o.get() });
                         Ok(())
                     })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // What the thing in this tab is doing, in its own words.
+            //
+            // The state dot is READ OFF THE SCREEN and can only ever say
+            // "busy" or "waiting"; this is the other half — an agent that
+            // knows what it is doing saying so. Detection is for the CLIs that
+            // will not tell us; this is for the ones that will.
+            //
+            // Keyed, so a build script and the agent driving it can both speak
+            // without overwriting each other. No icon, no colour, no priority:
+            // a tab row is eighteen columns wide, and a row that cannot show
+            // them should not accept them
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "set_status",
+                    lua.create_function(
+                        move |_, (key, value, tab): (String, Option<String>, Option<Value>)| {
+                            c.borrow_mut().push(Command::SetStatus {
+                                key,
+                                value: value.unwrap_or_default(),
+                                target: tab.as_ref().map(tab_ref_of).transpose()?,
+                                origin: o.get(),
+                            });
+                            Ok(())
+                        },
+                    )
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "set_progress",
+                    lua.create_function(
+                        move |_, (value, label, tab): (Option<f32>, Option<String>, Option<Value>)| {
+                            c.borrow_mut().push(Command::SetProgress {
+                                value: value.map(|v| v.clamp(0.0, 1.0)),
+                                label: label.unwrap_or_default(),
+                                target: tab.as_ref().map(tab_ref_of).transpose()?,
+                                origin: o.get(),
+                            });
+                            Ok(())
+                        },
+                    )
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
@@ -4172,6 +4229,48 @@ mod tests {
                 "{word} が通らない"
             );
         }
+    }
+
+    #[test]
+    fn saying_what_you_are_doing_means_your_own_tab_unless_you_name_one() {
+        // The agent in a tab says "I am running tests" and means itself. A
+        // build script started by hand is nobody's tab, and has to be able to
+        // say which one it is talking about
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_done(t)
+              shikisha.set_status("build", "running tests")
+              shikisha.set_progress(0.5, "tests")
+              shikisha.set_status("build", "done", "other")
+              shikisha.set_status("build", "")
+            end
+            "#,
+        )
+        .unwrap();
+        e.fire("on_done", &ctx(3, ""), None);
+        let said: Vec<String> = e
+            .drain_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::SetStatus { key, value, target, origin } => {
+                    Some(format!("status {key}={value:?} to {target:?}/{origin}"))
+                }
+                Command::SetProgress { value, target, origin, .. } => {
+                    Some(format!("progress {value:?} to {target:?}/{origin}"))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            said,
+            vec![
+                "status build=\"running tests\" to None/3".to_string(),
+                "progress Some(0.5) to None/3".to_string(),
+                "status build=\"done\" to Some(Name(\"other\"))/3".to_string(),
+                // An empty value is how something finishes: no second verb
+                "status build=\"\" to None/3".to_string(),
+            ]
+        );
     }
 
     #[test]

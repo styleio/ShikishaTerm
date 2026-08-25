@@ -98,6 +98,8 @@ shikisha.send_to_tab("reviewer", "レビューして")   -- 名前を変えて�
 | `shikisha.restart(tab)` | そのタブを会話ごと再起動する。`shikisha.restart(tab, "fresh")` なら新しい会話で |
 | `shikisha.log("文字列")` | `logs/hooks.log` に記録 |
 | `shikisha.set_session("id")` | **このタブ**のCLIが動かしている会話のIDを伝える（再起動で引き継ぐため）。タブを指定しないのは、呼んだ側がそのタブだから |
+| `shikisha.set_status("key", "文字列")` | **このタブ**が今なにをしているかを自分の言葉で伝える（タブ名の下に出ます）。`key` を分ければ複数の書き手が上書きし合わない。空文字でその1件を消す |
+| `shikisha.set_progress(0.4, "ラベル")` | どこまで進んだか（0〜1）。状態の隣に出ます。`nil` で消す |
 | `shikisha.get_var("キー")` / `shikisha.set_var("キー", 値)` | 記憶しておける変数。ワークスペース内で共有 |
 
 `on_question.lua` で**文字列を返す**と、それが自動的に送信されます。

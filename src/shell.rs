@@ -53,6 +53,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     cursor:pointer; border-left:3px solid transparent; user-select:none; }
   .tab:hover { background:#161c23; }
   .tab.sel { background:#16202b; border-left-color:var(--brand); }
+  /* What a tab says it is doing: its own words, under its name. Wraps to a
+     second line of its own so it never pushes the row's furniture around */
+  .tab { flex-wrap:wrap; }
+  .tab .said { flex-basis:100%; margin-left:26px; margin-top:2px; font-size:10px;
+    opacity:.6; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tab.sel .said { opacity:.85; }
   .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--dim); }
   .dot.BUSY, .dot.Working { background:var(--live); animation:pulse 1.2s ease-in-out infinite; }
   .dot.DONE { background:var(--brand); }
@@ -804,6 +810,12 @@ function drawTabs() {
       el("span", {class:"nm", title:t.profile}, t.name),
       t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
       spark(t.activity)));
+    // What it says it is doing, under its name. Only when it has said
+    // something: an empty second line on every tab would spend half the
+    // sidebar saying nothing
+    if (t.status) {
+      nav.lastChild.append(el("span", {class:"said", title:t.status}, t.status));
+    }
   }
   // A "+" at the end of the list. Opens the settings page already in the "add tab" state
   nav.append(el("div", {class:"tab addtab", onclick:addTabHere},

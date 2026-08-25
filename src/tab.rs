@@ -1170,6 +1170,11 @@ pub struct Tab {
     /// restart, read from its profile at every launch (so editing a profile
     /// takes effect the next time, like the detection rules do)
     pub resume: Option<crate::profile::ResumeSpec>,
+    /// What the thing running here says it is doing, keyed so that several
+    /// sources can speak without talking over each other. Newest last
+    pub status: Vec<(String, String)>,
+    /// How far along it says it is (0..=1), and what it calls the task
+    pub progress: Option<(f32, String)>,
     /// The model bridge's endpoint. If Some, this tab is an OpenAI-compatible
     /// API rather than an AI CLI.
     /// When its turn comes, the main process hits complete() on a thread and injects the response into the screen
@@ -1492,6 +1497,8 @@ impl Tab {
         }
 
         Ok(Self {
+            status: Vec::new(),
+            progress: None,
             born: std::time::SystemTime::now(),
             // Look for it shortly: a CLI writes its record as the conversation
             // begins, which is a moment after the process starts
@@ -1729,6 +1736,7 @@ impl Tab {
         fresh.auto_restart = self.auto_restart;
         fresh.id = self.id.clone();
         fresh.notify_on_done = self.notify_on_done.clone();
+        fresh.clear_said();
         // Since it was recreated, any pending config changes are now in effect
         *self = fresh;
         Ok(())
@@ -1777,6 +1785,40 @@ impl Tab {
     /// Context for the ✨ command suggester: what the terminal connects to
     pub fn command_line(&self) -> String {
         self.argv.join(" ")
+    }
+
+    /// The one line a tab row has room for: the most recent thing said.
+    ///
+    /// Not a merge of every key — a row eighteen columns wide cannot show
+    /// three things, and picking the newest is a rule anyone can predict. The
+    /// whole set is on the board, which has the room for it
+    pub fn status_line(&self) -> Option<String> {
+        let last = self.status.last().map(|(_, v)| v.clone())?;
+        Some(match self.progress {
+            Some((p, _)) => format!("{last} {}%", (p * 100.0).round() as i32),
+            None => last,
+        })
+    }
+
+    /// Say what is happening now. An empty value takes that entry away, so
+    /// finishing needs no second verb
+    pub fn set_status(&mut self, key: &str, value: &str) {
+        self.status.retain(|(k, _)| k != key);
+        if !value.trim().is_empty() {
+            self.status.push((key.to_string(), value.trim().to_string()));
+        }
+    }
+
+    /// Everything said, oldest first, for the board
+    pub fn status_all(&self) -> &[(String, String)] {
+        &self.status
+    }
+
+    /// A restart is the same tab doing the same job; what it said it was doing
+    /// belongs to the process that just died
+    fn clear_said(&mut self) {
+        self.status.clear();
+        self.progress = None;
     }
 
     /// When this tab's process started, on the wall clock

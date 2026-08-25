@@ -58,6 +58,16 @@ pub struct TabState {
     /// browser or the settings pane.
     #[serde(default)]
     pub auto: bool,
+    /// What the thing in this tab says it is doing, in its own words.
+    ///
+    /// The state dot is read off the screen and can only ever say "busy" or
+    /// "waiting"; this is the agent telling us "running tests, 3 of 5". The
+    /// newest one is what the tab row has room for
+    #[serde(default)]
+    pub status: Option<String>,
+    /// How far along, 0..=1, when it has said. Shown beside the status
+    #[serde(default)]
+    pub progress: Option<f32>,
 }
 
 /// Current position of the automation ring
@@ -184,6 +194,8 @@ impl TabState {
             settings: false,
             ai: t.ai_kind(),
             auto: t.auto_runs(),
+            status: t.status_line(),
+            progress: t.progress.as_ref().map(|(p, _)| *p),
         }
     }
 
@@ -203,6 +215,8 @@ impl TabState {
             depth: 0,
             activity: Vec::new(),
             kind: "browser".into(),
+            status: None,
+            progress: None,
             model: false,
             busy: false,
             settings: key == "settings",
@@ -280,6 +294,8 @@ mod tests {
             settings: false,
             ai: None,
             auto: false,
+            status: None,
+            progress: None,
         }
     }
 
