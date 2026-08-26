@@ -8,7 +8,53 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **`shikisha.note(tab, "text")`** writes a line **on** a tab's screen for the
+  person watching. Nothing reaches what runs there and no answer is expected —
+  the counterpart of `send_to_tab` for a pane that has to be told something
+  without being asked anything.
+
+### Changed
+- **One sub-input bar, for every pane.** A model pane used to carry a composer
+  of its own — its own field, its own Send, its own Enter — pinned to its floor,
+  while every other pane used the shared bar. Two composers meant two answers to
+  every question asked of one, and they had already drifted: the quick actions
+  and the phone's key row existed on only one of them. There is one field now.
+  On a model pane it offers the quick actions and nothing more (there is no
+  command line there to aim a target at or to suggest a command into), plus the
+  key row on a phone, and the empty field names the pane it will speak to.
+
 ### Fixed
+- **A discussion actually starts, finishes, or says why it did not.** Opening a
+  workspace left the opening speaker's briefing sitting in its input box as an
+  unsent draft, showed nothing at all in the panes driven by a model, and — once
+  someone was finally nudged — went quiet for good. Four separate holes behind
+  the one symptom:
+  - Automation spoke before the AI could listen. Every tab spent its first
+    800ms looking freshly resized, so its startup output was discarded as
+    redraw noise and the readiness gate mistook a launching CLI for a settled
+    one. The gate now asks the screen itself to hold still, and waits out a CLI
+    standing at its own trust prompt.
+  - A model bridge cannot be briefed — it is stateless and would speak before a
+    topic exists — so its pane was left blank and a participant looked like a
+    tab that had failed to start. Its stance and role are written on its screen
+    instead (see `shikisha.note`).
+  - A model pane reported "done" while its reply was still in flight, because
+    only its screen was being watched and nothing moves during an HTTP round
+    trip. An opening speaker that starts itself was therefore re-asked forever.
+  - A participant that ends its turn without saying anything is asked once
+    more; if it still says nothing the run ends with the reason on its screen
+    and in the transcript, instead of every seat waiting on a hand-off that
+    will never come.
+- **A finished line goes to the tab it was meant for.** The topic box floats
+  over whichever pane you are looking at, and it sends two things: "look at the
+  opening speaker" and "here is a line". The line carried no address, so it was
+  handed to whatever pane was in front when it arrived — and nothing promises
+  those two land in that order. Typed while watching another AI, the topic
+  reached that AI, or vanished without a trace. Lines name their recipient now,
+  and how one is delivered (told to a model, typed at a prompt) is decided in
+  one place rather than at each edge — which also mends sending to a model pane
+  from a phone, which had been typing at a keyboard that does not exist.
 - **A dialog no longer vanishes when a selection is dragged out of it.** Select
   text in the new-workspace wizard, overshoot the field, and let go anywhere
   outside — the form closed, taking everything typed into it. A click belongs to
