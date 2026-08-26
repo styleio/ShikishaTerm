@@ -1314,6 +1314,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         auto_enabled: ui.auto.unwrap_or(true),
         remote_on: ui.remote_on,
         remote_conn: ui.remote_conn,
+        remote_sticky: ui.remote_sticky,
         first_run: ui.first_run,
         // Keep the order exactly as written in the config.
         // Listing sessions and browsers separately would push the browser
@@ -3029,6 +3030,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
             remote_on: remote_ui.is_some(),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
+            remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
             nav,
             scrolled: session_at(&surfaces, active)
                 .and_then(|i| tabs.get(i))
@@ -6625,6 +6627,9 @@ struct Ui {
     remote_on: bool,
     /// Whether a phone/browser is connected over the remote link right now
     remote_conn: bool,
+    /// Whether the pairing token is the fixed one from settings (it decides
+    /// what the disconnect button promises, not what it does)
+    remote_sticky: bool,
     /// Where the auto-chain currently is (the invisible ball, made visible)
     ball: ball::Ball,
     /// The chain cap. Represents how close the ball's color is to that cap.

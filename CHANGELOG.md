@@ -8,6 +8,18 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **"Disconnect" now actually disconnects the phone.** Ending a remote session
+  from the window used to drop the sockets and nothing else. A second and a half
+  later the phone reconnected on its own — so a person who had just cut a phone
+  watched it go on watching, and go on driving a browser, from a screen that
+  said it had been disconnected. Admission is now a session handed out when the
+  pairing link is opened, and the disconnect revokes it: the phone's screen goes
+  dark at once, its next request is refused, and its touches reach nothing, even
+  on the input socket it still holds open. With a fixed token (which cannot be
+  rotated) that phone can pair again by opening the link — the veil offers it as
+  a button, and the window's control says so instead of promising otherwise.
+
 ## [0.3.1] - 2026-08-25
 
 A follow-up to the split panes of 0.3.0: the window is now divided with the

@@ -616,6 +616,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #netveil .nvtitle { font-size:17px; font-weight:700; color:var(--text); margin-bottom:10px; }
   #netveil .nvsub { font-size:13px; color:var(--dim); line-height:1.55; }
   #netveil.cut .nvtitle { color:var(--warn); }
+  #netveil .nvbtn { margin-top:18px; padding:11px 22px; border-radius:10px; font-size:14px;
+    border:1px solid var(--line); background:var(--panel); color:var(--text); }
+  #netveil .nvbtn[hidden] { display:none; }
 
   #vault, #palette { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
@@ -881,6 +884,10 @@ const TOKEN = (function () {
 // Inside the window, messages can be handed over directly. From a phone
 // they arrive over HTTP. Both use the same page (so the UI isn't written twice)
 const REMOTE = !window.ipc;
+// The PC ended this session (its "disconnect"). Nothing reconnects afterwards —
+// not the state socket, not the screen relay — until a person opens the link
+// again, which reloads this page and clears the flag with it.
+let remoteCut = false;
 const send = REMOTE
   ? (o => fetch("api/intent?t=" + encodeURIComponent(TOKEN),
       {method:"POST", body:JSON.stringify(o)}).catch(() => {}))
@@ -1305,12 +1312,17 @@ function drawStatus() {
       "AUTO " + (S.auto_enabled ? "ON" : "OFF")),
     S.remote_on ? el("span", {class:"pill on"}, "REMOTE") : null,
     // A phone is connected right now. Only shown at the window (a phone must not
-    // be able to disconnect itself). Clicking it cuts every remote session — the
-    // window sends the cut (rotates the token, drops the sockets) and reclaims its
-    // own terminal width (a forced resize report), so the name matches the deed.
+    // be able to disconnect itself). Clicking it ends every remote session — the
+    // phone's screen goes dark at once and its touches stop reaching anything —
+    // and reclaims the window's own terminal width (a forced resize report), so
+    // the name matches the deed. A fixed token says so: the cut is just as real,
+    // but that phone can open the link again, and the button must not pretend
+    // otherwise.
     (!REMOTE && S.remote_conn) ? el("span",
       {class:"pill live", id:"remotecut",
-       title:T["tui.remote.cut.title"] || "A phone is connected — click to disconnect",
+       title:(S.remote_sticky
+         ? (T["tui.remote.cut.title.sticky"] || "A phone is connected — click to disconnect (the fixed token stays, so that phone can reconnect from the link)")
+         : (T["tui.remote.cut.title"] || "A phone is connected — click to disconnect")),
        onclick:() => { send({kind:"remotecut"}); lastRC = ""; report(); }},
       T["tui.remote.live"] || "REMOTE ✕") : null,
     el("span", {class:"grow"}),
@@ -2308,11 +2320,13 @@ report();
 // line of output). If the socket can't hold — a flaky link, an older server — a
 // slow poll takes over until it reconnects.
 if (REMOTE) {
-  let wsUp = false, sws = null, cut = false, downSince = 0;
-  // Say what happened when the feed stops. The token can be revoked from the PC
-  // (a deliberate "disconnect" — every request then answers 403 and this page,
-  // holding the old token, can never come back), or the link can simply drop.
-  // Either way the stale screen would otherwise just sit there looking live.
+  let wsUp = false, sws = null, downSince = 0;
+  // Say what happened when the feed stops. The PC can end this session
+  // deliberately (its "disconnect": every request then answers 403 and this
+  // page is done until someone opens the link again), or the link can simply
+  // drop. Either way the stale screen would otherwise just sit there looking
+  // live — which is the worst of the three states, because it is the one that
+  // gets acted on.
   const showNet = (kind) => {
     let v = document.getElementById("netveil");
     if (!kind) { if (v) v.hidden = true; return; }
@@ -2321,7 +2335,15 @@ if (REMOTE) {
         el("div", {class:"nvbox"},
           el("div", {class:"nvicon"}, kind === "cut" ? "⛔" : "⚠"),
           el("div", {class:"nvtitle"}, ""),
-          el("div", {class:"nvsub"}, "")));
+          el("div", {class:"nvsub"}, ""),
+          // Only a fixed pairing can come back on its own: the token is
+          // unchanged, so opening the link again is all it takes. A rotated
+          // token leaves nothing to press — the new QR is the only way in.
+          STICKY && TOKEN
+            ? el("button", {class:"nvbtn", onclick:() => {
+                location.href = "/?t=" + encodeURIComponent(TOKEN);
+              }}, T["tui.net.cut.again"] || "Reconnect")
+            : null));
       document.body.append(v);
     }
     v.hidden = false;
@@ -2331,11 +2353,29 @@ if (REMOTE) {
       ? (T["tui.net.cut.title"] || "Disconnected from this PC")
       : (T["tui.net.down.title"] || "Connection lost");
     v.querySelector(".nvsub").textContent = kind === "cut"
-      ? (T["tui.net.cut.sub"] || "The PC ended this session (its access code changed). Scan the new QR code on the PC to reconnect.")
+      ? (STICKY
+          ? (T["tui.net.cut.sub.sticky"] || "The PC ended this session. Its access code is unchanged, so opening the link again reconnects this device.")
+          : (T["tui.net.cut.sub"] || "The PC ended this session (its access code changed). Scan the new QR code on the PC to reconnect."))
       : (T["tui.net.down.sub"] || "Reconnecting…");
+    const btn = v.querySelector(".nvbtn");
+    if (btn) btn.hidden = kind !== "cut";
+  };
+  // The PC ended this session. Stop everything this page holds — the state
+  // socket and, above all, the relay: its input line is a separate socket, and
+  // a page that keeps it open keeps a finger on a browser it can no longer see.
+  const cutNow = () => {
+    if (remoteCut) return;
+    remoteCut = true; wsUp = false;
+    try { if (sws) sws.close(); } catch (x) {}
+    castStop();
+    showNet("cut");
   };
   const connected = () => { downSince = 0; showNet(null); };
   const applyState = (d) => {
+    // The PC says the line is closed. It says so before dropping the socket, so
+    // the screen goes dark the moment the person there decides it does, instead
+    // of at the next poll.
+    if (d.cut) { cutNow(); return; }
     connected();
     if (d.ui) window.__state(typeof d.ui === "string" ? d.ui : JSON.stringify(d.ui));
     if (d.screen_html != null) { window.__screen(d.screen_html); pgArrived(); }
@@ -2347,14 +2387,14 @@ if (REMOTE) {
     if ("surveyed" in d) window.__surveyed(d.surveyed);
   };
   const connectState = () => {
-    if (cut) return;
+    if (remoteCut) return;
     try {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN));
     } catch (e) { setTimeout(connectState, 1500); return; }
     sws.onopen = () => { wsUp = true; connected(); };
     sws.onmessage = (e) => { try { applyState(JSON.parse(e.data)); } catch (x) {} };
-    sws.onclose = () => { wsUp = false; if (!cut) setTimeout(connectState, 1500); };
+    sws.onclose = () => { wsUp = false; if (!remoteCut) setTimeout(connectState, 1500); };
     sws.onerror = () => { try { sws.close(); } catch (x) {} };
   };
   connectState();
@@ -2362,13 +2402,13 @@ if (REMOTE) {
   // reliable place to notice a revoked token: a WS handshake failure is opaque,
   // but a plain fetch returns the 403 outright.
   const pull = async () => {
-    if (wsUp || cut) return;
+    if (wsUp || remoteCut) return;
     try {
       const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
       if (r.status === 403) {
         // Two different refusals share the status: the optional password
         // gate (body "password") wants the person to unlock this device
-        // once; anything else means the token was revoked from the PC.
+        // once; anything else means the PC ended this session.
         const body = await r.text().catch(() => "");
         if (body === "password") {
           const pw = prompt(T["tui.remote.password_prompt"] || "パスワード");
@@ -2379,9 +2419,7 @@ if (REMOTE) {
           }
           return;
         }
-        cut = true; wsUp = false;   // token revoked from the PC — this page is done
-        try { if (sws) sws.close(); } catch (x) {}
-        showNet("cut");
+        cutNow();   // this session was ended at the PC — the page is done
         return;
       }
       if (!r.ok) throw new Error("status " + r.status);
@@ -2417,7 +2455,7 @@ function sendShape(force) {
   return true;
 }
 function castStart() {
-  if (!REMOTE || castWs) return;
+  if (!REMOTE || castWs || remoteCut) return;
   const cv = document.getElementById("cast");
   castCtx = cv.getContext("2d");
   const proto = location.protocol === "https:" ? "wss:" : "ws:";

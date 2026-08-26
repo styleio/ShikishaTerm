@@ -183,18 +183,103 @@ pub struct RemoteUi {
     /// The accept thread, joined in shutdown() so the port is truly released
     /// before shutdown() returns
     accept_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
-    /// The optional password gate (see PwAuth)
-    auth: Arc<PwAuth>,
+    /// What a phone must hold besides the token, and where a cut lands (see Gate)
+    gate: Arc<Gate>,
 }
 
-/// The remote's optional second factor. The URL token alone is convenient
-/// but travels through notification channels in plain text; a password —
-/// entered once per app run on the phone itself — never does. Empty
-/// password = the gate is off (the user's own risk to accept)
-struct PwAuth {
+/// How many sessions are remembered at once. Every re-pairing mints one and
+/// only a cut removes them, so the list is bounded rather than left to grow for
+/// the life of the app; the oldest falls off first. Re-presenting a session that
+/// is still valid keeps it (see `Ids::keep`), so reloading a page does not use
+/// the list up — it takes that many *different* devices to push one out.
+const MAX_SESSIONS: usize = 64;
+
+/// A bounded set of session ids.
+struct Ids(Mutex<std::collections::VecDeque<String>>);
+
+impl Ids {
+    fn new() -> Self {
+        Self(Mutex::new(std::collections::VecDeque::new()))
+    }
+
+    /// Whether this id is one we handed out and have not since cut
+    fn has(&self, id: &str) -> bool {
+        !id.is_empty()
+            && self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|k| crate::crypto::token_eq(k, id))
+    }
+
+    /// The id the caller should hold from here on: the one it presented if that
+    /// is still valid (so a reload keeps its place in the list), a fresh one
+    /// otherwise.
+    fn keep(&self, presented: &str) -> String {
+        if self.has(presented) {
+            return presented.to_string();
+        }
+        let id = crate::random_hex(24);
+        let mut q = self.0.lock().unwrap();
+        while q.len() >= MAX_SESSIONS {
+            q.pop_front();
+        }
+        q.push_back(id.clone());
+        id
+    }
+
+    fn clear(&self) {
+        self.0.lock().unwrap().clear();
+    }
+}
+
+/// Everything a phone must present beyond the token — and the single place the
+/// window's "disconnect" takes effect.
+///
+/// The token alone cannot carry a disconnect: it may be a fixed string the
+/// person wrote into settings, and even when it is rotated, a page already
+/// loaded still holds sockets that were authorised at the time they opened. So
+/// admission is a *session*, minted when the pairing link is opened (the shell
+/// page with a valid `?t=`) and required by every data route and every live
+/// socket afterwards. Cutting empties the list: the phone's very next request —
+/// or its very next touch on the relay — is refused, whatever the token says.
+///
+/// The password is the optional second factor. The URL token is convenient but
+/// travels through notification channels in plain text; a password — entered
+/// once per app run on the phone itself — never does. Empty password = the gate
+/// is off (the user's own risk to accept).
+struct Gate {
     password: String,
-    /// Session ids handed to phones that presented the password
-    sessions: Mutex<std::collections::HashSet<String>>,
+    /// Sessions handed to phones that presented the password
+    pw: Ids,
+    /// Sessions handed to phones that opened the pairing link
+    grants: Ids,
+}
+
+impl Gate {
+    /// Whether the caller still holds a live session from opening the link
+    fn granted(&self, id: &str) -> bool {
+        self.grants.has(id)
+    }
+
+    /// Whether the password factor is satisfied (always, when none is set)
+    fn unlocked(&self, id: &str) -> bool {
+        self.password.is_empty() || self.pw.has(id)
+    }
+
+    /// The disconnect. Every session is gone, so nothing that was let in
+    /// before this moment is let in again without opening the link afresh.
+    fn cut(&self) {
+        self.grants.clear();
+        self.pw.clear();
+    }
+}
+
+/// The pairing session cookie (see Gate). HttpOnly so the page it admits can
+/// never read it out, SameSite=Strict so nothing but this origin can send it.
+fn session_cookie(id: &str) -> String {
+    format!("rs={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
 }
 
 impl RemoteUi {
@@ -267,13 +352,12 @@ impl RemoteUi {
         let state_clients: StateClients = Arc::new(Mutex::new(Vec::new()));
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
         let settings = Arc::new(Mutex::new(None));
-        // The optional second factor: the password itself (compared in
-        // constant time) and the session ids handed out to phones that
-        // presented it. In memory only — an app restart re-asks, and a
-        // token rotation clears them (cutting sessions must cut everything)
-        let auth = Arc::new(PwAuth {
+        // Who is let in, and the one thing a "disconnect" changes. In memory
+        // only — an app restart re-pairs every phone from the link
+        let gate = Arc::new(Gate {
             password,
-            sessions: Mutex::new(std::collections::HashSet::new()),
+            pw: Ids::new(),
+            grants: Ids::new(),
         });
 
         let server = Arc::new(server);
@@ -286,14 +370,14 @@ impl RemoteUi {
             let states = Arc::clone(&state_clients);
             let kf = Arc::clone(&keyframe_wanted);
             let settings = Arc::clone(&settings);
-            let auth = Arc::clone(&auth);
+            let gate = Arc::clone(&gate);
             std::thread::spawn(move || {
                 for req in server.incoming_requests() {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
                     if let Err(e) =
-                        handle(req, &token, &snapshot, &tx, &clients, &states, &kf, &settings, &auth, sticky)
+                        handle(req, &token, &snapshot, &tx, &clients, &states, &kf, &settings, &gate, sticky)
                     {
                         crate::append_hook_log(&crate::i18n::tp(
                             "err.remote.hook_log",
@@ -315,7 +399,7 @@ impl RemoteUi {
             state_clients,
             keyframe_wanted,
             settings,
-            auth,
+            gate,
             server: Mutex::new(Some(server)),
             accept_thread: Mutex::new(Some(accept_thread)),
         })
@@ -340,12 +424,24 @@ impl RemoteUi {
         self.cut_sessions();
     }
 
-    /// Drop every live connection and every password session WITHOUT changing
-    /// the token — the sticky-token "disconnect": a paired phone stays paired
-    /// (its bookmark still opens the board) but must present the password
-    /// again, and whatever it held open is gone now
+    /// End every remote session WITHOUT changing the token — the fixed-token
+    /// "disconnect". The pairing survives (a bookmarked link still opens the
+    /// board, and it must present the password again), but nothing that is open
+    /// right now survives: the sessions are gone, so the page already loaded is
+    /// refused on its next request and its next touch, and the sockets carrying
+    /// the screen to it are dropped.
+    ///
+    /// Dropping the sockets alone was NOT a disconnect. The page reconnects on
+    /// its own a second and a half later, and with a token that cannot change
+    /// there was nothing to refuse it with — so a phone that had been told it
+    /// was disconnected went on watching and driving a browser for as long as it
+    /// liked. Admission has to be revocable on its own, which is what Gate is.
     pub fn cut_sessions(&self) {
-        self.auth.sessions.lock().unwrap().clear();
+        self.gate.cut();
+        // Say it on the way out. The phone's own poll would notice within a
+        // second and a half; the screen it is holding should go dark the
+        // instant the person here decides it does.
+        self.push_state("{\"cut\":true}".to_string());
         self.frame_clients.lock().unwrap().clear();
         self.state_clients.lock().unwrap().clear();
     }
@@ -471,7 +567,7 @@ fn handle(
     state_clients: &StateClients,
     keyframe_wanted: &Arc<AtomicBool>,
     settings: &Arc<Mutex<Option<(String, String)>>>,
-    auth: &Arc<PwAuth>,
+    gate: &Arc<Gate>,
     sticky: bool,
 ) -> Result<()> {
     // Snapshot the current token for this request. It can be rotated at runtime
@@ -504,6 +600,10 @@ fn handle(
     };
     let method = req.method().as_str().to_string();
     let path = req.url().split('?').next().unwrap_or("/").to_string();
+    // The pairing session this request belongs to (see Gate). Read before the
+    // routes so the sockets, which consume the request when they upgrade, can
+    // carry it with them.
+    let session = cookie_value(&req, "rs");
 
     // The shell page carries no secrets and no state — it is the same inert HTML
     // for everyone, and every data route below still requires the token. Serving
@@ -512,46 +612,59 @@ fn handle(
     // fetches "/" with no token, gets the shell, and re-auths its data sockets
     // from storage. An unpaired visitor gets the same inert shell and can read
     // nothing — its state socket and every intent answer 403 just below.
+    //
+    // This is also where a session is minted: arriving here WITH the token in
+    // the URL is the pairing gesture — a QR scan, a bookmark, a deliberate
+    // reload — and it is the only way in. The page's own fetches and sockets
+    // carry the token too, but none of them lands on this route, so a page that
+    // has been cut cannot quietly let itself back in: a person has to open the
+    // link again.
     if method == "GET" && (path == "/" || path == "/shell") {
-        return req
-            .respond(
-                Response::from_string(crate::shell::page_for(sticky))
-                    .with_header(
-                        Header::from_bytes(
-                            &b"Content-Type"[..],
-                            &b"text/html; charset=utf-8"[..],
-                        )
-                        .unwrap(),
-                    )
-                    // Never show a stale page after an update
-                    .with_header(
-                        Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
-                    )
-                    // Keep any URL token out of the Referer header
-                    .with_header(
-                        Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap(),
-                    ),
+        let mut resp = Response::from_string(crate::shell::page_for(sticky))
+            .with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             )
+            // Never show a stale page after an update
+            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+            // Keep any URL token out of the Referer header
+            .with_header(Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap());
+        if crate::crypto::token_eq(&query_value(req.url(), "t"), &token) {
+            let id = gate.grants.keep(&session);
+            resp = resp.with_header(
+                Header::from_bytes(&b"Set-Cookie"[..], session_cookie(&id).as_bytes()).unwrap(),
+            );
+        }
+        return req.respond(resp).map_err(Into::into);
+    }
+
+    // Everything past here is data or control — the token first.
+    if !crate::crypto::token_eq(&supplied, &token) {
+        return req
+            .respond(Response::from_string("forbidden").with_status_code(403))
             .map_err(Into::into);
     }
 
-    // The settings screen, reverse-proxied to the loopback config server. The
-    // phone reaches the config UI only through here, authenticated by the remote
-    // token; the config server itself never faces the network. Handled before the
-    // generic gate so its `/api/*` don't collide with the remote's own routes.
-    // The optional password gate on top of the token. A phone that has the
-    // token but hasn't presented the password yet may do exactly one thing:
-    // trade the password for a session cookie at /auth. Everything else
-    // answers 403 with the body "password", which the shell reads as
-    // "prompt the person and try again"
-    let pw_ok = auth.password.is_empty()
-        || auth.sessions.lock().unwrap().contains(&cookie_value(&req, "rp"));
-    if !pw_ok && crate::crypto::token_eq(&supplied, &token) {
+    // Then the session, which is what the window's "disconnect" takes away. A
+    // caller holding the right token but no live session was cut (or never
+    // opened the link): the body says so, and the phone puts up its ⛔ screen
+    // rather than sitting in front of a picture that stopped being true.
+    if !gate.granted(&session) {
+        return req
+            .respond(Response::from_string("cut").with_status_code(403))
+            .map_err(Into::into);
+    }
+
+    // Then the optional password. A phone that has the token and a session but
+    // hasn't presented the password yet may do exactly one thing: trade the
+    // password for a session cookie at /auth. Everything else answers 403 with
+    // the body "password", which the shell reads as "prompt the person and try
+    // again"
+    let unlocked = gate.unlocked(&cookie_value(&req, "rp"));
+    if !unlocked {
         if method == "GET" && path == "/auth" {
             let given = query_value(req.url(), "p");
-            if crate::crypto::token_eq(&given, &auth.password) {
-                let id = crate::random_hex(24);
-                auth.sessions.lock().unwrap().insert(id.clone());
+            if crate::crypto::token_eq(&given, &gate.password) {
+                let id = gate.pw.keep("");
                 let cookie = format!(
                     "rp={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"
                 );
@@ -577,20 +690,13 @@ fn handle(
             .map_err(Into::into);
     }
 
+    // The settings screen, reverse-proxied to the loopback config server. The
+    // phone reaches the config UI only through here, on the same admission as
+    // the board; the config server itself never faces the network. Handled
+    // before the routes below so its `/api/*` don't collide with the remote's
+    // own verbs.
     if is_settings_path(&path) {
-        if !crate::crypto::token_eq(&supplied, &token) {
-            return req
-                .respond(Response::from_string("forbidden").with_status_code(403))
-                .map_err(Into::into);
-        }
         return proxy_settings(req, settings, &token, &method, &path);
-    }
-
-    // Everything past here is data or control — require the token.
-    if !crate::crypto::token_eq(&supplied, &token) {
-        return req
-            .respond(Response::from_string("forbidden").with_status_code(403))
-            .map_err(Into::into);
     }
 
     match (method.as_str(), path.as_str()) {
@@ -730,9 +836,19 @@ fn handle(
             );
             let mut stream = req.upgrade("websocket", resp);
             let tx = tx.clone();
+            let gate = Arc::clone(gate);
+            let session = session.clone();
             std::thread::spawn(move || {
                 loop {
-                    match crate::ws::read_frame(&mut stream) {
+                    let frame = crate::ws::read_frame(&mut stream);
+                    // Admission is re-checked on every touch, not once at the
+                    // handshake. This line stays open for as long as the phone
+                    // holds it, so a disconnect that only dropped the picture
+                    // left the hand still on the controls — blind, but driving.
+                    if !gate.granted(&session) {
+                        break;
+                    }
+                    match frame {
                         Ok((crate::ws::Op::Text, payload)) => {
                             let Ok(text) = String::from_utf8(payload) else {
                                 continue;
@@ -1073,24 +1189,175 @@ mod tests {
     /// The window's "disconnect" rotates the token: a phone still holding the old
     /// URL stops working on its very next request, only the new URL does, and the
     /// published URL (which the pairing QR reads) carries the new token.
+    /// A phone as the server sees it: it opens the pairing link once, keeps the
+    /// session cookie it is handed, and presents it on everything afterwards
+    /// (exactly what a browser does with a same-origin cookie).
+    struct Phone {
+        agent: ureq::Agent,
+        base: String,
+        cookie: String,
+    }
+
+    impl Phone {
+        fn new(base: &str) -> Self {
+            Self {
+                agent: ureq::Agent::config_builder()
+                    // A refusal is an answer here, not a transport error — and a
+                    // redirect is something to look at rather than to follow
+                    .http_status_as_error(false)
+                    .max_redirects(0)
+                    .build()
+                    .new_agent(),
+                base: base.to_string(),
+                cookie: String::new(),
+            }
+        }
+
+        /// Open the link: the pairing gesture (a QR scan, a bookmark, a reload).
+        /// Everything below it needs the session this hands back.
+        fn pair(&mut self, token: &str) {
+            let r = self.get(&format!("/?t={token}"));
+            let set = r
+                .headers()
+                .get("set-cookie")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let rs = set
+                .split(';')
+                .find(|kv| kv.trim_start().starts_with("rs="))
+                .unwrap_or_else(|| panic!("no session handed to a phone that opened the link: {set}"));
+            // The new session replaces the old one; anything else this browser
+            // holds it keeps, as a browser does
+            let kept = self
+                .cookie
+                .split(';')
+                .map(str::trim)
+                .filter(|c| !c.is_empty() && !c.starts_with("rs="))
+                .map(str::to_string);
+            self.cookie = std::iter::once(rs.trim().to_string())
+                .chain(kept)
+                .collect::<Vec<_>>()
+                .join("; ");
+        }
+
+        /// Keep another cookie alongside the session (the password gate's, the
+        /// settings hop's) — a browser holds them all at once
+        fn also(&mut self, cookie: &str) {
+            self.cookie = format!("{}; {}", self.cookie, cookie);
+        }
+
+        fn get(&self, path: &str) -> ureq::http::Response<ureq::Body> {
+            self.agent
+                .get(&format!("{}{path}", self.base))
+                .header("Cookie", &self.cookie)
+                .call()
+                .expect("no answer at all")
+        }
+
+        fn post(&self, path: &str, body: &str) -> ureq::http::Response<ureq::Body> {
+            self.agent
+                .post(&format!("{}{path}", self.base))
+                .header("Cookie", &self.cookie)
+                .header("Content-Type", "application/json")
+                .send(body)
+                .expect("no answer at all")
+        }
+
+        fn status(&self, path: &str) -> u16 {
+            self.get(path).status().as_u16()
+        }
+
+        /// The status and body together — the body is how the phone tells a
+        /// disconnect ("cut") from a locked device ("password")
+        fn said(&self, path: &str) -> (u16, String) {
+            let mut r = self.get(path);
+            let code = r.status().as_u16();
+            (code, r.body_mut().read_to_string().unwrap_or_default())
+        }
+
+        fn text(&self, path: &str) -> String {
+            self.get(path).body_mut().read_to_string().unwrap()
+        }
+
+        /// The status of one data request, as the page's own poll would make it
+        fn state(&self, token: &str) -> u16 {
+            self.status(&format!("/api/state?t={token}"))
+        }
+    }
+
     #[test]
     fn rotating_the_token_cuts_the_old_session() {
         let mut ui =
             RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "old-token-000000".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
-        let agent = ureq::Agent::new_with_defaults();
-        let status = |r: Result<ureq::http::Response<ureq::Body>, ureq::Error>| match r {
-            Ok(x) => x.status().as_u16(),
-            Err(ureq::Error::StatusCode(c)) => c,
-            Err(e) => panic!("unexpected: {e}"),
-        };
-        let get = |t: &str| status(agent.get(&format!("{base}/api/state?t={t}")).call());
+        let mut phone = Phone::new(&base);
+        phone.pair("old-token-000000");
 
-        assert_eq!(get("old-token-000000"), 200, "old token should work before the cut");
+        assert_eq!(phone.state("old-token-000000"), 200, "old token should work before the cut");
         ui.rotate_token("new-token-111111".into());
-        assert_eq!(get("old-token-000000"), 403, "old token must be dead after the cut");
-        assert_eq!(get("new-token-111111"), 200, "the new token must work");
+        assert_eq!(phone.state("old-token-000000"), 403, "old token must be dead after the cut");
+        assert_eq!(
+            phone.state("new-token-111111"),
+            403,
+            "learning the new token is not enough — the link has to be opened again"
+        );
+        phone.pair("new-token-111111");
+        assert_eq!(phone.state("new-token-111111"), 200, "re-pairing must let it back in");
         assert!(ui.url.ends_with("t=new-token-111111"), "url not rebuilt: {}", ui.url);
+    }
+
+    /// The disconnect has to hold even when the token cannot change — a fixed
+    /// token (remote.sticky_token) is a string the person wrote into settings,
+    /// so there is nothing to rotate. Dropping the sockets alone was not enough:
+    /// the page reconnected by itself a second later and went on watching and
+    /// driving. What is revoked is the session, and only opening the link again
+    /// brings one back.
+    #[test]
+    fn a_fixed_token_disconnect_locks_the_phone_out_too() {
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "fixed-token-22222".into(),
+            String::new(),
+        )
+        .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let mut phone = Phone::new(&base);
+        phone.pair("fixed-token-22222");
+        assert_eq!(phone.state("fixed-token-22222"), 200);
+
+        ui.cut_sessions();
+        assert_eq!(
+            phone.said("/api/state?t=fixed-token-22222"),
+            (403, "cut".to_string()),
+            "the phone still holds the token — the session is what must be gone, \
+             and the body is what puts up its ⛔ screen"
+        );
+
+        phone.pair("fixed-token-22222");
+        assert_eq!(
+            phone.state("fixed-token-22222"),
+            200,
+            "the link still pairs: a fixed token is a lasting pairing by choice"
+        );
+    }
+
+    /// Re-opening the link on a phone that is already paired keeps the session
+    /// it has, so a habit of reloading can't push the other devices out of a
+    /// bounded list.
+    #[test]
+    fn reloading_the_link_keeps_the_session_it_already_has() {
+        let ids = Ids::new();
+        let first = ids.keep("");
+        assert_eq!(ids.keep(&first), first, "a valid session must be kept as it is");
+        assert!(!ids.keep("not-one-we-minted").is_empty());
+        for _ in 0..MAX_SESSIONS {
+            ids.keep("");
+        }
+        assert!(!ids.has(&first), "the oldest falls off rather than growing forever");
+        let last = ids.keep("");
+        ids.clear();
+        assert!(!ids.has(&last), "a cut leaves nothing behind");
     }
 
     /// Off→on must rebind at once: shutdown() may only return after the
@@ -1128,26 +1395,23 @@ mod tests {
         )
         .unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
-        let agent = ureq::Agent::new_with_defaults();
+        let mut phone = Phone::new(&base);
+        phone.pair("tok123456789012");
 
-        // Token only → refused, with the body that tells the shell to prompt
-        let err = agent.get(&format!("{base}/api/state?t=tok123456789012")).call();
-        match err {
-            Err(ureq::Error::StatusCode(c)) => assert_eq!(c, 403),
-            other => panic!("パスワード未提示で通ってしまう: {other:?}"),
-        }
+        // Token and session only → refused, with the body that tells the shell
+        // to prompt (and not the one that tells it the line was cut)
+        assert_eq!(
+            phone.said("/api/state?t=tok123456789012"),
+            (403, "password".to_string()),
+            "パスワード未提示で通ってしまう"
+        );
 
         // Wrong password → refused
-        match agent.get(&format!("{base}/auth?t=tok123456789012&p=chigau")).call() {
-            Err(ureq::Error::StatusCode(c)) => assert_eq!(c, 403),
-            other => panic!("誤パスワードで通ってしまう: {other:?}"),
-        }
+        assert_eq!(phone.status("/auth?t=tok123456789012&p=chigau"), 403, "誤パスワードで通る");
 
         // Right password → a session cookie, and data routes open with it
-        let resp = agent
-            .get(&format!("{base}/auth?t=tok123456789012&p=aikotoba"))
-            .call()
-            .expect("正しいパスワードが通らない");
+        let resp = phone.get("/auth?t=tok123456789012&p=aikotoba");
+        assert_eq!(resp.status().as_u16(), 200, "正しいパスワードが通らない");
         let cookie = resp
             .headers()
             .get("set-cookie")
@@ -1158,18 +1422,21 @@ mod tests {
             .next()
             .unwrap()
             .to_string();
-        let ok = agent
-            .get(&format!("{base}/api/state?t=tok123456789012"))
-            .header("Cookie", &cookie)
-            .call()
-            .expect("クッキー提示でも開かない");
-        assert_eq!(ok.status().as_u16(), 200);
+        phone.also(&cookie);
+        assert_eq!(phone.state("tok123456789012"), 200, "クッキー提示でも開かない");
 
-        // No token at all stays refused even with the cookie
-        match agent.get(&format!("{base}/api/state")).header("Cookie", &cookie).call() {
-            Err(ureq::Error::StatusCode(c)) => assert_eq!(c, 403, "トークン無しは常に拒否"),
-            other => panic!("トークン無しで通ってしまう: {other:?}"),
-        }
+        // No token at all stays refused even with the cookies
+        assert_eq!(phone.status("/api/state"), 403, "トークン無しは常に拒否");
+
+        // The disconnect takes the password with it: the device unlocks again
+        // only after the person there says so
+        ui.cut_sessions();
+        phone.pair("tok123456789012");
+        assert_eq!(
+            phone.said("/api/state?t=tok123456789012"),
+            (403, "password".to_string()),
+            "切断後もパスワードが効いたままになっている"
+        );
         ui.shutdown();
     }
 
@@ -1177,15 +1444,14 @@ mod tests {
     fn serves_state_and_forwards_commands() {
         let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
-        let agent = ureq::Agent::new_with_defaults();
-        let status = |r: Result<ureq::http::Response<ureq::Body>, ureq::Error>| match r {
-            Ok(x) => x.status().as_u16(),
-            Err(ureq::Error::StatusCode(c)) => c,
-            Err(e) => panic!("unexpected: {e}"),
-        };
+        let mut phone = Phone::new(&base);
 
-        // No token is rejected
-        assert_eq!(status(agent.get(&format!("{base}/api/state")).call()), 403);
+        // Neither half alone opens anything: no token is refused, and the token
+        // without a session (a phone that never opened the link, or one the PC
+        // has since cut) is refused too
+        assert_eq!(phone.status("/api/state"), 403);
+        assert_eq!(phone.said("/api/state?t=tok123456789012"), (403, "cut".to_string()));
+        phone.pair("tok123456789012");
 
         // Returns state
         ui.snapshot.lock().unwrap().tabs = vec![RemoteTab {
@@ -1194,20 +1460,11 @@ mod tests {
             state: "QUESTION".into(),
             ..Default::default()
         }];
-        let body = agent
-            .get(&format!("{base}/api/state?t=tok123456789012"))
-            .call()
-            .unwrap()
-            .body_mut()
-            .read_to_string()
-            .unwrap();
+        let body = phone.text("/api/state?t=tok123456789012");
         assert!(body.contains("実装") && body.contains("QUESTION"), "{body}");
 
         // The instruction reaches the main loop
-        agent
-            .post(&format!("{base}/api/send?t=tok123456789012"))
-            .send(r#"{"tab":1,"text":"続けて"}"#)
-            .unwrap();
+        phone.post("/api/send?t=tok123456789012", r#"{"tab":1,"text":"続けて"}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
             RemoteCmd::Send { tab, text } => {
                 assert_eq!((tab, text.as_str()), (1, "続けて"));
@@ -1221,13 +1478,7 @@ mod tests {
         // asserted above (/api/state with no token = 403). There used to be a
         // separate, old phone-only page that never once reached the phone side.
         for entry in ["/", "/shell"] {
-            let page = agent
-                .get(&format!("{base}{entry}"))
-                .call()
-                .unwrap()
-                .body_mut()
-                .read_to_string()
-                .unwrap();
+            let page = phone.text(entry);
             assert!(
                 page.contains("api/intent") && page.contains("window.__state"),
                 "{entry} が（トークン無しで）窓と同じ外皮を配っていない"
@@ -1235,10 +1486,7 @@ mod tests {
         }
 
         // Operations from the screen reach the main loop
-        agent
-            .post(&format!("{base}/api/intent?t=tok123456789012"))
-            .send(r#"{"kind":"select","tab":2}"#)
-            .unwrap();
+        phone.post("/api/intent?t=tok123456789012", r#"{"kind":"select","tab":2}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
             RemoteCmd::Ui(crate::browser::Ev::Select { tab }) => assert_eq!(tab, 2),
             other => panic!("想定外: {other:?}"),
@@ -1247,10 +1495,7 @@ mod tests {
         // The "back" button on the top bar also reaches the main loop (both
         // the allow-list and the path). It used to be blocked by the
         // allow-list, and after that fix, silently dropped by keys_for
-        agent
-            .post(&format!("{base}/api/intent?t=tok123456789012"))
-            .send(r#"{"kind":"go","what":"back"}"#)
-            .unwrap();
+        phone.post("/api/intent?t=tok123456789012", r#"{"kind":"go","what":"back"}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
             RemoteCmd::Ui(crate::browser::Ev::Go {
                 go: crate::browser::Go::Back,
@@ -1261,14 +1506,8 @@ mod tests {
         // Something only the window can answer is stopped as soon as it's
         // received. That it didn't get through is confirmed on the next
         // receive (select comes through first)
-        agent
-            .post(&format!("{base}/api/intent?t=tok123456789012"))
-            .send(r#"{"kind":"menu","key":"k"}"#)
-            .unwrap();
-        agent
-            .post(&format!("{base}/api/intent?t=tok123456789012"))
-            .send(r#"{"kind":"select","tab":3}"#)
-            .unwrap();
+        phone.post("/api/intent?t=tok123456789012", r#"{"kind":"menu","key":"k"}"#);
+        phone.post("/api/intent?t=tok123456789012", r#"{"kind":"select","tab":3}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
             RemoteCmd::Ui(crate::browser::Ev::Select { tab }) => {
                 assert_eq!(tab, 3, "止めたはずの操作が先に届いた")
@@ -1297,19 +1536,18 @@ mod tests {
     fn settings_proxy_gates_and_hands_off_a_cookie() {
         let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
-        // A client that does NOT follow redirects, so we can inspect the 302.
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .build()
-            .new_agent();
+        // Phone does not follow redirects, so the 302 can be inspected.
+        let mut phone = Phone::new(&base);
 
         // No token → 403
-        let r = agent.get(&format!("{base}/cfg")).call().unwrap();
-        assert_eq!(r.status().as_u16(), 403, "unauthenticated /cfg must be refused");
+        assert_eq!(phone.status("/cfg"), 403, "unauthenticated /cfg must be refused");
+        // The token without a session is refused as well: the settings screen is
+        // reached on the same admission as the board, so a cut takes it too
+        assert_eq!(phone.said("/cfg?t=tok123456789012"), (403, "cut".to_string()));
+        phone.pair("tok123456789012");
 
         // First hop with ?t= → 302 + Set-Cookie sst=<token>, Location /cfg
-        let r = agent.get(&format!("{base}/cfg?t=tok123456789012")).call().unwrap();
+        let r = phone.get("/cfg?t=tok123456789012");
         assert_eq!(r.status().as_u16(), 302, "the pairing hop should redirect");
         let cookie = r.headers().get("set-cookie").and_then(|v| v.to_str().ok()).unwrap_or("");
         assert!(cookie.contains("sst=tok123456789012"), "cookie not set: {cookie}");
@@ -1318,12 +1556,8 @@ mod tests {
         assert_eq!(loc, "/cfg", "should bounce to a clean /cfg");
 
         // Cookie-authed hop, but no backend wired → 503 (not the shell, not a 404)
-        let r = agent
-            .get(&format!("{base}/cfg"))
-            .header("Cookie", "sst=tok123456789012")
-            .call()
-            .unwrap();
-        assert_eq!(r.status().as_u16(), 503, "no backend yet → 503");
+        phone.also("sst=tok123456789012");
+        assert_eq!(phone.status("/cfg"), 503, "no backend yet → 503");
         ui.shutdown();
     }
 
@@ -1355,10 +1589,15 @@ mod tests {
             .timeout_global(Some(std::time::Duration::from_secs(15)))
             .build()
             .new_agent();
+        // What the phone's browser holds by now: the session from opening the
+        // link, and the settings hop's own cookie
+        let mut paired = Phone::new(&base);
+        paired.pair("tok123456789012");
+        let cookie = format!("sst=tok123456789012; {}", paired.cookie);
 
         let mut r = agent
             .post(&format!("{base}/api/pick"))
-            .header("Cookie", "sst=tok123456789012")
+            .header("Cookie", &cookie)
             .header("Content-Type", "application/json")
             .send(r#"{"kind":"dir"}"#)
             .unwrap();
@@ -1369,7 +1608,7 @@ mod tests {
         // ...and the page the phone reads knows to leave the button off
         let mut r = agent
             .get(&format!("{base}/cfg"))
-            .header("Cookie", "sst=tok123456789012")
+            .header("Cookie", &cookie)
             .call()
             .unwrap();
         let html = r.body_mut().read_to_string().unwrap();
@@ -1421,14 +1660,23 @@ mod tests {
             .unwrap()
             .to_string();
 
+        // The relay is a data route like any other: it opens for a phone that
+        // has paired, and the handshake carries that session as a browser would
+        let mut phone = Phone::new(&format!("http://{hostport}"));
+        phone.pair("tok123456789012");
+
         let mut sock = TcpStream::connect(&hostport).unwrap();
         // Same key as the RFC 6455 example (accept becomes s3pP...)
-        let req = "GET /ws?t=tok123456789012 HTTP/1.1\r\n\
+        let req = format!(
+            "GET /ws?t=tok123456789012 HTTP/1.1\r\n\
              Host: localhost\r\n\
              Upgrade: websocket\r\n\
              Connection: Upgrade\r\n\
+             Cookie: {}\r\n\
              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
-             Sec-WebSocket-Version: 13\r\n\r\n";
+             Sec-WebSocket-Version: 13\r\n\r\n",
+            phone.cookie
+        );
         sock.write_all(req.as_bytes()).unwrap();
 
         // Read the response headers up to \r\n\r\n
@@ -1479,13 +1727,20 @@ mod tests {
             .unwrap()
             .to_string();
 
+        let mut phone = Phone::new(&format!("http://{hostport}"));
+        phone.pair("tok123456789012");
+
         let mut sock = TcpStream::connect(&hostport).unwrap();
-        let req = "GET /ws-in?t=tok123456789012 HTTP/1.1\r\n\
+        let req = format!(
+            "GET /ws-in?t=tok123456789012 HTTP/1.1\r\n\
              Host: localhost\r\n\
              Upgrade: websocket\r\n\
              Connection: Upgrade\r\n\
+             Cookie: {}\r\n\
              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
-             Sec-WebSocket-Version: 13\r\n\r\n";
+             Sec-WebSocket-Version: 13\r\n\r\n",
+            phone.cookie
+        );
         sock.write_all(req.as_bytes()).unwrap();
         let mut buf = Vec::new();
         let mut one = [0u8; 1];
@@ -1512,6 +1767,20 @@ mod tests {
             }
             other => panic!("軌跡が届いていない: {other:?}"),
         }
+
+        // ...and once the PC ends the session, the very same line reaches
+        // nothing. This socket is still open at the phone's end — which is
+        // exactly the state the bug lived in: the picture was gone, so the
+        // person believed the link was down, while every touch still landed on
+        // a real browser.
+        ui.cut_sessions();
+        sock.write_all(&mask_text_frame(intent)).unwrap();
+        assert!(
+            ui.rx
+                .recv_timeout(std::time::Duration::from_millis(700))
+                .is_err(),
+            "切断したはずの端末の操作が本体まで届いている"
+        );
         ui.shutdown();
     }
 

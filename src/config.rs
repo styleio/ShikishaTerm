@@ -227,10 +227,12 @@ pub struct RemoteSpec {
     pub password: String,
     /// Keep the pairing on the phone: the token stays in the URL (bookmarkable)
     /// and in persistent storage, so a discarded tab or a closed browser does
-    /// not cost a QR scan. The "disconnect" control then only drops live
-    /// connections and password sessions — a new token is an explicit
-    /// re-issue from settings. Off (default) = the token lives only in the
-    /// tab's session storage and every disconnect rotates it
+    /// not cost a QR scan. The "disconnect" control still ends every session at
+    /// once — the phone's screen goes dark and its touches reach nothing — but
+    /// the token is unchanged, so that phone can pair again by opening the link;
+    /// shutting it out for good means changing this string. Off (default) = the
+    /// token lives only in the tab's session storage and every disconnect
+    /// rotates it as well
     #[serde(default)]
     pub sticky_token: bool,
     /// The token itself when sticky: written by the person (or generated

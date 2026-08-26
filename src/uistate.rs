@@ -173,6 +173,11 @@ pub struct UiState {
     /// link. Drives the window's "remote connected — click to disconnect" pill.
     #[serde(default)]
     pub remote_conn: bool,
+    /// Whether the pairing is a fixed token (config remote.sticky_token). The
+    /// disconnect cuts the same either way; what differs is what comes after,
+    /// so the button has to say which one it is rather than claim the other.
+    #[serde(default)]
+    pub remote_sticky: bool,
     /// First launch, before any settings exist yet
     pub first_run: bool,
     pub tabs: Vec<TabState>,
