@@ -2757,7 +2757,13 @@ function addTabTo(ws) {
 function openModal(...kids) {
   const inner = el("div", {class:"modal-inner"}, ...kids);
   const back = el("div", {class:"modal"}, inner);
-  back.addEventListener("click", e => { if (e.target === back) back.remove(); });
+  // Closed by a press on the backdrop, not by a click on it. A click belongs to
+  // the nearest ancestor of where the button went DOWN and where it came UP, and
+  // the backdrop covers the whole screen -- so selecting text in a field and
+  // letting go past the dialog's edge (a hurried drag to the end of a line) was
+  // a "click on the backdrop", and the form vanished with everything typed into
+  // it. Where the press landed is the only thing that says what was meant.
+  back.addEventListener("mousedown", e => { if (e.target === back) back.remove(); });
   document.body.append(back);
   return back;
 }
@@ -6132,6 +6138,27 @@ mod tests {
         assert!(safe_workspace_path("/api/workspace?file=workspaces/x.lua", cfg).is_none());
         // URL-encoded .. is rejected too
         assert!(safe_workspace_path("/api/workspace?file=%2E%2E%2Fsecrets.json", cfg).is_none());
+    }
+
+    /// A dialog is dismissed by a press on the backdrop, never by a click on it.
+    ///
+    /// A click is attributed to the nearest ancestor of where the button went
+    /// down and where it came up, and the backdrop covers the whole screen. So
+    /// selecting text in a field and releasing past the dialog's edge — a
+    /// hurried drag to the end of a line — arrived as a click on the backdrop,
+    /// and the form vanished taking everything typed into it. Where the press
+    /// landed is the only thing that says what was meant.
+    #[test]
+    fn a_dialog_closes_on_the_press_that_started_outside_it() {
+        let page = PAGE;
+        assert!(
+            page.contains(r#"back.addEventListener("mousedown", e => { if (e.target === back) back.remove(); });"#),
+            "モーダルが押下ではなくクリックで閉じている"
+        );
+        assert!(
+            !page.contains(r#"back.addEventListener("click""#),
+            "背景のクリックで閉じる書き方が戻っている"
+        );
     }
 
     #[test]

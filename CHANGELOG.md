@@ -8,6 +8,15 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **A dialog no longer vanishes when a selection is dragged out of it.** Select
+  text in the new-workspace wizard, overshoot the field, and let go anywhere
+  outside — the form closed, taking everything typed into it. A click belongs to
+  the nearest ancestor of where the button went down and where it came up, and
+  the backdrop covers the whole screen, so a hurried drag to the end of a line
+  arrived as "a click on the backdrop". Dialogs close on the press that starts
+  outside them now, which is what the vault and the command palette already did.
+
 ## [0.3.3] - 2026-08-26
 
 One message bar for the whole app, the target you pick is the one that is

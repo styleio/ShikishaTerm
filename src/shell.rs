@@ -1416,7 +1416,7 @@ window.__password = function (title, note) {
   const inp = el("input", {type:"password", autocomplete:"off"});
   inp.style.cssText = "font:inherit;background:var(--bg);color:var(--text);" +
     "border:1px solid var(--line);border-radius:6px;padding:8px 10px;width:320px";
-  const done = t => { v.hidden = true; v.onclick = null; send({kind:"password", text:t}); };
+  const done = t => { v.hidden = true; v.onmousedown = null; send({kind:"password", text:t}); };
   inp.onkeydown = e => {
     if (e.key === "Enter") { e.preventDefault(); done(inp.value); }
     if (e.key === "Escape") { e.preventDefault(); done(null); }
@@ -1426,7 +1426,11 @@ window.__password = function (title, note) {
   box.append(el("h3", {}, title));
   if (note) box.append(el("div", {class:"row"}, note));
   box.append(inp);
-  v.onclick = e => { if (e.target === v) done(null); };
+  // On the press, not the click -- see the vault and the palette below, and the
+  // settings form's modal. A click is attributed to the ancestor shared by the
+  // press and the release, so a selection dragged out of the box and released
+  // over the backdrop reads as a click on the backdrop and takes the box away
+  v.onmousedown = e => { if (e.target === v) done(null); };
   v.append(box);
   inp.focus();
 };
