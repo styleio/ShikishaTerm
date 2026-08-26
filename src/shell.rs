@@ -1460,13 +1460,16 @@ window.__state = function (json) {
     location.reload();
     return;
   }
-  // The composer is the workbench on the phone too: any terminal tab shows
-  // it by default (opened WITHOUT focus, so the soft keyboard stays down
-  // until the person taps the field). Only their own ✕ keeps it collapsed —
-  // and then the ✏️ pen stays visible as the way back in
-  if (typeof REMOTE !== "undefined" && REMOTE) {
-    if (onTermPty() && !castClosed()
-        && !(castDock && castDock.style.display === "flex")) openTermBar();
+  // The composer is the workbench: it shows by default wherever there is
+  // something to type into (opened WITHOUT focus, so a phone's soft keyboard
+  // stays down until the person taps the field). Only their own ✕ keeps it
+  // collapsed — and then the ✏️ pen stays visible as the way back in.
+  // A browser tab is the window's own case, handled by syncBrowserDock.
+  if (!covering() && !castClosed() && !castMode
+      && !(castDock && castDock.style.display === "flex")
+      && (REMOTE ? onTermPty() : !onBrowserTab())) {
+    openTermBar();
+    if (castInput) castInput.blur();
   }
   // Where we are is half of what decides the pen, and it changes without the
   // bar being touched — so it is settled from the state, every update, on both
@@ -1508,11 +1511,14 @@ window.__state = function (json) {
     pager.classList.toggle("on", showPager);
     if (!showPager) pgReset();
   }
-  // The phone's sub-input bar belongs over a pane you can type into. Switching
-  // to INDEX or a browser relay closes it (a stray relay dock is handled
-  // separately, by castStop → exitCast).
-  if (REMOTE && !castMode && castDock && castDock.style.display !== "none") {
-    if (screen.hidden || web || !onTermPty()) closeBar();
+  // ...and it goes away when there is not. INDEX and the settings form cover
+  // the panes, so a Send there would be addressed to a pane that is not in
+  // front and would reach nobody; the phone additionally shuts it over
+  // anything that is not a pane it can type into (a stray relay dock is handled
+  // separately, by castStop → exitCast). Shut by us, not by the person, so the
+  // ✕ preference is left alone and the bar returns on its own above.
+  if (!castMode && castDock && castDock.style.display === "flex") {
+    if (covering() || (REMOTE && (screen.hidden || web || !onTermPty()))) closeBar();
   }
   // 📼 recording is "record what I do on THIS page": leaving the tab ends it,
   // so the radio never claims a recording that moved out from under it. The
@@ -1902,10 +1908,20 @@ let lastRC = "";
 // them then landed in the old rectangle, and focusing another pane redrew the
 // tree and quietly put it right, which made it look like a focus bug.
 function measureFocused() {
-  const f = document.querySelector("#panes .pane.focused .pbody");
   const main = document.getElementById("main");
-  if (!f || !main) return;
-  const b = f.getBoundingClientRect(), m = main.getBoundingClientRect();
+  if (!main) return;
+  const f = document.querySelector("#panes .pane.focused .pbody");
+  const m = main.getBoundingClientRect();
+  // A screen that covers the panes -- INDEX, the settings form -- leaves
+  // nothing to measure: #panes is hidden, and a hidden element reports a
+  // rectangle of zeros rather than no rectangle at all. Read as a pane, those
+  // zeros describe one sitting off the top-left corner of the window, and
+  // everything placed by these numbers went with it: on INDEX the toast was
+  // drawn at left:-290px, bottom:998px in a 900px-tall window, so every menu
+  // item that answers with a message looked like a button that does nothing.
+  // With the panes covered, the thing being talked about IS the content area.
+  const laid = f && f.getClientRects().length > 0;
+  const b = laid ? f.getBoundingClientRect() : m;
   main.style.setProperty("--fx", (b.left - m.left) + "px");
   main.style.setProperty("--fy", (b.top - m.top) + "px");
   main.style.setProperty("--fr", (m.right - b.right) + "px");
@@ -2086,6 +2102,11 @@ kbd.addEventListener("keydown", e => {
 // The tab in view, once, so nothing has to re-derive it from S.active. Every
 // "am I on a X tab" question below is asked of this.
 const activeTab = () => (S && S.tabs) ? S.tabs.find(t => t && t.index === S.active) : null;
+// Whether a screen is covering the panes. INDEX and the settings form are not
+// panes -- one is a view OF the running things, the other is about the app
+// itself -- so while either is up there is no pane in front, and anything that
+// belongs to a pane (the composer, the pen) belongs nowhere.
+const covering = () => !!(S && (S.board || S.settings_open));
 // Whether a terminal tab (session) is currently in view. False for INDEX(0), browser tabs, and unknown state
 const onTerminal = () => !!(S && !S.board && S.active !== 0 && S.tabs &&
   S.tabs.some(t => t.index === S.active && t.kind !== "browser"));
@@ -3503,7 +3524,8 @@ function syncPen() {
   // chat carry their own composer, so summoning the terminal bar there would be
   // nonsense. At the window the exception is the placed page — the window's pen
   // would be drawn underneath it and never seen, so that page draws one itself.
-  const here = (typeof REMOTE !== "undefined" && REMOTE) ? onTermPty() : !onBrowserTab();
+  const here = !covering()
+    && ((typeof REMOTE !== "undefined" && REMOTE) ? onTermPty() : !onBrowserTab());
   fab.style.display = (!open && here) ? "" : "none";
 }
 // Show the sub-input bar (auxiliary key row + input field). Never focused
@@ -4387,6 +4409,42 @@ mod tests {
         assert!(
             p.contains("--toast-max:min(calc(100% - var(--fx) - var(--fr) - 24px), 560px)"),
             "狭いペインでトーストがはみ出す"
+        );
+    }
+
+    /// A hidden pane is not a pane, and nothing may be placed by its rectangle.
+    ///
+    /// INDEX and the settings form cover the panes, so `#panes` is hidden --
+    /// and a hidden element reports a rectangle of zeros rather than no
+    /// rectangle at all. Measured as if it were a pane, those zeros describe
+    /// one sitting off the top-left corner of the window, and everything seated
+    /// on it went there too: on INDEX the toast was drawn at left:-290px,
+    /// bottom:998px in a 900px-tall window. Every board menu item that answers
+    /// with a message ("no notification target", "no exited tabs", "phone
+    /// access is off") therefore looked like a button that does nothing at all
+    /// -- on a brand-new install, which is the first thing anyone tries.
+    #[test]
+    fn a_covered_pane_is_the_window() {
+        let p = super::page();
+        assert!(
+            p.contains("const laid = f && f.getClientRects().length > 0;")
+                && p.contains("const b = laid ? f.getBoundingClientRect() : m;"),
+            "隠れたペインの矩形（全部ゼロ）をそのまま使っている"
+        );
+        // One answer to "is a screen covering the panes", and the things that
+        // belong to a pane all ask it
+        assert_eq!(
+            p.matches("const covering = () =>").count(),
+            1,
+            "「ペインが覆われているか」の答えが1箇所ではない"
+        );
+        assert!(
+            p.contains("if (covering() || (REMOTE && (screen.hidden || web || !onTermPty()))) closeBar();"),
+            "打ち込む先が無い画面でサブ入力欄が開いたままになる"
+        );
+        assert!(
+            p.contains("const here = !covering()"),
+            "打ち込む先が無い画面にペンが出る"
         );
     }
 

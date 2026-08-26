@@ -8,6 +8,26 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **The dashboard's menu answers again.** On a brand-new install, pressing
+  「スマホから接続」/「終了したタブを再起動」/「ワークスペース切替」/「通知テスト送信」/
+  「マスターパスワード」 did nothing at all — no action, no explanation, nothing to
+  tell a first-time user whether the app was broken or they were. Each of those
+  answers with a message, and the message was being drawn off the screen: INDEX
+  and the settings form cover the panes, a hidden pane reports a rectangle of
+  zeros rather than no rectangle, and the toast — which is seated over the pane
+  it is about — was placed by those zeros at `left:-290px, bottom:998px` in a
+  900px-tall window. With the panes covered, the thing being talked about is the
+  whole content area, so that is what it is seated on now.
+- **Nothing is left sitting on a pane that isn't there.** The same zeros placed
+  the composer and its ✏️ pen, which is why they were invisible on INDEX rather
+  than wrong. They now come and go with there being a pane to type into, on both
+  the window and a phone — a Send on the dashboard was addressed to a pane that
+  is not in front, and reached nobody.
+- **"Switch workspace" says when there is nowhere to switch to.** With a single
+  workspace it opened nothing and said nothing, which is indistinguishable from
+  a broken button.
+
 ## [0.3.4] - 2026-08-27
 
 A discussion that starts when you ask it to and says so when it cannot, one

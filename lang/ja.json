@@ -196,6 +196,7 @@
   "msg.settings_failed": ">> 設定画面を開けません: {error}",
   "msg.settings_wait": "Enterキーで終了します...",
   "msg.notify_none": ">> 通知先が未登録です（config.json の notify / secrets を確認）",
+  "msg.ws.only_one": "ワークスペースは1つだけです（設定で追加できます）",
   "msg.startup_failed": ">> {error}",
   "msg.update_available": ">> 新しいバージョン v{version} が公開されています（GitHub の Releases から入手できます）",
   "msg.remote_disabled": ">> スマホからの接続は無効です（e キーで設定 →「全体設定」→「スマホから使う」で有効にできます）",

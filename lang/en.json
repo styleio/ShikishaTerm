@@ -196,6 +196,7 @@
   "msg.settings_failed": ">> Could not open settings: {error}",
   "msg.settings_wait": "Press Enter to quit…",
   "msg.notify_none": ">> No notification targets configured (see notify / secrets in config.json)",
+  "msg.ws.only_one": "Only one workspace — add another in the settings",
   "msg.startup_failed": ">> {error}",
   "msg.update_available": ">> A new version v{version} is available (get it from GitHub Releases)",
   "msg.remote_disabled": ">> The phone feature is off (press e for Settings -> \"Global\" -> \"Use from your phone\")",

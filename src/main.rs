@@ -4134,8 +4134,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                         }
                         KeyCode::Char('w') => {
+                            // With nowhere to switch to, opening a list of one
+                            // is not an answer -- and saying nothing at all is
+                            // indistinguishable from a menu item that is broken
                             if workspaces.len() > 1 {
                                 ws_open = true;
+                            } else {
+                                flash = Some(i18n::t("msg.ws.only_one"));
                             }
                         }
                         KeyCode::Char('W') => {
@@ -4334,8 +4339,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             }
                         }
                         KeyCode::Char('w') => {
+                            // With nowhere to switch to, opening a list of one
+                            // is not an answer -- and saying nothing at all is
+                            // indistinguishable from a menu item that is broken
                             if workspaces.len() > 1 {
                                 ws_open = true;
+                            } else {
+                                flash = Some(i18n::t("msg.ws.only_one"));
                             }
                         }
                         KeyCode::Char('r') => {
