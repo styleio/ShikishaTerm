@@ -436,28 +436,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The topic hint drops onto its own line below on narrow widths */
   #topicbar .tb-hint { color:var(--dim); font-size:12px; flex:1 1 100%; margin:-2px 0 0; }
   @media (prefers-reduced-motion: reduce) { #topicbar button { animation:none; } }
-  /* Model-tab chat box — a Claude-style input pinned to the bottom of a model
-     tab, with a spinner while the reply generates. */
-  /* Claude-Code-style composer: a divider on top, a ">" prompt, and a
-     multi-line textarea that grows with the text. Enter sends, Shift+Enter
-     inserts a newline. A faint hint sits below, mirroring Claude's CLI. */
-  #modelchat { position:absolute; left:var(--fx); right:var(--fr); bottom:var(--fb); z-index:23;
-    padding:9px 16px 7px; background:var(--panel);
-    border-top:1px solid var(--line); }
-  #modelchat[hidden] { display:none; }
-  #modelchat .mc-box { display:flex; align-items:flex-start; gap:9px; }
-  #modelchat .mc-prompt { color:var(--live); font-weight:700; font-size:15px;
-    line-height:24px; flex:none; }
-  #modelchat textarea { flex:1; resize:none; border:0; outline:0; background:transparent;
-    color:var(--text); font:inherit; font-size:14px; line-height:24px;
-    max-height:168px; overflow-y:auto; padding:0; }
-  #modelchat textarea:disabled { opacity:.5; }
-  #modelchat .mc-hint { display:flex; justify-content:flex-end; align-items:center;
-    margin:4px 0 0 24px; color:var(--dim); font-size:11.5px; }
-  #modelchat .mc-send { border:0; border-radius:7px; padding:4px 14px;
-    background:var(--live); color:#04121c; font-weight:700; cursor:pointer; font-size:12px; }
-  #modelchat .mc-send:hover { filter:brightness(1.08); }
-  #modelchat .mc-send:disabled { cursor:default; filter:grayscale(.6) brightness(.8); }
   /* Claude-style "thinking" bubble floated over the conversation while a reply
      generates — bouncing dots + a bubble that breathes, so the wait feels alive.
      Sits just above the chat input, bottom-left like a chat app. */
@@ -776,7 +754,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     {{TOAST_HTML}}
     <div id="topicbar" hidden></div>
     <div id="thinking" hidden></div>
-    <div id="modelchat" hidden></div>
     <div id="pageui">
       <button id="pageUp" class="pagebtn" aria-label="older">&#9650;</button>
       <div id="pageCount"></div>
@@ -1186,12 +1163,12 @@ function drawTopicBar() {
   const go = () => {
     const topic = input.value.trim();
     if (!topic) { input.focus(); return; }
+    // Put the opening speaker in front, then hand it the topic the way it
+    // takes input. Typed as keystrokes it reached a CLI and vanished into a
+    // model bridge, which has no keyboard to type at -- so a discussion whose
+    // opening speaker was a model could not be started at all.
     send({kind:"select", tab:S.discuss_start});
-    send({kind:"key", text:topic});
-    // Submit for real — the key name the backend knows for Enter is "enter",
-    // not "Return"; sending "Return" was a no-op, so the topic just sat in the
-    // input as an unsent draft.
-    send({kind:"key", named:"enter"});
+    sendLine(topic, S.discuss_start);
     input.value = "";
     // It vanishes on its own once the opening speaker goes BUSY, but hide it
     // right away so a stray second Enter can't fire a duplicate topic.
@@ -1209,10 +1186,10 @@ function drawTopicBar() {
   bar.hidden = false;
 }
 
-// The model-tab chat box, pinned to the bottom of a model tab. Rebuilt only
-// when the visible model tab changes, so a half-typed message survives the
-// frequent state pushes; the busy spinner is toggled without a rebuild (so the
-// input keeps its text and focus while a reply generates).
+// A model pane types into the same sub-input bar as everything else -- see
+// sendBar(), which is the one place that decides where a Send goes. All that is
+// left here is the waiting indicator.
+//
 // The thinking bubble's live elapsed timer. __state only fires on change, so a
 // standalone interval keeps the seconds ticking while the reply generates.
 let thinkTimer = null, thinkStart = 0;
@@ -1220,70 +1197,35 @@ function fmtElapsed(ms) {
   const s = Math.floor(ms / 1000);
   return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60) + "s";
 }
-function drawModelChat() {
-  const box = document.getElementById("modelchat");
+// Claude-style bouncing dots parked where the reply will appear, so a wait on a
+// model pane never looks like a pane that has died. Toggled in place -- the
+// bubble is not rebuilt on every state push, or its elapsed timer would restart
+// each frame.
+function drawThinking() {
   const think = document.getElementById("thinking");
-  const t = S && S.tabs && S.tabs.find(x => x.index === S.active);
-  if (!(t && t.model)) {
-    box.hidden = true; think.hidden = true;
+  const t = activeTab();
+  if (!(t && t.model && t.busy)) {
+    think.hidden = true;
     if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
     return;
   }
-  const sig = "m" + t.index;
-  if (box.dataset.sig !== sig || !box.childNodes.length) {
-    box.dataset.sig = sig;
-    box.textContent = "";
-    const ta = el("textarea", {rows:"1",
-      placeholder:(T["tui.chat.ph"] || "Message {model}…").split("{model}").join(t.name || "model")});
-    // Grow with the text, up to a cap, like Claude's composer.
-    const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 168) + "px"; };
-    const go = () => {
-      const msg = ta.value.trim();
-      if (!msg) { ta.focus(); return; }
-      send({kind:"chat", text:msg});
-      ta.value = ""; grow();
-    };
-    ta.addEventListener("input", grow);
-    // Enter sends; Shift+Enter (or an active IME) inserts a newline instead.
-    ta.addEventListener("keydown", e => {
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); }
-    });
-    box.append(
-      el("div", {class:"mc-box"}, el("span", {class:"mc-prompt"}, ">"), ta),
-      el("div", {class:"mc-hint"},
-        el("button", {class:"mc-send", onclick:go}, T["tui.chat.btn"] || "Send")));
+  if (!think.childNodes.length) {
+    think.append(
+      el("span", {class:"th-dots"}, el("span"), el("span"), el("span")),
+      el("span", {class:"th-text"}, T["tui.chat.busy"] || "Thinking\u2026"),
+      el("span", {class:"th-elapsed"}, ""));
   }
-  box.hidden = false;
-  // While a reply generates: disable the input and float the Claude-style
-  // thinking bubble (bouncing dots) over the conversation, so the wait never
-  // feels dead. Toggled in place so typed text / focus survive a state push.
-  const gen = !!t.busy;
-  const inp = box.querySelector("textarea");
-  const btn = box.querySelector(".mc-send");
-  if (inp) inp.disabled = gen;
-  if (btn) btn.disabled = gen;
-  if (gen) {
-    if (!think.childNodes.length) {
-      think.append(
-        el("span", {class:"th-dots"}, el("span"), el("span"), el("span")),
-        el("span", {class:"th-text"}, T["tui.chat.busy"] || "Thinking…"),
-        el("span", {class:"th-elapsed"}, ""));
-    }
-    think.hidden = false;
-    positionThinking();
-    // Start (or keep) the per-second elapsed ticker.
-    if (!thinkTimer) {
-      thinkStart = Date.now();
-      const tick = () => {
-        const e = think.querySelector(".th-elapsed");
-        if (e) e.textContent = fmtElapsed(Date.now() - thinkStart);
-      };
-      tick();
-      thinkTimer = setInterval(tick, 1000);
-    }
-  } else {
-    think.hidden = true;
-    if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
+  think.hidden = false;
+  positionThinking();
+  // Start (or keep) the per-second elapsed ticker.
+  if (!thinkTimer) {
+    thinkStart = Date.now();
+    const tick = () => {
+      const e = think.querySelector(".th-elapsed");
+      if (e) e.textContent = fmtElapsed(Date.now() - thinkStart);
+    };
+    tick();
+    thinkTimer = setInterval(tick, 1000);
   }
 }
 
@@ -1558,21 +1500,19 @@ window.__state = function (json) {
   // Window only: over a browser tab, reuse the sub-input bar (composer) — actions
   // only, no target — and reserve room so the native browser doesn't hide it.
   syncBrowserDock();
-  // Page buttons: only on a phone, only over a real terminal tab (not INDEX,
-  // not a browser relay, not a model chat — those have their own controls).
-  const modelTabNow = S.tabs.some(t => t.index === S.active && t.model);
+  // Page buttons: only on a phone, only over a screen a person reads page by
+  // page. A model pane's conversation arrives whole, so it has no pages.
   const pager = document.getElementById("pageui");
   if (pager) {
-    const showPager = REMOTE && !screen.hidden && !web && !modelTabNow;
+    const showPager = REMOTE && !screen.hidden && !web && !onModelTab();
     pager.classList.toggle("on", showPager);
     if (!showPager) pgReset();
   }
-  // The phone's terminal sub-input bar belongs only over a real terminal tab.
-  // Switching to INDEX, a browser relay, or a model chat closes it (a stray
-  // relay dock is handled separately, by castStop → exitCast).
+  // The phone's sub-input bar belongs over a pane you can type into. Switching
+  // to INDEX or a browser relay closes it (a stray relay dock is handled
+  // separately, by castStop → exitCast).
   if (REMOTE && !castMode && castDock && castDock.style.display !== "none") {
-    const onTermTab = !screen.hidden && !web && !modelTabNow && S.active !== 0;
-    if (!onTermTab) closeBar();
+    if (screen.hidden || web || !onTermPty()) closeBar();
   }
   // 📼 recording is "record what I do on THIS page": leaving the tab ends it,
   // so the radio never claims a recording that moved out from under it. The
@@ -1591,7 +1531,7 @@ window.__state = function (json) {
   lastCastActive = S.active;
   if (S.board) drawBoard();
   drawTopicBar();
-  drawModelChat();
+  drawThinking();
   drawVeil();
   renderVault();
   // While scrolled back through history, say so — clicking jumps back to the present
@@ -2071,9 +2011,8 @@ window.__cursor = function (row, col, shown) {
   kbd.style.height = cellH + "px";
   // Hide it whenever the terminal isn't in view. A leftover cursor sitting
   // over the dashboard or a browser tab would look like it means something there
-  // On a model tab the caret lives in the chat composer, so hide the screen's.
-  const modelTab = S && S.tabs && S.tabs.some(x => x.index === S.active && x.model);
-  cur.hidden = !shown || composing || S === null || scr.hidden || modelTab;
+  // On a model pane the caret lives in the composer, so hide the screen's.
+  cur.hidden = !shown || composing || S === null || scr.hidden || onModelTab();
   if (!cur.hidden) {
     cur.style.left = curX + "px";
     cur.style.top = curY + "px";
@@ -2144,14 +2083,22 @@ kbd.addEventListener("keydown", e => {
 
 // Same convention as PuTTY: selecting text copies it immediately, right-click pastes.
 // Except while typing in the URL bar — stealing focus there would block every keystroke
+// The tab in view, once, so nothing has to re-derive it from S.active. Every
+// "am I on a X tab" question below is asked of this.
+const activeTab = () => (S && S.tabs) ? S.tabs.find(t => t && t.index === S.active) : null;
 // Whether a terminal tab (session) is currently in view. False for INDEX(0), browser tabs, and unknown state
-const onTerminal = () => S && !S.board && S.active !== 0 && S.tabs &&
-  S.tabs.some(t => t.index === S.active && t.kind !== "browser");
-// A real PTY terminal tab (AI CLI, shell, SSH) — where the phone shows its
-// sub-input bar. Excludes INDEX(0), browser relays, and model-chat tabs: those
-// carry their own composer textarea, so the bar would just be in the way there.
-const onTermPty = () => onTerminal() &&
-  !S.tabs.some(t => t.index === S.active && t.model);
+const onTerminal = () => !!(S && !S.board && S.active !== 0 && S.tabs &&
+  S.tabs.some(t => t.index === S.active && t.kind !== "browser"));
+// Whether the pane in view is answered by a model over the API rather than by a
+// program at a prompt. It still has a screen and a scrollback like any other —
+// what differs is only where a Send goes (sendBar) and which panels make sense
+// there (panelOptions).
+const onModelTab = () => { const t = activeTab(); return !!(t && t.model); };
+// A pane a person can type into: any session, model bridge included. Excludes
+// INDEX(0) and browser relays only. A model pane used to be excluded too, back
+// when it carried a composer of its own; it has none now, so leaving it out
+// would leave it with no way in at all.
+const onTermPty = () => onTerminal();
 const focus = () => {
   const a = document.activeElement;
   if (a && a.closest && a.closest("#nav")) return;
@@ -2159,11 +2106,13 @@ const focus = () => {
   // discussion-topic box, etc.). Otherwise every keystroke would be swallowed by
   // #kbd and fired as a board shortcut (e.g. typing "w" opens the workspace list).
   if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA")) return;
-  // On a model tab the caret belongs in the chat composer, not the screen —
-  // send focus there (like Claude, whose cursor always sits in the prompt).
-  if (S && S.tabs && S.tabs.some(x => x.index === S.active && x.model)) {
-    const ta = document.querySelector("#modelchat textarea");
-    if (ta) { ta.focus(); return; }
+  // A model pane has no command line to type at: its only input is the
+  // composer, so the caret belongs there (like Claude, whose cursor always sits
+  // in the prompt). If the person has collapsed the bar, the \u270f\ufe0f pen is the way
+  // back and nothing is focused meanwhile.
+  if (onModelTab()) {
+    if (castInput && castDock && castDock.style.display === "flex") castInput.focus();
+    return;
   }
   // On a phone, terminal typing never goes through the hidden #kbd (which would
   // pop the soft keyboard up over the screen). It goes through the sub-input bar,
@@ -3121,7 +3070,12 @@ function panelOptions() {
   // instead it gains 📼 (record page actions as Lua / run composer Lua on the
   // page). Otherwise it's the same sub-input bar as an AI tab.
   if (onBrowserTab()) return base.concat("lua");
-  const t = (S && S.tabs) ? S.tabs.find(x => x && x.index === S.active) : null;
+  const t = activeTab();
+  // A model pane is a conversation, not a command line. There is nothing to
+  // suggest a command into, and Send is the message itself — so it keeps the
+  // base and nothing more: quick actions at the window, and the key row as
+  // well on a phone.
+  if (t && t.model) return base;
   // 🎯 exists ONLY where an AI can be the operator (the active tab drives
   // the chosen target). A plain terminal has no AI to drive anything, so it
   // gets no target panel at all — it gains 🤖 instead: natural language in,
@@ -3370,12 +3324,18 @@ function syncAttach() { if (castAttEl) castAttEl.style.display = drivingBrowser(
 function syncComposerSlot() {
   if (!castInput) return;
   const want = (castPanel === "lua" && luaMode === "run") ? "lua" : "draft";
+  // The prompt is re-asked every render, not only when the document changes:
+  // walking from a terminal to a model pane swaps where a Send goes without
+  // swapping the document, and a field that still said "type here to send"
+  // would be describing the tab we just left.
+  castInput.placeholder = want === "lua"
+    ? (T["tui.cast.lua.ph"] || "Recorded Lua appears here — edit, Run, or write your own")
+    : onModelTab()
+      ? (T["tui.chat.ph"] || "Message {model}\u2026").split("{model}").join((activeTab() || {}).name || "model")
+      : (T["tui.cast.type.ph"] || "Type here to send");
   if (want === castSlot) return;
   if (castSlot === "lua") { luaSheet = castInput.value; } else { castDraft = castInput.value; }
   castInput.value = want === "lua" ? luaSheet : castDraft;
-  castInput.placeholder = want === "lua"
-    ? (T["tui.cast.lua.ph"] || "Recorded Lua appears here — edit, Run, or write your own")
-    : (T["tui.cast.type.ph"] || "Type here to send");
   castSlot = want;
   growCastInput();
 }
@@ -3554,6 +3514,24 @@ function closeBar() {
   if (castInput) castInput.blur();
   syncPen();
 }
+// Hand one line to a pane, the way THAT pane takes input: a message for a
+// model bridge, keystrokes and a submit for anything at a prompt. Everywhere a
+// person finishes a line comes through here -- the composer's Send and the
+// discussion's topic box -- so what pressing Enter means cannot come to mean
+// two different things in two places. `tab` names the recipient when it is not
+// the pane in front (the topic box aims at the opening speaker); the caller
+// puts it in front first, exactly as a person would.
+//
+// A model pane has no command line, so an empty line has nothing to accept and
+// does nothing; at a prompt a bare Enter is itself the instruction (accept a
+// default, insert a newline), so it is still sent.
+function sendLine(text, tab) {
+  const to = (tab == null) ? activeTab()
+    : ((S && S.tabs) ? S.tabs.find(x => x && x.index === tab) : null);
+  if (to && to.model) { if (text) send({kind:"chat", text}); return; }
+  if (text) send({kind:"key", text});
+  send({kind:"key", named:"enter"});
+}
 function sendBar() {
   if (!castInput) return;
   const t = castInput.value;
@@ -3583,10 +3561,8 @@ function sendBar() {
     send({kind:"key", ctrl: t.slice(0, 1).toLowerCase()});
     modCtrl = false; modAlt = false; refreshMods();
   } else {
-    // Terminal: type the line, then Enter to submit it (an AI prompt, a command).
-    // Empty + Send = a bare Enter (accept a prompt, insert a newline, etc.)
-    if (t) send({kind:"key", text:t});
-    send({kind:"key", named:"enter"});
+    // Hand the line to the pane in front, whatever kind of pane it is.
+    sendLine(t);
   }
   castInput.value = "";
   castInput.focus();
@@ -4406,6 +4382,52 @@ mod tests {
         assert!(
             p.contains("--toast-max:min(calc(100% - var(--fx) - var(--fr) - 24px), 560px)"),
             "狭いペインでトーストがはみ出す"
+        );
+    }
+
+    /// There is one sub-input bar, and every pane types into it.
+    ///
+    /// A model pane used to carry a composer of its own -- its own textarea,
+    /// its own Send, its own Enter handling, its own growth cap -- pinned to
+    /// the bottom of the pane. Two composers meant two answers to every
+    /// question asked of one (what the Enter key does, what a paste does, where
+    /// an attachment goes, whether the key row is reachable), and they had
+    /// already drifted: the quick actions and the phone's key row existed on
+    /// one of them only. What differs between panes is not the field, it is
+    /// where a Send goes -- and that is one line in sendBar().
+    #[test]
+    fn one_composer_serves_every_pane() {
+        let p = super::page();
+        assert!(
+            !p.contains("modelchat"),
+            "モデルのペインが自前の入力欄を持っている（サブ入力欄が2つある）"
+        );
+        assert_eq!(
+            p.matches("id:\"castinput\"").count(),
+            1,
+            "サブ入力欄を組み立てる場所が1つではない"
+        );
+        // One place decides how a finished line reaches a pane, and both doors
+        // that finish a line go through it
+        assert_eq!(
+            p.matches("kind:\"chat\"").count(),
+            1,
+            "モデルへの送信口が1つではない"
+        );
+        assert!(p.contains("function sendLine(text, tab) {"), "行の渡し方を決める一箇所が無い");
+        assert!(p.contains("    sendLine(t);"), "サブ入力欄の Send が自前で送っている");
+        assert!(
+            p.contains("sendLine(topic, S.discuss_start);"),
+            "討論の議題欄が自前で送っている（口火役がモデルだと届かない）"
+        );
+        // Actions only there (plus the key row on a phone) -- no 🎯, no 🤖, no 📼
+        assert!(
+            p.contains("if (t && t.model) return base;"),
+            "モデルのペインにアクション以外のパネルが出る"
+        );
+        assert!(
+            p.contains(r#"const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];"#),
+            "スマホの特殊キーが基本パネルから外れている"
         );
     }
 

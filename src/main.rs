@@ -444,7 +444,8 @@ struct WinSurface {
     /// The status bar's "remote connected" control was pressed. The loop cuts every
     /// remote session (rotates the token, drops the connections).
     remote_cut: bool,
-    /// Lines typed into a model tab's chat box, awaiting delivery to the bridge.
+    /// Lines typed at a model pane in the composer, awaiting delivery to the
+    /// bridge. Filled from both surfaces: the window's ipc and the phone's relay.
     chats: Vec<String>,
     /// Quick-action chips (Lua) fired from the bar, by index into config.actions.
     /// The loop looks up the code and runs it against the active tab.
@@ -2803,6 +2804,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                     remote::RemoteCmd::Ui(crate::browser::Ev::Survey) => {
                         surface.surveys += 1;
+                    }
+                    // A line typed at a model pane from the phone. Not a
+                    // keystroke -- a model bridge has no keyboard -- so it goes
+                    // to the same queue the window's composer fills. Without
+                    // this it fell through to keys_for and was dropped: the
+                    // phone could type at a model pane all day and nothing ever
+                    // reached the model.
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Chat { text }) => {
+                        surface.chats.push(text);
                     }
                     remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultSearch { .. })
                     | remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultOpen { .. }) => {
