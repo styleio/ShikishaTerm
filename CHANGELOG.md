@@ -8,6 +8,12 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-08-27
+
+The dashboard answers again. Every menu item on it that replies with a
+message had its reply drawn off the screen, which on a new install is the
+first thing anyone meets.
+
 ### Fixed
 - **The dashboard's menu answers again.** On a brand-new install, pressing
   「スマホから接続」/「終了したタブを再起動」/「ワークスペース切替」/「通知テスト送信」/
@@ -755,7 +761,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/styleio/ShikishaTerm/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/styleio/ShikishaTerm/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/styleio/ShikishaTerm/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/styleio/ShikishaTerm/compare/v0.3.1...v0.3.2
