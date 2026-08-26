@@ -8,7 +8,32 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-26
+
+One message bar for the whole app, the target you pick is the one that is
+remembered, and a handful of things that were true in one place and quietly not
+true in another.
+
+### Upgrading
+- **A tab that had "browser-control mode" set keeps its target** — the same
+  setting is now the 🎯 aim, and the picker on screen shows it. What changed is
+  when it starts: the tab is briefed once you give it a goal, rather than at
+  launch. Nothing needs editing.
+
 ### Changed
+- **Messages are one toast, and it goes away.** The window, the settings screen
+  and the transcript view each carried their own message bar with their own
+  timing, and the window's — the one the app itself writes to — faded never: it
+  waited for a keystroke, so a notice shown at startup could still be sitting
+  there an hour later. There is now one toast (`src/toast.rs`) for all of them.
+  It fades on its own after a few seconds (longer for a warning, longer again
+  for a long message), and a click or tap takes it away at once.
+
+- **A message can be taken with you.** Every toast carries a 📋 button that
+  copies its text and then leaves. Only that button touches the clipboard —
+  clicking the message itself just dismisses it, so getting a notice out of the
+  way never overwrites what you were about to paste.
+
 - **What you aim at is remembered, and there is no second place to set it.** The
   settings screen had a "browser-control mode" chosen per tab, from before the
   🎯 picker existed. Two places said the same thing and the settings one could
@@ -28,6 +53,23 @@ once it reaches its first tagged release.
   asked for anything.
 
 ### Fixed
+- **A division stays where you put it.** Showing a tab that is already on screen
+  now moves the aim to it, and not one pane changes what it holds. The two panes
+  used to trade contents, so an automation handing work back and forth — the AI
+  on the left, the browser it drives on the right — made the halves swap sides on
+  every turn. Nothing was ever hidden by that, but the arrangement was yours, and
+  a view that jumps is harder to read than one that sits still. A tab that is
+  nowhere on screen still lands in the pane you are looking at.
+
+- **The pen comes back when you walk to another tab.** Closing the composer over
+  a browser tab left no way to open it again: the pen was hidden there on
+  purpose — the placed page draws its own, ours would be underneath it — but
+  that answer was frozen at the moment of closing, so the next tab had no pen
+  either, and no way back into the composer. Where you are is half of what
+  decides the pen, and it changes without the bar being touched, so it is
+  settled from the state on every update now. One place decides it, for both the
+  window and the phone.
+
 - **A message is no longer cut in half by a page beside it.** The toast sat at
   the bottom of the window; with the window divided and a browser in one half,
   half the message was behind it — a page is a window of its own, and no
@@ -45,38 +87,6 @@ once it reaches its first tagged release.
   from the settings file once, at launch. Aimed from the screen it went on
   answering as a plain chat, its fenced Lua arriving mangled by the terminal's
   line wrapping. It now follows what the tab is actually aimed at.
-
-### Changed
-- **Messages are one toast, and it goes away.** The window, the settings screen
-  and the transcript view each carried their own message bar with their own
-  timing, and the window's — the one the app itself writes to — faded never: it
-  waited for a keystroke, so a notice shown at startup could still be sitting
-  there an hour later. There is now one toast (`src/toast.rs`) for all of them.
-  It fades on its own after a few seconds (longer for a warning, longer again
-  for a long message), and a click or tap takes it away at once.
-
-- **A message can be taken with you.** Every toast carries a 📋 button that
-  copies its text and then leaves. Only that button touches the clipboard —
-  clicking the message itself just dismisses it, so getting a notice out of the
-  way never overwrites what you were about to paste.
-
-### Fixed
-- **A division stays where you put it.** Showing a tab that is already on screen
-  now moves the aim to it, and not one pane changes what it holds. The two panes
-  used to trade contents, so an automation handing work back and forth — the AI
-  on the left, the browser it drives on the right — made the halves swap sides on
-  every turn. Nothing was ever hidden by that, but the arrangement was yours, and
-  a view that jumps is harder to read than one that sits still. A tab that is
-  nowhere on screen still lands in the pane you are looking at.
-
-- **The pen comes back when you walk to another tab.** Closing the composer over
-  a browser tab left no way to open it again: the pen was hidden there on
-  purpose — the placed page draws its own, ours would be underneath it — but
-  that answer was frozen at the moment of closing, so the next tab had no pen
-  either, and no way back into the composer. Where you are is half of what
-  decides the pen, and it changes without the bar being touched, so it is
-  settled from the state on every update now. One place decides it, for both the
-  window and the phone.
 
 ## [0.3.2] - 2026-08-26
 
@@ -664,7 +674,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/styleio/ShikishaTerm/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/styleio/ShikishaTerm/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/styleio/ShikishaTerm/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/styleio/ShikishaTerm/compare/v0.2.0...v0.3.0
