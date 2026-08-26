@@ -1954,24 +1954,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if pane_layout.focused_surface() != active {
             pane_layout.show(active);
         }
-        // The pane a tab sits in decides its size; a tab in no pane keeps the
-        // whole content area, so it is already the right shape the moment it
-        // appears. This is the only place a terminal is resized — two places
-        // deciding meant a split pane was told its size twice per frame, and
-        // whichever ran last won.
+        // This is the only place a terminal is resized — two places deciding
+        // meant a split pane was told its size twice per frame, and whichever
+        // ran last won.
         {
-            let mut want = vec![(rows, cols); tabs.len()];
-            for (id, sf) in pane_layout.leaves() {
-                let (Some(i), Some(g)) = (
-                    session_at(&surfaces, sf),
-                    surface.pane_geom.iter().find(|g| g.id == id),
-                ) else {
-                    continue;
-                };
-                if let Some(w) = want.get_mut(i) {
-                    *w = (g.rows, g.cols);
-                }
-            }
+            let want = tab_sizes(
+                tabs.len(),
+                &pane_layout,
+                &surfaces,
+                &surface.pane_geom,
+                (rows, cols),
+            );
             for (t, (r, c)) in tabs.iter().zip(want) {
                 let now = {
                     let pr = t.parser.lock().unwrap_or_else(|e| e.into_inner());
@@ -5470,6 +5463,45 @@ fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
     }
 }
 
+/// What size each tab's terminal should be drawn at.
+///
+/// The pane a tab sits in decides it; a tab in no pane keeps the whole content
+/// area (`front`), so it is already the right shape the moment it appears.
+///
+/// The pane in front is the exception, and deliberately so: it keeps `front`,
+/// which is the size last reported by *whoever is looking at it*. The window
+/// reports that pane's own rectangle there, so at the window nothing changes.
+/// A phone reports the one screen it has — it is never sent the division, a
+/// small screen having no room to be divided — and that is the same number.
+/// Reading the window's measurement for the front pane instead handed the tab
+/// being watched the window's shape: too wide for a phone, so half of it hung
+/// off the right with no way to reach it, and short of its foot, leaving a dead
+/// band underneath. The panes behind it are only ever seen at the window, so
+/// they keep the window's own measurement.
+fn tab_sizes(
+    tabs: usize,
+    layout: &crate::layout::Layout,
+    surfaces: &[Surface],
+    geom: &[crate::browser::PaneGeom],
+    front: (u16, u16),
+) -> Vec<(u16, u16)> {
+    let mut want = vec![front; tabs];
+    let focus = layout.focus();
+    for (id, sf) in layout.leaves() {
+        if id == focus {
+            continue;
+        }
+        let (Some(i), Some(g)) = (session_at(surfaces, sf), geom.iter().find(|g| g.id == id))
+        else {
+            continue;
+        };
+        if let Some(w) = want.get_mut(i) {
+            *w = (g.rows, g.cols);
+        }
+    }
+    want
+}
+
 /// Looks up the screen number (1-based) from a session's location.
 /// The ball moves by session number, so route it through here when displaying it.
 fn surface_at(surfaces: &[Surface], session: usize) -> usize {
@@ -6740,6 +6772,47 @@ fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tab in front is sized by whoever is watching it, panes behind it by
+    /// the window.
+    ///
+    /// A phone is never sent the division — a small screen has no room to be
+    /// divided — so it reports the one screen it has. That report lands in the
+    /// same `(rows, cols)` the window writes for its focused pane, and it has to
+    /// reach the terminal. Reading the window's own measurement for the front
+    /// pane instead left the tab being watched wearing the window's shape: too
+    /// wide for the phone, so half of it hung off the right edge, and short of
+    /// its foot, leaving a dead band underneath.
+    #[test]
+    fn the_tab_in_front_is_sized_by_whoever_is_watching_it() {
+        use crate::browser::PaneGeom;
+        let mut layout = crate::layout::Layout::single(1);
+        let front = layout.split(crate::layout::Dir::Row, 2);
+        let back = layout
+            .leaves()
+            .into_iter()
+            .find(|(id, _)| *id != front)
+            .expect("分割したのにペインが1つしかない")
+            .0;
+        let surfaces = vec![Surface::Session(0), Surface::Session(1)];
+        let geom = vec![
+            PaneGeom { id: back, rows: 50, cols: 200, rect: (0, 0, 800, 900) },
+            // What the window measured for the pane in front. The phone is
+            // looking at that same tab through a screen a fraction of the size
+            PaneGeom { id: front, rows: 50, cols: 100, rect: (800, 0, 800, 900) },
+        ];
+        let want = tab_sizes(2, &layout, &surfaces, &geom, (24, 40));
+        assert_eq!(want[1], (24, 40), "見ている本人の画面に端末が合わない");
+        assert_eq!(want[0], (50, 200), "奥のペインが窓の実測を失った");
+        // Undivided — every phone's case, and the window's most of the time —
+        // the one pane there is takes the reported size whole
+        let alone = crate::layout::Layout::single(1);
+        assert_eq!(
+            tab_sizes(1, &alone, &surfaces, &[], (24, 40))[0],
+            (24, 40),
+            "分割していないのに報告された寸法が使われない"
+        );
+    }
 
     fn step(act: &str, sel: &str, value: &str, xpath: bool, hint: &str) -> RecordedStep {
         RecordedStep {
