@@ -669,7 +669,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      message shown while the composer was open said nothing to anybody. How
      high it rides is decided per message by toastBottom(), since the composer
      bar is only sometimes there. */
-  #toast { --toast-pos:absolute; --toast-z:32; --toast-bottom:52px; }
+  /* Seated over the FOCUSED pane, not the window. A message is about what is
+     in front, and centred on the window it was cut in half by a page placed in
+     the other half -- a page is a window of its own and cannot be drawn over.
+     (When the focused pane holds such a page, the page draws the message
+     itself; see caps::browser_toast.) */
+  #toast { --toast-pos:absolute; --toast-z:32;
+    --toast-bottom:calc(var(--fb) + 52px);
+    --toast-x:calc(var(--fx) + (100% - var(--fx) - var(--fr)) / 2);
+    --toast-max:min(calc(100% - var(--fx) - var(--fr) - 24px), 560px); }
 {{TOAST_CSS}}
 
   /* ── Remote history paging (phone only) ──────────────────────────────
@@ -4371,6 +4379,31 @@ mod tests {
         );
     }
 
+
+    /// A message belongs to the pane in front, and is drawn where it can be
+    /// read whole.
+    ///
+    /// Centred on the window, a toast was cut in two by a page placed in the
+    /// other half: a page is a window of its own, and no z-index puts anything
+    /// above it. So the window seats its toast over the FOCUSED pane — and when
+    /// that pane holds such a page, the page draws the message itself (see
+    /// caps::browser_toast and the placed-page script).
+    #[test]
+    fn a_message_is_seated_over_the_pane_it_is_about() {
+        let p = super::page();
+        assert!(
+            p.contains("--toast-x:calc(var(--fx) + (100% - var(--fx) - var(--fr)) / 2)"),
+            "トーストが窓の中央のまま（ペインに座っていない）"
+        );
+        assert!(
+            p.contains("--toast-bottom:calc(var(--fb) + 52px)"),
+            "トーストがペインの底ではなく窓の底に付いている"
+        );
+        assert!(
+            p.contains("--toast-max:min(calc(100% - var(--fx) - var(--fr) - 24px), 560px)"),
+            "狭いペインでトーストがはみ出す"
+        );
+    }
 
     /// The ✏️ pen is decided by where we are now, not by where we were when
     /// the composer was closed.

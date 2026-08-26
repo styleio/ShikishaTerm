@@ -3076,6 +3076,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if flash != flash_shown {
             flash_shown = flash.clone();
             flash_at = Instant::now();
+            // A page placed in the focused pane is a window of its own: nothing
+            // of ours can be drawn over it, so the message would sit behind the
+            // page (or, in a split, be cut off at the pane's edge). Hand it to
+            // that page to draw, the way the pen is handed over
+            if let (Some(text), Some(key)) = (flash.as_deref(), focused_page(&pane_layout, &ui.surfaces))
+            {
+                // Plain, like the window's own: a flash is what the screen
+                // shows with `toast(S.flash)`, and it does not mark warnings
+                let _ = caps.browser_toast(&key, text, false);
+            }
         }
         // Comfortably longer than the longest the screen shows one for, so the
         // page is what decides when a message fades and this only clears up after it
@@ -3133,13 +3143,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
             composer_shut = on;
         }
         let wants_pen = composer_shut
-            .then(|| pane_layout.surface_of(pane_layout.focus()))
-            .flatten()
-            .and_then(|s| ui.surfaces.get(s.checked_sub(1)?))
-            .and_then(|s| match s {
-                Surface::Browser { key, .. } => Some(key.clone()),
-                Surface::Session(_) => None,
-            });
+            .then(|| focused_page(&pane_layout, &ui.surfaces))
+            .flatten();
         if wants_pen != pen_shown {
             if let Some(old) = pen_shown.take() {
                 let _ = caps.browser_pen(&old, false);
@@ -4791,6 +4796,18 @@ fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, TabAuto)> {
         }
     }
     out
+}
+
+/// The page placed in the focused pane, if that is what is there.
+///
+/// Two things need this and must agree: the pen (which that page draws for
+/// itself) and a message raised while it is in front (same reason -- a window
+/// of its own cannot be drawn over).
+fn focused_page(layout: &crate::layout::Layout, surfaces: &[Surface]) -> Option<String> {
+    match surfaces.get(layout.surface_of(layout.focus())?.checked_sub(1)?)? {
+        Surface::Browser { key, .. } => Some(key.clone()),
+        Surface::Session(_) => None,
+    }
 }
 
 /// Write down what a tab is aimed at: in the settings file, and in the copy of

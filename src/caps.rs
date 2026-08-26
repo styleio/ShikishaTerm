@@ -704,6 +704,20 @@ impl Capabilities {
         self.with(name, |b, to| b.eval_in(to, &js).map(|_| ()))
     }
 
+    /// Hand a message to a placed page to draw for itself.
+    ///
+    /// Nothing of ours can be stacked above a page: it is a window of its own.
+    /// A toast raised while that page holds the focused pane would be hidden
+    /// behind it -- or cut off at the pane's edge in a split -- so the page is
+    /// asked to draw the same message where the person is looking.
+    pub fn browser_toast(&self, name: &str, text: &str, warn: bool) -> Result<()> {
+        let js = format!(
+            "window.__shikisha_toast && window.__shikisha_toast({}, {warn});",
+            serde_json::Value::String(text.to_string())
+        );
+        self.with(name, |b, to| b.eval_in(to, &js).map(|_| ()))
+    }
+
     /// Show a banner asking the human something
     pub fn browser_ask(&self, name: &str, text: &str, label: &str) -> Result<()> {
         self.forget_press(name);

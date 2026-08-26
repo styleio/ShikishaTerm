@@ -28,6 +28,13 @@ once it reaches its first tagged release.
   asked for anything.
 
 ### Fixed
+- **A message is no longer cut in half by a page beside it.** The toast sat at
+  the bottom of the window; with the window divided and a browser in one half,
+  half the message was behind it — a page is a window of its own, and no
+  z-index puts anything above it. The window now seats its toast over the pane
+  in front, which is what the message is about, and when that pane holds a page,
+  the page draws the message itself (as it already draws the pen).
+
 - **An operation started from the screen obeys the workspace's referee.** The
   🎯 path handed the built-in commander an empty set of stop conditions, so the
   "停止条件" written for that workspace applied when the same browser was driven

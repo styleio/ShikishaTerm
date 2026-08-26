@@ -35,13 +35,16 @@
 //! the dictionary each page already carries in its script.
 
 /// Look and placement. Colours come from the app's scheme, so the toast is the
-/// same object on every screen; `--toast-pos` / `--toast-bottom` / `--toast-z`
-/// let a page seat it in its own layout.
+/// same object on every screen; `--toast-pos` / `--toast-x` / `--toast-bottom`
+/// / `--toast-max` / `--toast-z` let a page seat it in its own layout. The
+/// window uses them to sit it over the focused pane rather than the whole
+/// window: centred on the window, a split with a page in one half cut the
+/// message in two at that pane's edge.
 pub const CSS: &str = r#"
- #toast { position:var(--toast-pos, fixed); left:50%; bottom:var(--toast-bottom, 28px);
+ #toast { position:var(--toast-pos, fixed); left:var(--toast-x, 50%); bottom:var(--toast-bottom, 28px);
    transform:translateX(-50%) translateY(16px);
    display:flex; align-items:center; gap:10px;
-   max-width:min(86%, 560px); padding:10px 12px 10px 18px; border-radius:9px;
+   max-width:var(--toast-max, min(86%, 560px)); padding:10px 12px 10px 18px; border-radius:9px;
    background:var(--accent); color:#04121c; font-weight:600; font-size:13.5px;
    line-height:1.5; text-align:left;
    box-shadow:0 10px 30px rgba(0,0,0,.5); cursor:pointer;

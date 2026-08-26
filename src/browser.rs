@@ -51,6 +51,38 @@ const PLACED_JS: &str = r##"
   // In a shadow root so the page's own CSS cannot reach it, and the other way
   // about -- same as the banner above
   let host = null;
+  // The app's messages, drawn by the page for the same reason the pen is: a
+  // window of its own cannot be drawn over, so a toast raised while this page
+  // fills the focused pane would be hidden behind it -- or, in a split, cut in
+  // half at the pane's edge. It seats itself at the bottom of THIS page, which
+  // is the pane it is about.
+  var toastEl = null, toastGo = 0;
+  window.__shikisha_toast = function (text, warn) {
+    if (!text) { if (toastEl) toastEl.style.display = "none"; return; }
+    if (!toastEl) {
+      toastEl = document.createElement("div");
+      toastEl.id = "__shikisha_toast";
+      toastEl.style.cssText =
+        "position:fixed;left:50%;bottom:20px;transform:translateX(-50%);" +
+        "z-index:2147483646;max-width:min(86%,560px)";
+      (document.body || document.documentElement).appendChild(toastEl);
+      toastEl.attachShadow({ mode: "open" });
+      toastEl.shadowRoot.innerHTML =
+        '<div style="padding:10px 14px;border-radius:9px;font-size:13.5px;' +
+        'line-height:1.5;font-weight:600;text-align:left;overflow-wrap:anywhere;' +
+        'max-height:9em;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.5);' +
+        'font-family:system-ui,sans-serif"></div>';
+    }
+    var box = toastEl.shadowRoot.firstChild;
+    box.style.background = warn ? "#c8382f" : "#7fd7ff";
+    box.style.color = warn ? "#fff" : "#04121c";
+    box.textContent = text;
+    toastEl.style.display = "";
+    // Long enough to read, and the same message arriving again restarts it
+    clearTimeout(toastGo);
+    toastGo = setTimeout(function () { if (toastEl) toastEl.style.display = "none"; },
+      Math.min(12000, 3500 + text.length * 45));
+  };
   window.__shikisha_pen = function (on) {
     if (!on) { if (host) host.style.display = "none"; return; }
     if (!host) {
@@ -3814,6 +3846,29 @@ mod nav_tests {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// A placed page can draw the app's own two pieces of chrome, because
+    /// nothing of the window's can be drawn over it: the pen that summons the
+    /// composer, and a message raised while that page is in front. Both live in
+    /// the script every placed page is created with, and both hang off a name
+    /// the app calls — rename one here and the window would go on calling into
+    /// a page that no longer answers, silently.
+    #[test]
+    fn a_placed_page_can_draw_the_pen_and_a_message() {
+        for name in ["__shikisha_pen", "__shikisha_toast"] {
+            assert!(
+                PLACED_JS.contains(&format!("window.{name} = function")),
+                "{name} を置いていない"
+            );
+        }
+        // In a shadow root, or the page's own CSS reaches it (and ours reaches
+        // the page). The host is findable by id so it can be checked for.
+        assert!(
+            PLACED_JS.contains("toastEl.id = \"__shikisha_toast\"")
+                && PLACED_JS.matches("attachShadow").count() >= 2,
+            "影の中に置いていない / 名前が付いていない"
+        );
+    }
 
 
     /// Serve a test page on 127.0.0.1.
