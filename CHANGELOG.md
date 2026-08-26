@@ -8,6 +8,12 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-27
+
+A discussion that starts when you ask it to and says so when it cannot, one
+place to type whatever pane you are in front of, and a line that goes to the tab
+it was addressed to.
+
 ### Added
 - **`shikisha.note(tab, "text")`** writes a line **on** a tab's screen for the
   person watching. Nothing reaches what runs there and no answer is expected —
@@ -729,7 +735,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/styleio/ShikishaTerm/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/styleio/ShikishaTerm/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/styleio/ShikishaTerm/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/styleio/ShikishaTerm/compare/v0.3.0...v0.3.1
