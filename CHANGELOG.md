@@ -23,6 +23,14 @@ once it reaches its first tagged release.
   way never overwrites what you were about to paste.
 
 ### Fixed
+- **A division stays where you put it.** Showing a tab that is already on screen
+  now moves the aim to it, and not one pane changes what it holds. The two panes
+  used to trade contents, so an automation handing work back and forth — the AI
+  on the left, the browser it drives on the right — made the halves swap sides on
+  every turn. Nothing was ever hidden by that, but the arrangement was yours, and
+  a view that jumps is harder to read than one that sits still. A tab that is
+  nowhere on screen still lands in the pane you are looking at.
+
 - **The pen comes back when you walk to another tab.** Closing the composer over
   a browser tab left no way to open it again: the pen was hidden there on
   purpose — the placed page draws its own, ours would be underneath it — but

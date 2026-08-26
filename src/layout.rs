@@ -306,21 +306,26 @@ impl Layout {
         self.surface_of(self.focus).unwrap_or(0)
     }
 
-    /// Points the focused pane at a surface.
+    /// Shows a surface, and aims at it.
     ///
-    /// If that surface is already in another pane the two panes trade contents,
-    /// which keeps "one surface, one pane" true without ever refusing the
-    /// user's request — pressing `Ctrl+B 3` always ends with 3 under the cursor.
+    /// Already on screen in another pane? Then it is already shown, and the
+    /// only thing missing is the aim: the focus moves there and not one pane
+    /// changes what it holds. Nowhere on screen? Then the focused pane takes
+    /// it. Either way it ends up under the cursor, and never in two panes at
+    /// once.
+    ///
+    /// The two panes used to trade contents instead. Nothing was ever hidden by
+    /// that, but the arrangement was the person's — they put the AI on the left
+    /// and the browser on the right — and an automation walking back and forth
+    /// between the two turned it into a flicker, the halves changing sides on
+    /// every turn. A view that jumps is harder to read than one that sits still,
+    /// and moving the eye is cheaper than moving the room.
     pub fn show(&mut self, surface: usize) {
-        let focus = self.focus;
         if let Some(other) = self.pane_of(surface) {
-            if other == focus {
-                return;
-            }
-            let mine = self.focused_surface();
-            self.set_surface(other, mine);
+            self.focus = other;
+            return;
         }
-        self.set_surface(focus, surface);
+        self.set_surface(self.focus, surface);
     }
 
     /// Points one specific pane at a surface, with no swapping. Callers that
@@ -573,14 +578,40 @@ mod tests {
         assert!((a.w + b.w - 1.0).abs() < 0.001, "幅を食い合って合計は1");
     }
 
+    /// What is already on screen is not moved to another pane — the aim goes to
+    /// it where it stands.
+    ///
+    /// An automation that hands work between two tabs says `show` on every
+    /// turn. Trading the panes' contents there made the two halves swap sides
+    /// again and again while the work ran: nothing was hidden, but the division
+    /// the person arranged flickered under them. The one thing `show` must
+    /// guarantee is that the surface ends up on screen and under the cursor.
+    #[test]
+    fn showing_what_is_already_on_screen_only_moves_the_aim() {
+        let mut l = Layout::single(1);
+        l.split(Dir::Row, 2); // left: 1 (the AI), right: 2 (the browser), focus right
+        assert_eq!(l.focused_surface(), 2);
+
+        l.show(1);
+        assert_eq!(surfaces(&l), vec![1, 2], "既に見えているものを入れ替えない");
+        assert_eq!(l.focused_surface(), 1, "狙いはそこへ移る");
+
+        // ...and back, as many turns as the automation takes
+        l.show(2);
+        assert_eq!(surfaces(&l), vec![1, 2], "往復しても位置は変わらない");
+        assert_eq!(l.focused_surface(), 2);
+    }
+
+    /// A surface nowhere on screen lands in the pane being looked at, and lands
+    /// there only once.
     #[test]
     fn a_surface_never_appears_twice() {
         let mut l = Layout::single(1);
         l.split(Dir::Row, 2);
-        // Asking the right-hand pane to show what the left one already shows
-        l.show(1);
-        assert_eq!(surfaces(&l), vec![2, 1], "重複させず入れ替える");
-        assert_eq!(l.focused_surface(), 1);
+        l.show(3);
+        assert_eq!(surfaces(&l), vec![1, 3], "見えていないものは今のペインに入る");
+        assert_eq!(l.focused_surface(), 3);
+        assert_eq!(l.leaves().iter().filter(|(_, s)| *s == 3).count(), 1);
     }
 
     #[test]
