@@ -8,6 +8,20 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-26
+
+A patch for the phone: the control that says it has disconnected a phone now
+disconnects it, and the tab a phone is watching is drawn at the size of the
+phone.
+
+### Upgrading
+- **A phone that was already paired has to open its link once more.** The new
+  admission is a session handed out when the pairing link is opened, and a phone
+  running from before the update holds none — so it shows its "disconnected"
+  screen the first time. Tap **Reconnect** (a fixed token), or scan the QR code
+  again (the default), and it is back. Nothing needs to be changed in the
+  settings.
+
 ### Fixed
 - **"Disconnect" now actually disconnects the phone.** Ending a remote session
   from the window used to drop the sockets and nothing else. A second and a half
@@ -19,6 +33,21 @@ once it reaches its first tagged release.
   on the input socket it still holds open. With a fixed token (which cannot be
   rotated) that phone can pair again by opening the link — the veil offers it as
   a button, and the window's control says so instead of promising otherwise.
+
+- **The tab a phone is watching is sized for the phone, panes or no panes.** The
+  pane in front now keeps the size last reported by whoever is looking at it. At
+  the window that is the pane's own rectangle, so nothing there changes; a phone
+  reports the one screen it has — it is never sent the division — and the tab in
+  front is finally drawn to it. Before, the tab being watched was handed the
+  window's shape: too wide, so its right-hand side hung off the screen with no
+  way to reach it, and too short, leaving a dead band along the bottom.
+
+- **The relayed picture is the size of the pane it sits in, not of the frame
+  that arrives.** A canvas left to its own devices keeps the incoming frame's
+  pixel size — on a phone, the PC's page at twice the width of the screen. And
+  since the phone reports its screen shape from that same box, it reported the
+  frame's shape straight back, so the PC never re-shaped the page to suit the
+  phone and the black band under the picture could never close.
 
 ## [0.3.1] - 2026-08-25
 
@@ -565,7 +594,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/styleio/ShikishaTerm/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/styleio/ShikishaTerm/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/styleio/ShikishaTerm/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/styleio/ShikishaTerm/compare/v0.1.2...v0.2.0
