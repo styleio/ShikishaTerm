@@ -1889,22 +1889,25 @@ fn handle(
 
 // The settings screen. Unlike the main app's cyber look, it's a quiet UI that prioritizes readability
 // (sidebar + detail pane. The list shows only "what exists"; editing stays focused on one item at a time)
-/// The colours, poured into a page.
+/// The colours and the toast, poured into a page.
 ///
 /// Runs **before** the words are: an unknown `{{key}}` is replaced with the key
 /// itself, so a template left to that step would end up with the word THEME
 /// sitting in its stylesheet and no colours at all.
 ///
-/// Every page this server serves gets the same block, because they are all the
+/// Every page this server serves gets the same blocks, because they are all the
 /// same app: the settings screen, the transcript view and the manual are not
-/// three products with three looks.
+/// three products with three looks, and a message means the same thing and
+/// behaves the same way on each of them (src/toast.rs).
 fn themed(html: String) -> String {
     let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
     let scheme = look.scheme();
-    html.replace("{{THEME}}", &scheme.css_vars()).replace(
-        "{{SCHEME}}",
-        if crate::theme::is_light(&scheme) { "light" } else { "dark" },
-    )
+    crate::toast::render(html)
+        .replace("{{THEME}}", &scheme.css_vars())
+        .replace(
+            "{{SCHEME}}",
+            if crate::theme::is_light(&scheme) { "light" } else { "dark" },
+        )
 }
 
 const PAGE: &str = r##"<!doctype html>
@@ -1961,14 +1964,9 @@ const PAGE: &str = r##"<!doctype html>
    100% { background:transparent; color:var(--muted); }
  }
  button.primary:disabled { opacity:.55; cursor:default; }
- /* Small text in the header doesn't catch the eye for a save result, so show it at the bottom of the screen */
- #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(16px);
-   padding:11px 20px; border-radius:9px; background:var(--accent); color:#04121c;
-   font-weight:600; font-size:13.5px; box-shadow:0 10px 30px rgba(0,0,0,.5);
-   opacity:0; pointer-events:none; z-index:50;
-   transition:opacity .18s ease, transform .18s ease; }
- #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
- #toast.warn { background:var(--danger); color:#fff; }
+ /* Small text in the header doesn't catch the eye for a save result, so the
+    shared toast (src/toast.rs) says it again at the bottom of the screen */
+{{TOAST_CSS}}
  /* Mark the save button while there are unsaved changes. It turns amber and
     pulses a glow ring so an unsaved edit is impossible to miss and you remember
     to press Save at the end (it goes back to the normal blue once saved). */
@@ -2200,7 +2198,7 @@ const PAGE: &str = r##"<!doctype html>
   <main id="detail"></main>
 </div>
 
-<div id="toast" role="status" aria-live="polite"></div>
+{{TOAST_HTML}}
 
 <datalist id="cmdlist"></datalist>
 
@@ -2315,16 +2313,11 @@ async function readUserJson(res) {
   }};
 }
 
-let toastTimer = null;
-function toast(text, warn) {
-  const t = document.getElementById("toast");
-  t.textContent = (warn ? "⚠ " : "✓ ") + text;
-  t.classList.toggle("warn", !!warn);
-  t.classList.add("show");
-  clearTimeout(toastTimer);
-  // Failures need time to read, so show them longer
-  toastTimer = setTimeout(() => t.classList.remove("show"), warn ? 6000 : 2200);
-}
+{{TOAST_JS}}
+// This screen reports results, and a result is either good news or bad — say
+// which. Declared as a function so it exists from the moment the script starts,
+// whatever order the pieces end up in
+function toastText(text, warn) { return (warn ? "⚠ " : "✓ ") + text; }
 
 // Keep the result in the header too, but also always make it noticeable via a toast
 const result = (text, warn) => { msg(text, warn); toast(text, warn); };
@@ -5462,12 +5455,7 @@ const RESULT_PAGE: &str = r##"<!doctype html>
  .body th { background:var(--panel2); font-weight:600; }
  .note { text-align:center; color:var(--muted); font-size:12px; margin:12px auto; font-style:italic; }
  .empty { text-align:center; color:var(--muted); margin-top:60px; font-size:14px; }
- #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(16px);
-   padding:11px 20px; border-radius:9px; background:var(--accent); color:#04121c;
-   font-weight:600; font-size:13.5px; box-shadow:0 10px 30px rgba(0,0,0,.5);
-   opacity:0; pointer-events:none; z-index:50; transition:opacity .18s, transform .18s; }
- #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
- #toast.warn { background:var(--danger); color:#fff; }
+{{TOAST_CSS}}
 </style></head>
 <body>
 <header>
@@ -5481,7 +5469,7 @@ const RESULT_PAGE: &str = r##"<!doctype html>
   <button class="primary" id="dl"></button>
 </header>
 <main id="chat"></main>
-<div id="toast"></div>
+{{TOAST_HTML}}
 <script>
 const TOKEN = "__TOKEN__";
 const T = __DICT__;
@@ -5502,11 +5490,7 @@ const el = (tag, attrs = {}, ...kids) => {
 const fill = (s, args) => Object.entries(args)
   .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
 const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-function toast(t, warn) {
-  const b = document.getElementById("toast");
-  b.textContent = t; b.classList.toggle("warn", !!warn); b.classList.add("show");
-  setTimeout(() => b.classList.remove("show"), 2200);
-}
+{{TOAST_JS}}
 
 // A stable color + left/right lane per speaker, assigned on first appearance.
 const PALETTE = ["#00aaff","#ffb020","#7ee787","#ff6b9d","#b388ff","#5ad1cd","#ff8f5a","#9aa0ff"];
@@ -6002,7 +5986,6 @@ mod tests {
     #[test]
     fn pages_are_fully_rendered() {
         for (name, page) in [("PAGE", PAGE), ("HELP_PAGE", HELP_PAGE), ("RESULT_PAGE", RESULT_PAGE)] {
-            assert_no_duplicate_bindings(name, page);
             // Every page is coloured before it is worded, and each one says so
             // by asking for the block. A page that stopped asking would come up
             // with no colours defined and nothing would say why
@@ -6012,6 +5995,10 @@ mod tests {
                 .replace("__REMOTE__", "false")
                 .replace("__DICT__", "{}")
                 .replace("__MD__", "\"\"");
+            // Checked on the finished page, not the template: the shared toast
+            // is poured in on the way, and a page that kept a copy of one of
+            // its names would only break once it was actually served
+            assert_no_duplicate_bindings(name, &html);
             assert!(!html.contains("{{"), "{name} に未置換の {{{{key}}}} が残っている");
             assert!(!html.contains("__"), "{name} に未置換のプレースホルダが残っている");
             assert!(html.contains("<html lang=\"en\">"), "{name} の lang 属性");

@@ -1,6 +1,7 @@
 {
   "//": "Base language. Copy this file to lang/<code>.json and translate the values. Missing keys fall back to English.",
   "app.title": "SHIKISHA-TERM",
+  "toast.copy": "Copy this message",
   "common.save": "Save",
   "common.reload": "Reload",
   "common.cancel": "Cancel",

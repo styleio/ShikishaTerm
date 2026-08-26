@@ -44,6 +44,7 @@ mod sessionfind;
 mod shell;
 mod tab;
 mod theme;
+mod toast;
 mod usage;
 mod vault;
 mod uistate;
@@ -361,6 +362,12 @@ fn plaintext_secrets_warning(cfg: Option<&config::Config>) -> Option<String> {
         .unwrap_or(false);
     has_secret.then(|| i18n::t("msg.secrets.unencrypted"))
 }
+
+/// How long a message stays part of the state. The screen it lands on is what
+/// decides when the toast actually fades (up to nine seconds for a long
+/// warning); this is the slightly later moment the app stops carrying it, so
+/// nothing stale is handed to a surface that arrives afterwards.
+const FLASH_LIFE: Duration = Duration::from_secs(12);
 
 /// The set of things needed to draw into our own window
 struct WinSurface {
@@ -1858,6 +1865,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
         .first()
         .map(|e| i18n::tp("msg.startup_failed", &[("error", e)]))
         .or_else(|| plaintext_secrets_warning(cfg.as_ref()));
+    // A message is a toast, and a toast goes away by itself. The screen fades
+    // it after a few seconds (src/toast.rs), and it stops being part of the
+    // state shortly after that — otherwise it would sit in `flash` until the
+    // next keystroke and be handed, still looking fresh, to a phone that
+    // connected an hour later. Timed here by watching the value change rather
+    // than at the sixty-odd places that set one.
+    let mut flash_shown: Option<String> = None;
+    let mut flash_at = Instant::now();
     let mut last_detect = Instant::now() - Duration::from_secs(1);
     // The browser currently being screen-relayed (only streams while someone's watching)
     let mut casting: Option<String> = None;
@@ -3056,6 +3071,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
             discuss_start,
             discuss_start_name,
         };
+        if flash != flash_shown {
+            flash_shown = flash.clone();
+            flash_at = Instant::now();
+        }
+        // Comfortably longer than the longest the screen shows one for, so the
+        // page is what decides when a message fades and this only clears up after it
+        if flash.is_some() && flash_at.elapsed() >= FLASH_LIFE {
+            flash = None;
+            flash_shown = None;
+        }
         last_ui_state = Some(ui_state_of(&tabs, &ui, flash.as_deref()));
         surface.draw(&tabs, &ui, flash.as_deref())?;
         // The window's size can change. If we don't hand it back over, a placed

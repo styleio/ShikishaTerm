@@ -306,12 +306,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #castdock { position:absolute; left:var(--fx); right:var(--fr);
     bottom:calc(var(--fb) + var(--kbd, 0px)); z-index:18;
     display:none; flex-direction:column; }
-  #attachtoast { position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
-    z-index:30; max-width:86%; padding:9px 14px; border-radius:9px; font-size:13px;
-    background:var(--tint); color:var(--text); border:1px solid var(--brand);
-    box-shadow:0 8px 24px rgba(0,0,0,.5); opacity:0; pointer-events:none;
-    transition:opacity .18s ease; word-break:break-all; }
-  #attachtoast.bad { background:color-mix(in srgb, var(--stop) 20%, var(--bg)); color:var(--text); border-color:var(--stop); }
   /* Desktop-only summon button for the composer bar (bottom-right, above the bar). */
   #composerfab { position:absolute; right:calc(var(--fr) + 16px);
     bottom:calc(var(--fb) + 16px); z-index:19;
@@ -667,13 +661,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:var(--raise); border:1px solid var(--brand); color:var(--text);
     padding:4px 12px; border-radius:14px; font-size:12px; cursor:pointer; }
   #back:hover { background:var(--brand); color:#04121c; }
-  /* The message line. Above the sub-input bar (z-index 18) rather than behind
+  /* Every message this window shows — the app's own line and the ones the page
+     raises itself — is the shared toast (src/toast.rs). Seated inside #main
+     rather than the viewport, because #main is the part of the window this
+     screen owns, and above the sub-input bar (z-index 18) rather than behind
      it: without a z-index of its own it stacked under the dock, so every
-     message shown while the composer was open said nothing to anybody */
-  #flash { position:absolute; left:50%; bottom:52px; transform:translateX(-50%);
-    z-index:32; background:var(--raise); border:1px solid var(--brand); color:var(--text);
-    padding:8px 16px; border-radius:8px; font-size:13px; max-width:80%;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+     message shown while the composer was open said nothing to anybody. How
+     high it rides is decided per message by toastBottom(), since the composer
+     bar is only sometimes there. */
+  #toast { --toast-pos:absolute; --toast-z:32; --toast-bottom:52px; }
+{{TOAST_CSS}}
 
   /* ── Remote history paging (phone only) ──────────────────────────────
      A phone can't scroll a full-screen TUI smoothly over the network, so
@@ -768,7 +765,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <pre id="probe">MMMMMMMMMM</pre>
     <pre id="tprobe"></pre>
     <div id="back" hidden></div>
-    <div id="flash" hidden></div>
+    {{TOAST_HTML}}
     <div id="topicbar" hidden></div>
     <div id="thinking" hidden></div>
     <div id="modelchat" hidden></div>
@@ -904,6 +901,21 @@ const el = (t, a, ...kids) => {
 };
 
 let S = null;   // most recent state
+// The message the app last told us about. Kept so an unchanged one isn't shown again
+let lastFlash = null;
+
+// The shared toast (src/toast.rs). Declared this early because the very first
+// state can arrive with a message already in it.
+{{TOAST_JS}}
+// Where the toast sits in this window. The composer bar owns the bottom edge
+// while it's open — and rises with the phone's on-screen keyboard — so the
+// toast stands on top of it instead of over the thing being typed into.
+function toastBottom() {
+  const main = document.getElementById("main");
+  if (!main || !castDock || castDock.style.display !== "flex") return "52px";
+  const m = main.getBoundingClientRect(), d = castDock.getBoundingClientRect();
+  return Math.max(52, Math.round(m.bottom - d.top) + 14) + "px";
+}
 
 // Don't rebuild the DOM while a press is in progress.
 // A click only registers when it "starts and ends on the same element".
@@ -1578,9 +1590,14 @@ window.__state = function (json) {
     b.textContent = (T["tui.scrolled"] || "").replace("{lines}", S.scrolled);
     b.onclick = () => send({kind:"scroll", by: -1000000});
   }
-  const f = document.getElementById("flash");
-  f.hidden = !S.flash;
-  if (S.flash) f.textContent = S.flash;
+  // The app's own message arrives as state, and is shown as the same toast
+  // everything else on this screen uses. Compared by value, so a state push
+  // that merely repaints (a new frame, a tab switch, a phone reconnecting)
+  // can't resurrect a message that has already faded or been dismissed.
+  if (S.flash !== lastFlash) {
+    lastFlash = S.flash;
+    if (S.flash) toast(S.flash); else hideToast();
+  }
   paintPaneHeads();
 };
 
@@ -2659,7 +2676,7 @@ function buildActions() {
       if (isLua) {
         // The code lives server-side; fire it by index and note that it ran.
         send({kind:"runaction", index: i});
-        attachToast("▶ " + (a.label || ""));
+        toast("▶ " + (a.label || ""));
       } else {
         if (!castInput) return;
         const cur = castInput.value;
@@ -2858,17 +2875,6 @@ window.__setActions = function (arr) {
     if (castPanel === "actions" && castDock && castDock.style.display === "flex") renderPanel();
   } catch (e) {}
 };
-// A short-lived toast for attach results (client-side, independent of S.flash
-// so a state push can't wipe it mid-message).
-function attachToast(text, bad) {
-  let t = document.getElementById("attachtoast");
-  if (!t) { t = el("div", {id:"attachtoast"}); document.getElementById("main").append(t); }
-  t.textContent = text;
-  t.className = bad ? "bad" : "";
-  t.style.opacity = "1";
-  clearTimeout(t._to);
-  t._to = setTimeout(() => { t.style.opacity = "0"; }, 3200);
-}
 // Base64-encode an ArrayBuffer without blowing the call stack on large files.
 function bufToB64(buf) {
   const bytes = new Uint8Array(buf);
@@ -2925,8 +2931,8 @@ function attachViaIpc(name, data) {
 async function attachFile(file) {
   if (!file) return;
   const tab = (S && S.active) || 0;
-  if (!tab) { attachToast(T["attach.err.no_tab"] || "Pick a tab first", true); return; }
-  attachToast("…");
+  if (!tab) { toast(T["attach.err.no_tab"] || "Pick a tab first", true); return; }
+  toast("…");
   try {
     const name = file.name || "file";
     const data = bufToB64(await file.arrayBuffer());
@@ -2941,12 +2947,12 @@ async function attachFile(file) {
     }
     if (j && j.ok && j.path) {
       insertIntoComposer(j.path);
-      attachToast((T["attach.saved"] || "Attached {name}").replace("{name}", name));
+      toast((T["attach.saved"] || "Attached {name}").replace("{name}", name));
     } else {
-      attachToast((j && j.error) || T["attach.err.failed"] || "Attach failed", true);
+      toast((j && j.error) || T["attach.err.failed"] || "Attach failed", true);
     }
   } catch (e) {
-    attachToast(T["attach.err.failed"] || "Attach failed", true);
+    toast(T["attach.err.failed"] || "Attach failed", true);
   }
 }
 let castDock = null, castBar = null, castInput = null, castKeysEl = null, castAttEl = null, castSendEl = null;
@@ -3010,7 +3016,7 @@ async function downloadReplayLua() {
   if (typeof REMOTE !== "undefined" && REMOTE) {
     try {
       const r = await fetch("api/replay?t=" + encodeURIComponent(TOKEN));
-      if (!r.ok) { attachToast(T["tui.cast.replay.none"] || "No macro yet", true); return; }
+      if (!r.ok) { toast(T["tui.cast.replay.none"] || "No macro yet", true); return; }
       const blob = await r.blob();
       const u = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -3018,15 +3024,15 @@ async function downloadReplayLua() {
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(u), 1000);
       // A silent success reads as a failure — say it landed
-      attachToast(T["tui.cast.replay.downloaded"] || "Downloaded");
+      toast(T["tui.cast.replay.downloaded"] || "Downloaded");
     } catch (e) {
-      attachToast(String(e && e.message || e), true);
+      toast(String(e && e.message || e), true);
     }
   } else {
-    // The app answers with the saved path (or the reason it couldn't) via
-    // the flash bar; this toast is the immediate "the press registered"
+    // The app answers with the saved path (or the reason it couldn't) as a
+    // message of its own; this one is the immediate "the press registered"
     send({kind:"replaysave"});
-    attachToast(T["tui.cast.replay.saving"] || "Saving…");
+    toast(T["tui.cast.replay.saving"] || "Saving…");
   }
 }
 // The picker for the 🎯 panel: choose another tab to operate. Candidates are
@@ -3217,11 +3223,11 @@ window.__surveyed = (r) => {
     castSlot = "draft";
     castDraft = r.cmd;
     if (castInput) { castInput.value = r.cmd; growCastInput(); }
-    attachToast(T["tui.cast.survey.drafted"] || "🩺 Review the survey command, then Send");
+    toast(T["tui.cast.survey.drafted"] || "🩺 Review the survey command, then Send");
   } else if (r && r.ok) {
-    attachToast(T["tui.cast.survey.done"] || "🩺 Environment recorded — suggestions now use it");
+    toast(T["tui.cast.survey.done"] || "🩺 Environment recorded — suggestions now use it");
   } else {
-    attachToast((r && r.error) || (T["tui.cast.survey.failed"] || "Survey failed"), true);
+    toast((r && r.error) || (T["tui.cast.survey.failed"] || "Survey failed"), true);
   }
 };
 // The finished suggestion (or its failure) — from the window loop or the
@@ -3235,9 +3241,9 @@ window.__suggested = (r) => {
     castSlot = "draft";
     castDraft = r.cmd;
     if (castInput) { castInput.value = r.cmd; growCastInput(); }
-    attachToast(T["tui.cast.suggest.ready"] || "✨ Review the command, then Send");
+    toast(T["tui.cast.suggest.ready"] || "✨ Review the command, then Send");
   } else {
-    attachToast((r && r.error) || (T["tui.cast.suggest.failed"] || "Suggestion failed"), true);
+    toast((r && r.error) || (T["tui.cast.suggest.failed"] || "Suggestion failed"), true);
   }
   renderPanel();
 };
@@ -3390,7 +3396,7 @@ function renderPanel() {
       onclick: () => {
         send({kind:"operate", target: 0});
         castTarget = null;
-        attachToast(T["tui.cast.target.cleared"] || "🎯 released");
+        toast(T["tui.cast.target.cleared"] || "🎯 released");
         renderPanel();
       }}, "✕"));
     castPanelEl.append(chip);
@@ -3540,7 +3546,7 @@ function sendBar() {
     // chosen target (writes Lua). Not typed into the terminal we're viewing.
     send({kind:"operate", target: castTarget.index, goal: t});
     // A bare tab name reads as noise — say what actually happened to the text
-    attachToast((T["tui.cast.target.sent"] || "🎯 Asked the AI to drive {name}")
+    toast((T["tui.cast.target.sent"] || "🎯 Asked the AI to drive {name}")
       .replace("{name}", castTarget.name || ""));
   } else if (modCtrl && t) {
     // Terminal: Ctrl latched + a typed letter = a control chord (e.g. Ctrl+C to
@@ -4029,7 +4035,9 @@ pub fn page_for(sticky: bool) -> String {
     let dict = crate::i18n::dict_json();
     let keys: Vec<&str> = MENU.iter().map(|(k, _)| *k).collect();
     let words: std::collections::BTreeMap<&str, &str> = MENU.iter().copied().collect();
-    PAGE.replace(
+    // The message toast is the app's, not this screen's — every surface that
+    // says anything to the user says it the same way (src/toast.rs)
+    crate::toast::render(PAGE.to_string()).replace(
         "{{MENU_KEYS}}",
         &serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()),
     )
@@ -4075,6 +4083,34 @@ pub fn page_for(sticky: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::PAGE;
+
+    /// Every message this screen shows goes through the one shared toast.
+    ///
+    /// It used to have two of its own: a message line fed by the app's state
+    /// that only went away on the next keystroke, and a separate attach toast.
+    /// Neither could be dismissed by hand. If a second implementation ever
+    /// creeps back in, one kind of message starts behaving unlike the rest.
+    #[test]
+    fn every_message_is_the_shared_toast() {
+        let page = super::page_for(false);
+        for once in ["let toastTimer", "function toast(", "function hideToast("] {
+            assert_eq!(page.matches(once).count(), 1, "{once} が重複または欠落している");
+        }
+        assert!(
+            !page.contains("attachtoast") && !page.contains("attachToast"),
+            "この画面だけの古いトーストが残っている"
+        );
+        assert!(
+            !page.contains(r#"getElementById("flash")"#),
+            "消えないメッセージ行が残っている"
+        );
+        // The app's message is state, so it must be shown by comparing it —
+        // otherwise every repaint would put a dismissed message straight back up
+        assert!(
+            page.contains("if (S.flash !== lastFlash)"),
+            "アプリからのメッセージが値の変化で出ていない"
+        );
+    }
 
 
     /// Every translation key the page asks for must exist in the dictionary.

@@ -1,6 +1,7 @@
 {
   "//": "日本語。en.json をコピーして値を訳したもの。キーが欠けていれば英語が出ます",
   "app.title": "SHIKISHA-TERM",
+  "toast.copy": "このメッセージをコピー",
   "common.save": "保存",
   "common.reload": "再読込",
   "common.cancel": "キャンセル",

@@ -8,6 +8,20 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Changed
+- **Messages are one toast, and it goes away.** The window, the settings screen
+  and the transcript view each carried their own message bar with their own
+  timing, and the window's — the one the app itself writes to — faded never: it
+  waited for a keystroke, so a notice shown at startup could still be sitting
+  there an hour later. There is now one toast (`src/toast.rs`) for all of them.
+  It fades on its own after a few seconds (longer for a warning, longer again
+  for a long message), and a click or tap takes it away at once.
+
+- **A message can be taken with you.** Every toast carries a 📋 button that
+  copies its text and then leaves. Only that button touches the clipboard —
+  clicking the message itself just dismisses it, so getting a notice out of the
+  way never overwrites what you were about to paste.
+
 ### Fixed
 - **The pen comes back when you walk to another tab.** Closing the composer over
   a browser tab left no way to open it again: the pen was hidden there on
