@@ -100,8 +100,9 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // Menu "w"). It only shows the list; picking a workspace is a separate
         // digit intent, so this alone doesn't disrupt the window.
         Ev::OpenWs => true,
-        // Chatting with a model tab from the phone is just like typing into it.
-        Ev::Chat { .. } => true,
+        // Finishing a line in the composer from the phone is just like typing
+        // into the tab it names.
+        Ev::Say { .. } => true,
         // Firing one of the user's own quick actions (its Lua runs sandboxed).
         // No different in reach than typing the same instruction from the phone.
         Ev::RunAction { .. } => true,

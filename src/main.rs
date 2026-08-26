@@ -444,9 +444,10 @@ struct WinSurface {
     /// The status bar's "remote connected" control was pressed. The loop cuts every
     /// remote session (rotates the token, drops the connections).
     remote_cut: bool,
-    /// Lines typed at a model pane in the composer, awaiting delivery to the
-    /// bridge. Filled from both surfaces: the window's ipc and the phone's relay.
-    chats: Vec<String>,
+    /// Lines a person finished in the composer, each with the tab it is for,
+    /// awaiting delivery. Filled from both surfaces: the window's ipc and the
+    /// phone's relay.
+    says: Vec<(usize, String)>,
     /// Quick-action chips (Lua) fired from the bar, by index into config.actions.
     /// The loop looks up the code and runs it against the active tab.
     run_actions: Vec<usize>,
@@ -593,8 +594,8 @@ impl WinSurface {
     }
 
     /// Takes ownership of chat lines typed into model tabs
-    fn take_chats(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.chats)
+    fn take_says(&mut self) -> Vec<(usize, String)> {
+        std::mem::take(&mut self.says)
     }
 
     /// Takes the indices of Lua quick-actions fired since the last drain.
@@ -771,7 +772,7 @@ impl WinSurface {
                 // showing", so the loop decides (only one bar is ever displayed).
                 Ev::Go { go } => self.gos.push(go),
                 Ev::Scroll { by, row, col } => self.scrolls.push((by, row, col)),
-                Ev::Chat { text } => self.chats.push(text),
+                Ev::Say { tab, text } => self.says.push((tab, text)),
                 Ev::Where {
                     from: Some(name),
                     url,
@@ -1044,7 +1045,7 @@ fn run_in_window() -> Result<()> {
         close_settings: false,
         open_settings: None,
         remote_cut: false,
-        chats: Vec::new(),
+        says: Vec::new(),
         run_actions: Vec::new(),
         vault_queries: Vec::new(),
         vault_opens: Vec::new(),
@@ -2725,19 +2726,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // Treat input from remote as a human operation
                     // (resets the auto-chain, and is rejected while locked)
                     remote::RemoteCmd::Send { tab, text } => {
-                        if let Some(t) = session_at(&surfaces, tab).and_then(|i| tabs.get_mut(i)) {
-                            if t.locked {
-                                continue;
-                            }
-                            t.chain_depth = 0;
-                            t.last_manual_ms = Some(now_ms);
-                            let seen = t.output_count();
-                            write_prompt(t, &text);
-                            pending_submit.push(PendingSubmit::new(tab, seen, now_ms));
-                            append_hook_log(&format!(
-                                "remote send tab{tab}: {}",
-                                log_excerpt(&text, 120)
-                            ));
+                        let excerpt = log_excerpt(&text, 120);
+                        if hand_line(
+                            &mut tabs, &surfaces, tab, text, now_ms,
+                            &mut pending_submit, &mut ball,
+                        ) {
+                            append_hook_log(&format!("remote send tab{tab}: {excerpt}"));
                         }
                     }
                     remote::RemoteCmd::Keys { tab, keys } => {
@@ -2805,14 +2799,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::Survey) => {
                         surface.surveys += 1;
                     }
-                    // A line typed at a model pane from the phone. Not a
-                    // keystroke -- a model bridge has no keyboard -- so it goes
-                    // to the same queue the window's composer fills. Without
-                    // this it fell through to keys_for and was dropped: the
-                    // phone could type at a model pane all day and nothing ever
-                    // reached the model.
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Chat { text }) => {
-                        surface.chats.push(text);
+                    // A line the phone finished in the composer. Not a
+                    // keystroke -- the recipient may be a model bridge, which
+                    // has no keyboard -- so it goes to the same queue the
+                    // window's composer fills. Without this it fell through to
+                    // keys_for and was dropped, which the loop's own
+                    // fall-through guard had been saying all along.
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Say { tab, text }) => {
+                        surface.says.push((tab, text));
                     }
                     remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultSearch { .. })
                     | remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultOpen { .. }) => {
@@ -3372,18 +3366,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
-        // Lines typed into a model tab's chat box. Deliver each to whichever
-        // model tab is in view; a line typed while a non-model tab is up is
-        // dropped (the box is only shown over model tabs anyway).
-        for line in surface.take_chats() {
-            if let Some(t) = session_at(&surfaces, active).and_then(|i| tabs.get_mut(i)) {
-                if t.is_model() {
-                    // A line typed by the human is a fresh turn (chain 0), so a
-                    // rally brain resets its per-goal budget instead of treating
-                    // it as more of the automated chain.
-                    t.chain_depth = 0;
-                    t.chat_send(line);
-                }
+        // Lines a person finished in the composer or the topic box, each for
+        // the tab it names.
+        for (tab, line) in surface.take_says() {
+            let now_ms = start.elapsed().as_millis() as u64;
+            let to = if tab == 0 { active } else { tab };
+            if !hand_line(&mut tabs, &surfaces, to, line, now_ms, &mut pending_submit, &mut ball) {
+                append_hook_log(&format!("say went nowhere: tab{to} is not a session"));
             }
         }
 
@@ -5967,6 +5956,52 @@ fn browser_ctx(index: usize, key: &str) -> TabCtx {
 
 /// Grace period holding off auto-submit right after manual input (avoids keystroke cross-talk)
 const MANUAL_GUARD_MS: u64 = 5000;
+
+/// A person hands one named tab a line: the composer's Send, the discussion's
+/// topic box, and the phone's own send all end here.
+///
+/// The tab is named rather than taken to be "the one in front". Those are the
+/// same tab most of the time, which is exactly why the difference went unnoticed
+/// -- until the topic box, which switches the view and hands over a line in the
+/// same breath and cannot rely on the two arriving in that order.
+///
+/// How the line is delivered is the tab's business, not the caller's: a model
+/// bridge has no prompt to type at and is told directly, anything else is typed
+/// and submitted the way a person at its keyboard would. Deciding that out at
+/// the edges meant every edge had to know, and the phone's edge did not.
+fn hand_line(
+    tabs: &mut [Tab],
+    surfaces: &[Surface],
+    target: usize,
+    text: String,
+    now_ms: u64,
+    pending_submit: &mut Vec<PendingSubmit>,
+    ball: &mut ball::Ball,
+) -> bool {
+    let Some(t) = session_at(surfaces, target).and_then(|i| tabs.get_mut(i)) else {
+        return false;
+    };
+    if t.locked {
+        return false;
+    }
+    // Manual input breaks the chain -- except into a tab that was handed a
+    // draft to finish, which is joining in rather than taking over.
+    if ball.awaiting_human && ball.holder == target {
+        ball.awaiting_human = false;
+    } else {
+        t.chain_depth = 0;
+    }
+    t.last_manual_ms = Some(now_ms);
+    if t.is_model() {
+        t.chat_send(text);
+    } else {
+        to_live(t);
+        let seen = t.output_count();
+        write_prompt(t, &text);
+        pending_submit.push(PendingSubmit::new(target, seen, now_ms));
+    }
+    true
+}
 
 /// The screen to move to, following the ball. None if it shouldn't move.
 ///

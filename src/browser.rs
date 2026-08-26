@@ -971,7 +971,8 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             named: v.get("named").and_then(|x| x.as_str()).map(str::to_string),
             ctrl: v.get("ctrl").and_then(|x| x.as_str()).map(str::to_string),
         },
-        Some("chat") => Ev::Chat {
+        Some("say") => Ev::Say {
+            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
             text: v
                 .get("text")
                 .and_then(|x| x.as_str())
@@ -1216,9 +1217,14 @@ pub enum Ev {
         named: Option<String>,
         ctrl: Option<String>,
     },
-    /// A line typed into a model tab's chat box. Delivered to whichever model
-    /// tab is currently in view (the bridge answers it directly).
-    Chat { text: String },
+    /// A person hands one tab a line, and that tab is named.
+    ///
+    /// Naming it is the whole point. This used to be delivered to "whichever
+    /// tab is in front", which is a different tab from the one the sender meant
+    /// whenever the two messages "look at N" and "here is a line" did not land
+    /// in that order -- the discussion's topic box does exactly that pair, and
+    /// its topic went to the wrong pane, or to nobody.
+    Say { tab: usize, text: String },
     /// The window was closed
     Closed,
 }
@@ -3835,9 +3841,11 @@ mod nav_tests {
             parse_intent(&v)
         };
         assert!(matches!(read(r#"{"kind":"openws"}"#), Some(Ev::OpenWs)));
-        match read(r#"{"kind":"chat","text":"hello"}"#) {
-            Some(Ev::Chat { text }) => assert_eq!(text, "hello"),
-            other => panic!("chat が読めていない: {other:?}"),
+        match read(r#"{"kind":"say","tab":3,"text":"hello"}"#) {
+            Some(Ev::Say { tab, text }) => {
+                assert_eq!((tab, text.as_str()), (3, "hello"), "宛名と本文が揃っていない");
+            }
+            other => panic!("say が読めていない: {other:?}"),
         }
     }
 }

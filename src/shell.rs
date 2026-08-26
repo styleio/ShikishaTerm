@@ -3526,10 +3526,15 @@ function closeBar() {
 // does nothing; at a prompt a bare Enter is itself the instruction (accept a
 // default, insert a newline), so it is still sent.
 function sendLine(text, tab) {
-  const to = (tab == null) ? activeTab()
-    : ((S && S.tabs) ? S.tabs.find(x => x && x.index === tab) : null);
-  if (to && to.model) { if (text) send({kind:"chat", text}); return; }
-  if (text) send({kind:"key", text});
+  // Say who it is for. Left unsaid, a line is handed to whatever pane happens
+  // to be in front when it arrives -- the same pane nearly always, which is why
+  // this went unnoticed until the topic box, which puts the opening speaker in
+  // front and hands over the topic in the same breath. Those are two messages,
+  // and nothing promises they land in that order: the topic reached the pane
+  // being looked at, or, if that pane could not take it, nobody at all.
+  if (text) { send({kind:"say", tab: (tab == null ? S.active : tab), text}); return; }
+  // An empty Send is a bare Enter: meaningful at a prompt (accept a default,
+  // insert a newline) and not a line at all, so it stays a keystroke.
   send({kind:"key", named:"enter"});
 }
 function sendBar() {
@@ -4407,18 +4412,24 @@ mod tests {
             1,
             "サブ入力欄を組み立てる場所が1つではない"
         );
-        // One place decides how a finished line reaches a pane, and both doors
-        // that finish a line go through it
-        assert_eq!(
-            p.matches("kind:\"chat\"").count(),
-            1,
-            "モデルへの送信口が1つではない"
-        );
+        // One place decides where a finished line goes, and both doors that
+        // finish a line go through it
         assert!(p.contains("function sendLine(text, tab) {"), "行の渡し方を決める一箇所が無い");
         assert!(p.contains("    sendLine(t);"), "サブ入力欄の Send が自前で送っている");
         assert!(
             p.contains("sendLine(topic, S.discuss_start);"),
             "討論の議題欄が自前で送っている（口火役がモデルだと届かない）"
+        );
+        // ...and the line always says who it is for. Delivered to "whoever is
+        // in front", the topic box's own view switch could arrive after it
+        assert_eq!(
+            p.matches("kind:\"say\"").count(),
+            1,
+            "行を渡す口が1つではない"
+        );
+        assert!(
+            p.contains(r#"send({kind:"say", tab: (tab == null ? S.active : tab), text}); return;"#),
+            "渡す行に宛名が付いていない"
         );
         // Actions only there (plus the key row on a phone) -- no 🎯, no 🤖, no 📼
         assert!(
