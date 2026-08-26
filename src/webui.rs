@@ -2489,7 +2489,7 @@ function ensureIds(ws) {
   }
 }
 // A dropdown for picking a tab id (candidates = existing tab ids). emptyLabel is the label for the empty option.
-// Pass exclude(t)=>bool when tabs with drives should be excluded
+// Pass exclude(t)=>bool when tabs that are aimed at something should be excluded
 function idSelect(ws, val, emptyLabel, onChange, exclude) {
   const s = el("select");
   s.append(el("option", {value:""}, emptyLabel));
@@ -4229,12 +4229,12 @@ function wsDiscussCard(ws) {
   const agentsIn = txt((d.agents||[]).join(", "), T["settings.discuss.agents_ph"],
     v => { ensure().agents = v.split(",").map(s=>s.trim()).filter(Boolean); drawChips(); drawPersonas(); });
   // Participant-candidate chips: one click appends an existing tab id to the end of the turn order.
-  // Tabs with drives (browser-control mode) can't coexist in a discussion, so they're excluded from candidates
+  // A tab aimed at another tab (🎯) already has a turn to keep, so it can't also be a discussion participant
   const chipBox = el("div", {class:"hint", style:"display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px"});
   const drawChips = () => {
     chipBox.textContent = "";
     const cur = (ws.discuss && ws.discuss.agents) || [];
-    // Only candidate tabs that are a discussable AI (CLI/model API), not already a participant, and not browser-controlled
+    // Only candidate tabs that are a discussable AI (CLI/model API), not already a participant, and not aimed at anything
     const cand = (ws.tabs || [])
       .filter(t => isDiscussable(t) && !(t.drives||"").trim())
       .map(t => (t.id || t.name || "").trim())
@@ -4249,7 +4249,7 @@ function wsDiscussCard(ws) {
   const orderSel = self(d.order || "round-robin",
     [["round-robin",T["settings.discuss.order.round_robin"]],["moderated",T["settings.discuss.order.moderated"]]], v => ensure().order = v);
   const roundsIn = numf(d.max_rounds, v => ensure().max_rounds = v);
-  // Judge and moderator are likewise restricted to discussable AIs (browser-control tabs, shells, and Aider are excluded)
+  // Judge and moderator are likewise restricted to discussable AIs (aimed tabs, shells, and Aider are excluded)
   const notDiscuss = t => (t.drives||"").trim() || !isDiscussable(t);
   const judgeIn = idSelect(ws, d.judge, T["wizard.discuss.judge_none"],
     v => { ensure().judge = v; drawPersonas(); }, notDiscuss);
@@ -4494,32 +4494,6 @@ function tabPane(ws, t) {
     row(T["settings.tab.cwd"], ...pathField(t, "cwd", T["settings.tab.cwd.ph"], "dir",
         T["settings.tab.cwd.pick"]),
         el("span", {class:"hint"}, T["settings.tab.cwd.hint"]))));
-
-  // Browser-control mode (drives): picks which browser tab this AI tab controls. No Lua needed.
-  // The goal isn't a setting — it's typed into an input field after starting. Not shown on the browser tab itself
-  const isBrowser = c => { const h = (c || "").trim().split(/\s+/)[0].toLowerCase(); return h === "browser" || h === "web"; };
-  if (!isBrowser(t.command)) {
-    // drives and discuss can't coexist on the same tab. If this tab is a discussion participant,
-    // don't show browser-control mode, and explain why (prevents combining the two at the entry point)
-    const inDiscuss = !!(ws.discuss && [...(ws.discuss.agents||[]),
-      ws.discuss.judge, ws.discuss.moderator].filter(Boolean)
-      .includes((t.id || t.name || "").trim()));
-    if (inDiscuss) {
-      if (t.drives) delete t.drives;
-      box.append(card(T["settings.drives.title"],
-        el("div", {class:"hint"},
-          T["settings.drives.disabled_discuss"])));
-    } else {
-      const brTabs = (ws.tabs || []).filter(x => x !== t && isBrowser(x.command)).map(x => x.id || x.name).filter(Boolean);
-      const opts = [["", T["settings.drives.off"]]].concat(brTabs.map(id => [id, id]));
-      const sel = choose(t, "drives", opts, v => { if (!v) delete t.drives; refreshSave(); });
-      const hint = brTabs.length
-        ? T["settings.drives.hint"]
-        : T["settings.drives.hint_none"];
-      box.append(card(T["settings.drives.title"],
-        row(T["settings.drives.select_label"], sel, el("span", {class:"hint"}, hint))));
-    }
-  }
 
   // Notify on answer: a beginner-friendly way to get a Slack/Telegram ping when
   // this tab's AI finishes, without writing on_done Lua. Lists the destinations

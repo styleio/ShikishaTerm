@@ -896,9 +896,13 @@ pub struct TabConfig {
     /// Used to recover from an SSH disconnect or after a CLI tool self-updates
     #[serde(default)]
     pub auto_restart: bool,
-    /// Browser-operation mode. Setting this to the id of the browser tab being
-    /// operated makes this tab a "browser-operating agent". The built-in controller
-    /// runs, and the goal is typed into the input field (not written in config). Takes priority over automation
+    /// What this tab is aimed at (🎯): the id of the tab it drives, or absent.
+    ///
+    /// Written by the picker on screen -- picking IS the setting, so there is no
+    /// separate "default target" to keep in step with this. It is the aim only:
+    /// the operator is briefed when a goal is given, not at launch, and the
+    /// tab's own `automation` keeps running either way (the aim borrows the
+    /// pane's script while it is attached, and gives it back).
     #[serde(default)]
     pub drives: Option<String>,
     /// Working folder at launch. A relative path is resolved against the config file's location.
@@ -1384,6 +1388,87 @@ pub fn append_tab(workspace: &str, tab: serde_json::Value) -> bool {
         return false;
     };
     tabs.push(tab);
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Record which tab an operator is aimed at (🎯), or clear it.
+///
+/// The aim is chosen on screen and belongs in the settings file for the same
+/// reason the tab bar's width does: it must survive the next start, and one
+/// answer must not live in two places. There is no separate "default target"
+/// setting — the thing you pick IS the setting, and this is where it lands.
+///
+/// Read-modify-write on the parsed JSON, like every other change here, so the
+/// person's own file keeps its shape and its order. The tab is found by the
+/// name it is written under, in the flat `tabs` list or inside any workspace.
+/// Returns whether it was written.
+pub fn save_tab_aim(tab_name: &str, target: Option<&str>) -> bool {
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
+    else {
+        crate::append_hook_log("could not record the aim: settings are not readable");
+        return false;
+    };
+    // Every list of tabs the file can hold: the flat one and each workspace's
+    let mut lists: Vec<&mut serde_json::Value> = Vec::new();
+    let (flat, spaces) = {
+        let obj = doc.as_object_mut();
+        match obj {
+            Some(o) => {
+                let (mut f, mut w) = (None, None);
+                for (k, v) in o.iter_mut() {
+                    match k.as_str() {
+                        "tabs" => f = Some(v),
+                        "workspaces" => w = Some(v),
+                        _ => {}
+                    }
+                }
+                (f, w)
+            }
+            None => (None, None),
+        }
+    };
+    if let Some(f) = flat {
+        lists.push(f);
+    }
+    if let Some(list) = spaces.and_then(|w| w.as_array_mut()) {
+        for ws in list {
+            if let Some(t) = ws.get_mut("tabs") {
+                lists.push(t);
+            }
+        }
+    }
+    let mut written = false;
+    for tabs in lists {
+        let Some(tabs) = tabs.as_array_mut() else { continue };
+        for tab in tabs.iter_mut() {
+            let named = ["id", "name"].iter().any(|k| {
+                tab.get(k).and_then(|v| v.as_str()).map(str::trim) == Some(tab_name)
+            });
+            if !named {
+                continue;
+            }
+            let Some(obj) = tab.as_object_mut() else { continue };
+            match target {
+                Some(t) => {
+                    obj.insert("drives".into(), serde_json::Value::String(t.to_string()));
+                }
+                // Cleared aims leave nothing behind: an empty key in a person's
+                // file is a question they would have to answer for themselves
+                None => {
+                    obj.remove("drives");
+                }
+            }
+            written = true;
+        }
+    }
+    if !written {
+        return false;
+    }
     match serde_json::to_string_pretty(&doc) {
         Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
         Err(_) => false,

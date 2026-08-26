@@ -178,6 +178,12 @@ pub struct UiState {
     /// so the button has to say which one it is rather than claim the other.
     #[serde(default)]
     pub remote_sticky: bool,
+    /// What the focused tab is aimed at, as a screen number, when it has been
+    /// aimed at anything. The picker on screen is the only place an aim is
+    /// chosen and it is written down against that tab, so this is how it comes
+    /// back after a restart -- not a second setting to keep in step with.
+    #[serde(default)]
+    pub aim: Option<usize>,
     /// First launch, before any settings exist yet
     pub first_run: bool,
     pub tabs: Vec<TabState>,

@@ -3046,6 +3046,14 @@ function buildTargetPanel() {
   const wrap = el("div", {id:"casttarget"});
   const operator = (S && S.tabs) ? S.tabs.find(t => t && t.index === S.active) : null;
   const canOperate = !!(operator && operator.auto);
+  // An aim outlives the page: it was written down against this tab when it was
+  // picked, and S.aim is it, come back. Adopt it when this page has no aim of
+  // its own yet, so a restart (or a phone opening the board) finds the 🎯 where
+  // it was left rather than empty.
+  if (!castTarget && S && S.aim) {
+    const t = (S.tabs || []).find(x => x && x.index === S.aim);
+    if (t) castTarget = { index: t.index, name: t.name || ("#" + t.index), kind: t.kind, model: !!t.model };
+  }
   const tabs = (S && S.tabs)
     ? S.tabs.filter(t => t && t.index !== 0 && !t.settings && t.index !== S.active
         && (t.kind === "browser" || t.ai)) : [];
@@ -3062,8 +3070,17 @@ function buildTargetPanel() {
     if (!canOperate) { sel.value = ""; return; }
     const idx = parseInt(sel.value, 10);
     const t = tabs.find(x => x.index === idx);
-    if (t) { castTarget = { index: t.index, name: t.name || ("#" + idx), kind: t.kind, model: !!t.model }; }
-    else { if (castTarget) send({kind:"operate", target: 0}); castTarget = null; }  // detach
+    // Picking IS the setting: it is written down against this tab and comes
+    // back on the next start. Aiming alone hands over no work — the operator
+    // hears about it when a goal is sent — so this is safe to send on a
+    // dropdown change.
+    if (t) {
+      castTarget = { index: t.index, name: t.name || ("#" + idx), kind: t.kind, model: !!t.model };
+      send({kind:"operate", target: t.index});
+    } else {
+      send({kind:"operate", target: 0});
+      castTarget = null;
+    }
     renderPanel();   // the 🎯 chip appears/disappears with the choice
   };
   wrap.append(el("span", {class:"hint", style:"flex:none"}, T["tui.cast.target.label"] || "Operate:"), sel);

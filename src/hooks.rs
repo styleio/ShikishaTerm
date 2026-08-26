@@ -953,6 +953,11 @@ struct Attach {
     base: Option<usize>,
     workspace: Option<usize>,
     tabs: std::collections::HashMap<usize, usize>,
+    /// What a pane had before an aim (🎯) took it over, so letting the aim go
+    /// gives the tab its own automation back. Being aimed at something is a
+    /// borrowed turn, not a replacement -- the two used to fight, and whichever
+    /// was set last won for good.
+    lent: std::collections::HashMap<usize, Option<usize>>,
 }
 
 /// Capabilities granted to automation (default is empty = no file or network access)
@@ -3335,10 +3340,15 @@ end
     /// configured Agent tab uses; the goal is delivered separately by the caller,
     /// and from then on the normal on_done cycle runs the loop. Idempotent per
     /// browser (the script is cached), with no stop conditions (the AI judges DONE).
-    pub fn start_operate(&mut self, source_pane: usize, browser: &str, ctx: &TabCtx) -> Result<()> {
-        let stops = crate::config::stops_to_lua(&[]);
-        let id = self.load_browser_agent(browser, &stops)?;
-        self.set_tab(source_pane, id);
+    pub fn start_operate(
+        &mut self,
+        source_pane: usize,
+        browser: &str,
+        stops_lua: &str,
+        ctx: &TabCtx,
+    ) -> Result<()> {
+        let id = self.load_browser_agent(browser, stops_lua)?;
+        self.lend_tab(source_pane, id);
         crate::append_hook_log(&format!(
             "operate: briefing operator pane{source_pane} on browser {browser:?}"
         ));
@@ -3351,7 +3361,7 @@ end
     /// id/name), and brief the operator. The goal is delivered separately.
     pub fn start_operate_ai(&mut self, source_pane: usize, target: &str, ctx: &TabCtx) -> Result<()> {
         let id = self.load_ai_agent(target)?;
-        self.set_tab(source_pane, id);
+        self.lend_tab(source_pane, id);
         crate::append_hook_log(&format!(
             "operate: briefing operator pane{source_pane} on AI tab {target:?}"
         ));
@@ -3362,7 +3372,26 @@ end
     /// Detach an ad-hoc operate: the source tab goes back to being a plain tab
     /// (its on_done no longer runs the browser loop).
     pub fn stop_operate(&mut self, source_pane: usize) {
-        self.attach.tabs.remove(&source_pane);
+        match self.attach.lent.remove(&source_pane) {
+            // Give the tab back the automation it came with
+            Some(Some(had)) => {
+                self.attach.tabs.insert(source_pane, had);
+            }
+            Some(None) => {
+                self.attach.tabs.remove(&source_pane);
+            }
+            None => {
+                self.attach.tabs.remove(&source_pane);
+            }
+        }
+    }
+
+    /// Point a pane at the aim's script, remembering what it had. See
+    /// `Attach::lent`: an aim borrows the turn and gives it back.
+    fn lend_tab(&mut self, tab_index: usize, id: usize) {
+        let had = self.attach.tabs.get(&tab_index).copied();
+        self.attach.lent.entry(tab_index).or_insert(had);
+        self.attach.tabs.insert(tab_index, id);
     }
 
     /// Hand a goal to the operator, queued as a command like on_start's brief —
@@ -3993,7 +4022,8 @@ mod tests {
         let _g = RALLY_FILE_LOCK.lock().unwrap();
         let mut e = HookEngine::new().unwrap();
         // Start operating browser "br" from the tab in pane 1 (no config needed).
-        e.start_operate(1, "br", &ctx(1, "")).expect("operate should start");
+        e.start_operate(1, "br", "{}", &ctx(1, ""))
+            .expect("operate should start");
         let cmds = e.drain_commands();
         assert!(
             cmds.iter().any(|c| matches!(c, Command::SendPrompt { text, .. } if text.contains("browser_go"))),
@@ -4003,6 +4033,35 @@ mod tests {
         e.stop_operate(1);
         e.fire("on_done", &ctx(1, "DONE"), None);
         assert!(e.drain_commands().is_empty(), "a detached tab must not run the operate loop");
+    }
+
+    /// Letting an aim go gives the tab back the automation it came with.
+    ///
+    /// A tab can have its own Lua AND be aimed at something. The aim borrows
+    /// the pane's script while it lasts; if detaching simply dropped it, the
+    /// tab's own automation would be gone for the rest of the run — a thing
+    /// nobody asked for, and nothing on screen would say why it stopped.
+    #[test]
+    fn letting_an_aim_go_gives_back_the_tabs_own_automation() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let mut e = HookEngine::new().unwrap();
+        let mine = e
+            .load_source("<mine>", "function on_done(tab) shikisha.log('mine ran') end")
+            .expect("the tab's own automation");
+        e.set_tab(1, mine);
+
+        e.start_operate(1, "br", "{}", &ctx(1, ""))
+            .expect("operate should start");
+        e.drain_commands();
+        e.stop_operate(1);
+
+        e.fire("on_done", &ctx(1, "DONE"), None);
+        assert!(
+            e.drain_commands()
+                .iter()
+                .any(|c| matches!(c, Command::Log(m) if m.contains("mine ran"))),
+            "狙いを外したのに、そのタブ自身の自動化が戻っていない"
+        );
     }
 
     #[test]

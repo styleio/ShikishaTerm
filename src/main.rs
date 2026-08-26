@@ -1322,6 +1322,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         remote_on: ui.remote_on,
         remote_conn: ui.remote_conn,
         remote_sticky: ui.remote_sticky,
+        aim: ui.aim,
         first_run: ui.first_run,
         // Keep the order exactly as written in the config.
         // Listing sessions and browsers separately would push the browser
@@ -3046,6 +3047,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             remote_on: remote_ui.is_some(),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
+            aim: aim_of(workspaces.get(ws_index), &surfaces, &tabs, active),
             nav,
             scrolled: session_at(&surfaces, active)
                 .and_then(|i| tabs.get(i))
@@ -3647,11 +3649,45 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // browser-operate loop; the AI then writes Lua to drive the target.
         for (target, goal) in surface.take_operates() {
             let src_pane = active;
+            // The tab doing the driving, under the name it is written down by.
+            // The aim is remembered against it, so picking one on screen is the
+            // whole of the setting — there is no second place to look
+            let operator_name = session_at(&surfaces, active)
+                .and_then(|i| tabs.get(i))
+                .map(|t| t.id.clone().unwrap_or_else(|| t.title.clone()));
             if target == 0 {
                 if let Some(eng) = engine.as_mut() {
                     eng.stop_operate(src_pane);
                 }
                 operating = None;
+                if remember_aim(workspaces.get_mut(ws_index), operator_name.as_deref(), None) {
+                    // Our own write is not news to the watcher (see the font size)
+                    watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
+                }
+                if let Some(t) = session_at(&surfaces, active).and_then(|i| tabs.get_mut(i)) {
+                    t.set_brain(None);
+                }
+                continue;
+            }
+            // A discussion participant already has a job: the script that keeps
+            // its turn in the ring lives on this pane, and aiming would replace
+            // it. The settings screen used to be the only place that could be
+            // asked for, and it refused there; now that the aim is picked on
+            // screen, the refusal belongs on screen too.
+            let in_discuss = workspaces
+                .get(ws_index)
+                .and_then(|w| w.discuss.as_ref())
+                .is_some_and(|d| {
+                    let me = operator_name.as_deref().unwrap_or_default();
+                    !me.is_empty()
+                        && d.agents
+                            .iter()
+                            .chain(d.judge.iter())
+                            .chain(d.moderator.iter())
+                            .any(|x| x.trim() == me)
+                });
+            if in_discuss {
+                flash = Some(i18n::t("msg.operate.in_discuss"));
                 continue;
             }
             // First slice: browser targets only. Its id comes from the layout.
@@ -3683,6 +3719,27 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     continue;
                 }
             };
+            // Remember it, whether or not there is work yet: what is picked on
+            // screen IS the setting, and it has to survive the next start
+            if remember_aim(
+                workspaces.get_mut(ws_index),
+                operator_name.as_deref(),
+                Some(&target_id),
+            ) {
+                watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
+            }
+            // A model operator is a browser brain exactly while it is aimed at
+            // one: it changes the system prompt it gets and whether its turn
+            // reaches the orchestrator, and both must follow the live aim
+            if let Some(t) = session_at(&surfaces, active).and_then(|i| tabs.get_mut(i)) {
+                t.set_brain(is_browser.then(|| target_id.clone()));
+            }
+            // Aiming is not yet working. The operator is briefed when there is
+            // something to do — otherwise touching the picker would fire a turn
+            // at an AI that has not been asked for anything
+            if goal.is_empty() {
+                continue;
+            }
             // The operator (the active tab) must act without confirmation, or every
             // step would stall waiting for a human. The shell already greys the
             // picker out; this backs it up for anything that posts operate directly.
@@ -3708,7 +3765,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     .zip(engine.as_mut())
                     .map(|(ctx, eng)| {
                         if is_browser {
-                            eng.start_operate(src_pane, &target_id, &ctx)
+                            // The referee is the workspace's, as it always was
+                            // for a browser driven from the settings file. The
+                            // ad-hoc path used to hand over an empty one, so
+                            // whoever aimed on screen quietly had no stops
+                            let stops = workspaces
+                                .get(ws_index)
+                                .map(|w| config::stops_to_lua(&w.stops))
+                                .unwrap_or_else(|| "{}".to_string());
+                            eng.start_operate(src_pane, &target_id, &stops, &ctx)
                         } else {
                             eng.start_operate_ai(src_pane, &target_id, &ctx)
                         }
@@ -4684,13 +4749,15 @@ fn open_console() {
 ///
 /// Reordering still works, because it's reassigned every time config is reloaded.
 /// Nothing is remembered anywhere, so it can never drift out of sync.
-/// The automation assignment for a tab. Either a file/directory, or the built-in browser-driving agent.
+/// The automation assignment for a tab: a file or directory of Lua.
+///
+/// Being aimed at another tab (ð¯) is NOT one of these. An aim is picked on
+/// screen and attached when there is a goal, so a tab keeps the automation it
+/// was given either way -- the two used to fight, and the aim won silently.
 #[derive(Debug, PartialEq)]
 enum TabAuto {
     /// An automation path (a directory or .lua file)
     Path(String),
-    /// Browser-driving mode. Built in; the value is the id of the browser being driven.
-    Agent(String),
 }
 
 /// Returns the screen number (1-based) of the tab in a workspace whose id
@@ -4719,14 +4786,75 @@ fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, TabAuto)> {
             continue;
         }
         pane += 1;
-        // `drives` (browser-driving mode) takes priority over `automation`; the built-in commander runs
-        if let Some(br) = t.cfg.drives.clone().filter(|s| !s.trim().is_empty()) {
-            out.push((pane, TabAuto::Agent(br)));
-        } else if let Some(p) = t.cfg.automation_path() {
+        if let Some(p) = t.cfg.automation_path() {
             out.push((pane, TabAuto::Path(p)));
         }
     }
     out
+}
+
+/// Write down what a tab is aimed at: in the settings file, and in the copy of
+/// it this run is holding.
+///
+/// Both, or the answer disagrees with itself. The file is what the next start
+/// reads; the copy in memory is what the screen is drawn from, and it is not
+/// re-read from disk (our own write is deliberately not treated as news, or
+/// every pick would announce a settings reload). Returns whether the file was
+/// written, which is the caller's cue to leave the watcher unbothered.
+fn remember_aim(
+    ws: Option<&mut config::Workspace>,
+    operator: Option<&str>,
+    aim: Option<&str>,
+) -> bool {
+    let Some(name) = operator else { return false };
+    if let Some(ws) = ws {
+        for t in ws.tabs.iter_mut() {
+            let named = t.cfg.id.as_deref() == Some(name) || t.cfg.name.as_deref() == Some(name);
+            if named {
+                t.cfg.drives = aim.map(str::to_string);
+            }
+        }
+    }
+    if config::save_tab_aim(name, aim) {
+        append_hook_log(&match aim {
+            Some(a) => format!("{name} is aimed at {a}"),
+            None => format!("{name} is aimed at nothing"),
+        });
+        return true;
+    }
+    // A tab with no name of its own in the file has nowhere to keep this. It
+    // still works for this run; it just won't be there next time, and saying so
+    // beats a silent forgetting
+    append_hook_log(&format!("could not record the aim for {name}"));
+    false
+}
+
+/// What the tab in `surface` is aimed at (🎯), as a surface number.
+///
+/// The aim is picked on screen and written into the settings file, so this is
+/// how a restart gets it back: read what was written for that tab, and turn the
+/// id back into the number the screen speaks in. There is no separate "default
+/// target" setting to reconcile with — one place holds the answer.
+fn aim_of(
+    ws: Option<&config::Workspace>,
+    surfaces: &[Surface],
+    tabs: &[Tab],
+    surface: usize,
+) -> Option<usize> {
+    let t = session_at(surfaces, surface).and_then(|i| tabs.get(i))?;
+    let me = t.id.clone().unwrap_or_else(|| t.title.clone());
+    let named = |c: &config::TabConfig| {
+        c.id.as_deref() == Some(me.as_str()) || c.name.as_deref() == Some(me.as_str())
+    };
+    let aim = ws?
+        .tabs
+        .iter()
+        .find(|x| named(&x.cfg))?
+        .cfg
+        .drives
+        .clone()
+        .filter(|d| !d.trim().is_empty())?;
+    hooks::TabRef::Name(aim).resolve(&surface_keys(surfaces, tabs))
 }
 
 fn build_engine(
@@ -4791,44 +4919,9 @@ fn build_engine(
     let stops_lua = ws
         .map(|w| config::stops_to_lua(&w.stops))
         .unwrap_or_else(|| "{}".to_string());
-    // `drives` and `discuss` can't coexist on the same tab (each one claims that
-    // tab's automation). If both are written, `discuss` takes priority and
-    // browser-driving mode is disabled with a warning.
-    let discuss_panes: std::collections::HashSet<usize> = ws
-        .and_then(|w| {
-            w.discuss.as_ref().map(|d| {
-                d.agents
-                    .iter()
-                    .chain(d.judge.iter())
-                    .chain(d.moderator.iter())
-                    .filter(|s| !s.trim().is_empty())
-                    .filter_map(|id| surface_of_id(w, id))
-                    .collect()
-            })
-        })
-        .unwrap_or_default();
     for (idx, auto) in &tab_luas {
         let id = match auto {
             TabAuto::Path(p) => load(&mut engine, p, errors),
-            // Browser-driving mode: loads the built-in commander for the target browser.
-            // But if the same tab is also a discussion participant, discuss wins and this is disabled.
-            TabAuto::Agent(br) if discuss_panes.contains(idx) => {
-                errors.push(crate::i18n::tp(
-                    "err.ws.agent_mode_and_discuss",
-                    &[("idx", &idx.to_string())],
-                ));
-                None
-            }
-            TabAuto::Agent(br) => match engine.load_browser_agent(br, &stops_lua) {
-                Ok(id) => Some(id),
-                Err(e) => {
-                    errors.push(crate::i18n::tp(
-                        "err.ws.agent_mode_failed",
-                        &[("br", br), ("e", &format!("{e:#}"))],
-                    ));
-                    None
-                }
-            },
         };
         if let Some(id) = id {
             engine.set_tab(*idx, id);
@@ -4977,18 +5070,14 @@ fn resolve_launch(
     opts: &mut tab::TabOptions,
     ws: Option<&config::Workspace>,
     id: Option<&str>,
-    drives: Option<&str>,
 ) -> Vec<String> {
     if let Some(mut conn) = bridge::launch_for(&argv) {
         if let (Some(d), Some(id)) = (ws.and_then(|w| w.discuss.as_ref()), id) {
             conn.persona = d.personas.get(id).filter(|p| !p.trim().is_empty()).cloned();
         }
-        // A model tab that `drives` a browser is a rally brain: it steers the
-        // browser by emitting Lua in its reply instead of chatting.
-        conn.drives = drives
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from);
+        // Whether this model is a browser brain is not decided here. It is
+        // decided by what it is aimed at, which can change while it runs
+        // (see Tab::set_brain)
         opts.model = Some(conn);
     }
     argv
@@ -5067,7 +5156,6 @@ fn apply_ws_config(
             &mut opts,
             Some(ws),
             ft.cfg.id.as_deref(),
-            ft.cfg.drives.as_deref(),
         );
         let cwd = opts.cwd.clone();
         match tabs.iter().position(|t| t.title == title) {
@@ -5291,7 +5379,6 @@ fn spawn_workspace(
             &mut opts,
             Some(ws),
             ft.cfg.id.as_deref(),
-            ft.cfg.drives.as_deref(),
         );
         let cwd = opts.cwd.clone();
         match Tab::spawn_as(
@@ -6655,6 +6742,8 @@ struct Ui {
     /// Whether the pairing token is the fixed one from settings (it decides
     /// what the disconnect button promises, not what it does)
     remote_sticky: bool,
+    /// What the focused tab is aimed at (🎯), as a screen number
+    aim: Option<usize>,
     /// Where the auto-chain currently is (the invisible ball, made visible)
     ball: ball::Ball,
     /// The chain cap. Represents how close the ball's color is to that cap.
@@ -7268,20 +7357,26 @@ mod tests {
         assert_eq!(surface_of_id(&ws, "審判"), Some(3));
     }
 
-    /// A tab with `drives` (browser-driving mode) written on it must be assigned the built-in agent
+    /// An aim is not automation, and must not take a tab's own automation away.
+    ///
+    /// `drives` used to mean "browser-driving mode", and a tab that had it was
+    /// handed the built-in agent at launch INSTEAD of the automation written
+    /// for it -- silently, with nothing on screen saying so. It now means the
+    /// aim last picked on screen (🎯), which is attached when there is a goal
+    /// and handed back when it is let go, so the two no longer fight.
     #[test]
-    fn a_tab_with_drives_uses_the_builtin_browser_agent() {
+    fn an_aim_does_not_replace_the_tabs_own_automation() {
         let mut ws = ws_from(&[
             ("エージェント", "ai", "claude"),
             ("ページ", "br", "browser https://example.com/"),
         ]);
         ws.tabs[0].cfg.drives = Some("br".into());
+        ws.tabs[0].cfg.automation = Some("scripts/mine".into());
 
-        let got = automation_by_pane(&ws);
         assert_eq!(
-            got,
-            vec![(1, TabAuto::Agent("br".to_string()))],
-            "drives のタブが内蔵エージェントに割り当たっていない"
+            automation_by_pane(&ws),
+            vec![(1, TabAuto::Path("scripts/mine".to_string()))],
+            "狙いを持つタブが自分の自動化を奪われている"
         );
     }
 

@@ -2396,13 +2396,24 @@ impl Tab {
         self.model_busy.load(Ordering::Relaxed)
     }
 
-    /// Send a line a human typed into a model tab's chat box. Echoes it into the
-    /// screen, then replays the whole conversation to the bridge on a thread and
-    /// injects the reply. This is a plain chat: unlike `dispatch_model` (used by
-    /// discussions) there is no say.txt hand-off and no turn/on_done bookkeeping.
-    /// True when this model tab is a browser-operation *brain* (`drives` set):
-    /// it steers the browser by emitting Lua in its reply, so its turns must
-    /// fire `on_done` and its reply is kept verbatim for the orchestrator.
+    /// Aim (or unaim) a model tab at a browser.
+    ///
+    /// A model tab is a browser brain only while it is aimed at one, and this
+    /// is what says so. It decides the system prompt the model is given and
+    /// whether its turn is marked for the orchestrator to pick up. That used to
+    /// be read from the settings file at launch, so a tab aimed on screen went
+    /// on answering as a plain chat — its fenced Lua arriving mangled by the
+    /// terminal's line wrapping, because nothing had told it it was driving.
+    pub fn set_brain(&mut self, browser: Option<String>) {
+        if let Some(c) = self.model.as_mut() {
+            c.drives = browser.filter(|b| !b.trim().is_empty());
+        }
+    }
+
+    /// True when this model tab is a browser-operation *brain* (it is aimed at
+    /// a browser): it steers that page by emitting Lua in its reply, so its
+    /// turns must fire `on_done` and its reply is kept verbatim for the
+    /// orchestrator.
     pub fn is_browser_brain(&self) -> bool {
         self.model
             .as_ref()

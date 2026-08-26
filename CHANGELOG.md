@@ -9,6 +9,37 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Changed
+- **What you aim at is remembered, and there is no second place to set it.** The
+  settings screen had a "browser-control mode" chosen per tab, from before the
+  🎯 picker existed. Two places said the same thing and the settings one could
+  not see the other: it read "off" while a browser was being driven, and it
+  offered only browsers although 🎯 can aim at an AI tab too. That card is gone.
+  Picking a target on screen IS the setting now — it is written down against
+  that tab and it comes back on the next start.
+
+- **An aim no longer takes a tab's automation away.** A tab given a target used
+  to be handed the built-in agent at launch *instead of* the Lua written for it,
+  silently. The aim now borrows the pane's script while it is attached and hands
+  it back when it is let go, so a tab keeps its own automation either way.
+
+- **A tab is briefed when there is work, not at launch.** Being aimed at
+  something is not yet doing it: the operator hears about its target when a goal
+  is given, so opening a workspace no longer fires a turn at an AI nobody has
+  asked for anything.
+
+### Fixed
+- **An operation started from the screen obeys the workspace's referee.** The
+  🎯 path handed the built-in commander an empty set of stop conditions, so the
+  "停止条件" written for that workspace applied when the same browser was driven
+  from the settings file and quietly did not when it was driven from the picker.
+
+- **A model brain knows it is driving.** Whether a model tab steers a browser
+  (its system prompt, and whether its turn reaches the orchestrator) was read
+  from the settings file once, at launch. Aimed from the screen it went on
+  answering as a plain chat, its fenced Lua arriving mangled by the terminal's
+  line wrapping. It now follows what the tab is actually aimed at.
+
+### Changed
 - **Messages are one toast, and it goes away.** The window, the settings screen
   and the transcript view each carried their own message bar with their own
   timing, and the window's — the one the app itself writes to — faded never: it
