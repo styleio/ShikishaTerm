@@ -1501,12 +1501,11 @@ window.__state = function (json) {
   if (typeof REMOTE !== "undefined" && REMOTE) {
     if (onTermPty() && !castClosed()
         && !(castDock && castDock.style.display === "flex")) openTermBar();
-    // showDock/closeBar own the open-state side of the pen's visibility; this
-    // owns the where-are-we side (no pen over browser/model tabs — they carry
-    // their own composer, summoning the terminal bar there would be nonsense)
-    if (fab && !(castDock && castDock.style.display === "flex"))
-      fab.style.display = onTermPty() ? "" : "none";
   }
+  // Where we are is half of what decides the pen, and it changes without the
+  // bar being touched — so it is settled from the state, every update, on both
+  // surfaces (see syncPen)
+  syncPen();
   drawTabs();
   drawStatus();
   drawNav();
@@ -3489,15 +3488,36 @@ function ensureBar() {
     window.visualViewport.addEventListener("scroll", fit);
   }
 }
+// Whether the ✏️ pen — the way back into a collapsed composer — is showing.
+//
+// Two things decide it: the composer must be closed (open, the pen would sit on
+// top of the bar's own ✕), and the place we are in must have something to
+// summon. The second half changes WITHOUT the bar being touched — the person
+// walks to another tab — so it is settled here, from the state, on every
+// update. Deciding it inside closeBar() froze the answer at the moment of
+// closing: shut the bar over a placed page (which draws its own pen, so the
+// window's is hidden) and the pen never came back on the next tab, because
+// nothing ever asked the question again.
+//
+// This is the app's own pen. The one a placed page draws for itself is
+// syncBrowserPen's business — same rule, different surface.
+function syncPen() {
+  if (!fab) return;
+  const open = castDock && castDock.style.display === "flex";
+  // A phone shows it only over a real terminal tab: a browser relay and a model
+  // chat carry their own composer, so summoning the terminal bar there would be
+  // nonsense. At the window the exception is the placed page — the window's pen
+  // would be drawn underneath it and never seen, so that page draws one itself.
+  const here = (typeof REMOTE !== "undefined" && REMOTE) ? onTermPty() : !onBrowserTab();
+  fab.style.display = (!open && here) ? "" : "none";
+}
 // Show the sub-input bar (auxiliary key row + input field). Never focused
 // automatically — the keyboard never pops up uninvited. It only opens when the user taps the input field
-function showDock() { ensureBar(); syncAttach(); castDock.style.display = "flex"; if (fab) fab.style.display = "none"; }
+function showDock() { ensureBar(); syncAttach(); castDock.style.display = "flex"; syncPen(); }
 function closeBar() {
   if (castDock) castDock.style.display = "none";
   if (castInput) castInput.blur();
-  // Over a placed page the window's own pen would be drawn underneath it and
-  // never seen. That page draws one for itself instead
-  if (fab) fab.style.display = onBrowserTab() ? "none" : "";
+  syncPen();
 }
 function sendBar() {
   if (!castInput) return;
@@ -3590,9 +3610,6 @@ function toggleComposer() {
   else {
     openTermBar();
     if (castInput) castInput.focus();
-    // Hide the ✎ button while the bar is open — it sits over the bar's ✕/Send
-    // buttons, and the ✕ already closes the bar.
-    if (fab) fab.style.display = "none";
     rememberCastClosed(false);
   }
   // Over a browser tab, the reserved room on #page follows the open/closed state.
@@ -3612,7 +3629,6 @@ if (!REMOTE) {
   if (!castClosed()) {
     ensureBar();
     openTermBar();
-    fab.style.display = "none";
     if (castInput) castInput.blur();
     syncBrowserDock();
   }
@@ -4302,6 +4318,37 @@ mod tests {
         );
     }
 
+
+    /// The ✏️ pen is decided by where we are now, not by where we were when
+    /// the composer was closed.
+    ///
+    /// Closing the bar over a placed page hides the window's own pen — that
+    /// page draws one for itself, and ours would be underneath it — and the
+    /// answer used to be frozen at that moment. Walk to an AI tab afterwards
+    /// and there was no pen and no way back into the composer, because nothing
+    /// ever asked the question again. One function owns the answer and every
+    /// state push re-asks it.
+    #[test]
+    fn the_pen_is_decided_by_where_we_are_now() {
+        let p = super::page();
+        assert!(p.contains("function syncPen()"), "ペンの可否を決める一箇所が無い");
+        assert_eq!(
+            p.matches("fab.style.display =").count(),
+            1,
+            "ペンの表示を書く場所が2つ以上ある（片方が場所を決め打ちして固まる）"
+        );
+        assert!(
+            p.contains(r#"(typeof REMOTE !== "undefined" && REMOTE) ? onTermPty() : !onBrowserTab()"#),
+            "どこに居るかの判定が入っていない"
+        );
+        // Both ways in and out of the composer, plus every state push, go
+        // through it — the last one is what makes walking to another tab work
+        assert!(
+            p.contains("castDock.style.display = \"flex\"; syncPen();")
+                && p.contains("syncPen();\n  drawTabs();"),
+            "開閉と状態更新のどこかが自分で決めている"
+        );
+    }
 
     /// The relayed picture is the size of the pane it sits in, never the size
     /// of the frame arriving.

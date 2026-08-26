@@ -8,6 +8,16 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **The pen comes back when you walk to another tab.** Closing the composer over
+  a browser tab left no way to open it again: the pen was hidden there on
+  purpose — the placed page draws its own, ours would be underneath it — but
+  that answer was frozen at the moment of closing, so the next tab had no pen
+  either, and no way back into the composer. Where you are is half of what
+  decides the pen, and it changes without the bar being touched, so it is
+  settled from the state on every update now. One place decides it, for both the
+  window and the phone.
+
 ## [0.3.2] - 2026-08-26
 
 A patch for the phone: the control that says it has disconnected a phone now
