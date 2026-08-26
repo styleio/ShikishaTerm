@@ -91,6 +91,7 @@ shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
 |---|---|
 | `shikisha.send_to_tab(tab, "text")` | **Give a tab an instruction and run it.** Works on this tab too (automatic chain +1) |
 | `shikisha.send(tab, "text")` | Send raw keystrokes (newline is `\r`). For answering prompts, not for instructions |
+| `shikisha.note(tab, "text")` | Write a line **on** that tab's screen for the person watching. Nothing is sent to what runs there and no answer is expected |
 | `shikisha.wait(tab, "pattern", ms)` | Wait until the text appears on screen; `true` if it did |
 | `shikisha.sleep(ms)` | Wait (other tabs keep running while you wait) |
 | `shikisha.state(tab)` | Read the state **right now** (use this as a loop condition) |
@@ -648,6 +649,7 @@ ones; this is the complete list.
 | `shikisha.send_to_tab(tab, "text")` | **Give a tab an instruction and run it.** Works on this tab too (chain +1) |
 | `shikisha.send(tab, "text")` | Raw keystrokes (newline is `\r`). For answering a prompt, not for instructing |
 | `shikisha.draft_to_tab(tab, "text")` | Leave the text in the tab's input box **without** running it — a person finishes and sends |
+| `shikisha.note(tab, "text")` | Write a line **on** that tab's screen. For the person watching only: nothing reaches what runs there, and nobody is asked to answer |
 | `shikisha.state(tab)` | The state right now: `WAIT` / `BUSY` / `DONE` / `ASK` / `EXIT` |
 | `shikisha.wait_state(tab, "DONE", ms)` | Wait until it reaches that state; `true` if it did |
 | `shikisha.tab_output(tab)` | Another tab's latest reply (`""` if there is none yet) |

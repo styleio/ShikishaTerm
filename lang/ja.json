@@ -869,6 +869,8 @@
   "agent.discuss.verdict_agg": "判定（集合条件）",
   "agent.discuss.agg_met": "集合条件が成立",
   "agent.discuss.judge_request_final": "上記の記録ファイルを最後まで読み、議論を審判してください。勝敗(または統合)と理由を say.txt に。",
+  "agent.discuss.again": "{me} の手番のままです。発言がまだ届いていません。あなたの発言を ",
+  "agent.discuss.result.silent": "議論が止まりました（{me} が発言を残さないまま手番を終えました）",
   "agent.discuss.round_limit_no_judge": "(周回上限。審判なし)",
   "agent.discuss.result.round_limit": "議論終了(周回上限)",
   "agent.discuss.mod.pick_before": "次に発言すべき参加者の id を1つ、または END を ",

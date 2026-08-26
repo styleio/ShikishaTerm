@@ -871,6 +871,8 @@
   "agent.discuss.verdict_agg": "Verdict (aggregate condition)",
   "agent.discuss.agg_met": "An aggregate condition was met",
   "agent.discuss.judge_request_final": "Read the whole record above, then judge the discussion. Write the outcome (or synthesis) and the reasons to say.txt.",
+  "agent.discuss.again": "Your turn is still open, {me} — nothing arrived. Write your statement to ",
+  "agent.discuss.result.silent": "Discussion stopped: {me} finished its turn without leaving a statement",
   "agent.discuss.round_limit_no_judge": "(Round limit reached. No judge.)",
   "agent.discuss.result.round_limit": "Discussion ended (round limit)",
   "agent.discuss.mod.pick_before": "Write either the id of the single participant who should speak next, or END, to",

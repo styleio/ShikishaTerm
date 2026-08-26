@@ -1201,17 +1201,27 @@ mod tests {
         let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
 
         // Nothing has been output yet = still starting up, so don't send input
+        let start = Instant::now();
         assert!(!t.had_output(), "起動直後は無出力");
-        assert!(!t.ready_for_startup_hook(), "無出力のうちは待つ");
+        assert!(
+            !t.ready_for_startup_hook(start.elapsed().as_millis() as u64),
+            "無出力のうちは待つ"
+        );
 
         // Once output appears and the screen settles, it's ready
-        let start = Instant::now();
         let mut became_ready = false;
+        let mut ready_at = 0;
+        let mut first_output_at = None;
         for _ in 0..120 {
             std::thread::sleep(Duration::from_millis(50));
+            let now = start.elapsed().as_millis() as u64;
             t.tick(start);
-            if t.ready_for_startup_hook() {
+            if first_output_at.is_none() && t.had_output() {
+                first_output_at = Some(now);
+            }
+            if t.ready_for_startup_hook(now) {
                 became_ready = true;
+                ready_at = now;
                 break;
             }
         }
@@ -1221,6 +1231,15 @@ mod tests {
             t.age_ms() < 15_000,
             "時間切れではなく、落ち着いたことで判定できている ({}ms)",
             t.age_ms()
+        );
+        // The point of the whole gate: the first byte is not the invitation to
+        // type. Something has to hold still afterwards. Without this the tab
+        // was declared ready on the same tick its banner appeared, and the
+        // persona went into a CLI that had not drawn its input box yet.
+        let out_at = first_output_at.expect("出力が出たのに記録されていない");
+        assert!(
+            ready_at >= out_at + 500,
+            "出力が出た瞬間に準備完了にしている (出力 {out_at}ms → 準備完了 {ready_at}ms)"
         );
 
         t.kill();
@@ -1396,6 +1415,11 @@ pub const ACTIVITY_LEN: usize = 24;
 /// Screen changes later than this are the peer actually producing output —
 /// the secondary "it answered" evidence when the working indicator was missed
 const POST_SUBMIT_ECHO_MS: u64 = 2_000;
+
+/// `last_resize_ms` when the tab has never been resized. A real stamp is an
+/// age in ms, so it can legitimately be 0 (a resize in the first millisecond);
+/// the "not yet" answer needs a value no age can reach.
+const NEVER_RESIZED: u64 = u64::MAX;
 
 /// What a launch should do about the conversation.
 ///
@@ -1860,7 +1884,7 @@ impl Tab {
             submitted_screen: AtomicU64::new(0),
             saw_working: AtomicBool::new(false),
             submit_tick_ms: AtomicU64::new(u64::MAX),
-            last_resize_ms: AtomicU64::new(0),
+            last_resize_ms: AtomicU64::new(NEVER_RESIZED),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
             last_hash: 0,
@@ -1996,12 +2020,18 @@ impl Tab {
     /// Whether we're within the redraw window.
     ///
     /// What we wait for is the redraw itself finishing, not the screen
-    /// settling down. Waiting too long would miss the start of a real response
+    /// settling down. Waiting too long would miss the start of a real response.
+    ///
+    /// A tab that has never been resized is NOT redrawing, however young it is.
+    /// Marking "no resize yet" with 0 made every tab spend its first 800ms
+    /// claiming to redraw, so the startup banner never counted as activity, the
+    /// detector never left WAIT, and `ready_for_startup_hook` waved the
+    /// automation through into a CLI that had not drawn its input box yet --
+    /// the persona landed in the prompt as an unsent draft.
     fn redrawing(&self) -> bool {
         const REDRAW_MS: u64 = 800;
-        self.age_ms()
-            .saturating_sub(self.last_resize_ms.load(Ordering::Relaxed))
-            < REDRAW_MS
+        let at = self.last_resize_ms.load(Ordering::Relaxed);
+        at != NEVER_RESIZED && self.age_ms().saturating_sub(at) < REDRAW_MS
     }
 
     /// Whether the peer has declared that it understands bracketed paste.
@@ -2313,6 +2343,16 @@ impl Tab {
         self.state = self
             .detector
             .tick(&screen_text, since, self.bell_count.load(Ordering::Relaxed));
+        // A model bridge is working with nothing on screen to show for it: the
+        // request is in flight over HTTP and not a pixel moves until the reply
+        // lands. The detector only ever watches the screen, so it read that
+        // silence as DONE, on_done fired on a turn that had not happened, and
+        // an orchestrator waiting for a statement found none -- and asked
+        // again, and again. The pane itself knows whether it is waiting; the
+        // detector is told rather than left to guess.
+        if self.is_generating() {
+            self.state = TabState::Busy;
+        }
         if self.state == TabState::Busy {
             self.spinner_idx = self.spinner_idx.wrapping_add(1);
         }
@@ -2431,6 +2471,41 @@ impl Tab {
             .clone()
     }
 
+    /// Write straight onto this tab's screen, as if the peer had printed it.
+    ///
+    /// The one way anything reaches a screen without going through the peer:
+    /// the model bridge's own turn markers and replies, and `shikisha.note`.
+    /// The byte counter is bumped along with the parser so detection sees the
+    /// same activity it would see from real output -- a screen that changed
+    /// while the activity meter stayed flat reads as a ghost.
+    fn inject_into(parser: &SharedParser, counter: &Arc<AtomicU64>, s: &str) {
+        let bytes = s.as_bytes();
+        counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parser
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .process(bytes);
+        }));
+    }
+
+    /// Put a note on this tab's screen. Nothing is sent anywhere and nobody is
+    /// asked to answer -- it is a message for the person watching.
+    ///
+    /// A model bridge is stateless, so it cannot be briefed at startup the way
+    /// a CLI can: prompt it and it answers immediately, before any topic
+    /// exists. Left at that it sat there blank, and a discussion's participants
+    /// were invisible until their turn came round. Telling the screen is not
+    /// the same act as telling the peer, so it is its own primitive.
+    pub fn note(&self, text: &str) {
+        let body = text.trim_end().replace('\n', "\r\n");
+        Self::inject_into(
+            &self.parser,
+            &self.bytes_out,
+            &format!("\r\n\x1b[2m{body}\x1b[0m\r\n"),
+        );
+    }
+
     /// A human line typed into the chat box. Echoes the line with a
     /// Claude-style prompt marker, then the model replies.
     pub fn chat_send(&self, user_text: String) {
@@ -2446,8 +2521,8 @@ impl Tab {
 
     /// Shared core of a model turn. `echo` controls whether the incoming text
     /// is shown verbatim (a human's line) or as a compact marker (relayed rally
-    /// context). For a browser brain the turn is marked so BUSY→DONE→on_done
-    /// fires and the reply is stashed verbatim for the orchestrator.
+    /// context). Either way the turn is marked, so BUSY→DONE→on_done fires and
+    /// the reply is stashed verbatim for whatever is orchestrating this pane.
     fn model_turn(&self, incoming: String, echo: bool) {
         let Some(conn) = self.model.clone() else { return };
         let text = incoming.trim().to_string();
@@ -2468,23 +2543,20 @@ impl Tab {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((true, text.clone()));
-        // A brain's turn must be picked up by detection (BUSY→DONE→on_done);
-        // a plain chat turn must NOT (there is no orchestrator, and firing
-        // would be a no-op at best). Marking here mirrors dispatch_model.
-        if brain {
-            self.mark_turn_start();
-        }
+        // Every model turn is marked, so detection sees BUSY→DONE and fires
+        // on_done. Marking here mirrors dispatch_model.
+        //
+        // It used to be done for a browser brain only, on the reasoning that a
+        // line typed into a chat pane has no orchestrator waiting on it. It
+        // can: a discussion's opening speaker is handed the topic by a person,
+        // and if that pane is a model bridge its answer was the one turn in the
+        // whole round that detection ignored -- so the discussion never started.
+        // With no hook attached, firing on_done reaches nobody and costs
+        // nothing, which is the right price for not having to know in advance
+        // who is listening.
+        self.mark_turn_start();
         std::thread::spawn(move || {
-            let inject = |s: &str| {
-                let bytes = s.as_bytes();
-                counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    parser
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .process(bytes);
-                }));
-            };
+            let inject = |s: &str| Self::inject_into(&parser, &counter, s);
             if echo {
                 // The human's line, with a Claude-style prompt marker. The
                 // "generating" state is shown by the HTML thinking bubble
@@ -2580,18 +2652,12 @@ impl Tab {
         self.mark_turn_start();
         let parser = Arc::clone(&self.parser);
         let counter = Arc::clone(&self.bytes_out);
+        // Raised for the whole turn, exactly as a chat turn does it. Both are
+        // "this pane is waiting on the API"; only who asked differs.
+        let busy = Arc::clone(&self.model_busy);
+        busy.store(true, Ordering::Relaxed);
         std::thread::spawn(move || {
-            // Write to the screen and bump the activity volume too (so detection can pick it up)
-            let inject = |s: &str| {
-                let bytes = s.as_bytes();
-                counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    parser
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .process(bytes);
-                }));
-            };
+            let inject = |s: &str| Self::inject_into(&parser, &counter, s);
             inject(&format!(
                 "\r\n\x1b[36m… {}\x1b[0m\r\n",
                 crate::i18n::tp("agent.model.generating", &[("model", &conn.model)])
@@ -2633,6 +2699,7 @@ impl Tab {
                     crate::i18n::tp("agent.model.error", &[("e", &e.to_string())])
                 )),
             }
+            busy.store(false, Ordering::Relaxed);
         });
     }
 
@@ -2650,10 +2717,27 @@ impl Tab {
     ///
     /// An AI CLI doesn't accept input until it launches and finishes drawing
     /// the input box. We treat "output appeared and the screen settled" as
-    /// "ready." A timeout is also set for programs that never output anything
-    pub fn ready_for_startup_hook(&self) -> bool {
+    /// "ready." A timeout is also set for programs that never output anything.
+    ///
+    /// Settling is asked of the screen itself, not inferred from the state.
+    /// "Not BUSY" reads as settled only once the state machine has actually
+    /// seen the boot output; on the very first ticks of a tab's life it still
+    /// holds its birth value, and taking that for calm sent the persona into a
+    /// CLI that was mid-launch. `now_ms` comes from the same clock `tick` uses.
+    pub fn ready_for_startup_hook(&self, now_ms: u64) -> bool {
         const GIVE_UP_MS: u64 = 15_000;
-        (self.had_output() && self.state != TabState::Busy) || self.age_ms() > GIVE_UP_MS
+        /// How long the screen must hold still before we call the launch finished
+        const SETTLE_MS: u64 = 700;
+        if self.age_ms() > GIVE_UP_MS {
+            return true;
+        }
+        self.had_output()
+            // A CLI standing at its own onboarding question (trust this
+            // directory? sign in?) is holding still, but it is holding still
+            // waiting for a person. Pasting a briefing into it answers the
+            // question with the briefing.
+            && !matches!(self.state, TabState::Busy | TabState::Question)
+            && self.ms_since_change(now_ms) >= SETTLE_MS
     }
 
     /// An estimate of the number of rows written so far.

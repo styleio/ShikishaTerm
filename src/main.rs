@@ -2436,7 +2436,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // Sending right after launch gets dropped, since the AI CLI
                         // hasn't drawn its input box yet. Wait until it's ready before
                         // flushing it in.
-                        if !*fired && tabs[i].ready_for_startup_hook() {
+                        if !*fired && tabs[i].ready_for_startup_hook(now_ms) {
                             *fired = true;
                             eng.fire(
                                 "on_start",
@@ -2882,7 +2882,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     .and_then(|r| r.resolve(&keys))
                     .and_then(|p| session_at(&surfaces, p))
                     .and_then(|i| tabs.get(i))
-                    .map(ready_to_receive)
+                    .map(|t| ready_to_receive(t, now_ms))
                     .unwrap_or(false);
                 if can {
                     ready.push(w.cmd);
@@ -6247,9 +6247,11 @@ fn target_of(cmd: &Command) -> Option<&hooks::TabRef> {
     }
 }
 
-/// Whether the recipient is in a state where it can accept input
-fn ready_to_receive(t: &Tab) -> bool {
-    t.ready_for_startup_hook()
+/// Whether the recipient is in a state where it can accept input.
+/// `now_ms` is the main loop's clock — the same one the readiness gate measures
+/// "the screen has held still" against
+fn ready_to_receive(t: &Tab, now_ms: u64) -> bool {
+    t.ready_for_startup_hook(now_ms)
 }
 
 /// How long to hold before giving up. Whoever wrote it isn't watching anymore by the time this long has passed.
@@ -6290,7 +6292,7 @@ fn exec_commands(
                 .and_then(index_of)
                 .and_then(session_of)
                 .and_then(|i| tabs.get(i))
-                .map(|t| !ready_to_receive(t))
+                .map(|t| !ready_to_receive(t, now_ms))
                 .unwrap_or(false);
             if not_yet {
                 if let Some(t) = target_of(&cmd) {
@@ -6488,6 +6490,19 @@ fn exec_commands(
                         "Draft tab{origin} -> tab{idx} (depth {depth}): {}",
                         log_excerpt(&text, 60)
                     ));
+                }
+            }
+            Command::Note { target, text } => {
+                // Display only: no chain depth, no ball, no submit reservation,
+                // and no manual-input guard. Writing on a screen interrupts
+                // nothing, so none of the things that protect a turn apply.
+                let Some(target) = index_of(&target) else {
+                    append_hook_log(&format!("Note target not found: {target:?}"));
+                    continue;
+                };
+                if let Some(t) = session_of(target).and_then(|i| tabs.get(i)) {
+                    t.note(&text);
+                    append_hook_log(&format!("note tab{target}: {}", log_excerpt(&text, 60)));
                 }
             }
             Command::SendPrompt {

@@ -751,6 +751,11 @@ pub enum Command {
     /// Switch the displayed tab (spectator mode: lets a human watch the
     /// AI<->browser turns). 0 = the dashboard (INDEX)
     ShowTab { target: TabRef },
+    /// Put a line on a tab's screen for the person watching. Nothing is sent
+    /// to the peer and nothing is expected back -- the counterpart of
+    /// `SendPrompt` for a pane that must be told something without being asked
+    /// anything
+    Note { target: TabRef, text: String },
     /// The rally's final result (an exit code and reason the AI produces by
     /// judging whether the goal was met). Written to data/last-result.json,
     /// the log, and the UI
@@ -1195,6 +1200,29 @@ impl HookEngine {
                             target: tab_ref_of(&target)?,
                             text: text.to_string_lossy(),
                             origin: o.get(),
+                        });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // Say something ON a tab's screen without saying it TO the tab.
+            // send_to_tab is a turn: the peer is handed text and expected to
+            // answer. A stateless model bridge cannot take a turn before there
+            // is anything to answer, yet the person watching still has to be
+            // able to see who is in the room and what they stand for. Those are
+            // two different acts, so they are two primitives -- not one with a
+            // flag.
+            let c = Rc::clone(&commands);
+            shikisha
+                .set(
+                    "note",
+                    lua.create_function(move |_, (target, text): (Value, mlua::LuaString)| {
+                        c.borrow_mut().push(Command::Note {
+                            target: tab_ref_of(&target)?,
+                            text: text.to_string_lossy(),
                         });
                         Ok(())
                     })
@@ -3028,47 +3056,40 @@ end
 
 function on_start(tab)
   local run = ensure_run()
-  -- A model bridge is stateless: it answers whatever prompt it is handed
-  -- straight away, so it cannot hold an intro the way a CLI waits at its
-  -- prompt. Briefing it at startup would make it speak before any topic
-  -- exists. Its persona rides on every turn's system message instead, so it
-  -- needs no startup briefing -- stay silent until its turn actually arrives.
-  -- (ensure_run() still runs above so the shared run exists even if the
-  -- opening speaker happens to be a model, which self-kicks from on_done.)
-  if tab.is_model then return end
   local say = run .. "/say.txt"
-  local lines
+  local lines = {}
+  local function add(...)
+    for _, l in ipairs({ ... }) do lines[#lines + 1] = l end
+  end
+  -- Where to put what you have to say. Only a CLI is told: for a model bridge
+  -- SHIKISHA writes say.txt out of the reply itself, so naming the file on its
+  -- screen would be telling the person watching something that is not true
+  -- here.
+  local function writes_to(head)
+    if tab.is_model then return end
+    add(head, "  " .. say)
+  end
   if IS_MOD then
-    lines = {
-      shikisha.tf("agent.discuss.mod.intro", { me = nm(ME) }),
-      shikisha.t("agent.discuss.mod.nominate"),
-      "  " .. say,
-      shikisha.t("agent.discuss.mod.write_to") .. table.concat(agent_names(), ", "),
-      shikisha.t("agent.discuss.mod.wait_turn"),
-    }
+    add(shikisha.tf("agent.discuss.mod.intro", { me = nm(ME) }))
+    writes_to(shikisha.t("agent.discuss.mod.nominate"))
+    add(shikisha.t("agent.discuss.mod.write_to") .. table.concat(agent_names(), ", "),
+        shikisha.t("agent.discuss.mod.wait_turn"))
   elseif IS_JUDGE then
     local ask = (MODE == "synthesis")
       and shikisha.t("agent.discuss.judge.ask_synthesis")
       or  shikisha.t("agent.discuss.judge.ask_winner")
-    lines = {
-      shikisha.tf("agent.discuss.judge.intro", { me = nm(ME) }),
-      shikisha.t("agent.discuss.judge.ruling_before") .. ask .. shikisha.t("agent.discuss.judge.ruling_after"),
-      "  " .. say,
-      shikisha.t("agent.discuss.judge.rubric"),
-      shikisha.t("agent.discuss.judge.wait_turn"),
-    }
+    add(shikisha.tf("agent.discuss.judge.intro", { me = nm(ME) }))
+    writes_to(shikisha.t("agent.discuss.judge.ruling_before") .. ask .. shikisha.t("agent.discuss.judge.ruling_after"))
+    add(shikisha.t("agent.discuss.judge.rubric"),
+        shikisha.t("agent.discuss.judge.wait_turn"))
   else
-    lines = {
-      shikisha.tf("agent.discuss.part.intro", { me = nm(ME) }),
-      shikisha.t("agent.discuss.part.each_turn"),
-      "  " .. say,
-      shikisha.t("agent.discuss.part.others"),
-    }
+    add(shikisha.tf("agent.discuss.part.intro", { me = nm(ME) }))
+    writes_to(shikisha.t("agent.discuss.part.each_turn"))
+    add(shikisha.t("agent.discuss.part.others"))
     if IS_FIRST then
-      lines[#lines + 1] = ""
-      lines[#lines + 1] = shikisha.t("agent.discuss.part.ready")
+      add("", shikisha.t("agent.discuss.part.ready"))
     else
-      lines[#lines + 1] = shikisha.t("agent.discuss.part.wait_turn")
+      add(shikisha.t("agent.discuss.part.wait_turn"))
     end
   end
   -- If a persona (stance/character) is set, put it at the very top. Keep to that stance throughout the discussion
@@ -3077,7 +3098,19 @@ function on_start(tab)
     table.insert(lines, 2, shikisha.t("agent.discuss.persona.keep"))
     table.insert(lines, 3, "")
   end
-  shikisha.send_to_tab(tab.index, table.concat(lines, "\n"))
+  local text = table.concat(lines, "\n")
+  -- A model bridge is stateless: it answers whatever prompt it is handed
+  -- straight away, so it cannot hold an intro the way a CLI waits at its
+  -- prompt. Briefing it would make it speak before any topic exists, and its
+  -- persona rides on every turn's system message anyway -- so it is never
+  -- prompted here. The person watching still has to see who is in the room:
+  -- the same introduction goes ON its screen instead of TO it. Left blank, a
+  -- participant looked like a tab that had failed to start.
+  if tab.is_model then
+    shikisha.note(tab.index, text)
+  else
+    shikisha.send_to_tab(tab.index, text)
+  end
 end
 
 function on_done(tab)
@@ -3092,6 +3125,8 @@ function on_done(tab)
       shikisha.set_var("discuss_says", nil)
       shikisha.set_var("discuss_round", 0)
       shikisha.set_var("discuss_ask_judge", nil)
+      shikisha.set_var("discuss_turn", nil)
+      for _, ag in ipairs(AGENTS) do shikisha.set_var("discuss_miss_" .. ag, nil) end
       tx("\n---\n")
     else
       return
@@ -3103,7 +3138,12 @@ function on_done(tab)
   -- When handing off a turn, append say.txt's location in a machine-readable
   -- form at the end. Harmless hint for a CLI AI; the model bridge (ours)
   -- uses this line as the turn signal
-  local function speak(pane, msg)
+  -- Handing over the turn. `who` is the id now on the clock -- kept because
+  -- on_done fires on any BUSY->DONE, so without it "finished without saying
+  -- anything" cannot be told apart from "this tab was busy with something
+  -- else". A pane spoken to by index (our own nudge) is still us.
+  local function speak(pane, msg, who)
+    shikisha.set_var("discuss_turn", who or ME)
     shikisha.send_to_tab(pane, msg .. "\nSHIKISHA_SAY=" .. say)
   end
   -- Hand the next speaker the record file to READ, never the transcript pasted
@@ -3117,15 +3157,46 @@ function on_done(tab)
 
   local msg = shikisha.exchange_take(say)
   if not (msg and #msg > 0) then
-    -- Hasn't spoken yet. Nudge the opening speaker to start.
-    -- For a CLI, this is right after a human typed the topic
-    -- (chain_depth==0). A model bridge can't receive human input, so let
-    -- it kick off automatically from its persona/context instead (is_model)
-    if IS_FIRST and (tab.chain_depth == 0 or tab.is_model) then
-      speak(tab.index, shikisha.t("agent.discuss.first.before") .. say .. shikisha.t("agent.discuss.first.after"))
+    -- Nothing was said. Either the opening speaker has not begun (for a CLI
+    -- that is right after a human typed the topic, chain_depth==0; a model
+    -- bridge is handed the topic as a message, so it kicks off from its own
+    -- reply instead), or whoever holds the turn has just finished without
+    -- leaving a statement.
+    local opening = IS_FIRST and (tab.chain_depth == 0 or tab.is_model)
+    -- Nobody handed us the turn, so finishing with nothing to say is not a
+    -- failure -- it is just this tab being used for something else.
+    if not opening and shikisha.get_var("discuss_turn") ~= ME then return end
+    local key = "discuss_miss_" .. ME
+    -- A person typing is a fresh start, whatever happened before it
+    if tab.chain_depth == 0 then shikisha.set_var(key, nil) end
+    local asks = (shikisha.get_var(key) or 0) + 1
+    shikisha.set_var(key, asks)
+    -- Ask, and ask once more -- a CLI that answered on screen instead of
+    -- writing the file usually gets it right the second time. Then stop and
+    -- say why. Neither of the two ways this used to go is acceptable: a
+    -- participant that simply went quiet took the whole discussion down with
+    -- it and no screen anywhere admitted it, and an opening speaker that kept
+    -- being asked was asked forever.
+    if asks <= 2 then
+      speak(tab.index, opening
+        and (shikisha.t("agent.discuss.first.before") .. say .. shikisha.t("agent.discuss.first.after"))
+        or table.concat({
+          ctx_ref(),
+          shikisha.tf("agent.discuss.again", { me = nm(ME) }) .. say
+            .. shikisha.t("agent.discuss.next_turn.after"),
+        }, "\n"))
+      return
     end
+    local why = shikisha.tf("agent.discuss.result.silent", { me = nm(ME) })
+    tx("\n## " .. why .. "\n")
+    shikisha.note(tab.index, why)
+    shikisha.set_result(1, why)
+    shikisha.set_var("discuss_done", true)
+    shikisha.open_result(run)
     return
   end
+  -- Spoke. Whatever it missed before is history
+  shikisha.set_var("discuss_miss_" .. ME, nil)
 
   -- The judge speaks only when it has been formally asked to rule. Until then,
   -- ignore anything it writes (Claude tends to eagerly acknowledge its
@@ -3144,7 +3215,7 @@ function on_done(tab)
         shikisha.show(JUDGE)
         speak(JUDGE, table.concat({
           ctx_ref(), shikisha.t("agent.discuss.judge_request"),
-        }, "\n"))
+        }, "\n"), JUDGE)
       else
         shikisha.set_result(0, shikisha.t("agent.discuss.result.mod_closed"))
         shikisha.set_var("discuss_done", true)
@@ -3162,7 +3233,7 @@ function on_done(tab)
     speak(pick, table.concat({
       ctx_ref(),
       shikisha.t("agent.discuss.your_turn.before") .. nm(pick) .. shikisha.t("agent.discuss.your_turn.mid") .. say .. shikisha.t("agent.discuss.your_turn.after"),
-    }, "\n"))
+    }, "\n"), pick)
     return
   end
 
@@ -3205,7 +3276,7 @@ function on_done(tab)
       shikisha.show(JUDGE)
       speak(JUDGE, table.concat({
         ctx_ref(), shikisha.t("agent.discuss.judge_request_final"),
-      }, "\n"))
+      }, "\n"), JUDGE)
     else
       tx("\n## " .. shikisha.t("agent.verdict.label") .. "\n" .. shikisha.t("agent.discuss.round_limit_no_judge") .. "\n")
       shikisha.set_result(0, shikisha.t("agent.discuss.result.round_limit"))
@@ -3225,13 +3296,13 @@ function on_done(tab)
       ctx_ref(),
       shikisha.t("agent.discuss.mod.pick_before") .. say
         .. shikisha.t("agent.discuss.mod.pick_after") .. table.concat(agent_names(), ", "),
-    }, "\n"))
+    }, "\n"), MODERATOR)
   else
     shikisha.show(NEXT)
     speak(NEXT, table.concat({
       ctx_ref(),
       shikisha.t("agent.discuss.next_turn.before") .. nm(NEXT) .. shikisha.t("agent.discuss.next_turn.mid") .. say .. shikisha.t("agent.discuss.next_turn.after"),
-    }, "\n"))
+    }, "\n"), NEXT)
   end
 end
 "##;
