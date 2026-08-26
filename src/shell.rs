@@ -233,8 +233,21 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      terminal. Keeps the aspect ratio while fitting the frame.
      touch-action:none stops the default scroll so finger movement can be
      forwarded as a raw motion trail instead */
+  /* The width and the height are spelled out instead of being left to the four
+     insets. A canvas is a replaced element, and one whose size is `auto` takes
+     the size of what it holds -- here the relayed frame, which is the PC's own
+     page and is far wider than any phone. `right` and `bottom` are then
+     over-constrained and the browser simply drops them (CSS 2.1 10.3.8), so the
+     picture hung off the right edge with no way to reach it. Worse, the phone
+     reports its screen shape from this very box: it kept reporting the frame's
+     own shape straight back, so the PC never re-shaped the page to the phone
+     and the black band under the picture could never close. The insets stay --
+     everything else is placed from them -- and these two say the same
+     rectangle in the terms a replaced element is willing to hear */
   #cast { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--navh));
-    right:var(--fr); bottom:var(--fb); width:auto; height:auto;
+    right:var(--fr); bottom:var(--fb);
+    width:calc(100% - var(--fx) - var(--fr));
+    height:calc(100% - var(--fy) - var(--navh) - var(--fb));
     object-fit:contain; object-position:top center; background:#000; touch-action:none;
     transform-origin:0 0; }
   /* Trackpad-style synthetic cursor: a Windows-like arrow whose tip is the
@@ -4251,6 +4264,34 @@ mod tests {
         );
     }
 
+
+    /// The relayed picture is the size of the pane it sits in, never the size
+    /// of the frame arriving.
+    ///
+    /// A canvas is a replaced element. Leave its width `auto` between a `left`
+    /// and a `right` and the browser keeps the frame's own pixel size and drops
+    /// the `right` as over-constrained. On a phone that frame is the PC's page:
+    /// twice the width of the screen, with half of it hanging off the right
+    /// edge and no way to reach it. Worse, the phone reports its screen shape
+    /// from this very box — so it reported the frame's own shape straight back,
+    /// the PC never re-shaped the page to suit the phone, and the black band
+    /// under the picture could never close.
+    #[test]
+    fn the_relayed_picture_is_the_size_of_the_pane_it_sits_in() {
+        let p = super::page();
+        assert!(
+            p.contains("width:calc(100% - var(--fx) - var(--fr));"),
+            "中継画面の幅がペインの幅になっていない"
+        );
+        assert!(
+            p.contains("height:calc(100% - var(--fy) - var(--navh) - var(--fb));"),
+            "中継画面の高さがペインの高さになっていない"
+        );
+        assert!(
+            !p.contains("width:auto; height:auto;"),
+            "置換要素の寸法を auto に戻すと、届いたフレームの原寸で描かれる"
+        );
+    }
 
     /// The tab bar is a width, and putting it away is that width being zero.
     ///
