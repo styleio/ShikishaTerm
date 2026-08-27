@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Store copy of SHIKISHA-TERM.
+
+  A full-trust desktop application, not a sandboxed app: it creates
+  pseudo-terminals and runs the AI command-line tools the person already has
+  installed, which is the whole point of it. That is what runFullTrust below
+  asks for, and it is why EntryPoint is Windows.FullTrustApplication.
+
+  Identity Name and Publisher are placeholders here. Partner Center assigns the
+  real ones when the app is reserved, and Publisher must then match the subject
+  of the certificate the package is signed with, character for character, or
+  Windows refuses to install it. tools/msix.ps1 fills both in.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="{{IDENTITY_NAME}}"
+    Publisher="{{PUBLISHER}}"
+    Version="{{VERSION}}"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>SHIKISHA-TERM</DisplayName>
+    <PublisherDisplayName>{{PUBLISHER_DISPLAY_NAME}}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <!-- 19041 is the first build with a ConPTY this program can rely on. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+    <Resource Language="ja-jp" />
+  </Resources>
+
+  <Applications>
+    <Application Id="SHIKISHATERM" Executable="SHIKISHA-TERM.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="SHIKISHA-TERM"
+        Description="Run Claude Code, Codex and Gemini side by side and let them hand work to each other."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Square310x310Logo="Assets\Square310x310Logo.png"
+          Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Runs ordinary Windows programs with the user's own rights. Without it
+         there are no pseudo-terminals and no AI tools to conduct. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

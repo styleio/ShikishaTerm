@@ -46,3 +46,6 @@ Window.cmd
 
 #デバッグ用
 /screenshot
+
+# MSIX build output (target/ is already ignored; this is the unpacked staging)
+/packaging/**/*.msix

@@ -129,7 +129,16 @@ fn main() -> Result<()> {
     // Decide the display language (config, then OS; falls back to English if untranslated)
     i18n::init(
         config::load().and_then(|c| c.language).as_deref(),
-        &[config_file_dir(), std::path::PathBuf::from(".")],
+        // The exe's own folder first: the translations ship with the program and
+        // are only ever read, so they stay where it was installed. Installed from
+        // the Store, the config folder is somewhere else entirely -- looking only
+        // there would find no ja.json and quietly fall back to English, on a
+        // Japanese machine, with nothing to say it had happened.
+        &[
+            config::exe_dir(),
+            config_file_dir(),
+            std::path::PathBuf::from("."),
+        ],
     );
     // Settings-only mode (edit settings in a browser without launching the main app)
     if std::env::args().nth(1).as_deref() == Some("--settings") {

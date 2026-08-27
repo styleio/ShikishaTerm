@@ -1262,13 +1262,58 @@ impl Config {
     }
 }
 
-/// Root of the portable layout (where the exe and its folders sit side by side).
-/// data / logs / config all live under here
-pub fn root_dir() -> std::path::PathBuf {
+/// Where the program itself was installed. What ships with it and is only ever
+/// read -- lang, profiles, the automation manual -- sits here, in both layouts.
+pub fn exe_dir() -> std::path::PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
         .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// Whether this process is running from an installed package (the Store).
+///
+/// `GetCurrentPackageFullName` answers `APPMODEL_ERROR_NO_PACKAGE` when the
+/// process has none. Asking only for the length -- with nowhere to put the name
+/// -- is the cheapest way to put the question, and the "buffer too small" answer
+/// that comes back is itself a yes.
+fn packaged() -> bool {
+    const APPMODEL_ERROR_NO_PACKAGE: u32 = 15700;
+    let mut len: u32 = 0;
+    let rc = unsafe {
+        windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName(
+            &mut len,
+            std::ptr::null_mut(),
+        )
+    };
+    rc != APPMODEL_ERROR_NO_PACKAGE
+}
+
+/// Root of the layout that holds what belongs to the person using it: config,
+/// data, logs, workspaces.
+///
+/// Portable by default -- beside the exe. That is the promise the download
+/// makes: unzip it anywhere, copy the folder to another machine whole, delete
+/// the folder and nothing of it is left behind.
+///
+/// A copy installed from the Store cannot keep that promise. It runs from
+/// `Program Files\WindowsApps`, which is read-only to the very program stored
+/// there, so the first attempt to save a setting would fail -- on a fresh
+/// install, with nowhere to write the log that would say why. So an installed
+/// copy keeps those things under LOCALAPPDATA instead. Nothing changes for the
+/// download: unpackaged, this is the exe's own folder exactly as before.
+pub fn root_dir() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        if packaged()
+            && let Some(local) = std::env::var_os("LOCALAPPDATA")
+        {
+            return std::path::PathBuf::from(local).join("SHIKISHA-TERM");
+        }
+        exe_dir()
+    })
+    .clone()
 }
 
 /// Search order for the config file. Prefers the new layout (config folder),
@@ -1537,6 +1582,23 @@ pub fn load() -> Option<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The download keeps everything beside the exe, and must go on doing so.
+    ///
+    /// A Store copy has to put the person's config, data and logs under
+    /// LOCALAPPDATA, because the folder it runs from is read-only to it. That
+    /// belongs to the packaged copy alone: the download's promise is that the
+    /// folder holds the whole of it -- copy it to another machine and the
+    /// settings come along, delete it and nothing is left behind. A test run is
+    /// never packaged, so this is the download's layout being asserted.
+    #[test]
+    fn the_portable_layout_keeps_everything_beside_the_exe() {
+        assert!(!packaged(), "a test run should not be a packaged one");
+        assert_eq!(root_dir(), exe_dir(), "ポータブル配置が exe の隣から離れた");
+        for p in [logs_dir(), state_path("x")] {
+            assert!(p.starts_with(exe_dir()), "{p:?} が exe の隣から外れた");
+        }
+    }
 
     #[test]
     fn a_config_saved_by_a_windows_editor_still_loads() {
