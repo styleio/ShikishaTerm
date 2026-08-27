@@ -1,29 +1,21 @@
-SHIKISHA-TERM -- third-party notices
-====================================
+{{!--
+  Not the shape of THIRD-PARTY-NOTICES.txt -- the raw material for it.
 
-SHIKISHA-TERM itself is under the MIT License; see LICENSE.
-
-It is built from the open source components listed below. Each of them is
-distributed under its own terms, and every one of those terms is reproduced
-here in full, because that is the condition on which they were given. The
-list is worked out from Cargo.lock, so it describes the exact versions this
-build was made from -- not a general list of things the project has used.
-
-Rebuild it with tools/notices.ps1.
-
+  cargo-about hands its crate lists out in whatever order it happened to find
+  them on disk, which is not the same order on two machines. That is invisible
+  in a file people only read, and fatal to `notices.ps1 -Check`, which compares
+  the generated text against the committed one and cannot tell "a dependency
+  changed" from "the same crates came back shuffled". Handlebars cannot sort,
+  so this emits one tagged line per fact and tools/notices.ps1 does the sorting
+  and the laying out. None of these markers reach the finished file; a license
+  whose text contains one stops the run.
+--}}
 {{#each licenses}}
-================================================================================
-{{{name}}}
-================================================================================
-
-Applies to:
+@@LICENSE@@{{{name}}}
 {{#each used_by}}
-  * {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}}
-    {{{crate.repository}}}{{/if}}
+@@CRATE@@{{{crate.name}}}|{{{crate.version}}}|{{{crate.repository}}}
 {{/each}}
-
---------------------------------------------------------------------------------
-
+@@TEXT@@
 {{{text}}}
-
+@@END@@
 {{/each}}

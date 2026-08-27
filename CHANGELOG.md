@@ -14,10 +14,12 @@ once it reaches its first tagged release.
   the code — and the zip carried none of them, which is a download handed out
   outside the grant and the first thing an OSS compliance review looks at.
   `THIRD-PARTY-NOTICES.txt` now ships beside `LICENSE` with the full terms of
-  every component the Windows binary is built from, 210 of them: not a
+  every component the Windows binary is built from, 209 of them: not a
   general list of what the project has used, but what this build links.
   `tools/notices.ps1` writes it, `dist.list` carries it, and CI fails a pull
-  request that adds a dependency without rerunning it.
+  request that adds a dependency without rerunning it. The file is written in
+  a fixed order and with the crate itself left out, so that check compares the
+  same text on every machine and no program credits itself.
 - **A copyleft dependency can no longer arrive in silence.** `about.toml` names
   the licenses that may travel inside the download; one that is not on that
   list stops generation rather than reaching a user by way of some transitive
