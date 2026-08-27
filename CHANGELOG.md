@@ -8,6 +8,35 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-08-27
+
+Looking at INDEX no longer wrecks what the AI had drawn, and the executable
+finally says who wrote it.
+
+### Fixed
+- **A screen covering the panes no longer resizes the terminals underneath.**
+  Opening INDEX, or the settings form, told every running AI that its window
+  had shrunk to 20 columns by 5 rows — then told it to grow back the moment the
+  cover lifted. Anything that redraws on a resize, which is every AI CLI built
+  on Ink (Qwen Code, Gemini CLI, Claude Code), reflowed its whole interface into
+  that and could not put it back: what returned was blank rows and a frame cut
+  off mid-line, repairing only where the next keystroke made the program draw
+  again. That is why typing appeared to fix it a piece at a time. The cause was
+  the same one behind the misplaced toast in 0.3.5 — a hidden element reports a
+  rectangle of zeros rather than no rectangle at all — caught that time where
+  things are *placed* and missed where they are *measured*. Measured on a
+  running window, opening INDEX went 118x47 → 20x5 → 118x47; it now stays
+  118x47 throughout. A covered pane has not changed size; it is only not being
+  shown.
+
+### Changed
+- **The executable says who wrote it.** `LegalCopyright` read "MIT License",
+  which is the name of a license and not a copyright notice — no holder, no
+  year, which is the one thing that field exists to state. It now reads
+  `Copyright (c) 2026 styleio. MIT License.`, `CompanyName` names the author
+  rather than repeating the product, and `OriginalFilename` and `InternalName`,
+  both of which were empty, are filled in.
+
 ### Added
 - **The download says what it is made of.** MIT, BSD, ISC and Apache all grant
   what they grant on one condition — that their copyright notice travels with

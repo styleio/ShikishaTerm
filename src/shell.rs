@@ -1898,6 +1898,10 @@ if (document.fonts && document.fonts.ready) {
 // The other side trusts this number for line-wrapping, so a mismatch
 // means it keeps writing past the edge of the screen
 let lastRC = "";
+// The last measurements taken while the panes were actually on screen. A screen
+// that covers them -- INDEX, the settings form -- must not be allowed to speak
+// for their size; see report().
+let lastPanes = null, lastFit = null;
 // The focused pane's rectangle, in the pixels every layer above it draws with:
 // the placed browser, the composer, the pen.
 //
@@ -1949,7 +1953,19 @@ function report() {
   // terminal just because the top bar appeared, or re-wrap the AI's screen just
   // because a browser tab was switched to
   const area = document.getElementById("page").getBoundingClientRect();
-  const panes = boxes.map((el) => {
+  // INDEX and the settings form cover the panes, and a covered element reports
+  // a rectangle of zeros rather than no rectangle at all. Measured as a pane,
+  // those zeros are the smallest terminal `fit` will name -- 20x5 -- so every
+  // running AI was told its window had shrunk to that, reflowed its whole
+  // interface to suit, and was told to grow back the moment the cover lifted.
+  // What came back from that round trip was a broken frame: blank rows, and
+  // the box the program had drawn cut off mid-line. It repaired only where the
+  // next keystroke made the program draw again, which is why typing appeared
+  // to fix it a piece at a time. A covered pane has not changed size -- it is
+  // only not being shown -- so keep the last measurement taken while it was.
+  const laid = boxes.length > 0
+    && boxes.every((el) => el.querySelector(".pbody").getClientRects().length > 0);
+  if (laid) lastPanes = boxes.map((el) => {
     const b = el.querySelector(".pbody").getBoundingClientRect();
     const d = fit(b);
     // Where a browser placed in this pane sits. Even if the shell's CSS
@@ -1971,9 +1987,15 @@ function report() {
              Math.max(1, Math.round(r.height) - in_ * 2)]};
   });
   // The focused pane's numbers are the ones the rest of the app still speaks in
-  const box = boxes.find((el) => el.classList.contains("focused"));
-  const f = fit(box ? box.querySelector(".pbody").getBoundingClientRect()
-                    : main.getBoundingClientRect());
+  if (laid) {
+    const box = boxes.find((el) => el.classList.contains("focused"));
+    lastFit = fit(box ? box.querySelector(".pbody").getBoundingClientRect()
+                      : main.getBoundingClientRect());
+  }
+  const panes = lastPanes || [];
+  // Before any pane has ever been laid out -- a cold start onto INDEX -- there
+  // is nothing to remember yet, and the content area is the honest answer
+  const f = lastFit || fit(main.getBoundingClientRect());
   gRows = f.rows;   // remembered so the remote pager knows one screenful's height
   const key = f.rows + "x" + f.cols + "@" +
     Math.round(main.getBoundingClientRect().width) + "," + Math.round(area.left) + "," +
@@ -4445,6 +4467,37 @@ mod tests {
         assert!(
             p.contains("const here = !covering()"),
             "打ち込む先が無い画面にペンが出る"
+        );
+    }
+
+    /// A covered pane has not changed size, and must not be told that it has.
+    ///
+    /// The same zeros that misplaced the toast were also being measured as a
+    /// terminal, where they come out as the smallest `fit` will name: 20x5. So
+    /// opening INDEX -- or the settings form -- told every running AI that its
+    /// window had shrunk to a fifth of a screen. Qwen, Claude Code, anything
+    /// built on Ink reflowed its whole interface to suit, and was told to grow
+    /// back the moment the cover lifted. What survived that round trip was a
+    /// broken frame: blank rows, and the box it had drawn cut off mid-line. It
+    /// repaired only where the next keystroke made the program draw again,
+    /// which is why typing appeared to fix it a piece at a time.
+    ///
+    /// Measured on a running window, the resize sent on opening INDEX went
+    /// 118x47 -> 20x5 -> 118x47. It now stays 118x47 throughout.
+    #[test]
+    fn a_covered_pane_keeps_the_size_it_had() {
+        let p = super::page();
+        assert!(
+            p.contains("&& boxes.every((el) => el.querySelector(\".pbody\").getClientRects().length > 0);"),
+            "覆われたペインの矩形（全部ゼロ）から行数・桁数を出している"
+        );
+        assert!(
+            p.contains("if (laid) lastPanes = boxes.map((el) => {"),
+            "ペインが覆われている間の測定値を採用してしまう"
+        );
+        assert!(
+            p.contains("const panes = lastPanes || [];") && p.contains("const f = lastFit || fit("),
+            "覆われている間、最後にちゃんと測れた値を使っていない"
         );
     }
 

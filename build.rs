@@ -31,8 +31,17 @@ fn main() {
         res.set_icon("assets/icon.ico");
         res.set("FileDescription", "SHIKISHA-TERM — conductor AI terminal");
         res.set("ProductName", "SHIKISHA-TERM");
-        res.set("CompanyName", "SHIKISHA-TERM");
-        res.set("LegalCopyright", "MIT License");
+        res.set("CompanyName", "styleio");
+        // A copyright notice, not the name of a license. "MIT License" on this
+        // field states no holder and no year, which is the one thing the field
+        // exists to say
+        res.set("LegalCopyright", "Copyright (c) 2026 styleio. MIT License.");
+        // Both of these were empty. Windows shows OriginalFilename to say what
+        // the file was called before anyone renamed it, and a blank one on a
+        // downloaded executable is a small thing every reputation heuristic
+        // notices -- and something Explorer simply has no answer for
+        res.set("OriginalFilename", "SHIKISHA-TERM.exe");
+        res.set("InternalName", "SHIKISHA-TERM");
         if let Err(e) = res.compile() {
             // アイコンが無くてもソフトは動く。ビルドごと止める理由にはならない
             println!("cargo:warning=アイコンを埋め込めませんでした: {e}");
