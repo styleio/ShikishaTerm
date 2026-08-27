@@ -25,7 +25,9 @@ param(
     [switch]$Install,
     [string]$Publisher = 'CN=SHIKISHA-TERM Test',
     [string]$IdentityName = 'SHIKISHATERM.Test',
-    [string]$PublisherDisplayName = 'styleio'
+    # Must match the publisher display name on the Partner Center account
+    # exactly, or the Store rejects the submission.
+    [string]$PublisherDisplayName = 'WIRED & ECO, K.K.'
 )
 $ErrorActionPreference = 'Stop'
 
