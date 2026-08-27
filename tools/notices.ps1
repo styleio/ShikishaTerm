@@ -12,8 +12,8 @@
   license cannot be identified stops the run rather than being credited to
   nobody.
 
-    tools\notices.ps1           rewrite THIRD-PARTY-NOTICES.txt
-    tools\notices.ps1 -Check    do not write; fail if the committed file is stale
+    tools/notices.ps1           rewrite THIRD-PARTY-NOTICES.txt
+    tools/notices.ps1 -Check    do not write; fail if the committed file is stale
 
   CI runs -Check, so a dependency added without rerunning this is caught at
   the pull request rather than inside a release someone already downloaded.
@@ -32,7 +32,7 @@ $dest = Join-Path $root 'THIRD-PARTY-NOTICES.txt'
 # cargo is not always on PATH here (it is installed per-user, and a shell that
 # did not read the profile will not see it), so fall back to where rustup puts it.
 $cargo = (Get-Command cargo -ErrorAction SilentlyContinue).Source
-if (-not $cargo) { $cargo = Join-Path $HOME '.cargo\bin\cargo.exe' }
+if (-not $cargo) { $cargo = Join-Path $HOME '.cargo/bin/cargo.exe' }
 if (-not (Test-Path $cargo)) { throw "cargo not found; install rustup first" }
 
 # cargo-about only builds its command line under the `cli` feature. Without it
@@ -69,7 +69,31 @@ try {
             Write-Host "THIRD-PARTY-NOTICES.txt is current"
             exit 0
         }
-        Write-Host "THIRD-PARTY-NOTICES.txt is out of date -- run tools\notices.ps1 and commit it"
+        Write-Host "THIRD-PARTY-NOTICES.txt is out of date -- run tools/notices.ps1 and commit it"
+
+        # Say what differs, not merely that something does. A check that fails on
+        # a build machine and reports nothing leaves the difference to be guessed
+        # at from a machine that cannot reproduce it.
+        $a = $known -split "`n"
+        $b = $fresh -split "`n"
+        Write-Host "  committed: $($a.Count) lines, $($known.Length) chars"
+        Write-Host "  generated: $($b.Count) lines, $($fresh.Length) chars"
+
+        $was = @($a | Select-String -Pattern '^  \* (\S+ \S+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+        $now = @($b | Select-String -Pattern '^  \* (\S+ \S+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+        foreach ($c in ($now | Where-Object { $was -notcontains $_ })) { Write-Host "  + $c" }
+        foreach ($c in ($was | Where-Object { $now -notcontains $_ })) { Write-Host "  - $c" }
+
+        # The crate lists can agree while the license text moves, so show the
+        # first place the two actually part company.
+        for ($i = 0; $i -lt [Math]::Max($a.Count, $b.Count); $i++) {
+            if ($a[$i] -ne $b[$i]) {
+                Write-Host "  first difference at line $($i + 1):"
+                Write-Host "    committed: $($a[$i])"
+                Write-Host "    generated: $($b[$i])"
+                break
+            }
+        }
         exit 1
     }
 
@@ -78,6 +102,7 @@ try {
         exit 0
     }
     [System.IO.File]::WriteAllText($dest, $fresh, $utf8)
+
     # Distinct crates, not lines: one crate under two licenses is listed under
     # both, and reporting 262 where 210 were credited invites the wrong question.
     $n = ([regex]::Matches($fresh, '(?m)^  \* (\S+ \S+)$') | ForEach-Object { $_.Groups[1].Value } |
