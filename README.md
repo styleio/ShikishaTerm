@@ -309,3 +309,7 @@ If SHIKISHA-TERM saves you time, you can support its development on
 ## License
 
 [MIT](LICENSE)
+
+The program is built from open source components, and the terms of every one
+of them are reproduced in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt),
+which is inside the download as well as here.

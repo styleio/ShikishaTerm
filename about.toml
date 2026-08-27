@@ -1,0 +1,185 @@
+# Which third-party licenses may travel inside the download, and where their
+# text is found when a crate files it somewhere unusual.
+#
+# MIT, BSD and Apache all give their permission on one condition: that their
+# copyright notice goes wherever the code goes. A binary that carries none of
+# them is being handed out outside the grant. Nobody sues over it, but it is
+# the first thing an OSS compliance review looks at, and a download that fails
+# that review is a download a company cannot approve -- which is the real cost
+# of leaving it out.
+#
+# THIRD-PARTY-NOTICES.txt is that condition, met. Rebuild it with
+# tools/notices.ps1; release.yml rebuilds it before packing, so the download is
+# never assembled from a stale copy.
+
+# The program is a Windows executable and nothing else is ever handed out, so a
+# crate that only ever compiles for another target reaches nobody. Working the
+# list out for every target instead would credit macOS and Linux crates that are
+# not in the binary -- a longer file describing a build no one receives.
+targets = ["x86_64-pc-windows-msvc"]
+
+# The test harness is not handed out. The build script's helpers are not in the
+# binary either, but they do run on the machine that makes it, and being
+# generous here costs a few paragraphs where being stingy costs a notice.
+ignore-dev-dependencies = true
+ignore-build-dependencies = false
+
+# ring states its terms in files named for neither the license nor the crate.
+# This is cargo-about's own recipe for finding them; without it, generation
+# stops rather than quietly crediting nothing.
+workarounds = ["ring"]
+
+# Everything the tree actually offers, in the order we would rather be bound by:
+# where a crate says "MIT OR Apache-2.0", the first match here is the one taken.
+# Anything absent from this list stops generation, which is the point -- a
+# copyleft dependency arriving by way of some transitive bump would otherwise
+# reach the download in silence.
+#
+# BSD sits above Apache-2.0 deliberately: crates offering that pair ship the
+# BSD file with a real copyright line in it and the Apache file without one, so
+# taking BSD is what puts the author's name in the notices.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "0BSD",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Apache-2.0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "OpenSSL",
+]
+
+# --- Where the text really is ----------------------------------------------
+#
+# Below, a crate is told which file carries its terms, because scanning does not
+# find it on its own. Each entry pins the file's SHA-256: when a version bump
+# rewrites it, generation fails and says so, instead of silently going back to
+# the placeholder text these entries exist to replace.
+
+# windows-rs names its file `license-mit` and indents every line of it, and the
+# scanner scores that too low to trust. Left alone, the whole windows-rs family
+# -- most of what this program is made of -- is credited to
+# "Copyright (c) <year> <copyright holders>", which names no one at all.
+
+[windows.clarify]
+license = "MIT"
+[[windows.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-collections.clarify]
+license = "MIT"
+[[windows-collections.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-core.clarify]
+license = "MIT"
+[[windows-core.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-future.clarify]
+license = "MIT"
+[[windows-future.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-implement.clarify]
+license = "MIT"
+[[windows-implement.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-interface.clarify]
+license = "MIT"
+[[windows-interface.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-link.clarify]
+license = "MIT"
+[[windows-link.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-numerics.clarify]
+license = "MIT"
+[[windows-numerics.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-result.clarify]
+license = "MIT"
+[[windows-result.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-strings.clarify]
+license = "MIT"
+[[windows-strings.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-sys.clarify]
+license = "MIT"
+[[windows-sys.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-targets.clarify]
+license = "MIT"
+[[windows-targets.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-threading.clarify]
+license = "MIT"
+[[windows-threading.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-version.clarify]
+license = "MIT"
+[[windows-version.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows_x86_64_msvc.clarify]
+license = "MIT"
+[[windows_x86_64_msvc.clarify.files]]
+path = "license-mit"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+# lua-src carries two licenses in one file: its own, and Lua's underneath a
+# "### Lua license ###" heading. Two licenses in one file read as a poor match
+# for either, so the scanner declines it -- and the entire Lua interpreter,
+# compiled into this binary, loses its notice. Taking the file whole keeps
+# Lua.org's copyright where it belongs.
+[lua-src.clarify]
+license = "MIT"
+[[lua-src.clarify.files]]
+path = "LICENSE"
+checksum = "bb53bb4136a0ac250ba54c3baf6fb0ee22f33879a696848dc0d0aa64dfa9412d"
+
+# dpi says "Apache-2.0 AND MIT" -- both, not either. The Apache half is in
+# LICENSE and is found; the MIT half belongs to the rust-lang/libm routines
+# built into the crate, and sits in a file named after libm rather than after
+# the license, where scanning does not look. Those routines carry the
+# copyrights of half a dozen people, and this is where they are kept.
+[dpi.clarify]
+license = "Apache-2.0 AND MIT"
+[[dpi.clarify.files]]
+path = "LICENSE"
+license = "Apache-2.0"
+checksum = "6dc0e068dcf3a5bc8e054205b85b7720e1d49265bbc64bf515d2cf79197df69a"
+[[dpi.clarify.files]]
+path = "LICENSE-LIBM-MIT"
+license = "MIT"
+checksum = "9eff396a99bafd208e7126602420d6864f6066c08b84485a5b032320a9c01997"

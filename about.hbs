@@ -1,0 +1,29 @@
+SHIKISHA-TERM -- third-party notices
+====================================
+
+SHIKISHA-TERM itself is under the MIT License; see LICENSE.
+
+It is built from the open source components listed below. Each of them is
+distributed under its own terms, and every one of those terms is reproduced
+here in full, because that is the condition on which they were given. The
+list is worked out from Cargo.lock, so it describes the exact versions this
+build was made from -- not a general list of things the project has used.
+
+Rebuild it with tools/notices.ps1.
+
+{{#each licenses}}
+================================================================================
+{{{name}}}
+================================================================================
+
+Applies to:
+{{#each used_by}}
+  * {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}}
+    {{{crate.repository}}}{{/if}}
+{{/each}}
+
+--------------------------------------------------------------------------------
+
+{{{text}}}
+
+{{/each}}

@@ -8,6 +8,21 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **The download says what it is made of.** MIT, BSD, ISC and Apache all grant
+  what they grant on one condition — that their copyright notice travels with
+  the code — and the zip carried none of them, which is a download handed out
+  outside the grant and the first thing an OSS compliance review looks at.
+  `THIRD-PARTY-NOTICES.txt` now ships beside `LICENSE` with the full terms of
+  every component the Windows binary is built from, 210 of them: not a
+  general list of what the project has used, but what this build links.
+  `tools/notices.ps1` writes it, `dist.list` carries it, and CI fails a pull
+  request that adds a dependency without rerunning it.
+- **A copyleft dependency can no longer arrive in silence.** `about.toml` names
+  the licenses that may travel inside the download; one that is not on that
+  list stops generation rather than reaching a user by way of some transitive
+  version bump. Nothing in the tree is copyleft today.
+
 ## [0.3.5] - 2026-08-27
 
 The dashboard answers again. Every menu item on it that replies with a

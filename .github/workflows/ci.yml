@@ -25,3 +25,10 @@ jobs:
 
       - name: Test
         run: cargo test --locked --verbose
+
+      # A dependency added without rerunning tools/notices.ps1 leaves the
+      # download crediting the wrong set of authors. Caught here, it is a line
+      # in a pull request; caught at the tag, it is a release already downloaded.
+      - name: Third-party notices are current
+        shell: pwsh
+        run: ./tools/notices.ps1 -Check

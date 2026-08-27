@@ -30,6 +30,12 @@ Settings.cmd
 README.md
 README.ja.md
 LICENSE
+# Everything the program is built from, and the terms each of them was given
+# under. MIT, BSD and Apache all permit what they permit on the condition that
+# their copyright notice travels with the code, so a download without this file
+# is a download handed out outside the grant. tools/notices.ps1 writes it and
+# CI checks it is current
+THIRD-PARTY-NOTICES.txt
 SECURITY.md
 config.example.json
 secrets.example.json

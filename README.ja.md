@@ -256,3 +256,6 @@ SHIKISHA-TERM が役に立ったら、[Ko-fi](https://ko-fi.com/styleio) で開�
 ## ライセンス
 
 [MIT](LICENSE)
+
+本体は多数のオープンソース部品の上に成り立っています。その全ライセンス全文を
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) に収録し、配布物にも同梱しています。
