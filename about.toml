@@ -24,6 +24,18 @@ targets = ["x86_64-pc-windows-msvc"]
 ignore-dev-dependencies = true
 ignore-build-dependencies = false
 
+# Only the crate's own root is searched for its terms.
+#
+# Left to search the whole tree, the scanner treats any file whose head reads
+# like a license as the license -- and a crate that repeats its BSD header at
+# the top of every source file offers it hundreds of candidates. moxcms was
+# credited with the text of src/conversions/katana/pcs_stages.rs, Rust and all.
+# Which of those files won depended on the order the filesystem handed them
+# over, so two machines generating from the same Cargo.lock produced two
+# different files, and `-Check` failed on a build machine over a difference
+# nobody had made. A license belongs at the root of the crate that grants it.
+max-depth = 1
+
 # ring states its terms in files named for neither the license nor the crate.
 # This is cargo-about's own recipe for finding them; without it, generation
 # stops rather than quietly crediting nothing.

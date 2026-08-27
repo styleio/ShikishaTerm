@@ -47,8 +47,11 @@ finally says who wrote it.
   general list of what the project has used, but what this build links.
   `tools/notices.ps1` writes it, `dist.list` carries it, and CI fails a pull
   request that adds a dependency without rerunning it. The file is written in
-  a fixed order and with the crate itself left out, so that check compares the
-  same text on every machine and no program credits itself.
+  a fixed order, with the crate itself left out, and reading only each crate's
+  own root for its terms — a crate that repeats its licence header atop every
+  source file was otherwise credited with the text of one of them, picked in
+  whatever order the filesystem happened to hand them over. All three are what
+  let that check compare the same text on two machines.
 - **A copyleft dependency can no longer arrive in silence.** `about.toml` names
   the licenses that may travel inside the download; one that is not on that
   list stops generation rather than reaching a user by way of some transitive
