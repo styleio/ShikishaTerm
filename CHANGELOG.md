@@ -22,6 +22,15 @@ once it reaches its first tagged release.
   where to change it.
 
 ### Fixed
+- **A model connection edited while its tab is open now reaches that tab.** The
+  providers were worked out again on every settings save, and then nobody was
+  told: a tab keeps the connection it was launched with, so the new endpoint,
+  the new key and the new wait all sat in the file being ignored while the tab
+  went on failing exactly as before. Setting the wait to 0 and watching the tab
+  give up at 180 seconds anyway is what it looked like from the outside — 180
+  being what that tab had been holding since it opened. Tabs in workspaces that
+  are off screen are handed the new connection too; they are just as open.
+
 - **A Codex tab waiting to be trusted looks like one waiting for a person, not
   a working one.** On its first launch in a folder Codex stops and asks "Do you
   trust the contents of this directory? **Working** with untrusted contents

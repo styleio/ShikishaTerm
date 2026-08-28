@@ -1741,16 +1741,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
     }
 
     // Resolve the model bridge's connection info again now that the password is confirmed
-    // (encrypted-secret keys get unlocked here too)
+    // (encrypted-secret keys get unlocked here too). Tabs spawned before the
+    // prompt hold keys that could not be decrypted yet, so they are handed the
+    // real ones here — otherwise they go on sending an empty bearer token (→ 401).
     if let Some(c) = &cfg {
         if password.is_some() {
-            bridge::set_providers(c, password.as_deref());
-            // Tabs already spawned (before the prompt) with keys that couldn't be
-            // decrypted yet. Now that the providers hold the real keys, refresh
-            // each model tab so it stops sending an empty bearer token (→ 401).
-            for t in &mut tabs {
-                t.refresh_model_conn();
-            }
+            reload_providers(c, password.as_deref(), tabs.iter_mut());
         }
     }
 
@@ -2223,9 +2219,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     };
                 }
                 cfg = Some(newcfg);
-                // Re-resolve the model bridge's connection info (picks up providers/secret changes)
+                // Re-resolve the model bridge's connection info, and hand it to
+                // the tabs — including the ones parked in workspaces that are
+                // not on screen, which are just as open as the ones that are
                 if let Some(c) = &cfg {
-                    bridge::set_providers(c, password.as_deref());
+                    reload_providers(
+                        c,
+                        password.as_deref(),
+                        tabs.iter_mut().chain(ws_tabs.iter_mut().flatten()),
+                    );
                 }
                 watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
                 let mut note = remote_changed.unwrap_or(msg);
@@ -4811,6 +4813,28 @@ impl PendingSend {
         } else {
             Step::Wait
         }
+    }
+}
+
+/// Work out the model connections again, and hand them to the tabs that are
+/// using them.
+///
+/// A tab keeps the connection it was launched with, so the second half is not
+/// optional: without it, a provider edited while its tab is open changes
+/// nothing that tab can see. The new endpoint, the new key and the new wait sit
+/// in the settings file being ignored, the tab fails in exactly the way it
+/// failed before, and nothing on screen connects the two — the person is left
+/// to conclude that the setting does not work. Reported as just that: the wait
+/// was set to "as long as it takes" and the tab still gave up at 180 seconds,
+/// because 180 was what it had been holding since it opened.
+fn reload_providers<'a>(
+    cfg: &config::Config,
+    password: Option<&str>,
+    tabs: impl Iterator<Item = &'a mut Tab>,
+) {
+    bridge::set_providers(cfg, password);
+    for t in tabs {
+        t.refresh_model_conn();
     }
 }
 
@@ -8264,6 +8288,53 @@ mod tests {
         // The Enter still follows, measured from the moment the rest went over
         assert!(waited(&p.step(0, 510)), "ここから静止を測り直す");
         assert!(submitted(&p.step(0, 510 + SUBMIT_QUIET_MS)), "送信はそのあと");
+    }
+
+    /// A provider edited while its tab is open reaches that tab.
+    ///
+    /// Re-resolving the providers is only half of it: a tab holds the
+    /// connection it was launched with, so on its own that changes nothing the
+    /// tab can see. Reported from use — the wait was set to 0 ("as long as it
+    /// takes"), saved, and the tab still gave up at 180 seconds, which was the
+    /// wait it had been holding since it opened. The same silence applied to a
+    /// corrected endpoint and to a new key.
+    #[test]
+    fn a_provider_edited_now_reaches_the_tab_that_is_using_it() {
+        let settings = |secs: u64| {
+            let mut cfg = config::Config::default();
+            cfg.providers.insert(
+                "t".into(),
+                config::ProviderSpec {
+                    base_url: "http://127.0.0.1:1/v1".into(),
+                    timeout_sec: Some(secs),
+                    ..Default::default()
+                },
+            );
+            cfg
+        };
+        let argv = vec!["model".to_string(), "t/m".to_string()];
+
+        bridge::set_providers(&settings(180), None);
+        let conn = bridge::launch_for(&argv).expect("接続が引ける");
+        assert_eq!(conn.timeout, Some(Duration::from_secs(180)));
+        let mut tabs = vec![Tab::spawn(
+            "model".into(),
+            &argv,
+            None,
+            10,
+            40,
+            tab::TabOptions { model: Some(conn), ..Default::default() },
+        )
+        .expect("起動")];
+
+        // The wait is changed to "as long as it takes" and saved
+        reload_providers(&settings(0), None, tabs.iter_mut());
+        assert_eq!(
+            tabs[0].model.as_ref().and_then(|c| c.timeout),
+            None,
+            "設定を変えてもタブが古い待ち時間を握ったまま"
+        );
+        tabs[0].kill();
     }
 
     /// A paste is cut at character boundaries, so no character is ever split
