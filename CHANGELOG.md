@@ -9,6 +9,17 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A tab that cannot find its conversation says so.** Claude Code is handed a
+  conversation id at launch, so the app always knows which one a tab is having.
+  Codex cannot be told, so the app has to recognise the conversation from
+  Codex's own records — by the folder they say they belong to — and when that
+  failed it failed in complete silence: the tab started fresh, and the settings
+  screen went on showing its ticked `Pick up where this tab left off` with
+  nothing anywhere to say the tick could not be honoured. Two folders are now
+  the same folder whatever the spelling (`D:/Simic2`, `D:\Simic2` and
+  `D:\simic2` are one folder to Windows and were three to the matching), and
+  when the conversation still cannot be pinned down the log says what was
+  looked for, in which folder, and which folders the records actually claim.
 - **A long message typed into the sub-input bar is actually sent.** Paste a
   page's worth of text at a Codex or Claude tab and press Send, and nothing
   happened: the text sat in the CLI's input box, unsent, until the next thing

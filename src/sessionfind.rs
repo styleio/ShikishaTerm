@@ -45,14 +45,69 @@ pub fn find(spec: &RecordSpec, cwd: Option<&Path>, since: SystemTime) -> Option<
         let Some((id, at)) = first_line_fields(&file, spec) else {
             continue;
         };
-        // Same folder, written the way that CLI writes it — compared as paths
-        // so that D:\Test and D:/Test are the one folder they plainly are
-        if Path::new(&at) != cwd {
+        // Same folder, written the way that CLI writes it
+        if !same_folder(Path::new(&at), cwd) {
             continue;
         }
         best = Some((made, id));
     }
     best.map(|(_, id)| id)
+}
+
+/// The folders the fresh records claim, newest first — for saying out loud why
+/// none of them was this tab's.
+///
+/// What fails here is attribution, and it fails without a sound: the app reads
+/// real records, rejects every one, and starts the tab on a fresh conversation
+/// as though it had never looked. The one fact that settles it is what folder
+/// those records say they belong to, next to the folder the tab is in.
+pub fn folders_seen(spec: &RecordSpec, since: SystemTime, most: usize) -> Vec<String> {
+    let mut files: Vec<(SystemTime, PathBuf)> = walk(&expand(&spec.dir), 0, since)
+        .into_iter()
+        .filter_map(|f| {
+            let made = std::fs::metadata(&f).ok()?.modified().ok()?;
+            (made >= since).then_some((made, f))
+        })
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut out: Vec<String> = Vec::new();
+    for (_, f) in files {
+        if out.len() >= most {
+            break;
+        }
+        let Some((_, at)) = first_line_fields(&f, spec) else {
+            continue;
+        };
+        if !out.contains(&at) {
+            out.push(at);
+        }
+    }
+    out
+}
+
+/// Whether two paths name the same folder.
+///
+/// Spelled out rather than left to `==`, because Windows hands the same folder
+/// back in whatever spelling it likes and none of the differences mean
+/// anything: a config says `D:/Simic2`, the CLI writes down `D:\Simic2`, and
+/// the disk itself may hold `D:\simic2` — Windows will open all three. Compared
+/// as written, they are three folders, and a tab whose folder was spelled with
+/// the wrong case simply never found its conversation, silently, forever.
+///
+/// Case is folded because this app runs on Windows, where it decides nothing.
+pub fn same_folder(a: &Path, b: &Path) -> bool {
+    let key = |p: &Path| -> Vec<String> {
+        p.components()
+            .map(|c| {
+                c.as_os_str()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .to_lowercase()
+            })
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    key(a) == key(b)
 }
 
 /// Whether the record of one conversation is still there.
@@ -213,6 +268,23 @@ mod tests {
         });
         std::fs::write(&p, format!("{line}\n{{\"more\":\"said later\"}}\n")).unwrap();
         p
+    }
+
+    /// The same folder, spelled the several ways Windows allows.
+    ///
+    /// Compared as written, a tab whose folder was typed `D:/Simic2` never
+    /// matched the `D:\Simic2` its CLI wrote down the moment the disk held a
+    /// different case, and the conversation was silently never found.
+    #[test]
+    fn the_same_folder_spelled_differently_is_the_same_folder() {
+        let same = |a: &str, b: &str| same_folder(Path::new(a), Path::new(b));
+        assert!(same(r"D:\Simic2", "D:/Simic2"), "スラッシュの向きは関係ない");
+        assert!(same(r"D:\simic2", "D:/Simic2"), "大文字小文字は関係ない");
+        assert!(same(r"d:\Simic2", "D:/Simic2"), "ドライブ文字も同じ");
+        assert!(same(r"D:\Simic2\", "D:/Simic2"), "末尾の区切りは関係ない");
+        assert!(!same(r"D:\Simic2", "D:/Simic"), "別のフォルダは別のフォルダ");
+        assert!(!same(r"D:\Simic2", r"C:\Simic2"), "ドライブが違えば別");
+        assert!(!same(r"D:\a\Simic2", r"D:\Simic2"), "階層が違えば別");
     }
 
     fn tmp(name: &str) -> PathBuf {

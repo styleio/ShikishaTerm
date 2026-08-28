@@ -3653,3 +3653,86 @@ mod long_paste_probe {
         run("file", &body);
     }
 }
+
+#[cfg(test)]
+mod codex_session_probe {
+    use super::{Tab, TabOptions};
+    use crate::{PendingSend, Step, paste_chunks};
+    use std::time::{Duration, Instant};
+
+    /// Does a Codex tab's conversation get found at all?
+    ///
+    ///   cargo test codex_session -- --ignored --nocapture
+    ///
+    /// Codex is not told which conversation to have (it has no `new_id`), so
+    /// the only way the app can know is to read Codex's own records back —
+    /// which is what `sessionfind::find` does, and what has to work for
+    /// "carry the conversation over" to have anything to carry.
+    #[test]
+    #[ignore]
+    fn the_conversation_a_codex_tab_started_is_found() {
+        // The way a config writes it: forward slashes, as in the user's "D:/Simic2"
+        let cwd = std::path::PathBuf::from(
+            std::env::var("SHIKISHA_PROBE_CWD").unwrap_or_else(|_| "D:/ShikishaTerm".into()),
+        );
+        let mut tab = Tab::spawn(
+            "codex".into(),
+            &["codex".to_string()],
+            None,
+            30,
+            120,
+            TabOptions { cwd: Some(cwd), ..Default::default() },
+        )
+        .expect("起動");
+        println!(
+            "resume spec: record={:?} verify={:?}",
+            tab.resume.as_ref().and_then(|r| r.record.clone()),
+            tab.resume.as_ref().and_then(|r| r.verify.clone()),
+        );
+        let boot = Instant::now();
+        while boot.elapsed() < Duration::from_secs(240) && !tab.accepts_bracketed_paste() {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        std::thread::sleep(Duration::from_secs(3));
+
+        // Say something, the way the app says it
+        let chunks = paste_chunks(&tab, "MANGO とだけ答えてください。ツールは使わないでください。");
+        let mut p = PendingSend::new(1, chunks, true, tab.output_count(), 0);
+        let t0 = Instant::now();
+        loop {
+            let now = t0.elapsed().as_millis() as u64;
+            match p.step(tab.output_count(), now) {
+                Step::Wait => {}
+                Step::Hand(c) => tab.write_passthrough(&c).unwrap(),
+                Step::Submit { .. } => {
+                    tab.write_bytes(b"\r").unwrap();
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(16));
+        }
+
+        // Exactly the look the main loop performs, until it finds it or gives up
+        let spec = tab.resume.as_ref().and_then(|r| r.record.clone()).expect("record spec");
+        let look = Instant::now();
+        let mut found = None;
+        while look.elapsed() < Duration::from_secs(90) {
+            found = crate::sessionfind::find(&spec, tab.cwd(), tab.born());
+            if found.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        println!("found after {:?}: {found:?}", look.elapsed());
+        if let Some(id) = &found {
+            let verify = tab.resume.as_ref().and_then(|r| r.verify.clone()).unwrap();
+            println!("verify says it exists: {}", crate::sessionfind::exists(&verify, id));
+            println!(
+                "resumable: {}",
+                crate::tab::resumable(&["codex".to_string()], &None, id)
+            );
+        }
+        tab.kill();
+        assert!(found.is_some(), "Codex の会話が見つからない");
+    }
+}

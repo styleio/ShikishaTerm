@@ -1254,10 +1254,14 @@ fn only_one_here(tabs: &[Tab], index: usize) -> bool {
     let Some(me) = tabs.get(index) else {
         return false;
     };
-    !tabs
-        .iter()
-        .enumerate()
-        .any(|(i, o)| i != index && o.program() == me.program() && o.cwd() == me.cwd())
+    !tabs.iter().enumerate().any(|(i, o)| {
+        i != index
+            && o.program() == me.program()
+            && match (o.cwd(), me.cwd()) {
+                (Some(a), Some(b)) => crate::sessionfind::same_folder(a, b),
+                (a, b) => a.is_none() && b.is_none(),
+            }
+    })
 }
 
 /// Restart one tab, carrying its conversation when that can be done safely, and
@@ -2445,11 +2449,55 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // found. NOT after a while: one of these CLIs writes its
                     // record when the first thing is said, and a tab can sit
                     // open for an hour before anyone says it
-                    None if !alone || spec.is_none() => t.session_probe = None,
+                    None if !alone || spec.is_none() => {
+                        // Said out loud, because this is the moment the tab
+                        // quietly stops being able to come back tomorrow. The
+                        // settings screen still shows its "carry the
+                        // conversation over" tick, and nothing else on screen
+                        // would ever mention that it cannot be honoured here
+                        append_hook_log(&format!(
+                            "tab{} \"{}\": not looking for a conversation ({})",
+                            i + 1,
+                            t.title,
+                            match alone {
+                                false => "another tab runs the same program in the same folder",
+                                true => "this CLI keeps no records to read it from",
+                            }
+                        ));
+                        t.session_probe = None;
+                    }
                     None => {
                         // Eager at first, then patient. Looking is cheap —
                         // yesterday's folders are skipped unread — but not free
                         let wait = if left > 0 { 2 } else { 15 };
+                        // The one pass where eagerness runs out is where this
+                        // is worth saying: by now the CLI has long written its
+                        // record, so still not knowing means the two sides
+                        // disagree about something -- and which two things
+                        // failed to meet is exactly what nobody could see
+                        if left == 1 {
+                            let spec = spec.as_ref().expect("checked above");
+                            let seen = sessionfind::folders_seen(spec, t.born(), 5);
+                            append_hook_log(&format!(
+                                "tab{} \"{}\": still cannot tell which conversation {} is having \
+                                 (looked under {} for a record whose folder is {}; {})",
+                                i + 1,
+                                t.title,
+                                t.program(),
+                                spec.dir,
+                                t.cwd().map(|c| c.display().to_string()).unwrap_or_else(|| {
+                                    "(none: the tab has no folder, so nothing can be attributed \
+                                     to it)"
+                                        .into()
+                                }),
+                                match seen.is_empty() {
+                                    true => "it has written no records since this tab started"
+                                        .to_string(),
+                                    false =>
+                                        format!("the records it has written say: {}", seen.join(", ")),
+                                }
+                            ));
+                        }
                         t.session_probe = Some((
                             std::time::Instant::now() + Duration::from_secs(wait),
                             left.saturating_sub(1),
