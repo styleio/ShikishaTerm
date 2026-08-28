@@ -9,6 +9,17 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A Codex tab waiting to be trusted looks like one waiting for a person, not
+  a working one.** On its first launch in a folder Codex stops and asks "Do you
+  trust the contents of this directory? **Working** with untrusted contents
+  comes with higher risk of prompt injection" — and `Working` was a busy
+  pattern, so the tab spun as though it were hard at work while it was in fact
+  blocked, unanswered, having started no conversation at all. The same bare
+  word matched any line of Codex's own output containing it (a diff of a script
+  that prints `Working tree is not clean` was enough), and unlike a spinner
+  that line does not go away, so the tab stayed "busy" for good. Busy now looks
+  for Codex's own indicator rather than the word, and the trust prompt is
+  recognised as the question it is.
 - **A tab that cannot find its conversation says so.** Claude Code is handed a
   conversation id at launch, so the app always knows which one a tab is having.
   Codex cannot be told, so the app has to recognise the conversation from

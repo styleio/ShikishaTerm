@@ -4,11 +4,12 @@
     "codex"
   ],
   "busy_patterns": [
-    "[Ww]orking",
+    "•\\s*Working",
     "esc to interrupt",
-    "Thinking"
+    "•\\s*Thinking"
   ],
   "question_patterns": [
+    "Do you trust the contents of this directory",
     "Allow command\\?",
     "\\[y/N\\]",
     "\\(y/n\\)",

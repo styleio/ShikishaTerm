@@ -199,6 +199,33 @@ mod tests {
         assert!(d.shows_working(), "このAIは作業中を画面に出す");
     }
 
+    /// The real profile, read from `profiles/codex.json`, against the three
+    /// screens that mattered.
+    ///
+    /// Codex stops on first launch in a folder and asks whether it is trusted.
+    /// That prompt reads "…**Working** with untrusted contents comes with
+    /// higher risk of prompt injection", so a busy pattern of bare `Working`
+    /// showed a spinner on a tab that was in fact waiting for a person — and
+    /// the same pattern hit any line of Codex's own output with the word in it,
+    /// which does not go away, so the tab stayed "busy" for good.
+    #[test]
+    fn codexs_trust_prompt_is_a_question_and_not_work() {
+        let profile = crate::profile::load_for_command("codex");
+        let mut d = Detector::new(profile);
+
+        let trust = "  Do you trust the contents of this directory? Working with untrusted \
+                     contents comes with higher risk of prompt injection.\n\n› 1. Yes\n  2. No";
+        assert_eq!(d.tick(trust, 100, 0), TabState::Question, "人を待っている");
+
+        let diff = "28 +    Write-Host \"Working tree is not clean. Commit or discard changes.\"";
+        d.tick(diff, 5_000, 0);
+        assert!(!d.working_shown(), "出力に混ざった語で作業中にしている");
+
+        let spinner = "• Working (0s • esc to interrupt)";
+        d.tick(spinner, 100, 0);
+        assert!(d.working_shown(), "本物の作業中表示を見落としている");
+    }
+
     #[test]
     fn busy_pattern_wins_over_silence() {
         let mut d = Detector::new(claude_like());
