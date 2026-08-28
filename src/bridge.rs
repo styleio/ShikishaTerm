@@ -31,6 +31,9 @@ pub struct ModelConn {
     pub url: String,
     pub model: String,
     pub headers: HashMap<String, String>,
+    /// How long to wait for a whole reply. `None` waits as long as it takes
+    /// (the setting's 0), which is what a local thinking model needs.
+    pub timeout: Option<std::time::Duration>,
     /// The stance/persona for a discussion. The bridge is stateless, so
     /// unless this is attached as the system message every turn, the model
     /// forgets its stance and drifts off topic (only set when this is a
@@ -56,11 +59,41 @@ pub fn run() -> Result<()> {
         .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
         .unwrap_or_default();
     let system = std::env::var("SHIKISHA_BRIDGE_SYSTEM").ok();
+    // Seconds, with 0 meaning "wait as long as it takes" -- the same words the
+    // setting uses, so the child and the app cannot come to mean different things
+    let timeout = match std::env::var("SHIKISHA_BRIDGE_TIMEOUT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(crate::config::PROVIDER_TIMEOUT_DEFAULT_SEC)
+    {
+        0 => None,
+        secs => Some(std::time::Duration::from_secs(secs)),
+    };
     let mut prompt = String::new();
     std::io::stdin().read_to_string(&mut prompt)?;
-    let out = complete(&url, &model, &headers, system.as_deref(), prompt.trim())?;
+    let out = complete(&url, &model, &headers, timeout, system.as_deref(), prompt.trim())?;
     print!("{out}");
     Ok(())
+}
+
+/// Why the request never came back, in words a person can act on.
+///
+/// ureq's own account of running out of time is "timeout: global", which names
+/// neither what was waited for nor for how long. The number is the point: it is
+/// a setting, and the person reading this is the one who can change it — and
+/// with a model on their own machine, the honest answer is often "it was still
+/// thinking".
+fn why_it_failed(e: &ureq::Error, endpoint: &str, timeout: Option<std::time::Duration>) -> String {
+    match (e, timeout) {
+        (ureq::Error::Timeout(_), Some(t)) => crate::i18n::tp(
+            "err.bridge.timed_out",
+            &[("endpoint", endpoint), ("secs", &t.as_secs().to_string())],
+        ),
+        _ => crate::i18n::tp(
+            "err.bridge.connect_failed",
+            &[("endpoint", endpoint), ("e", &e.to_string())],
+        ),
+    }
 }
 
 /// Hit an OpenAI-compatible `/chat/completions` once and return the response
@@ -69,6 +102,7 @@ pub fn complete(
     base_url: &str,
     model: &str,
     headers: &HashMap<String, String>,
+    timeout: Option<std::time::Duration>,
     system: Option<&str>,
     user: &str,
 ) -> Result<String> {
@@ -77,7 +111,7 @@ pub fn complete(
         messages.push(serde_json::json!({"role": "system", "content": s}));
     }
     messages.push(serde_json::json!({"role": "user", "content": user}));
-    complete_messages(base_url, model, headers, &messages)
+    complete_messages(base_url, model, headers, timeout, &messages)
 }
 
 /// Like `complete`, but takes a full pre-built message list. Used for
@@ -88,25 +122,23 @@ pub fn complete_messages(
     base_url: &str,
     model: &str,
     headers: &HashMap<String, String>,
+    timeout: Option<std::time::Duration>,
     messages: &[serde_json::Value],
 ) -> Result<String> {
     let endpoint = chat_endpoint(base_url);
     let body = serde_json::json!({ "model": model, "messages": messages, "stream": false });
 
     let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(180)))
+        .timeout_global(timeout)
         .build()
         .new_agent();
     let mut req = agent.post(&endpoint);
     for (k, v) in headers {
         req = req.header(k.as_str(), v.as_str());
     }
-    let mut resp = req.send_json(&body).map_err(|e| {
-        anyhow!(crate::i18n::tp(
-            "err.bridge.connect_failed",
-            &[("endpoint", &endpoint), ("e", &e.to_string())]
-        ))
-    })?;
+    let mut resp = req
+        .send_json(&body)
+        .map_err(|e| anyhow!(why_it_failed(&e, &endpoint, timeout)))?;
     let v: serde_json::Value = resp
         .body_mut()
         .read_json()
@@ -126,6 +158,11 @@ pub fn complete_messages(
 /// List the available models from an OpenAI-compatible `{base_url}/models`
 /// endpoint. Returns the model ids. Works for DeepSeek, Ollama (/v1),
 /// OpenRouter, etc. — the same providers `complete()` talks to.
+///
+/// Keeps its own short wait rather than the connection's. Asking what models
+/// exist is a filing-cabinet question — no model loads, nothing thinks — so the
+/// minutes a reply may be worth waiting for buy nothing here, and a dropdown
+/// that hangs is a settings screen that looks broken.
 pub fn list_models(base_url: &str, headers: &HashMap<String, String>) -> Result<Vec<String>> {
     let endpoint = models_endpoint(base_url);
     let agent = ureq::Agent::config_builder()
@@ -205,7 +242,7 @@ pub fn extract_say(s: &str) -> Option<String> {
 /// Cache of resolved providers (name -> (base_url, headers)).
 /// Filled in at startup / config reload, when the main binary holds the
 /// password (secret decryption happens only there).
-static PROVIDERS: Mutex<Option<HashMap<String, (String, HashMap<String, String>)>>> =
+static PROVIDERS: Mutex<Option<HashMap<String, crate::config::ProviderConn>>> =
     Mutex::new(None);
 
 /// Resolve config's providers and cache them.
@@ -229,15 +266,16 @@ pub fn launch_for(argv: &[String]) -> Option<ModelConn> {
         return None;
     }
     let (provider, model) = argv.get(1)?.trim().split_once('/')?;
-    let (url, headers) = {
+    let conn = {
         let g = PROVIDERS.lock().ok()?;
         g.as_ref()?.get(provider)?.clone()
     };
     Some(ModelConn {
         provider: provider.to_string(),
-        url,
+        url: conn.url,
         model: model.to_string(),
-        headers,
+        headers: conn.headers,
+        timeout: conn.timeout,
         persona: None,
         drives: None,
     })

@@ -136,6 +136,35 @@ pub struct ProviderSpec {
     /// "@name" secrets references. When given, the default api_key Bearer header is not sent -- these are sent instead
     #[serde(default)]
     pub headers: std::collections::HashMap<String, String>,
+    /// How long to wait for a whole reply, in seconds. **0 waits as long as it
+    /// takes.** Left out, `PROVIDER_TIMEOUT_DEFAULT_SEC` applies.
+    ///
+    /// The reply is asked for in one piece, so this covers everything the far
+    /// end does: loading the model, thinking, and writing the answer. A cloud
+    /// API is done in seconds and wants a short leash — a limit is the only
+    /// thing that tells "still working" apart from "never coming back". A model
+    /// on the machine next door is a different animal: a 27B thinking model
+    /// took 320 seconds to answer "just say OK", most of it thinking, and a
+    /// fixed 180 meant it could never once finish. Which of the two this is, is
+    /// not something the app can know — so it is asked.
+    #[serde(default)]
+    pub timeout_sec: Option<u64>,
+}
+
+/// How long to wait for a whole reply from a provider that does not say.
+pub const PROVIDER_TIMEOUT_DEFAULT_SEC: u64 = 180;
+
+/// A provider resolved into what one request needs.
+///
+/// Carried together because they are decided together and travel together; as
+/// a loose tuple, adding the third one meant touching every hand it passed
+/// through and the compiler could not say which of the two strings was which.
+#[derive(Debug, Clone)]
+pub struct ProviderConn {
+    pub url: String,
+    pub headers: std::collections::HashMap<String, String>,
+    /// `None` means wait as long as it takes (the person asked for 0).
+    pub timeout: Option<std::time::Duration>,
 }
 
 /// The tab bar's width as the window should open it, in pixels.
@@ -500,7 +529,7 @@ impl Config {
         &self,
         name: &str,
         password: Option<&str>,
-    ) -> Option<(String, std::collections::HashMap<String, String>)> {
+    ) -> Option<ProviderConn> {
         let p = self.providers.get(name)?;
         if p.base_url.trim().is_empty() {
             return None;
@@ -520,7 +549,14 @@ impl Config {
         } else if let Some(key) = p.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             headers.insert("Authorization".into(), format!("Bearer {}", deref(key)));
         }
-        Some((p.base_url.trim().to_string(), headers))
+        Some(ProviderConn {
+            url: p.base_url.trim().to_string(),
+            headers,
+            timeout: match p.timeout_sec.unwrap_or(PROVIDER_TIMEOUT_DEFAULT_SEC) {
+                0 => None,
+                secs => Some(std::time::Duration::from_secs(secs)),
+            },
+        })
     }
 }
 
@@ -1594,6 +1630,42 @@ pub fn load() -> Option<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How long to wait for a reply is the person's to set, and 0 means "as
+    /// long as it takes".
+    ///
+    /// A limit is worth having: it is the only thing that tells "still working"
+    /// apart from "never coming back". But one fixed number cannot serve both a
+    /// cloud API that answers in seconds and a 27B thinking model on the
+    /// machine next door, which took 320 seconds to answer "just say OK" — at
+    /// the old fixed 180 it could never once finish, and said so in words
+    /// ("timeout: global") that named neither the wait nor its length.
+    #[test]
+    fn the_wait_for_a_reply_is_settable_and_zero_means_forever() {
+        let resolved = |secs: Option<u64>| {
+            let mut cfg = Config::default();
+            cfg.providers.insert(
+                "p".into(),
+                ProviderSpec {
+                    base_url: "http://localhost:11434/v1".into(),
+                    timeout_sec: secs,
+                    ..Default::default()
+                },
+            );
+            cfg.resolve_provider("p", None).expect("解決できる").timeout
+        };
+        assert_eq!(
+            resolved(None),
+            Some(std::time::Duration::from_secs(PROVIDER_TIMEOUT_DEFAULT_SEC)),
+            "書かなければ既定の待ち時間"
+        );
+        assert_eq!(
+            resolved(Some(600)),
+            Some(std::time::Duration::from_secs(600)),
+            "書いた秒数のとおりに待つ"
+        );
+        assert_eq!(resolved(Some(0)), None, "0 は待ち続ける（上限なし）");
+    }
 
     /// The download keeps everything beside the exe, and must go on doing so.
     ///

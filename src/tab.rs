@@ -2635,7 +2635,7 @@ impl Tab {
                 }
                 msgs
             };
-            match crate::bridge::complete_messages(&conn.url, &conn.model, &conn.headers, &msgs) {
+            match crate::bridge::complete_messages(&conn.url, &conn.model, &conn.headers, conn.timeout, &msgs) {
                 Ok(reply) => {
                     history
                         .lock()
@@ -2710,7 +2710,9 @@ impl Tab {
                 system.push('\n');
                 system.push_str(&crate::i18n::t("agent.model.persona_tail"));
             }
-            match crate::bridge::complete(&conn.url, &conn.model, &conn.headers, Some(&system), prompt.trim()) {
+            match crate::bridge::complete(
+                &conn.url, &conn.model, &conn.headers, conn.timeout, Some(&system), prompt.trim(),
+            ) {
                 Ok(text) => {
                     if let Some(say) = crate::bridge::extract_say(&prompt) {
                         match std::fs::write(&say, &text) {

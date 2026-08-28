@@ -3616,6 +3616,18 @@ function providersCard() {
         if (r.ok) { p.api_key = "@" + sk; keyIn.value = ""; toast(fill(T["settings.providers.key_saved"], {name})); refreshSave(); draw(); }
         else toast(r.error || T["settings.secrets.save_failed"], true);
       }}, T["settings.providers.save_key"]);
+      // How long to wait for a whole reply. Blank means the app's own 180, and
+      // 0 means "as long as it takes" -- which is the only workable answer for
+      // a thinking model on the machine next door.
+      const waitIn = el("input", {type:"number", min:"0", step:"1", class:"mono",
+        style:"flex:none;width:80px", placeholder:T["settings.providers.timeout_ph"],
+        title:T["settings.providers.timeout_title"],
+        value: (p.timeout_sec === undefined || p.timeout_sec === null) ? "" : String(p.timeout_sec)});
+      waitIn.addEventListener("input", () => {
+        const v = waitIn.value.trim();
+        if (v === "") delete p.timeout_sec; else p.timeout_sec = Math.max(0, Math.floor(Number(v) || 0));
+        refreshSave();
+      });
       const del = el("button", {class:"quiet", style:"flex:none", onclick: () => {
         if (confirm(fill(T["settings.providers.delete_confirm"], {name}))) { delete current.providers[name]; refreshSave(); draw(); }
       }}, T["common.delete"]);
@@ -3623,7 +3635,7 @@ function providersCard() {
         el("span", {class:"mono", style:"flex:none;min-width:70px;color:var(--text)"}, name),
         urlIn, keyIn,
         el("span", {class:"mono", style:"flex:none;width:14px"}, hasKey ? "🔑" : ""),
-        keyBtn, del));
+        waitIn, keyBtn, del));
     }
   };
   const nameIn = el("input", {class:"mono", placeholder:T["settings.providers.name_ph"], style:"width:130px"});

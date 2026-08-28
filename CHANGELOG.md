@@ -8,6 +8,19 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **How long to wait for a model's reply is now yours to set, per connection,
+  and 0 waits as long as it takes.** A limit is worth having — it is the only
+  thing that tells "still working" apart from "never coming back" — but one
+  fixed number cannot serve both a cloud API that answers in seconds and a
+  model on the machine next door. A 27B thinking model took **320 seconds** to
+  answer "just say OK", nearly all of it thinking, so the old fixed 180 meant
+  it could never once finish; and what it said when it gave up was
+  `timeout: global`, which names neither what was waited for nor for how long.
+  Each connection in Settings now carries its own number of seconds (blank
+  keeps the old 180), and running out of it says so, with the number in it and
+  where to change it.
+
 ### Fixed
 - **A Codex tab waiting to be trusted looks like one waiting for a person, not
   a working one.** On its first launch in a folder Codex stops and asks "Do you
