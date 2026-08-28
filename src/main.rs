@@ -3052,7 +3052,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // taken the whole thing in
         if !pending_send.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
+            // One at a time per tab, from the front. Two messages to the same
+            // tab used to go over interleaved -- the second one's text arriving
+            // before the first one's Enter, so both were sent as one and the
+            // second Enter went out onto an empty line. Sending in turn is what
+            // makes two messages two messages.
+            let mut holding: Vec<usize> = Vec::new();
             pending_send.retain_mut(|p| {
+                if holding.contains(&p.tab) {
+                    return true;
+                }
+                holding.push(p.tab);
                 let Some(t) = session_at(&surfaces, p.tab).and_then(|i| tabs.get(i)) else {
                     return false;
                 };
@@ -4587,6 +4597,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             view_touched_ms = now_ms;
                             // Typed characters show up at the very bottom. Scrolled back, they're invisible.
                             to_live(t);
+                            finish_paste(&mut pending_send, t, active, now_ms);
                             t.write_bytes(&bytes)?;
                         }
                     }
@@ -4604,6 +4615,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         t.chain_depth = 0;
                         t.last_manual_ms = Some(now_ms);
                         to_live(t);
+                        finish_paste(&mut pending_send, t, active, now_ms);
                         t.write_bytes(text.as_bytes())?;
                     }
                 }
@@ -4738,6 +4750,25 @@ impl PendingSend {
         }
     }
 
+    /// Everything still owed, handed over at once.
+    ///
+    /// For when something else is about to write to the same tab. A paste that
+    /// goes over in pieces owns that tab until the last piece is in: a
+    /// keystroke, or another message, arriving in the gaps is typed into the
+    /// middle of somebody's sentence. The pacing is what gets given up here,
+    /// never the order.
+    fn rest(&mut self, now_ms: u64) -> Vec<u8> {
+        if self.handed >= self.chunks.len() {
+            return Vec::new();
+        }
+        let out = self.chunks[self.handed..].concat();
+        self.handed = self.chunks.len();
+        self.quiet_since = None;
+        self.not_before = now_ms + SUBMIT_FLOOR_MS;
+        self.give_up = now_ms + SUBMIT_GIVE_UP_MS;
+        out
+    }
+
     /// The next thing to do for this send.
     ///
     /// While the body is going out, what we wait on is the recipient drawing.
@@ -4779,6 +4810,21 @@ impl PendingSend {
             Step::Submit { settled }
         } else {
             Step::Wait
+        }
+    }
+}
+
+/// Give this tab the rest of whatever is being pasted into it, now.
+///
+/// Called just before anything else writes to that tab. A paste that goes over
+/// in pieces holds the tab until it is finished; letting a keystroke into the
+/// gaps would type it into the middle of the person's own sentence. The Enter
+/// is left where it was — the person may still be adding to what was pasted.
+fn finish_paste(pending: &mut [PendingSend], t: &Tab, tab: usize, now_ms: u64) {
+    for p in pending.iter_mut().filter(|p| p.tab == tab) {
+        let rest = p.rest(now_ms);
+        if !rest.is_empty() {
+            let _ = t.write_passthrough(&rest);
         }
     }
 }
@@ -8171,6 +8217,53 @@ mod tests {
         assert!(waited(&p.step(0, 10)), "静止を観測しはじめる");
         assert!(submitted(&p.step(0, 10 + SUBMIT_QUIET_MS)), "本文は渡し終える");
         assert!(!p.submit, "下書きは Enter を打たない");
+    }
+
+    /// Two messages to one tab are two messages.
+    ///
+    /// They are handed over in turn, from the front: the second one's text must
+    /// not start going over until the first one's Enter has. Sent together,
+    /// what arrives is one message with both in it, followed by an Enter on an
+    /// empty line — which is exactly what it looked like from outside: "the
+    /// text I meant to send never went".
+    #[test]
+    fn a_second_message_waits_for_the_first_ones_enter() {
+        let mut queue = vec![
+            PendingSend::new(1, vec![vec![b'A']], true, 0, 0),
+            PendingSend::new(1, vec![vec![b'B']], true, 0, 0),
+            PendingSend::new(2, vec![vec![b'C']], true, 0, 0),
+        ];
+        // One pass: the front one for tab1 acts, the one behind it waits, and
+        // another tab is nobody's business
+        let mut holding: Vec<usize> = Vec::new();
+        let acted: Vec<bool> = queue
+            .iter_mut()
+            .map(|p| {
+                if holding.contains(&p.tab) {
+                    return false;
+                }
+                holding.push(p.tab);
+                !waited(&p.step(0, 0))
+            })
+            .collect();
+        assert_eq!(acted, vec![true, false, true], "同じタブは順番待ち、別のタブは並行");
+
+        // The one behind has handed over nothing at all, so nothing of it can
+        // have landed inside the message in front
+        assert_eq!(queue[1].handed, 0, "後ろの本文が先に流れ込んでいる");
+    }
+
+    /// A person typing into a tab mid-paste must not be typed into the middle
+    /// of the paste. The rest of it goes over first, in one piece.
+    #[test]
+    fn typing_pushes_the_rest_of_the_paste_out_first() {
+        let mut p = PendingSend::new(1, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0);
+        assert!(handed(&p.step(0, 0)), "ひと塊目");
+        assert_eq!(p.rest(500), b"bc".to_vec(), "残りは一度に出す");
+        assert_eq!(p.rest(500), Vec::<u8>::new(), "二度は出さない");
+        // The Enter still follows, measured from the moment the rest went over
+        assert!(waited(&p.step(0, 510)), "ここから静止を測り直す");
+        assert!(submitted(&p.step(0, 510 + SUBMIT_QUIET_MS)), "送信はそのあと");
     }
 
     /// A paste is cut at character boundaries, so no character is ever split
