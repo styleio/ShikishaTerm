@@ -1990,13 +1990,25 @@ impl Tab {
         self.response_marker.store(u64::MAX, Ordering::Relaxed);
     }
 
-    /// Send input. Only input containing a submit counts as "requesting a response"
     /// Input that just flows straight through to the child process.
-    /// Not input that requests a response, so `prompted` is not set
-    /// (used only for real-machine verification. The normal path is write_bytes)
-    #[cfg(test)]
+    ///
+    /// Not input that requests a response, so `prompted` is not set — which is
+    /// what a piece of a paste is. Already-encoded bytes (see `encode_out`), so
+    /// a piece can be handed over without the conversion seeing half a character.
     pub fn write_passthrough(&self, bytes: &[u8]) -> Result<()> {
         pty_write(&self.writer, bytes)
+    }
+
+    /// Text turned into the bytes this peer reads, ready for `write_passthrough`.
+    ///
+    /// For a paste that goes out in pieces, the conversion has to happen before
+    /// the cutting — converting each piece separately is fine only because the
+    /// pieces are cut at character boundaries.
+    pub fn encode_out(&self, text: &str) -> Vec<u8> {
+        match self.opts.encoding {
+            Some(enc) => enc.encode(text).0.into_owned(),
+            None => text.as_bytes().to_vec(),
+        }
     }
 
     pub fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
@@ -3506,5 +3518,138 @@ mod resize_survival_tests {
             text.contains("ALIVE"),
             "縮めた後に読み取りが止まっている: {text:?}"
         );
+    }
+}
+
+
+#[cfg(test)]
+mod long_paste_probe {
+    use super::{Tab, TabOptions};
+    use crate::{PendingSend, Step, paste_chunks};
+    use std::time::{Duration, Instant};
+
+    /// A long paste must actually be sent, not left sitting in the input box.
+    ///
+    ///   $env:SHIKISHA_PROBE_BODY = "...\body.txt"
+    ///   cargo test long_paste -- --ignored --nocapture
+    ///
+    /// Runs the production path (`paste_chunks` + `PendingSend`) against a real
+    /// Codex CLI, because this only goes wrong against a real one: it draws
+    /// *nothing at all* for seconds while taking a long paste in, so anything
+    /// that reads "output has stopped" as "it has finished" presses Enter into
+    /// the middle of the paste, where it counts as a newline. Before the
+    /// chunking, 20,000 characters went nowhere; the text stayed in the box
+    /// until the next thing typed carried it in.
+    ///
+    /// Costs one cheap turn of the real CLI (it is asked to reply "MANGO").
+    fn run(label: &str, body: &str) {
+        let cli = std::env::var("SHIKISHA_PROBE_CMD").unwrap_or_else(|_| "codex".into());
+        let mut tab = Tab::spawn(
+            cli.clone(),
+            &[cli],
+            None,
+            30,
+            120,
+            TabOptions { cwd: Some(std::path::PathBuf::from(r"D:\ShikishaTerm")), ..Default::default() },
+        )
+        .expect("起動");
+        let settle = |ms: u64, cap: u64| {
+            let start = Instant::now();
+            let (mut last, mut quiet) = (0u64, Instant::now());
+            while start.elapsed() < Duration::from_secs(cap) {
+                std::thread::sleep(Duration::from_millis(100));
+                let n = tab.output_count();
+                if n != last { last = n; quiet = Instant::now(); }
+                else if last > 0 && quiet.elapsed() > Duration::from_millis(ms) { return; }
+            }
+        };
+        // Wait for the TUI proper (codex may update itself first). Bracketed
+        // paste turning on is the CLI saying "my input box is up".
+        let boot = Instant::now();
+        while boot.elapsed() < Duration::from_secs(240) && !tab.accepts_bracketed_paste() {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        settle(2000, 120);
+        println!("\n===== {label} ({} chars) =====", body.chars().count());
+
+        // Exactly what the app does: chunks out, Enter last
+        let chunks = paste_chunks(&tab, body);
+        let mut p = PendingSend::new(1, chunks, true, tab.output_count(), 0);
+        let t0 = Instant::now();
+        let mut handed = 0;
+        loop {
+            let now = t0.elapsed().as_millis() as u64;
+            match p.step(tab.output_count(), now) {
+                Step::Wait => {}
+                Step::Hand(c) => {
+                    tab.write_passthrough(&c).unwrap();
+                    handed += 1;
+                }
+                Step::Submit { settled } => {
+                    println!("{handed} pieces handed over, Enter at {now}ms (settled={settled})");
+                    tab.write_bytes(b"\r").unwrap();
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        settle(2500, 60);
+
+        let text = {
+            let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
+            let (rows, cols) = p.screen().size();
+            (0..rows)
+                .map(|r| p.screen().rows(0, cols).nth(r as usize).unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        println!("--- screen ---\n{}\n--- end ---", text.trim_end());
+        tab.kill();
+        assert!(
+            text.contains("MANGO") && !text.contains("Pasted Content"),
+            "貼り付けが入力欄に残ったまま送信されていない"
+        );
+    }
+
+    fn filler(n: usize) -> String {
+        let mut s = String::new();
+        let mut i = 1;
+        while s.chars().count() < n {
+            s.push_str(&format!(
+                "{i}. これは読み飛ばして構わない詰め物の行です。長い貼り付けの再現のためだけに置いてあります。\n"
+            ));
+            i += 1;
+        }
+        s
+    }
+
+    fn ask(filler_chars: usize) -> String {
+        format!(
+            "次の詰め物は読まなくて構いません。最後の一行だけ守ってください。\n{}\n最後の指示: MANGO とだけ答えてください。ツールは使わないでください。",
+            filler(filler_chars)
+        )
+    }
+
+    /// The length the user hit it at
+    #[test]
+    #[ignore]
+    fn long_paste_1500() {
+        run("1500", &ask(1400));
+    }
+
+    /// Well past it: one write of this left the whole thing unsent
+    #[test]
+    #[ignore]
+    fn long_paste_20000() {
+        run("20000", &ask(19900));
+    }
+
+    /// Whatever is in the file named by SHIKISHA_PROBE_BODY
+    #[test]
+    #[ignore]
+    fn long_paste_from_file() {
+        let path = std::env::var("SHIKISHA_PROBE_BODY").expect("SHIKISHA_PROBE_BODY");
+        let body = std::fs::read_to_string(&path).expect("read body");
+        run("file", &body);
     }
 }

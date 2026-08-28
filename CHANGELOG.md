@@ -9,6 +9,19 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A long message typed into the sub-input bar is actually sent.** Paste a
+  page's worth of text at a Codex or Claude tab and press Send, and nothing
+  happened: the text sat in the CLI's input box, unsent, until the next thing
+  typed carried the whole lot in with it. The recipient takes a paste in one
+  character at a time and falls a long way behind; the Enter written next
+  joined the same queue and was read as part of the paste, where it means a
+  newline and not "send this". Waiting longer could never fix it — the wait was
+  on our clock and the queue was on theirs, and a Codex CLI taking in 20,000
+  characters drew nothing at all for two seconds, so "it has gone quiet" looked
+  exactly like "it has finished". The paste now goes over a piece at a time,
+  each piece handed on only once the recipient has drawn something, so by the
+  last one it is caught up and the Enter lands where it belongs.
+
 - **Reopening the app comes back to the conversation, not to an empty prompt.**
   Closing SHIKISHA-TERM in the middle of a job and starting it again put the
   workspace back, put the panes back, and quietly started every AI on a brand

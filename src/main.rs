@@ -1839,7 +1839,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // Holding area for hand-offs the recipient can't accept yet
     let mut waiting: Vec<Waiting> = Vec::new();
     // A reservation to send submit (Enter) later, for text that's already been sent
-    let mut pending_submit: Vec<PendingSubmit> = Vec::new();
+    let mut pending_send: Vec<PendingSend> = Vec::new();
     // Tabs that look like they've finished responding, and the time that gets confirmed.
     // We hold off firing until we've verified it stayed quiet, so we don't fire on a
     // mid-response pause for breath.
@@ -2348,7 +2348,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             &notifier,
                             &mut flash,
                             &mut ball,
-                            &mut pending_submit,
+                            &mut pending_send,
                             &mut waiting,
                             &mut active,
                             ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
@@ -2535,7 +2535,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             t.was_prompted(),
                             t.saw_working_flag(),
                             t.answered_since_submit(),
-                            pending_submit.iter().any(|p| p.tab == idx)
+                            pending_send.iter().any(|p| p.tab == idx)
                         ));
                     }
 
@@ -2562,7 +2562,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // that output as a response, only treat it as one once there's
                         // been input. A tab where submit (Enter) hasn't arrived yet is
                         // merely showing a pasted draft. Going quiet doesn't make that a response.
-                        let submitting = pending_submit.iter().any(|p| p.tab == idx);
+                        let submitting = pending_send.iter().any(|p| p.tab == idx);
                         // If nothing came out after submit, it never arrived.
                         // Don't read a screen that's just showing the pasted draft as a response.
                         let answering = tabs[idx - 1].was_prompted()
@@ -2666,7 +2666,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         &notifier,
                         &mut flash,
                         &mut ball,
-                        &mut pending_submit,
+                        &mut pending_send,
                         &mut waiting,
                         &mut active,
                         ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
@@ -2804,7 +2804,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         let excerpt = log_excerpt(&text, 120);
                         if hand_line(
                             &mut tabs, &surfaces, tab, text, now_ms,
-                            &mut pending_submit, &mut ball,
+                            &mut pending_send, &mut ball,
                         ) {
                             append_hook_log(&format!("remote send tab{tab}: {excerpt}"));
                         }
@@ -2992,7 +2992,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     &notifier,
                     &mut flash,
                     &mut ball,
-                    &mut pending_submit,
+                    &mut pending_send,
                     &mut waiting,
                     &mut active,
                     ViewMove { allowed: auto_switch, touched_ms: view_touched_ms, settings_open },
@@ -3000,24 +3000,32 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
-        // Send the reserved submit (Enter) once the recipient has drawn the pasted text
-        if !pending_submit.is_empty() {
+        // Feed out the pastes in flight, and press Enter once the recipient has
+        // taken the whole thing in
+        if !pending_send.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
-            pending_submit.retain_mut(|p| {
+            pending_send.retain_mut(|p| {
                 let Some(t) = session_at(&surfaces, p.tab).and_then(|i| tabs.get(i)) else {
                     return false;
                 };
-                if !p.ready(t.output_count(), now_ms) {
-                    return true;
+                match p.step(t.output_count(), now_ms) {
+                    Step::Wait => true,
+                    Step::Hand(chunk) => {
+                        let _ = t.write_passthrough(&chunk);
+                        true
+                    }
+                    Step::Submit { settled } => {
+                        if p.submit {
+                            let _ = t.write_bytes(b"\r");
+                            append_hook_log(&format!(
+                                "submit tab{} ({})",
+                                p.tab,
+                                if settled { "after intake finished" } else { "sent while still unsettled" }
+                            ));
+                        }
+                        false
+                    }
                 }
-                let settled = now_ms < p.give_up;
-                let _ = t.write_bytes(b"\r");
-                append_hook_log(&format!(
-                    "submit tab{} ({})",
-                    p.tab,
-                    if settled { "after intake finished" } else { "sent while still unsettled" }
-                ));
-                false
             });
         }
 
@@ -3470,7 +3478,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         for (tab, line) in surface.take_says() {
             let now_ms = start.elapsed().as_millis() as u64;
             let to = if tab == 0 { active } else { tab };
-            if !hand_line(&mut tabs, &surfaces, to, line, now_ms, &mut pending_submit, &mut ball) {
+            if !hand_line(&mut tabs, &surfaces, to, line, now_ms, &mut pending_send, &mut ball) {
                 append_hook_log(&format!("say went nowhere: tab{to} is not a session"));
             }
         }
@@ -4292,9 +4300,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         KeyCode::Char('x') => {
                             auto_enabled = false;
-                            // If a submit reservation is left over, only the Enter
-                            // would arrive after stopping.
-                            pending_submit.clear();
+                            // A paste on its way out would otherwise keep
+                            // trickling in, and its Enter land, after the stop.
+                            // Whatever has already gone over stays in the input
+                            // box, unsent — which is what stopping means here.
+                            pending_send.clear();
                             // Discard every waiting loop too (don't let them revive on resume)
                             if let Some(eng) = engine.as_mut() {
                                 eng.cancel_all();
@@ -4603,18 +4613,60 @@ const SUBMIT_QUIET_MS: u64 = 400;
 /// keeps responding and never settles
 const SUBMIT_GIVE_UP_MS: u64 = 8_000;
 
-/// A reservation to send submit (Enter) after the text body has been sent.
+/// How much of a paste to hand over at a time.
 ///
-/// Writing it all in one go means the Enter arrives before the AI CLI has
-/// finished taking in the paste and gets dropped. But using a fixed wait time
-/// instead is just guessing "how many seconds the recipient takes to process
-/// it", and breaks the moment device, load, or body length changes.
-/// The signal to use instead is the recipient having drawn the paste
-/// (= having produced output).
-struct PendingSubmit {
+/// The recipient takes a paste in one character at a time — on Windows the
+/// console turns the stream into individual key events — and it is far slower at
+/// that than we are at writing. Give it the whole thing in one go and it spends
+/// seconds working through a backlog nothing on our side can see.
+const PASTE_CHUNK: usize = 1024;
+/// How long to give the recipient to draw something before handing over the next
+/// chunk anyway. Drawing is the only way it has of saying "I've caught up";
+/// the timeout is for a recipient that draws nothing at all.
+const PASTE_ACK_MS: u64 = 600;
+
+/// What to do with a send on this pass.
+enum Step {
+    /// Nothing yet: the recipient hasn't caught up, or hasn't settled
+    Wait,
+    /// Hand over this much more of the paste
+    Hand(Vec<u8>),
+    /// The body is all in. Press Enter (or, for a draft, stop here)
+    Submit { settled: bool },
+}
+
+/// A paste on its way to a tab, and the Enter that finishes it.
+///
+/// Both halves are here because they are one problem. The recipient reads the
+/// paste one character at a time and falls behind; the Enter we write next joins
+/// the same queue, so it is taken *inside* the paste, where it counts as a
+/// newline and not as "send this" — the text sits in the input box, unsent,
+/// until the next thing typed carries it in. Waiting longer before pressing
+/// Enter cannot fix that: the wait is on our clock, and the queue is on theirs.
+///
+/// So the paste is handed over a chunk at a time, and the next chunk only goes
+/// out once the recipient has drawn something (= caught up). Nothing here is a
+/// guess about how fast the recipient is; it sets its own pace, and by the time
+/// the last chunk is out it is at most one chunk behind.
+///
+/// Measured against a real Codex CLI on Windows: 20,000 characters written in
+/// one go left the whole thing in the input box (it drew *nothing at all* for
+/// two seconds mid-intake, so "output has stopped" looked exactly like
+/// "finished"). Handed over in chunks, the same text sends.
+struct PendingSend {
     tab: usize,
-    /// The cumulative output amount last seen. While it keeps increasing, intake is still in progress.
+    /// The paste, already encoded for the recipient, split at character
+    /// boundaries. Split before encoding so no character is ever cut in half.
+    chunks: Vec<Vec<u8>>,
+    /// How many chunks have gone out
+    handed: usize,
+    /// Whether to press Enter at the end. A draft is placed for a person to
+    /// finish, so it stops with the text in the box.
+    submit: bool,
+    /// The cumulative output amount last seen. A change means the recipient drew.
     seen: u64,
+    /// When the last chunk was handed over
+    handed_ms: u64,
     /// The point output stopped (None = hasn't stopped yet)
     quiet_since: Option<u64>,
     /// The earliest time submission is allowed, to prevent sending too early
@@ -4623,24 +4675,45 @@ struct PendingSubmit {
     give_up: u64,
 }
 
-impl PendingSubmit {
-    fn new(tab: usize, seen: u64, now_ms: u64) -> Self {
+impl PendingSend {
+    fn new(tab: usize, chunks: Vec<Vec<u8>>, submit: bool, seen: u64, now_ms: u64) -> Self {
         Self {
             tab,
+            chunks,
+            handed: 0,
+            submit,
             seen,
+            handed_ms: now_ms,
             quiet_since: None,
             not_before: now_ms + SUBMIT_FLOOR_MS,
             give_up: now_ms + SUBMIT_GIVE_UP_MS,
         }
     }
 
-    /// Whether it's okay to send submit (Enter) to this tab right now.
+    /// The next thing to do for this send.
     ///
-    /// What we wait for is "intake finished", not "response started". A long
-    /// paste keeps redrawing over several round trips, so sending as soon as it
-    /// starts arrives mid-intake and gets dropped (measured: around 600 chars
-    /// goes through, around 1900 chars fails).
-    fn ready(&mut self, output_count: u64, now_ms: u64) -> bool {
+    /// While the body is going out, what we wait on is the recipient drawing.
+    /// Once it is all out, what we wait on is the drawing *stopping* — the same
+    /// "it has taken it in" signal as before, which is now trustworthy because
+    /// the recipient was never allowed to fall behind.
+    fn step(&mut self, output_count: u64, now_ms: u64) -> Step {
+        if self.handed < self.chunks.len() {
+            let drew = output_count != self.seen;
+            if !drew && now_ms.saturating_sub(self.handed_ms) < PASTE_ACK_MS && self.handed > 0 {
+                return Step::Wait;
+            }
+            let chunk = self.chunks[self.handed].clone();
+            self.handed += 1;
+            self.seen = output_count;
+            self.handed_ms = now_ms;
+            // The clock for "has it settled?" starts when the last chunk is out
+            if self.handed == self.chunks.len() {
+                self.quiet_since = None;
+                self.not_before = now_ms + SUBMIT_FLOOR_MS;
+                self.give_up = now_ms + SUBMIT_GIVE_UP_MS;
+            }
+            return Step::Hand(chunk);
+        }
         if output_count != self.seen {
             // Still mid-intake. Restart the measurement from when it stops.
             self.seen = output_count;
@@ -4649,29 +4722,45 @@ impl PendingSubmit {
             self.quiet_since = Some(now_ms);
         }
         if now_ms < self.not_before {
-            return false;
+            return Step::Wait;
         }
         let settled = self
             .quiet_since
             .is_some_and(|q| now_ms.saturating_sub(q) >= SUBMIT_QUIET_MS);
-        settled || now_ms >= self.give_up
+        if settled || now_ms >= self.give_up {
+            Step::Submit { settled }
+        } else {
+            Step::Wait
+        }
     }
 }
 
-/// Sends just the text body to the prompt. The caller sends submit a little later.
-fn write_prompt(t: &Tab, text: &str) {
+/// The paste to hand a tab, cut into chunks small enough for it to swallow one
+/// at a time. Cut before encoding, so a character never straddles two writes.
+///
+/// One place builds this, for every door that pastes into a tab: a person's
+/// line, an automated hand-off, and a draft left for someone to finish.
+fn paste_chunks(t: &Tab, text: &str) -> Vec<Vec<u8>> {
     let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
     let body = text.replace("\r\n", "\r").replace('\n', "\r");
-    let mut bytes = Vec::new();
-    if bracketed {
-        // If bracketed paste is supported, multi-line text still arrives as a single input
-        bytes.extend_from_slice(b"\x1b[200~");
-        bytes.extend_from_slice(body.as_bytes());
-        bytes.extend_from_slice(b"\x1b[201~");
+    // If bracketed paste is supported, multi-line text still arrives as a single input
+    let payload = if bracketed {
+        format!("\x1b[200~{body}\x1b[201~")
     } else {
-        bytes.extend_from_slice(body.as_bytes());
+        body
+    };
+    let mut chunks = Vec::new();
+    let mut rest = payload.as_str();
+    while !rest.is_empty() {
+        let mut cut = PASTE_CHUNK.min(rest.len());
+        while !rest.is_char_boundary(cut) {
+            cut += 1;
+        }
+        let (head, tail) = rest.split_at(cut);
+        chunks.push(t.encode_out(head));
+        rest = tail;
     }
-    let _ = t.write_bytes(&bytes);
+    chunks
 }
 
 /// The name used when placing the settings page inside the window.
@@ -6134,7 +6223,7 @@ fn hand_line(
     target: usize,
     text: String,
     now_ms: u64,
-    pending_submit: &mut Vec<PendingSubmit>,
+    pending_send: &mut Vec<PendingSend>,
     ball: &mut ball::Ball,
 ) -> bool {
     let Some(t) = session_at(surfaces, target).and_then(|i| tabs.get_mut(i)) else {
@@ -6156,8 +6245,8 @@ fn hand_line(
     } else {
         to_live(t);
         let seen = t.output_count();
-        write_prompt(t, &text);
-        pending_submit.push(PendingSubmit::new(target, seen, now_ms));
+        let chunks = paste_chunks(t, &text);
+        pending_send.push(PendingSend::new(target, chunks, true, seen, now_ms));
     }
     true
 }
@@ -6478,7 +6567,7 @@ fn exec_commands(
     notifier: &notify::Notifier,
     flash: &mut Option<String>,
     ball: &mut ball::Ball,
-    pending_submit: &mut Vec<PendingSubmit>,
+    pending_send: &mut Vec<PendingSend>,
     waiting: &mut Vec<Waiting>,
     active: &mut usize,
     // Whether automation may move the view right now (see ViewMove)
@@ -6680,11 +6769,9 @@ fn exec_commands(
                         continue;
                     }
                     // Don't send submit (Enter). A human adds to it and sends it themselves.
-                    let mut bytes = Vec::with_capacity(text.len() + 12);
-                    bytes.extend_from_slice(b"\x1b[200~");
-                    bytes.extend_from_slice(text.as_bytes());
-                    bytes.extend_from_slice(b"\x1b[201~");
-                    let _ = t.write_bytes(&bytes);
+                    let seen = t.output_count();
+                    let chunks = paste_chunks(t, &text);
+                    pending_send.push(PendingSend::new(idx, chunks, false, seen, now_ms));
                     // A human is part of the loop too. If they add to it and
                     // send it, the chain continues, so count the depth the same
                     // way as an auto-send.
@@ -6756,8 +6843,8 @@ fn exec_commands(
                     append_hook_log(&format!("model's turn tab{target} ({} chars)", text.chars().count()));
                 } else {
                     let seen = t.output_count();
-                    write_prompt(t, &text);
-                    pending_submit.push(PendingSubmit::new(target, seen, now_ms));
+                    let chunks = paste_chunks(t, &text);
+                    pending_send.push(PendingSend::new(target, chunks, true, seen, now_ms));
                     append_hook_log(&format!("Paste tab{target} ({} chars)", text.chars().count()));
                 }
                 // A self-send (seeding a persona at launch, the opening nudge,
@@ -7896,7 +7983,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
 
-        write_prompt(&t, "echo shikisha-ok");
+        for chunk in paste_chunks(&t, "echo shikisha-ok") {
+            t.write_passthrough(&chunk).unwrap();
+        }
         std::thread::sleep(Duration::from_millis(400));
         assert!(
             screen(&t).contains("echo shikisha-ok"),
@@ -7951,43 +8040,110 @@ mod tests {
         t.kill();
     }
 
-    /// Submit (Enter) must wait until paste intake has "finished".
+    /// Shorthand for the tests: is this step Wait / Hand / Submit?
+    fn waited(s: &Step) -> bool {
+        matches!(s, Step::Wait)
+    }
+    fn handed(s: &Step) -> bool {
+        matches!(s, Step::Hand(_))
+    }
+    fn submitted(s: &Step) -> bool {
+        matches!(s, Step::Submit { .. })
+    }
+
+    /// Submit (Enter) must wait until paste intake has really finished.
     ///
-    /// Sending it the moment it "starts" gets a long paste dropped mid-intake.
-    /// Measured: around 600 chars goes through, around 1900 chars fails.
+    /// The recipient reads the paste one character at a time and falls behind;
+    /// an Enter written into the same queue is taken as part of the paste and
+    /// counts as a newline, leaving the text unsent in the input box. So the
+    /// body goes over a chunk at a time and the Enter only follows the last one.
     #[test]
     fn the_enter_waits_for_the_paste_to_finish_being_taken_in() {
-        let mut p = PendingSubmit::new(1, 100, 1_000);
+        let one = |n: usize| vec![vec![b'x'; 8]; n];
 
-        // Never send while output is still moving, no matter how long it's been
-        assert!(!p.ready(100, 1_000), "送った瞬間");
-        assert!(!p.ready(200, 1_100), "反応が始まっただけでは送らない");
-        assert!(!p.ready(300, 2_000), "まだ増えている");
-        assert!(!p.ready(400, 3_000), "まだ増えている");
+        // A one-chunk paste: out at once, then the settling rule as before
+        let mut p = PendingSend::new(1, one(1), true, 100, 1_000);
+        assert!(handed(&p.step(100, 1_000)), "最初のひと塊はすぐ渡す");
+        assert!(waited(&p.step(200, 1_100)), "反応が始まっただけでは送らない");
+        assert!(waited(&p.step(300, 2_000)), "まだ増えている");
+        assert!(waited(&p.step(400, 3_000)), "まだ増えている");
+        assert!(waited(&p.step(400, 3_100)), "止まった直後はまだ");
+        assert!(waited(&p.step(400, 3_100 + SUBMIT_QUIET_MS - 1)), "静かな時間が足りない");
+        assert!(submitted(&p.step(400, 3_100 + SUBMIT_QUIET_MS)), "落ち着いたら送る");
 
-        // Only send once it's stopped and stayed quiet for a while
-        assert!(!p.ready(400, 3_100), "止まった直後はまだ");
-        assert!(!p.ready(400, 3_100 + SUBMIT_QUIET_MS - 1), "静かな時間が足りない");
-        assert!(p.ready(400, 3_100 + SUBMIT_QUIET_MS), "落ち着いたら送る");
-
-        // Restart the measurement if activity resumes partway through.
-        // The quiet period starts not at "the moment it stopped" but "the first time we noticed it had stopped".
-        let mut p = PendingSubmit::new(1, 0, 0);
-        assert!(!p.ready(0, 100), "静かだがまだ足りない");
-        assert!(!p.ready(50, 200), "再開したので測り直す");
-        assert!(!p.ready(50, 300), "ここで改めて静止を観測");
-        assert!(!p.ready(50, 300 + SUBMIT_QUIET_MS - 1), "測り直し中");
-        assert!(p.ready(50, 300 + SUBMIT_QUIET_MS), "改めて落ち着いた");
+        // Restart the measurement if activity resumes partway through
+        let mut p = PendingSend::new(1, one(1), true, 0, 0);
+        assert!(handed(&p.step(0, 0)), "ひと塊目");
+        assert!(waited(&p.step(0, 100)), "静かだがまだ足りない");
+        assert!(waited(&p.step(50, 200)), "再開したので測り直す");
+        assert!(waited(&p.step(50, 300)), "ここで改めて静止を観測");
+        assert!(waited(&p.step(50, 300 + SUBMIT_QUIET_MS - 1)), "測り直し中");
+        assert!(submitted(&p.step(50, 300 + SUBMIT_QUIET_MS)), "改めて落ち着いた");
 
         // Send anyway once the cap is hit, even if it never settles
-        let mut p = PendingSubmit::new(1, 0, 0);
+        let mut p = PendingSend::new(1, one(1), true, 0, 0);
+        assert!(handed(&p.step(0, 0)), "ひと塊目");
         let mut out = 0;
         for t in (100..SUBMIT_GIVE_UP_MS).step_by(100) {
             out += 1;
-            assert!(!p.ready(out, t), "増え続けている間は待つ ({t}ms)");
+            assert!(!submitted(&p.step(out, t)), "増え続けている間は待つ ({t}ms)");
         }
         out += 1;
-        assert!(p.ready(out, SUBMIT_GIVE_UP_MS), "上限に達したら送る");
+        assert!(submitted(&p.step(out, SUBMIT_GIVE_UP_MS)), "上限に達したら送る");
+    }
+
+    /// The whole body has to be handed over before the Enter, and the next
+    /// piece only goes out once the recipient has drawn (= caught up).
+    ///
+    /// This is the bug the chunking exists for: Codex CLI drew *nothing at all*
+    /// for two seconds while taking in a long paste, so "output has stopped"
+    /// looked exactly like "it has finished", the Enter went out into the middle
+    /// of the paste, and 20,000 characters sat unsent in the input box.
+    #[test]
+    fn the_body_goes_over_a_piece_at_a_time_and_the_enter_comes_last() {
+        let mut p = PendingSend::new(1, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0);
+        assert!(handed(&p.step(0, 0)), "ひと塊目はすぐ");
+        // Silent recipient: not a word drawn. It must not be given the rest at
+        // once, and above all must not be sent Enter.
+        assert!(waited(&p.step(0, 10)), "描かないうちは次を渡さない");
+        assert!(waited(&p.step(0, PASTE_ACK_MS - 1)), "待ちきる前は渡さない");
+        assert!(handed(&p.step(0, PASTE_ACK_MS)), "描かないままなら待って渡す");
+        // Drawing means it has caught up, so the rest can go straight away
+        let last = PASTE_ACK_MS + 1;
+        assert!(handed(&p.step(9, last)), "描いたらすぐ次を渡す");
+        // Only now does the settling rule start, and it is measured from the
+        // first pass that sees the recipient still — not from the last piece
+        assert!(waited(&p.step(9, last + 10)), "ここで静止を観測しはじめる");
+        assert!(waited(&p.step(9, last + 10 + SUBMIT_QUIET_MS - 1)), "静かな時間が足りない");
+        assert!(submitted(&p.step(9, last + 10 + SUBMIT_QUIET_MS)), "全部渡してから送信");
+
+        // A draft is placed and left alone: the body goes over, the Enter never does
+        let mut p = PendingSend::new(1, vec![vec![b'a']], false, 0, 0);
+        assert!(handed(&p.step(0, 0)), "本文は渡す");
+        assert!(waited(&p.step(0, 10)), "静止を観測しはじめる");
+        assert!(submitted(&p.step(0, 10 + SUBMIT_QUIET_MS)), "本文は渡し終える");
+        assert!(!p.submit, "下書きは Enter を打たない");
+    }
+
+    /// A paste is cut at character boundaries, so no character is ever split
+    /// across two writes (a broken character would be drawn as garbage).
+    #[test]
+    fn a_paste_is_cut_between_characters() {
+        let t = Tab::spawn("cmd".into(), &["cmd.exe".to_string()], None, 24, 80, tab::TabOptions::default())
+            .expect("起動");
+        let text = "あ".repeat(PASTE_CHUNK); // 3 bytes each: boundaries never land on PASTE_CHUNK
+        let chunks = paste_chunks(&t, &text);
+        assert!(chunks.len() > 1, "長い本文は分割される");
+        for c in &chunks {
+            assert!(
+                std::str::from_utf8(c).is_ok(),
+                "塊の途中で文字が割れている"
+            );
+        }
+        let joined: String = chunks.iter().map(|c| String::from_utf8_lossy(c).into_owned()).collect();
+        assert!(joined.contains(&text), "つなげたら元の本文に戻る");
+        let mut t = t;
+        t.kill();
     }
 
     /// Automation may move the view, but the person outranks it.
