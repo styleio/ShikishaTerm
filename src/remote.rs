@@ -81,6 +81,11 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // dropped is exactly who needs this, and it reaches no further than the
         // keystroke (Ctrl+B r) it stands for — one tab, the one on screen.
         Ev::Restart => true,
+        // The same act, named by pane instead of implied. It reaches no
+        // further than Ev::Restart does -- one pane, one tab -- and refusing it
+        // would mean the same button worked or didn't depending on which door
+        // it was pressed from
+        Ev::RestartPane { .. } => true,
         // Input into the relay screen (finger trail / swipe / characters). The
         // heart of remote control, so let it through
         Ev::Inject { .. } => true,

@@ -8,6 +8,34 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **Reopening the app comes back to the conversation, not to an empty prompt.**
+  Closing SHIKISHA-TERM in the middle of a job and starting it again put the
+  workspace back, put the panes back, and quietly started every AI on a brand
+  new conversation. The id of the one it had been running was written down and
+  read back at startup, but it was only ever handed over by Ctrl+B r, on a tab,
+  one at a time — and nothing on screen said so, which is why the way back was
+  not findable by anyone who did not already know it was there. The settings
+  screen even promised the opposite, in as many words. Each tab is now launched
+  back into the conversation it was having, so its history is on screen again;
+  `Pick up where this tab left off`, in that tab's settings, turns it off for a
+  tab that is better off clean. A conversation that has been deleted since, a
+  tab that is new, and a CLI that cannot be told which conversation to resume
+  all still start fresh, silently, because starting fresh is what a tab
+  normally does.
+
+### Changed
+- **Restarting belongs to the pane it restarts.** The ↻ next to the emergency
+  stop could only ever reach whichever pane had focus, so with the screen
+  divided the other half could not be restarted without first going and
+  standing in it. Each pane's caption now carries the pair itself: ⟳ carries
+  the conversation on, ⟲ starts a new one — the two keys Ctrl+B r and Ctrl+B R
+  already stood for, on the pane they are drawn on. A pane whose thing has
+  already exited restarts on the first press; a live one asks twice. A phone
+  keeps the button in its status bar, where it is not ambiguous: there are no
+  panes to point at, and a phone watching an SSH tab that dropped is exactly
+  who needs it.
+
 ## [0.3.6] - 2026-08-27
 
 Looking at INDEX no longer wrecks what the AI had drawn, and the executable

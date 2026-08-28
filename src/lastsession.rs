@@ -8,10 +8,15 @@
 //! would be worse than not offering it: a restored screen that is a photograph
 //! of a live thing invites people to trust it.
 //!
-//! And it is never used on its own. Someone who quit to be rid of a
-//! conversation should not find it waiting for them. What this does is let the
-//! key that already means "carry the conversation over" reach across a restart
-//! of the whole app, on a tab where nothing has happened yet.
+//! What it is FOR is the restart nobody planned: the app was closed, or the
+//! machine was, in the middle of something. Putting the panes back and leaving
+//! them empty restores the furniture and not the work, so by default each tab
+//! is launched back into the conversation it was having -- the CLI is handed
+//! the id and asked to resume it, and what comes up is the conversation, not a
+//! prompt. `restore_conversations` turns that off for the person who closes
+//! the app to be rid of what was in it; with it off this is still read, and
+//! the key that means "carry the conversation over" (Ctrl+B r) can then reach
+//! back across the restart on a tab where nothing has happened yet.
 
 use std::path::PathBuf;
 
@@ -90,16 +95,38 @@ impl Saved {
     /// The conversation this tab was having last time, if this is recognisably
     /// the same tab.
     pub fn conversation_for(&self, workspace: &str, t: &Tab) -> Option<Session> {
+        self.conversation_of(
+            workspace,
+            t.program(),
+            t.cwd().map(|c| c.display().to_string()).as_deref(),
+            t.id.as_deref(),
+            &t.title,
+        )
+    }
+
+    /// The same question asked of a tab that does not exist yet.
+    ///
+    /// At startup the answer is needed BEFORE the process is launched -- that
+    /// is the whole point of carrying a conversation over -- so the test is
+    /// written against the four things that identify a tab rather than against
+    /// a live one. `conversation_for` is the same test, asked later
+    pub fn conversation_of(
+        &self,
+        workspace: &str,
+        program: &str,
+        cwd: Option<&str>,
+        id: Option<&str>,
+        title: &str,
+    ) -> Option<Session> {
         let ws = self.workspaces.iter().find(|w| w.name == workspace)?;
-        let cwd = t.cwd().map(|c| c.display().to_string());
         let saved = ws.tabs.iter().find(|s| {
-            s.program == t.program()
-                && s.cwd == cwd
-                && match (&s.id, &t.id) {
+            s.program == program
+                && s.cwd.as_deref() == cwd
+                && match (&s.id, id) {
                     // An automation name is the handle that survives renaming,
                     // so when there is one it is the whole test
                     (Some(a), Some(b)) => a == b,
-                    _ => s.title == t.title,
+                    _ => s.title == title,
                 }
         })?;
         Some(Session {
@@ -199,10 +226,25 @@ mod tests {
                 }],
             }],
         };
+        let found = |program, cwd, id, title| {
+            saved
+                .conversation_of("work", program, Some(cwd), id, title)
+                .map(|s| s.id)
+        };
+        // The automation name is the handle that survives renaming
+        assert_eq!(
+            found("claude", "D:\\Test", Some("coder"), "何とでも"),
+            Some("abc".into())
+        );
         // The same name pointing at a different program is not the same tab:
         // resuming a conversation into another CLI is nonsense, not a courtesy
-        let other = SavedTab { program: "codex".into(), ..saved.workspaces[0].tabs[0].clone() };
-        assert_ne!(other.program, saved.workspaces[0].tabs[0].program);
+        assert_eq!(found("codex", "D:\\Test", Some("coder"), "AGENT"), None);
+        // Nor is the same tab set up in another folder
+        assert_eq!(found("claude", "D:\\Other", Some("coder"), "AGENT"), None);
+        // And a workspace that was never remembered has nothing to say
+        assert!(saved
+            .conversation_of("elsewhere", "claude", Some("D:\\Test"), Some("coder"), "AGENT")
+            .is_none());
         assert!(saved.panes_for("work").is_none());
         assert!(saved.panes_for("elsewhere").is_none());
     }

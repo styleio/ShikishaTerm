@@ -1308,6 +1308,29 @@ fn plan_launch(
     }
 }
 
+/// Whether a conversation we remember can still be handed to this command.
+///
+/// Two questions in one, because both have the same answer for the caller —
+/// launch it fresh. The CLI has to have a way of being told which conversation
+/// to resume, and the conversation has to still be on this machine: handing a
+/// CLI an id it has never heard of makes it refuse to start, in its own words,
+/// in a place the person has no reason to connect with having reopened the app.
+///
+/// Asked at startup, before any tab exists, which is why it takes the command
+/// rather than a `Tab`. `main::resume_plan` asks the same two questions of a
+/// tab that is already running.
+pub fn resumable(argv: &[String], profile_spec: &Option<String>, id: &str) -> bool {
+    let Some(spec) = Tab::resolve_profile(argv, profile_spec).resume else {
+        return false;
+    };
+    if spec.with_id.is_empty() {
+        return false;
+    }
+    spec.verify
+        .as_ref()
+        .is_none_or(|v| crate::sessionfind::exists(v, id))
+}
+
 /// The command line a launch will really run, written out for a person to read.
 ///
 /// A command field that shows one line while another one starts is how an

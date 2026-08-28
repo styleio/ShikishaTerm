@@ -58,6 +58,16 @@ pub struct TabState {
     /// browser or the settings pane.
     #[serde(default)]
     pub auto: bool,
+    /// Whether relaunching this makes any sense. A session always can be; a
+    /// placed page can be reopened at the URL it started on; the app's own
+    /// furniture (the settings form, the result view) cannot, because there is
+    /// nothing behind it to put back.
+    ///
+    /// Per tab rather than one flag for the focused one, because the ↻ lives
+    /// in each pane's caption now: a control that appears where it would do
+    /// nothing is worse than one that is not offered.
+    #[serde(default)]
+    pub restartable: bool,
     /// What the thing in this tab says it is doing, in its own words.
     ///
     /// The state dot is read off the screen and can only ever say "busy" or
@@ -261,6 +271,7 @@ impl TabState {
             depth: t.chain_depth,
             activity: t.activity().to_vec(),
             kind: "pty".into(),
+            restartable: true,
             model: t.is_model(),
             busy: t.is_generating(),
             settings: false,
@@ -293,6 +304,10 @@ impl TabState {
             depth: 0,
             activity: Vec::new(),
             kind: "browser".into(),
+            // The same two keys `main::restartable_page` refuses, and for the
+            // same reason: they are opened and closed by the app, so "open it
+            // again" is not a thing a person can want from them
+            restartable: key != "settings" && key != "result",
             status: None,
             progress: None,
             // A browser is not in a folder and starts nothing, so it has
@@ -371,6 +386,7 @@ mod tests {
             depth: 0,
             activity: vec![0; 4],
             kind: "pty".into(),
+            restartable: true,
             model: false,
             busy: false,
             settings: false,

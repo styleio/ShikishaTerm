@@ -914,6 +914,18 @@ pub struct TabConfig {
     /// asked to resume it through the same resume flags a restart would use
     #[serde(default)]
     pub resume: Option<String>,
+    /// Whether this tab comes back to the conversation it was having when the
+    /// app last closed (default: yes).
+    ///
+    /// The shape of the screen is put back either way -- panes are furniture.
+    /// This is about the contents, which is a different promise: the CLI is
+    /// handed the id it was running and asked to resume it, so what is on
+    /// screen after reopening the app is the conversation itself, not an empty
+    /// prompt. Per tab, because the answer differs per tab: the one you live in
+    /// all day should come back, and a scratch tab you keep for one-off
+    /// questions is better off clean
+    #[serde(default)]
+    pub restore_conversation: Option<bool>,
     /// Scrollback line count (defaults to 5000)
     #[serde(default)]
     pub scrollback: Option<usize>,

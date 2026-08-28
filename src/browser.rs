@@ -757,6 +757,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("stop") => Ev::Stop,
         Some("restart") => Ev::Restart,
+        Some("restartpane") => Ev::RestartPane {
+            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            keep: v.get("keep").and_then(|x| x.as_bool()).unwrap_or(true),
+        },
         Some("remotecut") => Ev::RemoteCut,
         // A quick-action chip whose payload is Lua (the code stays server-side —
         // the page only knows the index). Runs it against the active tab.
@@ -1128,10 +1132,22 @@ pub enum Ev {
     VaultOpen { program: String, id: String, cwd: Option<String>, title: String },
     /// Emergency stop
     Stop,
-    /// Relaunch the tab being viewed. The status bar's ↻ next to the stop button
-    /// sends this; `keys_for` turns it into the Ctrl+B r that already does the
-    /// job, so there is one restart in the app rather than two that can drift.
+    /// Relaunch the tab being viewed. `keys_for` turns it into the Ctrl+B r that
+    /// already does the job, so there is one restart in the app rather than two
+    /// that can drift. Kept for the phone and the palette, which have a "this
+    /// tab" and no pane to point at.
     Restart,
+    /// Relaunch what a named pane holds. The ↻ pair in a pane's caption sends
+    /// this.
+    ///
+    /// Named rather than implied, for the same reason the ⊞ in a caption is:
+    /// with the screen divided, "the tab being viewed" is whichever pane has
+    /// focus, and a button attached to a pane must mean THAT pane whether or
+    /// not you were in it.
+    ///
+    /// `keep` is the choice between the two keys this stands for — Ctrl+B r
+    /// carries the conversation over, Ctrl+B R starts a new one.
+    RestartPane { id: u32, keep: bool },
     /// Cut every remote session from the window's side: rotate the access token
     /// and drop the open connections. Window-only — a phone can't disconnect
     /// itself (allowed_from_afar leaves it on the reject side).

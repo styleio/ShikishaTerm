@@ -2432,7 +2432,15 @@ function launchLine(t) {
       if (i) line.append(document.createTextNode(" "));
       line.append(el("span", {class: (i >= 1 && i <= r.added) ? "added" : ""}, a));
     });
-    if (r.added) note.textContent = T["settings.tab.command.real_note"];
+    // The same arguments mean two different things depending on the tab's own
+    // answer to "come back to this conversation", and the line cannot show
+    // both. `--session-id` is added either way -- it is what lets this app know
+    // which conversation a tab is having at all, which Ctrl+B r and the Vault
+    // both need -- so what changes here is what it is FOR
+    if (r.added)
+      note.textContent = t.restore_conversation === false
+        ? T["settings.tab.command.real_note.off"]
+        : T["settings.tab.command.real_note"];
   };
   // Typing is not a reason to ask on every keystroke, and the answer to a
   // half-typed command is not worth showing
@@ -3926,6 +3934,11 @@ function resumeCard() {
   const list = el("div", {}, el("div", {class:"hint"}, "…"));
   const box = card(T["settings.section.resume"],
     el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.resume.intro"]),
+    // This page is what somebody reads when they ask whether their conversation
+    // comes back, so it has to say where the switch for that is. The switch
+    // itself stays in one place -- two controls for one setting is how they
+    // start disagreeing
+    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.resume.where"]),
     list,
     el("div", {class:"hint", style:"margin-top:12px"}, T["settings.resume.note"]));
   load();
@@ -4611,6 +4624,9 @@ function aiPanel(t, cmdInput, rebuild) {
     detail.textContent = "";
     const m = parseModel(t.command);
     helpBtn.hidden = !!m || !headOf(t.command);
+    // An API model tab holds its exchange in this app, not in a CLI's records:
+    // there is no conversation to be handed back at launch
+    carry.hidden = !!m || !headOf(t.command);
     if (!m) {
       // A CLI is selected. If it has an "act without asking" flag, surface it
       // as an explicit, explained checkbox — required for autonomous discussion
@@ -4667,11 +4683,45 @@ function aiPanel(t, cmdInput, rebuild) {
     drawDetail();
   });
 
+  // Whether this tab comes back to the conversation it was having when the app
+  // last closed. It sits here, under the CLI's own switches and directly above
+  // the command line, because that is where the id it needs is visible: the
+  // "what actually runs" line right below shows the conversation argument this
+  // is the switch for.
+  //
+  // Outside `detail`, which is rebuilt per CLI and returns early for the ones
+  // with no "act without asking" flag -- this applies to every CLI tab, and a
+  // setting that vanished depending on which AI was picked would look like a
+  // bug in the settings rather than a choice.
+  const carry = el("div");
+  {
+    // Built the way the "act without asking" row above it is, rather than with
+    // checkDefaultOn: that one is shaped for the label-and-field grid, and in a
+    // full-width row it puts the words in the narrow left column, where they
+    // wrap mid-sentence. Two checkboxes one under the other have to look alike
+    const cb = el("input", {type:"checkbox"});
+    cb.checked = t.restore_conversation !== false;
+    cb.addEventListener("change", () => {
+      // Absent means yes, so the common answer leaves nothing in the file
+      if (cb.checked) delete t.restore_conversation;
+      else t.restore_conversation = false;
+      // The line below explains what the conversation argument is for, and the
+      // answer just changed. Announced through the command field's own event,
+      // the one path every other writer of that line already goes through
+      cmdInput.dispatchEvent(new Event("input", {bubbles: true}));
+    });
+    carry.append(
+      el("label", {class:"row", style:"cursor:pointer;gap:8px"}, cb,
+        el("span", {}, T["settings.tab.restore_conv"])),
+      el("div", {class:"row"}, el("label", {}, ""),
+        el("span", {class:"hint"}, T["settings.tab.restore_conv.hint"])));
+  }
+
   box.append(el("div", {class:"row"}, el("label", {}, T["settings.tab.ai.pick"]), sel, helpBtn));
   if (!provs.length)
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.tab.ai.api_hint"])));
-  box.append(detail);
+  box.append(detail, carry);
   drawDetail();
   return box;
 }

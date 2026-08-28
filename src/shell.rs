@@ -174,6 +174,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      one makes a pane, the other unmakes it */
   .pane .phead .sp { opacity:.55; padding:0 2px; font-size:12px; line-height:1; }
   .pane .phead .sp:hover { opacity:1; color:var(--brand); }
+  /* Relaunch what is in this pane. Two of them, because there are two things a
+     person means by it -- carry the conversation on, or start it clean -- and
+     one control that silently picks for you is how a restart eats a day's work.
+     Armed shows in warning colour rather than in words: the caption is 22px
+     tall and has no room for "SURE?" */
+  .pane .phead .rs { opacity:.55; padding:0 2px; font-size:12px; line-height:1; }
+  .pane .phead .rs:hover { opacity:1; color:var(--brand); }
+  .pane .phead .rs.armed { opacity:1; color:var(--warn); }
   /* The dividers. Drawn wider than they look so they can actually be grabbed:
      a 1px line is a line, not a handle.
      The handle takes the pointer; the hairline inside it is what the eye sees.
@@ -1238,6 +1246,15 @@ let restartArmed = 0;
 // The restart button beside the stop button: relaunch the tab being viewed.
 // Sends the intent that Ctrl+B r stands for, so there is one restart in the app.
 //
+// THE PHONE'S ONLY ONE. At the window the pair in each pane's caption is where
+// restarting lives now, and it has to be: a status bar has one button and a
+// divided screen has several panes, so "the tab being viewed" could only ever
+// reach whichever pane had focus — you could not restart the other half of a
+// split without first going and standing in it. A phone has no panes; it shows
+// one screen at a time, so there the ambiguity does not arise and the bar is
+// the right place. A phone watching an SSH tab that dropped is exactly who
+// needs this.
+//
 // Where it applies is the app's call, carried in the state (`restartable`): a
 // session relaunches its command, a page reopens exactly as it was opened (back
 // to its starting URL, with everything the page had built up gone). The board
@@ -1248,7 +1265,7 @@ let restartArmed = 0;
 // emergency stop, and a stray tap must not take a running conversation — or a
 // filled-in form — down with it. The arming lapses on its own.
 function restartBtn() {
-  if (!(S && S.restartable)) { restartArmed = 0; return null; }
+  if (!REMOTE || !(S && S.restartable)) { restartArmed = 0; return null; }
   const t = S.tabs.find(x => x.index === S.active);
   const armed = Date.now() < restartArmed;
   return el("span", {id:"restart", class: armed ? "armed" : "",
@@ -1586,6 +1603,10 @@ window.__panes = function (json) {
         // choice with two directions rather than as two unrelated icons
         '<span class="sp sr" title="' + (T["tui.pane.split_right"] || "") + '">&#9637;</span>' +
         '<span class="sp sd" title="' + (T["tui.pane.split_down"] || "") + '">&#9636;</span>' +
+        // Same act, two directions in time: ⟳ carries the conversation on,
+        // ⟲ goes back to the start of one. A matched pair, the way ▥ and ▤ are
+        '<span class="rs rk" title="' + (T["tui.pane.restart_keep"] || "") + '">&#10227;</span>' +
+        '<span class="rs rf" title="' + (T["tui.pane.restart_fresh"] || "") + '">&#10226;</span>' +
         '<span class="cl">&#10005;</span></div>' +
         '<div class="pbody"><pre class="pscreen notranslate" translate="no"></pre>' +
         '<div class="pnew"></div></div>';
@@ -1613,6 +1634,28 @@ window.__panes = function (json) {
         el.querySelector(cls).onclick = (e) => {
           e.stopPropagation();
           send({kind:"splitpane", id:p.id, down});
+        };
+      }
+      // The same two keys, Ctrl+B r and Ctrl+B R, on the pane you pressed them
+      // on. A pane whose thing has already exited (the SSH that dropped) holds
+      // nothing to lose, so it goes on the first press; a live one asks twice,
+      // because a stray tap must not take a running conversation down with it
+      for (const [cls, keep] of [[".rk", true], [".rf", false]]) {
+        el.querySelector(cls).onclick = (e) => {
+          e.stopPropagation();
+          const t = paneTab(p);
+          if (armedPane === cls + p.id || (t && t.state === "EXIT")) {
+            armedPane = null;
+            send({kind:"restartpane", id:p.id, keep});
+          } else {
+            // One thing armed at a time: arming the other of the pair, or the
+            // same one on another pane, must not leave a second live trigger
+            armedPane = cls + p.id;
+            setTimeout(() => {
+              if (armedPane === cls + p.id) { armedPane = null; paintPaneHeads(); }
+            }, 4100);
+          }
+          paintPaneHeads();
         };
       }
       host.append(el);
@@ -1643,6 +1686,17 @@ window.__panes = function (json) {
   if (lastCur) window.__cursor(lastCur[0], lastCur[1], lastCur[2]);
 };
 
+// Which restart is one press away from firing, as "<class><pane id>". At most
+// one at a time, and never held on the element: the captions are repainted on
+// every state push, and an arming kept there would be wiped a moment after it
+// was asked for
+let armedPane = null;
+
+// The tab a pane is showing, if it is showing one.
+function paneTab(p) {
+  return S && S.tabs ? S.tabs.find(x => x.index === p.surface) : null;
+}
+
 // What each pane is captioned with. Read from the same state the tab bar uses
 // rather than sent along with the tree: one copy cannot go stale against the other.
 function paintPaneHeads() {
@@ -1650,9 +1704,17 @@ function paintPaneHeads() {
   for (const p of PANES.panes) {
     const el = document.querySelector('#panes .pane[data-pid="' + p.id + '"]');
     if (!el) continue;
-    const t = S && S.tabs ? S.tabs.find(x => x.index === p.surface) : null;
+    const t = paneTab(p);
     el.querySelector(".nm").textContent = t ? t.name : "";
     el.querySelector(".dot").className = "dot " + (t ? t.state : "");
+    // Offered only where it would do something. The app's own screens (the
+    // settings form, the result view) have nothing behind them to put back,
+    // and a control that refuses is worse than one that is not there
+    for (const cls of [".rk", ".rf"]) {
+      const b = el.querySelector(cls);
+      b.hidden = !(t && t.restartable);
+      b.classList.toggle("armed", armedPane === cls + p.id);
+    }
     // Empty means there is nothing to show here, which is the same question
     // this line already answers. Asking the pane tree instead -- "is the
     // surface number zero?" -- was asking a copy that can be a frame behind,
@@ -4793,12 +4855,43 @@ mod tests {
     #[test]
     fn the_restart_button_follows_what_the_app_says() {
         assert!(
-            PAGE.contains("if (!(S && S.restartable)) { restartArmed = 0; return null; }"),
+            PAGE.contains("if (!REMOTE || !(S && S.restartable)) { restartArmed = 0; return null; }"),
             "再起動ボタンが本体の判断を読んでいない"
+        );
+        assert!(
+            PAGE.contains("b.hidden = !(t && t.restartable);"),
+            "ペインの再起動ボタンが本体の判断を読んでいない"
         );
         assert!(
             !PAGE.contains("if (!onTerminal()) { restartArmed = 0; return null; }"),
             "画面側が独自に判断する古い配線に戻っている"
+        );
+    }
+
+    /// Restarting belongs to a pane, not to the status bar — at the window.
+    ///
+    /// A status bar has one button and a divided screen has several panes, so the
+    /// bar's ↻ could only ever reach whichever pane had focus: the other half of a
+    /// split could not be restarted without first going and standing in it. The
+    /// pair now lives in each pane's caption, where it names the pane it is drawn
+    /// on. The bar keeps it on the phone alone, which has no panes to be ambiguous
+    /// about and is exactly who needs it when an SSH tab drops.
+    #[test]
+    fn a_pane_is_restarted_from_its_own_caption() {
+        // Both meanings offered, because one control that picks for you is how
+        // a restart eats a day's work
+        assert!(
+            PAGE.contains(r#"send({kind:"restartpane", id:p.id, keep});"#),
+            "ペインの見出しから再起動を送っていない"
+        );
+        assert!(
+            PAGE.contains(r#"for (const [cls, keep] of [[".rk", true], [".rf", false]])"#),
+            "引き継ぐ/引き継がないの二つが揃っていない"
+        );
+        // A live pane asks twice, and only one arming is live at a time
+        assert!(
+            PAGE.contains(r#"if (armedPane === cls + p.id || (t && t.state === "EXIT"))"#),
+            "動いているペインを一押しで落とせてしまう"
         );
     }
 

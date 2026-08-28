@@ -406,6 +406,9 @@ struct WinSurface {
     pane_ratios: Vec<(usize, f32)>,
     /// Panes whose ⊞ / ⊟ caption button was pressed (pane, split downwards?)
     pane_splits: Vec<(u32, bool)>,
+    /// ↻ / ⟲ pressed in a pane's caption: which pane, and whether to carry the
+    /// conversation over
+    restart_panes: Vec<(u32, bool)>,
     /// The size the terminal is now drawn at, when it has just been changed
     font_size: Option<u8>,
     /// The width the tab bar is now drawn at, when its edge has just been
@@ -519,6 +522,9 @@ impl WinSurface {
 
     fn take_pane_splits(&mut self) -> Vec<(u32, bool)> {
         std::mem::take(&mut self.pane_splits)
+    }
+    fn take_restart_panes(&mut self) -> Vec<(u32, bool)> {
+        std::mem::take(&mut self.restart_panes)
     }
 
     fn take_font_size(&mut self) -> Option<u8> {
@@ -724,6 +730,7 @@ impl WinSurface {
                 Ev::ClosePane { id } => self.close_panes.push(id),
                 Ev::PaneRatio { divider, ratio } => self.pane_ratios.push((divider, ratio)),
                 Ev::SplitPane { id, down } => self.pane_splits.push((id, down)),
+                Ev::RestartPane { id, keep } => self.restart_panes.push((id, keep)),
                 Ev::FontSize { px } => self.font_size = Some(px),
                 Ev::TabWidth { px } => self.tab_width = Some(px),
                 Ev::JsError { msg } => {
@@ -1061,6 +1068,7 @@ fn run_in_window() -> Result<()> {
         record_arms: Vec::new(),
         run_luas: Vec::new(),
         pane_splits: Vec::new(),
+        restart_panes: Vec::new(),
         font_size: None,
         tab_width: None,
         touches: Vec::new(),
@@ -1184,6 +1192,57 @@ fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'stati
         return (tab::Resume::Fresh, Some("msg.resume.ambiguous"));
     }
     (tab::Resume::Fresh, Some("msg.resume.unknown"))
+}
+
+/// Relaunch whatever one surface holds, and answer with what to say about it.
+///
+/// The one restart in the app. Three doors reach it — Ctrl+B r / Ctrl+B R, the
+/// ↻ pair in a pane's caption, and the phone's ↻ — and they must do the same
+/// thing, so none of them carries logic of its own.
+///
+/// A session relaunches its command, carrying the conversation when `keep` and
+/// when that can be done safely. A page has no process to relaunch: opening it
+/// again exactly as it was opened is the same act — a fresh page object, back
+/// at the URL it started on, with whatever the page had built up gone. Not yet
+/// a fresh identity; see `browser_spec` on why the private profile isn't
+/// reaching WebView2. Anything else (the board, the app's own screens) has
+/// nothing to put back and is left alone.
+#[allow(clippy::too_many_arguments)]
+fn restart_surface(
+    at: usize,
+    keep: bool,
+    tabs: &mut [Tab],
+    surfaces: &[Surface],
+    engine: &mut Option<HookEngine>,
+    caps: &hooks::Caps,
+    rows: u16,
+    cols: u16,
+) -> Option<String> {
+    // Whatever this tab had queued or was waiting on dies with the process it
+    // was waiting on. Done before the kill, while the index still means what
+    // the engine thinks it means
+    if let Some(eng) = engine.as_mut() {
+        eng.cancel_tab(at);
+    }
+    let alone = session_at(surfaces, at)
+        .map(|i| only_one_here(tabs, i))
+        .unwrap_or(false);
+    if let Some(t) = session_mut(tabs, surfaces, at) {
+        return Some(restart_tab(t, alone, keep, rows, cols));
+    }
+    let name = restartable_page(surfaces, at, caps)?;
+    Some(
+        match caps
+            .browser_spec(&name)
+            .ok_or_else(|| anyhow::anyhow!("no spec"))
+            .and_then(|(url, profile)| {
+                caps.browser_close(&name)?;
+                caps.browser_open(&name, &url, profile)
+            }) {
+            Ok(()) => i18n::tp("msg.restarted", &[("name", &name)]),
+            Err(e) => i18n::tp("msg.restart_failed", &[("error", &format!("{e:#}"))]),
+        },
+    )
 }
 
 /// Whether this tab is the only one that could have left "the newest
@@ -1591,6 +1650,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         ));
     }
+    // What was on screen when the app last closed. Two things are taken from
+    // it, and they are taken at different moments. The conversations are needed
+    // HERE, before the first process starts: carrying one over is a decision
+    // the launch itself makes, and asking afterwards would mean minting a
+    // conversation only to throw it away. The division of the screen is put
+    // back further down, once there are tabs for the panes to point at
+    let mut last_session = crate::lastsession::Saved::load();
     if !cmd_args.is_empty() {
         tabs.push(Tab::spawn(
             title_of(&cmd_args),
@@ -1604,7 +1670,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // If we're resuming where we left off, launch that same workspace too.
         // Hard-coding this to the first workspace would restore only the name while
         // showing a screen with different contents.
-        spawn_workspace(w, rows, cols, &mut tabs, &mut startup_errors);
+        spawn_workspace(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
     }
     // No config yet = first run. Guide the user so the experience isn't just
     // "a single shell opens and nothing else happens", leaving them unsure what to do.
@@ -1801,13 +1867,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // pane's surface *is* `active`, and the two are re-synced once per frame
     // below, so splitting the screen adds panes without rewriting the loop.
     let mut pane_layout = crate::layout::Layout::single(active);
-    // What was on screen when the app last closed. Two things are taken from
-    // it, and neither happens on its own: the division of the screen is put
-    // back (it is a shape, not a conversation, and nobody is surprised to find
-    // their panes where they left them), while the conversations are only
-    // OFFERED — see `resume_plan`. Someone who quit to be rid of a
-    // conversation must not find it waiting for them
-    let mut last_session = crate::lastsession::Saved::load();
+    // The other half of what was remembered (the conversations were used at
+    // launch, above). The division of the screen is put back unconditionally:
+    // it is a shape, not a conversation, and nobody is surprised to find their
+    // panes where they left them. `previous` is filled in whether or not the
+    // conversations were carried, because with carrying turned off it is what
+    // Ctrl+B r reaches for — the way back stays available, it is just not taken
+    // for you
     if let Some(ws) = workspaces.get(ws_index) {
         for t in tabs.iter_mut() {
             t.previous = last_session.conversation_for(&ws.name, t);
@@ -3285,6 +3351,30 @@ fn run(mut surface: WinSurface) -> Result<()> {
             active = split_focused(&mut pane_layout, dir, surface_count, active);
             view_touched_ms = start.elapsed().as_millis() as u64;
         }
+        // ↻ / ⟲ in a pane's caption. Focus moves to that pane first, and not
+        // as a side effect: the restart itself, the engine's cancel and the
+        // "is anyone else running this CLI here" test are all written in terms
+        // of the focused surface, and moving there is how the button means the
+        // pane it is drawn on rather than the pane you happened to be in
+        for (id, keep) in surface.take_restart_panes() {
+            if !pane_layout.focus_pane(id) {
+                continue;
+            }
+            active = pane_layout.focused_surface();
+            view_touched_ms = start.elapsed().as_millis() as u64;
+            if let Some(msg) = restart_surface(
+                active,
+                keep,
+                &mut tabs,
+                &surfaces,
+                &mut engine,
+                &caps,
+                rows,
+                cols,
+            ) {
+                flash = Some(msg);
+            }
+        }
         for id in surface.take_close_panes() {
             if pane_layout.close(id) {
                 active = pane_layout.focused_surface();
@@ -4019,6 +4109,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     &mut engine,
                                     &mut engines,
                                     &caps,
+                                    &last_session,
                                 );
                             }
                             ws_open = false;
@@ -4103,33 +4194,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // conversation back, while wanting a clean slate has an
                         // answer inside the CLI already (/clear)
                         KeyCode::Char('r') | KeyCode::Char('R') => {
-                            let keep = key.code == KeyCode::Char('r');
-                            if let Some(eng) = engine.as_mut() {
-                                eng.cancel_tab(active);
-                            }
-                            let alone = session_at(&surfaces, active)
-                                .map(|i| only_one_here(&tabs, i))
-                                .unwrap_or(false);
-                            if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
-                                flash = Some(restart_tab(t, alone, keep, rows, cols));
-                            } else if let Some(name) = restartable_page(&surfaces, active, &caps) {
-                                // A page has no process to relaunch. Opening it again
-                                // exactly as it was opened is the same act: a fresh
-                                // page object, back at the URL it started on, with
-                                // whatever the page had built up gone. Not yet a fresh
-                                // identity — see `browser_spec` on why the private
-                                // profile isn't reaching WebView2.
-                                flash = Some(match caps
-                                    .browser_spec(&name)
-                                    .ok_or_else(|| anyhow::anyhow!("no spec"))
-                                    .and_then(|(url, profile)| {
-                                        caps.browser_close(&name)?;
-                                        caps.browser_open(&name, &url, profile)
-                                    }) {
-                                    Ok(()) => i18n::tp("msg.restarted", &[("name", &name)]),
-                                    Err(e) => i18n::tp("msg.restart_failed", &[("error", &format!("{e:#}"))]),
-                                });
-                            }
+                            flash = restart_surface(
+                                active,
+                                key.code == KeyCode::Char('r'),
+                                &mut tabs,
+                                &surfaces,
+                                &mut engine,
+                                &caps,
+                                rows,
+                                cols,
+                            );
                         }
                         // Ctrl+B l toggles the input lock / w workspace list / ? help
                         KeyCode::Char('l') => {
@@ -4172,6 +4246,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     &mut engine,
                                     &mut engines,
                                     &caps,
+                                    &last_session,
                                 );
                                 settings_open = false;
                             }
@@ -5380,12 +5455,61 @@ fn apply_browser_chrome(ws: &config::Workspace, caps: &hooks::Caps) {
     }
 }
 
+/// The conversation a tab should be launched back into, if there is one.
+///
+/// Three things all have to hold, and every one of them failing is ordinary
+/// rather than exceptional: this tab may have been told to start clean, it may
+/// be new since last time, and the conversation may have been deleted since. So
+/// there is no message here — a tab that starts fresh is what a tab normally
+/// does, and saying so on every launch would be noise.
+///
+/// The tab is recognised by the same four things `lastsession` writes down, in
+/// the same spelling: the program is `argv[0]` and the folder is the resolved
+/// `cwd`, exactly as a running tab would report them.
+fn carried_conversation(
+    carry: Option<&crate::lastsession::Saved>,
+    ws: &config::Workspace,
+    argv: &[String],
+    cfg: &config::TabConfig,
+    cwd: &Option<std::path::PathBuf>,
+    title: &str,
+) -> tab::Resume {
+    if cfg.restore_conversation == Some(false) {
+        return tab::Resume::Fresh;
+    }
+    let Some(saved) = carry else {
+        return tab::Resume::Fresh;
+    };
+    let cwd = cwd.as_ref().map(|c| c.display().to_string());
+    let Some(session) = saved.conversation_of(
+        &ws.name,
+        argv.first().map(String::as_str).unwrap_or_default(),
+        cwd.as_deref(),
+        cfg.id.as_deref(),
+        title,
+    ) else {
+        return tab::Resume::Fresh;
+    };
+    match tab::resumable(argv, &cfg.profile, &session.id) {
+        true => tab::Resume::Id(session),
+        false => tab::Resume::Fresh,
+    }
+}
+
+/// Launch every tab a workspace declares.
+///
+/// `carry` is what was on screen when the app last closed; whether a given tab
+/// actually comes back to it is that tab's own setting. A tab the Vault
+/// reopened names its own conversation and outranks both: that id was chosen
+/// deliberately, a moment ago, and "what this tab was saying last time" is not
+/// an answer to it
 fn spawn_workspace(
     ws: &config::Workspace,
     rows: u16,
     cols: u16,
     tabs: &mut Vec<Tab>,
     errors: &mut Vec<String>,
+    carry: Option<&crate::lastsession::Saved>,
 ) {
     // Warn when ids collide, since automation can't tell where to send in that case
     let dups = config::duplicate_keys(ws);
@@ -5416,6 +5540,13 @@ fn spawn_workspace(
             ft.cfg.id.as_deref(),
         );
         let cwd = opts.cwd.clone();
+        let plan = match resume_plan_of(ft.cfg.resume.as_deref()) {
+            named @ tab::Resume::Id(_) => named,
+            _ => carried_conversation(carry, ws, &argv, &ft.cfg, &cwd, &title),
+        };
+        if let tab::Resume::Id(s) = &plan {
+            append_hook_log(&format!("launching \"{title}\" carrying {}", s.short()));
+        }
         match Tab::spawn_as(
             title.clone(),
             &argv,
@@ -5423,7 +5554,7 @@ fn spawn_workspace(
             rows,
             cols,
             opts,
-            resume_plan_of(ft.cfg.resume.as_deref()),
+            plan,
         ) {
             Ok(mut tab) => {
                 tab.locked = ft.cfg.locked;
@@ -5464,6 +5595,7 @@ fn switch_workspace(
     engine: &mut Option<HookEngine>,
     engines: &mut [Option<HookEngine>],
     caps: &hooks::Caps,
+    last: &crate::lastsession::Saved,
 ) {
     // Guard against every backing array, not just `workspaces`: the per-workspace
     // `engines`/`ws_tabs` caches are resized on config reload, and a mismatch must
@@ -5497,7 +5629,15 @@ fn switch_workspace(
     config::save_last_workspace(&workspaces[to].name);
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {
-        spawn_workspace(&workspaces[to], rows, cols, tabs, errors);
+        // First visit this run, so these tabs are being launched for the first
+        // time and the same question applies as at startup: come back to what
+        // this workspace was saying, or start it clean
+        spawn_workspace(&workspaces[to], rows, cols, tabs, errors, Some(last));
+        // Whether or not it was carried, the way back is worth holding on to:
+        // this is what Ctrl+B r reaches for on a tab nobody has spoken to yet
+        for t in tabs.iter_mut() {
+            t.previous = last.conversation_for(&workspaces[to].name, t);
+        }
         open_declared_browsers(&workspaces[to], caps, errors);
     }
     *engine = match engines[to].take() {
@@ -7169,6 +7309,111 @@ mod tests {
     }
 
 
+    /// A conversation comes back with the app, or it plainly does not.
+    ///
+    /// This is the decision that used to have only one answer. Every tab was
+    /// launched fresh at startup, the remembered id was read afterwards and
+    /// only ever handed over by Ctrl+B r, and nothing on screen said so — you
+    /// closed the app in the middle of a job, opened it again, and were looking
+    /// at an empty prompt where a conversation had been.
+    ///
+    /// Every way of NOT carrying one is tested here, because each of them is
+    /// silent by design: a tab starting fresh is what a tab normally does.
+    #[test]
+    fn a_tab_is_launched_back_into_what_it_was_saying() {
+        let ws = workspace_from(
+            r#"{"workspaces":[{"name":"W","tabs":[{"name":"AGENT","command":"claude"}]}]}"#,
+        );
+        let cfg = &ws.tabs[0].cfg;
+        let argv = vec!["claude".to_string()];
+        let here = Some(std::path::PathBuf::from("D:\\Work"));
+        let remembered = |program: &str, session: &str| crate::lastsession::Saved {
+            version: 1,
+            workspaces: vec![crate::lastsession::SavedWs {
+                name: "W".into(),
+                panes: None,
+                tabs: vec![crate::lastsession::SavedTab {
+                    title: "AGENT".into(),
+                    id: None,
+                    cwd: Some("D:\\Work".into()),
+                    program: program.into(),
+                    session: session.into(),
+                    source: "Minted".into(),
+                }],
+            }],
+        };
+        let plan = |saved: &crate::lastsession::Saved| {
+            carried_conversation(Some(saved), &ws, &argv, cfg, &here, "AGENT")
+        };
+
+        // This tab was told to start clean, so nothing is carried however well
+        // it is remembered
+        let known = remembered("claude", "11111111-1111-4111-8111-111111111111");
+        let mut off = cfg.clone();
+        off.restore_conversation = Some(false);
+        assert_eq!(
+            carried_conversation(Some(&known), &ws, &argv, &off, &here, "AGENT"),
+            tab::Resume::Fresh,
+            "設定を切っても引き継いでいる"
+        );
+
+        // A conversation that is no longer on this machine. Handing the CLI an
+        // id it has never heard of makes it refuse to start, in red, in its own
+        // words -- which is not an answer to "I reopened the app"
+        assert_eq!(plan(&known), tab::Resume::Fresh, "消えた会話を渡している");
+
+        // Remembered under another program: the same name a year later can be
+        // a different CLI, and resuming a conversation into one is nonsense
+        assert_eq!(
+            plan(&remembered("codex", "11111111-1111-4111-8111-111111111111")),
+            tab::Resume::Fresh,
+            "別のCLIの会話を渡している"
+        );
+
+        // A CLI with no way of being told which conversation to resume. Gemini
+        // can be handed a new id and can be told "the latest", but not "that
+        // one" -- and "the latest" is a guess, not this tab's conversation
+        let gemini = vec!["gemini".to_string()];
+        assert_eq!(
+            carried_conversation(
+                Some(&remembered("gemini", "11111111-1111-4111-8111-111111111111")),
+                &ws,
+                &gemini,
+                cfg,
+                &here,
+                "AGENT",
+            ),
+            tab::Resume::Fresh,
+            "指定できないCLIに会話を渡している"
+        );
+
+        // Nothing remembered at all -- a tab that is new since last time
+        let empty = crate::lastsession::Saved { version: 1, workspaces: Vec::new() };
+        assert_eq!(plan(&empty), tab::Resume::Fresh);
+    }
+
+    /// The Vault's choice outranks what the tab was saying last time.
+    ///
+    /// Reopening a past conversation names the one to resume, deliberately, a
+    /// moment ago. "What this tab happened to be running when the app closed"
+    /// is not an answer to that, and quietly preferring it would make the Vault
+    /// open the wrong conversation.
+    #[test]
+    fn a_reopened_conversation_outranks_the_remembered_one() {
+        let ws = workspace_from(
+            r#"{"workspaces":[{"name":"W","tabs":[
+                {"name":"AGENT","command":"claude","resume":"picked-from-the-vault"}
+            ]}]}"#,
+        );
+        assert_eq!(
+            resume_plan_of(ws.tabs[0].cfg.resume.as_deref()),
+            tab::Resume::Id(tab::Session {
+                id: "picked-from-the-vault".into(),
+                source: tab::SessionSource::Store,
+            })
+        );
+    }
+
     /// Every menu key the board displays must be received by INDEX.
     ///
     /// Showing it with no receiver means nothing happens when it's pressed.
@@ -7952,7 +8197,7 @@ mod tests {
         );
         let mut tabs = Vec::new();
         let mut errs = Vec::new();
-        spawn_workspace(&ws0, 24, 80, &mut tabs, &mut errs);
+        spawn_workspace(&ws0, 24, 80, &mut tabs, &mut errs, None);
         assert_eq!(tabs.len(), 2, "{errs:?}");
         let one_before = tabs[0].signature();
 
