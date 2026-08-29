@@ -100,7 +100,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab .place .pr, .tab .place .pt { flex:none; white-space:nowrap; }
   .tab .place .pr { color:var(--brand); }
   .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--dim); }
-  .dot.BUSY, .dot.Working { background:var(--live); animation:pulse 1.2s ease-in-out infinite; }
+  /* It blinks between two values instead of gliding between them. A glide has
+     to be redrawn on every frame the display shows, for as long as an agent is
+     at work -- which is measurably a fifth of a processor core spent on one
+     8-pixel dot, and it is spent precisely while its owner is trying to type.
+     Two values a second read as "alive" just as well and cost two redraws */
+  .dot.BUSY, .dot.Working { background:var(--live); animation:pulse 1.2s step-end infinite; }
   .dot.DONE { background:var(--brand); }
   .dot.ASK  { background:var(--warn); }
   .dot.EXIT { background:var(--stop); }
@@ -440,9 +445,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #topicbar input:focus { border-color:var(--live); }
   #topicbar button { flex:none; padding:9px 22px; border-radius:8px; border:0;
     background:var(--live); color:#04121c; font-weight:700; cursor:pointer;
-    font-size:14px; animation:tbpulse 1.7s ease-in-out infinite; }
+    font-size:14px; animation:tbpulse 1.7s ease-in-out 6; }
   #topicbar button:hover { filter:brightness(1.08); }
-  /* A soft green ring that breathes outward, to draw the eye without motion sickness */
+  /* A soft green ring that breathes outward, to draw the eye without motion
+     sickness. It breathes six times and then stops: this bar waits for a
+     person, so "forever" means until they get back -- and a shadow that grows
+     and blurs is redrawn whole on every frame of it. Catching the eye is what
+     the ring is for, and it has done that within ten seconds */
   @keyframes tbpulse { 0%,100% { box-shadow:0 0 0 0 color-mix(in srgb, var(--live) 55%, transparent) }
     50% { box-shadow:0 0 0 7px color-mix(in srgb, var(--live) 0%, transparent) } }
   /* The topic hint drops onto its own line below on narrow widths */
@@ -522,7 +531,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     transition:left .35s cubic-bezier(.4,1.4,.5,1), top .35s ease, background .3s;
     transform:translate(-50%,-50%); }
   #ball.human { background:var(--brand); box-shadow:0 0 12px var(--brand); }
-  #ball.wait { animation:pulse 1s ease-in-out infinite; }
+  #ball.wait { animation:pulse 1s step-end infinite; }
   .lane { position:absolute; top:50%; height:2px; background:var(--line);
     transform:translateY(-50%); }
   .peg { position:absolute; top:50%; width:7px; height:7px; border-radius:50%;
