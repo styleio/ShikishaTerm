@@ -8,6 +8,12 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-08-29
+
+Typing to an AI that is thinking is quick again. The window had been rebuilding
+the whole terminal for every turn of a spinner, and the person at the keyboard
+was the one paying for it.
+
 ### Added
 - **How long to wait for a model's reply is now yours to set, per connection,
   and 0 waits as long as it takes.** A limit is worth having — it is the only
@@ -22,6 +28,35 @@ once it reaches its first tagged release.
   where to change it.
 
 ### Fixed
+- **Typing into the sub-input bar while an AI is thinking is quick again.**
+  Keystrokes arrived a second late, on a machine with nothing else to do. Every
+  time the screen changed by so much as one character — which is what a spinner
+  turning over is — the window rebuilt the terminal's entire contents as HTML
+  and handed the page the lot. The page then threw away every element on screen
+  and built them again, and the browser has to finish that layout before it can
+  answer the one question the input bar asks on every key: how tall is this box
+  now. So the person typing paid for the AI's spinner, several times a second.
+  Only the lines that actually moved are sent now (the whole grid still goes
+  over when the screen changed shape, or when most of it moved anyway). Two
+  more things were being done for nothing and have stopped: the grid was
+  rendered every frame just to compare it against the last one, and the state
+  the board shows was assembled twice a frame. Measured against Claude Code
+  with a screenful of Japanese on it: the layout a keystroke waits for went
+  from 5.7ms to 1.0ms, the page's own work from 177ms to 91ms per second, and
+  the window's share of a processor core from 35% to 21%.
+
+- **A tab at work no longer costs a fifth of a processor core to indicate.**
+  The little dot beside it faded in and out on a curve, and a curve has to be
+  redrawn on every frame the display puts up, for as long as the agent is at
+  work — which is precisely the minutes when its owner is trying to type. With
+  that one animation stopped the window went from 35% of a core to 11% while a
+  tab churned away. It blinks between the two values now, the way the
+  terminal's own cursor always has: two redraws a second, and it still reads as
+  "this one is alive". The ball waiting for a human is the same animation and
+  gets the same treatment, and the green ring on the "start the discussion"
+  button breathes six times and then stops — that bar waits for a person, so
+  "forever" really meant "until they come back".
+
 - **A model connection edited while its tab is open now reaches that tab.** The
   providers were worked out again on every settings save, and then nobody was
   told: a tab keeps the connection it was launched with, so the new endpoint,
@@ -897,7 +932,9 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/styleio/ShikishaTerm/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/styleio/ShikishaTerm/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/styleio/ShikishaTerm/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/styleio/ShikishaTerm/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/styleio/ShikishaTerm/compare/v0.3.2...v0.3.3
