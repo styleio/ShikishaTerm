@@ -385,7 +385,14 @@ struct WinSurface {
     cols: u16,
     /// The last state we sent. Only send again when it changes.
     last: Option<crate::uistate::UiState>,
-    last_screen: String,
+    /// The terminal contents as the page last got them, row by row. Kept in
+    /// pieces because that is the shape of a change: an AI's spinner turning
+    /// over moves one line, and the page can be told to repair just that one
+    last_screen_rows: Vec<String>,
+    /// What the picture was made from when those rows were built. Rendering
+    /// the grid only to find it identical cost about a millisecond, sixty
+    /// times a second, whether or not anything had happened
+    last_screen_key: Option<ScreenKey>,
     /// The last cursor (row, col, shown) we sent. Placing the cursor forces the
     /// page to recompute layout, so re-sending an unchanged one every frame kept
     /// the WebView busy at ~60Hz for nothing. Only send again when it moves.
@@ -423,9 +430,10 @@ struct WinSurface {
     add_tab_pane: Option<u32>,
     /// The pane tree as last sent to the page. Only send it again when it changes
     last_layout: String,
-    /// The terminal contents last sent for each unfocused pane. The focused
-    /// pane goes through `last_screen`, since it keeps the full renderer
-    last_pane_screens: std::collections::HashMap<u32, String>,
+    /// The terminal contents last sent for each unfocused pane, and what they
+    /// were made from. The focused pane goes through `last_screen_rows`, since
+    /// it keeps the full renderer
+    last_pane_screens: std::collections::HashMap<u32, (ScreenKey, String)>,
     /// Intents that arrived from the window, converted into the form the loop reads.
     /// The loop only understands terminal key input, so everything gets funneled there.
     pending: std::collections::VecDeque<Event>,
@@ -818,6 +826,19 @@ impl WinSurface {
                 }
                 // The window's page says whether that pen should be showing
                 Ev::Pen { on } => self.pen = Some(on),
+                // Our own page says it is up. It comes back blank — a reload
+                // after an update, a first paint — and everything we send is
+                // "what changed since last time", so unless the record of what
+                // it already has is torn up here, the board stays empty until
+                // something happens to move every part of it.
+                Ev::Ready { from: None, .. } => {
+                    self.last = None;
+                    self.last_screen_rows.clear();
+                    self.last_screen_key = None;
+                    self.last_cursor = None;
+                    self.last_layout.clear();
+                    self.last_pane_screens.clear();
+                }
                 // A placed page finished loading (fires on every navigation)
                 Ev::Ready {
                     from: Some(name),
@@ -1039,7 +1060,8 @@ fn run_in_window() -> Result<()> {
         rows: 40,
         cols: 120,
         last: None,
-        last_screen: String::new(),
+        last_screen_rows: Vec::new(),
+        last_screen_key: None,
         last_cursor: None,
         area: (0, 0, 0, 0),
         pane_geom: Vec::new(),
@@ -1380,6 +1402,106 @@ fn panes_json(l: &crate::layout::Layout) -> String {
     .to_string()
 }
 
+/// What decides whether a tab's picture differs from the one already on screen.
+///
+/// Every way the contents can move shows up in one of these: bytes arriving
+/// from the program (counted by every path that writes to a screen, the app's
+/// own notes included), a resize, scrolling back, and which tab is in front.
+/// Asking is a mutex and five loads; rendering the grid to compare it against
+/// the last one is a millisecond, sixty times a second, for an answer that is
+/// almost always "nothing moved".
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ScreenKey {
+    session: usize,
+    bytes: u64,
+    rows: u16,
+    cols: u16,
+    scrollback: usize,
+}
+
+/// What the page has to be told about a screen that has just been rendered.
+#[derive(Debug, PartialEq, Eq)]
+enum ScreenPush {
+    /// It already shows exactly this
+    Nothing,
+    /// These rows, and nothing else, moved
+    Rows(Vec<usize>),
+    /// Hand it the whole grid again
+    Whole,
+}
+
+/// Decides which of the three a frame calls for.
+///
+/// The whole grid goes out when the screen changed shape (the page's rows no
+/// longer line up with ours, so a row number would land somewhere else), and
+/// when enough of it moved that dozens of separate repairs cost more than one
+/// parse of the lot. Everything in between -- which is nearly every frame an
+/// AI at work produces -- is a handful of rows.
+fn screen_push(had: &[String], now: &[String]) -> ScreenPush {
+    if had.len() != now.len() {
+        return ScreenPush::Whole;
+    }
+    let moved: Vec<usize> = (0..now.len()).filter(|&i| now[i] != had[i]).collect();
+    match moved.len() {
+        0 => ScreenPush::Nothing,
+        n if n * 3 > now.len() => ScreenPush::Whole,
+        _ => ScreenPush::Rows(moved),
+    }
+}
+
+#[cfg(test)]
+mod screen_push_tests {
+    use super::{ScreenPush, screen_push};
+
+    fn rows(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("row {i}")).collect()
+    }
+
+    /// An AI at work redraws its spinner and nothing else. That must reach the
+    /// page as that one row: rewriting the grid makes the browser build every
+    /// element on screen again, and the next keystroke in the composer waits
+    /// behind that layout.
+    #[test]
+    fn a_spinner_turning_over_sends_one_row() {
+        let had = rows(40);
+        let mut now = had.clone();
+        now[39] = "* Flambeing... (13s)".into();
+        assert_eq!(screen_push(&had, &now), ScreenPush::Rows(vec![39]));
+    }
+
+    /// A screen that did not move is not worth a word.
+    #[test]
+    fn an_unchanged_screen_says_nothing() {
+        let had = rows(40);
+        assert_eq!(screen_push(&had, &had.clone()), ScreenPush::Nothing);
+    }
+
+    /// Output scrolling past moves nearly every row. Dozens of separate
+    /// repairs cost more than handing over one string, so hand it over.
+    #[test]
+    fn a_scrolling_screen_goes_over_whole() {
+        let had = rows(40);
+        let now: Vec<String> = (0..40).map(|i| format!("row {}", i + 1)).collect();
+        assert_eq!(screen_push(&had, &now), ScreenPush::Whole);
+    }
+
+    /// A resize renumbers everything. A row number sent now would land on a
+    /// different line over there, so nothing may be said row by row.
+    #[test]
+    fn a_resized_screen_goes_over_whole() {
+        assert_eq!(screen_push(&rows(40), &rows(50)), ScreenPush::Whole);
+        // Including the first frame, when the page has nothing at all
+        assert_eq!(screen_push(&[], &rows(40)), ScreenPush::Whole);
+    }
+}
+
+fn screen_key(session: usize, t: &Tab) -> ScreenKey {
+    let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let s = p.screen();
+    let (rows, cols) = s.size();
+    ScreenKey { session, bytes: t.output_count(), rows, cols, scrollback: s.scrollback() }
+}
+
 fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
     crate::uistate::UiState {
         workspace: ui
@@ -1491,6 +1613,40 @@ impl WinSurface {
         self.win.wait_password(Duration::from_secs(600))
     }
 
+    /// Hand the page the terminal's contents, saying as little as will do.
+    ///
+    /// A screen almost never changes all over: an AI at work redraws its
+    /// spinner, a build prints a line. Rewriting the whole grid for that makes
+    /// the browser throw away and rebuild every element on it — and the next
+    /// keystroke in the composer has to wait behind that layout, which is what
+    /// made typing to a thinking AI feel like wading through mud. So the rows
+    /// that moved are sent on their own, and the whole grid only when the
+    /// screen changed shape, or when most of it moved anyway (one parse beats
+    /// dozens of separate repairs).
+    fn send_screen(&mut self, rows: Vec<String>) {
+        match screen_push(&self.last_screen_rows, &rows) {
+            ScreenPush::Nothing => return,
+            ScreenPush::Rows(moved) => {
+                let list: Vec<(usize, &str)> =
+                    moved.iter().map(|&i| (i, rows[i].as_str())).collect();
+                let _ = self.win.eval(&format!(
+                    "return window.__rows({});",
+                    serde_json::to_string(&list).unwrap_or_default()
+                ));
+            }
+            ScreenPush::Whole => {
+                // The screen was redrawn whole (new shape, or a switched tab),
+                // so re-place the cursor once even if its row/col is the same.
+                self.last_cursor = None;
+                let _ = self.win.eval(&format!(
+                    "return window.__screen({});",
+                    serde_json::to_string(&rows.join("\n")).unwrap_or_default()
+                ));
+            }
+        }
+        self.last_screen_rows = rows;
+    }
+
     fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> Result<()> {
         {
             {
@@ -1541,47 +1697,54 @@ impl WinSurface {
                     if id == ui.layout.focus() {
                         continue;
                     }
-                    let html = match session_at(&ui.surfaces, surface).and_then(|i| tabs.get(i)) {
-                        Some(t) => {
-                            let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-                            crate::shell::screen_html(p.screen())
-                        }
-                        None => String::new(),
+                    let seat = session_at(&ui.surfaces, surface);
+                    let Some((i, t)) = seat.and_then(|i| tabs.get(i).map(|t| (i, t))) else {
+                        continue;
                     };
-                    if w.last_pane_screens.get(&id) != Some(&html) {
+                    // A pane nobody is looking at changes as often as one they
+                    // are, so it gets the same guard: build the picture only
+                    // once something it is made of has moved
+                    let key = screen_key(i, t);
+                    if w.last_pane_screens.get(&id).map(|(k, _)| *k) == Some(key) {
+                        continue;
+                    }
+                    let html = {
+                        let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                        crate::shell::screen_html(p.screen())
+                    };
+                    if w.last_pane_screens.get(&id).map(|(_, h)| h.as_str()) != Some(html.as_str()) {
                         let _ = w.win.eval(&format!(
                             "return window.__panescreen({},{});",
                             id,
                             serde_json::to_string(&html).unwrap_or_default()
                         ));
-                        w.last_pane_screens.insert(id, html);
                     }
+                    w.last_pane_screens.insert(id, (key, html));
                 }
-                // Only send the terminal contents for the tab currently being viewed
-                if let Some(t) = session_at(&ui.surfaces, ui.active).and_then(|i| tabs.get(i)) {
-                    let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-                    let s = p.screen();
-                    let html = crate::shell::screen_html(s);
-                    if html != w.last_screen {
-                        w.last_screen = html.clone();
-                        // The screen was redrawn (new content, or a switched tab),
-                        // so re-place the cursor once even if its row/col is the same.
-                        w.last_cursor = None;
-                        let _ = w.win.eval(&format!(
-                            "return window.__screen({});",
-                            serde_json::to_string(&html).unwrap_or_default()
-                        ));
-                    }
-                    let (r, c) = s.cursor_position();
-                    let on = !s.hide_cursor();
-                    // Placing the cursor forces a layout recompute in the page,
-                    // so only do it when the cursor actually moved — not 60x a
-                    // second onto an unchanged position.
-                    if w.last_cursor != Some((r, c, on)) {
-                        w.last_cursor = Some((r, c, on));
-                        let _ = w
-                            .win
-                            .eval(&format!("return window.__cursor({r},{c},{on});"));
+                // Only send the terminal contents for the tab currently being
+                // viewed, and only once something it is made of has moved
+                let seat = session_at(&ui.surfaces, ui.active);
+                if let Some((i, t)) = seat.and_then(|i| tabs.get(i).map(|t| (i, t))) {
+                    let key = screen_key(i, t);
+                    if w.last_screen_key != Some(key) {
+                        w.last_screen_key = Some(key);
+                        let (rows, cursor) = {
+                            let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                            let s = p.screen();
+                            let (r, c) = s.cursor_position();
+                            (crate::shell::screen_rows(s), (r, c, !s.hide_cursor()))
+                        };
+                        w.send_screen(rows);
+                        // Placing the cursor forces a layout recompute in the
+                        // page, so only do it when the cursor actually moved —
+                        // not 60x a second onto an unchanged position.
+                        if w.last_cursor != Some(cursor) {
+                            w.last_cursor = Some(cursor);
+                            let (r, c, on) = cursor;
+                            let _ = w
+                                .win
+                                .eval(&format!("return window.__cursor({r},{c},{on});"));
+                        }
                     }
                 }
                 Ok(())
@@ -1930,7 +2093,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut prefix_active = false;
     // The last state drawn. This is what gets handed to the phone (keeps the
     // assembly point to a single spot).
-    let mut last_ui_state: Option<crate::uistate::UiState> = None;
     // What we last pushed to remote viewers over the state socket, so we only
     // send on change. The screen is also rate-limited (see below) so a burst of
     // AI output doesn't flood a slow phone link the way pushing every frame would.
@@ -2727,9 +2889,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // Hand the current status to the remote UI and run any operations it sent
             if let Some(r) = remote_ui.as_ref() {
                 let snap = remote::Snapshot {
-                    // Pass along what was built at draw time. `ui` doesn't exist here yet,
-                    // and rebuilding it would create a second place that assembles state.
-                    ui: last_ui_state.clone(),
+                    // What was built at draw time, read back from where the
+                    // window keeps it. `ui` doesn't exist here yet, and
+                    // building it again would be a second place that assembles
+                    // state -- and one more full build of it every frame.
+                    ui: surface.last.clone(),
                     screen_html: tabs
                         .get(session_at(&surfaces, active).unwrap_or(usize::MAX))
                         .map(|t| {
@@ -3240,7 +3404,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
             flash = None;
             flash_shown = None;
         }
-        last_ui_state = Some(ui_state_of(&tabs, &ui, flash.as_deref()));
         surface.draw(&tabs, &ui, flash.as_deref())?;
         // The window's size can change. If we don't hand it back over, a placed
         // page stays at its previous size.

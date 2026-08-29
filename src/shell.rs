@@ -237,6 +237,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
     bottom:var(--fb); margin:0; padding:8px; white-space:pre;
     overflow:auto; line-height:1.25; font-family:var(--mono); --cw:1ch; }
+  /* One element per terminal row, so a screen that changed in one place can
+     be repaired in one place. A row with nothing on it still has to stand its
+     full height, or the rows below would climb up past the cursor */
+  #screen .r { min-height:1.25em; }
   /* Screen relay. While viewing a browser tab, this shows in place of the
      terminal. Keeps the aspect ratio while fitting the frame.
      touch-action:none stops the default scroll so finger movement can be
@@ -1886,10 +1890,33 @@ window.__toggleTabBar = function () {
 // One unfocused pane's terminal contents.
 window.__panescreen = function (id, html) {
   const el = document.querySelector('#panes .pane[data-pid="' + id + '"] .pscreen');
-  if (el) el.innerHTML = html;
+  if (el) el.innerHTML = rowsHtml(html);
 };
 
-// The terminal's own contents. This is the one place a grid of cells is correct, so accept it as-is
+// The terminal's own contents, as one element per row.
+//
+// Rows are elements rather than newlines in one blob so that the usual change
+// -- an AI's spinner turning over, one line of output arriving -- can be
+// written into that one row (see __rows). Replacing the whole grid instead
+// makes the browser rebuild every element on screen, and the person typing in
+// the composer waits for that layout before their own keystroke can land.
+function rowsHtml(html) {
+  const rows = html.split("\n");
+  let out = "";
+  for (let i = 0; i < rows.length; i++) out += '<div class="r">' + rows[i] + '</div>';
+  return out;
+}
+// The rows that moved since the last frame, as [row number, html]. The window
+// sends these whenever it can; a full __screen still arrives when the shape of
+// the screen changed (a resize, a switched tab) or when most of it did anyway
+window.__rows = function (list) {
+  const kids = document.getElementById("screen").children;
+  for (let i = 0; i < list.length; i++) {
+    const el = kids[list[i][0]];
+    if (el) el.innerHTML = list[i][1];
+  }
+};
+// The whole grid. This is the one place a grid of cells is correct, so accept it as-is
 window.__screen = function (html) {
   const s = document.getElementById("screen");
   // A phone shows the window's own terminal size (it can't resize it from afar),
@@ -1902,7 +1929,7 @@ window.__screen = function (html) {
   const unit = cellH || 16;
   const nearBottom = (s.scrollHeight - s.clientHeight - s.scrollTop) <= unit * 1.5;
   const prevTop = s.scrollTop;
-  s.innerHTML = html;
+  s.innerHTML = rowsHtml(html);
   if (REMOTE) s.scrollTop = nearBottom ? s.scrollHeight : prevTop;
 };
 
@@ -3916,19 +3943,32 @@ fn esc_into(out: &mut String, s: &str) {
     }
 }
 
-/// Renders the screen as HTML.
+/// Renders the screen as HTML, one string per row.
+///
+/// Rows are kept apart because that is the shape of a change: a spinner
+/// turning over redraws one line, and handing the page a whole new grid for
+/// it makes it throw every element on screen away and build it again. That
+/// cost lands on whoever is typing at that moment -- the browser has to
+/// finish the new layout before it can answer "how tall is this box now?".
 ///
 /// Consecutive cells with the same appearance are merged into a single
 /// span. Making an element per cell would produce 9000 elements for a
 /// 50-row by 180-column screen, making every frame's redraw expensive.
-pub fn screen_html(screen: &vt100::Screen) -> String {
+pub fn screen_rows(screen: &vt100::Screen) -> Vec<String> {
     // The two the screen already has: text that was given no colour is the
     // window's text colour, and a cell with no background shows the window
     const FG: &str = "var(--text)";
     const BG: &str = "transparent";
     let (rows, cols) = screen.size();
-    let mut out = String::with_capacity(rows as usize * cols as usize * 2);
+    let mut out_rows: Vec<String> = Vec::with_capacity(rows as usize);
+    // How the cell before this one looked, and the CSS it came out as. A
+    // screen is overwhelmingly cells that look like their neighbour, so
+    // spelling the same declaration out again for each of them is thousands
+    // of throwaway strings per frame, for a picture that is usually identical
+    let mut seen: Option<Look> = None;
+    let mut seen_style = String::new();
     for r in 0..rows {
+        let mut out = String::with_capacity(cols as usize * 2);
         let mut open: Option<String> = None;
         let mut run = String::new();
         // How many cells this run spans. Position is determined by this, not by font advance width
@@ -3938,39 +3978,56 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
             if cell.is_wide_continuation() {
                 continue;
             }
-            let (mut fg, mut bg) = (cell.fgcolor(), cell.bgcolor());
-            if cell.inverse() {
-                std::mem::swap(&mut fg, &mut bg);
+            let look = Look {
+                fg: cell.fgcolor(),
+                bg: cell.bgcolor(),
+                inverse: cell.inverse(),
+                bold: cell.bold(),
+                dim: cell.dim(),
+                italic: cell.italic(),
+                underline: cell.underline(),
+            };
+            if seen != Some(look) {
+                seen = Some(look);
+                seen_style.clear();
+                let (mut fg, mut bg) = (look.fg, look.bg);
+                if look.inverse {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+                let fgc = color_css(fg, if look.inverse { BG } else { FG });
+                if fgc != FG {
+                    seen_style.push_str("color:");
+                    seen_style.push_str(&fgc);
+                    seen_style.push(';');
+                }
+                let bgc = color_css(bg, if look.inverse { FG } else { BG });
+                if bgc != BG {
+                    seen_style.push_str("background:");
+                    seen_style.push_str(&bgc);
+                    seen_style.push(';');
+                }
+                if look.bold {
+                    seen_style.push_str("font-weight:700;");
+                }
+                if look.dim {
+                    seen_style.push_str("opacity:.6;");
+                }
+                if look.italic {
+                    seen_style.push_str("font-style:italic;");
+                }
+                if look.underline {
+                    seen_style.push_str("text-decoration:underline;");
+                }
             }
-            let mut style = String::new();
-            let fgc = color_css(fg, if cell.inverse() { BG } else { FG });
-            if fgc != FG {
-                style.push_str(&format!("color:{fgc};"));
-            }
-            let bgc = color_css(bg, if cell.inverse() { FG } else { BG });
-            if bgc != BG {
-                style.push_str(&format!("background:{bgc};"));
-            }
-            if cell.bold() {
-                style.push_str("font-weight:700;");
-            }
-            if cell.dim() {
-                style.push_str("opacity:.6;");
-            }
-            if cell.italic() {
-                style.push_str("font-style:italic;");
-            }
-            if cell.underline() {
-                style.push_str("text-decoration:underline;");
-            }
+            let style = seen_style.as_str();
             // Break the run wherever the appearance changes
-            if open.as_deref() != Some(style.as_str()) {
+            if open.as_deref() != Some(style) {
                 if let Some(prev) = open.take() {
                     flush_run(&mut out, &prev, &run, span);
                     run.clear();
                     span = 0;
                 }
-                open = Some(style.clone());
+                open = Some(style.to_string());
             }
             let ch = cell.contents();
             let wide = cell.is_wide();
@@ -3995,19 +4052,44 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
                 continue;
             }
             // Anything that can't be merged gets its own single-character box
-            flush_run(&mut out, style.as_str(), &run, span);
+            flush_run(&mut out, style, &run, span);
             run.clear();
             span = 0;
             let mut one = String::new();
             esc_into(&mut one, ch);
-            flush_cell(&mut out, style.as_str(), &one, if wide { 2 } else { 1 });
+            flush_cell(&mut out, style, &one, if wide { 2 } else { 1 });
         }
         if let Some(prev) = open.take() {
             flush_run(&mut out, &prev, &run, span);
         }
-        out.push('\n');
+        out_rows.push(out);
     }
-    out
+    out_rows
+}
+
+/// Everything about a cell that decides how it is painted.
+///
+/// Named, so that "does this one look like the last one?" is a single
+/// comparison rather than seven, and so an attribute added later cannot be
+/// half-remembered here
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Look {
+    fg: vt100::Color,
+    bg: vt100::Color,
+    inverse: bool,
+    bold: bool,
+    dim: bool,
+    italic: bool,
+    underline: bool,
+}
+
+/// The whole screen as one string, rows separated by newlines.
+///
+/// For everything that cannot repair a single row: the phone's relay, an
+/// unfocused pane, a test. The window uses `screen_rows` and sends the few
+/// rows that moved
+pub fn screen_html(screen: &vt100::Screen) -> String {
+    screen_rows(screen).join("\n")
 }
 
 /// Writes out one run. `span` is the number of cells the run occupies.
@@ -4198,7 +4280,7 @@ pub fn page_for(sticky: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::PAGE;
+    use super::{PAGE, screen_html, screen_rows};
 
     /// Every message this screen shows goes through the one shared toast.
     ///
@@ -4974,6 +5056,38 @@ mod tests {
         assert!(!html.contains("{{__lang__}}"), "lang のプレースホルダが残っている");
     }
 
+    /// The terminal is handed over as rows, and the page keeps them as
+    /// separate elements.
+    ///
+    /// This is what lets a changed line be repaired on its own. Go back to one
+    /// blob of HTML and every frame an AI draws while thinking rebuilds every
+    /// element on screen -- which the person typing into the composer pays for,
+    /// because the browser must finish that layout before it can answer how
+    /// tall their text box now is.
+    #[test]
+    fn the_screen_is_made_of_rows_that_can_be_repaired_one_at_a_time() {
+        let mut p: vt100::Parser = vt100::Parser::new(4, 20, 0);
+        p.process(b"one\r\ntwo\r\nthree");
+        let rows = screen_rows(p.screen());
+        assert_eq!(rows.len(), 4, "行の数が画面の高さと違う: {rows:?}");
+        assert!(
+            rows.iter().all(|r| !r.contains('\n')),
+            "1行の中に改行が混ざっている: {rows:?}"
+        );
+        // The one-string form is still the same picture (the phone, an
+        // unfocused pane and the tests all read it)
+        assert_eq!(screen_html(p.screen()), rows.join("\n"));
+        assert!(PAGE.contains("window.__rows = function"), "行だけを直す口が無い");
+        assert!(
+            PAGE.contains(r#"'<div class="r">'"#),
+            "行が別々の要素になっていない"
+        );
+        assert!(
+            PAGE.contains("#screen .r { min-height:1.25em; }"),
+            "空の行が高さを失う"
+        );
+    }
+
     /// Text selection is limited to the terminal's contents.
     ///
     /// If everything were a single grid of cells, selecting the output
@@ -5212,3 +5326,4 @@ mod color_tests {
         assert_eq!(h.matches("<span").count(), 3, "{h}");
     }
 }
+

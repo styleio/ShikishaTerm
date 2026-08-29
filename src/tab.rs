@@ -1832,7 +1832,12 @@ impl Tab {
                             if hit.is_err() {
                                 // Continuing to read in the broken state would
                                 // panic again on the very next character.
-                                // Send a full terminal reset to return to a known state
+                                // Send a full terminal reset to return to a known state.
+                                // Counted like any other output: the counter is
+                                // what everything downstream watches to know the
+                                // screen moved, and a wipe that nothing counted
+                                // would leave the window showing the old picture
+                                counter.fetch_add(2, Ordering::Relaxed);
                                 let reset = std::panic::catch_unwind(
                                     std::panic::AssertUnwindSafe(|| {
                                         parser
