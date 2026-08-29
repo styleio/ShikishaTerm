@@ -702,6 +702,75 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-top-color:var(--brand); border-radius:50%; animation:pgspin .7s linear infinite; }
   @keyframes pgspin { to { transform:rotate(360deg); } }
 
+  /* ── Reader (phone only) ───────────────────────────────────────────────
+     The answer as words, not as a grid of cells.
+
+     Paging the relay cannot be made smooth, and not because the link is slow:
+     a full-screen TUI keeps no scrollback, so every page turn asks the CLI to
+     scroll ITSELF and waits for a fresh screen — a round trip per third of a
+     screen, on text already broken to the terminal's width and impossible to
+     select. Here the phone holds the words instead. Scrolling is then the
+     browser's own (a flick travels), lines re-wrap to the width, and anything
+     on the page can be selected and copied.
+
+     Which is why this is a plain document and not a second terminal: the one
+     thing it must never become is another grid. */
+  #reader { position:fixed; inset:0; z-index:30; display:none; flex-direction:column;
+    background:var(--bg); color:var(--text); }
+  #reader.on { display:flex; }
+  #rhead { flex:0 0 auto; display:flex; align-items:center; gap:10px; padding:10px 12px;
+    padding-top:calc(10px + env(safe-area-inset-top)); background:var(--panel);
+    border-bottom:1px solid var(--line); }
+  #rname { flex:1 1 auto; font-weight:700; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #rclose { flex:none; width:34px; height:34px; border-radius:10px; border:1px solid var(--line);
+    background:transparent; color:var(--text); font-size:16px; line-height:1; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; touch-action:manipulation; }
+  #rbody { flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+    padding:16px 16px calc(32px + env(safe-area-inset-bottom));
+    font-size:16px; line-height:1.75;
+    user-select:text; -webkit-user-select:text; }
+  /* The one place in this app where text is NOT monospace: this is prose to be
+     read, and a proportional face fits more of it on a phone's width */
+  #rbody, #rhead { font-family:system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif; }
+  .rturn { margin:0 0 26px; }
+  .rwho { font-size:11px; font-weight:700; letter-spacing:.09em; color:var(--dim);
+    margin-bottom:6px; }
+  /* What the person said is set back from what the AI answered: on a phone the
+     eye needs the turn boundary more than it needs a bubble */
+  .rturn.you { border-left:3px solid var(--line); padding-left:12px; color:var(--dim); }
+  .rturn p { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .rturn h1, .rturn h2, .rturn h3 { font-size:1.05em; margin:18px 0 8px; }
+  .rturn ul { margin:0 0 12px; padding-left:1.3em; }
+  .rturn li { margin:0 0 6px; }
+  .rturn code { font-family:ui-monospace, Consolas, monospace; font-size:.88em;
+    background:var(--panel); border-radius:4px; padding:1px 4px; }
+  /* A code block scrolls itself rather than widening the page. Long lines are
+     the one thing that must not turn the whole reader into a horizontal pan */
+  .rturn pre { margin:0 0 14px; padding:10px 12px; border-radius:8px; overflow-x:auto;
+    background:var(--panel); border:1px solid var(--line); }
+  .rturn pre code { background:none; padding:0; font-size:13px; line-height:1.5; }
+  /* A table gets its own scroller for the same reason a code block does: on a
+     phone it is nearly always wider than the screen, and the page itself must
+     never be the thing that pans sideways */
+  .rtable { overflow-x:auto; margin:0 0 14px; }
+  .rturn table { border-collapse:collapse; font-size:14px; }
+  .rturn th, .rturn td { border:1px solid var(--line); padding:6px 10px;
+    text-align:left; vertical-align:top; }
+  .rturn th { background:var(--panel); font-weight:700; white-space:nowrap; }
+  /* The drawer handle is fixed to the top-left corner and would sit on top of
+     the reader's own heading. While reading there is no board to reach for */
+  body.reading #hamburger { display:none; }
+  #rfoot { flex:0 0 auto; padding:8px 12px calc(8px + env(safe-area-inset-bottom));
+    border-top:1px solid var(--line); color:var(--dim); font-size:12px; display:none; }
+  #rfoot.on { display:block; }
+  #rmore { position:absolute; left:50%; transform:translateX(-50%); bottom:18px;
+    padding:8px 16px; border-radius:999px; border:1px solid var(--line);
+    background:var(--brand); color:#fff; font-size:13px; font-weight:700;
+    cursor:pointer; display:none; z-index:2; }
+  #rmore.on { display:block; }
+
   /* ── Narrow/tall responsive layout (phones, small PCs, portrait displays) ──
      Must always come after all the base rules. Placed earlier, a later
      base rule at the same specificity would win and the override wouldn't stick */
@@ -776,6 +845,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="topicbar" hidden></div>
     <div id="thinking" hidden></div>
     <div id="pageui">
+      <button id="readOpen" class="pagebtn" aria-label="read">&#128214;</button>
       <button id="pageUp" class="pagebtn" aria-label="older">&#9650;</button>
       <div id="pageCount"></div>
       <button id="pageDown" class="pagebtn" aria-label="newer">&#9660;</button>
@@ -804,6 +874,18 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="vhint"></div>
       <div class="vlist"></div>
     </div>
+  </div>
+  <!-- The reader: what was said on this tab, as text you can scroll and copy.
+       Its own layer rather than a pane, because it covers the terminal and
+       gives it straight back — nothing about the session changes while it is up -->
+  <div id="reader">
+    <div id="rhead">
+      <div id="rname"></div>
+      <button id="rclose" aria-label="close">✕</button>
+    </div>
+    <div id="rbody"></div>
+    <div id="rfoot"></div>
+    <button id="rmore"></button>
   </div>
   <div id="status"></div>
 </div>
@@ -1540,7 +1622,18 @@ window.__state = function (json) {
     const showPager = REMOTE && !screen.hidden && !web && !onModelTab();
     pager.classList.toggle("on", showPager);
     if (!showPager) pgReset();
+    // 📖 rides with the pager because it answers the same need — reading what
+    // was said — and offers the better half of the answer wherever there is a
+    // record to read. Where there is none it is not shown at all: a button that
+    // does nothing on some tabs teaches people not to trust it
+    const openRead = document.getElementById("readOpen");
+    const here = activeTab();
+    if (openRead) {
+      openRead.style.display = (showPager && here && here.readable) ? "flex" : "none";
+      openRead.title = T["tui.read.open"] || "";
+    }
   }
+  rdOnState();
   // ...and it goes away when there is not. INDEX and the settings form cover
   // the panes, so a Send there would be addressed to a pane that is not in
   // front and would reach nobody; the phone additionally shuts it over
@@ -2399,6 +2492,233 @@ scr.addEventListener("touchend", () => {
 }, {passive:true});
 scr.addEventListener("touchcancel", () => { swY = null; }, {passive:true});
 
+// ── Reader (phone only) ──────────────────────────────────────────────
+// The words of this tab's conversation, as a document. Where they come from
+// and why they cannot come from the screen is written at the top of reader.rs;
+// the short of it is that a full-screen TUI keeps no scrollback, so the pager
+// above does not scroll our copy of anything — it asks the CLI to scroll
+// itself, one round trip at a time, over text already broken to the terminal's
+// width. Here the phone holds the text, so scrolling is the browser's own.
+//
+// Nothing in here talks to the PC while you read. That is the whole point: a
+// flick has to travel, and a flick that must ask a PC across the house how far
+// it went never will.
+let rdTab = 0, rdFrom = 0, rdMore = false, rdLoading = false, rdWasBusy = false;
+const rdPanel = () => document.getElementById("reader");
+const rdBodyEl = () => document.getElementById("rbody");
+const rdIsOpen = () => rdPanel().classList.contains("on");
+
+// Inline spans, built as nodes rather than assembled into innerHTML. What a
+// conversation contains is not ours to trust, and a node can never be read
+// back as markup
+function rdInline(node, text) {
+  const re = /`([^`]+)`|\*\*([^*]+)\*\*/g;
+  let at = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > at) node.append(document.createTextNode(text.slice(at, m.index)));
+    node.append(m[1] != null ? el("code", {}, m[1]) : el("b", {}, m[2]));
+    at = m.index + m[0].length;
+  }
+  if (at < text.length) node.append(document.createTextNode(text.slice(at)));
+  return node;
+}
+
+// Enough Markdown for an answer to read as one: fenced code, headings, bullets,
+// and the inline spans. Not a Markdown engine and not trying to become one —
+// whatever it does not recognise it shows verbatim, which for a reader is the
+// correct way to fail: the words still arrive
+function rdMarkup(text) {
+  const out = document.createDocumentFragment();
+  const lines = String(text).split(/\r?\n/);
+  const row = l => /^\s*\|.*\|\s*$/.test(l);
+  const cells = l => l.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+  let i = 0, para = [], list = null;
+  const endPara = () => { if (para.length) { out.append(rdInline(el("p", {}), para.join("\n"))); para = []; } };
+  const endList = () => { if (list) { out.append(list); list = null; } };
+  const intoList = (tag, body) => {
+    endPara();
+    if (list && list.tagName.toLowerCase() !== tag) endList();
+    if (!list) list = el(tag, {});
+    list.append(rdInline(el("li", {}), body));
+  };
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {
+      endPara(); endList();
+      const code = [];
+      for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) code.push(lines[i]);
+      i++;   // step over the closing fence (or off the end, if it never came)
+      out.append(el("pre", {}, el("code", {}, code.join("\n"))));
+      continue;
+    }
+    // A table is a header row, the |---|---| beneath it, then the rows. Left as
+    // pipes it reads as line noise, and an answer that compares things is
+    // exactly the kind worth opening a reader for
+    if (row(line) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1] || "")) {
+      endPara(); endList();
+      const table = el("table", {});
+      const head = el("tr", {});
+      for (const c of cells(line)) head.append(rdInline(el("th", {}), c));
+      table.append(head);
+      for (i += 2; i < lines.length && row(lines[i]); i++) {
+        const tr = el("tr", {});
+        for (const c of cells(lines[i])) tr.append(rdInline(el("td", {}), c));
+        table.append(tr);
+      }
+      out.append(el("div", {class:"rtable"}, table));
+      continue;
+    }
+    const head = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (head) { endPara(); endList(); out.append(rdInline(el("h3", {}), head[2])); i++; continue; }
+    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (bullet) { intoList("ul", bullet[1]); i++; continue; }
+    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (numbered) { intoList("ol", numbered[1]); i++; continue; }
+    if (line.trim() === "") { endPara(); endList(); i++; continue; }
+    endList(); para.push(line); i++;
+  }
+  endPara(); endList();
+  return out;
+}
+
+function rdTurn(turn) {
+  const you = turn.who === "you";
+  const box = el("div", {class: "rturn " + (you ? "you" : "ai")});
+  box.append(el("div", {class:"rwho"},
+    you ? (T["tui.read.you"] || "YOU") : (T["tui.read.ai"] || "AI")));
+  box.append(rdMarkup(turn.text));
+  return box;
+}
+
+function rdNote(text) {
+  const body = rdBodyEl();
+  body.textContent = "";
+  body.append(el("div", {class:"rwho"}, text));
+}
+
+async function rdAsk(before) {
+  const q = "api/read?t=" + encodeURIComponent(TOKEN) + "&tab=" + rdTab + "&want=6"
+    + (before != null ? "&before=" + before : "");
+  const r = await fetch(q, {cache:"no-store"});
+  if (!r.ok) throw new Error("status " + r.status);
+  return await r.json();
+}
+
+// Open at the TOP of the newest answer, never at its end. "Scrolled to the
+// bottom" is where a terminal leaves you and is precisely the complaint: the
+// head of a long answer is the part that never survives
+function rdToLatest() {
+  const body = rdBodyEl();
+  const said = body.querySelectorAll(".rturn.ai");
+  const last = said[said.length - 1];
+  if (!last) { body.scrollTop = body.scrollHeight; return; }
+  body.scrollTop = Math.max(0,
+    body.scrollTop + last.getBoundingClientRect().top - body.getBoundingClientRect().top - 8);
+}
+
+// A page can come back short — turns merge, and a conversation can bury six of
+// them under megabytes of tool output. Keep asking until the screen is at least
+// full, or there is nothing older left
+async function rdFillScreen() {
+  const body = rdBodyEl();
+  for (let guard = 0; guard < 6; guard++) {
+    if (!rdMore || body.scrollHeight > body.clientHeight + 40) return;
+    if (!await rdOlder()) return;
+  }
+}
+
+async function rdOlder() {
+  if (rdLoading || !rdMore) return false;
+  rdLoading = true;
+  const body = rdBodyEl();
+  try {
+    const j = await rdAsk(rdFrom);
+    if (!j.ok) { rdMore = false; return false; }
+    rdFrom = j.from; rdMore = !!j.more;
+    if (!j.turns || !j.turns.length) return rdMore;
+    // Prepending pushes everything down. Put the reader back where they were,
+    // measured rather than guessed — the height added is the height to add back
+    const wasHeight = body.scrollHeight, wasTop = body.scrollTop;
+    const frag = document.createDocumentFragment();
+    for (const turn of j.turns) frag.append(rdTurn(turn));
+    body.prepend(frag);
+    body.scrollTop = wasTop + (body.scrollHeight - wasHeight);
+    return true;
+  } catch (e) {
+    return false;
+  } finally {
+    rdLoading = false;
+  }
+}
+
+async function rdShow() {
+  const tab = activeTab();
+  if (!REMOTE || !tab || !tab.readable) return;
+  rdTab = tab.index;
+  rdFrom = 0; rdMore = false; rdWasBusy = false;
+  document.getElementById("rname").textContent = tab.name || "";
+  document.getElementById("rmore").classList.remove("on");
+  rdNote(T["tui.read.loading"] || "…");
+  rdPanel().classList.add("on");
+  document.body.classList.add("reading");
+  // Reading is reading: put the keyboard away and stop the screen relay's
+  // gestures from being aimed at a tab nobody is looking at
+  if (kbd) kbd.blur();
+  try {
+    const j = await rdAsk(null);
+    if (!j.ok || !j.turns || !j.turns.length) {
+      rdNote(T["tui.read.empty"] || "");
+      return;
+    }
+    rdFrom = j.from; rdMore = !!j.more;
+    const body = rdBodyEl();
+    body.textContent = "";
+    for (const turn of j.turns) body.append(rdTurn(turn));
+    rdToLatest();
+    await rdFillScreen();
+  } catch (e) {
+    rdNote(String((e && e.message) || e));
+  }
+}
+
+function rdHide() {
+  rdPanel().classList.remove("on");
+  document.body.classList.remove("reading");
+  rdBodyEl().textContent = "";
+  document.getElementById("rfoot").classList.remove("on");
+  document.getElementById("rmore").classList.remove("on");
+}
+
+// Called on every state change. While a turn is running the terminal is what
+// you watch it arrive on — that live screen IS the loading indicator, and this
+// says so rather than pretending the record is behind. When the turn lands,
+// nothing moves on its own: a reader mid-sentence is not to be yanked
+// somewhere else, so the new answer is offered as a button
+function rdOnState() {
+  if (!rdIsOpen()) return;
+  // The reader belongs to the tab it was opened from. Follow a tab switch and
+  // it would quietly show somebody else's conversation under the same heading
+  if (S && S.active !== rdTab) { rdHide(); return; }
+  const tab = (S && S.tabs) ? S.tabs.find(t => t.index === rdTab) : null;
+  const busy = !!(tab && (tab.state === "BUSY" || tab.busy));
+  const foot = document.getElementById("rfoot");
+  foot.classList.toggle("on", busy);
+  foot.textContent = busy ? (T["tui.read.generating"] || "") : "";
+  if (rdWasBusy && !busy) {
+    const more = document.getElementById("rmore");
+    more.textContent = T["tui.read.arrived"] || "";
+    more.classList.add("on");
+  }
+  rdWasBusy = busy;
+}
+
+document.getElementById("readOpen").addEventListener("click", () => rdShow());
+document.getElementById("rclose").addEventListener("click", () => rdHide());
+document.getElementById("rmore").addEventListener("click", () => rdShow());
+rdBodyEl().addEventListener("scroll", () => {
+  if (rdBodyEl().scrollTop < 240 && rdMore && !rdLoading) rdOlder();
+}, {passive:true});
+
 // The top bar's input needs to behave like an ordinary text field. If
 // merely selecting text copied it, or right-click pasted into the
 // terminal, editing the URL would be impossible
@@ -2406,7 +2726,7 @@ scr.addEventListener("touchcancel", () => { swY = null; }, {passive:true});
 // #kbd — on a phone that would pop the soft keyboard up over the screen.
 // The ✏️ pen counts as "the bar": otherwise the phone's tap-on-terminal rule
 // below opened the bar on mouseup and the pen's own click toggled it shut again
-const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #pageui, #castdock, #composerfab");
+const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #pageui, #castdock, #composerfab, #reader");
 document.addEventListener("mouseup", e => {
   if (inBar(e)) return;
   const s = window.getSelection();

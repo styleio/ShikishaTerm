@@ -37,6 +37,7 @@ mod netaddr;
 mod notify;
 mod pr;
 mod profile;
+mod reader;
 mod remote;
 mod repo;
 mod session_log;
@@ -2959,6 +2960,19 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 200,
                             ),
                             cwd: tab_cwd_abs(t),
+                            // Two strings, no filesystem: this runs every tick,
+                            // and finding the record means walking a folder.
+                            // The reader resolves the path when it is asked
+                            record_id: t
+                                .session
+                                .as_ref()
+                                .map(|s| s.id.clone())
+                                .unwrap_or_default(),
+                            record_glob: t
+                                .resume
+                                .as_ref()
+                                .and_then(|r| r.verify.clone())
+                                .unwrap_or_default(),
                         })
                         .collect(),
                 };

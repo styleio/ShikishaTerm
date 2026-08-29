@@ -112,14 +112,27 @@ pub fn same_folder(a: &Path, b: &Path) -> bool {
 
 /// Whether the record of one conversation is still there.
 ///
-/// `pattern` is a path with `{id}` in it and `*` standing for any run of
-/// characters within one name — `{home}/.claude/projects/*/{id}.jsonl`, or
-/// `…/rollout-*-{id}.jsonl` where the id is only part of the file name.
-///
 /// Asked before resuming, because a CLI handed an id it has never heard of
 /// says so in its own words, in its own place, and the person is left staring
 /// at a red line with no idea that the app could have told them plainly.
 pub fn exists(pattern: &str, id: &str) -> bool {
+    locate(pattern, id).is_some()
+}
+
+/// Where that record actually is.
+///
+/// `pattern` is a path with `{id}` in it and `*` standing for any run of
+/// characters within one name — `{home}/.claude/projects/*/{id}.jsonl`, or
+/// `…/rollout-*-{id}.jsonl` where the id is only part of the file name.
+///
+/// The walk that answers "is it still there" already held the path and threw
+/// it away. It is handed back now because reading a conversation means opening
+/// that file, and a second walk written beside this one would be a second
+/// place for the pattern rules to drift.
+pub fn locate(pattern: &str, id: &str) -> Option<PathBuf> {
+    if id.is_empty() {
+        return None;
+    }
     let full = expand(&pattern.replace("{id}", id))
         .display()
         .to_string()
@@ -127,7 +140,10 @@ pub fn exists(pattern: &str, id: &str) -> bool {
     // Everything up to the first wildcard is a plain path and can be joined in
     // one step; only from there does anything have to be listed
     let (fixed, rest) = match full.find('*') {
-        None => return PathBuf::from(&full).exists(),
+        None => {
+            let one = PathBuf::from(&full);
+            return one.exists().then_some(one);
+        }
         Some(at) => {
             let cut = full[..at].rfind('\\').map(|i| i + 1).unwrap_or(0);
             (full[..cut].to_string(), full[cut..].to_string())
@@ -137,19 +153,19 @@ pub fn exists(pattern: &str, id: &str) -> bool {
     walk_glob(PathBuf::from(fixed), &steps)
 }
 
-fn walk_glob(at: PathBuf, steps: &[String]) -> bool {
+fn walk_glob(at: PathBuf, steps: &[String]) -> Option<PathBuf> {
     let Some(step) = steps.first() else {
-        return at.exists();
+        return at.exists().then_some(at);
     };
     if !step.contains('*') {
         return walk_glob(at.join(step), &steps[1..]);
     }
-    let Ok(entries) = std::fs::read_dir(&at) else {
-        return false;
-    };
-    entries.flatten().any(|e| {
+    let entries = std::fs::read_dir(&at).ok()?;
+    entries.flatten().find_map(|e| {
         let name = e.file_name().to_string_lossy().to_string();
-        name_matches(step, &name) && walk_glob(e.path(), &steps[1..])
+        name_matches(step, &name)
+            .then(|| walk_glob(e.path(), &steps[1..]))
+            .flatten()
     })
 }
 

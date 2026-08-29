@@ -94,6 +94,10 @@ pub struct TabState {
     /// questions, and this one changes every couple of seconds
     #[serde(default)]
     pub cost: Option<String>,
+    /// Whether what was said here can be read back as text (reader.rs). The
+    /// display offers the reader only where there is something to read
+    #[serde(default)]
+    pub readable: bool,
 }
 
 /// The Vault overlay's contents: what was searched and what turned up.
@@ -257,6 +261,16 @@ pub struct UiState {
     pub discuss_idle: bool,
 }
 
+/// Whether this tab's conversation can be read back as flowing text.
+///
+/// True when the CLI keeps a record we know how to find and we know which
+/// conversation is this tab's — claude and codex today. It rides in the tab
+/// state rather than in the phone's own snapshot because the reader is a
+/// property of the tab, and both surfaces ask the same question of it
+fn readable(t: &crate::tab::Tab) -> bool {
+    t.session.is_some() && t.resume.as_ref().is_some_and(|r| r.verify.is_some())
+}
+
 impl TabState {
     /// Build from a running tab
     pub fn of(index: usize, t: &crate::tab::Tab) -> Self {
@@ -285,6 +299,7 @@ impl TabState {
                 ports: t.place.ports.clone(),
             }),
             cost: t.usage.line(),
+            readable: readable(t),
         }
     }
 
@@ -319,6 +334,8 @@ impl TabState {
             settings: key == "settings",
             ai: None,
             auto: false,
+            // Nothing was said here to read back
+            readable: false,
         }
     }
 }
@@ -396,6 +413,7 @@ mod tests {
             progress: None,
             place: None,
             cost: None,
+            readable: false,
         }
     }
 

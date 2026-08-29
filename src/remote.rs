@@ -35,6 +35,14 @@ pub struct RemoteTab {
     /// so the AI running here can reach it. Empty if the tab has no folder set.
     #[serde(default)]
     pub cwd: String,
+    /// Which conversation, and the pattern that finds its record. Never sent:
+    /// an id names a conversation, and the phone has no use for one — it asks
+    /// by tab number and the path is resolved on this side. Kept here because
+    /// this snapshot is the only thing the request thread can see
+    #[serde(skip)]
+    pub record_id: String,
+    #[serde(skip)]
+    pub record_glob: String,
 }
 
 #[derive(Clone, Serialize, Default)]
@@ -743,6 +751,48 @@ fn handle(
             let snap = snapshot.lock().unwrap().clone();
             req.respond(json_response(serde_json::to_value(snap)?))?;
         }
+        // The tab's conversation, as text, newest turns last. What the phone's
+        // reader shows instead of the terminal grid: a full-screen TUI keeps no
+        // scrollback, so the screen relay simply has no older text to give, and
+        // the CLI's own record is the only complete copy (reader.rs).
+        //
+        // The phone names a tab and a byte offset to read back from — never a
+        // path. Which file that is stays on this side, resolved from the id the
+        // app itself handed the CLI at launch
+        ("GET", "/api/read") => {
+            let tab: usize = query_value(req.url(), "tab").parse().unwrap_or(0);
+            let before: u64 = query_value(req.url(), "before").parse().unwrap_or(u64::MAX);
+            let want: usize = query_value(req.url(), "want")
+                .parse()
+                .unwrap_or(6)
+                .clamp(1, 40);
+            let record = snapshot
+                .lock()
+                .unwrap()
+                .tabs
+                .iter()
+                .find(|t| t.index == tab)
+                .map(|t| (t.record_id.clone(), t.record_glob.clone()));
+            let found = record
+                .filter(|(id, glob)| !id.is_empty() && !glob.is_empty())
+                .and_then(|(id, glob)| crate::sessionfind::locate(&glob, &id));
+            let answer = match found {
+                // No record yet is the ordinary state of a tab nobody has
+                // spoken to. Said plainly, so the reader can show a line
+                // instead of an error
+                None => serde_json::json!({"ok": false, "empty": true}),
+                Some(path) => match crate::reader::read_back(&path, before, want) {
+                    Ok(page) => serde_json::json!({
+                        "ok": true,
+                        "turns": page.turns,
+                        "from": page.from,
+                        "more": page.more,
+                    }),
+                    Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
+                },
+            };
+            req.respond(json_response(answer))?;
+        }
         // The latest run's durable replay script (css/xpath anchors, no
         // digest refs) — the 🎯 panel's download button on the phone.
         // 404 while no run has recorded anything replayable yet
@@ -1033,13 +1083,25 @@ fn cookie_value(req: &tiny_http::Request, name: &str) -> String {
 /// Paths served by reverse-proxy to the loopback settings server. The remote UI
 /// owns exactly its own four `/api/*` verbs; every other `/api/*`, plus the
 /// settings / result / help pages, belongs to the config server.
+/// The verbs the remote UI answers itself. Everything else under `/api/` belongs
+/// to the config server and is reached through the proxy.
+///
+/// One list, checked against the routes themselves by
+/// `every_verb_this_file_serves_is_claimed`. It was written apart from them
+/// once, and the cost was silent: `/api/replay` was added below and not here,
+/// so the phone's download button asked the settings proxy for it and the code
+/// that actually serves it — a dozen lines away — was never once reached.
+const OWN_VERBS: [&str; 7] = [
+    "state", "send", "auto", "intent", "attach", "read", "replay",
+];
+
 fn is_settings_path(path: &str) -> bool {
     if path == "/cfg" || path == "/help" || path == "/result" {
         return true;
     }
     if let Some(rest) = path.strip_prefix("/api/") {
         let seg = rest.split(['/', '?']).next().unwrap_or("");
-        return !matches!(seg, "state" | "send" | "auto" | "intent" | "attach");
+        return !OWN_VERBS.contains(&seg);
     }
     false
 }
@@ -1580,15 +1642,39 @@ mod tests {
         ui.shutdown();
     }
 
-    /// `/api/*` routing: the remote UI owns exactly its own four verbs; every
-    /// other `/api/*`, plus the settings pages, is the config server's.
+    /// `/api/*` routing: the remote UI owns exactly its own verbs; every other
+    /// `/api/*`, plus the settings pages, is the config server's.
     #[test]
     fn settings_paths_are_told_apart_from_the_remotes_own() {
         for p in ["/cfg", "/help", "/result", "/api/config", "/api/secrets", "/api/secrets/set"] {
             assert!(is_settings_path(p), "{p} should proxy to settings");
         }
-        for p in ["/api/state", "/api/send", "/api/auto", "/api/intent", "/", "/shell", "/ws-state"] {
+        for p in [
+            "/api/state", "/api/send", "/api/auto", "/api/intent", "/api/attach", "/api/read",
+            "/api/replay", "/", "/shell", "/ws-state",
+        ] {
             assert!(!is_settings_path(p), "{p} is the remote's own route");
+        }
+    }
+
+    /// Every route this file answers is claimed in `OWN_VERBS`.
+    ///
+    /// Written because the two lists drifted once and nothing said so: a route
+    /// that is not claimed is handed to the settings proxy, and the handler
+    /// sitting right here simply never runs. Nothing about that looks broken
+    /// from the outside — it looks like the feature was never built.
+    #[test]
+    fn every_verb_this_file_serves_is_claimed() {
+        for line in include_str!("remote.rs").lines() {
+            let Some(at) = line.find("\"/api/") else { continue };
+            if !line.contains("=> {") {
+                continue;
+            }
+            let verb = line[at + 6..].split(['"', '/', '?']).next().unwrap_or("");
+            assert!(
+                OWN_VERBS.contains(&verb),
+                "/api/{verb} を自分で処理しているのに OWN_VERBS に無い (設定プロキシに吸われて到達しない)"
+            );
         }
     }
 
