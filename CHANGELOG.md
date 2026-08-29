@@ -8,6 +8,25 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **A terminal watched from a phone stays the phone's width, instead of
+  snapping back to the window's the first time a tab is switched.** The phone
+  measures its own screen and the terminal is cut to fit it -- that part has
+  worked for a while -- but so does the window, and both of them re-report as
+  they redraw. Switching tabs redraws the pane tree at the window, which
+  re-reported there, so the size the phone had just been given was taken back a
+  frame later, mid-session, with nothing on the phone having changed. What that
+  looked like depended on the interface being watched: Codex draws down the
+  left, so it went on looking about right, while Claude Code rules a line clean
+  across the terminal and hung two thirds of itself off the right edge, to be
+  read by scrolling sideways. Who decides is now settled in one place, from who
+  is actually looking rather than from who spoke most recently: **a phone that
+  is watching decides, and the window has its own shape back the moment none
+  is** -- within a few seconds of the phone being closed or falling asleep,
+  which a small heartbeat down the same line is what makes noticeable. A phone
+  whose network won't hold a socket open, and which falls back to asking for
+  the state instead, counts as watching just the same.
+
 ## [0.3.7] - 2026-08-29
 
 Typing to an AI that is thinking is quick again. The window had been rebuilding

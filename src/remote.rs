@@ -14,6 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use serde::Serialize;
@@ -174,6 +175,11 @@ pub struct RemoteUi {
     frame_clients: FrameClients,
     /// Destinations for state pushes (screen HTML / UI JSON) over /ws-state
     state_clients: StateClients,
+    /// When a viewer last asked for the state over plain HTTP. Watching is
+    /// normally a held-open state socket, but a phone whose network won't carry
+    /// one falls back to asking for the state every second and a half, and it is
+    /// watching just as much -- `watched` counts both.
+    last_poll: Arc<Mutex<Option<Instant>>>,
     /// A new viewer joined. The main loop will emit one frame of the current
     /// screen at the next opportunity (so a static page doesn't stay blank
     /// waiting for the next change)
@@ -356,6 +362,7 @@ impl RemoteUi {
         let stop = Arc::new(AtomicBool::new(false));
         let frame_clients: FrameClients = Arc::new(Mutex::new(Vec::new()));
         let state_clients: StateClients = Arc::new(Mutex::new(Vec::new()));
+        let last_poll: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
         let settings = Arc::new(Mutex::new(None));
         // Who is let in, and the one thing a "disconnect" changes. In memory
@@ -374,6 +381,7 @@ impl RemoteUi {
             let stop = Arc::clone(&stop);
             let clients = Arc::clone(&frame_clients);
             let states = Arc::clone(&state_clients);
+            let polls = Arc::clone(&last_poll);
             let kf = Arc::clone(&keyframe_wanted);
             let settings = Arc::clone(&settings);
             let gate = Arc::clone(&gate);
@@ -383,7 +391,10 @@ impl RemoteUi {
                         break;
                     }
                     if let Err(e) =
-                        handle(req, &token, &snapshot, &tx, &clients, &states, &kf, &settings, &gate, sticky)
+                        handle(
+                            req, &token, &snapshot, &tx, &clients, &states, &polls, &kf,
+                            &settings, &gate, sticky,
+                        )
                     {
                         crate::append_hook_log(&crate::i18n::tp(
                             "err.remote.hook_log",
@@ -403,6 +414,7 @@ impl RemoteUi {
             stop,
             frame_clients,
             state_clients,
+            last_poll,
             keyframe_wanted,
             settings,
             gate,
@@ -475,6 +487,23 @@ impl RemoteUi {
     /// is, the main loop skips building and pushing state entirely.
     pub fn has_state_clients(&self) -> bool {
         !self.state_clients.lock().unwrap().is_empty()
+    }
+
+    /// How long a viewer that can only poll counts as still being there. It
+    /// asks every second and a half, so this is a few missed turns.
+    const POLL_LIFE: Duration = Duration::from_secs(6);
+
+    /// Whether anyone is watching from afar at all -- over the state socket, or
+    /// by polling when a socket won't hold. What the terminal is cut to hangs on
+    /// this answer, so it has to count the poller too: a phone reduced to
+    /// polling is still a phone-sized screen looking at the same terminal.
+    pub fn watched(&self) -> bool {
+        self.has_state_clients()
+            || self
+                .last_poll
+                .lock()
+                .unwrap()
+                .is_some_and(|t| t.elapsed() < Self::POLL_LIFE)
     }
 
     /// Push one state message (a small JSON object with `ui` or `screen_html`)
@@ -571,6 +600,7 @@ fn handle(
     tx: &Sender<RemoteCmd>,
     frame_clients: &FrameClients,
     state_clients: &StateClients,
+    last_poll: &Arc<Mutex<Option<Instant>>>,
     keyframe_wanted: &Arc<AtomicBool>,
     settings: &Arc<Mutex<Option<(String, String)>>>,
     gate: &Arc<Gate>,
@@ -707,6 +737,9 @@ fn handle(
 
     match (method.as_str(), path.as_str()) {
         ("GET", "/api/state") => {
+            // Asking for the state IS watching, and this is the only trace a
+            // viewer without a socket leaves (see `watched`).
+            *last_poll.lock().unwrap() = Some(Instant::now());
             let snap = snapshot.lock().unwrap().clone();
             req.respond(json_response(serde_json::to_value(snap)?))?;
         }
@@ -1443,6 +1476,30 @@ mod tests {
             (403, "password".to_string()),
             "切断後もパスワードが効いたままになっている"
         );
+        ui.shutdown();
+    }
+
+    /// A phone reduced to polling still counts as someone watching.
+    ///
+    /// What the terminals are cut to hangs on that answer (see `terminal_size`
+    /// in the main loop): counted only by the state socket, a phone whose
+    /// network won't hold one open would be handed a terminal shaped for the
+    /// window and left reading it sideways -- the very thing the fitting is for.
+    #[test]
+    fn a_phone_that_can_only_poll_is_still_watching() {
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let mut phone = Phone::new(&base);
+        assert!(!ui.watched(), "誰も来ていないのに見られている扱い");
+        phone.pair("tok123456789012");
+        // Pairing alone is not watching: the page has to ask for the state
+        assert!(!ui.watched(), "ページを開いただけで見られている扱い");
+        // Nor does a request that is refused -- it never saw the state
+        let stranger = Phone::new(&base);
+        assert_eq!(stranger.status("/api/state?t=tok123456789012"), 403);
+        assert!(!ui.watched(), "断った相手が見ている扱いになった");
+        phone.get("/api/state?t=tok123456789012");
+        assert!(ui.watched(), "状態を取りに来た相手が見ている扱いにならない");
         ui.shutdown();
     }
 

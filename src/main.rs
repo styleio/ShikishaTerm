@@ -381,8 +381,13 @@ const FLASH_LIFE: Duration = Duration::from_secs(12);
 /// The set of things needed to draw into our own window
 struct WinSurface {
     win: std::rc::Rc<crate::browser::Browser>,
+    /// What the window measured for itself, in character cells.
     rows: u16,
     cols: u16,
+    /// What a phone measured for its own screen, when one has said. Kept apart
+    /// from the window's own numbers because they are two different answers to
+    /// two different questions, and `terminal_size` picks between them.
+    phone: Option<(u16, u16)>,
     /// The last state we sent. Only send again when it changes.
     last: Option<crate::uistate::UiState>,
     /// The terminal contents as the page last got them, row by row. Kept in
@@ -732,6 +737,10 @@ impl WinSurface {
                     self.area = area;
                     self.full = full;
                     self.pane_geom = panes;
+                    // Only to wake the loop, so a window dragged to a new size
+                    // reaches the terminals on the next pass instead of after a
+                    // sleep. The numbers themselves are read off `self` where
+                    // the choice between the viewers is made (`terminal_size`).
                     self.pending.push_back(Event::Resize(cols, rows));
                 }
                 Ev::FocusPane { id } => self.focus_panes.push(id),
@@ -1059,6 +1068,7 @@ fn run_in_window() -> Result<()> {
         win,
         rows: 40,
         cols: 120,
+        phone: None,
         last: None,
         last_screen_rows: Vec::new(),
         last_screen_key: None,
@@ -2099,6 +2109,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut last_remote_ui: Option<String> = None;
     let mut last_remote_screen = String::new();
     let mut last_remote_push = Instant::now() - Duration::from_secs(1);
+    /// How often a viewer that has said nothing is written to anyway.
+    const BEAT: Duration = Duration::from_secs(3);
+    // When the last heartbeat went out. A phone is only ever found to be gone
+    // by a write to it failing, so on a quiet screen -- nothing running, no
+    // output -- a phone that was closed or fell asleep would be counted as
+    // watching for as long as the quiet lasted, and the terminals would stay
+    // cut to a screen nobody was holding. A few bytes every few seconds means
+    // it is noticed within one beat of leaving; it also keeps the socket from
+    // being timed out as idle by whatever sits between the two.
+    let mut last_beat = Instant::now();
     // Whether an overlaid browser is currently being shown. Leaving it up would
     // permanently hide the terminal, so it's hidden by default.
     let mut flash: Option<String> = startup_errors
@@ -2210,6 +2230,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if pane_layout.focused_surface() != active {
             pane_layout.show(active);
         }
+        // Who the terminals are cut to, settled once per pass rather than by
+        // whichever viewer last reported (see `terminal_size`). Both viewers
+        // re-measure and re-report as they redraw, so reading it here — from
+        // who is actually looking — is what keeps the two of them from taking
+        // the terminal off each other.
+        (rows, cols) = pty_dims(terminal_size(
+            (surface.rows, surface.cols),
+            surface.phone,
+            remote_ui.as_ref().is_some_and(|r| r.watched()),
+        ));
         // This is the only place a terminal is resized — two places deciding
         // meant a split pane was told its size twice per frame, and whichever
         // ran last won.
@@ -2949,6 +2979,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         last_remote_screen = snap.screen_html.clone();
                         last_remote_push = Instant::now();
                     }
+                    // The heartbeat. Carries nothing the page needs -- it reads
+                    // it as "the line is alive" and drops it -- and exists so
+                    // that a viewer that has gone is found to be gone.
+                    if last_beat.elapsed() >= BEAT {
+                        r.push_state("{\"beat\":1}".to_string());
+                        last_beat = Instant::now();
+                    }
                 }
                 *r.snapshot.lock().unwrap() = snap;
             }
@@ -3055,13 +3092,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::Scroll { by, row, col }) => {
                         surface.scrolls.push((by, row, col));
                     }
-                    // The phone fits the terminal to its own screen. Take its rows/cols,
-                    // but NOT its `area`: that positions the window's own browser child
-                    // view, which the phone doesn't use (it watches the relay), so the
-                    // window keeps the placement it measured for itself.
+                    // The phone fits the terminal to its own screen. Its numbers are
+                    // kept as the phone's own -- not written over the window's, which
+                    // is what the window falls back to the moment nobody is watching
+                    // from afar (see `terminal_size`). Its `area` is not taken either:
+                    // that positions the window's own browser child view, which the
+                    // phone doesn't use (it watches the relay), so the window keeps
+                    // the placement it measured for itself.
                     remote::RemoteCmd::Ui(crate::browser::Ev::Resize { rows, cols, .. }) => {
-                        surface.rows = rows;
-                        surface.cols = cols;
+                        surface.phone = Some((rows, cols));
                         surface.pending.push_back(Event::Resize(cols, rows));
                     }
                     // A Lua quick-action fired from the phone. It's not a keystroke,
@@ -4785,9 +4824,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                 }
             }
-            Event::Resize(width, height) => {
-                (rows, cols) = pty_dims(Size { width, height });
-            }
+            // A viewer remeasured itself. Nothing to carry out here: it has
+            // already written its numbers down on the surface, and the top of
+            // the loop cuts the terminals to whichever viewer is looking.
+            // Arriving as an event is what wakes the loop to do that promptly.
+            Event::Resize(..) => {}
             _ => {}
         }
     }
@@ -6119,6 +6160,32 @@ fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
     match surfaces.get(active.checked_sub(1)?)? {
         Surface::Session(i) => Some(*i),
         Surface::Browser { .. } => None,
+    }
+}
+
+/// The shape every terminal is cut to: **a phone that is watching decides it,
+/// and the window decides it when none is.**
+///
+/// The two viewers see the same terminals at wildly different widths, and only
+/// one number can be handed to a program. Both of them re-measure and re-report
+/// freely -- the pane tree is redrawn on a tab switch and re-reports as part of
+/// that -- so "whoever spoke last wins" was never a rule at all: the window
+/// spoke on every repaint and took the size back within a frame of the phone
+/// getting it. A phone opened onto a tab fitted its screen, then jumped to the
+/// window's width the first time a tab was switched, and Claude Code -- which
+/// rules a line clean across the terminal -- hung two thirds of itself off the
+/// right edge with only a sideways scroll to read it by.
+///
+/// So the choice is made in one place, from who is looking rather than from who
+/// spoke most recently, and the reports themselves become harmless. Watching
+/// means a live state socket or a viewer still polling for the state; the
+/// heartbeat sent along that socket is what makes a phone that walks away
+/// noticed within a few seconds, and the window then has its own shape back
+/// without anybody having to ask for it.
+fn terminal_size(window: (u16, u16), phone: Option<(u16, u16)>, watched: bool) -> Size {
+    match phone {
+        Some((rows, cols)) if watched => Size { width: cols, height: rows },
+        _ => Size { width: window.1, height: window.0 },
     }
 }
 
@@ -7495,6 +7562,38 @@ fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A phone that is watching decides the shape of the terminal, and the
+    /// window takes it back the moment nobody is.
+    ///
+    /// Both viewers re-report their own measurement as they redraw, so the
+    /// answer must not depend on which of them spoke last: the window redraws
+    /// its pane tree on every tab switch and re-reported there, which used to
+    /// snatch the terminal back to the window's width a frame after a phone had
+    /// fitted it to its screen.
+    #[test]
+    fn a_watching_phone_decides_the_shape_of_the_terminal() {
+        let window = (40, 118);
+        let phone = Some((44, 45));
+        assert_eq!(
+            terminal_size(window, phone, true),
+            Size { width: 45, height: 44 },
+            "見ているスマホの寸法に端末が合わない"
+        );
+        // Nobody watching from afar: the window wears its own measurement again,
+        // without waiting for anyone to resize anything
+        assert_eq!(
+            terminal_size(window, phone, false),
+            Size { width: 118, height: 40 },
+            "誰も見ていないのに端末がスマホの寸法のまま"
+        );
+        // A phone that has connected but not yet measured itself decides nothing
+        assert_eq!(
+            terminal_size(window, None, true),
+            Size { width: 118, height: 40 },
+            "寸法を報告していないスマホが端末を決めてしまった"
+        );
+    }
 
     /// The tab in front is sized by whoever is watching it, panes behind it by
     /// the window.
