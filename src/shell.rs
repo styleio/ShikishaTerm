@@ -1531,8 +1531,15 @@ function drawNav() {
     if (want.forward) n.append(btn("→", "tui.nav.forward", "forward", want.can_forward));
     if (want.reload) {
       // Wrap the reload icon in a span so it only spins while loading
-      const rb = el("button", {title:T["tui.nav.reload"], onclick:() => send({kind:"go", what:"reload"})},
+      const rb = el("button", {title:T["tui.nav.reload"]},
         el("span", {class:"ico"}, "⟳"));
+      // Held down with a modifier it throws the cache away first — the same
+      // gesture every browser uses, so nobody has to be told about it. On a
+      // phone there is no modifier to hold, so a long press says it instead
+      // (the browser reports that as a context menu)
+      rb.onclick = (e) =>
+        send({kind:"go", what:(e.shiftKey || e.ctrlKey || e.metaKey) ? "hardreload" : "reload"});
+      rb.oncontextmenu = (e) => { e.preventDefault(); send({kind:"go", what:"hardreload"}); };
       if (want.loading) rb.classList.add("spin");
       n.append(rb);
     }

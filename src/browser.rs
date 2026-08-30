@@ -105,6 +105,39 @@ const PLACED_JS: &str = r##"
 })();
 "##;
 
+/// Added on top of the placed-page scripts for a window a page asked to open.
+///
+/// An adopted window has no title bar of its own — it sits in the seat its
+/// opener was using — so the way out of it has to be drawn. `window.close` is
+/// taken over for the same reason: a popup that finishes by closing itself
+/// (which is how every sign-in popup ends) has to reach us, or the runtime
+/// tears the page down from under the pane and leaves a hole.
+const POPUP_JS: &str = r#"
+(function () {
+  const shut = () => { try { window.ipc.postMessage(JSON.stringify({kind:"popupclose"})); } catch (e) {} };
+  window.close = shut;
+  const draw = () => {
+    if (document.getElementById("__shikisha_popbar") || !document.documentElement) return;
+    const bar = document.createElement("div");
+    bar.id = "__shikisha_popbar";
+    bar.style.cssText = "position:fixed;top:0;left:0;right:0;height:24px;z-index:2147483647;" +
+      "display:flex;align-items:center;gap:8px;padding:0 8px;box-sizing:border-box;" +
+      "background:#1b1d22;color:#c9ced8;font:11px/1 system-ui,sans-serif;";
+    const who = document.createElement("span");
+    who.textContent = location.origin;
+    who.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+    const x = document.createElement("span");
+    x.textContent = "\u2715";
+    x.style.cssText = "cursor:pointer;padding:0 6px;font-size:13px";
+    x.addEventListener("click", shut);
+    bar.append(who, x);
+    document.documentElement.appendChild(bar);
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", draw);
+  else draw();
+})();
+"#;
+
 /// Always injected into every document first.
 ///
 /// It runs on every navigation, so no matter how many times a login
@@ -598,6 +631,10 @@ pub enum Cmd {
     },
     /// Remove a placed page
     RemoveChild { name: String },
+    /// Take in the windows pages asked for, and let go of the ones that asked
+    /// to close. Sent by the handlers that answer those requests: they run on
+    /// the message loop and cannot reach into the loop's own bookkeeping
+    Adopt,
     /// Keep a hidden page's compositor running (`on=true`) for the duration
     /// of genuine-input operations, and release it again (`on=false`).
     ///
@@ -685,6 +722,13 @@ pub enum Go {
     Back,
     Forward,
     Reload,
+    /// Reload having thrown away everything already held for the page.
+    ///
+    /// The ordinary reload is allowed to serve a cached copy, which is
+    /// exactly wrong for the case a person presses it in: a page that is
+    /// wrong, from a build that has moved on. Every browser hides this behind
+    /// a modifier on the same button, and so does this one
+    Hard,
     To(String),
 }
 
@@ -846,6 +890,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 Some("back") => Go::Back,
                 Some("forward") => Go::Forward,
                 Some("reload") => Go::Reload,
+                Some("hardreload") => Go::Hard,
                 Some("to") => Go::To(
                     v.get("url")
                         .and_then(|x| x.as_str())
@@ -2747,15 +2792,141 @@ pub fn key_known(named: &str) -> bool {
     named_vk(named).is_some()
 }
 
+/// Windows the pages asked for, by the page that asked. Newest last.
+///
+/// A pane holds one page at a time, so a window opened by one of them stands
+/// in the same seat, in front of it. Which is also what it means to everything
+/// else: "this pane" is what a person is looking at and what automation is
+/// driving, and while a sign-in window is up, that is the sign-in window.
+type Overlays = std::collections::HashMap<String, Vec<(String, wry::WebView)>>;
+
 fn target<'a>(
     main: &'a wry::WebView,
     children: &'a std::collections::HashMap<String, wry::WebView>,
+    overlays: &'a Overlays,
     to: &Option<String>,
 ) -> Option<&'a wry::WebView> {
     match to {
         None => Some(main),
-        Some(name) => children.get(name),
+        Some(name) => overlays
+            .get(name)
+            .and_then(|stack| stack.last())
+            .map(|(_, v)| v)
+            .or_else(|| children.get(name)),
     }
+}
+
+/// What a new-window handler has to hand back to the loop it cannot touch.
+#[derive(Default)]
+struct Adoptions {
+    /// (the page that asked, the new page's name, the page itself)
+    made: Vec<(String, String, wry::WebView)>,
+    /// Names of adopted pages that asked to be let go
+    shut: Vec<String>,
+    /// Counts the names apart
+    next: u32,
+}
+
+/// One command line for the whole answer, because the answer has to be given
+/// synchronously and this is the only place it can be built.
+type WindowAnswer = Box<dyn Fn(String, wry::NewWindowFeatures) -> wry::NewWindowResponse>;
+
+/// Take in a window a page asked for, rather than refusing it in silence.
+///
+/// wry's answer to `window.open` when nobody says otherwise is "no", with
+/// nothing said: the call returns null, the `target="_blank"` link does
+/// nothing, and a sign-in button that hands off to a popup — which is most of
+/// them — is a button that does nothing at all. There is no error for anyone
+/// to read, on either side.
+///
+/// So the window is made here and handed back, which is what keeps the two
+/// pages related: same environment, real opener, so `window.opener`,
+/// `postMessage` and the closing handshake all still work. It is placed in
+/// the seat its opener occupies, because a pane is where a person is looking.
+fn adopt_windows(
+    opener: String,
+    seat: std::rc::Rc<std::cell::Cell<(i32, i32, i32, i32)>>,
+    window: std::rc::Rc<tao::window::Window>,
+    inbox: std::rc::Rc<std::cell::RefCell<Adoptions>>,
+    proxy: tao::event_loop::EventLoopProxy<Cmd>,
+    ev_tx: Sender<Ev>,
+) -> WindowAnswer {
+    use wry::{NewWindowResponse, WebViewBuilder, WebViewBuilderExtWindows};
+    Box::new(move |uri, features| {
+        let name = {
+            let mut ib = match inbox.try_borrow_mut() {
+                Ok(ib) => ib,
+                // Never make a window while the loop is in the middle of
+                // counting them. Refusing is what happens today anyway
+                Err(_) => return NewWindowResponse::Deny,
+            };
+            ib.next += 1;
+            format!("{opener}#window{}", ib.next)
+        };
+        // No URL is given: the runtime navigates the window it is handed, and
+        // setting one here would load the page twice
+        let ipc_name = name.clone();
+        let ipc_inbox = std::rc::Rc::clone(&inbox);
+        let ipc_proxy = proxy.clone();
+        let nav_tx = ev_tx.clone();
+        let nav_who = opener.clone();
+        let fin_tx = ev_tx.clone();
+        let fin_who = opener.clone();
+        let built = WebViewBuilder::new()
+            .with_environment(features.opener.environment.clone())
+            .with_bounds(to_rect(seat.get()))
+            .with_initialization_script(&format!("{INIT_JS}{PLACED_JS}{POPUP_JS}"))
+            // Reported as the pane, not as itself: what the bar above the pane
+            // should say is loading is whatever the pane is showing
+            .with_navigation_handler(move |_url| {
+                let _ = nav_tx.send(Ev::Loading { from: Some(nav_who.clone()), busy: true });
+                true
+            })
+            .with_on_page_load_handler(move |e, _url| {
+                if matches!(e, wry::PageLoadEvent::Finished) {
+                    let _ = fin_tx.send(Ev::Loading { from: Some(fin_who.clone()), busy: false });
+                }
+            })
+            .with_ipc_handler(move |req| {
+                let body: &str = req.body();
+                if !body.contains("popupclose") {
+                    return;
+                }
+                if let Ok(mut ib) = ipc_inbox.try_borrow_mut() {
+                    ib.shut.push(ipc_name.clone());
+                    let _ = ipc_proxy.send_event(Cmd::Adopt);
+                }
+            })
+            // A window opened by a window belongs to the same seat
+            .with_new_window_req_handler(adopt_windows(
+                opener.clone(),
+                std::rc::Rc::clone(&seat),
+                std::rc::Rc::clone(&window),
+                std::rc::Rc::clone(&inbox),
+                proxy.clone(),
+                ev_tx.clone(),
+            ))
+            .build_as_child(&*window);
+        match built {
+            Ok(v) => {
+                let raw = cdp::webview_of(&v);
+                crate::append_hook_log(&format!(
+                    "[browser] '{opener}' opened a window -> '{name}' ({uri})"
+                ));
+                if let Ok(mut ib) = inbox.try_borrow_mut() {
+                    ib.made.push((opener.clone(), name, v));
+                }
+                let _ = proxy.send_event(Cmd::Adopt);
+                NewWindowResponse::Create { webview: raw }
+            }
+            Err(e) => {
+                crate::append_hook_log(&format!(
+                    "[browser] '{opener}' asked for a window ({uri}) and it could not be made: {e}"
+                ));
+                NewWindowResponse::Deny
+            }
+        }
+    })
 }
 
 /// Build a JS function call.
@@ -2860,10 +3031,14 @@ fn run_window(
         .send(ev_loop.create_proxy())
         .map_err(|_| anyhow!(crate::i18n::t("err.browser.proxy_connect_failed")))?;
 
-    let window = WindowBuilder::new()
-        .with_title(title)
-        .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0))
-        .build(&ev_loop)?;
+    // Shared, because a page asking to open a window is answered on the
+    // message loop, and the answer is a page built inside this same window
+    let window = std::rc::Rc::new(
+        WindowBuilder::new()
+            .with_title(title)
+            .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0))
+            .build(&ev_loop)?,
+    );
 
     let ipc = ev_tx.clone();
     // The shell gets an explicit folder for the same reason the pages do: without
@@ -2883,11 +3058,17 @@ fn run_window(
             };
             let _ = ipc.send(ev);
         })
-        .build(&window)?;
+        .build(&*window)?;
 
     // Pages placed inside the same window. Looked up by name
     let mut children: std::collections::HashMap<String, wry::WebView> =
         std::collections::HashMap::new();
+    // Windows those pages asked to open, kept in the seat of whoever asked
+    let mut overlays: Overlays = std::collections::HashMap::new();
+    // How those handlers hand their work back to this loop
+    let adoptions = std::rc::Rc::new(std::cell::RefCell::new(Adoptions::default()));
+    // ...and how they wake it to come and collect
+    let adopt_wake = ev_loop.create_proxy();
     // WebContext per profile. One per data folder (tabs with the same name share it).
     // Not needed after creation on Windows, but keeping it around is harmless, so hold it keyed by folder
     let mut web_ctxs: std::collections::HashMap<std::path::PathBuf, WebContext> =
@@ -2911,8 +3092,13 @@ fn run_window(
         std::collections::HashMap::new();
     // Each child's last layout-given rect: how a wake tells hidden (0×0)
     // from merely unfocused, and what it restores on release
-    let mut child_sizes: std::collections::HashMap<String, (i32, i32, i32, i32)> =
-        std::collections::HashMap::new();
+    // Shared per child: a handler that opens a window into this seat reads it
+    // without reaching into the loop's own state, and a resize lands on the
+    // window that is standing in the seat as well
+    let mut child_sizes: std::collections::HashMap<
+        String,
+        std::rc::Rc<std::cell::Cell<(i32, i32, i32, i32)>>,
+    > = std::collections::HashMap::new();
     // Each cast target's own (pre-override) viewport in CSS px. Held for the
     // life of the cast so a phone rotating back and forth always re-shapes
     // from the real size, and torn down (override cleared) with the cast
@@ -2942,7 +3128,7 @@ fn run_window(
                 Cmd::Eval { id, to, js } => {
                     // When the destination can't be found, don't fall back
                     // to the main view. That would run site-facing JS against our own screen
-                    if let Some(v) = target(&webview, &children, &to) {
+                    if let Some(v) = target(&webview, &children, &overlays, &to) {
                         let _ = v.evaluate_script(&wrap_eval(id, &js));
                     } else {
                         let _ = ev_tx.send(Ev::Result {
@@ -2963,15 +3149,16 @@ fn run_window(
                         // its parameters and stopping it later would kill
                         // the relay's frames. So wake only when nothing casts
                         if !wakes.contains_key(&to) && !casts.contains_key(&to) {
-                            if let Some(v) = target(&webview, &children, &to) {
+                            if let Some(v) = target(&webview, &children, &overlays, &to) {
                                 let wv = cdp::webview_of(v);
                                 // Hidden = this child is currently sized 0.
                                 // Borrow it a real surface, parked outside
                                 // the client area (clipped, never painted)
                                 let hidden = to.as_ref().is_some_and(|name| {
-                                    child_sizes
-                                        .get(name)
-                                        .is_none_or(|&(_, _, w, h)| w <= 0 || h <= 0)
+                                    child_sizes.get(name).is_none_or(|seat| {
+                                        let (_, _, w, h) = seat.get();
+                                        w <= 0 || h <= 0
+                                    })
                                 });
                                 if hidden {
                                     let _ = v.set_bounds(to_rect((-4000, 0, 1280, 900)));
@@ -2981,8 +3168,10 @@ fn run_window(
                                 {
                                     wakes.insert(to.clone(), (cast, hidden));
                                 } else if hidden {
-                                    if let Some(&r) =
-                                        to.as_ref().and_then(|n| child_sizes.get(n))
+                                    if let Some(r) = to
+                                        .as_ref()
+                                        .and_then(|n| child_sizes.get(n))
+                                        .map(|seat| seat.get())
                                     {
                                         let _ = v.set_bounds(to_rect(r));
                                     }
@@ -2994,9 +3183,11 @@ fn run_window(
                         if borrowed {
                             // Give back whatever the layout last decreed —
                             // including a rect that changed mid-wake
-                            if let (Some(v), Some(&r)) = (
-                                target(&webview, &children, &to),
-                                to.as_ref().and_then(|n| child_sizes.get(n)),
+                            if let (Some(v), Some(r)) = (
+                                target(&webview, &children, &overlays, &to),
+                                to.as_ref()
+                                    .and_then(|n| child_sizes.get(n))
+                                    .map(|seat| seat.get()),
                             ) {
                                 let _ = v.set_bounds(to_rect(r));
                             }
@@ -3005,7 +3196,7 @@ fn run_window(
                 }
                 Cmd::Cdp { id, to, method, params } => {
                     // Same guard as Eval: an unplaced page must answer, not hang
-                    if let Some(v) = target(&webview, &children, &to) {
+                    if let Some(v) = target(&webview, &children, &overlays, &to) {
                         let tx = ev_tx.clone();
                         cdp::call_result(
                             &cdp::webview_of(v),
@@ -3030,7 +3221,7 @@ fn run_window(
                     // If credentials are already armed, swap them; otherwise enable Fetch and arm them
                     if let Some(arm) = auths.get(&to) {
                         *arm.creds.borrow_mut() = (user, pass);
-                    } else if let Some(v) = target(&webview, &children, &to) {
+                    } else if let Some(v) = target(&webview, &children, &overlays, &to) {
                         let wv = cdp::webview_of(v);
                         match cdp::arm_basic_auth(&wv, &user, &pass) {
                             Some(arm) => {
@@ -3043,12 +3234,12 @@ fn run_window(
                     }
                 }
                 Cmd::Ask { to, text, label } => {
-                    if let Some(v) = target(&webview, &children, &to) {
+                    if let Some(v) = target(&webview, &children, &overlays, &to) {
                         let _ = v.evaluate_script(&ask_js(&text, &label));
                     }
                 }
                 Cmd::Unask { to } => {
-                    if let Some(v) = target(&webview, &children, &to) {
+                    if let Some(v) = target(&webview, &children, &overlays, &to) {
                         let _ = v.evaluate_script(
                             "window.__shikisha_unask&&window.__shikisha_unask();",
                         );
@@ -3062,7 +3253,8 @@ fn run_window(
                     // startup" report can be matched against it.
                     let born = std::time::Instant::now();
                     let bounds = to_rect(rect);
-                    child_sizes.insert(name.clone(), rect);
+                    let seat = std::rc::Rc::new(std::cell::Cell::new(rect));
+                    child_sizes.insert(name.clone(), std::rc::Rc::clone(&seat));
                     // Decide this page's data storage (profile/private).
                     // Same folder = same cookies/login, different folder = different profile.
                     // All tabs, including "default", are isolated under
@@ -3104,6 +3296,18 @@ fn run_window(
                                 let _ = fin_tx.send(Ev::Loading { from: Some(fin_who.clone()), busy: false });
                             }
                         })
+                        // What to do when this page asks to open a window.
+                        // Without an answer here the request is refused in
+                        // silence, which is how a sign-in popup becomes a
+                        // button that does nothing
+                        .with_new_window_req_handler(adopt_windows(
+                            name.clone(),
+                            std::rc::Rc::clone(&seat),
+                            std::rc::Rc::clone(&window),
+                            std::rc::Rc::clone(&adoptions),
+                            adopt_wake.clone(),
+                            ev_tx.clone(),
+                        ))
                         .with_ipc_handler(move |req| {
                             let body: &str = req.body();
                             let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
@@ -3144,7 +3348,7 @@ fn run_window(
                             };
                             let _ = ipc.send(ev);
                         })
-                        .build_as_child(&window)
+                        .build_as_child(&*window)
                     {
                         Ok(v) => {
                             // Arm automatic dialog handling right after placing it (don't let "leave page?" freeze it)
@@ -3168,12 +3372,46 @@ fn run_window(
                 Cmd::ChildBounds { name, rect } => {
                     if let Some(v) = children.get(&name) {
                         let _ = v.set_bounds(to_rect(rect));
-                        child_sizes.insert(name.clone(), rect);
+                        match child_sizes.get(&name) {
+                            Some(seat) => seat.set(rect),
+                            None => {
+                                child_sizes.insert(
+                                    name.clone(),
+                                    std::rc::Rc::new(std::cell::Cell::new(rect)),
+                                );
+                            }
+                        }
+                        // A window this page opened stands in the same seat,
+                        // so it is moved and hidden by the same layout
+                        for (_, v) in overlays.get(&name).into_iter().flatten() {
+                            let _ = v.set_bounds(to_rect(rect));
+                        }
+                    }
+                }
+                // Windows that were asked for, and windows that asked to go.
+                // Both are handed over by handlers running on this same loop,
+                // which is why neither can be done where it is decided
+                Cmd::Adopt => {
+                    let (made, shut) = match adoptions.try_borrow_mut() {
+                        Ok(mut ib) => (std::mem::take(&mut ib.made), std::mem::take(&mut ib.shut)),
+                        Err(_) => (Vec::new(), Vec::new()),
+                    };
+                    for (opener, name, view) in made {
+                        overlays.entry(opener).or_default().push((name, view));
+                    }
+                    for name in shut {
+                        // Dropping the page is what closes it
+                        for stack in overlays.values_mut() {
+                            stack.retain(|(n, _)| n != &name);
+                        }
+                        overlays.retain(|_, stack| !stack.is_empty());
                     }
                 }
                 Cmd::RemoveChild { name } => {
                     children.remove(&name);
                     child_sizes.remove(&name);
+                    // Whatever it opened goes with it
+                    overlays.remove(&name);
                     if let Some((cast, _)) = wakes.remove(&Some(name.clone())) {
                         cdp::stop(cast);
                     }
@@ -3189,7 +3427,7 @@ fn run_window(
                     }
                 }
                 Cmd::Focus { to } => {
-                    if let Some(v) = target(&webview, &children, &to) {
+                    if let Some(v) = target(&webview, &children, &overlays, &to) {
                         if let Err(e) = v.focus() {
                             crate::append_hook_log(&crate::i18n::tp(
                                 "err.browser.log_focus_failed",
@@ -3198,12 +3436,24 @@ fn run_window(
                         }
                     }
                 }
-                Cmd::Move { to, go } => match target(&webview, &children, &to) {
+                Cmd::Move { to, go } => match target(&webview, &children, &overlays, &to) {
                     Some(v) => {
                         let r = match &go {
                             Go::Back => v.go_back(),
                             Go::Forward => v.go_forward(),
                             Go::Reload => v.reload(),
+                            // wry's reload is the ordinary one. The flag that
+                            // says "ignore what you already have" exists only
+                            // in the DevTools protocol, so that is where this
+                            // one goes
+                            Go::Hard => {
+                                cdp::call(
+                                    &cdp::webview_of(v),
+                                    "Page.reload",
+                                    "{\"ignoreCache\":true}",
+                                );
+                                Ok(())
+                            }
                             Go::To(u) => v.load_url(u),
                         };
                         if let Err(e) = r {
@@ -3219,7 +3469,7 @@ fn run_window(
                     )),
                 },
                 Cmd::Where { to } => {
-                    if let Some(v) = target(&webview, &children, &to) {
+                    if let Some(v) = target(&webview, &children, &overlays, &to) {
                         let _ = where_tx.send(Ev::Where {
                             from: to,
                             url: v.url().unwrap_or_default(),
@@ -3235,10 +3485,10 @@ fn run_window(
                             // but re-issue startScreencast to push out one
                             // fresh frame (otherwise a new viewer joining
                             // while the page is static would see nothing indefinitely)
-                            if let Some(view) = target(&webview, &children, &to) {
+                            if let Some(view) = target(&webview, &children, &overlays, &to) {
                                 cdp::kick(&cdp::webview_of(view));
                             }
-                        } else if let Some(view) = target(&webview, &children, &to) {
+                        } else if let Some(view) = target(&webview, &children, &overlays, &to) {
                             let wv = cdp::webview_of(view);
                             let tx = ev_tx.clone();
                             let from = to.clone();
@@ -3262,7 +3512,7 @@ fn run_window(
                     } else if let Some(cast) = casts.remove(&to) {
                         // Give the page its own shape back before the stream goes away
                         if naturals.remove(&to).is_some() {
-                            if let Some(view) = target(&webview, &children, &to) {
+                            if let Some(view) = target(&webview, &children, &overlays, &to) {
                                 cdp::call(
                                     &cdp::webview_of(view),
                                     "Emulation.clearDeviceMetricsOverride",
@@ -3274,7 +3524,7 @@ fn run_window(
                     }
                 }
                 Cmd::Inject { to, input } => {
-                    if let Some(view) = target(&webview, &children, &to) {
+                    if let Some(view) = target(&webview, &children, &overlays, &to) {
                         let wv = cdp::webview_of(view);
                         let (cw, ch) = cast_dims.get();
                         match input {
@@ -3816,6 +4066,12 @@ mod nav_tests {
         assert!(matches!(
             read(r#"{"kind":"go","what":"reload"}"#),
             Some(Ev::Go { go: Go::Reload })
+        ));
+        // The same button, held down. A page that is wrong from a build that
+        // has moved on is exactly when someone reaches for it
+        assert!(matches!(
+            read(r#"{"kind":"go","what":"hardreload"}"#),
+            Some(Ev::Go { go: Go::Hard })
         ));
         match read(r#"{"kind":"go","what":"to","url":"example.com"}"#) {
             Some(Ev::Go { go: Go::To(u) }) => assert_eq!(u, "example.com"),

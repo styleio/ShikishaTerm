@@ -4427,7 +4427,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
             let allowed = match &go {
                 Go::Back => spec.back,
                 Go::Forward => spec.forward,
-                Go::Reload => spec.reload,
+                // Both reloads ride on the one control: a bar that shows a
+                // reload button is a bar where a person can hold it down
+                Go::Reload | Go::Hard => spec.reload,
                 Go::To(_) => spec.url,
             };
             if !allowed {

@@ -3,7 +3,7 @@
   "app.title": "SHIKISHA-TERM",
   "toast.copy": "Copy this message",
   "common.save": "Save",
-  "common.reload": "Reload",
+  "common.reload": "Reload (with Shift, or held down: throw the cache away first)",
   "common.cancel": "Cancel",
   "common.close": "Close",
   "common.delete": "Delete",

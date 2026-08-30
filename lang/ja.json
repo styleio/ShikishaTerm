@@ -415,7 +415,7 @@
   "settings.browser.profile.hint": "Cookie・ログインの箱。既定は default。名前を変えると別のログインとして分かれます（Chrome の「人物」と同じ。複数アカウントの使い分けに）。",
   "tui.nav.back": "戻る",
   "tui.nav.forward": "進む",
-  "tui.nav.reload": "更新",
+  "tui.nav.reload": "更新（Shiftを押しながら／長押しでキャッシュを捨てて再取得）",
   "tui.nav.url": "URL欄",
   "tui.nav.url.ph": "検索または URL を入力",
   "settings.browser.nav.hint": "ページの上に横並びで出ます。人が自分でページを選んでから、帯のボタンで解析させたいときに使います。要らなければ全部外してください（そのぶん画面が広くなります）",
