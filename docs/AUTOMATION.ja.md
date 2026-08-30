@@ -100,6 +100,7 @@ shikisha.send_to_tab("reviewer", "レビューして")   -- 名前を変えて�
 | `shikisha.restart(tab)` | そのタブを会話ごと再起動する。`shikisha.restart(tab, "fresh")` なら新しい会話で |
 | `shikisha.log("文字列")` | `logs/hooks.log` に記録 |
 | `shikisha.set_session("id")` | **このタブ**のCLIが動かしている会話のIDを伝える（再起動で引き継ぐため）。タブを指定しないのは、呼んだ側がそのタブだから |
+| `shikisha.set_state("BUSY")` | **このタブ**が今どの状態かを画面の推測ではなく自分で伝える（`BUSY` / `QUESTION` / `DONE` / `WAIT`）。AI CLI 自身のフックはここを通って状態●を動かす。第2引数は送信時刻（ミリ秒）で、追い越して届いても言われた順に適用される |
 | `shikisha.set_status("key", "文字列")` | **このタブ**が今なにをしているかを自分の言葉で伝える（タブ名の下に出ます）。`key` を分ければ複数の書き手が上書きし合わない。空文字でその1件を消す |
 | `shikisha.set_progress(0.4, "ラベル")` | どこまで進んだか（0〜1）。状態の隣に出ます。`nil` で消す |
 

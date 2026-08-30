@@ -107,7 +107,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      Two values a second read as "alive" just as well and cost two redraws */
   .dot.BUSY, .dot.Working { background:var(--live); animation:pulse 1.2s step-end infinite; }
   .dot.DONE { background:var(--brand); }
-  .dot.ASK  { background:var(--warn); }
+  /* The state a person has to answer. Named for the state itself: the class
+     is the label the app sends (`QUESTION`), and while this rule said `ASK`
+     it matched nothing at all — the one dot that exists to be noticed was
+     drawn in the same grey as a tab sitting idle */
+  .dot.QUESTION { background:var(--warn); }
   .dot.EXIT { background:var(--stop); }
   @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.35 } }
   .num { color:var(--dim); font-size:12px; min-width:14px; }

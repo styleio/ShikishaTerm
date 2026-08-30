@@ -100,6 +100,7 @@ shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
 | `shikisha.restart(tab)` | Restart that tab, carrying its conversation over. `shikisha.restart(tab, "fresh")` starts a new one |
 | `shikisha.log("text")` | Record in `logs/hooks.log` |
 | `shikisha.set_session("id")` | Say which conversation THIS tab's CLI is running, so a restart can pick it up. No tab argument: the caller is the tab |
+| `shikisha.set_state("BUSY")` | Say what THIS tab is doing, instead of leaving it to be read off the screen: `BUSY`, `QUESTION`, `DONE` or `WAIT`. This is how an AI CLI's own hooks drive the state dot. A second argument is the sender's clock in milliseconds, so reports that overtake each other still apply in the order they were said |
 | `shikisha.set_status("key", "text")` | Say what THIS tab is doing, in its own words, under its name in the tab bar. `key` lets several sources speak without overwriting each other; an empty text removes that one |
 | `shikisha.set_progress(0.4, "label")` | How far along, 0..1, shown beside the status. `nil` removes it |
 

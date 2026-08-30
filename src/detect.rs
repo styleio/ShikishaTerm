@@ -1,6 +1,6 @@
 //! State-detection engine: overlays several independent signals (screen
-//! pattern / bell / silence timer) into a state machine that decides tab
-//! state. DESIGN.md ch. 4.2.
+//! pattern / bell / silence timer / the program's own word) into a state
+//! machine that decides tab state. DESIGN.md ch. 4.2.
 
 use crate::profile::Profile;
 
@@ -33,6 +33,22 @@ impl TabState {
         }
     }
 
+    /// A state named from outside this process, read back.
+    ///
+    /// `EXIT` is deliberately not here. A program is dead when its process is
+    /// dead, and nothing else -- an announcement to the contrary, from a hook
+    /// or a script, would paint a tab red while the thing in it is still
+    /// running
+    pub fn from_label(name: &str) -> Option<TabState> {
+        Some(match name.trim().to_ascii_uppercase().as_str() {
+            "BUSY" => TabState::Busy,
+            "DONE" => TabState::Done,
+            "QUESTION" => TabState::Question,
+            "WAIT" => TabState::Wait,
+            _ => return None,
+        })
+    }
+
     /// Name shown on screen (translated)
     pub fn display(&self) -> String {
         crate::i18n::t(match self {
@@ -45,8 +61,37 @@ impl TabState {
     }
 }
 
+/// The end of a turn can go missing: pressing Ctrl+C or Esc is something a
+/// person does to a CLI, so most of them have no event for it, and the app can
+/// also be started in the middle of a turn it never saw begin. A dot stuck on
+/// "working" for the rest of the session is worse than a dot that goes back to
+/// guessing, so a word that says "working" has two ways to stop standing.
+///
+/// This is the one for a CLI that shows nothing while it works: a full minute
+/// without a single character on screen.
+const BUSY_STALL_MS: u64 = 60_000;
+
+/// What the program in the tab said about itself, in its own words.
+#[derive(Debug, Clone, Copy)]
+struct Word {
+    state: TabState,
+    /// The sender's clock. Hooks are separate processes, told not to block, so
+    /// the order they were SENT is the only order that means anything -- two
+    /// of them can arrive the other way round
+    sent_ms: u64,
+    /// Whether the screen has been still once since it was said.
+    ///
+    /// A dialog is being painted at the very moment its hook fires, so
+    /// "the screen moved" can only mean "the person answered" after the
+    /// screen has stopped moving at least once
+    settled: bool,
+}
+
 pub struct Detector {
     profile: Profile,
+    /// The screen's own judgment. Kept apart from what `tick` returns so that
+    /// a hook's word can outrank it without rewriting the history the screen
+    /// logic reasons from
     state: TabState,
     /// Whether there was "activity" recently (Done only fires on the activity-to-silence transition)
     was_active: bool,
@@ -59,6 +104,8 @@ pub struct Detector {
     /// The string that actually matched (to trace false positives)
     working_matched: Option<String>,
     last_bell: u64,
+    /// The last thing the program said about itself, while it still stands
+    word: Option<Word>,
 }
 
 impl Detector {
@@ -70,6 +117,7 @@ impl Detector {
             working_shown: false,
             working_matched: None,
             last_bell: 0,
+            word: None,
         }
     }
 
@@ -102,9 +150,97 @@ impl Detector {
         self.profile.done_confirm_ms
     }
 
+    /// The program's own word about what it is doing, through its hook.
+    ///
+    /// `sent_ms` is the sender's clock at the moment it was said. Returns
+    /// whether it was taken: a report older than the one already in hand is
+    /// dropped rather than applied, because these arrive by way of separate
+    /// processes that were told not to wait for each other -- "started
+    /// working" landing after "finished" would otherwise leave a tab busy
+    /// forever, and the two are milliseconds apart when a turn is short
+    pub fn hook_says(&mut self, state: TabState, sent_ms: u64) -> bool {
+        if self.word.is_some_and(|w| sent_ms < w.sent_ms) {
+            return false;
+        }
+        self.word = Some(Word { state, sent_ms, settled: false });
+        true
+    }
+
+    /// What the program last said about itself, while it still stands
+    pub fn hook_word(&self) -> Option<TabState> {
+        self.word.map(|w| w.state)
+    }
+
+    /// The word, if it still stands -- and this is also where it stops
+    /// standing.
+    ///
+    /// Every CLI worth hooking announces the beginning of a turn, the opening
+    /// of a permission dialog and the end of a turn, and **none of them
+    /// announce the answer to the dialog**: approving, refusing and pressing
+    /// Ctrl+C are things a person does to the CLI, not things the CLI does.
+    /// So the rising edge comes from the hook and the falling edge comes from
+    /// the screen: output moving again IS the answer. A tab left saying
+    /// "waiting for you" after you already answered is worse than no dot at
+    /// all, so nothing here is allowed to depend on an event that never comes.
+    fn word_now(&mut self, ms_since_output: u64) -> Option<TabState> {
+        // Read before the word is borrowed: this is the screen's evidence that
+        // a turn is NOT running, and it is only evidence for the CLIs that
+        // show something while one is. Those redraw a counting clock every
+        // second, so a screen frozen this long with no indicator on it is not
+        // a CLI at work -- it is the end of the turn having gone unreported
+        let indicator_gone = !self.profile.busy.is_empty() && !self.working_shown;
+        let long_enough = self
+            .profile
+            .done_confirm_ms
+            .unwrap_or(crate::profile::DEFAULT_DONE_CONFIRM_MS);
+        let w = self.word.as_mut()?;
+        let still = ms_since_output >= ACTIVITY_MS;
+        w.settled |= still;
+        let spent = match w.state {
+            // Answered: it had gone quiet waiting for a person, and now it is
+            // moving again
+            TabState::Question => w.settled && !still,
+            // Working, with the end of the turn never delivered
+            TabState::Busy => {
+                (indicator_gone && ms_since_output >= long_enough)
+                    || ms_since_output > BUSY_STALL_MS
+            }
+            // Resting states. They stand until the program says otherwise --
+            // which it will, at the next prompt
+            _ => false,
+        };
+        if spent {
+            self.word = None;
+            return None;
+        }
+        Some(w.state)
+    }
+
     /// Runs periodically (roughly every 200ms).
-    /// Priority: QUESTION > BUSY (pattern) > bell completion > activity timer > silence timer
+    ///
+    /// Priority: a question on screen > the program's own word > the screen's
+    /// own reading of it. The word outranks the screen because it is not a
+    /// reading at all -- the CLI fired it the instant the turn began or ended,
+    /// in whatever language, under whatever theme, whether or not it happened
+    /// to draw a word this app knows. A question on screen outranks even that,
+    /// because not every question a CLI asks is one it reports (a menu, a
+    /// login, a trust prompt), and a tab that says "working" while it is in
+    /// fact waiting for a person is the one mistake with no way back: nobody
+    /// goes to look at a tab that claims to be busy.
     pub fn tick(&mut self, screen_text: &str, ms_since_output: u64, bell_count: u64) -> TabState {
+        let screen = self.screen_tick(screen_text, ms_since_output, bell_count);
+        // Bookkeeping runs every tick, whichever signal ends up winning, so
+        // that whoever takes over is never handed a stale reading
+        let word = self.word_now(ms_since_output);
+        if screen == TabState::Question {
+            return screen;
+        }
+        word.unwrap_or(screen)
+    }
+
+    /// The screen's own reading, on its own. Priority within it:
+    /// QUESTION > BUSY (pattern) > bell completion > activity timer > silence timer
+    fn screen_tick(&mut self, screen_text: &str, ms_since_output: u64, bell_count: u64) -> TabState {
         let bell_rang = bell_count > self.last_bell;
         self.last_bell = bell_count;
 
@@ -261,6 +397,124 @@ mod tests {
         d.tick("working", 100, 0);
         // Between 500ms and 2000ms, hold the judgment and stay Busy (prevents flicker)
         assert_eq!(d.tick("quiet", 1000, 0), TabState::Busy);
+    }
+
+    /// The whole point of asking the CLI: it says it is working, and it stays
+    /// working through a silence that the screen alone reads as "finished".
+    ///
+    /// This is the everyday case, not an edge one — the silence timer is two
+    /// seconds, and any pause longer than that used to end the turn, hand the
+    /// ball on, and fire on_done on a response that had not been written yet
+    #[test]
+    fn a_program_that_says_it_is_working_is_not_finished_by_silence() {
+        let mut d = Detector::new(claude_like());
+        d.tick("thinking", 100, 0);
+        assert!(d.hook_says(TabState::Busy, 1_000));
+        // The screen alone calls this finished. It is not
+        assert_eq!(d.tick("nothing moving", 3_000, 0), TabState::Busy);
+        assert_eq!(d.hook_word(), Some(TabState::Busy));
+    }
+
+    /// ...and the other half: the end of a turn is the CLI saying so, not the
+    /// screen going quiet for two seconds
+    #[test]
+    fn the_end_of_a_turn_is_taken_from_the_program_at_once() {
+        let mut d = Detector::new(claude_like());
+        assert!(d.hook_says(TabState::Busy, 1_000));
+        assert_eq!(d.tick("... esc to interrupt ...", 100, 0), TabState::Busy);
+        assert!(d.hook_says(TabState::Done, 2_000));
+        // The screen still holds the last frame of the spinner, and it no
+        // longer matters
+        assert_eq!(d.tick("... esc to interrupt ...", 100, 0), TabState::Done);
+    }
+
+    /// Hooks are separate processes told not to block each other, so a short
+    /// turn can deliver "finished" and "started" in that order. Applying them
+    /// as they land would leave the tab working with nothing running
+    #[test]
+    fn a_report_that_arrives_late_does_not_undo_a_newer_one() {
+        let mut d = Detector::new(claude_like());
+        assert!(d.hook_says(TabState::Done, 5_000));
+        assert!(!d.hook_says(TabState::Busy, 4_900), "古い報告は適用しない");
+        assert_eq!(d.tick("quiet", 3_000, 0), TabState::Done);
+        // A genuinely newer one still gets through
+        assert!(d.hook_says(TabState::Busy, 5_001));
+        assert_eq!(d.tick("quiet", 3_000, 0), TabState::Busy);
+    }
+
+    /// Nothing is sent when a person approves, refuses or interrupts — the
+    /// only event a CLI has to offer is the one that opened the dialog. So the
+    /// answer has to be read off the screen, or the tab asks forever
+    #[test]
+    fn a_dialog_stops_waiting_when_the_screen_moves_again() {
+        let mut d = Detector::new(claude_like());
+        assert!(d.hook_says(TabState::Question, 1_000));
+        // The dialog is still being painted as its hook fires
+        assert_eq!(d.tick("Allow Bash?", 0, 0), TabState::Question);
+        // Nobody has answered yet
+        assert_eq!(d.tick("Allow Bash?", 8_000, 0), TabState::Question);
+        // Answered: output moves again
+        assert_eq!(d.tick("running npm test", 100, 0), TabState::Busy);
+        assert_eq!(d.hook_word(), None, "答えたら待ちは消える");
+    }
+
+    /// A question on screen outranks even the program's own word: not every
+    /// question a CLI asks is one it reports, and "busy" on a tab that is in
+    /// fact waiting for a person is the mistake nobody goes back to check
+    #[test]
+    fn a_question_on_screen_wins_over_a_word_that_says_working() {
+        let mut d = Detector::new(claude_like());
+        assert!(d.hook_says(TabState::Busy, 1_000));
+        assert_eq!(d.tick("Do you want to proceed?\n❯ 1. Yes", 100, 0), TabState::Question);
+        // The word is not thrown away by it: the menu belongs to a turn that
+        // is still running, so the turn is still running once it is answered
+        assert_eq!(d.hook_word(), Some(TabState::Busy), "画面の問いは言葉を捨てない");
+        assert_eq!(d.tick("carrying on", 100, 0), TabState::Busy);
+    }
+
+    /// Pressing Esc is something a person does to a CLI, and most of them have
+    /// no event for it: the turn ends and the last thing anyone said about it
+    /// was "working". A CLI that shows a spinner is telling us the truth by
+    /// not showing one, and after long enough that outweighs a word nobody
+    /// came back to correct.
+    #[test]
+    fn an_interrupted_turn_is_noticed_by_the_missing_spinner() {
+        let mut d = Detector::new(claude_like());
+        d.tick("Thinking… (3s · esc to interrupt)", 100, 0);
+        assert!(d.hook_says(TabState::Busy, 1_000));
+        // Interrupted: the spinner is gone and the screen has stopped moving
+        assert_eq!(d.tick("[Request interrupted by user]", 4_000, 0), TabState::Busy);
+        assert_eq!(
+            d.tick("[Request interrupted by user]", 11_000, 0),
+            TabState::Done,
+            "画面の判断に戻る"
+        );
+        assert_eq!(d.hook_word(), None);
+    }
+
+    /// A CLI that shows nothing while it works gives the screen no evidence to
+    /// weigh, so the only thing left is a stall long enough that no turn could
+    /// still be running behind it
+    #[test]
+    fn with_nothing_to_show_a_word_stands_until_the_screen_is_long_dead() {
+        let mut d = Detector::new(Profile::generic());
+        d.tick("working", 100, 0);
+        assert!(d.hook_says(TabState::Busy, 1_000));
+        assert_eq!(d.tick("nothing", 30_000, 0), TabState::Busy, "無表示のCLIは黙って働く");
+        assert_eq!(d.tick("nothing", 61_000, 0), TabState::Done, "画面の判断に戻る");
+        assert_eq!(d.hook_word(), None);
+    }
+
+    #[test]
+    fn only_states_this_app_has_a_name_for_are_accepted() {
+        assert_eq!(TabState::from_label("busy"), Some(TabState::Busy));
+        assert_eq!(TabState::from_label(" DONE "), Some(TabState::Done));
+        assert_eq!(TabState::from_label("QUESTION"), Some(TabState::Question));
+        assert_eq!(TabState::from_label("WAIT"), Some(TabState::Wait));
+        // A program is dead when its process is dead, and not because
+        // something said so
+        assert_eq!(TabState::from_label("EXIT"), None);
+        assert_eq!(TabState::from_label("working"), None);
     }
 
     #[test]

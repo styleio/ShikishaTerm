@@ -96,7 +96,14 @@ pub struct RecordSpec {
     pub cwd: String,
 }
 
-/// How to install a "tell us your session id" hook into a CLI's own config.
+/// How to ask a CLI to report on itself, by writing into its own config.
+///
+/// Two different things are asked for, which is why there are two lists. One
+/// is a fact we cannot get any other way (which conversation this is). The
+/// other is the tab's state — which we *can* get by reading the screen, and
+/// read far better from the CLI itself: a hook fires the instant a turn
+/// begins, a permission dialog opens, or a turn ends, in any language, under
+/// any theme, whether or not the CLI happened to draw a word we know.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HookSpec {
     /// The CLI's hook config file. `{home}` is the user's home folder
@@ -105,7 +112,15 @@ pub struct HookSpec {
     pub format: HookFormat,
     /// The events to register for. One is usually enough — the moment a
     /// conversation starts — but a CLI may name it differently
+    #[serde(default)]
     pub events: Vec<String>,
+    /// The events that ARE the state, and the state each one means:
+    /// `{"UserPromptSubmit": "BUSY", "PermissionRequest": "QUESTION",
+    /// "Stop": "DONE"}`. Which event means what is a fact about a CLI, so it
+    /// belongs in the profile with the rest of them — nothing here is named
+    /// in the app
+    #[serde(default)]
+    pub states: std::collections::BTreeMap<String, String>,
 }
 
 /// How a CLI spells one hook handler.
@@ -122,6 +137,16 @@ pub enum HookFormat {
     Args,
     /// `{ "type": "command", "command": "<one command line>" }`
     Shell,
+    /// The same one command line, with **nothing quoted**.
+    ///
+    /// For a CLI that splits the line itself rather than handing it to a
+    /// shell. Quoting a path there does not protect a space in it — it stops
+    /// the program being found at all, silently. Measured against Codex CLI
+    /// 0.150/0.151 on Windows: a quoted path never ran; the same path bare
+    /// ran; a bare path *containing a space* never ran. So the path has to be
+    /// written in a form that has no space in it to begin with (see
+    /// `agenthook::spaceless`)
+    Bare,
 }
 
 fn default_silence_ms() -> u64 {

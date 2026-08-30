@@ -31,6 +31,19 @@
       "id": "payload.session_id",
       "cwd": "payload.cwd"
     },
-    "verify": "{home}/.codex/sessions/*/*/*/rollout-*-{id}.jsonl"
+    "verify": "{home}/.codex/sessions/*/*/*/rollout-*-{id}.jsonl",
+    "hook": {
+      "file": "{home}/.codex/hooks.json",
+      "format": "bare",
+      "events": [
+        "SessionStart"
+      ],
+      "states": {
+        "UserPromptSubmit": "BUSY",
+        "PermissionRequest": "QUESTION",
+        "Stop": "DONE",
+        "Interrupt": "WAIT"
+      }
+    }
   }
 }

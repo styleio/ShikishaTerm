@@ -72,6 +72,15 @@ fn lerr(e: mlua::Error) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
 
+/// Wall-clock milliseconds. Used to stamp what one process tells another, so
+/// the order things were said survives the order they arrive in
+pub fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Location of the rally replay script. Executed browser-operation Lua is
 /// appended here. Only the statement body is written, so it can be pasted
 /// straight into on_done.lua to replay
@@ -777,6 +786,10 @@ pub enum Command {
     /// itself — from its own hook, or by anything else speaking for it — so the
     /// tab is `origin`, never a name the caller chose to give
     SetSession { id: String, origin: usize },
+    /// "This is what I am doing", from the program itself. The state dot is
+    /// otherwise read off the screen, which is a guess -- a good one, and
+    /// still a guess. A program that will say so outright is believed
+    SetState { state: String, sent_ms: u64, origin: usize },
     /// "This is what I am doing." The caller's own tab unless it names another
     /// — a build script run by hand is nobody's tab and still has something to
     /// say. An empty value takes the entry away, so finishing needs no second verb
@@ -1987,6 +2000,47 @@ impl HookEngine {
                     "set_session",
                     lua.create_function(move |_, id: String| {
                         c.borrow_mut().push(Command::SetSession { id, origin: o.get() });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The tab saying what it is doing, in the app's own vocabulary:
+            // BUSY, QUESTION, DONE, WAIT.
+            //
+            // Same rule as set_session -- the caller IS the tab. This is how
+            // an AI CLI's own hooks reach the state dot (`--hook state:BUSY`
+            // and friends), and it is open to Lua for the same reason
+            // set_status is: a script that knows something the screen cannot
+            // show should not have to draw it and hope we read it back.
+            //
+            // The second argument is the sender's clock, and it exists
+            // because these arrive by way of separate processes that were
+            // told not to wait for each other: without it, "started working"
+            // landing a moment after "finished" leaves the tab busy for good.
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "set_state",
+                    lua.create_function(move |_, (state, sent): (String, Option<i64>)| {
+                        // Refused here rather than dropped later: a name this
+                        // app has never heard of is a mistake in whatever
+                        // wrote it, and a silent one would show up as a dot
+                        // that simply never moves
+                        let known = crate::detect::TabState::from_label(&state).ok_or_else(|| {
+                            mlua::Error::runtime(crate::i18n::tp(
+                                "err.hooks.state",
+                                &[("state", &state)],
+                            ))
+                        })?;
+                        c.borrow_mut().push(Command::SetState {
+                            state: known.label().to_string(),
+                            sent_ms: sent.map(|v| v.max(0) as u64).unwrap_or_else(epoch_ms),
+                            origin: o.get(),
+                        });
                         Ok(())
                     })
                     .map_err(lerr)?,

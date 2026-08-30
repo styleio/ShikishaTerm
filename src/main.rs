@@ -1123,6 +1123,61 @@ fn run_in_window() -> Result<()> {
 /// being split — so splitting twice walks down the tab bar instead of asking
 /// the same question twice. With nothing spare it falls back to the dashboard,
 /// which is never wrong and never a duplicate.
+/// What one hook event is worth keeping, once the CLI's JSON has been read.
+///
+/// Pure, so it can be tested: this is the only place on the hook path that
+/// makes a judgment, and it runs inside a child process of the agent that is
+/// not allowed to fail loudly.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Report {
+    /// The conversation this is, when the event says
+    id: Option<String>,
+    /// What to tell the tab it is doing, in this app's own vocabulary
+    state: Option<String>,
+}
+
+/// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
+fn hook_report(kind: &str, v: &serde_json::Value) -> Report {
+    // The same fact goes by several names across the CLIs that report it, and a
+    // CLI is free to rename it in its next release. Read every spelling anyone
+    // is known to use rather than one and a shrug
+    let id = ["session_id", "sessionId", "conversation_id", "conversationId"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let Some(state) = kind.strip_prefix("state:") else {
+        return Report { id: id.filter(|_| kind == "session"), state: None };
+    };
+    // A subagent's events carry its parent's session id, so its "finished"
+    // would put the whole tab back to rest while the real turn runs on. The
+    // one thing a subagent has to say that cannot wait is that it is asking
+    // for permission — that dialog is in front of the person either way.
+    //
+    // The id is left to the event that exists to carry it: reporting it from
+    // every event would write the same line into the log all day
+    let sub = ["agent_id", "agent_type"]
+        .iter()
+        .any(|k| v.get(*k).is_some_and(|x| !x.is_null()));
+    let keep = !sub || state.eq_ignore_ascii_case("QUESTION");
+    Report { id: None, state: keep.then(|| state.to_string()) }
+}
+
+/// Every tab's identity and state, in the shape the automation engine reads.
+///
+/// Built in one place because two callers need the same thing. One is the
+/// detection tick, so a script can read `shikisha.state`. The other is the
+/// external API — and there it is not a convenience: a call arrives naming
+/// nothing but its own key, and the engine works out which tab that is by
+/// looking the name up in THIS list. An engine that has not been given it
+/// attributes the call to nobody, which is how a hook comes to report a
+/// conversation id "from tab0: no such tab" and lose it.
+fn tab_states(tabs: &[Tab]) -> Vec<(hooks::TabKey, String)> {
+    tabs.iter()
+        .map(|t| (t.key(), t.state.label().to_string()))
+        .collect()
+}
+
 /// Carry one hook event from an AI CLI back to the app.
 ///
 /// Runs as a short-lived child of the agent. Reads the agent's JSON from stdin,
@@ -1134,16 +1189,20 @@ fn hook_mode(kind: String) -> Result<()> {
     let mut body = String::new();
     let read = std::io::stdin().read_to_string(&mut body);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    // Stamped where it was said, not where it lands. Hooks are separate
+    // processes told not to block, so two of them race and the loser of the
+    // race is not the loser of the argument
+    let sent = hooks::epoch_ms() as i64;
 
-    // The same fact goes by several names across the CLIs that report it, and a
-    // CLI is free to rename it in its next release. Read every spelling anyone
-    // is known to use rather than one and a shrug
-    let id = ["session_id", "sessionId", "conversation_id", "conversationId"]
-        .iter()
-        .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
-        .unwrap_or_default()
-        .to_string();
-    if kind != "session" || id.is_empty() {
+    let report = hook_report(&kind, &v);
+    let mut calls: Vec<(&str, Vec<serde_json::Value>)> = Vec::new();
+    if let Some(id) = report.id {
+        calls.push(("set_session", vec![id.into()]));
+    }
+    if let Some(state) = report.state {
+        calls.push(("set_state", vec![state.into(), sent.into()]));
+    }
+    if calls.is_empty() {
         // A hook that quietly does nothing is the worst way for this to fail —
         // the conversation is lost at the next restart and nobody finds out
         // until then. Say what arrived, in enough detail to tell "the CLI sent
@@ -1155,12 +1214,91 @@ fn hook_mode(kind: String) -> Result<()> {
         ));
         return Ok(());
     }
-    match api::ApiClient::from_env().and_then(|mut c| c.call("set_session", vec![id.into()])) {
-        Ok(answer) if answer["ok"] == serde_json::json!(true) => {}
-        Ok(answer) => append_hook_log(&format!("hook session refused: {answer}")),
-        Err(e) => append_hook_log(&format!("hook session could not report: {e}")),
+    // The same CLI is also used on its own, outside this app, and then there
+    // is no app to report to. That is not a failure and must not be written
+    // down as one: it would be a line in a log file for every turn of every
+    // conversation anyone ever has
+    if std::env::var(api::ENV_PIPE).is_err() {
+        return Ok(());
+    }
+    let mut client = match api::ApiClient::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            append_hook_log(&format!("hook {kind} could not report: {e}"));
+            return Ok(());
+        }
+    };
+    for (method, params) in calls {
+        match client.call(method, params) {
+            Ok(answer) if answer["ok"] == serde_json::json!(true) => {}
+            Ok(answer) => append_hook_log(&format!("hook {kind} refused: {answer}")),
+            Err(e) => append_hook_log(&format!("hook {kind} could not report: {e}")),
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod hook_report_tests {
+    use super::*;
+
+    fn claude(event: &str) -> serde_json::Value {
+        serde_json::json!({
+            "session_id": "abc123",
+            "transcript_path": "/home/u/.claude/projects/x/abc123.jsonl",
+            "cwd": "/home/u/project",
+            "hook_event_name": event,
+        })
+    }
+
+    #[test]
+    fn the_conversation_is_taken_from_the_event_that_carries_it() {
+        assert_eq!(
+            hook_report("session", &claude("SessionStart")),
+            Report { id: Some("abc123".into()), state: None }
+        );
+    }
+
+    #[test]
+    fn a_state_event_says_the_state_and_nothing_else() {
+        assert_eq!(
+            hook_report("state:BUSY", &claude("UserPromptSubmit")),
+            Report { id: None, state: Some("BUSY".into()) }
+        );
+    }
+
+    /// A subagent's events arrive under the parent's session id. Its "finished"
+    /// is not the turn finishing — believing it puts a tab back to rest, fires
+    /// on_done, and hands the ball on in the middle of the work.
+    #[test]
+    fn a_subagent_cannot_end_the_turn_but_can_still_ask() {
+        let mut done = claude("Stop");
+        done["agent_id"] = serde_json::json!("agent_42");
+        assert_eq!(hook_report("state:DONE", &done).state, None, "サブの完了は本体の完了ではない");
+
+        let mut ask = claude("PermissionRequest");
+        ask["agent_id"] = serde_json::json!("agent_42");
+        ask["tool_name"] = serde_json::json!("Bash");
+        assert_eq!(
+            hook_report("state:QUESTION", &ask).state,
+            Some("QUESTION".into()),
+            "誰が出したダイアログでも人は答えなければならない"
+        );
+    }
+
+    /// Codex spells the conversation the same way; the ones that don't are
+    /// covered by reading every spelling anyone is known to use
+    #[test]
+    fn another_clis_spelling_of_the_same_fact_is_read_too() {
+        let v = serde_json::json!({ "conversationId": "b5f6c1c2", "hook_event_name": "SessionStart" });
+        assert_eq!(hook_report("session", &v).id.as_deref(), Some("b5f6c1c2"));
+    }
+
+    #[test]
+    fn an_event_with_nothing_in_it_reports_nothing() {
+        let v = serde_json::json!({});
+        assert_eq!(hook_report("session", &v), Report::default());
+    }
 }
 
 /// What a restart should do about this tab's conversation, and — when it cannot
@@ -2729,11 +2867,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // Fire hooks -> resume waiting coroutines -> run the queued operations
             if let Some(eng) = engine.as_mut() {
                 // Let the loop read the current state (shikisha.state)
-                eng.set_states(
-                    tabs.iter()
-                        .map(|t| (t.key(), t.state.label().to_string()))
-                        .collect(),
-                );
+                eng.set_states(tab_states(&tabs));
                 // ...and each tab's latest reply, so an operator can read the AI
                 // tab it's driving (shikisha.tab_output).
                 eng.set_outputs(
@@ -2771,10 +2905,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                         let t = &tabs[idx - 1];
                         append_hook_log(&format!(
-                            "State tab{idx} {}->{} [{}] prompted={} working={} answered={} submit_pending={}",
+                            "State tab{idx} {}->{} [{}] said={:?} prompted={} working={} answered={} submit_pending={}",
                             old.label(),
                             new.label(),
                             t.profile_name(),
+                            // What the program said about itself, if it says
+                            // anything: the one line that tells a state read
+                            // off the screen from a state it was told outright
+                            t.hook_word().map(|w| w.label()),
                             t.was_prompted(),
                             t.saw_working_flag(),
                             t.answered_since_submit(),
@@ -3026,27 +3164,31 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // rather than on the 200ms detection tick
         if let Some(a) = api_server.as_ref() {
             while let Ok(call) = a.rx.try_recv() {
+                // A workspace with no Lua of its own still has an engine's
+                // worth of commands to offer; make one rather than answer
+                // "not available" (the same gap-filler as 🎯 operate and ▶)
+                if engine.is_none() {
+                    match crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)) {
+                        Ok(eng) => engine = Some(eng),
+                        Err(e) => {
+                            let _ = call.reply.send(Err(e.to_string()));
+                            continue;
+                        }
+                    }
+                }
                 let answer = match engine.as_ref() {
                     Some(eng) => {
+                        // Who exists, before anything is answered. An engine
+                        // made a line ago to serve this very call has been
+                        // told nothing yet, and "which tab is calling" is
+                        // answered out of this list — the first call from a
+                        // tab used to be credited to nobody and thrown away,
+                        // and the first call is the one carrying the id of the
+                        // conversation to come back to
+                        eng.set_states(tab_states(&tabs));
                         eng.call_primitive_as(call.caller.as_deref(), &call.method, &call.params)
                     }
-                    // A workspace with no Lua of its own still has an engine's
-                    // worth of commands to offer; make one rather than answer
-                    // "not available" (the same gap-filler as 🎯 operate and ▶)
-                    None => match crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(
-                        &caps,
-                    )) {
-                        Ok(eng) => {
-                            let out = eng.call_primitive_as(
-                                call.caller.as_deref(),
-                                &call.method,
-                                &call.params,
-                            );
-                            engine = Some(eng);
-                            out
-                        }
-                        Err(e) => Err(e.to_string()),
-                    },
+                    None => Err("no engine".to_string()),
                 };
                 let _ = call.reply.send(answer);
             }
@@ -7057,6 +7199,25 @@ fn exec_commands(
                 let s = tab::Session { id, source: tab::SessionSource::Hook };
                 append_hook_log(&format!("tab{origin} \"{}\" is running {}", t.title, s.short()));
                 t.session = Some(s);
+            }
+            // A tab saying what it is doing, rather than being read. Believed
+            // over the screen, and dropped when it is older than something
+            // already applied — hooks are separate processes that race
+            Command::SetState { state, sent_ms, origin } => {
+                let Some(known) = TabState::from_label(&state) else {
+                    append_hook_log(&format!("set_state from tab{origin}: {state:?} is not a state"));
+                    continue;
+                };
+                let Some(t) = session_of(origin).and_then(|i| tabs.get_mut(i)) else {
+                    append_hook_log(&format!("set_state from tab{origin}: no such tab"));
+                    continue;
+                };
+                if !t.hook_says(known, sent_ms) {
+                    append_hook_log(&format!(
+                        "tab{origin} \"{}\" said {state} out of order — dropped",
+                        t.title
+                    ));
+                }
             }
             Command::SetStatus { key, value, target, origin } => {
                 let at = target.as_ref().and_then(index_of).unwrap_or(origin);

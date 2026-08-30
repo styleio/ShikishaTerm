@@ -23,7 +23,8 @@ pub struct TabState {
     pub name: String,
     /// Name referenced from automation
     pub id: Option<String>,
-    /// WAIT / BUSY / DONE / ASK / EXIT. Used to pick the display
+    /// WAIT / BUSY / DONE / QUESTION / EXIT, exactly as `TabState::label`
+    /// spells them — the page uses this as a CSS class. Used to pick the display
     pub state: String,
     /// Human-readable state name (translated). Use this one for display
     pub state_label: String,

@@ -123,7 +123,19 @@ It layers several independent signals and runs a state machine to decide a tab's
 | Screen patterns | Profile-defined regexes against the vt100 screen buffer (e.g. "esc to interrupt" = BUSY; a choice list like "❯ 1." = QUESTION) | High (depends on the rule) |
 | Terminal control sequences | The bell (BEL), window-title changes (OSC), alt-screen switches, cursor show/hide | Medium |
 | Output-silence timer | No output for N seconds + the cursor at an input position → assume it's waiting | Medium (generic fallback) |
+| The program's own word | The CLI's own hooks, reporting the turn it just started, the dialog it just opened, the turn it just finished (`--hook state:BUSY`, installed per CLI from Settings) | Certain, where a CLI has them |
 | Process exit | The child's exit code | Certain |
+
+The program's own word outranks the rest whenever it is there. It is not a reading of anything: the CLI
+fires it the instant a turn begins or ends, in any language, under any theme, whether or not
+it happened to draw a word this app knows — which is what removes the two-second silence
+timer's habit of ending a turn that had only paused. What no CLI reports is the *answer* to a
+permission dialog: approving, refusing and pressing Ctrl+C are things a person does to a CLI,
+not things a CLI does. So the rising edge comes from the hook and the falling edge from the
+screen, and nothing is allowed to depend on an event that never comes. A question found on
+screen still outranks everything, because not every question a CLI asks is one it reports, and
+a tab claiming to be busy while it waits for a person is the one mistake nobody goes back to
+check.
 
 Because this is heuristic (versus the "100% certain" of a headless JSON integration), the
 whole thing is built so a misdetection can't cause an accident: the auto-run budget (7.5)

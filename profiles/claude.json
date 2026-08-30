@@ -32,7 +32,12 @@
       "format": "args",
       "events": [
         "SessionStart"
-      ]
+      ],
+      "states": {
+        "UserPromptSubmit": "BUSY",
+        "PermissionRequest": "QUESTION",
+        "Stop": "DONE"
+      }
     },
     "verify": "{home}/.claude/projects/*/{id}.jsonl"
   }

@@ -2446,6 +2446,18 @@ impl Tab {
         self.detector.done_confirm_ms()
     }
 
+    /// The program in this tab saying what it is doing, rather than being
+    /// read. `sent_ms` is its clock at the moment it said so; false means it
+    /// was older than something already applied and was dropped
+    pub fn hook_says(&mut self, state: TabState, sent_ms: u64) -> bool {
+        self.detector.hook_says(state, sent_ms)
+    }
+
+    /// What the program last said about itself, while it still stands
+    pub fn hook_word(&self) -> Option<TabState> {
+        self.detector.hook_word()
+    }
+
     /// Recent output volume (oldest → newest, each 0..=7)
     pub fn activity(&self) -> &[u8] {
         &self.activity
