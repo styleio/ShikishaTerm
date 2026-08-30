@@ -73,7 +73,20 @@ pub struct Page {
     pub more: bool,
 }
 
-/// The last `want` turns of `path` that begin before byte `before`.
+/// The last `want` things said in `path`, before byte `before`.
+///
+/// `want` counts THINGS SAID, not records. A CLI writes one turn as a run of
+/// records — a paragraph, a tool call, another paragraph — and Claude files a
+/// tool's result as a message from the user, so a handful of records is
+/// routinely one side of one exchange and the human's own words sit a long way
+/// further back. Counting records would make "the last exchange" mean whatever
+/// the tool traffic happened to look like.
+///
+/// A block is only handed back once it has been read to its head: the walk
+/// stops when it meets the START of one block too many, which is the proof
+/// that the block before it is whole. Half a turn, missing its opening, is the
+/// one thing this must never return — it is the failure the reader exists to
+/// end.
 ///
 /// `before` is `u64::MAX` for "the end of the file" — the first page. Every
 /// page after that passes the previous page's `from`.
@@ -88,8 +101,10 @@ pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page>
     // Newest first while collecting; turned the right way round at the end
     let mut found: Vec<Turn> = Vec::new();
     let mut read = 0usize;
+    // Set when the walk meets the start of one block too many
+    let mut enough = false;
 
-    while end > 0 && read < BUDGET && found.len() < want {
+    while end > 0 && read < BUDGET && !enough {
         let start = end.saturating_sub(CHUNK as u64);
         let mut buf = vec![0u8; (end - start) as usize];
         file.seek(SeekFrom::Start(start))?;
@@ -111,15 +126,29 @@ pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page>
         for k in (first..heads.len()).rev() {
             let at = heads[k];
             let stop = heads.get(k + 1).map_or(buf.len(), |n| n - 1);
-            if let Some(turn) = turn_of(&buf[at..stop.max(at)]) {
-                found.push(turn);
-            }
-            // Set for every line looked at, not only the ones that said
-            // something: the next page must start strictly before whatever
-            // this one has already been through, or it repeats it
-            from = start + at as u64;
-            if found.len() >= want {
+            let said = turn_of(&buf[at..stop.max(at)]);
+            // One block past what was asked for: stop WITHOUT taking this line,
+            // so the next page begins with it and the block it opens is read
+            // whole rather than beheaded
+            if let Some(turn) = &said
+                && found.len() >= want
+                && found.last().is_none_or(|last| last.who != turn.who)
+            {
+                enough = true;
                 break;
+            }
+            // Moved for every line looked at, not only the ones that said
+            // something: the next page must start strictly before whatever this
+            // one has already been through, or it hands back the same thing
+            from = start + at as u64;
+            match (said, found.last_mut()) {
+                // Older words from the same speaker join the block already
+                // being built — in FRONT of it, because this walk goes backwards
+                (Some(turn), Some(last)) if last.who == turn.who => {
+                    last.text = format!("{}\n\n{}", turn.text, last.text);
+                }
+                (Some(turn), _) => found.push(turn),
+                (None, _) => {}
             }
         }
 
@@ -134,7 +163,7 @@ pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page>
 
     found.reverse();
     Ok(Page {
-        turns: merge(found),
+        turns: found,
         from,
         more: from > 0,
     })
@@ -144,9 +173,15 @@ pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page>
 fn turn_of(line: &[u8]) -> Option<Turn> {
     // A cheap gate ahead of the JSON parser. Most of these lines are tool
     // results, some of them megabytes each, and parsing every one of them only
-    // to find out it is not a message is where the whole cost of a read would go
+    // to find out it is not a message is where the whole cost of a read would go.
+    //
+    // Two spellings have to survive it, and forgetting the second cost this
+    // module every human word in the file: an answer arrives as blocks
+    // (`"content":[{"type":"text"…`), but what a PERSON typed is filed as a bare
+    // string (`"content":"…`), which carries no `text` key at all
     let text = std::str::from_utf8(line).ok()?;
-    if !text.contains("\"role\"") || !text.contains("\"text\"") {
+    if !text.contains("\"role\"") || !(text.contains("\"text\"") || text.contains("\"content\":\""))
+    {
         return None;
     }
     let record: Value = serde_json::from_str(text).ok()?;
@@ -251,26 +286,6 @@ fn human_part(text: &str) -> String {
     kept.trim().to_string()
 }
 
-/// One turn per thing said, not one per record.
-///
-/// A CLI writes a single turn as several records — a paragraph, a tool call,
-/// another paragraph — so read back record by record an answer arrives in
-/// shards with the speaker's name repeated between them. Neighbours from the
-/// same speaker are one thing said.
-fn merge(turns: Vec<Turn>) -> Vec<Turn> {
-    let mut out: Vec<Turn> = Vec::with_capacity(turns.len());
-    for turn in turns {
-        match out.last_mut() {
-            Some(last) if last.who == turn.who => {
-                last.text.push_str("\n\n");
-                last.text.push_str(&turn.text);
-            }
-            _ => out.push(turn),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +319,17 @@ mod tests {
         assert_eq!(turn.text, "原因が確定しました");
     }
 
+    /// What a person typed is filed differently from what the AI answered: a
+    /// bare string where the answer has blocks. Missing this shape is not a
+    /// cosmetic loss — it is every human word in the file
+    #[test]
+    fn a_person_types_a_plain_string() {
+        let line = r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":"バグを発見しました"}}"#.as_bytes();
+        let turn = turn_of(line).expect("人の発言");
+        assert_eq!(turn.who, Who::You);
+        assert_eq!(turn.text, "バグを発見しました");
+    }
+
     #[test]
     fn machinery_is_not_speech() {
         // A tool result rides in a user record; it has a role, but nobody said it
@@ -333,21 +359,66 @@ mod tests {
         assert_eq!(human_part("<system-reminder>ここから先"), "<system-reminder>ここから先");
     }
 
-    #[test]
-    fn one_turn_per_speaker_not_per_record() {
-        let turns = merge(vec![
-            Turn { who: Who::Ai, text: "調べます".into() },
-            Turn { who: Who::Ai, text: "直しました".into() },
-            Turn { who: Who::You, text: "ありがとう".into() },
-        ]);
-        assert_eq!(turns.len(), 2, "続けて喋った分は1つ");
-        assert_eq!(turns[0].text, "調べます\n\n直しました");
-    }
-
     fn record(who: &str, text: &str) -> String {
         format!(
             "{{\"message\":{{\"role\":\"{who}\",\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}}}"
         )
+    }
+
+    /// What `want` counts. A CLI writes one answer as a run of records with the
+    /// tool traffic threaded through it — and Claude files a tool's result as a
+    /// message from the USER, so counting records would call that traffic the
+    /// exchange and never reach the person's own words.
+    #[test]
+    fn asking_for_the_last_exchange_reaches_past_the_tool_traffic() {
+        let path = tmp("exchange");
+        let mut lines = String::new();
+        lines.push_str(&record("user", "直してください"));
+        lines.push('\n');
+        for i in 0..30 {
+            lines.push_str(&record("assistant", &format!("段落{i}")));
+            lines.push('\n');
+            // A tool result: a user record carrying no words at all
+            lines.push_str(
+                "{\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"text\":\"ok\"}]}}",
+            );
+            lines.push('\n');
+        }
+        std::fs::write(&path, &lines).unwrap();
+
+        let page = read_back(&path, u64::MAX, 2).unwrap();
+        assert_eq!(page.turns.len(), 2, "最後のやり取り = 人の発言 + その返答");
+        assert_eq!(page.turns[0].who, Who::You);
+        assert_eq!(page.turns[0].text, "直してください", "人の言葉まで遡る");
+        assert_eq!(page.turns[1].who, Who::Ai);
+        // The answer arrives whole, head included -- the failure this exists to end
+        assert!(page.turns[1].text.starts_with("段落0"), "返答の頭が欠けない");
+        assert!(page.turns[1].text.ends_with("段落29"));
+        assert!(!page.more, "先頭まで読み切っている");
+    }
+
+    /// A block is handed back only once its head has been read. Asking for one
+    /// block, out of a conversation that has more, must not return half of one
+    #[test]
+    fn a_block_is_never_handed_back_beheaded() {
+        let path = tmp("whole");
+        let mut lines = String::new();
+        lines.push_str(&record("user", "古い質問"));
+        lines.push('\n');
+        for i in 0..5 {
+            lines.push_str(&record("assistant", &format!("段落{i}")));
+            lines.push('\n');
+        }
+        std::fs::write(&path, &lines).unwrap();
+
+        let page = read_back(&path, u64::MAX, 1).unwrap();
+        assert_eq!(page.turns.len(), 1);
+        assert_eq!(page.turns[0].text, "段落0\n\n段落1\n\n段落2\n\n段落3\n\n段落4");
+        assert!(page.more, "その前の発言がまだ残っている");
+        // ...and the next page begins exactly where this one stopped
+        let older = read_back(&path, page.from, 1).unwrap();
+        assert_eq!(older.turns[0].text, "古い質問");
+        assert!(!older.more);
     }
 
     #[test]

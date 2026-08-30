@@ -762,6 +762,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The drawer handle is fixed to the top-left corner and would sit on top of
      the reader's own heading. While reading there is no board to reach for */
   body.reading #hamburger { display:none; }
+  /* The way back into the past, at the head of the document — which is where
+     the conversation carries on upward. Full width so a thumb cannot miss it,
+     and quiet, because it is not the thing you came here to read */
+  #rearlier { display:none; width:100%; margin:0 0 22px; padding:11px 12px;
+    border:1px dashed var(--line); border-radius:10px; background:transparent;
+    color:var(--dim); font:inherit; font-size:13px; cursor:pointer;
+    touch-action:manipulation; }
+  #rearlier:disabled { opacity:.6; }
   #rfoot { flex:0 0 auto; padding:8px 12px calc(8px + env(safe-area-inset-bottom));
     border-top:1px solid var(--line); color:var(--dim); font-size:12px; display:none; }
   #rfoot.on { display:block; }
@@ -2590,14 +2598,32 @@ function rdTurn(turn) {
   return box;
 }
 
+// Two blocks from the same speaker can land side by side, where a page had to
+// stop part-way through a turn (a run of tool output longer than one read). Say
+// the name once: that seam is ours, not something that happened in the
+// conversation.
+function rdRelabel() {
+  let before = null;
+  for (const turn of rdBodyEl().querySelectorAll(".rturn")) {
+    const who = turn.classList.contains("you") ? "you" : "ai";
+    const label = turn.querySelector(".rwho");
+    if (label) label.style.display = who === before ? "none" : "";
+    before = who;
+  }
+}
+
 function rdNote(text) {
   const body = rdBodyEl();
   body.textContent = "";
   body.append(el("div", {class:"rwho"}, text));
 }
 
-async function rdAsk(before) {
-  const q = "api/read?t=" + encodeURIComponent(TOKEN) + "&tab=" + rdTab + "&want=6"
+// The opening page is deliberately small: the last exchange, and nothing else.
+// Walking back is a tap, and each tap brings a handful
+const RD_FIRST = 2, RD_MORE = 6;
+
+async function rdAsk(before, want) {
+  const q = "api/read?t=" + encodeURIComponent(TOKEN) + "&tab=" + rdTab + "&want=" + want
     + (before != null ? "&before=" + before : "");
   const r = await fetch(q, {cache:"no-store"});
   if (!r.ok) throw new Error("status " + r.status);
@@ -2616,38 +2642,50 @@ function rdToLatest() {
     body.scrollTop + last.getBoundingClientRect().top - body.getBoundingClientRect().top - 8);
 }
 
-// A page can come back short — turns merge, and a conversation can bury six of
-// them under megabytes of tool output. Keep asking until the screen is at least
-// full, or there is nothing older left
-async function rdFillScreen() {
-  const body = rdBodyEl();
-  for (let guard = 0; guard < 6; guard++) {
-    if (!rdMore || body.scrollHeight > body.clientHeight + 40) return;
-    if (!await rdOlder()) return;
-  }
+// The way back into the past: one deliberate tap, at the head of the document
+// where the conversation actually continues upward. Not an automatic load on
+// reaching the top — the reader opens on the last exchange on purpose, and
+// something that quietly kept pulling more in would undo that.
+const rdEarlier = el("button", { id: "rearlier", onclick: () => rdOlder() });
+
+function rdEarlierState() {
+  rdEarlier.style.display = rdMore ? "block" : "none";
+  rdEarlier.textContent = rdLoading
+    ? (T["tui.read.loading"] || "…")
+    : (T["tui.read.earlier"] || "");
+  rdEarlier.disabled = rdLoading;
 }
 
 async function rdOlder() {
   if (rdLoading || !rdMore) return false;
   rdLoading = true;
+  rdEarlierState();
   const body = rdBodyEl();
   try {
-    const j = await rdAsk(rdFrom);
+    const j = await rdAsk(rdFrom, RD_MORE);
     if (!j.ok) { rdMore = false; return false; }
     rdFrom = j.from; rdMore = !!j.more;
     if (!j.turns || !j.turns.length) return rdMore;
-    // Prepending pushes everything down. Put the reader back where they were,
-    // measured rather than guessed — the height added is the height to add back
-    const wasHeight = body.scrollHeight, wasTop = body.scrollTop;
     const frag = document.createDocumentFragment();
     for (const turn of j.turns) frag.append(rdTurn(turn));
-    body.prepend(frag);
-    body.scrollTop = wasTop + (body.scrollHeight - wasHeight);
+    // In after the button, before everything already read
+    const first = body.querySelector(".rturn");
+    body.insertBefore(frag, first);
+    // Land on what was just fetched. They asked to see it — leaving them where
+    // they stood, with the new material somewhere above, would make the tap
+    // look like it did nothing
+    rdRelabel();
+    const added = body.querySelector(".rturn");
+    if (added) {
+      body.scrollTop = Math.max(0,
+        body.scrollTop + added.getBoundingClientRect().top - body.getBoundingClientRect().top - 8);
+    }
     return true;
   } catch (e) {
     return false;
   } finally {
     rdLoading = false;
+    rdEarlierState();
   }
 }
 
@@ -2665,7 +2703,7 @@ async function rdShow() {
   // gestures from being aimed at a tab nobody is looking at
   if (kbd) kbd.blur();
   try {
-    const j = await rdAsk(null);
+    const j = await rdAsk(null, RD_FIRST);
     if (!j.ok || !j.turns || !j.turns.length) {
       rdNote(T["tui.read.empty"] || "");
       return;
@@ -2673,9 +2711,11 @@ async function rdShow() {
     rdFrom = j.from; rdMore = !!j.more;
     const body = rdBodyEl();
     body.textContent = "";
+    body.append(rdEarlier);
+    rdEarlierState();
     for (const turn of j.turns) body.append(rdTurn(turn));
+    rdRelabel();
     rdToLatest();
-    await rdFillScreen();
   } catch (e) {
     rdNote(String((e && e.message) || e));
   }
@@ -2715,9 +2755,7 @@ function rdOnState() {
 document.getElementById("readOpen").addEventListener("click", () => rdShow());
 document.getElementById("rclose").addEventListener("click", () => rdHide());
 document.getElementById("rmore").addEventListener("click", () => rdShow());
-rdBodyEl().addEventListener("scroll", () => {
-  if (rdBodyEl().scrollTop < 240 && rdMore && !rdLoading) rdOlder();
-}, {passive:true});
+
 
 // The top bar's input needs to behave like an ordinary text field. If
 // merely selecting text copied it, or right-click pasted into the

@@ -567,6 +567,7 @@
   "tui.read.open": "この会話を文章として読む",
   "tui.read.you": "あなた",
   "tui.read.ai": "AI",
+  "tui.read.earlier": "▲  これより前のやり取りを見る",
   "tui.read.loading": "記録を読んでいます…",
   "tui.read.empty": "まだ何も話されていません。",
   "tui.read.generating": "生成中です — 閉じると端末の画面で進行が見えます。",

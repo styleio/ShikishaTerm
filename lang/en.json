@@ -569,6 +569,7 @@
   "tui.read.open": "Read this conversation as text",
   "tui.read.you": "YOU",
   "tui.read.ai": "AI",
+  "tui.read.earlier": "▲  Earlier in this conversation",
   "tui.read.loading": "Reading the record…",
   "tui.read.empty": "Nothing has been said here yet.",
   "tui.read.generating": "Being written now — close this to watch it arrive on the screen.",
