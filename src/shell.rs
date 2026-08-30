@@ -129,12 +129,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
 
   /* AI tabs, branded per model. --ai is kept separate from --brand so the
      status dot (--brand for DONE) never loses its meaning. Running several
-     AIs side by side is the headline feature, so let each one wear its colour. */
+     AIs side by side is the headline feature, so let each one wear its colour.
+     The colour is worn twice -- the left bar and the name -- and no more: a
+     third copy as a chip in front of the status dot pushed the dot sideways on
+     AI rows only, so the column of dots you scan down the sidebar zig-zagged,
+     and the second line's fixed indent no longer lined up under anything. */
   .tab.aitab { border-left-color:var(--ai); }
   .tab.aitab.sel { border-left-color:var(--ai); }
   .tab.aitab .nm { color:var(--ai); font-weight:600; }
-  .aichip { width:7px; height:7px; border-radius:2px; flex:none;
-    background:var(--ai); box-shadow:0 0 6px var(--ai); }
   .ai-claude   { --ai:#d97757; }
   .ai-codex    { --ai:#19c37d; }
   .ai-gemini   { --ai:#4285f4; }
@@ -1086,12 +1088,13 @@ function drawTabs() {
     // Settings isn't a tab — it's reached via the gear pinned at the bottom.
     if (t.settings) continue;
     // Running several AIs side by side is the headline feature, so brand each
-    // AI tab in its own colour (a left bar + a glowing chip + a tinted name).
-    // The status dot stays separate — colour = which AI, dot = what it's doing.
+    // AI tab in its own colour (a left bar + a tinted name). The status dot
+    // stays separate — colour = which AI, dot = what it's doing. Nothing is
+    // inserted before the dot, so every row's dot sits at the same x and the
+    // column reads as one line down the sidebar.
     const brand = t.ai ? " aitab ai-" + t.ai : "";
     nav.append(el("div", {class:"tab" + (S.active === t.index ? " sel" : "") + brand,
         onclick:() => send({kind:"select", tab:t.index})},
-      t.ai ? el("span", {class:"aichip"}) : null,
       el("span", {class:"dot " + t.state}),
       el("span", {class:"num"}, String(t.index)),
       el("span", {class:"nm", title:t.profile}, t.name),
