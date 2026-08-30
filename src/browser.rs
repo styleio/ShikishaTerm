@@ -2831,6 +2831,53 @@ struct Adoptions {
 /// synchronously and this is the only place it can be built.
 type WindowAnswer = Box<dyn Fn(String, wry::NewWindowFeatures) -> wry::NewWindowResponse>;
 
+/// Everything a browser has to say about who it is, once a name is chosen.
+///
+/// The name is not the only place the claim is made. It is made again, in
+/// `Sec-CH-UA` and in `navigator.userAgentData`, and those are not written
+/// from the name — a browser calling itself Chrome while announcing
+/// "Microsoft Edge WebView2" alongside has told a site more than it would
+/// have by saying nothing at all. So the brands are built out of the name
+/// itself, and the two always agree.
+///
+/// A name with no Chromium version in it (someone naming a browser that is
+/// not one) is given no brands: that is what a browser which does not speak
+/// client hints sends.
+fn ua_override(ua: &str) -> String {
+    let after = |mark: &str| -> Option<String> {
+        let at = ua.find(mark)? + mark.len();
+        let ver: String = ua[at..].chars().take_while(|c| c.is_ascii_digit()).collect();
+        (!ver.is_empty()).then_some(ver)
+    };
+    let mut brands = Vec::new();
+    if let Some(major) = after("Chrome/") {
+        // The greased entry is part of the format, not decoration: a site
+        // that hard-codes the list is meant to trip over it
+        brands.push(serde_json::json!({ "brand": "Chromium", "version": major }));
+        brands.push(serde_json::json!({ "brand": "Not=A?Brand", "version": "99" }));
+        match after("Edg/") {
+            Some(edge) => {
+                brands.push(serde_json::json!({ "brand": "Microsoft Edge", "version": edge }))
+            }
+            None => brands
+                .push(serde_json::json!({ "brand": "Google Chrome", "version": major })),
+        }
+    }
+    serde_json::json!({
+        "userAgent": ua,
+        "userAgentMetadata": {
+            "brands": brands,
+            "platform": "Windows",
+            "platformVersion": "15.0.0",
+            "architecture": "x86",
+            "bitness": "64",
+            "model": "",
+            "mobile": false,
+        },
+    })
+    .to_string()
+}
+
 /// Take in a window a page asked for, rather than refusing it in silence.
 ///
 /// wry's answer to `window.open` when nobody says otherwise is "no", with
@@ -2850,6 +2897,9 @@ fn adopt_windows(
     inbox: std::rc::Rc<std::cell::RefCell<Adoptions>>,
     proxy: tao::event_loop::EventLoopProxy<Cmd>,
     ev_tx: Sender<Ev>,
+    // A sign-in window that called itself something else than the page that
+    // opened it would be a second browser arriving in the middle of a login
+    user_agent: Option<String>,
 ) -> WindowAnswer {
     use wry::{NewWindowResponse, WebViewBuilder, WebViewBuilderExtWindows};
     Box::new(move |uri, features| {
@@ -2872,7 +2922,11 @@ fn adopt_windows(
         let nav_who = opener.clone();
         let fin_tx = ev_tx.clone();
         let fin_who = opener.clone();
-        let built = WebViewBuilder::new()
+        let mut b = WebViewBuilder::new();
+        if let Some(ua) = user_agent.as_deref() {
+            b = b.with_user_agent(ua);
+        }
+        let built = b
             .with_environment(features.opener.environment.clone())
             .with_bounds(to_rect(seat.get()))
             .with_initialization_script(&format!("{INIT_JS}{PLACED_JS}{POPUP_JS}"))
@@ -2905,11 +2959,15 @@ fn adopt_windows(
                 std::rc::Rc::clone(&inbox),
                 proxy.clone(),
                 ev_tx.clone(),
+                user_agent.clone(),
             ))
             .build_as_child(&*window);
         match built {
             Ok(v) => {
                 let raw = cdp::webview_of(&v);
+                if let Some(ua) = user_agent.as_deref() {
+                    cdp::call(&raw, "Emulation.setUserAgentOverride", &ua_override(ua));
+                }
                 crate::append_hook_log(&format!(
                     "[browser] '{opener}' opened a window -> '{name}' ({uri})"
                 ));
@@ -3063,6 +3121,9 @@ fn run_window(
     // Pages placed inside the same window. Looked up by name
     let mut children: std::collections::HashMap<String, wry::WebView> =
         std::collections::HashMap::new();
+    // What the browser calls itself. Read once, here: a name that changed
+    // under a page would be a different browser halfway through a login
+    let user_agent = crate::config::user_agent();
     // Windows those pages asked to open, kept in the seat of whoever asked
     let mut overlays: Overlays = std::collections::HashMap::new();
     // How those handlers hand their work back to this loop
@@ -3283,7 +3344,11 @@ fn run_window(
                     let nav_who = name.clone();
                     let fin_tx = ev_tx.clone();
                     let fin_who = name.clone();
-                    match WebViewBuilder::new_with_web_context(ctx)
+                    let mut b = WebViewBuilder::new_with_web_context(ctx);
+                    if let Some(ua) = user_agent.as_deref() {
+                        b = b.with_user_agent(ua);
+                    }
+                    match b
                         .with_url(&url)
                         .with_bounds(bounds)
                         .with_initialization_script(&format!("{INIT_JS}{PLACED_JS}"))
@@ -3307,6 +3372,7 @@ fn run_window(
                             std::rc::Rc::clone(&adoptions),
                             adopt_wake.clone(),
                             ev_tx.clone(),
+                            user_agent.clone(),
                         ))
                         .with_ipc_handler(move |req| {
                             let body: &str = req.body();
@@ -3353,6 +3419,11 @@ fn run_window(
                         Ok(v) => {
                             // Arm automatic dialog handling right after placing it (don't let "leave page?" freeze it)
                             let wvh = cdp::webview_of(&v);
+                            // ...and say the same thing about who we are in
+                            // the other place it gets asked
+                            if let Some(ua) = user_agent.as_deref() {
+                                cdp::call(&wvh, "Emulation.setUserAgentOverride", &ua_override(ua));
+                            }
                             if let Some(arm) = cdp::arm_dialogs(&wvh) {
                                 dialogs.insert(Some(name.clone()), arm);
                             }
@@ -4080,6 +4151,37 @@ mod nav_tests {
         // Discard unknown instructions. Doing nothing is better than silently doing something else
         assert!(read(r#"{"kind":"go","what":"quit"}"#).is_none());
         assert!(read(r#"{"kind":"go"}"#).is_none());
+    }
+
+    /// A chosen name has to be told the same way twice, or the second telling
+    /// gives away the first.
+    #[test]
+    fn what_the_browser_says_it_is_agrees_with_itself() {
+        let chrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                      (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+        let v: serde_json::Value = serde_json::from_str(&ua_override(chrome)).unwrap();
+        let brands = v["userAgentMetadata"]["brands"].as_array().unwrap();
+        let names: Vec<&str> = brands.iter().filter_map(|b| b["brand"].as_str()).collect();
+        assert!(names.contains(&"Google Chrome"), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains("WebView")), "名乗りと食い違う: {names:?}");
+        assert_eq!(brands[0]["version"], "151");
+
+        // Edge names itself twice; both have to be there or the pair is odd
+        let edge = format!("{chrome} Edg/151.0.0.0");
+        let v: serde_json::Value = serde_json::from_str(&ua_override(&edge)).unwrap();
+        let names: Vec<&str> = v["userAgentMetadata"]["brands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["brand"].as_str())
+            .collect();
+        assert!(names.contains(&"Microsoft Edge") && names.contains(&"Chromium"), "{names:?}");
+
+        // Something that is not a Chromium at all sends no brands, which is
+        // exactly what such a browser does
+        let v: serde_json::Value =
+            serde_json::from_str(&ua_override("Mozilla/5.0 … Firefox/999.0")).unwrap();
+        assert!(v["userAgentMetadata"]["brands"].as_array().unwrap().is_empty());
     }
 
     /// A phone reporting its screen shape parses into a View input, and a

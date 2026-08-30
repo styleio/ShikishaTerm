@@ -1530,18 +1530,23 @@ function drawNav() {
     if (want.back) n.append(btn("←", "tui.nav.back", "back", want.can_back));
     if (want.forward) n.append(btn("→", "tui.nav.forward", "forward", want.can_forward));
     if (want.reload) {
-      // Wrap the reload icon in a span so it only spins while loading
+      // The same act, twice, the way the pane header shows restarting: ⟳
+      // carries on with what is already held, ⟲ goes back to nothing. It is
+      // the same pair of ideas — keep the conversation / start a new one,
+      // keep the cache / fetch it all again — so it is the same pair of
+      // marks, and neither of them is hidden behind a key nobody presses.
+      // Wrap the icon in a span so only it spins while loading
       const rb = el("button", {title:T["tui.nav.reload"]},
         el("span", {class:"ico"}, "⟳"));
-      // Held down with a modifier it throws the cache away first — the same
-      // gesture every browser uses, so nobody has to be told about it. On a
-      // phone there is no modifier to hold, so a long press says it instead
-      // (the browser reports that as a context menu)
+      // Shift still works on the plain one: it is what a hand trained on
+      // browsers will try, and it costs nothing to answer
       rb.onclick = (e) =>
         send({kind:"go", what:(e.shiftKey || e.ctrlKey || e.metaKey) ? "hardreload" : "reload"});
-      rb.oncontextmenu = (e) => { e.preventDefault(); send({kind:"go", what:"hardreload"}); };
       if (want.loading) rb.classList.add("spin");
       n.append(rb);
+      n.append(el("button", {title:T["tui.nav.reload_hard"],
+          onclick:() => send({kind:"go", what:"hardreload"})},
+        el("span", {class:"ico"}, "⟲")));
     }
     if (want.edit) {
       const box = el("input", {type:"text", spellcheck:"false",

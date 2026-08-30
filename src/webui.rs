@@ -3255,6 +3255,9 @@ function basicCard() {
           ["portable", T["settings.browser_data.portable"] || "Share across PCs (Drive sync)"],
         ]),
         el("span", {class:"hint"}, T["settings.browser_data.hint"] || "")),
+    row(T["settings.user_agent"],
+        field(current, "user_agent", T["settings.user_agent.ph"], {grow:true}),
+        el("span", {class:"hint"}, T["settings.user_agent.hint"] || "")),
     row(T["settings.font"],
         (() => {
           current.appearance = current.appearance || {};
@@ -5228,7 +5231,7 @@ function payload() {
   ["tab_bar_width","max_chain"].forEach(k => {
     const v = out[k]; if (v === "" || v === null || v === undefined) delete out[k]; else out[k] = Number(v);
   });
-  ["automation","secrets","ai_engine","browser_data","language"].forEach(k => { if (!out[k]) delete out[k]; });
+  ["automation","secrets","ai_engine","browser_data","language","user_agent"].forEach(k => { if (!out[k]) delete out[k]; });
   // Quick actions: drop rows left without a label, and omit the key entirely if none remain.
   if (out.actions) {
     out.actions = out.actions

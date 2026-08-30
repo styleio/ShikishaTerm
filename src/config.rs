@@ -105,6 +105,15 @@ pub struct Config {
     ///   anything else      ... used as an absolute path
     #[serde(default)]
     pub browser_data: Option<String>,
+    /// What the browser calls itself when it asks a site for a page.
+    ///
+    /// Empty means the engine's own, which is Edge's, word for word — this is
+    /// a real Chromium and it says so. Some sites keep a list of the browsers
+    /// they will hand a sign-in page to, and answer everything else with
+    /// "this browser may not be secure"; naming a browser they know is the
+    /// only way past that. Applies to pages opened after it is set
+    #[serde(default)]
+    pub user_agent: Option<String>,
     /// Auxiliary key row for the relay screen (phone remote control). Listed left to right.
     /// Usable names: esc tab space enter backspace delete
     ///   left up down right home end pageup pagedown
@@ -218,6 +227,17 @@ pub fn cast_keys() -> Vec<String> {
 
 /// Decide where WebView2 stores its data, based on config. To avoid Drive cache churn
 /// and EBWebView sync notifications, the default is the non-synced local folder (%LOCALAPPDATA%)
+/// What the browser should call itself, if anything was asked for.
+///
+/// Read once when the browser window opens: a name that changed under a page
+/// mid-visit would be a different browser halfway through a login
+pub fn user_agent() -> Option<String> {
+    load()
+        .and_then(|c| c.user_agent)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 pub fn browser_data_dir() -> std::path::PathBuf {
     let mode = load()
         .and_then(|c| c.browser_data)
