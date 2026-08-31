@@ -13,6 +13,7 @@
 
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
+use std::path::Path;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
@@ -1356,6 +1357,182 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T
     })
 }
 
+/// Adds a folder to a workspace's settings, with the same tabs as another.
+///
+/// This is what "work on another branch too" writes down. It edits the file
+/// the person owns rather than keeping a second list of its own, so what
+/// happened is visible in the settings screen afterwards and survives a
+/// restart without anything else having to remember it.
+///
+/// Everything already in the file is left exactly as it was -- it is read as
+/// values, not as our own types, so a key this version has never heard of
+/// still comes out the other side.
+pub fn append_group(ws_name: &str, like: Option<&Path>, cwd: &Path, name: Option<&str>) -> Result<()> {
+    append_group_at(&config_file_path(), ws_name, like, cwd, name)
+}
+
+/// The same, told which settings file to edit. Split out so it can be checked
+/// against a file of its own rather than against whatever this machine has
+pub fn append_group_at(
+    path: &Path,
+    ws_name: &str,
+    like: Option<&Path>,
+    cwd: &Path,
+    name: Option<&str>,
+) -> Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let mut root: serde_json::Value =
+        serde_json::from_str(without_bom(&text)).unwrap_or_else(|_| serde_json::json!({}));
+
+    // A workspace kept in a file of its own is edited there; the entry in the
+    // settings only names it
+    let mut file_at: Option<std::path::PathBuf> = None;
+    {
+        let list = root
+            .get("workspaces")
+            .and_then(|w| w.as_array())
+            .map(|a| a.to_vec())
+            .unwrap_or_default();
+        for w in list {
+            if w.get("name").and_then(|n| n.as_str()) == Some(ws_name) {
+                if let Some(f) = w.get("file").and_then(|f| f.as_str()) {
+                    file_at = Some(resolve_data_path(f));
+                }
+                break;
+            }
+        }
+    }
+    let mut side = match &file_at {
+        Some(p) => Some(serde_json::from_str::<serde_json::Value>(without_bom(
+            &std::fs::read_to_string(p)?,
+        ))?),
+        None => None,
+    };
+
+    // The object that holds the groups: the workspace's own, the file it names,
+    // or the settings themselves when no workspace was ever made
+    let holder: &mut serde_json::Value = match (&mut side, ws_name.is_empty()) {
+        (Some(v), _) => v,
+        (None, true) => &mut root,
+        (None, false) => root
+            .get_mut("workspaces")
+            .and_then(|w| w.as_array_mut())
+            .and_then(|a| {
+                a.iter_mut()
+                    .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(ws_name))
+            })
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_workspace")))?,
+    };
+    fold_loose_tabs(holder);
+
+    let groups = holder
+        .get_mut("groups")
+        .and_then(|g| g.as_array_mut())
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_workspace")))?;
+    // The tabs to bring along: whoever is already working in the folder this
+    // was asked for from. Same faces, new branch
+    let tabs = like
+        .and_then(|want| {
+            groups.iter().find(|g| {
+                g.get("cwd")
+                    .and_then(|c| c.as_str())
+                    .map(resolve_group_cwd)
+                    .is_some_and(|c| c == want)
+            })
+        })
+        .and_then(|g| g.get("tabs").cloned())
+        .unwrap_or_else(|| serde_json::json!([]));
+    // What marks the copies apart. The branch when there is one, since two
+    // branches can end in the same word (`feature/login`, `fix/login`) and
+    // their folders would then hand out the same name twice
+    let mark = name
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(|n| n.replace('/', "-"))
+        .or_else(|| cwd.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_default();
+    let mut group = serde_json::json!({ "cwd": cwd.display().to_string(), "tabs": retag(tabs, &mark) });
+    if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
+        group["name"] = serde_json::json!(n);
+    }
+    groups.push(group);
+
+    let out = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_default();
+    match (&side, &file_at) {
+        (Some(v), Some(p)) => crate::crypto::write_atomic(p, &out(v))?,
+        _ => crate::crypto::write_atomic(path, &out(&root))?,
+    }
+    Ok(())
+}
+
+/// Moves tabs written straight into a workspace under a group, so there is one
+/// shape to append to. The same rule `grouped` uses to launch them
+fn fold_loose_tabs(holder: &mut serde_json::Value) {
+    if !holder.get("groups").map(|g| g.is_array()).unwrap_or(false) {
+        holder["groups"] = serde_json::json!([]);
+    }
+    let loose = match holder.get_mut("tabs").and_then(|t| t.as_array_mut()) {
+        Some(a) if !a.is_empty() => std::mem::take(a),
+        _ => Vec::new(),
+    };
+    if let Some(o) = holder.as_object_mut() {
+        o.remove("tabs");
+    }
+    for t in loose {
+        let cwd = t.get("cwd").and_then(|c| c.as_str()).unwrap_or_default().to_string();
+        let mut tab = t.clone();
+        if let Some(o) = tab.as_object_mut() {
+            o.remove("cwd");
+        }
+        let groups = holder["groups"].as_array_mut().expect("作ったばかり");
+        let at = groups.iter().position(|g| {
+            g.get("cwd").and_then(|c| c.as_str()).unwrap_or_default() == cwd
+                && g.get("name").is_none()
+                && g.get("id").is_none()
+        });
+        match at {
+            Some(i) => groups[i]["tabs"].as_array_mut().expect("配列").push(tab),
+            None => {
+                let mut g = serde_json::json!({ "tabs": [tab] });
+                if !cwd.is_empty() {
+                    g["cwd"] = serde_json::json!(cwd);
+                }
+                groups.push(g);
+            }
+        }
+    }
+}
+
+/// Copies of tabs need names automation can still tell apart. The one it uses
+/// is the id, so that is the one that takes the folder's mark; the name on
+/// screen is left alone, because the heading above it already says which
+/// branch this is
+fn retag(tabs: serde_json::Value, mark: &str) -> serde_json::Value {
+    let mut out = tabs;
+    fn walk(v: &mut serde_json::Value, mark: &str) {
+        let Some(list) = v.as_array_mut() else { return };
+        for t in list {
+            if let Some(id) = t.get("id").and_then(|i| i.as_str()).map(str::to_string) {
+                t["id"] = serde_json::json!(format!("{id}@{mark}"));
+            }
+            if let Some(kids) = t.get_mut("children") {
+                walk(kids, mark);
+            }
+        }
+    }
+    walk(&mut out, mark);
+    out
+}
+
+/// A group's folder as an absolute path, the same way launching resolves it.
+fn resolve_group_cwd(c: &str) -> std::path::PathBuf {
+    let p = std::path::PathBuf::from(c.trim());
+    match p.is_absolute() {
+        true => p,
+        false => root_dir().join(p),
+    }
+}
+
 /// The names one written path may be stored under, best first.
 ///
 /// The folder was called `projects` before it was called `workspaces`, and
@@ -1916,6 +2093,68 @@ mod tests {
         assert_eq!(ws.folder_of(&ws.tabs[1]), ws.folder_of(&ws.tabs[0]));
         // Relative stays relative to the settings, so a folder of them travels
         assert_eq!(ws.folder_of(&ws.tabs[2]), Some(root_dir().join("scripts")));
+    }
+
+    /// Writing down "work on another branch too", and reading it back the way
+    /// launching would.
+    #[test]
+    fn another_folder_is_written_with_the_same_faces() {
+        let dir = std::env::temp_dir().join(format!("shikisha-append-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        // Written the old way, tabs straight in the workspace with a folder each
+        std::fs::write(
+            &file,
+            r#"{"max_chain": 7, "workspaces": [{"name": "Demo", "secrets_allow": ["x"], "tabs": [
+                 {"name": "実装", "id": "coder", "command": "claude", "cwd": "D:/work/proj"},
+                 {"name": "レビュー", "id": "rev", "command": "codex", "cwd": "D:/work/proj"}]}]}"#,
+        )
+        .unwrap();
+
+        append_group_at(
+            &file,
+            "Demo",
+            Some(Path::new("D:/work/proj")),
+            Path::new("D:/work/proj.worktrees/feature/login"),
+            Some("feature/login"),
+        )
+        .unwrap();
+
+        let cfg: Config = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        // Nothing else in the file was disturbed, including a key nobody read
+        assert_eq!(cfg.max_chain, Some(7));
+        assert_eq!(cfg.workspaces[0].secrets_allow, ["x"]);
+
+        let ws = &cfg.resolve_workspaces().0[0];
+        assert_eq!(ws.groups.len(), 2, "折り畳んだ元の1つと、足した1つ");
+        assert_eq!(ws.groups[0].cwd.as_deref(), Some(Path::new("D:/work/proj")));
+        assert_eq!(ws.groups[1].name.as_deref(), Some("feature/login"));
+        assert_eq!(
+            ws.groups[1].cwd.as_deref(),
+            Some(Path::new("D:/work/proj.worktrees/feature/login"))
+        );
+        // The same faces, working in the new folder
+        let names = |g: usize| {
+            ws.tabs
+                .iter()
+                .filter(|t| t.group == g)
+                .map(|t| t.cfg.name.clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(1), names(0));
+        assert_eq!(names(1), ["実装", "レビュー"]);
+        // Automation still has one name per tab: the copies are marked with the
+        // folder they went to, while what is on screen stays readable
+        let ids = ws
+            .tabs
+            .iter()
+            .filter(|t| t.group == 1)
+            .map(|t| t.cfg.id.clone().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["coder@feature-login", "rev@feature-login"]);
+        assert!(duplicate_keys(ws).is_empty(), "自動化から指す名前がぶつかっていない");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

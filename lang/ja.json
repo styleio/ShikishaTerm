@@ -743,6 +743,7 @@
   "err.worktree.no_branch": "ブランチ名を入力してください",
   "err.worktree.bad_branch": "{name} はブランチ名として使えません",
   "err.worktree.not_a_repo": "このフォルダは git リポジトリの中にありません",
+  "err.worktree.no_workspace": "その名前のワークスペースがありません",
   "err.worktree.exists": "{path} には既に何かあります",
   "err.worktree.failed": "できませんでした: {said}\n{command}",
   "err.wspack.non_lua": "Lua以外のファイルは取り込めません: {path}",

@@ -745,6 +745,7 @@
   "err.worktree.no_branch": "Type a branch name.",
   "err.worktree.bad_branch": "Git will not take {name} as a branch name.",
   "err.worktree.not_a_repo": "This folder is not in a git repository.",
+  "err.worktree.no_workspace": "No workspace by that name.",
   "err.worktree.exists": "There is already something at {path}.",
   "err.worktree.failed": "Could not do it: {said}\n{command}",
   "err.wspack.non_lua": "Only Lua files can be imported: {path}",
