@@ -4224,7 +4224,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // to the settings, so the reload that follows is what actually shows
         for (folder, name) in surface.take_folder_names() {
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
-            if let Err(e) = config::rename_group(&ws, std::path::Path::new(&folder), &name) {
+            if let Err(e) = config::rename_folder(&ws, std::path::Path::new(&folder), &name) {
                 flash = Some(format!("{e:#}"));
             }
         }
@@ -4240,7 +4240,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 continue;
             }
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
-            match config::remove_group(&ws, &at) {
+            match config::remove_folder(&ws, &at) {
                 Ok(()) => {
                     flash = Some(i18n::tp(
                         "msg.folder.discarded",
@@ -4257,7 +4257,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // waiting in the settings
         for folder in surface.take_folder_closes() {
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
-            match config::remove_group(&ws, std::path::Path::new(&folder)) {
+            match config::remove_folder(&ws, std::path::Path::new(&folder)) {
                 // Said out loud, because the folder is still on disk and this
                 // is the only sign that it was left there on purpose
                 Ok(()) => flash = Some(i18n::tp("msg.folder.closed", &[("path", &folder)])),
@@ -4273,7 +4273,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
             let at = std::path::PathBuf::from(&path);
-            match config::append_group(&ws, None, &at, None) {
+            match config::append_folder(&ws, None, &at, None) {
                 Ok(()) => {
                     browse_view = None;
                     flash = Some(i18n::tp("msg.folder.opened", &[("path", &path)]));
@@ -4354,7 +4354,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             .map(|w| w.name.clone())
                             .unwrap_or_default();
                         let wrote = crate::worktree::create(&plan).and_then(|()| {
-                            config::append_group(
+                            config::append_folder(
                                 &ws,
                                 Some(&plan.main),
                                 &plan.folder,
@@ -6111,10 +6111,10 @@ fn resolve_launch(
 }
 
 /// Where it runs comes from the tab's group, the only thing that has a folder.
-fn tab_options(cfg: &config::TabConfig, group: Option<&config::Group>) -> tab::TabOptions {
+fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> tab::TabOptions {
     tab::TabOptions {
-        cwd: group.and_then(|g| g.cwd.clone()),
-        group: group.and_then(|g| g.name.clone()),
+        cwd: folder.and_then(|f| f.cwd.clone()),
+        group: folder.and_then(|f| f.name.clone()),
         scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
@@ -6171,7 +6171,7 @@ fn apply_ws_config(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let mut opts = tab_options(&ft.cfg, ws.group_of(ft));
+        let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
         let argv = resolve_launch(
             argv,
             &mut opts,
@@ -6445,7 +6445,7 @@ fn spawn_workspace(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let mut opts = tab_options(&ft.cfg, ws.group_of(ft));
+        let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
         let argv = resolve_launch(
             argv,
             &mut opts,
@@ -8984,13 +8984,13 @@ mod tests {
                         ..Default::default()
                     },
                     depth: 0,
-                    group: 0,
+                    folder: 0,
                 }
             })
             .collect();
         config::Workspace {
             name: "試験".into(),
-            groups: vec![config::Group::default()],
+            folders: vec![config::Folder::default()],
             tabs,
             automation: None,
             browsers: Vec::new(),

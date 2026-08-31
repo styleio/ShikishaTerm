@@ -5340,7 +5340,8 @@ function automsg(t, warn) { const m = document.getElementById("automsg");
 // straight into a workspace -- every one from before groups existed -- are
 // split by the folder each of them named, and a child follows its parent.
 function groupsOf(w) {
-  const groups = (w.groups || []).map(g => ({name:g.name || "", id:g.id || "",
+  // `groups` is what this was called before it was called what it is
+  const groups = (w.folders || w.groups || []).map(g => ({name:g.name || "", id:g.id || "",
                                              cwd:g.cwd || "", tabs:g.tabs || []}));
   for (const t of (w.tabs || [])) {
     const cwd = (t.cwd || "").trim();
@@ -5553,7 +5554,9 @@ function payload() {
       Object.entries(out.providers).filter(([, p]) => p && (p.base_url || "").trim()));
     if (!Object.keys(out.providers).length) delete out.providers;
   }
-  delete out.lua; delete out.tabs;
+  // The old spellings go when the new ones are written, or a file would carry
+  // both and the one nobody edits would win on the next read
+  delete out.lua; delete out.tabs; delete out.groups;
 
   // A group is written with its own tabs nested back under it. Its name and id
   // are worth writing only when someone typed them; the folder always is
@@ -5573,7 +5576,7 @@ function payload() {
   const files = [];
   for (const w of wss) {
     if (!w.file) continue;
-    const body = { name:w.name, groups:groupsOut(w) };
+    const body = { name:w.name, folders:groupsOut(w) };
     if (w.automation) body.automation = w.automation;
     if (w.secrets_allow && w.secrets_allow.length) body.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) body.secrets_allow_all = true;
@@ -5584,7 +5587,7 @@ function payload() {
   out.workspaces = wss.map(w => {
     const o = { name:w.name };
     if (w.file) o.file = w.file;
-    else { if (w.automation) o.automation = w.automation; o.groups = groupsOut(w); }
+    else { if (w.automation) o.automation = w.automation; o.folders = groupsOut(w); }
     // Don't lose a setting that isn't on screen just because it was saved from the screen
     if (w.browsers) o.browsers = w.browsers;
     // Allow-list of secrets the rally may use (denied by default)

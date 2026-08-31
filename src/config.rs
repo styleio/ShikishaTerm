@@ -20,9 +20,9 @@ pub struct Config {
     /// List of workspaces (projects). Switched between like virtual desktops
     #[serde(default)]
     pub workspaces: Vec<WorkspaceSpec>,
-    /// Groups written directly when workspaces are not used
-    #[serde(default)]
-    pub groups: Vec<GroupConfig>,
+    /// Working folders written directly when workspaces are not used
+    #[serde(default, alias = "groups")]
+    pub folders: Vec<FolderConfig>,
     /// The colour chosen for a project, against the folder git shares between
     /// its branches. Nothing here means every project still has a colour --
     /// one worked out from its own name -- so this only ever holds answers
@@ -736,8 +736,8 @@ pub struct WorkspaceSpec {
     #[serde(default)]
     pub file: Option<String>,
     /// Inline definition
-    #[serde(default)]
-    pub groups: Vec<GroupConfig>,
+    #[serde(default, alias = "groups")]
+    pub folders: Vec<FolderConfig>,
     /// Tabs written without a group. They become one (see `grouped`)
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
@@ -768,8 +768,8 @@ pub struct WorkspaceSpec {
 pub struct WorkspaceFile {
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub groups: Vec<GroupConfig>,
+    #[serde(default, alias = "groups")]
+    pub folders: Vec<FolderConfig>,
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
     /// Automation shared across this workspace
@@ -1089,7 +1089,7 @@ pub struct TabConfig {
 /// in a single group with no name, which is drawn as no heading at all, so a
 /// person who has never heard the word still has one.
 #[derive(Debug, Deserialize, Clone, Default)]
-pub struct GroupConfig {
+pub struct FolderConfig {
     /// Shown as the heading, when there is more than one group. Absent means
     /// the folder speaks for itself (its branch, or its last path component)
     #[serde(default)]
@@ -1133,9 +1133,9 @@ impl CommandSpec {
     }
 }
 
-/// A group resolved at launch time: its folder is a real path.
+/// A working folder resolved at launch time: its path is a real one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Group {
+pub struct Folder {
     pub name: Option<String>,
     pub id: Option<String>,
     /// Where its tabs start. Absent means wherever the app itself is
@@ -1146,8 +1146,8 @@ pub struct Group {
 pub struct Workspace {
     pub name: String,
     /// The folders this workspace works in. Always at least one, so that
-    /// nothing downstream has to answer "what if a tab has no group"
-    pub groups: Vec<Group>,
+    /// nothing downstream has to answer "what if a tab is in none"
+    pub folders: Vec<Folder>,
     pub tabs: Vec<FlatTab>,
     /// Automation at the workspace level
     pub automation: Option<String>,
@@ -1164,15 +1164,15 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// The group a tab works in. Everything about where it runs lives there,
-    /// because a tab has nothing of its own to disagree with
-    pub fn group_of(&self, t: &FlatTab) -> Option<&Group> {
-        self.groups.get(t.group)
+    /// The working folder a tab belongs to. Everything about where it runs
+    /// lives there, because a tab has nothing of its own to disagree with
+    pub fn folder_of(&self, t: &FlatTab) -> Option<&Folder> {
+        self.folders.get(t.folder)
     }
 
-    /// The folder a tab starts in: its group's, because a tab has none of its own.
-    pub fn folder_of(&self, t: &FlatTab) -> Option<std::path::PathBuf> {
-        self.group_of(t).and_then(|g| g.cwd.clone())
+    /// Where a tab starts: its folder's path, because a tab has none of its own.
+    pub fn cwd_of(&self, t: &FlatTab) -> Option<std::path::PathBuf> {
+        self.folder_of(t).and_then(|f| f.cwd.clone())
     }
 }
 
@@ -1206,9 +1206,9 @@ pub struct FlatTab {
     pub cfg: TabConfig,
     /// Display indent depth (0 = parent)
     pub depth: u16,
-    /// Which of the workspace's groups this tab works in, and therefore which
-    /// folder it starts in
-    pub group: usize,
+    /// Which of the workspace's working folders this tab belongs to, and
+    /// therefore where it starts
+    pub folder: usize,
 }
 
 /// Verify each tab can be addressed uniquely from automation.
@@ -1237,14 +1237,14 @@ pub fn duplicate_keys(ws: &Workspace) -> Vec<String> {
 }
 
 /// Flatten children depth-first (keeps display order matching tab numbers)
-fn flatten(tabs: &[TabConfig], depth: u16, group: usize, out: &mut Vec<FlatTab>) {
+fn flatten(tabs: &[TabConfig], depth: u16, folder: usize, out: &mut Vec<FlatTab>) {
     for t in tabs {
         out.push(FlatTab {
             cfg: t.clone(),
             depth,
-            group,
+            folder,
         });
-        flatten(&t.children, depth + 1, group, out);
+        flatten(&t.children, depth + 1, folder, out);
     }
 }
 
@@ -1259,11 +1259,11 @@ fn flatten(tabs: &[TabConfig], depth: u16, group: usize, out: &mut Vec<FlatTab>)
 ///
 /// The result is never empty. A workspace with nothing in it still has the one
 /// group everything lands in, so no caller has to answer "and if it has none".
-fn grouped(groups: &[GroupConfig], loose: &[TabConfig]) -> Vec<GroupConfig> {
-    let mut out = groups.to_vec();
+fn foldered(folders: &[FolderConfig], loose: &[TabConfig]) -> Vec<FolderConfig> {
+    let mut out = folders.to_vec();
     let same = |a: &Option<String>, b: &Option<String>| match (a, b) {
         (None, None) => true,
-        (Some(x), Some(y)) => resolve_group_cwd(x) == resolve_group_cwd(y),
+        (Some(x), Some(y)) => resolve_folder_cwd(x) == resolve_folder_cwd(y),
         _ => false,
     };
     for t in loose {
@@ -1273,22 +1273,22 @@ fn grouped(groups: &[GroupConfig], loose: &[TabConfig]) -> Vec<GroupConfig> {
         // same thing
         match out.iter_mut().find(|g| same(&g.cwd, &cwd)) {
             Some(g) => g.tabs.push(t.clone()),
-            None => out.push(GroupConfig { cwd, tabs: vec![t.clone()], ..Default::default() }),
+            None => out.push(FolderConfig { cwd, tabs: vec![t.clone()], ..Default::default() }),
         }
     }
     if out.is_empty() {
-        out.push(GroupConfig::default());
+        out.push(FolderConfig::default());
     }
     out
 }
 
 /// Turns written groups into ones with a real folder, and lays their tabs out
 /// in one list in the order they are shown.
-fn resolve_groups(defs: &[GroupConfig]) -> (Vec<Group>, Vec<FlatTab>) {
-    let mut groups = Vec::with_capacity(defs.len());
+fn resolve_folders(defs: &[FolderConfig]) -> (Vec<Folder>, Vec<FlatTab>) {
+    let mut folders = Vec::with_capacity(defs.len());
     let mut tabs = Vec::new();
     for (at, def) in defs.iter().enumerate() {
-        groups.push(Group {
+        folders.push(Folder {
             name: def.name.clone().filter(|n| !n.trim().is_empty()),
             id: def.id.clone().filter(|i| !i.trim().is_empty()),
             // Relative stays relative to the settings, so that a whole folder
@@ -1303,7 +1303,7 @@ fn resolve_groups(defs: &[GroupConfig]) -> (Vec<Group>, Vec<FlatTab>) {
         });
         flatten(&def.tabs, 0, at, &mut tabs);
     }
-    (groups, tabs)
+    (folders, tabs)
 }
 
 /// A byte-order mark is not JSON.
@@ -1434,28 +1434,28 @@ pub fn set_folder_color(family: &Path, color: &str) -> Result<()> {
 /// Everything already in the file is left exactly as it was -- it is read as
 /// values, not as our own types, so a key this version has never heard of
 /// still comes out the other side.
-pub fn append_group(ws_name: &str, like: Option<&Path>, cwd: &Path, name: Option<&str>) -> Result<()> {
-    append_group_at(&config_file_path(), ws_name, like, cwd, name)
+pub fn append_folder(ws_name: &str, like: Option<&Path>, cwd: &Path, name: Option<&str>) -> Result<()> {
+    append_folder_at(&config_file_path(), ws_name, like, cwd, name)
 }
 
 /// The same, told which settings file to edit. Split out so it can be checked
 /// against a file of its own rather than against whatever this machine has
-pub fn append_group_at(
+pub fn append_folder_at(
     path: &Path,
     ws_name: &str,
     like: Option<&Path>,
     cwd: &Path,
     name: Option<&str>,
 ) -> Result<()> {
-    with_groups(path, ws_name, |groups| {
+    with_folders(path, ws_name, |folders| {
         // The tabs to bring along: whoever is already working in the folder
         // this was asked for from. Same faces, new branch
         let tabs = like
             .and_then(|want| {
-                groups.iter().find(|g| {
+                folders.iter().find(|g| {
                     g.get("cwd")
                         .and_then(|c| c.as_str())
-                        .map(resolve_group_cwd)
+                        .map(resolve_folder_cwd)
                         .is_some_and(|c| c == want)
                 })
             })
@@ -1470,10 +1470,10 @@ pub fn append_group_at(
             .map(|n| n.replace('/', "-"))
             .or_else(|| cwd.file_name().map(|n| n.to_string_lossy().to_string()))
             .unwrap_or_default();
-        let mut group =
+        let mut folder =
             serde_json::json!({ "cwd": cwd.display().to_string(), "tabs": retag(tabs, &mark) });
         if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
-            group["name"] = serde_json::json!(n);
+            folder["name"] = serde_json::json!(n);
         }
         // Beside the folders it belongs with. A branch of one project written
         // after an unrelated one reads as unrelated: the list is drawn in the
@@ -1481,18 +1481,18 @@ pub fn append_group_at(
         // a family nobody can see
         let family = crate::repo::family_of(cwd);
         let last_of_family = family.as_ref().and_then(|f| {
-            groups.iter().rposition(|g| {
+            folders.iter().rposition(|g| {
                 g.get("cwd")
                     .and_then(|c| c.as_str())
-                    .map(resolve_group_cwd)
+                    .map(resolve_folder_cwd)
                     .and_then(|c| crate::repo::family_of(&c))
                     .as_ref()
                     == Some(f)
             })
         });
         match last_of_family {
-            Some(at) => groups.insert(at + 1, group),
-            None => groups.push(group),
+            Some(at) => folders.insert(at + 1, folder),
+            None => folders.push(folder),
         }
         Ok(())
     })
@@ -1500,9 +1500,9 @@ pub fn append_group_at(
 
 /// Renames a folder in the list. An empty name hands it back to what the
 /// folder itself says -- its branch, or its own last part
-pub fn rename_group(ws_name: &str, cwd: &Path, name: &str) -> Result<()> {
-    with_groups(&config_file_path(), ws_name, |groups| {
-        let Some(g) = find_group(groups, cwd) else {
+pub fn rename_folder(ws_name: &str, cwd: &Path, name: &str) -> Result<()> {
+    with_folders(&config_file_path(), ws_name, |folders| {
+        let Some(g) = find_folder(folders, cwd) else {
             return Ok(());
         };
         match name.trim() {
@@ -1522,33 +1522,33 @@ pub fn rename_group(ws_name: &str, cwd: &Path, name: &str) -> Result<()> {
 /// The folder on disk is not touched. Closing a thing on screen and deleting
 /// somebody's work are different acts, and only one of them can be undone by
 /// opening it again.
-pub fn remove_group(ws_name: &str, cwd: &Path) -> Result<()> {
-    with_groups(&config_file_path(), ws_name, |groups| {
-        if groups.len() <= 1 {
+pub fn remove_folder(ws_name: &str, cwd: &Path) -> Result<()> {
+    with_folders(&config_file_path(), ws_name, |folders| {
+        if folders.len() <= 1 {
             anyhow::bail!(crate::i18n::t("err.worktree.last_folder"));
         }
-        let at = groups.iter().position(|g| {
+        let at = folders.iter().position(|g| {
             g.get("cwd")
                 .and_then(|c| c.as_str())
-                .map(resolve_group_cwd)
+                .map(resolve_folder_cwd)
                 .is_some_and(|c| c == cwd)
         });
         if let Some(i) = at {
-            groups.remove(i);
+            folders.remove(i);
         }
         Ok(())
     })
 }
 
 /// The group working in this folder, if it is in the list.
-fn find_group<'a>(
+fn find_folder<'a>(
     groups: &'a mut [serde_json::Value],
     cwd: &Path,
 ) -> Option<&'a mut serde_json::Value> {
     groups.iter_mut().find(|g| {
         g.get("cwd")
             .and_then(|c| c.as_str())
-            .map(resolve_group_cwd)
+            .map(resolve_folder_cwd)
             .is_some_and(|c| c == cwd)
     })
 }
@@ -1559,7 +1559,7 @@ fn find_group<'a>(
 /// One way in, because there are three things that change a group and each of
 /// them would otherwise carry its own copy of "find the workspace, follow it
 /// to the file it lives in, fold the loose tabs, write it out atomically".
-fn with_groups(
+fn with_folders(
     path: &Path,
     ws_name: &str,
     edit: impl FnOnce(&mut Vec<serde_json::Value>) -> Result<()>,
@@ -1610,11 +1610,11 @@ fn with_groups(
     };
     fold_loose_tabs(holder);
 
-    let groups = holder
-        .get_mut("groups")
+    let folders = holder
+        .get_mut("folders")
         .and_then(|g| g.as_array_mut())
         .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_workspace")))?;
-    edit(groups)?;
+    edit(folders)?;
 
     let out = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_default();
     match (&side, &file_at) {
@@ -1627,8 +1627,8 @@ fn with_groups(
 /// Moves tabs written straight into a workspace under a group, so there is one
 /// shape to append to. The same rule `grouped` uses to launch them
 fn fold_loose_tabs(holder: &mut serde_json::Value) {
-    if !holder.get("groups").map(|g| g.is_array()).unwrap_or(false) {
-        holder["groups"] = serde_json::json!([]);
+    if !holder.get("folders").map(|g| g.is_array()).unwrap_or(false) {
+        holder["folders"] = serde_json::json!([]);
     }
     let loose = match holder.get_mut("tabs").and_then(|t| t.as_array_mut()) {
         Some(a) if !a.is_empty() => std::mem::take(a),
@@ -1643,32 +1643,32 @@ fn fold_loose_tabs(holder: &mut serde_json::Value) {
         if let Some(o) = tab.as_object_mut() {
             o.remove("cwd");
         }
-        let groups = holder["groups"].as_array_mut().expect("作ったばかり");
-        let at = groups.iter().position(|g| {
+        let folders = holder["folders"].as_array_mut().expect("作ったばかり");
+        let at = folders.iter().position(|g| {
             g.get("cwd").and_then(|c| c.as_str()).unwrap_or_default() == cwd
                 && g.get("name").is_none()
                 && g.get("id").is_none()
         });
         match at {
-            Some(i) => groups[i]["tabs"].as_array_mut().expect("配列").push(tab),
+            Some(i) => folders[i]["tabs"].as_array_mut().expect("配列").push(tab),
             None => {
                 let mut g = serde_json::json!({ "tabs": [tab] });
                 if !cwd.is_empty() {
                     g["cwd"] = serde_json::json!(cwd);
                 }
-                groups.push(g);
+                folders.push(g);
             }
         }
     }
 }
 
-/// The tabs of the group working in this folder, making the group if there is
-/// none. One answer to "where does a tab go", used by everything that adds one
-fn group_tabs_at<'a>(holder: &'a mut serde_json::Value, cwd: Option<&Path>) -> &'a mut Vec<serde_json::Value> {
+/// The tabs of the working folder at this path, making one if there is none.
+/// One answer to "where does a tab go", used by everything that adds one
+fn folder_tabs_at<'a>(holder: &'a mut serde_json::Value, cwd: Option<&Path>) -> &'a mut Vec<serde_json::Value> {
     fold_loose_tabs(holder);
-    let groups = holder["groups"].as_array_mut().expect("作ったばかり");
-    let at = groups.iter().position(|g| {
-        let here = g.get("cwd").and_then(|c| c.as_str()).map(resolve_group_cwd);
+    let folders = holder["folders"].as_array_mut().expect("作ったばかり");
+    let at = folders.iter().position(|g| {
+        let here = g.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd);
         here.as_deref() == cwd
     });
     let at = match at {
@@ -1678,11 +1678,11 @@ fn group_tabs_at<'a>(holder: &'a mut serde_json::Value, cwd: Option<&Path>) -> &
             if let Some(c) = cwd {
                 g["cwd"] = serde_json::json!(c.display().to_string());
             }
-            groups.push(g);
-            groups.len() - 1
+            folders.push(g);
+            folders.len() - 1
         }
     };
-    groups[at]["tabs"].as_array_mut().expect("配列")
+    folders[at]["tabs"].as_array_mut().expect("配列")
 }
 
 /// Copies of tabs need names automation can still tell apart. The one it uses
@@ -1707,7 +1707,7 @@ fn retag(tabs: serde_json::Value, mark: &str) -> serde_json::Value {
 }
 
 /// A group's folder as an absolute path, the same way launching resolves it.
-fn resolve_group_cwd(c: &str) -> std::path::PathBuf {
+fn resolve_folder_cwd(c: &str) -> std::path::PathBuf {
     let p = std::path::PathBuf::from(c.trim());
     match p.is_absolute() {
         true => p,
@@ -1762,11 +1762,11 @@ impl Config {
         let mut out = Vec::new();
         let mut errors = Vec::new();
         if self.workspaces.is_empty() {
-            if !self.tabs.is_empty() || !self.groups.is_empty() {
-                let (groups, tabs) = resolve_groups(&grouped(&self.groups, &self.tabs));
+            if !self.tabs.is_empty() || !self.folders.is_empty() {
+                let (folders, tabs) = resolve_folders(&foldered(&self.folders, &self.tabs));
                 out.push(Workspace {
                     name: "DEFAULT".into(),
-                    groups,
+                    folders,
                     tabs,
                     automation: None,
                     browsers: Vec::new(),
@@ -1781,8 +1781,8 @@ impl Config {
         for ws in &self.workspaces {
             #[allow(clippy::type_complexity)]
             #[allow(clippy::type_complexity)]
-            let (group_defs, file_name, file_lua, file_secrets, file_stops, file_discuss): (
-                Vec<GroupConfig>,
+            let (folder_defs, file_name, file_lua, file_secrets, file_stops, file_discuss): (
+                Vec<FolderConfig>,
                 Option<String>,
                 Option<String>,
                 (Vec<String>, bool),
@@ -1791,7 +1791,7 @@ impl Config {
             ) = match &ws.file {
                 Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
                     Ok(p) => (
-                        grouped(&p.groups, &p.tabs),
+                        foldered(&p.folders, &p.tabs),
                         p.name,
                         p.automation.or(p.lua),
                         (p.secrets_allow, p.secrets_allow_all),
@@ -1804,7 +1804,7 @@ impl Config {
                     }
                 },
                 None => (
-                    grouped(&ws.groups, &ws.tabs),
+                    foldered(&ws.folders, &ws.tabs),
                     None,
                     None,
                     (Vec::new(), false),
@@ -1812,7 +1812,7 @@ impl Config {
                     None,
                 ),
             };
-            let (groups, tabs) = resolve_groups(&group_defs);
+            let (folders, tabs) = resolve_folders(&folder_defs);
             out.push(Workspace {
                 // Prefer the display name from config; fall back to the definition file's name if empty
                 name: if ws.name.is_empty() {
@@ -1820,7 +1820,7 @@ impl Config {
                 } else {
                     ws.name.clone()
                 },
-                groups,
+                folders,
                 tabs,
                 // Prefer config's setting; fall back to the definition file's if absent
                 automation: ws.automation.clone().or_else(|| ws.lua.clone()).or(file_lua),
@@ -2005,7 +2005,7 @@ pub fn append_tab(workspace: &str, tab: serde_json::Value, cwd: Option<&Path>) -
     else {
         return false;
     };
-    group_tabs_at(ws, cwd).push(tab);
+    folder_tabs_at(ws, cwd).push(tab);
     match serde_json::to_string_pretty(&doc) {
         Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
         Err(_) => false,
@@ -2220,10 +2220,10 @@ mod tests {
         .unwrap();
         let (ws, errs) = cfg.resolve_workspaces();
         assert!(errs.is_empty());
-        assert_eq!(ws[0].groups.len(), 1, "1つにまとまるはず");
-        assert!(ws[0].groups[0].name.is_none(), "名前のないグループ = 見出しを描かない");
-        assert!(ws[0].tabs.iter().all(|t| t.group == 0));
-        assert_eq!(ws[0].folder_of(&ws[0].tabs[0]), None, "書いていない場所はアプリの隣");
+        assert_eq!(ws[0].folders.len(), 1, "1つにまとまるはず");
+        assert!(ws[0].folders[0].name.is_none(), "名前の無い作業フォルダ");
+        assert!(ws[0].tabs.iter().all(|t| t.folder == 0));
+        assert_eq!(ws[0].cwd_of(&ws[0].tabs[0]), None, "書いていない場所はアプリの隣");
     }
 
     #[test]
@@ -2239,9 +2239,9 @@ mod tests {
         )
         .unwrap();
         let ws = &cfg.resolve_workspaces().0[0];
-        assert_eq!(ws.groups.len(), 2, "フォルダの数だけ");
+        assert_eq!(ws.folders.len(), 2, "フォルダの数だけ");
         let by_name = |n: &str| ws.tabs.iter().find(|t| t.cfg.name.as_deref() == Some(n)).unwrap();
-        let folder = |n: &str| ws.folder_of(by_name(n));
+        let folder = |n: &str| ws.cwd_of(by_name(n));
         assert_eq!(folder("A"), Some("D:/work/one".into()));
         assert_eq!(folder("B"), folder("A"), "同じ場所は同じグループ");
         assert_eq!(folder("A2"), folder("A"), "子は親のフォルダで動く");
@@ -2252,7 +2252,7 @@ mod tests {
     #[test]
     fn a_group_is_the_only_thing_that_says_where_work_happens() {
         let cfg: Config = serde_json::from_str(
-            r#"{"groups": [
+            r#"{"folders": [
                  {"name": "main", "cwd": "D:/work/proj",
                   "tabs": [{"name": "実装", "command": "claude"},
                            {"name": "レビュー", "command": "codex"}]},
@@ -2261,14 +2261,14 @@ mod tests {
         )
         .unwrap();
         let ws = &cfg.resolve_workspaces().0[0];
-        assert_eq!(ws.groups.len(), 2);
+        assert_eq!(ws.folders.len(), 2);
         assert_eq!(ws.tabs.len(), 3);
         // Everyone in a group works in the one folder -- the whole point, since
         // a reviewer pointed somewhere else reviews nothing
-        assert_eq!(ws.folder_of(&ws.tabs[0]), Some("D:/work/proj".into()));
-        assert_eq!(ws.folder_of(&ws.tabs[1]), ws.folder_of(&ws.tabs[0]));
+        assert_eq!(ws.cwd_of(&ws.tabs[0]), Some("D:/work/proj".into()));
+        assert_eq!(ws.cwd_of(&ws.tabs[1]), ws.cwd_of(&ws.tabs[0]));
         // Relative stays relative to the settings, so a folder of them travels
-        assert_eq!(ws.folder_of(&ws.tabs[2]), Some(root_dir().join("scripts")));
+        assert_eq!(ws.cwd_of(&ws.tabs[2]), Some(root_dir().join("scripts")));
     }
 
     /// Writing down "work on another branch too", and reading it back the way
@@ -2287,7 +2287,7 @@ mod tests {
         )
         .unwrap();
 
-        append_group_at(
+        append_folder_at(
             &file,
             "Demo",
             Some(Path::new("D:/work/proj")),
@@ -2302,18 +2302,18 @@ mod tests {
         assert_eq!(cfg.workspaces[0].secrets_allow, ["x"]);
 
         let ws = &cfg.resolve_workspaces().0[0];
-        assert_eq!(ws.groups.len(), 2, "折り畳んだ元の1つと、足した1つ");
-        assert_eq!(ws.groups[0].cwd.as_deref(), Some(Path::new("D:/work/proj")));
-        assert_eq!(ws.groups[1].name.as_deref(), Some("feature/login"));
+        assert_eq!(ws.folders.len(), 2, "折り畳んだ元の1つと、足した1つ");
+        assert_eq!(ws.folders[0].cwd.as_deref(), Some(Path::new("D:/work/proj")));
+        assert_eq!(ws.folders[1].name.as_deref(), Some("feature/login"));
         assert_eq!(
-            ws.groups[1].cwd.as_deref(),
+            ws.folders[1].cwd.as_deref(),
             Some(Path::new("D:/work/proj.worktrees/feature/login"))
         );
         // The same faces, working in the new folder
         let names = |g: usize| {
             ws.tabs
                 .iter()
-                .filter(|t| t.group == g)
+                .filter(|t| t.folder == g)
                 .map(|t| t.cfg.name.clone().unwrap_or_default())
                 .collect::<Vec<_>>()
         };
@@ -2324,13 +2324,34 @@ mod tests {
         let ids = ws
             .tabs
             .iter()
-            .filter(|t| t.group == 1)
+            .filter(|t| t.folder == 1)
             .map(|t| t.cfg.id.clone().unwrap_or_default())
             .collect::<Vec<_>>();
         assert_eq!(ids, ["coder@feature-login", "rev@feature-login"]);
         assert!(duplicate_keys(ws).is_empty(), "自動化から指す名前がぶつかっていない");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A settings file written before the word settled still opens.
+    ///
+    /// It was called `groups` for as long as the thing was called a group,
+    /// which is a developer's word for it. The file says `folders` now,
+    /// because that is what they are and what the screen calls them -- and the
+    /// old spelling keeps working, because somebody's settings are not a thing
+    /// to break over a word.
+    #[test]
+    fn the_word_it_used_to_be_called_still_reads() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"workspaces": [{"name": "Old", "groups": [
+                 {"name": "main", "cwd": "D:/work/proj",
+                  "tabs": [{"name": "実装", "command": "claude"}]}]}]}"#,
+        )
+        .unwrap();
+        let ws = &cfg.resolve_workspaces().0[0];
+        assert_eq!(ws.folders.len(), 1);
+        assert_eq!(ws.folders[0].name.as_deref(), Some("main"));
+        assert_eq!(ws.cwd_of(&ws.tabs[0]), Some(Path::new("D:/work/proj").to_path_buf()));
     }
 
     #[test]
