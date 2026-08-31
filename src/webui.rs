@@ -3279,6 +3279,8 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.auto_switch.hint"])),
     row(T["settings.restore_ws"], checkDefaultOn(current, "restore_workspace", T["settings.restore_ws.label"]),
         el("span", {class:"hint"}, T["settings.restore_ws.hint"])),
+    row(T["settings.tui_clipboard"], checkDefaultOn(current, "tui_clipboard", T["settings.tui_clipboard.label"]),
+        el("span", {class:"hint"}, T["settings.tui_clipboard.hint"])),
     row(T["settings.ai_engine"], aiSelect(),
         el("span", {class:"hint", id:"aihint"}, "")),
     row(T["settings.browser_data"],

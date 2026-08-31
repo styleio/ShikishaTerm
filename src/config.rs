@@ -54,6 +54,18 @@ pub struct Config {
     /// Wait time (ms) before a response is considered finished.
     /// If the profile specifies its own value, that takes priority
     pub done_confirm_ms: Option<u64>,
+    /// Whether a program running in a tab may put text on the Windows
+    /// clipboard (default: yes).
+    ///
+    /// This is how tmux, Neovim, fzf and most full-screen tools copy: they do
+    /// not call any Windows API -- they cannot, over ssh -- they write the text
+    /// into the terminal and let the terminal do it. With this off, copying
+    /// inside those tools silently does nothing.
+    ///
+    /// Reading is never allowed, and there is no setting for it: a program that
+    /// could read the clipboard could read whatever was copied last, from
+    /// anywhere, including the far end of an ssh session.
+    pub tui_clipboard: Option<bool>,
     /// Width of the left tab bar, in pixels, or 0 when it is put away. Omitted
     /// means the built-in width. Dragging the bar's edge writes it back here,
     /// which is how it survives a restart.

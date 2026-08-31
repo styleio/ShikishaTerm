@@ -88,6 +88,10 @@ pub struct QueryResponder {
     /// The window title, as the program in this tab last set it. Read by state
     /// detection, which is why it is kept rather than dropped
     window_title: WindowTitle,
+    /// Whether a program in this tab may put text on the clipboard. Answered
+    /// when the tab is made, so changing the setting reaches the tabs opened
+    /// after it -- the same as the detection rules
+    clipboard_writes: bool,
 }
 
 /// (title, body) pairs waiting to be shown
@@ -95,6 +99,43 @@ pub type Notes = Arc<Mutex<Vec<(String, String)>>>;
 
 /// The window title a program set, shared with whoever wants to read it
 pub type WindowTitle = Arc<Mutex<String>>;
+
+/// Longest text a program in a tab may put on the clipboard. Generous for a
+/// copied file or a page of output, and short of the "paste the whole heap"
+/// end of the scale
+const CLIPBOARD_MAX: usize = 100 * 1024;
+
+/// What a program in a tab is asking to put on the clipboard, if it may.
+///
+/// Split out from the callback so the deciding is testable without a clipboard:
+/// everything that could refuse is here, and what is left is one call to the
+/// system.
+///
+/// `ty` is the selection it names. Only the clipboard (`c`) and the primary
+/// selection (`p`) are taken; the numbered cut-buffers are a different thing
+/// this app does not keep. `data` is base64, which is the only spelling the
+/// sequence has.
+fn clipboard_text_of(ty: &[u8], data: &[u8], allowed: bool) -> Option<String> {
+    if !allowed {
+        return None;
+    }
+    if !ty.iter().all(|c| *c == b'c' || *c == b'p') || ty.is_empty() {
+        return None;
+    }
+    if data.len() > CLIPBOARD_MAX * 2 {
+        return None;
+    }
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        data,
+    )
+    .ok()?;
+    if bytes.len() > CLIPBOARD_MAX {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    (!text.is_empty()).then_some(text)
+}
 
 /// A title longer than this is not a title. Bounded because it arrives from
 /// the other side of a PTY, where nothing is obliged to be reasonable
@@ -199,6 +240,26 @@ impl vt100::Callbacks for QueryResponder {
     /// being asked, whether a turn is running. State detection reads it.
     fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
         self.store_title(title);
+    }
+
+    /// A program in the tab copying something.
+    ///
+    /// This is how every full-screen tool copies -- tmux, Neovim, fzf, and the
+    /// TUIs that AI CLIs are built as. None of them can reach the Windows
+    /// clipboard themselves, least of all through ssh, so they hand the text to
+    /// the terminal and it is the terminal's job to finish it. Dropping this
+    /// (which is what happened before) makes copying inside those tools do
+    /// nothing at all, with no error to explain it.
+    ///
+    /// The other direction -- a program asking to be *given* the clipboard --
+    /// is deliberately not implemented: leaving `paste_from_clipboard` alone is
+    /// how it stays refused. Whatever was copied last, from any application, is
+    /// not something the far end of an ssh session gets to read.
+    fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8], data: &[u8]) {
+        let Some(text) = clipboard_text_of(ty, data, self.clipboard_writes) else {
+            return;
+        };
+        let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
     }
 
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
@@ -819,6 +880,7 @@ mod tests {
                 bell: Arc::clone(&bell),
                 notes: Arc::clone(&notes),
                 window_title: Arc::clone(&title),
+                clipboard_writes: false,
             },
         );
 
@@ -838,6 +900,42 @@ mod tests {
         );
         p.process(b"\x07");
         assert_eq!(bell.load(std::sync::atomic::Ordering::Relaxed), 1, "ベルを数えていない");
+    }
+
+    /// Copying from inside a full-screen tool, and the four ways it is refused.
+    ///
+    /// This sequence is the one place where something on the far side of a PTY
+    /// reaches into this machine, so every refusal lives in one function and is
+    /// checked here rather than being spread through the callback.
+    #[test]
+    fn a_program_may_hand_over_text_to_copy_but_only_within_reason() {
+        use base64::Engine as _;
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let take = |ty: &str, data: &str, allowed: bool| {
+            super::clipboard_text_of(ty.as_bytes(), data.as_bytes(), allowed)
+        };
+
+        // The ordinary case: tmux, Neovim, fzf, an AI CLI's own copy command
+        assert_eq!(take("c", &b64("hello from ssh"), true), Some("hello from ssh".into()));
+        assert_eq!(take("p", &b64("primary"), true), Some("primary".into()));
+
+        // Turned off in settings
+        assert_eq!(take("c", &b64("hello"), false), None);
+        // A selection this app does not keep. The numbered cut-buffers are a
+        // different thing, and answering them would be pretending
+        assert_eq!(take("q", &b64("hello"), true), None);
+        assert_eq!(take("7", &b64("hello"), true), None);
+        assert_eq!(take("", &b64("hello"), true), None);
+        // Not base64 at all
+        assert_eq!(take("c", "not base64 !!", true), None);
+        // Nothing to copy
+        assert_eq!(take("c", &b64(""), true), None);
+        // Longer than a copy plausibly is. Checked before decoding as well as
+        // after, so a compressed-looking payload cannot make us allocate first
+        let huge = b64(&"x".repeat(super::CLIPBOARD_MAX + 1));
+        assert_eq!(take("c", &huge, true), None);
+        let overlong_encoding = "A".repeat(super::CLIPBOARD_MAX * 2 + 4);
+        assert_eq!(take("c", &overlong_encoding, true), None);
     }
 
     #[test]
@@ -1907,6 +2005,9 @@ impl Tab {
                 bell: Arc::clone(&bell_count),
                 notes: Arc::clone(&notes),
                 window_title: Arc::clone(&window_title),
+                clipboard_writes: crate::config::load()
+                    .and_then(|c| c.tui_clipboard)
+                    .unwrap_or(true),
             },
         )));
         // A model-bridge tab launches an idle placeholder process, so its screen
