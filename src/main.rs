@@ -53,6 +53,7 @@ mod update;
 mod watch;
 mod ws;
 mod webui;
+mod worktree;
 mod wspack;
 
 use std::sync::{Arc, Mutex};

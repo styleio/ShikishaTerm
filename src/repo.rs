@@ -170,6 +170,18 @@ pub fn family_of(cwd: &Path) -> Option<PathBuf> {
     }))
 }
 
+/// The original checkout of whatever repository this folder belongs to.
+///
+/// Every branch cut from it points back at one shared git folder, and that
+/// folder sits inside the original -- so the answer is the same from anywhere
+/// in the family, which is what makes it the thing to hang a new branch off
+pub fn main_checkout(cwd: &Path) -> Option<PathBuf> {
+    let git = family_of(cwd)?;
+    // `<checkout>/.git` -> `<checkout>`. A bare repository has no checkout to
+    // name, and is not somewhere anyone is working anyway
+    (git.file_name()? == ".git").then(|| git.parent().map(Path::to_path_buf))?
+}
+
 /// Whether this folder is a branch cut from a checkout, rather than the
 /// checkout itself.
 ///
