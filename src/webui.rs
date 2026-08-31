@@ -2038,7 +2038,10 @@ const PAGE: &str = r##"<!doctype html>
    margin:14px 10px 4px; }
  .navgrouphead { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
    margin:12px 0 2px; display:flex; align-items:center; gap:6px; }
- .navgrouphead .caret { font-size:10px; width:10px; display:inline-block; text-align:center; }
+ .navgrouphead.sel { color:var(--text); }
+ .navgrouphead .caret { font-size:10px; width:14px; display:inline-block; text-align:center;
+   border-radius:4px; }
+ .navgrouphead .caret:hover { background:var(--panel2); }
  /* Four levels: everything, a workspace, one of its working folders, a tab in
     that folder. Depth is where the row starts, the way a file list does it --
     elbows drawn between every row would be three times the ink for the same
@@ -2787,15 +2790,23 @@ function renderNav() {
   wss.forEach((ws, wi) => {
     // The group you're editing counts as open even without an explicit toggle.
     const open = navOpen.has(wi) || (!sel.global && sel.ws === wi);
-    nav.append(el("button", {class:"navitem navgrouphead",
-      onclick:() => { navOpen.has(wi) ? navOpen.delete(wi) : navOpen.add(wi); render(); }},
-      el("span", {class:"caret"}, open ? "▾" : "▸"),
+    // `?? null` because a selection made elsewhere (the gear, a deep link) may
+    // simply not mention a folder, and "no folder" has to match "no folder"
+    const here = (g, t) => !sel.global && sel.ws === wi && (sel.grp ?? null) === g
+      && (sel.tab ?? null) === t;
+    // The name is the workspace's own page and the caret is the fold, the way
+    // a folder's row works everywhere else. A separate "workspace settings"
+    // row underneath made the folders look like its equals rather than its
+    // contents, which is the one thing this list has to get across
+    nav.append(el("button", {class:"navitem navgrouphead" + (here(null, null) ? " sel" : ""),
+      onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:null, tab:null, global:false}; render(); }},
+      el("span", {class:"caret", onclick:e => {
+        e.stopPropagation();
+        navOpen.has(wi) ? navOpen.delete(wi) : navOpen.add(wi);
+        render();
+      }}, open ? "▾" : "▸"),
       el("span", {}, ws.name || T["settings.tab.unnamed"])));
     if (!open) return;
-    const here = (g, t) => !sel.global && sel.ws === wi && sel.grp === g && sel.tab === t;
-    nav.append(el("button", {class:"navitem lvl1" + (here(null, null) ? " sel" : ""),
-      onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:null, tab:null, global:false}; render(); }},
-      el("span", {}, T["settings.workspace.settings"])));
     // Every folder, always -- the one a workspace starts with is a folder like
     // any other, and hiding it is how "where does this actually run" became
     // impossible to find
@@ -5734,11 +5745,11 @@ load().then(() => {
   }
   if (q.get("gen") === "1" || !wss[cur]) {
     navGlobalOpen = true;
-    sel = {ws:(wss[cur] ? cur : sel.ws), tab:null, global:true, section:"basic"};
+    sel = {ws:(wss[cur] ? cur : sel.ws), grp:null, tab:null, global:true, section:"basic"};
   } else {
     navGlobalOpen = false;
     navOpen.add(cur);
-    sel = {ws:cur, tab:null, global:false};
+    sel = {ws:cur, grp:null, tab:null, global:false};
   }
   render();
   const s = document.querySelector(".navitem.sel");

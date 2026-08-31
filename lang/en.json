@@ -426,7 +426,6 @@
   "settings.language.hint": "Screen language. Automatic follows the OS. Choosing here overrides the OS and takes effect after a restart (add lang/<code>.json to contribute a translation)",
   "settings.language.restart": "Saved. Please restart SHIKISHA-TERM to apply the language change.",
   "settings.workspace": "Workspace",
-  "settings.workspace.settings": "Workspace settings",
   "settings.workspace.name": "Name",
   "settings.workspace.file": "Definition file",
   "settings.workspace.automation": "Automation",
