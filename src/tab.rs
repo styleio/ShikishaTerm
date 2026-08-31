@@ -170,6 +170,14 @@ fn note_of(params: &[&[u8]]) -> Option<(String, String)> {
 }
 
 impl QueryResponder {
+    /// Keep the window title where state detection can read it, bounded.
+    fn store_title(&self, title: &[u8]) {
+        let text: String = String::from_utf8_lossy(title).chars().take(TITLE_MAX).collect();
+        if let Ok(mut cur) = self.window_title.lock() {
+            *cur = text;
+        }
+    }
+
     fn reply(&self, bytes: &[u8]) {
         if let Ok(mut w) = self.writer.lock() {
             let _ = w.write_all(bytes);
@@ -186,14 +194,19 @@ impl vt100::Callbacks for QueryResponder {
     /// A program asking to be noticed. Kept rather than dropped, and kept
     /// bounded: a program in a loop must not be able to fill memory with its
     /// own announcements
+    /// The title is not shown anywhere -- the tab already carries the name a
+    /// person gave it -- but it is where a CLI says, on purpose and without
+    /// being asked, whether a turn is running. State detection reads it.
+    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
+        self.store_title(title);
+    }
+
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
-        // The title is not shown anywhere -- the tab already carries the name a
-        // person gave it -- but it is where a CLI says, on purpose and without
-        // being asked, whether a turn is running. State detection reads it
+        // The other door to the same slot. The parser hands a plain two-part
+        // title to `set_window_title` above; one with a semicolon in it, or one
+        // being cleared, arrives here in pieces instead
         if let Some(title) = title_of(params) {
-            if let Ok(mut cur) = self.window_title.lock() {
-                *cur = title;
-            }
+            self.store_title(title.as_bytes());
             return;
         }
         let Some(note) = note_of(params) else { return };
@@ -785,6 +798,46 @@ mod tests {
         assert_eq!(p(&["0", "a window title"]), None);
         assert_eq!(p(&["777", "something-else", "x"]), None);
         assert_eq!(p(&["99", "i=1:d=0:"]), None);
+    }
+
+    /// The whole path, in the bytes a CLI really sends: parser -> callback ->
+    /// the slot state detection reads. Everything above this tests the pieces;
+    /// this is the one that would have caught them being wired up wrongly.
+    #[test]
+    fn the_title_a_program_sets_arrives_where_detection_reads_it() {
+        use std::sync::{Arc, Mutex};
+        let notes: super::Notes = Arc::new(Mutex::new(Vec::new()));
+        let title: super::WindowTitle = Arc::new(Mutex::new(String::new()));
+        let bell = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let sink: super::PtyWriter = Arc::new(Mutex::new(Box::new(Vec::new())));
+        let mut p = vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            super::QueryResponder {
+                writer: sink,
+                bell: Arc::clone(&bell),
+                notes: Arc::clone(&notes),
+                window_title: Arc::clone(&title),
+            },
+        );
+
+        // Exactly what Claude Code writes while a turn runs, then when it rests
+        p.process("\x1b]0;\u{25d0} Arithmetic calculation\x07".as_bytes());
+        assert_eq!(*title.lock().unwrap(), "◐ Arithmetic calculation");
+        p.process("\x1b]0;\u{2733} Arithmetic calculation\x07".as_bytes());
+        assert_eq!(*title.lock().unwrap(), "✳ Arithmetic calculation");
+
+        // ...and reading titles has not taken anything away from the escapes
+        // that were already understood
+        p.process("\x1b]777;notify;Build;3 tests failed\x07".as_bytes());
+        assert_eq!(
+            notes.lock().unwrap().last().cloned(),
+            Some(("Build".into(), "3 tests failed".into())),
+            "通知が届かなくなっている"
+        );
+        p.process(b"\x07");
+        assert_eq!(bell.load(std::sync::atomic::Ordering::Relaxed), 1, "ベルを数えていない");
     }
 
     #[test]
