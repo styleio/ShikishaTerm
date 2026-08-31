@@ -2310,7 +2310,7 @@ const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(
 let current = {};        // Contents of config.json (holds the base settings)
 let wss = [];            // Workspaces and tabs
 let sel = {ws:0, tab:null, global:true, section:"basic"};
-// Which workspace groups are expanded in the sidebar. Collapsed by default so
+// Which workspaces are expanded in the sidebar. Collapsed by default so
 // the nav stays tidy; the workspace you're editing auto-expands.
 const navOpen = new Set();
 // The global-settings group is expanded by default (the page opens onto it).
@@ -2736,7 +2736,7 @@ const CAT_LIST = [
 
 // ── Sidebar ───────────────────────────────────────
 // What a folder is called in a list: what someone typed, else the folder itself
-function groupLabel(g, i) {
+function folderLabel(g, i) {
   const name = (g.name || "").trim();
   if (name) return name;
   const cwd = (g.cwd || "").trim();
@@ -2780,10 +2780,10 @@ function renderNav() {
     // Every folder, always -- the one a workspace starts with is a folder like
     // any other, and hiding it is how "where does this actually run" became
     // impossible to find
-    (ws.groups || []).forEach((g, gi) => {
+    (ws.folders || []).forEach((g, gi) => {
       nav.append(el("button", {class:"navitem navfolder" + (here(gi, null) ? " sel" : ""),
         onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:gi, tab:null, global:false}; render(); }},
-        el("span", {}, groupLabel(g, gi)),
+        el("span", {}, folderLabel(g, gi)),
         el("span", {class:"sub"}, g.cwd || T["settings.group.folder.ph"])));
       (ws.tabs || []).forEach((t, ti) => {
         if ((t.group || 0) !== gi) return;
@@ -2805,8 +2805,8 @@ function renderNav() {
     nav.append(el("button", {class:"navitem navfolder navadd",
       onclick:() => {
         navOpen.add(wi);
-        (ws.groups = ws.groups || []).push({name:"", id:"", cwd:""});
-        sel = {ws:wi, grp:ws.groups.length - 1, tab:null, global:false};
+        (ws.folders = ws.folders || []).push({name:"", id:"", cwd:""});
+        sel = {ws:wi, grp:ws.folders.length - 1, tab:null, global:false};
         render(); refreshSave();
       }},
       T["settings.group.add"]));
@@ -2980,8 +2980,8 @@ function partsValid(parts) {
 }
 function landOnWs(ws) {
   // Made by a wizard, a template or from nothing -- all of them arrive here, so
-  // this is the one place that has to make sure a workspace has its group
-  if (!(ws.groups || []).length) ws.groups = [{name:"", id:"", cwd:""}];
+  // this is the one place that has to make sure a workspace has its folder
+  if (!(ws.folders || []).length) ws.folders = [{name:"", id:"", cwd:""}];
   (ws.tabs || []).forEach(t => { if (t.group === undefined) t.group = 0; });
   wss.push(ws); sel = {ws:wss.length - 1, tab:null, global:false}; render(); refreshSave();
 }
@@ -3167,7 +3167,7 @@ function wizardReview() {
         });
         m.remove();
         landOnWs({name: nameIn.value.trim() || T["wizard.review.default_name"], automation:"", tabs,
-          groups:[{name:"", id:"", cwd: repo.dir.trim()}],
+          folders:[{name:"", id:"", cwd: repo.dir.trim()}],
           discuss:{agents, order:"round-robin", max_rounds:4, personas},
           stops:[{when:"console", agents:"all", pattern:"LGTM", outcome:"success", code:0, reason:T["wizard.review.stop_reason"]}]});
       }}, T["wizard.review.create"]),
@@ -3210,13 +3210,13 @@ function crumbParts() {
   const ws = wss[sel.ws];
   if (!ws) return ["", ""];
   const name = ws.name || T["settings.tab.unnamed"];
-  const g = (ws.groups || [])[sel.grp];
+  const g = (ws.folders || [])[sel.grp];
   if (sel.tab === null) {
     if (!g) return ["", name];
-    return [name, groupLabel(g, sel.grp)];
+    return [name, folderLabel(g, sel.grp)];
   }
   const t = (ws.tabs || [])[sel.tab];
-  const where = g ? name + " › " + groupLabel(g, sel.grp) : name;
+  const where = g ? name + " › " + folderLabel(g, sel.grp) : name;
   return [where, (t && t.name) || T["settings.tab.unnamed"]];
 }
 
@@ -3333,9 +3333,9 @@ function renderDetail() {
   if (!ws) return;
   if (sel.tab === null) {
     if (sel.grp === null || sel.grp === undefined) return d.append(wsPane(ws));
-    const g = (ws.groups || [])[sel.grp];
+    const g = (ws.folders || [])[sel.grp];
     if (!g) { sel.grp = null; return renderDetail(); }
-    return d.append(groupPane(ws, g, sel.grp));
+    return d.append(folderPane(ws, g, sel.grp));
   }
   const t = ws.tabs[sel.tab];
   if (!t) { sel.tab = null; return renderDetail(); }
@@ -4334,12 +4334,12 @@ function wsPane(ws) {
 // A folder, and everything about it. One page per folder, reached the same way
 // it is reached in the tab list, because "where does this run" is a fact about
 // the folder rather than about the workspace it happens to sit in.
-function groupPane(ws, g, gi) {
+function folderPane(ws, g, gi) {
   const box = el("div");
   const tabsHere = () => (ws.tabs || []).filter(t => (t.group || 0) === gi);
 
   box.append(card(T["settings.group.title"],
-    row(T["settings.group.name"], field(g, "name", groupLabel(g, gi), {grow:false, width:280,
+    row(T["settings.group.name"], field(g, "name", folderLabel(g, gi), {grow:false, width:280,
         onInput:() => renderNav()}),
         el("span", {class:"hint"}, T["settings.group.name.hint"])),
     row(T["settings.group.folder"],
@@ -4386,14 +4386,14 @@ function groupPane(ws, g, gi) {
   // getting rid of the folder itself. Two different acts: one can be undone by
   // opening it again, and the other cannot
   const drop = () => {
-    ws.groups.splice(gi, 1);
+    ws.folders.splice(gi, 1);
     (ws.tabs || []).forEach(t => { if ((t.group || 0) > gi) t.group--; });
     sel = {ws:sel.ws, grp:null, tab:null, global:false};
     render(); refreshSave();
   };
   const guard = () => {
     if (tabsHere().length) { toast(T["settings.group.in_use"], true); return false; }
-    if ((ws.groups || []).length <= 1) { toast(T["settings.group.last"], true); return false; }
+    if ((ws.folders || []).length <= 1) { toast(T["settings.group.last"], true); return false; }
     return true;
   };
   const buttons = el("div", {class:"row"},
@@ -4408,7 +4408,7 @@ function groupPane(ws, g, gi) {
     if (!where || !where.cut) return;
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
-      if (!confirm(fill(T["settings.group.discard.sure"], {name: groupLabel(g, gi)}))) return;
+      if (!confirm(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}))) return;
       const r = await fetch("/api/folder/discard",
         {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd})})
         .then(r => r.json()).catch(() => ({ok:false, error:""}));
@@ -4747,11 +4747,11 @@ function tabPane(ws, t) {
   rebuild();
   const launch = card(T["settings.tab.launch"], cmdRow, detailBox,
     row(T["settings.tab.command"], cmdInput), real.box);
-  if ((ws.groups || []).length > 1) {
+  if ((ws.folders || []).length > 1) {
     // Through a holder, because a select speaks strings and a group is a number
     launch.append(row(T["settings.group.where"],
       choose({at: String(t.group || 0)}, "at",
-             ws.groups.map((g, i) => [String(i), groupLabel(g, i)]),
+             ws.folders.map((g, i) => [String(i), folderLabel(g, i)]),
              v => { sel.tab = setTabGroup(ws, sel.tab, Number(v)); render(); refreshSave(); })));
   }
   box.append(launch);
@@ -5335,30 +5335,22 @@ function automsg(t, warn) { const m = document.getElementById("automsg");
   m.textContent = t; m.style.color = warn ? "var(--danger)" : "var(--muted)"; }
 
 // ── Load / save ──────────────────────────────────
-// However a workspace was written, it comes out as groups. This mirrors
-// grouped() in config.rs, which does the same to launch it: tabs written
-// straight into a workspace -- every one from before groups existed -- are
-// split by the folder each of them named, and a child follows its parent.
-function groupsOf(w) {
-  // `groups` is what this was called before it was called what it is
-  const groups = (w.folders || w.groups || []).map(g => ({name:g.name || "", id:g.id || "",
-                                             cwd:g.cwd || "", tabs:g.tabs || []}));
-  for (const t of (w.tabs || [])) {
-    const cwd = (t.cwd || "").trim();
-    let g = groups.find(x => x.cwd === cwd && !x.name && !x.id);
-    if (!g) { g = {name:"", id:"", cwd, tabs:[]}; groups.push(g); }
-    g.tabs.push(t);
-  }
-  if (!groups.length) groups.push({name:"", id:"", cwd:"", tabs:[]});
-  return groups;
+// A workspace's working folders, and never none of them: the one everything
+// lands in is a folder like any other. Mirrors foldered() in config.rs, which
+// says the same thing on the way to launching them
+function foldersOf(w) {
+  const folders = (w.folders || []).map(f => ({name:f.name || "", id:f.id || "",
+                                               cwd:f.cwd || "", tabs:f.tabs || []}));
+  if (!folders.length) folders.push({name:"", id:"", cwd:"", tabs:[]});
+  return folders;
 }
 
-// The screen keeps one flat list of tabs, each remembering which group it is in
-function readGroups(ws, w) {
-  const gs = groupsOf(w);
-  ws.groups = gs.map(g => ({name:g.name, id:g.id, cwd:g.cwd}));
+// The screen keeps one flat list of tabs, each remembering which folder it is in
+function readFolders(ws, w) {
+  const fs = foldersOf(w);
+  ws.folders = fs.map(f => ({name:f.name, id:f.id, cwd:f.cwd}));
   ws.tabs = [];
-  gs.forEach((g, i) => flatten(g.tabs, 0, i, ws.tabs));
+  fs.forEach((f, i) => flatten(f.tabs, 0, i, ws.tabs));
 }
 
 function flatten(tabs, depth, group, out) {
@@ -5440,7 +5432,7 @@ async function load() {
   wss = [];
   for (const w of list) {
     const ws = { name:w.name || "", file:w.file || null,
-                 automation:w.automation || w.lua || "", tabs:[], groups:[],
+                 automation:w.automation || w.lua || "", tabs:[], folders:[],
                  // Not touched from the screen, but kept so saving doesn't drop it
                  browsers:w.browsers || null,
                  secrets_allow: w.secrets_allow || [],
@@ -5453,13 +5445,13 @@ async function load() {
       // tabs would come out empty and saving would erase them, so stop here too.
       if (got.failure) return showLoadFailure(got.failure);
       const f = got.value;
-      readGroups(ws, f);
+      readFolders(ws, f);
       if (!ws.automation) ws.automation = f.automation || f.lua || "";
       if (!ws.secrets_allow.length) ws.secrets_allow = f.secrets_allow || [];
       if (!ws.secrets_allow_all) ws.secrets_allow_all = !!f.secrets_allow_all;
       if (!ws.stops.length && Array.isArray(f.stops)) ws.stops = f.stops;
       if (!ws.discuss && f.discuss) ws.discuss = f.discuss;
-    } else readGroups(ws, w);
+    } else readFolders(ws, w);
     wss.push(ws);
   }
   if (sel.ws >= wss.length) sel = {ws:0, tab:null, global:true};
@@ -5554,13 +5546,11 @@ function payload() {
       Object.entries(out.providers).filter(([, p]) => p && (p.base_url || "").trim()));
     if (!Object.keys(out.providers).length) delete out.providers;
   }
-  // The old spellings go when the new ones are written, or a file would carry
-  // both and the one nobody edits would win on the next read
-  delete out.lua; delete out.tabs; delete out.groups;
+  delete out.lua; delete out.tabs;
 
   // A group is written with its own tabs nested back under it. Its name and id
   // are worth writing only when someone typed them; the folder always is
-  const groupsOut = w => (w.groups && w.groups.length ? w.groups : [{}]).map((g, i) => {
+  const foldersOut = w => (w.folders && w.folders.length ? w.folders : [{}]).map((g, i) => {
     const o = {};
     for (const k of ["name", "id", "cwd"]) if ((g[k] || "").trim()) o[k] = g[k].trim();
     o.tabs = nest(w.tabs.filter(t => (t.group || 0) === i));
@@ -5576,7 +5566,7 @@ function payload() {
   const files = [];
   for (const w of wss) {
     if (!w.file) continue;
-    const body = { name:w.name, folders:groupsOut(w) };
+    const body = { name:w.name, folders:foldersOut(w) };
     if (w.automation) body.automation = w.automation;
     if (w.secrets_allow && w.secrets_allow.length) body.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) body.secrets_allow_all = true;
@@ -5587,7 +5577,7 @@ function payload() {
   out.workspaces = wss.map(w => {
     const o = { name:w.name };
     if (w.file) o.file = w.file;
-    else { if (w.automation) o.automation = w.automation; o.folders = groupsOut(w); }
+    else { if (w.automation) o.automation = w.automation; o.folders = foldersOut(w); }
     // Don't lose a setting that isn't on screen just because it was saved from the screen
     if (w.browsers) o.browsers = w.browsers;
     // Allow-list of secrets the rally may use (denied by default)
@@ -5709,7 +5699,7 @@ load().then(() => {
   const cur = idx("ws");
   if (want && wss[cur]) {
     const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
-    const gi = (wss[cur].groups || []).findIndex(g => same(g.cwd) === same(want));
+    const gi = (wss[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
     if (gi >= 0) {
       navGlobalOpen = false;
       navOpen.add(cur);

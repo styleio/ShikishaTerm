@@ -8545,7 +8545,7 @@ mod tests {
     #[test]
     fn a_tab_is_launched_back_into_what_it_was_saying() {
         let ws = workspace_from(
-            r#"{"workspaces":[{"name":"W","tabs":[{"name":"AGENT","command":"claude"}]}]}"#,
+            r#"{"workspaces":[{"name":"W","folders":[{"tabs":[{"name":"AGENT","command":"claude"}]}]}]}"#,
         );
         let cfg = &ws.tabs[0].cfg;
         let argv = vec!["claude".to_string()];
@@ -8624,9 +8624,9 @@ mod tests {
     #[test]
     fn a_reopened_conversation_outranks_the_remembered_one() {
         let ws = workspace_from(
-            r#"{"workspaces":[{"name":"W","tabs":[
+            r#"{"workspaces":[{"name":"W","folders":[{"tabs":[
                 {"name":"AGENT","command":"claude","resume":"picked-from-the-vault"}
-            ]}]}"#,
+            ]}]}]}"#,
         );
         assert_eq!(
             resume_plan_of(ws.tabs[0].cfg.resume.as_deref()),
@@ -9578,10 +9578,10 @@ mod tests {
     #[test]
     fn hot_reload_applies_changes_without_restarting_untouched_tabs() {
         let ws0 = workspace_from(
-            r#"{"workspaces":[{"name":"T","tabs":[
+            r#"{"workspaces":[{"name":"T","folders":[{"tabs":[
                 {"name":"one","command":"cmd.exe"},
                 {"name":"two","command":"cmd.exe"}
-            ]}]}"#,
+            ]}]}]}"#,
         );
         let mut tabs = Vec::new();
         let mut errs = Vec::new();
@@ -9591,10 +9591,10 @@ mod tests {
 
         // one: gains a lock (applies immediately) / two: removed / three: added
         let ws1 = workspace_from(
-            r#"{"workspaces":[{"name":"T","tabs":[
+            r#"{"workspaces":[{"name":"T","folders":[{"tabs":[
                 {"name":"one","command":"cmd.exe","locked":true},
                 {"name":"three","command":"cmd.exe"}
-            ]}]}"#,
+            ]}]}]}"#,
         );
         let msg = apply_ws_config(&mut tabs, &ws1, 24, 80, &mut errs);
 
@@ -9610,10 +9610,10 @@ mod tests {
 
         // A change to the encoding requires a rebuild, so it gets deferred and flagged
         let ws2 = workspace_from(
-            r#"{"workspaces":[{"name":"T","tabs":[
+            r#"{"workspaces":[{"name":"T","folders":[{"tabs":[
                 {"name":"one","command":"cmd.exe","encoding":"shift_jis"},
                 {"name":"three","command":"cmd.exe"}
-            ]}]}"#,
+            ]}]}]}"#,
         );
         let msg2 = apply_ws_config(&mut tabs, &ws2, 24, 80, &mut errs);
         assert!(tabs[0].needs_restart, "要再起動の印が付く");
