@@ -518,6 +518,8 @@ struct WinSurface {
     folder_names: Vec<(String, String)>,
     /// Folders taken out of the list. The files stay where they are
     folder_closes: Vec<String>,
+    /// Branch folders thrown away for good
+    folder_discards: Vec<String>,
 }
 
 impl WinSurface {
@@ -703,6 +705,10 @@ impl WinSurface {
         std::mem::take(&mut self.folder_closes)
     }
 
+    fn take_folder_discards(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.folder_discards)
+    }
+
     fn take_suggests(&mut self) -> Vec<String> {
         std::mem::take(&mut self.suggests)
     }
@@ -802,6 +808,7 @@ impl WinSurface {
                 Ev::Browse { path, open } => self.browses.push((path, open)),
                 Ev::FolderName { folder, name } => self.folder_names.push((folder, name)),
                 Ev::FolderClose { folder } => self.folder_closes.push(folder),
+                Ev::FolderDiscard { folder } => self.folder_discards.push(folder),
                 Ev::RemoteCut => self.remote_cut = true,
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
@@ -1142,6 +1149,7 @@ fn run_in_window() -> Result<()> {
         browses: Vec::new(),
         folder_names: Vec::new(),
         folder_closes: Vec::new(),
+        folder_discards: Vec::new(),
         record_arms: Vec::new(),
         run_luas: Vec::new(),
         pane_splits: Vec::new(),
@@ -4148,6 +4156,24 @@ fn run(mut surface: WinSurface) -> Result<()> {
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
             if let Err(e) = config::rename_group(&ws, std::path::Path::new(&folder), &name) {
                 flash = Some(format!("{e:#}"));
+            }
+        }
+        // Thrown away for good: the folder goes, and the list with it. The
+        // list is only cleared once the folder is actually gone, so a refusal
+        // leaves everything exactly where it was
+        for folder in surface.take_folder_discards() {
+            let at = std::path::PathBuf::from(&folder);
+            match crate::worktree::discard(&at) {
+                Err(e) => flash = Some(format!("{e:#}")),
+                Ok(()) => {
+                    let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
+                    match config::remove_group(&ws, &at) {
+                        Ok(()) => {
+                            flash = Some(i18n::tp("msg.folder.discarded", &[("path", &folder)]))
+                        }
+                        Err(e) => flash = Some(format!("{e:#}")),
+                    }
+                }
             }
         }
         for folder in surface.take_folder_closes() {

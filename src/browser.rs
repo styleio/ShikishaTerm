@@ -775,6 +775,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("folderclose") => Ev::FolderClose {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
+        Some("folderdiscard") => Ev::FolderDiscard {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
         Some("browse") => Ev::Browse {
             path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false),
@@ -1187,6 +1190,9 @@ pub enum Ev {
     FolderName { folder: String, name: String },
     /// A folder was closed: its tabs go, the files stay
     FolderClose { folder: String },
+    /// A branch's folder was thrown away for good. Refused while there is
+    /// anything in it that is not committed
+    FolderDiscard { folder: String },
     /// "Close settings" on the settings page. Collapses the settings tab
     /// and returns to the operating board. This is a window-internal
     /// action, so it's not accepted from a phone (allowed_from_afar)

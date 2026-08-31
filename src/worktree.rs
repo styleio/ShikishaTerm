@@ -252,6 +252,57 @@ pub fn carry_into(plan: &Plan, names: &[String]) -> Vec<String> {
     trouble
 }
 
+/// Gets rid of a branch's folder, once there is nothing in it to lose.
+///
+/// Refused while anything is uncommitted. A folder full of work that only
+/// exists there is the one thing this must never take, and "are you sure" is
+/// not a good enough answer when the app is the one that made the folder in
+/// the first place. What it does not check is whether the branch was merged:
+/// that is a judgement, and it belongs to the person.
+pub fn discard(folder: &Path) -> Result<()> {
+    if !folder.exists() {
+        return Ok(());
+    }
+    if !crate::repo::is_linked(folder) {
+        bail!(crate::i18n::t("err.worktree.not_a_branch"));
+    }
+    let dirty = std::process::Command::new("git")
+        .arg("-C")
+        .arg(folder)
+        .args(["status", "--porcelain"])
+        .output()?;
+    let said = String::from_utf8_lossy(&dirty.stdout);
+    if !said.trim().is_empty() {
+        bail!(crate::i18n::tp(
+            "err.worktree.dirty",
+            &[("count", &said.lines().count().to_string())]
+        ));
+    }
+    let main = crate::repo::main_checkout(folder)
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.not_a_repo")))?;
+    // Git's own removal, so the repository stops listing it too. Anything
+    // linked into the folder is unhooked first: removing the folder with a
+    // junction still in it walks through and takes what is on the other side
+    for e in std::fs::read_dir(folder)?.flatten() {
+        let at = e.path();
+        let linked = std::fs::symlink_metadata(&at)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if linked && at.is_dir() {
+            let _ = std::fs::remove_dir(&at);
+        }
+    }
+    run(&[
+        "git".into(),
+        "-C".into(),
+        main.display().to_string(),
+        "worktree".into(),
+        "remove".into(),
+        folder.display().to_string(),
+    ])?;
+    Ok(())
+}
+
 /// Where a branch's folder goes, and why there.
 ///
 /// Beside the checkout, in one folder that holds all of them: it is easy to
@@ -589,6 +640,61 @@ mod tests {
             .args(["/c", "rmdir"])
             .arg(cut.folder.join("node_modules"))
             .status();
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// Throwing a branch's folder away, and refusing to.
+    #[test]
+    fn a_folder_with_work_in_it_is_not_thrown_away() {
+        let main = std::env::temp_dir().join("shikisha-wt-discard").join("myproject");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&main)
+                .args(args)
+                .output()
+                .expect("git が要る");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(main.join("readme.md"), "hi\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "first"]);
+
+        let cut = plan(&main, "feature/gone", None).unwrap();
+        create(&cut).unwrap();
+
+        // The project's own folder is not a branch and is never thrown away,
+        // however it is asked
+        assert!(discard(&main).is_err(), "本体を消してはいけない");
+        assert!(main.join("readme.md").exists());
+
+        // Work that only exists here is the one thing this must not take
+        std::fs::write(cut.folder.join("notes.md"), "half an idea\n").unwrap();
+        assert!(discard(&cut.folder).is_err(), "未コミットがあるのに消した");
+        assert!(cut.folder.join("notes.md").exists(), "消えてしまった");
+
+        // Once there is nothing to lose, it goes -- and git stops listing it
+        std::fs::remove_file(cut.folder.join("notes.md")).unwrap();
+        discard(&cut.folder).unwrap();
+        assert!(!cut.folder.exists(), "フォルダが残っている");
+        let listed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&main)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&listed.stdout).contains("feature/gone"),
+            "git がまだ持っている"
+        );
+        // Asking again is not an error: it is already how it was asked to be
+        discard(&cut.folder).unwrap();
+
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 

@@ -1290,7 +1290,8 @@ function folderMenu(e, g) {
                               : (T["tui.folder.fold"] || "Fold"),
          () => fold(g.folder)),
     renameItem(g),
-    closeItem(g));
+    closeItem(g),
+    g.linked ? discardItem(g) : null);
   document.body.append(m);
   // Below what was pressed, and never off the bottom of the window
   const r = e.currentTarget.getBoundingClientRect();
@@ -1416,6 +1417,26 @@ function closeItem(g) {
     }
     closeFolderMenu();
     send({kind:"folderclose", folder:g.folder});
+  };
+  return row;
+}
+
+// Throwing the folder away for good. Only offered for a branch's own folder,
+// asked twice like closing, and the app refuses it outright while there is
+// anything in there that is not committed -- the answer comes back as the
+// message, not as a folder that is already gone
+function discardItem(g) {
+  const row = el("div", {class:"warn"}, T["tui.folder.discard"] || "Delete the folder");
+  let armed = false;
+  row.onclick = e => {
+    e.stopPropagation();
+    if (!armed) {
+      armed = true;
+      row.textContent = T["tui.folder.discard.sure"] || "Delete it?";
+      return;
+    }
+    closeFolderMenu();
+    send({kind:"folderdiscard", folder:g.folder});
   };
   return row;
 }
