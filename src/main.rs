@@ -4250,10 +4250,22 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // the line that happens
         for (from, name, base, make, carry) in surface.take_branches() {
             let from = std::path::PathBuf::from(&from);
+            // What this project can offer -- the branches to grow from, and
+            // the things git will not carry -- is a fact about the folder, not
+            // about what has been typed so far. Answered even when the name is
+            // still empty, so the pickers are filled the moment the dialog opens
+            let repo = crate::repo::main_checkout(&from);
+            let offers = repo.as_deref().map(|main| {
+                (crate::worktree::bases(main), crate::worktree::carryables(main))
+            });
+            let (bases, carryable) = offers.unwrap_or_default();
             branch_view = Some(match crate::worktree::plan(&from, &name, Some(&base)) {
                 Err(e) => crate::uistate::BranchPlan {
                     from: from.display().to_string(),
                     branch: name,
+                    base: base.clone(),
+                    bases,
+                    carry: carryable,
                     error: Some(format!("{e:#}")),
                     ..Default::default()
                 },
@@ -4264,8 +4276,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         folder: plan.folder.display().to_string(),
                         line: plan.line(),
                         base: plan.base.clone(),
-                        bases: crate::worktree::bases(&plan.main),
-                        carry: crate::worktree::carryables(&plan.main),
+                        bases,
+                        carry: carryable,
                         error: None,
                         done: false,
                     };

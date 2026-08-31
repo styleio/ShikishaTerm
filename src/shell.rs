@@ -1513,6 +1513,10 @@ function openBranch(g) {
   sel.dataset.key = "";
   sel.textContent = "";
   drawBranch();
+  // Asked before a single letter is typed: what this project can be grown
+  // from does not depend on the name, and a picker that is empty until you
+  // type is a picker nobody finds anything in
+  send({kind:"branch", from:branchFrom, branch:"", base:"", make:false, carry:[]});
   setTimeout(() => q.focus(), 30);
 }
 function closeBranch() {
@@ -1550,11 +1554,14 @@ function drawBranch() {
   const typed = (document.getElementById("bq") || {}).value || "";
   // An answer about a name that has since changed says nothing about this one
   const mine = p && p.from === branchFrom && p.branch === typed.trim();
+  // The lists belong to the folder, not to the name: an answer for this folder
+  // fills them whatever was typed when it was asked
+  const here = p && p.from === branchFrom;
   if (mine && p.done) { closeBranch(); return; }
   b.querySelector(".bwhere").textContent = mine && !p.error ? p.folder : "";
   b.querySelector(".bcmd").textContent = mine && !p.error ? p.line : "";
-  drawCarry(b, mine && !p.error ? (p.carry || []) : []);
-  drawBases(b, mine ? p : null);
+  drawCarry(b, here ? (p.carry || []) : []);
+  drawBases(b, here ? p : null);
   b.querySelector(".berr").textContent = mine && p.error ? p.error : "";
   b.querySelector(".go").disabled = !(mine && !p.error);
 }
@@ -1565,6 +1572,10 @@ function drawBases(b, p) {
   const sel = document.getElementById("bbase");
   if (!sel) return;
   const list = (p && p.bases) || [];
+  // An answer that has nothing to say about the branches -- one about a name
+  // that has since changed -- must not empty a picker that is already filled,
+  // least of all while it is open
+  if (!list.length && sel.options.length) return;
   const key = list.join("\u0000");
   if (sel.dataset.key === key) return;
   sel.dataset.key = key;
@@ -1582,6 +1593,7 @@ function drawBases(b, p) {
 // whatever was just unticked, which is the one thing this list must not do
 function drawCarry(b, items) {
   const box = b.querySelector(".bcarry");
+  if (!items.length && box.children.length) return;
   const key = items.map(i => i.name).join("\u0000");
   if (box.dataset.key === key) return;
   box.dataset.key = key;
