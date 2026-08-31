@@ -2832,7 +2832,6 @@ function renderNav() {
   });
   nav.append(el("div", {class:"navgroup"}, ""));
   nav.append(el("button", {class:"navitem navadd", onclick:addWs}, T["settings.workspace.add"]));
-  if (!REMOTE) nav.append(el("button", {class:"navitem navadd", onclick:importWs}, T["settings.ws.import.nav"]));
 }
 
 const newTab = (o = {}) => Object.assign(
@@ -3023,7 +3022,10 @@ function addWs() {
       opt("🗣", T["wizard.pick.discuss.title"], T["wizard.pick.discuss.desc"], wizardDiscuss),
       opt("🌐", T["wizard.pick.browser.title"], T["wizard.pick.browser.desc"], wizardBrowser),
       opt("👨\u200d💻", T["wizard.pick.review.title"], T["wizard.pick.review.desc"], wizardReview),
-      opt("🖥", T["wizard.pick.blank.title"], T["wizard.pick.blank.desc"], createBlankWs)),
+      opt("🖥", T["wizard.pick.blank.title"], T["wizard.pick.blank.desc"], createBlankWs),
+      // A file dialog is the only way in, and a phone has none to open
+      REMOTE ? null
+             : opt("📂", T["wizard.pick.import.title"], T["wizard.pick.import.desc"], importWs)),
     el("div", {class:"row", style:"margin-top:6px"},
       el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
 }
@@ -4329,12 +4331,13 @@ function wsPane(ws) {
   box.append(wsStopsCard(ws));
   box.append(wsSecretsCard(ws));
 
-  // Both halves of this end in a file dialog on the PC, so from a phone the whole
-  // card would be two buttons that can't do anything
+  // Writing it out is about this workspace. Reading one in makes a different
+  // one, so it is asked for where another workspace is asked for -- not on the
+  // page of the workspace it would have nothing to do with. It ends in a file
+  // dialog either way, which a phone has no way to open
   if (!REMOTE) box.append(card(T["settings.ws.share"],
     el("div", {class:"row"},
-      el("button", {onclick:() => exportWs(sel.ws)}, T["settings.ws.export"]),
-      el("button", {onclick:importWs}, T["settings.ws.import"])),
+      el("button", {onclick:() => exportWs(sel.ws)}, T["settings.ws.export"])),
     el("div", {class:"hint"}, T["settings.ws.share.hint"])));
 
   box.append(el("div", {class:"row"},
