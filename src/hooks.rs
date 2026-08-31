@@ -1077,6 +1077,14 @@ pub struct HookEngine {
     /// an operator read the tab it's driving (shikisha.tab_output) when that tab is
     /// another AI rather than a browser.
     outputs: Rc<RefCell<Vec<(TabKey, String)>>>,
+    /// Each tab's (identifier, screen as it is drawn right now), same order as
+    /// `states`. The reply is what a turn produced; this is what is on the
+    /// glass -- which for a full-screen program is the only thing there is
+    screens: Rc<RefCell<Vec<(TabKey, String)>>>,
+    /// Each tab's (identifier, the file its output is being written to), for
+    /// reading a long run in pieces. Absent for a tab that is not being
+    /// recorded
+    logs: Rc<RefCell<Vec<(TabKey, std::path::PathBuf)>>>,
     pending: Vec<Pending>,
     scripts: Vec<Script>,
     attach: Attach,
@@ -1139,6 +1147,9 @@ impl HookEngine {
         let current_origin = Rc::new(Cell::new(1usize));
         let states: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
         let outputs: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let screens: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let logs: Rc<RefCell<Vec<(TabKey, std::path::PathBuf)>>> =
+            Rc::new(RefCell::new(Vec::new()));
         let remote_url: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
         let shikisha = lua.create_table().map_err(lerr)?;
@@ -1187,6 +1198,65 @@ impl HookEngine {
                         Ok(r.resolve(&keys)
                             .and_then(|i| outputs.get(i - 1).map(|(_, out)| out.clone()))
                             .unwrap_or_default())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // What is on another tab's screen right now.
+            //
+            // `tab_output` answers "what did the turn produce"; a full-screen
+            // program never produces one -- it draws, and the drawing IS the
+            // output. Reading a pager, a menu, a progress bar or a TUI's own
+            // panel needs the glass, not the transcript.
+            let sc = Rc::clone(&screens);
+            shikisha
+                .set(
+                    "tab_screen",
+                    lua.create_function(move |_, tab: Value| {
+                        let r = tab_ref_of(&tab)?;
+                        let screens = sc.borrow();
+                        let keys: Vec<TabKey> = screens.iter().map(|(k, _)| k.clone()).collect();
+                        Ok(r.resolve(&keys)
+                            .and_then(|i| screens.get(i - 1).map(|(_, s)| s.clone()))
+                            .unwrap_or_default())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // Read a tab's output from where you left off.
+            //
+            // The screen holds the last two dozen lines and the reply holds one
+            // turn; a build that printed four thousand lines is in neither. This
+            // reads the recording instead, from a mark the caller keeps, and
+            // hands back a new mark -- so a long run can be followed in pieces
+            // without holding all of it at once, and without reading the same
+            // piece twice.
+            //
+            // The recording is the one the app already keeps, with the terminal
+            // escapes stripped out of it. A tab that is not being recorded reads
+            // as empty and gives the mark straight back, so a caller written
+            // against it does not have to ask first.
+            let lg = Rc::clone(&logs);
+            shikisha
+                .set(
+                    "tab_read",
+                    lua.create_function(move |_, (tab, from): (Value, Option<u64>)| {
+                        let r = tab_ref_of(&tab)?;
+                        let logs = lg.borrow();
+                        let keys: Vec<TabKey> = logs.iter().map(|(k, _)| k.clone()).collect();
+                        let from = from.unwrap_or(0);
+                        let path = r
+                            .resolve(&keys)
+                            .and_then(|i| logs.get(i - 1).map(|(_, p)| p.clone()))
+                            .filter(|p| !p.as_os_str().is_empty());
+                        let Some(path) = path else {
+                            return Ok((String::new(), from));
+                        };
+                        Ok(crate::session_log::read_from(&path, from))
                     })
                     .map_err(lerr)?,
                 )
@@ -2279,6 +2349,8 @@ impl HookEngine {
             current_origin,
             states,
             outputs,
+            screens,
+            logs,
             pending: Vec::new(),
             scripts: Vec::new(),
             attach: Attach::default(),
@@ -2376,6 +2448,14 @@ impl HookEngine {
     /// operator can read the AI tab it's driving via shikisha.tab_output.
     pub fn set_outputs(&self, outputs: Vec<(TabKey, String)>) {
         *self.outputs.borrow_mut() = outputs;
+    }
+
+    pub fn set_screens(&self, screens: Vec<(TabKey, String)>) {
+        *self.screens.borrow_mut() = screens;
+    }
+
+    pub fn set_logs(&self, logs: Vec<(TabKey, std::path::PathBuf)>) {
+        *self.logs.borrow_mut() = logs;
     }
 
     /// The phone board's URL (token included), or None while remote is off.
@@ -4325,6 +4405,80 @@ mod tests {
                         && text.contains("browser_go")
                         && text.contains("input field"))),
             "on_start がブラウザ操作プロトコル(入力欄でゴール)を送っていない: {cmds:?}"
+        );
+    }
+
+    /// Three ways to read a tab, because there are three different things to
+    /// read: what a turn produced, what is on the glass right now, and the
+    /// whole run from a mark you keep.
+    ///
+    /// The screen is the one that was missing, and it is the only one a
+    /// full-screen program has -- a pager, a menu, a TUI panel. Reading a tab
+    /// that has no recording must not be an error either: automation written
+    /// against it should not have to ask first.
+    #[test]
+    fn a_tab_can_be_read_three_ways() {
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_done(tab)
+              shikisha.set_var("reply", shikisha.tab_output(2))
+              shikisha.set_var("glass", shikisha.tab_screen(2))
+              local text, at = shikisha.tab_read(2, 0)
+              shikisha.set_var("read", text)
+              shikisha.set_var("at", at)
+              shikisha.send_to_tab(1, shikisha.get_var("reply") .. "|" ..
+                shikisha.get_var("glass") .. "|" .. shikisha.get_var("read") ..
+                "|" .. tostring(shikisha.get_var("at")))
+            end
+            "#,
+        )
+        .unwrap();
+        let key = |n: usize| TabKey { name: format!("tab{n}"), id: Some(format!("id{n}")) };
+
+        let dir = std::env::temp_dir().join("shikisha-tabread");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("two.log");
+        std::fs::write(&log, "line one
+").unwrap();
+
+        e.set_outputs(vec![(key(1), String::new()), (key(2), "the answer".into())]);
+        e.set_screens(vec![(key(1), String::new()), (key(2), "> menu
+  1. yes".into())]);
+        // Tab 1 is not being recorded; tab 2 is. Both are listed, so tab
+        // numbers still mean what they say
+        e.set_logs(vec![(key(1), std::path::PathBuf::new()), (key(2), log)]);
+
+        e.fire("on_done", &ctx(1, ""), None);
+        let cmds = e.drain_commands();
+        let sent = cmds
+            .iter()
+            .find_map(|c| match c {
+                Command::SendPrompt { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("何も送っていない");
+        assert_eq!(sent, "the answer|> menu
+  1. yes|line one
+|9");
+
+        // A tab with no recording reads as empty and gives the mark back,
+        // rather than failing
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_done(tab)
+              local text, at = shikisha.tab_read(1, 40)
+              shikisha.send_to_tab(1, "[" .. text .. "]" .. tostring(at))
+            end
+            "#,
+        )
+        .unwrap();
+        e.set_logs(vec![(key(1), std::path::PathBuf::new())]);
+        e.fire("on_done", &ctx(1, ""), None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c, Command::SendPrompt { text, .. } if text == "[]40")),
+            "記録の無いタブの読み出しが失敗している: {cmds:?}"
         );
     }
 

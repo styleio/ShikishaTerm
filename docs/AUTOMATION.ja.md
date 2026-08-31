@@ -726,6 +726,8 @@ shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
 | `shikisha.state(タブ)` | 今の状態: `WAIT` / `BUSY` / `DONE` / `ASK` / `EXIT` |
 | `shikisha.wait_state(タブ, "DONE", ミリ秒)` | その状態になるまで待つ。なれば `true` |
 | `shikisha.tab_output(タブ)` | 他のタブの最新の返答（まだ無ければ `""`） |
+| `shikisha.tab_screen(タブ)` | そのタブの画面に今出ているもの。応答は「手番が生んだもの」、こちらは「画面そのもの」で、ページャやメニューなど全画面のプログラムでは画面が唯一の出力です |
+| `shikisha.tab_read(タブ, 印)` | そのタブの記録を「印」から読む。本文と次の印を返すので、長い実行を少しずつ追えます（同じところを二度読みません）。最初は `0`。記録していないタブは `""` と、渡した印をそのまま返します |
 | `shikisha.restart(タブ)` | そのタブを会話ごと再起動する。`shikisha.restart(タブ, "fresh")` なら新しい会話で |
 
 ### 画面

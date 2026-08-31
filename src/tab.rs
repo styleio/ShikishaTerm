@@ -1741,6 +1741,13 @@ pub struct Tab {
     /// The window title the program last set. Not shown: read on every tick as
     /// one of the things that says whether a turn is running
     window_title: WindowTitle,
+    /// The screen as it was drawn at the last tick. Already read for state
+    /// detection, kept because automation has no other way to see a program
+    /// that draws instead of printing (shikisha.tab_screen)
+    pub last_screen: String,
+    /// Where this tab's output is being recorded, when it is. Automation reads
+    /// it back from its own mark (shikisha.tab_read)
+    pub log_path: Option<std::path::PathBuf>,
     /// The conversation this tab was having when the app last closed. Not
     /// resumed on its own — that would hand back yesterday's context to
     /// someone who quit to be rid of it — but offered to the key that already
@@ -2022,6 +2029,7 @@ impl Tab {
         let child_exited = Arc::new(AtomicBool::new(false));
 
         // PTY output → (encoding conversion if needed) → vt100 parser / session log
+        let log_path;
         {
             let parser = Arc::clone(&parser);
             let counter = Arc::clone(&bytes_out);
@@ -2030,6 +2038,7 @@ impl Tab {
             let mut log = opts
                 .log
                 .then(|| crate::session_log::SessionLog::open(&crate::config::logs_dir(), &title));
+            log_path = log.as_ref().and_then(|l| l.path().map(|p| p.to_path_buf()));
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 let mut decoder = enc.map(|e| e.new_decoder());
@@ -2107,6 +2116,8 @@ impl Tab {
         Ok(Self {
             notes,
             window_title,
+            last_screen: String::new(),
+            log_path,
             previous: None,
             spoke: AtomicBool::new(false),
             status: Vec::new(),
@@ -2627,6 +2638,7 @@ impl Tab {
         self.state = self
             .detector
             .tick(&screen_text, since, self.bell_count.load(Ordering::Relaxed));
+        self.last_screen = screen_text;
         // A model bridge is working with nothing on screen to show for it: the
         // request is in flight over HTTP and not a pixel moves until the reply
         // lands. The detector only ever watches the screen, so it read that

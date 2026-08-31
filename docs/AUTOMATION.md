@@ -689,6 +689,8 @@ ones; this is the complete list.
 | `shikisha.state(tab)` | The state right now: `WAIT` / `BUSY` / `DONE` / `ASK` / `EXIT` |
 | `shikisha.wait_state(tab, "DONE", ms)` | Wait until it reaches that state; `true` if it did |
 | `shikisha.tab_output(tab)` | Another tab's latest reply (`""` if there is none yet) |
+| `shikisha.tab_screen(tab)` | What is on that tab's screen right now. The reply is what a turn produced; this is the glass -- for a pager, a menu or any full-screen program it is the only output there is |
+| `shikisha.tab_read(tab, mark)` | That tab's recorded output from `mark` onward. Returns the text and the next mark, so a long run is followed in pieces without reading the same piece twice. Starts at `0`; a tab that is not being recorded reads as `""` and gives the mark back |
 | `shikisha.restart(tab)` | Restart that tab, carrying its conversation over. `shikisha.restart(tab, "fresh")` starts a new one |
 
 ### The screen

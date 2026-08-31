@@ -2970,6 +2970,23 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         .map(|t| (t.key(), t.last_response.clone().unwrap_or_default()))
                         .collect(),
                 );
+                // ...and what each one has on its screen, which for a program
+                // that draws instead of printing is the only output there is
+                eng.set_screens(
+                    tabs.iter()
+                        .map(|t| (t.key(), t.last_screen.clone()))
+                        .collect(),
+                );
+                // ...and where each one is being recorded, for reading a long
+                // run back in pieces
+                // Every tab is listed, recorded or not: the list is what tab
+                // numbers are resolved against, and leaving one out would make
+                // "tab 2" mean the second recorded tab
+                eng.set_logs(
+                    tabs.iter()
+                        .map(|t| (t.key(), t.log_path.clone().unwrap_or_default()))
+                        .collect(),
+                );
                 // ...and where a phone can reach this app, for "a human is
                 // needed" notifications (shikisha.remote_url)
                 eng.set_remote_url(remote_ui.as_ref().map(|r| r.url.clone()));

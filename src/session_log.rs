@@ -64,6 +64,9 @@ impl AnsiStripper {
 /// (never let logging bring down a session).
 pub struct SessionLog {
     file: Option<std::fs::File>,
+    /// Where it is being written. Kept so automation can read the run back from
+    /// a mark of its own -- see `read_from`
+    path: Option<std::path::PathBuf>,
     stripper: AnsiStripper,
     buf: Vec<u8>,
 }
@@ -72,12 +75,14 @@ impl SessionLog {
     pub fn open(dir: &std::path::Path, title: &str) -> Self {
         let _ = std::fs::create_dir_all(dir);
         let name = format!("{}-{}.log", sanitize(title), today());
+        let path = dir.join(name);
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(dir.join(name))
+            .open(&path)
             .ok();
         let mut me = Self {
+            path: file.is_some().then_some(path),
             file,
             stripper: AnsiStripper::default(),
             buf: Vec::new(),
@@ -130,6 +135,59 @@ fn epoch_secs() -> u64 {
         .unwrap_or(0)
 }
 
+
+/// Where this log is being written, if it is.
+impl SessionLog {
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+}
+
+/// Read a recording from a mark, and hand back the next one.
+///
+/// The mark is a position in the file, which is what makes "from where I left
+/// off" cheap: no scanning, no remembering what was already seen. A run that
+/// printed four thousand lines is read in whatever pieces the caller asks for.
+///
+/// A read is bounded -- a caller that has been away a long time gets the next
+/// piece, not all of it -- and the mark it gets back is where that piece ended,
+/// so the next call continues from there.
+///
+/// A partial character at the end of a piece is a real possibility (the mark is
+/// in bytes, and the text is not) so the read backs up to the last whole one
+/// rather than handing over a broken character.
+pub fn read_from(path: &std::path::Path, from: u64) -> (String, u64) {
+    use std::io::{Read as _, Seek as _};
+    /// Most a single read hands back
+    const MAX: usize = 64 * 1024;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return (String::new(), from);
+    };
+    // A recording that was rotated or cleared is shorter than the mark: start
+    // over rather than reading nothing for ever
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = if from > len { 0 } else { from };
+    if f.seek(std::io::SeekFrom::Start(from)).is_err() {
+        return (String::new(), from);
+    }
+    let mut buf = vec![0u8; MAX];
+    let read = match f.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return (String::new(), from),
+    };
+    buf.truncate(read);
+    // Back up to the last whole character, unless that would mean handing back
+    // nothing at all (a single character longer than the buffer cannot happen,
+    // but a caller stuck at the same mark for ever would be worse than a
+    // replacement glyph)
+    let good = match std::str::from_utf8(&buf) {
+        Ok(_) => read,
+        Err(e) if e.valid_up_to() > 0 => e.valid_up_to(),
+        Err(_) => read,
+    };
+    let text = String::from_utf8_lossy(&buf[..good]).to_string();
+    (text, from + good as u64)
+}
 /// Compute the calendar date from epoch seconds (the civil_from_days
 /// algorithm).
 fn ymd(days: i64) -> (i64, u32, u32) {
@@ -171,6 +229,57 @@ mod tests {
         let mut out = Vec::new();
         s.feed(input, &mut out);
         String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// Reading a long run back in pieces, from a mark the caller keeps.
+    #[test]
+    fn a_recording_is_read_from_a_mark_and_hands_the_next_one_back() {
+        let dir = std::env::temp_dir().join("shikisha-log-read");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("run.log");
+        std::fs::write(&path, "one
+two
+").unwrap();
+
+        let (text, at) = super::read_from(&path, 0);
+        assert_eq!(text, "one
+two
+");
+        assert_eq!(at, 8, "次の印が末尾になっていない");
+
+        // Nothing new yet: the mark comes straight back
+        let (text, again) = super::read_from(&path, at);
+        assert_eq!(text, "");
+        assert_eq!(again, at, "読むものが無いのに印が動いている");
+
+        // ...and only what was added since
+        std::fs::write(&path, "one
+two
+three
+").unwrap();
+        let (text, _) = super::read_from(&path, at);
+        assert_eq!(text, "three
+", "同じところを二度読んでいる");
+
+        // A recording that was cleared is shorter than the mark. Start over
+        // rather than reading nothing for ever
+        std::fs::write(&path, "fresh
+").unwrap();
+        let (text, at) = super::read_from(&path, 999);
+        assert_eq!(text, "fresh
+", "短くなった記録から読み直していない");
+        assert_eq!(at, 6);
+
+        // A character split across the end of a piece is not handed over broken
+        std::fs::write(&path, "あい").unwrap();
+        let (text, at) = super::read_from(&path, 0);
+        assert_eq!(text, "あい");
+        assert_eq!(at, 6);
+
+        // A file that is not there reads as nothing, and keeps the mark
+        let (text, at) = super::read_from(&dir.join("nope.log"), 42);
+        assert_eq!((text.as_str(), at), ("", 42));
     }
 
     #[test]
