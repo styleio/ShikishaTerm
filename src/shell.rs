@@ -163,7 +163,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* A branch of a project sits under the checkout it was cut from, one step
      in. Only the heading moves: the tabs below keep their own column, so the
      status dots still read as one line all the way down the sidebar */
-  .tab.folder.cut { padding-left:20px; }
+  .tab.folder.cut, .tab.under { padding-left:20px; }
   .tab.folder .hang { color:var(--dim); font-size:11px; margin-left:-10px; opacity:.7; }
   /* Choosing one. The swatches are the colours picked from when nobody has,
      and the last square opens whatever the system offers */
@@ -1221,7 +1221,10 @@ function drawTabs() {
     // inserted before the dot, so every row's dot sits at the same x and the
     // column reads as one line down the sidebar.
     const brand = t.ai ? " aitab ai-" + t.ai : "";
-    nav.append(el("div", {class:"tab" + (S.active === t.index ? " sel" : "") + brand,
+    // A branch's tabs stand where its heading does. Moving the heading alone
+    // left them looking like they belonged to the folder above it
+    const under = (t.group != null && (folders[t.group] || {}).linked) ? " under" : "";
+    nav.append(el("div", {class:"tab" + (S.active === t.index ? " sel" : "") + brand + under,
         onclick:() => send({kind:"select", tab:t.index})},
       el("span", {class:"dot " + t.state}),
       el("span", {class:"num"}, String(t.index)),
