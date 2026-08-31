@@ -2335,6 +2335,11 @@ let sel = {ws:0, tab:null, global:true, section:"basic"};
 // Which workspaces are expanded in the sidebar. Collapsed by default so
 // the nav stays tidy; the workspace you're editing auto-expands.
 const navOpen = new Set();
+// Workspaces somebody has folded on purpose. Kept apart from the ones opened
+// on purpose, because "what you are looking at counts as open" would otherwise
+// hold a workspace open for good -- selecting one is exactly what clicking its
+// row does now, so the caret could never win
+const navShut = new Set();
 // The global-settings group is expanded by default (the page opens onto it).
 let navGlobalOpen = true;
 // When opened via a deep-link shortcut (?ret=1), returning to the board after a
@@ -2789,7 +2794,7 @@ function renderNav() {
 
   wss.forEach((ws, wi) => {
     // The group you're editing counts as open even without an explicit toggle.
-    const open = navOpen.has(wi) || (!sel.global && sel.ws === wi);
+    const open = !navShut.has(wi) && (navOpen.has(wi) || (!sel.global && sel.ws === wi));
     // `?? null` because a selection made elsewhere (the gear, a deep link) may
     // simply not mention a folder, and "no folder" has to match "no folder"
     const here = (g, t) => !sel.global && sel.ws === wi && (sel.grp ?? null) === g
@@ -2799,10 +2804,11 @@ function renderNav() {
     // row underneath made the folders look like its equals rather than its
     // contents, which is the one thing this list has to get across
     nav.append(el("button", {class:"navitem navgrouphead" + (here(null, null) ? " sel" : ""),
-      onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:null, tab:null, global:false}; render(); }},
+      onclick:() => { sel = {ws:wi, grp:null, tab:null, global:false}; render(); }},
       el("span", {class:"caret", onclick:e => {
         e.stopPropagation();
-        navOpen.has(wi) ? navOpen.delete(wi) : navOpen.add(wi);
+        if (open) { navShut.add(wi); navOpen.delete(wi); }
+        else { navShut.delete(wi); navOpen.add(wi); }
         render();
       }}, open ? "▾" : "▸"),
       el("span", {}, ws.name || T["settings.tab.unnamed"])));
@@ -2812,21 +2818,20 @@ function renderNav() {
     // impossible to find
     (ws.folders || []).forEach((g, gi) => {
       nav.append(el("button", {class:"navitem navfolder lvl1" + (here(gi, null) ? " sel" : ""),
-        onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:gi, tab:null, global:false}; render(); }},
+        onclick:() => { sel = {ws:wi, grp:gi, tab:null, global:false}; render(); }},
         el("span", {}, folderLabel(g, gi)),
         el("span", {class:"sub"}, g.cwd || T["settings.group.folder.ph"])));
       (ws.tabs || []).forEach((t, ti) => {
         if ((t.group || 0) !== gi) return;
         const b = el("button", {class:"navitem navtab lvl" + (t.depth ? 3 : 2) +
           (here(gi, ti) ? " sel" : ""),
-          onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:gi, tab:ti, global:false}; render(); }});
+          onclick:() => { sel = {ws:wi, grp:gi, tab:ti, global:false}; render(); }});
         b.append(el("span", {class:"nm"}, t.name || T["settings.tab.unnamed"]));
         b.append(el("span", {class:"sub"}, cmdToText(t.command) || T["automation.unset"]));
         nav.append(b);
       });
       nav.append(el("button", {class:"navitem navadd lvl2",
         onclick:() => {
-          navOpen.add(wi);
           sel = {ws:wi, grp:gi, tab:addTabTo(ws, gi), global:false};
           render();
         }},
@@ -2834,7 +2839,6 @@ function renderNav() {
     });
     nav.append(el("button", {class:"navitem navadd lvl1",
       onclick:() => {
-        navOpen.add(wi);
         (ws.folders = ws.folders || []).push({name:"", id:"", cwd:""});
         sel = {ws:wi, grp:ws.folders.length - 1, tab:null, global:false};
         render(); refreshSave();
@@ -5735,7 +5739,7 @@ load().then(() => {
     const gi = (wss[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
     if (gi >= 0) {
       navGlobalOpen = false;
-      navOpen.add(cur);
+      navShut.delete(cur); navOpen.add(cur);
       sel = {ws:cur, grp:gi, tab:null, global:false};
       render();
       const s = document.querySelector(".navitem.sel");
@@ -5748,7 +5752,7 @@ load().then(() => {
     sel = {ws:(wss[cur] ? cur : sel.ws), grp:null, tab:null, global:true, section:"basic"};
   } else {
     navGlobalOpen = false;
-    navOpen.add(cur);
+    navShut.delete(cur); navOpen.add(cur);
     sel = {ws:cur, grp:null, tab:null, global:false};
   }
   render();
