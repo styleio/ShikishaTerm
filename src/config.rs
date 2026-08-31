@@ -886,6 +886,10 @@ pub struct NavSpec {
     pub forward: bool,
     #[serde(default)]
     pub reload: bool,
+    /// The second reload: fetch it all again instead of using what is held.
+    /// Its own switch, because it is its own button
+    #[serde(default)]
+    pub reload_hard: bool,
     /// URL bar. Lets a person navigate to any page
     #[serde(default)]
     pub url: bool,
@@ -899,7 +903,7 @@ impl NavSpec {
 
     /// Show all of them. Used when the spec is omitted, as in `browser_nav(id)`
     pub fn all() -> Self {
-        Self { back: true, forward: true, reload: true, url: true }
+        Self { back: true, forward: true, reload: true, reload_hard: true, url: true }
     }
 }
 
@@ -930,6 +934,9 @@ pub struct BrowserConfig {
     /// Private (disposable) browser
     #[serde(default)]
     pub private: bool,
+    /// What this page calls itself. Falls back to the app-wide setting
+    #[serde(default)]
+    pub user_agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -1006,6 +1013,12 @@ pub struct TabConfig {
     /// Meaningless for a terminal tab, so it's not read there
     #[serde(default)]
     pub nav: Option<NavSpec>,
+    /// What this browser tab calls itself. Falls back to the app-wide setting.
+    /// Per tab, because one page can need a name another must not have: a site
+    /// that will not sign you in unless you are Chrome, beside a site that
+    /// serves something different to anything calling itself Chrome
+    #[serde(default)]
+    pub user_agent: Option<String>,
     /// Banner shown below a browser tab (text and button label)
     #[serde(default)]
     pub ask: Option<AskSpec>,

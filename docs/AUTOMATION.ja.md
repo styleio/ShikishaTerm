@@ -358,6 +358,7 @@ shikisha.draft_to_tab("ai", shikisha.browser_html(page.id))
 ```lua
 shikisha.browser_nav(page.id)                        -- 全部出す
 shikisha.browser_nav(page.id, { reload = true, url = true })  -- 選んで出す
+-- 指定できるのは back / forward / reload / reload_hard（スーパーリロード）/ url
 shikisha.browser_unnav(page.id)                      -- 引っ込める
 ```
 

@@ -3481,6 +3481,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 back: spec.back,
                 forward: spec.forward,
                 reload: spec.reload,
+                reload_hard: spec.reload_hard,
                 edit: spec.url,
                 can_back: w.is_some_and(|w| w.2),
                 can_forward: w.is_some_and(|w| w.3),
@@ -4427,9 +4428,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
             let allowed = match &go {
                 Go::Back => spec.back,
                 Go::Forward => spec.forward,
-                // Both reloads ride on the one control: a bar that shows a
-                // reload button is a bar where a person can hold it down
-                Go::Reload | Go::Hard => spec.reload,
+                Go::Reload => spec.reload,
+                // Its own switch. Shift on the plain button is a shortcut for
+                // it, so that is allowed wherever either is shown
+                Go::Hard => spec.reload_hard || spec.reload,
                 Go::To(_) => spec.url,
             };
             if !allowed {
@@ -5919,7 +5921,8 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
         let profile = browser::BrowserProfile::new(
             b.browser_profile.as_deref().unwrap_or_default(),
             b.private,
-        );
+        )
+        .calling_itself(b.user_agent.clone());
         match caps.browser_open(&b.id, &b.url, profile) {
             Ok(()) => caps.note_declared(&b.id),
             Err(e) => errors.push(crate::i18n::tp(
@@ -5945,7 +5948,8 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             let profile = browser::BrowserProfile::new(
                 ft.cfg.browser_profile.as_deref().unwrap_or_default(),
                 ft.cfg.private,
-            );
+            )
+            .calling_itself(ft.cfg.user_agent.clone());
             if let Err(e) = caps.browser_open(&name, &url, profile) {
                 errors.push(crate::i18n::tp(
                     "err.ws.browser_open",

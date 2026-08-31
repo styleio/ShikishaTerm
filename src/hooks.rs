@@ -1606,6 +1606,7 @@ impl HookEngine {
                                     back: get("back"),
                                     forward: get("forward"),
                                     reload: get("reload"),
+                                    reload_hard: get("reload_hard"),
                                     url: get("url"),
                                 }
                             }

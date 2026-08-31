@@ -1353,6 +1353,11 @@ pub struct BrowserProfile {
     pub name: String,
     /// Throwaway. If true, opens in a temp folder that keeps no history/cookies
     pub private: bool,
+    /// What this page calls itself, when it is not to be what everything else
+    /// calls itself. `None` takes the app-wide setting. It travels with the
+    /// profile because it is the same question — who this page is to a site —
+    /// and it is asked at every place a page is opened
+    pub user_agent: Option<String>,
 }
 
 impl BrowserProfile {
@@ -1362,11 +1367,18 @@ impl BrowserProfile {
         Self {
             name: if n.is_empty() { "default".into() } else { n.to_string() },
             private,
+            user_agent: None,
         }
+    }
+
+    /// The same profile, with a name of its own to give sites
+    pub fn calling_itself(mut self, ua: Option<String>) -> Self {
+        self.user_agent = ua.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        self
     }
     /// The default (shared "default" profile, persistent)
     pub fn shared_default() -> Self {
-        Self { name: "default".into(), private: false }
+        Self { name: "default".into(), private: false, user_agent: None }
     }
 }
 
@@ -3326,6 +3338,9 @@ fn run_window(
                     if profile.private {
                         ephemeral_dirs.insert(name.clone(), data_dir.clone());
                     }
+                    // This page's own name if it was given one, the app's
+                    // otherwise
+                    let ua = profile.user_agent.clone().or_else(|| user_agent.clone());
                     let ctx = web_ctxs
                         .entry(data_dir.clone())
                         .or_insert_with(|| WebContext::new(Some(data_dir.clone())));
@@ -3345,7 +3360,7 @@ fn run_window(
                     let fin_tx = ev_tx.clone();
                     let fin_who = name.clone();
                     let mut b = WebViewBuilder::new_with_web_context(ctx);
-                    if let Some(ua) = user_agent.as_deref() {
+                    if let Some(ua) = ua.as_deref() {
                         b = b.with_user_agent(ua);
                     }
                     match b
@@ -3372,7 +3387,7 @@ fn run_window(
                             std::rc::Rc::clone(&adoptions),
                             adopt_wake.clone(),
                             ev_tx.clone(),
-                            user_agent.clone(),
+                            ua.clone(),
                         ))
                         .with_ipc_handler(move |req| {
                             let body: &str = req.body();
@@ -3421,7 +3436,7 @@ fn run_window(
                             let wvh = cdp::webview_of(&v);
                             // ...and say the same thing about who we are in
                             // the other place it gets asked
-                            if let Some(ua) = user_agent.as_deref() {
+                            if let Some(ua) = ua.as_deref() {
                                 cdp::call(&wvh, "Emulation.setUserAgentOverride", &ua_override(ua));
                             }
                             if let Some(arm) = cdp::arm_dialogs(&wvh) {

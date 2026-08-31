@@ -151,6 +151,9 @@ pub struct NavState {
     pub back: bool,
     pub forward: bool,
     pub reload: bool,
+    /// The second reload, which throws away what is held first
+    #[serde(default)]
+    pub reload_hard: bool,
     /// URL field (how a person navigates to an arbitrary page)
     pub edit: bool,
     pub can_back: bool,

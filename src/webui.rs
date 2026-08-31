@@ -4841,6 +4841,7 @@ function kindPanel(t, cmdInput, rebuild) {
       part("back", T["tui.nav.back"]),
       part("forward", T["tui.nav.forward"]),
       part("reload", T["tui.nav.reload"]),
+      part("reload_hard", T["tui.nav.reload_hard.short"]),
       part("url", T["tui.nav.url"])));
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.browser.nav.hint"])));
@@ -4870,6 +4871,20 @@ function kindPanel(t, cmdInput, rebuild) {
       el("span", {class:"hint"}, T["settings.browser.private.hint"])));
     box.append(profRow);
     applyPriv();
+
+    // What this page calls itself. Empty follows the app-wide setting, which
+    // is the answer almost every page wants -- this is here for the one that
+    // does not
+    const uaInput = el("input", {type:"text", class:"mono", style:"flex:1;min-width:0",
+      placeholder:T["settings.browser.ua.ph"]});
+    uaInput.value = t.user_agent || "";
+    uaInput.addEventListener("input", () => {
+      const v = uaInput.value.trim();
+      if (v) t.user_agent = v; else delete t.user_agent;
+    });
+    box.append(el("div", {class:"row"}, el("label", {}, T["settings.browser.ua"]), uaInput));
+    box.append(el("div", {class:"row"}, el("label", {}, ""),
+      el("span", {class:"hint"}, T["settings.browser.ua.hint"])));
 
     // The band shown at the bottom. A single checkbox isn't enough (needs message text and a button label),
     // so only show the content fields once "show it" is turned on
@@ -5081,6 +5096,7 @@ function flatten(tabs, depth, out) {
                profile: t.profile || "", automation: t.automation || t.lua || "",
                drives: t.drives || "",
                browser_profile: t.browser_profile || "", private: !!t.private,
+               user_agent: t.user_agent || "",
                locked: !!t.locked, auto_restart: !!t.auto_restart, cwd: t.cwd || "",
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
                notify_on_done: t.notify_on_done || "",
@@ -5099,6 +5115,7 @@ function nest(flat) {
     if (f.drives) node.drives = f.drives;
     if (f.browser_profile) node.browser_profile = f.browser_profile;
     if (f.private) node.private = true;
+    if (f.user_agent) node.user_agent = f.user_agent;
     if (f.locked) node.locked = true;
     if (f.auto_restart) node.auto_restart = true;
     if (f.cwd) node.cwd = f.cwd;

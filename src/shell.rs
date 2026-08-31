@@ -1544,6 +1544,9 @@ function drawNav() {
         send({kind:"go", what:(e.shiftKey || e.ctrlKey || e.metaKey) ? "hardreload" : "reload"});
       if (want.loading) rb.classList.add("spin");
       n.append(rb);
+    }
+    // Its own switch, so a bar can show one, the other, or both
+    if (want.reload_hard) {
       n.append(el("button", {title:T["tui.nav.reload_hard"],
           onclick:() => send({kind:"go", what:"hardreload"})},
         el("span", {class:"ico"}, "⟲")));

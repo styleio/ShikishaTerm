@@ -352,6 +352,7 @@ survives navigation and never covers the site's own sticky header.
 ```lua
 shikisha.browser_nav(page.id)                                 -- all of them
 shikisha.browser_nav(page.id, { reload = true, url = true })  -- pick some
+-- back / forward / reload / reload_hard (fetch it all again) / url
 shikisha.browser_unnav(page.id)                               -- take it away
 ```
 
