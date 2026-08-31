@@ -665,6 +665,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 9px;
     overflow:auto; white-space:pre-wrap; word-break:break-all; }
   #branch .bcmd { color:var(--dim); }
+  /* What the new folder cannot get from git. Ticked as it will happen, so
+     nobody has to read it unless they disagree */
+  #branch .bcarry { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; }
+  #branch .bcarry .say { color:var(--dim); font-size:11.5px; }
+  #branch .bcarry label { display:flex; align-items:center; gap:5px; font-size:12px;
+    color:var(--text); cursor:pointer; }
   #branch .berr, #browse .berr { color:var(--bad, #e5644d); font-size:12px; white-space:pre-wrap; }
   #branch .brow, #browse .brow { display:flex; gap:8px; justify-content:flex-end; }
   #branch button, #browse button { font:inherit; font-size:13px; padding:7px 16px;
@@ -951,6 +957,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <input id="bq" type="text" autocomplete="off" spellcheck="false">
       <div class="bwhere"></div>
       <div class="bcmd"></div>
+      <div class="bcarry"></div>
       <div class="berr"></div>
       <div class="brow"><button class="go"></button></div>
     </div>
@@ -1462,6 +1469,9 @@ function openBranch(g) {
   const q = document.getElementById("bq");
   q.placeholder = T["tui.branch.placeholder"] || "branch name";
   q.value = "";
+  const box = b.querySelector(".bcarry");
+  box.dataset.key = "";
+  box.textContent = "";
   drawBranch();
   setTimeout(() => q.focus(), 30);
 }
@@ -1476,8 +1486,15 @@ function askBranch() {
   clearTimeout(branchTimer);
   branchTimer = setTimeout(() => {
     const q = document.getElementById("bq");
-    send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), make:false});
+    send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), make:false, carry:carrying()});
   }, 180);
+}
+
+// The names still ticked, in the order they were offered
+function carrying() {
+  const b = document.getElementById("branch");
+  if (!b) return [];
+  return Array.from(b.querySelectorAll(".bcarry input:checked")).map(i => i.value);
 }
 function drawBranch() {
   const b = document.getElementById("branch");
@@ -1489,9 +1506,28 @@ function drawBranch() {
   if (mine && p.done) { closeBranch(); return; }
   b.querySelector(".bwhere").textContent = mine && !p.error ? p.folder : "";
   b.querySelector(".bcmd").textContent = mine && !p.error ? p.line : "";
+  drawCarry(b, mine && !p.error ? (p.carry || []) : []);
   b.querySelector(".berr").textContent = mine && p.error ? p.error : "";
   b.querySelector(".go").disabled = !(mine && !p.error);
 }
+// Drawn once per set of names: rebuilding it on every answer would untick
+// whatever was just unticked, which is the one thing this list must not do
+function drawCarry(b, items) {
+  const box = b.querySelector(".bcarry");
+  const key = items.map(i => i.name).join("\u0000");
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  box.textContent = "";
+  if (!items.length) return;
+  box.append(el("span", {class:"say"}, T["tui.branch.carry"] || "Bring along:"));
+  for (const it of items) {
+    const cb = el("input", {type:"checkbox", value:it.name});
+    cb.checked = !!it.on;
+    box.append(el("label", {title:it.folder ? (T["tui.branch.carry.link"] || "") : ""},
+      cb, el("span", {}, it.name)));
+  }
+}
+
 (function () {
   const b = document.getElementById("branch");
   if (!b) return;
@@ -1499,7 +1535,7 @@ function drawBranch() {
   b.addEventListener("mousedown", e => { if (e.target === b) closeBranch(); });
   b.querySelector(".go").onclick = () => {
     const q = document.getElementById("bq");
-    send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), make:true});
+    send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), make:true, carry:carrying()});
   };
   const q = document.getElementById("bq");
   q.addEventListener("input", askBranch);

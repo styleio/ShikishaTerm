@@ -787,6 +787,15 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             branch: v.get("branch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             make: v.get("make").and_then(|x| x.as_bool()).unwrap_or(false),
+            carry: v
+                .get("carry")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
         },
         Some("closesettings") => Ev::CloseSettings,
         Some("opensettings") => Ev::OpenSettings {
@@ -1164,6 +1173,8 @@ pub enum Ev {
         from: String,
         branch: String,
         make: bool,
+        /// What to bring along, of what was offered
+        carry: Vec<String>,
     },
     /// A colour was chosen for the project a folder belongs to. Empty means
     /// "go back to the one you work out yourselves"

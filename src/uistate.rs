@@ -241,6 +241,10 @@ pub struct BranchPlan {
     pub folder: String,
     /// The command, exactly as it will run
     pub line: String,
+    /// What the new folder will not have and cannot get from git -- the
+    /// ignored things that are actually there, offered to come along
+    #[serde(default)]
+    pub carry: Vec<crate::worktree::Carry>,
     /// Why it cannot be done, when it cannot
     #[serde(default)]
     pub error: Option<String>,

@@ -507,8 +507,9 @@ struct WinSurface {
     vault_queries: Vec<String>,
     /// Past conversations asked to be reopened as resuming tabs
     vault_opens: Vec<crate::browser::Ev>,
-    /// Branches asked about, and asked for: (folder cut from, branch, make it)
-    branches: Vec<(String, String, bool)>,
+    /// Branches asked about, and asked for: (folder cut from, branch, make
+    /// it, what to bring along)
+    branches: Vec<(String, String, bool, Vec<String>)>,
     /// Colours chosen for a project: (a folder in it, the colour)
     folder_colors: Vec<(String, String)>,
     /// Folders being looked through, and the one finally chosen
@@ -682,7 +683,7 @@ impl WinSurface {
         std::mem::take(&mut self.vault_opens)
     }
 
-    fn take_branches(&mut self) -> Vec<(String, String, bool)> {
+    fn take_branches(&mut self) -> Vec<(String, String, bool, Vec<String>)> {
         std::mem::take(&mut self.branches)
     }
 
@@ -794,7 +795,9 @@ impl WinSurface {
                 Ev::OpenSettings { section, ret } => self.open_settings = Some((section, ret)),
                 Ev::VaultSearch { query } => self.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
-                Ev::Branch { from, branch, make } => self.branches.push((from, branch, make)),
+                Ev::Branch { from, branch, make, carry } => {
+                    self.branches.push((from, branch, make, carry))
+                }
                 Ev::FolderColor { folder, color } => self.folder_colors.push((folder, color)),
                 Ev::Browse { path, open } => self.browses.push((path, open)),
                 Ev::FolderName { folder, name } => self.folder_names.push((folder, name)),
@@ -4186,7 +4189,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // Another branch of a project already open. The same call answers "what
         // would this do" and does it, so the line shown before it happens is
         // the line that happens
-        for (from, name, make) in surface.take_branches() {
+        for (from, name, make, carry) in surface.take_branches() {
             let from = std::path::PathBuf::from(&from);
             branch_view = Some(match crate::worktree::plan(&from, &name, None) {
                 Err(e) => crate::uistate::BranchPlan {
@@ -4201,6 +4204,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         branch: plan.branch.clone(),
                         folder: plan.folder.display().to_string(),
                         line: plan.line(),
+                        carry: crate::worktree::carryables(&plan.main),
                         error: None,
                         done: false,
                     };
@@ -4223,10 +4227,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         match wrote {
                             Ok(()) => {
                                 view.done = true;
-                                flash = Some(i18n::tp(
-                                    "msg.branch.made",
-                                    &[("name", &plan.branch)],
-                                ));
+                                // What could not be brought along is said out
+                                // loud: the folder is made either way, and the
+                                // first build is what would otherwise fail
+                                let missed = crate::worktree::carry_into(&plan, &carry);
+                                flash = Some(match missed.is_empty() {
+                                    true => i18n::tp(
+                                        "msg.branch.made",
+                                        &[("name", &plan.branch)],
+                                    ),
+                                    false => i18n::tp(
+                                        "msg.branch.made_partly",
+                                        &[("name", &plan.branch), ("missed", &missed.join(", "))],
+                                    ),
+                                });
                             }
                             Err(e) => view.error = Some(format!("{e:#}")),
                         }
