@@ -50,7 +50,7 @@
   "tui.branch.from": "{name} から",
   "tui.branch.make": "作る",
   "tui.branch.carry": "持って行く:",
-  "tui.branch.carry.link": "コピーではなくリンクします",
+  "tui.branch.carry.link": "本体と共有",
   "tui.cast.control": "操作中 — タップで解除",
   "tui.cast.type.ph": "ここに入力",
   "tui.cast.send": "送信",

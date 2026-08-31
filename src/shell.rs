@@ -683,6 +683,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bcarry .say { color:var(--dim); font-size:11.5px; }
   #branch .bcarry label { display:flex; align-items:center; gap:5px; font-size:12px;
     color:var(--text); cursor:pointer; }
+  #branch .bcarry .link { font-size:10.5px; color:var(--dim); border:1px solid var(--line);
+    border-radius:5px; padding:0 4px; }
   #branch .berr, #browse .berr { color:var(--bad, #e5644d); font-size:12px; white-space:pre-wrap; }
   #branch .brow, #browse .brow { display:flex; gap:8px; justify-content:flex-end; }
   #branch button, #browse button { font:inherit; font-size:13px; padding:7px 16px;
@@ -1603,8 +1605,11 @@ function drawCarry(b, items) {
   for (const it of items) {
     const cb = el("input", {type:"checkbox", value:it.name});
     cb.checked = !!it.on;
-    box.append(el("label", {title:it.folder ? (T["tui.branch.carry.link"] || "") : ""},
-      cb, el("span", {}, it.name)));
+    box.append(el("label", {},
+      cb, el("span", {}, it.name),
+      // A folder is not copied: the branch and the project are looking at the
+      // same one, and a write in either is a write in both
+      it.folder ? el("span", {class:"link"}, T["tui.branch.carry.link"] || "shared") : null));
   }
 }
 

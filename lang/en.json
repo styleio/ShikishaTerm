@@ -50,7 +50,7 @@
   "tui.branch.from": "from {name}",
   "tui.branch.make": "Make it",
   "tui.branch.carry": "Bring along:",
-  "tui.branch.carry.link": "linked, not copied",
+  "tui.branch.carry.link": "shared with the project",
   "tui.cast.control": "In control — tap to release",
   "tui.cast.type.ph": "Type here to send",
   "tui.cast.send": "Send",
