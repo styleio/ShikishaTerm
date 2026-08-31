@@ -1023,10 +1023,20 @@ fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
         // The status bar's ↻. Same key a person at the window would press, so the
         // restart itself (cancel this tab's loops, kill, relaunch) lives in one place
         Ev::Restart => prefixed('r'),
-        Ev::Key { text, named, ctrl } => {
+        Ev::Key { text, named, ctrl, shift, alt } => {
             if let Some(n) = named {
+                // The modifiers a named key was pressed with. A character
+                // arrives already shifted, so this is the only place they are
+                // not already in the key itself
+                let mut mods = KeyModifiers::NONE;
+                if *shift {
+                    mods |= KeyModifiers::SHIFT;
+                }
+                if *alt {
+                    mods |= KeyModifiers::ALT;
+                }
                 named_key(n)
-                    .map(|code| vec![Event::Key(KeyEvent::new(code, KeyModifiers::NONE))])
+                    .map(|code| vec![Event::Key(KeyEvent::new(code, mods))])
                     .unwrap_or_default()
             } else if let Some(c) = ctrl.as_ref().and_then(|s| s.chars().next()) {
                 vec![Event::Key(KeyEvent::new(
@@ -5278,7 +5288,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         } else if t.locked {
                             // Soft lock: viewing and copying still work, but input is ignored
                             locked_hit = true;
-                        } else if let Some(bytes) = key_to_bytes(&key) {
+                        } else if let Some(bytes) =
+                            key_to_bytes_with(&key, crate::tab::keyboard_flags(&t.keyboard))
+                        {
                             // Manual input breaks the chain. Except input to a tab that
                             // received a draft doesn't break it — that's not a takeover,
                             // it's joining in; writing more and sending it is all part
@@ -8041,6 +8053,56 @@ fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
     }
 }
 
+/// A modified Enter, Tab, Backspace or Escape, spelled so the program can tell
+/// which one it was.
+///
+/// The old keyboard has no room for these: Enter is one byte, and Shift+Enter
+/// is the same byte, so "send this" and "start a new line here" arrive as the
+/// same keystroke. Every AI CLI wants both, which is why they ask for the
+/// newer keyboard on startup -- and why, until they were answered, the only way
+/// to type a newline into one was to know its private workaround.
+///
+/// Only these four, and only when modified. A program that asked to tell keys
+/// apart still gets its ordinary Return as a Return; what it gains is the one
+/// distinction it had no way to make.
+fn disambiguated_key(key: &KeyEvent) -> Option<Vec<u8>> {
+    let code = match key.code {
+        KeyCode::Enter => 13u32,
+        KeyCode::Tab | KeyCode::BackTab => 9,
+        KeyCode::Backspace => 127,
+        KeyCode::Esc => 27,
+        _ => return None,
+    };
+    // One bit per modifier, and the count is that plus one -- which is how
+    // every escape has counted modifiers since long before this protocol, and
+    // why an unmodified key counts 1 and is not sent this way at all
+    let mut bits = 0u8;
+    if key.modifiers.contains(KeyModifiers::SHIFT) || key.code == KeyCode::BackTab {
+        bits |= 1;
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        bits |= 2;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        bits |= 4;
+    }
+    (bits != 0).then(|| format!("\x1b[{code};{}u", bits + 1).into_bytes())
+}
+
+/// crossterm KeyEvent -> the byte sequence sent to the child PTY.
+///
+/// `flags` is what the program in that tab asked the keyboard to report; 0 is
+/// the keyboard every terminal has always had, and what everything not asking
+/// for anything gets.
+fn key_to_bytes_with(key: &KeyEvent, flags: u8) -> Option<Vec<u8>> {
+    if flags & 1 != 0 {
+        if let Some(bytes) = disambiguated_key(key) {
+            return Some(bytes);
+        }
+    }
+    key_to_bytes(key)
+}
+
 /// crossterm KeyEvent -> the byte sequence sent to the child PTY (VT100/xterm-style encoding)
 fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
     let mut buf: Vec<u8> = Vec::with_capacity(8);
@@ -8099,6 +8161,106 @@ fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole way through, from the message the window sends when a key is
+    /// pressed to the bytes the program receives.
+    ///
+    /// The pieces are checked on their own above; this is the one that would
+    /// catch them being connected wrongly -- a modifier dropped on the way in
+    /// looks exactly like a terminal that does not support the protocol, and
+    /// the program's own workaround hides it.
+    #[test]
+    fn a_shifted_return_arrives_shifted_all_the_way_to_the_program() {
+        let pressed = |named: &str, shift: bool| {
+            let ev = crate::browser::Ev::Key {
+                text: None,
+                named: Some(named.into()),
+                ctrl: None,
+                shift,
+                alt: false,
+            };
+            match keys_for(&ev).first() {
+                Some(Event::Key(k)) => Some(*k),
+                _ => None,
+            }
+        };
+
+        let plain = pressed("enter", false).expect("Enter が届いていない");
+        let shifted = pressed("enter", true).expect("Shift+Enter が届いていない");
+        assert!(!plain.modifiers.contains(KeyModifiers::SHIFT));
+        assert!(
+            shifted.modifiers.contains(KeyModifiers::SHIFT),
+            "窓が送った修飾が途中で落ちている"
+        );
+
+        // Without a program asking, both are a Return, exactly as before
+        assert_eq!(key_to_bytes_with(&plain, 0), Some(b"\r".to_vec()));
+        assert_eq!(key_to_bytes_with(&shifted, 0), Some(b"\r".to_vec()));
+        // With one asking, they are finally two different keys
+        assert_eq!(key_to_bytes_with(&plain, 1), Some(b"\r".to_vec()));
+        assert_eq!(key_to_bytes_with(&shifted, 1), Some(b"\x1b[13;2u".to_vec()));
+    }
+
+    /// Shift+Enter, which every AI CLI wants and no ordinary terminal can
+    /// spell.
+    ///
+    /// Enter is one byte and Shift+Enter is the same byte, so "send this" and
+    /// "start a new line" arrive as the same keystroke. The newer keyboard
+    /// exists for exactly this, and a program only gets it after asking -- so
+    /// the first half of this test is the one that matters most: with nobody
+    /// asking, every key is spelled exactly as it was before.
+    #[test]
+    fn a_program_that_asked_can_tell_shift_enter_from_enter() {
+        let k = |code, mods| KeyEvent::new(code, mods);
+        let bytes = |key: &KeyEvent, flags| key_to_bytes_with(key, flags);
+
+        // Nobody asked: every one of these is what it always was
+        for (code, mods) in [
+            (KeyCode::Enter, KeyModifiers::SHIFT),
+            (KeyCode::Enter, KeyModifiers::NONE),
+            (KeyCode::Tab, KeyModifiers::SHIFT),
+            (KeyCode::Esc, KeyModifiers::CONTROL),
+        ] {
+            let key = k(code, mods);
+            assert_eq!(
+                bytes(&key, 0),
+                key_to_bytes(&key),
+                "誰も頼んでいないのに綴りが変わっている: {code:?} {mods:?}"
+            );
+        }
+        assert_eq!(bytes(&k(KeyCode::Enter, KeyModifiers::SHIFT), 0), Some(b"\r".to_vec()));
+
+        // Asked for: the four keys that had no way to be told apart
+        assert_eq!(
+            bytes(&k(KeyCode::Enter, KeyModifiers::SHIFT), 1),
+            Some(b"\x1b[13;2u".to_vec()),
+            "Shift+Enter が普通のEnterのまま"
+        );
+        assert_eq!(
+            bytes(&k(KeyCode::Enter, KeyModifiers::CONTROL), 1),
+            Some(b"\x1b[13;5u".to_vec())
+        );
+        assert_eq!(
+            bytes(&k(KeyCode::Backspace, KeyModifiers::ALT), 1),
+            Some(b"\x1b[127;3u".to_vec())
+        );
+        assert_eq!(
+            bytes(&k(KeyCode::BackTab, KeyModifiers::NONE), 1),
+            Some(b"\x1b[9;2u".to_vec()),
+            "Shift+Tab は押された時点で修飾を名前に含んでいる"
+        );
+
+        // ...and everything else keeps the spelling it had, asked for or not.
+        // A program that wanted the whole protocol was told this terminal only
+        // does this much, so it is not waiting for the rest
+        assert_eq!(bytes(&k(KeyCode::Enter, KeyModifiers::NONE), 1), Some(b"\r".to_vec()));
+        assert_eq!(bytes(&k(KeyCode::Tab, KeyModifiers::NONE), 1), Some(b"\t".to_vec()));
+        assert_eq!(
+            bytes(&k(KeyCode::Char('c'), KeyModifiers::CONTROL), 1),
+            Some(vec![0x03])
+        );
+        assert_eq!(bytes(&k(KeyCode::Up, KeyModifiers::NONE), 1), Some(b"\x1b[A".to_vec()));
+    }
 
     /// Being told again that a tab is still working -- the whole of the rule,
     /// which is the part worth pinning down.

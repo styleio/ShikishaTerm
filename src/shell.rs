@@ -2866,7 +2866,15 @@ const NAMED = {
 kbd.addEventListener("keydown", e => {
   if (e.isComposing) return;
   const nm = NAMED[e.key];
-  if (nm) { e.preventDefault(); send({kind:"key", named:nm}); return; }
+  // Shift and Alt travel with a named key. A character carries its own shift
+  // already (the browser hands over "%", not shift and "5"), but Enter, Tab and
+  // the arrows have no shifted spelling -- and a program that asked to tell
+  // Shift+Enter from Enter has no way to be told otherwise
+  if (nm) {
+    e.preventDefault();
+    send({kind:"key", named:nm, shift:e.shiftKey, alt:e.altKey});
+    return;
+  }
   if (e.ctrlKey && e.key.length === 1) {
     e.preventDefault();
     send({kind:"key", ctrl:e.key.toLowerCase()});

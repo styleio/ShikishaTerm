@@ -92,6 +92,8 @@ pub struct QueryResponder {
     /// when the tab is made, so changing the setting reaches the tabs opened
     /// after it -- the same as the detection rules
     clipboard_writes: bool,
+    /// What the program running here has asked the keyboard to report
+    keyboard: KeyboardMode,
 }
 
 /// (title, body) pairs waiting to be shown
@@ -99,6 +101,24 @@ pub type Notes = Arc<Mutex<Vec<(String, String)>>>;
 
 /// The window title a program set, shared with whoever wants to read it
 pub type WindowTitle = Arc<Mutex<String>>;
+
+/// What a program has asked the keyboard to report, kept where the key encoder
+/// can read it. Zero is the keyboard every terminal has always had.
+///
+/// The stack is the protocol's own idea: a program pushes what it wants on the
+/// way in and pops on the way out, so a program it launched -- an editor opened
+/// from a shell -- can ask for something different and give it back. An empty
+/// stack means nobody asked for anything.
+pub type KeyboardMode = Arc<Mutex<Vec<u8>>>;
+
+/// Deepest the mode stack goes. A program that pushes without popping is not
+/// going to be saved by more room, and the memory is not ours to spend
+const KEYBOARD_STACK_MAX: usize = 16;
+
+/// What the program in a tab is currently asking for, or 0 if nothing.
+pub fn keyboard_flags(mode: &KeyboardMode) -> u8 {
+    mode.lock().ok().and_then(|m| m.last().copied()).unwrap_or(0)
+}
 
 /// Longest text a program in a tab may put on the clipboard. Generous for a
 /// copied file or a page of output, and short of the "paste the whole heap"
@@ -299,9 +319,60 @@ impl vt100::Callbacks for QueryResponder {
             (None, 'c', _) => self.reply(b"\x1b[?6c"),
             // DA2: secondary terminal type query
             (Some(b'>'), 'c', _) => self.reply(b"\x1b[>0;0;0c"),
+            // The keyboard a program is asking for. Claude Code asks on
+            // startup, and so does anything else that wants Shift+Enter to
+            // arrive as Shift+Enter instead of as a bare Return.
+            //
+            // Push what it asks for, pop it back when it leaves, and answer
+            // with what is in force. A program that pushed and then died
+            // leaves its ask behind, which is why a restart begins with an
+            // empty stack
+            (Some(b'>'), 'u', _) => {
+                if let Ok(mut m) = self.keyboard.lock() {
+                    if m.len() < KEYBOARD_STACK_MAX {
+                        m.push(supported_keyboard_flags(p0.unwrap_or(0)));
+                    }
+                }
+            }
+            (Some(b'<'), 'u', _) => {
+                if let Ok(mut m) = self.keyboard.lock() {
+                    let n = p0.unwrap_or(1).max(1) as usize;
+                    let keep = m.len().saturating_sub(n);
+                    m.truncate(keep);
+                }
+            }
+            // Set outright, without disturbing what is underneath
+            (Some(b'='), 'u', _) => {
+                if let Ok(mut m) = self.keyboard.lock() {
+                    let flags = supported_keyboard_flags(p0.unwrap_or(0));
+                    match m.last_mut() {
+                        Some(top) => *top = flags,
+                        None => m.push(flags),
+                    }
+                }
+            }
+            // Asked what is in force. Answered with what this terminal really
+            // does, not with what was asked for: a program told "yes to all of
+            // it" by a terminal that means "yes to some of it" ends up waiting
+            // for keys that never come
+            (Some(b'?'), 'u', _) => {
+                let flags = keyboard_flags(&self.keyboard);
+                self.reply(format!("\x1b[?{flags}u").as_bytes());
+            }
             _ => {}
         }
     }
+}
+
+/// The part of a keyboard request this terminal actually honours.
+///
+/// Only "tell the keys apart" (bit 1). The rest of the protocol -- reporting
+/// releases as well as presses, the text a key would have produced, every key
+/// as an escape -- is not encoded here, and saying yes to it would leave a
+/// program waiting for keys that never arrive. Answering honestly costs a
+/// feature; answering generously costs the keyboard.
+fn supported_keyboard_flags(asked: u16) -> u8 {
+    (asked & 1) as u8
 }
 
 pub fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
@@ -861,6 +932,84 @@ mod tests {
         assert_eq!(p(&["99", "i=1:d=0:"]), None);
     }
 
+    /// Asking for the newer keyboard, in the bytes Claude Code really sends.
+    ///
+    /// Measured, not guessed: `\x1b[>5u` on startup and `\x1b[<u` on the way
+    /// out are exactly what came back from `pty_probe --watch claude`.
+    ///
+    /// The answer to "what are you doing" is the part worth pinning down. It
+    /// reports what this terminal actually honours, not what was asked for --
+    /// a program told "yes, all of it" by a terminal that means "yes, some of
+    /// it" ends up waiting for keys that never come.
+    #[test]
+    fn a_program_can_ask_for_the_newer_keyboard_and_is_answered_honestly() {
+        use std::sync::{Arc, Mutex};
+        // A writer that keeps what was sent back, so the answers can be read
+        struct Kept(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Kept {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let keyboard: super::KeyboardMode = Arc::new(Mutex::new(Vec::new()));
+        let said: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let replies: super::PtyWriter =
+            Arc::new(Mutex::new(Box::new(Kept(Arc::clone(&said)))));
+        let mut p = vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            super::QueryResponder {
+                writer: Arc::clone(&replies),
+                bell: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                notes: Arc::new(Mutex::new(Vec::new())),
+                window_title: Arc::new(Mutex::new(String::new())),
+                clipboard_writes: false,
+                keyboard: Arc::clone(&keyboard),
+            },
+        );
+        let flags = || super::keyboard_flags(&keyboard);
+
+        // Nothing asked for is the keyboard every terminal has always had
+        assert_eq!(flags(), 0);
+
+        // What Claude Code sends on startup. It asks for 5; this terminal does
+        // the 1 of it, and says so
+        p.process(b"\x1b[>5u");
+        assert_eq!(flags(), 1, "頼まれた分のうち、できる分を持っていない");
+        p.process(b"\x1b[?u");
+
+        // ...and on the way out it gives it back
+        p.process(b"\x1b[<u");
+        assert_eq!(flags(), 0, "抜けたのに要求が残っている");
+
+        // Set outright, then asked again
+        p.process(b"\x1b[=1;1u");
+        assert_eq!(flags(), 1);
+        p.process(b"\x1b[?u");
+
+        // A program that pushes without popping runs into a floor, not into
+        // this app's memory
+        for _ in 0..100 {
+            p.process(b"\x1b[>1u");
+        }
+        assert!(
+            keyboard.lock().unwrap().len() <= super::KEYBOARD_STACK_MAX,
+            "積みっぱなしのプログラムに際限なく付き合っている"
+        );
+
+        // Both answers said 1 -- what is honoured, never the 5 that was asked
+        let answers = String::from_utf8_lossy(&said.lock().unwrap()).to_string();
+        assert_eq!(
+            answers, "[?1u[?1u",
+            "できないことまで「やる」と答えている: {answers:?}"
+        );
+    }
+
     /// The whole path, in the bytes a CLI really sends: parser -> callback ->
     /// the slot state detection reads. Everything above this tests the pieces;
     /// this is the one that would have caught them being wired up wrongly.
@@ -881,6 +1030,7 @@ mod tests {
                 notes: Arc::clone(&notes),
                 window_title: Arc::clone(&title),
                 clipboard_writes: false,
+                keyboard: Arc::new(Mutex::new(Vec::new())),
             },
         );
 
@@ -1748,6 +1898,9 @@ pub struct Tab {
     /// Where this tab's output is being recorded, when it is. Automation reads
     /// it back from its own mark (shikisha.tab_read)
     pub log_path: Option<std::path::PathBuf>,
+    /// What the program running here has asked the keyboard to report. Read
+    /// when a keypress is turned into bytes
+    pub keyboard: KeyboardMode,
     /// The conversation this tab was having when the app last closed. Not
     /// resumed on its own — that would hand back yesterday's context to
     /// someone who quit to be rid of it — but offered to the key that already
@@ -2003,6 +2156,9 @@ impl Tab {
         let bytes_out = Arc::new(AtomicU64::new(0));
         let notes: Notes = Arc::new(Mutex::new(Vec::new()));
         let window_title: WindowTitle = Arc::new(Mutex::new(String::new()));
+        // A fresh process starts with the keyboard every terminal has always
+        // had. What the last one asked for died with it
+        let keyboard: KeyboardMode = Arc::new(Mutex::new(Vec::new()));
         let parser: SharedParser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
@@ -2012,6 +2168,7 @@ impl Tab {
                 bell: Arc::clone(&bell_count),
                 notes: Arc::clone(&notes),
                 window_title: Arc::clone(&window_title),
+                keyboard: Arc::clone(&keyboard),
                 clipboard_writes: crate::config::load()
                     .and_then(|c| c.tui_clipboard)
                     .unwrap_or(true),
@@ -2118,6 +2275,7 @@ impl Tab {
             window_title,
             last_screen: String::new(),
             log_path,
+            keyboard,
             previous: None,
             spoke: AtomicBool::new(false),
             status: Vec::new(),

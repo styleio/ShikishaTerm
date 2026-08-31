@@ -1052,6 +1052,8 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
             named: v.get("named").and_then(|x| x.as_str()).map(str::to_string),
             ctrl: v.get("ctrl").and_then(|x| x.as_str()).map(str::to_string),
+            shift: v.get("shift").and_then(|x| x.as_bool()).unwrap_or(false),
+            alt: v.get("alt").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("say") => Ev::Say {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
@@ -1332,11 +1334,19 @@ pub enum Ev {
     Paste,
     /// An input request for the screencast view (arrives from a client; the conductor turns it into `Cmd::Inject`)
     Inject { to: Option<String>, input: Input },
-    /// A keystroke in window mode. Either a committed character, a named control key, or Ctrl+character
+    /// A keystroke in window mode. Either a committed character, a named
+    /// control key, or Ctrl+character.
+    ///
+    /// `shift` and `alt` ride along with a named key. A character already
+    /// carries its own shift -- the page sends `%`, not shift and `5` -- but
+    /// Enter, Tab and the arrows have no such spelling, and a program that
+    /// asked to tell Shift+Enter from Enter cannot be told without them
     Key {
         text: Option<String>,
         named: Option<String>,
         ctrl: Option<String>,
+        shift: bool,
+        alt: bool,
     },
     /// A person hands one tab a line, and that tab is named.
     ///
