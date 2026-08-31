@@ -695,12 +695,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&main)
-                .args(args)
-                .output()
-                .expect("git が要る");
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(&main).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git が要る");
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         git(&["init", "-q", "-b", "main"]);
@@ -730,12 +727,9 @@ mod tests {
         );
 
         // Where it grew from, written into the repository itself
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(made)
-            .args(["config", "--get", "branch.feature/login.shikishaBase"])
-            .output()
-            .unwrap();
+        let mut ask = std::process::Command::new("git");
+        ask.arg("-C").arg(made).args(["config", "--get", "branch.feature/login.shikishaBase"]);
+        let out = crate::detach_console(&mut ask).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "main");
 
         // Asking for the same branch twice does not quietly make a second one
@@ -754,12 +748,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&main)
-                .args(args)
-                .output()
-                .expect("git が要る");
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(&main).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git が要る");
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         git(&["init", "-q", "-b", "main"]);
@@ -804,10 +795,9 @@ mod tests {
 
         // The junction has to go before the folder does, or removing the tree
         // would walk into it and take the original's contents with it
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "rmdir"])
-            .arg(cut.folder.join("node_modules"))
-            .status();
+        let mut unhook = std::process::Command::new("cmd");
+        unhook.args(["/c", "rmdir"]).arg(cut.folder.join("node_modules"));
+        let _ = crate::detach_console(&mut unhook).status();
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
@@ -818,12 +808,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&main)
-                .args(args)
-                .output()
-                .expect("git が要る");
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(&main).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git が要る");
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         git(&["init", "-q", "-b", "main"]);
@@ -850,12 +837,9 @@ mod tests {
         std::fs::remove_file(cut.folder.join("notes.md")).unwrap();
         discard(&cut.folder).unwrap();
         assert!(!cut.folder.exists(), "フォルダが残っている");
-        let listed = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&main)
-            .args(["worktree", "list", "--porcelain"])
-            .output()
-            .unwrap();
+        let mut ask = std::process::Command::new("git");
+        ask.arg("-C").arg(&main).args(["worktree", "list", "--porcelain"]);
+        let listed = crate::detach_console(&mut ask).output().unwrap();
         assert!(
             !String::from_utf8_lossy(&listed.stdout).contains("feature/gone"),
             "git がまだ持っている"
