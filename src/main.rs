@@ -3980,7 +3980,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // app, so seating it in one corner of the app made as little sense
             // as seating the board there -- and once the panes were hidden to
             // let it cover, the pane it was sitting in had no size to give it
-            if settings_open && !covered {
+            // Nothing is placed in a rectangle with no size: before the page
+            // has measured itself there is no window to cover, and a page
+            // given nothing is a page nobody can find again
+            let room = surface.full.2 > 0 && surface.full.3 > 0;
+            if settings_open && !covered && room {
                 caps.show_at(&[(SETTINGS_TAB.to_string(), surface.full)]);
             } else {
             let shown: Vec<(String, (i32, i32, i32, i32))> = pane_layout

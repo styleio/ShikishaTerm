@@ -2663,21 +2663,22 @@ function report() {
   // is nothing to remember yet, and the content area is the honest answer
   const f = lastFit || fit(main.getBoundingClientRect());
   gRows = f.rows;   // remembered so the remote pager knows one screenful's height
-  const key = f.rows + "x" + f.cols + "@" +
+  const key = f.rows + "x" + f.cols + "@" + Math.round(window.innerWidth) + "x" +
+    Math.round(window.innerHeight) + "," +
     Math.round(main.getBoundingClientRect().width) + "," + Math.round(area.left) + "," +
     Math.round(area.top) + "," + Math.round(area.width) + "," + Math.round(area.height) +
     "|" + panes.map(p => p.id + ":" + p.rows + "x" + p.cols + ":" + p.rect.join(",")).join(";");
   if (key === lastRC) return;
   lastRC = key;
-  // The whole content area as well as the focused pane's share of it. A
-  // screen that covers the window -- the settings form -- is a page placed in
-  // the window like any other and needs a rectangle; it is just not a pane's
-  const whole = main.getBoundingClientRect();
+  // The focused pane's share of the content area, and the whole window. A
+  // screen that covers everything -- the settings -- is a page placed in the
+  // window like any other and needs a rectangle; it is just not a pane's, and
+  // not the content area's either. Settings that ask about the whole app while
+  // sitting beside the tab list read as one more tab's contents
   send({kind:"resize", rows:f.rows, cols:f.cols,
     area:[Math.round(area.left), Math.round(area.top),
           Math.round(area.width), Math.round(area.height)],
-    full:[Math.round(whole.left), Math.round(whole.top),
-          Math.round(whole.width), Math.round(whole.height)],
+    full:[0, 0, Math.round(window.innerWidth), Math.round(window.innerHeight)],
     panes:panes});
 }
 let rt = 0;
