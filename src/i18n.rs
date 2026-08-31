@@ -200,6 +200,45 @@ mod tests {
         }
     }
 
+    /// Every word the pages ask for by name is one English has.
+    ///
+    /// The pages ask by name, look the name up in a table built at
+    /// run time, and a key nobody put in `en.json` simply comes back as itself
+    /// -- so the mistake ships as a settings row labelled `settings.group.where`
+    /// and is only ever found by someone opening that screen. This is the check
+    /// that would have caught it before it was written.
+    #[test]
+    fn every_word_a_page_asks_for_exists() {
+        let en = parse(EN);
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut asked = 0;
+        for entry in std::fs::read_dir(&src).expect("srcフォルダ") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (at, _) in text.match_indices("T[\"") {
+                let rest = &text[at + 3..];
+                let Some(end) = rest.find('"') else { continue };
+                let key = &rest[..end];
+                // A key is written out in full; a trailing dot means the page
+                // builds the rest at run time, and only the page knows from
+                // what -- the one in `shell.rs` checks its own list
+                if !key.contains('.') || key.ends_with('.') {
+                    continue;
+                }
+                asked += 1;
+                assert!(
+                    en.contains_key(key),
+                    "{}: 画面が使う {key} が英語に無い",
+                    path.file_name().unwrap().to_string_lossy()
+                );
+            }
+        }
+        assert!(asked > 100, "画面の文言を読めていない ({asked}件)");
+    }
+
     #[test]
     fn missing_translation_falls_back_to_english() {
         let en = parse(EN);

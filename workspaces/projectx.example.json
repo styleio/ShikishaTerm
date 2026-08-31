@@ -2,28 +2,33 @@
   "//": "ワークスペース定義ファイル。config.json の workspaces から file で参照する",
   "name": "ProjectX",
   "automation": "scripts/projectx",
-  "tabs": [
+  "//groups": "1つの作業フォルダと、そこで働くタブ。フォルダを分けたいときだけ groups を増やす",
+  "groups": [
     {
-      "name": "A:実装",
-      "command": "claude",
       "//cwd": "AIが見るプロジェクトの場所。省略するとアプリと同じ場所",
       "cwd": "D:/work/myproject",
-      "children": [
+      "tabs": [
         {
-          "name": "B:レビュー",
-          "command": "codex",
-          "locked": true,
-          "automation": "scripts/projectx/reviewer"
-        },
-        {
-          "name": "C:デプロイ",
-          "command": "ssh -p 22 -i C:/keys/id_ed25519 -o ServerAliveInterval=60 user@example.com",
-          "profile": "claude",
-          "locked": true,
-          "auto_restart": true,
-          "//端末設定": "encoding は省略時UTF-8、log を true にすると logs/ に会話を保存",
-          "scrollback": 10000,
-          "log": true
+          "name": "A:実装",
+          "command": "claude",
+          "children": [
+            {
+              "name": "B:レビュー",
+              "command": "codex",
+              "locked": true,
+              "automation": "scripts/projectx/reviewer"
+            },
+            {
+              "name": "C:デプロイ",
+              "command": "ssh -p 22 -i C:/keys/id_ed25519 -o ServerAliveInterval=60 user@example.com",
+              "profile": "claude",
+              "locked": true,
+              "auto_restart": true,
+              "//端末設定": "encoding は省略時UTF-8、log を true にすると logs/ に会話を保存",
+              "scrollback": 10000,
+              "log": true
+            }
+          ]
         }
       ]
     }

@@ -1997,6 +1997,8 @@ const PAGE: &str = r##"<!doctype html>
    margin:12px 0 2px; display:flex; align-items:center; gap:6px; }
  .navgrouphead .caret { font-size:10px; width:10px; display:inline-block; text-align:center; }
  .navtab { padding-left:18px; }
+ .navfolder { padding-left:10px; color:var(--muted); font-size:11px; letter-spacing:.04em;
+              cursor:default; opacity:.9; }
  .navtab.child { padding-left:34px; }
  .navadd { color:var(--muted); }
 
@@ -2685,6 +2687,15 @@ const CAT_LIST = [
 ];
 
 // ── Sidebar ───────────────────────────────────────
+// What a folder is called in a list: what someone typed, else the folder itself
+function groupLabel(g, i) {
+  const name = (g.name || "").trim();
+  if (name) return name;
+  const cwd = (g.cwd || "").trim();
+  if (!cwd) return T["settings.group.folder.ph"];
+  return cwd.split(/[\\/]/).filter(Boolean).pop() || cwd;
+}
+
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
@@ -2717,7 +2728,14 @@ function renderNav() {
     nav.append(el("button", {class:"navitem" + (!sel.global && sel.ws === wi && sel.tab === null ? " sel" : ""),
       onclick:() => { navOpen.add(wi); sel = {ws:wi, tab:null, global:false}; render(); }},
       el("span", {}, T["settings.workspace.settings"])));
+    let shown = -1;
     (ws.tabs || []).forEach((t, ti) => {
+      const gi = t.group || 0;
+      if ((ws.groups || []).length > 1 && gi !== shown) {
+        shown = gi;
+        nav.append(el("div", {class:"navitem navfolder"},
+          el("span", {}, groupLabel(ws.groups[gi], gi))));
+      }
       const b = el("button", {class:"navitem navtab" + (t.depth ? " child" : "") +
         (!sel.global && sel.ws === wi && sel.tab === ti ? " sel" : ""),
         onclick:() => { navOpen.add(wi); sel = {ws:wi, tab:ti, global:false}; render(); }});
@@ -2737,7 +2755,7 @@ function renderNav() {
 const newTab = (o = {}) => Object.assign(
   {name:"", id:"", command:"", profile:"", automation:"", locked:false, auto_restart:false,
    browser_profile:"", private:false,
-   cwd:"", encoding:"", scrollback:"", log:false, depth:0}, o);
+   encoding:"", scrollback:"", log:false, depth:0, group:0}, o);
 
 // Index of a tab with both an empty name and empty command (still in progress). -1 if there is none.
 // Even if "Add tab" is clicked repeatedly, if an empty, unwritten tab already exists,
@@ -2752,7 +2770,16 @@ function firstEmptyTab(ws) {
 function addTabTo(ws) {
   ws.tabs = ws.tabs || [];
   let i = firstEmptyTab(ws);
-  if (i < 0) { ws.tabs.push(newTab()); i = ws.tabs.length - 1; }
+  if (i < 0) {
+    // Beside the tab being looked at, so a folder with several tabs keeps them
+    // together and the new one starts in the folder that was on screen
+    const at = ws.tabs[sel.tab];
+    const group = at ? (at.group || 0) : 0;
+    let j = ws.tabs.length;
+    while (j > 0 && (ws.tabs[j - 1].group || 0) > group) j--;
+    ws.tabs.splice(j, 0, newTab({group}));
+    i = j;
+  }
   return i;
 }
 
@@ -2882,6 +2909,10 @@ function partsValid(parts) {
   return null;
 }
 function landOnWs(ws) {
+  // Made by a wizard, a template or from nothing -- all of them arrive here, so
+  // this is the one place that has to make sure a workspace has its group
+  if (!(ws.groups || []).length) ws.groups = [{name:"", id:"", cwd:""}];
+  (ws.tabs || []).forEach(t => { if (t.group === undefined) t.group = 0; });
   wss.push(ws); sel = {ws:wss.length - 1, tab:null, global:false}; render(); refreshSave();
 }
 
@@ -3053,7 +3084,7 @@ function wizardReview() {
         if (!repo.dir.trim()) { toast(T["wizard.review.repo_required"], true); return; }
         const err = partsValid([coder].concat(revs)); if (err) { toast(err, true); return; }
         const tabs = [], personas = {}, agents = [], used = new Set();
-        tabs.push(newTab({name:T["wizard.review.coder_tab_name"], id:"coder", command: aiCommandOf(coder.key, coder.model), cwd: repo.dir.trim()}));
+        tabs.push(newTab({name:T["wizard.review.coder_tab_name"], id:"coder", command: aiCommandOf(coder.key, coder.model)}));
         personas["coder"] = CODER_PERSONA; agents.push("coder"); used.add("coder");
         revs.forEach((r, i) => {
           const rr = REVIEW_ROLES.find(x => x.label === r.role);
@@ -3066,6 +3097,7 @@ function wizardReview() {
         });
         m.remove();
         landOnWs({name: nameIn.value.trim() || T["wizard.review.default_name"], automation:"", tabs,
+          groups:[{name:"", id:"", cwd: repo.dir.trim()}],
           discuss:{agents, order:"round-robin", max_rounds:4, personas},
           stops:[{when:"console", agents:"all", pattern:"LGTM", outcome:"success", code:0, reason:T["wizard.review.stop_reason"]}]});
       }}, T["wizard.review.create"]),
@@ -4190,6 +4222,7 @@ function wsPane(ws) {
     e.append(bar);
     box.append(e);
   }
+  box.append(wsFoldersCard(ws));
   box.append(wsDiscussCard(ws));
   box.append(wsStopsCard(ws));
   box.append(wsSecretsCard(ws));
@@ -4209,6 +4242,45 @@ function wsPane(ws) {
       }
     }}, T["settings.workspace.delete"])));
   return box;
+}
+
+// Where the work happens. One folder per group, and a tab has none of its own:
+// a reviewer pointed somewhere other than the tab it reviews reviews nothing.
+// With a single folder this is one field and the word "group" never appears --
+// which is the state anyone who has not asked for a second one stays in.
+function wsFoldersCard(ws) {
+  const groups = ws.groups && ws.groups.length ? ws.groups : (ws.groups = [{name:"", id:"", cwd:""}]);
+  const box = el("div");
+  const draw = () => {
+    box.textContent = "";
+    groups.forEach((g, i) => {
+      const folder = pathField(g, "cwd", T["settings.group.folder.ph"], "dir",
+                               T["settings.group.folder.pick"]);
+      if (groups.length === 1) {
+        box.append(row(T["settings.group.folder"], ...folder,
+          el("span", {class:"hint"}, T["settings.group.folder.hint"])));
+        return;
+      }
+      // The last folder standing cannot be removed: its tabs would have nowhere
+      // to work, and an empty list is not a thing anyone asked for
+      const del = el("button", {class:"quiet", onclick:() => {
+        if (ws.tabs.some(t => (t.group || 0) === i)) { toast(T["settings.group.in_use"], true); return; }
+        groups.splice(i, 1);
+        ws.tabs.forEach(t => { if ((t.group || 0) > i) t.group--; });
+        draw(); renderNav(); refreshSave();
+      }}, T["common.delete"]);
+      box.append(el("div", {class:"row", style:"align-items:center;gap:8px;flex-wrap:wrap"},
+        field(g, "name", T["settings.group.name.ph"], {grow:false, width:200,
+              onInput:() => renderNav()}),
+        ...folder, del));
+    });
+    box.append(el("div", {class:"row"},
+      el("button", {class:"quiet", onclick:() => {
+        groups.push({name:"", id:"", cwd:""}); draw(); renderNav(); refreshSave();
+      }}, T["settings.group.add"])));
+  };
+  draw();
+  return card(T["settings.group.folders"], box);
 }
 
 // AI vs AI discussion. Lines up participant tab ids and cycles them round-robin or moderated (moderator picks the next speaker).
@@ -4480,7 +4552,9 @@ const TEMPLATES = {
 };
 function addTemplate(kind) {
   const ws = wss[sel.ws];
-  ws.tabs = (ws.tabs || []).concat(TEMPLATES[kind].map(x => newTab(x)));
+  const at = (ws.tabs || [])[sel.tab];
+  const group = at ? (at.group || 0) : 0;
+  ws.tabs = (ws.tabs || []).concat(TEMPLATES[kind].map(x => newTab(Object.assign({group}, x))));
   sel.tab = ws.tabs.length - TEMPLATES[kind].length;
   render();
   msg(T["settings.template.added"]);
@@ -4523,11 +4597,16 @@ function tabPane(ws, t) {
       setCommand(t, cmdInput, CAT_START[v] || ""); rebuild();
     }));
   rebuild();
-  box.append(card(T["settings.tab.launch"], cmdRow, detailBox,
-    row(T["settings.tab.command"], cmdInput), real.box,
-    row(T["settings.tab.cwd"], ...pathField(t, "cwd", T["settings.tab.cwd.ph"], "dir",
-        T["settings.tab.cwd.pick"]),
-        el("span", {class:"hint"}, T["settings.tab.cwd.hint"]))));
+  const launch = card(T["settings.tab.launch"], cmdRow, detailBox,
+    row(T["settings.tab.command"], cmdInput), real.box);
+  if ((ws.groups || []).length > 1) {
+    // Through a holder, because a select speaks strings and a group is a number
+    launch.append(row(T["settings.group.where"],
+      choose({at: String(t.group || 0)}, "at",
+             ws.groups.map((g, i) => [String(i), groupLabel(g, i)]),
+             v => { sel.tab = setTabGroup(ws, sel.tab, Number(v)); render(); refreshSave(); })));
+  }
+  box.append(launch);
 
   // Notify on answer: a beginner-friendly way to get a Slack/Telegram ping when
   // this tab's AI finishes, without writing on_done Lua. Lists the destinations
@@ -4583,9 +4662,27 @@ function tabPane(ws, t) {
   return box;
 }
 
+// Moves a tab to another folder, children and all: they are drawn under it and
+// work in the same place, so leaving them behind would split one family across
+// two folders. The list stays ordered by folder, which is what the headings in
+// the nav and the tab bar are drawn from. Returns where the tab ended up
+function setTabGroup(ws, i, group) {
+  let end = i + 1;
+  while (end < ws.tabs.length && ws.tabs[end].depth > ws.tabs[i].depth) end++;
+  const moved = ws.tabs.splice(i, end - i);
+  moved.forEach(t => t.group = group);
+  let at = ws.tabs.length;
+  for (let k = 0; k < ws.tabs.length; k++) if ((ws.tabs[k].group || 0) > group) { at = k; break; }
+  ws.tabs.splice(at, 0, ...moved);
+  return at;
+}
+
 function moveTab(ws, d) {
   const i = sel.tab, j = i + d;
   if (j < 0 || j >= ws.tabs.length) return;
+  // Swapping across a folder boundary would move a tab to another folder
+  // without saying so. The folder is picked in the tab's own settings
+  if ((ws.tabs[i].group || 0) !== (ws.tabs[j].group || 0)) return;
   [ws.tabs[i], ws.tabs[j]] = [ws.tabs[j], ws.tabs[i]];
   sel.tab = j; render();
 }
@@ -5090,18 +5187,43 @@ function automsg(t, warn) { const m = document.getElementById("automsg");
   m.textContent = t; m.style.color = warn ? "var(--danger)" : "var(--muted)"; }
 
 // ── Load / save ──────────────────────────────────
-function flatten(tabs, depth, out) {
+// However a workspace was written, it comes out as groups. This mirrors
+// grouped() in config.rs, which does the same to launch it: tabs written
+// straight into a workspace -- every one from before groups existed -- are
+// split by the folder each of them named, and a child follows its parent.
+function groupsOf(w) {
+  const groups = (w.groups || []).map(g => ({name:g.name || "", id:g.id || "",
+                                             cwd:g.cwd || "", tabs:g.tabs || []}));
+  for (const t of (w.tabs || [])) {
+    const cwd = (t.cwd || "").trim();
+    let g = groups.find(x => x.cwd === cwd && !x.name && !x.id);
+    if (!g) { g = {name:"", id:"", cwd, tabs:[]}; groups.push(g); }
+    g.tabs.push(t);
+  }
+  if (!groups.length) groups.push({name:"", id:"", cwd:"", tabs:[]});
+  return groups;
+}
+
+// The screen keeps one flat list of tabs, each remembering which group it is in
+function readGroups(ws, w) {
+  const gs = groupsOf(w);
+  ws.groups = gs.map(g => ({name:g.name, id:g.id, cwd:g.cwd}));
+  ws.tabs = [];
+  gs.forEach((g, i) => flatten(g.tabs, 0, i, ws.tabs));
+}
+
+function flatten(tabs, depth, group, out) {
   for (const t of tabs || []) {
     out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command),
                profile: t.profile || "", automation: t.automation || t.lua || "",
                drives: t.drives || "",
                browser_profile: t.browser_profile || "", private: !!t.private,
                user_agent: t.user_agent || "",
-               locked: !!t.locked, auto_restart: !!t.auto_restart, cwd: t.cwd || "",
+               locked: !!t.locked, auto_restart: !!t.auto_restart,
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
                notify_on_done: t.notify_on_done || "",
-               nav: t.nav || null, ask: t.ask || null, depth });
-    flatten(t.children, depth + 1, out);
+               nav: t.nav || null, ask: t.ask || null, depth, group });
+    flatten(t.children, depth + 1, group, out);
   }
   return out;
 }
@@ -5118,7 +5240,6 @@ function nest(flat) {
     if (f.user_agent) node.user_agent = f.user_agent;
     if (f.locked) node.locked = true;
     if (f.auto_restart) node.auto_restart = true;
-    if (f.cwd) node.cwd = f.cwd;
     if (f.encoding) node.encoding = f.encoding;
     if (f.scrollback) node.scrollback = Number(f.scrollback);
     if (f.log) node.log = true;
@@ -5170,7 +5291,7 @@ async function load() {
   wss = [];
   for (const w of list) {
     const ws = { name:w.name || "", file:w.file || null,
-                 automation:w.automation || w.lua || "", tabs:[],
+                 automation:w.automation || w.lua || "", tabs:[], groups:[],
                  // Not touched from the screen, but kept so saving doesn't drop it
                  browsers:w.browsers || null,
                  secrets_allow: w.secrets_allow || [],
@@ -5183,13 +5304,13 @@ async function load() {
       // tabs would come out empty and saving would erase them, so stop here too.
       if (got.failure) return showLoadFailure(got.failure);
       const f = got.value;
-      ws.tabs = flatten(f.tabs, 0, []);
+      readGroups(ws, f);
       if (!ws.automation) ws.automation = f.automation || f.lua || "";
       if (!ws.secrets_allow.length) ws.secrets_allow = f.secrets_allow || [];
       if (!ws.secrets_allow_all) ws.secrets_allow_all = !!f.secrets_allow_all;
       if (!ws.stops.length && Array.isArray(f.stops)) ws.stops = f.stops;
       if (!ws.discuss && f.discuss) ws.discuss = f.discuss;
-    } else ws.tabs = flatten(w.tabs, 0, []);
+    } else readGroups(ws, w);
     wss.push(ws);
   }
   if (sel.ws >= wss.length) sel = {ws:0, tab:null, global:true};
@@ -5286,6 +5407,15 @@ function payload() {
   }
   delete out.lua; delete out.tabs;
 
+  // A group is written with its own tabs nested back under it. Its name and id
+  // are worth writing only when someone typed them; the folder always is
+  const groupsOut = w => (w.groups && w.groups.length ? w.groups : [{}]).map((g, i) => {
+    const o = {};
+    for (const k of ["name", "id", "cwd"]) if ((g[k] || "").trim()) o[k] = g[k].trim();
+    o.tabs = nest(w.tabs.filter(t => (t.group || 0) === i));
+    return o;
+  });
+
   // Stop conditions are saved after dropping rows with an empty when
   const cleanStops = w => (w.stops || []).filter(s => s && s.when);
   // A discussion is only saved when there are 2 or more participants
@@ -5295,7 +5425,7 @@ function payload() {
   const files = [];
   for (const w of wss) {
     if (!w.file) continue;
-    const body = { name:w.name, tabs:nest(w.tabs) };
+    const body = { name:w.name, groups:groupsOut(w) };
     if (w.automation) body.automation = w.automation;
     if (w.secrets_allow && w.secrets_allow.length) body.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) body.secrets_allow_all = true;
@@ -5306,7 +5436,7 @@ function payload() {
   out.workspaces = wss.map(w => {
     const o = { name:w.name };
     if (w.file) o.file = w.file;
-    else { if (w.automation) o.automation = w.automation; o.tabs = nest(w.tabs); }
+    else { if (w.automation) o.automation = w.automation; o.groups = groupsOut(w); }
     // Don't lose a setting that isn't on screen just because it was saved from the screen
     if (w.browsers) o.browsers = w.browsers;
     // Allow-list of secrets the rally may use (denied by default)
@@ -6064,20 +6194,6 @@ mod tests {
             assert!(!html.contains("{{"), "{name} に未置換の {{{{key}}}} が残っている");
             assert!(!html.contains("__"), "{name} に未置換のプレースホルダが残っている");
             assert!(html.contains("<html lang=\"en\">"), "{name} の lang 属性");
-        }
-    }
-
-    /// Every key referenced from JS must exist in the dictionary (T["..."] must never be undefined)
-    #[test]
-    fn page_script_only_uses_known_keys() {
-        let en: serde_json::Value = serde_json::from_str(include_str!("../lang/en.json")).unwrap();
-        for page in [PAGE, RESULT_PAGE] {
-            let mut rest = page;
-            while let Some(i) = rest.find("T[\"") {
-                rest = &rest[i + 3..];
-                let key = &rest[..rest.find('"').unwrap()];
-                assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
-            }
         }
     }
 

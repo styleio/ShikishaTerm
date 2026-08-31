@@ -4700,7 +4700,7 @@ mod tests {
     }
 
 
-    /// Every translation key the page asks for must exist in the dictionary.
+    /// Every translation key the page builds at run time must exist too.
     ///
     /// A missing key just becomes an empty string — no crash, no warning —
     /// so the only way to notice is "I pressed it and nothing appeared".
@@ -4708,25 +4708,16 @@ mod tests {
     /// tui.help.body, and showed an empty box with just a title. It looked
     /// like pressing it simply did nothing.
     ///
-    /// A test used to cover this, but it got deleted along with the old phone-only page.
+    /// Keys written out in full are checked for every page at once, in
+    /// `i18n::tests::every_word_a_page_asks_for_exists`. What is left here is
+    /// the half that test cannot do: a key half of which is decided while the
+    /// page runs, so only the page's own list can say what to look for.
     #[test]
-    fn every_word_the_page_asks_for_is_in_the_dictionary() {
+    fn every_word_the_page_builds_is_in_the_dictionary() {
         let en: serde_json::Value =
             serde_json::from_str(include_str!("../lang/en.json")).unwrap();
         let p = super::page();
-        let mut rest = p.as_str();
         let mut checked = 0;
-        // Pick up every place the page reads T["..."]
-        while let Some(i) = rest.find("T[\"") {
-            rest = &rest[i + 3..];
-            let key = &rest[..rest.find('"').expect("閉じていない")];
-            // A trailing dot means it's built dynamically (T["tui.help." + k]) — handled below
-            if key.ends_with('.') {
-                continue;
-            }
-            assert!(en.get(key).is_some(), "lang/en.json に無いキー: {key}");
-            checked += 1;
-        }
         // The dynamically-built form (T["tui.help." + k]). The names are read
         // out of the page's own list rather than copied into this test: a
         // second list would be a second thing to keep in step, and the one
@@ -4748,7 +4739,11 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked > 20, "訳語をほとんど読んでいない ({checked}件)");
+        // Not a count: the list is as long as it happens to be. What matters is
+        // that the form is still there to be read, and that reading it found
+        // something -- a silent zero is how a check stops checking
+        assert!(p.contains(head), "動的に読む形が消えた: {head}");
+        assert!(checked > 0, "動的な訳語を読めていない");
     }
 
     /// The board's "edit settings" entry must never be forwarded as a keystroke.
