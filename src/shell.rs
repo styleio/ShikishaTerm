@@ -638,18 +638,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); background:var(--panel); color:var(--text); }
   #netveil .nvbtn[hidden] { display:none; }
 
-  #vault, #palette, #branch { position:fixed; inset:0; background:#00000099; display:flex;
+  #vault, #palette, #branch, #browse { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
-  #vault[hidden], #palette[hidden], #branch[hidden] { display:none; }
-  #vault .vbox, #palette .vbox, #branch .vbox { background:var(--panel); border:1px solid var(--brand);
+  #vault[hidden], #palette[hidden], #branch[hidden], #browse[hidden] { display:none; }
+  #vault .vbox, #palette .vbox, #branch .vbox, #browse .vbox { background:var(--panel); border:1px solid var(--brand);
     border-radius:12px; padding:16px 18px; width:min(720px,92vw); max-height:82vh;
     display:flex; flex-direction:column; gap:10px; }
-  #vault .vhead, #palette .vhead, #branch .vhead { display:flex; align-items:center; }
-  #vault .vtitle, #palette .vtitle, #branch .vtitle { color:var(--brand); font-size:13px;
-    letter-spacing:1px; text-transform:uppercase; flex:1; }
-  #vault .vclose, #palette .vclose, #branch .vclose { cursor:pointer; color:var(--dim);
-    font-size:16px; padding:2px 6px; }
-  #vault .vclose:hover, #palette .vclose:hover, #branch .vclose:hover { color:var(--text); }
+  #vault .vhead, #palette .vhead, #branch .vhead, #browse .vhead { display:flex; align-items:center; }
+  #vault .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle { color:var(--brand);
+    font-size:13px; letter-spacing:1px; text-transform:uppercase; flex:1; }
+  #vault .vclose, #palette .vclose, #branch .vclose, #browse .vclose { cursor:pointer;
+    color:var(--dim); font-size:16px; padding:2px 6px; }
+  #vault .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
+  #browse .vclose:hover { color:var(--text); }
   #vault #vq, #palette #pq, #branch #bq { font:inherit; font-size:14px; background:var(--bg);
     color:var(--text); border:1px solid var(--line); border-radius:8px; padding:9px 12px; outline:none; }
   #vault #vq:focus, #palette #pq:focus, #branch #bq:focus { border-color:var(--brand); }
@@ -657,16 +658,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the command itself. Never typed into -- the branch name above is the only
      thing anyone fills in */
   #branch .bsay { color:var(--dim); font-size:11.5px; }
-  #branch .bwhere, #branch .bcmd { font-family:var(--mono); font-size:11.5px; color:var(--text);
+  #browse .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; max-height:52vh; }
+  #browse .vrow { padding:8px 10px; border-radius:8px; cursor:pointer; }
+  #browse .vrow:hover { background:var(--raise); }
+  #branch .bwhere, #branch .bcmd, #browse .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--text);
     background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 9px;
     overflow:auto; white-space:pre-wrap; word-break:break-all; }
   #branch .bcmd { color:var(--dim); }
-  #branch .berr { color:var(--bad, #e5644d); font-size:12px; white-space:pre-wrap; }
-  #branch .brow { display:flex; gap:8px; justify-content:flex-end; }
-  #branch button { font:inherit; font-size:13px; padding:7px 16px; border-radius:8px;
-    border:1px solid var(--line); background:var(--raise); color:var(--text); cursor:pointer; }
-  #branch button.go { border-color:var(--brand); color:var(--brand); }
-  #branch button[disabled] { opacity:.45; cursor:default; }
+  #branch .berr, #browse .berr { color:var(--bad, #e5644d); font-size:12px; white-space:pre-wrap; }
+  #branch .brow, #browse .brow { display:flex; gap:8px; justify-content:flex-end; }
+  #branch button, #browse button { font:inherit; font-size:13px; padding:7px 16px;
+    border-radius:8px; border:1px solid var(--line); background:var(--raise);
+    color:var(--text); cursor:pointer; }
+  #branch button.go, #browse button.go { border-color:var(--brand); color:var(--brand); }
+  #branch button[disabled], #browse button[disabled] { opacity:.45; cursor:default; }
   /* The little menu a folder's heading opens. Not a hover thing: it has to be
      reachable by a finger as well as a pointer */
   .fmenu { position:fixed; z-index:60; background:var(--panel); border:1px solid var(--line);
@@ -943,6 +948,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="bwhere"></div>
       <div class="bcmd"></div>
       <div class="berr"></div>
+      <div class="brow"><button class="go"></button></div>
+    </div>
+  </div>
+  <!-- Somewhere else to work. The same list on the window and on a phone -->
+  <div id="browse" hidden>
+    <div class="vbox">
+      <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
+      <div class="bwhere"></div>
+      <div class="berr"></div>
+      <div class="vlist"></div>
       <div class="brow"><button class="go"></button></div>
     </div>
   </div>
@@ -1223,7 +1238,7 @@ function drawTabs() {
     }
   }
   // A "+" at the end of the list. Opens the settings page already in the "add tab" state
-  nav.append(el("div", {class:"tab addtab", onclick:addTabHere},
+  nav.append(el("div", {class:"tab addtab", onclick:e => addMenu(e)},
     el("span", {class:"num"}, "+"),
     el("span", {class:"nm"}, T["tui.tab.add"] || "ADD TAB")));
   // The settings gear, pinned to the very bottom of the sidebar. Always visible.
@@ -1276,6 +1291,79 @@ function folderMenu(e, g) {
   setTimeout(() => document.addEventListener("mousedown", folderMenuAway, true), 0);
 }
 let folderMenuAway = null;
+// The three ways a workspace grows, said as what happens rather than as what
+// they are. Parallel work only appears where there is a project to cut a
+// branch from, so someone with no repository never meets the idea
+function addMenu(e) {
+  closeFolderMenu();
+  const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
+  // The folder of the tab being looked at, so "another branch" means this one
+  const at = (S && S.tabs || []).find(t => t.index === S.active);
+  const gs = (S && S.groups) || [];
+  const here = (at && at.group != null && gs[at.group] && gs[at.group].color)
+    ? gs[at.group] : gs.find(g => g.color) || null;
+  const m = el("div", {class:"fmenu"},
+    item(T["tui.tab.add"] || "ADD TAB", addTabHere),
+    here ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
+                () => openBranch(here)) : null,
+    item(T["tui.folder.another"] || "Open another folder", () => openBrowse("")));
+  document.body.append(m);
+  const r = e.currentTarget.getBoundingClientRect();
+  const box = m.getBoundingClientRect();
+  m.style.left = Math.min(r.left, window.innerWidth - box.width - 8) + "px";
+  m.style.top = Math.min(r.bottom + 4, window.innerHeight - box.height - 8) + "px";
+  folderMenuAway = ev => { if (!m.contains(ev.target)) closeFolderMenu(); };
+  setTimeout(() => document.addEventListener("mousedown", folderMenuAway, true), 0);
+}
+
+// Somewhere else to work. The list comes from the app, so this is the same
+// walk from the window and from a phone -- there is no dialog the operating
+// system can draw on a phone, and one list is one thing to keep right
+function openBrowse(at) {
+  const b = document.getElementById("browse");
+  if (!b) return;
+  b.hidden = false;
+  b.querySelector(".vtitle").textContent = T["tui.browse.title"] || "OPEN A FOLDER";
+  b.querySelector(".go").textContent = T["tui.browse.open"] || "Open";
+  send({kind:"browse", path:at || "", open:false});
+}
+function closeBrowse() {
+  const b = document.getElementById("browse");
+  if (b) b.hidden = true;
+}
+function drawBrowse() {
+  const b = document.getElementById("browse");
+  if (!b || b.hidden) return;
+  const st = (S && S.browse) || null;
+  b.querySelector(".bwhere").textContent = (st && st.at) || (T["tui.browse.top"] || "");
+  b.querySelector(".berr").textContent = (st && st.error) || "";
+  const list = b.querySelector(".vlist");
+  list.textContent = "";
+  if (st && st.up != null) {
+    list.append(el("div", {class:"vrow", onclick:() => openBrowse(st.up)},
+      el("span", {class:"nm"}, "..")));
+  }
+  for (const d of (st && st.dirs) || []) {
+    // The last part is what a person reads; the whole path is the tooltip
+    const leaf = d.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || d;
+    list.append(el("div", {class:"vrow", title:d, onclick:() => openBrowse(d)},
+      el("span", {class:"nm"}, leaf)));
+  }
+  b.querySelector(".go").disabled = !(st && st.at);
+}
+(function () {
+  const b = document.getElementById("browse");
+  if (!b) return;
+  b.querySelector(".vclose").onclick = closeBrowse;
+  b.addEventListener("mousedown", e => { if (e.target === b) closeBrowse(); });
+  b.querySelector(".go").onclick = () => {
+    const st = (S && S.browse) || null;
+    if (!st || !st.at) return;
+    closeBrowse();
+    send({kind:"browse", path:st.at, open:true});
+  };
+})();
+
 // The colours for a project, offered as squares. Picking one is the whole
 // interaction -- there is nothing to confirm, and the list is repainted from
 // the app's answer, so what is on screen is what was actually saved
@@ -1933,6 +2021,7 @@ window.__state = function (json) {
   drawVeil();
   renderVault();
   drawBranch();
+  drawBrowse();
   // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");
   const away = !screen.hidden && S.scrolled > 0;

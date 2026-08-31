@@ -511,6 +511,8 @@ struct WinSurface {
     branches: Vec<(String, String, bool)>,
     /// Colours chosen for a project: (a folder in it, the colour)
     folder_colors: Vec<(String, String)>,
+    /// Folders being looked through, and the one finally chosen
+    browses: Vec<(String, bool)>,
 }
 
 impl WinSurface {
@@ -684,6 +686,10 @@ impl WinSurface {
         std::mem::take(&mut self.folder_colors)
     }
 
+    fn take_browses(&mut self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.browses)
+    }
+
     fn take_suggests(&mut self) -> Vec<String> {
         std::mem::take(&mut self.suggests)
     }
@@ -778,6 +784,7 @@ impl WinSurface {
                 ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
                 Ev::Branch { from, branch, make } => self.branches.push((from, branch, make)),
                 Ev::FolderColor { folder, color } => self.folder_colors.push((folder, color)),
+                Ev::Browse { path, open } => self.browses.push((path, open)),
                 Ev::RemoteCut => self.remote_cut = true,
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
@@ -1115,6 +1122,7 @@ fn run_in_window() -> Result<()> {
         vault_opens: Vec::new(),
         branches: Vec::new(),
         folder_colors: Vec::new(),
+        browses: Vec::new(),
         record_arms: Vec::new(),
         run_luas: Vec::new(),
         pane_splits: Vec::new(),
@@ -1675,6 +1683,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
     crate::uistate::UiState {
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
         branch: ui.branch.clone(),
+        browse: ui.browse.clone(),
         workspace: ui
             .ws_names
             .get(ui.ws_index)
@@ -2261,6 +2270,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // What making a branch would do. Answered while the name is being typed,
     // and cleared once the folder exists so the dialog can close itself
     let mut branch_view: Option<crate::uistate::BranchPlan> = None;
+    // The folders being looked through, while somewhere new is being chosen
+    let mut browse_view: Option<crate::uistate::BrowseState> = None;
     // What this whole app is costing the machine, refreshed on the same beat as
     // the per-tab figures. Shown in the board's header
     let mut self_cost: Option<String> = None;
@@ -3590,6 +3601,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             },
             vault: vault_view.clone(),
             branch: branch_view.clone(),
+            browse: browse_view.clone(),
             folder_colors: cfg
                 .as_ref()
                 .map(|c| c.folder_colors.clone())
@@ -4110,6 +4122,23 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 hits,
                 capped: found.capped,
             });
+        }
+        // Somewhere new to work. Looking hands back what is inside; choosing
+        // writes the folder into the settings, and the reload opens it
+        for (path, open) in surface.take_browses() {
+            if !open {
+                browse_view = Some(crate::uistate::BrowseState::of(&path));
+                continue;
+            }
+            let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
+            let at = std::path::PathBuf::from(&path);
+            match config::append_group(&ws, None, &at, None) {
+                Ok(()) => {
+                    browse_view = None;
+                    flash = Some(i18n::tp("msg.folder.opened", &[("path", &path)]));
+                }
+                Err(e) => flash = Some(format!("{e:#}")),
+            }
         }
         // A colour chosen for a project. Written against the folder git shares
         // between its branches, so all of them change at once
@@ -7714,6 +7743,8 @@ struct Ui {
     discuss_start_name: Option<String>,
     /// What making a branch would do, while someone is naming one
     branch: Option<crate::uistate::BranchPlan>,
+    /// The folders being looked through, while somewhere new is being chosen
+    browse: Option<crate::uistate::BrowseState>,
     /// The colours chosen for projects, by the folder git shares
     folder_colors: std::collections::HashMap<String, String>,
     /// The controls shown over the browser being viewed (None = don't show)

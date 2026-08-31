@@ -249,6 +249,92 @@ pub struct BranchPlan {
     pub done: bool,
 }
 
+/// Folders to choose from, when somewhere new is being opened.
+///
+/// The list is made here rather than by a dialog the operating system draws,
+/// because half the people using this are holding a phone and there is no
+/// dialog to draw for them. One list, walked the same way from either.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct BrowseState {
+    /// Where the list is standing. Empty means the top, where the drives are
+    pub at: String,
+    /// The folder above, when there is one
+    #[serde(default)]
+    pub up: Option<String>,
+    /// What is inside, folders only -- files are not somewhere to work
+    pub dirs: Vec<String>,
+    /// Why nothing is listed, when nothing is
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+impl BrowseState {
+    /// Where the walk starts: the person's own folder, then the drives.
+    ///
+    /// Their own first, because that is where work is, and a list that opens
+    /// on `A:` makes everyone scroll past floppy disks to reach it
+    fn top() -> Vec<String> {
+        let mut out = Vec::new();
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            if !home.is_empty() {
+                out.push(home);
+            }
+        }
+        for letter in 'A'..='Z' {
+            let root = format!("{letter}:\\");
+            if std::path::Path::new(&root).is_dir() {
+                out.push(root);
+            }
+        }
+        out
+    }
+
+    /// What is inside a folder, or the drives when nothing is named.
+    ///
+    /// Folders only, in the order a person reads them, and capped: a folder
+    /// with fifty thousand entries in it is not a list anyone scrolls, and
+    /// building it would stall the frame it was asked in
+    pub fn of(path: &str) -> Self {
+        let at = path.trim().to_string();
+        if at.is_empty() {
+            return Self { at, up: None, dirs: Self::top(), error: None };
+        }
+        let here = std::path::Path::new(&at);
+        // A drive has no folder above it, but there is still somewhere to go
+        // back to -- the list of drives itself. Without this, stepping into
+        // one is a door that only opens inwards
+        let up = Some(here.parent().map(|p| p.display().to_string()).unwrap_or_default());
+        let mut dirs = Vec::new();
+        let mut error = None;
+        match std::fs::read_dir(here) {
+            Ok(entries) => {
+                for e in entries.flatten().take(4000) {
+                    let p = e.path();
+                    // Skip what the person cannot open anyway, and the places
+                    // tools keep their own things
+                    let hidden = p
+                        .file_name()
+                        .map(|n| {
+                            let n = n.to_string_lossy();
+                            n.starts_with('.') || n.starts_with('$')
+                        })
+                        .unwrap_or(false);
+                    if hidden || !p.is_dir() {
+                        continue;
+                    }
+                    dirs.push(p.display().to_string());
+                    if dirs.len() >= 400 {
+                        break;
+                    }
+                }
+                dirs.sort_by_key(|d| d.to_lowercase());
+            }
+            Err(e) => error = Some(e.to_string()),
+        }
+        Self { at, up, dirs, error }
+    }
+}
+
 /// Current position of the automation ring
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct BallState {
@@ -305,6 +391,9 @@ pub struct UiState {
     /// The answer to "what would happen if I made this branch"
     #[serde(default)]
     pub branch: Option<BranchPlan>,
+    /// Folders to choose from, while somewhere new is being opened
+    #[serde(default)]
+    pub browse: Option<BrowseState>,
     pub workspaces: Vec<String>,
     pub ws_index: usize,
     /// What the focused pane is showing (0 = nothing is in it yet)
@@ -565,6 +654,30 @@ mod tests {
         let found = GroupState::all(&tabs, &Default::default());
         tabs[0].kill();
         assert_eq!(found[0].1.name, "feature/login");
+    }
+
+    #[test]
+    fn folders_can_be_walked_into_and_back_out_of() {
+        let root = std::env::temp_dir().join(format!("shikisha-browse-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(root.join("work").join("inner")).unwrap();
+        std::fs::create_dir_all(root.join(".hidden")).unwrap();
+        std::fs::write(root.join("notes.txt"), "x").unwrap();
+
+        let at = BrowseState::of(&root.display().to_string());
+        // Folders only: a file is not somewhere to work, and the places tools
+        // keep their own things are not either
+        assert_eq!(at.dirs.len(), 1, "{:?}", at.dirs);
+        assert!(at.dirs[0].ends_with("work"));
+        assert_eq!(at.up.as_deref(), Some(root.parent().unwrap().display().to_string().as_str()));
+
+        // The top is the drives, and every drive can get back to it
+        let top = BrowseState::of("");
+        assert!(top.up.is_none(), "一番上には戻る先が無い");
+        assert!(!top.dirs.is_empty(), "ドライブが出ている");
+        let drive = BrowseState::of(&top.dirs.last().cloned().unwrap());
+        assert!(drive.up.is_some(), "ドライブから一覧へ戻れる");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
