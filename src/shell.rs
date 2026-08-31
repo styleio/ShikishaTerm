@@ -669,8 +669,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .brow2 #bq { flex:1; min-width:0; }
   #branch #bbase { font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
     border:1px solid var(--line); border-radius:8px; padding:0 10px; cursor:pointer;
-    max-width:42%; display:flex; align-items:center; gap:6px; white-space:nowrap;
-    overflow:hidden; }
+    max-width:42%; flex:0 0 auto; display:flex; align-items:center; gap:6px;
+    white-space:nowrap; overflow:hidden; }
   #branch #bbase:hover { border-color:var(--brand); }
   #branch #bbase .nm { overflow:hidden; text-overflow:ellipsis; }
   #branch #bbase .caret { color:var(--dim); font-size:9px; }
@@ -973,7 +973,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
       <div class="bsay"></div>
-      <div class="brow2"><input id="bq" type="text" autocomplete="off" spellcheck="false"><div id="bbase"></div></div>
+      <div class="brow2"><div id="bbase"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
       <div class="bwhere"></div>
       <div class="bcmd"></div>
       <div class="bcarry"></div>
@@ -1563,9 +1563,18 @@ function drawBranch() {
   const b = document.getElementById("branch");
   if (!b || b.hidden) return;
   const p = (S && S.branch) || null;
-  const typed = (document.getElementById("bq") || {}).value || "";
-  // An answer about a name that has since changed says nothing about this one
-  const mine = p && p.from === branchFrom && p.branch === typed.trim();
+  const q = document.getElementById("bq");
+  const typed = (q || {}).value || "";
+  // An answer about a name that has since changed says nothing about this one.
+  // What it answers is the question that was asked, which may have been the
+  // empty one -- that is how "I would rather not name it" is asked
+  const mine = p && p.from === branchFrom && p.asked === typed.trim();
+  // The name it would use if nobody names one, and the fact that leaving it
+  // alone is enough. Shown in the empty field rather than written into it, so
+  // typing over it needs no clearing first
+  if (q && mine && !typed.trim() && p.branch) {
+    q.placeholder = (T["tui.branch.asis"] || "{name}").replace("{name}", p.branch);
+  }
   // The lists belong to the folder, not to the name: an answer for this folder
   // fills them whatever was typed when it was asked
   const here = p && p.from === branchFrom;

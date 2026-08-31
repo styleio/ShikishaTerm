@@ -241,6 +241,11 @@ pub struct BranchPlan {
     pub folder: String,
     /// The command, exactly as it will run
     pub line: String,
+    /// The name that was asked about, exactly as it was sent -- empty when
+    /// nobody has typed one. What came back is only about this question, and
+    /// the dialog has to be able to tell that
+    #[serde(default)]
+    pub asked: String,
     /// What the new branch will grow from
     #[serde(default)]
     pub base: String,

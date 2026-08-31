@@ -505,6 +505,28 @@ pub fn bases(main: &Path) -> Vec<String> {
     out
 }
 
+/// A name for the next branch, when nobody has one in mind.
+///
+/// Short and countable rather than unique-by-construction: this ends up on a
+/// pull request, and `work-3` is something a person can say out loud, which
+/// a timestamp and a handful of hex is not. Free names only -- the first one
+/// that is not already a branch here.
+pub fn suggest(main: &Path) -> String {
+    // From two, because the checkout itself is the first piece of work.
+    // Only the branch names are consulted: working out where each folder would
+    // go asks the disk whether it can be written to, and asking that a hundred
+    // times to think of a name would be a folder full of probes and a slow
+    // dialog. A name whose folder is somehow already there is refused later,
+    // by the one that actually makes it
+    for n in 2..200 {
+        let name = format!("work-{n}");
+        if !branch_exists(main, &name) {
+            return name;
+        }
+    }
+    String::new()
+}
+
 /// Whether a branch of this name is already in the repository.
 fn branch_exists(main: &Path, branch: &str) -> bool {
     match crate::repo::family_of(main) {

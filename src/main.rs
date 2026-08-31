@@ -4309,10 +4309,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     .unwrap_or_default(),
                 false => base.clone(),
             };
-            branch_view = Some(match crate::worktree::plan(&from, &name, Some(&base)) {
+            // Nothing typed yet: propose one, so the dialog opens with a
+            // complete answer and pressing the button is enough
+            let wanted = match name.trim().is_empty() {
+                true => repo.as_deref().map(crate::worktree::suggest).unwrap_or_default(),
+                false => name.clone(),
+            };
+            branch_view = Some(match crate::worktree::plan(&from, &wanted, Some(&base)) {
                 Err(e) => crate::uistate::BranchPlan {
                     from: from.display().to_string(),
-                    branch: name,
+                    branch: name.clone(),
+                    asked: name,
                     base: chosen,
                     bases,
                     carry: carryable,
@@ -4323,6 +4330,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     let mut view = crate::uistate::BranchPlan {
                         from: from.display().to_string(),
                         branch: plan.branch.clone(),
+                        asked: name.clone(),
                         folder: plan.folder.display().to_string(),
                         line: plan.line(),
                         base: plan.base.clone(),
