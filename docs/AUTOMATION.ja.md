@@ -22,7 +22,7 @@
 | `on_question.lua` | AIが確認・選択肢を出してきたとき |
 | `on_notify.lua` | プログラムが端末に通知を出したとき（ベル・OSC通知、ssh越しでも）。2つめの変数に本文が入る。`shikisha.notify(...)` で転送・振り分け・記録できる（画面のトーストはそのまま出る） |
 | `on_exit.lua` | セッションが終了したとき（切断・クラッシュを含む） |
-| `on_busy.lua` | 応答が始まったとき（上級者向け） |
+| `on_busy.lua` | 応答が始まったとき（上級者向け）。設定の**「作業が長引くタブの様子見」**に秒数を入れると、そのタブが作業を続けている間、その間隔でもう一度呼ばれます |
 | `_shared.lua` | 上記より先に読まれる。共通の下請け関数を置く場所 |
 
 `on_done.lua` と `on_busy.lua` は、**そのタブに何か送ったあとだけ**動きます。
@@ -224,6 +224,23 @@ end
 `tab.state` は**呼ばれた瞬間の**状態なので、ループの条件には
 `shikisha.state(tab)`（今の状態）を使ってください。
 タブが終了・再起動すると、待機中のループは自動で破棄されます。
+
+ループを書かない方法もあります。設定の**「作業が長引くタブの様子見」**に秒数を入れると、
+そのタブが作業を続けている間、`on_busy.lua` がその間隔でもう一度呼ばれます。
+呼ばれるたびに今の状態と画面が渡されるので、見張りをループではなく `if` 1つで書けます:
+
+```lua
+-- ここまで続く手番は、考えているのではなく返事が止まっている
+local since = shikisha.epoch_ms() - (shikisha.get_var("since_" .. tab.index) or 0)
+if shikisha.get_var("since_" .. tab.index) == nil then
+  shikisha.set_var("since_" .. tab.index, shikisha.epoch_ms())
+elseif since > 900000 then
+  shikisha.notify(tab.name .. " が15分、何も言わずに作業しています")
+  shikisha.set_var("since_" .. tab.index, shikisha.epoch_ms())
+end
+```
+
+呼ばれ直すのは、もともと知らされたタブについてだけです。人を待っているタブについては呼ばれません。
 
 ### 完了したらSlackに通知するだけ（on_done.lua）
 

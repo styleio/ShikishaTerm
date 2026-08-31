@@ -54,6 +54,18 @@ pub struct Config {
     /// Wait time (ms) before a response is considered finished.
     /// If the profile specifies its own value, that takes priority
     pub done_confirm_ms: Option<u64>,
+    /// How often, in seconds, automation is told again that a tab is still
+    /// working. 0 or unset means never (the default).
+    ///
+    /// A tab that has been working for twenty minutes without a word is either
+    /// thinking hard or hung, and nothing in this app can tell those apart --
+    /// but the automation watching it can, because it knows what it asked for.
+    /// It is only ever asked again about a tab it was already told about, and
+    /// never about one waiting on a person.
+    ///
+    /// Off by default, and generously set when on: cutting a long think short
+    /// is the expensive mistake here, not noticing a hang a minute late.
+    pub busy_repeat_sec: Option<u64>,
     /// Whether a program running in a tab may put text on the Windows
     /// clipboard (default: yes).
     ///

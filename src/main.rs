@@ -2208,7 +2208,19 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut asked_where_ms: u64 = 0;
 
     let mut auto_enabled = true;
+    // How often a still-working tab is mentioned to automation again. None
+    // unless somebody asked for it
+    let mut busy_repeat_ms: Option<u64> = cfg
+        .as_ref()
+        .and_then(|c| c.busy_repeat_sec)
+        .filter(|s| *s > 0)
+        .map(|s| s * 1000);
     let mut started_fired = vec![false; tabs.len()];
+    // When each still-working tab is due to be mentioned to automation again,
+    // for the tabs automation was told about in the first place. Empty unless
+    // the interval is set, and emptied for a tab the moment it stops working
+    let mut busy_again: std::collections::HashMap<usize, u64> =
+        std::collections::HashMap::new();
     // The "invisible ball" of the automation chain. Used in the display to show
     // which tab currently holds the work.
     let mut ball = ball::Ball::default();
@@ -2547,6 +2559,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 workspaces = new_ws;
                 max_chain = newcfg.max_chain.unwrap_or(10);
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
+                busy_repeat_ms = newcfg.busy_repeat_sec.filter(|s| *s > 0).map(|s| s * 1000);
+                busy_again.clear();
                 done_confirm_ms = newcfg
                     .done_confirm_ms
                     .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
@@ -3031,7 +3045,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             && !submitting
                             && tabs[idx - 1].answered_since_submit();
                         match new {
-                            TabState::Busy if answering => eng.fire("on_busy", &ctx, None),
+                            TabState::Busy if answering => {
+                                eng.fire("on_busy", &ctx, None);
+                                // ...and from here it may be mentioned again
+                                // while it is still working (below)
+                                if let Some(every) = busy_repeat_ms {
+                                    busy_again.insert(idx, now_ms + every);
+                                }
+                            }
                             TabState::Done if old == TabState::Busy && !answering => {
                                 append_hook_log(&format!(
                                     "Ignoring done tab{idx} [{}] prompted={} submitting={} answered={}",
@@ -3101,6 +3122,25 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             );
                             let status = notifier.send(&dest, &msg);
                             append_hook_log(&format!("notify_on_done tab{idx} \"{dest}\": {status}"));
+                        }
+                    }
+
+                    // A tab that has been working a long time without a word is
+                    // either thinking or hung, and nothing here can tell those
+                    // apart. The automation that asked for the work can, so it is
+                    // told again while the work is still running -- but only about
+                    // tabs it was told about in the first place, and only when
+                    // somebody asked for it. A hook that starts running on a timer
+                    // by itself is a hook that surprises whoever wrote it
+                    if let Some(every) = busy_repeat_ms {
+                        let states: Vec<TabState> = tabs.iter().map(|t| t.state).collect();
+                        for idx in busy_repeat_due(now_ms, every, &states, &mut busy_again) {
+                            let ctx = tab_ctx(&tabs[idx - 1], surface_at(&surfaces, idx));
+                            append_hook_log(&format!(
+                                "on_busy again tab{idx}: still working after {}s",
+                                every / 1000
+                            ));
+                            eng.fire("on_busy", &ctx, None);
                         }
                     }
 
@@ -6934,6 +6974,31 @@ fn page_ctx(
     })
 }
 
+/// Which tabs automation should be told about again, re-arming each one it
+/// names.
+///
+/// Kept out of the loop so the rule itself can be checked. The rule: only tabs
+/// automation was already told about (they are the ones in `tracked`), only
+/// while they are still working, and not before their time.
+fn busy_repeat_due(
+    now_ms: u64,
+    every: u64,
+    states: &[TabState],
+    tracked: &mut std::collections::HashMap<usize, u64>,
+) -> Vec<usize> {
+    tracked.retain(|&idx, _| states.get(idx - 1).is_some_and(|s| *s == TabState::Busy));
+    let mut due: Vec<usize> = tracked
+        .iter()
+        .filter(|(_, at)| now_ms >= **at)
+        .map(|(&idx, _)| idx)
+        .collect();
+    due.sort_unstable();
+    for idx in &due {
+        tracked.insert(*idx, now_ms + every);
+    }
+    due
+}
+
 fn tab_ctx(t: &Tab, index: usize) -> TabCtx {
     TabCtx {
         index,
@@ -8009,6 +8074,60 @@ fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Being told again that a tab is still working -- the whole of the rule,
+    /// which is the part worth pinning down.
+    ///
+    /// A tab that has been working for twenty minutes without a word is either
+    /// thinking or hung, and nothing in this app can tell those apart. The
+    /// automation that asked for the work can, so it is asked again -- and the
+    /// three guards are what keep that from becoming a nuisance: only tabs it
+    /// was told about in the first place, only while the work is still running,
+    /// and never before the interval is up.
+    #[test]
+    fn a_tab_that_keeps_working_is_mentioned_again_but_only_on_those_terms() {
+        use std::collections::HashMap;
+        let every = 300_000; // five minutes
+        let busy = vec![TabState::Busy, TabState::Busy, TabState::Done];
+        let mut tracked: HashMap<usize, u64> = HashMap::new();
+
+        // Tab 1 is the only one automation was told about
+        tracked.insert(1, 300_000);
+        assert!(
+            busy_repeat_due(299_000, every, &busy, &mut tracked).is_empty(),
+            "時間より前に呼んでいる"
+        );
+        assert_eq!(
+            busy_repeat_due(300_000, every, &busy, &mut tracked),
+            vec![1],
+            "時間になっても呼んでいない"
+        );
+        assert_eq!(tracked.get(&1), Some(&600_000), "次の時刻を置いていない");
+        assert!(
+            busy_repeat_due(300_001, every, &busy, &mut tracked).is_empty(),
+            "続けざまに二度呼んでいる"
+        );
+
+        // Tab 2 is working too, but automation was never told about it: it is
+        // not this app's place to start
+        assert!(!tracked.contains_key(&2), "頼まれていないタブを数えている");
+
+        // The work ends, and the asking stops with it -- including for a tab
+        // that has gone to waiting on a person
+        let answered = vec![TabState::Question, TabState::Busy, TabState::Done];
+        assert!(
+            busy_repeat_due(900_000, every, &answered, &mut tracked).is_empty(),
+            "人を待っているタブについて呼び続けている"
+        );
+        assert!(tracked.is_empty(), "終わったタブの予定が残っている");
+
+        // A tab that disappeared takes its place in the queue with it
+        tracked.insert(9, 0);
+        assert!(
+            busy_repeat_due(1_000_000, every, &busy, &mut tracked).is_empty(),
+            "もう無いタブについて呼んでいる"
+        );
+    }
 
     /// A phone that is watching decides the shape of the terminal, and the
     /// window takes it back the moment nobody is.

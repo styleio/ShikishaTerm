@@ -22,7 +22,7 @@ Only add the ones you need.
 | `on_done.lua` | When the AI has finished answering something it was asked |
 | `on_question.lua` | When the AI asks something or offers choices |
 | `on_exit.lua` | When the session ends (including disconnects and crashes) |
-| `on_busy.lua` | When an answer starts (advanced) |
+| `on_busy.lua` | When an answer starts (advanced). Set **Checking on a tab that keeps working** in Settings and it runs again, at that interval, for as long as the tab is still working |
 | `on_notify.lua` | When the program rings the terminal — a bell, an OSC notification, even over ssh. The second variable holds the text. Forward it with `shikisha.notify(...)`, route it, or log it; the on-screen toast still shows |
 | `_shared.lua` | Loaded before all of the above. Put shared helper functions here |
 
@@ -226,6 +226,25 @@ end
 `tab.state` is the state **at the moment you were called**, so use
 `shikisha.state(tab)` (the state right now) as the loop condition.
 When a tab exits or restarts, waiting loops are discarded automatically.
+
+Without the loop: set **Checking on a tab that keeps working** in Settings, and
+`on_busy.lua` is simply run again at that interval while the tab keeps working.
+Each run is told the state and the screen as they are now, so a watchdog can be
+written as one `if` instead of a loop:
+
+```lua
+-- a turn that has run this long has stopped answering, not started thinking
+local since = shikisha.epoch_ms() - (shikisha.get_var("since_" .. tab.index) or 0)
+if shikisha.get_var("since_" .. tab.index) == nil then
+  shikisha.set_var("since_" .. tab.index, shikisha.epoch_ms())
+elseif since > 900000 then
+  shikisha.notify(tab.name .. " has been working for 15 minutes without a word")
+  shikisha.set_var("since_" .. tab.index, shikisha.epoch_ms())
+end
+```
+
+You are only asked again about a tab you were told about in the first place, and
+never about one waiting on a person.
 
 ### Just notify Slack when it is done (on_done.lua)
 

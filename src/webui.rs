@@ -3275,6 +3275,8 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.max_chain.hint"])),
     row(T["settings.done_confirm"], secondsField(current, "done_confirm_ms", 10),
         el("span", {class:"hint"}, T["settings.done_confirm.hint"])),
+    row(T["settings.busy_repeat"], field(current, "busy_repeat_sec", "0", {type:"number", width:110, grow:false}),
+        el("span", {class:"hint"}, T["settings.busy_repeat.hint"])),
     row(T["settings.auto_switch"], checkDefaultOn(current, "auto_switch", T["settings.auto_switch.label"]),
         el("span", {class:"hint"}, T["settings.auto_switch.hint"])),
     row(T["settings.restore_ws"], checkDefaultOn(current, "restore_workspace", T["settings.restore_ws.label"]),

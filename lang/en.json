@@ -343,6 +343,8 @@
   "settings.max_chain.hint": "How many times AIs may hand work to each other in a row",
   "settings.done_confirm": "Answer settle time",
   "settings.done_confirm.hint": "Seconds of quiet before an answer counts as finished. Short values hand work over mid-thought",
+  "settings.busy_repeat": "Checking on a tab that keeps working",
+  "settings.busy_repeat.hint": "Seconds before automation is told again that a tab is still working. Empty or 0 means it is never told again. This is how a script notices an AI that has stopped answering, so set it generously -- cutting a long think short costs more than noticing a hang a minute late",
   "settings.auto_switch": "Auto-switch",
   "settings.auto_switch.label": "Let automation switch to the tab it is working in",
   "settings.auto_switch.hint": "Only automation that asks to be watched switches the screen; handing work to a tab does not. Stays put for a few seconds after you move around yourself, and never while the settings are open",
