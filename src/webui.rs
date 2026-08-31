@@ -2020,8 +2020,12 @@ const PAGE: &str = r##"<!doctype html>
  @media (prefers-reduced-motion: reduce) { #savebtn.dirty { animation:none; } }
 
  .layout { display:flex; align-items:flex-start; }
- nav { width:260px; flex:none; border-right:1px solid var(--line); min-height:calc(100vh - var(--headh));
-   padding:12px 10px; position:sticky; top:var(--headh); max-height:calc(100vh - var(--headh)); overflow:auto; }
+ /* Wider than it was, because the settings have the window now: four levels of
+    indentation and a folder's whole path both need somewhere to go, and the
+    column on the right is capped anyway */
+ nav { width:min(340px, 32vw); flex:none; border-right:1px solid var(--line);
+   min-height:calc(100vh - var(--headh)); padding:12px 10px; position:sticky;
+   top:var(--headh); max-height:calc(100vh - var(--headh)); overflow:auto; }
  main { flex:1; min-width:0; padding:24px 28px; max-width:820px; }
 
  .navitem { display:block; width:100%; text-align:left; border:0; background:none; color:var(--text);
@@ -2035,11 +2039,26 @@ const PAGE: &str = r##"<!doctype html>
  .navgrouphead { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
    margin:12px 0 2px; display:flex; align-items:center; gap:6px; }
  .navgrouphead .caret { font-size:10px; width:10px; display:inline-block; text-align:center; }
- .navtab { padding-left:18px; }
- .navfolder { padding-left:10px; color:var(--muted); font-size:11px; letter-spacing:.04em;
-              cursor:default; opacity:.9; }
- .navtab.child { padding-left:34px; }
- .navadd { color:var(--muted); }
+ /* Four levels: everything, a workspace, one of its working folders, a tab in
+    that folder. Depth is where the row starts, the way a file list does it --
+    elbows drawn between every row would be three times the ink for the same
+    three steps. The faint line is there to sight along when the names are long
+    enough to fill the width */
+ .navitem { position:relative; }
+ .lvl1 { padding-left:22px; }
+ .lvl2 { padding-left:38px; }
+ .lvl3 { padding-left:54px; }
+ .lvl1::before, .lvl2::before, .lvl3::before { content:""; position:absolute;
+   top:0; bottom:0; width:1px; background:var(--line); }
+ .lvl1::before { left:11px; }
+ .lvl2::before { left:27px; }
+ .lvl3::before { left:43px; }
+ /* A folder is the level people are looking for, so it keeps its own weight
+    while the tabs under it stay quiet */
+ .navfolder { color:var(--text); font-size:12.5px; }
+ .navfolder .sub { font-size:11px; }
+ .navtab.child .nm { opacity:.9; }
+ .navadd { color:var(--muted); font-size:12.5px; }
 
  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
    padding:6px 18px 14px; margin-bottom:18px; }
@@ -2757,7 +2776,7 @@ function renderNav() {
     el("span", {class:"caret"}, gOpen ? "▾" : "▸"),
     el("span", {}, T["settings.global"])));
   if (gOpen) globalSections().forEach(s => {
-    const b = el("button", {class:"navitem navtab" + (sel.global && sel.section === s.id ? " sel" : ""),
+    const b = el("button", {class:"navitem lvl1" + (sel.global && sel.section === s.id ? " sel" : ""),
       onclick:() => { navGlobalOpen = true; sel = {ws:sel.ws, tab:null, global:true, section:s.id}; render();
                       const cur = document.querySelector(".navitem.sel"); if (cur) cur.scrollIntoView({block:"nearest"}); }});
     b.append(el("span", {}, s.label));
@@ -2774,27 +2793,27 @@ function renderNav() {
       el("span", {}, ws.name || T["settings.tab.unnamed"])));
     if (!open) return;
     const here = (g, t) => !sel.global && sel.ws === wi && sel.grp === g && sel.tab === t;
-    nav.append(el("button", {class:"navitem" + (here(null, null) ? " sel" : ""),
+    nav.append(el("button", {class:"navitem lvl1" + (here(null, null) ? " sel" : ""),
       onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:null, tab:null, global:false}; render(); }},
       el("span", {}, T["settings.workspace.settings"])));
     // Every folder, always -- the one a workspace starts with is a folder like
     // any other, and hiding it is how "where does this actually run" became
     // impossible to find
     (ws.folders || []).forEach((g, gi) => {
-      nav.append(el("button", {class:"navitem navfolder" + (here(gi, null) ? " sel" : ""),
+      nav.append(el("button", {class:"navitem navfolder lvl1" + (here(gi, null) ? " sel" : ""),
         onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:gi, tab:null, global:false}; render(); }},
         el("span", {}, folderLabel(g, gi)),
         el("span", {class:"sub"}, g.cwd || T["settings.group.folder.ph"])));
       (ws.tabs || []).forEach((t, ti) => {
         if ((t.group || 0) !== gi) return;
-        const b = el("button", {class:"navitem navtab" + (t.depth ? " child" : "") +
+        const b = el("button", {class:"navitem navtab lvl" + (t.depth ? 3 : 2) +
           (here(gi, ti) ? " sel" : ""),
           onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:gi, tab:ti, global:false}; render(); }});
-        b.append(el("span", {}, (t.depth ? "└ " : "") + (t.name || T["settings.tab.unnamed"])));
+        b.append(el("span", {class:"nm"}, t.name || T["settings.tab.unnamed"]));
         b.append(el("span", {class:"sub"}, cmdToText(t.command) || T["automation.unset"]));
         nav.append(b);
       });
-      nav.append(el("button", {class:"navitem navtab navadd",
+      nav.append(el("button", {class:"navitem navadd lvl2",
         onclick:() => {
           navOpen.add(wi);
           sel = {ws:wi, grp:gi, tab:addTabTo(ws, gi), global:false};
@@ -2802,7 +2821,7 @@ function renderNav() {
         }},
         T["settings.tab.add"]));
     });
-    nav.append(el("button", {class:"navitem navfolder navadd",
+    nav.append(el("button", {class:"navitem navadd lvl1",
       onclick:() => {
         navOpen.add(wi);
         (ws.folders = ws.folders || []).push({name:"", id:"", cwd:""});
