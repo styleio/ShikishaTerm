@@ -678,6 +678,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:10px; padding:5px; min-width:190px; box-shadow:0 8px 24px #0007; }
   .fmenu div { padding:8px 10px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text); }
   .fmenu div:hover { background:var(--raise); }
+  .fmenu div.warn:hover { color:var(--bad, #e5644d); }
+  .fmenu .fname { font:inherit; font-size:12.5px; width:100%; box-sizing:border-box;
+    background:var(--bg); color:var(--text); border:1px solid var(--brand);
+    border-radius:6px; padding:4px 6px; outline:none; }
   .tab.folder .more { margin-left:auto; padding:0 4px; color:var(--dim); cursor:pointer;
     font-size:13px; line-height:1; }
   .tab.folder .more:hover { color:var(--text); }
@@ -1277,7 +1281,9 @@ function folderMenu(e, g) {
     g.color ? colorItem(g) : null,
     item(folded.has(g.folder) ? (T["tui.folder.open"] || "Unfold")
                               : (T["tui.folder.fold"] || "Fold"),
-         () => fold(g.folder)));
+         () => fold(g.folder)),
+    renameItem(g),
+    closeItem(g));
   document.body.append(m);
   // Below what was pressed, and never off the bottom of the window
   const r = e.currentTarget.getBoundingClientRect();
@@ -1363,6 +1369,49 @@ function drawBrowse() {
     send({kind:"browse", path:st.at, open:true});
   };
 })();
+
+// Renaming: the row becomes the field, so there is nothing else to open and
+// nowhere else to look. Empty hands the heading back to what the folder says
+// about itself -- its branch, or its own last part
+function renameItem(g) {
+  const row = el("div", {}, T["tui.folder.rename"] || "Rename");
+  row.onclick = e => {
+    e.stopPropagation();
+    row.textContent = "";
+    const inp = el("input", {class:"fname", value:g.name || "",
+                             placeholder:T["tui.folder.rename.ph"] || ""});
+    inp.addEventListener("keydown", ev => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") {
+        closeFolderMenu();
+        send({kind:"foldername", folder:g.folder, name:inp.value});
+      }
+      if (ev.key === "Escape") closeFolderMenu();
+    });
+    inp.addEventListener("mousedown", ev => ev.stopPropagation());
+    row.append(inp);
+    setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  };
+  return row;
+}
+
+// Closing: the tabs go, the files stay. Asked twice, because the tabs may be
+// in the middle of something and there is no putting that back
+function closeItem(g) {
+  const row = el("div", {class:"warn"}, T["tui.folder.close"] || "Close");
+  let armed = false;
+  row.onclick = e => {
+    e.stopPropagation();
+    if (!armed) {
+      armed = true;
+      row.textContent = T["tui.folder.close.sure"] || "Close it?";
+      return;
+    }
+    closeFolderMenu();
+    send({kind:"folderclose", folder:g.folder});
+  };
+  return row;
+}
 
 // The colours for a project, offered as squares. Picking one is the whole
 // interaction -- there is nothing to confirm, and the list is repainted from

@@ -1423,6 +1423,105 @@ pub fn append_group_at(
     cwd: &Path,
     name: Option<&str>,
 ) -> Result<()> {
+    with_groups(path, ws_name, |groups| {
+        // The tabs to bring along: whoever is already working in the folder
+        // this was asked for from. Same faces, new branch
+        let tabs = like
+            .and_then(|want| {
+                groups.iter().find(|g| {
+                    g.get("cwd")
+                        .and_then(|c| c.as_str())
+                        .map(resolve_group_cwd)
+                        .is_some_and(|c| c == want)
+                })
+            })
+            .and_then(|g| g.get("tabs").cloned())
+            .unwrap_or_else(|| serde_json::json!([]));
+        // What marks the copies apart. The branch when there is one, since two
+        // branches can end in the same word (`feature/login`, `fix/login`) and
+        // their folders would then hand out the same name twice
+        let mark = name
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(|n| n.replace('/', "-"))
+            .or_else(|| cwd.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_default();
+        let mut group =
+            serde_json::json!({ "cwd": cwd.display().to_string(), "tabs": retag(tabs, &mark) });
+        if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
+            group["name"] = serde_json::json!(n);
+        }
+        groups.push(group);
+        Ok(())
+    })
+}
+
+/// Renames a folder in the list. An empty name hands it back to what the
+/// folder itself says -- its branch, or its own last part
+pub fn rename_group(ws_name: &str, cwd: &Path, name: &str) -> Result<()> {
+    with_groups(&config_file_path(), ws_name, |groups| {
+        let Some(g) = find_group(groups, cwd) else {
+            return Ok(());
+        };
+        match name.trim() {
+            "" => {
+                if let Some(o) = g.as_object_mut() {
+                    o.remove("name");
+                }
+            }
+            n => g["name"] = serde_json::json!(n),
+        }
+        Ok(())
+    })
+}
+
+/// Takes a folder out of the list, and its tabs with it.
+///
+/// The folder on disk is not touched. Closing a thing on screen and deleting
+/// somebody's work are different acts, and only one of them can be undone by
+/// opening it again.
+pub fn remove_group(ws_name: &str, cwd: &Path) -> Result<()> {
+    with_groups(&config_file_path(), ws_name, |groups| {
+        if groups.len() <= 1 {
+            anyhow::bail!(crate::i18n::t("err.worktree.last_folder"));
+        }
+        let at = groups.iter().position(|g| {
+            g.get("cwd")
+                .and_then(|c| c.as_str())
+                .map(resolve_group_cwd)
+                .is_some_and(|c| c == cwd)
+        });
+        if let Some(i) = at {
+            groups.remove(i);
+        }
+        Ok(())
+    })
+}
+
+/// The group working in this folder, if it is in the list.
+fn find_group<'a>(
+    groups: &'a mut [serde_json::Value],
+    cwd: &Path,
+) -> Option<&'a mut serde_json::Value> {
+    groups.iter_mut().find(|g| {
+        g.get("cwd")
+            .and_then(|c| c.as_str())
+            .map(resolve_group_cwd)
+            .is_some_and(|c| c == cwd)
+    })
+}
+
+/// Opens a workspace's groups, hands them over to be changed, and writes the
+/// result back where it came from.
+///
+/// One way in, because there are three things that change a group and each of
+/// them would otherwise carry its own copy of "find the workspace, follow it
+/// to the file it lives in, fold the loose tabs, write it out atomically".
+fn with_groups(
+    path: &Path,
+    ws_name: &str,
+    edit: impl FnOnce(&mut Vec<serde_json::Value>) -> Result<()>,
+) -> Result<()> {
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
     let mut root: serde_json::Value =
         serde_json::from_str(without_bom(&text)).unwrap_or_else(|_| serde_json::json!({}));
@@ -1451,6 +1550,7 @@ pub fn append_group_at(
         ))?),
         None => None,
     };
+    #[allow(clippy::let_and_return)]
 
     // The object that holds the groups: the workspace's own, the file it names,
     // or the settings themselves when no workspace was ever made
@@ -1472,33 +1572,7 @@ pub fn append_group_at(
         .get_mut("groups")
         .and_then(|g| g.as_array_mut())
         .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_workspace")))?;
-    // The tabs to bring along: whoever is already working in the folder this
-    // was asked for from. Same faces, new branch
-    let tabs = like
-        .and_then(|want| {
-            groups.iter().find(|g| {
-                g.get("cwd")
-                    .and_then(|c| c.as_str())
-                    .map(resolve_group_cwd)
-                    .is_some_and(|c| c == want)
-            })
-        })
-        .and_then(|g| g.get("tabs").cloned())
-        .unwrap_or_else(|| serde_json::json!([]));
-    // What marks the copies apart. The branch when there is one, since two
-    // branches can end in the same word (`feature/login`, `fix/login`) and
-    // their folders would then hand out the same name twice
-    let mark = name
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .map(|n| n.replace('/', "-"))
-        .or_else(|| cwd.file_name().map(|n| n.to_string_lossy().to_string()))
-        .unwrap_or_default();
-    let mut group = serde_json::json!({ "cwd": cwd.display().to_string(), "tabs": retag(tabs, &mark) });
-    if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
-        group["name"] = serde_json::json!(n);
-    }
-    groups.push(group);
+    edit(groups)?;
 
     let out = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_default();
     match (&side, &file_at) {

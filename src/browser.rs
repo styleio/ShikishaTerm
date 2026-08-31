@@ -768,6 +768,13 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("addtab") => Ev::AddTab {
             pane: v.get("pane").and_then(|x| x.as_u64()).map(|n| n as u32),
         },
+        Some("foldername") => Ev::FolderName {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("folderclose") => Ev::FolderClose {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
         Some("browse") => Ev::Browse {
             path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false),
@@ -1164,6 +1171,11 @@ pub enum Ev {
     /// Looking for somewhere to work. An empty path asks for the drives;
     /// `open` says whether this is looking or choosing
     Browse { path: String, open: bool },
+    /// A folder was renamed in the list, or taken out of it. An empty name
+    /// hands it back to what the folder itself says
+    FolderName { folder: String, name: String },
+    /// A folder was closed: its tabs go, the files stay
+    FolderClose { folder: String },
     /// "Close settings" on the settings page. Collapses the settings tab
     /// and returns to the operating board. This is a window-internal
     /// action, so it's not accepted from a phone (allowed_from_afar)

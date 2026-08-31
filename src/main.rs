@@ -513,6 +513,10 @@ struct WinSurface {
     folder_colors: Vec<(String, String)>,
     /// Folders being looked through, and the one finally chosen
     browses: Vec<(String, bool)>,
+    /// Folders renamed in the list: (folder, the new name)
+    folder_names: Vec<(String, String)>,
+    /// Folders taken out of the list. The files stay where they are
+    folder_closes: Vec<String>,
 }
 
 impl WinSurface {
@@ -690,6 +694,14 @@ impl WinSurface {
         std::mem::take(&mut self.browses)
     }
 
+    fn take_folder_names(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.folder_names)
+    }
+
+    fn take_folder_closes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.folder_closes)
+    }
+
     fn take_suggests(&mut self) -> Vec<String> {
         std::mem::take(&mut self.suggests)
     }
@@ -785,6 +797,8 @@ impl WinSurface {
                 Ev::Branch { from, branch, make } => self.branches.push((from, branch, make)),
                 Ev::FolderColor { folder, color } => self.folder_colors.push((folder, color)),
                 Ev::Browse { path, open } => self.browses.push((path, open)),
+                Ev::FolderName { folder, name } => self.folder_names.push((folder, name)),
+                Ev::FolderClose { folder } => self.folder_closes.push(folder),
                 Ev::RemoteCut => self.remote_cut = true,
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
@@ -1123,6 +1137,8 @@ fn run_in_window() -> Result<()> {
         branches: Vec::new(),
         folder_colors: Vec::new(),
         browses: Vec::new(),
+        folder_names: Vec::new(),
+        folder_closes: Vec::new(),
         record_arms: Vec::new(),
         run_luas: Vec::new(),
         pane_splits: Vec::new(),
@@ -4122,6 +4138,23 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 hits,
                 capped: found.capped,
             });
+        }
+        // A folder renamed in the list, or taken out of it. Both are changes
+        // to the settings, so the reload that follows is what actually shows
+        for (folder, name) in surface.take_folder_names() {
+            let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
+            if let Err(e) = config::rename_group(&ws, std::path::Path::new(&folder), &name) {
+                flash = Some(format!("{e:#}"));
+            }
+        }
+        for folder in surface.take_folder_closes() {
+            let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
+            match config::remove_group(&ws, std::path::Path::new(&folder)) {
+                // Said out loud, because the folder is still on disk and this
+                // is the only sign that it was left there on purpose
+                Ok(()) => flash = Some(i18n::tp("msg.folder.closed", &[("path", &folder)])),
+                Err(e) => flash = Some(format!("{e:#}")),
+            }
         }
         // Somewhere new to work. Looking hands back what is inside; choosing
         // writes the folder into the settings, and the reload opens it
