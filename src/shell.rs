@@ -157,17 +157,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      colour */
   .tab.folder { padding-top:9px; padding-bottom:3px; gap:6px; }
   .tab.folder .nm { font-size:11px; opacity:.75; letter-spacing:.02em; }
+  /* Both marks take the same slot, so every folder's name starts on one
+     column whichever kind it is */
   .tab.folder .chip { width:8px; height:8px; border-radius:2px; flex:0 0 auto;
-    background:var(--line); }
-  .tab.folder .cut { font-size:11px; opacity:.6; }
-  /* Three depths, one step each. A project's folder is at the edge; a branch
-     of that project hangs one step under it; and a tab is one step under the
-     folder it runs in, whichever folder that is -- a tab beside its own
-     heading looked like a peer of it rather than something inside it */
-  .tab.folder.cut { padding-left:20px; }
+    margin:0 2px; background:var(--line); }
+  /* A branch's mark stands where another folder's square does, same width, so
+     the names still start on one column. A thin line needs more contrast than
+     a filled square to carry the same weight, hence dim rather than the rule
+     colour when the project has no colour of its own */
+  .tab.folder .cut { flex:0 0 auto; width:12px; height:12px; display:flex;
+    color:var(--dim); }
+  /* Every working folder starts at the same edge: git keeps one repository
+     and any number of folders for it, all siblings -- a branch made from
+     another branch is registered against that same repository, so there is no
+     depth here to draw. What tells them apart is the mark, not the margin.
+     Tabs are one step in, because those really are inside a folder */
   .tab.intab { padding-left:26px; }
-  .tab.intab.under { padding-left:42px; }
-  .tab.folder .hang { color:var(--dim); font-size:11px; margin-left:-10px; opacity:.7; }
   /* Choosing one. The swatches are the colours picked from when nobody has,
      and the last square opens whatever the system offers */
   .swatches { display:flex; flex-wrap:wrap; gap:6px; padding:6px 8px 8px; max-width:200px; }
@@ -1207,18 +1212,17 @@ function drawTabs() {
       shownFolder = t.group;
       const g = folders[t.group] || {};
       const shut = folded.has(g.folder);
-      const chip = el("span", {class:"chip"});
-      if (g.color) chip.style.background = g.color;
-      nav.append(el("div", {class:"tab folder" + (g.linked ? " cut" : ""),
+      // One mark, saying two things at once: the colour is which project, the
+      // shape is whether this is the project's own folder or a branch of it
+      const chip = g.linked ? cutMark() : el("span", {class:"chip"});
+      if (g.color) {
+        if (g.linked) chip.style.color = g.color;
+        else chip.style.background = g.color;
+      }
+      nav.append(el("div", {class:"tab folder",
           title:g.folder || "", onclick:() => { fold(g.folder); }},
-        g.linked ? el("span", {class:"hang"}, "\u2514") : null,
         chip,
         el("span", {class:"caret"}, shut ? "▸" : "▾"),
-        // A branch cut from the project it belongs to, rather than the
-        // project's own folder. Worth marking: closing one is a different act.
-        // Drawn rather than typed — every character that means "branch" is one
-        // some font has never heard of, and the fallback is a shrug
-        g.linked ? cutMark() : null,
         el("span", {class:"nm"}, g.name || ""),
         el("span", {class:"more", title:T["tui.folder.add"] || "+",
             onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+")));
@@ -1233,8 +1237,7 @@ function drawTabs() {
     const brand = t.ai ? " aitab ai-" + t.ai : "";
     // A branch's tabs stand where its heading does. Moving the heading alone
     // left them looking like they belonged to the folder above it
-    const under = (t.group != null && (folders[t.group] || {}).linked) ? " under" : "";
-    nav.append(el("div", {class:"tab intab" + (S.active === t.index ? " sel" : "") + brand + under,
+    nav.append(el("div", {class:"tab intab" + (S.active === t.index ? " sel" : "") + brand,
         onclick:() => send({kind:"select", tab:t.index})},
       el("span", {class:"dot " + t.state}),
       el("span", {class:"num"}, String(t.index)),
@@ -1583,15 +1586,19 @@ function drawCarry(b, items) {
   });
 })();
 
-// The mark on a folder that is a branch cut from another: a line, and a second
-// one leaving it. Takes its colour from the row it sits in
+// The mark on a folder that is a branch cut from another: a line of commits,
+// and a second one leaving it. Drawn rather than typed -- every character that
+// means "branch" is one some font has never heard of, and the fallback is a
+// shrug. Takes its colour from the row it sits in, so the mark says which
+// project this is and which kind of folder in one glance
 function cutMark() {
   const s = el("span", {class:"cut"});
-  s.innerHTML = '<svg viewBox="0 0 12 12" width="11" height="11" fill="none" ' +
-    'stroke="currentColor" stroke-width="1.3" stroke-linecap="round">' +
-    '<path d="M3.2 2.6v6.8"/><path d="M3.2 6.4c0-2.2 5.4-1 5.4-3.2"/>' +
-    '<circle cx="3.2" cy="10" r="1.2" fill="currentColor" stroke="none"/>' +
-    '<circle cx="8.6" cy="2.4" r="1.2" fill="currentColor" stroke="none"/></svg>';
+  s.innerHTML = '<svg viewBox="0 0 12 12" width="12" height="12" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.2" stroke-linecap="round">' +
+    '<path d="M3.5 4.1v3.8"/><path d="M8.5 4.1c0 2.3-5 1.1-5 3.8"/>' +
+    '<circle cx="3.5" cy="2.3" r="1.4" fill="currentColor" stroke="none"/>' +
+    '<circle cx="3.5" cy="9.7" r="1.4" fill="currentColor" stroke="none"/>' +
+    '<circle cx="8.5" cy="2.3" r="1.4" fill="currentColor" stroke="none"/></svg>';
   return s;
 }
 
