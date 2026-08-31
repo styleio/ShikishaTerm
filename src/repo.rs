@@ -27,6 +27,13 @@ pub struct Place {
     pub ports: Vec<u16>,
     /// `owner/name` on GitHub, when that is where this folder pushes to
     pub repo: Option<String>,
+    /// The folder shared by this checkout and every branch cut from it. Two
+    /// tabs holding the same one are working on the same project, which is
+    /// what the list draws as one family
+    pub family: Option<PathBuf>,
+    /// Whether this folder is one of those cut branches rather than the
+    /// original checkout
+    pub linked: bool,
     /// The pull request this branch is on, already written out. Filled in from
     /// elsewhere: it is the one thing here that has to be asked over a network
     pub pr: Option<String>,
@@ -161,6 +168,21 @@ pub fn family_of(cwd: &Path) -> Option<PathBuf> {
         true => p,
         false => dir.join(p),
     }))
+}
+
+/// Whether this folder is a branch cut from a checkout, rather than the
+/// checkout itself.
+///
+/// Both are working folders of one repository and both answer with their own
+/// branch, so nothing about the branch tells them apart. What does is where
+/// their git folder is: the original's *is* the shared one, and a cut branch's
+/// sits inside it. Worth telling apart because the list marks a cut branch --
+/// closing it is a different thing from closing the project
+pub fn is_linked(cwd: &Path) -> bool {
+    match (git_dir(cwd), family_of(cwd)) {
+        (Some(d), Some(shared)) => tidy(d) != shared,
+        _ => false,
+    }
 }
 
 /// The same path written the one way, so that two of them can be compared.
@@ -460,6 +482,16 @@ mod tests {
         std::fs::create_dir_all(elsewhere.join(".git")).unwrap();
         assert_ne!(family_of(&elsewhere), family_of(&main));
         assert_eq!(family_of(&tmp("family-plain")), None);
+    }
+
+    #[test]
+    fn a_cut_branch_knows_it_is_not_the_checkout_it_came_from() {
+        // What the list marks with a sign of its own: closing a branch that was
+        // cut for a piece of work is a different act from closing the project
+        let (main, side, _) = a_repository_with_a_worktree("family-linked");
+        assert!(is_linked(&side), "枝である");
+        assert!(!is_linked(&main), "本体は枝ではない");
+        assert!(!is_linked(&tmp("family-linked-plain")), "リポジトリでなければ枝でもない");
     }
 
     #[test]

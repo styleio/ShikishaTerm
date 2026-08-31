@@ -1133,9 +1133,15 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// The group a tab works in. Everything about where it runs lives there,
+    /// because a tab has nothing of its own to disagree with
+    pub fn group_of(&self, t: &FlatTab) -> Option<&Group> {
+        self.groups.get(t.group)
+    }
+
     /// The folder a tab starts in: its group's, because a tab has none of its own.
     pub fn folder_of(&self, t: &FlatTab) -> Option<std::path::PathBuf> {
-        self.groups.get(t.group).and_then(|g| g.cwd.clone())
+        self.group_of(t).and_then(|g| g.cwd.clone())
     }
 }
 
@@ -1350,16 +1356,28 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T
     })
 }
 
+/// The names one written path may be stored under, best first.
+///
+/// The folder was called `projects` before it was called `workspaces`, and
+/// settings written under either name are still out there, so a path naming
+/// one is also looked for under the other. Kept apart from the looking so it
+/// can be checked without a folder to look in -- the check used to change the
+/// process's own working folder to make one, which every other test running
+/// beside it then saw
+fn data_path_candidates(p: &str) -> Vec<String> {
+    let mut out = vec![p.to_string()];
+    if let Some(rest) = p.strip_prefix("projects/") {
+        out.push(format!("workspaces/{rest}"));
+    } else if let Some(rest) = p.strip_prefix("workspaces/") {
+        out.push(format!("projects/{rest}"));
+    }
+    out
+}
+
 /// Resolve a data file path, preferring beside the exe (portable layout).
 /// Configs pointing at the old projects/ name also fall back to workspaces/ (compat)
 pub fn resolve_data_path(p: &str) -> std::path::PathBuf {
-    let mut candidates = vec![p.to_string()];
-    // Fall back between projects/ and workspaces/ in either direction
-    if let Some(rest) = p.strip_prefix("projects/") {
-        candidates.push(format!("workspaces/{rest}"));
-    } else if let Some(rest) = p.strip_prefix("workspaces/") {
-        candidates.push(format!("projects/{rest}"));
-    }
+    let candidates = data_path_candidates(p);
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(std::path::Path::to_path_buf));
@@ -1975,20 +1993,19 @@ mod tests {
 
     #[test]
     fn legacy_projects_path_falls_back_to_workspaces() {
-        // An existing config pointing at the old name projects/ should still be able to read workspaces/
-        let dir = std::env::temp_dir().join("shikisha-ws-compat");
-        let ws_dir = dir.join("workspaces");
-        std::fs::create_dir_all(&ws_dir).unwrap();
-        std::fs::write(ws_dir.join("x.json"), r#"{"tabs":[]}"#).unwrap();
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
-
-        let resolved = resolve_data_path("projects/x.json");
-        let ok = resolved.exists();
-
-        std::env::set_current_dir(prev).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(ok, "projects/ 指定が workspaces/ にフォールバックする");
+        // An existing config pointing at the old name projects/ should still be
+        // able to read workspaces/, and the other way round
+        assert_eq!(
+            data_path_candidates("projects/x.json"),
+            ["projects/x.json", "workspaces/x.json"],
+            "projects/ 指定が workspaces/ にフォールバックする"
+        );
+        assert_eq!(
+            data_path_candidates("workspaces/x.json"),
+            ["workspaces/x.json", "projects/x.json"]
+        );
+        // Anything else is only ever itself
+        assert_eq!(data_path_candidates("scripts/x.lua"), ["scripts/x.lua"]);
     }
 
     #[test]

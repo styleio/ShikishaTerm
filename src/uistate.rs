@@ -35,6 +35,10 @@ pub struct TabState {
     pub depth: u32,
     /// Recent output volume (old to new, each 0..=7). Rendered as a bar graph
     pub activity: Vec<u8>,
+    /// Which folder it works in, as a position in `UiState::groups`. Absent for
+    /// a tab that is in no folder, which is drawn under no heading
+    #[serde(default)]
+    pub group: Option<usize>,
     /// "pty" or "browser". Changes how it's displayed
     pub kind: String,
     /// This pty tab is a model bridge (OpenAI-compatible API). The shell offers
@@ -123,6 +127,82 @@ pub struct PlaceState {
     pub ports: Vec<u16>,
 }
 
+/// A folder, as a heading over the tabs working in it.
+///
+/// A group is a folder, so this is worked out from where the tabs actually
+/// are rather than from what the settings say -- a tab that ended up
+/// somewhere else is somewhere else, and a list that insisted otherwise
+/// would be a list that lies.
+///
+/// Nothing is drawn when there is only one: someone who has never asked for a
+/// second folder should not have to learn that the first one has a name.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct GroupState {
+    /// The heading: what someone named it, else the branch, else the folder
+    pub name: String,
+    /// The whole path, for the tooltip
+    pub folder: String,
+    /// Which project this belongs to, as a colour 0..=7. Folders sharing one
+    /// are branches of one repository, and the list draws them as a family.
+    /// Absent when the folder is not in a repository at all
+    #[serde(default)]
+    pub color: Option<u8>,
+    /// Whether this folder is a branch cut from the family's checkout
+    #[serde(default)]
+    pub linked: bool,
+}
+
+impl GroupState {
+    /// The folders these tabs are in, in the order they first appear, each
+    /// paired with the folder itself so a tab can find its own.
+    ///
+    /// Tabs that are in no folder at all -- a browser is in none -- get no
+    /// heading and belong to nothing, which is why the answer is looked up by
+    /// path rather than handed out by position
+    pub fn all(tabs: &[crate::tab::Tab]) -> Vec<(std::path::PathBuf, GroupState)> {
+        let mut out: Vec<(std::path::PathBuf, GroupState)> = Vec::new();
+        for t in tabs {
+            let Some(cwd) = t.cwd() else { continue };
+            if out.iter().any(|(k, _)| k == cwd) {
+                continue;
+            }
+            // What to call it: what someone typed, else the branch it is on,
+            // else the folder's own name. A branch first because with several
+            // of them open, the branch is the thing that tells them apart
+            let name = t
+                .group_name()
+                .map(str::to_string)
+                .filter(|n| !n.trim().is_empty())
+                .or_else(|| t.place.branch.clone())
+                .or_else(|| cwd.file_name().map(|n| n.to_string_lossy().to_string()))
+                .unwrap_or_default();
+            out.push((
+                cwd.to_path_buf(),
+                GroupState {
+                    name,
+                    folder: cwd.display().to_string(),
+                    color: t.place.family.as_deref().map(Self::color_of),
+                    linked: t.place.linked,
+                },
+            ));
+        }
+        out
+    }
+
+    /// Turns the shared git folder into one of a handful of colours.
+    ///
+    /// Derived rather than stored, so a family has a colour without anyone
+    /// being asked for one. Someone who wants a particular colour says so, and
+    /// that answer is kept elsewhere -- this is only the starting point
+    pub fn color_of(family: &std::path::Path) -> u8 {
+        let mut h: u32 = 2166136261;
+        for b in family.to_string_lossy().to_lowercase().bytes() {
+            h = (h ^ b as u32).wrapping_mul(16777619);
+        }
+        (h % 8) as u8
+    }
+}
+
 /// Current position of the automation ring
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct BallState {
@@ -172,6 +252,10 @@ pub struct NavState {
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct UiState {
     pub workspace: String,
+    /// The folders this workspace's tabs are working in. One means nothing is
+    /// drawn: the heading only exists to tell folders apart
+    #[serde(default)]
+    pub groups: Vec<GroupState>,
     pub workspaces: Vec<String>,
     pub ws_index: usize,
     /// What the focused pane is showing (0 = nothing is in it yet)
@@ -288,6 +372,7 @@ impl TabState {
             locked: t.locked,
             depth: t.chain_depth,
             activity: t.activity().to_vec(),
+            group: None,
             kind: "pty".into(),
             restartable: true,
             model: t.is_model(),
@@ -322,6 +407,7 @@ impl TabState {
             locked: false,
             depth: 0,
             activity: Vec::new(),
+            group: None,
             kind: "browser".into(),
             // The same two keys `main::restartable_page` refuses, and for the
             // same reason: they are opened and closed by the app, so "open it
@@ -395,6 +481,55 @@ mod tests {
     }
 
 
+    /// A tab that is really running, in a folder of its own.
+    fn in_folder(folder: &str, named: Option<&str>) -> crate::tab::Tab {
+        let dir = std::env::temp_dir().join(format!("shikisha-group-{folder}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let opts = crate::tab::TabOptions {
+            cwd: Some(dir),
+            group: named.map(str::to_string),
+            ..Default::default()
+        };
+        crate::tab::Tab::spawn("t".into(), &["cmd.exe".to_string()], None, 6, 40, opts).unwrap()
+    }
+
+    #[test]
+    fn the_folders_are_the_ones_the_tabs_are_actually_in() {
+        // Two tabs in one folder are one heading, not two: what groups them is
+        // the folder, so nothing has to be declared for them to be together
+        let mut tabs = vec![in_folder("one", None), in_folder("one", None), in_folder("two", None)];
+        let found = GroupState::all(&tabs);
+        for t in tabs.iter_mut() {
+            t.kill();
+        }
+        assert_eq!(found.len(), 2, "フォルダの数だけ");
+        assert!(found[0].0.ends_with("shikisha-group-one"));
+        assert_eq!(found[0].1.name, "shikisha-group-one", "名前が無ければフォルダ自身の名前");
+        // Not in a repository, so it belongs to no family and has no colour
+        assert_eq!(found[0].1.color, None);
+        assert!(!found[0].1.linked);
+    }
+
+    #[test]
+    fn a_folder_someone_named_is_called_that() {
+        let mut tabs = vec![in_folder("named", Some("feature/login"))];
+        let found = GroupState::all(&tabs);
+        tabs[0].kill();
+        assert_eq!(found[0].1.name, "feature/login");
+    }
+
+    #[test]
+    fn one_project_gets_one_colour_and_two_get_two() {
+        // What the list draws branches of one repository with. The answer has
+        // to be the same every time it is asked, or the colours would move
+        // around as tabs open and close
+        let a = std::path::Path::new("D:/work/myproject/.git");
+        let b = std::path::Path::new("D:/work/other/.git");
+        assert_eq!(GroupState::color_of(a), GroupState::color_of(a));
+        assert!(GroupState::color_of(a) < 8 && GroupState::color_of(b) < 8);
+        assert_ne!(GroupState::color_of(a), GroupState::color_of(b));
+    }
+
     fn tab(index: usize, name: &str) -> TabState {
         TabState {
             index,
@@ -406,6 +541,7 @@ mod tests {
             locked: false,
             depth: 0,
             activity: vec![0; 4],
+            group: None,
             kind: "pty".into(),
             restartable: true,
             model: false,

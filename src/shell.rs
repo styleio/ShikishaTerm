@@ -149,6 +149,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .ai-aider    { --ai:#e5644d; }
   .ai-kimi     { --ai:#12b3a8; }
 
+  /* A folder, as a heading over the tabs working in it. Drawn only when there
+     is more than one, so nobody meets the idea before they need it.
+     The colour says which project, and branches of one project share it --
+     it sits in the dot's column so the row below still reads as one line down
+     the sidebar, and never on the left edge, which belongs to the AI's own
+     colour */
+  .tab.folder { cursor:default; padding-top:9px; padding-bottom:3px; gap:6px; }
+  .tab.folder:hover { background:transparent; }
+  .tab.folder .nm { font-size:11px; opacity:.75; letter-spacing:.02em; }
+  .tab.folder .chip { width:8px; height:8px; border-radius:2px; flex:0 0 auto;
+    background:var(--fam, var(--line)); }
+  .tab.folder .cut { font-size:11px; opacity:.6; }
+  .fam0 { --fam:#d97757; } .fam1 { --fam:#19c37d; } .fam2 { --fam:#4285f4; }
+  .fam3 { --fam:#a06bff; } .fam4 { --fam:#e0a80a; } .fam5 { --fam:#12b3a8; }
+  .fam6 { --fam:#e5644d; } .fam7 { --fam:#7f8cff; }
+
   /* Hamburger and scrim. Not shown on wide screens (sidebar stays visible) */
   #hamburger { display:none; position:fixed; top:6px; left:6px; z-index:40;
     width:34px; height:30px; align-items:center; justify-content:center;
@@ -1088,9 +1104,29 @@ function drawTabs() {
       onclick:() => send({kind:"select", tab:0})},
     el("span", {class:"num"}, "0"),
     el("span", {class:"nm"}, T["tui.index"] || "INDEX")));
+  // The folder each run of tabs works in. A heading appears when the folder
+  // changes, and only when there is more than one to change to -- with a single
+  // folder the sidebar looks exactly as it always has. A tab that is in no
+  // folder at all (a browser) leaves the heading alone rather than ending it,
+  // so a page declared between two tabs does not split their folder in two
+  const folders = S.groups || [];
+  let shownFolder = -1;
   for (const t of S.tabs) {
     // Settings isn't a tab — it's reached via the gear pinned at the bottom.
     if (t.settings) continue;
+    if (folders.length > 1 && t.group != null && t.group !== shownFolder) {
+      shownFolder = t.group;
+      const g = folders[t.group] || {};
+      nav.append(el("div", {class:"tab folder" + (g.color != null ? " fam" + g.color : ""),
+          title:g.folder || ""},
+        el("span", {class:"chip"}),
+        // A branch cut from the project it belongs to, rather than the
+        // project's own folder. Worth marking: closing one is a different act.
+        // Drawn rather than typed — every character that means "branch" is one
+        // some font has never heard of, and the fallback is a shrug
+        g.linked ? cutMark() : null,
+        el("span", {class:"nm"}, g.name || "")));
+    }
     // Running several AIs side by side is the headline feature, so brand each
     // AI tab in its own colour (a left bar + a tinted name). The status dot
     // stays separate — colour = which AI, dot = what it's doing. Nothing is
@@ -1112,7 +1148,11 @@ function drawTabs() {
     if (t.place) {
       const p = t.place;
       const line = el("span", {class:"place"});
-      if (p.branch) {
+      // Not when the heading right above already says it. Two tabs under
+      // "feature/login" saying "feature/login" each is the sidebar spending
+      // three lines on one fact
+      const heading = (t.group != null && folders.length > 1) ? (folders[t.group] || {}).name : null;
+      if (p.branch && p.branch !== heading) {
         // A long branch name is shortened from the front. The end of a branch
         // name is the part someone chose ("…/fix-login"); the front is the
         // part a tool prepended, and cutting the tail throws away the half
@@ -1147,6 +1187,18 @@ function drawTabs() {
       // it opens as the child WebView, as before.
       onclick:() => openSettings()},
     el("span", {class:"gear"}, "⚙️")));
+}
+
+// The mark on a folder that is a branch cut from another: a line, and a second
+// one leaving it. Takes its colour from the row it sits in
+function cutMark() {
+  const s = el("span", {class:"cut"});
+  s.innerHTML = '<svg viewBox="0 0 12 12" width="11" height="11" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.3" stroke-linecap="round">' +
+    '<path d="M3.2 2.6v6.8"/><path d="M3.2 6.4c0-2.2 5.4-1 5.4-3.2"/>' +
+    '<circle cx="3.2" cy="10" r="1.2" fill="currentColor" stroke="none"/>' +
+    '<circle cx="8.6" cy="2.4" r="1.2" fill="currentColor" stroke="none"/></svg>';
+  return s;
 }
 
 // Draw output volume as a real bar chart, not ▁▄█ characters

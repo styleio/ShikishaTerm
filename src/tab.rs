@@ -18,6 +18,8 @@ pub const SCROLLBACK_LINES: usize = 5000;
 pub struct TabOptions {
     /// Working folder at launch (the AI CLI looks at the project here)
     pub cwd: Option<std::path::PathBuf>,
+    /// What that folder is called in the list, when someone named it
+    pub group: Option<String>,
     /// Number of scrollback lines
     pub scrollback: usize,
     /// Encoding ("utf-8" / "shift_jis" / "euc-jp" etc). Defaults to UTF-8
@@ -34,6 +36,7 @@ impl Default for TabOptions {
     fn default() -> Self {
         Self {
             cwd: None,
+            group: None,
             scrollback: SCROLLBACK_LINES,
             encoding: None,
             log: false,
@@ -1677,6 +1680,12 @@ impl Tab {
     /// can reach them by the path we hand back.
     pub fn cwd(&self) -> Option<&std::path::Path> {
         self.opts.cwd.as_deref()
+    }
+
+    /// What its folder is called, when someone named it. The folder itself is
+    /// what actually groups tabs together; this is only the heading over them
+    pub fn group_name(&self) -> Option<&str> {
+        self.opts.group.as_deref()
     }
 
     /// The profile is resolved fresh each time, either from a name (given in

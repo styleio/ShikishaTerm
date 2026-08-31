@@ -1652,7 +1652,11 @@ fn screen_key(session: usize, t: &Tab) -> ScreenKey {
 }
 
 fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
+    // The folders these tabs are actually in. Worked out here, once, so the
+    // window and the phone are looking at the same list
+    let groups = crate::uistate::GroupState::all(tabs);
     crate::uistate::UiState {
+        groups: groups.iter().map(|(_, g)| g.clone()).collect(),
         workspace: ui
             .ws_names
             .get(ui.ws_index)
@@ -1677,7 +1681,13 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
             .iter()
             .enumerate()
             .filter_map(|(i, p)| match p {
-                Surface::Session(s) => tabs.get(*s).map(|t| crate::uistate::TabState::of(i + 1, t)),
+                Surface::Session(s) => tabs.get(*s).map(|t| {
+                    let mut ts = crate::uistate::TabState::of(i + 1, t);
+                    ts.group = t
+                        .cwd()
+                        .and_then(|c| groups.iter().position(|(k, _)| k == c));
+                    ts
+                }),
                 Surface::Browser { key, name } => {
                     Some(crate::uistate::TabState::browser(i + 1, key, name))
                 }
@@ -2738,11 +2748,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         (Some(r), Some(b)) => prs.of(r, b).map(|p| p.short()),
                         _ => None,
                     };
+                    // Which project this folder belongs to, and whether it is
+                    // the checkout or a branch cut from it. Same kind of look
+                    // as the branch above -- a file read, not a git run
+                    let (family, linked) = match t.cwd() {
+                        Some(c) => (crate::repo::family_of(c), crate::repo::is_linked(c)),
+                        None => (None, false),
+                    };
                     t.place = crate::repo::Place {
                         branch,
                         ports: ports.get(&i).cloned().unwrap_or_default(),
                         repo,
                         pr,
+                        family,
+                        linked,
                     };
                 }
             }
@@ -5764,10 +5783,11 @@ fn resolve_launch(
     argv
 }
 
-/// `cwd` comes from the tab's group, which is the only thing that has one.
-fn tab_options(cfg: &config::TabConfig, cwd: Option<std::path::PathBuf>) -> tab::TabOptions {
+/// Where it runs comes from the tab's group, the only thing that has a folder.
+fn tab_options(cfg: &config::TabConfig, group: Option<&config::Group>) -> tab::TabOptions {
     tab::TabOptions {
-        cwd,
+        cwd: group.and_then(|g| g.cwd.clone()),
+        group: group.and_then(|g| g.name.clone()),
         scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
@@ -5824,7 +5844,7 @@ fn apply_ws_config(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
+        let mut opts = tab_options(&ft.cfg, ws.group_of(ft));
         let argv = resolve_launch(
             argv,
             &mut opts,
@@ -6098,7 +6118,7 @@ fn spawn_workspace(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
+        let mut opts = tab_options(&ft.cfg, ws.group_of(ft));
         let argv = resolve_launch(
             argv,
             &mut opts,
