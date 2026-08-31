@@ -1451,7 +1451,25 @@ pub fn append_group_at(
         if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
             group["name"] = serde_json::json!(n);
         }
-        groups.push(group);
+        // Beside the folders it belongs with. A branch of one project written
+        // after an unrelated one reads as unrelated: the list is drawn in the
+        // order this is written in, and a family that is not next to itself is
+        // a family nobody can see
+        let family = crate::repo::family_of(cwd);
+        let last_of_family = family.as_ref().and_then(|f| {
+            groups.iter().rposition(|g| {
+                g.get("cwd")
+                    .and_then(|c| c.as_str())
+                    .map(resolve_group_cwd)
+                    .and_then(|c| crate::repo::family_of(&c))
+                    .as_ref()
+                    == Some(f)
+            })
+        });
+        match last_of_family {
+            Some(at) => groups.insert(at + 1, group),
+            None => groups.push(group),
+        }
         Ok(())
     })
 }

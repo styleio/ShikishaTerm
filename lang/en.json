@@ -47,6 +47,7 @@
   "tui.branch.title": "PARALLEL WORK",
   "tui.branch.hint": "Runs another branch of the same repository at the same time, without switching.",
   "tui.branch.placeholder": "branch name, e.g. feature/login",
+  "tui.branch.from": "from {name}",
   "tui.branch.make": "Make it",
   "tui.branch.carry": "Bring along:",
   "tui.branch.carry.link": "linked, not copied",

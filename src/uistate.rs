@@ -241,6 +241,12 @@ pub struct BranchPlan {
     pub folder: String,
     /// The command, exactly as it will run
     pub line: String,
+    /// What the new branch will grow from
+    #[serde(default)]
+    pub base: String,
+    /// The others it could grow from instead, best first
+    #[serde(default)]
+    pub bases: Vec<String>,
     /// What the new folder will not have and cannot get from git -- the
     /// ignored things that are actually there, offered to come along
     #[serde(default)]

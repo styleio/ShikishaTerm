@@ -160,6 +160,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder .chip { width:8px; height:8px; border-radius:2px; flex:0 0 auto;
     background:var(--line); }
   .tab.folder .cut { font-size:11px; opacity:.6; }
+  /* A branch of a project sits under the checkout it was cut from, one step
+     in. Only the heading moves: the tabs below keep their own column, so the
+     status dots still read as one line all the way down the sidebar */
+  .tab.folder.cut { padding-left:20px; }
+  .tab.folder .hang { color:var(--dim); font-size:11px; margin-left:-10px; opacity:.7; }
   /* Choosing one. The swatches are the colours picked from when nobody has,
      and the last square opens whatever the system offers */
   .swatches { display:flex; flex-wrap:wrap; gap:6px; padding:6px 8px 8px; max-width:200px; }
@@ -658,6 +663,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the command itself. Never typed into -- the branch name above is the only
      thing anyone fills in */
   #branch .bsay { color:var(--dim); font-size:11.5px; }
+  /* The name to give it, and what it starts from. One is typed and the other
+     is picked, because one of them is new and the other already exists */
+  #branch .brow2 { display:flex; gap:8px; align-items:stretch; }
+  #branch .brow2 #bq { flex:1; min-width:0; }
+  #branch #bbase { font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:8px; padding:0 8px; outline:none;
+    max-width:42%; }
   #browse .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; max-height:52vh; }
   #browse .vrow { padding:8px 10px; border-radius:8px; cursor:pointer; }
   #browse .vrow:hover { background:var(--raise); }
@@ -954,7 +966,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
       <div class="bsay"></div>
-      <input id="bq" type="text" autocomplete="off" spellcheck="false">
+      <div class="brow2"><input id="bq" type="text" autocomplete="off" spellcheck="false"><select id="bbase"></select></div>
       <div class="bwhere"></div>
       <div class="bcmd"></div>
       <div class="bcarry"></div>
@@ -1187,8 +1199,9 @@ function drawTabs() {
       const shut = folded.has(g.folder);
       const chip = el("span", {class:"chip"});
       if (g.color) chip.style.background = g.color;
-      nav.append(el("div", {class:"tab folder",
+      nav.append(el("div", {class:"tab folder" + (g.linked ? " cut" : ""),
           title:g.folder || "", onclick:() => { fold(g.folder); }},
+        g.linked ? el("span", {class:"hang"}, "\u2514") : null,
         chip,
         el("span", {class:"caret"}, shut ? "▸" : "▾"),
         // A branch cut from the project it belongs to, rather than the
@@ -1493,6 +1506,9 @@ function openBranch(g) {
   const box = b.querySelector(".bcarry");
   box.dataset.key = "";
   box.textContent = "";
+  const sel = document.getElementById("bbase");
+  sel.dataset.key = "";
+  sel.textContent = "";
   drawBranch();
   setTimeout(() => q.focus(), 30);
 }
@@ -1507,8 +1523,15 @@ function askBranch() {
   clearTimeout(branchTimer);
   branchTimer = setTimeout(() => {
     const q = document.getElementById("bq");
-    send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), make:false, carry:carrying()});
+    send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
+          make:false, carry:carrying()});
   }, 180);
+}
+
+// What it will grow from: whatever is showing in the picker
+function basing() {
+  const sel = document.getElementById("bbase");
+  return sel ? sel.value : "";
 }
 
 // The names still ticked, in the order they were offered
@@ -1528,9 +1551,30 @@ function drawBranch() {
   b.querySelector(".bwhere").textContent = mine && !p.error ? p.folder : "";
   b.querySelector(".bcmd").textContent = mine && !p.error ? p.line : "";
   drawCarry(b, mine && !p.error ? (p.carry || []) : []);
+  drawBases(b, mine ? p : null);
   b.querySelector(".berr").textContent = mine && p.error ? p.error : "";
   b.querySelector(".go").disabled = !(mine && !p.error);
 }
+// The branches this one can grow from. Filled once, then left alone: rebuilt
+// on every answer it would jump back to the first one each time somebody
+// chose another
+function drawBases(b, p) {
+  const sel = document.getElementById("bbase");
+  if (!sel) return;
+  const list = (p && p.bases) || [];
+  const key = list.join("\u0000");
+  if (sel.dataset.key === key) return;
+  sel.dataset.key = key;
+  sel.textContent = "";
+  for (const name of list) {
+    const said = (T["tui.branch.from"] || "from {name}").replace("{name}", name);
+    sel.append(el("option", {value:name}, said));
+  }
+  if (p && p.base) sel.value = p.base;
+  // Asking again with the chosen one, so the command line below follows
+  sel.onchange = askBranch;
+}
+
 // Drawn once per set of names: rebuilding it on every answer would untick
 // whatever was just unticked, which is the one thing this list must not do
 function drawCarry(b, items) {
@@ -1556,7 +1600,8 @@ function drawCarry(b, items) {
   b.addEventListener("mousedown", e => { if (e.target === b) closeBranch(); });
   b.querySelector(".go").onclick = () => {
     const q = document.getElementById("bq");
-    send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), make:true, carry:carrying()});
+    send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
+          make:true, carry:carrying()});
   };
   const q = document.getElementById("bq");
   q.addEventListener("input", askBranch);

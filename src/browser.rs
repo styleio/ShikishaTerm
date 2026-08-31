@@ -789,6 +789,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("branch") => Ev::Branch {
             from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             branch: v.get("branch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            base: v.get("base").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             make: v.get("make").and_then(|x| x.as_bool()).unwrap_or(false),
             carry: v
                 .get("carry")
@@ -1175,6 +1176,8 @@ pub enum Ev {
     Branch {
         from: String,
         branch: String,
+        /// What to grow it from. Empty asks for the sensible one
+        base: String,
         make: bool,
         /// What to bring along, of what was offered
         carry: Vec<String>,

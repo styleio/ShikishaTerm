@@ -507,9 +507,9 @@ struct WinSurface {
     vault_queries: Vec<String>,
     /// Past conversations asked to be reopened as resuming tabs
     vault_opens: Vec<crate::browser::Ev>,
-    /// Branches asked about, and asked for: (folder cut from, branch, make
-    /// it, what to bring along)
-    branches: Vec<(String, String, bool, Vec<String>)>,
+    /// Branches asked about, and asked for: (folder cut from, branch, what to
+    /// grow it from, make it, what to bring along)
+    branches: Vec<(String, String, String, bool, Vec<String>)>,
     /// Colours chosen for a project: (a folder in it, the colour)
     folder_colors: Vec<(String, String)>,
     /// Folders being looked through, and the one finally chosen
@@ -685,7 +685,7 @@ impl WinSurface {
         std::mem::take(&mut self.vault_opens)
     }
 
-    fn take_branches(&mut self) -> Vec<(String, String, bool, Vec<String>)> {
+    fn take_branches(&mut self) -> Vec<(String, String, String, bool, Vec<String>)> {
         std::mem::take(&mut self.branches)
     }
 
@@ -801,8 +801,8 @@ impl WinSurface {
                 Ev::OpenSettings { section, ret } => self.open_settings = Some((section, ret)),
                 Ev::VaultSearch { query } => self.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
-                Ev::Branch { from, branch, make, carry } => {
-                    self.branches.push((from, branch, make, carry))
+                Ev::Branch { from, branch, base, make, carry } => {
+                    self.branches.push((from, branch, base, make, carry))
                 }
                 Ev::FolderColor { folder, color } => self.folder_colors.push((folder, color)),
                 Ev::Browse { path, open } => self.browses.push((path, open)),
@@ -4248,9 +4248,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // Another branch of a project already open. The same call answers "what
         // would this do" and does it, so the line shown before it happens is
         // the line that happens
-        for (from, name, make, carry) in surface.take_branches() {
+        for (from, name, base, make, carry) in surface.take_branches() {
             let from = std::path::PathBuf::from(&from);
-            branch_view = Some(match crate::worktree::plan(&from, &name, None) {
+            branch_view = Some(match crate::worktree::plan(&from, &name, Some(&base)) {
                 Err(e) => crate::uistate::BranchPlan {
                     from: from.display().to_string(),
                     branch: name,
@@ -4263,6 +4263,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         branch: plan.branch.clone(),
                         folder: plan.folder.display().to_string(),
                         line: plan.line(),
+                        base: plan.base.clone(),
+                        bases: crate::worktree::bases(&plan.main),
                         carry: crate::worktree::carryables(&plan.main),
                         error: None,
                         done: false,

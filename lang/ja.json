@@ -47,6 +47,7 @@
   "tui.branch.title": "並行開発（GIT WORKTREE）",
   "tui.branch.hint": "同じリポジトリの別ブランチを、切り替えずに同時に動かします",
   "tui.branch.placeholder": "ブランチ名（例: feature/login）",
+  "tui.branch.from": "{name} から",
   "tui.branch.make": "作る",
   "tui.branch.carry": "持って行く:",
   "tui.branch.carry.link": "コピーではなくリンクします",

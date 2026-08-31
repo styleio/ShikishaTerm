@@ -425,7 +425,65 @@ pub fn default_base(main: &Path) -> String {
             return name.to_string();
         }
     }
-    "HEAD".into()
+    // Nothing to compare with, so it grows from where the checkout is. Said as
+    // the branch's own name rather than as HEAD: the same commit either way,
+    // and one of the two is a word people use
+    crate::repo::branch_of(main).unwrap_or_else(|| "HEAD".into())
+}
+
+/// The branches a new one could grow from, best first.
+///
+/// What the remote calls its default, then the rest of what the remote has,
+/// then this machine's own branches. Read out of the repository's files
+/// rather than by running git, because this is asked while someone is typing.
+pub fn bases(main: &Path) -> Vec<String> {
+    let Some(git) = crate::repo::family_of(main) else {
+        return vec!["HEAD".into()];
+    };
+    let mut out = vec![default_base(main)];
+    let mut add = |name: String| {
+        if !name.is_empty() && !out.contains(&name) {
+            out.push(name);
+        }
+    };
+    // Loose refs, then the ones packed away together
+    for (under, prefix) in [("refs/remotes", ""), ("refs/heads", "")] {
+        let root = git.join(under);
+        let mut todo = vec![root.clone()];
+        while let Some(dir) = todo.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    todo.push(path);
+                    continue;
+                }
+                if let Ok(rest) = path.strip_prefix(&root) {
+                    let name = rest.to_string_lossy().replace('\\', "/");
+                    // `origin/HEAD` is a pointer at another of these, not a
+                    // branch anyone means to start from
+                    if !name.ends_with("HEAD") {
+                        add(format!("{prefix}{name}"));
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(text) = std::fs::read_to_string(git.join("packed-refs")) {
+        for line in text.lines() {
+            let Some((_, r)) = line.split_once(' ') else { continue };
+            let r = r.trim();
+            for under in ["refs/remotes/", "refs/heads/"] {
+                if let Some(name) = r.strip_prefix(under) {
+                    if !name.ends_with("HEAD") {
+                        add(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out.truncate(200);
+    out
 }
 
 /// Whether a branch of this name is already in the repository.
@@ -577,7 +635,7 @@ mod tests {
 
         let cut = plan(&main, "feature/login", None).unwrap();
         assert!(cut.fresh, "まだ無い枝");
-        assert_eq!(cut.base, "HEAD", "remote が無ければ今いる所から");
+        assert_eq!(cut.base, "main", "remote が無ければ今いる所から、その名前で");
         create(&cut).unwrap();
 
         let made = &cut.folder;
@@ -594,7 +652,7 @@ mod tests {
             .args(["config", "--get", "branch.feature/login.shikishaBase"])
             .output()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "HEAD");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "main");
 
         // Asking for the same branch twice does not quietly make a second one
         assert!(create(&cut).is_err(), "同じ場所に二度作らない");
@@ -725,11 +783,43 @@ mod tests {
     }
 
     #[test]
+    fn the_branches_it_could_grow_from_are_the_ones_there_are() {
+        let main = repo("bases");
+        let git = main.join(".git");
+        std::fs::create_dir_all(git.join("refs/heads/feature")).unwrap();
+        std::fs::write(git.join("refs/heads/main"), "0
+").unwrap();
+        std::fs::write(git.join("refs/heads/feature/login"), "0
+").unwrap();
+        std::fs::create_dir_all(git.join("refs/remotes/origin")).unwrap();
+        std::fs::write(git.join("refs/remotes/origin/main"), "0
+").unwrap();
+        std::fs::write(git.join("refs/remotes/origin/HEAD"), "ref: refs/remotes/origin/main
+").unwrap();
+        std::fs::write(git.join("packed-refs"), "0000 refs/heads/old-thing
+").unwrap();
+
+        let found = bases(&main);
+        assert_eq!(found.first().map(String::as_str), Some("origin/main"), "既定が先頭: {found:?}");
+        for want in ["origin/main", "main", "feature/login", "old-thing"] {
+            assert!(found.iter().any(|b| b == want), "{want} が無い: {found:?}");
+        }
+        // The pointer at another branch is not a branch anyone starts from
+        assert!(!found.iter().any(|b| b.ends_with("HEAD")), "HEAD を出している: {found:?}");
+        // Said once each
+        let mut sorted = found.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), found.len(), "重複がある: {found:?}");
+    }
+
+    #[test]
     fn a_new_branch_grows_from_what_the_remote_calls_its_default() {
         let main = repo("base");
         let git = main.join(".git");
-        // Nothing known yet: whatever is checked out is all there is
-        assert_eq!(default_base(&main), "HEAD");
+        // Nothing known yet: it grows from where the checkout is standing,
+        // said as the branch's own name
+        assert_eq!(default_base(&main), "main");
         // A remote branch, found whether it is a file or packed away
         std::fs::create_dir_all(git.join("refs/remotes/origin")).unwrap();
         std::fs::write(git.join("refs/remotes/origin/main"), "0\n").unwrap();
