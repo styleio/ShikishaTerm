@@ -8,7 +8,61 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-31
+
+The dot beside a tab used to be a guess, read off the screen the way a person
+reads it. The AI itself will simply say — so now it does, and the dot is right
+the moment a turn starts, the moment your answer is wanted, and the moment it
+is over. The built-in browser also stopped swallowing the windows pages ask it
+to open, which is what a sign-in button usually needs.
+
+### Added
+- **The AI tells the app what it is doing, instead of being watched.** Turn it
+  on per CLI in Settings, under carrying conversations. The dot beside the tab
+  then goes yellow the instant you press Enter, blue the instant a permission
+  dialog wants your answer, and green the instant the reply is finished —
+  instead of a second or two later, and instead of turning green because the
+  AI happened to pause mid-thought. It works whatever language the CLI is in,
+  under any colour scheme, and whether or not it draws a word the app knows.
+  Claude Code and Codex both support it; Codex asks you to approve it once, the
+  next time it starts.
+- **Read the whole conversation on your phone, as a document you can scroll.**
+  A full-screen AI keeps no history the app can page through, so the reply you
+  wanted to re-read was gone the moment it scrolled by. The words now come from
+  the record the CLI keeps for itself: it opens on the newest answer with the
+  message that prompted it above, and older turns arrive six at a time when you
+  ask for them. Text you can flick through and select, not a grid of characters
+  turned page by page. Available for the CLIs that keep such a record (Claude
+  Code, Codex).
+- **A second reload button, the one that ignores what is stored.** Next to 再読み込み
+  is スーパーリロード — the page and everything it is built from is fetched again.
+  Shift-clicking the plain one does the same. Each has its own switch in the
+  tab's settings, so a page can show one, the other, or both.
+- **The browser can be told what name to give sites (UA).** Empty means it looks
+  like Edge, which is what it has always looked like. Fill it in when a site
+  answers "this browser may not be secure" and will not let you sign in. There
+  is one for the whole app in Settings, and one per browser tab for the site
+  that needs something different from the rest.
+
 ### Fixed
+- **A sign-in button that opens its own window now opens it.** "Sign in with
+  Google", and any link set to open in a new tab, did nothing at all: no
+  window, no error, no sign that anything had been pressed. Windows a page asks
+  for are now taken into the pane the page is in, with a small bar across the
+  top carrying the site's address and a ✕ to close it. The page that opened it
+  keeps hold of it, which is what lets a sign-in finish and hand you back.
+- **The "waiting for your answer" dot is yellow.** It had been drawn in the same
+  grey as a tab sitting idle — the one dot whose whole purpose is to be noticed.
+- **A tab restarted into the conversation it was having.** In a workspace with
+  no automation of its own, the first thing a CLI reported at startup — which
+  is the id of the conversation to come back to, and it is said exactly once —
+  was credited to no tab at all and thrown away. Restarting then started a new
+  conversation while the settings screen went on saying it would carry the old
+  one over.
+- **The dots down the tab list line up.** An AI tab carried a small coloured
+  chip in front of its dot, so the column you scan for "which of these needs
+  me" zig-zagged. The colour is still there, on the bar down the left of the
+  row and on the name.
 - **A terminal watched from a phone stays the phone's width, instead of
   snapping back to the window's the first time a tab is switched.** The phone
   measures its own screen and the terminal is cut to fit it -- that part has
@@ -951,7 +1005,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/styleio/ShikishaTerm/compare/v0.3.7...v0.4.0
 [0.3.7]: https://github.com/styleio/ShikishaTerm/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/styleio/ShikishaTerm/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/styleio/ShikishaTerm/compare/v0.3.4...v0.3.5
