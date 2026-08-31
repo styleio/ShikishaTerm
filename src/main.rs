@@ -4259,11 +4259,21 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 (crate::worktree::bases(main), crate::worktree::carryables(main))
             });
             let (bases, carryable) = offers.unwrap_or_default();
+            // What it would grow from, even when there is no name yet to grow.
+            // Echoing back the empty answer would leave the picker with nothing
+            // to show until somebody typed
+            let chosen = match base.trim().is_empty() {
+                true => repo
+                    .as_deref()
+                    .map(crate::worktree::default_base)
+                    .unwrap_or_default(),
+                false => base.clone(),
+            };
             branch_view = Some(match crate::worktree::plan(&from, &name, Some(&base)) {
                 Err(e) => crate::uistate::BranchPlan {
                     from: from.display().to_string(),
                     branch: name,
-                    base: base.clone(),
+                    base: chosen,
                     bases,
                     carry: carryable,
                     error: Some(format!("{e:#}")),

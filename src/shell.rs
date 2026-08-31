@@ -668,8 +668,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .brow2 { display:flex; gap:8px; align-items:stretch; }
   #branch .brow2 #bq { flex:1; min-width:0; }
   #branch #bbase { font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
-    border:1px solid var(--line); border-radius:8px; padding:0 8px; outline:none;
-    max-width:42%; }
+    border:1px solid var(--line); border-radius:8px; padding:0 10px; cursor:pointer;
+    max-width:42%; display:flex; align-items:center; gap:6px; white-space:nowrap;
+    overflow:hidden; }
+  #branch #bbase:hover { border-color:var(--brand); }
+  #branch #bbase .nm { overflow:hidden; text-overflow:ellipsis; }
+  #branch #bbase .caret { color:var(--dim); font-size:9px; }
+  .fmenu.tall { max-height:min(52vh, 420px); overflow:auto; }
   #browse .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; max-height:52vh; }
   #browse .vrow { padding:8px 10px; border-radius:8px; cursor:pointer; }
   #browse .vrow:hover { background:var(--raise); }
@@ -968,7 +973,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
       <div class="bsay"></div>
-      <div class="brow2"><input id="bq" type="text" autocomplete="off" spellcheck="false"><select id="bbase"></select></div>
+      <div class="brow2"><input id="bq" type="text" autocomplete="off" spellcheck="false"><div id="bbase"></div></div>
       <div class="bwhere"></div>
       <div class="bcmd"></div>
       <div class="bcarry"></div>
@@ -1295,10 +1300,32 @@ function fold(folder) {
 // What a folder can do. One menu, opened by pointer or by finger -- nothing
 // here is reachable only by hovering, because half the people using it are on
 // a phone
-function folderMenu(e, g) {
+// Opens a list under something, as its own layer on the body.
+//
+// Not a native <select>: the state arrives several times a second and every
+// arrival touches this document, which shuts a native popup the instant it
+// opens -- the same thing that once kept the browser dock's dropdown from
+// staying open. A list of our own is untouched by any of that.
+function openList(anchor, rows) {
   closeFolderMenu();
+  const m = el("div", {class:"fmenu"}, ...rows);
+  document.body.append(m);
+  // Below what was pressed, and never off the bottom of the window
+  const r = anchor.getBoundingClientRect();
+  const box = m.getBoundingClientRect();
+  m.style.left = Math.min(r.left, window.innerWidth - box.width - 8) + "px";
+  m.style.top = Math.min(r.bottom + 4, window.innerHeight - box.height - 8) + "px";
+  // A press anywhere else puts it away -- but a press *on it* must not, or the
+  // list would be gone before the release that makes the click, and every
+  // entry would look dead
+  folderMenuAway = ev => { if (!m.contains(ev.target)) closeFolderMenu(); };
+  setTimeout(() => document.addEventListener("mousedown", folderMenuAway, true), 0);
+  return m;
+}
+
+function folderMenu(e, g) {
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
-  const m = el("div", {class:"fmenu"},
+  openList(e.currentTarget, [
     item(T["tui.tab.add"] || "ADD TAB", addTabHere),
     // Only where there is a project to cut a branch from
     g.color ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
@@ -1309,43 +1336,26 @@ function folderMenu(e, g) {
          () => fold(g.folder)),
     renameItem(g),
     closeItem(g),
-    g.linked ? discardItem(g) : null);
-  document.body.append(m);
-  // Below what was pressed, and never off the bottom of the window
-  const r = e.currentTarget.getBoundingClientRect();
-  const box = m.getBoundingClientRect();
-  m.style.left = Math.min(r.left, window.innerWidth - box.width - 8) + "px";
-  m.style.top = Math.min(r.bottom + 4, window.innerHeight - box.height - 8) + "px";
-  // A press anywhere else puts it away -- but a press *on it* must not, or the
-  // menu would be gone before the release that makes the click, and every
-  // entry would look dead
-  folderMenuAway = ev => { if (!m.contains(ev.target)) closeFolderMenu(); };
-  setTimeout(() => document.addEventListener("mousedown", folderMenuAway, true), 0);
+    g.linked ? discardItem(g) : null,
+  ]);
 }
 let folderMenuAway = null;
 // The three ways a workspace grows, said as what happens rather than as what
 // they are. Parallel work only appears where there is a project to cut a
 // branch from, so someone with no repository never meets the idea
 function addMenu(e) {
-  closeFolderMenu();
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
   // The folder of the tab being looked at, so "another branch" means this one
   const at = (S && S.tabs || []).find(t => t.index === S.active);
   const gs = (S && S.groups) || [];
   const here = (at && at.group != null && gs[at.group] && gs[at.group].color)
     ? gs[at.group] : gs.find(g => g.color) || null;
-  const m = el("div", {class:"fmenu"},
+  openList(e.currentTarget, [
     item(T["tui.tab.add"] || "ADD TAB", addTabHere),
     here ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
                 () => openBranch(here)) : null,
-    item(T["tui.folder.another"] || "Open another folder", () => openBrowse("")));
-  document.body.append(m);
-  const r = e.currentTarget.getBoundingClientRect();
-  const box = m.getBoundingClientRect();
-  m.style.left = Math.min(r.left, window.innerWidth - box.width - 8) + "px";
-  m.style.top = Math.min(r.bottom + 4, window.innerHeight - box.height - 8) + "px";
-  folderMenuAway = ev => { if (!m.contains(ev.target)) closeFolderMenu(); };
-  setTimeout(() => document.addEventListener("mousedown", folderMenuAway, true), 0);
+    item(T["tui.folder.another"] || "Open another folder", () => openBrowse("")),
+  ]);
 }
 
 // Somewhere else to work. The list comes from the app, so this is the same
@@ -1511,8 +1521,10 @@ function openBranch(g) {
   const box = b.querySelector(".bcarry");
   box.dataset.key = "";
   box.textContent = "";
+  branchBase = "";
+  branchBases = [];
   const sel = document.getElementById("bbase");
-  sel.dataset.key = "";
+  sel.dataset.said = "";
   sel.textContent = "";
   drawBranch();
   // Asked before a single letter is typed: what this project can be grown
@@ -1537,11 +1549,9 @@ function askBranch() {
   }, 180);
 }
 
-// What it will grow from: whatever is showing in the picker
-function basing() {
-  const sel = document.getElementById("bbase");
-  return sel ? sel.value : "";
-}
+// What it will grow from: whatever the picker is showing
+let branchBase = "";
+function basing() { return branchBase; }
 
 // The names still ticked, in the order they were offered
 function carrying() {
@@ -1571,25 +1581,39 @@ function drawBranch() {
 // on every answer it would jump back to the first one each time somebody
 // chose another
 function drawBases(b, p) {
-  const sel = document.getElementById("bbase");
-  if (!sel) return;
+  const box = document.getElementById("bbase");
+  if (!box) return;
   const list = (p && p.bases) || [];
   // An answer that has nothing to say about the branches -- one about a name
-  // that has since changed -- must not empty a picker that is already filled,
-  // least of all while it is open
-  if (!list.length && sel.options.length) return;
-  const key = list.join("\u0000");
-  if (sel.dataset.key === key) return;
-  sel.dataset.key = key;
-  sel.textContent = "";
-  for (const name of list) {
-    const said = (T["tui.branch.from"] || "from {name}").replace("{name}", name);
-    sel.append(el("option", {value:name}, said));
+  // that has since changed -- must not empty a picker that is already filled
+  if (!list.length && branchBases.length) return;
+  branchBases = list;
+  if (!branchBase && p && p.base) branchBase = p.base;
+  const said = branchBase
+    ? (T["tui.branch.from"] || "from {name}").replace("{name}", branchBase)
+    : "";
+  // Written only when it changed: every touch of this document is another
+  // chance to shut a list that somebody has open
+  if (box.dataset.said !== said) {
+    box.dataset.said = said;
+    box.textContent = "";
+    box.append(el("span", {class:"nm"}, said), el("span", {class:"caret"}, "\u25BE"));
   }
-  if (p && p.base) sel.value = p.base;
-  // Asking again with the chosen one, so the command line below follows
-  sel.onchange = askBranch;
+  box.title = branchBase;
+  box.onclick = e => {
+    e.stopPropagation();
+    openList(box, branchBases.map(name => el("div", {onclick:() => {
+      closeFolderMenu();
+      branchBase = name;
+      // Redrawn from here rather than waiting for the answer, so the picker
+      // shows the choice the moment it is made
+      box.dataset.said = "";
+      drawBranch();
+      askBranch();
+    }}, (T["tui.branch.from"] || "from {name}").replace("{name}", name)))).classList.add("tall");
+  };
 }
+let branchBases = [];
 
 // Drawn once per set of names: rebuilding it on every answer would untick
 // whatever was just unticked, which is the one thing this list must not do
