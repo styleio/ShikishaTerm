@@ -1200,7 +1200,7 @@ function drawTabs() {
   for (const t of S.tabs) {
     // Settings isn't a tab — it's reached via the gear pinned at the bottom.
     if (t.settings) continue;
-    if (folders.length > 1 && t.group != null && t.group !== shownFolder) {
+    if (t.group != null && t.group !== shownFolder) {
       shownFolder = t.group;
       const g = folders[t.group] || {};
       const shut = folded.has(g.folder);
@@ -1217,11 +1217,11 @@ function drawTabs() {
         // some font has never heard of, and the fallback is a shrug
         g.linked ? cutMark() : null,
         el("span", {class:"nm"}, g.name || ""),
-        el("span", {class:"more", title:T["tui.folder.more"] || "…",
-            onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "⋯")));
+        el("span", {class:"more", title:T["tui.folder.add"] || "+",
+            onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+")));
     }
     // Its tabs are hidden while it is folded, and the heading says so
-    if (t.group != null && folders.length > 1 && folded.has((folders[t.group] || {}).folder)) continue;
+    if (t.group != null && folded.has((folders[t.group] || {}).folder)) continue;
     // Running several AIs side by side is the headline feature, so brand each
     // AI tab in its own colour (a left bar + a tinted name). The status dot
     // stays separate — colour = which AI, dot = what it's doing. Nothing is
@@ -1249,7 +1249,7 @@ function drawTabs() {
       // Not when the heading right above already says it. Two tabs under
       // "feature/login" saying "feature/login" each is the sidebar spending
       // three lines on one fact
-      const heading = (t.group != null && folders.length > 1) ? (folders[t.group] || {}).name : null;
+      const heading = t.group != null ? (folders[t.group] || {}).name : null;
       if (p.branch && p.branch !== heading) {
         // A long branch name is shortened from the front. The end of a branch
         // name is the part someone chose ("…/fix-login"); the front is the
@@ -1272,9 +1272,12 @@ function drawTabs() {
     }
   }
   // A "+" at the end of the list. Opens the settings page already in the "add tab" state
+  // A folder, not a tab: a tab has to go somewhere, and at the bottom of the
+  // whole list there was no saying where. Tabs are added from the folder they
+  // will run in
   nav.append(el("div", {class:"tab addtab", onclick:e => addMenu(e)},
     el("span", {class:"num"}, "+"),
-    el("span", {class:"nm"}, T["tui.tab.add"] || "ADD TAB")));
+    el("span", {class:"nm"}, T["tui.folder.add"] || "ADD A FOLDER")));
   // The settings gear, pinned to the very bottom of the sidebar. Always visible.
   const settingsOpen = !!S.settings_open;
   nav.append(el("div", {class:"tab gearrow" + (settingsOpen ? " sel" : ""),
@@ -1330,16 +1333,20 @@ function folderMenu(e, g) {
     // Only where there is a project to cut a branch from
     g.color ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
                    () => openBranch(g)) : null,
-    g.color ? colorItem(g) : null,
-    item(folded.has(g.folder) ? (T["tui.folder.open"] || "Unfold")
-                              : (T["tui.folder.fold"] || "Fold"),
-         () => fold(g.folder)),
-    renameItem(g),
-    closeItem(g),
-    g.linked ? discardItem(g) : null,
+    // The name, the colour and getting rid of it are settings, and settings
+    // live on that folder's own page rather than in a menu that grows a little
+    // every time one is added. Folding is the caret on the row itself
+    item(T["tui.folder.edit"] || "Edit...", () => openSettings(null, false, g.folder)),
   ]);
 }
 let folderMenuAway = null;
+function closeFolderMenu() {
+  if (folderMenuAway) {
+    document.removeEventListener("mousedown", folderMenuAway, true);
+    folderMenuAway = null;
+  }
+  for (const m of document.querySelectorAll(".fmenu")) m.remove();
+}
 // The three ways a workspace grows, said as what happens rather than as what
 // they are. Parallel work only appears where there is a project to cut a
 // branch from, so someone with no repository never meets the idea
@@ -1351,7 +1358,6 @@ function addMenu(e) {
   const here = (at && at.group != null && gs[at.group] && gs[at.group].color)
     ? gs[at.group] : gs.find(g => g.color) || null;
   openList(e.currentTarget, [
-    item(T["tui.tab.add"] || "ADD TAB", addTabHere),
     here ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
                 () => openBranch(here)) : null,
     item(T["tui.folder.another"] || "Open another folder", () => openBrowse("")),
@@ -1405,100 +1411,6 @@ function drawBrowse() {
     send({kind:"browse", path:st.at, open:true});
   };
 })();
-
-// Renaming: the row becomes the field, so there is nothing else to open and
-// nowhere else to look. Empty hands the heading back to what the folder says
-// about itself -- its branch, or its own last part
-function renameItem(g) {
-  const row = el("div", {}, T["tui.folder.rename"] || "Rename");
-  row.onclick = e => {
-    e.stopPropagation();
-    row.textContent = "";
-    const inp = el("input", {class:"fname", value:g.name || "",
-                             placeholder:T["tui.folder.rename.ph"] || ""});
-    inp.addEventListener("keydown", ev => {
-      ev.stopPropagation();
-      if (ev.key === "Enter") {
-        closeFolderMenu();
-        send({kind:"foldername", folder:g.folder, name:inp.value});
-      }
-      if (ev.key === "Escape") closeFolderMenu();
-    });
-    inp.addEventListener("mousedown", ev => ev.stopPropagation());
-    row.append(inp);
-    setTimeout(() => { inp.focus(); inp.select(); }, 0);
-  };
-  return row;
-}
-
-// Closing: the tabs go, the files stay. Asked twice, because the tabs may be
-// in the middle of something and there is no putting that back
-function closeItem(g) {
-  const row = el("div", {class:"warn"}, T["tui.folder.close"] || "Close");
-  let armed = false;
-  row.onclick = e => {
-    e.stopPropagation();
-    if (!armed) {
-      armed = true;
-      row.textContent = T["tui.folder.close.sure"] || "Close it?";
-      return;
-    }
-    closeFolderMenu();
-    send({kind:"folderclose", folder:g.folder});
-  };
-  return row;
-}
-
-// Throwing the folder away for good. Only offered for a branch's own folder,
-// asked twice like closing, and the app refuses it outright while there is
-// anything in there that is not committed -- the answer comes back as the
-// message, not as a folder that is already gone
-function discardItem(g) {
-  const row = el("div", {class:"warn"}, T["tui.folder.discard"] || "Delete the folder");
-  let armed = false;
-  row.onclick = e => {
-    e.stopPropagation();
-    if (!armed) {
-      armed = true;
-      row.textContent = T["tui.folder.discard.sure"] || "Delete it?";
-      return;
-    }
-    closeFolderMenu();
-    send({kind:"folderdiscard", folder:g.folder});
-  };
-  return row;
-}
-
-// The colours for a project, offered as squares. Picking one is the whole
-// interaction -- there is nothing to confirm, and the list is repainted from
-// the app's answer, so what is on screen is what was actually saved
-function colorItem(g) {
-  const row = el("div", {}, T["tui.folder.color"] || "Colour");
-  const box = el("div", {class:"swatches"});
-  const pick = c => { closeFolderMenu(); send({kind:"foldercolor", folder:g.folder, color:c}); };
-  for (const c of ["#d97757","#19c37d","#4285f4","#a06bff",
-                   "#e0a80a","#12b3a8","#e5644d","#7f8cff"]) {
-    const sw = el("i", {onclick:e => { e.stopPropagation(); pick(c); }});
-    sw.style.background = c;
-    box.append(sw);
-  }
-  // Anything at all, through the picker the system already has
-  const any = el("input", {type:"color", value:g.color || "#888888"});
-  any.addEventListener("input", () => pick(any.value));
-  const opener = el("i", {class:"any", onclick:e => { e.stopPropagation(); any.click(); }});
-  box.append(opener, any);
-  row.append(box);
-  row.onclick = e => e.stopPropagation();
-  return row;
-}
-
-function closeFolderMenu() {
-  if (folderMenuAway) {
-    document.removeEventListener("mousedown", folderMenuAway, true);
-    folderMenuAway = null;
-  }
-  for (const m of document.querySelectorAll(".fmenu")) m.remove();
-}
 
 // Another branch of the project this folder belongs to.
 //
@@ -4007,14 +3919,15 @@ let castTarget = null;
 // /cfg page (native + responsive) on the phone, handing the token over once.
 // section: deep-link to one settings card (e.g. "actions"). ret: come back to the
 // board once it's saved. Both optional — the sidebar gear passes neither.
-function openSettings(section, ret) {
+function openSettings(section, ret, folder) {
   if (typeof REMOTE !== "undefined" && REMOTE) {
     const p = {};
     if (section) p.section = section;
     if (ret) p.ret = "1";
+    if (folder) p.folder = folder;
     walkToSettings(p);
   } else {
-    send({kind:"opensettings", section: section || null, ret: !!ret});
+    send({kind:"opensettings", section: section || null, ret: !!ret, folder: folder || null});
   }
 }
 // The phone's only way in: hand the token over once (the proxy trades it for a

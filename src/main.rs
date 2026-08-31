@@ -467,7 +467,7 @@ struct WinSurface {
     /// The sidebar gear (or a deep-link shortcut) was pressed. The loop opens the
     /// settings page. Carries an optional section to land on and whether to return
     /// to the board once saved (Some = requested, None = not requested).
-    open_settings: Option<(Option<String>, bool)>,
+    open_settings: Option<(Option<String>, bool, Option<String>)>,
     /// The status bar's "remote connected" control was pressed. The loop cuts every
     /// remote session (rotates the token, drops the connections).
     remote_cut: bool,
@@ -587,8 +587,9 @@ impl WinSurface {
         std::mem::take(&mut self.close_settings)
     }
 
-    /// The pending "open settings" request (section, return-on-save), if any, clearing it.
-    fn take_open_settings(&mut self) -> Option<(Option<String>, bool)> {
+    /// The pending "open settings" request (section, return-on-save, the
+    /// working folder to land on), if any, clearing it.
+    fn take_open_settings(&mut self) -> Option<(Option<String>, bool, Option<String>)> {
         self.open_settings.take()
     }
 
@@ -798,7 +799,9 @@ impl WinSurface {
                 // The settings page's "close settings" button. Where the tab actually
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.close_settings = true,
-                Ev::OpenSettings { section, ret } => self.open_settings = Some((section, ret)),
+                Ev::OpenSettings { section, ret, folder } => {
+                    self.open_settings = Some((section, ret, folder))
+                }
                 Ev::VaultSearch { query } => self.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
                 Ev::Branch { from, branch, base, make, carry } => {
@@ -2319,9 +2322,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // What making a branch would do. Answered while the name is being typed,
     // and cleared once the folder exists so the dialog can close itself
     let mut branch_view: Option<crate::uistate::BranchPlan> = None;
-    // Branch folders asked to go, waiting for their tabs to finish leaving:
-    // where it is, when it was asked for, and when it was last tried
-    let mut pending_discards: Vec<(std::path::PathBuf, Instant, Instant)> = Vec::new();
     // The folders being looked through, while somewhere new is being chosen
     let mut browse_view: Option<crate::uistate::BrowseState> = None;
     // What this whole app is costing the machine, refreshed on the same beat as
@@ -4241,7 +4241,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
             match config::remove_group(&ws, &at) {
-                Ok(()) => pending_discards.push((at, Instant::now(), Instant::now())),
+                Ok(()) => {
+                    flash = Some(i18n::tp(
+                        "msg.folder.discarded",
+                        &[("path", &at.display().to_string())],
+                    ));
+                    crate::worktree::discard_soon(at);
+                }
                 Err(e) => flash = Some(format!("{e:#}")),
             }
         }
@@ -4249,33 +4255,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // round until git can have it, and given up on out loud rather than
         // silently -- a folder that was asked to go and did not is a surprise
         // waiting in the settings
-        pending_discards.retain_mut(|(at, since, last)| {
-            // Gone is the only thing that counts as done. Git can let go of a
-            // folder while Windows still holds the empty shell of it open,
-            // and a folder still sitting there is not one that was removed
-            if !at.exists() {
-                flash = Some(i18n::tp(
-                    "msg.folder.discarded",
-                    &[("path", &at.display().to_string())],
-                ));
-                return false;
-            }
-            // Not every time round: each try asks git how the folder is doing,
-            // and a frame is far too often to ask about one that is only
-            // waiting for a process to let go of it
-            if last.elapsed() < std::time::Duration::from_millis(400) {
-                return true;
-            }
-            *last = Instant::now();
-            let trouble = crate::worktree::discard(at).err();
-            let waited = since.elapsed() > std::time::Duration::from_secs(10);
-            if waited {
-                if let Some(e) = trouble {
-                    flash = Some(format!("{e:#}"));
-                }
-            }
-            !waited
-        });
         for folder in surface.take_folder_closes() {
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
             match config::remove_group(&ws, std::path::Path::new(&folder)) {
@@ -4688,10 +4667,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // The sidebar gear. Opens settings from any tab (the menu "e" key only
         // fires while INDEX is in view, so the gear needs its own path).
         // The workspace being viewed rides along so its group opens expanded.
-        if let Some((section, ret)) = surface.take_open_settings() {
+        if let Some((section, ret, folder)) = surface.take_open_settings() {
             // The gear passes the workspace being viewed; a deep-link shortcut may
             // also name a section to land on and ask to return once saved.
             let mut query = format!("&ws={ws_index}");
+            if let Some(f) = folder {
+                query += &format!("&folder={}", urlish(&f));
+            }
             if let Some(s) = section {
                 query += &format!("&section={s}");
             }
@@ -5355,6 +5337,27 @@ fn run(mut surface: WinSurface) -> Result<()> {
         t.kill();
     }
     Ok(())
+}
+
+/// A value made safe to put in a URL's query.
+///
+/// Only what would otherwise end the value or start another one. A Windows
+/// path is mostly letters, a colon and backslashes, and leaving those legible
+/// means the address bar still says where it is going
+fn urlish(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' | ':' => out.push(c),
+            other => {
+                let mut buf = [0u8; 4];
+                for b in other.encode_utf8(&mut buf).as_bytes() {
+                    out.push_str(&format!("%{b:02X}"));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Keeps a child process from popping up a window.

@@ -803,6 +803,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("closesettings") => Ev::CloseSettings,
         Some("opensettings") => Ev::OpenSettings {
+            folder: v
+                .get("folder")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             // A deep-link may name a section to land on and ask to return to the
             // board once saved (the sub-input bar's ⚙ shortcut does both).
             section: v
@@ -1210,6 +1215,8 @@ pub enum Ev {
     OpenSettings {
         section: Option<String>,
         ret: bool,
+        /// A working folder to land on, when the ask came from its row
+        folder: Option<String>,
     },
     /// Save the newest run's replay.lua to the user's Downloads folder
     ReplaySave,

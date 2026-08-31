@@ -327,6 +327,37 @@ pub fn discard(folder: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Removes a folder once whatever is standing in it has left.
+///
+/// Git will not remove a folder a process is standing in, and what stands in
+/// this one is the tabs that were working there -- which are on their way out,
+/// because taking the folder out of the settings is what ends them. So the
+/// removal waits, off to one side, rather than failing on the first try.
+///
+/// Nothing here decides *whether* it should go: that was settled by
+/// `ready_to_discard` before anything was closed, while saying no was still
+/// free.
+pub fn discard_soon(folder: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            // Gone is the only thing that counts as done: git can let go of a
+            // folder while Windows still holds the empty shell of it open
+            if !folder.exists() {
+                return;
+            }
+            let trouble = discard(&folder).err();
+            if std::time::Instant::now() > until {
+                if let Some(e) = trouble {
+                    crate::append_hook_log(&format!("could not remove {}: {e:#}", folder.display()));
+                }
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+    });
+}
+
 /// Whether this folder can be thrown away at all -- asked before anything is
 /// closed, so a refusal costs nothing.
 pub fn ready_to_discard(folder: &Path) -> Result<()> {

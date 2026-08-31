@@ -968,6 +968,45 @@ fn handle(
         }
         // Runs `<cmd> --help` so the settings page can show a CLI's real flags.
         // The program is the first token of the tab's command.
+        // Which project a folder belongs to, and whether its folder is one the
+        // app made. The settings screen cannot work either out: both mean
+        // looking at what git keeps behind the folder
+        ("GET", "/api/family") => {
+            let at = query_param(req.url(), "path")
+                .map(|c| percent_decode(&c))
+                .unwrap_or_default();
+            let at = std::path::Path::new(at.trim());
+            let resp = match at.as_os_str().is_empty() {
+                true => serde_json::json!({ "family": null, "cut": false }),
+                false => serde_json::json!({
+                    "family": crate::repo::family_of(at).map(|f| f.display().to_string()),
+                    "cut": crate::repo::is_linked(at),
+                }),
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // Throw a branch's folder away for good. Refused while anything in it
+        // is uncommitted -- said before the settings let go of it, so a no
+        // costs nothing. The removal itself waits for the tabs to leave
+        ("POST", "/api/folder/discard") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let at = std::path::PathBuf::from(
+                p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim(),
+            );
+            let resp = match crate::worktree::ready_to_discard(&at) {
+                Ok(()) => {
+                    crate::worktree::discard_soon(at);
+                    serde_json::json!({ "ok": true })
+                }
+                Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+            };
+            req.respond(json_resp(resp))?;
+        }
         ("GET", "/api/cli-help") => {
             let prog = query_param(req.url(), "cmd")
                 .map(|c| percent_decode(&c))
@@ -2006,6 +2045,15 @@ const PAGE: &str = r##"<!doctype html>
    padding:6px 18px 14px; margin-bottom:18px; }
  .card h2 { font-size:12px; color:var(--muted); font-weight:600; letter-spacing:.06em;
    margin:14px 0 10px; text-transform:uppercase; }
+ /* The colours a project can be given. Squares rather than a list of names:
+    the thing being chosen is the colour itself */
+ .swatches { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:4px 0 2px; }
+ .swatches i { width:22px; height:22px; border-radius:6px; cursor:pointer; display:block;
+   border:1px solid #0004; }
+ .swatches i.on { outline:2px solid var(--text); outline-offset:2px; }
+ .swatches i.any { background:conic-gradient(red,yellow,lime,aqua,blue,magenta,red); }
+ .swatches input[type="color"] { position:absolute; width:0; height:0; opacity:0; padding:0;
+   border:0; }
  .row { display:flex; align-items:center; gap:12px; padding:7px 0; flex-wrap:wrap; }
  .row > label:first-child { width:150px; flex:none; color:var(--muted); font-size:13px; }
  /* A second (or third) label inside one row — "port", "user" next to a host.
@@ -2725,27 +2773,43 @@ function renderNav() {
       el("span", {class:"caret"}, open ? "▾" : "▸"),
       el("span", {}, ws.name || T["settings.tab.unnamed"])));
     if (!open) return;
-    nav.append(el("button", {class:"navitem" + (!sel.global && sel.ws === wi && sel.tab === null ? " sel" : ""),
-      onclick:() => { navOpen.add(wi); sel = {ws:wi, tab:null, global:false}; render(); }},
+    const here = (g, t) => !sel.global && sel.ws === wi && sel.grp === g && sel.tab === t;
+    nav.append(el("button", {class:"navitem" + (here(null, null) ? " sel" : ""),
+      onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:null, tab:null, global:false}; render(); }},
       el("span", {}, T["settings.workspace.settings"])));
-    let shown = -1;
-    (ws.tabs || []).forEach((t, ti) => {
-      const gi = t.group || 0;
-      if ((ws.groups || []).length > 1 && gi !== shown) {
-        shown = gi;
-        nav.append(el("div", {class:"navitem navfolder"},
-          el("span", {}, groupLabel(ws.groups[gi], gi))));
-      }
-      const b = el("button", {class:"navitem navtab" + (t.depth ? " child" : "") +
-        (!sel.global && sel.ws === wi && sel.tab === ti ? " sel" : ""),
-        onclick:() => { navOpen.add(wi); sel = {ws:wi, tab:ti, global:false}; render(); }});
-      b.append(el("span", {}, (t.depth ? "└ " : "") + (t.name || T["settings.tab.unnamed"])));
-      b.append(el("span", {class:"sub"}, cmdToText(t.command) || T["automation.unset"]));
-      nav.append(b);
+    // Every folder, always -- the one a workspace starts with is a folder like
+    // any other, and hiding it is how "where does this actually run" became
+    // impossible to find
+    (ws.groups || []).forEach((g, gi) => {
+      nav.append(el("button", {class:"navitem navfolder" + (here(gi, null) ? " sel" : ""),
+        onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:gi, tab:null, global:false}; render(); }},
+        el("span", {}, groupLabel(g, gi)),
+        el("span", {class:"sub"}, g.cwd || T["settings.group.folder.ph"])));
+      (ws.tabs || []).forEach((t, ti) => {
+        if ((t.group || 0) !== gi) return;
+        const b = el("button", {class:"navitem navtab" + (t.depth ? " child" : "") +
+          (here(gi, ti) ? " sel" : ""),
+          onclick:() => { navOpen.add(wi); sel = {ws:wi, grp:gi, tab:ti, global:false}; render(); }});
+        b.append(el("span", {}, (t.depth ? "└ " : "") + (t.name || T["settings.tab.unnamed"])));
+        b.append(el("span", {class:"sub"}, cmdToText(t.command) || T["automation.unset"]));
+        nav.append(b);
+      });
+      nav.append(el("button", {class:"navitem navtab navadd",
+        onclick:() => {
+          navOpen.add(wi);
+          sel = {ws:wi, grp:gi, tab:addTabTo(ws, gi), global:false};
+          render();
+        }},
+        T["settings.tab.add"]));
     });
-    nav.append(el("button", {class:"navitem navtab navadd",
-      onclick:() => { navOpen.add(wi); sel = {ws:wi, tab:addTabTo(ws), global:false}; render(); }},
-      T["settings.tab.add"]));
+    nav.append(el("button", {class:"navitem navfolder navadd",
+      onclick:() => {
+        navOpen.add(wi);
+        (ws.groups = ws.groups || []).push({name:"", id:"", cwd:""});
+        sel = {ws:wi, grp:ws.groups.length - 1, tab:null, global:false};
+        render(); refreshSave();
+      }},
+      T["settings.group.add"]));
   });
   nav.append(el("div", {class:"navgroup"}, ""));
   nav.append(el("button", {class:"navitem navadd", onclick:addWs}, T["settings.workspace.add"]));
@@ -2767,14 +2831,20 @@ function firstEmptyTab(ws) {
 
 // Adds one tab. But if there's already an in-progress empty tab, just selects that instead.
 // Returns the index of the added (or found) tab
-function addTabTo(ws) {
+function addTabTo(ws, group) {
   ws.tabs = ws.tabs || [];
-  let i = firstEmptyTab(ws);
-  if (i < 0) {
-    // Beside the tab being looked at, so a folder with several tabs keeps them
-    // together and the new one starts in the folder that was on screen
+  // Which folder it will run in. Named by the caller, else the one being
+  // looked at, else the first: a tab has to be somewhere, and "somewhere"
+  // was the part nobody could answer when the button was at the bottom of
+  // the whole list
+  if (group === undefined || group === null) {
     const at = ws.tabs[sel.tab];
-    const group = at ? (at.group || 0) : 0;
+    group = at ? (at.group || 0) : (sel.grp || 0);
+  }
+  let i = ws.tabs.findIndex(t => (t.group || 0) === group
+    && !(t.name || "").trim() && !(t.command || "").trim() && !(t.id || "").trim());
+  if (i < 0) {
+    // Beside the others in the same folder, so the list stays in folder order
     let j = ws.tabs.length;
     while (j > 0 && (ws.tabs[j - 1].group || 0) > group) j--;
     ws.tabs.splice(j, 0, newTab({group}));
@@ -3140,9 +3210,14 @@ function crumbParts() {
   const ws = wss[sel.ws];
   if (!ws) return ["", ""];
   const name = ws.name || T["settings.tab.unnamed"];
-  if (sel.tab === null) return ["", name];
+  const g = (ws.groups || [])[sel.grp];
+  if (sel.tab === null) {
+    if (!g) return ["", name];
+    return [name, groupLabel(g, sel.grp)];
+  }
   const t = (ws.tabs || [])[sel.tab];
-  return [name, (t && t.name) || T["settings.tab.unnamed"]];
+  const where = g ? name + " › " + groupLabel(g, sel.grp) : name;
+  return [where, (t && t.name) || T["settings.tab.unnamed"]];
 }
 
 function renderCrumb() {
@@ -3256,7 +3331,12 @@ function renderDetail() {
   }
   const ws = wss[sel.ws];
   if (!ws) return;
-  if (sel.tab === null) return d.append(wsPane(ws));
+  if (sel.tab === null) {
+    if (sel.grp === null || sel.grp === undefined) return d.append(wsPane(ws));
+    const g = (ws.groups || [])[sel.grp];
+    if (!g) { sel.grp = null; return renderDetail(); }
+    return d.append(groupPane(ws, g, sel.grp));
+  }
   const t = ws.tabs[sel.tab];
   if (!t) { sel.tab = null; return renderDetail(); }
   d.append(tabPane(ws, t));
@@ -4226,7 +4306,6 @@ function wsPane(ws) {
     e.append(bar);
     box.append(e);
   }
-  box.append(wsFoldersCard(ws));
   box.append(wsDiscussCard(ws));
   box.append(wsStopsCard(ws));
   box.append(wsSecretsCard(ws));
@@ -4252,39 +4331,104 @@ function wsPane(ws) {
 // a reviewer pointed somewhere other than the tab it reviews reviews nothing.
 // With a single folder this is one field and the word "group" never appears --
 // which is the state anyone who has not asked for a second one stays in.
-function wsFoldersCard(ws) {
-  const groups = ws.groups && ws.groups.length ? ws.groups : (ws.groups = [{name:"", id:"", cwd:""}]);
+// A folder, and everything about it. One page per folder, reached the same way
+// it is reached in the tab list, because "where does this run" is a fact about
+// the folder rather than about the workspace it happens to sit in.
+function groupPane(ws, g, gi) {
   const box = el("div");
-  const draw = () => {
-    box.textContent = "";
-    groups.forEach((g, i) => {
-      const folder = pathField(g, "cwd", T["settings.group.folder.ph"], "dir",
-                               T["settings.group.folder.pick"]);
-      if (groups.length === 1) {
-        box.append(row(T["settings.group.folder"], ...folder,
-          el("span", {class:"hint"}, T["settings.group.folder.hint"])));
-        return;
-      }
-      // The last folder standing cannot be removed: its tabs would have nowhere
-      // to work, and an empty list is not a thing anyone asked for
-      const del = el("button", {class:"quiet", onclick:() => {
-        if (ws.tabs.some(t => (t.group || 0) === i)) { toast(T["settings.group.in_use"], true); return; }
-        groups.splice(i, 1);
-        ws.tabs.forEach(t => { if ((t.group || 0) > i) t.group--; });
-        draw(); renderNav(); refreshSave();
-      }}, T["common.delete"]);
-      box.append(el("div", {class:"row", style:"align-items:center;gap:8px;flex-wrap:wrap"},
-        field(g, "name", T["settings.group.name.ph"], {grow:false, width:200,
-              onInput:() => renderNav()}),
-        ...folder, del));
-    });
-    box.append(el("div", {class:"row"},
-      el("button", {class:"quiet", onclick:() => {
-        groups.push({name:"", id:"", cwd:""}); draw(); renderNav(); refreshSave();
-      }}, T["settings.group.add"])));
+  const tabsHere = () => (ws.tabs || []).filter(t => (t.group || 0) === gi);
+
+  box.append(card(T["settings.group.title"],
+    row(T["settings.group.name"], field(g, "name", groupLabel(g, gi), {grow:false, width:280,
+        onInput:() => renderNav()}),
+        el("span", {class:"hint"}, T["settings.group.name.hint"])),
+    row(T["settings.group.folder"],
+        ...pathField(g, "cwd", T["settings.group.folder.ph"], "dir", T["settings.group.folder.pick"]),
+        el("span", {class:"hint"}, T["settings.group.folder.hint"]))));
+
+  // The colour is the project's, not this folder's: every branch of one
+  // repository shares it, which is the whole reason it is there. Which project
+  // that is has to be asked of the app -- the settings screen has no way to
+  // look at a folder and see what git shares behind it
+  const colours = el("div", {class:"swatches"});
+  const paint = family => {
+    colours.textContent = "";
+    if (!family) {
+      colours.append(el("span", {class:"hint"}, T["settings.group.color.none"]));
+      return;
+    }
+    const now = (current.folder_colors || {})[family] || "";
+    const put = c => {
+      current.folder_colors = current.folder_colors || {};
+      if (c) current.folder_colors[family] = c;
+      else delete current.folder_colors[family];
+      refreshSave();
+      paint(family);
+    };
+    for (const c of ["#d97757","#19c37d","#4285f4","#a06bff",
+                     "#e0a80a","#12b3a8","#e5644d","#7f8cff"]) {
+      const sw = el("i", {class:(now.toLowerCase() === c ? "on" : ""), onclick:() => put(c)});
+      sw.style.background = c;
+      colours.append(sw);
+    }
+    const any = el("input", {type:"color", value:now || "#888888"});
+    any.addEventListener("input", () => put(any.value));
+    const opener = el("i", {class:"any", onclick:() => any.click()});
+    colours.append(opener, any);
+    if (now) colours.append(el("button", {class:"quiet", onclick:() => put("")},
+      T["settings.group.color.auto"]));
   };
-  draw();
-  return card(T["settings.group.folders"], box);
+  paint(null);
+  box.append(card(T["settings.group.color"], colours,
+    el("div", {class:"hint"}, T["settings.group.color.hint"])));
+
+  // Taking it out of the list, and -- for a folder the app made for a branch --
+  // getting rid of the folder itself. Two different acts: one can be undone by
+  // opening it again, and the other cannot
+  const drop = () => {
+    ws.groups.splice(gi, 1);
+    (ws.tabs || []).forEach(t => { if ((t.group || 0) > gi) t.group--; });
+    sel = {ws:sel.ws, grp:null, tab:null, global:false};
+    render(); refreshSave();
+  };
+  const guard = () => {
+    if (tabsHere().length) { toast(T["settings.group.in_use"], true); return false; }
+    if ((ws.groups || []).length <= 1) { toast(T["settings.group.last"], true); return false; }
+    return true;
+  };
+  const buttons = el("div", {class:"row"},
+    el("button", {class:"danger", onclick:() => { if (guard()) drop(); }},
+      T["settings.group.delete"]),
+    el("span", {class:"hint"}, T["settings.group.delete.hint"]));
+  box.append(buttons);
+
+  // Only for a branch's own folder: the project's own is never on the table
+  familyOf(g.cwd).then(where => {
+    paint(where && where.family);
+    if (!where || !where.cut) return;
+    buttons.append(el("button", {class:"danger", onclick: async () => {
+      if (!guard()) return;
+      if (!confirm(fill(T["settings.group.discard.sure"], {name: groupLabel(g, gi)}))) return;
+      const r = await fetch("/api/folder/discard",
+        {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd})})
+        .then(r => r.json()).catch(() => ({ok:false, error:""}));
+      if (!r.ok) { toast(r.error || T["settings.group.discard.failed"], true); return; }
+      drop();
+      toast(T["settings.group.discard.done"]);
+    }}, T["settings.group.discard"]));
+    buttons.append(el("span", {class:"hint"}, T["settings.group.discard.hint"]));
+  });
+  return box;
+}
+
+// Which project a folder belongs to, as the app sees it. Answered by the app
+// because it means looking at what git shares behind the folder
+async function familyOf(cwd) {
+  if (!(cwd || "").trim()) return null;
+  try {
+    return await fetch("/api/family?path=" + encodeURIComponent(cwd),
+                       {headers:{"X-Token":TOKEN}}).then(r => r.json());
+  } catch (e) { return null; }
 }
 
 // AI vs AI discussion. Lines up participant tab ids and cycles them round-robin or moderated (moderator picks the next speaker).
@@ -5546,7 +5690,8 @@ load().then(() => {
   const wi = idx("addtab");
   if (wss[wi]) {
     navGlobalOpen = false;
-    sel = {ws:wi, tab:addTabTo(wss[wi]), global:false};
+    sel = {ws:wi, grp:null, tab:addTabTo(wss[wi]), global:false};
+    sel.grp = wss[wi].tabs[sel.tab].group || 0;
     render();
     const s = document.querySelector(".navitem.sel");
     if (s) s.scrollIntoView({block:"center"});
@@ -5555,7 +5700,23 @@ load().then(() => {
   // "Edit settings" (?gen=1), or an open with no workspace to focus, lands on the
   // General group expanded. The sidebar gear (?ws=N, no gen) lands on the workspace
   // it came from with General collapsed — press its ▸ to open it.
+  // ?folder=<path> lands on that folder's own page: the tab list's edit
+  // entry knows the folder, not which line of the settings file it is on
+  const want = (q.get("folder") || "").trim();
   const cur = idx("ws");
+  if (want && wss[cur]) {
+    const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
+    const gi = (wss[cur].groups || []).findIndex(g => same(g.cwd) === same(want));
+    if (gi >= 0) {
+      navGlobalOpen = false;
+      navOpen.add(cur);
+      sel = {ws:cur, grp:gi, tab:null, global:false};
+      render();
+      const s = document.querySelector(".navitem.sel");
+      if (s) s.scrollIntoView({block:"center"});
+      return;
+    }
+  }
   if (q.get("gen") === "1" || !wss[cur]) {
     navGlobalOpen = true;
     sel = {ws:(wss[cur] ? cur : sel.ws), tab:null, global:true, section:"basic"};
