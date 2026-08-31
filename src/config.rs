@@ -1231,9 +1231,17 @@ fn flatten(tabs: &[TabConfig], depth: u16, group: usize, out: &mut Vec<FlatTab>)
 /// group everything lands in, so no caller has to answer "and if it has none".
 fn grouped(groups: &[GroupConfig], loose: &[TabConfig]) -> Vec<GroupConfig> {
     let mut out = groups.to_vec();
+    let same = |a: &Option<String>, b: &Option<String>| match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => resolve_group_cwd(x) == resolve_group_cwd(y),
+        _ => false,
+    };
     for t in loose {
         let cwd = t.legacy_cwd.clone().filter(|c| !c.trim().is_empty());
-        match out.iter_mut().find(|g| g.cwd == cwd && g.name.is_none() && g.id.is_none()) {
+        // The folder is what makes a group, so a loose tab naming one that is
+        // already here belongs with it -- not in a second heading saying the
+        // same thing
+        match out.iter_mut().find(|g| same(&g.cwd, &cwd)) {
             Some(g) => g.tabs.push(t.clone()),
             None => out.push(GroupConfig { cwd, tabs: vec![t.clone()], ..Default::default() }),
         }
@@ -1501,6 +1509,29 @@ fn fold_loose_tabs(holder: &mut serde_json::Value) {
             }
         }
     }
+}
+
+/// The tabs of the group working in this folder, making the group if there is
+/// none. One answer to "where does a tab go", used by everything that adds one
+fn group_tabs_at<'a>(holder: &'a mut serde_json::Value, cwd: Option<&Path>) -> &'a mut Vec<serde_json::Value> {
+    fold_loose_tabs(holder);
+    let groups = holder["groups"].as_array_mut().expect("作ったばかり");
+    let at = groups.iter().position(|g| {
+        let here = g.get("cwd").and_then(|c| c.as_str()).map(resolve_group_cwd);
+        here.as_deref() == cwd
+    });
+    let at = match at {
+        Some(i) => i,
+        None => {
+            let mut g = serde_json::json!({ "tabs": [] });
+            if let Some(c) = cwd {
+                g["cwd"] = serde_json::json!(c.display().to_string());
+            }
+            groups.push(g);
+            groups.len() - 1
+        }
+    };
+    groups[at]["tabs"].as_array_mut().expect("配列")
 }
 
 /// Copies of tabs need names automation can still tell apart. The one it uses
@@ -1806,7 +1837,7 @@ pub fn save_last_workspace(name: &str) {
 ///
 /// Returns whether it was written. A workspace that has vanished since the
 /// page listed it is a false rather than a new tab in the wrong place.
-pub fn append_tab(workspace: &str, tab: serde_json::Value) -> bool {
+pub fn append_tab(workspace: &str, tab: serde_json::Value, cwd: Option<&Path>) -> bool {
     let path = config_file_path();
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
     let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
@@ -1823,13 +1854,7 @@ pub fn append_tab(workspace: &str, tab: serde_json::Value) -> bool {
     else {
         return false;
     };
-    let tabs = ws
-        .as_object_mut()
-        .map(|o| o.entry("tabs").or_insert_with(|| serde_json::json!([])));
-    let Some(serde_json::Value::Array(tabs)) = tabs else {
-        return false;
-    };
-    tabs.push(tab);
+    group_tabs_at(ws, cwd).push(tab);
     match serde_json::to_string_pretty(&doc) {
         Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
         Err(_) => false,

@@ -507,6 +507,8 @@ struct WinSurface {
     vault_queries: Vec<String>,
     /// Past conversations asked to be reopened as resuming tabs
     vault_opens: Vec<crate::browser::Ev>,
+    /// Branches asked about, and asked for: (folder cut from, branch, make it)
+    branches: Vec<(String, String, bool)>,
 }
 
 impl WinSurface {
@@ -672,6 +674,10 @@ impl WinSurface {
         std::mem::take(&mut self.vault_opens)
     }
 
+    fn take_branches(&mut self) -> Vec<(String, String, bool)> {
+        std::mem::take(&mut self.branches)
+    }
+
     fn take_suggests(&mut self) -> Vec<String> {
         std::mem::take(&mut self.suggests)
     }
@@ -764,6 +770,7 @@ impl WinSurface {
                 Ev::OpenSettings { section, ret } => self.open_settings = Some((section, ret)),
                 Ev::VaultSearch { query } => self.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
+                Ev::Branch { from, branch, make } => self.branches.push((from, branch, make)),
                 Ev::RemoteCut => self.remote_cut = true,
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
@@ -1099,6 +1106,7 @@ fn run_in_window() -> Result<()> {
         run_actions: Vec::new(),
         vault_queries: Vec::new(),
         vault_opens: Vec::new(),
+        branches: Vec::new(),
         record_arms: Vec::new(),
         run_luas: Vec::new(),
         pane_splits: Vec::new(),
@@ -1658,6 +1666,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
     let groups = crate::uistate::GroupState::all(tabs);
     crate::uistate::UiState {
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
+        branch: ui.branch.clone(),
         workspace: ui
             .ws_names
             .get(ui.ws_index)
@@ -2241,6 +2250,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // hits. Kept across frames so the results stay put until the next search,
     // and dropped from the state entirely while the overlay is closed
     let mut vault_view: Option<crate::uistate::VaultState> = None;
+    // What making a branch would do. Answered while the name is being typed,
+    // and cleared once the folder exists so the dialog can close itself
+    let mut branch_view: Option<crate::uistate::BranchPlan> = None;
     // What this whole app is costing the machine, refreshed on the same beat as
     // the per-tab figures. Shown in the board's header
     let mut self_cost: Option<String> = None;
@@ -3569,6 +3581,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 false => Vec::new(),
             },
             vault: vault_view.clone(),
+            branch: branch_view.clone(),
             self_cost: self_cost.clone(),
             qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
             remote_on: remote_ui.is_some(),
@@ -4086,22 +4099,74 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 capped: found.capped,
             });
         }
+        // Another branch of a project already open. The same call answers "what
+        // would this do" and does it, so the line shown before it happens is
+        // the line that happens
+        for (from, name, make) in surface.take_branches() {
+            let from = std::path::PathBuf::from(&from);
+            branch_view = Some(match crate::worktree::plan(&from, &name, None) {
+                Err(e) => crate::uistate::BranchPlan {
+                    from: from.display().to_string(),
+                    branch: name,
+                    error: Some(format!("{e:#}")),
+                    ..Default::default()
+                },
+                Ok(plan) => {
+                    let mut view = crate::uistate::BranchPlan {
+                        from: from.display().to_string(),
+                        branch: plan.branch.clone(),
+                        folder: plan.folder.display().to_string(),
+                        line: plan.line(),
+                        error: None,
+                        done: false,
+                    };
+                    if make {
+                        // Made first, written down second: settings naming a
+                        // folder that does not exist would launch tabs into
+                        // nowhere on the next reload
+                        let ws = workspaces
+                            .get(ws_index)
+                            .map(|w| w.name.clone())
+                            .unwrap_or_default();
+                        let wrote = crate::worktree::create(&plan).and_then(|()| {
+                            config::append_group(
+                                &ws,
+                                Some(&plan.main),
+                                &plan.folder,
+                                Some(&plan.branch),
+                            )
+                        });
+                        match wrote {
+                            Ok(()) => {
+                                view.done = true;
+                                flash = Some(i18n::tp(
+                                    "msg.branch.made",
+                                    &[("name", &plan.branch)],
+                                ));
+                            }
+                            Err(e) => view.error = Some(format!("{e:#}")),
+                        }
+                    }
+                    view
+                }
+            });
+        }
         for ev in surface.take_vault_opens() {
             if let crate::browser::Ev::VaultOpen { program, id, cwd, title } = ev {
                 // The command is the program alone; the resume id rides in its
                 // own field, where the launch path turns it into the CLI's
                 // resume flags. Writing the flags into the command here would
                 // fight the auto-resume that also reads the profile
-                let mut tab = serde_json::json!({
+                let tab = serde_json::json!({
                     "name": title,
                     "command": program,
                     "resume": id,
                 });
-                if let Some(c) = cwd {
-                    tab["cwd"] = serde_json::json!(c);
-                }
+                // The folder the conversation was had in decides which group it
+                // comes back into -- one already working there, or a new one
+                let folder = cwd.as_deref().map(std::path::Path::new);
                 let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
-                if config::append_tab(&ws, tab) {
+                if config::append_tab(&ws, tab, folder) {
                     flash = Some(i18n::tp("msg.vault.reopened", &[("title", &title)]));
                 } else {
                     flash = Some(i18n::t("msg.vault.reopen_failed"));
@@ -7625,6 +7690,8 @@ struct Ui {
     /// number (1-based) and display name — for the dashboard's "start" card
     discuss_start: Option<usize>,
     discuss_start_name: Option<String>,
+    /// What making a branch would do, while someone is naming one
+    branch: Option<crate::uistate::BranchPlan>,
     /// The controls shown over the browser being viewed (None = don't show)
     nav: Option<crate::uistate::NavState>,
     /// How many lines back from the current screen we're scrolled (0 = live)

@@ -203,6 +203,29 @@ impl GroupState {
     }
 }
 
+/// What making a branch would do, answered while the name is being typed.
+///
+/// The dialog shows where the folder will be and the command that will make
+/// it, and both come from here -- worked out by the same code that will run
+/// it, never by the page guessing at the same rules a second time.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct BranchPlan {
+    /// The folder it would be cut from, as the page named it
+    pub from: String,
+    /// What has been typed so far, so a late answer to an old question can be
+    /// told from the answer to this one
+    pub branch: String,
+    pub folder: String,
+    /// The command, exactly as it will run
+    pub line: String,
+    /// Why it cannot be done, when it cannot
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Set once it has actually been made
+    #[serde(default)]
+    pub done: bool,
+}
+
 /// Current position of the automation ring
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct BallState {
@@ -256,6 +279,9 @@ pub struct UiState {
     /// drawn: the heading only exists to tell folders apart
     #[serde(default)]
     pub groups: Vec<GroupState>,
+    /// The answer to "what would happen if I made this branch"
+    #[serde(default)]
+    pub branch: Option<BranchPlan>,
     pub workspaces: Vec<String>,
     pub ws_index: usize,
     /// What the focused pane is showing (0 = nothing is in it yet)

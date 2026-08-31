@@ -768,6 +768,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("addtab") => Ev::AddTab {
             pane: v.get("pane").and_then(|x| x.as_u64()).map(|n| n as u32),
         },
+        Some("branch") => Ev::Branch {
+            from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            branch: v.get("branch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            make: v.get("make").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
         Some("closesettings") => Ev::CloseSettings,
         Some("opensettings") => Ev::OpenSettings {
             // A deep-link may name a section to land on and ask to return to the
@@ -1136,6 +1141,15 @@ pub enum Ev {
     /// tab goes there rather than wherever focus has wandered to by the time
     /// the form is done with
     AddTab { pane: Option<u32> },
+    /// A folder's heading was asked about another branch of the same project.
+    /// `from` is the folder it would be cut from, and `make` says whether this
+    /// is the question or the answer -- the same message either way, so what is
+    /// shown before it happens and what happens cannot describe two things
+    Branch {
+        from: String,
+        branch: String,
+        make: bool,
+    },
     /// "Close settings" on the settings page. Collapses the settings tab
     /// and returns to the operating board. This is a window-internal
     /// action, so it's not accepted from a phone (allowed_from_afar)

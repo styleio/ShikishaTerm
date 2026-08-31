@@ -155,8 +155,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      it sits in the dot's column so the row below still reads as one line down
      the sidebar, and never on the left edge, which belongs to the AI's own
      colour */
-  .tab.folder { cursor:default; padding-top:9px; padding-bottom:3px; gap:6px; }
-  .tab.folder:hover { background:transparent; }
+  .tab.folder { padding-top:9px; padding-bottom:3px; gap:6px; }
   .tab.folder .nm { font-size:11px; opacity:.75; letter-spacing:.02em; }
   .tab.folder .chip { width:8px; height:8px; border-radius:2px; flex:0 0 auto;
     background:var(--fam, var(--line)); }
@@ -635,20 +634,45 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); background:var(--panel); color:var(--text); }
   #netveil .nvbtn[hidden] { display:none; }
 
-  #vault, #palette { position:fixed; inset:0; background:#00000099; display:flex;
+  #vault, #palette, #branch { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
-  #vault[hidden], #palette[hidden] { display:none; }
-  #vault .vbox, #palette .vbox { background:var(--panel); border:1px solid var(--brand);
+  #vault[hidden], #palette[hidden], #branch[hidden] { display:none; }
+  #vault .vbox, #palette .vbox, #branch .vbox { background:var(--panel); border:1px solid var(--brand);
     border-radius:12px; padding:16px 18px; width:min(720px,92vw); max-height:82vh;
     display:flex; flex-direction:column; gap:10px; }
-  #vault .vhead, #palette .vhead { display:flex; align-items:center; }
-  #vault .vtitle, #palette .vtitle { color:var(--brand); font-size:13px; letter-spacing:1px;
-    text-transform:uppercase; flex:1; }
-  #vault .vclose, #palette .vclose { cursor:pointer; color:var(--dim); font-size:16px; padding:2px 6px; }
-  #vault .vclose:hover, #palette .vclose:hover { color:var(--text); }
-  #vault #vq, #palette #pq { font:inherit; font-size:14px; background:var(--bg); color:var(--text);
-    border:1px solid var(--line); border-radius:8px; padding:9px 12px; outline:none; }
-  #vault #vq:focus, #palette #pq:focus { border-color:var(--brand); }
+  #vault .vhead, #palette .vhead, #branch .vhead { display:flex; align-items:center; }
+  #vault .vtitle, #palette .vtitle, #branch .vtitle { color:var(--brand); font-size:13px;
+    letter-spacing:1px; text-transform:uppercase; flex:1; }
+  #vault .vclose, #palette .vclose, #branch .vclose { cursor:pointer; color:var(--dim);
+    font-size:16px; padding:2px 6px; }
+  #vault .vclose:hover, #palette .vclose:hover, #branch .vclose:hover { color:var(--text); }
+  #vault #vq, #palette #pq, #branch #bq { font:inherit; font-size:14px; background:var(--bg);
+    color:var(--text); border:1px solid var(--line); border-radius:8px; padding:9px 12px; outline:none; }
+  #vault #vq:focus, #palette #pq:focus, #branch #bq:focus { border-color:var(--brand); }
+  /* What is about to happen, said before it does: where the folder will be, and
+     the command itself. Never typed into -- the branch name above is the only
+     thing anyone fills in */
+  #branch .bsay { color:var(--dim); font-size:11.5px; }
+  #branch .bwhere, #branch .bcmd { font-family:var(--mono); font-size:11.5px; color:var(--text);
+    background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 9px;
+    overflow:auto; white-space:pre-wrap; word-break:break-all; }
+  #branch .bcmd { color:var(--dim); }
+  #branch .berr { color:var(--bad, #e5644d); font-size:12px; white-space:pre-wrap; }
+  #branch .brow { display:flex; gap:8px; justify-content:flex-end; }
+  #branch button { font:inherit; font-size:13px; padding:7px 16px; border-radius:8px;
+    border:1px solid var(--line); background:var(--raise); color:var(--text); cursor:pointer; }
+  #branch button.go { border-color:var(--brand); color:var(--brand); }
+  #branch button[disabled] { opacity:.45; cursor:default; }
+  /* The little menu a folder's heading opens. Not a hover thing: it has to be
+     reachable by a finger as well as a pointer */
+  .fmenu { position:fixed; z-index:60; background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:5px; min-width:190px; box-shadow:0 8px 24px #0007; }
+  .fmenu div { padding:8px 10px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text); }
+  .fmenu div:hover { background:var(--raise); }
+  .tab.folder .more { margin-left:auto; padding:0 4px; color:var(--dim); cursor:pointer;
+    font-size:13px; line-height:1; }
+  .tab.folder .more:hover { color:var(--text); }
+  .tab.folder .caret { color:var(--dim); font-size:9px; }
   #vault .vhint { color:var(--dim); font-size:11.5px; }
   #vault .vlist, #palette .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; }
   #vault .vrow, #palette .prow { padding:9px 10px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
@@ -905,6 +929,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="vlist"></div>
     </div>
   </div>
+  <!-- Another branch of a project already open. One thing to type; everything
+       else is shown rather than asked -->
+  <div id="branch" hidden>
+    <div class="vbox">
+      <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
+      <div class="bsay"></div>
+      <input id="bq" type="text" autocomplete="off" spellcheck="false">
+      <div class="bwhere"></div>
+      <div class="bcmd"></div>
+      <div class="berr"></div>
+      <div class="brow"><button class="go"></button></div>
+    </div>
+  </div>
   <!-- The reader: what was said on this tab, as text you can scroll and copy.
        Its own layer rather than a pane, because it covers the terminal and
        gives it straight back — nothing about the session changes while it is up -->
@@ -1117,16 +1154,22 @@ function drawTabs() {
     if (folders.length > 1 && t.group != null && t.group !== shownFolder) {
       shownFolder = t.group;
       const g = folders[t.group] || {};
+      const shut = folded.has(g.folder);
       nav.append(el("div", {class:"tab folder" + (g.color != null ? " fam" + g.color : ""),
-          title:g.folder || ""},
+          title:g.folder || "", onclick:() => { fold(g.folder); }},
         el("span", {class:"chip"}),
+        el("span", {class:"caret"}, shut ? "▸" : "▾"),
         // A branch cut from the project it belongs to, rather than the
         // project's own folder. Worth marking: closing one is a different act.
         // Drawn rather than typed — every character that means "branch" is one
         // some font has never heard of, and the fallback is a shrug
         g.linked ? cutMark() : null,
-        el("span", {class:"nm"}, g.name || "")));
+        el("span", {class:"nm"}, g.name || ""),
+        el("span", {class:"more", title:T["tui.folder.more"] || "…",
+            onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "⋯")));
     }
+    // Its tabs are hidden while it is folded, and the heading says so
+    if (t.group != null && folders.length > 1 && folded.has((folders[t.group] || {}).folder)) continue;
     // Running several AIs side by side is the headline feature, so brand each
     // AI tab in its own colour (a left bar + a tinted name). The status dot
     // stays separate — colour = which AI, dot = what it's doing. Nothing is
@@ -1188,6 +1231,120 @@ function drawTabs() {
       onclick:() => openSettings()},
     el("span", {class:"gear"}, "⚙️")));
 }
+
+// Folders whose tabs are put away for now. Kept here rather than in the app:
+// how much of a list is on screen is this screen's business, and the phone and
+// the window are each looking at their own
+const folded = new Set();
+function fold(folder) {
+  if (!folder) return;
+  folded.has(folder) ? folded.delete(folder) : folded.add(folder);
+  drawNav();
+}
+
+// What a folder can do. One menu, opened by pointer or by finger -- nothing
+// here is reachable only by hovering, because half the people using it are on
+// a phone
+function folderMenu(e, g) {
+  closeFolderMenu();
+  const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
+  const m = el("div", {class:"fmenu"},
+    item(T["tui.tab.add"] || "ADD TAB", addTabHere),
+    // Only where there is a project to cut a branch from
+    g.color != null ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
+                           () => openBranch(g)) : null,
+    item(folded.has(g.folder) ? (T["tui.folder.open"] || "Unfold")
+                              : (T["tui.folder.fold"] || "Fold"),
+         () => fold(g.folder)));
+  document.body.append(m);
+  // Below what was pressed, and never off the bottom of the window
+  const r = e.currentTarget.getBoundingClientRect();
+  const box = m.getBoundingClientRect();
+  m.style.left = Math.min(r.left, window.innerWidth - box.width - 8) + "px";
+  m.style.top = Math.min(r.bottom + 4, window.innerHeight - box.height - 8) + "px";
+  // A press anywhere else puts it away -- but a press *on it* must not, or the
+  // menu would be gone before the release that makes the click, and every
+  // entry would look dead
+  folderMenuAway = ev => { if (!m.contains(ev.target)) closeFolderMenu(); };
+  setTimeout(() => document.addEventListener("mousedown", folderMenuAway, true), 0);
+}
+let folderMenuAway = null;
+function closeFolderMenu() {
+  if (folderMenuAway) {
+    document.removeEventListener("mousedown", folderMenuAway, true);
+    folderMenuAway = null;
+  }
+  for (const m of document.querySelectorAll(".fmenu")) m.remove();
+}
+
+// Another branch of the project this folder belongs to.
+//
+// One thing to type. Where the folder will be and the command that will make
+// it are answered by the app -- the same code that will run it -- and shown
+// while the name is still being typed
+let branchFrom = "";
+let branchTimer = 0;
+function openBranch(g) {
+  const b = document.getElementById("branch");
+  if (!b) return;
+  branchFrom = g.folder || "";
+  b.hidden = false;
+  b.querySelector(".vtitle").textContent = T["tui.branch.title"] || "PARALLEL WORK";
+  b.querySelector(".bsay").textContent = T["tui.branch.hint"] || "";
+  b.querySelector(".go").textContent = T["tui.branch.make"] || "Make it";
+  const q = document.getElementById("bq");
+  q.placeholder = T["tui.branch.placeholder"] || "branch name";
+  q.value = "";
+  drawBranch();
+  setTimeout(() => q.focus(), 30);
+}
+function closeBranch() {
+  const b = document.getElementById("branch");
+  if (b) b.hidden = true;
+  branchFrom = "";
+}
+// Asks what would happen. Not on every letter -- a name is typed in bursts,
+// and a question per keystroke would answer about halves of words
+function askBranch() {
+  clearTimeout(branchTimer);
+  branchTimer = setTimeout(() => {
+    const q = document.getElementById("bq");
+    send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), make:false});
+  }, 180);
+}
+function drawBranch() {
+  const b = document.getElementById("branch");
+  if (!b || b.hidden) return;
+  const p = (S && S.branch) || null;
+  const typed = (document.getElementById("bq") || {}).value || "";
+  // An answer about a name that has since changed says nothing about this one
+  const mine = p && p.from === branchFrom && p.branch === typed.trim();
+  if (mine && p.done) { closeBranch(); return; }
+  b.querySelector(".bwhere").textContent = mine && !p.error ? p.folder : "";
+  b.querySelector(".bcmd").textContent = mine && !p.error ? p.line : "";
+  b.querySelector(".berr").textContent = mine && p.error ? p.error : "";
+  b.querySelector(".go").disabled = !(mine && !p.error);
+}
+(function () {
+  const b = document.getElementById("branch");
+  if (!b) return;
+  b.querySelector(".vclose").onclick = closeBranch;
+  b.addEventListener("mousedown", e => { if (e.target === b) closeBranch(); });
+  b.querySelector(".go").onclick = () => {
+    const q = document.getElementById("bq");
+    send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), make:true});
+  };
+  const q = document.getElementById("bq");
+  q.addEventListener("input", askBranch);
+  q.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); closeBranch(); }
+    // Enter makes it, but only once the app has said it can be made
+    if (e.key === "Enter" && !b.querySelector(".go").disabled) {
+      e.preventDefault();
+      b.querySelector(".go").click();
+    }
+  });
+})();
 
 // The mark on a folder that is a branch cut from another: a line, and a second
 // one leaving it. Takes its colour from the row it sits in
@@ -1745,6 +1902,7 @@ window.__state = function (json) {
   drawThinking();
   drawVeil();
   renderVault();
+  drawBranch();
   // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");
   const away = !screen.hidden && S.scrolled > 0;
