@@ -527,7 +527,7 @@
   "settings.group.folder.ph": "アプリと同じ場所",
   "settings.group.folder.hint": "ここのタブは、このフォルダで動きます",
   "settings.group.folder.pick": "作業フォルダを選んでください",
-  "settings.group.add": "作業フォルダを増やす",
+  "settings.group.add": "＋ 作業フォルダを追加",
   "settings.group.where": "動く場所",
   "settings.group.in_use": "このフォルダで動いているタブがあります。先に移すか削除してください",
   "settings.group.last": "最後の1つなので残します",

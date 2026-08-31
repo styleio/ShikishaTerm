@@ -529,7 +529,7 @@
   "settings.group.folder.ph": "same folder as the app",
   "settings.group.folder.hint": "Every tab here starts in this folder",
   "settings.group.folder.pick": "Choose a working folder",
-  "settings.group.add": "Add a working folder",
+  "settings.group.add": "＋ Add a working folder",
   "settings.group.where": "Works in",
   "settings.group.in_use": "Tabs are still working in this folder. Move or delete them first.",
   "settings.group.last": "This is the only folder left, so it stays.",
