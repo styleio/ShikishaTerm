@@ -184,8 +184,25 @@ fn looks_secret(name: &str) -> bool {
 
 /// Which of these names the repository ignores, according to the repository.
 fn ignored_of(main: &Path, names: &[String]) -> std::collections::HashSet<String> {
+    // Asked twice at most. Git answers 0 when some of these are ignored and 1
+    // when none are; anything else is git not having answered at all -- it can
+    // refuse for a moment while the index is still locked by the commit before
+    // it, and coming back with "nothing is ignored" would quietly offer an
+    // empty list instead of the truth
+    for attempt in 0..2 {
+        match ask_ignored(main, names) {
+            Some(found) => return found,
+            None => std::thread::sleep(std::time::Duration::from_millis(60 * (attempt + 1))),
+        }
+    }
+    Default::default()
+}
+
+/// One asking. `None` means git did not answer, which is not the same as
+/// answering that nothing is ignored
+fn ask_ignored(main: &Path, names: &[String]) -> Option<std::collections::HashSet<String>> {
     use std::io::Write as _;
-    let mut child = match std::process::Command::new("git")
+    let mut child = std::process::Command::new("git")
         .arg("-C")
         .arg(main)
         .args(["check-ignore", "--stdin"])
@@ -193,21 +210,23 @@ fn ignored_of(main: &Path, names: &[String]) -> std::collections::HashSet<String
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return Default::default(),
-    };
+        .ok()?;
+    let mut wrote = true;
     if let Some(mut w) = child.stdin.take() {
-        let _ = w.write_all(names.join("\n").as_bytes());
+        wrote = w.write_all(names.join("\n").as_bytes()).is_ok();
     }
-    let Ok(out) = child.wait_with_output() else {
-        return Default::default();
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(|l| l.trim().trim_matches('"').to_string())
-        .filter(|l| !l.is_empty())
-        .collect()
+    let out = child.wait_with_output().ok()?;
+    // 0 = some are ignored, 1 = none are. Anything else is a refusal
+    if !wrote || !matches!(out.status.code(), Some(0) | Some(1)) {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().trim_matches('"').to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+    )
 }
 
 /// Gives a new folder the things that were ticked.
