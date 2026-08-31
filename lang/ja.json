@@ -861,6 +861,8 @@
   "agent.contract.once": "終わったという報告は一度だけにしてください。同じ報告を繰り返さないでください。",
   "agent.contract.summary": "報告には、やったこと・分かったこと・残っていることを書いてください。",
   "agent.contract.wait": "報告したら、次の指示を待ってください。頼まれていない作業を始めないでください。",
+  "agent.turn.late": ">> 前の手番のために書かれた指示が、その手番が終わった後に届きました。使っていません。",
+  "agent.discuss.say_where": "渡されるメッセージの末尾に書いてあるファイル（SHIKISHA_SAY=...）",
   "agent.browser.wait.label": "できました",
   "agent.browser.proto.intro": "あなたはブラウザ \"{br}\" を操作するエージェントです。",
   "agent.browser.proto.each_turn": "毎手番、次の1手のLuaを **このファイルに上書き保存** して渡す(画面には貼らない):",

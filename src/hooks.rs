@@ -2591,8 +2591,22 @@ local function is_done(reply)
   return false
 end
 
+-- One turn, one piece of paper. The file a move is written to carries the
+-- number of the turn that asked for it, so a move written for turn 3 and
+-- delivered late cannot be picked up as the answer to turn 4. Every hint that
+-- names the file names this one, so the AI is always told the current number.
+local function infile_for(run, n)
+  return run .. "/in." .. n .. ".lua"
+end
+local function turn_no()
+  return shikisha.get_var("rally_turn") or 1
+end
+local function infile_now(run)
+  return infile_for(run, turn_no())
+end
+
 local function protocol(run)
-  local infile = run .. "/in.lua"
+  local infile = infile_now(run)
   local humanfile = run .. "/human.txt"
   return table.concat({
     shikisha.tf("agent.browser.proto.intro", { br = BR }),
@@ -2688,6 +2702,7 @@ end
 function on_start(tab)
   local run = shikisha.exchange_new()
   shikisha.set_var("rally_run", run)
+  shikisha.set_var("rally_turn", 1)
   shikisha.set_var("rally_record", run .. "/record.lua")
   shikisha.set_var("rally_tx", run .. "/transcript.md")
   shikisha.set_var("rally_nocode", 0)
@@ -2720,7 +2735,7 @@ function on_done(tab)
   local ai = tab.index
   local run = shikisha.get_var("rally_run")
   if not run then return end
-  local infile = run .. "/in.lua"
+  local infile = infile_now(run)
   -- A brain hands its move over inside its reply; a CLI agent writes files, so
   -- its reply text is on screen (tab.output). Use whichever carries the move.
   local said = tab.reply or tab.output or ""
@@ -2763,6 +2778,27 @@ function on_done(tab)
   -- in its reply, which we pull out here. Either way it lands as `code` and the
   -- rest of the pipeline (lint -> execute -> record -> judge) is shared.
   local code = shikisha.exchange_take(infile)
+  if code and #code > 0 then
+    -- Read once, and the number moves on: whatever is written next is a new
+    -- answer, whether it is the next move or a corrected one
+    shikisha.set_var("rally_turn", turn_no() + 1)
+    infile = infile_now(run)
+  else
+    -- Nothing on this turn's paper. A move for the turn before it, arriving
+    -- after that turn was answered, is late -- and saying nothing about it
+    -- would make "your move was ignored" look exactly like "your move was
+    -- never read"
+    local n = turn_no()
+    if n > 1 then
+      local late = shikisha.exchange_take(infile_for(run, n - 1))
+      if late and #late > 0 then
+        local said_late = shikisha.t("agent.turn.late")
+        shikisha.note(ai, said_late)
+        shikisha.log(said_late .. " " .. infile_for(run, n - 1))
+        tx("\n" .. said_late .. "\n")
+      end
+    end
+  end
   if (not code or #code == 0) and tab.is_model then
     code = extract_lua(tab.reply)
   end
@@ -2995,9 +3031,24 @@ local function tx(entry)
   if p then shikisha.exchange_append(p, entry) end
 end
 
+-- One turn, one piece of paper (the same rule the browser rally follows): the
+-- file the operator writes its instruction to carries the number of the turn
+-- that asked for it, so an instruction written for turn 3 and delivered late
+-- cannot be relayed as the instruction for turn 4
+local function infile_for(run, n)
+  return run .. "/in." .. n .. ".txt"
+end
+local function turn_no()
+  return shikisha.get_var("op_turn") or 1
+end
+local function infile_now(run)
+  return infile_for(run, turn_no())
+end
+
 function on_start(tab)
   local run = shikisha.exchange_new()
   shikisha.set_var("op_run", run)
+  shikisha.set_var("op_turn", 1)
   shikisha.set_var("op_tx", run .. "/transcript.md")
   shikisha.set_var("op_nocode", 0)
   reset_budget()
@@ -3006,7 +3057,7 @@ function on_start(tab)
   -- so it just waits for the human's goal. A CLI gets the file-handoff brief.
   if not tab.is_model then
     shikisha.send_to_tab(tab.index,
-      shikisha.tf("agent.ai.brief", { target = TARGET, infile = run .. "/in.txt" })
+      shikisha.tf("agent.ai.brief", { target = TARGET, infile = infile_now(run) })
         .. "\n" .. shikisha.contract())
   end
 end
@@ -3015,14 +3066,30 @@ function on_done(tab)
   local ai = tab.index
   local run = shikisha.get_var("op_run")
   if not run then return end
-  local infile = run .. "/in.txt"
+  local infile = infile_now(run)
   local said = tab.reply or tab.output or ""
   -- A human typed into the input (chain 0) = a fresh goal. Reset the safety budget.
   if tab.chain_depth == 0 then reset_budget(); shikisha.set_var("op_nocode", 0) end
   shikisha.set_var("op_tok", (shikisha.get_var("op_tok") or 0) + #said)
 
-  -- The operator's next instruction: a CLI writes in.txt; a model replies inline.
+  -- The operator's next instruction: a CLI writes its file; a model replies inline.
   local instr = shikisha.exchange_take(infile)
+  if instr and #instr > 0 then
+    -- Read once, and the number moves on
+    shikisha.set_var("op_turn", turn_no() + 1)
+    infile = infile_now(run)
+  else
+    local prev = turn_no() - 1
+    if prev >= 1 then
+      local late = shikisha.exchange_take(infile_for(run, prev))
+      if late and #late > 0 then
+        local said_late = shikisha.t("agent.turn.late")
+        shikisha.note(ai, said_late)
+        shikisha.log(said_late .. " " .. infile_for(run, prev))
+        tx("\n" .. said_late .. "\n")
+      end
+    end
+  end
   if (not instr or #instr == 0) and tab.is_model and not is_done(said) then
     instr = said
   end
@@ -3139,6 +3206,21 @@ local function agent_names()
   return t
 end
 
+-- One turn, one piece of paper (the same rule the other two follow). The paper
+-- is handed out with the turn, so a statement written for an earlier turn --
+-- by a participant who was slow, or who spoke out of order -- cannot be read
+-- as the statement of whoever is speaking now.
+local function hand_out_paper(run)
+  local n = (shikisha.get_var("discuss_paper_no") or 0) + 1
+  shikisha.set_var("discuss_paper_no", n)
+  local p = run .. "/say." .. n .. ".txt"
+  shikisha.set_var("discuss_say", p)
+  return p
+end
+local function paper_now(run)
+  return shikisha.get_var("discuss_say") or (run .. "/say.1.txt")
+end
+
 local function ensure_run()
   local r = shikisha.get_var("discuss_run")
   if r then return r end
@@ -3180,7 +3262,6 @@ end
 
 function on_start(tab)
   local run = ensure_run()
-  local say = run .. "/say.txt"
   local lines = {}
   local function add(...)
     for _, l in ipairs({ ... }) do lines[#lines + 1] = l end
@@ -3189,9 +3270,18 @@ function on_start(tab)
   -- SHIKISHA writes say.txt out of the reply itself, so naming the file on its
   -- screen would be telling the person watching something that is not true
   -- here.
+  -- Everyone else is handed their paper with their turn. The opening speaker
+  -- is not: the topic reaches it as a person typing, and a typed line carries
+  -- no paper, so it is given one here and told the name outright
   local function writes_to(head)
     if tab.is_model then return end
-    add(head, "  " .. say)
+    if IS_FIRST then
+      local first = hand_out_paper(run)
+      shikisha.set_var("discuss_first_paper", first)
+      add(head, "  " .. first)
+      return
+    end
+    add(head, "  " .. shikisha.t("agent.discuss.say_where"))
   end
   if IS_MOD then
     add(shikisha.tf("agent.discuss.mod.intro", { me = nm(ME) }))
@@ -3259,8 +3349,14 @@ function on_done(tab)
   end
   local run = shikisha.get_var("discuss_run")
   if not run then return end
-  local say = run .. "/say.txt"
-  -- When handing off a turn, append say.txt's location in a machine-readable
+  local say = paper_now(run)
+  -- A person typing a fresh topic starts the discussion over from the paper the
+  -- opening speaker was given at the start -- the only name it was ever told
+  if IS_FIRST and tab.chain_depth == 0 then
+    say = shikisha.get_var("discuss_first_paper") or say
+    shikisha.set_var("discuss_say", say)
+  end
+  -- When handing off a turn, append the paper's location in a machine-readable
   -- form at the end. Harmless hint for a CLI AI; the model bridge (ours)
   -- uses this line as the turn signal
   -- Handing over the turn. `who` is the id now on the clock -- kept because
@@ -3269,7 +3365,7 @@ function on_done(tab)
   -- else". A pane spoken to by index (our own nudge) is still us.
   local function speak(pane, msg, who)
     shikisha.set_var("discuss_turn", who or ME)
-    shikisha.send_to_tab(pane, msg .. "\nSHIKISHA_SAY=" .. say)
+    shikisha.send_to_tab(pane, msg .. "\nSHIKISHA_SAY=" .. hand_out_paper(run))
   end
   -- Hand the next speaker the record file to READ, never the transcript pasted
   -- inline. The record grows without bound while the prompt must not, and any
@@ -3291,6 +3387,20 @@ function on_done(tab)
     -- Nobody handed us the turn, so finishing with nothing to say is not a
     -- failure -- it is just this tab being used for something else.
     if not opening and shikisha.get_var("discuss_turn") ~= ME then return end
+    -- A statement on the previous turn's paper is one that arrived after its
+    -- turn had passed. It is not this speaker's, so it is not read out -- and
+    -- it is not dropped in silence either, or "your statement was too late"
+    -- would look exactly like "your statement was never read"
+    local paper = shikisha.get_var("discuss_paper_no") or 1
+    if paper > 1 then
+      local late = shikisha.exchange_take(run .. "/say." .. (paper - 1) .. ".txt")
+      if late and #late > 0 then
+        local said_late = shikisha.t("agent.turn.late")
+        shikisha.note(tab.index, said_late)
+        shikisha.log(said_late .. " " .. run .. "/say." .. (paper - 1) .. ".txt")
+        tx("\n" .. said_late .. "\n")
+      end
+    end
     local key = "discuss_miss_" .. ME
     -- A person typing is a fresh start, whatever happened before it
     if tab.chain_depth == 0 then shikisha.set_var(key, nil) end
@@ -4218,6 +4328,70 @@ mod tests {
         );
     }
 
+    /// One turn, one piece of paper.
+    ///
+    /// The failure this stops: an AI writes its move, the turn is answered, and
+    /// then a second copy of that move lands -- from a retry, a slow write, a
+    /// tab that was still finishing. With one fixed file name it would be read
+    /// as the answer to the *next* question, which is how a rally ends up
+    /// acting on an instruction nobody gave it. Numbering the paper makes a
+    /// late move land somewhere nobody is reading, and the sweep is what turns
+    /// "silently ignored" into something a person can see.
+    #[test]
+    fn a_move_written_for_a_turn_that_is_over_is_not_used_for_the_next_one() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let mut e = HookEngine::new().unwrap();
+        let id = e.load_browser_agent("br", "{}").expect("内蔵司令塔が読めない");
+        e.set_tab(1, id);
+        e.fire("on_start", &ctx(1, ""), None);
+        let opening = e
+            .drain_commands()
+            .iter()
+            .filter_map(|c| match c {
+                Command::SendPrompt { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            opening.contains("in.1.lua"),
+            "最初の手番の紙に番号がついていない: {opening}"
+        );
+
+        let run = crate::exchange::latest_run().expect("run folder");
+        // The AI answers turn 1. The move itself fails (there is no browser
+        // here), which is fine -- the point is that the paper was read
+        std::fs::write(run.join("in.1.lua"), "browser_digest(BR)").unwrap();
+        e.fire("on_done", &ctx(1, "wrote the move"), None);
+        let after = e
+            .drain_commands()
+            .iter()
+            .filter_map(|c| match c {
+                Command::SendPrompt { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            after.contains("in.2.lua") && !after.contains("in.1.lua"),
+            "手番が進んだのに、同じ紙を指したままになっている: {after}"
+        );
+
+        // Now the late copy of turn 1's move arrives, after turn 1 was answered
+        std::fs::write(run.join("in.1.lua"), "browser_digest(BR)").unwrap();
+        e.fire("on_done", &ctx(1, "still talking"), None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c,
+                Command::Note { text, .. } if text.contains("previous turn"))),
+            "遅れて届いた手が、黙って捨てられている: {cmds:?}"
+        );
+        assert!(
+            !run.join("in.1.lua").exists(),
+            "使わないと決めた紙が残っている"
+        );
+    }
+
     /// Deciding not to act is a decision, and it has to leave a trace. The run
     /// ends where `skip` is called -- that is the easy half -- but the half that
     /// matters is that it says so on the screen and in the log, and that it is
@@ -4535,7 +4709,7 @@ mod tests {
         assert!(
             cmds.iter().any(|c| matches!(c,
                 Command::SendPrompt { text, .. }
-                    if text.contains("say.txt") && text.contains("participant") && text.contains("open the discussion"))),
+                    if text.contains("say.1.txt") && text.contains("participant") && text.contains("open the discussion"))),
             "口火役の on_start が待機の案内をしていない: {cmds:?}"
         );
     }

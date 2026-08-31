@@ -863,6 +863,8 @@
   "agent.contract.once": "Say you have finished once. Do not repeat a report you have already made.",
   "agent.contract.summary": "In that report, say what you did, what you found, and what is left.",
   "agent.contract.wait": "After reporting, wait for the next instruction. Do not start work nobody asked for.",
+  "agent.turn.late": ">> A move written for the previous turn arrived after that turn was answered. It was not used.",
+  "agent.discuss.say_where": "the file named at the end of each message you are handed (SHIKISHA_SAY=...)",
   "agent.browser.wait.label": "Done",
   "agent.browser.proto.intro": "You are an agent operating the browser \"{br}\".",
   "agent.browser.proto.each_turn": "Each turn, hand over the Lua for the next single action by **overwriting this file** (do not paste it on screen):",
