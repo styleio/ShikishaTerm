@@ -191,6 +191,8 @@
   "msg.paste_failed": ">> ペーストに失敗: {error}",
   "msg.pane_last": ">> 最後のペインは閉じられません",
   "msg.no_response": ">> まだ応答が記録されていません",
+  "msg.skipped": ">> 見送りました: {reason}",
+  "msg.skipped_bare": ">> 見送りました",
   "msg.auto_on": ">> 自動化: ON",
   "msg.auto_off": ">> 自動化: OFF",
   "msg.emergency_stop": ">> 緊急停止: 全自動化を止めました（Ctrl+B a で再開）",

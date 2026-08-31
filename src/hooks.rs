@@ -1015,6 +1015,12 @@ pub type Caps = std::rc::Rc<crate::caps::Capabilities>;
 const LUA_STEP_TRIGGER: u32 = 500_000;
 const LUA_STEP_BUDGET: u64 = 20_000_000;
 
+/// How `shikisha.skip` leaves: by raising, so nothing written after it runs.
+/// The text is never shown to anyone -- `resume_thread` matches on it to tell
+/// "this run decided there was nothing to do" apart from "this run broke",
+/// and only the second is worth logging as a fault.
+const SKIP_MARKER: &str = "__shikisha_skip__";
+
 /// The instruction allowance of the entry into Lua that is currently running.
 ///
 /// Shared with the VM hook, which charges it every `LUA_STEP_TRIGGER`
@@ -1292,6 +1298,47 @@ impl HookEngine {
                             origin: o.get(),
                         });
                         Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // "There was nothing to do this time." Ends this run of the hook
+            // where it is called -- nothing written after it happens -- and
+            // says so where the person can see it.
+            //
+            // The saying-so is the whole point, and the reason this is a
+            // primitive rather than a `return`. A check that quietly declines
+            // to run is a check that can decline for three days with nobody
+            // noticing; the screen line and the log line are what make "it
+            // didn't run" a fact somebody can find.
+            //
+            // The twin of `set_result`, and deliberately not the same verb:
+            // that one is the verdict on a run that happened, this one is the
+            // record of a run that did not.
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "skip",
+                    lua.create_function(move |_, reason: Option<String>| {
+                        let reason = reason.unwrap_or_default();
+                        let line = if reason.trim().is_empty() {
+                            crate::i18n::t("msg.skipped_bare")
+                        } else {
+                            crate::i18n::tp("msg.skipped", &[("reason", &reason)])
+                        };
+                        let mut cmds = c.borrow_mut();
+                        cmds.push(Command::Note {
+                            target: TabRef::Index(o.get()),
+                            text: line.clone(),
+                        });
+                        cmds.push(Command::Log(line));
+                        // Leave by raising, the way the step limit does, so the
+                        // rest of the hook does not run. Nothing reads this text
+                        // but `resume_thread`, which knows it is not a fault
+                        Err::<(), _>(mlua::Error::runtime(SKIP_MARKER))
                     })
                     .map_err(lerr)?,
                 )
@@ -3656,6 +3703,11 @@ end
                     self.on_complete(hook, origin, vals);
                 }
             }
+            // A run that decided there was nothing to do left the same way a
+            // broken one does, because that is how Lua unwinds. It already said
+            // so on the screen and in the log, so saying it again as a fault
+            // would be the app calling a deliberate decision an error
+            Err(e) if format!("{e}").contains(SKIP_MARKER) => {}
             Err(e) => self.push_log(crate::i18n::tp("err.hooks.lua_error", &[("hook", hook), ("e", &format!("{e}"))])),
         }
     }
@@ -4163,6 +4215,69 @@ mod tests {
                         && text.contains("browser_go")
                         && text.contains("input field"))),
             "on_start がブラウザ操作プロトコル(入力欄でゴール)を送っていない: {cmds:?}"
+        );
+    }
+
+    /// Deciding not to act is a decision, and it has to leave a trace. The run
+    /// ends where `skip` is called -- that is the easy half -- but the half that
+    /// matters is that it says so on the screen and in the log, and that it is
+    /// not filed as a fault: an automation that declines every night for a week
+    /// must be findable, and must not look broken while it is behaving.
+    #[test]
+    fn skipping_ends_that_run_and_says_so() {
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_done(tab)
+              if tab.output == "nothing" then
+                shikisha.skip("nothing waiting")
+                shikisha.send_to_tab(2, "this must never be sent")
+              end
+              if tab.output == "quiet" then
+                shikisha.skip()
+              end
+              shikisha.send_to_tab(3, "carried on")
+            end
+            "#,
+        )
+        .unwrap();
+
+        e.fire("on_done", &ctx(1, "nothing"), None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c,
+                Command::Note { target: TabRef::Index(1), text } if text.contains("nothing waiting"))),
+            "見送ったことが、そのタブの画面に出ていない: {cmds:?}"
+        );
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Command::Log(t) if t.contains("nothing waiting"))),
+            "見送ったことが記録に残っていない: {cmds:?}"
+        );
+        assert!(
+            !cmds.iter().any(|c| matches!(c, Command::Log(t) if t.contains("Lua error"))),
+            "見送りが失敗として記録されている: {cmds:?}"
+        );
+        assert!(
+            !cmds.iter().any(|c| matches!(c, Command::SendPrompt { .. })),
+            "skip の下の行が実行されている: {cmds:?}"
+        );
+
+        // No reason is still a decision worth recording
+        e.fire("on_done", &ctx(1, "quiet"), None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c, Command::Note { .. }))
+                && !cmds.iter().any(|c| matches!(c, Command::SendPrompt { .. })),
+            "理由なしの skip が働いていない: {cmds:?}"
+        );
+
+        // ...and the next run is untouched. Skipping is not a broken script
+        e.fire("on_done", &ctx(1, "work"), None);
+        let cmds = e.drain_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(c,
+                Command::SendPrompt { text, .. } if text == "carried on")),
+            "見送った後の回まで止まっている: {cmds:?}"
         );
     }
 

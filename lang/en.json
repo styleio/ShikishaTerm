@@ -191,6 +191,8 @@
   "msg.paste_failed": ">> Paste failed: {error}",
   "msg.pane_last": ">> The last pane cannot be closed",
   "msg.no_response": ">> No captured response yet",
+  "msg.skipped": ">> Skipped: {reason}",
+  "msg.skipped_bare": ">> Skipped",
   "msg.auto_on": ">> Automation: ON",
   "msg.auto_off": ">> Automation: OFF",
   "msg.emergency_stop": ">> EMERGENCY STOP: all automation halted (Ctrl+B a to resume)",

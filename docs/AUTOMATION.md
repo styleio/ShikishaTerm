@@ -235,6 +235,21 @@ shikisha.notify("slack", tab.name .. " finished:\n" .. tab.output)
 
 ---
 
+### Stop before it starts, and leave a note (on_done.lua)
+
+```lua
+if shikisha.state(2) ~= "WAIT" then
+  shikisha.skip("tab 2 is still working")   -- nothing below this line runs
+end
+shikisha.send_to_tab(2, tab.output)
+```
+
+`skip` ends this run where it is called and puts one line on the tab's screen and
+in `logs/hooks.log`. Use it whenever an automation decides not to act: a hand-over
+that quietly does nothing looks exactly like a hand-over that is broken.
+
+---
+
 ### What gets passed on
 
 Only the reply is forwarded — not the terminal furniture around it. Startup banners,
@@ -746,6 +761,7 @@ How the rally works: files in and out, plus a judge. You can build your own the 
 | `shikisha.record(text)` / `shikisha.record_reset()` | Keep a pasteable record of the run |
 | `shikisha.take_replay()` | Drain the replay journal — the durable spelling of every operation since the last drain |
 | `shikisha.set_result(code, "reason")` | The run's verdict. Written to `data/last-result.json` and shown on screen |
+| `shikisha.skip("reason")` | Stop this run here and say so: one line on the tab's screen and in the log. For when an automation decides there is nothing to do |
 
 ### Files and the network
 

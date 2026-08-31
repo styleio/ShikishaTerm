@@ -233,6 +233,21 @@ shikisha.notify("slack", tab.name .. " が完了しました:\n" .. tab.output)
 
 ---
 
+### 動かす前にやめて、そう書き残す（on_done.lua）
+
+```lua
+if shikisha.state(2) ~= "WAIT" then
+  shikisha.skip("タブ2がまだ動いている")   -- この行より下は実行されません
+end
+shikisha.send_to_tab(2, tab.output)
+```
+
+`skip` は呼ばれたところで実行を終え、そのタブの画面と `logs/hooks.log` に1行残します。
+「今回は動かさない」と決めたときは必ずこれを使ってください。黙って何もしなかった受け渡しは、
+壊れて動かなかった受け渡しと見分けがつきません。
+
+---
+
 ### 何が渡されるか
 
 渡るのは応答だけで、まわりの飾りは落とします。起動バナー、入力欄の枠、
@@ -784,6 +799,7 @@ shikisha.show("br")            -- そこにブラウザが入る
 | `shikisha.record(文字列)` / `shikisha.record_reset()` | 貼り直せる形で実行の記録を残す |
 | `shikisha.take_replay()` | 再生用の記録を取り出す（前回取り出して以降の全操作を、壊れにくい書き方で） |
 | `shikisha.set_result(コード, "理由")` | この実行の判定。`data/last-result.json` に書かれ、画面にも出ます |
+| `shikisha.skip("理由")` | ここで実行を終え、そう書き残す（そのタブの画面とログに1行）。「今回は動かさない」と決めたときに使います |
 
 ### ファイル・通信
 
