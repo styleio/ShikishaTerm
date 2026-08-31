@@ -65,7 +65,11 @@ pub fn branch_of(cwd: &Path) -> Option<String> {
 /// gets no line, which is the same answer as a folder that is not a
 /// repository at all
 pub fn origin_of(cwd: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(git_dir(cwd)?.join("config")).ok()?;
+    // The shared folder, not this checkout's own: a worktree's git folder holds
+    // its HEAD and little else, and `config` is one of the things it does not
+    // have. Reading it there found nothing, so every worktree tab was missing
+    // the one line that says which repository it belongs to
+    let text = std::fs::read_to_string(family_of(cwd)?.join("config")).ok()?;
     // The url under [remote "origin"], and nothing under any other section
     let mut inside = false;
     for line in text.lines() {
@@ -130,6 +134,58 @@ fn git_dir(cwd: &Path) -> Option<PathBuf> {
         at = here.parent();
     }
     None
+}
+
+/// What two folders share when they are the same repository.
+///
+/// A checkout and every worktree cut from it keep separate working folders and
+/// separate HEADs, but exactly one store of objects, refs and config. Git
+/// writes the way back to it in `commondir`, so this is the same path for all
+/// of them and different for anything else -- which is precisely the question
+/// the tab list asks when it colours several branches of one project as one
+/// family. Nothing here runs `git`: it is two file reads, cheap enough to ask
+/// per tab, and a repository mid-rebase answers anyway
+pub fn family_of(cwd: &Path) -> Option<PathBuf> {
+    let dir = git_dir(cwd)?;
+    // A plain clone has no `commondir` and is its own family
+    let Ok(text) = std::fs::read_to_string(dir.join("commondir")) else {
+        return Some(tidy(dir));
+    };
+    let named = text.trim();
+    if named.is_empty() {
+        return Some(tidy(dir));
+    }
+    let p = PathBuf::from(named);
+    // Written relative to the worktree's own git folder, and usually `../..`
+    Some(tidy(match p.is_absolute() {
+        true => p,
+        false => dir.join(p),
+    }))
+}
+
+/// The same path written the one way, so that two of them can be compared.
+///
+/// `..` is resolved by reading the path rather than by asking the disk: the
+/// answer is wanted several times a second, and a folder that has just been
+/// removed should still be recognisable as the family it belonged to
+fn tidy(path: PathBuf) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            // A `..` with nothing above it is kept: dropping it would turn a
+            // path that points outside into one that points here
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                _ => out.push(".."),
+            },
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Every listening port on this machine, by the process that opened it.
@@ -365,6 +421,69 @@ mod tests {
         .unwrap();
         assert_eq!(branch_of(&side).as_deref(), Some("side-quest"));
         assert_eq!(branch_of(&root.join("main")).as_deref(), Some("main"));
+    }
+
+    /// Lays out a checkout with one worktree cut from it, the way git does.
+    /// Returns the two working folders and the shared git folder
+    fn a_repository_with_a_worktree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = tmp(name);
+        let main = root.join("main");
+        let git = main.join(".git");
+        let linked = git.join("worktrees").join("side");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(linked.join("HEAD"), "ref: refs/heads/side-quest\n").unwrap();
+        // Git writes this relative, pointing back up at the shared folder
+        std::fs::write(linked.join("commondir"), "../..\n").unwrap();
+        let side = root.join("side");
+        std::fs::create_dir_all(&side).unwrap();
+        std::fs::write(side.join(".git"), format!("gitdir: {}\n", linked.display())).unwrap();
+        (main, side, git)
+    }
+
+    #[test]
+    fn a_worktree_and_the_checkout_it_came_from_are_one_family() {
+        // What the tab list colours as one project. The two folders are not
+        // nested in each other and have different branches, so the only thing
+        // that can answer is the folder git keeps in common
+        let (main, side, git) = a_repository_with_a_worktree("family");
+        assert_eq!(family_of(&side), family_of(&main));
+        assert_eq!(family_of(&main).as_deref(), Some(git.as_path()));
+        // Deeper inside counts as the same family, as it is the same checkout
+        let deep = side.join("src");
+        std::fs::create_dir_all(&deep).unwrap();
+        assert_eq!(family_of(&deep), family_of(&main));
+
+        // A different repository is a different family, and no repository at
+        // all has none
+        let elsewhere = tmp("family-elsewhere");
+        std::fs::create_dir_all(elsewhere.join(".git")).unwrap();
+        assert_ne!(family_of(&elsewhere), family_of(&main));
+        assert_eq!(family_of(&tmp("family-plain")), None);
+    }
+
+    #[test]
+    fn a_worktree_says_which_repository_it_pushes_to() {
+        // The linked folder holds a HEAD and not much else -- `config` lives
+        // only in the shared one -- so asking the checkout's own folder left
+        // every worktree tab without a repository and therefore without a PR
+        let (main, side, git) = a_repository_with_a_worktree("family-origin");
+        std::fs::write(
+            git.join("config"),
+            "[remote \"origin\"]\n\turl = https://github.com/styleio/ShikishaTerm.git\n",
+        )
+        .unwrap();
+        assert_eq!(origin_of(&side).as_deref(), Some("styleio/ShikishaTerm"));
+        assert_eq!(origin_of(&side), origin_of(&main));
+    }
+
+    #[test]
+    fn a_path_that_walks_back_up_is_still_the_same_path() {
+        let base = PathBuf::from("a").join("b").join("c");
+        assert_eq!(tidy(base.join("..").join("..")), PathBuf::from("a"));
+        assert_eq!(tidy(base.join(".").join("d")), base.join("d"));
+        // Nothing to climb out of, so the climb is part of the answer
+        assert_eq!(tidy(PathBuf::from("..").join("x")), PathBuf::from("..").join("x"));
     }
 
     #[test]
