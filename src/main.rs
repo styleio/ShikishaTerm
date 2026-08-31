@@ -2297,6 +2297,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // What making a branch would do. Answered while the name is being typed,
     // and cleared once the folder exists so the dialog can close itself
     let mut branch_view: Option<crate::uistate::BranchPlan> = None;
+    // Branch folders asked to go, waiting for their tabs to finish leaving:
+    // where it is, when it was asked for, and when it was last tried
+    let mut pending_discards: Vec<(std::path::PathBuf, Instant, Instant)> = Vec::new();
     // The folders being looked through, while somewhere new is being chosen
     let mut browse_view: Option<crate::uistate::BrowseState> = None;
     // What this whole app is costing the machine, refreshed on the same beat as
@@ -4158,24 +4161,54 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 flash = Some(format!("{e:#}"));
             }
         }
-        // Thrown away for good: the folder goes, and the list with it. The
-        // list is only cleared once the folder is actually gone, so a refusal
-        // leaves everything exactly where it was
+        // Thrown away for good. Refused first, while nothing has happened yet,
+        // so a folder with work in it is never closed on the way to a no.
+        // Then the tabs are ended by taking the folder out of the settings --
+        // git will not remove a folder something is still standing in -- and
+        // the removal itself waits for them to actually be gone
         for folder in surface.take_folder_discards() {
             let at = std::path::PathBuf::from(&folder);
-            match crate::worktree::discard(&at) {
+            if let Err(e) = crate::worktree::ready_to_discard(&at) {
+                flash = Some(format!("{e:#}"));
+                continue;
+            }
+            let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
+            match config::remove_group(&ws, &at) {
+                Ok(()) => pending_discards.push((at, Instant::now(), Instant::now())),
                 Err(e) => flash = Some(format!("{e:#}")),
-                Ok(()) => {
-                    let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
-                    match config::remove_group(&ws, &at) {
-                        Ok(()) => {
-                            flash = Some(i18n::tp("msg.folder.discarded", &[("path", &folder)]))
-                        }
-                        Err(e) => flash = Some(format!("{e:#}")),
-                    }
-                }
             }
         }
+        // The folders whose tabs are on their way out. Tried again each time
+        // round until git can have it, and given up on out loud rather than
+        // silently -- a folder that was asked to go and did not is a surprise
+        // waiting in the settings
+        pending_discards.retain_mut(|(at, since, last)| {
+            // Gone is the only thing that counts as done. Git can let go of a
+            // folder while Windows still holds the empty shell of it open,
+            // and a folder still sitting there is not one that was removed
+            if !at.exists() {
+                flash = Some(i18n::tp(
+                    "msg.folder.discarded",
+                    &[("path", &at.display().to_string())],
+                ));
+                return false;
+            }
+            // Not every time round: each try asks git how the folder is doing,
+            // and a frame is far too often to ask about one that is only
+            // waiting for a process to let go of it
+            if last.elapsed() < std::time::Duration::from_millis(400) {
+                return true;
+            }
+            *last = Instant::now();
+            let trouble = crate::worktree::discard(at).err();
+            let waited = since.elapsed() > std::time::Duration::from_secs(10);
+            if waited {
+                if let Some(e) = trouble {
+                    flash = Some(format!("{e:#}"));
+                }
+            }
+            !waited
+        });
         for folder in surface.take_folder_closes() {
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
             match config::remove_group(&ws, std::path::Path::new(&folder)) {

@@ -263,21 +263,18 @@ pub fn discard(folder: &Path) -> Result<()> {
     if !folder.exists() {
         return Ok(());
     }
+    // Already out of git's hands, and only the empty folder is left: Windows
+    // keeps one alive while it is some process's working folder, and the tab
+    // that was standing here has just been asked to leave. Nothing but an
+    // empty folder is ever removed this way, so it can take nothing with it
     if !crate::repo::is_linked(folder) {
-        bail!(crate::i18n::t("err.worktree.not_a_branch"));
+        let empty = std::fs::read_dir(folder).map(|d| d.count() == 0).unwrap_or(false);
+        if empty {
+            std::fs::remove_dir(folder)?;
+            return Ok(());
+        }
     }
-    let dirty = std::process::Command::new("git")
-        .arg("-C")
-        .arg(folder)
-        .args(["status", "--porcelain"])
-        .output()?;
-    let said = String::from_utf8_lossy(&dirty.stdout);
-    if !said.trim().is_empty() {
-        bail!(crate::i18n::tp(
-            "err.worktree.dirty",
-            &[("count", &said.lines().count().to_string())]
-        ));
-    }
+    ready_to_discard(folder)?;
     let main = crate::repo::main_checkout(folder)
         .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.not_a_repo")))?;
     // Git's own removal, so the repository stops listing it too. Anything
@@ -300,6 +297,35 @@ pub fn discard(folder: &Path) -> Result<()> {
         "remove".into(),
         folder.display().to_string(),
     ])?;
+    // Git empties the folder but can leave the folder itself, because Windows
+    // holds one open while it is some process's working folder -- and the tab
+    // that just closed was standing in this one. Only ever removed empty, so
+    // this can never take anything with it
+    let _ = std::fs::remove_dir(folder);
+    Ok(())
+}
+
+/// Whether this folder can be thrown away at all -- asked before anything is
+/// closed, so a refusal costs nothing.
+pub fn ready_to_discard(folder: &Path) -> Result<()> {
+    if !folder.exists() {
+        return Ok(());
+    }
+    if !crate::repo::is_linked(folder) {
+        bail!(crate::i18n::t("err.worktree.not_a_branch"));
+    }
+    let dirty = std::process::Command::new("git")
+        .arg("-C")
+        .arg(folder)
+        .args(["status", "--porcelain"])
+        .output()?;
+    let said = String::from_utf8_lossy(&dirty.stdout);
+    if !said.trim().is_empty() {
+        bail!(crate::i18n::tp(
+            "err.worktree.dirty",
+            &[("count", &said.lines().count().to_string())]
+        ));
+    }
     Ok(())
 }
 
