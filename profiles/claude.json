@@ -14,6 +14,7 @@
     "yes/no",
     "Allow .+\\?"
   ],
+  "title_busy": ["◐", "◑"],
   "silence_ms": 2000,
   "resume": {
     "new_id": [

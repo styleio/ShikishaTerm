@@ -106,6 +106,12 @@ pub struct Detector {
     last_bell: u64,
     /// The last thing the program said about itself, while it still stands
     word: Option<Word>,
+    /// Whether the window title is currently claiming a turn is running.
+    ///
+    /// A level, not an event: it is re-read from the title on every tick, so
+    /// it withdraws itself the moment the CLI stops writing the mark. Nothing
+    /// has to expire it and nothing has to be cleared by hand
+    title_busy: bool,
 }
 
 impl Detector {
@@ -118,7 +124,20 @@ impl Detector {
             working_matched: None,
             last_bell: 0,
             word: None,
+            title_busy: false,
         }
+    }
+
+    /// The window title, as the program last set it.
+    ///
+    /// Called on every tick with whatever the title says right now, including
+    /// an empty one. Only "a turn is running" is taken from it -- see
+    /// `ProfileFile::title_busy` for why the resting states are not.
+    pub fn title_says(&mut self, title: &str) {
+        if self.profile.title_busy.is_empty() {
+            return;
+        }
+        self.title_busy = self.profile.title_busy.iter().any(|m| title.contains(m));
     }
 
     pub fn profile_name(&self) -> &str {
@@ -235,7 +254,21 @@ impl Detector {
         if screen == TabState::Question {
             return screen;
         }
-        word.unwrap_or(screen)
+        if let Some(w) = word {
+            return w;
+        }
+        // Then the title, which outranks the screen for one reason: a CLI that
+        // is thinking draws nothing, and a screen that has not moved for
+        // silence_ms is read as a turn that ended. It has ended a few of them
+        // early. The title is still saying otherwise, so believe it.
+        //
+        // It can only ever say BUSY, so the screen keeps every other verdict --
+        // and it is dropped once the screen has been still for longer than any
+        // turn plausibly is, in case a program leaves its own mark behind
+        if self.title_busy && ms_since_output <= BUSY_STALL_MS {
+            return TabState::Busy;
+        }
+        screen
     }
 
     /// The screen's own reading, on its own. Priority within it:
@@ -303,8 +336,113 @@ mod tests {
             silence_ms: 2000,
             ignore_bottom_rows: 2,
             done_confirm_ms: None,
+            title_busy: vec![],
         })
         .unwrap()
+    }
+
+    /// Three signals now say what a tab is doing, so the order they are
+    /// believed in has to be written down and held to: a question on the
+    /// screen, then the program's own word through its hook, then the title,
+    /// then the screen's own reading.
+    ///
+    /// The title sits third for a reason on each side. Above the screen,
+    /// because a CLI that is thinking draws nothing and a still screen used to
+    /// be read as a finished turn -- which handed the work on while the AI was
+    /// still doing it. Below the hook, because anything running in that tab can
+    /// write a title, while the hook is the CLI itself.
+    #[test]
+    fn the_title_is_believed_after_the_hook_and_before_the_screen() {
+        let mut p = claude_like();
+        p.title_busy = vec!["◐".into(), "◑".into()];
+        let mut d = Detector::new(p);
+
+        // A turn runs, then the screen goes quiet and the title rests too
+        d.title_says("◐ Claude Code");
+        d.tick("Thinking… (2s · esc to interrupt)", 0, 0);
+        d.title_says("✳ Arithmetic calculation");
+        assert_eq!(
+            d.tick("> ", 5_000, 0),
+            TabState::Done,
+            "何も主張していないタイトルが画面の判断を邪魔している"
+        );
+
+        // The same quiet screen, but the title says the turn is running again
+        d.title_says("◐ Arithmetic calculation");
+        assert_eq!(
+            d.tick("> ", 5_000, 0),
+            TabState::Busy,
+            "考えているだけで描かないAIを、終わったと読んでいる"
+        );
+
+        // ...and it lets go by itself as soon as the mark is gone
+        d.title_says("✳ Arithmetic calculation");
+        assert_eq!(
+            d.tick("> ", 5_000, 0),
+            TabState::Done,
+            "タイトルが働いていると言い続けている"
+        );
+
+        // A question on screen outranks it: a tab that claims to be busy while
+        // it is in fact waiting for a person is the one mistake with no way back
+        d.title_says("◐ Arithmetic calculation");
+        assert_eq!(
+            d.tick("Do you want to continue?", 100, 0),
+            TabState::Question,
+            "人を待っている画面より、タイトルを信じている"
+        );
+
+        // The hook outranks it too
+        d.title_says("◐ Arithmetic calculation");
+        d.hook_says(TabState::Question, 1);
+        assert_eq!(
+            d.tick("> ", 100, 0),
+            TabState::Question,
+            "CLI自身の申告より、タイトルを信じている"
+        );
+    }
+
+    /// A mark nobody listed is not evidence. Titles are written by whatever
+    /// happens to be running in the tab -- a shell prompt, a build script, an
+    /// ssh session -- and believing an unlisted one would mean believing all
+    /// of them.
+    #[test]
+    fn a_title_nobody_asked_about_says_nothing() {
+        let mut d = Detector::new(claude_like()); // no title marks configured
+        d.title_says("◐ some other program");
+        assert_eq!(
+            d.tick("> ", 5_000, 0),
+            TabState::Wait,
+            "プロファイルに無い記号を信じている"
+        );
+
+        // ...and neither is a mark that is listed, if it is not in the title
+        let mut p = claude_like();
+        p.title_busy = vec!["◐".into()];
+        let mut d = Detector::new(p);
+        d.title_says("bash -- ShikishaTerm2");
+        assert_eq!(
+            d.tick("> ", 5_000, 0),
+            TabState::Wait,
+            "印の無いタイトルを働いていると読んでいる"
+        );
+    }
+
+    /// A program can leave its own mark behind -- killed mid-turn, or simply
+    /// careless. Nothing else would ever take it down, so the claim expires on
+    /// a screen that has been still for longer than a turn plausibly runs.
+    #[test]
+    fn a_title_left_behind_stops_being_believed() {
+        let mut p = claude_like();
+        p.title_busy = vec!["◐".into()];
+        let mut d = Detector::new(p);
+        d.title_says("◐ left behind");
+        assert_eq!(d.tick("> ", 5_000, 0), TabState::Busy, "働いている間は信じる");
+        assert_eq!(
+            d.tick("> ", 61_000, 0),
+            TabState::Wait,
+            "置き去りのタイトルを信じ続けている"
+        );
     }
 
     /// Confirms the screen changing isn't confused with the AI starting to work.
@@ -333,6 +471,38 @@ mod tests {
 
         // Also confirms whether the profile has a "working" indicator at all
         assert!(d.shows_working(), "このAIは作業中を画面に出す");
+    }
+
+    /// The shipped profiles, against titles taken off the real CLIs.
+    ///
+    /// These marks were measured, not guessed -- `pty_probe --watch <cli>` on
+    /// 2026-08-31, reading the OSC 0 sequences each one actually wrote while a
+    /// turn ran and after it ended. That is the only way they can be right, and
+    /// this test is where the measurement is kept: if a CLI changes its spinner,
+    /// the fix is a new measurement and a new line here, not a guess.
+    #[test]
+    fn the_shipped_profiles_read_the_titles_their_clis_really_write() {
+        // (profile, a title seen while working, a title seen at rest)
+        let seen = [
+            ("claude", "◐ Arithmetic calculation", "✳ Arithmetic calculation"),
+            ("codex", "⠹ ShikishaTerm2", "ShikishaTerm2"),
+            ("gemini", "✦  Working… (ShikishaTerm2)", "◇  Ready (ShikishaTerm2)"),
+        ];
+        for (cli, working, resting) in seen {
+            let mut d = Detector::new(crate::profile::load_for_command(cli));
+            d.title_says(working);
+            assert_eq!(
+                d.tick("", 5_000, 0),
+                TabState::Busy,
+                "{cli}: 働いていると書いてあるのに読めていない"
+            );
+            d.title_says(resting);
+            assert_ne!(
+                d.tick("", 5_000, 0),
+                TabState::Busy,
+                "{cli}: 働いていないタイトルを働いていると読んでいる"
+            );
+        }
     }
 
     /// The real profile, read from `profiles/codex.json`, against the three

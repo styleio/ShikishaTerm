@@ -1,7 +1,7 @@
 //! PTY入出力の切り分け用ヘッドレスプローブ (デバッグ用)
-//! 使い方: cargo run --bin pty_probe -- <command> [args...]
+//! 使い方: cargo run --bin pty_probe -- [--watch] <command> [args...]
 //! 指定コマンドをPTYで起動し、出力を約10秒キャプチャして表示する。
-//! 途中でテスト入力("echo PROBE_OK\r")も書き込む。
+//! 途中でテスト入力("echo PROBE_OK\r")も書き込む (--watch なら何も書き込まない)。
 
 use std::io::{Read as _, Write as _};
 use std::sync::mpsc;
@@ -10,9 +10,17 @@ use std::time::Duration;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // Watch only: capture what the program says and never write to it. Some of
+    // the programs worth probing are agents, and typing into one of those is
+    // not a test input -- it is a turn, on somebody's account. Cursor-position
+    // queries are still answered: that is what a terminal is, not input.
+    let watch_only = args.first().is_some_and(|a| a == "--watch");
+    if watch_only {
+        args.remove(0);
+    }
     if args.is_empty() {
-        eprintln!("usage: pty_probe <command> [args...]");
+        eprintln!("usage: pty_probe [--watch] <command> [args...]");
         std::process::exit(2);
     }
 
@@ -74,7 +82,7 @@ fn main() -> anyhow::Result<()> {
                 break;
             }
         }
-        if phase == 0 {
+        if phase == 0 && !watch_only {
             println!("[probe] sending test input: echo PROBE_OK\\r");
             let _ = writer.write_all(b"echo PROBE_OK\r");
         }

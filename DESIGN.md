@@ -121,7 +121,7 @@ It layers several independent signals and runs a state machine to decide a tab's
 | Signal | What it is | Confidence |
 |---|---|---|
 | Screen patterns | Profile-defined regexes against the vt100 screen buffer (e.g. "esc to interrupt" = BUSY; a choice list like "❯ 1." = QUESTION) | High (depends on the rule) |
-| Terminal control sequences | The bell (BEL), window-title changes (OSC), alt-screen switches, cursor show/hide | Medium |
+| Terminal control sequences | The bell (BEL), the window title (OSC 0/2 — the marks a CLI writes there while a turn runs, listed per profile as `title_busy`), alt-screen switches, cursor show/hide | Medium |
 | Output-silence timer | No output for N seconds + the cursor at an input position → assume it's waiting | Medium (generic fallback) |
 | The program's own word | The CLI's own hooks, reporting the turn it just started, the dialog it just opened, the turn it just finished (`--hook state:BUSY`, installed per CLI from Settings) | Certain, where a CLI has them |
 | Process exit | The child's exit code | Certain |
@@ -136,6 +136,13 @@ screen, and nothing is allowed to depend on an event that never comes. A questio
 screen still outranks everything, because not every question a CLI asks is one it reports, and
 a tab claiming to be busy while it waits for a person is the one mistake nobody goes back to
 check.
+
+The title sits between the two. Below the word, because anything running in that tab can write
+a title while the hook is the CLI itself; above the screen, because a CLI that is thinking
+draws nothing, and a screen that has not moved for two seconds was being read as a turn that
+had ended — which handed the work on while the AI was still doing it. It can only ever say
+that a turn *is* running: which kind of rest a tab is in — finished, at a prompt, waiting on a
+person — is what a hand-over depends on, and no CLI puts that in its title.
 
 Because this is heuristic (versus the "100% certain" of a headless JSON integration), the
 whole thing is built so a misdetection can't cause an accident: the auto-run budget (7.5)

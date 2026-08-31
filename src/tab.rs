@@ -85,10 +85,47 @@ pub struct QueryResponder {
     /// Notifications the program in this tab asked for, in the standard
     /// escape sequences every terminal understands. Drained by the main loop
     notes: Notes,
+    /// The window title, as the program in this tab last set it. Read by state
+    /// detection, which is why it is kept rather than dropped
+    window_title: WindowTitle,
 }
 
 /// (title, body) pairs waiting to be shown
 pub type Notes = Arc<Mutex<Vec<(String, String)>>>;
+
+/// The window title a program set, shared with whoever wants to read it
+pub type WindowTitle = Arc<Mutex<String>>;
+
+/// A title longer than this is not a title. Bounded because it arrives from
+/// the other side of a PTY, where nothing is obliged to be reasonable
+const TITLE_MAX: usize = 256;
+
+/// The window title, out of the escape a program sets it with.
+///
+/// `0` sets the icon name and the title together, `2` sets the title alone;
+/// CLIs use whichever they were written against. `1` is the icon name only and
+/// is deliberately left out -- it is a different thing that merely travels the
+/// same way.
+///
+/// An empty title comes back as an empty string rather than nothing: a program
+/// clearing its title is saying something, and dropping it here would leave the
+/// last words standing forever.
+fn title_of(params: &[&[u8]]) -> Option<String> {
+    let text = |b: &[u8]| String::from_utf8_lossy(b).to_string();
+    match params.first().map(|p| text(p)).as_deref() {
+        Some("0") | Some("2") => Some(
+            params[1..]
+                .iter()
+                .map(|p| text(p))
+                .collect::<Vec<_>>()
+                .join(";")
+                .chars()
+                .take(TITLE_MAX)
+                .collect(),
+        ),
+        _ => None,
+    }
+}
 
 /// Read a notification out of an OSC sequence, in any of the three spellings
 /// terminals have settled on.
@@ -150,6 +187,15 @@ impl vt100::Callbacks for QueryResponder {
     /// bounded: a program in a loop must not be able to fill memory with its
     /// own announcements
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        // The title is not shown anywhere -- the tab already carries the name a
+        // person gave it -- but it is where a CLI says, on purpose and without
+        // being asked, whether a turn is running. State detection reads it
+        if let Some(title) = title_of(params) {
+            if let Ok(mut cur) = self.window_title.lock() {
+                *cur = title;
+            }
+            return;
+        }
         let Some(note) = note_of(params) else { return };
         if let Ok(mut n) = self.notes.lock() {
             if n.len() < 32 {
@@ -739,6 +785,30 @@ mod tests {
         assert_eq!(p(&["0", "a window title"]), None);
         assert_eq!(p(&["777", "something-else", "x"]), None);
         assert_eq!(p(&["99", "i=1:d=0:"]), None);
+    }
+
+    #[test]
+    fn a_window_title_is_taken_from_the_two_escapes_that_set_one() {
+        let t = |parts: &[&str]| -> Option<String> {
+            let owned: Vec<Vec<u8>> = parts.iter().map(|s| s.as_bytes().to_vec()).collect();
+            let refs: Vec<&[u8]> = owned.iter().map(|v| v.as_slice()).collect();
+            super::title_of(&refs)
+        };
+        // Both spellings, because CLIs use whichever they were written against
+        assert_eq!(t(&["0", "◐ Arithmetic calculation"]), Some("◐ Arithmetic calculation".into()));
+        assert_eq!(t(&["2", "⠹ ShikishaTerm2"]), Some("⠹ ShikishaTerm2".into()));
+        // A title with a semicolon in it is one title, not two
+        assert_eq!(t(&["0", "build", "then test"]), Some("build;then test".into()));
+        // Clearing the title says something, so it comes back as an empty title
+        // rather than as nothing at all
+        assert_eq!(t(&["0"]), Some(String::new()));
+        assert_eq!(t(&["0", ""]), Some(String::new()));
+        // The icon name is a different thing that travels the same way
+        assert_eq!(t(&["1", "an icon name"]), None);
+        assert_eq!(t(&["777", "notify", "Build", "done"]), None);
+        // Whatever arrives, it is bounded: this comes from the far side of a PTY
+        let long = "x".repeat(super::TITLE_MAX * 3);
+        assert_eq!(t(&["0", &long]).map(|s| s.chars().count()), Some(super::TITLE_MAX));
     }
 
     #[test]
@@ -1517,6 +1587,9 @@ pub struct Tab {
     /// Notifications the program asked for through the standard escapes,
     /// waiting for the loop to pick them up
     notes: Notes,
+    /// The window title the program last set. Not shown: read on every tick as
+    /// one of the things that says whether a turn is running
+    window_title: WindowTitle,
     /// The conversation this tab was having when the app last closed. Not
     /// resumed on its own — that would hand back yesterday's context to
     /// someone who quit to be rid of it — but offered to the key that already
@@ -1771,6 +1844,7 @@ impl Tab {
         // (the change in screen hash alone doesn't tell us "how much is moving")
         let bytes_out = Arc::new(AtomicU64::new(0));
         let notes: Notes = Arc::new(Mutex::new(Vec::new()));
+        let window_title: WindowTitle = Arc::new(Mutex::new(String::new()));
         let parser: SharedParser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
@@ -1779,6 +1853,7 @@ impl Tab {
                 writer: Arc::clone(&writer),
                 bell: Arc::clone(&bell_count),
                 notes: Arc::clone(&notes),
+                window_title: Arc::clone(&window_title),
             },
         )));
         // A model-bridge tab launches an idle placeholder process, so its screen
@@ -1877,6 +1952,7 @@ impl Tab {
 
         Ok(Self {
             notes,
+            window_title,
             previous: None,
             spoke: AtomicBool::new(false),
             status: Vec::new(),
@@ -2389,6 +2465,11 @@ impl Tab {
             self.submit_tick_ms.store(now, Ordering::Relaxed);
         }
         let old_state = self.state;
+        // Hand over what the program is claiming in its title before asking for
+        // a verdict, so the two are read from the same moment
+        if let Ok(t) = self.window_title.lock() {
+            self.detector.title_says(&t);
+        }
         self.state = self
             .detector
             .tick(&screen_text, since, self.bell_count.load(Ordering::Relaxed));

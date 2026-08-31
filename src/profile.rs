@@ -38,6 +38,34 @@ pub struct ProfileFile {
     /// particular AI has its own quirks.
     #[serde(default)]
     pub done_confirm_ms: Option<u64>,
+    /// Marks this CLI puts in the *window title* while a turn is running.
+    /// Plain text, matched by "the title contains this" -- titles are short,
+    /// and a regex that misfires on one costs more than it saves.
+    ///
+    /// Measured, not guessed (2026-08-31, `pty_probe --watch`): Claude Code
+    /// spins `◐ ◑` and rests at `✳`, Codex spins the braille dots and rests
+    /// with none, Gemini writes `✦  Working…` and rests at `◇  Ready`.
+    ///
+    /// Why the title at all, when the screen is already read: the screen is a
+    /// reading of drawn output, and it wobbles as lines scroll past. A title
+    /// is set on purpose, at the moment the turn starts and the moment it
+    /// ends, and it holds still in between. It is the same evidence in a
+    /// steadier place -- so a CLI nobody has written screen patterns for still
+    /// gets its dot right, as long as it says this much.
+    ///
+    /// Only "working" and "not working" live here, deliberately. Which kind of
+    /// rest a tab is in -- finished a turn, waiting at a prompt, waiting on a
+    /// person -- is what the hand-over depends on, and no CLI puts that in its
+    /// title. Letting a title claim a resting state would let it say WAIT over
+    /// a turn that had just ended, and a turn that ends unnoticed is a rally
+    /// that stops.
+    ///
+    /// There is no list for the other direction, and there does not need to be:
+    /// a title with none of these marks in it is a title claiming nothing, and
+    /// the screen decides again. `✳`, a dropped spinner and `◇  Ready` are
+    /// three spellings of the same silence, and none of them needs configuring.
+    #[serde(default)]
+    pub title_busy: Vec<String>,
     /// How this CLI carries a conversation across a restart. Absent means it
     /// has none — an editor-style tool with no conversation to keep
     #[serde(default)]
@@ -169,6 +197,8 @@ pub struct Profile {
     pub name: String,
     pub busy: Vec<regex::Regex>,
     pub question: Vec<regex::Regex>,
+    /// Title marks. Plain text on purpose (see `ProfileFile::title_busy`)
+    pub title_busy: Vec<String>,
     pub silence_ms: u64,
     pub ignore_bottom_rows: u16,
     pub done_confirm_ms: Option<u64>,
@@ -183,6 +213,7 @@ impl Profile {
             name: "GENERIC".into(),
             busy: Vec::new(),
             question: Vec::new(),
+            title_busy: Vec::new(),
             silence_ms: default_silence_ms(),
             ignore_bottom_rows: default_ignore_bottom_rows(),
             done_confirm_ms: None,
@@ -204,6 +235,7 @@ impl Profile {
         Ok(Self {
             busy: compile_all(&f.busy_patterns)?,
             question: compile_all(&f.question_patterns)?,
+            title_busy: f.title_busy,
             silence_ms: f.silence_ms,
             done_confirm_ms: f.done_confirm_ms,
             ignore_bottom_rows: f.ignore_bottom_rows,

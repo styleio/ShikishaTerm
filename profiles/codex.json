@@ -16,6 +16,7 @@
     "approve",
     "❯\\s*[Yy]es"
   ],
+  "title_busy": ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
   "silence_ms": 2000,
   "resume": {
     "with_id": [
