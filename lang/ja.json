@@ -31,6 +31,7 @@
   "tui.tab.add": "タブを追加",
   "tui.folder.more": "その他",
   "tui.folder.branch": "並行開発（git worktree）",
+  "tui.folder.color": "色",
   "tui.folder.fold": "畳む",
   "tui.folder.open": "広げる",
   "tui.branch.title": "並行開発（GIT WORKTREE）",

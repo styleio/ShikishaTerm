@@ -31,6 +31,7 @@
   "tui.tab.add": "Add a tab",
   "tui.folder.more": "More",
   "tui.folder.branch": "Parallel work (git worktree)",
+  "tui.folder.color": "Colour",
   "tui.folder.fold": "Fold",
   "tui.folder.open": "Unfold",
   "tui.branch.title": "PARALLEL WORK",

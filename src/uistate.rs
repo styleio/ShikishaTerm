@@ -127,6 +127,13 @@ pub struct PlaceState {
     pub ports: Vec<u16>,
 }
 
+/// The colours a project is given when nobody has chosen one. Eight, because
+/// past that they stop being telling apart and start being decoration
+pub const PALETTE: [&str; 8] = [
+    "#d97757", "#19c37d", "#4285f4", "#a06bff",
+    "#e0a80a", "#12b3a8", "#e5644d", "#7f8cff",
+];
+
 /// A folder, as a heading over the tabs working in it.
 ///
 /// A group is a folder, so this is worked out from where the tabs actually
@@ -142,11 +149,12 @@ pub struct GroupState {
     pub name: String,
     /// The whole path, for the tooltip
     pub folder: String,
-    /// Which project this belongs to, as a colour 0..=7. Folders sharing one
+    /// The colour of this folder's project, ready to draw. Folders sharing one
     /// are branches of one repository, and the list draws them as a family.
-    /// Absent when the folder is not in a repository at all
+    /// Absent when the folder is not in a repository at all -- there is no
+    /// family to belong to, so there is nothing for a colour to say
     #[serde(default)]
-    pub color: Option<u8>,
+    pub color: Option<String>,
     /// Whether this folder is a branch cut from the family's checkout
     #[serde(default)]
     pub linked: bool,
@@ -159,7 +167,10 @@ impl GroupState {
     /// Tabs that are in no folder at all -- a browser is in none -- get no
     /// heading and belong to nothing, which is why the answer is looked up by
     /// path rather than handed out by position
-    pub fn all(tabs: &[crate::tab::Tab]) -> Vec<(std::path::PathBuf, GroupState)> {
+    pub fn all(
+        tabs: &[crate::tab::Tab],
+        chosen: &std::collections::HashMap<String, String>,
+    ) -> Vec<(std::path::PathBuf, GroupState)> {
         let mut out: Vec<(std::path::PathBuf, GroupState)> = Vec::new();
         for t in tabs {
             let Some(cwd) = t.cwd() else { continue };
@@ -181,7 +192,11 @@ impl GroupState {
                 GroupState {
                     name,
                     folder: cwd.display().to_string(),
-                    color: t.place.family.as_deref().map(Self::color_of),
+                    color: t
+                        .place
+                        .family
+                        .as_deref()
+                        .map(|f| Self::color_of(f, chosen)),
                     linked: t.place.linked,
                 },
             ));
@@ -189,17 +204,25 @@ impl GroupState {
         out
     }
 
-    /// Turns the shared git folder into one of a handful of colours.
+    /// The colour a project is drawn in: the one someone chose for it, or one
+    /// picked from its own name.
     ///
-    /// Derived rather than stored, so a family has a colour without anyone
-    /// being asked for one. Someone who wants a particular colour says so, and
-    /// that answer is kept elsewhere -- this is only the starting point
-    pub fn color_of(family: &std::path::Path) -> u8 {
+    /// Derived when nobody has said, so a family has a colour without anyone
+    /// being asked for one, and the same colour every time it is asked. Chosen
+    /// when someone has -- the answer is kept against the folder git shares,
+    /// so every branch of the project changes together
+    pub fn color_of(family: &std::path::Path, chosen: &std::collections::HashMap<String, String>) -> String {
+        let key = family.display().to_string();
+        if let Some(c) = chosen.get(&key).or_else(|| chosen.get(&key.to_lowercase())) {
+            if !c.trim().is_empty() {
+                return c.trim().to_string();
+            }
+        }
         let mut h: u32 = 2166136261;
-        for b in family.to_string_lossy().to_lowercase().bytes() {
+        for b in key.to_lowercase().bytes() {
             h = (h ^ b as u32).wrapping_mul(16777619);
         }
-        (h % 8) as u8
+        PALETTE[(h % PALETTE.len() as u32) as usize].to_string()
     }
 }
 
@@ -524,7 +547,7 @@ mod tests {
         // Two tabs in one folder are one heading, not two: what groups them is
         // the folder, so nothing has to be declared for them to be together
         let mut tabs = vec![in_folder("one", None), in_folder("one", None), in_folder("two", None)];
-        let found = GroupState::all(&tabs);
+        let found = GroupState::all(&tabs, &Default::default());
         for t in tabs.iter_mut() {
             t.kill();
         }
@@ -539,7 +562,7 @@ mod tests {
     #[test]
     fn a_folder_someone_named_is_called_that() {
         let mut tabs = vec![in_folder("named", Some("feature/login"))];
-        let found = GroupState::all(&tabs);
+        let found = GroupState::all(&tabs, &Default::default());
         tabs[0].kill();
         assert_eq!(found[0].1.name, "feature/login");
     }
@@ -549,11 +572,19 @@ mod tests {
         // What the list draws branches of one repository with. The answer has
         // to be the same every time it is asked, or the colours would move
         // around as tabs open and close
+        let none = Default::default();
         let a = std::path::Path::new("D:/work/myproject/.git");
         let b = std::path::Path::new("D:/work/other/.git");
-        assert_eq!(GroupState::color_of(a), GroupState::color_of(a));
-        assert!(GroupState::color_of(a) < 8 && GroupState::color_of(b) < 8);
-        assert_ne!(GroupState::color_of(a), GroupState::color_of(b));
+        assert_eq!(GroupState::color_of(a, &none), GroupState::color_of(a, &none));
+        assert!(PALETTE.contains(&GroupState::color_of(a, &none).as_str()));
+        assert_ne!(GroupState::color_of(a, &none), GroupState::color_of(b, &none));
+
+        // Someone said which colour they wanted, and that is the answer for
+        // every branch of that project -- the key is the folder they share
+        let mut chosen = std::collections::HashMap::new();
+        chosen.insert(a.display().to_string(), "#123456".to_string());
+        assert_eq!(GroupState::color_of(a, &chosen), "#123456");
+        assert_ne!(GroupState::color_of(b, &chosen), "#123456", "他所の色まで変えない");
     }
 
     fn tab(index: usize, name: &str) -> TabState {

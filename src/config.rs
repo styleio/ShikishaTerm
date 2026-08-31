@@ -23,6 +23,12 @@ pub struct Config {
     /// Groups written directly when workspaces are not used
     #[serde(default)]
     pub groups: Vec<GroupConfig>,
+    /// The colour chosen for a project, against the folder git shares between
+    /// its branches. Nothing here means every project still has a colour --
+    /// one worked out from its own name -- so this only ever holds answers
+    /// somebody actually gave
+    #[serde(default)]
+    pub folder_colors: std::collections::HashMap<String, String>,
     /// Backward compat: tabs written directly when workspaces are not used
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
@@ -1363,6 +1369,35 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T
             &[("path", &path.display().to_string())],
         )
     })
+}
+
+/// Remembers the colour chosen for a project.
+///
+/// Against the folder git shares between the branches of one repository, so
+/// every branch changes together -- the colour says "these are one project",
+/// and a branch with its own would be saying the opposite. An empty colour
+/// forgets the choice and hands the project back to the one worked out from
+/// its name.
+pub fn set_folder_color(family: &Path, color: &str) -> Result<()> {
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let mut root: serde_json::Value =
+        serde_json::from_str(without_bom(&text)).unwrap_or_else(|_| serde_json::json!({}));
+    if !root.get("folder_colors").map(|c| c.is_object()).unwrap_or(false) {
+        root["folder_colors"] = serde_json::json!({});
+    }
+    let key = family.display().to_string();
+    let map = root["folder_colors"].as_object_mut().expect("作ったばかり");
+    match color.trim() {
+        "" => {
+            map.remove(&key);
+        }
+        c => {
+            map.insert(key, serde_json::json!(c));
+        }
+    }
+    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&root)?)?;
+    Ok(())
 }
 
 /// Adds a folder to a workspace's settings, with the same tabs as another.

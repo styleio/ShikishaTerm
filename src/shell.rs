@@ -158,11 +158,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder { padding-top:9px; padding-bottom:3px; gap:6px; }
   .tab.folder .nm { font-size:11px; opacity:.75; letter-spacing:.02em; }
   .tab.folder .chip { width:8px; height:8px; border-radius:2px; flex:0 0 auto;
-    background:var(--fam, var(--line)); }
+    background:var(--line); }
   .tab.folder .cut { font-size:11px; opacity:.6; }
-  .fam0 { --fam:#d97757; } .fam1 { --fam:#19c37d; } .fam2 { --fam:#4285f4; }
-  .fam3 { --fam:#a06bff; } .fam4 { --fam:#e0a80a; } .fam5 { --fam:#12b3a8; }
-  .fam6 { --fam:#e5644d; } .fam7 { --fam:#7f8cff; }
+  /* Choosing one. The swatches are the colours picked from when nobody has,
+     and the last square opens whatever the system offers */
+  .swatches { display:flex; flex-wrap:wrap; gap:6px; padding:6px 8px 8px; max-width:200px; }
+  .swatches i { width:20px; height:20px; border-radius:5px; cursor:pointer;
+    border:1px solid #0004; display:block; }
+  .swatches i.any { background:conic-gradient(red,yellow,lime,aqua,blue,magenta,red); }
+  .swatches input { position:absolute; width:0; height:0; opacity:0; }
 
   /* Hamburger and scrim. Not shown on wide screens (sidebar stays visible) */
   #hamburger { display:none; position:fixed; top:6px; left:6px; z-index:40;
@@ -1155,9 +1159,11 @@ function drawTabs() {
       shownFolder = t.group;
       const g = folders[t.group] || {};
       const shut = folded.has(g.folder);
-      nav.append(el("div", {class:"tab folder" + (g.color != null ? " fam" + g.color : ""),
+      const chip = el("span", {class:"chip"});
+      if (g.color) chip.style.background = g.color;
+      nav.append(el("div", {class:"tab folder",
           title:g.folder || "", onclick:() => { fold(g.folder); }},
-        el("span", {class:"chip"}),
+        chip,
         el("span", {class:"caret"}, shut ? "▸" : "▾"),
         // A branch cut from the project it belongs to, rather than the
         // project's own folder. Worth marking: closing one is a different act.
@@ -1251,8 +1257,9 @@ function folderMenu(e, g) {
   const m = el("div", {class:"fmenu"},
     item(T["tui.tab.add"] || "ADD TAB", addTabHere),
     // Only where there is a project to cut a branch from
-    g.color != null ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
-                           () => openBranch(g)) : null,
+    g.color ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
+                   () => openBranch(g)) : null,
+    g.color ? colorItem(g) : null,
     item(folded.has(g.folder) ? (T["tui.folder.open"] || "Unfold")
                               : (T["tui.folder.fold"] || "Fold"),
          () => fold(g.folder)));
@@ -1269,6 +1276,29 @@ function folderMenu(e, g) {
   setTimeout(() => document.addEventListener("mousedown", folderMenuAway, true), 0);
 }
 let folderMenuAway = null;
+// The colours for a project, offered as squares. Picking one is the whole
+// interaction -- there is nothing to confirm, and the list is repainted from
+// the app's answer, so what is on screen is what was actually saved
+function colorItem(g) {
+  const row = el("div", {}, T["tui.folder.color"] || "Colour");
+  const box = el("div", {class:"swatches"});
+  const pick = c => { closeFolderMenu(); send({kind:"foldercolor", folder:g.folder, color:c}); };
+  for (const c of ["#d97757","#19c37d","#4285f4","#a06bff",
+                   "#e0a80a","#12b3a8","#e5644d","#7f8cff"]) {
+    const sw = el("i", {onclick:e => { e.stopPropagation(); pick(c); }});
+    sw.style.background = c;
+    box.append(sw);
+  }
+  // Anything at all, through the picker the system already has
+  const any = el("input", {type:"color", value:g.color || "#888888"});
+  any.addEventListener("input", () => pick(any.value));
+  const opener = el("i", {class:"any", onclick:e => { e.stopPropagation(); any.click(); }});
+  box.append(opener, any);
+  row.append(box);
+  row.onclick = e => e.stopPropagation();
+  return row;
+}
+
 function closeFolderMenu() {
   if (folderMenuAway) {
     document.removeEventListener("mousedown", folderMenuAway, true);

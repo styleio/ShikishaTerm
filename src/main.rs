@@ -509,6 +509,8 @@ struct WinSurface {
     vault_opens: Vec<crate::browser::Ev>,
     /// Branches asked about, and asked for: (folder cut from, branch, make it)
     branches: Vec<(String, String, bool)>,
+    /// Colours chosen for a project: (a folder in it, the colour)
+    folder_colors: Vec<(String, String)>,
 }
 
 impl WinSurface {
@@ -678,6 +680,10 @@ impl WinSurface {
         std::mem::take(&mut self.branches)
     }
 
+    fn take_folder_colors(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.folder_colors)
+    }
+
     fn take_suggests(&mut self) -> Vec<String> {
         std::mem::take(&mut self.suggests)
     }
@@ -771,6 +777,7 @@ impl WinSurface {
                 Ev::VaultSearch { query } => self.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
                 Ev::Branch { from, branch, make } => self.branches.push((from, branch, make)),
+                Ev::FolderColor { folder, color } => self.folder_colors.push((folder, color)),
                 Ev::RemoteCut => self.remote_cut = true,
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
@@ -1107,6 +1114,7 @@ fn run_in_window() -> Result<()> {
         vault_queries: Vec::new(),
         vault_opens: Vec::new(),
         branches: Vec::new(),
+        folder_colors: Vec::new(),
         record_arms: Vec::new(),
         run_luas: Vec::new(),
         pane_splits: Vec::new(),
@@ -1663,7 +1671,7 @@ fn screen_key(session: usize, t: &Tab) -> ScreenKey {
 fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
     // The folders these tabs are actually in. Worked out here, once, so the
     // window and the phone are looking at the same list
-    let groups = crate::uistate::GroupState::all(tabs);
+    let groups = crate::uistate::GroupState::all(tabs, &ui.folder_colors);
     crate::uistate::UiState {
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
         branch: ui.branch.clone(),
@@ -3582,6 +3590,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
             },
             vault: vault_view.clone(),
             branch: branch_view.clone(),
+            folder_colors: cfg
+                .as_ref()
+                .map(|c| c.folder_colors.clone())
+                .unwrap_or_default(),
             self_cost: self_cost.clone(),
             qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
             remote_on: remote_ui.is_some(),
@@ -4098,6 +4110,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 hits,
                 capped: found.capped,
             });
+        }
+        // A colour chosen for a project. Written against the folder git shares
+        // between its branches, so all of them change at once
+        for (folder, color) in surface.take_folder_colors() {
+            let at = std::path::PathBuf::from(&folder);
+            if let Some(family) = crate::repo::family_of(&at) {
+                if let Err(e) = config::set_folder_color(&family, &color) {
+                    flash = Some(format!("{e:#}"));
+                }
+            }
         }
         // Another branch of a project already open. The same call answers "what
         // would this do" and does it, so the line shown before it happens is
@@ -7692,6 +7714,8 @@ struct Ui {
     discuss_start_name: Option<String>,
     /// What making a branch would do, while someone is naming one
     branch: Option<crate::uistate::BranchPlan>,
+    /// The colours chosen for projects, by the folder git shares
+    folder_colors: std::collections::HashMap<String, String>,
     /// The controls shown over the browser being viewed (None = don't show)
     nav: Option<crate::uistate::NavState>,
     /// How many lines back from the current screen we're scrolled (0 = live)

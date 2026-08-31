@@ -768,6 +768,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("addtab") => Ev::AddTab {
             pane: v.get("pane").and_then(|x| x.as_u64()).map(|n| n as u32),
         },
+        Some("foldercolor") => Ev::FolderColor {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            color: v.get("color").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
         Some("branch") => Ev::Branch {
             from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             branch: v.get("branch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
@@ -1150,6 +1154,9 @@ pub enum Ev {
         branch: String,
         make: bool,
     },
+    /// A colour was chosen for the project a folder belongs to. Empty means
+    /// "go back to the one you work out yourselves"
+    FolderColor { folder: String, color: String },
     /// "Close settings" on the settings page. Collapses the settings tab
     /// and returns to the operating board. This is a window-internal
     /// action, so it's not accepted from a phone (allowed_from_afar)
