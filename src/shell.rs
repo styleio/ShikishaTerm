@@ -160,10 +160,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder .chip { width:8px; height:8px; border-radius:2px; flex:0 0 auto;
     background:var(--line); }
   .tab.folder .cut { font-size:11px; opacity:.6; }
-  /* A branch of a project sits under the checkout it was cut from, one step
-     in. Only the heading moves: the tabs below keep their own column, so the
-     status dots still read as one line all the way down the sidebar */
-  .tab.folder.cut, .tab.under { padding-left:20px; }
+  /* Three depths, one step each. A project's folder is at the edge; a branch
+     of that project hangs one step under it; and a tab is one step under the
+     folder it runs in, whichever folder that is -- a tab beside its own
+     heading looked like a peer of it rather than something inside it */
+  .tab.folder.cut { padding-left:20px; }
+  .tab.intab { padding-left:26px; }
+  .tab.intab.under { padding-left:42px; }
   .tab.folder .hang { color:var(--dim); font-size:11px; margin-left:-10px; opacity:.7; }
   /* Choosing one. The swatches are the colours picked from when nobody has,
      and the last square opens whatever the system offers */
@@ -1231,7 +1234,7 @@ function drawTabs() {
     // A branch's tabs stand where its heading does. Moving the heading alone
     // left them looking like they belonged to the folder above it
     const under = (t.group != null && (folders[t.group] || {}).linked) ? " under" : "";
-    nav.append(el("div", {class:"tab" + (S.active === t.index ? " sel" : "") + brand + under,
+    nav.append(el("div", {class:"tab intab" + (S.active === t.index ? " sel" : "") + brand + under,
         onclick:() => send({kind:"select", tab:t.index})},
       el("span", {class:"dot " + t.state}),
       el("span", {class:"num"}, String(t.index)),
