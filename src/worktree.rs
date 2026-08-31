@@ -202,15 +202,15 @@ fn ignored_of(main: &Path, names: &[String]) -> std::collections::HashSet<String
 /// answering that nothing is ignored
 fn ask_ignored(main: &Path, names: &[String]) -> Option<std::collections::HashSet<String>> {
     use std::io::Write as _;
-    let mut child = std::process::Command::new("git")
+    let mut asking = std::process::Command::new("git");
+    asking
         .arg("-C")
         .arg(main)
         .args(["check-ignore", "--stdin"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+    let mut child = crate::detach_console(&mut asking).spawn().ok()?;
     let mut wrote = true;
     if let Some(mut w) = child.stdin.take() {
         wrote = w.write_all(names.join("\n").as_bytes()).is_ok();
@@ -253,15 +253,18 @@ pub fn carry_into(plan: &Plan, names: &[String]) -> Vec<String> {
         let done = match from.is_dir() {
             // A junction, which Windows lets anyone make -- a symbolic link
             // needs rights that most people running this do not have
-            true => std::process::Command::new("cmd")
-                .args(["/c", "mklink", "/J"])
-                .arg(&to)
-                .arg(&from)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false),
+            true => {
+                let mut link = std::process::Command::new("cmd");
+                link.args(["/c", "mklink", "/J"])
+                    .arg(&to)
+                    .arg(&from)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                crate::detach_console(&mut link)
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            }
             false => std::fs::copy(&from, &to).is_ok(),
         };
         if !done {
@@ -333,11 +336,9 @@ pub fn ready_to_discard(folder: &Path) -> Result<()> {
     if !crate::repo::is_linked(folder) {
         bail!(crate::i18n::t("err.worktree.not_a_branch"));
     }
-    let dirty = std::process::Command::new("git")
-        .arg("-C")
-        .arg(folder)
-        .args(["status", "--porcelain"])
-        .output()?;
+    let mut asking = std::process::Command::new("git");
+    asking.arg("-C").arg(folder).args(["status", "--porcelain"]);
+    let dirty = crate::detach_console(&mut asking).output()?;
     let said = String::from_utf8_lossy(&dirty.stdout);
     if !said.trim().is_empty() {
         bail!(crate::i18n::tp(
@@ -567,7 +568,11 @@ fn name_is_usable(branch: &str) -> bool {
 /// Runs one command and complains in the person's language when it fails.
 fn run(argv: &[String]) -> Result<()> {
     let (head, rest) = argv.split_first().expect("空のコマンド");
-    let out = std::process::Command::new(head).args(rest).output()?;
+    let mut running = std::process::Command::new(head);
+    running.args(rest);
+    // Nothing here may put a black window on somebody's screen: this app has no
+    // console of its own, so every one of these would flash one open
+    let out = crate::detach_console(&mut running).output()?;
     if out.status.success() {
         return Ok(());
     }

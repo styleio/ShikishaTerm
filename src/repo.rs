@@ -154,21 +154,46 @@ fn git_dir(cwd: &Path) -> Option<PathBuf> {
 /// per tab, and a repository mid-rebase answers anyway
 pub fn family_of(cwd: &Path) -> Option<PathBuf> {
     let dir = git_dir(cwd)?;
-    // A plain clone has no `commondir` and is its own family
+    // A plain clone has no `commondir` and is its own family. Spelled the same
+    // way as the branches cut from it, or the checkout reached by a short path
+    // would not recognise its own worktrees
     let Ok(text) = std::fs::read_to_string(dir.join("commondir")) else {
-        return Some(tidy(dir));
+        return Some(real(dir));
     };
     let named = text.trim();
     if named.is_empty() {
-        return Some(tidy(dir));
+        return Some(real(dir));
     }
     let p = PathBuf::from(named);
     // Written relative to the worktree's own git folder, and usually `../..`
-    Some(tidy(match p.is_absolute() {
+    Some(real(match p.is_absolute() {
         true => p,
         false => dir.join(p),
     }))
 }
+
+/// The one spelling of a path, so that two of them can be compared.
+///
+/// Windows hands out the same folder under more than one name -- the short
+/// `RUNNER~1` form of a long one, a different case, a drive mapped elsewhere --
+/// and two tabs in one repository that arrived by different routes would then
+/// look like two projects. Asked of the filesystem rather than worked out, and
+/// the prefix it answers with is taken off again because this is also shown to
+/// people. A folder that is not there cannot be asked about, so it is only
+/// tidied
+fn real(p: PathBuf) -> PathBuf {
+    let Ok(full) = std::fs::canonicalize(&p) else {
+        return tidy(p);
+    };
+    let said = full.to_string_lossy().to_string();
+    match said.strip_prefix(VERBATIM) {
+        Some(rest) => PathBuf::from(rest),
+        None => PathBuf::from(said),
+    }
+}
+
+/// What Windows puts in front of a path it has resolved in full.
+const VERBATIM: &str = "\\\\?\\";
 
 /// The original checkout of whatever repository this folder belongs to.
 ///
@@ -192,7 +217,9 @@ pub fn main_checkout(cwd: &Path) -> Option<PathBuf> {
 /// closing it is a different thing from closing the project
 pub fn is_linked(cwd: &Path) -> bool {
     match (git_dir(cwd), family_of(cwd)) {
-        (Some(d), Some(shared)) => tidy(d) != shared,
+        // Both through the same spelling, or a checkout reached by a short path
+        // would look like a branch of itself
+        (Some(d), Some(shared)) => real(d) != shared,
         _ => false,
     }
 }
@@ -480,9 +507,10 @@ mod tests {
         // What the tab list colours as one project. The two folders are not
         // nested in each other and have different branches, so the only thing
         // that can answer is the folder git keeps in common
-        let (main, side, git) = a_repository_with_a_worktree("family");
+        let (main, side, _git) = a_repository_with_a_worktree("family");
         assert_eq!(family_of(&side), family_of(&main));
-        assert_eq!(family_of(&main).as_deref(), Some(git.as_path()));
+        // The shared folder itself, however this machine spells the way there
+        assert!(family_of(&main).is_some_and(|f| f.ends_with(".git")));
         // Deeper inside counts as the same family, as it is the same checkout
         let deep = side.join("src");
         std::fs::create_dir_all(&deep).unwrap();
@@ -494,6 +522,28 @@ mod tests {
         std::fs::create_dir_all(elsewhere.join(".git")).unwrap();
         assert_ne!(family_of(&elsewhere), family_of(&main));
         assert_eq!(family_of(&tmp("family-plain")), None);
+    }
+
+    /// The same folder, spelled two ways, is one project.
+    ///
+    /// Windows hands the same place out under more than one name: a different
+    /// case, and the short `RUNNER~1` form of a long one -- which is what the
+    /// build machine's temporary folder is called, and where this was found.
+    /// Two tabs that arrived by different spellings looked like two projects,
+    /// so they were drawn as strangers and a branch could not find the checkout
+    /// it was cut from.
+    #[test]
+    fn one_folder_spelled_two_ways_is_one_project() {
+        let (main, side, _) = a_repository_with_a_worktree("family-spelling");
+        let shouted = PathBuf::from(main.display().to_string().to_uppercase());
+        assert!(shouted.exists(), "大文字でも同じ場所を指している");
+        assert_ne!(shouted, main, "綴りとしては別物");
+
+        assert_eq!(family_of(&shouted), family_of(&main), "同じ家族と見なされていない");
+        assert_eq!(family_of(&shouted), family_of(&side));
+        // And the checkout still knows it is not one of its own branches
+        assert!(!is_linked(&shouted), "本体が枝に見えている");
+        assert!(is_linked(&side));
     }
 
     #[test]
