@@ -5764,17 +5764,10 @@ fn resolve_launch(
     argv
 }
 
-fn tab_options(cfg: &config::TabConfig) -> tab::TabOptions {
+/// `cwd` comes from the tab's group, which is the only thing that has one.
+fn tab_options(cfg: &config::TabConfig, cwd: Option<std::path::PathBuf>) -> tab::TabOptions {
     tab::TabOptions {
-        // Relative paths are resolved against the config file's location (so the whole folder is portable)
-        cwd: cfg.cwd.as_ref().map(|c| {
-            let p = std::path::PathBuf::from(c);
-            if p.is_absolute() {
-                p
-            } else {
-                config_file_dir().join(p)
-            }
-        }),
+        cwd,
         scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
@@ -5831,7 +5824,7 @@ fn apply_ws_config(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let mut opts = tab_options(&ft.cfg);
+        let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
         let argv = resolve_launch(
             argv,
             &mut opts,
@@ -6105,7 +6098,7 @@ fn spawn_workspace(
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
-        let mut opts = tab_options(&ft.cfg);
+        let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
         let argv = resolve_launch(
             argv,
             &mut opts,
@@ -8409,11 +8402,13 @@ mod tests {
                         ..Default::default()
                     },
                     depth: 0,
+                    group: 0,
                 }
             })
             .collect();
         config::Workspace {
             name: "試験".into(),
+            groups: vec![config::Group::default()],
             tabs,
             automation: None,
             browsers: Vec::new(),

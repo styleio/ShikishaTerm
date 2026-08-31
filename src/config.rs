@@ -19,6 +19,9 @@ pub struct Config {
     /// List of workspaces (projects). Switched between like virtual desktops
     #[serde(default)]
     pub workspaces: Vec<WorkspaceSpec>,
+    /// Groups written directly when workspaces are not used
+    #[serde(default)]
+    pub groups: Vec<GroupConfig>,
     /// Backward compat: tabs written directly when workspaces are not used
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
@@ -703,6 +706,9 @@ pub struct WorkspaceSpec {
     pub file: Option<String>,
     /// Inline definition
     #[serde(default)]
+    pub groups: Vec<GroupConfig>,
+    /// Tabs written without a group. They become one (see `grouped`)
+    #[serde(default)]
     pub tabs: Vec<TabConfig>,
     /// Automation shared across this workspace (used when a tab doesn't specify its own)
     #[serde(default)]
@@ -731,6 +737,8 @@ pub struct WorkspaceSpec {
 pub struct WorkspaceFile {
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub groups: Vec<GroupConfig>,
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
     /// Automation shared across this workspace
@@ -968,10 +976,6 @@ pub struct TabConfig {
     /// pane's script while it is attached, and gives it back).
     #[serde(default)]
     pub drives: Option<String>,
-    /// Working folder at launch. A relative path is resolved against the config file's location.
-    /// A folder inside Docker/WSL cannot be specified this way (use the command's own -w / --cd)
-    #[serde(default)]
-    pub cwd: Option<String>,
     /// A conversation id to resume at launch, instead of starting a new one.
     /// Written by the Vault when a past conversation is reopened; the CLI is
     /// asked to resume it through the same resume flags a restart would use
@@ -1034,6 +1038,43 @@ pub struct TabConfig {
     /// Child tabs for display purposes (forwarding relationships are decided by Lua; this is display hierarchy only)
     #[serde(default)]
     pub children: Vec<TabConfig>,
+    /// The folder a tab used to be given directly. Read only so that settings
+    /// written before groups existed still open in the folder they mean; it is
+    /// turned into a group at load and never written back. Nothing downstream
+    /// reads it -- ask the tab's group instead
+    #[serde(rename = "cwd", default)]
+    pub legacy_cwd: Option<String>,
+}
+
+/// A folder, and the tabs that work in it.
+///
+/// The folder is written here and nowhere else. A tab used to carry its own,
+/// which meant a reviewer could be pointed at a different folder from the tab
+/// it was reviewing -- two AIs in one workspace looking at different files,
+/// with nothing on screen to say so. There is now one folder per group and no
+/// field on a tab to disagree with it.
+///
+/// A group is not something anyone has to make. Tabs written without one land
+/// in a single group with no name, which is drawn as no heading at all, so a
+/// person who has never heard the word still has one.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct GroupConfig {
+    /// Shown as the heading, when there is more than one group. Absent means
+    /// the folder speaks for itself (its branch, or its last path component)
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Name referred to from automation. As with a tab, setting it means
+    /// renaming the group won't break scripts
+    #[serde(default)]
+    pub id: Option<String>,
+    /// The folder every tab in here starts in. A relative path is resolved
+    /// against the config file's location. Absent means beside the app.
+    /// A folder inside Docker/WSL cannot be named this way (use the command's
+    /// own -w / --cd)
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub tabs: Vec<TabConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1061,9 +1102,21 @@ impl CommandSpec {
     }
 }
 
+/// A group resolved at launch time: its folder is a real path.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Group {
+    pub name: Option<String>,
+    pub id: Option<String>,
+    /// Where its tabs start. Absent means wherever the app itself is
+    pub cwd: Option<std::path::PathBuf>,
+}
+
 /// A workspace resolved at launch time (tabs are flattened; depth preserves the hierarchy)
 pub struct Workspace {
     pub name: String,
+    /// The folders this workspace works in. Always at least one, so that
+    /// nothing downstream has to answer "what if a tab has no group"
+    pub groups: Vec<Group>,
     pub tabs: Vec<FlatTab>,
     /// Automation at the workspace level
     pub automation: Option<String>,
@@ -1077,6 +1130,13 @@ pub struct Workspace {
     pub stops: Vec<StopCond>,
     /// AI-vs-AI discussion settings
     pub discuss: Option<DiscussSpec>,
+}
+
+impl Workspace {
+    /// The folder a tab starts in: its group's, because a tab has none of its own.
+    pub fn folder_of(&self, t: &FlatTab) -> Option<std::path::PathBuf> {
+        self.groups.get(t.group).and_then(|g| g.cwd.clone())
+    }
 }
 
 /// Whether this tab is a browser. Returns the URL if so.
@@ -1109,6 +1169,9 @@ pub struct FlatTab {
     pub cfg: TabConfig,
     /// Display indent depth (0 = parent)
     pub depth: u16,
+    /// Which of the workspace's groups this tab works in, and therefore which
+    /// folder it starts in
+    pub group: usize,
 }
 
 /// Verify each tab can be addressed uniquely from automation.
@@ -1137,14 +1200,65 @@ pub fn duplicate_keys(ws: &Workspace) -> Vec<String> {
 }
 
 /// Flatten children depth-first (keeps display order matching tab numbers)
-fn flatten(tabs: &[TabConfig], depth: u16, out: &mut Vec<FlatTab>) {
+fn flatten(tabs: &[TabConfig], depth: u16, group: usize, out: &mut Vec<FlatTab>) {
     for t in tabs {
         out.push(FlatTab {
             cfg: t.clone(),
             depth,
+            group,
         });
-        flatten(&t.children, depth + 1, out);
+        flatten(&t.children, depth + 1, group, out);
     }
+}
+
+/// The groups a definition asks for, however it happens to be written.
+///
+/// Tabs written straight into a workspace -- which is how every workspace was
+/// written before groups existed, and how anyone writes one without thinking
+/// about folders -- become groups here, split by the folder each of them named.
+/// A child follows its parent whatever it says: the tree on screen is one
+/// thing, and moving a child into another group to honour a folder it should
+/// never have carried would silently rearrange the list.
+///
+/// The result is never empty. A workspace with nothing in it still has the one
+/// group everything lands in, so no caller has to answer "and if it has none".
+fn grouped(groups: &[GroupConfig], loose: &[TabConfig]) -> Vec<GroupConfig> {
+    let mut out = groups.to_vec();
+    for t in loose {
+        let cwd = t.legacy_cwd.clone().filter(|c| !c.trim().is_empty());
+        match out.iter_mut().find(|g| g.cwd == cwd && g.name.is_none() && g.id.is_none()) {
+            Some(g) => g.tabs.push(t.clone()),
+            None => out.push(GroupConfig { cwd, tabs: vec![t.clone()], ..Default::default() }),
+        }
+    }
+    if out.is_empty() {
+        out.push(GroupConfig::default());
+    }
+    out
+}
+
+/// Turns written groups into ones with a real folder, and lays their tabs out
+/// in one list in the order they are shown.
+fn resolve_groups(defs: &[GroupConfig]) -> (Vec<Group>, Vec<FlatTab>) {
+    let mut groups = Vec::with_capacity(defs.len());
+    let mut tabs = Vec::new();
+    for (at, def) in defs.iter().enumerate() {
+        groups.push(Group {
+            name: def.name.clone().filter(|n| !n.trim().is_empty()),
+            id: def.id.clone().filter(|i| !i.trim().is_empty()),
+            // Relative stays relative to the settings, so that a whole folder
+            // of them can be carried to another machine
+            cwd: def.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(|c| {
+                let p = std::path::PathBuf::from(c);
+                match p.is_absolute() {
+                    true => p,
+                    false => root_dir().join(p),
+                }
+            }),
+        });
+        flatten(&def.tabs, 0, at, &mut tabs);
+    }
+    (groups, tabs)
 }
 
 /// A byte-order mark is not JSON.
@@ -1271,11 +1385,11 @@ impl Config {
         let mut out = Vec::new();
         let mut errors = Vec::new();
         if self.workspaces.is_empty() {
-            if !self.tabs.is_empty() {
-                let mut tabs = Vec::new();
-                flatten(&self.tabs, 0, &mut tabs);
+            if !self.tabs.is_empty() || !self.groups.is_empty() {
+                let (groups, tabs) = resolve_groups(&grouped(&self.groups, &self.tabs));
                 out.push(Workspace {
                     name: "DEFAULT".into(),
+                    groups,
                     tabs,
                     automation: None,
                     browsers: Vec::new(),
@@ -1290,8 +1404,8 @@ impl Config {
         for ws in &self.workspaces {
             #[allow(clippy::type_complexity)]
             #[allow(clippy::type_complexity)]
-            let (tab_defs, file_name, file_lua, file_secrets, file_stops, file_discuss): (
-                Vec<TabConfig>,
+            let (group_defs, file_name, file_lua, file_secrets, file_stops, file_discuss): (
+                Vec<GroupConfig>,
                 Option<String>,
                 Option<String>,
                 (Vec<String>, bool),
@@ -1300,7 +1414,7 @@ impl Config {
             ) = match &ws.file {
                 Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
                     Ok(p) => (
-                        p.tabs,
+                        grouped(&p.groups, &p.tabs),
                         p.name,
                         p.automation.or(p.lua),
                         (p.secrets_allow, p.secrets_allow_all),
@@ -1312,10 +1426,16 @@ impl Config {
                         continue;
                     }
                 },
-                None => (ws.tabs.clone(), None, None, (Vec::new(), false), Vec::new(), None),
+                None => (
+                    grouped(&ws.groups, &ws.tabs),
+                    None,
+                    None,
+                    (Vec::new(), false),
+                    Vec::new(),
+                    None,
+                ),
             };
-            let mut tabs = Vec::new();
-            flatten(&tab_defs, 0, &mut tabs);
+            let (groups, tabs) = resolve_groups(&group_defs);
             out.push(Workspace {
                 // Prefer the display name from config; fall back to the definition file's name if empty
                 name: if ws.name.is_empty() {
@@ -1323,6 +1443,7 @@ impl Config {
                 } else {
                     ws.name.clone()
                 },
+                groups,
                 tabs,
                 // Prefer config's setting; fall back to the definition file's if absent
                 automation: ws.automation.clone().or_else(|| ws.lua.clone()).or(file_lua),
@@ -1715,6 +1836,68 @@ mod tests {
         for p in [logs_dir(), state_path("x")] {
             assert!(p.starts_with(exe_dir()), "{p:?} が exe の隣から外れた");
         }
+    }
+
+    #[test]
+    fn tabs_written_without_a_group_are_still_in_one() {
+        // What someone writes when they have never heard the word, and what
+        // every workspace written before groups existed looks like
+        let cfg: Config = serde_json::from_str(
+            r#"{"tabs": [{"name": "A", "command": "a"},
+                         {"name": "B", "command": "b"}]}"#,
+        )
+        .unwrap();
+        let (ws, errs) = cfg.resolve_workspaces();
+        assert!(errs.is_empty());
+        assert_eq!(ws[0].groups.len(), 1, "1つにまとまるはず");
+        assert!(ws[0].groups[0].name.is_none(), "名前のないグループ = 見出しを描かない");
+        assert!(ws[0].tabs.iter().all(|t| t.group == 0));
+        assert_eq!(ws[0].folder_of(&ws[0].tabs[0]), None, "書いていない場所はアプリの隣");
+    }
+
+    #[test]
+    fn a_folder_written_on_a_tab_becomes_the_group_it_meant() {
+        // The old shape. Two tabs naming the same folder are one group -- they
+        // were already working in one place -- and a child follows its parent
+        // whatever it says, because the tree on screen is not a folder list
+        let cfg: Config = serde_json::from_str(
+            r#"{"tabs": [{"name": "A", "command": "a", "cwd": "D:/work/one",
+                          "children": [{"name": "A2", "command": "a2", "cwd": "D:/elsewhere"}]},
+                         {"name": "B", "command": "b", "cwd": "D:/work/one"},
+                         {"name": "C", "command": "c", "cwd": "D:/work/two"}]}"#,
+        )
+        .unwrap();
+        let ws = &cfg.resolve_workspaces().0[0];
+        assert_eq!(ws.groups.len(), 2, "フォルダの数だけ");
+        let by_name = |n: &str| ws.tabs.iter().find(|t| t.cfg.name.as_deref() == Some(n)).unwrap();
+        let folder = |n: &str| ws.folder_of(by_name(n));
+        assert_eq!(folder("A"), Some("D:/work/one".into()));
+        assert_eq!(folder("B"), folder("A"), "同じ場所は同じグループ");
+        assert_eq!(folder("A2"), folder("A"), "子は親のフォルダで動く");
+        assert_eq!(by_name("A2").depth, 1, "木の形は変わらない");
+        assert_eq!(folder("C"), Some("D:/work/two".into()));
+    }
+
+    #[test]
+    fn a_group_is_the_only_thing_that_says_where_work_happens() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"groups": [
+                 {"name": "main", "cwd": "D:/work/proj",
+                  "tabs": [{"name": "実装", "command": "claude"},
+                           {"name": "レビュー", "command": "codex"}]},
+                 {"name": "feature/login", "cwd": "scripts",
+                  "tabs": [{"name": "実装", "command": "claude"}]}]}"#,
+        )
+        .unwrap();
+        let ws = &cfg.resolve_workspaces().0[0];
+        assert_eq!(ws.groups.len(), 2);
+        assert_eq!(ws.tabs.len(), 3);
+        // Everyone in a group works in the one folder -- the whole point, since
+        // a reviewer pointed somewhere else reviews nothing
+        assert_eq!(ws.folder_of(&ws.tabs[0]), Some("D:/work/proj".into()));
+        assert_eq!(ws.folder_of(&ws.tabs[1]), ws.folder_of(&ws.tabs[0]));
+        // Relative stays relative to the settings, so a folder of them travels
+        assert_eq!(ws.folder_of(&ws.tabs[2]), Some(root_dir().join("scripts")));
     }
 
     #[test]
