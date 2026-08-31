@@ -689,7 +689,14 @@ mod tests {
         assert_eq!(crate::repo::branch_of(made).as_deref(), Some("feature/login"));
         assert_eq!(crate::repo::family_of(made), crate::repo::family_of(&main), "同じ家族");
         assert!(crate::repo::is_linked(made), "本体から切った枝である");
-        assert_eq!(crate::repo::main_checkout(made).as_deref(), Some(main.as_path()));
+        // Both asked the same way. Comparing against the path this test wrote
+        // would be comparing an answer with a spelling, and a machine whose
+        // temporary folder is handed out short (`RUNNER~1`) has two of those
+        assert_eq!(
+            crate::repo::main_checkout(made),
+            crate::repo::main_checkout(&main),
+            "枝から本体に戻れていない"
+        );
 
         // Where it grew from, written into the repository itself
         let out = std::process::Command::new("git")
