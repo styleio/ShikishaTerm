@@ -734,6 +734,7 @@ How the rally works: files in and out, plus a judge. You can build your own the 
 
 | Command | Description |
 |---|---|
+| `shikisha.contract()` | The promises a tab is asked to keep while it holds a turn: say it in words rather than opening a confirmation prompt, report once, say what you did and what is left, then wait. Send it with the **opening** instruction, not every turn |
 | `shikisha.exchange_new()` | Make a folder for this run and return its path |
 | `shikisha.exchange_write(path, "text")` | Write a file (overwrites) |
 | `shikisha.exchange_append(path, "text")` | Append to one |

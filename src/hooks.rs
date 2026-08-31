@@ -946,6 +946,23 @@ function shikisha.browser_wait(name, opts)
   if opts.ask then shikisha.browser_unask(name) end
   return "timeout"
 end
+-- What a tab is asked to promise while it holds a turn. Handed over once, with
+-- the opening instruction -- not every turn, because four lines repeated on
+-- every hand-over cost tokens on every hand-over, and rules an agent reads
+-- twenty times are rules it stops reading.
+--
+-- One text in one place: every orchestrator hands over the same promises, and
+-- so does anyone writing their own. Each line exists because of a way a chain
+-- actually stops: a prompt nobody can answer, a second "done" that ends the
+-- next turn as well, a report with nothing in it, and work nobody asked for.
+function shikisha.contract()
+  return table.concat({
+    shikisha.t("agent.contract.ask"),
+    shikisha.t("agent.contract.once"),
+    shikisha.t("agent.contract.summary"),
+    shikisha.t("agent.contract.wait"),
+  }, "\n")
+end
 function shikisha.wait(tab, pattern, timeout_ms)
   local idx = (type(tab) == "table") and tab.index or tab
   return coroutine.yield({ op = "wait", tab = idx, pattern = pattern, timeout_ms = timeout_ms or 10000 })
@@ -2546,6 +2563,7 @@ local function protocol(run)
     shikisha.t("agent.browser.proto.press_note"),
     shikisha.t("agent.browser.proto.human_before") .. humanfile .. shikisha.t("agent.browser.proto.human_after"),
     shikisha.t("agent.browser.proto.done_note"),
+    shikisha.contract(),
   }, "\n")
 end
 
@@ -2941,7 +2959,8 @@ function on_start(tab)
   -- so it just waits for the human's goal. A CLI gets the file-handoff brief.
   if not tab.is_model then
     shikisha.send_to_tab(tab.index,
-      shikisha.tf("agent.ai.brief", { target = TARGET, infile = run .. "/in.txt" }))
+      shikisha.tf("agent.ai.brief", { target = TARGET, infile = run .. "/in.txt" })
+        .. "\n" .. shikisha.contract())
   end
 end
 
@@ -2965,9 +2984,12 @@ function on_done(tab)
     local n = (shikisha.get_var("op_round") or 0) + 1
     shikisha.set_var("op_round", n)
     tx("\n### " .. shikisha.t("transcript.ai.instruction") .. " " .. n .. "\n" .. instr .. "\n")
-    -- Relay to the target AI and wait for its reply.
+    -- Relay to the target AI and wait for its reply. Nobody ever briefed the
+    -- target -- it is an ordinary tab that someone else has started driving --
+    -- so the promises ride along with the first instruction it is given, and
+    -- only that one.
     shikisha.show(TARGET)
-    shikisha.send_to_tab(TARGET, instr)
+    shikisha.send_to_tab(TARGET, n == 1 and (shikisha.contract() .. "\n\n" .. instr) or instr)
     shikisha.sleep(1500)                          -- let the target begin
     shikisha.wait_state(TARGET, "DONE", 300000)   -- ...then finish
     local reply = ""
@@ -3147,6 +3169,7 @@ function on_start(tab)
       add(shikisha.t("agent.discuss.part.wait_turn"))
     end
   end
+  add("", shikisha.contract())
   -- If a persona (stance/character) is set, put it at the very top. Keep to that stance throughout the discussion
   if PERSONA ~= nil and #PERSONA > 0 then
     table.insert(lines, 1, shikisha.t("agent.discuss.persona.label") .. PERSONA)
@@ -4141,6 +4164,79 @@ mod tests {
                         && text.contains("input field"))),
             "on_start がブラウザ操作プロトコル(入力欄でゴール)を送っていない: {cmds:?}"
         );
+    }
+
+    /// The four promises exist because of four ways a chain actually stops: a
+    /// confirmation prompt nobody can answer, a second "done" that also ends the
+    /// next turn, a report with nothing in it, and work nobody asked for. They
+    /// are worth nothing if one orchestrator hands them over and another quietly
+    /// does not, so all three openings are checked against the same text -- and
+    /// a hand-written automation is checked against it too, because that is the
+    /// proof there is one source and not four copies drifting apart.
+    #[test]
+    fn every_opening_instruction_carries_the_same_promises() {
+        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        // A fragment of each promise, from the English base wording
+        let promises = [
+            "do not open a confirmation prompt",
+            "Say you have finished once",
+            "what is left",
+            "wait for the next instruction",
+        ];
+        let opening = |e: &mut HookEngine| -> String {
+            e.fire("on_start", &ctx(1, ""), None);
+            e.drain_commands()
+                .iter()
+                .filter_map(|c| match c {
+                    Command::SendPrompt { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let mut browser = HookEngine::new().unwrap();
+        let id = browser.load_browser_agent("br", "{}").expect("browser rally");
+        browser.set_tab(1, id);
+
+        let mut operate = HookEngine::new().unwrap();
+        let id = operate.load_ai_agent("2").expect("operate another tab");
+        operate.set_tab(1, id);
+
+        let mut discuss = HookEngine::new().unwrap();
+        let id = discuss
+            .load_discuss_agent(
+                "ai1", "ai2", true, false, None, 4, r#"{"ai1","ai2"}"#, "{}", "{}", "winner",
+                "round-robin", None, false, "",
+            )
+            .expect("discussion");
+        discuss.set_tab(1, id);
+
+        // ...and one written by hand, which reaches the same text through the
+        // same function rather than repeating it
+        let mut own = HookEngine::from_source(
+            r#"
+            function on_start(tab)
+              shikisha.send_to_tab(1, shikisha.contract())
+            end
+            "#,
+        )
+        .unwrap();
+
+        for (who, e) in [
+            ("browser rally", &mut browser),
+            ("operating another tab", &mut operate),
+            ("discussion", &mut discuss),
+            ("a hand-written one", &mut own),
+        ] {
+            let text = opening(e);
+            for promise in promises {
+                assert!(
+                    text.contains(promise),
+                    "{who} の最初の指示に約束「{promise}」が無い: {text}"
+                );
+            }
+        }
     }
 
     #[test]
