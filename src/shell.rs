@@ -4765,8 +4765,13 @@ function gitPicked(where) {
 // Everything the panel learns comes back through here
 window.__git = function (d) {
   if (!d || !d.act) return;
-  if (d.busy) { G.busy = d.act; G.said = ""; drawGit(); return; }
+  // The panel and the sub-input bar are drawn by different hands. Whatever
+  // changes "is something running", both of them have to hear about it
+  const bar = () => { if (castPanel === "git" && castPanelEl) renderPanel(); };
+  if (d.busy) { G.busy = d.act; G.said = ""; drawGit(); bar(); return; }
+  const was = G.busy;
   G.busy = "";
+  if (was) bar();
   if (!d.ok) {
     // A commit refused because the branch is shared is not a failure, it is a
     // question with an answer -- asked here in the panel's own words, with the
@@ -5166,9 +5171,20 @@ function gitHistory(back) {
 // the two things a commit can be asked to do beyond being a commit
 function buildGitPanel() {
   const wrap = el("div", {style:"display:flex;flex:1 1 0;gap:12px;align-items:center;min-width:0;padding:6px 0;flex-wrap:wrap"});
-  wrap.append(el("button", {class:"castbtn", style:"flex:none",
-    onclick:() => { if (G.busy !== "message") gitAsk("message"); }},
-    (G.busy === "message" ? "\u2026" : "\ud83e\udd16 ") + (T["git.write"] || "")));
+  const writing = G.busy === "message";
+  const write = el("button", {class:"castbtn", style:"flex:none",
+    onclick:() => {
+      if (G.busy) return;
+      // Say it started before anything is sent: the answer is half a minute
+      // away, and a button that looks untouched gets pressed again
+      G.busy = "message";
+      renderPanel();
+      drawGit();
+      gitAsk("message");
+    }},
+    writing ? ("\u23f3 " + (T["git.writing"] || "")) : ("\ud83e\udd16 " + (T["git.write"] || "")));
+  write.disabled = !!G.busy;
+  wrap.append(write);
   const tick = (on, label, set) => {
     const box = el("input", {type:"checkbox"});
     box.checked = on;
@@ -5185,7 +5201,9 @@ function drawGit() {
   if (!box || box.hidden) return;
   if (!gitUi || !box.firstChild) gitBuild(box);
   const u = gitUi;
-  u.said.textContent = G.busy ? "\u2026" : (G.said || "");
+  u.said.textContent = G.busy
+    ? (T["git.busy." + G.busy] || T["git.busy"] || "")
+    : (G.said || "");
   u.said.className = "said" + (G.bad && !G.busy ? " bad" : "");
   // `hidden` loses to an inline display, so the display is what gets set
   u.naming.style.display = G.offer ? "flex" : "none";
