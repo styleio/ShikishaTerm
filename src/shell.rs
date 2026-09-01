@@ -4861,7 +4861,7 @@ function gitBuild(box) {
       el("b", {}, T["git.view.all"] || ""),
       el("label", {class:"castradio"}, remotes, el("span", {}, T["git.view.remotes"] || "")),
       el("span", {style:"flex:1"}),
-      el("button", {class:"quiet", onclick:() => gitHistory()}, T["git.back"] || "")),
+      el("button", {class:"quiet", onclick:() => gitHistory(true)}, T["git.back"] || "")),
     el("div", {class:"logrow logcols"},
       el("span", {class:"g"}, T["git.col.graph"] || ""),
       el("span", {class:"s"}, T["git.col.subject"] || ""),
@@ -5094,10 +5094,12 @@ function gitNewBranch() {
 }
 // The history is the same panel with a different middle: the branches stay on
 // the left, because where you are is the thing both views are about
-function gitHistory() {
-  G.view = G.view === "history" ? "changes" : "history";
+function gitHistory(back) {
+  // Not a toggle. A button that does the opposite thing on the second press is
+  // a button people report as broken -- the way back is the one that says so
+  G.view = back ? "changes" : "history";
   G.said = "";
-  if (G.view === "history") gitAsk("graph", {all:true, remotes:G.remotes});
+  if (!back) gitAsk("graph", {all:true, remotes:G.remotes});
   drawGit();
 }
 // The panel's own row in the sub-input bar: have the AI write the message, and
