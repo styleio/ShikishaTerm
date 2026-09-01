@@ -438,12 +438,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     text-overflow:ellipsis; white-space:nowrap; }
   #gitpanel .said.bad { color:var(--danger); }
   #gitpanel .cols { display:flex; flex:1 1 auto; min-height:0; }
-  #gitpanel .branches { width:170px; flex:0 0 auto; overflow:auto;
-    border-right:1px solid var(--line); }
-  #gitpanel .mid { width:38%; min-width:220px; flex:0 0 auto; display:flex;
-    flex-direction:column; border-right:1px solid var(--line); min-height:0; }
+  #gitpanel .branches { flex:0 0 170px; overflow:auto; min-width:0; }
+  #gitpanel .mid { flex:0 0 38%; min-width:0; display:flex;
+    flex-direction:column; min-height:0; }
   #gitpanel .sec { flex:1 1 0; display:flex; flex-direction:column; min-height:0; }
-  #gitpanel .sec + .sec { border-top:1px solid var(--line); }
+  /* The border between two panes is the thing you drag. Wider than it looks:
+     a one-pixel line is a one-pixel target, and nobody hits it twice */
+  #gitpanel .grip { flex:0 0 5px; background:var(--line); position:relative;
+    background-clip:content-box; }
+  #gitpanel .grip.v { cursor:col-resize; border-left:2px solid transparent;
+    border-right:2px solid transparent; }
+  #gitpanel .grip.h { flex:0 0 5px; cursor:row-resize; border-top:2px solid transparent;
+    border-bottom:2px solid transparent; }
+  #gitpanel .grip:hover, #gitpanel .grip.on { background:var(--brand); }
   #gitpanel .sec .list { overflow:auto; flex:1 1 auto; }
   #gitpanel h4 { margin:0; padding:6px 10px 4px; font-size:11px; letter-spacing:.06em;
     color:var(--muted); font-weight:600; text-transform:uppercase; flex:0 0 auto;
@@ -480,12 +487,32 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .diff .d { color:var(--danger); }
   #gitpanel .diff .h { color:var(--muted); }
   #gitpanel .empty { color:var(--muted); padding:12px 10px; font-size:12px; }
+  /* On a phone the three columns become one, and the row of chips says which
+     one is in front. Everything a person can reach on the window is reachable
+     here -- it is the same panel, not a cut-down one */
+  #gitpanel .chips { display:none; gap:6px; padding:6px 10px; flex:0 0 auto;
+    border-bottom:1px solid var(--line); overflow-x:auto; }
+  #gitpanel .chips button { flex:0 0 auto; padding:5px 12px; font-size:12.5px;
+    border-radius:14px; border:1px solid var(--line); background:none;
+    color:var(--muted); cursor:pointer; }
+  #gitpanel .chips button.on { color:var(--text); border-color:var(--brand);
+    background:color-mix(in srgb, var(--brand) 14%, transparent); }
+  #gitpanel.narrow .chips { display:flex; }
+  #gitpanel.narrow .cols { flex-direction:column; }
+  #gitpanel.narrow .grip { display:none; }
+  #gitpanel.narrow .branches, #gitpanel.narrow .mid, #gitpanel.narrow .diff,
+  #gitpanel.narrow .hist { flex:1 1 auto; width:auto; }
+  #gitpanel.narrow .hist .log, #gitpanel.narrow .hist .about { flex:1 1 auto; }
+  #gitpanel.narrow .under { flex-direction:column; }
+  #gitpanel.narrow .bar { gap:4px; }
+  #gitpanel.narrow .bar button { padding:6px 10px; }
+  #gitpanel.narrow .logrow .w, #gitpanel.narrow .logrow .a { display:none; }
 
   /* The history: the log across the top, and under it what one commit did */
   #gitpanel .hist { flex:1 1 auto; display:flex; flex-direction:column; min-width:0; min-height:0; }
   #gitpanel .histhead { display:flex; align-items:center; gap:12px; padding:5px 10px;
     border-bottom:1px solid var(--line); flex:0 0 auto; font-size:12px; }
-  #gitpanel .log { flex:1 1 55%; overflow:auto; min-height:0; }
+  #gitpanel .log { flex:0 0 55%; overflow:auto; min-height:0; }
   #gitpanel .logrow { display:flex; gap:10px; padding:2px 10px; cursor:pointer; font-size:12px; }
   #gitpanel .logrow:hover { background:var(--panel2); }
   #gitpanel .logrow.on { background:color-mix(in srgb, var(--brand) 18%, transparent); }
@@ -497,9 +524,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     white-space:nowrap; }
   #gitpanel .logrow .h { flex:0 0 auto; font-family:var(--mono); color:var(--muted); }
   #gitpanel .logcols { color:var(--muted); font-size:11px; }
-  #gitpanel .under { flex:1 1 45%; display:flex; min-height:0; border-top:1px solid var(--line); }
-  #gitpanel .about { width:42%; min-width:200px; flex:0 0 auto; overflow:auto; padding:6px 10px;
-    border-right:1px solid var(--line); font-size:12px; }
+  #gitpanel .under { flex:1 1 auto; display:flex; min-height:0; }
+  #gitpanel .about { flex:0 0 42%; min-width:0; overflow:auto; padding:6px 10px;
+    font-size:12px; }
   #gitpanel .about dt { color:var(--muted); font-size:11px; margin-top:6px; }
   #gitpanel .about dd { margin:0; font-family:var(--mono); font-size:11.5px;
     word-break:break-all; }
@@ -4842,18 +4869,88 @@ function gitBuild(box) {
       el("span", {class:"a"}, T["git.col.author"] || ""),
       el("span", {class:"h"}, T["git.col.hash"] || "")),
     log,
-    el("div", {class:"under"}, about, commitDiff));
+    grip(false, "log", "%", () => log),
+    el("div", {class:"under"}, about, grip(true, "about", "%", () => about), commitDiff));
   hist.style.display = "none";
   // Making one belongs with the list of them, now that the toolbar's button is
   // the way into the history
   const plus = el("button", {title:T["git.branch.make"] || "", onclick:() => gitNewBranch()}, "+");
+  const chips = el("div", {class:"chips"});
+  box.append(chips);
+  const branchCol = el("div", {style:"display:flex;flex-direction:column;min-height:0"},
+    el("h4", {}, el("span", {class:"grow"}, T["git.branches"] || ""), plus), branches);
   box.append(el("div", {class:"cols"},
-    el("div", {}, el("h4", {}, el("span", {class:"grow"}, T["git.branches"] || ""), plus), branches),
-    mid, diff, hist));
-  gitUi = { bar, said, naming, name, branches, staged, work, diff,
-            hist, mid, log, about, commitDiff, remotes,
+    branchCol,
+    grip(true, "branches", "px", () => branchCol),
+    mid,
+    grip(true, "mid", "%", () => mid),
+    diff, hist));
+  gitUi = { bar, said, naming, name, branches, branchCol, staged, work, diff,
+            hist, mid, log, about, commitDiff, remotes, chips,
             btn: {commit, pull, push, fetch, branch, merge},
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
+}
+
+// How wide each pane is, in pixels or percent as the person left it. Kept in
+// the browser rather than in the settings file: it is where somebody dragged a
+// line on this screen, not a decision about the app
+let gitSize = {branches:170, mid:38, log:55, about:42};
+try {
+  const saved = JSON.parse(localStorage.getItem("shikishaGitPanes") || "null");
+  if (saved && typeof saved === "object") gitSize = Object.assign(gitSize, saved);
+} catch (e) {}
+function saveGitSize() {
+  try { localStorage.setItem("shikishaGitPanes", JSON.stringify(gitSize)); } catch (e) {}
+}
+// The draggable border between two panes. `key` is what it moves, `unit` says
+// whether that number is pixels or a percentage of what is around it
+function grip(vertical, key, unit, target) {
+  const g = el("div", {class:"grip " + (vertical ? "v" : "h")});
+  g.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    const box = target();
+    if (!box) return;
+    const parent = box.parentElement;
+    const whole = vertical ? parent.clientWidth : parent.clientHeight;
+    const from = vertical ? box.getBoundingClientRect().width : box.getBoundingClientRect().height;
+    const at = vertical ? e.clientX : e.clientY;
+    g.classList.add("on");
+    g.setPointerCapture(e.pointerId);
+    const move = ev => {
+      const now = (vertical ? ev.clientX : ev.clientY) - at + from;
+      const px = Math.max(60, Math.min(now, whole - 60));
+      gitSize[key] = unit === "%" ? (px / Math.max(whole, 1)) * 100 : px;
+      applyGitSize();
+    };
+    const up = () => {
+      g.classList.remove("on");
+      g.removeEventListener("pointermove", move);
+      g.removeEventListener("pointerup", up);
+      saveGitSize();
+    };
+    g.addEventListener("pointermove", move);
+    g.addEventListener("pointerup", up);
+  });
+  return g;
+}
+function applyGitSize() {
+  const u = gitUi;
+  if (!u) return;
+  u.branchCol.style.flex = "0 0 " + gitSize.branches + "px";
+  u.mid.style.flex = "0 0 " + gitSize.mid + "%";
+  u.log.style.flex = "0 0 " + gitSize.log + "%";
+  u.about.style.flex = "0 0 " + gitSize.about + "%";
+}
+
+// A phone gets the same panel with one column in front at a time
+const GIT_NARROW = 720;
+let gitPane = "files";
+function gitPanes() {
+  return G.view === "history"
+    ? [["branches", T["git.pane.branches"] || ""], ["log", T["git.pane.log"] || ""],
+       ["about", T["git.pane.commit"] || ""], ["diff", T["git.pane.diff"] || ""]]
+    : [["branches", T["git.pane.branches"] || ""], ["files", T["git.pane.changes"] || ""],
+       ["diff", T["git.pane.diff"] || ""]];
 }
 
 function gitAllPaths(staged) {
@@ -4874,6 +4971,8 @@ function gitFileRow(r, where) {
         G.pick = {}; G.pick[r.path] = where;
       }
       G.sel = r.path; G.staged = where === "staged"; G.diff = ""; G.hunks = [];
+      // On a phone, asking for a file means asking to see it
+      if (document.getElementById("gitpanel").classList.contains("narrow")) gitPane = "diff";
       drawGit();
       gitAsk("diff", {paths: [r.path], staged: where === "staged"});
       gitAsk("hunks", {paths: [r.path], staged: where === "staged"});
@@ -4900,6 +4999,7 @@ function drawHistory(u) {
       onclick:() => {
         if (!r.hash) return;
         G.commit = r.hash; G.about = null; G.sel = null; G.hunks = [];
+        if (document.getElementById("gitpanel").classList.contains("narrow")) gitPane = "about";
         drawGit();
         gitAsk("detail", {text:r.hash});
       }});
@@ -4935,6 +5035,7 @@ function drawHistory(u) {
       const row = el("div", {class:"row" + (G.sel === f ? " pick" : ""), style:"padding:2px 0",
         onclick:() => {
           G.sel = f; G.hunks = [];
+          if (document.getElementById("gitpanel").classList.contains("narrow")) gitPane = "diff";
           drawGit();
           gitAsk("hunks", {paths:[f], commit:G.commit});
         }});
@@ -5046,9 +5147,27 @@ function drawGit() {
   if (!(G.branches || []).length) u.branches.append(el("div", {class:"empty"}, "\u2026"));
 
   const history = G.view === "history";
-  u.mid.style.display = history ? "none" : "flex";
-  u.diff.style.display = history ? "none" : "block";
+  const narrow = box.clientWidth > 0 && box.clientWidth < GIT_NARROW;
+  box.classList.toggle("narrow", narrow);
+  applyGitSize();
+  // The chips only mean anything while one pane is in front
+  u.chips.textContent = "";
+  const panes = gitPanes();
+  if (narrow && !panes.some(([id]) => id === gitPane)) gitPane = panes[1][0];
+  for (const [id, label] of panes) {
+    u.chips.append(el("button", {class: gitPane === id ? "on" : "",
+      onclick:() => { gitPane = id; drawGit(); }}, label));
+  }
+  const shows = id => !narrow || gitPane === id;
+  u.branchCol.style.display = shows("branches") ? "flex" : "none";
+  u.mid.style.display = !history && shows("files") ? "flex" : "none";
+  u.diff.style.display = !history && shows("diff") ? "block" : "none";
   u.hist.style.display = history ? "flex" : "none";
+  if (history) {
+    u.log.style.display = shows("log") ? "block" : "none";
+    u.about.style.display = shows("about") ? "block" : "none";
+    u.commitDiff.style.display = shows("diff") ? "block" : "none";
+  }
   // The toolbar stays whole in either view: where you are does not change what
   // you can do, and a button that comes and goes is a button people stop trusting
   u.btn.branch.classList.toggle("go", history);
