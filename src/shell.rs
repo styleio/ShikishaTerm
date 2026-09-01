@@ -1289,6 +1289,12 @@ const REMOTE = !window.ipc;
 // not the state socket, not the screen relay — until a person opens the link
 // again, which reloads this page and clears the flag with it.
 let remoteCut = false;
+// The Enter that finishes an IME conversion is a keystroke for the IME, not an
+// answer to the box it happens to be in. Every Enter that does something has to
+// let that one through -- otherwise the first Enter of every Japanese word
+// submits half a word. `keyCode === 229` is the older spelling of the same
+// thing, kept because it costs nothing and some inputs still only say that
+const typingIME = e => e.isComposing || e.keyCode === 229;
 const send = REMOTE
   ? (o => fetch("api/intent?t=" + encodeURIComponent(TOKEN),
       {method:"POST", body:JSON.stringify(o)}).catch(() => {}))
@@ -1947,6 +1953,7 @@ function drawCarry(b, items) {
   };
   b.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); closeRepair(); }
+    if (typingIME(e)) return;
     if (e.key === "Enter" && !b.querySelector(".go").disabled) {
       e.preventDefault();
       b.querySelector(".go").click();
@@ -1968,6 +1975,7 @@ function drawCarry(b, items) {
   q.addEventListener("input", askBranch);
   q.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); closeBranch(); }
+    if (typingIME(e)) return;
     // Enter makes it, but only once the app has said it can be made
     if (e.key === "Enter" && !b.querySelector(".go").disabled) {
       e.preventDefault();
@@ -2135,7 +2143,10 @@ function drawTopicBar() {
     // right away so a stray second Enter can't fire a duplicate topic.
     bar.hidden = true;
   };
-  input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  input.addEventListener("keydown", e => {
+    if (typingIME(e)) return;
+    if (e.key === "Enter") { e.preventDefault(); go(); }
+  });
   const hint = (T["tui.discuss.start.hint"] || "Sends your topic to the opening speaker ({name}) and begins.")
     .split("{name}").join(S.discuss_start_name || "");
   bar.append(
@@ -2330,6 +2341,7 @@ window.__password = function (title, note) {
     "border:1px solid var(--line);border-radius:6px;padding:8px 10px;width:320px";
   const done = t => { v.hidden = true; v.onmousedown = null; send({kind:"password", text:t}); };
   inp.onkeydown = e => {
+    if (typingIME(e)) return;
     if (e.key === "Enter") { e.preventDefault(); done(inp.value); }
     if (e.key === "Escape") { e.preventDefault(); done(null); }
   };
@@ -2398,6 +2410,7 @@ function drawNav() {
       const box = el("input", {type:"text", spellcheck:"false",
         title:T["tui.nav.url.ph"], placeholder:T["tui.nav.url.ph"], value:want.at || ""});
       box.onkeydown = e => {
+        if (typingIME(e)) { e.stopPropagation(); return; }
         if (e.key === "Enter") { e.preventDefault(); goTo(); }
         // Keystrokes here never flow to the terminal — this is where the destination URL is typed
         e.stopPropagation();
@@ -4213,6 +4226,7 @@ function renderPalette() {
   if (!q || !v) return;
   q.addEventListener("input", () => buildPalette(q.value));
   q.addEventListener("keydown", (e) => {
+    if (typingIME(e)) return;
     if (e.key === "ArrowDown") { e.preventDefault(); palSel = Math.min(palSel + 1, palItems.length - 1); renderPalette(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); palSel = Math.max(palSel - 1, 0); renderPalette(); }
     else if (e.key === "Enter") { e.preventDefault(); const it = palItems[palSel]; if (it) { closePalette(); it.run(); } }
@@ -4588,7 +4602,10 @@ function buildSuggestPanel() {
     placeholder: T["tui.cast.suggest.ph"] || "What do you want to do?"});
   inp.value = suggestDraft;
   inp.addEventListener("input", () => { suggestDraft = inp.value; });
-  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  inp.addEventListener("keydown", (e) => {
+    if (typingIME(e)) return;
+    if (e.key === "Enter") { e.preventDefault(); go(); }
+  });
   const btn = el("button", {class:"castbtn", style:"flex:none", onclick: go},
     suggestBusy ? "…" : ("🤖 " + (T["tui.cast.suggest.go"] || "Suggest")));
   function go() {
@@ -4835,6 +4852,7 @@ function gitBuild(box) {
   const name = el("input", {type:"text", placeholder:T["git.branch.name"] || "",
     style:"padding:3px 8px;font-size:12.5px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--text)"});
   name.addEventListener("keydown", e => {
+    if (typingIME(e)) return;
     if (e.key === "Enter" && name.value.trim()) gitAsk("branch_new", {text: name.value.trim()});
   });
   const makeIt = el("button", {onclick:() => {
@@ -5419,7 +5437,7 @@ function ensureBar() {
   document.getElementById("main").append(castDock);
   // Enter sends; Shift+Enter (or an active IME) inserts a newline instead.
   castInput.addEventListener("keydown", (e) => {
-    if (e.isComposing) return;
+    if (typingIME(e)) return;
     if (e.key === "Enter" && !e.shiftKey) { sendBar(); e.preventDefault(); }
   });
   // Grow the field with its content (up to the CSS max-height, then it scrolls).
@@ -6800,6 +6818,24 @@ mod tests {
         assert!(
             PAGE.contains(r#"if (armedPane === cls + p.id || (t && t.state === "EXIT"))"#),
             "動いているペインを一押しで落とせてしまう"
+        );
+    }
+
+    /// Every Enter that does something has to let a conversion through.
+    ///
+    /// Typing Japanese means pressing Enter to accept what the IME offered.
+    /// A box that treats that as "go" submits half a word, every single time,
+    /// and it is invisible to anyone typing English. Counted rather than
+    /// spot-checked: a new box with an Enter and no guard fails here.
+    #[test]
+    fn enter_that_finishes_a_conversion_is_not_an_answer() {
+        let page = PAGE;
+        assert!(page.contains("const typingIME ="), "IME中かどうかを言う場所が無い");
+        let acts = page.matches("e.key === \"Enter\"").count();
+        let guards = page.matches("typingIME(e)").count();
+        assert!(
+            guards >= acts,
+            "Enter を拾う箇所 {acts} に対し、変換中を通す守りが {guards} しかない"
         );
     }
 
