@@ -105,6 +105,9 @@ pub struct Config {
     /// Not editable from the GUI since this is an advanced feature
     #[serde(default)]
     pub capabilities: crate::caps::CapabilitySpec,
+    /// The git panel's "have the AI write it" button
+    #[serde(default)]
+    pub git: GitSpec,
     /// Who may call which automation command: the person's own automation, an
     /// AI, or both. Only the rows somebody changed are written here -- every
     /// other command answers from the defaults in `grants.rs`, so a command
@@ -1270,6 +1273,25 @@ pub fn browser_url_of(argv: &[String]) -> Option<String> {
     }
     let url = rest.first()?.trim().to_string();
     (!url.is_empty()).then_some(url)
+}
+
+/// What the git panel's commit-message button does.
+///
+/// Two levels on purpose. `message_hint` is **added** to the built-in prompt --
+/// the rules and the diff still go, and this says the extra thing ("always in
+/// English", "start with a ticket number"). Replacing the whole prompt would
+/// leave the AI describing a change it was never shown, which is why the field
+/// that replaces things is the Lua one: there, the caller builds the whole
+/// question themselves and can reach anything automation can reach.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+pub struct GitSpec {
+    /// Added to the built-in prompt. Empty means the built-in prompt alone
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_hint: Option<String>,
+    /// Lua that produces the message itself. When set, the built-in template is
+    /// not used at all -- this is the whole of it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_lua: Option<String>,
 }
 
 /// Whether this tab is the git panel.

@@ -2735,6 +2735,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     newcfg.resolve_tokens(password.as_deref()),
                     newcfg.automation_permissions.clone(),
                 );
+                if let Some(eng) = engine.as_ref() {
+                    eng.set_ai_engine(newcfg.ai_engine.clone().filter(|s| !s.is_empty()));
+                }
                 engine = build_engine(
                     Some(&newcfg),
                     workspaces.get(ws_index),
@@ -3130,6 +3133,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // Fire hooks -> resume waiting coroutines -> run the queued operations
             if let Some(eng) = engine.as_mut() {
                 // Let the loop read the current state (shikisha.state)
+                eng.set_ai_engine(cfg.as_ref().and_then(|c| c.ai_engine.clone()).filter(|s| !s.is_empty()));
                 eng.set_states(tab_states(&tabs));
                 // The tabs, and then the git panels: naming either one names
                 // the folder it is looking at
@@ -4308,12 +4312,48 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                 .unwrap_or_default();
             let text = args.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string();
-            if matches!(act.as_str(), "fetch" | "pull" | "push" | "message" | "resolve") {
+            if act == "message" {
+                // Lua the person can add to or replace entirely. It runs in the
+                // engine because `ai_ask` suspends there rather than blocking:
+                // the window keeps drawing while the AI thinks
+                if engine.is_none() {
+                    engine =
+                        crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+                }
+                let Some(eng) = engine.as_mut() else { continue };
+                let mut folders = tab_cwds(&tabs);
+                folders.extend(panel_cwds(&surfaces));
+                eng.set_states(tab_states(&tabs));
+                eng.set_cwds(folders);
+                let spec = cfg.as_ref().map(|c| c.git.clone()).unwrap_or_default();
+                let code = spec
+                    .message_lua
+                    .filter(|l| !l.trim().is_empty())
+                    .unwrap_or_else(|| crate::hooks::COMMIT_MESSAGE_LUA.to_string());
+                let _ = eng.call_primitive_as(
+                    None,
+                    grants::Subject::Human,
+                    "set_var",
+                    &[serde_json::json!("git_tab"), serde_json::json!(panel)],
+                );
+                let _ = eng.call_primitive_as(
+                    None,
+                    grants::Subject::Human,
+                    "set_var",
+                    &[
+                        serde_json::json!("git_hint"),
+                        serde_json::json!(spec.message_hint.unwrap_or_default()),
+                    ],
+                );
+                surface.push_git(&serde_json::json!({"act": "message", "busy": true}).to_string());
+                eng.start_snippet("message", &code);
+                continue;
+            }
+            if matches!(act.as_str(), "fetch" | "pull" | "push" | "resolve") {
                 // "message" is the AI writing one, which is a read of the diff
                 // followed by a wait on a program -- the same reason as the
                 // network ones for not doing it on this thread
                 let name = match act.as_str() {
-                    "message" => "git_diff".to_string(),
                     // Untangling writes the file back, which is the same reach
                     // as anything else that edits the tree
                     "resolve" => "git_apply".to_string(),
@@ -4346,6 +4386,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 "fetch" => crate::git::fetch(&dir),
                                 "pull" => crate::git::pull(&dir),
                                 "push" => crate::git::push(&dir),
+                                #[allow(unreachable_patterns)]
                                 // Every file git left marked, one at a time.
                                 // Nothing is staged and nothing is committed:
                                 // what comes back is written into the tree, and
@@ -4377,18 +4418,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     ) + if failed.is_empty() { "" } else { "\n" }
                                         + &failed.join("\n"))
                                 }),
-                                // What is staged is what is about to be
-                                // committed, so that is what gets described.
-                                // With nothing staged there is still a change
-                                // to talk about -- the one in front of them
-                                _ => crate::git::diff(&dir, None, true)
-                                    .and_then(|staged| match staged.trim().is_empty() {
-                                        true => crate::git::diff(&dir, None, false),
-                                        false => Ok(staged),
-                                    })
-                                    .and_then(|d| {
-                                        crate::webui::write_commit_message(&d, ai.as_deref())
-                                    }),
+                                _ => Ok(String::new()),
                             };
                             let js = match done {
                                 Ok(said) => serde_json::json!({
@@ -4518,6 +4548,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
             surface.push_git(&js);
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"git\":{js}}}"));
+            }
+        }
+        // Answers from the Lua that was left running (the commit message)
+        if let Some(eng) = engine.as_mut() {
+            for (tag, said) in eng.take_snippets() {
+                let payload = match said {
+                    Ok(text) => serde_json::json!({"act": tag, "ok": true, "data": text}),
+                    Err(why) => serde_json::json!({"act": tag, "ok": false, "error": why}),
+                };
+                let js = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+                surface.push_git(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"git\":{js}}}"));
+                }
             }
         }
         // Answers from the ones that went to a thread

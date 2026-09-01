@@ -446,6 +446,21 @@ fn paths_of(v: &Value) -> mlua::Result<Vec<String>> {
     }
 }
 
+/// One sentence out of what Lua said, for a screen rather than a log.
+///
+/// The same trimming the git panel does to a primitive's error: the marks of
+/// where it came from -- "runtime error:" in front, a traceback behind -- belong
+/// in the log, not in front of somebody waiting for a commit message
+fn plain_lua_error(said: &str) -> String {
+    said.split("stack traceback:")
+        .next()
+        .unwrap_or(said)
+        .trim()
+        .trim_start_matches("runtime error:")
+        .trim()
+        .to_string()
+}
+
 /// The one place a refusal is decided, said, and written down.
 ///
 /// Said: the caller gets a sentence naming the command and who it was closed
@@ -1035,6 +1050,14 @@ enum WaitKind {
     Sleep {
         deadline: Instant,
     },
+    /// Waiting on the assistant AI. The asking happens on a thread of its own,
+    /// because it takes tens of seconds and the engine runs on the main loop --
+    /// so the coroutine yields here and the loop keeps drawing until the answer
+    /// arrives down this channel
+    Ai {
+        rx: std::sync::mpsc::Receiver<Result<String, String>>,
+        deadline: Instant,
+    },
     Screen {
         tab: usize,
         re: regex::Regex,
@@ -1109,6 +1132,13 @@ function shikisha.wait(tab, pattern, timeout_ms)
   local idx = (type(tab) == "table") and tab.index or tab
   return coroutine.yield({ op = "wait", tab = idx, pattern = pattern, timeout_ms = timeout_ms or 10000 })
 end
+-- Ask the assistant AI (the one in Settings > Basic) and get its answer back.
+-- Written as a yield so the app keeps running while it thinks: everything else
+-- -- other tabs, the screen, this hook's own siblings -- carries on.
+-- Returns the text, or nil and the reason.
+function shikisha.ai_ask(prompt, opts)
+  return coroutine.yield({op = "ai", prompt = prompt, timeout_ms = (opts or {}).timeout_ms})
+end
 function shikisha.sleep(ms)
   return coroutine.yield({ op = "sleep", ms = ms })
 end
@@ -1162,6 +1192,39 @@ const LUA_STEP_BUDGET: u64 = 20_000_000;
 /// "this run decided there was nothing to do" apart from "this run broke",
 /// and only the second is worth logging as a fault.
 const SKIP_MARKER: &str = "__shikisha_skip__";
+
+/// What a running snippet's `hook` name starts with.
+///
+/// A snippet is Lua the app runs on somebody's behalf and then wants the answer
+/// from -- the git panel's commit message, and whatever else grows one. It goes
+/// through the same coroutine machinery as a hook, so it can wait on the AI
+/// without stopping the loop; this prefix is how the finish is told apart from
+/// a hook's, which nobody is waiting on
+const SNIPPET: &str = "snippet:";
+
+/// What the commit-message button runs when nobody has written their own.
+///
+/// It is Lua rather than Rust so that "I want it in English" and "I want a
+/// ticket number from the database in front" are the same kind of change --
+/// one edits the added instruction, the other replaces this text. What it must
+/// do is return the message as a string; where that string goes is the panel's
+/// business, not this template's.
+pub const COMMIT_MESSAGE_LUA: &str = r#"
+local tab  = shikisha.get_var("git_tab")
+local hint = shikisha.get_var("git_hint") or ""
+-- What is staged is what is about to be committed. With nothing staged there
+-- is still a change to talk about: the one in front of them
+local diff = shikisha.git_diff(tab, { staged = true })
+if diff == "" then diff = shikisha.git_diff(tab, { staged = false }) end
+if diff == "" then error(shikisha.t("err.git.nothing_to_describe")) end
+-- A diff can be a megabyte. The shape of the change is in the first pages
+if #diff > 12000 then diff = diff:sub(1, 12000) .. "\n...\n" end
+local extra = ""
+if hint ~= "" then extra = shikisha.t("ai.commit.extra") .. "\n" .. hint .. "\n" end
+local said, why = shikisha.ai_ask(shikisha.tf("ai.commit.prompt", { extra = extra, diff = diff }))
+if not said then error(why) end
+return said
+"#;
 
 /// The instruction allowance of the entry into Lua that is currently running.
 ///
@@ -1239,6 +1302,12 @@ pub struct HookEngine {
     /// The phone board's URL (with token), pushed in by the main loop.
     /// None while remote is off
     remote_url: Rc<RefCell<Option<String>>>,
+    /// Which assistant AI to ask (Settings > Basic). None means "whichever is
+    /// installed", which is what the rest of the app does with it
+    ai_engine: Rc<RefCell<Option<String>>>,
+    /// Snippets that have finished since the loop last looked: (tag, answer or
+    /// the reason there is none)
+    snippets: Vec<(String, Result<String, String>)>,
     /// The runaway ceiling, armed at every door that enters Lua
     budget: StepBudget,
     /// Who is running the code that is currently inside Lua.
@@ -1311,6 +1380,7 @@ impl HookEngine {
         let cwds: Rc<RefCell<Vec<(TabKey, std::path::PathBuf)>>> =
             Rc::new(RefCell::new(Vec::new()));
         let remote_url: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let ai_engine: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
         let shikisha = lua.create_table().map_err(lerr)?;
         {
@@ -3013,6 +3083,8 @@ impl HookEngine {
             attach: Attach::default(),
             caps,
             remote_url,
+            ai_engine,
+            snippets: Vec::new(),
             budget,
             subject,
         })
@@ -3133,6 +3205,40 @@ impl HookEngine {
 
     pub fn set_logs(&self, logs: Vec<(TabKey, std::path::PathBuf)>) {
         *self.logs.borrow_mut() = logs;
+    }
+
+    /// Start a piece of Lua that will answer later.
+    ///
+    /// The same road a hook takes: it runs in a coroutine, so `ai_ask` and
+    /// `sleep` inside it suspend rather than stopping the window. When it
+    /// finishes, what it returned turns up in `take_snippets` under this tag.
+    ///
+    /// It runs in the person's name, because the person pressed the button that
+    /// asked for it -- the permission table sees the same subject it would if
+    /// they had typed the same line into the composer.
+    pub fn start_snippet(&mut self, tag: &str, code: &str) {
+        let _budget = self.budget.arm();
+        self.subject.set(crate::grants::Subject::Human);
+        let started = (|| -> mlua::Result<()> {
+            let func = compile_repl(&self.lua, self.lua.globals(), "snippet", code)?;
+            let thread = self.lua.create_thread(func)?;
+            self.resume_thread(thread, &format!("{SNIPPET}{tag}"), 0, MultiValue::new());
+            Ok(())
+        })();
+        if let Err(e) = started {
+            self.snippets.push((tag.to_string(), Err(plain_lua_error(&e.to_string()))));
+        }
+    }
+
+    /// The snippets that have finished since this was last called
+    pub fn take_snippets(&mut self) -> Vec<(String, Result<String, String>)> {
+        std::mem::take(&mut self.snippets)
+    }
+
+    /// Which assistant AI `ai_ask` should ask. Set from config on load and on
+    /// reload, so a change takes effect without a restart
+    pub fn set_ai_engine(&self, engine: Option<String>) {
+        *self.ai_engine.borrow_mut() = engine;
     }
 
     /// Where each tab is working. Pushed in on the same tick as the states, so
@@ -4519,8 +4625,62 @@ end
         let now = Instant::now();
         let pending = std::mem::take(&mut self.pending);
         for p in pending {
+            // The AI answers with words rather than yes/no, so it hands back
+            // what to resume with instead of a flag
+            if let WaitKind::Ai { rx, deadline } = &p.wait {
+                let answer = match rx.try_recv() {
+                    Ok(Ok(text)) => Some(Ok(text)),
+                    Ok(Err(why)) => Some(Err(why)),
+                    Err(std::sync::mpsc::TryRecvError::Empty) if now < *deadline => None,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        Some(Err(crate::i18n::t("err.hooks.ai_timeout")))
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(Err(crate::i18n::t("err.hooks.ai_gone")))
+                    }
+                };
+                match answer {
+                    None => {
+                        self.pending.push(p);
+                        continue;
+                    }
+                    Some(said) => {
+                        self.current_origin.set(p.origin);
+                        match self.lua.registry_value::<Thread>(&p.key) {
+                            Ok(thread) => {
+                                let args = match said {
+                                    Ok(text) => MultiValue::from_vec(vec![Value::String(
+                                        self.lua.create_string(&text).unwrap_or_else(|_| {
+                                            self.lua.create_string("").expect("empty string")
+                                        }),
+                                    )]),
+                                    Err(why) => MultiValue::from_vec(vec![
+                                        Value::Nil,
+                                        Value::String(
+                                            self.lua
+                                                .create_string(&why)
+                                                .unwrap_or_else(|_| {
+                                                    self.lua.create_string("").expect("empty")
+                                                }),
+                                        ),
+                                    ]),
+                                };
+                                self.resume_thread(thread, &p.hook, p.origin, args);
+                            }
+                            Err(e) => self.push_log(crate::i18n::tp(
+                                "err.hooks.lua_resume",
+                                &[("e", &format!("{e}"))],
+                            )),
+                        }
+                        let _ = self.lua.remove_registry_value(p.key);
+                        continue;
+                    }
+                }
+            }
             let ready: Option<bool> = match &p.wait {
                 WaitKind::Sleep { deadline } => (now >= *deadline).then_some(true),
+                // Handled above: it answers with words, not with a flag
+                WaitKind::Ai { .. } => None,
                 WaitKind::Screen { tab, re, deadline } => match screens(*tab) {
                     Some(text) if re.is_match(&text) => Some(true),
                     _ if now >= *deadline => Some(false),
@@ -4585,12 +4745,28 @@ end
             // so on the screen and in the log, so saying it again as a fault
             // would be the app calling a deliberate decision an error
             Err(e) if format!("{e}").contains(SKIP_MARKER) => {}
-            Err(e) => self.push_log(crate::i18n::tp("err.hooks.lua_error", &[("hook", hook), ("e", &format!("{e}"))])),
+            Err(e) => {
+                if let Some(tag) = hook.strip_prefix(SNIPPET) {
+                    let why = plain_lua_error(&e.to_string());
+                    self.snippets.push((tag.to_string(), Err(why)));
+                }
+                self.push_log(crate::i18n::tp("err.hooks.lua_error", &[("hook", hook), ("e", &format!("{e}"))]))
+            }
         }
     }
 
     /// Handle a hook's return value on completion: if on_question returns a string, send it as auto-reply keys
     fn on_complete(&mut self, hook: &str, origin: usize, vals: MultiValue) {
+        // A snippet is something the app is waiting on an answer from
+        if let Some(tag) = hook.strip_prefix(SNIPPET) {
+            let said = match vals.into_iter().next() {
+                Some(Value::String(s)) => Ok(s.to_string_lossy().to_string()),
+                Some(Value::Nil) | None => Err(crate::i18n::t("err.hooks.snippet_empty")),
+                Some(other) => Ok(format!("{other:?}")),
+            };
+            self.snippets.push((tag.to_string(), said));
+            return;
+        }
         if hook == "on_question" {
             if let Some(Value::String(s)) = vals.into_iter().next() {
                 if let Ok(keys) = s.to_str() {
@@ -4624,6 +4800,22 @@ end
                     re: regex::Regex::new(&pattern)
                         .with_context(|| crate::i18n::tp("err.hooks.wait_regex", &[("pattern", &pattern)]))?,
                     deadline: Instant::now() + Duration::from_millis(timeout_ms),
+                })
+            }
+            "ai" => {
+                let prompt: String = t.get("prompt").map_err(lerr)?;
+                let ms: Option<u64> = t.get("timeout_ms").ok().flatten();
+                let engine = self.ai_engine.borrow().clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let said = crate::webui::ask_local_ai(&prompt, engine.as_deref())
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(said);
+                });
+                Ok(WaitKind::Ai {
+                    rx,
+                    deadline: Instant::now()
+                        + Duration::from_millis(ms.unwrap_or(180_000).clamp(1_000, 900_000)),
                 })
             }
             other => anyhow::bail!(crate::i18n::tp("err.hooks.unknown_yield", &[("other", other)])),

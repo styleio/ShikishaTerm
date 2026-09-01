@@ -233,6 +233,9 @@ pub const CATALOG: &[Entry] = &[
     e("read_path", Group::Files, true, false, false),
     e("write_path", Group::Files, true, false, false),
     e("http_raw", Group::Files, true, false, false),
+    // Asking the assistant AI costs money and time, and an AI that can ask an
+    // AI can do it in a loop. Open it deliberately or not at all
+    e("ai_ask", Group::Advanced, true, false, false),
     // -- The evaluators --------------------------------------------------------
     // Walled: one page, and only what this table allows an AI anyway
     e("run_scoped", Group::Advanced, true, true, false),
@@ -408,6 +411,7 @@ mod tests {
                 "read_path",
                 "write_path",
                 "http_raw",
+                "ai_ask",
                 "lua",
             ]
         );

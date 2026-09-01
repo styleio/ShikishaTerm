@@ -5217,6 +5217,11 @@ function buildGitPanel() {
   };
   wrap.append(tick(gitPush, T["git.then.push"] || "", v => { gitPush = v; }));
   wrap.append(tick(gitAmend, T["git.then.amend"] || "", v => { gitAmend = v; }));
+  // Same shape as the quick actions': the gear at the end goes to where this
+  // button is configured
+  wrap.append(el("span", {style:"flex:1"}));
+  wrap.append(el("button", {class:"castbtn", style:"flex:none",
+    title:T["settings.sec.git"] || "", onclick:() => openSettings("git", true)}, "\u2699\ufe0f"));
   return wrap;
 }
 

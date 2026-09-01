@@ -1034,6 +1034,11 @@ fn handle(
                 .replace("__TOKEN__", token)
                 .replace("__REMOTE__", if remote_client { "true" } else { "false" })
                 .replace("__GRANTS__", &crate::grants::catalog_json())
+                .replace(
+                    "__GITLUA__",
+                    &serde_json::to_string(crate::hooks::COMMIT_MESSAGE_LUA)
+                        .unwrap_or_else(|_| "\"\"".into()),
+                )
                 .replace("__DICT__", &crate::i18n::dict_json());
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
@@ -2474,6 +2479,10 @@ const T = __DICT__;
 // otherwise. Comes from the same list the app enforces, so the screen cannot
 // show a command that does not exist or miss one that does
 const GRANTS = __GRANTS__;
+// The commit-message template the app ships with. Poured in rather than
+// written out again here: "put the built-in one back" has to put back the one
+// that actually runs
+const GIT_MESSAGE_LUA = __GITLUA__;
 // {name} substitution (same rule as tp on the Rust side)
 const fill = (s, args) => Object.entries(args)
   .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
@@ -3803,6 +3812,7 @@ function globalSections() {
     {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
     {id:"permissions", label:T["settings.sec.permissions"], sub:T["settings.sec.permissions.sub"], build:permissionsCard},
+    {id:"git",       label:T["settings.sec.git"],       sub:T["settings.sec.git.sub"],       build:gitCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
     {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},
     {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:notifyCard},
@@ -4208,6 +4218,58 @@ function permissionsCard() {
     el("div", {class:"row"}, reset,
       el("a", {href:manualHref(""), target:"_blank"}, T["settings.permissions.manual"])),
     body);
+}
+
+// The commit-message button, in two levels. The instruction is ADDED to the
+// built-in prompt -- the rules and the diff still go, and this is the extra
+// thing to obey. Replacing the prompt outright would leave the AI describing a
+// change nobody showed it, so the field that replaces things is the Lua one.
+function gitCard() {
+  const g = current.git = current.git || {};
+  const hint = el("textarea", {rows:"3", class:"mono", style:"width:100%",
+    placeholder:T["settings.git.hint.ph"]});
+  hint.value = g.message_hint || "";
+  hint.addEventListener("input", () => {
+    if (hint.value.trim()) g.message_hint = hint.value; else delete g.message_hint;
+    refreshSave();
+  });
+
+  const useLua = el("input", {type:"checkbox"});
+  useLua.checked = typeof g.message_lua === "string";
+  const lua = el("textarea", {rows:"12", class:"mono", style:"width:100%",
+    placeholder:T["settings.git.lua.ph"]});
+  lua.value = g.message_lua || "";
+  lua.addEventListener("input", () => { g.message_lua = lua.value; refreshSave(); });
+  const luaBox = el("div", {});
+  const drawLua = () => {
+    luaBox.textContent = "";
+    if (!useLua.checked) return;
+    luaBox.append(el("div", {class:"hint"}, T["settings.git.lua.hint"]));
+    luaBox.append(lua);
+    luaBox.append(el("div", {style:"margin-top:6px"},
+      el("button", {class:"quiet", onclick:() => {
+        // The built-in one, as a starting point rather than a blank sheet
+        lua.value = GIT_MESSAGE_LUA;
+        g.message_lua = lua.value;
+        refreshSave();
+      }}, T["settings.git.lua.default"]),
+      el("a", {href:manualHref("ai_ask"), target:"_blank", style:"margin-left:10px"},
+        T["settings.git.lua.manual"])));
+  };
+  useLua.addEventListener("change", () => {
+    if (useLua.checked) { g.message_lua = lua.value || GIT_MESSAGE_LUA; lua.value = g.message_lua; }
+    else delete g.message_lua;
+    drawLua();
+    refreshSave();
+  });
+  drawLua();
+
+  return card(T["settings.sec.git"],
+    el("div", {class:"hint"}, T["settings.git.hint.about"]),
+    el("div", {style:"margin:6px 0 14px"}, hint),
+    el("label", {class:"row", style:"cursor:pointer;gap:8px"}, useLua,
+      el("span", {}, T["settings.git.lua.label"])),
+    luaBox);
 }
 
 function notifyCard() {
@@ -6688,6 +6750,7 @@ mod tests {
                 .replace("__REMOTE__", "false")
                 .replace("__DICT__", "{}")
                 .replace("__GRANTS__", "[]")
+                .replace("__GITLUA__", "\"\"")
                 .replace("__MD__", "\"\"");
             // Checked on the finished page, not the template: the shared toast
             // is poured in on the way, and a page that kept a copy of one of
