@@ -5297,6 +5297,50 @@ mod tests {
         );
     }
 
+    /// The manual's section 9 opens by promising it lists every command. The
+    /// promise is kept here rather than by whoever remembers.
+    ///
+    /// This is the reference: arguments, return values, the notes a signature
+    /// cannot carry ("fill does not submit -- press comes next"). The settings
+    /// screen deliberately says only what each command is for, because ticking
+    /// a box and looking something up are different jobs. What both need is
+    /// that neither can quietly stop matching the app.
+    #[test]
+    fn the_manual_lists_every_command_and_no_others() {
+        for (name, text) in [
+            ("AUTOMATION.md", include_str!("../docs/AUTOMATION.md")),
+            ("AUTOMATION.ja.md", include_str!("../docs/AUTOMATION.ja.md")),
+        ] {
+            let section = text
+                .split_once("## 9")
+                .unwrap_or_else(|| panic!("{name}: 命令の一覧 (9章) が見つからない"))
+                .1;
+            let mut listed = std::collections::BTreeSet::new();
+            let mut rest = section;
+            while let Some(at) = rest.find("shikisha.") {
+                rest = &rest[at + "shikisha.".len()..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+                    .unwrap_or(rest.len());
+                if rest[end..].starts_with('(') {
+                    listed.insert(rest[..end].to_string());
+                }
+            }
+            let known: std::collections::BTreeSet<String> =
+                crate::grants::CATALOG.iter().map(|c| c.name.to_string()).collect();
+            let missing: Vec<&String> = known.difference(&listed).collect();
+            assert!(
+                missing.is_empty(),
+                "{name} の9章に載っていない命令: {missing:?} — 引数と説明を書いて足すこと"
+            );
+            let gone: Vec<&String> = listed.difference(&known).collect();
+            assert!(
+                gone.is_empty(),
+                "{name} の9章が、もう存在しない命令を載せている: {gone:?}"
+            );
+        }
+    }
+
     #[test]
     fn every_row_has_words_for_the_screen() {
         // A row with no sentence would render as a bare function name, which
