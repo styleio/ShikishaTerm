@@ -873,6 +873,30 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.set_result(コード, "理由")` | この実行の判定。`data/last-result.json` に書かれ、画面にも出ます |
 | `shikisha.skip("理由")` | ここで実行を終え、そう書き残す（そのタブの画面とログに1行）。「今回は動かさない」と決めたときに使います |
 
+### git を動かす
+
+**どのリポジトリか**は、そこに居るタブで指します。`タブ` を省くと呼んだ側のタブです。
+パスは受け取りません。
+
+読む側（`shikisha.git_status` など）は git を起動します。サイドバーのブランチ表示とは別の
+経路で、あちらは git を起動しないので rebase 中でも答えます。
+
+| 命令 | 説明 |
+|---|---|
+| `shikisha.git_status(タブ)` | 変わったファイルの一覧。1件ずつ `{path, index, work, staged, conflict, from}`。`index` と `work` は git が出す2文字（ステージ側と作業ツリー側）そのまま |
+| `shikisha.git_diff(タブ, {path=…, staged=…})` | 差分をそのまま文字列で。`staged=true` でステージ済みの側、`path` で1ファイルに絞る |
+| `shikisha.git_log(タブ, 件数)` | 最近のコミット。`{hash, short, author, date, subject}`。既定20件 |
+| `shikisha.git_conflicts(タブ)` | 衝突しているファイルのパスだけ |
+| `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected}`。`protected` は「共有ブランチなので直接コミットしない方がよい」の印。detached なら `nil` |
+| `shikisha.git_stage(タブ, パス)` | 次のコミットに入れる。パスは文字列1つでも、テーブルで複数でも |
+| `shikisha.git_unstage(タブ, パス)` | 次のコミットから外す |
+| `shikisha.git_commit(タブ, "メッセージ", opts)` | 入れたものをコミットし、短いハッシュを返す。**共有ブランチ（`main` / `master`）では止まる** —— 新しいブランチを作るか、承知のうえなら `{allow_protected=true}` |
+| `shikisha.git_run(タブ, "引数…")` | 任意の git を実行して、その出力を返す。**シェルは通りません**（`;` や `&&` は git の引数になって断られる） |
+
+**既定では、どれも人間だけが実行できます**（自動化の権限）。AI に開けるなら
+`git_status` / `git_diff` / `git_log` から。`git_run` を開けることは「git の全権を渡す」と
+同じ意味です。
+
 ### ファイル・通信
 
 「窓口」を登録しない限り使えません。6章を参照してください。

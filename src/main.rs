@@ -29,6 +29,7 @@ mod detect;
 mod digest;
 mod exchange;
 mod folders;
+mod git;
 mod grants;
 mod hooks;
 mod i18n;
@@ -1277,6 +1278,24 @@ fn subject_of(caller: Option<&str>, tabs: &[Tab]) -> grants::Subject {
 fn tab_states(tabs: &[Tab]) -> Vec<(hooks::TabKey, String)> {
     tabs.iter()
         .map(|t| (t.key(), t.state.label().to_string()))
+        .collect()
+}
+
+/// Where each tab is working, in the same order as the states.
+///
+/// A tab with no folder of its own gets an empty path rather than the app's
+/// own folder: falling back would mean `git_status()` from a tab that is
+/// nowhere quietly answers about the app's own repository
+fn tab_cwds(tabs: &[Tab]) -> Vec<(hooks::TabKey, std::path::PathBuf)> {
+    tabs.iter()
+        .map(|t| {
+            let dir = match t.cwd().map(std::path::Path::to_path_buf) {
+                Some(p) if p.is_absolute() => p,
+                Some(p) => std::env::current_dir().map(|c| c.join(&p)).unwrap_or(p),
+                None => std::path::PathBuf::new(),
+            };
+            (t.key(), dir)
+        })
         .collect()
 }
 
@@ -3045,6 +3064,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             if let Some(eng) = engine.as_mut() {
                 // Let the loop read the current state (shikisha.state)
                 eng.set_states(tab_states(&tabs));
+                eng.set_cwds(tab_cwds(&tabs));
                 // ...and each tab's latest reply, so an operator can read the AI
                 // tab it's driving (shikisha.tab_output).
                 eng.set_outputs(
@@ -3406,6 +3426,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // and the first call is the one carrying the id of the
                         // conversation to come back to
                         eng.set_states(tab_states(&tabs));
+                        eng.set_cwds(tab_cwds(&tabs));
                         let who = subject_of(call.caller.as_deref(), &tabs);
                         eng.call_primitive_as(
                             call.caller.as_deref(),

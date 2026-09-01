@@ -393,6 +393,53 @@ fn lua_to_json(v: &Value) -> serde_json::Value {
 /// own line should answer, not vanish — so the chunk is first compiled
 /// REPL-style with `return` prepended, falling back to the plain statement
 /// form when that isn't valid Lua
+/// The repository a git command runs in.
+///
+/// `nil` means the tab that called, which is the same rule `set_status` uses.
+/// The answer is the top of the working tree rather than the tab's own folder,
+/// so paths coming back from `status` and paths going in to `stage` are
+/// written the same way whichever subfolder a tab happens to sit in.
+fn git_folder(
+    cwds: &RefCell<Vec<(TabKey, std::path::PathBuf)>>,
+    origin: &Cell<usize>,
+    tab: &Value,
+) -> mlua::Result<std::path::PathBuf> {
+    let list = cwds.borrow();
+    let index = match tab {
+        Value::Nil => origin.get(),
+        other => {
+            let keys: Vec<TabKey> = list.iter().map(|(k, _)| k.clone()).collect();
+            tab_ref_of(other)?.resolve(&keys).unwrap_or(0)
+        }
+    };
+    let Some((_, dir)) = index.checked_sub(1).and_then(|i| list.get(i)) else {
+        return Err(mlua::Error::runtime(crate::i18n::t("err.git.no_tab")));
+    };
+    // A tab that is nowhere carries an empty path rather than the app's own
+    // folder, so that "no folder" is said plainly instead of quietly answering
+    // about whatever repository this app happens to be running from
+    if dir.as_os_str().is_empty() {
+        return Err(mlua::Error::runtime(crate::i18n::t("err.git.no_tab")));
+    }
+    crate::git::root(dir).map_err(|e| mlua::Error::runtime(e.to_string()))
+}
+
+/// One path, or several. Writing `git_stage(tab, "src/main.rs")` for a single
+/// file is what everyone tries first, and a list is what a loop produces
+fn paths_of(v: &Value) -> mlua::Result<Vec<String>> {
+    match v {
+        Value::String(s) => Ok(vec![s.to_string_lossy().to_string()]),
+        Value::Table(t) => {
+            let mut out = Vec::new();
+            for p in t.clone().sequence_values::<String>() {
+                out.push(p?);
+            }
+            Ok(out)
+        }
+        _ => Err(mlua::Error::runtime(crate::i18n::t("err.git.paths"))),
+    }
+}
+
 /// The one place a refusal is decided, said, and written down.
 ///
 /// Said: the caller gets a sentence naming the command and who it was closed
@@ -1171,6 +1218,9 @@ pub struct HookEngine {
     /// reading a long run in pieces. Absent for a tab that is not being
     /// recorded
     logs: Rc<RefCell<Vec<(TabKey, std::path::PathBuf)>>>,
+    /// Each tab's working folder, same order as `states`. The repository a git
+    /// command runs in is found through here
+    cwds: Rc<RefCell<Vec<(TabKey, std::path::PathBuf)>>>,
     pending: Vec<Pending>,
     scripts: Vec<Script>,
     attach: Attach,
@@ -1245,6 +1295,11 @@ impl HookEngine {
         let outputs: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
         let screens: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
         let logs: Rc<RefCell<Vec<(TabKey, std::path::PathBuf)>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        // Each tab's working folder, same order as `states`. This is how a
+        // repository is named: by the tab sitting in it, never by a path a
+        // script assembled (see docs/design/git-access.ja.md §1)
+        let cwds: Rc<RefCell<Vec<(TabKey, std::path::PathBuf)>>> =
             Rc::new(RefCell::new(Vec::new()));
         let remote_url: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
@@ -2448,6 +2503,226 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // git. The reading side of this app already has a path that never
+            // launches git (`repo.rs`, which reads `.git/HEAD` so the sidebar
+            // can answer during a rebase), and that stays as it is -- these are
+            // the list and the diffs a person asked to see, which cannot be
+            // read correctly without git itself. See docs/design/git-access.ja.md
+        }
+        {
+            // What has changed, one row per file, in git's own two letters
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_status",
+                    lua.create_function(move |lua, tab: Value| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let changes = crate::git::status(&dir)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let out = lua.create_table()?;
+                        for ch in changes {
+                            let row = lua.create_table()?;
+                            row.set("path", ch.path)?;
+                            row.set("index", ch.index.to_string())?;
+                            row.set("work", ch.work.to_string())?;
+                            // The two booleans every caller works out anyway
+                            row.set("staged", !matches!(ch.index, ' ' | '?'))?;
+                            row.set(
+                                "conflict",
+                                ch.index == 'U'
+                                    || ch.work == 'U'
+                                    || (ch.index == 'A' && ch.work == 'A')
+                                    || (ch.index == 'D' && ch.work == 'D'),
+                            )?;
+                            if let Some(f) = ch.from {
+                                row.set("from", f)?;
+                            }
+                            out.push(row)?;
+                        }
+                        Ok(out)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // Only the files with a conflict. The first thing an AI asked to
+            // untangle a merge needs, and the last thing to disappear
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_conflicts",
+                    lua.create_function(move |lua, tab: Value| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let files = crate::git::conflicts(&dir)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        lua.create_sequence_from(files)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The diff as text. `{ staged = true }` reads the staged side,
+            // `{ path = "..." }` narrows it to one file
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_diff",
+                    lua.create_function(move |_, (tab, opts): (Value, Option<Table>)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let path: Option<String> = match &opts {
+                            Some(t) => t.get("path")?,
+                            None => None,
+                        };
+                        let staged = match &opts {
+                            Some(t) => t.get::<Option<bool>>("staged")?.unwrap_or(false),
+                            None => false,
+                        };
+                        crate::git::diff(&dir, path.as_deref(), staged)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_log",
+                    lua.create_function(move |lua, (tab, count): (Value, Option<u32>)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let commits = crate::git::log(&dir, count.unwrap_or(20))
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let out = lua.create_table()?;
+                        for cm in commits {
+                            let row = lua.create_table()?;
+                            row.set("hash", cm.hash)?;
+                            row.set("short", cm.short)?;
+                            row.set("author", cm.author)?;
+                            row.set("date", cm.date)?;
+                            row.set("subject", cm.subject)?;
+                            out.push(row)?;
+                        }
+                        Ok(out)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The branch checked out, and whether committing straight onto it
+            // is the kind of thing to ask about first. `nil` when the head is
+            // detached -- there is no branch to name
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_branch",
+                    lua.create_function(move |lua, tab: Value| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let name = crate::git::branch(&dir)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        match name {
+                            Some(n) => {
+                                let row = lua.create_table()?;
+                                row.set("protected", crate::git::is_protected(&n))?;
+                                row.set("name", n)?;
+                                Ok(Value::Table(row))
+                            }
+                            None => Ok(Value::Nil),
+                        }
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_stage",
+                    lua.create_function(move |_, (tab, paths): (Value, Value)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        crate::git::stage(&dir, &paths_of(&paths)?)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_unstage",
+                    lua.create_function(move |_, (tab, paths): (Value, Value)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        crate::git::unstage(&dir, &paths_of(&paths)?)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // Commit what is staged. A shared branch refuses unless the caller
+            // says it meant it, so whoever catches the refusal can offer to
+            // make a branch instead -- a better answer than either a wall or a
+            // commit nobody meant to make
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_commit",
+                    lua.create_function(
+                        move |_, (tab, message, opts): (Value, String, Option<Table>)| {
+                            let dir = git_folder(&c, &o, &tab)?;
+                            let allow = match &opts {
+                                Some(t) => {
+                                    t.get::<Option<bool>>("allow_protected")?.unwrap_or(false)
+                                }
+                                None => false,
+                            };
+                            crate::git::commit(&dir, &message, allow)
+                                .map_err(|e| mlua::Error::runtime(e.to_string()))
+                        },
+                    )
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The floor everything else is sugar over. Whatever git can do,
+            // this can do -- which is why it is closed to an AI by default and
+            // never appears on a screen. The words are split here rather than
+            // handed to a shell, so `;` and `&&` reach git as arguments and
+            // git refuses them
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_run",
+                    lua.create_function(move |_, (tab, line): (Value, String)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let args = crate::git::split_args(&line);
+                        if args.is_empty() {
+                            return Err(mlua::Error::runtime(crate::i18n::t("err.git.empty_run")));
+                        }
+                        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+                        crate::git::run(&dir, &borrowed)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             // Every primitive there is, read off the table itself at the moment
             // it is asked. Not a hand-kept list: one written by hand would
             // answer for the day it was written, and the external API's idea of
@@ -2483,6 +2758,7 @@ impl HookEngine {
             outputs,
             screens,
             logs,
+            cwds,
             pending: Vec::new(),
             scripts: Vec::new(),
             attach: Attach::default(),
@@ -2608,6 +2884,12 @@ impl HookEngine {
 
     pub fn set_logs(&self, logs: Vec<(TabKey, std::path::PathBuf)>) {
         *self.logs.borrow_mut() = logs;
+    }
+
+    /// Where each tab is working. Pushed in on the same tick as the states, so
+    /// that naming a tab is enough to name the repository it sits in
+    pub fn set_cwds(&self, cwds: Vec<(TabKey, std::path::PathBuf)>) {
+        *self.cwds.borrow_mut() = cwds;
     }
 
     /// The phone board's URL (token included), or None while remote is off.
@@ -4213,42 +4495,14 @@ mod tests {
     /// Japanese is laid over it, so both have to carry the same list.
     #[test]
     fn every_command_is_in_both_manuals() {
-        // Every command automation can call, read off this file. Line by line on
-        // purpose: a pattern spanning lines would carry whatever ending the
-        // checkout used, and a CRLF checkout then finds 21 of the 55 — which is
-        // exactly how this passed here and failed on CI.
-        let collect = |text: &str| {
-            let mut names: Vec<String> = Vec::new();
-            let mut add = |n: &str| {
-                let ok = !n.is_empty()
-                    && n.len() < 32
-                    && n.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit());
-                if ok && !names.iter().any(|x| x == n) {
-                    names.push(n.to_string());
-                }
-            };
-            let rows: Vec<&str> = text.lines().map(str::trim).collect();
-            for (i, row) in rows.iter().enumerate() {
-                // `.set(` on the line above, the name alone on this one
-                if i > 0 && rows[i - 1].ends_with(".set(") {
-                    if let Some(n) = row.strip_prefix("\"").and_then(|r| r.strip_suffix("\",")) {
-                        add(n);
-                    }
-                }
-                // ...or all on one line
-                for open in ["bind!(\"", "function shikisha."] {
-                    if let Some(rest) = row.strip_prefix(open) {
-                        let close = if open.starts_with("bind") { "\"" } else { "(" };
-                        if let Some(n) = rest.split(close).next() {
-                            add(n);
-                        }
-                    }
-                }
-            }
-            names
-        };
+        // The list comes from the permission catalog, which another test holds
+        // against the live Lua table in both directions. This used to read the
+        // names back out of this file's own text, and a `.set("conflict",` in
+        // the middle of building a result table was enough to invent a command
+        // that never existed. One derivation of "what exists", not two.
+        let names: Vec<String> =
+            crate::grants::CATALOG.iter().map(|c| c.name.to_string()).collect();
         let src = include_str!("hooks.rs");
-        let names = collect(src);
         assert!(names.len() > 40, "命令の抽出に失敗している ({} 件)", names.len());
 
         // The `tab` table an event receives, built in tab_table below
@@ -5274,6 +5528,45 @@ mod tests {
             }
         }
         live
+    }
+
+    #[test]
+    fn a_repository_is_named_by_the_tab_that_sits_in_it() {
+        let e = HookEngine::new().unwrap();
+        let key = TabKey { id: Some("work".into()), name: "作業".into() };
+        let nowhere = TabKey { id: Some("floating".into()), name: "浮いている".into() };
+        e.set_states(vec![(key.clone(), "WAIT".into()), (nowhere.clone(), "WAIT".into())]);
+        e.set_cwds(vec![
+            (key, std::env::current_dir().unwrap()),
+            // A tab with no folder of its own. It must not quietly answer
+            // about the app's own repository
+            (nowhere, std::path::PathBuf::new()),
+        ]);
+        if crate::git::root(std::path::Path::new(".")).is_err() {
+            return; // built outside a checkout
+        }
+        let rows = e.call_primitive("git_status", &[serde_json::json!("work")]).unwrap();
+        assert!(rows.is_array(), "変更の一覧が配列で返る: {rows:?}");
+        let head = e.call_primitive("git_branch", &[serde_json::json!("work")]).unwrap();
+        assert!(head.is_object() || head.is_null(), "{head:?}");
+        let lost = e.call_primitive("git_status", &[serde_json::json!("floating")]).unwrap_err();
+        assert!(
+            lost.contains(&crate::i18n::t("err.git.no_tab")),
+            "フォルダの無いタブはそう言われる: {lost}"
+        );
+    }
+
+    #[test]
+    fn git_is_closed_to_an_ai_until_somebody_opens_it() {
+        // The whole set, reads included. Opening the reads is a reasonable
+        // thing to want and one tick to do; arriving open is not
+        let e = HookEngine::new().unwrap();
+        for name in ["git_status", "git_diff", "git_log", "git_commit", "git_run"] {
+            let err = e
+                .call_primitive_as(None, crate::grants::Subject::Ai, name, &[])
+                .unwrap_err();
+            assert!(err.contains(name), "{name} が断られる理由に名前が入る: {err}");
+        }
     }
 
     #[test]

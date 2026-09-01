@@ -58,6 +58,7 @@ pub enum Group {
     Files,
     Layout,
     Basics,
+    Git,
     Advanced,
 }
 
@@ -71,19 +72,21 @@ impl Group {
             Group::Files => "files",
             Group::Layout => "layout",
             Group::Basics => "basics",
+            Group::Git => "git",
             Group::Advanced => "advanced",
         }
     }
 
     /// The order they appear on screen: what automation touches most first,
     /// what can hurt last
-    pub const ORDER: [Group; 8] = [
+    pub const ORDER: [Group; 9] = [
         Group::Tabs,
         Group::Report,
         Group::Browser,
         Group::Handoff,
         Group::Layout,
         Group::Basics,
+        Group::Git,
         Group::Files,
         Group::Advanced,
     ];
@@ -195,6 +198,20 @@ pub const CATALOG: &[Entry] = &[
     e("t", Group::Basics, true, true, false),
     e("tf", Group::Basics, true, true, false),
     e("list", Group::Basics, true, true, false),
+    // -- git -------------------------------------------------------------------
+    // Closed to an AI to begin with, reads included. Letting an AI look at a
+    // diff is a reasonable thing to want and a one-click decision to make; it
+    // is not something to arrive switched on
+    e("git_status", Group::Git, true, false, false),
+    e("git_diff", Group::Git, true, false, false),
+    e("git_log", Group::Git, true, false, false),
+    e("git_conflicts", Group::Git, true, false, false),
+    e("git_branch", Group::Git, true, false, false),
+    e("git_stage", Group::Git, true, false, false),
+    e("git_unstage", Group::Git, true, false, false),
+    e("git_commit", Group::Git, true, false, false),
+    // Whatever git can do. Opening this is opening all of it at once
+    e("git_run", Group::Git, true, false, false),
     // -- Files and the network ------------------------------------------------
     // Through a registered gateway: the destination was chosen by a person
     e("read_file", Group::Files, true, true, false),
@@ -354,7 +371,23 @@ mod tests {
         let closed: Vec<&str> = CATALOG.iter().filter(|e| !e.ai).map(|e| e.name).collect();
         assert_eq!(
             closed,
-            vec!["restart", "close_pane", "read_path", "write_path", "http_raw", "lua"]
+            vec![
+                "restart",
+                "close_pane",
+                "git_status",
+                "git_diff",
+                "git_log",
+                "git_conflicts",
+                "git_branch",
+                "git_stage",
+                "git_unstage",
+                "git_commit",
+                "git_run",
+                "read_path",
+                "write_path",
+                "http_raw",
+                "lua",
+            ]
         );
     }
 }

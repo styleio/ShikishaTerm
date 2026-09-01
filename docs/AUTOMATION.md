@@ -839,6 +839,30 @@ How the rally works: files in and out, plus a judge. You can build your own the 
 | `shikisha.set_result(code, "reason")` | The run's verdict. Written to `data/last-result.json` and shown on screen |
 | `shikisha.skip("reason")` | Stop this run here and say so: one line on the tab's screen and in the log. For when an automation decides there is nothing to do |
 
+### Working with git
+
+**Which repository** is named by the tab sitting in it. Leave the tab out and it is the tab
+that called. No path is accepted.
+
+The reading side launches git. The branch shown in the sidebar comes from somewhere else --
+that path never launches git, which is why it still answers during a rebase.
+
+| Command | What it does |
+|---|---|
+| `shikisha.git_status(tab)` | The changed files, one row each: `{path, index, work, staged, conflict, from}`. `index` and `work` are git's own two letters (staged side, working-tree side) |
+| `shikisha.git_diff(tab, {path=…, staged=…})` | The diff, as text. `staged=true` reads the staged side; `path` narrows it to one file |
+| `shikisha.git_log(tab, count)` | Recent commits: `{hash, short, author, date, subject}`. 20 by default |
+| `shikisha.git_conflicts(tab)` | Just the paths of the files with a conflict |
+| `shikisha.git_branch(tab)` | The branch: `{name, protected}`. `protected` marks one that is shared, so committing straight onto it is worth asking about. `nil` when the head is detached |
+| `shikisha.git_stage(tab, paths)` | Add to the next commit. One path as a string, or several in a table |
+| `shikisha.git_unstage(tab, paths)` | Take back out of the next commit |
+| `shikisha.git_commit(tab, "message", opts)` | Commit what was added and answer with the short hash. **It stops on a shared branch (`main` / `master`)** -- make a branch, or pass `{allow_protected=true}` to say you meant it |
+| `shikisha.git_run(tab, "args…")` | Run any git and answer with its output. **No shell is involved**: `;` and `&&` arrive as arguments and git refuses them |
+
+**All of these are open to a person only, to begin with** (automation permissions). If an AI
+is to be let in, `git_status` / `git_diff` / `git_log` are the place to start. Opening
+`git_run` is the same as handing it all of git.
+
 ### Files and the network
 
 Off unless you register a gateway — see section 6.
