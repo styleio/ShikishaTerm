@@ -1456,6 +1456,7 @@
   "git.need.message": "Write the message in the bar below first",
   "git.write": "Write it for me",
   "git.writing": "Writing…",
+  "git.writing.here": "The AI is writing the message here…",
   "git.busy": "Working…",
   "git.busy.message": "The AI is writing the message…",
   "git.busy.resolve": "The AI is untangling the conflict…",

@@ -1454,6 +1454,7 @@
   "git.need.message": "先に下の欄にメッセージを書いてください",
   "git.write": "AIに書かせる",
   "git.writing": "生成中…",
+  "git.writing.here": "ここにAIがメッセージを書いています…",
   "git.busy": "実行中…",
   "git.busy.message": "AIがメッセージを書いています…",
   "git.busy.resolve": "AIが衝突を解いています…",

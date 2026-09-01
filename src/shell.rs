@@ -337,6 +337,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      in half. Held to one line, the overflow is cut cleanly at the right edge
      instead, whatever a given language's wording came out to */
   #castinput::placeholder { white-space:nowrap; }
+  /* Held shut while the AI writes into it. A box that still looks writable and
+     is not is worse than one that plainly is not, so the whole row goes flat:
+     the field takes the panel's own colour, loses its caret, and the buttons
+     around it stop looking pressable */
+  #castbar.locked #castinput { background:var(--panel2); color:var(--muted);
+    border-style:dashed; caret-color:transparent; cursor:not-allowed; }
+  #castbar.locked #castinput::placeholder { color:var(--muted); }
+  #castbar.locked .castsend, #castbar.locked .castbtn, #castbar.locked .castatt {
+    opacity:.35; pointer-events:none; }
   #castbar .castsend { padding:8px 14px; border:0; border-radius:8px;
     background:var(--brand); color:#04121c; font-weight:700; cursor:pointer; }
   #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);
@@ -4767,7 +4776,10 @@ window.__git = function (d) {
   if (!d || !d.act) return;
   // The panel and the sub-input bar are drawn by different hands. Whatever
   // changes "is something running", both of them have to hear about it
-  const bar = () => { if (castPanel === "git" && castPanelEl) renderPanel(); };
+  const bar = () => {
+    gitLockBar(G.busy === "message");
+    if (castPanel === "git" && castPanelEl) renderPanel();
+  };
   if (d.busy) { G.busy = d.act; G.said = ""; drawGit(); bar(); return; }
   const was = G.busy;
   G.busy = "";
@@ -5142,12 +5154,23 @@ function drawHistory(u) {
 // there is one place a person writes a line in this app, and this is a line.
 let gitPush = false, gitAmend = false;
 function gitWantsPush() { return gitPush; }
+// The answer lands in the sub-input bar by replacing what is in it. Anything
+// typed while waiting would be thrown away without a word, so the box is held
+// shut for the half minute it takes -- and says why, where the caret was
+function gitLockBar(on) {
+  if (!castInput) return;
+  castInput.disabled = !!on;
+  if (castBar) castBar.classList.toggle("locked", !!on);
+  // What it says while shut is decided where every other prompt is decided
+  syncComposerSlot();
+}
 function gitSetMessage(text) {
   if (!castInput) return;
   castInput.value = text;
   castInput.dispatchEvent(new Event("input"));
 }
 function gitCommit() {
+  if (G.busy === "message") { gitSay(T["git.busy.message"] || "", false); return; }
   const text = castInput ? castInput.value.trim() : "";
   if (!text) { gitSay(T["git.need.message"] || "", true); return; }
   gitAsk("commit", {text: text, amend: gitAmend});
@@ -5178,6 +5201,7 @@ function buildGitPanel() {
       // Say it started before anything is sent: the answer is half a minute
       // away, and a button that looks untouched gets pressed again
       G.busy = "message";
+      gitLockBar(true);
       renderPanel();
       drawGit();
       gitAsk("message");
@@ -5365,7 +5389,12 @@ function syncComposerSlot() {
   // walking from a terminal to a model pane swaps where a Send goes without
   // swapping the document, and a field that still said "type here to send"
   // would be describing the tab we just left.
-  castInput.placeholder = want === "lua"
+  // One owner for what the box says. The git panel's writing state is asked
+  // about here too, rather than being written on top and lost at the next
+  // render -- which is what happened the first time
+  castInput.placeholder = (typeof G !== "undefined" && G.busy === "message")
+    ? (T["git.writing.here"] || "")
+    : want === "lua"
     ? (T["tui.cast.lua.ph"] || "Recorded Lua appears here — edit, Run, or write your own")
     : onModelTab()
       ? (T["tui.chat.ph"] || "Message {model}\u2026").split("{model}").join((activeTab() || {}).name || "model")
