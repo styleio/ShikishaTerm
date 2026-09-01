@@ -892,6 +892,8 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.git_checkout(タブ, "名前")` | そのブランチへ移る |
 | `shikisha.git_merge(タブ, "名前")` | そのブランチを取り込む。衝突したら止まり、`git_conflicts` に出る |
 | `shikisha.git_fetch(タブ)` / `shikisha.git_pull(タブ)` / `shikisha.git_push(タブ)` | サーバと話す。**返るまで他のことは止まります**（最大3分）。押しっぱなしにできる画面が要るなら、待ちは呼ぶ側で組むこと。`git_push` は一度も送っていないブランチなら upstream を付けて送り直し、その旨を返す |
+| `shikisha.git_hunks(タブ, {path=…, staged=…})` | 差分をまとまり（hunk）に切って返す。`{file, header, start, end, patch}`。`patch` はそれ自体が完結したパッチ |
+| `shikisha.git_apply(タブ, パッチ, {cached=…, reverse=…})` | パッチを当てる。`cached` で次のコミット側へ、`reverse` で逆向き（取り消し）。**hunk 単位のステージはこの2つの組み合わせ** |
 | `shikisha.git_stage(タブ, パス)` | 次のコミットに入れる。パスは文字列1つでも、テーブルで複数でも |
 | `shikisha.git_unstage(タブ, パス)` | 次のコミットから外す |
 | `shikisha.git_branch_create(タブ, "名前")` | ブランチを作って、そこへ移る。ステージしたものは持ったまま移るので、**共有ブランチで断られたときの行き先**になる |

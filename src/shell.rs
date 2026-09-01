@@ -462,8 +462,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     white-space:nowrap; font-family:var(--mono); font-size:12px; direction:rtl;
     text-align:left; }
   #gitpanel .branches .row.here { color:var(--brand); font-weight:600; }
-  #gitpanel .diff { flex:1 1 auto; overflow:auto; padding:8px 12px; margin:0;
+  #gitpanel .diff { flex:1 1 auto; overflow:auto; padding:0; margin:0;
     white-space:pre; font-family:var(--mono); font-size:12px; line-height:1.35; }
+  /* One hunk: what it covers, what can be done with it, and then the lines */
+  #gitpanel .hunk { border-bottom:1px solid var(--line); }
+  #gitpanel .hunkhead { display:flex; align-items:center; gap:8px; padding:4px 10px;
+    background:var(--panel); font-family:var(--ui); font-size:11.5px; color:var(--muted);
+    position:sticky; top:0; }
+  #gitpanel .hunkhead .grow { flex:1; }
+  #gitpanel .hunkhead button { font-size:11px; padding:2px 8px; border-radius:6px;
+    border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
+  #gitpanel .hunkhead button:hover { color:var(--text); background:var(--panel2); }
+  #gitpanel .hunk .lines { padding:4px 12px; }
+  #gitpanel .filehead { padding:5px 12px; font-family:var(--ui); font-size:12px;
+    border-bottom:1px solid var(--line); color:var(--text); background:var(--panel); }
   #gitpanel .diff .a { color:var(--ok); }
   #gitpanel .diff .d { color:var(--danger); }
   #gitpanel .diff .h { color:var(--muted); }
@@ -4647,7 +4659,7 @@ window.__recorded = function (line) {
 // command and hand back what it answered. The panel keeps no truth of its own:
 // after anything that changes something, it asks for the list again.
 let G = { panel:null, branch:null, branches:[], rows:null, sel:null, staged:false,
-          diff:"", said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null };
+          diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null };
 let gitUi = null;
 
 function gitTab() {
@@ -4683,6 +4695,13 @@ window.__git = function (d) {
   else if (d.act === "branch") { G.branch = d.data || null; }
   else if (d.act === "branches") { G.branches = d.data || []; }
   else if (d.act === "diff") { G.diff = d.data || ""; }
+  else if (d.act === "hunks") { G.hunks = d.data || []; }
+  else if (d.act === "hunk") {
+    // A piece moved. What is staged changed, and so did the piece list
+    gitAsk("status");
+    if (G.sel) gitAsk("hunks", {paths: [G.sel], staged: G.staged});
+    gitAsk("diff", {paths: [G.sel], staged: G.staged});
+  }
   else if (d.act === "message") { gitSetMessage(d.data || ""); G.said = ""; }
   else {
     // Something changed. Ask again rather than guessing what it did
@@ -4709,7 +4728,7 @@ function gitRefresh(keep) {
   const name = t.id || t.name;
   if (G.panel !== name) {
     G = { panel:name, branch:null, branches:[], rows:null, sel:null, staged:false,
-          diff:"", said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null };
+          diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null };
     gitUi = null;
   } else if (!keep) {
     G.pick = {};
@@ -4794,9 +4813,10 @@ function gitFileRow(r, where) {
       } else {
         G.pick = {}; G.pick[r.path] = where;
       }
-      G.sel = r.path; G.staged = where === "staged"; G.diff = "";
+      G.sel = r.path; G.staged = where === "staged"; G.diff = ""; G.hunks = [];
       drawGit();
       gitAsk("diff", {paths: [r.path], staged: where === "staged"});
+      gitAsk("hunks", {paths: [r.path], staged: where === "staged"});
     }});
   row.append(el("span", {class:"x"}, gitMark(r)));
   row.append(el("span", {class:"p", title:r.from ? r.from + " -> " + r.path : r.path}, r.path));
@@ -4892,14 +4912,43 @@ function drawGit() {
   const text = G.diff || "";
   // git says this itself when it cannot show a change as lines
   if (/^Binary files /m.test(text) || text.includes("GIT binary patch")) {
+    u.diff.append(el("div", {class:"filehead"}, G.sel));
     u.diff.append(el("div", {class:"empty"}, T["git.binary"] || ""));
     return;
   }
-  for (const line of text.split("\n")) {
-    const cls = line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@") ? "h"
-      : line.startsWith("+") ? "a" : line.startsWith("-") ? "d" : "";
-    u.diff.append(el("span", {class:cls}, line + "\n"));
+  u.diff.append(el("div", {class:"filehead"}, G.sel));
+  const hunks = G.hunks || [];
+  if (!hunks.length) {
+    u.diff.append(el("div", {class:"empty"}, text.trim() ? "\u2026" : (T["git.same"] || "")));
+    return;
   }
+  hunks.forEach((h, i) => {
+    const head = el("div", {class:"hunkhead"});
+    head.append(el("span", {class:"grow"},
+      (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
+      (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
+    // Staged: the piece can be taken back out. Not staged: it can be put in,
+    // or thrown away -- and throwing away is the one that cannot be undone,
+    // so it says so plainly rather than sitting first
+    if (G.staged) {
+      head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, cached:true, reverse:true})},
+        T["git.hunk.unstage"] || ""));
+    } else {
+      head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, cached:true})},
+        T["git.hunk.stage"] || ""));
+      head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, reverse:true})},
+        T["git.hunk.drop"] || ""));
+    }
+    const lines = el("pre", {class:"lines", style:"margin:0"});
+    // The patch carries its file header; on screen the lines are the point
+    h.patch.split("\n").forEach(line => {
+      if (line.startsWith("diff --git ") || line.startsWith("index ")
+        || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@")) return;
+      const cls = line.startsWith("+") ? "a" : line.startsWith("-") ? "d" : "";
+      lines.append(el("span", {class:cls}, line + "\n"));
+    });
+    u.diff.append(el("div", {class:"hunk"}, head, lines));
+  });
 }
 
 window.__luaDone = function (err) {

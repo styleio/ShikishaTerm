@@ -858,6 +858,8 @@ that path never launches git, which is why it still answers during a rebase.
 | `shikisha.git_checkout(tab, "name")` | Move onto that branch |
 | `shikisha.git_merge(tab, "name")` | Bring that branch in. A conflict stops it, and shows up in `git_conflicts` |
 | `shikisha.git_fetch(tab)` / `shikisha.git_pull(tab)` / `shikisha.git_push(tab)` | Talk to the server. **Everything else waits** until it answers (up to three minutes). `git_push` sets the upstream and retries when the branch has never been sent, and says so in its answer |
+| `shikisha.git_hunks(tab, {path=…, staged=…})` | The diff cut into hunks: `{file, header, start, end, patch}`. Each `patch` is a whole patch on its own |
+| `shikisha.git_apply(tab, patch, {cached=…, reverse=…})` | Apply a patch. `cached` puts it in the next commit, `reverse` takes it back out. **Staging one hunk is these two together** |
 | `shikisha.git_stage(tab, paths)` | Add to the next commit. One path as a string, or several in a table |
 | `shikisha.git_unstage(tab, paths)` | Take back out of the next commit |
 | `shikisha.git_branch_create(tab, "name")` | Make a branch and move onto it. Staged work moves with you, which is what makes this **the way out of a refusal on a shared branch** |

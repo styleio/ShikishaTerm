@@ -2556,6 +2556,64 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // The diff, cut into the pieces a person says yes or no to. Each
+            // one carries a patch that stands on its own, which is what makes
+            // "this bit, not that bit" possible at all
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_hunks",
+                    lua.create_function(move |lua, (tab, opts): (Value, Option<Table>)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let path: Option<String> = match &opts {
+                            Some(t) => t.get("path")?,
+                            None => None,
+                        };
+                        let staged = match &opts {
+                            Some(t) => t.get::<Option<bool>>("staged")?.unwrap_or(false),
+                            None => false,
+                        };
+                        let text = crate::git::diff(&dir, path.as_deref(), staged)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let out = lua.create_table()?;
+                        for h in crate::git::split_hunks(&text) {
+                            let row = lua.create_table()?;
+                            row.set("file", h.file)?;
+                            row.set("header", h.header)?;
+                            row.set("start", h.start)?;
+                            row.set("end", h.end)?;
+                            row.set("patch", h.patch)?;
+                            out.push(row)?;
+                        }
+                        Ok(out)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // ...and putting one back: staged, unstaged, or undone, which are
+            // the same call with the two switches saying which
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_apply",
+                    lua.create_function(move |_, (tab, patch, opts): (Value, String, Option<Table>)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let flag = |name: &str| -> mlua::Result<bool> {
+                            Ok(match &opts {
+                                Some(t) => t.get::<Option<bool>>(name)?.unwrap_or(false),
+                                None => false,
+                            })
+                        };
+                        crate::git::apply(&dir, &patch, flag("cached")?, flag("reverse")?)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             // Only the files with a conflict. The first thing an AI asked to
             // untangle a merge needs, and the last thing to disappear
             let c = Rc::clone(&cwds);

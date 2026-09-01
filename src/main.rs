@@ -4386,6 +4386,28 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }),
                     ],
                 ),
+                "hunks" => (
+                    "git_hunks",
+                    vec![
+                        who.clone(),
+                        serde_json::json!({
+                            "path": paths.first().cloned().unwrap_or_default(),
+                            "staged": args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false),
+                        }),
+                    ],
+                ),
+                // One piece of a diff, put where the button said
+                "hunk" => (
+                    "git_apply",
+                    vec![
+                        who.clone(),
+                        serde_json::json!(text),
+                        serde_json::json!({
+                            "cached": args.get("cached").and_then(|v| v.as_bool()).unwrap_or(false),
+                            "reverse": args.get("reverse").and_then(|v| v.as_bool()).unwrap_or(false),
+                        }),
+                    ],
+                ),
                 "stage" => ("git_stage", vec![who.clone(), files]),
                 "unstage" => ("git_unstage", vec![who.clone(), files]),
                 "commit" => (

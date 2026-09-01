@@ -86,6 +86,12 @@ pub fn run(dir: &Path, args: &[&str]) -> Result<String> {
 
 /// The same, with the caller saying how long it is willing to wait
 pub fn run_within(dir: &Path, args: &[&str], limit: Duration) -> Result<String> {
+    run_stdin(dir, args, "", limit)
+}
+
+/// ...and with something to hand it on the way in. `git apply` reads the patch
+/// from here rather than from a file nobody asked us to write
+pub fn run_stdin(dir: &Path, args: &[&str], input: &str, limit: Duration) -> Result<String> {
     if !dir.is_dir() {
         bail!(crate::i18n::tp(
             "err.git.no_folder",
@@ -100,10 +106,16 @@ pub fn run_within(dir: &Path, args: &[&str], limit: Duration) -> Result<String> 
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "")
-        .stdin(Stdio::null())
+        .stdin(if input.is_empty() { Stdio::null() } else { Stdio::piped() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = crate::detach_console(&mut cmd).spawn()?;
+    if !input.is_empty() {
+        use std::io::Write as _;
+        if let Some(mut w) = child.stdin.take() {
+            w.write_all(input.as_bytes())?;
+        }
+    }
     let out = child.stdout.take().map(drain);
     let err = child.stderr.take().map(drain);
     let started = Instant::now();
@@ -247,6 +259,117 @@ pub fn branch(dir: &Path) -> Result<Option<String>> {
         }
         Err(_) => Ok(None),
     }
+}
+
+/// One piece of a diff: the smallest thing a person says yes or no to.
+///
+/// `patch` is a whole, valid patch on its own -- the file's header and this one
+/// hunk -- so it can be handed straight back to `git apply`. Everything else
+/// here is for the screen
+pub struct Hunk {
+    pub file: String,
+    /// The `@@ ... @@` line, as git wrote it
+    pub header: String,
+    /// The lines this hunk covers on the new side
+    pub start: u32,
+    pub end: u32,
+    pub patch: String,
+}
+
+/// Cut a diff into hunks.
+///
+/// Split here rather than in the screen: a patch that is one line out does not
+/// apply, and "which lines is this" is the sort of thing that should be got
+/// right once, where it can be tested, instead of in every place that draws it
+pub fn split_hunks(diff: &str) -> Vec<Hunk> {
+    let mut out: Vec<Hunk> = Vec::new();
+    let mut file = String::new();
+    let mut head = String::new();
+    let mut cur: Option<Hunk> = None;
+    let finish = |cur: &mut Option<Hunk>, out: &mut Vec<Hunk>| {
+        if let Some(h) = cur.take() {
+            out.push(h);
+        }
+    };
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            finish(&mut cur, &mut out);
+            head = format!("{line}\n");
+            // "diff --git a/x b/x" -- the name after "b/" is the one it is now
+            file = line
+                .rsplit(" b/")
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            continue;
+        }
+        if cur.is_none() && !line.starts_with("@@") {
+            // Everything between the two is the file's header: index, mode,
+            // ---/+++, and the "Binary files" line when there is nothing to cut
+            head.push_str(line);
+            head.push('\n');
+            continue;
+        }
+        if line.starts_with("@@") {
+            finish(&mut cur, &mut out);
+            let (start, count) = new_range(line);
+            cur = Some(Hunk {
+                file: file.clone(),
+                header: line.to_string(),
+                start,
+                end: start + count.saturating_sub(1).max(0),
+                patch: format!("{head}{line}\n"),
+            });
+            continue;
+        }
+        if let Some(h) = cur.as_mut() {
+            h.patch.push_str(line);
+            h.patch.push('\n');
+        }
+    }
+    finish(&mut cur, &mut out);
+    out
+}
+
+/// The `+start,count` half of a hunk header. A missing count means one line,
+/// which is how git writes a single-line hunk
+fn new_range(header: &str) -> (u32, u32) {
+    let plus = header
+        .split_whitespace()
+        .find(|w| w.starts_with('+'))
+        .unwrap_or("+0,0");
+    let mut parts = plus.trim_start_matches('+').split(',');
+    let start = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+    let count = parts.next().and_then(|n| n.parse().ok()).unwrap_or(1);
+    (start, count)
+}
+
+/// Put one patch back into the tree, or into what is staged.
+///
+/// This is how a hunk is staged, unstaged, or thrown away -- the same call each
+/// time, with the two switches saying which. git decides whether the patch
+/// still fits; if the file moved on since it was drawn, it refuses, and that
+/// refusal is the truth rather than something to work around
+pub fn apply(dir: &Path, patch: &str, cached: bool, reverse: bool) -> Result<()> {
+    if patch.trim().is_empty() {
+        bail!(crate::i18n::t("err.git.empty_patch"));
+    }
+    let mut args: Vec<&str> = vec!["apply"];
+    if cached {
+        args.push("--cached");
+    }
+    if reverse {
+        args.push("--reverse");
+    }
+    // Whitespace is somebody's file, not something to tidy on the way past
+    args.push("--whitespace=nowarn");
+    args.push("-");
+    let mut body = patch.to_string();
+    if !body.ends_with('\n') {
+        body.push('\n');
+    }
+    run_stdin(dir, &args, &body, LIMIT).map(|_| ())
 }
 
 /// Every local branch, and which one is checked out.
@@ -573,6 +696,71 @@ mod tests {
         let log = log(&dir, 5).unwrap();
         assert_eq!(log.len(), 1, "コミットは増えない");
         assert_eq!(log[0].subject, "first", "言い直したほうが残る");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_diff_is_cut_where_a_person_would_cut_it() {
+        let diff = concat!(
+            "diff --git a/f.txt b/f.txt\n",
+            "index 111..222 100644\n",
+            "--- a/f.txt\n",
+            "+++ b/f.txt\n",
+            "@@ -1,3 +1,4 @@\n",
+            " one\n",
+            "+two\n",
+            " three\n",
+            " four\n",
+            "@@ -20,2 +21,2 @@\n",
+            "-old\n",
+            "+new\n",
+        );
+        let hunks = split_hunks(diff);
+        assert_eq!(hunks.len(), 2, "@@ ごとに1つ");
+        assert_eq!(hunks[0].file, "f.txt");
+        assert_eq!((hunks[0].start, hunks[0].end), (1, 4));
+        assert_eq!((hunks[1].start, hunks[1].end), (21, 22));
+        // Each piece carries the file's header, so it stands on its own as a
+        // patch -- which is the whole point of cutting it this way
+        assert!(hunks[1].patch.starts_with("diff --git a/f.txt b/f.txt\n"));
+        assert!(hunks[1].patch.contains("+++ b/f.txt\n"));
+        assert!(hunks[1].patch.contains("@@ -20,2 +21,2 @@\n-old\n+new\n"));
+        assert!(!hunks[1].patch.contains("+two"), "隣の hunk は混ざらない");
+        // Nothing to cut is not an error
+        assert!(split_hunks("").is_empty());
+    }
+
+    #[test]
+    fn one_hunk_can_be_staged_without_the_others() {
+        let Some(dir) = scratch_repo("hunks") else { return };
+        // Far apart enough that git's three lines of context cannot join them
+        let start = (1..=24).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        std::fs::write(dir.join("f.txt"), format!("{start}\n")).unwrap();
+        stage(&dir, &["f.txt".to_string()]).unwrap();
+        commit(&dir, "start", true, false).unwrap();
+
+        // Two changes, far enough apart to be two hunks
+        let edited = format!(
+            "{}\n",
+            start.replace("line 1\n", "LINE ONE\n").replace("line 20", "LINE TWENTY")
+        );
+        std::fs::write(dir.join("f.txt"), edited).unwrap();
+        let hunks = split_hunks(&diff(&dir, Some("f.txt"), false).unwrap());
+        assert_eq!(hunks.len(), 2, "離れた2箇所は2つの hunk: {hunks:?}",
+            hunks = hunks.iter().map(|h| h.header.clone()).collect::<Vec<_>>());
+
+        // Stage the first one only
+        apply(&dir, &hunks[0].patch, true, false).expect("hunk を1つだけ載せられる");
+        let staged = diff(&dir, Some("f.txt"), true).unwrap();
+        assert!(staged.contains("LINE ONE"), "選んだほうは入っている");
+        assert!(!staged.contains("LINE TWENTY"), "選ばなかったほうは入っていない");
+        // ...and the other is still waiting in the tree
+        let left = diff(&dir, Some("f.txt"), false).unwrap();
+        assert!(left.contains("LINE TWENTY") && !left.contains("LINE ONE"));
+
+        // Taking it back out again
+        apply(&dir, &hunks[0].patch, true, true).expect("戻せる");
+        assert!(diff(&dir, Some("f.txt"), true).unwrap().trim().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
