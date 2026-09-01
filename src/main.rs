@@ -4386,6 +4386,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }),
                     ],
                 ),
+                "graph" => (
+                    "git_graph",
+                    vec![
+                        who.clone(),
+                        serde_json::json!({
+                            "all": args.get("all").and_then(|v| v.as_bool()).unwrap_or(true),
+                            "remotes": args.get("remotes").and_then(|v| v.as_bool()).unwrap_or(false),
+                        }),
+                    ],
+                ),
+                "detail" => ("git_detail", vec![who.clone(), serde_json::json!(text)]),
                 "hunks" => (
                     "git_hunks",
                     vec![
@@ -4393,6 +4404,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         serde_json::json!({
                             "path": paths.first().cloned().unwrap_or_default(),
                             "staged": args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false),
+                            "commit": args.get("commit").and_then(|v| v.as_str()).unwrap_or(""),
                         }),
                     ],
                 ),

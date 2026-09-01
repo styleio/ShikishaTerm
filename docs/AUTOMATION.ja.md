@@ -888,6 +888,8 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.git_log(タブ, 件数)` | 最近のコミット。`{hash, short, author, date, subject}`。既定20件 |
 | `shikisha.git_conflicts(タブ)` | 衝突しているファイルのパスだけ |
 | `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected}`。`protected` は「共有ブランチなので直接コミットしない方がよい」の印。detached なら `nil` |
+| `shikisha.git_graph(タブ, {all=…, remotes=…, count=…})` | 履歴。`{graph, hash, short, author, date, subject}`。`graph` は git が描いた枝の絵で、コミットの無い行（マージの合流）もそのまま入る |
+| `shikisha.git_detail(タブ, ハッシュ)` | そのコミットの全部。`{hash, parents, author, author_date, committer, commit_date, subject, body, files}` |
 | `shikisha.git_branches(タブ)` | ブランチの一覧。`{name, current, protected}` |
 | `shikisha.git_checkout(タブ, "名前")` | そのブランチへ移る |
 | `shikisha.git_merge(タブ, "名前")` | そのブランチを取り込む。衝突したら止まり、`git_conflicts` に出る |

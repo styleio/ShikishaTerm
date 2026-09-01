@@ -2574,8 +2574,18 @@ impl HookEngine {
                             Some(t) => t.get::<Option<bool>>("staged")?.unwrap_or(false),
                             None => false,
                         };
-                        let text = crate::git::diff(&dir, path.as_deref(), staged)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let commit: Option<String> = match &opts {
+                            Some(t) => t.get("commit")?,
+                            None => None,
+                        };
+                        // A commit's own change is cut the same way the working
+                        // tree's is -- which is what lets one piece of a commit
+                        // be walked back without touching the rest
+                        let text = match commit.as_deref().filter(|c| !c.is_empty()) {
+                            Some(c) => crate::git::show(&dir, c, path.as_deref().unwrap_or_default()),
+                            None => crate::git::diff(&dir, path.as_deref(), staged),
+                        }
+                        .map_err(|e| mlua::Error::runtime(e.to_string()))?;
                         let out = lua.create_table()?;
                         for h in crate::git::split_hunks(&text) {
                             let row = lua.create_table()?;
@@ -2764,6 +2774,68 @@ impl HookEngine {
                                 .map_err(|e| mlua::Error::runtime(e.to_string()))
                         },
                     )
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The history, with git drawing the graph, and one commit in full
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_graph",
+                    lua.create_function(move |lua, (tab, opts): (Value, Option<Table>)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let flag = |name: &str| -> mlua::Result<bool> {
+                            Ok(match &opts {
+                                Some(t) => t.get::<Option<bool>>(name)?.unwrap_or(false),
+                                None => false,
+                            })
+                        };
+                        let count = match &opts {
+                            Some(t) => t.get::<Option<u32>>("count")?.unwrap_or(200),
+                            None => 200,
+                        };
+                        let rows = crate::git::graph(&dir, flag("all")?, flag("remotes")?, count)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let out = lua.create_table()?;
+                        for r in rows {
+                            let row = lua.create_table()?;
+                            row.set("graph", r.graph)?;
+                            row.set("hash", r.hash)?;
+                            row.set("short", r.short)?;
+                            row.set("author", r.author)?;
+                            row.set("date", r.date)?;
+                            row.set("subject", r.subject)?;
+                            out.push(row)?;
+                        }
+                        Ok(out)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_detail",
+                    lua.create_function(move |lua, (tab, hash): (Value, String)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let d = crate::git::detail(&dir, &hash)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let row = lua.create_table()?;
+                        row.set("hash", d.hash)?;
+                        row.set("parents", lua.create_sequence_from(d.parents)?)?;
+                        row.set("author", d.author)?;
+                        row.set("author_date", d.author_date)?;
+                        row.set("committer", d.committer)?;
+                        row.set("commit_date", d.commit_date)?;
+                        row.set("subject", d.subject)?;
+                        row.set("body", d.body)?;
+                        row.set("files", lua.create_sequence_from(d.files)?)?;
+                        Ok(row)
+                    })
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;

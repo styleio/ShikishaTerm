@@ -251,6 +251,146 @@ pub fn log(dir: &Path, count: u32) -> Result<Vec<Commit>> {
 /// commit" into an error about an ambiguous argument. Callers reach this after
 /// `root()` has agreed there is a repository, so a failure here means a
 /// detached head rather than a missing one
+/// One commit as the history view shows it: the drawing on the left, and the
+/// four things a person scans for
+pub struct Line {
+    /// git's own graph art for this row (`*`, `|\`, `|/` and so on)
+    pub graph: String,
+    pub hash: String,
+    pub short: String,
+    pub author: String,
+    pub date: String,
+    pub subject: String,
+}
+
+/// Everything about one commit, as it is shown when a row is picked
+pub struct Detail {
+    pub hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub author_date: String,
+    pub committer: String,
+    pub commit_date: String,
+    pub subject: String,
+    pub body: String,
+    pub files: Vec<String>,
+}
+
+/// The history, with git drawing the graph.
+///
+/// The art on the left is git's own: it knows which branches were where, and
+/// redrawing that from a list of parents is a way to be subtly wrong about
+/// somebody's history. Rows without a commit on them (the `|/` that closes a
+/// merge) are kept -- they are the shape of the thing
+pub fn graph(dir: &Path, all: bool, remotes: bool, count: u32) -> Result<Vec<Line>> {
+    let n = format!("-{}", count.clamp(1, 2000));
+    let mut args: Vec<&str> = vec![
+        "log",
+        "--graph",
+        "--date=format:%Y/%m/%d %H:%M",
+        "--pretty=format:%x1e%H%x1f%h%x1f%an%x1f%ad%x1f%s",
+        &n,
+    ];
+    if remotes {
+        args.push("--all");
+    } else if all {
+        args.push("--branches");
+    }
+    let out = run(dir, &args)?;
+    Ok(out
+        .lines()
+        .map(|line| match line.split_once('\x1e') {
+            None => Line {
+                graph: line.trim_end().to_string(),
+                hash: String::new(),
+                short: String::new(),
+                author: String::new(),
+                date: String::new(),
+                subject: String::new(),
+            },
+            Some((art, record)) => {
+                let mut f = record.split('\x1f');
+                Line {
+                    graph: art.trim_end().to_string(),
+                    hash: f.next().unwrap_or_default().to_string(),
+                    short: f.next().unwrap_or_default().to_string(),
+                    author: f.next().unwrap_or_default().to_string(),
+                    date: f.next().unwrap_or_default().to_string(),
+                    subject: f.next().unwrap_or_default().to_string(),
+                }
+            }
+        })
+        .collect())
+}
+
+/// One commit, in full, and the files it touched
+pub fn detail(dir: &Path, hash: &str) -> Result<Detail> {
+    let hash = hash.trim();
+    if hash.is_empty() {
+        bail!(crate::i18n::t("err.git.no_commit"));
+    }
+    let out = run(
+        dir,
+        &[
+            "show",
+            "--no-patch",
+            "--date=format:%Y/%m/%d %H:%M",
+            "--pretty=format:%H%x1f%P%x1f%an%x1f%ad%x1f%cn%x1f%cd%x1f%s%x1f%b",
+            hash,
+        ],
+    )?;
+    let mut f = out.split('\x1f');
+    let full = f.next().unwrap_or_default().trim().to_string();
+    let parents: Vec<String> = f
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let mut take = || f.next().unwrap_or_default().to_string();
+    let (author, author_date, committer, commit_date, subject) =
+        (take(), take(), take(), take(), take());
+    let body = take().trim().to_string();
+    // A merge has more than one parent, and `show` says nothing about what it
+    // changed unless it is told which side to compare against. First parent is
+    // the one people mean: "what did this merge bring in"
+    let files = run(
+        dir,
+        &["show", "--name-only", "--pretty=format:", "-m", "--first-parent", hash],
+    )?
+    .lines()
+    .map(str::trim)
+    .filter(|l| !l.is_empty())
+    .map(str::to_string)
+    .collect();
+    Ok(Detail {
+        hash: full,
+        parents,
+        author,
+        author_date,
+        committer,
+        commit_date,
+        subject,
+        body,
+        files,
+    })
+}
+
+/// What one commit did to one file, as a patch that can be cut into hunks and
+/// walked back one at a time
+pub fn show(dir: &Path, hash: &str, path: &str) -> Result<String> {
+    let hash = hash.trim();
+    if hash.is_empty() {
+        bail!(crate::i18n::t("err.git.no_commit"));
+    }
+    let mut args: Vec<&str> = vec!["show", "--no-color", "--pretty=format:", "-m", "--first-parent", hash];
+    if !path.is_empty() {
+        args.push("--");
+        args.push(path);
+    }
+    run(dir, &args)
+}
+
 pub fn branch(dir: &Path) -> Result<Option<String>> {
     match run(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
         Ok(out) => {
@@ -659,6 +799,42 @@ mod tests {
         // The diff has the words that changed in it
         let d = diff(&dir, Some("kept.txt"), false).unwrap();
         assert!(d.contains("+two"), "差分に変更後の行がある: {d}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_history_comes_back_drawn_and_in_pieces() {
+        let Some(dir) = scratch_repo("history") else { return };
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        stage(&dir, &["a.txt".to_string()]).unwrap();
+        commit(&dir, "first", true, false).unwrap();
+        std::fs::write(dir.join("a.txt"), "two").unwrap();
+        std::fs::write(dir.join("b.txt"), "new").unwrap();
+        stage(&dir, &["a.txt".to_string(), "b.txt".to_string()]).unwrap();
+        commit(&dir, "second\n\nwith a reason", true, false).unwrap();
+
+        let rows = graph(&dir, false, false, 10).unwrap();
+        let commits: Vec<&Line> = rows.iter().filter(|r| !r.hash.is_empty()).collect();
+        assert_eq!(commits.len(), 2, "コミットの数だけ行がある");
+        assert!(commits[0].graph.contains('*'), "git の描いた絵が付いてくる");
+        assert_eq!(commits[0].subject, "second");
+        assert!(commits[0].date.starts_with("20"), "日時が読める形: {}", commits[0].date);
+
+        let d = detail(&dir, &commits[0].hash).unwrap();
+        assert_eq!(d.subject, "second");
+        assert_eq!(d.body, "with a reason");
+        assert_eq!(d.parents, vec![commits[1].hash.clone()], "親を1つ持っている");
+        assert_eq!(d.files, vec!["a.txt".to_string(), "b.txt".to_string()]);
+        assert!(!d.committer.is_empty() && !d.commit_date.is_empty());
+
+        // What it did to one file, cut into pieces that can be walked back
+        let patch = show(&dir, &commits[0].hash, "a.txt").unwrap();
+        let hunks = split_hunks(&patch);
+        assert_eq!(hunks.len(), 1);
+        assert!(hunks[0].patch.contains("+two"));
+        // ...and walking one back leaves the file as it was before that commit
+        apply(&dir, &hunks[0].patch, false, true).expect("取り消せる");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap().trim(), "one");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

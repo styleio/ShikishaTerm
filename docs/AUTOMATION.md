@@ -854,6 +854,8 @@ that path never launches git, which is why it still answers during a rebase.
 | `shikisha.git_log(tab, count)` | Recent commits: `{hash, short, author, date, subject}`. 20 by default |
 | `shikisha.git_conflicts(tab)` | Just the paths of the files with a conflict |
 | `shikisha.git_branch(tab)` | The branch: `{name, protected}`. `protected` marks one that is shared, so committing straight onto it is worth asking about. `nil` when the head is detached |
+| `shikisha.git_graph(tab, {all=…, remotes=…, count=…})` | The history: `{graph, hash, short, author, date, subject}`. `graph` is git's own drawing, and the rows with no commit on them (a merge closing) are kept |
+| `shikisha.git_detail(tab, hash)` | One commit in full: `{hash, parents, author, author_date, committer, commit_date, subject, body, files}` |
 | `shikisha.git_branches(tab)` | Every branch: `{name, current, protected}` |
 | `shikisha.git_checkout(tab, "name")` | Move onto that branch |
 | `shikisha.git_merge(tab, "name")` | Bring that branch in. A conflict stops it, and shows up in `git_conflicts` |

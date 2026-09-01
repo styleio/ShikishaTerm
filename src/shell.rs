@@ -481,6 +481,31 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .diff .h { color:var(--muted); }
   #gitpanel .empty { color:var(--muted); padding:12px 10px; font-size:12px; }
 
+  /* The history: the log across the top, and under it what one commit did */
+  #gitpanel .hist { flex:1 1 auto; display:flex; flex-direction:column; min-width:0; min-height:0; }
+  #gitpanel .histhead { display:flex; align-items:center; gap:12px; padding:5px 10px;
+    border-bottom:1px solid var(--line); flex:0 0 auto; font-size:12px; }
+  #gitpanel .log { flex:1 1 55%; overflow:auto; min-height:0; }
+  #gitpanel .logrow { display:flex; gap:10px; padding:2px 10px; cursor:pointer; font-size:12px; }
+  #gitpanel .logrow:hover { background:var(--panel2); }
+  #gitpanel .logrow.on { background:color-mix(in srgb, var(--brand) 18%, transparent); }
+  #gitpanel .logrow .g { font-family:var(--mono); white-space:pre; color:var(--muted);
+    flex:0 0 auto; min-width:2ch; }
+  #gitpanel .logrow .s { flex:1 1 auto; min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  #gitpanel .logrow .w, #gitpanel .logrow .a { flex:0 0 auto; color:var(--muted);
+    white-space:nowrap; }
+  #gitpanel .logrow .h { flex:0 0 auto; font-family:var(--mono); color:var(--muted); }
+  #gitpanel .logcols { color:var(--muted); font-size:11px; }
+  #gitpanel .under { flex:1 1 45%; display:flex; min-height:0; border-top:1px solid var(--line); }
+  #gitpanel .about { width:42%; min-width:200px; flex:0 0 auto; overflow:auto; padding:6px 10px;
+    border-right:1px solid var(--line); font-size:12px; }
+  #gitpanel .about dt { color:var(--muted); font-size:11px; margin-top:6px; }
+  #gitpanel .about dd { margin:0; font-family:var(--mono); font-size:11.5px;
+    word-break:break-all; }
+  #gitpanel .about .body { margin-top:8px; white-space:pre-wrap; font-family:var(--ui);
+    font-size:12px; }
+
   /* ── Bar above the browser view ──────────────────
      Never drawn inside the page — the page is pushed down a notch and this
      is drawn in the space that opens up. Drawing inside the page would
@@ -4659,7 +4684,8 @@ window.__recorded = function (line) {
 // command and hand back what it answered. The panel keeps no truth of its own:
 // after anything that changes something, it asks for the list again.
 let G = { panel:null, branch:null, branches:[], rows:null, sel:null, staged:false,
-          diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null };
+          diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
+          view:"changes", log:[], commit:null, about:null, remotes:false };
 let gitUi = null;
 
 function gitTab() {
@@ -4696,11 +4722,17 @@ window.__git = function (d) {
   else if (d.act === "branches") { G.branches = d.data || []; }
   else if (d.act === "diff") { G.diff = d.data || ""; }
   else if (d.act === "hunks") { G.hunks = d.data || []; }
+  else if (d.act === "graph") { G.log = d.data || []; }
+  else if (d.act === "detail") { G.about = d.data || null; G.sel = null; G.hunks = []; }
   else if (d.act === "hunk") {
     // A piece moved. What is staged changed, and so did the piece list
     gitAsk("status");
-    if (G.sel) gitAsk("hunks", {paths: [G.sel], staged: G.staged});
-    gitAsk("diff", {paths: [G.sel], staged: G.staged});
+    if (G.view === "history") {
+      if (G.sel && G.commit) gitAsk("hunks", {paths: [G.sel], commit: G.commit});
+    } else if (G.sel) {
+      gitAsk("hunks", {paths: [G.sel], staged: G.staged});
+      gitAsk("diff", {paths: [G.sel], staged: G.staged});
+    }
   }
   else if (d.act === "message") { gitSetMessage(d.data || ""); G.said = ""; }
   else {
@@ -4728,7 +4760,8 @@ function gitRefresh(keep) {
   const name = t.id || t.name;
   if (G.panel !== name) {
     G = { panel:name, branch:null, branches:[], rows:null, sel:null, staged:false,
-          diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null };
+          diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
+          view:"changes", log:[], commit:null, about:null, remotes:false };
     gitUi = null;
   } else if (!keep) {
     G.pick = {};
@@ -4748,7 +4781,7 @@ function gitBuild(box) {
   const pull = mk(T["git.pull"] || "", null, () => gitAsk("pull"));
   const push = mk(T["git.push"] || "", null, () => gitAsk("push"));
   const fetch = mk(T["git.fetch"] || "", null, () => gitAsk("fetch"));
-  const branch = mk(T["git.branch.new"] || "", null, () => gitNewBranch());
+  const branch = mk(T["git.branch.new"] || "", null, () => gitHistory());
   const merge = mk(T["git.merge"] || "", null, () => {
     if (G.pickBranch) gitAsk("merge", {text: G.pickBranch});
     else gitSay(T["git.merge.pick"] || "", true);
@@ -4788,10 +4821,37 @@ function gitBuild(box) {
       el("h4", {}, el("span", {class:"grow"}, T["git.group.unstaged"] || ""), stageAll, stagePick),
       work));
   const diff = el("pre", {class:"diff"});
+  const remotes = el("input", {type:"checkbox"});
+  remotes.addEventListener("change", () => {
+    G.remotes = remotes.checked;
+    gitAsk("graph", {all:true, remotes:G.remotes});
+  });
+  const log = el("div", {class:"log"});
+  const about = el("div", {class:"about"});
+  const commitDiff = el("pre", {class:"diff"});
+  const hist = el("div", {class:"hist"},
+    el("div", {class:"histhead"},
+      el("b", {}, T["git.view.all"] || ""),
+      el("label", {class:"castradio"}, remotes, el("span", {}, T["git.view.remotes"] || "")),
+      el("span", {style:"flex:1"}),
+      el("button", {class:"quiet", onclick:() => gitHistory()}, T["git.back"] || "")),
+    el("div", {class:"logrow logcols"},
+      el("span", {class:"g"}, T["git.col.graph"] || ""),
+      el("span", {class:"s"}, T["git.col.subject"] || ""),
+      el("span", {class:"w"}, T["git.col.date"] || ""),
+      el("span", {class:"a"}, T["git.col.author"] || ""),
+      el("span", {class:"h"}, T["git.col.hash"] || "")),
+    log,
+    el("div", {class:"under"}, about, commitDiff));
+  hist.style.display = "none";
+  // Making one belongs with the list of them, now that the toolbar's button is
+  // the way into the history
+  const plus = el("button", {title:T["git.branch.make"] || "", onclick:() => gitNewBranch()}, "+");
   box.append(el("div", {class:"cols"},
-    el("div", {}, el("h4", {}, T["git.branches"] || ""), branches),
-    mid, diff));
+    el("div", {}, el("h4", {}, el("span", {class:"grow"}, T["git.branches"] || ""), plus), branches),
+    mid, diff, hist));
   gitUi = { bar, said, naming, name, branches, staged, work, diff,
+            hist, mid, log, about, commitDiff, remotes,
             btn: {commit, pull, push, fetch, branch, merge},
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
 }
@@ -4830,6 +4890,88 @@ function gitMark(r) {
     : x.includes("R") ? "\u2192" : "\u25cf";
 }
 
+// The log across the top, one commit under it, and what that commit did to the
+// file that is picked -- one piece at a time, each of which can be walked back
+function drawHistory(u) {
+  u.remotes.checked = !!G.remotes;
+  u.log.textContent = "";
+  for (const r of G.log || []) {
+    const row = el("div", {class:"logrow" + (G.commit === r.hash && r.hash ? " on" : ""),
+      onclick:() => {
+        if (!r.hash) return;
+        G.commit = r.hash; G.about = null; G.sel = null; G.hunks = [];
+        drawGit();
+        gitAsk("detail", {text:r.hash});
+      }});
+    row.append(el("span", {class:"g"}, r.graph || ""));
+    row.append(el("span", {class:"s"}, r.subject || ""));
+    row.append(el("span", {class:"w"}, r.date || ""));
+    row.append(el("span", {class:"a"}, r.author || ""));
+    row.append(el("span", {class:"h"}, r.short || ""));
+    u.log.append(row);
+  }
+  if (!(G.log || []).length) u.log.append(el("div", {class:"empty"}, "\u2026"));
+
+  u.about.textContent = "";
+  const d = G.about;
+  if (!d) {
+    u.about.append(el("div", {class:"empty"}, T["git.pick.commit"] || ""));
+  } else {
+    const dl = el("dl", {style:"margin:0"});
+    const pair = (label, value) => {
+      dl.append(el("dt", {}, label));
+      dl.append(el("dd", {}, value));
+    };
+    pair(T["git.detail.commit"] || "", d.hash || "");
+    pair(T["git.detail.parent"] || "", (d.parents || []).join("  "));
+    pair(T["git.detail.author"] || "", d.author || "");
+    pair(T["git.detail.authored"] || "", d.author_date || "");
+    pair(T["git.detail.committer"] || "", d.committer || "");
+    pair(T["git.detail.committed"] || "", d.commit_date || "");
+    u.about.append(dl);
+    u.about.append(el("div", {class:"body"}, (d.subject || "") + (d.body ? "\n\n" + d.body : "")));
+    u.about.append(el("dt", {}, T["git.detail.files"] || ""));
+    for (const f of d.files || []) {
+      const row = el("div", {class:"row" + (G.sel === f ? " pick" : ""), style:"padding:2px 0",
+        onclick:() => {
+          G.sel = f; G.hunks = [];
+          drawGit();
+          gitAsk("hunks", {paths:[f], commit:G.commit});
+        }});
+      row.append(el("span", {class:"p", style:"direction:ltr"}, f));
+      u.about.append(row);
+    }
+  }
+
+  u.commitDiff.textContent = "";
+  if (!G.sel) {
+    u.commitDiff.append(el("div", {class:"empty"}, T["git.pick.file"] || ""));
+    return;
+  }
+  u.commitDiff.append(el("div", {class:"filehead"}, G.sel));
+  const hunks = G.hunks || [];
+  if (!hunks.length) { u.commitDiff.append(el("div", {class:"empty"}, "\u2026")); return; }
+  hunks.forEach((h, i) => {
+    const head = el("div", {class:"hunkhead"});
+    head.append(el("span", {class:"grow"},
+      (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
+      (T["git.hunk.lines"] || "").replace("{from}", h.start).replace("{to}", h.end)));
+    // Undoing a piece of a commit puts the old lines back in the working tree.
+    // The commit is untouched -- history is not being rewritten, the change is
+    // simply being taken back out of what is here now
+    head.append(el("button", {onclick:() => gitAsk("hunk", {text:h.patch, reverse:true})},
+      T["git.hunk.drop"] || ""));
+    const lines = el("pre", {class:"lines", style:"margin:0"});
+    h.patch.split("\n").forEach(line => {
+      if (line.startsWith("diff --git ") || line.startsWith("index ")
+        || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@")) return;
+      const cls = line.startsWith("+") ? "a" : line.startsWith("-") ? "d" : "";
+      lines.append(el("span", {class:cls}, line + "\n"));
+    });
+    u.commitDiff.append(el("div", {class:"hunk"}, head, lines));
+  });
+}
+
 // The message lives in the sub-input bar, not in a box of the panel's own:
 // there is one place a person writes a line in this app, and this is a line.
 let gitPush = false, gitAmend = false;
@@ -4847,6 +4989,14 @@ function gitCommit() {
 function gitNewBranch() {
   G.offer = !G.offer;
   G.said = "";
+  drawGit();
+}
+// The history is the same panel with a different middle: the branches stay on
+// the left, because where you are is the thing both views are about
+function gitHistory() {
+  G.view = G.view === "history" ? "changes" : "history";
+  G.said = "";
+  if (G.view === "history") gitAsk("graph", {all:true, remotes:G.remotes});
   drawGit();
 }
 // The panel's own row in the sub-input bar: have the AI write the message, and
@@ -4894,6 +5044,15 @@ function drawGit() {
     u.branches.append(row);
   }
   if (!(G.branches || []).length) u.branches.append(el("div", {class:"empty"}, "\u2026"));
+
+  const history = G.view === "history";
+  u.mid.style.display = history ? "none" : "flex";
+  u.diff.style.display = history ? "none" : "block";
+  u.hist.style.display = history ? "flex" : "none";
+  // The toolbar stays whole in either view: where you are does not change what
+  // you can do, and a button that comes and goes is a button people stop trusting
+  u.btn.branch.classList.toggle("go", history);
+  if (history) { drawHistory(u); return; }
 
   const rows = G.rows || [];
   const conflicts = rows.filter(r => r.conflict);
