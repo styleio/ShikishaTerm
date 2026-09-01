@@ -867,6 +867,13 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .unwrap_or_default()
                 .to_string(),
         },
+        // The git panel asking for a list, a diff, or a change (see `Ev::Git`).
+        Some("git") => Ev::Git {
+            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
         // A recorded step from a page (who it came from is stamped by the pane's
         // ipc handler, like "button").
         Some("recorded") => Ev::Recorded {
@@ -1301,6 +1308,17 @@ pub enum Ev {
     /// browser in the same sandbox as the rally's AI-authored code (browser
     /// functions on that one tab, nothing else).
     RunLua { code: String },
+    /// The git panel asking for something. `panel` is the surface's own name,
+    /// which is how the folder it reports on is found; `act` is one of a short
+    /// list the loop turns into a primitive call. The panel does not name
+    /// primitives itself -- a screen is allowed to ask for the things it draws,
+    /// not to reach the whole table through a message
+    Git {
+        panel: String,
+        act: String,
+        path: String,
+        text: String,
+    },
     /// One recorded step reported by a page being recorded. The pane's ipc
     /// handler stamps `from` with the page's name (same as `Button`).
     /// `act` is fill/click/press/secret; `value` is the committed text

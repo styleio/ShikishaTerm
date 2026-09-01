@@ -1272,6 +1272,17 @@ pub fn browser_url_of(argv: &[String]) -> Option<String> {
     (!url.is_empty()).then_some(url)
 }
 
+/// Whether this tab is the git panel.
+///
+/// Told apart by the head of the command, the same way browser/ssh/docker are.
+/// The word on its own, with nothing after it: `git status` in a tab is
+/// somebody wanting a terminal that runs git, and taking that away would be
+/// rude. `git` alone in a terminal only prints its own usage, so nobody meant
+/// that
+pub fn is_git_panel(argv: &[String]) -> bool {
+    matches!(argv, [head] if head.eq_ignore_ascii_case("git"))
+}
+
 impl TabConfig {
     /// Prefer automation, falling back to the old name lua
     pub fn automation_path(&self) -> Option<String> {
@@ -2508,7 +2519,19 @@ mod tests {
 
 #[cfg(test)]
 mod browser_kind_tests {
-    use super::browser_url_of;
+    use super::{browser_url_of, is_git_panel};
+
+    #[test]
+    fn the_git_panel_is_the_word_on_its_own() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(is_git_panel(&v(&["git"])));
+        assert!(is_git_panel(&v(&["GIT"])), "大文字でも同じもの");
+        // Somebody wanting a terminal that runs git keeps their terminal
+        assert!(!is_git_panel(&v(&["git", "status"])));
+        assert!(!is_git_panel(&v(&["gitk"])));
+        assert!(!is_git_panel(&[]));
+    }
+
 
     fn v(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()

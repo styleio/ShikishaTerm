@@ -2698,6 +2698,23 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // Make a branch and move onto it. What a refused commit is offered
+            // instead of, so that the refusal is a door rather than a wall
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_branch_create",
+                    lua.create_function(move |_, (tab, name): (Value, String)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        crate::git::branch_create(&dir, &name)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             // The floor everything else is sugar over. Whatever git can do,
             // this can do -- which is why it is closed to an AI by default and
             // never appears on a screen. The words are split here rather than

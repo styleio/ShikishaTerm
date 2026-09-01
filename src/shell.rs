@@ -420,6 +420,45 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Only this is selectable — the tab bar and frame never get pulled into a selection */
   #screen { user-select:text; }
 
+  /* ── The git panel ───────────────────────────────
+     Same place as a terminal, same edges. Two columns: what changed on the
+     left, what it changed on the right */
+  #gitpanel[hidden] { display:none; }
+  #gitpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:var(--fb); display:flex; flex-direction:column; overflow:hidden;
+    font-family:var(--ui); font-size:13px; user-select:text; }
+  #gitpanel .head { display:flex; align-items:center; gap:10px; padding:8px 12px;
+    border-bottom:1px solid var(--line); flex:0 0 auto; }
+  #gitpanel .head b { font-size:13px; }
+  #gitpanel .warn { color:var(--danger); }
+  #gitpanel .body { display:flex; flex:1 1 auto; min-height:0; }
+  #gitpanel .list { width:44%; min-width:220px; overflow:auto; padding:6px 0;
+    border-right:1px solid var(--line); }
+  #gitpanel .diff { flex:1 1 auto; overflow:auto; padding:8px 12px; margin:0;
+    white-space:pre; font-family:var(--mono); font-size:12px; line-height:1.35; }
+  #gitpanel .diff .a { color:var(--ok); }
+  #gitpanel .diff .d { color:var(--danger); }
+  #gitpanel .diff .h { color:var(--muted); }
+  #gitpanel h4 { margin:10px 12px 4px; font-size:11px; letter-spacing:.06em;
+    color:var(--muted); font-weight:600; text-transform:uppercase; }
+  #gitpanel .row { display:flex; align-items:center; gap:8px; padding:3px 12px;
+    cursor:pointer; }
+  #gitpanel .row:hover { background:var(--panel2); }
+  #gitpanel .row.on { background:var(--panel2); }
+  #gitpanel .row .x { width:2ch; color:var(--muted); font-family:var(--mono); }
+  #gitpanel .row .p { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; font-family:var(--mono); font-size:12px; }
+  #gitpanel .row button { visibility:hidden; }
+  #gitpanel .row:hover button, #gitpanel .row.on button { visibility:visible; }
+  /* The message goes above the list, where it is written before anything is
+     picked -- and where the composer along the pane's bottom edge cannot sit
+     over it */
+  #gitpanel .foot { flex:0 0 auto; border-bottom:1px solid var(--line); padding:8px 12px;
+    display:flex; flex-direction:column; gap:6px; }
+  #gitpanel .foot .line { display:flex; gap:8px; align-items:center; }
+  #gitpanel .foot input { flex:1; min-width:0; }
+  #gitpanel .empty { color:var(--muted); padding:14px 12px; }
+
   /* ── Bar above the browser view ──────────────────
      Never drawn inside the page — the page is pushed down a notch and this
      is drawn in the space that opens up. Drawing inside the page would
@@ -988,6 +1027,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <!-- notranslate as well as the page-wide opt-out above: this is the one
          element a forced "translate this page" would wreck outright -->
     <pre id="screen" class="notranslate" translate="no" hidden></pre>
+    <!-- The git panel sits exactly where a terminal would. It has no process
+         and no page of its own: the board draws it, and every button on it is
+         one call to an automation command -->
+    <div id="gitpanel" hidden></div>
     <canvas id="cast" hidden></canvas>
     <div id="cur" hidden></div>
     <textarea id="kbd" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
@@ -2346,6 +2389,8 @@ window.__state = function (json) {
   // Leaving the terminal contents in place would flash the previous tab's
   // output for a frame at the moment of switching
   const web = S.tabs.some(t => t.index === S.active && t.kind === "browser");
+  // The git panel stands where a terminal would, so the two take turns
+  const git = S.tabs.some(t => t.index === S.active && t.kind === "git");
   // INDEX covers the window; the panes are still there underneath and come
   // back the moment a running thing is picked. Nothing of the layout is drawn
   // while it is up, or the caption of a pane would show through the board
@@ -2356,7 +2401,17 @@ window.__state = function (json) {
   board.hidden = !S.board;
   document.getElementById("panes").hidden = cover;
   // Nothing to draw for a pane with nothing in it -- it says so itself
-  screen.hidden = cover || S.active === 0 || web;
+  screen.hidden = cover || S.active === 0 || web || git;
+  const panel = document.getElementById("gitpanel");
+  const wasGit = panel && !panel.hidden;
+  if (panel) panel.hidden = cover || !git;
+  // Ask the moment it comes into view, and whenever the panel being looked at
+  // changes -- a list that was true a workspace ago is not worth drawing
+  if (panel && !panel.hidden) {
+    const t = gitTab();
+    if (!wasGit || G.panel !== ((t && (t.id || t.name)) || null)) gitRefresh();
+    else drawGit();
+  }
   // While viewing a browser tab, the phone shows the screen relay (canvas).
   // The window (PC) still layers the real page as before, so it never uses the relay
   const cast = document.getElementById("cast");
@@ -4563,6 +4618,140 @@ window.__recorded = function (line) {
   } catch (e) {}
 };
 // The verdict of a ▶ run: null = ran clean, a string = the error text.
+// ── The git panel ──────────────────────────────────────────
+// Everything here is a message asking the app to run one automation command
+// and hand back what it answered. The panel keeps no truth of its own: after
+// anything that changes something, it asks for the list again.
+let G = { panel:null, branch:null, rows:null, sel:null, diff:"", note:"", offer:false, msg:"" };
+
+function gitTab() {
+  return (S && S.tabs || []).find(t => t.index === S.active && t.kind === "git");
+}
+function gitAsk(act, path, text) {
+  const t = gitTab();
+  if (!t) return;
+  send({kind:"git", panel: t.id || t.name || "", act, path: path || "", text: text || ""});
+}
+// Everything the panel knows comes back through here
+window.__git = function (d) {
+  if (!d || !d.act) return;
+  if (!d.ok) {
+    // A commit refused because the branch is shared is not a failure, it is a
+    // question with an answer -- so it is asked here in the panel's own words,
+    // with the way out under it. Anything else is reported as it came
+    G.offer = d.why === "protected";
+    G.note = G.offer
+      ? (T["git.protected"] || "").replace("{branch}", (G.branch && G.branch.name) || "")
+      : (d.error || "");
+    drawGit();
+    return;
+  }
+  G.note = "";
+  if (d.act === "status") { G.rows = d.data || []; }
+  else if (d.act === "branch") { G.branch = d.data || null; }
+  else if (d.act === "diff") { G.diff = d.data || ""; }
+  else {
+    // Something changed. Ask again rather than guessing what it did
+    if (d.act === "commit" || d.act === "branch_new") {
+      G.msg = ""; G.offer = false; G.sel = null; G.diff = "";
+      if (gitUi) gitUi.msg.value = "";
+    }
+    gitAsk("status"); gitAsk("branch");
+  }
+  drawGit();
+};
+
+function gitRefresh() {
+  const t = gitTab();
+  if (!t) return;
+  if (G.panel !== (t.id || t.name)) {
+    // A different panel: nothing carried over from the last one
+    G = { panel: t.id || t.name, branch:null, rows:null, sel:null, diff:"", note:"", offer:false, msg:"" };
+    gitUi = null;
+  }
+  gitAsk("status"); gitAsk("branch");
+}
+
+// The panel is built once and then updated in place. Rebuilding it whole on
+// every answer would take the message box down with it -- and with it the
+// caret, and whatever was half typed into it.
+let gitUi = null;
+
+function gitBuild(box) {
+  box.textContent = "";
+  const branch = el("b", {}, "");
+  const shared = el("span", {class:"warn"}, T["git.shared"] || "");
+  box.append(el("div", {class:"head"}, branch, shared, el("span", {style:"flex:1"}),
+    el("button", {class:"quiet", onclick:() => gitRefresh()}, T["git.reload"] || "")));
+
+  const note = el("div", {class:"warn"});
+  const msg = el("input", {type:"text", placeholder:T["git.message"] || ""});
+  msg.addEventListener("input", () => { G.msg = msg.value; });
+  const commit = el("button", {class:"primary", onclick:() => {
+    if (msg.value.trim()) gitAsk("commit", "", msg.value);
+  }}, T["git.commit"] || "");
+  const name = el("input", {type:"text", placeholder:T["git.branch.name"] || ""});
+  const make = el("button", {onclick:() => {
+    if (name.value.trim()) gitAsk("branch_new", "", name.value.trim());
+  }}, T["git.branch.make"] || "");
+  const offer = el("div", {class:"line"}, name, make);
+  offer.hidden = true;
+  box.append(el("div", {class:"foot"}, note, el("div", {class:"line"}, msg, commit), offer));
+
+  const list = el("div", {class:"list"});
+  const diff = el("pre", {class:"diff"});
+  box.append(el("div", {class:"body"}, list, diff));
+  gitUi = { branch, shared, note, msg, offer, list, diff };
+}
+
+function drawGit() {
+  const box = document.getElementById("gitpanel");
+  if (!box || box.hidden) return;
+  if (!gitUi || !box.firstChild) gitBuild(box);
+  const u = gitUi;
+  u.branch.textContent = G.branch ? G.branch.name : (T["git.detached"] || "");
+  u.shared.hidden = !(G.branch && G.branch.protected);
+  u.note.textContent = G.note || "";
+  u.note.hidden = !G.note;
+  u.offer.hidden = !G.offer;
+  // The message belongs to the person typing it, not to the last answer
+  if (document.activeElement !== u.msg) u.msg.value = G.msg;
+
+  u.list.textContent = "";
+  const rows = G.rows || [];
+  const groups = [
+    ["conflict", T["git.group.conflict"], rows.filter(r => r.conflict)],
+    ["staged", T["git.group.staged"], rows.filter(r => r.staged && !r.conflict)],
+    ["unstaged", T["git.group.unstaged"], rows.filter(r => !r.staged && !r.conflict)],
+  ];
+  let any = false;
+  for (const [id, label, items] of groups) {
+    if (!items.length) continue;
+    any = true;
+    u.list.append(el("h4", {}, label));
+    for (const r of items) {
+      const staged = id === "staged";
+      const row = el("div", {class:"row" + (G.sel === r.path ? " on" : ""),
+        onclick:() => { G.sel = r.path; G.diff = ""; drawGit(); gitAsk("diff", r.path, staged ? "staged" : ""); }});
+      row.append(el("span", {class:"x"}, (r.index + r.work).trim() || "?"));
+      row.append(el("span", {class:"p", title:r.from ? r.from + " → " + r.path : r.path}, r.path));
+      row.append(el("button", {class:"quiet", onclick:e => {
+        e.stopPropagation();
+        gitAsk(staged ? "unstage" : "stage", r.path);
+      }}, staged ? (T["git.unstage"] || "") : (T["git.stage"] || "")));
+      u.list.append(row);
+    }
+  }
+  if (!any) u.list.append(el("div", {class:"empty"}, T["git.clean"] || ""));
+
+  u.diff.textContent = "";
+  for (const line of (G.diff || "").split("\n")) {
+    const cls = line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@") ? "h"
+      : line.startsWith("+") ? "a" : line.startsWith("-") ? "d" : "";
+    u.diff.append(el("span", {class:cls}, line + "\n"));
+  }
+}
+
 window.__luaDone = function (err) {
   try {
     luaFlash(err ? ("⚠ " + String(err).slice(0, 300)) : ("✔ " + (T["tui.cast.lua.ok"] || "Ran")), !!err);

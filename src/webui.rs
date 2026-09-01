@@ -2746,7 +2746,10 @@ const buildModel = o => "model " + (o.provider || "") + (o.model ? "/" + o.model
 // Default model name per provider (a convenience value that lets input be skipped; empty if none)
 const DEFAULT_MODEL = {deepseek: "deepseek-chat"};
 
-const kindOf = c => parseBrowser(c) ? "browser" : parseModel(c) ? "model"
+// The git panel is the word on its own -- `git status` in a tab is somebody
+// who wants a terminal that runs git, and it stays one
+const isGitPanel = c => cmdToText(c).trim().toLowerCase() === "git";
+const kindOf = c => isGitPanel(c) ? "git" : parseBrowser(c) ? "browser" : parseModel(c) ? "model"
   : parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
 // CLI-type AIs (external programs the user installs). check = engine id to
 // look up in aiEngines for the "(not installed)" note.
@@ -2787,7 +2790,8 @@ const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 // Others map 1:1. CLI AIs and API providers then sit side by side inside the AI panel.
 const catOf = c => { const k = kindOf(cmdToText(c));
   return k === "model" ? "ai" : k === "cmd" ? (isAiCli(c) ? "ai" : "cmd") : k; };
-const CAT_START = {ai:"claude", cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl ", browser:"browser https://"};
+const CAT_START = {ai:"claude", cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl ",
+  browser:"browser https://", git:"git"};
 const CAT_LIST = [
   ["ai",      T["settings.tab.cat.ai"]],
   ["cmd",     T["settings.tab.cat.cmd"]],
@@ -2795,6 +2799,7 @@ const CAT_LIST = [
   ["docker",  "Docker"],
   ["wsl",     "WSL"],
   ["browser", T["settings.tab.kind.browser"]],
+  ["git",     T["settings.tab.kind.git"]],
 ];
 
 // ── Sidebar ───────────────────────────────────────

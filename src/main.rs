@@ -490,6 +490,9 @@ struct WinSurface {
     /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
     /// shown browser.
     run_luas: Vec<String>,
+    /// What the git panel has asked for since the last drain: (panel, act,
+    /// path, text)
+    gits: Vec<(String, String, String, String)>,
     /// Recorded steps reported by pages. The loop turns each into one Lua
     /// line for the composer.
     recorded: Vec<RecordedStep>,
@@ -661,6 +664,16 @@ impl WinSurface {
     /// Takes the composer Lua awaiting a sandboxed run (▶) since the last drain.
     fn take_run_luas(&mut self) -> Vec<String> {
         std::mem::take(&mut self.run_luas)
+    }
+
+    /// Takes what the git panel has asked for since the last drain
+    fn take_gits(&mut self) -> Vec<(String, String, String, String)> {
+        std::mem::take(&mut self.gits)
+    }
+
+    /// Hand one answer back to the git panel (already JSON-encoded)
+    fn push_git(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__git && window.__git({json});"));
     }
 
     /// Takes the recorded steps reported by pages since the last drain.
@@ -842,6 +855,7 @@ impl WinSurface {
                 // resolved by the loop (it knows the shown browser and the engine).
                 Ev::Record { on } => self.record_arms.push(on),
                 Ev::RunLua { code } => self.run_luas.push(code),
+                Ev::Git { panel, act, path, text } => self.gits.push((panel, act, path, text)),
                 Ev::Recorded {
                     from: Some(child),
                     act,
@@ -1156,6 +1170,7 @@ fn run_in_window() -> Result<()> {
         last_pane_screens: std::collections::HashMap::new(),
         pending: std::collections::VecDeque::new(),
         presses: Vec::new(),
+        gits: Vec::new(),
         loads: Vec::new(),
         scrolls: Vec::new(),
         gos: Vec::new(),
@@ -1278,6 +1293,39 @@ fn subject_of(caller: Option<&str>, tabs: &[Tab]) -> grants::Subject {
 fn tab_states(tabs: &[Tab]) -> Vec<(hooks::TabKey, String)> {
     tabs.iter()
         .map(|t| (t.key(), t.state.label().to_string()))
+        .collect()
+}
+
+/// One sentence a person can read, out of what Lua reported.
+///
+/// An error arriving from a primitive carries the marks of where it came from
+/// -- "runtime error:" in front and a stack traceback behind. Both belong in
+/// the log and in a script author's hands; neither belongs on a panel
+fn plain_error(said: &str) -> String {
+    said.split("stack traceback:")
+        .next()
+        .unwrap_or(said)
+        .trim()
+        .trim_start_matches("runtime error:")
+        .trim()
+        .to_string()
+}
+
+/// The folders the git panels report on, keyed by their own names.
+///
+/// Appended after the tabs so that naming a panel resolves to its folder. A
+/// panel is not a tab and has no process, but it is the thing a person clicked
+/// on, so it has to be nameable the same way
+fn panel_cwds(surfaces: &[Surface]) -> Vec<(hooks::TabKey, std::path::PathBuf)> {
+    surfaces
+        .iter()
+        .filter_map(|s| match s {
+            Surface::Git { key, name, dir: Some(d), .. } => Some((
+                hooks::TabKey { id: Some(key.clone()), name: name.clone() },
+                d.clone(),
+            )),
+            _ => None,
+        })
         .collect()
 }
 
@@ -1832,6 +1880,9 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
                 Surface::Browser { key, name } => {
                     Some(crate::uistate::TabState::browser(i + 1, key, name))
                 }
+                Surface::Git { key, name, group, .. } => {
+                    Some(crate::uistate::TabState::git(i + 1, key, name, *group))
+                }
             })
             .collect(),
         // The ball moves by session number; what we display is the screen number
@@ -1869,7 +1920,8 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
                     .get(*s)
                     .map(|t| t.ms_since_change(ui.now_ms) < QUIET_MS)
                     .unwrap_or(false),
-                Surface::Browser { .. } => false,
+                // Neither a page nor a panel is doing anything on its own
+                Surface::Browser { .. } | Surface::Git { .. } => false,
             });
             let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
             !anyone_active && ring_idle
@@ -3064,7 +3116,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
             if let Some(eng) = engine.as_mut() {
                 // Let the loop read the current state (shikisha.state)
                 eng.set_states(tab_states(&tabs));
-                eng.set_cwds(tab_cwds(&tabs));
+                // The tabs, and then the git panels: naming either one names
+                // the folder it is looking at
+                let mut folders = tab_cwds(&tabs);
+                folders.extend(panel_cwds(&surfaces));
+                eng.set_cwds(folders);
                 // ...and each tab's latest reply, so an operator can read the AI
                 // tab it's driving (shikisha.tab_output).
                 eng.set_outputs(
@@ -3518,6 +3574,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // 📼 / ▶ from the phone's composer: same queues as the window's.
                     remote::RemoteCmd::Ui(crate::browser::Ev::Record { on }) => {
                         surface.record_arms.push(on);
+                    }
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Git { panel, act, path, text }) => {
+                        surface.gits.push((panel, act, path, text));
                     }
                     remote::RemoteCmd::Ui(crate::browser::Ev::RunLua { code }) => {
                         surface.run_luas.push(code);
@@ -4216,6 +4275,70 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // "Off" must land even when the browser tab is no longer shown
                 // (e.g. the tab switch that caused it) — it names no page.
                 let _ = caps.browser_record("", false);
+            }
+        }
+
+        // What the git panel asked for. Each act is one primitive call, made in
+        // the person's name -- the panel is a screen they opened, so it reaches
+        // exactly what their own automation would (see docs/design/git-access.ja.md)
+        for (panel, act, path, text) in surface.take_gits() {
+            if engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
+            let Some(eng) = engine.as_mut() else { continue };
+            let mut folders = tab_cwds(&tabs);
+            folders.extend(panel_cwds(&surfaces));
+            eng.set_states(tab_states(&tabs));
+            eng.set_cwds(folders);
+            let who = serde_json::Value::String(panel.clone());
+            let (method, params): (&str, Vec<serde_json::Value>) = match act.as_str() {
+                "status" => ("git_status", vec![who.clone()]),
+                "branch" => ("git_branch", vec![who.clone()]),
+                "diff" => (
+                    "git_diff",
+                    vec![
+                        who.clone(),
+                        serde_json::json!({ "path": path, "staged": text == "staged" }),
+                    ],
+                ),
+                "stage" => ("git_stage", vec![who.clone(), serde_json::json!(path)]),
+                "unstage" => ("git_unstage", vec![who.clone(), serde_json::json!(path)]),
+                "commit" => ("git_commit", vec![who.clone(), serde_json::json!(text)]),
+                // "make a branch and commit there" -- the answer to a refusal
+                // rather than a way around it
+                "branch_new" => ("git_branch_create", vec![who.clone(), serde_json::json!(text)]),
+                _ => continue,
+            };
+            let answer = eng.call_primitive_as(None, grants::Subject::Human, method, &params);
+            let payload = match answer {
+                Ok(data) => serde_json::json!({ "act": act, "ok": true, "data": data }),
+                Err(e) => {
+                    // A commit refused on a shared branch is not a failure, it
+                    // is a question -- and the panel asks it in its own words,
+                    // so the reason is named rather than shown as Lua said it
+                    let shared = act == "commit"
+                        && eng
+                            .call_primitive_as(
+                                None,
+                                grants::Subject::Human,
+                                "git_branch",
+                                &[who.clone()],
+                            )
+                            .ok()
+                            .and_then(|b| b.get("protected").and_then(|p| p.as_bool()))
+                            .unwrap_or(false);
+                    serde_json::json!({
+                        "act": act,
+                        "ok": false,
+                        "error": plain_error(&e),
+                        "why": if shared { "protected" } else { "" },
+                    })
+                }
+            };
+            let js = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+            surface.push_git(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"git\":{js}}}"));
             }
         }
 
@@ -6051,7 +6174,9 @@ fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, TabAuto)> {
 fn focused_page(layout: &crate::layout::Layout, surfaces: &[Surface]) -> Option<String> {
     match surfaces.get(layout.surface_of(layout.focus())?.checked_sub(1)?)? {
         Surface::Browser { key, .. } => Some(key.clone()),
-        Surface::Session(_) => None,
+        // The panel is drawn by the board, so there is no page in front of
+        // anything -- a message can be raised over it like any other pane
+        Surface::Session(_) | Surface::Git { .. } => None,
     }
 }
 
@@ -6477,7 +6602,7 @@ fn apply_ws_config(
         }
         // Browsers aren't child processes, so don't launch them here
         // (open_declared_browsers opens the window)
-        if config::browser_url_of(&argv).is_some() {
+        if config::browser_url_of(&argv).is_some() || config::is_git_panel(&argv) {
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
@@ -6751,7 +6876,7 @@ fn spawn_workspace(
         // window. Trying to launch one here would produce a baffling "no
         // executable named browser" failure every time, out of nowhere.
         // (open_declared_browsers opens them)
-        if config::browser_url_of(&argv).is_some() {
+        if config::browser_url_of(&argv).is_some() || config::is_git_panel(&argv) {
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
@@ -6889,6 +7014,18 @@ enum Surface {
         /// The human-readable name
         name: String,
     },
+    /// The git panel: no process, no page, drawn by the board itself.
+    ///
+    /// It carries the folder it reports on because it has no tab of its own to
+    /// borrow one from -- and that folder is what the primitives are called
+    /// against, by this surface's own name
+    Git {
+        key: String,
+        name: String,
+        dir: Option<std::path::PathBuf>,
+        /// Which folder heading it belongs under in the sidebar
+        group: Option<usize>,
+    },
 }
 
 /// Builds what's laid out on screen, in the order written in config.
@@ -6904,6 +7041,22 @@ fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String
         for ft in &ws.tabs {
             let argv = ft.cfg.command.argv();
             if argv.is_empty() {
+                continue;
+            }
+            if config::is_git_panel(&argv) {
+                let key = ft
+                    .cfg
+                    .id
+                    .clone()
+                    .or_else(|| ft.cfg.name.clone())
+                    .unwrap_or_else(|| "git".into());
+                let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
+                out.push(Surface::Git {
+                    dir: ws.cwd_of(ft),
+                    group: None,
+                    key,
+                    name,
+                });
                 continue;
             }
             if config::browser_url_of(&argv).is_some() {
@@ -6971,7 +7124,7 @@ fn ui_surface_at(surfaces: &[Surface], n: usize) -> Option<&Surface> {
 fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
     match surfaces.get(active.checked_sub(1)?)? {
         Surface::Session(i) => Some(*i),
-        Surface::Browser { .. } => None,
+        Surface::Browser { .. } | Surface::Git { .. } => None,
     }
 }
 
@@ -7688,7 +7841,9 @@ fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
         .map(|p| match p {
             Surface::Session(i) => tabs.get(*i).map(|t| t.key()).unwrap_or_default(),
             // Browsers give priority to the id too; still lookup-able by display name
-            Surface::Browser { key, name } => hooks::TabKey {
+            // A page and a panel both give priority to the id, and both stay
+            // lookup-able by the name on screen
+            Surface::Browser { key, name } | Surface::Git { key, name, .. } => hooks::TabKey {
                 id: Some(key.clone()),
                 name: name.clone(),
             },
@@ -9067,6 +9222,14 @@ mod tests {
     /// where we recorded how it was opened. The settings screen and the result
     /// view ride in the pane list like any other page, but they are the app's own
     /// furniture — restarting them means nothing, so they are refused by name.
+    #[test]
+    fn a_panel_is_told_what_happened_without_where_it_came_from() {
+        let raw = "runtime error: main は共有ブランチです\nstack traceback:\n\t[C]: in upvalue 'fn'";
+        assert_eq!(plain_error(raw), "main は共有ブランチです");
+        // Something that was already plain comes through unharmed
+        assert_eq!(plain_error("git は見つかりません"), "git は見つかりません");
+    }
+
     #[test]
     fn the_apps_own_screens_are_not_restartable_pages() {
         let caps: crate::hooks::Caps = std::rc::Rc::new(crate::caps::Capabilities::new(

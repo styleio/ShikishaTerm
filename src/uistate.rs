@@ -627,6 +627,20 @@ impl TabState {
     ///
     /// It isn't a session, so it has no state and no output volume.
     /// Rather than pad it out to look similar, it's more readable left as-is
+    /// The git panel. It has no process and no page of its own -- the board
+    /// draws it -- so most of what a tab carries is simply absent
+    pub fn git(index: usize, key: &str, name: &str, group: Option<usize>) -> Self {
+        Self {
+            kind: "git".into(),
+            state: "GIT".into(),
+            state_label: crate::i18n::t("tui.state.git"),
+            group,
+            // Opening and closing it is the tab list's business, not a restart
+            restartable: false,
+            ..Self::browser(index, key, name)
+        }
+    }
+
     pub fn browser(index: usize, key: &str, name: &str) -> Self {
         Self {
             index,

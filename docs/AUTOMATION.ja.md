@@ -890,6 +890,7 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected}`。`protected` は「共有ブランチなので直接コミットしない方がよい」の印。detached なら `nil` |
 | `shikisha.git_stage(タブ, パス)` | 次のコミットに入れる。パスは文字列1つでも、テーブルで複数でも |
 | `shikisha.git_unstage(タブ, パス)` | 次のコミットから外す |
+| `shikisha.git_branch_create(タブ, "名前")` | ブランチを作って、そこへ移る。ステージしたものは持ったまま移るので、**共有ブランチで断られたときの行き先**になる |
 | `shikisha.git_commit(タブ, "メッセージ", opts)` | 入れたものをコミットし、短いハッシュを返す。**共有ブランチ（`main` / `master`）では止まる** —— 新しいブランチを作るか、承知のうえなら `{allow_protected=true}` |
 | `shikisha.git_run(タブ, "引数…")` | 任意の git を実行して、その出力を返す。**シェルは通りません**（`;` や `&&` は git の引数になって断られる） |
 

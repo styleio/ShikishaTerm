@@ -210,6 +210,7 @@ pub const CATALOG: &[Entry] = &[
     e("git_stage", Group::Git, true, false, false),
     e("git_unstage", Group::Git, true, false, false),
     e("git_commit", Group::Git, true, false, false),
+    e("git_branch_create", Group::Git, true, false, false),
     // Whatever git can do. Opening this is opening all of it at once
     e("git_run", Group::Git, true, false, false),
     // -- Files and the network ------------------------------------------------
@@ -382,6 +383,7 @@ mod tests {
                 "git_stage",
                 "git_unstage",
                 "git_commit",
+                "git_branch_create",
                 "git_run",
                 "read_path",
                 "write_path",

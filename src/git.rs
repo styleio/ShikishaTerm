@@ -277,6 +277,22 @@ pub fn commit(dir: &Path, message: &str, allow_protected: bool) -> Result<String
     Ok(run(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
 }
 
+/// Make a branch and move onto it, carrying whatever is staged.
+///
+/// This exists so that refusing a commit on a shared branch has somewhere to
+/// go. A wall tells someone they were wrong; this hands them the road they
+/// wanted in the first place, with their work still in their hands
+pub fn branch_create(dir: &Path, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!(crate::i18n::t("err.git.empty_branch"));
+    }
+    // git has its own rules about what a ref may be called, and they are the
+    // ones that matter -- checking them again here would be a second opinion
+    // that can only ever disagree
+    run(dir, &["checkout", "-q", "-b", name]).map(|_| ())
+}
+
 /// Whether this branch is one that refuses a direct commit. Read by whoever
 /// wants to offer the alternative before the refusal happens
 pub fn is_protected(name: &str) -> bool {
@@ -379,6 +395,30 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "hello again").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
         commit(&dir, "second", false).expect("自分のブランチなら止まらない");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_way_out_of_a_refusal_keeps_the_work() {
+        let Some(dir) = scratch_repo("branchnew") else { return };
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        stage(&dir, &["a.txt".to_string()]).unwrap();
+        commit(&dir, "start", true).unwrap();
+
+        // Something staged, on a branch that will not take it
+        std::fs::write(dir.join("a.txt"), "two").unwrap();
+        stage(&dir, &["a.txt".to_string()]).unwrap();
+        assert!(commit(&dir, "next", false).is_err());
+
+        // The offer: a branch, and the staged work still staged on it
+        branch_create(&dir, "work/next").expect("枝を作れる");
+        assert_eq!(branch(&dir).unwrap().as_deref(), Some("work/next"));
+        let rows = status(&dir).unwrap();
+        assert_eq!(rows.iter().find(|c| c.path == "a.txt").unwrap().index, 'M',
+            "ステージしたものは持ったまま移る");
+        commit(&dir, "next", false).expect("移った先では通る");
+
+        assert!(branch_create(&dir, "  ").is_err(), "名前が空なら断る");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

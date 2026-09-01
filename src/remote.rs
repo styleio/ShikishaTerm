@@ -128,6 +128,10 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // the input injection and quick actions already allowed above.
         Ev::Record { .. } => true,
         Ev::RunLua { .. } => true,
+        // The git panel. Everything it can ask for is something the person can
+        // do on this PC by opening the same panel, and a phone that can hand an
+        // AI a whole task can certainly stage a file
+        Ev::Git { .. } => true,
         // ✨ command suggestion: the reply is a draft the person still has to
         // send — same reach as typing the command from the phone themselves
         Ev::Suggest { .. } => true,

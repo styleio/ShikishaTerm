@@ -856,6 +856,7 @@ that path never launches git, which is why it still answers during a rebase.
 | `shikisha.git_branch(tab)` | The branch: `{name, protected}`. `protected` marks one that is shared, so committing straight onto it is worth asking about. `nil` when the head is detached |
 | `shikisha.git_stage(tab, paths)` | Add to the next commit. One path as a string, or several in a table |
 | `shikisha.git_unstage(tab, paths)` | Take back out of the next commit |
+| `shikisha.git_branch_create(tab, "name")` | Make a branch and move onto it. Staged work moves with you, which is what makes this **the way out of a refusal on a shared branch** |
 | `shikisha.git_commit(tab, "message", opts)` | Commit what was added and answer with the short hash. **It stops on a shared branch (`main` / `master`)** -- make a branch, or pass `{allow_protected=true}` to say you meant it |
 | `shikisha.git_run(tab, "args…")` | Run any git and answer with its output. **No shell is involved**: `;` and `&&` arrive as arguments and git refuses them |
 
