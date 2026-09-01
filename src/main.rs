@@ -1329,14 +1329,15 @@ fn plain_error(said: &str) -> String {
 /// Appended after the tabs so that naming a panel resolves to its folder. A
 /// panel is not a tab and has no process, but it is the thing a person clicked
 /// on, so it has to be nameable the same way
-fn panel_cwds(surfaces: &[Surface]) -> Vec<(hooks::TabKey, std::path::PathBuf)> {
+fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
     surfaces
         .iter()
         .filter_map(|s| match s {
-            Surface::Git { key, name, dir: Some(d), .. } => Some((
-                hooks::TabKey { id: Some(key.clone()), name: name.clone() },
-                d.clone(),
-            )),
+            Surface::Git { key, name, dir: Some(d), protect, .. } => Some(hooks::TabPlace {
+                key: hooks::TabKey { id: Some(key.clone()), name: name.clone() },
+                dir: d.clone(),
+                protect: protect.clone(),
+            }),
             _ => None,
         })
         .collect()
@@ -1347,7 +1348,7 @@ fn panel_cwds(surfaces: &[Surface]) -> Vec<(hooks::TabKey, std::path::PathBuf)> 
 /// A tab with no folder of its own gets an empty path rather than the app's
 /// own folder: falling back would mean `git_status()` from a tab that is
 /// nowhere quietly answers about the app's own repository
-fn tab_cwds(tabs: &[Tab]) -> Vec<(hooks::TabKey, std::path::PathBuf)> {
+fn tab_places(tabs: &[Tab]) -> Vec<hooks::TabPlace> {
     tabs.iter()
         .map(|t| {
             let dir = match t.cwd().map(std::path::Path::to_path_buf) {
@@ -1355,7 +1356,7 @@ fn tab_cwds(tabs: &[Tab]) -> Vec<(hooks::TabKey, std::path::PathBuf)> {
                 Some(p) => std::env::current_dir().map(|c| c.join(&p)).unwrap_or(p),
                 None => std::path::PathBuf::new(),
             };
-            (t.key(), dir)
+            hooks::TabPlace { key: t.key(), dir, protect: t.protect().to_vec() }
         })
         .collect()
 }
@@ -3145,9 +3146,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 eng.set_states(tab_states(&tabs));
                 // The tabs, and then the git panels: naming either one names
                 // the folder it is looking at
-                let mut folders = tab_cwds(&tabs);
-                folders.extend(panel_cwds(&surfaces));
-                eng.set_cwds(folders);
+                let mut folders = tab_places(&tabs);
+                folders.extend(panel_places(&surfaces));
+                eng.set_places(folders);
                 // ...and each tab's latest reply, so an operator can read the AI
                 // tab it's driving (shikisha.tab_output).
                 eng.set_outputs(
@@ -3509,7 +3510,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // and the first call is the one carrying the id of the
                         // conversation to come back to
                         eng.set_states(tab_states(&tabs));
-                        eng.set_cwds(tab_cwds(&tabs));
+                        eng.set_places(tab_places(&tabs));
                         let who = subject_of(call.caller.as_deref(), &tabs);
                         eng.call_primitive_as(
                             call.caller.as_deref(),
@@ -4329,10 +4330,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
                 }
                 let Some(eng) = engine.as_mut() else { continue };
-                let mut folders = tab_cwds(&tabs);
-                folders.extend(panel_cwds(&surfaces));
+                let mut folders = tab_places(&tabs);
+                folders.extend(panel_places(&surfaces));
                 eng.set_states(tab_states(&tabs));
-                eng.set_cwds(folders);
+                eng.set_places(folders);
                 let spec = cfg.as_ref().map(|c| c.git.clone()).unwrap_or_default();
                 let code = spec
                     .message_lua
@@ -4367,10 +4368,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     "resolve" => "git_apply".to_string(),
                     _ => format!("git_{act}"),
                 };
-                let dir = panel_cwds(&surfaces)
+                let dir = panel_places(&surfaces)
                     .into_iter()
-                    .find(|(k, _)| k.matches(&panel))
-                    .map(|(_, d)| d);
+                    .find(|p| p.key.matches(&panel))
+                    .map(|p| p.dir);
                 let answer = match (caps.allows(&name, grants::Subject::Human), dir) {
                     (false, _) => Some(i18n::tp(
                         "err.hooks.not_permitted",
@@ -4452,10 +4453,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
             }
             let Some(eng) = engine.as_mut() else { continue };
-            let mut folders = tab_cwds(&tabs);
-            folders.extend(panel_cwds(&surfaces));
+            let mut folders = tab_places(&tabs);
+            folders.extend(panel_places(&surfaces));
             eng.set_states(tab_states(&tabs));
-            eng.set_cwds(folders);
+            eng.set_places(folders);
             let who = serde_json::Value::String(panel.clone());
             let files = serde_json::json!(paths);
             let (method, params): (&str, Vec<serde_json::Value>) = match act.as_str() {
@@ -6794,6 +6795,7 @@ fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> tab:
     tab::TabOptions {
         cwd,
         group: folder.and_then(|f| f.name.clone()),
+        protect: folder.map(|f| f.protect.clone()).unwrap_or_default(),
         scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
@@ -6868,6 +6870,7 @@ fn apply_ws_config(
                     ft.cfg.auto_restart,
                     ft.depth,
                     ft.cfg.notify_on_done.clone(),
+                    opts.protect.clone(),
                 );
                 // Changes to command, encoding, or line count require a rebuild
                 if t.signature() != tab::signature_of(&argv, &opts) {
@@ -7268,6 +7271,10 @@ enum Surface {
         key: String,
         name: String,
         dir: Option<std::path::PathBuf>,
+        /// The branches its folder will not take a direct commit onto. The
+        /// panel has no tab of its own to borrow the answer from, so it carries
+        /// the folder's own
+        protect: Vec<String>,
     },
 }
 
@@ -7296,6 +7303,7 @@ fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
                 out.push(Surface::Git {
                     dir: ws.cwd_of(ft),
+                    protect: ws.folder_of(ft).map(|f| f.protect.clone()).unwrap_or_default(),
                     key,
                     name,
                 });

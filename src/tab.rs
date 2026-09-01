@@ -20,6 +20,11 @@ pub struct TabOptions {
     pub cwd: Option<std::path::PathBuf>,
     /// What that folder is called in the list, when someone named it
     pub group: Option<String>,
+    /// The branches a commit made from this tab refuses to land on, straight
+    /// from the folder's settings. It travels with the tab because naming a tab
+    /// is how automation names a repository -- `git_commit("農場1", …)` has to
+    /// arrive knowing what that project guards
+    pub protect: Vec<String>,
     /// Number of scrollback lines
     pub scrollback: usize,
     /// Encoding ("utf-8" / "shift_jis" / "euc-jp" etc). Defaults to UTF-8
@@ -99,6 +104,10 @@ impl Default for TabOptions {
         Self {
             cwd: None,
             group: None,
+            // The guarded ones, for anything built without an answer: a tab
+            // that lost the setting on the way here must refuse a commit to
+            // main, not wave it through
+            protect: crate::git::DEFAULT_PROTECTED.iter().map(|s| s.to_string()).collect(),
             scrollback: SCROLLBACK_LINES,
             encoding: None,
             log: false,
@@ -2233,6 +2242,11 @@ impl Tab {
         self.opts.group.as_deref()
     }
 
+    /// The branches its folder does not take a direct commit onto
+    pub fn protect(&self) -> &[String] {
+        &self.opts.protect
+    }
+
     /// Why this tab is not running what it was asked to run, when it is not.
     pub fn held(&self) -> Option<&Held> {
         self.opts.held.as_ref()
@@ -2948,7 +2962,7 @@ impl Tab {
     }
 
     /// Swap in settings that can take effect without a restart
-    pub fn apply_live_config(&mut self, profile_spec: Option<String>, locked: bool, auto_restart: bool, depth: u16, notify_on_done: Option<String>) {
+    pub fn apply_live_config(&mut self, profile_spec: Option<String>, locked: bool, auto_restart: bool, depth: u16, notify_on_done: Option<String>, protect: Vec<String>) {
         if self.profile_spec != profile_spec {
             self.profile_spec = profile_spec;
             self.detector = Detector::new(Self::resolve_profile(&self.argv, &self.profile_spec));
@@ -2957,6 +2971,10 @@ impl Tab {
         self.auto_restart = auto_restart;
         self.depth = depth;
         self.notify_on_done = notify_on_done;
+        // Which branches are guarded is read at the moment somebody commits,
+        // never at launch -- so a change to it lands on the tabs already
+        // running rather than waiting for a restart nobody knew to do
+        self.opts.protect = protect;
     }
 
     /// Stash the launch conditions to use on the next restart (keeps running with the current settings until then)

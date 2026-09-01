@@ -888,7 +888,7 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.git_diff(タブ, {path=…, staged=…})` | 差分をそのまま文字列で。`staged=true` でステージ済みの側、`path` で1ファイルに絞る |
 | `shikisha.git_log(タブ, 件数)` | 最近のコミット。`{hash, short, author, date, subject}`。既定20件 |
 | `shikisha.git_conflicts(タブ)` | 衝突しているファイルのパスだけ |
-| `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected}`。`protected` は「共有ブランチなので直接コミットしない方がよい」の印。detached なら `nil` |
+| `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected}`。`protected` は「このフォルダが守っているので直接コミットしない方がよい」の印。detached なら `nil` |
 | `shikisha.git_graph(タブ, {all=…, remotes=…, count=…})` | 履歴。`{graph, hash, short, author, date, subject}`。`graph` は git が描いた枝の絵で、コミットの無い行（マージの合流）もそのまま入る |
 | `shikisha.git_detail(タブ, ハッシュ)` | そのコミットの全部。`{hash, parents, author, author_date, committer, commit_date, subject, body, files}` |
 | `shikisha.git_branches(タブ)` | ブランチの一覧。`{name, current, protected}` |
@@ -900,7 +900,7 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.git_stage(タブ, パス)` | 次のコミットに入れる。パスは文字列1つでも、テーブルで複数でも |
 | `shikisha.git_unstage(タブ, パス)` | 次のコミットから外す |
 | `shikisha.git_branch_create(タブ, "名前")` | ブランチを作って、そこへ移る。ステージしたものは持ったまま移るので、**共有ブランチで断られたときの行き先**になる |
-| `shikisha.git_commit(タブ, "メッセージ", opts)` | 入れたものをコミットし、短いハッシュを返す。**共有ブランチ（`main` / `master`）では止まる** —— 新しいブランチを作るか、承知のうえなら `{allow_protected=true}` |
+| `shikisha.git_commit(タブ, "メッセージ", opts)` | 入れたものをコミットし、短いハッシュを返す。**保護ブランチでは止まる** —— 新しいブランチを作るか、承知のうえなら `{allow_protected=true}`。どのブランチを守るかは 設定 → 保護ブランチ（既定は `main` / `master`）で決まり、作業フォルダごとに変えられる |
 | `shikisha.git_run(タブ, "引数…")` | 任意の git を実行して、その出力を返す。**シェルは通りません**（`;` や `&&` は git の引数になって断られる） |
 
 **既定では、どれも人間だけが実行できます**（自動化の権限）。AI に開けるなら

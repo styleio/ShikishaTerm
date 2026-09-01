@@ -406,28 +406,42 @@ fn lua_to_json(v: &Value) -> serde_json::Value {
 /// so paths coming back from `status` and paths going in to `stage` are
 /// written the same way whichever subfolder a tab happens to sit in.
 fn git_folder(
-    cwds: &RefCell<Vec<(TabKey, std::path::PathBuf)>>,
+    places: &RefCell<Vec<TabPlace>>,
     origin: &Cell<usize>,
     tab: &Value,
 ) -> mlua::Result<std::path::PathBuf> {
-    let list = cwds.borrow();
+    git_place(places, origin, tab).map(|(dir, _)| dir)
+}
+
+/// The same folder, with the branches it will not take a direct commit onto.
+///
+/// Asked together because they are answered together: which repository a tab
+/// sits in and what that project guards are both facts about the folder behind
+/// the tab, and looking them up separately is how the two come to disagree
+fn git_place(
+    places: &RefCell<Vec<TabPlace>>,
+    origin: &Cell<usize>,
+    tab: &Value,
+) -> mlua::Result<(std::path::PathBuf, Vec<String>)> {
+    let list = places.borrow();
     let index = match tab {
         Value::Nil => origin.get(),
         other => {
-            let keys: Vec<TabKey> = list.iter().map(|(k, _)| k.clone()).collect();
+            let keys: Vec<TabKey> = list.iter().map(|p| p.key.clone()).collect();
             tab_ref_of(other)?.resolve(&keys).unwrap_or(0)
         }
     };
-    let Some((_, dir)) = index.checked_sub(1).and_then(|i| list.get(i)) else {
+    let Some(place) = index.checked_sub(1).and_then(|i| list.get(i)) else {
         return Err(mlua::Error::runtime(crate::i18n::t("err.git.no_tab")));
     };
     // A tab that is nowhere carries an empty path rather than the app's own
     // folder, so that "no folder" is said plainly instead of quietly answering
     // about whatever repository this app happens to be running from
-    if dir.as_os_str().is_empty() {
+    if place.dir.as_os_str().is_empty() {
         return Err(mlua::Error::runtime(crate::i18n::t("err.git.no_tab")));
     }
-    crate::git::root(dir).map_err(|e| mlua::Error::runtime(e.to_string()))
+    let root = crate::git::root(&place.dir).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+    Ok((root, place.protect.clone()))
 }
 
 /// One path, or several. Writing `git_stage(tab, "src/main.rs")` for a single
@@ -882,6 +896,20 @@ impl TabKey {
     }
 }
 
+/// Where a tab works, and what that folder will not take a direct commit onto.
+///
+/// One row rather than two lists side by side: the folder and the rule about
+/// it are read together every single time, and two lists kept in the same
+/// order are two lists that can fall out of step
+#[derive(Debug, Clone, Default)]
+pub struct TabPlace {
+    pub key: TabKey,
+    /// The tab's working folder. Empty for a tab that is in none
+    pub dir: std::path::PathBuf,
+    /// The branches this folder guards, already settled by the settings
+    pub protect: Vec<String>,
+}
+
 impl TabRef {
     /// Resolve the actual (1-indexed) number from a tab list.
     /// A string spec is looked up first by ID, then by tab name
@@ -1290,9 +1318,9 @@ pub struct HookEngine {
     /// reading a long run in pieces. Absent for a tab that is not being
     /// recorded
     logs: Rc<RefCell<Vec<(TabKey, std::path::PathBuf)>>>,
-    /// Each tab's working folder, same order as `states`. The repository a git
-    /// command runs in is found through here
-    cwds: Rc<RefCell<Vec<(TabKey, std::path::PathBuf)>>>,
+    /// Each tab's working folder and what that folder guards, same order as
+    /// `states`. The repository a git command runs in is found through here
+    places: Rc<RefCell<Vec<TabPlace>>>,
     pending: Vec<Pending>,
     scripts: Vec<Script>,
     attach: Attach,
@@ -1377,8 +1405,7 @@ impl HookEngine {
         // Each tab's working folder, same order as `states`. This is how a
         // repository is named: by the tab sitting in it, never by a path a
         // script assembled (see docs/design/git-access.ja.md §1)
-        let cwds: Rc<RefCell<Vec<(TabKey, std::path::PathBuf)>>> =
-            Rc::new(RefCell::new(Vec::new()));
+        let places: Rc<RefCell<Vec<TabPlace>>> = Rc::new(RefCell::new(Vec::new()));
         let remote_url: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let ai_engine: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
@@ -2590,7 +2617,7 @@ impl HookEngine {
         }
         {
             // What has changed, one row per file, in git's own two letters
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2631,7 +2658,7 @@ impl HookEngine {
             // The diff, cut into the pieces a person says yes or no to. Each
             // one carries a patch that stands on its own, which is what makes
             // "this bit, not that bit" possible at all
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2675,7 +2702,7 @@ impl HookEngine {
                 .map_err(lerr)?;
             // ...and putting one back: staged, unstaged, or undone, which are
             // the same call with the two switches saying which
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2698,7 +2725,7 @@ impl HookEngine {
         {
             // Only the files with a conflict. The first thing an AI asked to
             // untangle a merge needs, and the last thing to disappear
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2716,7 +2743,7 @@ impl HookEngine {
         {
             // The diff as text. `{ staged = true }` reads the staged side,
             // `{ path = "..." }` narrows it to one file
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2739,7 +2766,7 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2768,19 +2795,19 @@ impl HookEngine {
             // The branch checked out, and whether committing straight onto it
             // is the kind of thing to ask about first. `nil` when the head is
             // detached -- there is no branch to name
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
                     "git_branch",
                     lua.create_function(move |lua, tab: Value| {
-                        let dir = git_folder(&c, &o, &tab)?;
+                        let (dir, protect) = git_place(&c, &o, &tab)?;
                         let name = crate::git::branch(&dir)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
                         match name {
                             Some(n) => {
                                 let row = lua.create_table()?;
-                                row.set("protected", crate::git::is_protected(&n))?;
+                                row.set("protected", crate::git::is_protected(&n, &protect))?;
                                 row.set("name", n)?;
                                 Ok(Value::Table(row))
                             }
@@ -2792,7 +2819,7 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2805,7 +2832,7 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2824,14 +2851,14 @@ impl HookEngine {
             // says it meant it, so whoever catches the refusal can offer to
             // make a branch instead -- a better answer than either a wall or a
             // commit nobody meant to make
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
                     "git_commit",
                     lua.create_function(
                         move |_, (tab, message, opts): (Value, String, Option<Table>)| {
-                            let dir = git_folder(&c, &o, &tab)?;
+                            let (dir, protect) = git_place(&c, &o, &tab)?;
                             let allow = match &opts {
                                 Some(t) => {
                                     t.get::<Option<bool>>("allow_protected")?.unwrap_or(false)
@@ -2842,7 +2869,7 @@ impl HookEngine {
                                 Some(t) => t.get::<Option<bool>>("amend")?.unwrap_or(false),
                                 None => false,
                             };
-                            crate::git::commit(&dir, &message, allow, amend)
+                            crate::git::commit(&dir, &message, &protect, allow, amend)
                                 .map_err(|e| mlua::Error::runtime(e.to_string()))
                         },
                     )
@@ -2852,7 +2879,7 @@ impl HookEngine {
         }
         {
             // The history, with git drawing the graph, and one commit in full
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2897,7 +2924,7 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2924,20 +2951,20 @@ impl HookEngine {
         }
         {
             // Every local branch, with a mark on the one checked out
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
                     "git_branches",
                     lua.create_function(move |lua, tab: Value| {
-                        let dir = git_folder(&c, &o, &tab)?;
+                        let (dir, protect) = git_place(&c, &o, &tab)?;
                         let list = crate::git::branches(&dir)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
                         let out = lua.create_table()?;
                         for (name, here) in list {
                             let row = lua.create_table()?;
                             row.set("current", here)?;
-                            row.set("protected", crate::git::is_protected(&name))?;
+                            row.set("protected", crate::git::is_protected(&name, &protect))?;
                             row.set("name", name)?;
                             out.push(row)?;
                         }
@@ -2946,7 +2973,7 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2959,7 +2986,7 @@ impl HookEngine {
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -2981,7 +3008,7 @@ impl HookEngine {
             // thread, because a window cannot wait on somebody's network
             macro_rules! network {
                 ($name:literal, $f:path) => {{
-                    let c = Rc::clone(&cwds);
+                    let c = Rc::clone(&places);
                     let o = Rc::clone(&current_origin);
                     shikisha
                         .set(
@@ -3002,7 +3029,7 @@ impl HookEngine {
         {
             // Make a branch and move onto it. What a refused commit is offered
             // instead of, so that the refusal is a door rather than a wall
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -3022,7 +3049,7 @@ impl HookEngine {
             // never appears on a screen. The words are split here rather than
             // handed to a shell, so `;` and `&&` reach git as arguments and
             // git refuses them
-            let c = Rc::clone(&cwds);
+            let c = Rc::clone(&places);
             let o = Rc::clone(&current_origin);
             shikisha
                 .set(
@@ -3077,7 +3104,7 @@ impl HookEngine {
             outputs,
             screens,
             logs,
-            cwds,
+            places,
             pending: Vec::new(),
             scripts: Vec::new(),
             attach: Attach::default(),
@@ -3241,10 +3268,11 @@ impl HookEngine {
         *self.ai_engine.borrow_mut() = engine;
     }
 
-    /// Where each tab is working. Pushed in on the same tick as the states, so
-    /// that naming a tab is enough to name the repository it sits in
-    pub fn set_cwds(&self, cwds: Vec<(TabKey, std::path::PathBuf)>) {
-        *self.cwds.borrow_mut() = cwds;
+    /// Where each tab is working, and what its folder guards. Pushed in on the
+    /// same tick as the states, so that naming a tab is enough to name the
+    /// repository it sits in
+    pub fn set_places(&self, places: Vec<TabPlace>) {
+        *self.places.borrow_mut() = places;
     }
 
     /// The phone board's URL (token included), or None while remote is off.
@@ -5977,11 +6005,11 @@ mod tests {
         let key = TabKey { id: Some("work".into()), name: "作業".into() };
         let nowhere = TabKey { id: Some("floating".into()), name: "浮いている".into() };
         e.set_states(vec![(key.clone(), "WAIT".into()), (nowhere.clone(), "WAIT".into())]);
-        e.set_cwds(vec![
-            (key, std::env::current_dir().unwrap()),
+        e.set_places(vec![
+            TabPlace { key, dir: std::env::current_dir().unwrap(), protect: Vec::new() },
             // A tab with no folder of its own. It must not quietly answer
             // about the app's own repository
-            (nowhere, std::path::PathBuf::new()),
+            TabPlace { key: nowhere, ..Default::default() },
         ]);
         if crate::git::root(std::path::Path::new(".")).is_err() {
             return; // built outside a checkout

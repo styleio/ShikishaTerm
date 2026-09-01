@@ -35,12 +35,17 @@ const LIMIT: Duration = Duration::from_secs(20);
 /// loop -- the panel hands them to a thread -- so waiting costs nobody a redraw
 const NETWORK_LIMIT: Duration = Duration::from_secs(180);
 
-/// Branches that do not take a direct commit unless the caller says so.
+/// The branches that refuse a direct commit until somebody says otherwise.
 ///
 /// Not a security boundary -- it is the difference between "committed to main
 /// by accident" and "meant it". The offer to make a branch instead lives in
-/// whoever catches the refusal
-const PROTECTED: [&str; 2] = ["main", "master"];
+/// whoever catches the refusal.
+///
+/// Only the starting point: which branches to guard is a question each project
+/// answers differently, so the answer travels in from the settings (see
+/// [`crate::config::GitSpec::protected`]) and this is what an answer nobody has
+/// given yet amounts to
+pub const DEFAULT_PROTECTED: [&str; 2] = ["main", "master"];
 
 /// One line of `git status`, in git's own vocabulary.
 ///
@@ -652,13 +657,19 @@ pub fn unstage(dir: &Path, paths: &[String]) -> Result<()> {
 /// A protected branch refuses unless the caller says it meant it. The refusal
 /// is the whole point: whoever catches it can offer to make a branch instead,
 /// which is a better answer than either committing or a wall
-pub fn commit(dir: &Path, message: &str, allow_protected: bool, amend: bool) -> Result<String> {
+pub fn commit(
+    dir: &Path,
+    message: &str,
+    protect: &[String],
+    allow_protected: bool,
+    amend: bool,
+) -> Result<String> {
     if message.trim().is_empty() {
         bail!(crate::i18n::t("err.git.empty_message"));
     }
     if !allow_protected {
         if let Some(b) = branch(dir)? {
-            if PROTECTED.contains(&b.as_str()) {
+            if is_protected(&b, protect) {
                 bail!(crate::i18n::tp("err.git.protected", &[("branch", &b)]));
             }
         }
@@ -690,10 +701,43 @@ pub fn branch_create(dir: &Path, name: &str) -> Result<()> {
     run(dir, &["checkout", "-q", "-b", name]).map(|_| ())
 }
 
-/// Whether this branch is one that refuses a direct commit. Read by whoever
-/// wants to offer the alternative before the refusal happens
-pub fn is_protected(name: &str) -> bool {
-    PROTECTED.contains(&name)
+/// Whether this branch is one of the ones being guarded. Read by whoever wants
+/// to offer the alternative before the refusal happens.
+///
+/// `*` stands for any run of characters, so a whole shelf of branches can be
+/// named at once (`release/*`). Everything else is the name itself: branch
+/// names are what people type, and a name that quietly meant something else
+/// would guard the wrong branch
+pub fn is_protected(name: &str, protect: &[String]) -> bool {
+    protect.iter().any(|p| name_matches(p.trim(), name))
+}
+
+/// One pattern against one branch name, `*` matching any run of characters.
+///
+/// Walked rather than turned into a regular expression: the whole language is
+/// one character, and a regex would also give `.` `+` `(` a meaning nobody
+/// asked for -- a branch really can be called `v1.0+fix`
+fn name_matches(pattern: &str, name: &str) -> bool {
+    let Some((head, rest)) = pattern.split_once('*') else {
+        return pattern == name;
+    };
+    if !name.starts_with(head) {
+        return false;
+    }
+    // What is left of the pattern has to be found somewhere in what is left of
+    // the name, at the end if the pattern ends there
+    let mut at = &name[head.len()..];
+    loop {
+        if name_matches(rest, at) {
+            return true;
+        }
+        // A `*` may stand for nothing at all, so this walks forward one
+        // character at a time until the rest of the name is gone
+        match at.chars().next() {
+            Some(c) => at = &at[c.len_utf8()..],
+            None => return false,
+        }
+    }
 }
 
 /// Split a command line the way a shell would, minus the shell.
@@ -749,11 +793,46 @@ mod tests {
         assert_eq!(split_args("status; rm -rf /").len(), 4);
     }
 
+    /// The list as the settings hand it over
+    fn guarded() -> Vec<String> {
+        DEFAULT_PROTECTED.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Which branches are guarded is the project's answer, not ours.
+    ///
+    /// It began as two names written into this file, which is fine right up
+    /// until somebody works alone on their own repository -- there, "make a
+    /// branch first" is a rule with nobody on the other side of it.
     #[test]
-    fn protected_branches_are_the_ones_people_share() {
-        assert!(is_protected("main"));
-        assert!(is_protected("master"));
-        assert!(!is_protected("feature/two"));
+    fn protected_branches_are_the_ones_the_project_named() {
+        let out_of_the_box = guarded();
+        assert!(is_protected("main", &out_of_the_box));
+        assert!(is_protected("master", &out_of_the_box));
+        assert!(!is_protected("feature/two", &out_of_the_box));
+
+        // Alone on your own repository, nothing is guarded -- said by leaving
+        // the list empty
+        assert!(!is_protected("main", &[]));
+
+        // A project that shares other branches names its own
+        let theirs = ["develop".to_string(), "release/*".to_string()];
+        assert!(is_protected("develop", &theirs));
+        assert!(is_protected("release/1.0", &theirs));
+        assert!(is_protected("release/", &theirs), "* は何も無くても当たる");
+        assert!(!is_protected("main", &theirs), "書いていないものは守らない");
+        assert!(!is_protected("hotfix/release/1.0", &theirs), "頭から見る");
+
+        // `*` is the whole of the language. Everything else is the name
+        // itself, because a branch really can be called `v1.0+fix`
+        let odd = ["v1.0+fix".to_string(), "*/wip".to_string()];
+        assert!(is_protected("v1.0+fix", &odd));
+        assert!(!is_protected("v1Z0+fix", &odd), ". は . でしかない");
+        assert!(is_protected("team/wip", &odd));
+        assert!(!is_protected("wip", &odd), "* の前の / まで含めて名前");
+        assert!(is_protected("anything at all", &["*".to_string()]), "* だけなら全部守る");
+
+        // Spaces around a name are somebody typing a list, not a branch
+        assert!(is_protected("main", &[" main ".to_string()]));
     }
 
     /// A repository of its own, thrown away afterwards. `None` when this
@@ -777,13 +856,13 @@ mod tests {
 
         // On main it refuses, and says which branch it is refusing about --
         // whoever catches this offers to make a branch instead
-        let refused = commit(&dir, "first", false, false).unwrap_err().to_string();
+        let refused = commit(&dir, "first", &guarded(), false, false).unwrap_err().to_string();
         assert!(refused.contains("main"), "断る理由にブランチ名が入る: {refused}");
         // Nothing was committed by the refusal
         assert!(log(&dir, 1).map(|l| l.is_empty()).unwrap_or(true));
 
         // ...and it goes through for someone who says they meant it
-        let hash = commit(&dir, "first", true, false).expect("承知のうえなら通る");
+        let hash = commit(&dir, "first", &guarded(), true, false).expect("承知のうえなら通る");
         assert!(!hash.is_empty());
         assert_eq!(log(&dir, 1).unwrap()[0].subject, "first");
 
@@ -791,7 +870,7 @@ mod tests {
         run(&dir, &["checkout", "-q", "-b", "feature"]).unwrap();
         std::fs::write(dir.join("a.txt"), "hello again").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "second", false, false).expect("自分のブランチなら止まらない");
+        commit(&dir, "second", &guarded(), false, false).expect("自分のブランチなら止まらない");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -800,12 +879,12 @@ mod tests {
         let Some(dir) = scratch_repo("branchnew") else { return };
         std::fs::write(dir.join("a.txt"), "one").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "start", true, false).unwrap();
+        commit(&dir, "start", &guarded(), true, false).unwrap();
 
         // Something staged, on a branch that will not take it
         std::fs::write(dir.join("a.txt"), "two").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        assert!(commit(&dir, "next", false, false).is_err());
+        assert!(commit(&dir, "next", &guarded(), false, false).is_err());
 
         // The offer: a branch, and the staged work still staged on it
         branch_create(&dir, "work/next").expect("枝を作れる");
@@ -813,7 +892,7 @@ mod tests {
         let rows = status(&dir).unwrap();
         assert_eq!(rows.iter().find(|c| c.path == "a.txt").unwrap().index, 'M',
             "ステージしたものは持ったまま移る");
-        commit(&dir, "next", false, false).expect("移った先では通る");
+        commit(&dir, "next", &guarded(), false, false).expect("移った先では通る");
 
         assert!(branch_create(&dir, "  ").is_err(), "名前が空なら断る");
         let _ = std::fs::remove_dir_all(&dir);
@@ -824,7 +903,7 @@ mod tests {
         let Some(dir) = scratch_repo("status") else { return };
         std::fs::write(dir.join("kept.txt"), "one").unwrap();
         stage(&dir, &["kept.txt".to_string()]).unwrap();
-        commit(&dir, "start", true, false).unwrap();
+        commit(&dir, "start", &guarded(), true, false).unwrap();
 
         std::fs::write(dir.join("kept.txt"), "two").unwrap();
         std::fs::write(dir.join("fresh.txt"), "new").unwrap();
@@ -854,11 +933,11 @@ mod tests {
         let Some(dir) = scratch_repo("history") else { return };
         std::fs::write(dir.join("a.txt"), "one").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "first", true, false).unwrap();
+        commit(&dir, "first", &guarded(), true, false).unwrap();
         std::fs::write(dir.join("a.txt"), "two").unwrap();
         std::fs::write(dir.join("b.txt"), "new").unwrap();
         stage(&dir, &["a.txt".to_string(), "b.txt".to_string()]).unwrap();
-        commit(&dir, "second\n\nwith a reason", true, false).unwrap();
+        commit(&dir, "second\n\nwith a reason", &guarded(), true, false).unwrap();
 
         let rows = graph(&dir, false, false, 10, None).unwrap();
         let commits: Vec<&Line> = rows.iter().filter(|r| !r.hash.is_empty()).collect();
@@ -890,7 +969,7 @@ mod tests {
         let Some(dir) = scratch_repo("branches") else { return };
         std::fs::write(dir.join("a.txt"), "one").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "start", true, false).unwrap();
+        commit(&dir, "start", &guarded(), true, false).unwrap();
         branch_create(&dir, "side").unwrap();
 
         let list = branches(&dir).unwrap();
@@ -913,9 +992,9 @@ mod tests {
         let Some(dir) = scratch_repo("amend") else { return };
         std::fs::write(dir.join("a.txt"), "one").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "frist", true, false).unwrap();
+        commit(&dir, "frist", &guarded(), true, false).unwrap();
 
-        commit(&dir, "first", true, true).expect("書き直せる");
+        commit(&dir, "first", &guarded(), true, true).expect("書き直せる");
         let log = log(&dir, 5).unwrap();
         assert_eq!(log.len(), 1, "コミットは増えない");
         assert_eq!(log[0].subject, "first", "言い直したほうが残る");
@@ -960,7 +1039,7 @@ mod tests {
         let start = (1..=24).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
         std::fs::write(dir.join("f.txt"), format!("{start}\n")).unwrap();
         stage(&dir, &["f.txt".to_string()]).unwrap();
-        commit(&dir, "start", true, false).unwrap();
+        commit(&dir, "start", &guarded(), true, false).unwrap();
 
         // Two changes, far enough apart to be two hunks
         let edited = format!(
@@ -992,17 +1071,17 @@ mod tests {
         let Some(dir) = scratch_repo("conflict") else { return };
         std::fs::write(dir.join("c.txt"), "base").unwrap();
         stage(&dir, &["c.txt".to_string()]).unwrap();
-        commit(&dir, "base", true, false).unwrap();
+        commit(&dir, "base", &guarded(), true, false).unwrap();
 
         run(&dir, &["checkout", "-q", "-b", "other"]).unwrap();
         std::fs::write(dir.join("c.txt"), "theirs").unwrap();
         stage(&dir, &["c.txt".to_string()]).unwrap();
-        commit(&dir, "theirs", false, false).unwrap();
+        commit(&dir, "theirs", &guarded(), false, false).unwrap();
 
         run(&dir, &["checkout", "-q", "main"]).unwrap();
         std::fs::write(dir.join("c.txt"), "ours").unwrap();
         stage(&dir, &["c.txt".to_string()]).unwrap();
-        commit(&dir, "ours", true, false).unwrap();
+        commit(&dir, "ours", &guarded(), true, false).unwrap();
 
         // The merge fails, which is the point: what matters is that the file
         // can then be found by name rather than by reading git's message

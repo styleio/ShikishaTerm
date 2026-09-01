@@ -1039,6 +1039,11 @@ fn handle(
                     &serde_json::to_string(crate::hooks::COMMIT_MESSAGE_LUA)
                         .unwrap_or_else(|_| "\"\"".into()),
                 )
+                .replace(
+                    "__PROTECT__",
+                    &serde_json::to_string(&crate::git::DEFAULT_PROTECTED)
+                        .unwrap_or_else(|_| "[]".into()),
+                )
                 .replace("__DICT__", &crate::i18n::dict_json());
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
@@ -2483,6 +2488,18 @@ const GRANTS = __GRANTS__;
 // written out again here: "put the built-in one back" has to put back the one
 // that actually runs
 const GIT_MESSAGE_LUA = __GITLUA__;
+// The branches guarded until somebody says otherwise. Poured in from the app
+// so the box shows what is really running, not a copy of it kept here
+const PROTECT_DEFAULT = __PROTECT__;
+// A list of branch names as it is typed and as it is stored. Space or comma
+// between them, because both are what people reach for
+const protectList = text => (text || "").split(/[\s,]+/).filter(Boolean);
+const protectText = list => (list || []).join(" ");
+// What the app guards where a folder has not said anything of its own
+const protectApp = () => {
+  const g = current.git || {};
+  return Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT;
+};
 // {name} substitution (same rule as tp on the Rust side)
 const fill = (s, args) => Object.entries(args)
   .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
@@ -3813,6 +3830,7 @@ function globalSections() {
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
     {id:"permissions", label:T["settings.sec.permissions"], sub:T["settings.sec.permissions.sub"], build:permissionsCard},
     {id:"git",       label:T["settings.sec.git"],       sub:T["settings.sec.git.sub"],       build:gitCard},
+    {id:"protect",   label:T["settings.sec.protect"],   sub:T["settings.sec.protect.sub"],   build:protectCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
     {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},
     {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:notifyCard},
@@ -4218,6 +4236,29 @@ function permissionsCard() {
     el("div", {class:"row"}, reset,
       el("a", {href:manualHref(""), target:"_blank"}, T["settings.permissions.manual"])),
     body);
+}
+
+// The branches the panel will not commit straight onto.
+//
+// It began as two names written into the app, which is right up until somebody
+// is working alone on their own repository -- there, "make a branch first" is a
+// rule with nobody on the other side of it. So the names are a question, asked
+// here for every folder and again on the folder itself for the one project that
+// wants something else.
+function protectCard() {
+  const box = el("input", {class:"mono grow", placeholder:T["settings.protect.ph"]});
+  box.value = protectText(protectApp());
+  // The settings are touched when somebody types, never by looking: a card
+  // that wrote itself into the config on the way in would light the save
+  // button for a change nobody made
+  box.addEventListener("input", () => {
+    (current.git = current.git || {}).protect = protectList(box.value);
+    refreshSave();
+  });
+  return card(T["settings.sec.protect"],
+    el("div", {class:"hint"}, T["settings.protect.hint"]),
+    el("div", {class:"row"}, box),
+    el("div", {class:"hint"}, T["settings.protect.wild"]));
 }
 
 // The commit-message button, in two levels. The instruction is ADDED to the
@@ -4703,13 +4744,38 @@ function folderPane(ws, g, gi) {
   const box = el("div");
   const tabsHere = () => (ws.tabs || []).filter(t => (t.group || 0) === gi);
 
+  // This folder's own answer about which branches refuse a direct commit.
+  // Unticked it follows the app's, which is what the box shows greyed out
+  const ownProtect = el("input", {type:"checkbox"});
+  ownProtect.checked = Array.isArray(g.protect);
+  const protectBox = el("input", {class:"mono grow"});
+  const drawProtect = () => {
+    protectBox.disabled = !ownProtect.checked;
+    protectBox.placeholder = ownProtect.checked
+      ? T["settings.protect.ph"]
+      : protectText(protectApp());
+    protectBox.value = Array.isArray(g.protect) ? protectText(g.protect) : "";
+  };
+  ownProtect.addEventListener("change", () => {
+    if (ownProtect.checked) g.protect = protectApp().slice();
+    else delete g.protect;
+    drawProtect();
+    refreshSave();
+  });
+  protectBox.addEventListener("input", () => { g.protect = protectList(protectBox.value); refreshSave(); });
+  drawProtect();
+  const ownLabel = el("label", {class:"check"});
+  ownLabel.append(ownProtect, document.createTextNode(T["settings.group.protect.own"]));
+
   box.append(card(T["settings.group.title"],
     row(T["settings.group.name"], field(g, "name", folderLabel(g, gi), {grow:false, width:280,
         onInput:() => renderNav()}),
         el("span", {class:"hint"}, T["settings.group.name.hint"])),
     row(T["settings.group.folder"],
         ...pathField(g, "cwd", T["settings.group.folder.ph"], "dir", T["settings.group.folder.pick"]),
-        el("span", {class:"hint"}, T["settings.group.folder.hint"]))));
+        el("span", {class:"hint"}, T["settings.group.folder.hint"])),
+    row(T["settings.protect.label"], protectBox, ownLabel),
+    el("div", {class:"hint"}, T["settings.group.protect.hint"])));
 
   // The colour is the project's, not this folder's: every branch of one
   // repository shares it, which is the whole reason it is there. Which project
@@ -5923,6 +5989,15 @@ function payload() {
   const foldersOut = w => (w.folders && w.folders.length ? w.folders : [{}]).map((g, i) => {
     const o = {};
     for (const k of ["name", "id", "cwd"]) if ((g[k] || "").trim()) o[k] = g[k].trim();
+    // The branches this folder guards, when it has an answer of its own. An
+    // empty list is an answer too ("nothing here"), so what decides is whether
+    // there is a list at all
+    if (Array.isArray(g.protect)) o.protect = g.protect;
+    // What it would take to make this folder on a machine that does not have
+    // it. Written by the app when the folder is made and never shown on this
+    // screen -- so it has to be carried through a save, or saving the settings
+    // is how the answer gets lost
+    if (g.source) o.source = g.source;
     o.tabs = nest(w.tabs.filter(t => (t.group || 0) === i));
     return o;
   });
@@ -6751,6 +6826,7 @@ mod tests {
                 .replace("__DICT__", "{}")
                 .replace("__GRANTS__", "[]")
                 .replace("__GITLUA__", "\"\"")
+                .replace("__PROTECT__", "[]")
                 .replace("__MD__", "\"\"");
             // Checked on the finished page, not the template: the shared toast
             // is poured in on the way, and a page that kept a copy of one of

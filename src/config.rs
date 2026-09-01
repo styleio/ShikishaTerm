@@ -1104,6 +1104,11 @@ pub struct FolderConfig {
     /// it. Written when it is made; asked of a person only when it is absent
     #[serde(default)]
     pub source: Option<SourceSpec>,
+    /// The branches this folder will not commit straight onto, when it wants
+    /// something other than the app-wide answer. Absent means it follows that
+    /// one; an empty list means this folder guards nothing
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protect: Option<Vec<String>>,
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
 }
@@ -1226,6 +1231,11 @@ pub struct Folder {
     /// What it would take to make this folder on a machine that does not have
     /// it. [`Source::Unknown`] is the case that has to ask
     pub source: Source,
+    /// The branches a commit made from here refuses to land on. Already the
+    /// whole answer -- what this folder said, or what the app said for the
+    /// folders that said nothing -- so that nothing downstream has to know
+    /// there were two places to ask
+    pub protect: Vec<String>,
 }
 
 /// A workspace resolved at launch time (tabs are flattened; depth preserves the hierarchy)
@@ -1292,6 +1302,31 @@ pub struct GitSpec {
     /// not used at all -- this is the whole of it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_lua: Option<String>,
+    /// The branches the panel will not commit straight onto, for every folder
+    /// that has not said otherwise. `*` stands for any run of characters.
+    ///
+    /// Absent means [`crate::git::DEFAULT_PROTECTED`]; an empty list means
+    /// nothing is guarded, which is what one person working alone on their own
+    /// repository is entitled to want
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protect: Option<Vec<String>>,
+}
+
+impl GitSpec {
+    /// The branches to guard where nobody has said anything more specific.
+    pub fn protected(&self) -> Vec<String> {
+        match &self.protect {
+            Some(list) => list
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            None => crate::git::DEFAULT_PROTECTED
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        }
+    }
 }
 
 /// Whether this tab is the git panel.
@@ -1378,7 +1413,7 @@ fn foldered(folders: &[FolderConfig]) -> Vec<FolderConfig> {
 
 /// Turns written groups into ones with a real folder, and lays their tabs out
 /// in one list in the order they are shown.
-fn resolve_folders(defs: &[FolderConfig]) -> (Vec<Folder>, Vec<FlatTab>) {
+fn resolve_folders(defs: &[FolderConfig], protect: &[String]) -> (Vec<Folder>, Vec<FlatTab>) {
     let mut folders = Vec::with_capacity(defs.len());
     let mut tabs = Vec::new();
     for (at, def) in defs.iter().enumerate() {
@@ -1395,6 +1430,16 @@ fn resolve_folders(defs: &[FolderConfig]) -> (Vec<Folder>, Vec<FlatTab>) {
                 }
             }),
             source: def.source.as_ref().map(SourceSpec::read).unwrap_or_default(),
+            // Settled here, once: a folder that has said what it guards, and
+            // the app's own answer for every folder that has not
+            protect: match &def.protect {
+                Some(list) => list
+                    .iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+                None => protect.to_vec(),
+            },
         });
         flatten(&def.tabs, 0, at, &mut tabs);
     }
@@ -1866,7 +1911,7 @@ impl Config {
         let mut errors = Vec::new();
         if self.workspaces.is_empty() {
             if !self.folders.is_empty() {
-                let (folders, tabs) = resolve_folders(&foldered(&self.folders));
+                let (folders, tabs) = resolve_folders(&foldered(&self.folders), &self.git.protected());
                 out.push(Workspace {
                     name: "DEFAULT".into(),
                     folders,
@@ -1915,7 +1960,7 @@ impl Config {
                     None,
                 ),
             };
-            let (folders, tabs) = resolve_folders(&folder_defs);
+            let (folders, tabs) = resolve_folders(&folder_defs, &self.git.protected());
             out.push(Workspace {
                 // Prefer the display name from config; fall back to the definition file's name if empty
                 name: if ws.name.is_empty() {
@@ -2258,6 +2303,49 @@ pub fn load() -> Option<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Which branches refuse a direct commit is the project's answer, and a
+    /// project that has not given one gets the app's.
+    ///
+    /// Two levels because both questions are real: one person alone turns the
+    /// guard off everywhere, and a team that shares `develop` says so on the
+    /// one folder that works that way.
+    #[test]
+    fn a_folder_guards_what_it_says_or_what_the_app_says() {
+        let read = |json: &str| {
+            let cfg: Config = serde_json::from_str(json).expect("設定として読める");
+            let (ws, _) = cfg.resolve_workspaces();
+            ws.into_iter()
+                .next()
+                .expect("ワークスペースが1つある")
+                .folders
+                .into_iter()
+                .map(|f| f.protect)
+                .collect::<Vec<_>>()
+        };
+
+        // Nobody has said anything: the branches everybody shares
+        let plain = read(r#"{"workspaces":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[]}]}]}"#);
+        assert_eq!(plain[0], vec!["main".to_string(), "master".to_string()]);
+
+        // The app-wide answer reaches the folders that have not given one, and
+        // the folder that has keeps its own
+        let mixed = read(
+            r#"{"git":{"protect":["develop"]},"workspaces":[{"name":"W","folders":[
+                {"cwd":"D:/a","tabs":[]},
+                {"cwd":"D:/b","protect":["release/*"," "],"tabs":[]},
+                {"cwd":"D:/c","protect":[],"tabs":[]}]}]}"#,
+        );
+        assert_eq!(mixed[0], vec!["develop".to_string()], "言わなければアプリの答え");
+        assert_eq!(mixed[1], vec!["release/*".to_string()], "言えばそのとおり（空白は名前ではない）");
+        assert!(mixed[2].is_empty(), "空の一覧は「何も守らない」という答え");
+
+        // Alone on your own repository: nothing is guarded anywhere
+        let alone = read(
+            r#"{"git":{"protect":[]},"workspaces":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[]}]}]}"#,
+        );
+        assert!(alone[0].is_empty());
+    }
 
     /// How long to wait for a reply is the person's to set, and 0 means "as
     /// long as it takes".
