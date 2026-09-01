@@ -1392,6 +1392,7 @@
   "git.group.staged": "コミットに入れたもの",
   "git.group.unstaged": "まだ入れていないもの",
   "git.clean": "変わったものはありません",
+  "git.settled": "衝突は解けています。読んでから追加すると、マージが終わります。",
   "git.stage": "入れる",
   "git.unstage": "外す",
   "git.message": "メッセージ",

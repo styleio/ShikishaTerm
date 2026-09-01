@@ -5041,7 +5041,10 @@ function gitFileRow(r, where) {
 // letters are still there, in the tooltip, for whoever wants them
 function gitMark(r) {
   const x = (r.index + r.work).replace(/ /g, "");
-  return r.conflict ? "\u26a0" : x.includes("?") ? "\u002b" : x.includes("D") ? "\u2212"
+  // A conflict still holding both sides, and one that has been sorted out and
+  // is only waiting to be added, are not the same thing to look at
+  return r.conflict ? (r.tangled ? "\u26a0" : "\u2713")
+    : x.includes("?") ? "\u002b" : x.includes("D") ? "\u2212"
     : x.includes("R") ? "\u2192" : "\u25cf";
 }
 
@@ -5195,7 +5198,9 @@ function drawGit() {
     ? (T["git.merge"] || "") + " \u2190 " + G.pickBranch
     : (T["git.merge"] || "");
   u.btn.merge.title = G.pickBranch ? "" : (T["git.merge.pick"] || "");
-  const marked = (G.rows || []).some(r => r.conflict);
+  // Only while something still holds both sides. A file git calls unmerged
+  // because it has not been staged yet has nothing left to untangle
+  const marked = (G.rows || []).some(r => r.conflict && r.tangled);
   u.btn.untangle.hidden = !marked;
   u.btn.untangle.textContent = G.busy === "resolve"
     ? "\u2026"
@@ -5275,6 +5280,9 @@ function drawGit() {
   conflicts.forEach(r => u.work.append(gitFileRow(r, "work")));
   work.forEach(r => u.work.append(gitFileRow(r, "work")));
   if (!work.length && !conflicts.length) u.work.append(el("div", {class:"empty"}, T["git.clean"] || ""));
+  else if (conflicts.length && !conflicts.some(r => r.tangled)) {
+    u.work.append(el("div", {class:"empty"}, T["git.settled"] || ""));
+  }
 
   u.diff.textContent = "";
   if (!G.sel) { u.diff.append(el("div", {class:"empty"}, T["git.diff.hint"] || "")); return; }

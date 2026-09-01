@@ -2544,6 +2544,8 @@ impl HookEngine {
                                     || (ch.index == 'A' && ch.work == 'A')
                                     || (ch.index == 'D' && ch.work == 'D'),
                             )?;
+                            // Marked by git, and still holding both sides
+                            row.set("tangled", ch.tangled)?;
                             if let Some(f) = ch.from {
                                 row.set("from", f)?;
                             }

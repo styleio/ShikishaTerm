@@ -4350,7 +4350,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 // Nothing is staged and nothing is committed:
                                 // what comes back is written into the tree, and
                                 // the person reads it as a diff like any other
-                                "resolve" => crate::git::conflicts(&dir).and_then(|files| {
+                                "resolve" => crate::git::tangled(&dir).and_then(|files| {
                                     let mut done: Vec<String> = Vec::new();
                                     let mut failed: Vec<String> = Vec::new();
                                     for f in &files {

@@ -54,6 +54,14 @@ pub struct Change {
     pub path: String,
     /// Where a renamed or copied file came from
     pub from: Option<String>,
+    /// For a file git has marked as conflicted: whether the markers are still
+    /// in it.
+    ///
+    /// git says "unmerged" until the file is staged, whatever is inside it, so
+    /// on its own that cannot tell "nobody has touched this yet" from "this is
+    /// sorted out and waiting to be added". Those want different words on
+    /// screen, and only one of them wants help
+    pub tangled: bool,
 }
 
 pub struct Commit {
@@ -188,15 +196,45 @@ pub fn status(dir: &Path) -> Result<Vec<Change>> {
         } else {
             None
         };
-        changes.push(Change { index, work, path, from });
+        let conflict = index == 'U'
+            || work == 'U'
+            || (index == 'A' && work == 'A')
+            || (index == 'D' && work == 'D');
+        // Only the conflicted ones are opened, and only up to a size worth
+        // reading: this runs every time the list is drawn
+        let tangled = conflict && has_markers(&dir.join(&path));
+        changes.push(Change { index, work, path, from, tangled });
     }
     Ok(changes)
+}
+
+/// Whether git's conflict markers are still in this file.
+///
+/// A file too large to read is called tangled: saying "sorted out" about
+/// something nobody looked at is the wrong way to be wrong
+fn has_markers(path: &Path) -> bool {
+    const ROOM: u64 = 4 * 1024 * 1024;
+    match std::fs::metadata(path).map(|m| m.len()) {
+        Ok(n) if n <= ROOM => std::fs::read_to_string(path)
+            .map(|body| body.contains("<<<<<<<") && body.contains(">>>>>>>"))
+            .unwrap_or(true),
+        _ => true,
+    }
 }
 
 /// The files with a conflict in them, and nothing else
 pub fn conflicts(dir: &Path) -> Result<Vec<String>> {
     let out = run(dir, &["diff", "--name-only", "--diff-filter=U", "-z"])?;
     Ok(out.split('\0').filter(|f| !f.is_empty()).map(str::to_string).collect())
+}
+
+/// The ones that still have both sides in them. What is left after somebody --
+/// or the AI -- has been through is waiting to be staged, not to be untangled
+pub fn tangled(dir: &Path) -> Result<Vec<String>> {
+    Ok(conflicts(dir)?
+        .into_iter()
+        .filter(|f| has_markers(&dir.join(f)))
+        .collect())
 }
 
 /// The diff, as text. `staged` reads the staged side instead of the working
@@ -978,6 +1016,17 @@ mod tests {
             row.index,
             row.work
         );
+        assert!(row.tangled, "まだ両方の側が入ったまま");
+        assert_eq!(tangled(&dir).unwrap(), vec!["c.txt".to_string()]);
+
+        // Sorted out by hand: git still calls it unmerged until it is staged,
+        // and that is exactly the state that must not ask for help again
+        std::fs::write(dir.join("c.txt"), "ours and theirs").unwrap();
+        let after = status(&dir).unwrap();
+        let row = after.iter().find(|c| c.path == "c.txt").unwrap();
+        assert!(!row.tangled, "印が消えたら、もう解くものは無い");
+        assert!(conflicts(&dir).unwrap().contains(&"c.txt".to_string()), "git はまだ未マージ扱い");
+        assert!(tangled(&dir).unwrap().is_empty(), "解くべきものは残っていない");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

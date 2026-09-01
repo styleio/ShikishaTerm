@@ -1394,6 +1394,7 @@
   "git.group.staged": "In the next commit",
   "git.group.unstaged": "Not in it yet",
   "git.clean": "Nothing has changed",
+  "git.settled": "The conflicts are sorted out. Read them, then add them to finish the merge.",
   "git.stage": "Add",
   "git.unstage": "Remove",
   "git.message": "Message",
