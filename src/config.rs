@@ -1530,6 +1530,19 @@ pub fn append_folder_at(
         if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
             folder["name"] = serde_json::json!(n);
         }
+        // What it would take to make this folder again, written now rather than
+        // asked for later. Nobody remembers which branch a folder held six
+        // weeks ago, and the label above cannot be turned back into one -- it
+        // flattens `work/2` and `work-2` to the same word
+        if let (Some(branch), Some(from)) = (name, like) {
+            if let Some(url) = crate::repo::remote_url_of(from) {
+                folder["source"] = serde_json::to_value(SourceSpec::worktree(
+                    &crate::folders::scrub(&url),
+                    branch,
+                    &crate::worktree::default_base(from),
+                ))?;
+            }
+        }
         // Beside the folders it belongs with. A branch of one project written
         // after an unrelated one reads as unrelated: the list is drawn in the
         // order this is written in, and a family that is not next to itself is
@@ -1568,6 +1581,32 @@ pub fn rename_folder(ws_name: &str, cwd: &Path, name: &str) -> Result<()> {
             }
             n => g["name"] = serde_json::json!(n),
         }
+        Ok(())
+    })
+}
+
+/// Writes down where a folder came from, so no machine has to ask again.
+///
+/// Called at the moment a folder is made, and once more for a folder that was
+/// written by hand and had to be asked about. Both write the same thing, so
+/// "answered once" and "made by us" leave the settings in the same state and
+/// every machine after this one is silent.
+pub fn set_folder_source(ws_name: &str, cwd: &Path, source: &SourceSpec) -> Result<()> {
+    set_folder_source_at(&config_file_path(), ws_name, cwd, source)
+}
+
+/// The same, told which settings file to edit.
+pub fn set_folder_source_at(
+    path: &Path,
+    ws_name: &str,
+    cwd: &Path,
+    source: &SourceSpec,
+) -> Result<()> {
+    with_folders(path, ws_name, |folders| {
+        let Some(g) = find_folder(folders, cwd) else {
+            return Ok(());
+        };
+        g["source"] = serde_json::to_value(source)?;
         Ok(())
     })
 }

@@ -164,6 +164,11 @@ pub struct GroupState {
     /// the tabs in that folder are being held back rather than run
     #[serde(default)]
     pub health: crate::folders::Health,
+    /// How far this folder's branch is from the remote, as of the last fetch.
+    /// A number the row can wear, so "somebody else has pushed" is something
+    /// you notice rather than something you find out
+    #[serde(default)]
+    pub drift: crate::folders::Drift,
 }
 
 impl GroupState {
@@ -205,9 +210,10 @@ impl GroupState {
                         .map(|f| Self::color_of(f, chosen)),
                     linked: t.place.linked,
                     // Filled in by whoever is drawing: whether a folder is
-                    // here is a question for the disk, and the disk is asked
-                    // away from the list being built
+                    // here, and how far it has drifted, are questions for the
+                    // disk, and the disk is asked away from the list being built
                     health: Default::default(),
+                    drift: Default::default(),
                 },
             ));
         }
@@ -272,6 +278,65 @@ pub struct BranchPlan {
     /// Set once it has actually been made
     #[serde(default)]
     pub done: bool,
+}
+
+/// Putting a working folder back on this machine.
+///
+/// The dialog does not decide anything: it shows what will happen and asks. All
+/// of it is worked out by the same code that carries it out, so the line on
+/// screen is the line that runs.
+///
+/// Most of the time there is nothing to ask. Where a folder came from was
+/// written down when it was made, so the answer is already known and the
+/// question is only whether to go ahead. The asking case is the one where
+/// nothing was written down — settings typed by hand, or a folder that predates
+/// any of this — and the answer is written into the settings so that this
+/// machine, and every machine after it, never asks again.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct RepairPlan {
+    /// The folder this is about, as the page named it
+    pub folder: String,
+    /// What it is called in the list
+    pub name: String,
+    /// What is wrong with it, in one line
+    pub trouble: String,
+    /// Everything that has to happen, in order, each carrying the command
+    #[serde(default)]
+    pub steps: Vec<crate::folders::Step>,
+    /// What stands in the way, when something does
+    #[serde(default)]
+    pub blocked: Option<crate::folders::Blocked>,
+    /// The same, in the person's language
+    #[serde(default)]
+    pub said: String,
+    /// Whether this is the one case that has to ask which project the folder
+    /// belongs to
+    #[serde(default)]
+    pub asking: bool,
+    /// The projects on this machine it could belong to
+    #[serde(default)]
+    pub projects: Vec<Project>,
+    /// The branch to propose, when asking
+    #[serde(default)]
+    pub branch: String,
+    /// Why it could not be done, after trying
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Set once the folder is actually there
+    #[serde(default)]
+    pub done: bool,
+}
+
+/// A project already on this machine, offered as the one a folder belongs to.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct Project {
+    /// Its remote, with no credentials in it. This is what gets written down:
+    /// it is the same on every machine, and a path is not
+    pub origin: String,
+    /// Where it is here, so the list reads as places rather than as URLs
+    pub at: String,
+    /// What to call it in the list
+    pub name: String,
 }
 
 /// Folders to choose from, when somewhere new is being opened.
@@ -416,6 +481,9 @@ pub struct UiState {
     /// The answer to "what would happen if I made this branch"
     #[serde(default)]
     pub branch: Option<BranchPlan>,
+    /// The answer to "what would it take to have this folder here"
+    #[serde(default)]
+    pub repair: Option<RepairPlan>,
     /// Folders to choose from, while somewhere new is being opened
     #[serde(default)]
     pub browse: Option<BrowseState>,

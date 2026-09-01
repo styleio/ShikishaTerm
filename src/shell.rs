@@ -651,19 +651,24 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); background:var(--panel); color:var(--text); }
   #netveil .nvbtn[hidden] { display:none; }
 
-  #vault, #palette, #branch, #browse { position:fixed; inset:0; background:#00000099; display:flex;
+  #vault, #palette, #branch, #browse, #repair { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
-  #vault[hidden], #palette[hidden], #branch[hidden], #browse[hidden] { display:none; }
-  #vault .vbox, #palette .vbox, #branch .vbox, #browse .vbox { background:var(--panel); border:1px solid var(--brand);
+  #vault[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
+  #repair[hidden] { display:none; }
+  #vault .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
+  #repair .vbox { background:var(--panel); border:1px solid var(--brand);
     border-radius:12px; padding:16px 18px; width:min(720px,92vw); max-height:82vh;
     display:flex; flex-direction:column; gap:10px; }
-  #vault .vhead, #palette .vhead, #branch .vhead, #browse .vhead { display:flex; align-items:center; }
-  #vault .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle { color:var(--brand);
+  #vault .vhead, #palette .vhead, #branch .vhead, #browse .vhead,
+  #repair .vhead { display:flex; align-items:center; }
+  #vault .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle,
+  #repair .vtitle { color:var(--brand);
     font-size:13px; letter-spacing:1px; text-transform:uppercase; flex:1; }
-  #vault .vclose, #palette .vclose, #branch .vclose, #browse .vclose { cursor:pointer;
+  #vault .vclose, #palette .vclose, #branch .vclose, #browse .vclose,
+  #repair .vclose { cursor:pointer;
     color:var(--dim); font-size:16px; padding:2px 6px; }
   #vault .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
-  #browse .vclose:hover { color:var(--text); }
+  #browse .vclose:hover, #repair .vclose:hover { color:var(--text); }
   #vault #vq, #palette #pq, #branch #bq { font:inherit; font-size:14px; background:var(--bg);
     color:var(--text); border:1px solid var(--line); border-radius:8px; padding:9px 12px; outline:none; }
   #vault #vq:focus, #palette #pq:focus, #branch #bq:focus { border-color:var(--brand); }
@@ -699,6 +704,27 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bcarry .link { font-size:10.5px; color:var(--dim); border:1px solid var(--line);
     border-radius:5px; padding:0 4px; }
   #branch .berr, #browse .berr { color:var(--bad, #e5644d); font-size:12px; white-space:pre-wrap; }
+  /* Putting a folder back. The same frame as the branch dialog, because it is
+     the same kind of question -- what will happen, said before it happens */
+  #repair .rname { font-size:13px; font-weight:600; }
+  #repair .rsay { color:var(--dim); font-size:11.5px; white-space:pre-wrap; line-height:1.5; }
+  #repair .rwill { color:var(--dim); font-size:11px; padding-top:2px; }
+  #repair .rcmd { font-family:var(--mono); font-size:11.5px; color:var(--text);
+    background:var(--raise); border-radius:6px; padding:5px 7px; margin-top:3px;
+    overflow-x:auto; white-space:pre; }
+  #repair .rsteps, #repair .rask { display:flex; flex-direction:column; gap:2px; }
+  /* A display of its own beats the hidden attribute unless it is said again
+     here. Without this the question stayed on screen after it was answered */
+  #repair .rask[hidden] { display:none; }
+  #repair .rproj { display:flex; gap:7px; align-items:baseline; padding:3px 2px; cursor:pointer; }
+  #repair .rproj .nm { font-size:12.5px; }
+  #repair .rproj .at { color:var(--dim); font-size:11px; font-family:var(--mono); }
+  #repair .rbrow { display:flex; gap:8px; align-items:center; padding-top:4px; }
+  #repair .rblabel { color:var(--dim); font-size:11.5px; flex:0 0 auto; }
+  #repair .rbranch { font:inherit; font-size:12.5px; flex:1 1 auto; min-width:0;
+    background:var(--bg); color:var(--text); border:1px solid var(--brand);
+    border-radius:6px; padding:4px 6px; outline:none; }
+  #repair .rerr { color:var(--bad, #e5644d); font-size:12px; white-space:pre-wrap; }
   #branch .brow, #browse .brow { display:flex; gap:8px; justify-content:flex-end; }
   #branch button, #browse button { font:inherit; font-size:13px; padding:7px 16px;
     border-radius:8px; border:1px solid var(--line); background:var(--raise);
@@ -723,9 +749,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      a warning per folder on a PC that has none of them is four warnings nobody
      reads -- and a warning nobody reads is the same as no warning at all. The
      count is the whole message; the names are one click away */
-  .tab.trouble { gap:6px; color:var(--warn, #e0a80a); }
-  .tab.trouble .nm { font-size:11.5px; opacity:1; }
-  .tab.trouble .caret { color:inherit; font-size:9px; margin-left:auto; padding:0 4px; }
+  .tab.trouble { gap:6px; color:var(--warn, #e0a80a); align-items:flex-start; }
+  /* The one line wraps rather than being cut: the count is the whole message,
+     and a message that ends in an ellipsis is a message nobody acts on. Every
+     language spends a different width on it, so nothing here depends on it
+     fitting */
+  .tab.trouble .nm { font-size:11.5px; opacity:1; white-space:normal;
+    line-height:1.35; flex:1 1 auto; min-width:0; }
+  .tab.trouble .caret { color:inherit; font-size:9px; flex:0 0 auto; padding:0 2px; }
   .tab.troubled { padding-left:26px; font-size:11.5px; }
   .tab.troubled .nm { color:var(--warn, #e0a80a); }
   .tab.troubled .why { display:block; color:var(--dim); font-size:10.5px;
@@ -733,6 +764,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* On the folder's own row, in the mark's column, so a folded list still says
      which folder the count was about */
   .tab.folder .ail { flex:0 0 auto; color:var(--warn, #e0a80a); font-size:11px; }
+  /* How far the branch is from the remote. Sits at the end of the row, where a
+     count belongs, and never pushes the name around */
+  .tab.folder .drift { margin-left:auto; display:flex; gap:5px; flex:0 0 auto;
+    font-size:10.5px; font-family:var(--mono); }
+  .tab.folder .drift .beh { color:var(--warn, #e0a80a); }
+  .tab.folder .drift .ahd { color:var(--dim); }
+  /* The + keeps its place at the very end */
+  .tab.folder .drift + .more { margin-left:6px; }
   #vault .vhint { color:var(--dim); font-size:11.5px; }
   #vault .vlist, #palette .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; }
   #vault .vrow, #palette .prow { padding:9px 10px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
@@ -1003,6 +1042,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="brow"><button class="go"></button></div>
     </div>
   </div>
+  <!-- A working folder that is not on this machine. What will run is shown
+       before it runs; the only question asked is the one nothing answers -->
+  <div id="repair" hidden>
+    <div class="vbox">
+      <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
+      <div class="rname"></div>
+      <div class="rsay"></div>
+      <div class="rsteps"></div>
+      <div class="rask" hidden>
+        <div class="rlist"></div>
+        <div class="rbrow"><span class="rblabel"></span><input class="rbranch" type="text" autocomplete="off" spellcheck="false"></div>
+      </div>
+      <div class="rerr"></div>
+      <div class="brow"><button class="go"></button></div>
+    </div>
+  </div>
   <!-- Somewhere else to work. The same list on the window and on a phone -->
   <div id="browse" hidden>
     <div class="vbox">
@@ -1242,6 +1297,7 @@ function drawTabs() {
         // still shows which folder is the one with the problem
         ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
         el("span", {class:"nm"}, g.name || ""),
+        drifted(g),
         el("span", {class:"more", title:T["tui.folder.add"] || "+",
             onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+")));
     }
@@ -1350,6 +1406,22 @@ function openList(anchor, rows) {
   return m;
 }
 
+// How far this folder is from the remote, when it is anywhere but on it.
+//
+// A number and an arrow, nothing else. Somebody pushing to the branch you are
+// sitting on is the sort of thing you want to notice in passing, not something
+// to go and ask about -- and it is true as of the last fetch, which is what the
+// hover says, because a number that quietly means "an hour ago" would be worse
+// than no number
+function drifted(g) {
+  const d = (g && g.drift) || {};
+  if (!d.behind && !d.ahead) return null;
+  const say = k => (T[k] || "").replace("{n}", k.endsWith("behind") ? d.behind : d.ahead);
+  const box = el("span", {class:"drift"});
+  if (d.behind) box.append(el("span", {class:"beh", title:say("tui.folder.behind")}, "↓" + d.behind));
+  if (d.ahead) box.append(el("span", {class:"ahd", title:say("tui.folder.ahead")}, "↑" + d.ahead));
+  return box;
+}
 // Whether a folder is one the person has to do something about. Being looked
 // at is not: a drive takes a moment to answer and a warning that appears and
 // then withdraws itself teaches people to ignore warnings
@@ -1413,6 +1485,9 @@ function troubleRow(nav, folders) {
 function folderMenu(e, g) {
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
   openList(e.currentTarget, [
+    // First when the folder is not here at all: nothing else in this menu can
+    // be done in a folder that does not exist
+    ailing(g) ? item(T["tui.repair.go"] || "", () => openRepair(g)) : null,
     item(T["tui.tab.add"] || "ADD TAB", addTabHere),
     // Only where there is a project to cut a branch from
     g.color ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
@@ -1503,6 +1578,100 @@ function drawBrowse() {
 // while the name is still being typed
 let branchFrom = "";
 let branchTimer = 0;
+// Putting a working folder back on this machine.
+//
+// Nearly always there is nothing to choose: where the folder came from was
+// written down when it was made, so the dialog says what will run and offers
+// one button. The choosing case is the one where nothing was written down, and
+// answering it writes the answer into the settings so no machine asks again.
+let repairAt = "";
+let repairPick = "";
+function openRepair(g) {
+  const b = document.getElementById("repair");
+  if (!b) return;
+  repairAt = g.folder || "";
+  repairPick = "";
+  b.hidden = false;
+  b.querySelector(".vtitle").textContent = T["tui.repair.title"] || "";
+  b.querySelector(".rname").textContent = g.name || g.folder || "";
+  b.querySelector(".rsay").textContent = whyFolder(g);
+  b.querySelector(".rsteps").textContent = "";
+  b.querySelector(".rask").hidden = true;
+  b.querySelector(".rerr").textContent = "";
+  askRepair(false);
+}
+function closeRepair() {
+  const b = document.getElementById("repair");
+  if (b) b.hidden = true;
+  repairAt = "";
+}
+// Asks what would happen, or asks for it. One message for both, so what was
+// shown is what runs
+function askRepair(take) {
+  const b = document.getElementById("repair");
+  const branch = b ? (b.querySelector(".rbranch").value || "") : "";
+  send({kind:"repair", folder:repairAt, choose:repairPick, branch:branch, take:!!take});
+  repairPick = "";
+}
+function drawRepair() {
+  const b = document.getElementById("repair");
+  if (!b || b.hidden) return;
+  const p = (S && S.repair) || null;
+  // An answer about a folder that is no longer the one on screen says nothing
+  // about this one
+  if (!p || p.folder !== repairAt) return;
+  if (p.done) { closeRepair(); return; }
+  b.querySelector(".rname").textContent = p.name || p.folder || "";
+  b.querySelector(".rsay").textContent = p.said || p.trouble || "";
+  b.querySelector(".rerr").textContent = p.error || "";
+  // What will run, in order, exactly as it will run
+  const box = b.querySelector(".rsteps");
+  box.textContent = "";
+  const steps = p.steps || [];
+  if (steps.length) {
+    box.append(el("div", {class:"rwill"}, T["tui.repair.will"] || ""));
+    for (const s of steps) {
+      box.append(el("div", {class:"rcmd"}, s.line || (s["do"] === "make" ? s.to : "")));
+    }
+  }
+  // The one question, and only when there is one
+  const ask = b.querySelector(".rask");
+  ask.hidden = !p.asking;
+  if (p.asking) drawAsk(ask, p);
+  const go = b.querySelector(".go");
+  go.textContent = p.asking ? (T["tui.repair.save"] || "") : (T["tui.repair.go"] || "");
+  go.disabled = p.asking ? false : !steps.length;
+}
+// Which project this folder holds. Drawn once per set of projects: rebuilding
+// it on every answer would throw away whatever was just chosen
+function drawAsk(ask, p) {
+  // Marked as drawn rather than compared against the empty string: a machine
+  // with no projects open answers with an empty list, and an empty key read as
+  // "nothing drawn yet" left the question itself unwritten
+  const key = "|" + (p.projects || []).map(x => x.origin).join("\u0000");
+  const branch = ask.querySelector(".rbranch");
+  if (ask.dataset.key !== key) {
+    ask.dataset.key = key;
+    const list = ask.querySelector(".rlist");
+    list.textContent = "";
+    list.append(el("div", {class:"rwill"}, T["tui.repair.which"] || ""));
+    for (const proj of (p.projects || [])) {
+      const row = el("label", {class:"rproj"},
+        el("input", {type:"radio", name:"rproj", value:proj.origin}),
+        el("span", {class:"nm"}, proj.name),
+        el("span", {class:"at"}, proj.at));
+      row.querySelector("input").onchange = () => { repairPick = proj.origin; };
+      list.append(row);
+    }
+    const plain = el("label", {class:"rproj"},
+      el("input", {type:"radio", name:"rproj", value:"folder"}),
+      el("span", {class:"nm"}, T["tui.repair.plain"] || ""));
+    plain.querySelector("input").onchange = () => { repairPick = "folder"; };
+    list.append(plain);
+    branch.value = p.branch || "";
+  }
+  ask.querySelector(".rblabel").textContent = T["tui.repair.branch"] || "";
+}
 function openBranch(g) {
   const b = document.getElementById("branch");
   if (!b) return;
@@ -1641,6 +1810,26 @@ function drawCarry(b, items) {
       it.folder ? el("span", {class:"link"}, T["tui.branch.carry.link"] || "shared") : null));
   }
 }
+
+(function () {
+  const b = document.getElementById("repair");
+  if (!b) return;
+  b.querySelector(".vclose").onclick = closeRepair;
+  b.addEventListener("mousedown", e => { if (e.target === b) closeRepair(); });
+  // One button, whether it is answering the question or going ahead. Which of
+  // those it is doing is written on it, and decided by the app rather than here
+  b.querySelector(".go").onclick = () => {
+    const asking = !b.querySelector(".rask").hidden;
+    askRepair(!asking);
+  };
+  b.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); closeRepair(); }
+    if (e.key === "Enter" && !b.querySelector(".go").disabled) {
+      e.preventDefault();
+      b.querySelector(".go").click();
+    }
+  });
+})();
 
 (function () {
   const b = document.getElementById("branch");
@@ -2225,6 +2414,7 @@ window.__state = function (json) {
   drawVeil();
   renderVault();
   drawBranch();
+  drawRepair();
   drawBrowse();
   // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");

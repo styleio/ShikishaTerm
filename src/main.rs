@@ -511,6 +511,9 @@ struct WinSurface {
     /// Branches asked about, and asked for: (folder cut from, branch, what to
     /// grow it from, make it, what to bring along)
     branches: Vec<(String, String, String, bool, Vec<String>)>,
+    /// Working folders asked about, and asked for: (the folder, the project
+    /// chosen when one had to be, the branch, go ahead)
+    repairs: Vec<(String, String, String, bool)>,
     /// Colours chosen for a project: (a folder in it, the colour)
     folder_colors: Vec<(String, String)>,
     /// Folders being looked through, and the one finally chosen
@@ -691,6 +694,10 @@ impl WinSurface {
         std::mem::take(&mut self.branches)
     }
 
+    fn take_repairs(&mut self) -> Vec<(String, String, String, bool)> {
+        std::mem::take(&mut self.repairs)
+    }
+
     fn take_folder_colors(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.folder_colors)
     }
@@ -807,6 +814,9 @@ impl WinSurface {
                 ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
                 Ev::Branch { from, branch, base, make, carry } => {
                     self.branches.push((from, branch, base, make, carry))
+                }
+                Ev::Repair { folder, choose, branch, take } => {
+                    self.repairs.push((folder, choose, branch, take))
                 }
                 Ev::FolderColor { folder, color } => self.folder_colors.push((folder, color)),
                 Ev::Browse { path, open } => self.browses.push((path, open)),
@@ -1159,6 +1169,7 @@ fn run_in_window() -> Result<()> {
         vault_queries: Vec::new(),
         vault_opens: Vec::new(),
         branches: Vec::new(),
+        repairs: Vec::new(),
         folder_colors: Vec::new(),
         browses: Vec::new(),
         folder_names: Vec::new(),
@@ -1728,12 +1739,20 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
     let health = folders::watch().look(
         &groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
     );
+    // And how far each has drifted from the remote. Read off the same disk,
+    // never over the network -- what is on it says "three behind what you last
+    // fetched", which is the thing worth seeing without asking
+    let drift = folders::drifts().look(
+        &groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+    );
     for (at, g) in groups.iter_mut() {
         g.health = health.get(at).cloned().unwrap_or_default();
+        g.drift = drift.get(at).cloned().unwrap_or_default();
     }
     crate::uistate::UiState {
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
         branch: ui.branch.clone(),
+        repair: ui.repair.clone(),
         browse: ui.browse.clone(),
         workspace: ui
             .ws_names
@@ -2333,6 +2352,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // What making a branch would do. Answered while the name is being typed,
     // and cleared once the folder exists so the dialog can close itself
     let mut branch_view: Option<crate::uistate::BranchPlan> = None;
+    // What it would take to have a missing working folder here. Answered when
+    // one is opened, and cleared once the folder exists so the dialog closes
+    let mut repair_view: Option<crate::uistate::RepairPlan> = None;
     // The folders being looked through, while somewhere new is being chosen
     let mut browse_view: Option<crate::uistate::BrowseState> = None;
     // What this whole app is costing the machine, refreshed on the same beat as
@@ -3455,6 +3477,27 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     | remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultOpen { .. }) => {
                         surface.queue_vault(ev);
                     }
+                    // Giving a branch its own folder, and putting a working
+                    // folder back on this machine. Neither is a keystroke, so
+                    // neither can be turned into one -- they go to the same
+                    // queues the window's dialogs fill
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Branch {
+                        from,
+                        branch,
+                        base,
+                        make,
+                        carry,
+                    }) => {
+                        surface.branches.push((from, branch, base, make, carry));
+                    }
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Repair {
+                        folder,
+                        choose,
+                        branch,
+                        take,
+                    }) => {
+                        surface.repairs.push((folder, choose, branch, take));
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         let keys = keys_for(&ev);
@@ -3709,6 +3752,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             },
             vault: vault_view.clone(),
             branch: branch_view.clone(),
+            repair: repair_view.clone(),
             browse: browse_view.clone(),
             folder_colors: cfg
                 .as_ref()
@@ -4305,6 +4349,111 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     flash = Some(format!("{e:#}"));
                 }
             }
+        }
+        // A working folder that is not on this machine. The same call answers
+        // "what would it take" and does it, so the lines shown before it
+        // happens are the lines that happen
+        for (folder, choose, branch, take) in surface.take_repairs() {
+            let at = std::path::PathBuf::from(&folder);
+            let ws = workspaces.get(ws_index);
+            let ws_name = ws.map(|w| w.name.clone()).unwrap_or_default();
+            // The answer to the one question that has to be asked, written into
+            // the settings the moment it is given. Every machine after this one
+            // reads it instead of asking
+            let chosen = match choose.trim() {
+                "" => None,
+                "folder" => Some(config::SourceSpec::plain()),
+                url => Some(config::SourceSpec::worktree(
+                    url,
+                    match branch.trim().is_empty() {
+                        true => at
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default(),
+                        false => branch.trim().to_string(),
+                    }
+                    .as_str(),
+                    "origin/main",
+                )),
+            };
+            if let Some(spec) = chosen.as_ref() {
+                if let Err(e) = config::set_folder_source(&ws_name, &at, spec) {
+                    flash = Some(format!("{e:#}"));
+                }
+            }
+            // What the settings say now: the answer just given, or what was
+            // written down when the folder was made
+            let source = match chosen.as_ref() {
+                Some(spec) => spec.read(),
+                None => ws
+                    .and_then(|w| w.folders.iter().find(|f| f.cwd.as_deref() == Some(at.as_path())))
+                    .map(|f| f.source.clone())
+                    .unwrap_or_default(),
+            };
+            // The project the settings already name, when they do. Preferred
+            // over working it out from the path: what somebody wrote down beats
+            // what a folder's shape suggests
+            let checkout = ws.and_then(|w| {
+                w.folders.iter().find_map(|f| {
+                    let cwd = f.cwd.as_deref()?;
+                    let url = crate::repo::remote_url_of(cwd)?;
+                    match &source {
+                        config::Source::Worktree { origin, .. }
+                            if crate::folders::scrub(&url) == crate::folders::scrub(origin) =>
+                        {
+                            crate::repo::main_checkout(cwd)
+                        }
+                        _ => None,
+                    }
+                })
+            });
+            let name = ws
+                .and_then(|w| w.folders.iter().find(|f| f.cwd.as_deref() == Some(at.as_path())))
+                .and_then(|f| f.name.clone())
+                .unwrap_or_else(|| {
+                    at.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+                });
+            let planned = crate::folders::plan(&at, &source, checkout.as_deref());
+            let mut view = crate::uistate::RepairPlan {
+                folder: folder.clone(),
+                name,
+                trouble: trouble_of(&at),
+                branch: at
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                ..Default::default()
+            };
+            match planned {
+                Ok(steps) => {
+                    view.done = steps.is_empty();
+                    view.steps = steps.clone();
+                    if take && !steps.is_empty() {
+                        // Stopped at the first thing that will not work: the
+                        // second step is built on the first having happened
+                        match steps.iter().try_for_each(|s| crate::folders::take(s, &source)) {
+                            Ok(()) => view.done = at.is_dir(),
+                            Err(e) => view.error = Some(format!("{e:#}")),
+                        }
+                        if view.done {
+                            flash = Some(i18n::tp(
+                                "msg.folder.ready",
+                                &[("name", &view.name)],
+                            ));
+                        }
+                    }
+                }
+                Err(blocked) => {
+                    // Nothing was ever written down about this folder. This is
+                    // the only case that asks, and the answer ends the asking
+                    // for every machine, not just this one
+                    view.asking = matches!(blocked, crate::folders::Blocked::Unknown);
+                    view.projects = projects_here(ws);
+                    view.said = blocked_said(&blocked);
+                    view.blocked = Some(blocked);
+                }
+            }
+            repair_view = Some(view);
         }
         // Another branch of a project already open. The same call answers "what
         // would this do" and does it, so the line shown before it happens is
@@ -6123,6 +6272,73 @@ fn resolve_launch(
         opts.model = Some(conn);
     }
     argv
+}
+
+/// What is wrong with a working folder, in one line.
+///
+/// Asked of the same table the sidebar reads, so the dialog and the row above
+/// it cannot say two different things about one folder.
+fn trouble_of(at: &std::path::Path) -> String {
+    match folders::watch().settled(at, folders::BEFORE_LAUNCH) {
+        folders::Health::NoDrive { drive } => i18n::tp(
+            "msg.folder.no_drive",
+            &[("drive", &drive), ("path", &at.display().to_string())],
+        ),
+        folders::Health::Missing => {
+            i18n::tp("msg.folder.missing", &[("path", &at.display().to_string())])
+        }
+        _ => String::new(),
+    }
+}
+
+/// Why the folder cannot simply be put back, in the person's language.
+fn blocked_said(why: &folders::Blocked) -> String {
+    use folders::Blocked;
+    match why {
+        Blocked::OtherProject { at, found, wanted } => i18n::tp(
+            "msg.folder.other_project",
+            &[("path", at), ("found", found), ("wanted", wanted)],
+        ),
+        Blocked::NotEmpty { at, holds } => i18n::tp(
+            "msg.folder.not_empty",
+            &[("path", at), ("holds", &holds.join(", "))],
+        ),
+        Blocked::BranchTaken { branch, at } => {
+            i18n::tp("msg.folder.branch_taken", &[("branch", branch), ("path", at)])
+        }
+        Blocked::Unknown => i18n::t("msg.folder.unknown"),
+        Blocked::NoDrive { drive } => {
+            i18n::tp("msg.folder.no_drive_short", &[("drive", drive)])
+        }
+    }
+}
+
+/// The projects already on this machine, for the one question that has to be
+/// asked.
+///
+/// Taken from the folders that are open, because those are the projects this
+/// person actually works on -- and each is named by its remote, which is the
+/// same string on every machine and therefore the thing worth writing down.
+fn projects_here(ws: Option<&config::Workspace>) -> Vec<crate::uistate::Project> {
+    let mut out: Vec<crate::uistate::Project> = Vec::new();
+    for f in ws.map(|w| w.folders.as_slice()).unwrap_or_default() {
+        let Some(cwd) = f.cwd.as_deref() else { continue };
+        let Some(url) = crate::repo::remote_url_of(cwd) else { continue };
+        let origin = folders::scrub(&url);
+        if out.iter().any(|p| p.origin == origin) {
+            continue;
+        }
+        let at = crate::repo::main_checkout(cwd).unwrap_or_else(|| cwd.to_path_buf());
+        out.push(crate::uistate::Project {
+            name: at
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| origin.clone()),
+            at: at.display().to_string(),
+            origin,
+        });
+    }
+    out
 }
 
 /// Where it runs comes from the tab's group, the only thing that has a folder.
@@ -8009,6 +8225,9 @@ struct Ui {
     discuss_start_name: Option<String>,
     /// What making a branch would do, while someone is naming one
     branch: Option<crate::uistate::BranchPlan>,
+    /// What it would take to put a working folder back on this machine, while
+    /// somebody is looking at the one that is missing
+    repair: Option<crate::uistate::RepairPlan>,
     /// The folders being looked through, while somewhere new is being chosen
     browse: Option<crate::uistate::BrowseState>,
     /// The colours chosen for projects, by the folder git shares

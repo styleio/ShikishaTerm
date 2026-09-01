@@ -155,6 +155,17 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // so they don't fight in a loop: they hand off, the side that last actually
         // changed size wins, and the other holds until it changes.
         Ev::Resize { .. } => true,
+        // Giving a branch its own folder, and putting a working folder back on
+        // this machine when it is not here. Both run git against a folder the
+        // person already works in, and both show what will run before it runs.
+        //
+        // Allowed from afar because a working folder that is missing is
+        // precisely the thing somebody discovers while away from the PC -- and
+        // because the phone can already type anything at all into an agent
+        // running in that folder, which is more reach, not less. Refusing here
+        // would mean the answer to "my folder is gone" is "wait until you are
+        // home", which is not an answer this app is allowed to give.
+        Ev::Branch { .. } | Ev::Repair { .. } => true,
         // Paste stays local — one long-press would flow straight into the AI's input box
         _ => false,
     }

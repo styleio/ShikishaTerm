@@ -786,6 +786,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             color: v.get("color").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
+        Some("repair") => Ev::Repair {
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            choose: v.get("choose").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            branch: v.get("branch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            take: v.get("take").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
         Some("branch") => Ev::Branch {
             from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             branch: v.get("branch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
@@ -1180,6 +1186,19 @@ pub enum Ev {
     /// `from` is the folder it would be cut from, and `make` says whether this
     /// is the question or the answer -- the same message either way, so what is
     /// shown before it happens and what happens cannot describe two things
+    /// Putting a working folder back on this machine: asked about, then asked
+    /// for. The same event does both, so what is shown is what happens
+    Repair {
+        folder: String,
+        /// The project it belongs to, in answer to the one question that has to
+        /// be asked -- a remote URL, or "folder" for an ordinary folder. Empty
+        /// while nothing has been chosen
+        choose: String,
+        /// The branch it holds, alongside that answer
+        branch: String,
+        /// Whether to go ahead with what was shown
+        take: bool,
+    },
     Branch {
         from: String,
         branch: String,

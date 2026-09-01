@@ -582,6 +582,168 @@ pub fn checkout_for(cwd: &Path, branch: &str) -> Option<PathBuf> {
     Some(at.parent()?.join(name))
 }
 
+// ---------------------------------------------------------------------------
+// How far a folder is from the remote
+// ---------------------------------------------------------------------------
+
+/// How far this folder's branch has drifted from the remote.
+///
+/// **As of the last fetch, and nothing more.** Nothing here goes to the
+/// network. Asking the remote would mean a connection every few seconds per
+/// folder, and — worse — it would put this app's git in the way of the git the
+/// person (or the agent in that tab) is running in the same folder. What is on
+/// disk is enough to say "you are three behind what you last saw", which is the
+/// thing worth knowing at a glance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Default)]
+pub struct Drift {
+    /// Commits the remote has that this folder does not
+    pub behind: u32,
+    /// Commits this folder has that the remote does not
+    pub ahead: u32,
+}
+
+impl Drift {
+    pub fn any(&self) -> bool {
+        self.behind > 0 || self.ahead > 0
+    }
+}
+
+/// One folder's last answer, and what it was an answer about.
+struct Drifted {
+    drift: Drift,
+    /// The two commits it was worked out from. While these are unchanged the
+    /// answer cannot have changed either, so nothing is recomputed
+    of: (String, String),
+    settled: bool,
+}
+
+/// How far each folder has drifted, kept up to date in the background.
+#[derive(Clone, Default)]
+pub struct Drifts {
+    known: Arc<Mutex<HashMap<PathBuf, Drifted>>>,
+}
+
+/// The one table, for the whole app.
+pub fn drifts() -> &'static Drifts {
+    static DRIFTS: OnceLock<Drifts> = OnceLock::new();
+    DRIFTS.get_or_init(Drifts::default)
+}
+
+impl Drifts {
+    /// Ask about these folders, and answer with what is known so far.
+    ///
+    /// Which two commits to compare is read off the disk here — it is a couple
+    /// of small files. Counting what lies between them is not: that is a walk
+    /// of the history, so it happens on a thread of its own and only when the
+    /// two commits have actually changed. In practice that is once per fetch,
+    /// not once per frame.
+    pub fn look(&self, paths: &[PathBuf]) -> HashMap<PathBuf, Drift> {
+        let mut out = HashMap::with_capacity(paths.len());
+        let mut send: Vec<(PathBuf, String, String)> = Vec::new();
+        {
+            let mut known = self.known.lock().unwrap_or_else(|e| e.into_inner());
+            known.retain(|k, _| paths.iter().any(|p| p == k));
+            for p in paths {
+                let Some(ends) = ends_of(p) else {
+                    // Not in a repository, or on a branch the remote has never
+                    // heard of. Neither is a state to draw a number for
+                    known.remove(p);
+                    continue;
+                };
+                match known.get(p) {
+                    Some(e) if e.of == ends => {
+                        if e.settled {
+                            out.insert(p.clone(), e.drift.clone());
+                        }
+                    }
+                    _ => {
+                        known.insert(
+                            p.clone(),
+                            Drifted { drift: Drift::default(), of: ends.clone(), settled: false },
+                        );
+                        send.push((p.clone(), ends.0, ends.1));
+                    }
+                }
+            }
+        }
+        for (p, mine, theirs) in send {
+            let known = Arc::clone(&self.known);
+            std::thread::spawn(move || {
+                let drift = count_between(&p, &mine, &theirs);
+                if let Ok(mut map) = known.lock() {
+                    if let Some(e) = map.get_mut(&p) {
+                        // Only if it is still an answer to the question that
+                        // was asked: a fetch during the walk moves the ends
+                        if e.of == (mine, theirs) {
+                            e.drift = drift;
+                            e.settled = true;
+                        }
+                    }
+                }
+            });
+        }
+        out
+    }
+}
+
+/// The two commits to compare: where this folder is, and where the remote was
+/// when it was last fetched.
+///
+/// Read the way git would read them, never by running git — the answer is
+/// wanted several times a second, and a repository mid-rebase answers anyway.
+fn ends_of(cwd: &Path) -> Option<(String, String)> {
+    let branch = crate::repo::branch_of(cwd)?;
+    let git = crate::repo::family_of(cwd)?;
+    let mine = ref_at(&git, &format!("refs/heads/{branch}"))?;
+    let theirs = ref_at(&git, &format!("refs/remotes/origin/{branch}"))?;
+    Some((mine, theirs))
+}
+
+/// One ref, loose or packed.
+fn ref_at(git: &Path, full: &str) -> Option<String> {
+    if let Ok(text) = std::fs::read_to_string(git.join(full)) {
+        let said = text.trim();
+        if !said.is_empty() && !said.starts_with("ref:") {
+            return Some(said.to_string());
+        }
+    }
+    // Refs that have been packed away live in one file, one per line
+    let packed = std::fs::read_to_string(git.join("packed-refs")).ok()?;
+    packed.lines().find_map(|l| {
+        let (sha, name) = l.split_once(' ')?;
+        (name.trim() == full).then(|| sha.trim().to_string())
+    })
+}
+
+/// How many commits lie on each side. The one place a git process is started.
+///
+/// `rev-list` only reads: it takes no lock and touches no working file, so it
+/// cannot collide with the git the person -- or the agent in that tab -- is
+/// running in the same folder. Run once per pair of commits, which is once per
+/// fetch rather than once per frame.
+fn count_between(cwd: &Path, mine: &str, theirs: &str) -> Drift {
+    if mine == theirs {
+        return Drift::default();
+    }
+    let mut asking = std::process::Command::new("git");
+    asking
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-list", "--left-right", "--count", &format!("{mine}...{theirs}")]);
+    let Ok(out) = crate::detach_console(&mut asking).output() else {
+        return Drift::default();
+    };
+    if !out.status.success() {
+        return Drift::default();
+    }
+    let said = String::from_utf8_lossy(&out.stdout);
+    let mut parts = said.split_whitespace();
+    // Left is what only this folder has, right is what only the remote has
+    let ahead = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+    let behind = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+    Drift { behind, ahead }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,6 +1003,52 @@ mod restore_tests {
         assert_eq!(checkout_for(deep, "feature/login"), Some(PathBuf::from(r"D:\Simic")));
         // Somewhere that is not one of ours has no project to point back at
         assert_eq!(checkout_for(Path::new(r"D:\just\a\folder"), "x"), None);
+    }
+
+/// The whole of it, carried out. Everything above stops at deciding; this
+    /// one runs what was decided and looks at what is on the disk afterwards.
+    #[test]
+    fn a_folder_is_really_put_back() {
+        let root = clear("real");
+        let checkout = root.join("myproject");
+        let url = project("myproject", &checkout);
+        let want = root.join("myproject.worktrees").join("work-2");
+        let source = cut(&url, "work-2");
+
+        let steps = plan(&want, &source, None).expect("nothing is in the way");
+        for s in &steps {
+            take(s, &source).expect("the step runs");
+        }
+        assert!(want.is_dir(), "the folder was not made");
+        assert!(want.join("readme.md").exists(), "it came up empty");
+        assert_eq!(crate::repo::branch_of(&want).as_deref(), Some("work-2"));
+        assert_eq!(
+            crate::repo::family_of(&want),
+            crate::repo::family_of(&checkout),
+            "it belongs to the project it was cut from"
+        );
+        // And now that it is there, there is nothing left to do
+        assert_eq!(plan(&want, &source, None), Ok(Vec::new()));
+        // Asking for the same branch a second time is refused rather than
+        // quietly making a second folder for it
+        let twice = root.join("myproject.worktrees").join("again");
+        assert!(matches!(
+            plan(&twice, &cut(&url, "work-2"), Some(&checkout)),
+            Err(Blocked::BranchTaken { .. })
+        ));
+    }
+
+    /// An ordinary folder is made, and nothing git is attempted on it.
+    #[test]
+    fn a_plain_folder_is_really_made() {
+        let root = clear("realplain");
+        let want = root.join("notes");
+        let steps = plan(&want, &crate::config::Source::Plain, None).unwrap();
+        for s in &steps {
+            take(s, &crate::config::Source::Plain).expect("the step runs");
+        }
+        assert!(want.is_dir());
+        assert!(!want.join(".git").exists(), "a plain folder is not a repository");
     }
 
     /// A remote URL can hold a live token. These are written into settings that
