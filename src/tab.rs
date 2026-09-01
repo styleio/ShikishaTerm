@@ -4447,9 +4447,18 @@ mod held_tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        // Named, though the card may have folded the path across two lines
+        // Named -- but the card folds to the width of the terminal, and a
+        // long path folds *inside* the name (this machine's temp folder is
+        // short enough to fit; a CI runner's is not, which is where it was
+        // first seen). Put the card's lines back together before looking
+        let unfolded: String = screen
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix('\u{2502}'))
+            .filter_map(|l| l.trim_end().strip_suffix('\u{2502}'))
+            .map(str::trim)
+            .collect();
         assert!(
-            screen.contains("shikisha-no-such-fold"),
+            unfolded.contains("shikisha-no-such-folder"),
             "the card never named the folder: {screen:?}"
         );
         // Still holding: what was asked for never ran, so nothing exited

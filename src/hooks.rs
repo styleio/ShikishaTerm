@@ -365,7 +365,13 @@ fn lua_to_json(v: &Value) -> serde_json::Value {
             let len = t.raw_len();
             let pairs: Vec<(Value, Value)> =
                 t.clone().pairs::<Value, Value>().filter_map(|p| p.ok()).collect();
-            if len > 0 && pairs.len() == len {
+            // An empty table is written the same way in Lua whether it was
+            // meant as a list or as a map, so something has to be decided
+            // here -- and every primitive that can hand one back means "the
+            // list is empty" (no changes, no conflicts, no commands you may
+            // call). Answering `{}` made a caller that iterates fall over on
+            // exactly the day there was nothing to iterate.
+            if pairs.is_empty() || (len > 0 && pairs.len() == len) {
                 J::Array((1..=len).map(|i| lua_to_json(&t.get(i).unwrap_or(Value::Nil))).collect())
             } else {
                 let mut o = serde_json::Map::new();
@@ -5584,6 +5590,21 @@ mod tests {
                 .unwrap_err();
             assert!(err.contains(name), "{name} が断られる理由に名前が入る: {err}");
         }
+    }
+
+    #[test]
+    fn an_empty_list_comes_back_as_an_empty_list() {
+        // The shape must not change on the quiet day. A panel that draws rows,
+        // or a script that loops over them, breaks precisely when there is
+        // nothing to draw -- which is the hardest day to reproduce
+        let e = HookEngine::new().unwrap();
+        let empty = e.call_primitive("lua", &[serde_json::json!("return {}")]).unwrap();
+        assert_eq!(empty, serde_json::json!([null, []]), "空のテーブルは空の配列");
+        let filled = e.call_primitive("lua", &[serde_json::json!("return {1, 2}")]).unwrap();
+        assert_eq!(filled, serde_json::json!([null, [1, 2]]));
+        // A table with names in it is still an object
+        let named = e.call_primitive("lua", &[serde_json::json!("return {a = 1}")]).unwrap();
+        assert_eq!(named, serde_json::json!([null, {"a": 1}]));
     }
 
     #[test]
