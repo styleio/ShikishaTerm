@@ -1611,7 +1611,7 @@ function folderMenu(e, g) {
     // First when the folder is not here at all: nothing else in this menu can
     // be done in a folder that does not exist
     ailing(g) ? item(T["tui.repair.go"] || "", () => openRepair(g)) : null,
-    item(T["tui.tab.add"] || "ADD TAB", addTabHere),
+    item(T["tui.tab.add"] || "ADD TAB", () => addTabHere(g)),
     // Only where there is a project to cut a branch from
     g.color ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
                    () => openBranch(g)) : null,
@@ -4362,9 +4362,18 @@ function walkToSettings(params) {
 // no such WebView and no keystroke that could summon one — the intent was simply
 // refused from afar, so the + did nothing at all. It walks to the same page and
 // asks for the same thing instead.
-function addTabHere() {
-  if (typeof REMOTE !== "undefined" && REMOTE) walkToSettings({addtab: (S && S.ws_index) || 0});
-  else send({kind:"addtab"});
+// `g` is the folder it was asked for from, when it was asked for from one.
+// Carrying it is the difference between "add a tab here" and "add a tab
+// somewhere, and let the form pick" -- which picked the first folder
+function addTabHere(g) {
+  const at = g && g.folder ? g.folder : "";
+  if (typeof REMOTE !== "undefined" && REMOTE) {
+    const p = {addtab: (S && S.ws_index) || 0};
+    if (at) p.folder = at;
+    walkToSettings(p);
+  } else {
+    send({kind:"addtab", folder: at});
+  }
 }
 // Fetch the newest run's portable replay (durable anchors, no digest refs).
 // The phone downloads it over HTTP; the window board has no HTTP downloads,
@@ -6803,14 +6812,28 @@ mod tests {
     #[test]
     fn the_tab_bar_plus_reaches_the_settings_from_a_phone() {
         assert!(
-            PAGE.contains("walkToSettings({addtab: (S && S.ws_index) || 0})"),
+            PAGE.contains("const p = {addtab: (S && S.ws_index) || 0};")
+                && PAGE.contains("walkToSettings(p);"),
             "スマホの + が設定ページへ歩いて行かない"
         );
         // The window still takes the keystroke path (the WebView is its to open)
-        assert!(PAGE.contains(r#"else send({kind:"addtab"});"#), "窓側の道が消えている");
+        assert!(
+            PAGE.contains(r#"send({kind:"addtab", folder: at});"#),
+            "窓側の道が消えている"
+        );
         assert!(
             !PAGE.contains(r#"onclick:() => send({kind:"addtab"})"#),
             "+ が全surface共通で intent を送る古い配線に戻っている"
+        );
+        // ...and both roads carry which folder it was asked for from. Without
+        // it the form adds the tab to the first folder, wherever it was asked
+        assert!(
+            PAGE.contains("if (at) p.folder = at;"),
+            "スマホの + がフォルダを落としている"
+        );
+        assert!(
+            PAGE.contains("const at = g && g.folder ? g.folder : \"\";"),
+            "+ を押したフォルダが読まれていない"
         );
     }
 

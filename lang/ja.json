@@ -549,6 +549,8 @@
   "settings.group.folder.pick": "作業フォルダを選んでください",
   "settings.group.add": "＋ 作業フォルダを追加",
   "settings.group.where": "動く場所",
+  "settings.tab.folder": "どの作業フォルダ",
+  "settings.tab.folder.hint": "選んだ作業フォルダへこのタブを移します。動く場所もそこになります",
   "settings.group.in_use": "このフォルダで動いているタブがあります。先に移すか削除してください",
   "settings.group.last": "最後の1つなので残します",
   "settings.group.delete": "この作業フォルダを外す",

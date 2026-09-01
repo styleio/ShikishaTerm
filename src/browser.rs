@@ -767,6 +767,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("addtab") => Ev::AddTab {
             pane: v.get("pane").and_then(|x| x.as_u64()).map(|n| n as u32),
+            folder: v
+                .get("folder")
+                .and_then(|x| x.as_str())
+                .filter(|f| !f.is_empty())
+                .map(str::to_string),
         },
         Some("foldername") => Ev::FolderName {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
@@ -1187,7 +1192,13 @@ pub enum Ev {
     /// pane with nothing in it. `pane` is that pane, when one asked -- the new
     /// tab goes there rather than wherever focus has wandered to by the time
     /// the form is done with
-    AddTab { pane: Option<u32> },
+    AddTab {
+        pane: Option<u32>,
+        /// The folder it was asked for from, when it was asked for from one.
+        /// Without it the form has to guess, and it guessed the first folder --
+        /// so a tab added from the third one appeared in the first
+        folder: Option<String>,
+    },
     /// A folder's heading was asked about another branch of the same project.
     /// `from` is the folder it would be cut from, and `make` says whether this
     /// is the question or the answer -- the same message either way, so what is

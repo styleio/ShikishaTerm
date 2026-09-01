@@ -487,6 +487,9 @@ struct WinSurface {
     /// 📼 record-mode toggles from the composer (true = arm the shown browser's
     /// recorder, false = silence recording everywhere).
     record_arms: Vec<bool>,
+    /// The folder a tab was asked for from, when the ask named one. Read once
+    /// by the door that opens the form
+    add_tab_folder: Option<String>,
     /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
     /// shown browser.
     run_luas: Vec<String>,
@@ -899,9 +902,19 @@ impl WinSurface {
                 // A tab was asked for from a pane with nothing in it. Note
                 // which pane asked, then go on to open the form exactly as the
                 // tab bar's + does -- one door, so the two cannot drift
-                Ev::AddTab { pane: Some(id) } => {
-                    self.add_tab_pane = Some(id);
-                    for e in keys_for(&crate::browser::Ev::AddTab { pane: None }) {
+                Ev::AddTab { pane, folder } => {
+                    self.add_tab_pane = pane.or(self.add_tab_pane);
+                    // A folder was named: the form has to be told, so remember
+                    // it for the door below. Otherwise this is the tab bar's +,
+                    // which goes through the same key the keyboard uses -- one
+                    // door, so the two cannot drift
+                    if let Some(f) = folder {
+                        self.add_tab_folder = Some(f);
+                    }
+                    for e in keys_for(&crate::browser::Ev::AddTab {
+                        pane: None,
+                        folder: None,
+                    }) {
                         self.pending.push_back(e);
                     }
                 }
@@ -1169,6 +1182,7 @@ fn run_in_window() -> Result<()> {
         last_pane_screens: std::collections::HashMap::new(),
         pending: std::collections::VecDeque::new(),
         presses: Vec::new(),
+        add_tab_folder: None,
         gits: Vec::new(),
         loads: Vec::new(),
         scrolls: Vec::new(),
@@ -5507,8 +5521,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // Without changing the nonce, a second press returns to the
                         // same URL and nothing happens.
                         KeyCode::Char('t') => {
+                            // Which folder it was asked for from, if it was
+                            let at = surface
+                                .add_tab_folder
+                                .take()
+                                .map(|f| format!("&folder={}", percent_encode(&f)));
                             let query = format!(
-                                "&addtab={ws_index}&nonce={}",
+                                "&addtab={ws_index}{}&nonce={}",
+                                at.unwrap_or_default(),
                                 start.elapsed().as_millis()
                             );
                             flash = Some(
@@ -7517,6 +7537,24 @@ fn open_settings(
     )
 }
 
+/// A folder path, safe to carry in a query string.
+///
+/// Only what a Windows path can hold has to survive: separators, spaces, and
+/// whatever a person named a folder. Anything outside the unreserved set is
+/// written as its bytes, which is what the other side decodes
+fn percent_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// The tab's working folder as an absolute path string, for attachments. Falls
 /// back to the app's own working folder when the tab has none configured.
 fn tab_cwd_abs(t: &Tab) -> String {
@@ -9278,7 +9316,7 @@ mod tests {
     /// The tab bar's + must arrive with the prefix key attached, so it works no matter which tab is being viewed
     #[test]
     fn the_add_tab_button_arrives_prefixed() {
-        let evs = super::keys_for(&crate::browser::Ev::AddTab { pane: None });
+        let evs = super::keys_for(&crate::browser::Ev::AddTab { pane: None, folder: None });
         assert_eq!(evs.len(), 2, "前置キー + 本体の2打鍵");
         let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
         assert_eq!(k.code, KeyCode::Char('b'));

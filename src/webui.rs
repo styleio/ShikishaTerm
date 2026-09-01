@@ -5003,10 +5003,11 @@ function tabPane(ws, t) {
     row(T["settings.tab.command"], cmdInput), real.box);
   if ((ws.folders || []).length > 1) {
     // Through a holder, because a select speaks strings and a group is a number
-    launch.append(row(T["settings.group.where"],
+    launch.append(row(T["settings.tab.folder"],
       choose({at: String(t.group || 0)}, "at",
              ws.folders.map((g, i) => [String(i), folderLabel(g, i)]),
-             v => { sel.tab = setTabGroup(ws, sel.tab, Number(v)); render(); refreshSave(); })));
+             v => { sel.tab = setTabGroup(ws, sel.tab, Number(v)); render(); refreshSave(); }),
+      el("span", {class:"hint"}, T["settings.tab.folder.hint"])));
   }
   box.append(launch);
 
@@ -5419,6 +5420,10 @@ function kindPanel(t, cmdInput, rebuild) {
     box.append(el("div", {class:"row"},
       ...f(o, "shell", T["settings.container.shell"], "bash / claude", upd, 220),
       el("span", {class:"hint"}, T["settings.container.hint"])));
+  } else if (isGitPanel(t.command)) {
+    // A git panel has nothing to launch: no command to pick, no arguments to
+    // get right. What it needs is the folder, and that is the row below
+    return el("div", {class:"hint"}, T["settings.tab.kind.git.hint"]);
   } else {
     const s = el("select");
     s.append(el("option", {value:""}, T["settings.tab.common.pick"]));
@@ -5937,7 +5942,15 @@ load().then(() => {
   const wi = idx("addtab");
   if (wss[wi]) {
     navGlobalOpen = false;
-    sel = {ws:wi, grp:null, tab:addTabTo(wss[wi]), global:false};
+    // Asked for from a folder: that is where it goes. The form used to add it
+    // wherever the default was, which is the first folder -- so a tab asked
+    // for from the third one turned up in the first
+    const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
+    const from = (q.get("folder") || "").trim();
+    const gi = from
+      ? (wss[wi].folders || []).findIndex(g => same(g.cwd) === same(from))
+      : -1;
+    sel = {ws:wi, grp:null, tab:addTabTo(wss[wi], gi >= 0 ? gi : undefined), global:false};
     sel.grp = wss[wi].tabs[sel.tab].group || 0;
     render();
     const s = document.querySelector(".navitem.sel");

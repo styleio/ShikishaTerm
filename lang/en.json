@@ -551,6 +551,8 @@
   "settings.group.folder.pick": "Choose a working folder",
   "settings.group.add": "＋ Add a working folder",
   "settings.group.where": "Works in",
+  "settings.tab.folder": "Which folder",
+  "settings.tab.folder.hint": "Moves this tab to that folder, and it runs there",
   "settings.group.in_use": "Tabs are still working in this folder. Move or delete them first.",
   "settings.group.last": "This is the only folder left, so it stays.",
   "settings.group.delete": "Remove this folder",
