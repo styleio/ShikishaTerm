@@ -1516,10 +1516,14 @@ function drawTabs() {
 // how much of a list is on screen is this screen's business, and the phone and
 // the window are each looking at their own
 const folded = new Set();
+// Redraws the list it just changed. Asking for the address bar instead left
+// the fold recorded and the screen untouched until the next state push
+// happened to arrive -- and the app only pushes when something has actually
+// changed, so on a quiet board that was seconds away and the press read as dead
 function fold(folder) {
   if (!folder) return;
   folded.has(folder) ? folded.delete(folder) : folded.add(folder);
-  drawNav();
+  drawTabs();
 }
 
 // What a folder can do. One menu, opened by pointer or by finger -- nothing
@@ -1605,7 +1609,7 @@ function troubleRow(nav, folders) {
   if (bad.length) {
     const say = (bad.length === 1 ? (T["tui.folder.trouble_one"] || "")
                                   : (T["tui.folder.trouble"] || "")).split("{n}").join(bad.length);
-    nav.append(el("div", {class:"tab trouble", onclick:() => { troubleOpen = !troubleOpen; drawNav(); }},
+    nav.append(el("div", {class:"tab trouble", onclick:() => { troubleOpen = !troubleOpen; drawTabs(); }},
       el("span", {class:"num"}, "⚠"),
       el("span", {class:"nm"}, say),
       el("span", {class:"caret"}, troubleOpen ? "▾" : "▸")));
@@ -6393,6 +6397,28 @@ mod tests {
             p.contains("addEventListener(\"pointercancel\", release")
                 && p.contains("addEventListener(\"blur\", release"),
             "押しっぱなしのまま画面が止まる道が残っている"
+        );
+    }
+
+    /// What the tab list changes by itself, the tab list draws by itself.
+    ///
+    /// Folding a folder and opening the warning line are both this list's own
+    /// business — the app is never told, so nothing arrives from it afterwards.
+    /// They asked for `drawNav` (the browser's address bar) instead, so the new
+    /// state was recorded and nothing on screen moved. What eventually moved it
+    /// was the next state push, and the app pushes only when something has
+    /// really changed: on a quiet board that is seconds away, and the press
+    /// reads as ignored.
+    #[test]
+    fn the_tab_list_redraws_itself_when_it_folds() {
+        let p = super::page();
+        assert!(
+            p.contains("folded.has(folder) ? folded.delete(folder) : folded.add(folder);\n  drawTabs();"),
+            "折りたたみが一覧を描き直していない（次の状態が届くまで画面が変わらない）"
+        );
+        assert!(
+            p.contains("troubleOpen = !troubleOpen; drawTabs();"),
+            "警告の開閉が一覧を描き直していない"
         );
     }
 

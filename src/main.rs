@@ -1893,8 +1893,16 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
                 Surface::Browser { key, name } => {
                     Some(crate::uistate::TabState::browser(i + 1, key, name))
                 }
-                Surface::Git { key, name, group, .. } => {
-                    Some(crate::uistate::TabState::git(i + 1, key, name, *group))
+                Surface::Git { key, name, dir, .. } => {
+                    // The panel reports on a folder, so it stands under that
+                    // folder's heading and is put away with it. Worked out from
+                    // where it actually points, exactly as a tab's is -- carried
+                    // as a number decided elsewhere, it was never filled in, and
+                    // a panel belonging to nothing sat on outside a folded folder
+                    let group = dir
+                        .as_deref()
+                        .and_then(|d| groups.iter().position(|(k, _)| k == d));
+                    Some(crate::uistate::TabState::git(i + 1, key, name, group))
                 }
             })
             .collect(),
@@ -7260,8 +7268,6 @@ enum Surface {
         key: String,
         name: String,
         dir: Option<std::path::PathBuf>,
-        /// Which folder heading it belongs under in the sidebar
-        group: Option<usize>,
     },
 }
 
@@ -7290,7 +7296,6 @@ fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
                 out.push(Surface::Git {
                     dir: ws.cwd_of(ft),
-                    group: None,
                     key,
                     name,
                 });
