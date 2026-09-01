@@ -591,6 +591,74 @@ fn generate_with_local_ai(
     extract_lua(&text)
 }
 
+/// Ask the assistant AI to write the commit message for a diff.
+///
+/// The same road the automation editor uses to have Lua written, and the same
+/// setting picks the AI -- there is no second place to configure, and no second
+/// kind of key. What comes back is used as a draft: it lands in the composer
+/// for the person to read, change, and send.
+pub fn write_commit_message(diff: &str, engine: Option<&str>) -> Result<String> {
+    if diff.trim().is_empty() {
+        anyhow::bail!("{}", crate::i18n::t("err.git.nothing_to_describe"));
+    }
+    // A diff can be a megabyte. What a message needs is the shape of the
+    // change, which the first pages carry; the rest is the same shape again
+    const ROOM: usize = 12_000;
+    let mut short: String = diff.chars().take(ROOM).collect();
+    if diff.chars().count() > ROOM {
+        short.push_str("\n...\n");
+    }
+    let prompt = crate::i18n::tp("ai.commit.prompt", &[("diff", &short)]);
+    let said = ask_local_ai(&prompt, engine)?;
+    // Models like to wrap an answer in a fence or announce it first. The
+    // message is the last thing they say, and a commit message is short
+    let text = said
+        .trim()
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim()
+        .lines()
+        .filter(|l| !l.trim().starts_with("```"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(text.trim().to_string())
+}
+
+/// Run the assistant AI once with this prompt on its standard input.
+///
+/// The three things that ask an AI something -- write me Lua, suggest me a
+/// command, write me a commit message -- differ in what they ask and in
+/// nothing else. Spawning it lived in each of them until there were three
+pub fn ask_local_ai(prompt: &str, engine: Option<&str>) -> Result<String> {
+    let (cmd, args) = pick_local_ai(engine)?;
+    let mut spawner = std::process::Command::new(&cmd);
+    spawner
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Inheriting the console here would kill the mouse (same reason as open_browser)
+    let mut child = crate::detach_console(&mut spawner)
+        .spawn()
+        .with_context(|| crate::i18n::tp("ai.err.cannot_run", &[("cmd", &cmd)]))?;
+    {
+        use std::io::Write as _;
+        let mut stdin = child.stdin.take().context(crate::i18n::t("webui.err.stdin"))?;
+        stdin.write_all(prompt.as_bytes())?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "{}",
+            crate::i18n::tp(
+                "ai.err.failed",
+                &[("cmd", &cmd), ("error", String::from_utf8_lossy(&out.stderr).trim())]
+            )
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 /// One-shot "natural language → one shell command" via the assistant AI
 /// (config's ai_engine, auto-detected when unset). The terminal's own launch
 /// command and recent screen ride along as the environment fingerprint: the

@@ -871,8 +871,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("git") => Ev::Git {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
         },
         // A recorded step from a page (who it came from is stamped by the pane's
         // ipc handler, like "button").
@@ -1316,8 +1315,10 @@ pub enum Ev {
     Git {
         panel: String,
         act: String,
-        path: String,
-        text: String,
+        /// Whatever this act needs, as it was written on the screen. A JSON
+        /// object rather than a fixed set of fields: the panel grows buttons
+        /// far faster than this enum should grow shapes
+        args: serde_json::Value,
     },
     /// One recorded step reported by a page being recorded. The pane's ipc
     /// handler stamps `from` with the page's name (same as `Button`).

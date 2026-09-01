@@ -490,9 +490,8 @@ struct WinSurface {
     /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
     /// shown browser.
     run_luas: Vec<String>,
-    /// What the git panel has asked for since the last drain: (panel, act,
-    /// path, text)
-    gits: Vec<(String, String, String, String)>,
+    /// What the git panel has asked for since the last drain: (panel, act, args)
+    gits: Vec<(String, String, serde_json::Value)>,
     /// Recorded steps reported by pages. The loop turns each into one Lua
     /// line for the composer.
     recorded: Vec<RecordedStep>,
@@ -667,7 +666,7 @@ impl WinSurface {
     }
 
     /// Takes what the git panel has asked for since the last drain
-    fn take_gits(&mut self) -> Vec<(String, String, String, String)> {
+    fn take_gits(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.gits)
     }
 
@@ -855,7 +854,7 @@ impl WinSurface {
                 // resolved by the loop (it knows the shown browser and the engine).
                 Ev::Record { on } => self.record_arms.push(on),
                 Ev::RunLua { code } => self.run_luas.push(code),
-                Ev::Git { panel, act, path, text } => self.gits.push((panel, act, path, text)),
+                Ev::Git { panel, act, args } => self.gits.push((panel, act, args)),
                 Ev::Recorded {
                     from: Some(child),
                     act,
@@ -2312,6 +2311,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // ✨ finished command suggestions arrive from worker threads (the
     // assistant AI call takes seconds); polled once per tick below
     let (suggest_tx, suggest_rx) = std::sync::mpsc::channel::<String>();
+    // The git panel's slow half: fetch, pull and push answer from a thread
+    let (git_tx, git_rx) = std::sync::mpsc::channel::<String>();
     // 🔍 environment cards: per tab (by id), the captured output of the last
     // survey the person ran. Ride along with every ✨ suggestion so the AI
     // keeps knowing the environment long after the survey scrolled away
@@ -3575,8 +3576,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::Record { on }) => {
                         surface.record_arms.push(on);
                     }
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Git { panel, act, path, text }) => {
-                        surface.gits.push((panel, act, path, text));
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Git { panel, act, args }) => {
+                        surface.gits.push((panel, act, args));
                     }
                     remote::RemoteCmd::Ui(crate::browser::Ev::RunLua { code }) => {
                         surface.run_luas.push(code);
@@ -4278,10 +4279,89 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
-        // What the git panel asked for. Each act is one primitive call, made in
-        // the person's name -- the panel is a screen they opened, so it reaches
-        // exactly what their own automation would (see docs/design/git-access.ja.md)
-        for (panel, act, path, text) in surface.take_gits() {
+        // What the git panel asked for.
+        //
+        // The everyday ones are one primitive call each, made in the person's
+        // name: the panel is a screen they opened, so it reaches exactly what
+        // their own automation would. The ones that talk to a server are the
+        // exception and say so out loud -- they ask the same permission table
+        // and then run on a thread, because the engine lives on the main loop
+        // and a window cannot wait three minutes on somebody's network.
+        for (panel, act, args) in surface.take_gits() {
+            let paths: Vec<String> = args
+                .get("paths")
+                .and_then(|p| p.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let text = args.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+            if matches!(act.as_str(), "fetch" | "pull" | "push" | "message") {
+                // "message" is the AI writing one, which is a read of the diff
+                // followed by a wait on a program -- the same reason as the
+                // network ones for not doing it on this thread
+                let name = match act.as_str() {
+                    "message" => "git_diff".to_string(),
+                    _ => format!("git_{act}"),
+                };
+                let dir = panel_cwds(&surfaces)
+                    .into_iter()
+                    .find(|(k, _)| k.matches(&panel))
+                    .map(|(_, d)| d);
+                let answer = match (caps.allows(&name, grants::Subject::Human), dir) {
+                    (false, _) => Some(i18n::tp(
+                        "err.hooks.not_permitted",
+                        &[("name", &name), ("who", &i18n::t("grant.who.human"))],
+                    )),
+                    (true, None) => Some(i18n::t("err.git.no_tab")),
+                    (true, Some(dir)) => {
+                        // Say it started, so a button that will be a while
+                        // does not look like a button that did nothing
+                        surface.push_git(
+                            &serde_json::json!({"act": act, "busy": true}).to_string(),
+                        );
+                        let tx = git_tx.clone();
+                        let act2 = act.clone();
+                        let ai = cfg
+                            .as_ref()
+                            .and_then(|c| c.ai_engine.clone())
+                            .filter(|s| !s.is_empty());
+                        std::thread::spawn(move || {
+                            let done = match act2.as_str() {
+                                "fetch" => crate::git::fetch(&dir),
+                                "pull" => crate::git::pull(&dir),
+                                "push" => crate::git::push(&dir),
+                                // What is staged is what is about to be
+                                // committed, so that is what gets described.
+                                // With nothing staged there is still a change
+                                // to talk about -- the one in front of them
+                                _ => crate::git::diff(&dir, None, true)
+                                    .and_then(|staged| match staged.trim().is_empty() {
+                                        true => crate::git::diff(&dir, None, false),
+                                        false => Ok(staged),
+                                    })
+                                    .and_then(|d| {
+                                        crate::webui::write_commit_message(&d, ai.as_deref())
+                                    }),
+                            };
+                            let js = match done {
+                                Ok(said) => serde_json::json!({
+                                    "act": act2, "ok": true, "data": said.trim(),
+                                }),
+                                Err(e) => serde_json::json!({
+                                    "act": act2, "ok": false, "error": plain_error(&e.to_string()),
+                                }),
+                            };
+                            let _ = tx.send(js.to_string());
+                        });
+                        None
+                    }
+                };
+                if let Some(said) = answer {
+                    surface.push_git(
+                        &serde_json::json!({"act": act, "ok": false, "error": said}).to_string(),
+                    );
+                }
+                continue;
+            }
             if engine.is_none() {
                 engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
             }
@@ -4291,19 +4371,35 @@ fn run(mut surface: WinSurface) -> Result<()> {
             eng.set_states(tab_states(&tabs));
             eng.set_cwds(folders);
             let who = serde_json::Value::String(panel.clone());
+            let files = serde_json::json!(paths);
             let (method, params): (&str, Vec<serde_json::Value>) = match act.as_str() {
                 "status" => ("git_status", vec![who.clone()]),
                 "branch" => ("git_branch", vec![who.clone()]),
+                "branches" => ("git_branches", vec![who.clone()]),
                 "diff" => (
                     "git_diff",
                     vec![
                         who.clone(),
-                        serde_json::json!({ "path": path, "staged": text == "staged" }),
+                        serde_json::json!({
+                            "path": paths.first().cloned().unwrap_or_default(),
+                            "staged": args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false),
+                        }),
                     ],
                 ),
-                "stage" => ("git_stage", vec![who.clone(), serde_json::json!(path)]),
-                "unstage" => ("git_unstage", vec![who.clone(), serde_json::json!(path)]),
-                "commit" => ("git_commit", vec![who.clone(), serde_json::json!(text)]),
+                "stage" => ("git_stage", vec![who.clone(), files]),
+                "unstage" => ("git_unstage", vec![who.clone(), files]),
+                "commit" => (
+                    "git_commit",
+                    vec![
+                        who.clone(),
+                        serde_json::json!(text),
+                        serde_json::json!({
+                            "amend": args.get("amend").and_then(|v| v.as_bool()).unwrap_or(false),
+                        }),
+                    ],
+                ),
+                "checkout" => ("git_checkout", vec![who.clone(), serde_json::json!(text)]),
+                "merge" => ("git_merge", vec![who.clone(), serde_json::json!(text)]),
                 // "make a branch and commit there" -- the answer to a refusal
                 // rather than a way around it
                 "branch_new" => ("git_branch_create", vec![who.clone(), serde_json::json!(text)]),
@@ -4336,6 +4432,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 }
             };
             let js = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+            surface.push_git(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"git\":{js}}}"));
+            }
+        }
+        // Answers from the ones that went to a thread
+        while let Ok(js) = git_rx.try_recv() {
+            append_hook_log(&format!("git: {}", log_excerpt(&js, 200)));
             surface.push_git(&js);
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"git\":{js}}}"));

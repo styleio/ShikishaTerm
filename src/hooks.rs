@@ -855,7 +855,10 @@ pub struct TabKey {
 }
 
 impl TabKey {
-    fn matches(&self, s: &str) -> bool {
+    /// Whether this key is the one a person named. Public because the loop
+    /// looks a panel up the same way Lua looks a tab up -- one rule for what a
+    /// name means, not two
+    pub fn matches(&self, s: &str) -> bool {
         // Match by ID if one is set, otherwise match by name
         match &self.id {
             Some(id) => id == s,
@@ -2695,13 +2698,94 @@ impl HookEngine {
                                 }
                                 None => false,
                             };
-                            crate::git::commit(&dir, &message, allow)
+                            let amend = match &opts {
+                                Some(t) => t.get::<Option<bool>>("amend")?.unwrap_or(false),
+                                None => false,
+                            };
+                            crate::git::commit(&dir, &message, allow, amend)
                                 .map_err(|e| mlua::Error::runtime(e.to_string()))
                         },
                     )
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
+        }
+        {
+            // Every local branch, with a mark on the one checked out
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_branches",
+                    lua.create_function(move |lua, tab: Value| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        let list = crate::git::branches(&dir)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let out = lua.create_table()?;
+                        for (name, here) in list {
+                            let row = lua.create_table()?;
+                            row.set("current", here)?;
+                            row.set("protected", crate::git::is_protected(&name))?;
+                            row.set("name", name)?;
+                            out.push(row)?;
+                        }
+                        Ok(out)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_checkout",
+                    lua.create_function(move |_, (tab, name): (Value, String)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        crate::git::checkout(&dir, &name)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            let c = Rc::clone(&cwds);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "git_merge",
+                    lua.create_function(move |_, (tab, name): (Value, String)| {
+                        let dir = git_folder(&c, &o, &tab)?;
+                        crate::git::merge(&dir, &name)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The three that talk to a server. A script calling one of these
+            // waits for it, and so does everything else in the app -- the
+            // engine runs on the main loop. The panel does not call these: it
+            // asks the same permission table and then hands the work to a
+            // thread, because a window cannot wait on somebody's network
+            macro_rules! network {
+                ($name:literal, $f:path) => {{
+                    let c = Rc::clone(&cwds);
+                    let o = Rc::clone(&current_origin);
+                    shikisha
+                        .set(
+                            $name,
+                            lua.create_function(move |_, tab: Value| {
+                                let dir = git_folder(&c, &o, &tab)?;
+                                $f(&dir).map_err(|e| mlua::Error::runtime(e.to_string()))
+                            })
+                            .map_err(lerr)?,
+                        )
+                        .map_err(lerr)?;
+                }};
+            }
+            network!("git_fetch", crate::git::fetch);
+            network!("git_pull", crate::git::pull);
+            network!("git_push", crate::git::push);
         }
         {
             // Make a branch and move onto it. What a refused commit is offered

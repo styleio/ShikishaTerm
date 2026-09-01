@@ -29,6 +29,12 @@ use anyhow::{Result, bail};
 /// to a network -- and for the day a repository is on a disconnected share
 const LIMIT: Duration = Duration::from_secs(20);
 
+/// The ceiling for the ones that talk to a server. A fetch of a large
+/// repository over a slow line is not a hang, and killing it at twenty seconds
+/// would be this app deciding the network is wrong. These never run on the main
+/// loop -- the panel hands them to a thread -- so waiting costs nobody a redraw
+const NETWORK_LIMIT: Duration = Duration::from_secs(180);
+
 /// Branches that do not take a direct commit unless the caller says so.
 ///
 /// Not a security boundary -- it is the difference between "committed to main
@@ -75,6 +81,11 @@ fn drain(mut s: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> 
 /// Failure carries git's own words: `stderr` says what was wrong far better
 /// than a status code, and the person reading it is writing automation
 pub fn run(dir: &Path, args: &[&str]) -> Result<String> {
+    run_within(dir, args, LIMIT)
+}
+
+/// The same, with the caller saying how long it is willing to wait
+pub fn run_within(dir: &Path, args: &[&str], limit: Duration) -> Result<String> {
     if !dir.is_dir() {
         bail!(crate::i18n::tp(
             "err.git.no_folder",
@@ -99,7 +110,7 @@ pub fn run(dir: &Path, args: &[&str]) -> Result<String> {
     let status = loop {
         match child.try_wait()? {
             Some(s) => break s,
-            None if started.elapsed() > LIMIT => {
+            None if started.elapsed() > limit => {
                 let _ = child.kill();
                 let _ = child.wait();
                 bail!(crate::i18n::tp(
@@ -238,6 +249,75 @@ pub fn branch(dir: &Path) -> Result<Option<String>> {
     }
 }
 
+/// Every local branch, and which one is checked out.
+///
+/// `for-each-ref` rather than `branch`: `branch` writes for people (a `*` in
+/// front, colours, a leading two spaces) and its output has changed shape
+/// before. This one is the plumbing, and says exactly what was asked for
+pub fn branches(dir: &Path) -> Result<Vec<(String, bool)>> {
+    let out = run(dir, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"])?;
+    let here = branch(dir)?;
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| (l.to_string(), here.as_deref() == Some(l)))
+        .collect())
+}
+
+/// Move to a branch that already exists. git refuses when the move would take
+/// uncommitted work with it into a conflict, and says so better than we could
+pub fn checkout(dir: &Path, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!(crate::i18n::t("err.git.empty_branch"));
+    }
+    run(dir, &["checkout", "-q", name]).map(|_| ())
+}
+
+/// Bring the merge in. A conflict is not an error to hide: git stops, the files
+/// are marked, and the panel is about to list them
+pub fn merge(dir: &Path, name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!(crate::i18n::t("err.git.empty_branch"));
+    }
+    run(dir, &["merge", "--no-edit", name])
+}
+
+pub fn fetch(dir: &Path) -> Result<String> {
+    run_within(dir, &["fetch", "--prune"], NETWORK_LIMIT)
+}
+
+pub fn pull(dir: &Path) -> Result<String> {
+    run_within(dir, &["pull"], NETWORK_LIMIT)
+}
+
+/// Send it. A branch made here has never been pushed, so the first push is the
+/// common one rather than the exception -- and answering "set an upstream and
+/// try again" to somebody who just pressed a button called Push is asking them
+/// to type the thing the button was for. The retry says out loud what it did
+pub fn push(dir: &Path) -> Result<String> {
+    match run_within(dir, &["push"], NETWORK_LIMIT) {
+        Ok(out) => Ok(out),
+        Err(first) => {
+            let Some(here) = branch(dir)? else { return Err(first) };
+            if !first.to_string().contains("--set-upstream") {
+                return Err(first);
+            }
+            let said = run_within(
+                dir,
+                &["push", "--set-upstream", "origin", &here],
+                NETWORK_LIMIT,
+            )?;
+            Ok(format!(
+                "{}\n{said}",
+                crate::i18n::tp("msg.git.first_push", &[("branch", &here)])
+            ))
+        }
+    }
+}
+
 pub fn stage(dir: &Path, paths: &[String]) -> Result<()> {
     let mut args: Vec<&str> = vec!["add", "--"];
     args.extend(paths.iter().map(String::as_str));
@@ -262,7 +342,7 @@ pub fn unstage(dir: &Path, paths: &[String]) -> Result<()> {
 /// A protected branch refuses unless the caller says it meant it. The refusal
 /// is the whole point: whoever catches it can offer to make a branch instead,
 /// which is a better answer than either committing or a wall
-pub fn commit(dir: &Path, message: &str, allow_protected: bool) -> Result<String> {
+pub fn commit(dir: &Path, message: &str, allow_protected: bool, amend: bool) -> Result<String> {
     if message.trim().is_empty() {
         bail!(crate::i18n::t("err.git.empty_message"));
     }
@@ -273,7 +353,14 @@ pub fn commit(dir: &Path, message: &str, allow_protected: bool) -> Result<String
             }
         }
     }
-    run(dir, &["commit", "-m", message])?;
+    // Amend rewrites the commit that is already there. On a branch nobody else
+    // has, that is tidying; on a shared one it is rewriting what other people
+    // have -- which is why it goes through the same refusal as a plain commit
+    let mut args = vec!["commit", "-m", message];
+    if amend {
+        args.push("--amend");
+    }
+    run(dir, &args)?;
     Ok(run(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
 }
 
@@ -380,13 +467,13 @@ mod tests {
 
         // On main it refuses, and says which branch it is refusing about --
         // whoever catches this offers to make a branch instead
-        let refused = commit(&dir, "first", false).unwrap_err().to_string();
+        let refused = commit(&dir, "first", false, false).unwrap_err().to_string();
         assert!(refused.contains("main"), "断る理由にブランチ名が入る: {refused}");
         // Nothing was committed by the refusal
         assert!(log(&dir, 1).map(|l| l.is_empty()).unwrap_or(true));
 
         // ...and it goes through for someone who says they meant it
-        let hash = commit(&dir, "first", true).expect("承知のうえなら通る");
+        let hash = commit(&dir, "first", true, false).expect("承知のうえなら通る");
         assert!(!hash.is_empty());
         assert_eq!(log(&dir, 1).unwrap()[0].subject, "first");
 
@@ -394,7 +481,7 @@ mod tests {
         run(&dir, &["checkout", "-q", "-b", "feature"]).unwrap();
         std::fs::write(dir.join("a.txt"), "hello again").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "second", false).expect("自分のブランチなら止まらない");
+        commit(&dir, "second", false, false).expect("自分のブランチなら止まらない");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -403,12 +490,12 @@ mod tests {
         let Some(dir) = scratch_repo("branchnew") else { return };
         std::fs::write(dir.join("a.txt"), "one").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        commit(&dir, "start", true).unwrap();
+        commit(&dir, "start", true, false).unwrap();
 
         // Something staged, on a branch that will not take it
         std::fs::write(dir.join("a.txt"), "two").unwrap();
         stage(&dir, &["a.txt".to_string()]).unwrap();
-        assert!(commit(&dir, "next", false).is_err());
+        assert!(commit(&dir, "next", false, false).is_err());
 
         // The offer: a branch, and the staged work still staged on it
         branch_create(&dir, "work/next").expect("枝を作れる");
@@ -416,7 +503,7 @@ mod tests {
         let rows = status(&dir).unwrap();
         assert_eq!(rows.iter().find(|c| c.path == "a.txt").unwrap().index, 'M',
             "ステージしたものは持ったまま移る");
-        commit(&dir, "next", false).expect("移った先では通る");
+        commit(&dir, "next", false, false).expect("移った先では通る");
 
         assert!(branch_create(&dir, "  ").is_err(), "名前が空なら断る");
         let _ = std::fs::remove_dir_all(&dir);
@@ -427,7 +514,7 @@ mod tests {
         let Some(dir) = scratch_repo("status") else { return };
         std::fs::write(dir.join("kept.txt"), "one").unwrap();
         stage(&dir, &["kept.txt".to_string()]).unwrap();
-        commit(&dir, "start", true).unwrap();
+        commit(&dir, "start", true, false).unwrap();
 
         std::fs::write(dir.join("kept.txt"), "two").unwrap();
         std::fs::write(dir.join("fresh.txt"), "new").unwrap();
@@ -453,21 +540,58 @@ mod tests {
     }
 
     #[test]
+    fn the_branches_are_listed_with_the_one_you_are_on() {
+        let Some(dir) = scratch_repo("branches") else { return };
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        stage(&dir, &["a.txt".to_string()]).unwrap();
+        commit(&dir, "start", true, false).unwrap();
+        branch_create(&dir, "side").unwrap();
+
+        let list = branches(&dir).unwrap();
+        let names: Vec<&str> = list.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"main") && names.contains(&"side"), "{names:?}");
+        assert_eq!(
+            list.iter().filter(|(_, here)| *here).map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["side"],
+            "今いる枝はひとつだけ印が付く"
+        );
+
+        checkout(&dir, "main").expect("戻れる");
+        assert_eq!(branch(&dir).unwrap().as_deref(), Some("main"));
+        assert!(checkout(&dir, "no-such-branch").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn amend_rewrites_rather_than_adds() {
+        let Some(dir) = scratch_repo("amend") else { return };
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        stage(&dir, &["a.txt".to_string()]).unwrap();
+        commit(&dir, "frist", true, false).unwrap();
+
+        commit(&dir, "first", true, true).expect("書き直せる");
+        let log = log(&dir, 5).unwrap();
+        assert_eq!(log.len(), 1, "コミットは増えない");
+        assert_eq!(log[0].subject, "first", "言い直したほうが残る");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_conflict_is_listed_as_one() {
         let Some(dir) = scratch_repo("conflict") else { return };
         std::fs::write(dir.join("c.txt"), "base").unwrap();
         stage(&dir, &["c.txt".to_string()]).unwrap();
-        commit(&dir, "base", true).unwrap();
+        commit(&dir, "base", true, false).unwrap();
 
         run(&dir, &["checkout", "-q", "-b", "other"]).unwrap();
         std::fs::write(dir.join("c.txt"), "theirs").unwrap();
         stage(&dir, &["c.txt".to_string()]).unwrap();
-        commit(&dir, "theirs", false).unwrap();
+        commit(&dir, "theirs", false, false).unwrap();
 
         run(&dir, &["checkout", "-q", "main"]).unwrap();
         std::fs::write(dir.join("c.txt"), "ours").unwrap();
         stage(&dir, &["c.txt".to_string()]).unwrap();
-        commit(&dir, "ours", true).unwrap();
+        commit(&dir, "ours", true, false).unwrap();
 
         // The merge fails, which is the point: what matters is that the file
         // can then be found by name rather than by reading git's message

@@ -888,6 +888,10 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.git_log(タブ, 件数)` | 最近のコミット。`{hash, short, author, date, subject}`。既定20件 |
 | `shikisha.git_conflicts(タブ)` | 衝突しているファイルのパスだけ |
 | `shikisha.git_branch(タブ)` | 今のブランチ `{name, protected}`。`protected` は「共有ブランチなので直接コミットしない方がよい」の印。detached なら `nil` |
+| `shikisha.git_branches(タブ)` | ブランチの一覧。`{name, current, protected}` |
+| `shikisha.git_checkout(タブ, "名前")` | そのブランチへ移る |
+| `shikisha.git_merge(タブ, "名前")` | そのブランチを取り込む。衝突したら止まり、`git_conflicts` に出る |
+| `shikisha.git_fetch(タブ)` / `shikisha.git_pull(タブ)` / `shikisha.git_push(タブ)` | サーバと話す。**返るまで他のことは止まります**（最大3分）。押しっぱなしにできる画面が要るなら、待ちは呼ぶ側で組むこと。`git_push` は一度も送っていないブランチなら upstream を付けて送り直し、その旨を返す |
 | `shikisha.git_stage(タブ, パス)` | 次のコミットに入れる。パスは文字列1つでも、テーブルで複数でも |
 | `shikisha.git_unstage(タブ, パス)` | 次のコミットから外す |
 | `shikisha.git_branch_create(タブ, "名前")` | ブランチを作って、そこへ移る。ステージしたものは持ったまま移るので、**共有ブランチで断られたときの行き先**になる |
