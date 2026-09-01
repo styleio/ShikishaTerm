@@ -2757,6 +2757,18 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // launch (started_fired cleared) so its on_start briefing fires again.
             // A staged change to the launch conditions (encoding, scrollback…)
             // is not a reason to lose the conversation
+            // A folder that has turned up since its tabs were held back. Nobody
+            // announces that -- it is made by the dialog, by hand in Explorer,
+            // or by a stick being plugged in -- so it is noticed here, off the
+            // table the watch already keeps, and the tab goes back through the
+            // ordinary restart below. Only ever in this direction: a folder
+            // that has GONE leaves a running tab alone, because stopping
+            // somebody's agent mid-sentence is worse than the folder being gone
+            for t in tabs.iter_mut().chain(ws_tabs.iter_mut().flatten()) {
+                if t.held().is_some() && tab::Held::of(t.cwd()).is_none() {
+                    t.release();
+                }
+            }
             let alone: Vec<bool> = (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
             for (i, t) in tabs.iter_mut().enumerate() {
                 // Ask what to do about the conversation only once it is
@@ -4468,6 +4480,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             Ok(()) => view.done = at.is_dir(),
                             Err(e) => view.error = Some(format!("{e:#}")),
                         }
+                        // What was true a moment ago is not true now. Said out
+                        // loud rather than waited out, so the folder stops
+                        // being called missing the instant it is made -- and
+                        // the tabs held back for it start on the next beat
+                        crate::folders::watch().forget(&at);
                         if view.done {
                             flash = Some(i18n::tp(
                                 "msg.folder.ready",
@@ -6382,15 +6399,7 @@ fn projects_here(ws: Option<&config::Workspace>) -> Vec<crate::uistate::Project>
 /// from. One answer, so the two cannot disagree.
 fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> tab::TabOptions {
     let cwd = folder.and_then(|f| f.cwd.clone());
-    let held = cwd.as_deref().and_then(|p| {
-        match folders::watch().settled(p, folders::BEFORE_LAUNCH) {
-            folders::Health::NoDrive { drive } => {
-                Some(tab::Held::NoDrive { drive, cwd: p.to_path_buf() })
-            }
-            folders::Health::Missing => Some(tab::Held::Missing { cwd: p.to_path_buf() }),
-            _ => None,
-        }
-    });
+    let held = tab::Held::of(cwd.as_deref());
     tab::TabOptions {
         cwd,
         group: folder.and_then(|f| f.name.clone()),

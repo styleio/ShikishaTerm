@@ -54,6 +54,23 @@ pub enum Held {
 }
 
 impl Held {
+    /// What is holding back a tab that would run in this folder, if anything.
+    ///
+    /// The one place health becomes a held tab. Both the launch path and a
+    /// restart ask here, so a tab cannot be held for a reason that has stopped
+    /// being true -- which is exactly what happened when only the launch path
+    /// knew how to ask.
+    pub fn of(cwd: Option<&std::path::Path>) -> Option<Held> {
+        let cwd = cwd?;
+        match crate::folders::watch().settled(cwd, crate::folders::BEFORE_LAUNCH) {
+            crate::folders::Health::NoDrive { drive } => {
+                Some(Held::NoDrive { drive, cwd: cwd.to_path_buf() })
+            }
+            crate::folders::Health::Missing => Some(Held::Missing { cwd: cwd.to_path_buf() }),
+            _ => None,
+        }
+    }
+
     /// The reason a folder is not usable, as the tab's own screen says it.
     pub fn say(&self) -> String {
         match self {
@@ -2221,6 +2238,18 @@ impl Tab {
         self.opts.held.as_ref()
     }
 
+    /// The folder turned up. Put back what this tab was asked to run.
+    ///
+    /// The folder appearing is not something anyone tells us about -- it is
+    /// made by the dialog, by hand in Explorer, or by a stick being plugged in
+    /// -- so noticing is the app's job. Staged rather than done here, so it
+    /// goes through the same restart every other changed launch condition does.
+    pub fn release(&mut self) {
+        if self.opts.held.take().is_some() {
+            self.needs_restart = true;
+        }
+    }
+
     /// The profile is resolved fresh each time, either from a name (given in
     /// config) or from the command name.
     /// Because it's re-resolved on restart, edits to profiles/*.json take effect immediately
@@ -2712,6 +2741,11 @@ impl Tab {
     /// is decided by the caller — see `Resume`
     pub fn restart_as(&mut self, rows: u16, cols: u16, plan: Resume) -> Result<()> {
         self.kill();
+        // Asked again, because a restart is exactly when it may have changed:
+        // the folder has turned up since this tab was held, or has gone since
+        // it started. Without this the restart button on a held tab put back
+        // the same held tab, for ever
+        self.opts.held = Held::of(self.opts.cwd.as_deref());
         let mut fresh = Tab::spawn_as(
             self.title.clone(),
             &self.argv.clone(),
@@ -4443,6 +4477,42 @@ mod held_tests {
             ..held.clone()
         };
         assert_ne!(signature_of(&argv, &held), signature_of(&argv, &other));
+    }
+
+/// The folder turns up, and the tab goes back to running what it was asked
+    /// to run.
+    ///
+    /// Held is decided in one place and asked again on every restart. It used
+    /// to be decided only at launch, so a tab held for a folder that had since
+    /// been made stayed held for ever — and pressing restart put back the very
+    /// same held tab, because the reason travelled with it unexamined.
+    #[test]
+    fn a_folder_turning_up_lets_the_tab_run() {
+        let dir = std::env::temp_dir().join("shikisha-turns-up-51ab");
+        let _ = std::fs::remove_dir_all(&dir);
+        // Not there: something is holding it back, and it says which folder
+        assert_eq!(Held::of(Some(&dir)), Some(Held::Missing { cwd: dir.clone() }));
+
+        std::fs::create_dir_all(&dir).unwrap();
+        // The watch is allowed to hold an answer for a few seconds. The one
+        // caller that knows better says so, and the next look is a real one
+        crate::folders::watch().forget(&dir);
+        assert_eq!(Held::of(Some(&dir)), None, "the folder is there and it is still held back");
+
+        // And a tab holding that reason gives it up, asking to be restarted
+        let opts = TabOptions {
+            cwd: Some(dir.clone()),
+            held: Some(Held::Missing { cwd: dir.clone() }),
+            ..Default::default()
+        };
+        let mut tab =
+            Tab::spawn("t".into(), &["cmd.exe".to_string()], None, 10, 60, opts).expect("held");
+        assert!(tab.held().is_some());
+        tab.release();
+        assert!(tab.held().is_none(), "it is still holding a reason that has stopped being true");
+        assert!(tab.needs_restart, "nothing will ever restart it");
+        tab.kill();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Japanese spends two columns per character, and the card holds Japanese.

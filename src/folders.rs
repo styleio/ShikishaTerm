@@ -163,6 +163,18 @@ impl Watch {
         }
     }
 
+    /// Forget what is known about this folder, so the next look is a real one.
+    ///
+    /// For the one caller that knows the answer has just changed: the dialog
+    /// that made the folder. Waiting out the ordinary few seconds would leave
+    /// the person looking at "this folder is not here" immediately after
+    /// watching it be made, which reads as the app not having noticed.
+    pub fn forget(&self, p: &Path) {
+        if let Ok(mut known) = self.known.lock() {
+            known.remove(p);
+        }
+    }
+
     /// What came back about this folder, if anything has.
     fn answered(&self, p: &Path) -> Option<Health> {
         let known = self.known.lock().unwrap_or_else(|e| e.into_inner());
