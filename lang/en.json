@@ -1400,7 +1400,7 @@
   "git.push": "Push",
   "git.fetch": "Fetch",
   "git.merge": "Merge",
-  "git.branch.new": "Branch",
+  "git.branch.new": "New branch",
   "git.branches": "Branches",
   "git.checkout": "Move here",
   "git.pane.branches": "Branches",

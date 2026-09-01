@@ -4814,7 +4814,7 @@ function gitBuild(box) {
   const pull = mk(T["git.pull"] || "", null, () => gitAsk("pull"));
   const push = mk(T["git.push"] || "", null, () => gitAsk("push"));
   const fetch = mk(T["git.fetch"] || "", null, () => gitAsk("fetch"));
-  const branch = mk(T["git.branch.new"] || "", null, () => { G.pickBranch = null; gitHistory(); });
+  const branch = mk(T["git.branch.new"] || "", null, () => gitNewBranch());
   const merge = mk(T["git.merge"] || "", null, () => {
     if (G.pickBranch) gitAsk("merge", {text: G.pickBranch});
     else gitSay(T["git.merge.pick"] || "", true);
@@ -4883,13 +4883,10 @@ function gitBuild(box) {
     grip(false, "log", "%", () => log),
     el("div", {class:"under"}, about, grip(true, "about", "%", () => about), commitDiff));
   hist.style.display = "none";
-  // Making one belongs with the list of them, now that the toolbar's button is
-  // the way into the history
-  const plus = el("button", {title:T["git.branch.make"] || "", onclick:() => gitNewBranch()}, "+");
   const chips = el("div", {class:"chips"});
   box.append(chips);
   const branchCol = el("div", {style:"display:flex;flex-direction:column;min-height:0"},
-    el("h4", {}, el("span", {class:"grow"}, T["git.branches"] || ""), plus), branches);
+    el("h4", {}, el("span", {class:"grow"}, T["git.branches"] || "")), branches);
   box.append(el("div", {class:"cols"},
     branchCol,
     grip(true, "branches", "px", () => branchCol),
@@ -5145,6 +5142,17 @@ function drawGit() {
   for (const k in u.btn) u.btn[k].disabled = !!G.busy;
 
   u.branches.textContent = "";
+  // The first row is every branch at once -- the same question the rows below
+  // ask about one of them
+  const everything = el("div", {class:"row" + (G.view === "history" && !G.pickBranch ? " pick" : ""),
+    onclick:() => {
+      G.pickBranch = null;
+      G.commit = null; G.about = null; G.sel = null; G.hunks = [];
+      gitHistory();
+    }});
+  everything.append(el("span", {class:"x"}, "\u2261"));
+  everything.append(el("span", {class:"p", style:"direction:ltr"}, T["git.view.all"] || ""));
+  u.branches.append(everything);
   for (const b of G.branches || []) {
     // Pointing at a branch asks to see it. Moving onto one is a different
     // thing -- it changes the files on disk -- so it has a button of its own

@@ -1398,7 +1398,7 @@
   "git.push": "プッシュ",
   "git.fetch": "フェッチ",
   "git.merge": "マージ",
-  "git.branch.new": "ブランチ",
+  "git.branch.new": "ブランチを作る",
   "git.branches": "ブランチ",
   "git.checkout": "移る",
   "git.pane.branches": "ブランチ",
