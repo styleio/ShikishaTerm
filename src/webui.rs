@@ -2096,6 +2096,11 @@ const PAGE: &str = r##"<!doctype html>
  .granthead .caret { font-size:11px; width:14px; text-align:center; color:var(--muted); }
  .grantrow { display:flex; align-items:center; gap:8px; padding:4px 0; }
  .grantrow .nm { font-size:12.5px; }
+ /* The name is a link, but a quiet one: the eye is here to find a row, not to
+    be sold a destination */
+ .grantrow a.nm { color:var(--text); text-decoration:none;
+   border-bottom:1px dotted var(--muted); }
+ .grantrow a.nm:hover { color:var(--accent); border-bottom-color:var(--accent); }
  .grantrow .sub { display:block; color:var(--muted); font-size:11.5px; margin-top:1px; }
  /* The two columns are one width, wherever they appear -- a heading's pair has
     to stand in the same place as the rows it answers for */
@@ -3985,6 +3990,11 @@ function operateCard() {
 // to the standard answer and the row leaves the file again, which is what lets
 // a command added next month arrive with the answer its author chose.
 const grantFolded = {};
+// The manual, at one command if a name is given. `#cmd-<name>` is not an id in
+// the page -- the manual is markdown and grows headings of its own -- it is a
+// request the help page answers by finding the row that command is written on
+const manualHref = name => "/help?token=" + encodeURIComponent(TOKEN)
+  + (name ? "#cmd-" + name : "");
 
 function permissionsCard() {
   // Read without writing: merely opening this card must not make the settings
@@ -4039,7 +4049,10 @@ function permissionsCard() {
       if (!open) continue;
       for (const cmd of sec.commands) {
         const line = el("div", {class:"grantrow" + (answerOf(cmd, "ai") ? "" : " off")});
-        const name = el("span", {class:"nm mono"}, cmd.name);
+        // The name is the way in: the manual is the reference, and this is
+        // the row you were already looking at when you wanted it
+        const name = el("a", {class:"nm mono", href:manualHref(cmd.name), target:"_blank",
+          title:fill(T["settings.permissions.manual.one"], {name: cmd.name})}, cmd.name);
         const label = el("span", {class:"grow"}, name,
           el("span", {class:"sub"}, T[cmd.text] || ""));
         if (changed(cmd)) name.after(el("span", {class:"grantmark"}, T["settings.permissions.changed"]));
@@ -4070,7 +4083,8 @@ function permissionsCard() {
       el("div", {}, T["settings.permissions.who.ai"]),
       el("div", {}, T["settings.permissions.who.human"])),
     el("div", {class:"grantwarn"}, T["settings.permissions.caution"]),
-    el("div", {class:"row"}, reset),
+    el("div", {class:"row"}, reset,
+      el("a", {href:manualHref(""), target:"_blank"}, T["settings.permissions.manual"])),
     body);
 }
 
@@ -6301,6 +6315,9 @@ const HELP_PAGE: &str = r##"<!doctype html>
  th { color:var(--accent); }
  hr { border:0; border-top:1px solid var(--line); margin:28px 0; }
  a { color:var(--accent); }
+ /* The row that was asked for. Marked, not animated: it has to still be
+    obvious a minute later when the reader looks up from the text */
+ .hit td, .hit { background:var(--panel2); box-shadow:inset 3px 0 0 var(--accent); }
 </style></head><body><div id="doc"></div>
 <script>
 const MD = __MD__;
@@ -6348,6 +6365,18 @@ function render(md) {
   return out.join("\n");
 }
 document.getElementById("doc").innerHTML = render(MD);
+// Arrived from a command's name on the settings screen. Land on the row that
+// command is written on, rather than at the top of a long page: the reference
+// rows are table rows, and the list of every command is the last of them, so
+// the last matching row is the definition rather than a mention in passing
+const asked = decodeURIComponent((location.hash || "").replace(/^#cmd-/, ""));
+if (/^[a-z0-9_]+$/.test(asked)) {
+  const needle = "shikisha." + asked + "(";
+  const rows = [...document.querySelectorAll("#doc tr")].filter(r => r.textContent.includes(needle));
+  const hit = rows.length ? rows[rows.length - 1]
+    : [...document.querySelectorAll("#doc p, #doc li")].find(e => e.textContent.includes(needle));
+  if (hit) { hit.classList.add("hit"); hit.scrollIntoView({block:"center"}); }
+}
 </script></body></html>
 "##;
 

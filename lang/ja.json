@@ -1268,6 +1268,8 @@
   "settings.sec.permissions.sub": "どの命令を人間が実行でき、AIが実行できるか",
   "settings.permissions.hint": "実行してよいものにチェックを入れます。",
   "settings.permissions.caution": "端末のタブで自分で起動したAIは「人間」に数えます。cmd や PowerShell のタブを開いて、その中で claude と打って動かした場合です。「AIが実行」のチェックを外しても、そのAIは止まりません。そのタブの資格で呼んでいて、そのタブは端末だからです。AIとして数えるには、タブのコマンド自体をAIにしてください。",
+  "settings.permissions.manual": "引数と使い方はマニュアル",
+  "settings.permissions.manual.one": "{name} をマニュアルで見る",
   "settings.permissions.who.human": "「人間が実行」に数えるのは、それ以外すべてです。自分で書いたフックやスクリプト、▶ での実行、自分で起動した外部プログラム。",
   "settings.permissions.who.ai": "「AIが実行」に数えるのは、AI用のタブ（そのタブのコマンドが claude / codex / gemini / aider などのAIのもの、またはモデルAPIのタブ）からの呼び出しと、AIが書いたLuaです。",
   "settings.permissions.col.human": "人間が実行",
