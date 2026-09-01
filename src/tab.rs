@@ -30,6 +30,51 @@ pub struct TabOptions {
     /// When Some, spawn does not start a real process — it only starts an idle
     /// placeholder process to hold the display
     pub model: Option<crate::bridge::ModelConn>,
+    /// Why this tab must not start. When set, the command is not run at all:
+    /// the tab holds the display and says what is wrong instead.
+    ///
+    /// A working folder that is not on this machine used to be dropped, and the
+    /// command ran in the app's own folder — so an agent told to work on one
+    /// project worked on whatever it landed in, with nothing on screen to say
+    /// so. Not launching is the only honest answer: the folder is the job
+    pub held: Option<Held>,
+}
+
+/// Why a tab is being held rather than started.
+///
+/// The reason travels with the tab, because the tab is where it has to be
+/// read: a message that only ever appeared in a notification would be gone by
+/// the time somebody clicked the tab to find out why it is idle.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Held {
+    /// The drive named by the folder is not on this machine
+    NoDrive { drive: String, cwd: std::path::PathBuf },
+    /// The drive is here and the folder is not
+    Missing { cwd: std::path::PathBuf },
+}
+
+impl Held {
+    /// The reason a folder is not usable, as the tab's own screen says it.
+    pub fn say(&self) -> String {
+        match self {
+            Held::NoDrive { drive, cwd } => crate::i18n::tp(
+                "msg.folder.no_drive",
+                &[("drive", drive), ("path", &cwd.display().to_string())],
+            ),
+            Held::Missing { cwd } => crate::i18n::tp(
+                "msg.folder.missing",
+                &[("path", &cwd.display().to_string())],
+            ),
+        }
+    }
+
+    /// What it is, in one word, for the signature that decides restarts.
+    fn tag(&self) -> String {
+        match self {
+            Held::NoDrive { drive, .. } => format!("nodrive:{drive}"),
+            Held::Missing { .. } => "missing".into(),
+        }
+    }
 }
 
 impl Default for TabOptions {
@@ -41,6 +86,7 @@ impl Default for TabOptions {
             encoding: None,
             log: false,
             model: None,
+            held: None,
         }
     }
 }
@@ -433,35 +479,128 @@ fn model_title_box(conn: &crate::bridge::ModelConn, cols: u16) -> String {
         .chain(std::iter::once(HEADER.chars().count()))
         .max()
         .unwrap_or(0);
+    let body: Vec<String> = rows
+        .iter()
+        .map(|(label, value)| match label.is_empty() {
+            true => String::new(),
+            false => format!("{:<LABEL_W$}{value}", format!("{label}:")),
+        })
+        .collect();
+    card(HEADER, &body, longest, cols, CYAN)
+}
+
+/// The colours a card is drawn in: one for something working, one for
+/// something that needs a person.
+const CYAN: &str = "36";
+const AMBER: &str = "33";
+
+/// A card in the middle of a tab that is holding a display rather than running
+/// something.
+///
+/// Two tabs do that — a model bridge, and one held back because its folder is
+/// not on this machine — and a blank screen in either reads as broken. Drawn
+/// once here so the two cannot drift apart, and sized to the terminal so a
+/// narrow window folds the words rather than the frame.
+fn card(header: &str, body: &[String], want: usize, cols: u16, colour: &str) -> String {
     let max_inner = (cols as usize).saturating_sub(4).max(8);
-    let inner = longest.clamp(8, max_inner);
+    let inner = want.max(width_of(header)).clamp(8, max_inner);
     let bar = "\u{2500}".repeat(inner + 2);
     let line = |body: &str| {
         format!(
-            "\x1b[36m\u{2502}\x1b[0m {:<width$} \x1b[36m\u{2502}\x1b[0m\r\n",
-            clip(body, inner),
-            width = inner
+            "\x1b[{colour}m\u{2502}\x1b[0m {}{} \x1b[{colour}m\u{2502}\x1b[0m\r\n",
+            body,
+            " ".repeat(inner.saturating_sub(width_of(body)))
         )
     };
     // Lead with a few blank lines so the header clears the discussion banner
     // (which floats over the top of every tab while a discussion is at rest).
     let mut out = String::from("\r\n\r\n\r\n");
-    out.push_str(&format!("\x1b[36m\u{256d}{bar}\u{256e}\x1b[0m\r\n"));
+    out.push_str(&format!("\x1b[{colour}m\u{256d}{bar}\u{256e}\x1b[0m\r\n"));
     out.push_str(&format!(
-        "\x1b[36m\u{2502}\x1b[0m \x1b[1;36m{:<width$}\x1b[0m \x1b[36m\u{2502}\x1b[0m\r\n",
-        clip(HEADER, inner),
-        width = inner
+        "\x1b[{colour}m\u{2502}\x1b[0m \x1b[1;{colour}m{}\x1b[0m{} \x1b[{colour}m\u{2502}\x1b[0m\r\n",
+        clip(header, inner),
+        " ".repeat(inner.saturating_sub(width_of(header)))
     ));
-    for (label, value) in rows.iter() {
-        if label.is_empty() {
-            out.push_str(&line(""));
-        } else {
-            let value = clip(value, inner.saturating_sub(LABEL_W));
-            out.push_str(&line(&format!("{:<LABEL_W$}{value}", format!("{label}:"))));
+    for row in body {
+        for folded in fold(row, inner) {
+            out.push_str(&line(&folded));
         }
     }
-    out.push_str(&format!("\x1b[36m\u{2570}{bar}\u{256f}\x1b[0m\r\n"));
+    out.push_str(&format!("\x1b[{colour}m\u{2570}{bar}\u{256f}\x1b[0m\r\n"));
     out
+}
+
+/// How many columns a string takes on a terminal.
+///
+/// Counted rather than assumed: a card that holds an English sentence holds a
+/// Japanese one too, and Japanese spends two columns per character. Counting
+/// characters instead drew the right-hand edge halfway across the text.
+fn width_of(s: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    s.width()
+}
+
+/// Break a line to fit, at a space where there is one and anywhere when there
+/// is not.
+///
+/// Japanese is written without spaces, so a folder that breaks only at them
+/// does not break Japanese at all — it just runs off the edge. Breaking
+/// anywhere is not typesetting, but it is legible, and every character on
+/// screen beats a neat rule that hides half of them.
+fn fold(s: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    if width_of(s) <= width {
+        return vec![s.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut line = String::new();
+    let mut at = 0usize;
+    // Where the line could be broken instead of here, and how much of it that
+    // would leave behind
+    let mut space: Option<(usize, usize)> = None;
+    for ch in s.chars() {
+        let w = width_of(&ch.to_string());
+        if at + w > width && !line.is_empty() {
+            match space.filter(|(_, taken)| *taken > 0) {
+                // Break at the space, and carry what came after it to the next
+                // line rather than losing it
+                Some((cut, _)) => {
+                    let rest: String = line[cut..].trim_start().to_string();
+                    out.push(line[..cut].trim_end().to_string());
+                    at = width_of(&rest);
+                    line = rest;
+                }
+                None => {
+                    out.push(std::mem::take(&mut line));
+                    at = 0;
+                }
+            }
+            space = None;
+        }
+        if ch == ' ' {
+            space = Some((line.len(), at));
+        }
+        line.push(ch);
+        at += w;
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
+/// The card a tab shows when it is being held back rather than started.
+///
+/// It says the one thing that matters — this is not your command failing, it
+/// is the folder not being here — and names the folder, because the person
+/// reading it is about to go and look for it.
+fn held_card(held: &Held, cols: u16) -> String {
+    let header = crate::i18n::t("msg.folder.held");
+    let body: Vec<String> = vec![String::new(), held.say(), String::new()];
+    let want = body.iter().map(|b| width_of(b)).max().unwrap_or(0).min(56);
+    card(&header, &body, want, cols, AMBER)
 }
 
 /// Build the launch command.
@@ -1761,14 +1900,19 @@ fn already_resumes(spec: &crate::profile::ResumeSpec, argv: &[String]) -> bool {
 /// Fingerprint of the launch conditions. If this changes, a new session must be created to take effect
 pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
     format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         argv.join(" "),
         opts.encoding.map(|e| e.name()).unwrap_or("UTF-8"),
         opts.scrollback,
         opts.cwd
             .as_ref()
             .map(|p| p.display().to_string())
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        // Why it is being held is part of what it is. A folder that turns up —
+        // the stick plugged in, the branch expanded — changes this, and the
+        // ordinary "its launch conditions changed" path then restarts the tab
+        // for real, without a single line of its own
+        opts.held.as_ref().map(Held::tag).unwrap_or_default()
     )
 }
 
@@ -2072,6 +2216,11 @@ impl Tab {
         self.opts.group.as_deref()
     }
 
+    /// Why this tab is not running what it was asked to run, when it is not.
+    pub fn held(&self) -> Option<&Held> {
+        self.opts.held.as_ref()
+    }
+
     /// The profile is resolved fresh each time, either from a name (given in
     /// config) or from the command name.
     /// Because it's re-resolved on restart, edits to profiles/*.json take effect immediately
@@ -2123,7 +2272,9 @@ impl Tab {
         // runs no CLI at all, so there is nothing to resume
         let resume_spec = if opts.model.is_some() { None } else { profile.resume.clone() };
         let (resumed, session) = plan_launch(resume_spec.as_ref(), argv, plan);
-        let spawn_argv: &[String] = if opts.model.is_some() {
+        // A held tab holds the display the same way a model tab does, and for
+        // the same reason: the thing it would run must not run
+        let spawn_argv: &[String] = if opts.model.is_some() || opts.held.is_some() {
             idle = idle_argv();
             &idle
         } else {
@@ -2136,13 +2287,34 @@ impl Tab {
         for (k, v) in crate::api::child_env(&title) {
             cmd.env(k, v);
         }
-        // If unspecified/nonexistent, launch in the app's folder
-        // (passing a nonexistent folder would make the launch itself fail)
-        let cwd = opts
-            .cwd
-            .clone()
-            .filter(|p| p.is_dir())
-            .unwrap_or(std::env::current_dir()?);
+        // Where it runs. A folder that is not there is NOT quietly swapped for
+        // another one: the folder is the job, and a command that lands
+        // somewhere else is doing a different job than the one it was given.
+        // It used to be dropped here, which is how an agent configured for one
+        // project came up in the app's own folder with nothing on screen
+        // saying so. A launch that cannot have its folder now fails, and
+        // `launch_problem` turns the failure into words.
+        //
+        // A held tab is the exception. Nothing of the person's runs in one, so
+        // its placeholder is given somewhere that exists.
+        //
+        // Refused here rather than left to the operating system, which does not
+        // refuse: ConPTY starts the child regardless and it comes up in
+        // whatever folder this process happens to be in. The answer comes from
+        // the table that is already keeping it, so this costs a lookup rather
+        // than a disk that may not be answering
+        let cwd = match (&opts.held, &opts.cwd) {
+            (None, Some(p)) => {
+                if crate::folders::watch()
+                    .settled(p, crate::folders::BEFORE_LAUNCH)
+                    .wrong()
+                {
+                    anyhow::bail!("the working folder {} is not on this PC", p.display());
+                }
+                p.clone()
+            }
+            _ => std::env::current_dir()?,
+        };
         cmd.cwd(cwd);
         let mut child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
@@ -2181,6 +2353,13 @@ impl Tab {
         if let Some(conn) = opts.model.as_ref() {
             if let Ok(mut p) = parser.lock() {
                 p.process(model_title_box(conn, cols).as_bytes());
+            }
+        }
+        // A held tab has an idle placeholder too, so without this it would be
+        // a blank screen that says nothing about why nothing happened
+        if let Some(held) = opts.held.as_ref() {
+            if let Ok(mut p) = parser.lock() {
+                p.process(held_card(held, cols).as_bytes());
             }
         }
         let child_exited = Arc::new(AtomicBool::new(false));
@@ -4170,3 +4349,100 @@ mod codex_session_probe {
     }
 }
 
+
+#[cfg(test)]
+mod held_tests {
+    use super::{Held, Tab, TabOptions, fold, signature_of, width_of};
+    use std::time::{Duration, Instant};
+
+    fn nowhere() -> std::path::PathBuf {
+        std::env::temp_dir().join("shikisha-no-such-folder-7c2a")
+    }
+
+    /// The whole point. A folder that is not there used to be dropped and the
+    /// command ran in the app's own folder, so an agent configured for one
+    /// project came up in another with nothing on screen saying so.
+    #[test]
+    fn a_missing_folder_is_never_swapped_for_another_one() {
+        let opts = TabOptions { cwd: Some(nowhere()), ..Default::default() };
+        let out = Tab::spawn("t".into(), &["cmd.exe".to_string()], None, 20, 60, opts);
+        let Err(e) = out else {
+            panic!("a tab launched into a folder that does not exist");
+        };
+        // And it is said in words a person can act on, rather than as an
+        // operating system error code
+        let said = crate::tab::launch_problem("t", "cmd.exe", Some(&nowhere()), &e.to_string());
+        assert!(said.contains(&nowhere().display().to_string()), "{said}");
+    }
+
+    /// A held tab starts nothing of the person's, and says why on its own
+    /// screen -- the place somebody clicking the tab will actually look.
+    #[test]
+    fn a_held_tab_holds_the_screen_and_says_why() {
+        let held = Held::Missing { cwd: nowhere() };
+        let opts = TabOptions {
+            cwd: Some(nowhere()),
+            held: Some(held),
+            ..Default::default()
+        };
+        // `cmd.exe /c exit 3` would be gone in a moment if it ever ran
+        let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into(), "3".into()];
+        let mut tab = Tab::spawn("t".into(), &argv, None, 24, 80, opts).expect("held tab starts");
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut screen = String::new();
+        while Instant::now() < until {
+            screen = {
+                let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
+                p.screen().contents()
+            };
+            if screen.contains("shikisha-no-such-fold") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Named, though the card may have folded the path across two lines
+        assert!(
+            screen.contains("shikisha-no-such-fold"),
+            "the card never named the folder: {screen:?}"
+        );
+        // Still holding: what was asked for never ran, so nothing exited
+        assert!(!tab.exited(), "the held tab ran something");
+        tab.kill();
+    }
+
+    /// A folder turning up changes what the tab is, so the ordinary
+    /// "its launch conditions changed" path restarts it. Without this, a stick
+    /// plugged in after startup would leave every tab held for ever.
+    #[test]
+    fn a_folder_turning_up_is_a_different_tab() {
+        let argv = vec!["cmd.exe".to_string()];
+        let held = TabOptions {
+            cwd: Some(nowhere()),
+            held: Some(Held::Missing { cwd: nowhere() }),
+            ..Default::default()
+        };
+        let free = TabOptions { cwd: Some(nowhere()), ..Default::default() };
+        assert_ne!(signature_of(&argv, &held), signature_of(&argv, &free));
+        // And a different reason is a different signature too: a drive coming
+        // back is not the same event as a folder being made
+        let other = TabOptions {
+            held: Some(Held::NoDrive { drive: "D:".into(), cwd: nowhere() }),
+            ..held.clone()
+        };
+        assert_ne!(signature_of(&argv, &held), signature_of(&argv, &other));
+    }
+
+    /// Japanese spends two columns per character, and the card holds Japanese.
+    /// Counting characters drew the frame's right edge through the text.
+    #[test]
+    fn the_card_folds_by_columns_not_by_characters() {
+        assert_eq!(width_of("あい"), 4);
+        for line in fold("あいうえおかきくけこ", 6) {
+            assert!(width_of(&line) <= 6, "{line:?} is wider than the card");
+        }
+        // English still breaks at a space when there is one to break at
+        assert_eq!(fold("one two three", 8), vec!["one two", "three"]);
+        // A word longer than the card is broken rather than left hanging out
+        assert!(fold("supercalifragilistic", 8).iter().all(|l| width_of(l) <= 8));
+    }
+}

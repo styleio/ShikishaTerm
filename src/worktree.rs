@@ -597,10 +597,16 @@ fn name_is_usable(branch: &str) -> bool {
 }
 
 /// Runs one command and complains in the person's language when it fails.
-fn run(argv: &[String]) -> Result<()> {
+pub fn run(argv: &[String]) -> Result<()> {
     let (head, rest) = argv.split_first().expect("空のコマンド");
     let mut running = std::process::Command::new(head);
     running.args(rest);
+    // A clone of a private repository will ask for a password, and there is
+    // nowhere for it to ask: this app has no console, so git would wait for an
+    // answer that can never come and the whole thing would hang with nothing on
+    // screen. Told not to ask, it fails in a second and says why — which the
+    // person can act on
+    running.env("GIT_TERMINAL_PROMPT", "0");
     // Nothing here may put a black window on somebody's screen: this app has no
     // console of its own, so every one of these would flash one open
     let out = crate::detach_console(&mut running).output()?;

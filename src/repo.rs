@@ -72,6 +72,17 @@ pub fn branch_of(cwd: &Path) -> Option<String> {
 /// gets no line, which is the same answer as a folder that is not a
 /// repository at all
 pub fn origin_of(cwd: &Path) -> Option<String> {
+    github_path(&remote_url_of(cwd)?)
+}
+
+/// Where this folder's repository pushes to, exactly as git has it written.
+///
+/// The whole URL rather than a GitHub name, because this is also what says
+/// whether two folders on two machines are the same project — and plenty of
+/// projects are not on GitHub. Whoever shows or stores it takes the
+/// credentials off first (see `folders::scrub`): git keeps them in the URL when
+/// it is told to, and this file is read by things that write elsewhere.
+pub fn remote_url_of(cwd: &Path) -> Option<String> {
     // The shared folder, not this checkout's own: a worktree's git folder holds
     // its HEAD and little else, and `config` is one of the things it does not
     // have. Reading it there found nothing, so every worktree tab was missing
@@ -90,7 +101,7 @@ pub fn origin_of(cwd: &Path) -> Option<String> {
         }
         if let Some(url) = t.strip_prefix("url") {
             if let Some(v) = url.split_once('=') {
-                return github_path(v.1.trim());
+                return Some(v.1.trim().to_string());
             }
         }
     }

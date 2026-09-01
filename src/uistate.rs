@@ -158,6 +158,12 @@ pub struct GroupState {
     /// Whether this folder is a branch cut from the family's checkout
     #[serde(default)]
     pub linked: bool,
+    /// Whether the folder is actually on this machine. Settings travel between
+    /// PCs on a sync folder or a stick, and a path that is right on one of them
+    /// is simply not there on the other -- which the list has to say, because
+    /// the tabs in that folder are being held back rather than run
+    #[serde(default)]
+    pub health: crate::folders::Health,
 }
 
 impl GroupState {
@@ -198,6 +204,10 @@ impl GroupState {
                         .as_deref()
                         .map(|f| Self::color_of(f, chosen)),
                     linked: t.place.linked,
+                    // Filled in by whoever is drawing: whether a folder is
+                    // here is a question for the disk, and the disk is asked
+                    // away from the list being built
+                    health: Default::default(),
                 },
             ));
         }

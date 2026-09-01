@@ -719,6 +719,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     font-size:13px; line-height:1; }
   .tab.folder .more:hover { color:var(--text); }
   .tab.folder .caret { color:var(--dim); font-size:9px; }
+  /* Folders that are not on this machine. One line whatever the number, because
+     a warning per folder on a PC that has none of them is four warnings nobody
+     reads -- and a warning nobody reads is the same as no warning at all. The
+     count is the whole message; the names are one click away */
+  .tab.trouble { gap:6px; color:var(--warn, #e0a80a); }
+  .tab.trouble .nm { font-size:11.5px; opacity:1; }
+  .tab.trouble .caret { color:inherit; font-size:9px; margin-left:auto; padding:0 4px; }
+  .tab.troubled { padding-left:26px; font-size:11.5px; }
+  .tab.troubled .nm { color:var(--warn, #e0a80a); }
+  .tab.troubled .why { display:block; color:var(--dim); font-size:10.5px;
+    white-space:normal; line-height:1.35; padding-top:1px; }
+  /* On the folder's own row, in the mark's column, so a folded list still says
+     which folder the count was about */
+  .tab.folder .ail { flex:0 0 auto; color:var(--warn, #e0a80a); font-size:11px; }
   #vault .vhint { color:var(--dim); font-size:11.5px; }
   #vault .vlist, #palette .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; }
   #vault .vrow, #palette .prow { padding:9px 10px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
@@ -1204,6 +1218,7 @@ function drawTabs() {
   // folder at all (a browser) leaves the heading alone rather than ending it,
   // so a page declared between two tabs does not split their folder in two
   const folders = S.groups || [];
+  troubleRow(nav, folders);
   let shownFolder = -1;
   for (const t of S.tabs) {
     // Settings isn't a tab — it's reached via the gear pinned at the bottom.
@@ -1223,6 +1238,9 @@ function drawTabs() {
           title:g.folder || "", onclick:() => { fold(g.folder); }},
         chip,
         el("span", {class:"caret"}, shut ? "▸" : "▾"),
+        // On the row itself as well as in the count above, so a folded list
+        // still shows which folder is the one with the problem
+        ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
         el("span", {class:"nm"}, g.name || ""),
         el("span", {class:"more", title:T["tui.folder.add"] || "+",
             onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+")));
@@ -1330,6 +1348,66 @@ function openList(anchor, rows) {
   folderMenuAway = ev => { if (!m.contains(ev.target)) closeFolderMenu(); };
   setTimeout(() => document.addEventListener("mousedown", folderMenuAway, true), 0);
   return m;
+}
+
+// Whether a folder is one the person has to do something about. Being looked
+// at is not: a drive takes a moment to answer and a warning that appears and
+// then withdraws itself teaches people to ignore warnings
+function ailing(g) {
+  const h = (g && g.health && g.health.as) || "fine";
+  return h === "nodrive" || h === "missing";
+}
+// What is wrong with it, in one line.
+function whyFolder(g) {
+  const h = (g && g.health) || {};
+  const say = (k, subs) => {
+    let s = T[k] || "";
+    for (const [n, v] of Object.entries(subs || {})) s = s.split("{" + n + "}").join(v);
+    return s;
+  };
+  if (h.as === "nodrive") return say("msg.folder.no_drive", {drive:h.drive, path:g.folder});
+  if (h.as === "missing") return say("msg.folder.missing", {path:g.folder});
+  if (h.as === "looking") {
+    return h.drive ? say("tui.folder.looking", {drive:h.drive, secs:h.secs})
+                   : say("tui.folder.looking_any", {secs:h.secs});
+  }
+  return "";
+}
+// One line for every folder that is not here, folded shut.
+//
+// Four warnings on a PC that has none of these folders is four things to
+// dismiss, and by the third nobody is reading them. The count is the message;
+// the names and the reasons are one click away, and the folder's own row keeps
+// its own mark so the list still says which one.
+let troubleOpen = false;
+function troubleRow(nav, folders) {
+  const bad = folders.filter(ailing);
+  const slow = folders.filter(g => ((g.health || {}).as) === "looking");
+  // A drive still answering is said here too, and only here: it is not a
+  // warning, it is the reason the app looks like it is doing nothing. Naming
+  // the drive is the whole point -- "our software has frozen" is what people
+  // conclude when nothing says which disk is not answering
+  if (!bad.length && !slow.length) { troubleOpen = false; return; }
+  if (bad.length) {
+    const say = (bad.length === 1 ? (T["tui.folder.trouble_one"] || "")
+                                  : (T["tui.folder.trouble"] || "")).split("{n}").join(bad.length);
+    nav.append(el("div", {class:"tab trouble", onclick:() => { troubleOpen = !troubleOpen; drawNav(); }},
+      el("span", {class:"num"}, "⚠"),
+      el("span", {class:"nm"}, say),
+      el("span", {class:"caret"}, troubleOpen ? "▾" : "▸")));
+  }
+  for (const g of slow) {
+    nav.append(el("div", {class:"tab trouble"},
+      el("span", {class:"num"}, "⏳"),
+      el("span", {class:"nm"}, whyFolder(g))));
+  }
+  if (!troubleOpen) return;
+  for (const g of bad) {
+    nav.append(el("div", {class:"tab troubled", title:g.folder,
+        onclick:() => openRepair(g)},
+      el("span", {class:"nm"}, g.name || g.folder || ""),
+      el("span", {class:"why"}, whyFolder(g))));
+  }
 }
 
 function folderMenu(e, g) {

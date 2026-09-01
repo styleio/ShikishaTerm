@@ -1090,8 +1090,95 @@ pub struct FolderConfig {
     /// own -w / --cd)
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Where this folder came from, so a machine that does not have it can make
+    /// it. Written when it is made; asked of a person only when it is absent
+    #[serde(default)]
+    pub source: Option<SourceSpec>,
     #[serde(default)]
     pub tabs: Vec<TabConfig>,
+}
+
+/// Where a working folder came from.
+///
+/// Settings are shared between machines, and a folder named only by its path is
+/// a folder the second machine cannot make. What it takes to make one again is
+/// three facts, so they are written down at the moment it is made rather than
+/// asked for later — nobody should have to remember which branch a folder held
+/// six weeks ago, and nothing else in the settings can be asked.
+///
+/// The repository is named by its **remote URL**, never by the folder it was
+/// cut from: a path is the thing that differs between machines, which is the
+/// problem this exists to solve. The URL is the same everywhere.
+///
+/// Every field is optional so that a half-written one — this file gets edited
+/// by hand — costs its own folder rather than the whole settings file.
+#[derive(Debug, Deserialize, serde::Serialize, Clone, Default, PartialEq, Eq)]
+pub struct SourceSpec {
+    /// The repository's remote, without credentials. Never a path
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// The branch this folder holds, spelled exactly as git spells it —
+    /// slashes and all. The folder's `name` is a label and flattens
+    /// `work/2` to `work-2`, which cannot be turned back into a branch
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// What the branch grew from, for the case where it no longer exists
+    /// anywhere and has to be started again
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// `"folder"` for a working folder that is deliberately not a repository.
+    /// Recorded so that the one question is asked once and never again
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+/// The same, read: what is actually known about where a folder came from.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Source {
+    /// A branch of a repository, with everything needed to expand it anywhere
+    Worktree { origin: String, branch: String, base: String },
+    /// An ordinary folder, said so on purpose
+    Plain,
+    /// Nothing was written down. The one case that has to ask a person —
+    /// settings written by hand, or a folder made before any of this existed
+    #[default]
+    Unknown,
+}
+
+impl SourceSpec {
+    /// What this amounts to, with the half-written cases folded into
+    /// "nobody said".
+    pub fn read(&self) -> Source {
+        if self.kind.as_deref() == Some("folder") {
+            return Source::Plain;
+        }
+        let some = |v: &Option<String>| {
+            v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+        };
+        match (some(&self.origin), some(&self.branch)) {
+            (Some(origin), Some(branch)) => Source::Worktree {
+                origin,
+                branch,
+                base: some(&self.base).unwrap_or_default(),
+            },
+            _ => Source::Unknown,
+        }
+    }
+
+    /// An ordinary folder, recorded as one.
+    pub fn plain() -> Self {
+        Self { kind: Some("folder".into()), ..Default::default() }
+    }
+
+    /// A branch of a repository, recorded as one.
+    pub fn worktree(origin: &str, branch: &str, base: &str) -> Self {
+        Self {
+            origin: Some(origin.to_string()),
+            branch: Some(branch.to_string()),
+            base: (!base.trim().is_empty()).then(|| base.to_string()),
+            kind: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1126,6 +1213,9 @@ pub struct Folder {
     pub id: Option<String>,
     /// Where its tabs start. Absent means wherever the app itself is
     pub cwd: Option<std::path::PathBuf>,
+    /// What it would take to make this folder on a machine that does not have
+    /// it. [`Source::Unknown`] is the case that has to ask
+    pub source: Source,
 }
 
 /// A workspace resolved at launch time (tabs are flattened; depth preserves the hierarchy)
@@ -1264,6 +1354,7 @@ fn resolve_folders(defs: &[FolderConfig]) -> (Vec<Folder>, Vec<FlatTab>) {
                     false => root_dir().join(p),
                 }
             }),
+            source: def.source.as_ref().map(SourceSpec::read).unwrap_or_default(),
         });
         flatten(&def.tabs, 0, at, &mut tabs);
     }

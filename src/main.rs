@@ -28,6 +28,7 @@ mod crypto;
 mod detect;
 mod digest;
 mod exchange;
+mod folders;
 mod hooks;
 mod i18n;
 mod lastsession;
@@ -1719,7 +1720,17 @@ fn screen_key(session: usize, t: &Tab) -> ScreenKey {
 fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
     // The folders these tabs are actually in. Worked out here, once, so the
     // window and the phone are looking at the same list
-    let groups = crate::uistate::GroupState::all(tabs, &ui.folder_colors);
+    let mut groups = crate::uistate::GroupState::all(tabs, &ui.folder_colors);
+    // And whether each of them is on this machine. Asked here because this is
+    // the one place the list is built, and answered from a table kept up to
+    // date on its own threads -- a drive that has stopped answering must not
+    // stop the drawing
+    let health = folders::watch().look(
+        &groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+    );
+    for (at, g) in groups.iter_mut() {
+        g.health = health.get(at).cloned().unwrap_or_default();
+    }
     crate::uistate::UiState {
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
         branch: ui.branch.clone(),
@@ -6115,14 +6126,30 @@ fn resolve_launch(
 }
 
 /// Where it runs comes from the tab's group, the only thing that has a folder.
+///
+/// And whether that folder is on this machine at all, which is asked here
+/// rather than at each launch site: a tab whose folder is not here is held
+/// back instead of started, and there is more than one place tabs are started
+/// from. One answer, so the two cannot disagree.
 fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> tab::TabOptions {
+    let cwd = folder.and_then(|f| f.cwd.clone());
+    let held = cwd.as_deref().and_then(|p| {
+        match folders::watch().settled(p, folders::BEFORE_LAUNCH) {
+            folders::Health::NoDrive { drive } => {
+                Some(tab::Held::NoDrive { drive, cwd: p.to_path_buf() })
+            }
+            folders::Health::Missing => Some(tab::Held::Missing { cwd: p.to_path_buf() }),
+            _ => None,
+        }
+    });
     tab::TabOptions {
-        cwd: folder.and_then(|f| f.cwd.clone()),
+        cwd,
         group: folder.and_then(|f| f.name.clone()),
         scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
         model: None,
+        held,
     }
 }
 
@@ -9566,17 +9593,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A folder that is not on this machine stops the launch.
+    ///
+    /// This test used to promise the opposite — that a tab starts anyway,
+    /// "easier to recover from than a launch failure". It was not a recovery.
+    /// The folder was dropped and the command ran in the app's own folder, so
+    /// an agent configured for one project came up somewhere else entirely,
+    /// with a full set of permissions and nothing on screen saying so. There is
+    /// no recovering from work done in the wrong place.
+    ///
+    /// What the person gets instead is a tab that holds its screen and says
+    /// which folder is missing (see `tab::held_tests`), and a folder that turns
+    /// up later restarts it on its own.
     #[test]
-    fn missing_folder_falls_back_instead_of_failing_to_start() {
+    fn a_folder_that_is_not_here_stops_the_launch() {
         let opts = tab::TabOptions {
             cwd: Some(std::path::PathBuf::from("Z:/does/not/exist")),
             ..Default::default()
         };
         let argv = vec!["cmd.exe".to_string()];
-        // The session still launches even for a folder that doesn't exist (easier to recover from than a launch failure)
-        let mut t = Tab::spawn("fallback".into(), &argv, None, 10, 60, opts)
-            .expect("存在しないフォルダでも起動できる");
-        t.kill();
+        let out = Tab::spawn("nowhere".into(), &argv, None, 10, 60, opts);
+        assert!(out.is_err(), "存在しないフォルダのまま起動してはいけない");
     }
 
     #[test]
