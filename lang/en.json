@@ -1402,6 +1402,7 @@
   "git.merge": "Merge",
   "git.branch.new": "Branch",
   "git.branches": "Branches",
+  "git.checkout": "Move here",
   "git.pane.branches": "Branches",
   "git.pane.changes": "Changes",
   "git.pane.diff": "The change",

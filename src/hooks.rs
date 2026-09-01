@@ -2797,7 +2797,17 @@ impl HookEngine {
                             Some(t) => t.get::<Option<u32>>("count")?.unwrap_or(200),
                             None => 200,
                         };
-                        let rows = crate::git::graph(&dir, flag("all")?, flag("remotes")?, count)
+                        let only: Option<String> = match &opts {
+                            Some(t) => t.get("branch")?,
+                            None => None,
+                        };
+                        let rows = crate::git::graph(
+                            &dir,
+                            flag("all")?,
+                            flag("remotes")?,
+                            count,
+                            only.as_deref(),
+                        )
                             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
                         let out = lua.create_table()?;
                         for r in rows {

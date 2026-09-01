@@ -4808,7 +4808,7 @@ function gitBuild(box) {
   const pull = mk(T["git.pull"] || "", null, () => gitAsk("pull"));
   const push = mk(T["git.push"] || "", null, () => gitAsk("push"));
   const fetch = mk(T["git.fetch"] || "", null, () => gitAsk("fetch"));
-  const branch = mk(T["git.branch.new"] || "", null, () => gitHistory());
+  const branch = mk(T["git.branch.new"] || "", null, () => { G.pickBranch = null; gitHistory(); });
   const merge = mk(T["git.merge"] || "", null, () => {
     if (G.pickBranch) gitAsk("merge", {text: G.pickBranch});
     else gitSay(T["git.merge.pick"] || "", true);
@@ -4856,9 +4856,14 @@ function gitBuild(box) {
   const log = el("div", {class:"log"});
   const about = el("div", {class:"about"});
   const commitDiff = el("pre", {class:"diff"});
+  const which = el("b", {class:"which"});
   const hist = el("div", {class:"hist"},
     el("div", {class:"histhead"},
-      el("b", {}, T["git.view.all"] || ""),
+      el("button", {class:"quiet", onclick:() => {
+        G.pickBranch = null;
+        gitAsk("graph", {all:true, remotes:G.remotes});
+      }}, T["git.view.all"] || ""),
+      which,
       el("label", {class:"castradio"}, remotes, el("span", {}, T["git.view.remotes"] || "")),
       el("span", {style:"flex:1"}),
       el("button", {class:"quiet", onclick:() => gitHistory(true)}, T["git.back"] || "")),
@@ -4886,7 +4891,7 @@ function gitBuild(box) {
     grip(true, "mid", "%", () => mid),
     diff, hist));
   gitUi = { bar, said, naming, name, branches, branchCol, staged, work, diff,
-            hist, mid, log, about, commitDiff, remotes, chips,
+            hist, mid, log, about, commitDiff, remotes, chips, which,
             btn: {commit, pull, push, fetch, branch, merge},
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
 }
@@ -4993,6 +4998,7 @@ function gitMark(r) {
 // file that is picked -- one piece at a time, each of which can be walked back
 function drawHistory(u) {
   u.remotes.checked = !!G.remotes;
+  u.which.textContent = G.pickBranch || "";
   u.log.textContent = "";
   for (const r of G.log || []) {
     const row = el("div", {class:"logrow" + (G.commit === r.hash && r.hash ? " on" : ""),
@@ -5099,7 +5105,7 @@ function gitHistory(back) {
   // a button people report as broken -- the way back is the one that says so
   G.view = back ? "changes" : "history";
   G.said = "";
-  if (!back) gitAsk("graph", {all:true, remotes:G.remotes});
+  if (!back) gitAsk("graph", {all:!G.pickBranch, remotes:G.remotes, branch:G.pickBranch || ""});
   drawGit();
 }
 // The panel's own row in the sub-input bar: have the AI write the message, and
@@ -5134,16 +5140,23 @@ function drawGit() {
 
   u.branches.textContent = "";
   for (const b of G.branches || []) {
+    // Pointing at a branch asks to see it. Moving onto one is a different
+    // thing -- it changes the files on disk -- so it has a button of its own
+    // rather than hiding behind a second click
     const row = el("div", {class:"row" + (b.current ? " here" : "") + (G.pickBranch === b.name ? " pick" : ""),
       title:b.name,
       onclick:() => {
-        if (b.current) return;
-        G.pickBranch = G.pickBranch === b.name ? null : b.name;
-        drawGit();
-      },
-      ondblclick:() => { if (!b.current) gitAsk("checkout", {text: b.name}); }});
+        G.pickBranch = b.name;
+        G.commit = null; G.about = null; G.sel = null; G.hunks = [];
+        gitHistory();
+      }});
     row.append(el("span", {class:"x"}, b.current ? "\u25cf" : ""));
     row.append(el("span", {class:"p"}, b.name));
+    if (!b.current) {
+      row.append(el("button", {class:"quiet", title:T["git.checkout"] || "",
+        onclick:e => { e.stopPropagation(); gitAsk("checkout", {text: b.name}); }},
+        T["git.checkout"] || ""));
+    }
     u.branches.append(row);
   }
   if (!(G.branches || []).length) u.branches.append(el("div", {class:"empty"}, "\u2026"));

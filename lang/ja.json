@@ -1400,6 +1400,7 @@
   "git.merge": "マージ",
   "git.branch.new": "ブランチ",
   "git.branches": "ブランチ",
+  "git.checkout": "移る",
   "git.pane.branches": "ブランチ",
   "git.pane.changes": "変更",
   "git.pane.diff": "差分",

@@ -4393,6 +4393,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         serde_json::json!({
                             "all": args.get("all").and_then(|v| v.as_bool()).unwrap_or(true),
                             "remotes": args.get("remotes").and_then(|v| v.as_bool()).unwrap_or(false),
+                            "branch": args.get("branch").and_then(|v| v.as_str()).unwrap_or(""),
                         }),
                     ],
                 ),

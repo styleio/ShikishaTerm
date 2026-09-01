@@ -282,7 +282,13 @@ pub struct Detail {
 /// redrawing that from a list of parents is a way to be subtly wrong about
 /// somebody's history. Rows without a commit on them (the `|/` that closes a
 /// merge) are kept -- they are the shape of the thing
-pub fn graph(dir: &Path, all: bool, remotes: bool, count: u32) -> Result<Vec<Line>> {
+pub fn graph(
+    dir: &Path,
+    all: bool,
+    remotes: bool,
+    count: u32,
+    branch: Option<&str>,
+) -> Result<Vec<Line>> {
     let n = format!("-{}", count.clamp(1, 2000));
     let mut args: Vec<&str> = vec![
         "log",
@@ -291,10 +297,13 @@ pub fn graph(dir: &Path, all: bool, remotes: bool, count: u32) -> Result<Vec<Lin
         "--pretty=format:%x1e%H%x1f%h%x1f%an%x1f%ad%x1f%s",
         &n,
     ];
-    if remotes {
-        args.push("--all");
-    } else if all {
-        args.push("--branches");
+    // Naming one branch beats the two switches: it is the narrower question,
+    // and it is the one somebody asked by pointing at it
+    match branch.map(str::trim).filter(|b| !b.is_empty()) {
+        Some(b) => args.push(b),
+        None if remotes => args.push("--all"),
+        None if all => args.push("--branches"),
+        None => {}
     }
     let out = run(dir, &args)?;
     Ok(out
@@ -813,7 +822,7 @@ mod tests {
         stage(&dir, &["a.txt".to_string(), "b.txt".to_string()]).unwrap();
         commit(&dir, "second\n\nwith a reason", true, false).unwrap();
 
-        let rows = graph(&dir, false, false, 10).unwrap();
+        let rows = graph(&dir, false, false, 10, None).unwrap();
         let commits: Vec<&Line> = rows.iter().filter(|r| !r.hash.is_empty()).collect();
         assert_eq!(commits.len(), 2, "コミットの数だけ行がある");
         assert!(commits[0].graph.contains('*'), "git の描いた絵が付いてくる");
