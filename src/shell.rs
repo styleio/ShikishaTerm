@@ -469,6 +469,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     white-space:nowrap; font-family:var(--mono); font-size:12px; direction:rtl;
     text-align:left; }
   #gitpanel .branches .row.here { color:var(--brand); font-weight:600; }
+  /* Moving onto a branch: under the pointer only, and always the same width */
+  #gitpanel .branches .row button.go { flex:0 0 1.6em; padding:0; font-size:14px;
+    line-height:1.2; border:0; background:none; color:var(--muted); cursor:pointer;
+    visibility:hidden; }
+  #gitpanel .branches .row:hover button.go { visibility:visible; }
+  #gitpanel .branches .row button.go:hover { color:var(--brand); }
   #gitpanel .diff { flex:1 1 auto; overflow:auto; padding:0; margin:0;
     white-space:pre; font-family:var(--mono); font-size:12px; line-height:1.35; }
   /* One hunk: what it covers, what can be done with it, and then the lines */
@@ -5153,9 +5159,11 @@ function drawGit() {
     row.append(el("span", {class:"x"}, b.current ? "\u25cf" : ""));
     row.append(el("span", {class:"p"}, b.name));
     if (!b.current) {
-      row.append(el("button", {class:"quiet", title:T["git.checkout"] || "",
+      // Quiet: it only shows under the pointer, and it is an arrow rather than
+      // a word so the row does not change width when it appears
+      row.append(el("button", {class:"quiet go", title:T["git.checkout"] || "",
         onclick:e => { e.stopPropagation(); gitAsk("checkout", {text: b.name}); }},
-        T["git.checkout"] || ""));
+        "→"));
     }
     u.branches.append(row);
   }
