@@ -469,6 +469,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     white-space:nowrap; font-family:var(--mono); font-size:12px; direction:rtl;
     text-align:left; }
   #gitpanel .branches .row.here { color:var(--brand); font-weight:600; }
+  /* Asked for something the list has: a border rather than a flash, so it is
+     still there a second later when the eye arrives */
+  #gitpanel .branches.asking { outline:1px solid var(--brand); outline-offset:-1px;
+    background:color-mix(in srgb, var(--brand) 8%, transparent); }
   /* Moving onto a branch: under the pointer only, and always the same width */
   #gitpanel .branches .row button.go { flex:0 0 1.6em; padding:0; font-size:14px;
     line-height:1.2; border:0; background:none; color:var(--muted); cursor:pointer;
@@ -4803,6 +4807,11 @@ window.__git = function (d) {
       if (gitWantsPush()) gitAsk("push");
     } else if (d.act === "checkout" || d.act === "branch_new") {
       G.pick = {}; G.sel = null; G.diff = ""; G.offer = false;
+    } else if (d.act === "resolve") {
+      // Written into the tree, not staged and not committed. The next thing to
+      // do is read it, so the file list comes back and the diff with it
+      G.said = String(d.data || "").split("\n").filter(Boolean)[0] || "";
+      G.sel = null; G.diff = ""; G.hunks = [];
     } else if (d.act === "fetch" || d.act === "pull" || d.act === "push" || d.act === "merge") {
       G.said = String(d.data || "").split("\n").filter(Boolean).pop() || (T["git.done"] || "");
     }
@@ -4842,9 +4851,21 @@ function gitBuild(box) {
   const fetch = mk(T["git.fetch"] || "", null, () => gitAsk("fetch"));
   const branch = mk(T["git.branch.new"] || "", null, () => gitNewBranch());
   const merge = mk(T["git.merge"] || "", null, () => {
-    if (G.pickBranch) gitAsk("merge", {text: G.pickBranch});
-    else gitSay(T["git.merge.pick"] || "", true);
+    if (G.pickBranch) { gitAsk("merge", {text: G.pickBranch}); return; }
+    // Nothing picked: say what the button needs, and point at where to say it
+    // rather than leaving a sentence to be found somewhere else on the screen
+    gitSay(T["git.merge.pick"] || "", true);
+    if (gitUi) {
+      gitUi.branches.classList.add("asking");
+      setTimeout(() => gitUi && gitUi.branches.classList.remove("asking"), 1600);
+    }
   });
+  // Only there when git has left something marked. A button for a thing that
+  // is not happening is a button people learn to read past
+  const untangle = mk("\ud83e\udd16 " + (T["git.resolve"] || ""), "go", () => {
+    if (G.busy !== "resolve") gitAsk("resolve");
+  });
+  untangle.hidden = true;
   const said = el("span", {class:"said"});
   bar.append(said);
   // Making a branch asks for a name here rather than in a dialog: this window
@@ -4922,7 +4943,7 @@ function gitBuild(box) {
     diff, hist));
   gitUi = { bar, said, naming, name, branches, branchCol, staged, work, diff,
             hist, mid, log, about, commitDiff, remotes, chips, which,
-            btn: {commit, pull, push, fetch, branch, merge},
+            btn: {commit, pull, push, fetch, branch, merge, untangle},
             pick: {unstageAll, unstagePick, stageAll, stagePick} };
 }
 
@@ -5167,6 +5188,18 @@ function drawGit() {
   u.naming.style.display = G.offer ? "flex" : "none";
   if (G.offer && document.activeElement !== u.name) u.name.focus();
   for (const k in u.btn) u.btn[k].disabled = !!G.busy;
+  // The untangle button appears with the conflicts and leaves with them
+  // The button names what it would bring in: a merge with nothing named is the
+  // question people were left holding
+  u.btn.merge.textContent = G.pickBranch
+    ? (T["git.merge"] || "") + " \u2190 " + G.pickBranch
+    : (T["git.merge"] || "");
+  u.btn.merge.title = G.pickBranch ? "" : (T["git.merge.pick"] || "");
+  const marked = (G.rows || []).some(r => r.conflict);
+  u.btn.untangle.hidden = !marked;
+  u.btn.untangle.textContent = G.busy === "resolve"
+    ? "\u2026"
+    : "\ud83e\udd16 " + (T["git.resolve"] || "");
 
   u.branches.textContent = "";
   // The first row is every branch at once -- the same question the rows below

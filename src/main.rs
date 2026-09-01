@@ -4308,12 +4308,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                 .unwrap_or_default();
             let text = args.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string();
-            if matches!(act.as_str(), "fetch" | "pull" | "push" | "message") {
+            if matches!(act.as_str(), "fetch" | "pull" | "push" | "message" | "resolve") {
                 // "message" is the AI writing one, which is a read of the diff
                 // followed by a wait on a program -- the same reason as the
                 // network ones for not doing it on this thread
                 let name = match act.as_str() {
                     "message" => "git_diff".to_string(),
+                    // Untangling writes the file back, which is the same reach
+                    // as anything else that edits the tree
+                    "resolve" => "git_apply".to_string(),
                     _ => format!("git_{act}"),
                 };
                 let dir = panel_cwds(&surfaces)
@@ -4343,6 +4346,37 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 "fetch" => crate::git::fetch(&dir),
                                 "pull" => crate::git::pull(&dir),
                                 "push" => crate::git::push(&dir),
+                                // Every file git left marked, one at a time.
+                                // Nothing is staged and nothing is committed:
+                                // what comes back is written into the tree, and
+                                // the person reads it as a diff like any other
+                                "resolve" => crate::git::conflicts(&dir).and_then(|files| {
+                                    let mut done: Vec<String> = Vec::new();
+                                    let mut failed: Vec<String> = Vec::new();
+                                    for f in &files {
+                                        let at = dir.join(f);
+                                        let said = std::fs::read_to_string(&at)
+                                            .map_err(anyhow::Error::from)
+                                            .and_then(|body| {
+                                                crate::webui::resolve_conflict(f, &body, ai.as_deref())
+                                            })
+                                            .and_then(|text| {
+                                                std::fs::write(&at, text).map_err(Into::into)
+                                            });
+                                        match said {
+                                            Ok(()) => done.push(f.clone()),
+                                            Err(e) => failed.push(format!("{f}: {e}")),
+                                        }
+                                    }
+                                    if done.is_empty() && !failed.is_empty() {
+                                        anyhow::bail!("{}", failed.join("\n"));
+                                    }
+                                    Ok(crate::i18n::tp(
+                                        "msg.git.resolved",
+                                        &[("n", &done.len().to_string())],
+                                    ) + if failed.is_empty() { "" } else { "\n" }
+                                        + &failed.join("\n"))
+                                }),
                                 // What is staged is what is about to be
                                 // committed, so that is what gets described.
                                 // With nothing staged there is still a change

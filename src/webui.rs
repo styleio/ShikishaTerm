@@ -624,6 +624,55 @@ pub fn write_commit_message(diff: &str, engine: Option<&str>) -> Result<String> 
     Ok(text.trim().to_string())
 }
 
+/// Have the assistant AI untangle one conflicted file.
+///
+/// It is handed the file exactly as git left it -- both sides and the markers --
+/// and gives back what the file should be. Nothing here decides that the answer
+/// is right: it is written to the working tree, where the person reads it as a
+/// diff and stages it, or throws it away. Proposing is the AI's half.
+pub fn resolve_conflict(name: &str, body: &str, engine: Option<&str>) -> Result<String> {
+    if !body.contains("<<<<<<<") {
+        anyhow::bail!("{}", crate::i18n::tp("err.git.no_markers", &[("file", name)]));
+    }
+    // A file with a conflict in it is usually ordinary in size; one that is not
+    // is not something to send half of, because half a file written back is
+    // worse than the conflict
+    const ROOM: usize = 60_000;
+    if body.chars().count() > ROOM {
+        anyhow::bail!("{}", crate::i18n::tp("err.git.too_big", &[("file", name)]));
+    }
+    let prompt = crate::i18n::tp("ai.resolve.prompt", &[("file", name), ("body", body)]);
+    let said = ask_local_ai(&prompt, engine)?;
+    let text = strip_fence(&said);
+    if text.trim().is_empty() {
+        anyhow::bail!("{}", crate::i18n::tp("err.git.no_answer", &[("file", name)]));
+    }
+    if text.contains("<<<<<<<") || text.contains(">>>>>>>") {
+        anyhow::bail!("{}", crate::i18n::tp("err.git.markers_left", &[("file", name)]));
+    }
+    Ok(text)
+}
+
+/// What a model says, minus the way models like to wrap it. A fenced block is
+/// taken as the answer; anything outside one is dropped, because a file that
+/// begins "Here is the resolved version:" does not compile
+fn strip_fence(said: &str) -> String {
+    let text = said.trim();
+    let Some(start) = text.find("```") else {
+        return text.to_string();
+    };
+    let after = &text[start + 3..];
+    // The rest of the fence line is the language, not content
+    let body = match after.find('\n') {
+        Some(nl) => &after[nl + 1..],
+        None => "",
+    };
+    match body.rfind("```") {
+        Some(end) => body[..end].trim_end_matches('\n').to_string(),
+        None => body.to_string(),
+    }
+}
+
 /// Run the assistant AI once with this prompt on its standard input.
 ///
 /// The three things that ask an AI something -- write me Lua, suggest me a
@@ -6557,6 +6606,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn what_a_model_wraps_its_answer_in_is_not_part_of_the_answer() {
+        assert_eq!(strip_fence("one\ntwo"), "one\ntwo", "素のままなら素のまま");
+        assert_eq!(
+            strip_fence("Here it is:\n```rust\nfn main() {}\n```\nhope that helps"),
+            "fn main() {}",
+            "囲いの中だけが答え"
+        );
+        // An opening fence with nothing closing it still gives up its contents
+        assert_eq!(strip_fence("```\nline\n"), "line");
     }
 
     #[test]
