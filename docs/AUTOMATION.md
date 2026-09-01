@@ -684,10 +684,16 @@ ones; this is the complete list.
 The same command can be allowed for **you** and refused for **an AI**. The settings
 card lists every command with two boxes: one for a person, one for an AI.
 
-- **A person** — the hooks and scripts you wrote, the run button, an external
-  program you started yourself
-- **An AI** — a call an AI tab made with its own key, and Lua an AI wrote (inside
-  `run_scoped`)
+- **An AI** — a call from an **AI tab** (a tab whose command is an AI: `claude`,
+  `codex`, `gemini`, `aider` and the like, or a tab talking to a model over an
+  API), and Lua an AI wrote (inside `run_scoped`)
+- **A person** — everything else: the hooks and scripts you wrote, the run
+  button, and programs you started yourself
+
+> **An AI you start by hand inside a terminal tab counts as you.** Open a `cmd`
+> or PowerShell tab, type `claude` in it, and **unticking the AI column will not
+> stop that AI** — it is calling with the tab's own key, and the tab is a
+> terminal. To have it counted as an AI, **make the tab's own command the AI**.
 
 Nearly everything is ticked in both columns to begin with. **Six commands start out
 closed to an AI**, and each one either steps outside this table or destroys

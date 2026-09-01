@@ -2087,12 +2087,20 @@ const PAGE: &str = r##"<!doctype html>
  .granthead { display:flex; align-items:center; gap:8px; padding:10px 0 4px;
    border-top:1px solid var(--line); margin-top:4px; }
  .granthead b { font-size:12.5px; font-weight:600; }
+ /* Who counts as what, and the one case where the answer surprises people */
+ .grantwho { font-size:12.5px; line-height:1.65; margin:2px 0 10px; }
+ .grantwho div + div { margin-top:4px; }
+ .grantwarn { font-size:12.5px; line-height:1.65; margin:0 0 12px; padding:8px 12px;
+   border-left:3px solid var(--danger); background:var(--panel2); border-radius:0 6px 6px 0; }
  .granthead .foldable { cursor:pointer; display:flex; align-items:center; gap:8px; }
  .granthead .caret { font-size:11px; width:14px; text-align:center; color:var(--muted); }
  .grantrow { display:flex; align-items:center; gap:8px; padding:4px 0; }
  .grantrow .nm { font-size:12.5px; }
  .grantrow .sub { display:block; color:var(--muted); font-size:11.5px; margin-top:1px; }
- .grantrow .cell { width:104px; display:flex; justify-content:center; flex:0 0 104px; }
+ /* The two columns are one width, wherever they appear -- a heading's pair has
+    to stand in the same place as the rows it answers for */
+ .grantrow .cell, .granthead .cell { width:104px; flex:0 0 104px; display:flex;
+   justify-content:center; }
  .grantrow .grow { min-width:0; }
  .grantrow.off .nm { color:var(--muted); }
  .grantmark { color:var(--muted); font-size:11px; margin-left:6px; }
@@ -4052,8 +4060,16 @@ function permissionsCard() {
     refreshSave();
     draw();
   }}, T["settings.permissions.reset"]);
+  // What counts as an AI is the first thing on the card, spelled out rather
+  // than left to be assumed. The mistake this prevents is a person unticking
+  // the AI column, walking away, and the AI they started by hand in a terminal
+  // tab carrying on -- it holds that tab's key, and that tab is a terminal
   return card(T["settings.sec.permissions"],
     el("div", {class:"hint"}, T["settings.permissions.hint"]),
+    el("div", {class:"grantwho"},
+      el("div", {}, T["settings.permissions.who.ai"]),
+      el("div", {}, T["settings.permissions.who.human"])),
+    el("div", {class:"grantwarn"}, T["settings.permissions.caution"]),
     el("div", {class:"row"}, reset),
     body);
 }
