@@ -101,8 +101,8 @@ shikisha.send_to_tab("reviewer", "レビューして")   -- 名前を変えて�
 | `shikisha.log("文字列")` | `logs/hooks.log` に記録 |
 | `shikisha.set_session("id")` | **このタブ**のCLIが動かしている会話のIDを伝える（再起動で引き継ぐため）。タブを指定しないのは、呼んだ側がそのタブだから |
 | `shikisha.set_state("BUSY")` | **このタブ**が今どの状態かを画面の推測ではなく自分で伝える（`BUSY` / `QUESTION` / `DONE` / `WAIT`）。AI CLI 自身のフックはここを通って状態●を動かす。第2引数は送信時刻（ミリ秒）で、追い越して届いても言われた順に適用される |
-| `shikisha.set_status("key", "文字列")` | **このタブ**が今なにをしているかを自分の言葉で伝える（タブ名の下に出ます）。`key` を分ければ複数の書き手が上書きし合わない。空文字でその1件を消す |
-| `shikisha.set_progress(0.4, "ラベル")` | どこまで進んだか（0〜1）。状態の隣に出ます。`nil` で消す |
+| `shikisha.set_status("key", "文字列", タブ)` | 今なにをしているかを自分の言葉で伝える（タブ名の下に出ます）。`key` を分ければ複数の書き手が上書きし合わない。空文字でその1件を消す。`タブ` を省くと**このタブ**について |
+| `shikisha.set_progress(0.4, "ラベル", タブ)` | どこまで進んだか（0〜1）。状態の隣に出ます。`nil` で消す。`タブ` を省くと**このタブ**について |
 
 **このアプリを知らないCLIでも同じことができます。** どの端末でも通じる通知のエスケープを
 そのまま受け取ります。設定は要りません（ssh越しやコンテナの中など、こちらのものが何も
@@ -648,8 +648,8 @@ shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
 ```
 
 `method` は9章の命令から `shikisha.` を取った名前、`params` はその引数を順に並べたものです。
-`list` は存在する命令を全部返します。アプリ自身の表を読んで答えるので、**実際にできることと
-食い違うことがありません**。
+`list` は**その呼び出し元が実行してよい命令**を返します。アプリ自身の表と権限を読んで答えるので、
+**実際にできることと食い違うことがありません**。
 
 ループや分岐は、まとまったコードを1回で渡せます:
 
@@ -808,20 +808,21 @@ shikisha.show("br")            -- そこにブラウザが入る
 |---|---|
 | `shikisha.get_var("キー")` / `shikisha.set_var("キー", 値)` | 記憶しておける変数。ワークスペース内で共有 |
 | `shikisha.log("文字列")` | `logs/hooks.log` に1行書く |
-| `shikisha.notify("文字列")` | Slack / Telegram へ通知（設定済みの宛先のみ） |
+| `shikisha.notify("文字列")` / `shikisha.notify("宛先", "文字列")` | Slack / Telegram へ通知（設定済みの宛先のみ）。宛先を書かなければ既定の宛先へ |
 | `shikisha.remote_url()` | スマホからこのアプリに繋がるURL。リモートが切れているときは `nil`。通知に入れておくと「手伝いに来て」がワンタップになります |
 | `shikisha.t("キー")` / `shikisha.tf("キー", {name="…"})` | 訳語を引く（`tf` は `{name}` も差し込む）。組み込みの進行役がアプリの言語で話すために使っています |
 
 ### 自分の状態を伝える
 
-**呼んだ側のタブについて**の報告です。どのタブか書かないのは、呼んだ側がそのタブだからです。
+既定では**呼んだ側のタブについて**の報告です。だから普通はタブを書きません。
+`set_status` と `set_progress` だけは、最後の引数で**別のタブについて**報告できます。
 AI CLI 自身のフックもここを通ります。
 
 | 命令 | 説明 |
 |---|---|
 | `shikisha.set_state("BUSY")` | **このタブ**が今どの状態かを、画面の推測ではなく自分で伝える（`BUSY` / `QUESTION` / `DONE` / `WAIT`）。第2引数は送信時刻（ミリ秒）で、追い越して届いても言われた順に適用される |
-| `shikisha.set_status("キー", "文字列")` | **このタブ**が今なにをしているかを自分の言葉で伝える（タブ名の下に出ます）。`キー` を分ければ複数の書き手が上書きし合わない。空文字でその1件を消す |
-| `shikisha.set_progress(0.4, "ラベル")` | どこまで進んだか（0〜1）。状態の隣に出ます。`nil` で消す |
+| `shikisha.set_status("キー", "文字列", タブ)` | 今なにをしているかを自分の言葉で伝える（タブ名の下に出ます）。`キー` を分ければ複数の書き手が上書きし合わない。空文字でその1件を消す。`タブ` を省くと**このタブ**について |
+| `shikisha.set_progress(0.4, "ラベル", タブ)` | どこまで進んだか（0〜1）。状態の隣に出ます。`nil` で消す。`タブ` を省くと**このタブ**について |
 | `shikisha.set_session("id")` | **このタブ**のCLIが動かしている会話のIDを伝える（再起動で引き継ぐため） |
 
 ### ブラウザを動かす
@@ -835,8 +836,8 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.browser_go(id, "back"/"forward"/"reload"/"to", url)` | 移動する |
 | `shikisha.browser_nav(id, {…})` / `shikisha.browser_unnav(id)` | ページの上に戻る・進む・更新・URL欄を出す／消す |
 | `shikisha.browser_find(id, セレクタ)` | あるか: `"visible"` / `"hidden"` / `"missing"` |
-| `shikisha.browser_click(id, セレクタ)` | 押す |
-| `shikisha.browser_fill(id, セレクタ, "文字列")` | 入力する。**送信はしません** — 続けて `browser_press` |
+| `shikisha.browser_click(id, セレクタ, opts)` | 押す。`opts` は `{ on_missing = "continue" }`（無ければ止めずに状態を返す） |
+| `shikisha.browser_fill(id, セレクタ, "文字列", opts)` | 入力する。**送信はしません** — 続けて `browser_press`。`opts` は `browser_click` と同じ |
 | `shikisha.browser_fill_secret(id, セレクタ, "キー")` | 登録済みの秘密情報から入力する。値はスクリプトに渡りません |
 | `shikisha.browser_press(id, "enter")` | ページ上でキーを押す |
 | `shikisha.browser_text(id, セレクタ)` | 見えている文字 |
@@ -866,7 +867,7 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.lint(コード)` | Luaを実行せずに構文検査する。壊れていればエラー文字列、健全なら `nil` |
 | `shikisha.run_scoped(id, コード)` | AIが書いたLuaを1つのページに対してだけ実行する牢屋。ファイルも通信も他のタブも触れません。`err, out` を返す |
 | `shikisha.lua(コード)` | まとまったコードを、何にでも手が届く場所で実行する（ループも分岐も、複数の命令も一度に）。`err`（実行できたら `nil`）に続けて、コードが返した値をそのまま返す。`run_scoped` の牢屋なし版なので、自分で書いていないコードを渡さないこと |
-| `shikisha.list()` | 存在する命令の名前を全部返す。表そのものを読むので、古くなりようがない |
+| `shikisha.list()` | 呼んだ相手が実行してよい命令の名前を返す（9章の「自動化の権限」）。表そのものを読むので、古くなりようがない |
 | `shikisha.record(文字列)` / `shikisha.record_reset()` | 貼り直せる形で実行の記録を残す |
 | `shikisha.take_replay()` | 再生用の記録を取り出す（前回取り出して以降の全操作を、壊れにくい書き方で） |
 | `shikisha.set_result(コード, "理由")` | この実行の判定。`data/last-result.json` に書かれ、画面にも出ます |

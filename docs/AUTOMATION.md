@@ -101,8 +101,8 @@ shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
 | `shikisha.log("text")` | Record in `logs/hooks.log` |
 | `shikisha.set_session("id")` | Say which conversation THIS tab's CLI is running, so a restart can pick it up. No tab argument: the caller is the tab |
 | `shikisha.set_state("BUSY")` | Say what THIS tab is doing, instead of leaving it to be read off the screen: `BUSY`, `QUESTION`, `DONE` or `WAIT`. This is how an AI CLI's own hooks drive the state dot. A second argument is the sender's clock in milliseconds, so reports that overtake each other still apply in the order they were said |
-| `shikisha.set_status("key", "text")` | Say what THIS tab is doing, in its own words, under its name in the tab bar. `key` lets several sources speak without overwriting each other; an empty text removes that one |
-| `shikisha.set_progress(0.4, "label")` | How far along, 0..1, shown beside the status. `nil` removes it |
+| `shikisha.set_status("key", "text", tab)` | Say what a tab is doing, in its own words, under its name in the tab bar. `key` lets several sources speak without overwriting each other; an empty text removes that one. Leave `tab` out and it is THIS tab |
+| `shikisha.set_progress(0.4, "label", tab)` | How far along, 0..1, shown beside the status. `nil` removes it. Leave `tab` out and it is THIS tab |
 
 **A CLI that has never heard of this app can say it too.** The notification escapes
 every terminal understands land in the same place, with nothing to set up — useful
@@ -610,7 +610,7 @@ line of answer back:
 ```
 
 `method` is a command from section 9 with the `shikisha.` taken off. `params` are its
-arguments in order. `list` answers with every command there is, read off the app's own
+arguments in order. `list` answers with every command **the caller is allowed to run**, read off the app's own
 table — so it can never fall behind what the app can actually do.
 
 For loops and branches, hand over a whole chunk in one call:
@@ -774,20 +774,21 @@ thought of.
 |---|---|
 | `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared within the workspace |
 | `shikisha.log("text")` | Write a line to `logs/hooks.log` |
-| `shikisha.notify("text")` | Notify Slack / Telegram (only targets you configured) |
+| `shikisha.notify("text")` / `shikisha.notify("target", "text")` | Notify Slack / Telegram (only targets you configured). With no target named, it goes to the default one |
 | `shikisha.remote_url()` | The URL a phone can reach this app on, or `nil` while remote is off. Put it in a notification so "come and help" is one tap away |
 | `shikisha.t("key")` / `shikisha.tf("key", {name="..."})` | Look up a translated string (`tf` also substitutes `{name}`). Used by the built-in orchestrators so they speak the app's language |
 
 ### Reporting your own state
 
-These are about **the tab that called them**. No tab is named because the caller is
-the tab. An AI CLI's own hooks report through here too.
+By default these are about **the tab that called them**, which is why no tab is
+usually named. `set_status` and `set_progress` take one as a last argument, to
+report about another tab. An AI CLI's own hooks report through here too.
 
 | Command | What it does |
 |---|---|
 | `shikisha.set_state("BUSY")` | **This tab** says what it is doing rather than leaving it to be read off the screen (`BUSY` / `QUESTION` / `DONE` / `WAIT`). The second argument is the sender's clock in milliseconds, so reports that overtake each other still apply in the order they were said |
-| `shikisha.set_status("key", "text")` | **This tab** says what it is working on, in its own words (shown under the tab name). Separate keys let several writers speak without overwriting each other; an empty string clears one |
-| `shikisha.set_progress(0.4, "label")` | How far along it is (0..1), shown beside the state. `nil` clears it |
+| `shikisha.set_status("key", "text", tab)` | Say what is being worked on, in its own words (shown under the tab name). Separate keys let several writers speak without overwriting each other; an empty string clears one. Leave `tab` out and it is **this tab** |
+| `shikisha.set_progress(0.4, "label", tab)` | How far along it is (0..1), shown beside the state. `nil` clears it. Leave `tab` out and it is **this tab** |
 | `shikisha.set_session("id")` | **This tab** says which conversation its CLI is running, so a restart can pick it back up |
 
 ### Browsing
@@ -801,8 +802,8 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 | `shikisha.browser_go(id, "back"/"forward"/"reload"/"to", url)` | Navigate |
 | `shikisha.browser_nav(id, {...})` / `shikisha.browser_unnav(id)` | Show / hide back-forward-reload-address above the page |
 | `shikisha.browser_find(id, sel)` | Is it there? `"visible"` / `"hidden"` / `"missing"` |
-| `shikisha.browser_click(id, sel)` | Click it |
-| `shikisha.browser_fill(id, sel, "text")` | Type into it. **Does not submit** — follow with `browser_press` |
+| `shikisha.browser_click(id, sel, opts)` | Click it. `opts` is `{ on_missing = "continue" }` -- answer with the state instead of stopping |
+| `shikisha.browser_fill(id, sel, "text", opts)` | Type into it. **Does not submit** — follow with `browser_press`. `opts` is the same as `browser_click`'s |
 | `shikisha.browser_fill_secret(id, sel, "KEY")` | Fill from a registered secret. The value never reaches the script |
 | `shikisha.browser_press(id, "enter")` | Press a key on the page |
 | `shikisha.browser_text(id, sel)` | The visible text |
@@ -832,7 +833,7 @@ How the rally works: files in and out, plus a judge. You can build your own the 
 | `shikisha.lint(code)` | Compile-check Lua without running it. An error string, or `nil` if sound |
 | `shikisha.run_scoped(id, code)` | Run AI-written Lua against one page, in a jail: no files, no network, no other tabs. Returns `err, out` |
 | `shikisha.lua(code)` | Run a whole chunk with everything in reach — loops, branches, several commands at once. Returns `err` (`nil` when it ran) followed by whatever the chunk returned. The unwalled twin of `run_scoped`, so never hand it code you didn't write |
-| `shikisha.list()` | Every command that exists, by name. Read off the table itself, so it is never out of date |
+| `shikisha.list()` | The commands the caller may run, by name (see automation permissions above). Read off the table itself, so it is never out of date |
 | `shikisha.record(text)` / `shikisha.record_reset()` | Keep a pasteable record of the run |
 | `shikisha.take_replay()` | Drain the replay journal — the durable spelling of every operation since the last drain |
 | `shikisha.set_result(code, "reason")` | The run's verdict. Written to `data/last-result.json` and shown on screen |
