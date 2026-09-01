@@ -3076,6 +3076,19 @@ impl Tab {
         self.model.is_some()
     }
 
+    /// Whether an AI is what is running here: a model this app talks to over
+    /// an API, or a CLI one of the profiles recognises.
+    ///
+    /// Used to decide, at the external API's door, whether a call arriving
+    /// with this tab's key is a person's or an AI's. It is as good as the
+    /// profile that matched the command -- an AI started by hand inside a
+    /// plain shell tab inherits that tab's key and counts as the person. That
+    /// AI has a shell, which is a wider door than this one, so the answer is
+    /// the honest one rather than a guess dressed up as a boundary
+    pub fn is_ai(&self) -> bool {
+        self.is_model() || self.profile_name() != crate::profile::GENERIC
+    }
+
     /// Whether a chat reply is being generated right now (for the UI spinner).
     pub fn is_generating(&self) -> bool {
         self.model_busy.load(Ordering::Relaxed)

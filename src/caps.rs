@@ -206,6 +206,11 @@ pub struct Capabilities {
     /// stay independent: refs are the interactive currency, this is the
     /// portable one
     replay: std::cell::RefCell<Vec<String>>,
+    /// Who may call which automation command. The other half of the same
+    /// question this module already answers: the gateways above say *which
+    /// door*, this says *who is knocking*. Swapped out on reload with the
+    /// rest of what comes from config
+    grants: std::cell::RefCell<crate::grants::Grants>,
 }
 
 /// Default wait time when touching a page.
@@ -238,7 +243,14 @@ impl Capabilities {
             secret_allow_all: std::cell::Cell::new(false),
             open_result: std::cell::RefCell::new(None),
             replay: std::cell::RefCell::new(Vec::new()),
+            grants: std::cell::RefCell::new(crate::grants::Grants::default()),
         }
+    }
+
+    /// May this subject call this command? Every door asks here, so there is
+    /// one answer rather than one per entrance
+    pub fn allows(&self, name: &str, subject: crate::grants::Subject) -> bool {
+        self.grants.borrow().allows(name, subject)
     }
 
     /// Append one durable line to the replay journal
@@ -251,12 +263,17 @@ impl Capabilities {
         std::mem::take(&mut *self.replay.borrow_mut())
     }
 
-    pub fn new(spec: CapabilitySpec, base: PathBuf, tokens: HashMap<String, String>) -> Self {
+    pub fn new(
+        spec: CapabilitySpec,
+        base: PathBuf,
+        tokens: HashMap<String, String>,
+        grants: crate::grants::GrantSpec,
+    ) -> Self {
         let me = Self {
             base,
             ..Self::disabled()
         };
-        me.set_config(spec, tokens);
+        me.set_config(spec, tokens, grants);
         me
     }
 
@@ -264,10 +281,16 @@ impl Capabilities {
     ///
     /// Placed pages, banners, and bars carry over. Merely reloading config
     /// must not make things vanish from the screen, or stick around when they shouldn't
-    pub fn set_config(&self, spec: CapabilitySpec, tokens: HashMap<String, String>) {
+    pub fn set_config(
+        &self,
+        spec: CapabilitySpec,
+        tokens: HashMap<String, String>,
+        grants: crate::grants::GrantSpec,
+    ) {
         let wants_http = !spec.http.is_empty() || !spec.allow_hosts.is_empty();
         *self.spec.borrow_mut() = spec;
         *self.tokens.borrow_mut() = tokens;
+        *self.grants.borrow_mut() = crate::grants::Grants::new(grants);
         if !wants_http || self.tx.borrow().is_some() {
             return;
         }
@@ -962,7 +985,7 @@ mod reload_tests {
             .insert("0/html".into(), crate::config::NavSpec::all());
         c.note_press("0/html");
 
-        c.set_config(CapabilitySpec::default(), HashMap::new());
+        c.set_config(CapabilitySpec::default(), HashMap::new(), Default::default());
 
         assert_eq!(c.hosted_names(), vec!["settings".to_string()], "置いたページを忘れた");
         assert!(c.nav_of("html").is_some(), "上のバーを忘れた");
@@ -1006,6 +1029,7 @@ mod reload_tests {
         c.set_config(
             CapabilitySpec { files, ..Default::default() },
             HashMap::new(),
+            Default::default(),
         );
         // The gateway is registered (the read itself still fails since the file doesn't exist)
         let err = c.read("tmp", "居ないファイル.txt").unwrap_err().to_string();
@@ -1030,7 +1054,7 @@ mod tests {
     use super::*;
 
     fn caps(spec: CapabilitySpec, base: PathBuf) -> Capabilities {
-        Capabilities::new(spec, base, HashMap::new())
+        Capabilities::new(spec, base, HashMap::new(), Default::default())
     }
 
     #[test]
@@ -1038,7 +1062,8 @@ mod tests {
         let mut tokens = HashMap::new();
         tokens.insert("diary".to_string(), "hunter2secret".to_string());
         tokens.insert("short".to_string(), "ab".to_string());
-        let c = Capabilities::new(CapabilitySpec::default(), PathBuf::from("."), tokens);
+        let c =
+            Capabilities::new(CapabilitySpec::default(), PathBuf::from("."), tokens, Default::default());
         // A known secret value gets redacted
         let masked = c.redact("Authorization: hunter2secret\n本文");
         assert!(!masked.contains("hunter2secret"), "秘密値が残っている: {masked}");
@@ -1052,7 +1077,8 @@ mod tests {
         let mut tokens = HashMap::new();
         tokens.insert("diary".to_string(), "hunter2secret".to_string());
         tokens.insert("github".to_string(), "ghp_xxx".to_string());
-        let c = Capabilities::new(CapabilitySpec::default(), PathBuf::from("."), tokens);
+        let c =
+            Capabilities::new(CapabilitySpec::default(), PathBuf::from("."), tokens, Default::default());
         // Default is deny-all (empty allowlist)
         assert!(c.secret_value("diary").is_err(), "既定は全拒否のはず");
         // Only an allowed key can be retrieved

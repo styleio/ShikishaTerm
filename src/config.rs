@@ -105,6 +105,13 @@ pub struct Config {
     /// Not editable from the GUI since this is an advanced feature
     #[serde(default)]
     pub capabilities: crate::caps::CapabilitySpec,
+    /// Who may call which automation command: the person's own automation, an
+    /// AI, or both. Only the rows somebody changed are written here -- every
+    /// other command answers from the defaults in `grants.rs`, so a command
+    /// added after this file was written arrives with the answer its author
+    /// chose rather than with whatever an old file happened to say
+    #[serde(default)]
+    pub automation_permissions: crate::grants::GrantSpec,
     /// Remote UI viewable from a phone etc. Disabled by default
     #[serde(default)]
     pub remote: RemoteSpec,

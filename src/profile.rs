@@ -5,6 +5,11 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+/// The profile a tab gets when no rule claimed its command: a shell, a build,
+/// anything this app has no detection rules for. Named here because "is this
+/// tab an AI" is answered by comparing against it
+pub const GENERIC: &str = "GENERIC";
+
 /// The raw shape of profiles/*.json
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProfileFile {
@@ -210,7 +215,7 @@ impl Profile {
     /// (judged only by the silence timer, bell, and process exit).
     pub fn generic() -> Self {
         Self {
-            name: "GENERIC".into(),
+            name: GENERIC.into(),
             busy: Vec::new(),
             question: Vec::new(),
             title_busy: Vec::new(),

@@ -916,6 +916,7 @@ fn handle(
             let html = crate::i18n::render(&themed(PAGE.to_string()))
                 .replace("__TOKEN__", token)
                 .replace("__REMOTE__", if remote_client { "true" } else { "false" })
+                .replace("__GRANTS__", &crate::grants::catalog_json())
                 .replace("__DICT__", &crate::i18n::dict_json());
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
@@ -2077,6 +2078,24 @@ const PAGE: &str = r##"<!doctype html>
  .swatches input[type="color"] { position:absolute; width:0; height:0; opacity:0; padding:0;
    border:0; }
  .row { display:flex; align-items:center; gap:12px; padding:7px 0; flex-wrap:wrap; }
+ /* Automation permissions. Two narrow columns on the right, everything else
+    on the left, so the eye runs down a column instead of hunting across a row */
+ .grantcols { display:flex; align-items:flex-end; gap:0; justify-content:flex-end;
+   position:sticky; top:0; background:var(--panel); padding:6px 0 4px; z-index:1; }
+ .grantcols span { width:104px; text-align:center; color:var(--muted); font-size:11.5px; }
+ .grantcols .grow { width:auto; flex:1; }
+ .granthead { display:flex; align-items:center; gap:8px; padding:10px 0 4px;
+   border-top:1px solid var(--line); margin-top:4px; }
+ .granthead b { font-size:12.5px; font-weight:600; }
+ .granthead .foldable { cursor:pointer; display:flex; align-items:center; gap:8px; }
+ .granthead .caret { font-size:11px; width:14px; text-align:center; color:var(--muted); }
+ .grantrow { display:flex; align-items:center; gap:8px; padding:4px 0; }
+ .grantrow .nm { font-size:12.5px; }
+ .grantrow .sub { display:block; color:var(--muted); font-size:11.5px; margin-top:1px; }
+ .grantrow .cell { width:104px; display:flex; justify-content:center; flex:0 0 104px; }
+ .grantrow .grow { min-width:0; }
+ .grantrow.off .nm { color:var(--muted); }
+ .grantmark { color:var(--muted); font-size:11px; margin-left:6px; }
  .row > label:first-child { width:150px; flex:none; color:var(--muted); font-size:13px; }
  /* A second (or third) label inside one row — "port", "user" next to a host.
     It names the field that follows it, so it sits tight against it rather than
@@ -2321,6 +2340,10 @@ const TOKEN = "__TOKEN__";
 // of here, so the buttons that would summon one are left out entirely
 const REMOTE = __REMOTE__;
 const T = __DICT__;
+// Every command there is, grouped, with the answer it has when nobody has said
+// otherwise. Comes from the same list the app enforces, so the screen cannot
+// show a command that does not exist or miss one that does
+const GRANTS = __GRANTS__;
 // {name} substitution (same rule as tp on the Rust side)
 const fill = (s, args) => Object.entries(args)
   .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
@@ -3644,6 +3667,7 @@ function globalSections() {
     {id:"logins",    label:T["settings.sec.logins"],    sub:T["settings.sec.logins.sub"],    build:loginsCard},
     {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
+    {id:"permissions", label:T["settings.sec.permissions"], sub:T["settings.sec.permissions.sub"], build:permissionsCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
     {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},
     {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:notifyCard},
@@ -3942,6 +3966,96 @@ function operateCard() {
     row(T["settings.operate.on_limit"], pol, el("span", {class:"hint"}, T["settings.operate.on_limit.hint"])),
     row(T["settings.operate.settle"], num("settle_ms", 1800), el("span", {class:"hint"}, T["settings.operate.settle.hint"])),
     row(T["settings.operate.confirm"], conf, el("span", {class:"hint"}, T["settings.operate.confirm.hint"])));
+}
+
+// Who may run which command: the person's own automation in one column, an AI
+// in the other. The list is not written here -- it is poured in from the same
+// catalog the app enforces (GRANTS), so a command that gained or lost its place
+// in the app cannot go missing from this screen.
+//
+// Only what somebody changed is written to the config file. Untick a box back
+// to the standard answer and the row leaves the file again, which is what lets
+// a command added next month arrive with the answer its author chose.
+const grantFolded = {};
+
+function permissionsCard() {
+  // Read without writing: merely opening this card must not make the settings
+  // look edited. The key appears in the file the first time a box disagrees
+  // with the standard answer, and leaves again when it agrees once more
+  const saved = () => current.automation_permissions || {};
+  const answerOf = (cmd, col) => {
+    const rule = saved()[cmd.name] || {};
+    return rule[col] === undefined ? cmd[col] : rule[col];
+  };
+  const changed = cmd => answerOf(cmd, "human") !== cmd.human || answerOf(cmd, "ai") !== cmd.ai;
+  const decide = (cmd, col, on) => {
+    const all = current.automation_permissions || {};
+    const rule = all[cmd.name] || {};
+    if (on === cmd[col]) delete rule[col]; else rule[col] = on;
+    if (Object.keys(rule).length) all[cmd.name] = rule; else delete all[cmd.name];
+    if (Object.keys(all).length) current.automation_permissions = all;
+    else delete current.automation_permissions;
+    refreshSave();
+  };
+
+  const body = el("div", {});
+  const draw = () => {
+    body.textContent = "";
+    body.append(el("div", {class:"grantcols"},
+      el("span", {class:"grow"}, ""),
+      el("span", {}, T["settings.permissions.col.human"]),
+      el("span", {}, T["settings.permissions.col.ai"])));
+    for (const sec of GRANTS) {
+      const open = !grantFolded[sec.group];
+      // The whole heading folds, not just the caret: a 10px triangle is a
+      // target nobody hits on the first try
+      const fold = () => { grantFolded[sec.group] = open; draw(); };
+      const head = el("div", {class:"granthead"},
+        el("span", {class:"foldable grow", onclick:fold},
+          el("span", {class:"caret"}, open ? "▾" : "▸"),
+          el("b", {}, T[sec.label])));
+      // One box per column that answers for the whole group. Half-set shows as
+      // half-set rather than guessing which way the person meant it
+      for (const col of ["human", "ai"]) {
+        const on = sec.commands.filter(c => answerOf(c, col)).length;
+        const box = el("input", {type:"checkbox"});
+        box.checked = on === sec.commands.length;
+        box.indeterminate = on > 0 && on < sec.commands.length;
+        box.addEventListener("change", () => {
+          sec.commands.forEach(c => decide(c, col, box.checked));
+          draw();
+        });
+        head.append(el("span", {class:"cell"}, box));
+      }
+      body.append(head);
+      if (!open) continue;
+      for (const cmd of sec.commands) {
+        const line = el("div", {class:"grantrow" + (answerOf(cmd, "ai") ? "" : " off")});
+        const name = el("span", {class:"nm mono"}, cmd.name);
+        const label = el("span", {class:"grow"}, name,
+          el("span", {class:"sub"}, T[cmd.text] || ""));
+        if (changed(cmd)) name.after(el("span", {class:"grantmark"}, T["settings.permissions.changed"]));
+        line.append(label);
+        for (const col of ["human", "ai"]) {
+          const box = el("input", {type:"checkbox"});
+          box.checked = answerOf(cmd, col);
+          box.addEventListener("change", () => { decide(cmd, col, box.checked); draw(); });
+          line.append(el("span", {class:"cell"}, box));
+        }
+        body.append(line);
+      }
+    }
+  };
+  draw();
+  const reset = el("button", {onclick:() => {
+    delete current.automation_permissions;
+    refreshSave();
+    draw();
+  }}, T["settings.permissions.reset"]);
+  return card(T["settings.sec.permissions"],
+    el("div", {class:"hint"}, T["settings.permissions.hint"]),
+    el("div", {class:"row"}, reset),
+    body);
 }
 
 function notifyCard() {
@@ -6381,6 +6495,7 @@ mod tests {
                 .replace("__TOKEN__", "t")
                 .replace("__REMOTE__", "false")
                 .replace("__DICT__", "{}")
+                .replace("__GRANTS__", "[]")
                 .replace("__MD__", "\"\"");
             // Checked on the finished page, not the template: the shared toast
             // is poured in on the way, and a page that kept a copy of one of

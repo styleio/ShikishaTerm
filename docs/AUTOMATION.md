@@ -649,7 +649,8 @@ setup at all:
 
 Because the key is the tab's own, a call arrives already knowing who is making it — and
 what that tab sends counts against **the same chain limit** (section 5) as work handed over
-on screen. The API is not a way around the brakes.
+on screen. The API is not a way around the brakes. If an AI is what is running in that tab,
+what it may call is what **Settings > Automation permissions** (section 9) allows an AI.
 
 **What the token protects, and what it does not.** The pipe is created with an access list
 naming your account and nobody else, so another account cannot reach it. Another program
@@ -677,6 +678,41 @@ that presented no valid key.
 
 Everything automation can call, in one place. The sections above teach the common
 ones; this is the complete list.
+
+### Whether it may run is decided in Settings > Automation permissions
+
+The same command can be allowed for **you** and refused for **an AI**. The settings
+card lists every command with two boxes: one for a person, one for an AI.
+
+- **A person** — the hooks and scripts you wrote, the run button, an external
+  program you started yourself
+- **An AI** — a call an AI tab made with its own key, and Lua an AI wrote (inside
+  `run_scoped`)
+
+Nearly everything is ticked in both columns to begin with. **Six commands start out
+closed to an AI**, and each one either steps outside this table or destroys
+something you own:
+
+| Command | Why it starts closed to an AI |
+|---|---|
+| `lua` | Runs code with nothing walled off. Open it and the table means nothing |
+| `read_path` / `write_path` / `http_raw` | Raw paths and raw URLs, past the gateways. Allowed folders and hosts are the escape hatch you opened for your own scripts |
+| `close_pane` | Takes away a place you were looking at |
+| `restart` | Throws away the conversation running in a tab |
+
+A command that is switched off answers with a sentence saying so, and the refusal
+is written to `logs/hooks.log`. Nothing ever fails in silence. `shikisha.list()`
+answers for whoever asked, too: it leaves out what that caller may not call.
+
+Only the rows you changed are written to the config file. Anything left standard is
+not written at all.
+
+```jsonc
+"automation_permissions": {
+  "lua": { "ai": true },          // open it to an AI as well
+  "send_to_tab": { "ai": false }  // close it to an AI
+}
+```
 
 ### Tabs and turns
 

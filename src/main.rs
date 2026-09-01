@@ -29,6 +29,7 @@ mod detect;
 mod digest;
 mod exchange;
 mod folders;
+mod grants;
 mod hooks;
 mod i18n;
 mod lastsession;
@@ -1249,6 +1250,30 @@ fn hook_report(kind: &str, v: &serde_json::Value) -> Report {
 /// looking the name up in THIS list. An engine that has not been given it
 /// attributes the call to nobody, which is how a hook comes to report a
 /// conversation id "from tab0: no such tab" and lose it.
+/// Whose call this is, for the permission table.
+///
+/// Nobody says who they are: the external API mints a key per tab, so a call
+/// arrives already attached to the tab whose key opened the connection, and
+/// this only has to look up what is running there. A caller holding no tab's
+/// key is a program the person started themselves, which is why "outside every
+/// tab" counts as the person -- the same reading the chain brake already takes.
+/// A key naming a tab that is no longer there is nobody, and answers as the AI:
+/// the side that cannot do harm if the guess is wrong
+fn subject_of(caller: Option<&str>, tabs: &[Tab]) -> grants::Subject {
+    let Some(name) = caller else {
+        return grants::Subject::Human;
+    };
+    let keys: Vec<hooks::TabKey> = tab_states(tabs).into_iter().map(|(k, _)| k).collect();
+    match hooks::TabRef::Name(name.to_string())
+        .resolve(&keys)
+        .and_then(|i| tabs.get(i - 1))
+    {
+        Some(t) if t.is_ai() => grants::Subject::Ai,
+        Some(_) => grants::Subject::Human,
+        None => grants::Subject::Ai,
+    }
+}
+
 fn tab_states(tabs: &[Tab]) -> Vec<(hooks::TabKey, String)> {
     tabs.iter()
         .map(|t| (t.key(), t.state.label().to_string()))
@@ -2188,6 +2213,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             c.capabilities.clone(),
             config_file_dir(),
             c.resolve_tokens(password.as_deref()),
+            c.automation_permissions.clone(),
         ),
         None => caps::Capabilities::disabled(),
     });
@@ -2621,6 +2647,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 caps.set_config(
                     newcfg.capabilities.clone(),
                     newcfg.resolve_tokens(password.as_deref()),
+                    newcfg.automation_permissions.clone(),
                 );
                 engine = build_engine(
                     Some(&newcfg),
@@ -3367,7 +3394,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // and the first call is the one carrying the id of the
                         // conversation to come back to
                         eng.set_states(tab_states(&tabs));
-                        eng.call_primitive_as(call.caller.as_deref(), &call.method, &call.params)
+                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        eng.call_primitive_as(
+                            call.caller.as_deref(),
+                            who,
+                            &call.method,
+                            &call.params,
+                        )
                     }
                     None => Err("no engine".to_string()),
                 };
@@ -9010,6 +9043,7 @@ mod tests {
             Default::default(),
             std::path::PathBuf::from("."),
             std::collections::HashMap::new(),
+            Default::default(),
         ));
         let page = |k: &str| Surface::Browser { key: k.into(), name: k.into() };
         let surfaces = vec![

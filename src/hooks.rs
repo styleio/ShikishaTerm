@@ -393,13 +393,74 @@ fn lua_to_json(v: &Value) -> serde_json::Value {
 /// own line should answer, not vanish — so the chunk is first compiled
 /// REPL-style with `return` prepended, falling back to the plain statement
 /// form when that isn't valid Lua
+/// The one place a refusal is decided, said, and written down.
+///
+/// Said: the caller gets a sentence naming the command and who it was closed
+/// to, because an AI that is refused in silence simply stalls and nobody ever
+/// learns why. Written down: the refusal goes to `logs/hooks.log`, so the
+/// person finds out without having to be watching the tab at the time
+fn permit(name: &str, caps: &Caps, who: crate::grants::Subject) -> mlua::Result<()> {
+    if caps.allows(name, who) {
+        return Ok(());
+    }
+    let who_text = crate::i18n::t(&format!("grant.who.{}", who.id()));
+    crate::append_hook_log(&format!("refused {name} ({})", who.id()));
+    Err(mlua::Error::runtime(crate::i18n::tp(
+        "err.hooks.not_permitted",
+        &[("name", name), ("who", &who_text)],
+    )))
+}
+
+/// Put the permission table in front of every function the table holds.
+///
+/// Applied once, to the finished table, so it covers what Rust registered and
+/// what the prelude defined without either having to remember. Wrapping rather
+/// than removing is deliberate: a command that is switched off answers with a
+/// sentence, where a missing one would only say "attempt to call a nil value".
+///
+/// It also makes the unwalled evaluator safe to hand out: code run through
+/// `lua` calls these same wrappers, in the same name, so switching it on for an
+/// AI widens what it can *write*, never what it can *reach*.
+fn guard_table(
+    lua: &mlua::Lua,
+    caps: &Caps,
+    subject: &Rc<Cell<crate::grants::Subject>>,
+) -> mlua::Result<()> {
+    let sh: Table = lua.globals().get("shikisha")?;
+    let c = Caps::clone(caps);
+    let who = Rc::clone(subject);
+    let ask = lua.create_function(move |_, name: String| permit(&name, &c, who.get()))?;
+    // The wrapper is written in Lua, not in Rust, and that is not a style
+    // choice: `wait` and `sleep` suspend the thread they are running in, and a
+    // Rust function in the middle of that call is a wall a yield cannot cross.
+    // A Lua closure that tail-calls the original is transparent to all of it --
+    // yields, several return values, everything
+    let wrap: mlua::Function = lua
+        .load(
+            r#"
+local ask = ...
+return function(sh)
+  for name, fn in pairs(sh) do
+    if type(fn) == "function" then
+      sh[name] = function(...) ask(name) return fn(...) end
+    end
+  end
+end
+"#,
+        )
+        .call(ask)?;
+    wrap.call::<()>(sh)?;
+    Ok(())
+}
+
 fn run_scoped(
     lua: &mlua::Lua,
     caps: &Caps,
+    subject: &Rc<Cell<crate::grants::Subject>>,
     browser: &str,
     code: &str,
 ) -> mlua::Result<(Value, Value)> {
-    let env = build_sandbox_env(lua, caps, browser)?;
+    let env = build_sandbox_env(lua, caps, subject, browser)?;
     let func = compile_repl(lua, env, "ai-lua", code);
     match func.and_then(|f| f.call::<MultiValue>(())) {
         Ok(vals) => {
@@ -425,7 +486,12 @@ fn run_scoped(
 }
 
 /// Build the sandbox's `_ENV`. Contains only safe standard functions plus a restricted shikisha table
-fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Result<Table> {
+fn build_sandbox_env(
+    lua: &mlua::Lua,
+    caps: &Caps,
+    subject: &Rc<Cell<crate::grants::Subject>>,
+    browser: &str,
+) -> mlua::Result<Table> {
     let env = lua.create_table()?;
     // Copy over only the safe standard functions. load/require/os/io/debug/coroutine/getmetatable etc. are excluded
     let g = lua.globals();
@@ -454,10 +520,17 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
         ($n:literal, $args:ty, |$lua:ident, $c:ident, $a:ident, $p:pat_param| $body:expr) => {{
             let $c = Caps::clone(caps);
             let $a = allowed.clone();
+            // The same permission table the outside table is behind. This is a
+            // narrower room, not a second set of rules: the table says who may
+            // call a command at all, and this room says "on one page, and only
+            // these verbs"
+            let permitted = Caps::clone(caps);
+            let who = Rc::clone(subject);
             sh.set(
                 $n,
                 lua.create_function(move |$lua, $p: $args| {
                     let _ = &$lua;
+                    permit($n, &permitted, who.get())?;
                     $body
                 })?,
             )?;
@@ -658,6 +731,19 @@ fn build_sandbox_env(lua: &mlua::Lua, caps: &Caps, browser: &str) -> mlua::Resul
                 Ok(())
             })?,
         )?;
+    }
+    // Anything the catalog marks as part of this room, taken from the outside
+    // table as it stands. Browser verbs are bound above with a page guard of
+    // their own; this is how a command with no page to guard (a query, say)
+    // joins the vocabulary by being marked rather than by being written twice
+    let outside: Table = lua.globals().get("shikisha")?;
+    for c in crate::grants::CATALOG.iter().filter(|c| c.scoped) {
+        if sh.contains_key(c.name)? {
+            continue;
+        }
+        if let Ok(Value::Function(f)) = outside.get::<Value>(c.name) {
+            sh.set(c.name, f)?;
+        }
     }
     // In the one-line Lua the AI writes, calling by bare name
     // (browser_go(...)) reads naturally. Place the same functions as
@@ -1096,6 +1182,13 @@ pub struct HookEngine {
     remote_url: Rc<RefCell<Option<String>>>,
     /// The runaway ceiling, armed at every door that enters Lua
     budget: StepBudget,
+    /// Who is running the code that is currently inside Lua.
+    ///
+    /// Set by the door rather than by the code: a hook and the composer's run
+    /// button are a person, a call carrying an AI tab's token and anything
+    /// inside `run_scoped` are an AI. Every primitive reads it, so a nested
+    /// call cannot quietly become somebody else on the way down
+    subject: Rc<Cell<crate::grants::Subject>>,
 }
 
 const HOOK_NAMES: [&str; 6] = ["on_start", "on_question", "on_busy", "on_done", "on_exit", "on_notify"];
@@ -1145,6 +1238,9 @@ impl HookEngine {
 
         let commands: Rc<RefCell<Vec<Command>>> = Rc::new(RefCell::new(Vec::new()));
         let current_origin = Rc::new(Cell::new(1usize));
+        // Nobody has come through a door yet. A person is the honest starting
+        // point: the scripts loaded at startup are the ones they wrote
+        let subject = Rc::new(Cell::new(crate::grants::Subject::Human));
         let states: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
         let outputs: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
         let screens: Rc<RefCell<Vec<(TabKey, String)>>> = Rc::new(RefCell::new(Vec::new()));
@@ -1513,6 +1609,27 @@ impl HookEngine {
                             Ok((check("browser_fill", rep.state.as_str(), &opts)?, rep.echo))
                         },
                     )
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // Press a single named key (enter/tab/escape/...) on the focused
+            // element. browser_fill only sets a value, so this is how a form
+            // is submitted: fill the box, then browser_press(id, "enter").
+            //
+            // It lived only inside the walled evaluator until the permission
+            // table was written and the two lists were put side by side: the
+            // manual has always documented it, and an AI could press keys
+            // where the person's own automation could not
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_press",
+                    lua.create_function(move |_, (name, key): (String, String)| {
+                        c.browser_press(&name, &key)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
@@ -2092,11 +2209,18 @@ impl HookEngine {
             // (Lua generated from web content) without touching
             // file/http/raw secret values/other tabs
             let c = Caps::clone(&caps);
+            // Whoever called this, the code being run was written by an AI --
+            // that is the whole reason this door exists -- so it runs in the
+            // AI's name and the name goes back afterwards
+            let who = Rc::clone(&subject);
             shikisha
                 .set(
                     "run_scoped",
                     lua.create_function(move |lua, (browser, code): (String, String)| {
-                        run_scoped(lua, &c, &browser, &code)
+                        let before = who.replace(crate::grants::Subject::Ai);
+                        let out = run_scoped(lua, &c, &who, &browser, &code);
+                        who.set(before);
+                        out
                     })
                     .map_err(lerr)?,
                 )
@@ -2328,11 +2452,17 @@ impl HookEngine {
             // it is asked. Not a hand-kept list: one written by hand would
             // answer for the day it was written, and the external API's idea of
             // what exists would drift from what Lua actually has
+            // ...and it answers for whoever is asking: a command switched off
+            // for an AI is not on the list an AI is handed, so "what can I do
+            // here" and "what happens if I try" can never disagree
+            let c = Caps::clone(&caps);
+            let who = Rc::clone(&subject);
             shikisha
                 .set(
                     "list",
                     lua.create_function(move |lua, ()| {
                         let mut names = primitive_names(lua)?;
+                        names.retain(|n| c.allows(n, who.get()));
                         names.sort();
                         lua.create_sequence_from(names)
                     })
@@ -2342,6 +2472,8 @@ impl HookEngine {
         }
         lua.globals().set("shikisha", shikisha).map_err(lerr)?;
         lua.load(PRELUDE).exec().map_err(lerr)?;
+        // Last, so it covers the prelude's commands as well as Rust's
+        guard_table(&lua, &caps, &subject).map_err(lerr)?;
 
         Ok(Self {
             lua,
@@ -2357,8 +2489,10 @@ impl HookEngine {
             caps,
             remote_url,
             budget,
+            subject,
         })
     }
+
 
     /// Run composer-typed Lua (▶ run mode) against one browser, in the very
     /// sandbox the rally runs AI-authored code in: browser functions on that
@@ -2378,6 +2512,19 @@ impl HookEngine {
     /// work to AI, and this door must not be the way around it. A caller from
     /// outside every tab counts as a person: the chain starts over.
     pub fn call_primitive_as(
+        &self,
+        caller: Option<&str>,
+        subject: crate::grants::Subject,
+        method: &str,
+        params: &[serde_json::Value],
+    ) -> std::result::Result<serde_json::Value, String> {
+        let was = self.subject.replace(subject);
+        let out = self.call_primitive_from(caller, method, params);
+        self.subject.set(was);
+        out
+    }
+
+    fn call_primitive_from(
         &self,
         caller: Option<&str>,
         method: &str,
@@ -2422,7 +2569,12 @@ impl HookEngine {
 
     pub fn run_browser_lua(&self, browser: &str, code: &str) -> Option<String> {
         let _budget = self.budget.arm();
-        let out = match run_scoped(&self.lua, &self.caps, browser, code) {
+        // Typed by the person in front of the window, so it runs in their
+        // name -- the same room an AI gets, with their own permissions
+        let was = self.subject.replace(crate::grants::Subject::Human);
+        let ran = run_scoped(&self.lua, &self.caps, &self.subject, browser, code);
+        self.subject.set(was);
+        let out = match ran {
             Ok((Value::String(s), _)) => Some(s.to_string_lossy().to_string()),
             Ok(_) => None,
             Err(e) => Some(e.to_string()),
@@ -3671,6 +3823,8 @@ end
             return;
         };
         self.current_origin.set(ctx.index);
+        // A hook is code the person wrote, whatever set it off
+        self.subject.set(crate::grants::Subject::Human);
         let result = (|| -> mlua::Result<()> {
             let func: mlua::Function = self.scripts[id].env.get(hook)?;
             let thread = self.lua.create_thread(func)?;
@@ -3696,6 +3850,7 @@ end
     /// commands are collected like a hook's and drained by the caller.
     pub fn fire_action(&mut self, code: &str, ctx: &TabCtx) {
         self.current_origin.set(ctx.index);
+        self.subject.set(crate::grants::Subject::Human);
         let result = (|| -> mlua::Result<()> {
             let env = self.lua.create_table()?;
             let mt = self.lua.create_table()?;
@@ -3809,6 +3964,7 @@ end
             return;
         };
         self.current_origin.set(page.index);
+        self.subject.set(crate::grants::Subject::Human);
         let result = (|| -> mlua::Result<()> {
             let func: mlua::Function = self.scripts[id].env.get(hook)?;
             let thread = self.lua.create_thread(func)?;
@@ -4140,6 +4296,7 @@ mod tests {
             Default::default(),
             std::path::PathBuf::from("."),
             std::collections::HashMap::new(),
+            Default::default(),
         ));
         let mut eng = super::HookEngine::with_caps(caps).expect("engine");
         eng.load_browser_agent("BR", "{}").expect("browser rally template");
@@ -5101,6 +5258,167 @@ mod tests {
             serde_json::to_value(&names).unwrap(),
             "内側から見た一覧と外側から見た一覧は同じもの"
         );
+    }
+
+    /// Everything callable, gathered the way the doors gather it
+    fn everything_callable(e: &HookEngine) -> std::collections::BTreeSet<String> {
+        let mut live: std::collections::BTreeSet<String> =
+            primitive_names(&e.lua).unwrap().into_iter().collect();
+        // The walled evaluator hands out a vocabulary of its own, and it is a
+        // door like any other -- so it counts as "callable" too
+        let env = build_sandbox_env(&e.lua, &e.caps, &e.subject, "br").unwrap();
+        let sandbox: Table = env.get("shikisha").unwrap();
+        for pair in sandbox.pairs::<Value, Value>() {
+            if let Ok((Value::String(k), Value::Function(_))) = pair {
+                live.insert(k.to_string_lossy().to_string());
+            }
+        }
+        live
+    }
+
+    #[test]
+    fn the_permission_screen_cannot_fall_behind_the_commands() {
+        // Adding a command and forgetting the screen is not something anyone
+        // has to remember: it fails here, in both directions -- a command with
+        // no row, and a row for a command that no longer exists
+        let e = HookEngine::new().unwrap();
+        let live = everything_callable(&e);
+        let listed: std::collections::BTreeSet<String> =
+            crate::grants::CATALOG.iter().map(|c| c.name.to_string()).collect();
+        let missing: Vec<&String> = live.difference(&listed).collect();
+        assert!(
+            missing.is_empty(),
+            "grants.rs の CATALOG に行が無い命令: {missing:?} — グループと既定を書いて足すこと"
+        );
+        let stale: Vec<&String> = listed.difference(&live).collect();
+        assert!(
+            stale.is_empty(),
+            "CATALOG に残っているが、もう存在しない命令: {stale:?} — 行を消すこと"
+        );
+    }
+
+    #[test]
+    fn every_row_has_words_for_the_screen() {
+        // A row with no sentence would render as a bare function name, which
+        // is exactly the wall this screen exists to avoid
+        for c in crate::grants::CATALOG {
+            let key = crate::grants::text_key(c.name);
+            assert_ne!(crate::i18n::t(&key), key, "{key} を lang/en.json に足すこと");
+        }
+        for g in crate::grants::Group::ORDER {
+            let key = crate::grants::group_key(g);
+            assert_ne!(crate::i18n::t(&key), key, "{key} を lang/en.json に足すこと");
+        }
+    }
+
+    #[test]
+    fn the_walled_evaluator_hands_out_exactly_what_the_catalog_marks() {
+        // The scoped column is what the sandbox binds, written down where the
+        // screen can read it. Two lists that must agree, checked rather than
+        // remembered
+        let e = HookEngine::new().unwrap();
+        let env = build_sandbox_env(&e.lua, &e.caps, &e.subject, "br").unwrap();
+        let sandbox: Table = env.get("shikisha").unwrap();
+        let mut bound: Vec<String> = Vec::new();
+        for pair in sandbox.pairs::<Value, Value>() {
+            if let Ok((Value::String(k), Value::Function(_))) = pair {
+                bound.push(k.to_string_lossy().to_string());
+            }
+        }
+        bound.sort();
+        let mut marked: Vec<String> = crate::grants::CATALOG
+            .iter()
+            .filter(|c| c.scoped)
+            .map(|c| c.name.to_string())
+            .collect();
+        marked.sort();
+        assert_eq!(bound, marked, "牢屋の語彙と CATALOG の scoped 印がずれている");
+    }
+
+    #[test]
+    fn an_ai_cannot_reach_the_evaluator_that_would_undo_the_table() {
+        let e = HookEngine::new().unwrap();
+        let ai = e
+            .call_primitive_as(None, crate::grants::Subject::Ai, "lua", &[serde_json::json!("return 1")])
+            .unwrap_err();
+        assert!(ai.contains("lua"), "断る理由に命令の名前が入る: {ai}");
+        assert!(
+            ai.contains(&crate::i18n::t("grant.who.ai")),
+            "誰に対して閉じているのかが書いてある: {ai}"
+        );
+        // ...and the person it was written for still has it
+        assert_eq!(
+            e.call_primitive_as(None, crate::grants::Subject::Human, "lua", &[serde_json::json!("return 1")])
+                .unwrap(),
+            serde_json::json!([null, 1])
+        );
+    }
+
+    #[test]
+    fn what_the_list_says_is_what_actually_happens() {
+        // The manual promises the list cannot disagree with reality. It has to
+        // stay true now that reality depends on who is asking
+        let e = HookEngine::new().unwrap();
+        let seen = |who| -> Vec<String> {
+            serde_json::from_value(
+                e.call_primitive_as(None, who, "list", &[]).unwrap(),
+            )
+            .unwrap()
+        };
+        let ai = seen(crate::grants::Subject::Ai);
+        let human = seen(crate::grants::Subject::Human);
+        assert!(!ai.contains(&"lua".to_string()), "AIの一覧に閉じた命令が並んでいる");
+        assert!(!ai.contains(&"write_path".to_string()));
+        assert!(human.contains(&"lua".to_string()), "人の一覧からは消えていない");
+        assert!(ai.contains(&"send_to_tab".to_string()), "普通の命令はAIにも開いている");
+    }
+
+    #[test]
+    fn the_name_goes_back_after_the_call_it_belonged_to() {
+        // A door that left the subject behind would hand the next caller
+        // somebody else's permissions
+        let e = HookEngine::new().unwrap();
+        let _ = e.call_primitive_as(None, crate::grants::Subject::Ai, "list", &[]);
+        assert_eq!(e.subject.get(), crate::grants::Subject::Human);
+        assert!(
+            e.call_primitive_as(None, crate::grants::Subject::Human, "lua", &[serde_json::json!("return 1")])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_sandbox_asks_the_same_table_everything_else_asks() {
+        // Close one browser verb to AIs only
+        let mut spec = crate::grants::GrantSpec::new();
+        spec.insert(
+            "browser_click".into(),
+            crate::grants::Rule { human: None, ai: Some(false) },
+        );
+        let caps: Caps = std::rc::Rc::new(crate::caps::Capabilities::new(
+            Default::default(),
+            ".".into(),
+            Default::default(),
+            spec,
+        ));
+        let e = HookEngine::with_caps(caps).unwrap();
+        let refused = crate::i18n::t("grant.who.ai");
+        // AI-written Lua is refused by name, inside the sandbox
+        let out = e
+            .call_primitive(
+                "run_scoped",
+                &[
+                    serde_json::json!("br"),
+                    serde_json::json!("shikisha.browser_click('br', '#x')"),
+                ],
+            )
+            .unwrap();
+        let said = out[0].as_str().unwrap_or_default().to_string();
+        assert!(said.contains(&refused), "AIの手は止まる: {said}");
+        // ...and the person's own run button is untouched by that decision
+        let mine = e
+            .run_browser_lua("br", "shikisha.browser_click('br', '#x')")
+            .unwrap_or_default();
+        assert!(!mine.contains(&refused), "人の手まで止めてしまっている: {mine}");
     }
 
     #[test]
