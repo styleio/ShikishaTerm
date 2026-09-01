@@ -406,6 +406,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #casttarget { display:flex; align-items:center; gap:8px; flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #casttarget::-webkit-scrollbar { display:none; }
+  /* 🌿 commit: a chip and two ticks, the same row shape as 📼 and 🎯. The
+     panels share one shape on purpose -- the bar is one bar, whichever panel
+     is in front of it */
+  #castgit { display:flex; align-items:center; gap:12px; flex:1 1 0; min-width:0;
+    padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
+  #castgit::-webkit-scrollbar { display:none; }
   /* 📼 record/run: two radios + a hint, same row shape as 🎯. */
   #castlua { display:flex; align-items:center; gap:12px; flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
@@ -4595,6 +4601,11 @@ function panelName(p) {
     : p === "suggest" ? (T["tui.cast.panel.suggest"] || "AI command suggest")
     : (T["tui.cast.panel.target"] || "Target");
 }
+// The bar's gear: one shape, wherever it points
+function gearTo(section, title) {
+  return el("button", {class:"castgear", title: title,
+    onclick: () => openSettings(section, true)}, "⚙️");
+}
 // A compact emoji for the switcher itself — text labels ate horizontal width.
 function panelLabel(p) {
   return p === "git" ? "🌿"
@@ -5197,9 +5208,11 @@ function gitHistory(back) {
 // The panel's own row in the sub-input bar: have the AI write the message, and
 // the two things a commit can be asked to do beyond being a commit
 function buildGitPanel() {
-  const wrap = el("div", {style:"display:flex;flex:1 1 0;gap:12px;align-items:center;min-width:0;padding:6px 0;flex-wrap:wrap"});
+  const wrap = el("div", {id:"castgit"});
   const writing = G.busy === "message";
-  const write = el("button", {class:"castbtn", style:"flex:none",
+  // The same chip a quick action is: this row is one of them in everything but
+  // where it lives
+  const write = el("button", {class:"castaction",
     onclick:() => {
       if (G.busy) return;
       // Say it started before anything is sent: the answer is half a minute
@@ -5221,11 +5234,6 @@ function buildGitPanel() {
   };
   wrap.append(tick(gitPush, T["git.then.push"] || "", v => { gitPush = v; }));
   wrap.append(tick(gitAmend, T["git.then.amend"] || "", v => { gitAmend = v; }));
-  // Same shape as the quick actions': the gear at the end goes to where this
-  // button is configured
-  wrap.append(el("span", {style:"flex:1"}));
-  wrap.append(el("button", {class:"castbtn", style:"flex:none",
-    title:T["settings.sec.git"] || "", onclick:() => openSettings("git", true)}, "\u2699\ufe0f"));
   return wrap;
 }
 
@@ -5471,9 +5479,12 @@ function renderPanel() {
   // Actions settings card (and returns here once saved). Stays put while the chips
   // scroll under it, mirroring the switcher on the left.
   if (castPanel === "actions") {
-    castPanelEl.append(el("button", {class:"castgear",
-      title: T["tui.cast.actions.edit"] || "Edit quick actions",
-      onclick: () => openSettings("actions", true)}, "⚙️"));
+    castPanelEl.append(gearTo("actions", T["tui.cast.actions.edit"] || "Edit quick actions"));
+  }
+  // The commit row is configured too, and by the same gesture: the gear at the
+  // end of the bar, in the one shape the bar has for gears
+  if (castPanel === "git") {
+    castPanelEl.append(gearTo("git", T["settings.sec.git"] || ""));
   }
   // After the reset above, castPanel is final for this render — load the
   // panel's composer document and relabel Send to its verb.
