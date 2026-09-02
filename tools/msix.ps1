@@ -12,17 +12,27 @@
   What goes in is still dist.list's to decide -- tools/stage.ps1 does the
   copying, so the Store copy and the download cannot drift apart.
 
-    tools/msix.ps1                       build an unsigned package
+    tools/msix.ps1                       build a package under test identity
     tools/msix.ps1 -SelfSign             sign it with a local test certificate
     tools/msix.ps1 -SelfSign -Install    ...and install it, for trying it out
+                                         (elevated shell -- see -SelfSign below)
+    tools/msix.ps1 -Store                build the one to upload to Partner Center
 
   -SelfSign is for trying the package on this machine and nothing else. The
   Store signs the real one: a package submitted there needs no certificate of
   ours at all, which is the reason for going this way in the first place.
+
+  -Store takes the three identity values from packaging/msix/store.json, which
+  is copied by hand, once, from Partner Center -> the product -> Product
+  identity. They are not ours to invent: Windows compares the Publisher in the
+  package against the subject of the certificate the Store signs it with, and a
+  submission whose identity differs by a single character is rejected. That file
+  is the one place they are written down.
 #>
 param(
     [switch]$SelfSign,
     [switch]$Install,
+    [switch]$Store,
     [string]$Publisher = 'CN=SHIKISHA-TERM Test',
     [string]$IdentityName = 'SHIKISHATERM.Test',
     # Must match the publisher display name on the Partner Center account
@@ -30,6 +40,26 @@ param(
     [string]$PublisherDisplayName = 'WIRED & ECO, K.K.'
 )
 $ErrorActionPreference = 'Stop'
+
+if ($Store) {
+    if ($SelfSign -or $Install) {
+        throw "-Store builds the package the Store signs; it must go up unsigned"
+    }
+    $identityFile = Join-Path (Split-Path -Parent $PSScriptRoot) 'packaging\msix\store.json'
+    if (-not (Test-Path $identityFile)) {
+        throw "$identityFile is missing -- copy the values from Partner Center into it"
+    }
+    $id = Get-Content $identityFile -Raw | ConvertFrom-Json
+    foreach ($field in 'identityName', 'publisher', 'publisherDisplayName') {
+        $value = $id.$field
+        if (-not $value -or $value -match 'REPLACE') {
+            throw "store.json: '$field' has not been filled in from Partner Center yet"
+        }
+    }
+    $IdentityName = $id.identityName
+    $Publisher = $id.publisher
+    $PublisherDisplayName = $id.publisherDisplayName
+}
 
 $root = Split-Path -Parent $PSScriptRoot
 $out  = Join-Path $root 'target\msix'
@@ -67,19 +97,30 @@ Remove-Item (Join-Path $stage 'Settings.cmd') -ErrorAction SilentlyContinue
 
 Copy-Item (Join-Path $root 'packaging\msix\Assets') $stage -Recurse -Force
 
+# Escaped on the way in. A publisher display name is a company's real name and
+# real names carry "&" -- which is not a character in XML, it is the start of
+# one. Pasted in raw it makes the manifest unparseable, and makeappx says so in
+# a line and column rather than a name.
+function Esc([string]$s) { [System.Security.SecurityElement]::Escape($s) }
+
 $manifest = Get-Content (Join-Path $root 'packaging\msix\AppxManifest.xml') -Raw
-$manifest = $manifest.Replace('{{IDENTITY_NAME}}', $IdentityName).
-                      Replace('{{PUBLISHER}}', $Publisher).
+$manifest = $manifest.Replace('{{IDENTITY_NAME}}', (Esc $IdentityName)).
+                      Replace('{{PUBLISHER}}', (Esc $Publisher)).
                       Replace('{{VERSION}}', $version).
-                      Replace('{{PUBLISHER_DISPLAY_NAME}}', $PublisherDisplayName)
+                      Replace('{{PUBLISHER_DISPLAY_NAME}}', (Esc $PublisherDisplayName))
 [System.IO.File]::WriteAllText((Join-Path $stage 'AppxManifest.xml'), $manifest,
                                [System.Text.UTF8Encoding]::new($false))
 
-$msix = Join-Path $out "SHIKISHA-TERM-$version.msix"
+$suffix = if ($Store) { '-store' } else { '-test' }
+$msix = Join-Path $out "SHIKISHA-TERM-$version$suffix.msix"
 if (Test-Path $msix) { Remove-Item $msix -Force }
 & $makeappx pack /d $stage /p $msix /o
 if ($LASTEXITCODE -ne 0) { throw "makeappx failed" }
 Write-Host "built $msix"
+if ($Store) {
+    Write-Host "unsigned on purpose. Upload it at Partner Center -> the product ->"
+    Write-Host "Packages. The Store signs it with its own certificate."
+}
 
 if ($SelfSign) {
     # A certificate for this machine only, whose subject matches the Publisher in
@@ -98,16 +139,27 @@ if ($SelfSign) {
     & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint $msix
     if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
 
-    # Windows trusts nothing self-signed until it is told to. Trusted People is
-    # the store sideloading reads, and it is per-user, so this needs no admin.
-    $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('TrustedPeople', 'CurrentUser')
-    $store.Open('ReadWrite'); $store.Add($cert); $store.Close()
-    Write-Host "signed, and the test certificate is trusted for this user"
+    # Windows trusts nothing self-signed until it is told to, and the store it
+    # reads when installing a package is the machine's, not the user's: put the
+    # certificate in CurrentUser and the install still fails with 0x800B0109,
+    # having said only that the root is untrusted. Writing to LocalMachine needs
+    # administrator rights, so this asks for them rather than failing later.
+    $me = New-Object Security.Principal.WindowsPrincipal(
+              [Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw "-SelfSign has to trust the certificate machine-wide; run this in an elevated shell"
+    }
+    $trusted = [System.Security.Cryptography.X509Certificates.X509Store]::new('TrustedPeople', 'LocalMachine')
+    $trusted.Open('ReadWrite'); $trusted.Add($cert); $trusted.Close()
+    Write-Host "signed, and the test certificate is trusted on this machine"
+    Write-Host "  to take that trust back:"
+    Write-Host "  Get-ChildItem Cert:\LocalMachine\TrustedPeople | ? Subject -eq '$Publisher' | Remove-Item"
 }
 
 if ($Install) {
     if (-not $SelfSign) { throw "-Install needs -SelfSign: Windows will not install an unsigned package" }
     Add-AppxPackage -Path $msix -ForceUpdateFromAnyVersion
     Write-Host "installed. Start it from the Start menu, or:"
-    Write-Host "  explorer.exe shell:AppsFolder\$IdentityName" + "_$((Get-AppxPackage $IdentityName).PublisherId)!SHIKISHATERM"
+    $family = (Get-AppxPackage $IdentityName).PackageFamilyName
+    Write-Host "  explorer.exe shell:AppsFolder\$family!SHIKISHATERM"
 }

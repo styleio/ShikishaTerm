@@ -72,6 +72,33 @@ jobs:
             SHIKISHA-TERM.zip.sha256
           retention-days: 7
 
+      # The Store copy: the same binary, packaged. Built here rather than on a
+      # laptop for the same reason the zip is -- what people install should come
+      # from the tagged source, and nowhere else. It goes up unsigned on purpose;
+      # Partner Center signs it with Microsoft's own certificate.
+      #
+      # Skipped until packaging/msix/store.json carries the identity Partner
+      # Center assigns when the name is reserved. Before that there is nothing to
+      # build a valid package against, and a wrong identity is rejected on upload.
+      - name: Store package (MSIX)
+        shell: pwsh
+        run: |
+          $identity = Get-Content packaging/msix/store.json -Raw
+          if ($identity -match 'REPLACE') {
+            Write-Host "::notice::store.json still has placeholders -- no Store package built"
+            "skipped=true" | Out-File $env:GITHUB_ENV -Append
+            exit 0
+          }
+          ./tools/msix.ps1 -Store
+
+      - name: Upload the Store package
+        if: env.skipped != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SHIKISHA-TERM-msix
+          path: target/msix/*-store.msix
+          retention-days: 30
+
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
