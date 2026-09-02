@@ -850,7 +850,7 @@ that path never launches git, which is why it still answers during a rebase.
 
 | Command | What it does |
 |---|---|
-| `shikisha.git_status(tab)` | The changed files, one row each: `{path, index, work, staged, conflict, from}`. `index` and `work` are git's own two letters (staged side, working-tree side) |
+| `shikisha.git_status(tab)` | The changed files, one row each: `{path, index, work, staged, unstaged, conflict, from}`. `index` and `work` are git's own two letters (staged side, working-tree side). `staged` and `unstaged` are not opposites — stage one hunk of a file and both are true |
 | `shikisha.git_diff(tab, {path=…, staged=…})` | The diff, as text. `staged=true` reads the staged side; `path` narrows it to one file |
 | `shikisha.git_log(tab, count)` | Recent commits: `{hash, short, author, date, subject}`. 20 by default |
 | `shikisha.git_conflicts(tab)` | Just the paths of the files with a conflict |

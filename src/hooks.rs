@@ -2632,8 +2632,13 @@ impl HookEngine {
                             row.set("path", ch.path)?;
                             row.set("index", ch.index.to_string())?;
                             row.set("work", ch.work.to_string())?;
-                            // The two booleans every caller works out anyway
+                            // The booleans every caller works out anyway. They
+                            // are not opposites: a file can be both at once, and
+                            // that is the ordinary result of staging one hunk of
+                            // it. Saying only "staged" about `MM` loses the half
+                            // that is still waiting
                             row.set("staged", !matches!(ch.index, ' ' | '?'))?;
+                            row.set("unstaged", ch.work != ' ')?;
                             row.set(
                                 "conflict",
                                 ch.index == 'U'
@@ -6023,6 +6028,59 @@ mod tests {
             lost.contains(&crate::i18n::t("err.git.no_tab")),
             "フォルダの無いタブはそう言われる: {lost}"
         );
+    }
+
+    #[test]
+    fn a_file_half_in_the_commit_is_in_both_lists() {
+        // Staging one hunk of a file leaves the rest of it waiting, and the two
+        // halves are not opposites: the screen puts the file above AND below,
+        // the way git's own `MM` reads. It was in the staged list alone once,
+        // which said the debug line somebody left behind was going in
+        let dir = std::env::temp_dir().join(format!("shikisha-hooks-mm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git").args(args).current_dir(&dir).output()
+        };
+        if git(&["init", "-b", "main"]).map(|o| !o.status.success()).unwrap_or(true) {
+            return; // no git on this machine
+        }
+        let _ = git(&["config", "user.email", "test@example.invalid"]);
+        let _ = git(&["config", "user.name", "test"]);
+
+        let start = (1..=24).map(|n| format!("line {n}")).collect::<Vec<_>>().join("
+");
+        std::fs::write(dir.join("f.txt"), format!("{start}
+")).unwrap();
+        crate::git::stage(&dir, &["f.txt".to_string()]).unwrap();
+        crate::git::commit(&dir, "start", &[], true, false).unwrap();
+        std::fs::write(
+            dir.join("f.txt"),
+            format!("{}
+", start.replace("line 1
+", "ONE
+").replace("line 20", "TWENTY")),
+        )
+        .unwrap();
+        let hunks =
+            crate::git::split_hunks(&crate::git::diff(&dir, Some("f.txt"), false).unwrap());
+        assert_eq!(hunks.len(), 2, "離れた2箇所は2つの hunk");
+        crate::git::apply(&dir, &hunks[0].patch, true, false).unwrap();
+
+        let e = HookEngine::new().unwrap();
+        let key = TabKey { id: Some("work".into()), name: "作業".into() };
+        e.set_states(vec![(key.clone(), "WAIT".into())]);
+        e.set_places(vec![TabPlace { key, dir: dir.clone(), protect: Vec::new() }]);
+        let rows = e.call_primitive("git_status", &[serde_json::json!("work")]).unwrap();
+        let row = rows
+            .as_array()
+            .and_then(|r| r.iter().find(|r| r["path"] == "f.txt"))
+            .expect("変えたファイルが一覧に出る");
+        assert_eq!(row["index"], "M", "ステージ側は変更済み");
+        assert_eq!(row["work"], "M", "作業ツリー側も変更済み");
+        assert_eq!(row["staged"], true, "半分は次のコミットに入っている");
+        assert_eq!(row["unstaged"], true, "残りの半分はまだ入っていない");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

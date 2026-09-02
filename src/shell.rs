@@ -4812,7 +4812,23 @@ window.__git = function (d) {
     return;
   }
   G.bad = false;
-  if (d.act === "status") { G.rows = d.data || []; }
+  if (d.act === "status") {
+    G.rows = d.data || [];
+    // A file that has just moved takes the reader with it. Staging the whole of
+    // the file being read used to leave the pane saying "nothing differs here",
+    // which is true of the side it was still looking at and useless: the change
+    // is right there, one list up
+    const moved = G.view !== "history" && G.sel
+      ? (G.rows || []).find(r => r.path === G.sel && !r.conflict)
+      : null;
+    if (moved && !(G.staged ? moved.staged : moved.unstaged)
+              && (G.staged ? moved.unstaged : moved.staged)) {
+      G.staged = !G.staged;
+      if (G.pick[G.sel]) { G.pick[G.sel] = G.staged ? "staged" : "work"; }
+      gitAsk("diff", {paths: [G.sel], staged: G.staged});
+      gitAsk("hunks", {paths: [G.sel], staged: G.staged});
+    }
+  }
   else if (d.act === "branch") { G.branch = d.data || null; }
   else if (d.act === "branches") { G.branches = d.data || []; }
   else if (d.act === "diff") { G.diff = d.data || ""; }
@@ -4838,7 +4854,10 @@ window.__git = function (d) {
       G.offer = false; G.pick = {}; G.sel = null; G.diff = "";
       if (gitWantsPush()) gitAsk("push");
     } else if (d.act === "checkout" || d.act === "branch_new") {
-      G.pick = {}; G.sel = null; G.diff = ""; G.offer = false;
+      // The refusal that led here is answered now -- leaving "main is a
+      // protected branch" on screen after moving off main says something that
+      // has stopped being true
+      G.pick = {}; G.sel = null; G.diff = ""; G.offer = false; G.said = "";
     } else if (d.act === "resolve") {
       // Written into the tree, not staged and not committed. The next thing to
       // do is read it, so the file list comes back and the diff with it
@@ -5042,7 +5061,9 @@ function gitPanes() {
 }
 
 function gitAllPaths(staged) {
-  return (G.rows || []).filter(r => !!r.staged === !!staged && !r.conflict).map(r => r.path);
+  return (G.rows || [])
+    .filter(r => (staged ? r.staged : r.unstaged) && !r.conflict)
+    .map(r => r.path);
 }
 function gitSay(text, bad) { G.said = text; G.bad = !!bad; drawGit(); }
 
@@ -5330,8 +5351,11 @@ function drawGit() {
 
   const rows = G.rows || [];
   const conflicts = rows.filter(r => r.conflict);
+  // A file belongs to both lists when it is in both -- stage one hunk of a file
+  // and the rest of it is still not in the commit, which is the whole reason
+  // hunks can be staged separately. Listing it only above would say the opposite
   const staged = rows.filter(r => r.staged && !r.conflict);
-  const work = rows.filter(r => !r.staged && !r.conflict);
+  const work = rows.filter(r => r.unstaged && !r.conflict);
   u.staged.textContent = "";
   staged.forEach(r => u.staged.append(gitFileRow(r, "staged")));
   if (!staged.length) u.staged.append(el("div", {class:"empty"}, T["git.staged.empty"] || ""));

@@ -884,7 +884,7 @@ AI CLI 自身のフックもここを通ります。
 
 | 命令 | 説明 |
 |---|---|
-| `shikisha.git_status(タブ)` | 変わったファイルの一覧。1件ずつ `{path, index, work, staged, conflict, from}`。`index` と `work` は git が出す2文字（ステージ側と作業ツリー側）そのまま |
+| `shikisha.git_status(タブ)` | 変わったファイルの一覧。1件ずつ `{path, index, work, staged, unstaged, conflict, from}`。`index` と `work` は git が出す2文字（ステージ側と作業ツリー側）そのまま。`staged` と `unstaged` は反対語ではない（hunk を1つだけステージすると両方 true） |
 | `shikisha.git_diff(タブ, {path=…, staged=…})` | 差分をそのまま文字列で。`staged=true` でステージ済みの側、`path` で1ファイルに絞る |
 | `shikisha.git_log(タブ, 件数)` | 最近のコミット。`{hash, short, author, date, subject}`。既定20件 |
 | `shikisha.git_conflicts(タブ)` | 衝突しているファイルのパスだけ |

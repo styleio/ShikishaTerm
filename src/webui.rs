@@ -591,39 +591,6 @@ fn generate_with_local_ai(
     extract_lua(&text)
 }
 
-/// Ask the assistant AI to write the commit message for a diff.
-///
-/// The same road the automation editor uses to have Lua written, and the same
-/// setting picks the AI -- there is no second place to configure, and no second
-/// kind of key. What comes back is used as a draft: it lands in the composer
-/// for the person to read, change, and send.
-pub fn write_commit_message(diff: &str, engine: Option<&str>) -> Result<String> {
-    if diff.trim().is_empty() {
-        anyhow::bail!("{}", crate::i18n::t("err.git.nothing_to_describe"));
-    }
-    // A diff can be a megabyte. What a message needs is the shape of the
-    // change, which the first pages carry; the rest is the same shape again
-    const ROOM: usize = 12_000;
-    let mut short: String = diff.chars().take(ROOM).collect();
-    if diff.chars().count() > ROOM {
-        short.push_str("\n...\n");
-    }
-    let prompt = crate::i18n::tp("ai.commit.prompt", &[("diff", &short)]);
-    let said = ask_local_ai(&prompt, engine)?;
-    // Models like to wrap an answer in a fence or announce it first. The
-    // message is the last thing they say, and a commit message is short
-    let text = said
-        .trim()
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim()
-        .lines()
-        .filter(|l| !l.trim().starts_with("```"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(text.trim().to_string())
-}
-
 /// Have the assistant AI untangle one conflicted file.
 ///
 /// It is handed the file exactly as git left it -- both sides and the markers --
