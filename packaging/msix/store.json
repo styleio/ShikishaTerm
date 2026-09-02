@@ -1,6 +1,6 @@
 {
-  "_": "Copied by hand from Partner Center -> SHIKISHA-TERM -> Product identity. tools/msix.ps1 -Store reads it, and refuses to build while REPLACE is still here. Nothing secret: these three values are public in every installed copy.",
-  "identityName": "REPLACE.from.PartnerCenter.PackageIdentityName",
-  "publisher": "CN=REPLACE-from-PartnerCenter-Publisher",
+  "_": "Copied by hand from Partner Center -> SHIKISHA-TERM -> Product identity (2026-09-02). tools/msix.ps1 -Store reads it. Nothing secret: these three values are public in every installed copy.",
+  "identityName": "WIREDECOK.K.SHIKISHA-TERM",
+  "publisher": "CN=D884F3BE-7FF1-476D-9E10-7FE8F8E1A4C5",
   "publisherDisplayName": "WIRED & ECO, K.K."
 }
