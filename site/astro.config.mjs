@@ -35,6 +35,7 @@ export default defineConfig({
       sidebar: [
         { label: "Automation", link: "/automation/" },
         { label: "Translating", link: "/translating/" },
+        { label: "Privacy", link: "/privacy/" },
         { label: "Download", link: `${REPO}/releases/latest`, attrs: { target: "_blank" } },
       ],
       customCss: ["./src/styles/custom.css"],

@@ -17,7 +17,10 @@ const REPO_URL = "https://github.com/styleio/ShikishaTerm";
 const PAGES = [
   { src: "docs/AUTOMATION.md", dest: "automation.md", order: 1 },
   { src: "docs/TRANSLATING.md", dest: "translating.md", order: 2 },
+  // Microsoft Store の掲載情報がこのURLを指す。消すとストアの審査が落ちる
+  { src: "docs/PRIVACY.md", dest: "privacy.md", order: 3 },
   { src: "docs/AUTOMATION.ja.md", dest: "ja/automation.md", order: 1 },
+  { src: "docs/PRIVACY.ja.md", dest: "ja/privacy.md", order: 3 },
 ];
 
 /** 1行目の `# 見出し` をページタイトルに使い、本文からは取り除く */
@@ -41,6 +44,8 @@ function fixLinks(body, dest) {
     ["docs/AUTOMATION.md", "/automation/"],
     ["docs/AUTOMATION.ja.md", "/ja/automation/"],
     ["docs/TRANSLATING.md", "/translating/"],
+    ["docs/PRIVACY.md", "/privacy/"],
+    ["docs/PRIVACY.ja.md", "/ja/privacy/"],
   ]);
   return body.replace(/\]\((?!https?:|#|\/)([^)]+)\)/g, (whole, href) => {
     const clean = href.replace(/^\.\//, "");
