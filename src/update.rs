@@ -10,8 +10,16 @@ use std::sync::mpsc;
 /// number that should be notified about.
 /// If there's nothing to report, nothing arrives (the receiver can just
 /// peek with try_recv).
+///
+/// An installed copy asks nothing. The Store is what put it there and the Store
+/// is what replaces it, so the answer could only ever be a toast pointing at a
+/// zip the person cannot use -- and it would go on pointing at it until the
+/// Store caught up. The download, which nobody updates but its owner, still asks.
 pub fn spawn_check() -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel();
+    if crate::config::packaged() {
+        return rx;
+    }
     std::thread::spawn(move || {
         if let Some(v) = latest_unnotified() {
             let _ = tx.send(v);
