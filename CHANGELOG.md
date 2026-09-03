@@ -24,6 +24,47 @@ twice over -- once for the undisclosed dependency, and once for an app that
   download asks the world for. "Unzip it anywhere and run it" is true again.
 
 
+## [0.5.0] - 2026-09-01
+
+A tab used to know only what to run. Now it knows *where* — every tab sits in a
+working folder, folders sit in the sidebar, and a branch can be given a folder
+of its own without leaving the window. On top of that sits a git panel: staging,
+committing, branching and merging, drawn where a terminal would be, and an AI
+that untangles a merge while a person decides it.
+
+### Added
+- **Working folders.** Tabs are grouped by the folder they run in, shown in the
+  sidebar, and named the same word everywhere -- screen, settings and
+  `config.json`. A project can be given a colour, or left to pick its own.
+- **A git panel, launched like a tab.** Nine primitives underneath it: the
+  history and the working tree are the same panel seen from two sides, a piece
+  of a file can be staged without staging the file, and the panel folds onto a
+  phone.
+- **The commit message can be written for you**, and the button that does it can
+  be edited. `ai_ask` exposes the same assistant to Lua.
+- **A branch can have a folder of its own** (a git worktree), made from the
+  sidebar, thrown away once there is nothing left to lose, and carrying along
+  the files git leaves behind.
+- **The project decides which branches refuse a commit**, and says which
+  branches are shared where anyone can read it.
+- **Shift+Enter** is a key of its own, for the programs that ask for it.
+
+### Changed
+- **Settings became four visible levels**, told apart by where a row starts. A
+  workspace's row *is* the workspace, folders sit under it, and what you fold
+  stays folded.
+- **One table decides who may call what** -- human or AI -- and a test keeps the
+  screen honest about it. A command's name is the way into the manual.
+- **A tab's state comes from where the CLI says it is working**, which holds
+  still, rather than from a guess that moved.
+
+### Fixed
+- **A folder that is not on this PC stops its tabs instead of moving them**, says
+  which project it held, and offers to fetch it. When it turns up, the tabs go
+  back to work.
+- **What a full-screen tool copies, the terminal finishes.**
+- **"git did not answer" stopped being read as "nothing is ignored".**
+
 ## [0.4.0] - 2026-08-31
 
 The dot beside a tab used to be a guess, read off the screen the way a person
