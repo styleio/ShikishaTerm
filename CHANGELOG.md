@@ -8,6 +8,22 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-03
+
+The program stopped needing the Visual C++ Redistributable. It was never
+mentioned anywhere, because nobody had noticed it was there: Rust links that
+runtime from outside the binary by default, so an unzipped copy quietly
+depended on the machine having had Visual Studio near it at some point. The
+Microsoft Store found it before a person did, and refused the first submission
+twice over -- once for the undisclosed dependency, and once for an app that
+"loads indefinitely" on a test device that did not have it.
+
+### Fixed
+- **A machine that has never seen Visual Studio can run this.** The C runtime is
+  linked into the executable now, so `VCRUNTIME140.dll` is not something the
+  download asks the world for. "Unzip it anywhere and run it" is true again.
+
+
 ## [0.4.0] - 2026-08-31
 
 The dot beside a tab used to be a guess, read off the screen the way a person

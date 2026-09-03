@@ -1,0 +1,14 @@
+# The C runtime travels inside the binary.
+#
+# Rust's MSVC target links vcruntime140.dll dynamically by default, which makes
+# the Visual C++ Redistributable a thing the person has to already have. A
+# portable exe cannot ask for that -- "unzip it anywhere and run it" stops being
+# true on a machine that has never had Visual Studio near it -- and the Store
+# rejected the first submission for exactly this: an undisclosed dependency on
+# Visual C++, alongside a report that the app "loads indefinitely" on a clean
+# test device.
+#
+# Statically linking the CRT removes the dependency instead of disclosing it.
+# The binary grows by a few hundred KB, which is the whole cost.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
