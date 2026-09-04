@@ -12,6 +12,13 @@
 </p>
 
 <p align="center">
+  <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0?launch=true&mode=full">
+    <img alt="Get it from Microsoft" src="https://get.microsoft.com/images/en-us%20dark.svg" height="56">
+  </a>
+</p>
+
+
+<p align="center">
   <a href="https://github.com/styleio/ShikishaTerm/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/styleio/ShikishaTerm?style=social"></a>
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <a href="https://github.com/styleio/ShikishaTerm/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/styleio/ShikishaTerm?include_prereleases"></a>

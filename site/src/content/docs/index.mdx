@@ -11,14 +11,6 @@ hero:
     file: ../../assets/logo.png
   tagline: Run Claude Code, Codex and Gemini side by side — and let them hand work to each other.
   actions:
-    - text: Get it from the Microsoft Store
-      link: https://apps.microsoft.com/detail/9PB8XQVM87Z0
-      icon: down-arrow
-      variant: primary
-    - text: Portable zip
-      link: https://github.com/styleio/ShikishaTerm/releases/latest
-      icon: down-arrow
-      variant: minimal
     - text: How automation works
       link: /automation/
       icon: right-arrow
@@ -30,8 +22,16 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-**A single portable `.exe`. No install, no admin rights, no API keys** — it drives the AI
-CLIs you already have logged in.
+<p style="text-align:center;margin:0 0 1.2em">
+  <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0">
+    <img alt="Get it from Microsoft" src="https://get.microsoft.com/images/en-us%20dark.svg" height="64" style="height:64px" />
+  </a>
+</p>
+
+**No API keys — it drives the AI CLIs you already have logged in.** The Store copy is
+signed by Microsoft and updates itself; the [portable zip](https://github.com/styleio/ShikishaTerm/releases/latest)
+is the same program with nothing installed, and Windows warns about it once because it is
+not signed.
 
 <video src="/demo.mp4" autoplay loop muted playsinline style="width:100%;border-radius:12px" />
 

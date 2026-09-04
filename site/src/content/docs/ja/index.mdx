@@ -10,14 +10,6 @@ hero:
     file: ../../../assets/logo.png
   tagline: Claude Code / Codex / Gemini を同時に動かし、AI同士に仕事を渡させる。
   actions:
-    - text: Microsoft Store から入れる
-      link: https://apps.microsoft.com/detail/9PB8XQVM87Z0
-      icon: down-arrow
-      variant: primary
-    - text: 持ち運べる zip
-      link: https://github.com/styleio/ShikishaTerm/releases/latest
-      icon: down-arrow
-      variant: minimal
     - text: 自動化の書き方
       link: /ja/automation/
       icon: right-arrow
@@ -29,8 +21,15 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-**ポータブルな単一の `.exe`。インストール不要・管理者権限不要・APIキー不要** —
-すでにログイン済みのAI CLIをそのまま動かします。
+<p style="text-align:center;margin:0 0 1.2em">
+  <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0">
+    <img alt="Microsoft Store から入手" src="https://get.microsoft.com/images/ja%20dark.svg" height="64" style="height:64px" />
+  </a>
+</p>
+
+**APIキーは不要** — すでにログイン済みのAI CLIをそのまま動かします。Store 版は Microsoft が
+署名していて自動で更新されます。[持ち運べる zip](https://github.com/styleio/ShikishaTerm/releases/latest)
+は同じプログラムを何もインストールせずに動かすもので、署名が無いぶん Windows が一度だけ警告を出します。
 
 <video src="/demo.mp4" autoplay loop muted playsinline style="width:100%;border-radius:12px" />
 

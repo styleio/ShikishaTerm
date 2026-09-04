@@ -109,7 +109,23 @@ jobs:
             SHIKISHA-TERM.zip
             SHIKISHA-TERM.zip.sha256
           body: |
-            ## Install
+            ## Which copy do you want?
+
+            **Most people want the Microsoft Store version:**
+            **https://apps.microsoft.com/detail/9PB8XQVM87Z0**
+
+            Microsoft signs the Store copy, so Windows raises no warning when it starts,
+            and it updates itself.
+
+            **The download below is the portable copy.** Same version, same source, same
+            build — but it is not code-signed, so the first run shows
+            **"Windows protected your PC"** (SmartScreen). Click **More info → Run anyway**
+            to get past it.
+
+            Take this one if you want nothing installed: unzip it anywhere, and delete the
+            folder to remove it.
+
+            ## Install (portable)
 
             1. Download `SHIKISHA-TERM.zip` below and unzip it anywhere
             2. Run `SHIKISHA-TERM.exe`

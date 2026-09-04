@@ -8,6 +8,13 @@
 </p>
 
 <p align="center">
+  <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0?launch=true&mode=full">
+    <img alt="Microsoft Store から入手" src="https://get.microsoft.com/images/ja%20dark.svg" height="56">
+  </a>
+</p>
+
+
+<p align="center">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <a href="https://github.com/styleio/ShikishaTerm/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/styleio/ShikishaTerm?include_prereleases"></a>
   <a href="README.md"><img alt="English" src="https://img.shields.io/badge/README-English-blue.svg"></a>
