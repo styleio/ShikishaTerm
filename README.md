@@ -55,6 +55,11 @@ For example:
 
 ## Install
 
+**From the Microsoft Store** — [get it here](https://apps.microsoft.com/detail/9PB8XQVM87Z0). Microsoft signs the Store copy, so
+there is no security warning to click past, and updates arrive on their own.
+
+**Or take the portable copy**, if you would rather nothing were installed:
+
 1. Download `SHIKISHA-TERM.zip` from [Releases](https://github.com/styleio/ShikishaTerm/releases/latest)
 2. Unzip it anywhere — a USB stick and a synced folder both work
 3. Run `SHIKISHA-TERM.exe`
@@ -69,10 +74,12 @@ Nothing is written outside that folder. There is no installer and no runtime to 
 
 ### About the Windows warning
 
-The project has **applied for a free code signing certificate from
-[SignPath Foundation](https://signpath.org/)** — see the [code signing policy](SIGNING.md).
-That application is pending, so release binaries are not signed yet and the first run shows
-**"Windows protected your PC"**.
+**The Store copy is signed by Microsoft and shows no warning.** This section is about the
+zip only.
+
+The zip is not signed — free certificates were applied for and not granted, and the Store
+route was taken instead ([code signing policy](SIGNING.md)). So the first run of an
+unzipped copy shows **"Windows protected your PC"**.
 
 Click **More info → Run anyway** to continue. If you would rather check first — and being
 wary of an unsigned executable from the internet is the right instinct:

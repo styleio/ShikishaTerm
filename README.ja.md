@@ -35,6 +35,11 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 
 ## 導入
 
+**Microsoft Store から入れる** — [ストアのページ](https://apps.microsoft.com/detail/9PB8XQVM87Z0)。Store 版は Microsoft が署名して
+いるので、セキュリティの警告を押し進める必要がなく、更新も自動で届きます。
+
+**インストールしたくなければ、持ち運べる版があります:**
+
 1. [Releases](https://github.com/styleio/ShikishaTerm/releases/latest) から `SHIKISHA-TERM.zip` を落とす
 2. 好きな場所に展開する（USBメモリでも同期フォルダでも動きます）
 3. `SHIKISHA-TERM.exe` を起動する
@@ -48,10 +53,11 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 
 ### Windowsの警告について
 
-初回起動時に「**WindowsによってPCが保護されました**」が出ます。実行ファイルに
-コード署名をしていないためです。オープンソースに無料で証明書を出している
-[SignPath Foundation](https://signpath.org/) に申請中で、審査が通るまでは
-未署名のままになります（[コード署名ポリシー](SIGNING.md)）。
+**Store 版は Microsoft が署名しているので警告は出ません。** ここは zip の話です。
+
+zip には署名がありません。無料の証明書に申請しましたが通らず、代わりに Store で配る道を
+選びました（[コード署名ポリシー](SIGNING.md)）。そのため、展開した zip を初めて起動すると
+「**WindowsによってPCが保護されました**」が出ます。
 
 続けるには「**詳細情報**」→「**実行**」を押してください。その前に確認したい場合は
 ——**素性の分からない未署名のexeを警戒するのは正しい判断です**——こちらをどうぞ:
