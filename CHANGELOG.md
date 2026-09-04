@@ -8,6 +8,17 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **The app wears its own icon, whole.** The window never said which icon it
+  wanted, so the title bar and Alt+Tab drew Windows' default grey window shape
+  while the taskbar went and found the one in the exe — two pictures for one
+  program, and the one in the corner of our own window was not even ours. And
+  the picture the taskbar found was a fragment: the small drawings inside
+  `icon.ico` were a crop of the logo, cut off at the canvas edge, so what showed
+  up was a piece of a hand. Every size is now its own drawing of the whole mark
+  — bolder as it gets smaller, because a hairline that survives at 256 pixels is
+  gone at 16.
+
 ### Changed
 - **The phone QR hands the link over instead of printing it.** Under the code
   there used to be the address with its token stripped off — safe to look at,

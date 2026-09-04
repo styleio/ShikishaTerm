@@ -3206,6 +3206,54 @@ fn ask_js(text: &str, label: &str) -> String {
     )
 }
 
+/// Put our own icon on the window.
+///
+/// A window that never says which icon it wants gets Windows' default — the
+/// grey generic window shape — in its title bar and in Alt+Tab, while the
+/// taskbar goes and finds the one inside the exe. Two pictures for one program,
+/// and the one in the corner of our own window was not even ours.
+///
+/// It is loaded out of our own resource (id 1, which is where `build.rs` puts
+/// `assets\icon.ico`) rather than from a file beside the exe: one copy of the
+/// artwork, nothing extra to ship, and nothing that can go missing.
+///
+/// Each size is asked for by name. An icon file holds several drawings, and
+/// `LoadImage` picks the one nearest what it is asked for; asking for
+/// "whatever" (0, 0) takes the first entry and squeezes it, which is how a
+/// 256-pixel drawing ends up as a smear in a 16-pixel corner.
+#[cfg(windows)]
+fn wear_our_own_icon(hwnd: isize) {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW,
+        SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW, WM_SETICON,
+    };
+    const OUR_ICON: *const u16 = 1 as *const u16; // MAKEINTRESOURCE(1)
+    unsafe {
+        let module = GetModuleHandleW(std::ptr::null());
+        let hwnd = hwnd as *mut std::ffi::c_void;
+        let mut wear = |which: u32, w: i32, h: i32| {
+            let icon = LoadImageW(module, OUR_ICON, IMAGE_ICON, w, h, LR_DEFAULTCOLOR);
+            if !icon.is_null() {
+                SendMessageW(hwnd, WM_SETICON, which as usize, icon as isize);
+            }
+        };
+        // The title bar and Alt+Tab, then the taskbar and the switcher's big
+        // tile. The system is asked how large those are, because it is not the
+        // same answer on a 150% display as on a 100% one
+        wear(
+            ICON_SMALL,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+        );
+        wear(
+            ICON_BIG,
+            GetSystemMetrics(SM_CXICON),
+            GetSystemMetrics(SM_CYICON),
+        );
+    }
+}
+
 fn run_window(
     url: &str,
     title: &str,
@@ -3235,6 +3283,11 @@ fn run_window(
             .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0))
             .build(&ev_loop)?,
     );
+    #[cfg(windows)]
+    {
+        use tao::platform::windows::WindowExtWindows;
+        wear_our_own_icon(window.hwnd());
+    }
 
     let ipc = ev_tx.clone();
     // The shell gets an explicit folder for the same reason the pages do: without
