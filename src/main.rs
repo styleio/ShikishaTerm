@@ -1855,6 +1855,8 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         g.health = health.get(at).cloned().unwrap_or_default();
         g.drift = drift.get(at).cloned().unwrap_or_default();
     }
+    // The pairing link as it should be shown, with the network it leads to
+    let shown = ui.qr.as_deref().map(crate::netaddr::shown_link);
     crate::uistate::UiState {
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
         branch: ui.branch.clone(),
@@ -1915,11 +1917,16 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         vault: ui.vault.clone(),
         self_cost: ui.self_cost.clone(),
         ws_open: ui.ws_open,
-        qr: ui.qr.clone(),
+        // The link, its picture and the badge under it are decided together, in
+        // this one place: a QR that says one thing while the badge beside it
+        // says another is worse than either alone.
+        //
         // Build the image just once here. Both the window and the phone read the
         // same state, so the same QR shows up regardless of origin (this ends the
         // link-rot we used to get back when it was served as a separate image).
-        qr_svg: ui.qr.as_deref().map(|u| crate::netaddr::qr_svg(u, 6)),
+        qr: shown.as_ref().map(|(url, _)| url.clone()),
+        qr_svg: shown.as_ref().map(|(url, _)| crate::netaddr::qr_svg(url, 6)),
+        qr_kind: shown.as_ref().map(|(_, kind)| kind.to_string()),
         nav: ui.nav.clone(),
         scrolled: ui.scrolled,
         build: format!("build {}  ({})", env!("BUILD_TIME"), env!("BUILD_REV")),
@@ -3912,7 +3919,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 .map(|c| c.folder_colors.clone())
                 .unwrap_or_default(),
             self_cost: self_cost.clone(),
-            qr: if qr_open { remote_ui.as_ref().map(|r| r.url.clone()) } else { None },
+            // With a stand-in laid out there is a link to show even when
+            // nothing is listening — that is the whole point of it (netaddr::demo_link)
+            qr: if qr_open {
+                remote_ui
+                    .as_ref()
+                    .map(|r| r.url.clone())
+                    .or_else(netaddr::demo_link)
+            } else {
+                None
+            },
             remote_on: remote_ui.is_some(),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
@@ -5773,7 +5789,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         KeyCode::Char('?') | KeyCode::Char('h') => help_open = true,
                         // Show the QR code for connecting from a phone
                         KeyCode::Char('i') => {
-                            if remote_ui.is_some() {
+                            if remote_ui.is_some() || netaddr::demo_link().is_some() {
                                 qr_open = true;
                             } else {
                                 flash = Some(

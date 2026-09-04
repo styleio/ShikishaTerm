@@ -127,7 +127,15 @@ starting), double-click **`Settings.cmd`**.
 </p>
 
 Turn on "Use from your phone" in the settings and a QR code appears. Scan it and you get a
-small web page listing every tab, its status, and a box to send instructions.
+small web page listing every tab, its status, and a box to send instructions. `Ctrl+B 0`
+then `i` shows the same code on the board.
+
+Under the code sit the only two things worth acting on. **📋 copies the link** — token and
+all — to the clipboard, for a phone that cannot photograph the screen it is on, and the
+**badge beside it says which network that link leads to**: green for Tailscale (your own
+devices, anywhere), amber for the home LAN (everyone on that Wi-Fi). The link itself is
+never printed: with its token it is the key to the machine, and without one it opens
+nothing.
 
 **Know where it is reachable from** — this feature lets a phone run commands on your machine:
 

@@ -550,6 +550,12 @@ pub struct UiState {
     /// side draw the same thing, and no second request is needed
     #[serde(default)]
     pub qr_svg: Option<String>,
+    /// Which network that destination is on ("tailscale" / "lan" / "local" /
+    /// "public"), worked out by `netaddr::url_kind`. The screen colours a badge
+    /// with it: whether the link can be handed around is the one thing about an
+    /// address a person has to know, and it is not readable from the digits
+    #[serde(default)]
+    pub qr_kind: Option<String>,
     /// Controls shown above the browser being viewed (None = don't show)
     pub nav: Option<NavState>,
     /// How many lines back from the current screen we're scrolled (0 = current).

@@ -383,6 +383,25 @@ fn effective_remote(shared: &Arc<std::sync::Mutex<RemoteInfo>>) -> RemoteInfo {
     }
 }
 
+/// The connection info the phone card is drawn from: the stand-in laid out for
+/// a promotional shot (`netaddr::demo_link`) when there is one, otherwise the
+/// real thing. The card is drawn as running in that case — there is a link to
+/// show, which is the only question this screen asks.
+fn remote_for_display(shared: &Arc<std::sync::Mutex<RemoteInfo>>) -> (RemoteInfo, bool) {
+    match crate::netaddr::demo_link() {
+        Some(url) => (
+            RemoteInfo {
+                running: true,
+                url,
+                note: String::new(),
+            },
+            true,
+        ),
+        None => (effective_remote(shared), false),
+    }
+}
+
+
 /// Brings our own process's dialog to the front when it appears.
 /// Windows forbids background processes from popping themselves to the front on their own,
 /// so we set the topmost attribute to keep it from hiding behind the browser
@@ -1896,12 +1915,22 @@ fn handle(
             req.respond(json_resp(resp))?;
         }
         ("GET", "/api/remote") => {
-            let info = effective_remote(remote);
-            let ts = crate::netaddr::tailscale_ip().map(|i| i.to_string());
-            let lan = crate::netaddr::lan_ip().map(|i| i.to_string());
-            // The full URL embeds the access token (= full-machine control),
-            // so it never leaves the server as text. The page gets the origin
-            // only; the token reaches the phone solely inside the QR image
+            let (info, demo) = remote_for_display(remote);
+            // A stand-in address stands in for the whole card: it is presented
+            // as the safe case, so the picture is of the feature rather than of
+            // a warning about a network nobody is on
+            let (ts, lan) = if demo {
+                (Some(crate::netaddr::url_host(&info.url)), None)
+            } else {
+                (
+                    crate::netaddr::tailscale_ip().map(|i| i.to_string()),
+                    crate::netaddr::lan_ip().map(|i| i.to_string()),
+                )
+            };
+            // The full URL embeds the access token (= full-machine control), so
+            // it is never drawn on the page. The origin is all the page gets;
+            // the token reaches the phone inside the QR image, or the clipboard
+            // by way of /api/remote/url when the copy button is pressed
             let origin = info.url.split("/?").next().unwrap_or("").to_string();
             let resp = serde_json::json!({
                 "running": info.running,
@@ -1909,6 +1938,9 @@ fn handle(
                 "note": info.note,
                 "tailscale": ts,
                 "lan": lan,
+                // What the link leads to, said in one word so the page can put
+                // a colour on it
+                "kind": crate::netaddr::shown_link(&info.url).1,
             });
             req.respond(
                 Response::from_string(resp.to_string()).with_header(
@@ -1920,9 +1952,18 @@ fn handle(
                 ),
             )?;
         }
+        // The connection link as text, for the clipboard and nowhere else.
+        // It carries the token — the whole machine — so the page asks for it at
+        // the moment the copy button is pressed and hands it straight to the
+        // clipboard, never to the screen. Behind the same token gate as the
+        // rest of this server, so this hands out nothing the QR did not already
+        ("GET", "/api/remote/url") => {
+            let (info, _) = remote_for_display(remote);
+            req.respond(json_resp(serde_json::json!({ "url": info.url })))?;
+        }
         // Connection QR code (avoids having to hand-type the URL and token)
         ("GET", "/api/remote/qr") => {
-            let url = effective_remote(remote).url;
+            let url = remote_for_display(remote).0.url;
             let svg = if url.is_empty() {
                 String::new()
             } else {
@@ -2234,6 +2275,19 @@ const PAGE: &str = r##"<!doctype html>
  .stoprow input[type=number] { width:80px; }
  .stoprow .arrow { color:var(--muted); }
  #wsstopslist select { width:auto; }
+
+ /* Which network the phone's connection link leads to. The tone names are its
+    own (not the page-wide .warn, which is a paragraph of danger text) so that
+    a badge stays a badge whatever else those words come to mean. */
+ .netbadge { display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:600;
+   line-height:1.5; white-space:nowrap; border-radius:999px; padding:2px 10px; border:1px solid; }
+ .netbadge.ok   { color:var(--live);   border-color:var(--live);
+   background:color-mix(in srgb, var(--live) 14%, transparent); }
+ .netbadge.care { color:var(--warn);   border-color:var(--warn);
+   background:color-mix(in srgb, var(--warn) 14%, transparent); }
+ .netbadge.risk { color:var(--danger); border-color:var(--danger);
+   background:color-mix(in srgb, var(--danger) 14%, transparent); }
+ .netbadge.mute { color:var(--muted);  border-color:var(--line); }
 
  input[type=text], input[type=number], select, textarea {
    background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:7px;
@@ -4633,10 +4687,54 @@ function remoteCard() {
       // The image is loaded directly rather than via fetch, so pass auth as the token in the URL
       const img = el("img", {src:"/api/remote/qr?token=" + encodeURIComponent(TOKEN),
         style:"width:200px;height:200px;border-radius:8px;background:#fff;padding:6px"});
-      // Only the origin is printed — the access token stays inside the QR image
-      qrbox.append(el("div", {class:"hint"}, T["settings.phone.scan"]), img,
-        el("div", {class:"hint mono", style:"word-break:break-all"}, j.origin));
+      qrbox.append(el("div", {class:"hint"}, T["settings.phone.scan"]), img, linkRow(j.kind));
     }
+  }
+
+  // Under the QR, the two things a person can act on. The link itself is not
+  // among them: printed without its token it opens nothing, and printed with
+  // one it is a password on a screen someone can photograph over your shoulder.
+  // So it goes to the clipboard on a press, and what stays on screen is which
+  // network it leads to.
+  function linkRow(kind) {
+    const copy = el("button", {class:"quiet", style:"font-size:16px;line-height:1",
+      title: T["settings.phone.copy"], onclick: () => copyUrl(copy)}, "📋");
+    const row = el("div", {style:"display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap"},
+      copy, netBadge(kind));
+    return row;
+  }
+
+  // Colour is the message: a Tailscale address is reachable by your own
+  // machines only, a LAN one by whoever else is on that Wi-Fi. The words are
+  // written out rather than built from the kind, so a translation that goes
+  // missing is caught before it ships.
+  function netBadge(kind) {
+    const nets = {
+      tailscale: ["ok",   "🔒", T["settings.phone.badge.tailscale"], T["settings.phone.badge.tailscale.hint"]],
+      lan:       ["care", "⚠",  T["settings.phone.badge.lan"],       T["settings.phone.badge.lan.hint"]],
+      local:     ["mute", "",   T["settings.phone.badge.local"],     T["settings.phone.badge.local.hint"]],
+      public:    ["risk", "⚠",  T["settings.phone.badge.public"],    T["settings.phone.badge.public.hint"]],
+    };
+    const skin = nets[kind];
+    if (!skin) return el("span");
+    return el("span", {class:"netbadge " + skin[0], title: skin[3]},
+      (skin[1] ? skin[1] + " " : "") + skin[2]);
+  }
+
+  // The link is fetched at the moment of the press, so it is never sitting in
+  // the page waiting to be read. copyText() is the toast's — one way onto the
+  // clipboard for every screen, including a phone on plain http, where
+  // navigator.clipboard does not exist at all.
+  async function copyUrl(btn) {
+    let url = "";
+    try { url = ((await (await fetch("/api/remote/url", {headers:{"X-Token":TOKEN}})).json()) || {}).url || ""; }
+    catch (e) {}
+    if (!url) { toast(T["settings.phone.copy_failed"], true); return; }
+    copyText(url).then(() => {
+      toast(T["settings.phone.copied"]);
+      btn.textContent = "✓";
+      setTimeout(() => { btn.textContent = "📋"; }, 1400);
+    });
   }
   return box;
 }
@@ -6686,6 +6784,24 @@ mod tests {
             "どのファイルの話か分からない"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The connection link may reach the clipboard, never the screen. Printing
+    /// it without the token showed an address that opens nothing; printing it
+    /// with the token puts the key to the machine where a camera can see it.
+    #[test]
+    fn the_phone_card_hands_the_link_over_rather_than_printing_it() {
+        let from = PAGE.find("function remoteCard()").expect("remoteCard が無い");
+        let len = PAGE[from..].find("function aiSelect()").expect("カードの終わりが無い");
+        let card = &PAGE[from..from + len];
+        assert!(card.contains("/api/remote/url"), "コピー用の取り出し口が無い");
+        assert!(card.contains("netBadge"), "どの網に繋がるかのバッジが無い");
+        assert!(card.contains("copyText("), "共有のクリップボード経路を通っていない");
+        assert_eq!(
+            card.matches("j.origin").count(),
+            1,
+            "origin は「見せるものがあるか」の判定だけ。画面に描いてはいけない"
+        );
     }
 
     /// Opening a card must never count as an edit.

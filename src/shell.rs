@@ -936,8 +936,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #veil .pick { cursor:pointer; padding:7px 10px; border-radius:7px; }
   #veil .pick:hover { background:var(--raise); }
   #veil .qr { background:#fff; padding:12px; border-radius:8px; }
-  #veil .url { font-size:12px; color:var(--dim); margin-top:10px;
-    word-break:break-all; user-select:text; }
+  /* Under the QR: the one press that hands the link over, and what network it
+     leads to. Nothing here is the link itself — see drawVeil. */
+  #veil .qrrow { display:flex; align-items:center; gap:10px; margin-top:12px; }
+  #veil .qrcopy { flex:none; font:inherit; font-size:16px; line-height:1;
+    background:var(--raise); color:var(--text); border:1px solid var(--line);
+    border-radius:8px; padding:7px 11px; cursor:pointer; }
+  #veil .qrcopy:hover { border-color:var(--brand); }
+  .netbadge { display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:600;
+    line-height:1.5; white-space:nowrap; border-radius:999px; padding:2px 10px; border:1px solid; }
+  .netbadge.ok   { color:var(--live); border-color:var(--live);
+    background:color-mix(in srgb, var(--live) 14%, transparent); }
+  .netbadge.care { color:var(--warn); border-color:var(--warn);
+    background:color-mix(in srgb, var(--warn) 14%, transparent); }
+  .netbadge.risk { color:var(--stop); border-color:var(--stop);
+    background:color-mix(in srgb, var(--stop) 14%, transparent); }
+  .netbadge.mute { color:var(--dim); border-color:var(--line); }
   /* Marker shown while scrolled back through history. Without it, the output looks like it has frozen */
   #back { position:absolute; right:calc(var(--fr) + 14px); top:calc(var(--fy) + 10px); z-index:6;
     background:var(--raise); border:1px solid var(--brand); color:var(--text);
@@ -2322,11 +2336,16 @@ function drawVeil() {
     // window/phone pair sharing this same page — a broken link on the other
     const qr = el("div", {class:"qr"});
     qr.innerHTML = S.qr_svg || "";
-    // Show only the address, never the token. The token is a full-machine
-    // credential now, so printing it as plain text under the QR would put it a
-    // screenshot / OCR / shoulder-glance away from leaking. The QR image itself
-    // still carries the token for scanning, which is the intended pairing path.
-    box.append(qr, el("div", {class:"url"}, String(S.qr).split("?")[0]));
+    // Under it, the two things a person can act on. The link is not printed
+    // either way: with its token it is a full-machine credential sitting where
+    // a camera, an OCR pass or a shoulder can read it, and the address alone
+    // (which is what used to be here) opens nothing and answers nothing. So it
+    // goes to the clipboard on a press — for a phone that cannot photograph the
+    // screen it is on, or a chat window someone is standing in — and what stays
+    // on show is which network it leads to.
+    const copy = el("button", {class:"qrcopy", title:T["settings.phone.copy"],
+      onclick:(e) => { e.stopPropagation(); copyLink(); }}, "📋");
+    box.append(qr, el("div", {class:"qrrow"}, copy, netBadge(S.qr_kind)));
   } else {
     box.append(el("h3", {}, T["tui.help.title"] || "HELP"));
     // The keys come from the app, not from the translations: they are whatever
@@ -2348,6 +2367,31 @@ function drawVeil() {
   }
   v.onclick = () => send({kind:"key", named:"esc"});
   v.append(box);
+}
+
+// Colour is the message: a Tailscale address is reachable by your own machines
+// and nobody else's, wherever you are; a home-network one is offered to
+// everyone on that Wi-Fi. Which of the two this is comes from the app
+// (S.qr_kind), so the window, the phone and the settings screen cannot end up
+// with three opinions about what counts as private.
+function netBadge(kind) {
+  const nets = {
+    tailscale: ["ok",   "🔒", T["settings.phone.badge.tailscale"], T["settings.phone.badge.tailscale.hint"]],
+    lan:       ["care", "⚠",  T["settings.phone.badge.lan"],       T["settings.phone.badge.lan.hint"]],
+    local:     ["mute", "",   T["settings.phone.badge.local"],     T["settings.phone.badge.local.hint"]],
+    public:    ["risk", "⚠",  T["settings.phone.badge.public"],    T["settings.phone.badge.public.hint"]],
+  };
+  const skin = nets[kind];
+  if (!skin) return el("span");
+  return el("span", {class:"netbadge " + skin[0], title:skin[3]},
+    (skin[1] ? skin[1] + " " : "") + skin[2]);
+}
+
+// The pairing link onto the clipboard. It is already here — the QR is drawn
+// from it — so there is nothing to fetch; the press is what decides it leaves.
+function copyLink() {
+  if (!S.qr) return;
+  copyText(String(S.qr)).then(() => toast(T["settings.phone.copied"]));
 }
 
 // Prompt for a password. Never shown on the phone.
@@ -4727,26 +4771,13 @@ function buildLuaPanel() {
   return wrap;
 }
 // 📋: the Lua sheet to the clipboard (whether or not it's currently loaded in
-// the composer). navigator.clipboard needs a secure context, which the phone
-// (plain http) doesn't have — fall back to a temporary selection there.
+// the composer). copyText() is the toast's, and it is the page's only way onto
+// the clipboard: navigator.clipboard needs a secure context, which the phone
+// (plain http) doesn't have, and one place knows to fall back there.
 function copySheet() {
   const text = castSlot === "lua" && castInput ? castInput.value : luaSheet;
   if (!text) return;
-  const done = () => luaFlash("📋 " + (T["tui.cast.lua.copied"] || "Copied"));
-  const fallback = () => {
-    try {
-      const tmp = el("textarea", {style:"position:fixed;left:-9999px;top:0"});
-      tmp.value = text;
-      document.body.append(tmp);
-      tmp.select();
-      document.execCommand("copy");
-      tmp.remove();
-      done();
-    } catch (e) {}
-  };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(done, fallback);
-  } else { fallback(); }
+  copyText(text).then(() => luaFlash("📋 " + (T["tui.cast.lua.copied"] || "Copied")));
 }
 // A recorded step arrived (window: eval'd in; phone: over /ws-state). It goes
 // on the Lua sheet (shown in ▶ run mode); while ⏺ recording, the panel's hint

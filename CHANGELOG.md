@@ -8,6 +8,17 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Changed
+- **The phone QR hands the link over instead of printing it.** Under the code
+  there used to be the address with its token stripped off — safe to look at,
+  and useless: nothing opens with it. In its place are the two things worth
+  pressing. 📋 puts the real link, token and all, on the clipboard, which is how
+  you reach a phone that cannot photograph the screen it is on. Beside it a
+  badge says which network that link leads to: green for Tailscale, amber with a
+  warning mark for the home LAN, because "who else can use this" is the one
+  thing about an address that a person cannot read off the digits. Both the
+  board's overlay (`Ctrl+B 0` → `i`) and the settings screen.
+
 ## [0.5.1] - 2026-09-03
 
 The program stopped needing the Visual C++ Redistributable. It was never

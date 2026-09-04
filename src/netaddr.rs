@@ -65,6 +65,74 @@ pub fn resolve_bind(spec: &str, allow_public: bool) -> Result<(Ipv4Addr, Option<
     Ok((ip, None))
 }
 
+/// The host out of one of our own `http://ip:port/…` URLs, without the port.
+/// Written here rather than reached for from a URL crate because the only
+/// inputs are the links this app builds itself.
+pub fn url_host(url: &str) -> String {
+    let after = url.split("://").nth(1).unwrap_or(url);
+    let hostport = after.split('/').next().unwrap_or("");
+    match hostport.rsplit_once(':') {
+        Some((h, _)) => h.to_string(),
+        None => hostport.to_string(),
+    }
+}
+
+/// Which network a connection link leads to.
+///
+/// This is the one fact about the address a person needs before handing the
+/// link to anybody, so both screens that show a link (the board's phone
+/// overlay, the settings card) say it — and they say it from here, because two
+/// opinions about what counts as private is how one of them ends up wrong.
+pub fn url_kind(url: &str) -> &'static str {
+    let Ok(ip) = url_host(url).parse::<Ipv4Addr>() else {
+        return "unknown";
+    };
+    if is_tailscale(&ip) {
+        "tailscale"
+    } else if ip.is_loopback() {
+        "local"
+    } else if ip.is_private() || ip.is_link_local() {
+        "lan"
+    } else {
+        "public"
+    }
+}
+
+/// A stand-in pairing link, for the one screen that cannot be photographed as
+/// it stands.
+///
+/// The phone screens show this machine's own address, and the QR carries the
+/// token that opens it — a picture of that, published anywhere, is a picture of
+/// a door and its key. When `data\demo-remote` holds a URL, every screen that
+/// offers the link uses that one instead, so a promotional shot has nothing
+/// real in the frame. The announce shooter writes the file; an installation
+/// somebody is actually using has no reason to have one.
+pub fn demo_link() -> Option<String> {
+    demo_link_from(&std::fs::read_to_string(crate::config::state_path("demo-remote")).ok()?)
+}
+
+/// One line with no blanks in it, or the file counts as absent. An empty file
+/// is how the shooter turns the stand-in off again, and a URL with a space in
+/// it would go into a QR code nobody can scan.
+fn demo_link_from(raw: &str) -> Option<String> {
+    let url = raw.trim();
+    (!url.is_empty() && url.len() < 400 && !url.contains(char::is_whitespace))
+        .then(|| url.to_string())
+}
+
+/// The pairing link a screen should show, and the network it is presented as
+/// being on. Both answers come from here so the board's overlay, the phone and
+/// the settings card cannot disagree about either.
+///
+/// A stand-in is presented as the safe case: the picture is meant to be of the
+/// feature, not of a warning about a network nobody is on.
+pub fn shown_link(url: &str) -> (String, &'static str) {
+    match demo_link() {
+        Some(demo) => (demo, "tailscale"),
+        None => (url.to_string(), url_kind(url)),
+    }
+}
+
 /// QR code (SVG) shown on the settings screen, for scanning with a phone
 /// camera.
 pub fn qr_svg(text: &str, scale: u32) -> String {
@@ -142,6 +210,29 @@ mod tests {
                 assert!(note.is_none(), "Tailscaleなら注意書きは不要");
             }
         }
+    }
+
+    /// The badge under a QR code is the whole answer to "who else can reach
+    /// this", so every address family has to land in the right word.
+    #[test]
+    fn a_link_says_which_network_it_leads_to() {
+        assert_eq!(url_host("http://100.64.0.1:8787/?t=abc"), "100.64.0.1");
+        assert_eq!(url_kind("http://100.101.5.7:8787/?t=abc"), "tailscale");
+        assert_eq!(url_kind("http://192.168.0.4:8787/?t=abc"), "lan");
+        assert_eq!(url_kind("http://10.1.2.3:8787/?t=abc"), "lan");
+        assert_eq!(url_kind("http://127.0.0.1:8787/?t=abc"), "local");
+        assert_eq!(url_kind("http://8.8.8.8:8787/?t=abc"), "public");
+        // Nothing to show beats a guess: the screens draw no badge for these
+        assert_eq!(url_kind(""), "unknown");
+        assert_eq!(url_kind("http://nas.local:8787/"), "unknown");
+    }
+
+    /// The stand-in is off unless a file says so, and says so cleanly.
+    #[test]
+    fn a_blank_stand_in_leaves_the_real_link_alone() {
+        assert_eq!(demo_link_from("http://8.8.8.8/\n").as_deref(), Some("http://8.8.8.8/"));
+        assert_eq!(demo_link_from("  \n "), None, "空のファイルは無効");
+        assert_eq!(demo_link_from("http://8.8.8.8/ と書いた"), None, "空白入りは QR にならない");
     }
 
     #[test]
