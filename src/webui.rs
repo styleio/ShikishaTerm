@@ -5143,17 +5143,8 @@ function tabPane(ws, t) {
       setCommand(t, cmdInput, CAT_START[v] || ""); rebuild();
     }));
   rebuild();
-  const launch = card(T["settings.tab.launch"], cmdRow, detailBox,
-    row(T["settings.tab.command"], cmdInput), real.box);
-  if ((ws.folders || []).length > 1) {
-    // Through a holder, because a select speaks strings and a group is a number
-    launch.append(row(T["settings.tab.folder"],
-      choose({at: String(t.group || 0)}, "at",
-             ws.folders.map((g, i) => [String(i), folderLabel(g, i)]),
-             v => { sel.tab = setTabGroup(ws, sel.tab, Number(v)); render(); refreshSave(); }),
-      el("span", {class:"hint"}, T["settings.tab.folder.hint"])));
-  }
-  box.append(launch);
+  box.append(card(T["settings.tab.launch"], cmdRow, detailBox,
+    row(T["settings.tab.command"], cmdInput), real.box));
 
   // Notify on answer: a beginner-friendly way to get a Slack/Telegram ping when
   // this tab's AI finishes, without writing on_done Lua. Lists the destinations
@@ -5192,7 +5183,17 @@ function tabPane(ws, t) {
     el("div", {class:"row"}, el("label", {}, T["settings.tab.behavior"]),
        check(t, "locked", T["settings.tab.locked"]),
        check(t, "auto_restart", T["settings.tab.auto_restart"]),
-       check(t, "log", T["settings.tab.log"])),
+       check(t, "log", T["settings.tab.log"])));
+  // Which folder this tab sits in. Same family as the order buttons below — both
+  // decide where the tab sits — so they stay together. Only offered when there is
+  // more than one folder. Through a holder, because a select speaks strings and a group is a number
+  if ((ws.folders || []).length > 1)
+    det.append(row(T["settings.tab.folder"],
+      choose({at: String(t.group || 0)}, "at",
+             ws.folders.map((g, i) => [String(i), folderLabel(g, i)]),
+             v => { sel.tab = setTabGroup(ws, sel.tab, Number(v)); render(); refreshSave(); }),
+      el("span", {class:"hint"}, T["settings.tab.folder.hint"])));
+  det.append(
     el("div", {class:"row"}, el("label", {}, T["settings.tab.order"]),
        el("button", {class:"quiet", onclick:() => moveTab(ws, -1)}, T["settings.tab.move_up"]),
        el("button", {class:"quiet", onclick:() => moveTab(ws, 1)}, T["settings.tab.move_down"]),
