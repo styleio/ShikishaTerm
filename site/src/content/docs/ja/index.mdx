@@ -21,11 +21,13 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-<p style="text-align:center;margin:0 0 1.2em">
-  <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0">
-    <img alt="Microsoft Store から入手" src="https://get.microsoft.com/images/ja%20dark.svg" height="64" style="height:64px" />
+<div style="display:flex;flex-direction:column;align-items:center;gap:.6em;margin:0 0 1.4em;text-align:center">
+  <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0" style="display:inline-block;line-height:0">
+    <img alt="Microsoft Store から入手" src="https://get.microsoft.com/images/ja%20dark.svg"
+         style="height:64px;width:auto;max-width:100%" />
   </a>
-</p>
+  <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0"><strong>インストールはこちら（Microsoft Store）</strong></a>
+</div>
 
 **APIキーは不要** — すでにログイン済みのAI CLIをそのまま動かします。Store 版は Microsoft が
 署名していて自動で更新されます。[持ち運べる zip](https://github.com/styleio/ShikishaTerm/releases/latest)
