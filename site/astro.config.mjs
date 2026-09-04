@@ -17,9 +17,14 @@ export default defineConfig({
         root: { label: "English", lang: "en" },
         ja: { label: "日本語", lang: "ja" },
       },
-      // 見出しに出るのは高さ32px程度なので、文字入りのロゴではなく指揮者の手だけ。
-      // 題字は replacesTitle: false のまま横に添える
-      logo: { src: "./src/assets/mark.png", alt: "SHIKISHA-TERM" },
+      // 見出しに出るのは高さ32px程度なので、文字入りのロゴではなくアプリと同じ
+      // アイコン (assets/icon.ico と同じ絵)。題字は replacesTitle: false のまま横に添える。
+      //
+      // ファイル名が mark.png から変わっているのは、Cloudflare Pages のビルド
+      // キャッシュが古い画像を出し続けたため (2026-09-04)。中身を差し替えた
+      // コミットで public/ の favicon は新しくなったのに、src/assets を通る
+      // これだけが古いハッシュのまま公開された。名前を変えると確実に作り直る
+      logo: { src: "./src/assets/app-icon.png", alt: "SHIKISHA-TERM" },
       favicon: "/favicon.ico",
       head: [
         // SNSに貼られたときのカード。og:image は絶対URLでないと拾われない
