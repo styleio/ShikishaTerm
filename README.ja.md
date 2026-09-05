@@ -45,7 +45,7 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 **Microsoft Store から入れる** — [ストアのページ](https://apps.microsoft.com/detail/9PB8XQVM87Z0)。Store 版は Microsoft が署名して
 いるので、セキュリティの警告を押し進める必要がなく、更新も自動で届きます。
 
-**インストールしたくなければ、持ち運べる版があります:**
+**インストールしたくなければ、ポータブル版があります:**
 
 1. [Releases](https://github.com/styleio/ShikishaTerm/releases/latest) から `SHIKISHA-TERM.zip` を落とす
 2. 好きな場所に展開する（USBメモリでも同期フォルダでも動きます）
