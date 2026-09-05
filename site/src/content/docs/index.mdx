@@ -31,6 +31,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <span style="opacity:.66;font-size:.9em">
     Windows 10/11 · free · or take the
     <a href="https://github.com/styleio/ShikishaTerm/releases/latest">portable zip</a>
+    <br />(the zip is unsigned, so Windows shows a warning the first time — <a href="#the-warning-on-the-zip-and-how-you-can-remove-it">here is why</a>)
   </span>
 </div>
 
@@ -167,8 +168,30 @@ trying to become your editor.
 
 The Store copy is signed by Microsoft, shows no warning and updates itself. The zip is the
 same build with nothing installed — unzip it, run it, delete the folder to remove it — but
-Windows will warn about it once, because it is not code-signed.
+**Windows will warn about it the first time**, because it is not code-signed. See below for
+what that looks like and how it goes away.
 </details>
+
+## The warning on the zip, and how you can remove it
+
+The first time you run the unzipped copy, Windows says **"Windows protected your PC"**.
+That is SmartScreen, and it is alarming if nobody warned you — so, warning you: it is
+expected, and **More info → Run anyway** gets past it. It appears because the zip carries
+no code-signing certificate, not because anything is wrong with the file. Every release is
+built by public GitHub Actions from a tagged commit, and a SHA256 sits next to the download
+so you can check the bytes you got are the bytes that were built.
+
+**The Store copy does not show it at all** — Microsoft signs that one.
+
+Making it disappear from the zip too means a code-signing certificate.
+[SignPath Foundation](https://signpath.org/) issues them to open source projects for free,
+and for programs like this one they ask for *"a certain verifiable reputation"* before
+putting their own name behind a certificate. For a project on GitHub, the most legible form
+that reputation takes is stars.
+
+So if this is useful to you: **[star it on GitHub](https://github.com/styleio/ShikishaTerm)**.
+It is the one thing a stranger can do in a second that makes a signed build likelier — for
+everyone who downloads the zip after you.
 
 ---
 
