@@ -47,6 +47,12 @@ shift
 goto collect_loop
 
 :build
+rem Microsoft's newer ConPTY, fetched once and verified against a pinned hash.
+rem Without it the terminal falls back to the one in Windows, which is slower
+rem and drops part of what programs send -- and says nothing about it. A
+rem failure here is not fatal: you get a warning and the older engine.
+powershell -NoProfile -ExecutionPolicy Bypass -File "tools\conpty.ps1"
+
 cargo build %FLAGS%
 if errorlevel 1 exit /b 1
 
@@ -71,9 +77,12 @@ if errorlevel 1 (
   exit /b 1
 )
 copy /y "Settings.cmd" "run\" >nul
-xcopy /y /e /i /q "lang" "run\lang" >nul
-xcopy /y /e /i /q "profiles" "run\profiles" >nul
-xcopy /y /e /i /q "docs" "run\docs" >nul
+rem What travels with the exe is dist.list's to decide -- the same list the
+rem release build and build.rs read. This file used to name lang, profiles and
+rem docs itself, which is exactly the arrangement that let conpty.dll reach the
+rem download and not the machine it was developed on.
+powershell -NoProfile -ExecutionPolicy Bypass -File "tools\stage.ps1" -Dest "run" >nul
+if errorlevel 1 exit /b 1
 
 rem Your own data is never overwritten
 if not exist "run\config.json" copy /y "config.example.json" "run\config.json" >nul

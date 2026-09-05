@@ -1780,6 +1780,28 @@ fn handle(
                 "signed_in": crate::pr::signed_in(),
             })))?;
         }
+        // What this machine already offers to open a tab on: the installed WSL
+        // distributions and the hosts in the person's own ssh config. Both were
+        // things the settings screen asked people to type from memory
+        ("GET", "/api/discover") => {
+            req.respond(json_resp(serde_json::json!({
+                "wsl": crate::discover::wsl_distros(),
+                "ssh": crate::discover::ssh_hosts(),
+            })))?;
+        }
+        // Which pseudo console the terminals are running on. There is nothing
+        // to set: what decides it is whether the file shipped, so this reports
+        // and the download fixes. It is here at all because both ways of
+        // falling back to Windows' older one are completely silent
+        ("GET", "/api/conpty") => {
+            let r = crate::conpty::report();
+            req.respond(json_resp(serde_json::json!({
+                "bundled": r.bundled,
+                "version": r.version,
+                "path": r.path.display().to_string(),
+                "missing": r.missing.map(|m| m.id()),
+            })))?;
+        }
         // Every action the window has, with the key it answers to right now.
         // The names are the app's own, so the settings screen never has its
         // own idea of what this program can do
@@ -2640,6 +2662,43 @@ function field(obj, key, ph, opts = {}) {
   i.value = obj[key] ?? "";
   i.addEventListener("input", () => { obj[key] = i.value; if (opts.onInput) opts.onInput(i.value); });
   return i;
+}
+// Names this machine already knows: the installed WSL distributions, the hosts
+// in the person's own ssh config.
+//
+// Asked for once and shared, because the answer costs a child process and does
+// not change while a settings screen is open.
+let SUGGEST = null;
+function suggestions() {
+  if (!SUGGEST) {
+    SUGGEST = fetch("/api/discover", {headers:{"X-Token":TOKEN}})
+      .then(r => r.json()).catch(() => ({}));
+  }
+  return SUGGEST;
+}
+// Hang a suggestion list off a text field.
+//
+// A list and not a menu, deliberately. Everything the machine knows about is
+// one keystroke away instead of being typed from memory -- which is the whole
+// point, since a distribution name recalled wrongly is a tab that fails to
+// start and a command line that looks right. But a menu would also be a claim
+// that the list is complete, and it never is: the distribution installed a
+// minute ago is not in it, and neither is the host that lives in somebody's
+// head. So typing still works, and typing something not on the list is not an
+// error.
+function suggest(input, key) {
+  let list = document.getElementById("sug-" + key);
+  if (!list) {
+    // One per kind, kept on the page: the cards are rebuilt as a person walks
+    // through them, and a new list per rebuild would pile up unseen.
+    list = el("datalist", {id:"sug-" + key});
+    document.body.append(list);
+    suggestions().then(j => {
+      for (const v of (j[key] || [])) list.append(el("option", {value:v}));
+    });
+  }
+  input.setAttribute("list", list.id);
+  return input;
 }
 function check(obj, key, label) {
   const i = el("input", {type:"checkbox"});
@@ -3604,6 +3663,8 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.restore_ws.hint"])),
     row(T["settings.tui_clipboard"], checkDefaultOn(current, "tui_clipboard", T["settings.tui_clipboard.label"]),
         el("span", {class:"hint"}, T["settings.tui_clipboard.hint"])),
+    row(T["settings.conpty"], conptyState(),
+        el("span", {class:"hint"}, T["settings.conpty.hint"])),
     row(T["settings.ai_engine"], aiSelect(),
         el("span", {class:"hint", id:"aihint"}, "")),
     row(T["settings.browser_data"],
@@ -3642,6 +3703,29 @@ function basicCard() {
           ["en", "English"],
         ]),
         el("span", {class:"hint"}, T["settings.language.hint"])));
+}
+// Which pseudo console the terminals are running on.
+//
+// Read-only, like the sign-in below it: there is no setting behind this. What
+// decides it is whether the file travelled with the program, so the only thing
+// a person can do about it is get the program again -- and the only reason
+// this row exists is that being on the older one looks exactly like being on
+// the newer one, right up until a program's output arrives wrong.
+function conptyState() {
+  const out = el("span", {class:"hint"}, "…");
+  (async () => {
+    let j;
+    try { j = await (await fetch("/api/conpty", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    if (j.bundled) {
+      out.textContent = T["settings.conpty.on"] + (j.version ? " (" + j.version + ")" : "");
+      out.classList.remove("warn");
+      return;
+    }
+    out.textContent = T["settings.conpty.off." + j.missing] || T["settings.conpty.off"];
+    out.classList.add("warn");
+  })();
+  return out;
 }
 // Whether pull request numbers can be shown, and why not when they cannot.
 //
@@ -5508,16 +5592,17 @@ function kindPanel(t, cmdInput, rebuild) {
   const sync = (build, o) => () => {
     setCommand(t, cmdInput, build(o));
   };
-  const f = (obj, key, label, ph, upd, w) => {
+  const f = (obj, key, label, ph, upd, w, sug) => {
     const i = el("input", {type:"text", placeholder:ph, class:"mono"});
     if (w) i.style.width = w + "px";
     i.value = obj[key] || "";
     i.addEventListener("input", () => { obj[key] = i.value.trim(); upd(); });
+    if (sug) suggest(i, sug);
     return [el("label", {}, label), i];
   };
   if (ssh) {
     const upd = sync(buildSsh, ssh);
-    box.append(el("div", {class:"row"}, ...f(ssh, "host", T["settings.ssh.host"], "example.com", upd, 240),
+    box.append(el("div", {class:"row"}, ...f(ssh, "host", T["settings.ssh.host"], "example.com", upd, 240, "ssh"),
       el("label", {class:"beside"}, T["settings.phone.port"]),
       (() => { const i = el("input", {type:"text", class:"mono", style:"width:70px"});
                i.value = ssh.port || ""; i.placeholder = "22";
@@ -5658,7 +5743,7 @@ function kindPanel(t, cmdInput, rebuild) {
     const o = dk || wsl, upd = sync(dk ? buildDocker : buildWsl, o);
     box.append(el("div", {class:"row"},
       ...(dk ? f(o, "container", T["settings.container.name"], "myapp", upd, 200)
-             : f(o, "distro", T["settings.container.distro"], "Ubuntu", upd, 200)),
+             : f(o, "distro", T["settings.container.distro"], "Ubuntu", upd, 200, "wsl")),
       ...f(o, "dir", T["settings.container.dir"], "/home/me/proj", upd, 220)));
     box.append(el("div", {class:"row"},
       ...f(o, "shell", T["settings.container.shell"], "bash / claude", upd, 220),

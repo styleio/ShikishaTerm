@@ -8,7 +8,43 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **The newer ConPTY travels with the program.** Windows carries two pseudo
+  consoles. The one in the box parses what a program writes into a text buffer
+  and re-renders a picture of that buffer into our pipe; the newer one, which
+  Microsoft distributes signed and under MIT, copies the bytes through
+  untouched. Measured here, on Windows 10.0.26200: the older one drops kitty
+  graphics and Sixel entirely, rewrites the parameters and terminator of an
+  OSC 8 hyperlink, reorders escape sequences against the text around them, and
+  spends 286ms and 2.93MB where the newer one spends 119ms and 2.17MB on the
+  same ten thousand lines of Japanese. Its output is not even the same twice.
+  `conpty.dll` and `OpenConsole.exe` now ship beside the executable, pinned by
+  hash and never re-signed by us, and the terminal picks them up with no code
+  of ours involved. The settings screen says which one is in use, because both
+  ways of ending up on the older one — a download that arrived without the
+  files, and one file arriving without the other — are otherwise silent.
+- **The settings screen offers what this machine already has.** A WSL tab asked
+  for a distribution name typed into a box whose placeholder said "Ubuntu", and
+  an SSH tab asked for a host name the same way; one wrong letter made a tab
+  that fails to start with a command line that looks right. Both lists are
+  already written down on the machine — `wsl.exe` knows what is installed and
+  `~/.ssh/config` knows what has been connected to — so both are now offered as
+  suggestions. Suggestions, not a menu: a distribution installed a minute ago is
+  not in the list, and typing still works.
+
 ### Fixed
+- **A progress bar is no longer read as a message.** A program reporting how far
+  along it is sends the same escape sequence as one sending a notification, with
+  a number in front. That number was being read as the message: a tab would say
+  "4;1;50" on screen, hand it to the automation, and send it to whatever phone
+  the notification settings pointed at — once per percent, for the length of the
+  job. Progress is now told apart from a sentence.
+- **Closing a tab closes what the tab started.** Killing the program a tab
+  launched has never reached what that program launched: a `.cmd` shim is a
+  `cmd.exe` holding a `node`, and killing the shim left the node running, with
+  the folder still open, visible only in Task Manager. Every tab now owns a job
+  object, so its whole tree ends together — when the tab closes, when it is
+  restarted, and if this program dies without getting the chance to tidy up.
 - **The app wears its own icon, whole.** The window never said which icon it
   wanted, so the title bar and Alt+Tab drew Windows' default grey window shape
   while the taskbar went and found the one in the exe — two pictures for one
@@ -20,6 +56,20 @@ once it reaches its first tagged release.
   gone at 16.
 
 ### Changed
+- **A tab that is not sending UTF-8 says so.** The characters came out wrong and
+  nothing else happened: the program was fine, the terminal was fine, and the
+  one setting that fixes it is the one nobody knows to look for. A tab now says
+  what happened once, and names the encoding this machine most likely meant.
+  It is a sentence, not a switch — re-decoding on a guess would be wrong the
+  moment a program really did send something that is not text.
+- **A tab with no folder of its own follows its shell.** A shell that announces
+  where it is working (`OSC 7`, or ConEmu's spelling of it) is now understood,
+  including from inside WSL, where `/mnt/d/work` is this machine's `D:\work` and
+  `/home/me` is reachable only through `\\wsl.localhost\`. A folder somebody set
+  still wins, and a `cd` typed inside a tab does not move the tab; what changes
+  is where a file dropped from a phone lands when nobody set one — which used to
+  be whatever folder this program happened to be running from. A directory
+  announced from the far end of an ssh session is not treated as a place here.
 - **The phone QR hands the link over instead of printing it.** Under the code
   there used to be the address with its token stripped off — safe to look at,
   and useless: nothing opens with it. In its place are the two things worth

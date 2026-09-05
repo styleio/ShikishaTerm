@@ -22,6 +22,11 @@ logs/
 # 開発中の実行フォルダ (Dev.cmd が作る。利用者の設定が入る)
 run/
 
+# Microsoft の ConPTY 再頒布物 (tools/conpty.ps1 が取得する)。
+# ハッシュは packaging/conpty/redist.json に固定してあるので、リポジトリが
+# バイナリを抱える必要はない。vendor/ の他 (vt100) はソースなので追跡する
+/vendor/conpty/
+
 
 
 

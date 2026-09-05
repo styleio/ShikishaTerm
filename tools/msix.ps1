@@ -95,6 +95,18 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 # launches the exe by path, and an installed copy is started from the Start menu.
 Remove-Item (Join-Path $stage 'Settings.cmd') -ErrorAction SilentlyContinue
 
+# ...and the two files that decide how the terminal behaves have to be there.
+# They travel like everything else, through dist.list, but unlike everything
+# else their absence says nothing at run time: the program falls back to the
+# ConPTY in Windows and keeps working, only slower and dropping part of what
+# programs send. A Store copy that lost them would look identical to one that
+# did not, so it is checked here rather than noticed later.
+foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
+    if (-not (Test-Path (Join-Path $stage $f))) {
+        throw "$f is missing from the payload -- run tools/conpty.ps1, then build again"
+    }
+}
+
 Copy-Item (Join-Path $root 'packaging\msix\Assets') $stage -Recurse -Force
 
 # Escaped on the way in. A publisher display name is a company's real name and

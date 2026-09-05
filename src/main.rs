@@ -24,15 +24,18 @@ mod browser;
 mod browserstate;
 mod caps;
 mod config;
+mod conpty;
 mod crypto;
 mod detect;
 mod digest;
+mod discover;
 mod exchange;
 mod folders;
 mod git;
 mod grants;
 mod hooks;
 mod i18n;
+mod job;
 mod lastsession;
 mod keys;
 mod layout;
@@ -54,6 +57,7 @@ mod vault;
 mod uistate;
 mod update;
 mod watch;
+mod winpath;
 mod ws;
 mod webui;
 mod worktree;
@@ -171,6 +175,19 @@ fn main() -> Result<()> {
         let url = std::env::args().nth(2).unwrap_or_else(|| "https://example.com/".into());
         return cast_test(&url);
     }
+
+    // Which pseudo console this run got, written down before the first tab
+    // opens. Both ways of ending up on the older one are silent -- a download
+    // that arrived without the file, and the file arriving without the program
+    // it starts -- so this line is where that silence gets a sentence.
+    append_hook_log(&conpty::report().line());
+
+    // Ask what WSL distributions are installed, once, on a thread of its own.
+    // A shell inside one announces its folder by the distribution's name, and
+    // the only way to tell that name from a machine at the end of an ssh
+    // session is to know what is installed here. Asking on the thread that
+    // reads a tab's output would stop that tab for as long as wsl.exe takes.
+    discover::learn_wsl_distros();
 
     // Running it pops up the window. Only add a launcher in front when there's a reason to.
     run_in_window()
@@ -2900,6 +2917,29 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // something newer replaces it. The toast is the part that is held
             // back when the person is already looking at that tab — telling
             // someone what is in front of them is noise, not news
+            // Output that is not UTF-8, said once per tab.
+            //
+            // The characters go wrong on screen and nothing else happens: the
+            // program is fine, the terminal is fine, and the one setting that
+            // would fix it is the one nobody knows to look for. So the tab says
+            // what happened and which encoding this machine most likely meant.
+            // It is a sentence, not a switch -- guessing and re-decoding by
+            // ourselves would be wrong the moment a program really did send
+            // something that is not text.
+            for i in 0..tabs.len() {
+                let Some(t) = tabs.get_mut(i) else { continue };
+                if !t.take_not_utf8() {
+                    continue;
+                }
+                let said = match crate::discover::legacy_console_encoding() {
+                    Some((name, _)) => i18n::tp("msg.encoding.not_utf8", &[("enc", name)]),
+                    None => i18n::t("msg.encoding.not_utf8.plain"),
+                };
+                append_hook_log(&format!("tab{} is not UTF-8", i + 1));
+                t.set_status("notify", &said);
+                flash = Some(format!("{} — {said}", t.title));
+            }
+
             let mut fired_notes: Vec<(usize, String)> = Vec::new();
             for i in 0..tabs.len() {
                 let showing = session_at(&surfaces, active) == Some(i);
@@ -7665,10 +7705,19 @@ fn percent_encode(s: &str) -> String {
 /// The tab's working folder as an absolute path string, for attachments. Falls
 /// back to the app's own working folder when the tab has none configured.
 fn tab_cwd_abs(t: &Tab) -> String {
+    // Where somebody put this tab is where it belongs, and a `cd` typed inside
+    // it does not move it. But for a tab nobody gave a folder, what the shell
+    // in it says about itself beats the only other answer there was -- the
+    // folder this program happens to be running from, which is a place a file
+    // dropped from a phone had no business landing in.
+    let reported = || {
+        let r = t.reported_cwd();
+        (!r.is_empty()).then(|| std::path::PathBuf::from(r))
+    };
     let abs = match t.cwd().map(std::path::Path::to_path_buf) {
         Some(p) if p.is_absolute() => Some(p),
         Some(p) => std::env::current_dir().ok().map(|c| c.join(p)),
-        None => std::env::current_dir().ok(),
+        None => reported().or_else(|| std::env::current_dir().ok()),
     };
     abs.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }

@@ -23,6 +23,21 @@ profiles/*.json
 # it that half the commands do not exist
 docs/AUTOMATION*.md
 
+# --- Placed beside the exe itself, with no folder around them --------------
+# Same rule as above, except that the folder structure is dropped: these have
+# to sit next to the executable, because that is where Windows looks for them.
+[beside-exe-flat]
+# Microsoft's newer ConPTY. Windows' own is still the older design that parses
+# the child's output into a text buffer and re-renders it at us: it drops whole
+# sequences, rewrites others, and spends more than twice as long doing it.
+# portable-pty loads a conpty.dll found here in preference to the system one
+# with no help from our code, so these two files ARE the feature -- lose them
+# and the terminal silently gets slower and less correct. conpty.dll starts
+# OpenConsole.exe, so neither travels without the other.
+# tools/conpty.ps1 fetches them (hash-pinned); vendor/conpty is gitignored.
+vendor/conpty/conpty.dll
+vendor/conpty/OpenConsole.exe
+
 # --- Carried by the download only -----------------------------------------
 # Nothing here is read by the app; it is what makes an unzipped folder usable.
 [package]

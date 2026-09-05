@@ -46,6 +46,50 @@ has used.
 Rebuild it with tools/notices.ps1.
 '@
 
+# Not everything in the download is built from source. conpty.dll and
+# OpenConsole.exe are Microsoft's own binaries, shipped beside the executable
+# exactly as they were signed (see packaging/conpty/redist.json), and MIT asks
+# the same thing of a binary as of source: that its notice travels with it.
+#
+# Written here rather than discovered, because cargo-about reads Cargo.lock and
+# these are not a crate. It is a constant so that -Check keeps comparing the
+# same text on every machine.
+$bundled = @'
+
+================================================================================
+MIT License
+================================================================================
+
+Applies to:
+  * conpty.dll and OpenConsole.exe, from the NuGet package
+    Microsoft.Windows.Console.ConPTY, shipped unmodified beside the executable
+    https://github.com/microsoft/terminal
+
+--------------------------------------------------------------------------------
+
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+'@
+
 # The program is not a third party to itself. cargo-about counts the crate it
 # was pointed at like any other, which put SHIKISHA-TERM in its own notices
 # under a canonical MIT text reading "Copyright (c) <year> <copyright holders>"
@@ -169,6 +213,7 @@ try {
 
     $out = [System.Text.StringBuilder]::new()
     [void]$out.AppendLine($header)
+    [void]$out.AppendLine($bundled)
     foreach ($s in (Sort-Ordinal $ordered { param($x) $x.Key })) {
         if ($s.Text -match '(?m)^@@') {
             throw "the text of $($s.Name) contains a marker this script parses by"
