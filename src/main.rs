@@ -9499,11 +9499,11 @@ mod tests {
 
     /// What gets handed out is written down once, and everyone reads that.
     ///
-    /// Four things distribute this app and each used to carry its own list. They
-    /// drifted without a sound: the deploy hook was copying the wording files and
-    /// nothing else, so the detection profiles and the automation manual never
-    /// reached the test machine at all, and no one could have noticed. A payload
-    /// that is named once cannot arrive in some places and not others.
+    /// Several things distribute this app and each used to carry its own list.
+    /// They drifted without a sound: one copier was carrying the wording files
+    /// and nothing else, so the detection profiles and the automation manual
+    /// never reached a test machine at all, and no one could have noticed. A
+    /// payload that is named once cannot arrive in some places and not others.
     #[test]
     fn one_list_says_what_gets_handed_out() {
         let list = include_str!("../dist.list");

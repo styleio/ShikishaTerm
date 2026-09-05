@@ -1,7 +1,7 @@
 # What gets handed out, and the only place it is written down.
 #
-# Four things distribute this app — build.rs (beside the dev exe), the deploy
-# hook and Deploy.cmd (the test machine), and release.yml (the download) — and
+# Several things distribute this app — build.rs (beside the dev exe), the
+# copiers that stage a test machine, and release.yml (the download) — and
 # they used to each carry their own list. They drifted, quietly: the hook was
 # copying lang and nothing else, and no one could see it. A payload named here
 # reaches every one of them; anything not named here reaches none.

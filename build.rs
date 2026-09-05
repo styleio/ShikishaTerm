@@ -48,8 +48,8 @@ fn main() {
         }
     }
 
-    // exe の隣に置くものは dist.list に書いてある。配る側 (ここ・Deploy.cmd・
-    // deploy-hook・release.yml) が各自リストを持っていた頃は、静かに食い違った
+    // exe の隣に置くものは dist.list に書いてある。配る側 (ここ・stage.ps1・
+    // release.yml) が各自リストを持っていた頃は、静かに食い違った
     for pattern in dist_patterns("beside-exe") {
         copy_beside_exe(&pattern, false);
     }
