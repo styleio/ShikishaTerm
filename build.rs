@@ -50,8 +50,11 @@ fn main() {
 
     // exe の隣に置くものは dist.list に書いてある。配る側 (ここ・Deploy.cmd・
     // deploy-hook・release.yml) が各自リストを持っていた頃は、静かに食い違った
-    for pattern in beside_exe_patterns() {
-        copy_beside_exe(&pattern);
+    for pattern in dist_patterns("beside-exe") {
+        copy_beside_exe(&pattern, false);
+    }
+    for pattern in dist_patterns("beside-exe-flat") {
+        copy_beside_exe(&pattern, true);
     }
 
     println!("cargo:rustc-env=BUILD_TIME={built}");
@@ -67,6 +70,9 @@ fn main() {
     println!("cargo:rerun-if-changed=lang");
     println!("cargo:rerun-if-changed=docs");
     println!("cargo:rerun-if-changed=profiles");
+    // tools/conpty.ps1 が後から置くこともある。見張っていないと、取得した
+    // 次のビルドで exe の隣に届かず、静かに in-box ConPTY のままになる
+    println!("cargo:rerun-if-changed=vendor/conpty");
 }
 
 /// コミットし直したらラベルも取り直す。
@@ -102,11 +108,11 @@ fn watch_git_head() {
     }
 }
 
-/// dist.list の [beside-exe] に並んだ `dir/pattern` を読む。
+/// dist.list の指定した節に並んだ `dir/pattern` を読む。
 ///
 /// わざと素朴な形式にしてある。同じファイルを PowerShell 側 (tools/stage.ps1)
 /// も読むので、両方にライブラリが要る形式にすると、いつか解釈がずれる
-fn beside_exe_patterns() -> Vec<String> {
+fn dist_patterns(section: &str) -> Vec<String> {
     println!("cargo:rerun-if-changed=dist.list");
     let Ok(text) = std::fs::read_to_string("dist.list") else {
         println!("cargo:warning=dist.list が読めません。exe の隣に何も配れません");
@@ -120,7 +126,7 @@ fn beside_exe_patterns() -> Vec<String> {
             continue;
         }
         if let Some(name) = t.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
-            in_section = name == "beside-exe";
+            in_section = name == section;
             continue;
         }
         if in_section {
@@ -135,9 +141,12 @@ fn beside_exe_patterns() -> Vec<String> {
 /// 隣に置かれたものは埋め込みより優先される。置きっぱなしにすると、
 /// 直したはずのものが動かしたものへ届かない
 ///
+/// `flat` は入れ物のフォルダを作らず exe と同じ階層へ置く指定。
+/// Windows が exe の隣しか見ないもの (conpty.dll) のためにある
+///
 /// OUT_DIR は target/<profile>/build/<pkg>-<hash>/out なので、
 /// 3つ上が exe の置き場になる
-fn copy_beside_exe(pattern: &str) {
+fn copy_beside_exe(pattern: &str, flat: bool) {
     let Ok(out) = std::env::var("OUT_DIR") else {
         return;
     };
@@ -149,7 +158,7 @@ fn copy_beside_exe(pattern: &str) {
         println!("cargo:warning=dist.list の書き方が読めません: {pattern}");
         return;
     };
-    let dest = dir.join(dir_name);
+    let dest = if flat { dir } else { dir.join(dir_name) };
     if std::fs::create_dir_all(&dest).is_err() {
         return;
     }

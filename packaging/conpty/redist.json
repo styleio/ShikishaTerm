@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "The ConPTY that ships beside the executable, pinned by hash.",
+    "",
+    "Windows' own in-box ConPTY is still the v1 design on every build we have",
+    "measured (including 10.0.26200): it parses the child's VT into a text",
+    "buffer and re-renders a snapshot into our pipe. That drops whole",
+    "sequences (APC, DCS), rewrites others (OSC 8 loses its parameters and its",
+    "terminator), reorders OSC against the text around it, and -- measured on",
+    "this project's own stack -- spends 286ms and 2.93MB where the v2",
+    "redistributable spends 119ms and 2.17MB for the same 10,000 lines of",
+    "Japanese, measured on this project's own stack.",
+    "",
+    "tools/conpty.ps1 downloads this package, checks every hash below, and",
+    "puts conpty.dll and OpenConsole.exe into vendor/conpty/. dist.list is what",
+    "then carries them to the exe. portable-pty loads a conpty.dll sitting",
+    "beside the executable in preference to the in-box one with no help from",
+    "us, so there is no Rust code behind this -- only the file being there.",
+    "",
+    "Both files are Microsoft's, signed by Microsoft, and MIT-licensed. We",
+    "never re-sign them. To raise the version: change every field here, run",
+    "tools/conpty.ps1 -Force, and check the new hashes are what came down."
+  ],
+  "schemaVersion": 1,
+  "packageId": "Microsoft.Windows.Console.ConPTY",
+  "version": "1.24.260710001",
+  "license": "MIT",
+  "projectUrl": "https://github.com/microsoft/terminal",
+  "nupkg": {
+    "url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/1.24.260710001/microsoft.windows.console.conpty.1.24.260710001.nupkg",
+    "sha256": "175640566a3b59c4b132070ee96c2c77e5ab7edd2e92732a5eb3610bbf63d90e"
+  },
+  "architectures": {
+    "x64": {
+      "conptyDll": {
+        "entryPath": "runtimes/win-x64/native/conpty.dll",
+        "sha256": "39fba2713e2495117b1591ae8c32a3b904bea7aa66069cf7815e2844c76d75d8"
+      },
+      "openConsoleExe": {
+        "entryPath": "build/native/runtimes/x64/OpenConsole.exe",
+        "sha256": "b7fd936c2668b87b9ecf7b3366dc6568afc1c6f981874cba3e955a1c35cf8160"
+      }
+    },
+    "arm64": {
+      "conptyDll": {
+        "entryPath": "runtimes/win-arm64/native/conpty.dll",
+        "sha256": "db3d173640b172bafd42d5b541b638a9aeec1c7d0e40dd636bf02822a32c912c"
+      },
+      "openConsoleExe": {
+        "entryPath": "build/native/runtimes/arm64/OpenConsole.exe",
+        "sha256": "ed7622fd0d3bedc9ab9f122f5e58edf0def9e7999224f52dd395ba9f54edbe09"
+      }
+    }
+  }
+}

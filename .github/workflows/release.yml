@@ -29,6 +29,15 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      # Microsoft's newer ConPTY, verified against the hashes pinned in
+      # packaging/conpty/redist.json. -Require because a release that quietly
+      # lost this is a release where every terminal got slower and started
+      # dropping sequences, with nothing anywhere to say why. It runs before
+      # the build so build.rs finds it and puts it beside the exe too.
+      - name: Fetch the bundled ConPTY
+        shell: pwsh
+        run: ./tools/conpty.ps1 -Require
+
       - name: Build
         run: cargo build --release --locked
 
@@ -50,6 +59,20 @@ jobs:
         run: |
           ./tools/stage.ps1 -Dest "dist/SHIKISHA-TERM" -Package `
                             -Exe "target/release/SHIKISHA-TERM.exe"
+
+      # stage.ps1 skips a pattern that matched nothing, because most of what it
+      # carries is optional. These two are not: without them the terminal falls
+      # back to the engine in Windows and says so only on a settings screen
+      # nobody opens when things merely feel slow. So the packing is checked
+      # here rather than trusted.
+      - name: The staged folder carries the ConPTY
+        shell: pwsh
+        run: |
+          foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
+            $p = "dist/SHIKISHA-TERM/$f"
+            if (-not (Test-Path $p)) { throw "$f did not reach the staged folder" }
+            Write-Host "$f  $((Get-Item $p).Length) bytes"
+          }
 
       - name: Zip
         shell: pwsh

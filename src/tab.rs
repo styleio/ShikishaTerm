@@ -166,6 +166,9 @@ pub struct QueryResponder {
     clipboard_writes: bool,
     /// What the program running here has asked the keyboard to report
     keyboard: KeyboardMode,
+    /// Where the shell says it is now. Empty until one says so, which most
+    /// never do -- announcing it takes shell integration nobody has set up
+    cwd: ReportedCwd,
 }
 
 /// (title, body) pairs waiting to be shown
@@ -173,6 +176,10 @@ pub type Notes = Arc<Mutex<Vec<(String, String)>>>;
 
 /// The window title a program set, shared with whoever wants to read it
 pub type WindowTitle = Arc<Mutex<String>>;
+/// Where the program in a tab says it is working, as a path this machine can
+/// open. Written by the callback, read by whoever needs a folder for a tab
+/// that was never given one
+pub type ReportedCwd = Arc<Mutex<String>>;
 
 /// What a program has asked the keyboard to report, kept where the key encoder
 /// can read it. Zero is the keyboard every terminal has always had.
@@ -260,6 +267,110 @@ fn title_of(params: &[&[u8]]) -> Option<String> {
     }
 }
 
+/// Watches a byte stream for the moment it stops being UTF-8.
+///
+/// Every tab decodes as UTF-8 unless it was told otherwise, and when that is
+/// wrong the screen fills with the wrong characters and says nothing about
+/// why. The setting that fixes it exists; knowing to reach for it is the part
+/// nobody has. So the stream is watched, and the first time it carries a
+/// sequence that cannot be UTF-8, the tab can say so and name the encoding
+/// this machine would have meant.
+///
+/// The whole difficulty is the seam between two reads. A three-byte character
+/// arriving as two and one is not broken UTF-8, and treating it as such would
+/// accuse every Japanese session of being mis-decoded within a second of
+/// starting. So the tail that could still be the beginning of something is
+/// carried over to the next read, which is exactly what a decoder does -- this
+/// one just does not keep the text.
+#[derive(Default)]
+pub struct Utf8Watch {
+    /// At most three bytes: the longest an unfinished character can be
+    carry: Vec<u8>,
+}
+
+impl Utf8Watch {
+    /// True when this read contains a sequence that cannot be UTF-8.
+    pub fn broken(&mut self, chunk: &[u8]) -> bool {
+        // Cheap path: with nothing carried over, the bytes can be judged where
+        // they lie. This runs on every read of every tab, so it allocates only
+        // when a character really did straddle the seam.
+        let joined: Vec<u8>;
+        let bytes: &[u8] = match self.carry.is_empty() {
+            true => chunk,
+            false => {
+                joined = self.carry.iter().copied().chain(chunk.iter().copied()).collect();
+                &joined
+            }
+        };
+        self.carry.clear();
+        match std::str::from_utf8(bytes) {
+            Ok(_) => false,
+            Err(e) => match e.error_len() {
+                // Ran out mid-character. Keep the piece and judge it next time
+                // What is carried can only be the start of one character, so
+                // it is three bytes at the very most and cannot accumulate
+                None => {
+                    self.carry.extend_from_slice(&bytes[e.valid_up_to()..]);
+                    false
+                }
+                Some(_) => true,
+            },
+        }
+    }
+}
+
+/// ConEmu's numbered sub-commands hiding inside OSC 9.
+///
+/// `\e]9;<n>;…` where `<n>` is a small number is ConEmu's structured form
+/// (4 = progress, 9 = working directory, and so on) rather than a message.
+/// A single part after the 9 can only be text -- nobody sends a bare
+/// sub-command with no argument -- so the shape is what tells them apart,
+/// not a list of numbers we would have to keep up to date.
+fn conemu_sub(params: &[&[u8]]) -> Option<u8> {
+    if params.len() < 3 {
+        return None;
+    }
+    let n = std::str::from_utf8(params[1]).ok()?.trim();
+    (n.len() <= 2 && n.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| n.parse().ok())
+        .flatten()
+}
+
+/// Where the program says it is working, out of the two escapes shells use to
+/// say so: `OSC 7` with a `file://` URI, and ConEmu's `OSC 9;9` with a path.
+///
+/// The answer is a path on this machine or nothing. A shell at the far end of
+/// an ssh session announces its directory just as eagerly as one here, and
+/// naming that path locally would be pointing at whatever happens to sit at
+/// the same place on this disk.
+fn cwd_of(params: &[&[u8]]) -> Option<String> {
+    let text = |b: &[u8]| String::from_utf8_lossy(b).to_string();
+    // A path may hold a semicolon, and the parser splits on those. Everything
+    // after the number is the payload, semicolons included.
+    let joined = |from: usize| {
+        params[from..]
+            .iter()
+            .map(|p| text(p))
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+    let said = match params.first().map(|p| text(p)).as_deref() {
+        Some("7") if params.len() > 1 => crate::winpath::from_osc7(&joined(1)),
+        Some("9") if conemu_sub(params) == Some(9) => crate::winpath::from_osc7(&joined(2)),
+        _ => None,
+    }?;
+    match said {
+        crate::winpath::Said::Here(p) => Some(p),
+        // A name we do not know is a machine we cannot open. Distributions are
+        // the exception, and the only reason this asks rather than assumes:
+        // "/srv/app on build-server" is not "\\wsl.localhost\build-server\srv\app",
+        // it is somewhere else entirely
+        crate::winpath::Said::Somewhere { host, path } => {
+            crate::discover::is_wsl_distro(&host).then(|| crate::winpath::in_distro(&host, &path))?
+        }
+    }
+}
+
 /// Read a notification out of an OSC sequence, in any of the three spellings
 /// terminals have settled on.
 ///
@@ -276,8 +387,20 @@ fn note_of(params: &[&[u8]]) -> Option<(String, String)> {
             .join(";")
     };
     match params.first().map(|p| text(p)).as_deref() {
-        // \e]9;body\a — the oldest and simplest: a body and nothing else
-        Some("9") if params.len() > 1 => Some((String::new(), joined(1))),
+        // \e]9;body\a — the oldest and simplest: a body and nothing else.
+        //
+        // ConEmu later crowded the same number with numbered sub-commands, and
+        // they travel: \e]9;4;1;50\a is a progress bar at 50%, which reaches us
+        // intact through ConPTY and used to arrive on screen as a notification
+        // reading "4;1;50" -- once per percent, forwarded to whatever phone the
+        // automation points at. So a numeric first part is read as one of those
+        // instead of as a sentence. Only 2 ("show this message") is something a
+        // person is meant to read; the rest are not notifications at all
+        Some("9") if params.len() > 1 => match conemu_sub(params) {
+            None => Some((String::new(), joined(1))),
+            Some(2) if params.len() > 2 => Some((String::new(), joined(2))),
+            Some(_) => None,
+        },
         // \e]777;notify;title;body\a
         Some("777") if params.len() > 2 && text(params[1]) == "notify" => {
             Some((text(params[2]), joined(3)))
@@ -360,6 +483,15 @@ impl vt100::Callbacks for QueryResponder {
         // being cleared, arrives here in pieces instead
         if let Some(title) = title_of(params) {
             self.store_title(title.as_bytes());
+            return;
+        }
+        // Where the shell moved to. Kept rather than acted on: it is the only
+        // honest answer to "where is this tab working" once somebody has typed
+        // cd, and it is what a tab with no folder of its own can fall back to
+        if let Some(cwd) = cwd_of(params) {
+            if let Ok(mut c) = self.cwd.lock() {
+                *c = cwd;
+            }
             return;
         }
         let Some(note) = note_of(params) else { return };
@@ -1069,6 +1201,42 @@ mod tests {
         assert_eq!(again, Some(found), "他に無ければ一周して同じ行に戻る");
     }
 
+    /// The seam between two reads is the whole difficulty: a Japanese session
+    /// splits characters across reads constantly, and calling that "not UTF-8"
+    /// would put a notice on every one of them.
+    #[test]
+    fn a_character_split_across_two_reads_is_still_utf8() {
+        let jp = "指揮者".as_bytes();
+        let mut w = super::Utf8Watch::default();
+        // Byte by byte is the worst case a real read can be
+        for i in 0..jp.len() {
+            assert!(!w.broken(&jp[i..i + 1]), "{i} バイト目で誤判定");
+        }
+        // ...and the same text arriving whole is fine too
+        let mut w = super::Utf8Watch::default();
+        assert!(!w.broken(jp));
+        assert!(!w.broken(b""));
+        assert!(!w.broken(b"plain ascii\r\n"));
+    }
+
+    #[test]
+    fn text_in_another_encoding_is_caught() {
+        // "指揮者" in Shift_JIS: no lead byte in it can begin a UTF-8 sequence
+        let sjis = [0x8Du8, 0x77, 0x8A, 0xF6, 0x8E, 0xD2];
+        let mut w = super::Utf8Watch::default();
+        assert!(w.broken(&sjis), "CP932 のバイト列は UTF-8 ではない");
+        // The same three bytes, one read at a time, are a character
+        let mut w = super::Utf8Watch::default();
+        assert!(!w.broken(&[0xE6]), "まだ途中かもしれない");
+        assert!(!w.broken(&[0x8C]));
+        assert!(!w.broken(&[0x87]), "ここで完成する (\u{6307})");
+        // A lead byte followed by another lead byte is not a seam; nothing can
+        // make those two into a character, so it is answered at once
+        let mut w = super::Utf8Watch::default();
+        assert!(!w.broken(&[0xE6]));
+        assert!(w.broken(&[0xE6]), "続きになれないバイトが来たら、そこで分かる");
+    }
+
     #[test]
     fn every_spelling_of_a_terminal_notification_is_understood() {
         let p = |parts: &[&str]| -> Option<(String, String)> {
@@ -1095,6 +1263,21 @@ mod tests {
         assert_eq!(p(&["0", "a window title"]), None);
         assert_eq!(p(&["777", "something-else", "x"]), None);
         assert_eq!(p(&["99", "i=1:d=0:"]), None);
+        // ConEmu's numbered sub-commands share OSC 9 with the plain message.
+        // A progress bar is not a sentence, and it arrives once per percent --
+        // reading it as one put "4;1;50" on screen and on somebody's phone
+        assert_eq!(p(&["9", "4", "1", "50"]), None, "進捗は通知ではない");
+        assert_eq!(p(&["9", "4", "0"]), None);
+        assert_eq!(p(&["9", "9", "C:\\work"]), None, "作業フォルダも通知ではない");
+        // ...except 2, which exists to put words in front of a person
+        assert_eq!(p(&["9", "2", "look at me"]), Some((String::new(), "look at me".into())));
+        // A body is still a body: one part can only be text, and text that
+        // happens to hold a semicolon is not a sub-command either
+        assert_eq!(p(&["9", "50"]), Some((String::new(), "50".into())));
+        assert_eq!(
+            p(&["9", "Build", "then retried"]),
+            Some((String::new(), "Build;then retried".into()))
+        );
     }
 
     /// Asking for the newer keyboard, in the bytes Claude Code really sends.
@@ -1132,6 +1315,7 @@ mod tests {
                 writer: Arc::clone(&replies),
                 bell: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 notes: Arc::new(Mutex::new(Vec::new())),
+                cwd: Arc::new(Mutex::new(String::new())),
                 window_title: Arc::new(Mutex::new(String::new())),
                 clipboard_writes: false,
                 keyboard: Arc::clone(&keyboard),
@@ -1196,6 +1380,7 @@ mod tests {
                 window_title: Arc::clone(&title),
                 clipboard_writes: false,
                 keyboard: Arc::new(Mutex::new(Vec::new())),
+                cwd: Arc::new(Mutex::new(String::new())),
             },
         );
 
@@ -1215,6 +1400,43 @@ mod tests {
         );
         p.process(b"\x07");
         assert_eq!(bell.load(std::sync::atomic::Ordering::Relaxed), 1, "ベルを数えていない");
+    }
+
+    /// The other half of the same path: a shell announcing where it moved to,
+    /// in the bytes it really sends, arriving in the slot the app reads.
+    #[test]
+    fn where_a_shell_says_it_is_arrives_where_it_is_read() {
+        use std::sync::{Arc, Mutex};
+        let cwd: super::ReportedCwd = Arc::new(Mutex::new(String::new()));
+        let notes: super::Notes = Arc::new(Mutex::new(Vec::new()));
+        let sink: super::PtyWriter = Arc::new(Mutex::new(Box::new(Vec::new())));
+        let mut p = vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            super::QueryResponder {
+                writer: sink,
+                bell: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                notes: Arc::clone(&notes),
+                cwd: Arc::clone(&cwd),
+                window_title: Arc::new(Mutex::new(String::new())),
+                clipboard_writes: false,
+                keyboard: Arc::new(Mutex::new(Vec::new())),
+            },
+        );
+
+        p.process(b"\x1b]7;file://localhost/D:/work/proj\x07");
+        assert_eq!(*cwd.lock().unwrap(), "D:\\work\\proj");
+        // ConEmu's spelling of the same thing
+        p.process(b"\x1b]9;9;C:\\Users\\me\x07");
+        assert_eq!(*cwd.lock().unwrap(), "C:\\Users\\me");
+        // A directory on the far end of an ssh session is not a place here, so
+        // the last thing we knew about stands rather than being replaced by a
+        // path that means nothing on this machine
+        p.process(b"\x1b]7;file://build-server/srv/app\x07");
+        assert_eq!(*cwd.lock().unwrap(), "C:\\Users\\me", "他所のパスで上書きしない");
+        // ...and none of this has quietly become a notification
+        assert!(notes.lock().unwrap().is_empty(), "cwd は通知ではない");
     }
 
     /// Copying from inside a full-screen tool, and the four ways it is refused.
@@ -2134,6 +2356,17 @@ pub struct Tab {
     bell_count: Arc<AtomicU64>,
     /// Cumulative bytes read from the PTY (incremented by the reader thread)
     bytes_out: Arc<AtomicU64>,
+    /// Holds this tab's processes. Never read: what it is for is being
+    /// dropped, which is what ends them. See [`crate::job`]
+    _job: Option<crate::job::Job>,
+    /// Where the program in this tab last said it is working. Empty unless the
+    /// shell announces it, which takes shell integration most people do not
+    /// have -- so this is a bonus, never something relied on
+    reported_cwd: ReportedCwd,
+    /// Raised by the reader thread the first time this tab's output turns out
+    /// not to be UTF-8. Only ever set on a tab that was not told to expect
+    /// another encoding -- a tab reading Shift_JIS on purpose is not mistaken
+    not_utf8: Arc<AtomicBool>,
     /// Time this session was created. Used to judge whether it just started up
     created: Instant,
     /// The same moment on the wall clock, which is what a file's timestamp can
@@ -2363,14 +2596,28 @@ impl Tab {
         drop(pair.slave);
         let pid = child.process_id();
         let killer = child.clone_killer();
+        // Everything this tab goes on to start belongs to this tab. Killing the
+        // program we launched has never reached what it launched -- a .cmd shim
+        // is a cmd.exe holding a node, and killing the shim left the node
+        // running with the folder still open. A job object owns them all, and
+        // closing it (which happens when this tab is dropped, restarted, or
+        // this program dies) ends them together.
+        let job = crate::job::Job::new();
+        if let (Some(j), Some(p)) = (job.as_ref(), pid) {
+            if !j.take(p) {
+                crate::append_hook_log(&format!("could not put \"{title}\" in a job object"));
+            }
+        }
 
         let writer: PtyWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
         let bell_count = Arc::new(AtomicU64::new(0));
         // Cumulative output volume. The INDEX waveform is drawn from its deltas
         // (the change in screen hash alone doesn't tell us "how much is moving")
         let bytes_out = Arc::new(AtomicU64::new(0));
+        let not_utf8 = Arc::new(AtomicBool::new(false));
         let notes: Notes = Arc::new(Mutex::new(Vec::new()));
         let window_title: WindowTitle = Arc::new(Mutex::new(String::new()));
+        let reported_cwd: ReportedCwd = Arc::new(Mutex::new(String::new()));
         // A fresh process starts with the keyboard every terminal has always
         // had. What the last one asked for died with it
         let keyboard: KeyboardMode = Arc::new(Mutex::new(Vec::new()));
@@ -2384,6 +2631,7 @@ impl Tab {
                 notes: Arc::clone(&notes),
                 window_title: Arc::clone(&window_title),
                 keyboard: Arc::clone(&keyboard),
+                cwd: Arc::clone(&reported_cwd),
                 clipboard_writes: crate::config::load()
                     .and_then(|c| c.tui_clipboard)
                     .unwrap_or(true),
@@ -2412,6 +2660,7 @@ impl Tab {
         {
             let parser = Arc::clone(&parser);
             let counter = Arc::clone(&bytes_out);
+            let mojibake = Arc::clone(&not_utf8);
             let mut reader = pair.master.try_clone_reader()?;
             let enc = opts.encoding;
             let mut log = opts
@@ -2422,11 +2671,22 @@ impl Tab {
                 let mut buf = [0u8; 8192];
                 let mut decoder = enc.map(|e| e.new_decoder());
                 let mut text = String::new();
+                // Only watched when nothing else was expected: a tab set to
+                // Shift_JIS is already being read the way it is written
+                let mut watch = enc.is_none().then(Utf8Watch::default);
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             counter.fetch_add(n as u64, Ordering::Relaxed);
+                            // Asked once, and never again after the answer is
+                            // yes: this sits on the path every byte takes
+                            if let Some(w) = watch.as_mut() {
+                                if w.broken(&buf[..n]) {
+                                    mojibake.store(true, Ordering::Relaxed);
+                                    watch = None;
+                                }
+                            }
                             let chunk: &[u8] = match decoder.as_mut() {
                                 // Convert Shift_JIS etc to UTF-8 before passing to the parser
                                 Some(d) => {
@@ -2536,6 +2796,9 @@ impl Tab {
             child_exited,
             bell_count,
             bytes_out,
+            _job: job,
+            reported_cwd,
+            not_utf8,
             created: Instant::now(),
             prompted: AtomicBool::new(false),
             submitted_output: AtomicU64::new(0),
@@ -2893,6 +3156,26 @@ impl Tab {
             .lock()
             .map(|mut n| std::mem::take(&mut *n))
             .unwrap_or_default()
+    }
+
+    /// Where the program in this tab says it is working, if it says so at all.
+    ///
+    /// Only ever an addition to what the tab was configured with: a folder
+    /// somebody set is where this tab belongs, and a `cd` typed inside it does
+    /// not move the tab.
+    pub fn reported_cwd(&self) -> String {
+        self.reported_cwd
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_default()
+    }
+
+    /// True once, the first time this tab's output turned out not to be UTF-8.
+    ///
+    /// Taken rather than read, so the notice is given once and does not follow
+    /// the person around: they have been told, and the setting is where it was.
+    pub fn take_not_utf8(&self) -> bool {
+        self.not_utf8.swap(false, Ordering::Relaxed)
     }
 
     /// Everything said, oldest first, for the board

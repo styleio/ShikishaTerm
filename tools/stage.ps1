@@ -25,7 +25,7 @@ if (-not (Test-Path $list)) { throw "dist.list is missing at $list" }
 # build script too, and a format that needs a library on both sides is a format
 # that will disagree with itself one day.
 $section = ''
-$want = @{ 'beside-exe' = @(); 'package' = @() }
+$want = @{ 'beside-exe' = @(); 'beside-exe-flat' = @(); 'package' = @() }
 foreach ($line in Get-Content $list -Encoding UTF8) {
     $t = $line.Trim()
     if ($t -eq '' -or $t.StartsWith('#')) { continue }
@@ -33,7 +33,7 @@ foreach ($line in Get-Content $list -Encoding UTF8) {
     if ($want.ContainsKey($section)) { $want[$section] += $t }
 }
 
-$sections = @('beside-exe')
+$sections = @('beside-exe', 'beside-exe-flat')
 if ($Package) { $sections += 'package' }
 
 New-Item -ItemType Directory -Force $Dest | Out-Null
@@ -45,7 +45,10 @@ foreach ($s in $sections) {
         $recurse = $pattern.EndsWith('/**')
         $rel = if ($recurse) { $pattern.Substring(0, $pattern.Length - 3) } else { $pattern }
         $src = Join-Path $root ($rel -replace '/', '\')
-        $sub = Split-Path $rel -Parent          # "" for a file at the root
+        # beside-exe-flat drops the folder the file came from: it has to end up
+        # next to the executable itself, because that is the only place Windows
+        # looks (conpty.dll). Everywhere else keeps the shape it is written in.
+        $sub = if ($s -eq 'beside-exe-flat') { '' } else { Split-Path $rel -Parent }
         $to  = if ($sub) { Join-Path $Dest $sub } else { $Dest }
 
         if ($recurse) {
