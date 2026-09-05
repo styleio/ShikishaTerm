@@ -84,12 +84,20 @@ Nothing is written outside that folder. There is no installer and no runtime to 
 **The Store copy is signed by Microsoft and shows no warning.** This section is about the
 zip only.
 
-The zip is not signed — free certificates were applied for and not granted, and the Store
-route was taken instead ([code signing policy](SIGNING.md)). So the first run of an
-unzipped copy shows **"Windows protected your PC"**.
+The zip carries no code-signing certificate, so the first run of an unzipped copy shows
+**"Windows protected your PC"** ([code signing policy](SIGNING.md)). Click
+**More info → Run anyway** to continue.
 
-Click **More info → Run anyway** to continue. If you would rather check first — and being
-wary of an unsigned executable from the internet is the right instinct:
+**You can help make that warning go away.** Removing it means a certificate, and
+[SignPath Foundation](https://signpath.org/) issues them to open source projects for free —
+but for a program like this one they ask for *"a certain verifiable reputation"* before
+putting their own name behind it. For a project on GitHub the most legible form that
+reputation takes is stars. So if this is useful to you,
+**[star the repository](https://github.com/styleio/ShikishaTerm)** — it takes a second, and it is the thing most likely to
+get a signed build into the hands of whoever downloads the zip after you.
+
+If you would rather check the download first — and being wary of an unsigned executable
+from the internet is the right instinct:
 
 - Every release is built by [GitHub Actions](.github/workflows/release.yml) from this
   source, not on anyone's laptop. The build log for your download is public

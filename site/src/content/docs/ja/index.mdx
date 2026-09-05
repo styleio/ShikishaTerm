@@ -30,6 +30,8 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <span style="opacity:.66;font-size:.9em">
     Windows 10/11 ・無料・
     <a href="https://github.com/styleio/ShikishaTerm/releases/latest">持ち運べる zip</a> もあります
+    <br />（zip は未署名なので初回に Windows の警告が出ます —
+    <a href="#zip-に出る警告とそれを消す方法">理由はこちら</a>）
   </span>
 </div>
 
@@ -166,8 +168,30 @@ Windows で素直に動くのは、そのためでもあります。
 
 Store版は Microsoft が署名しているので警告が出ず、更新も自動です。zip は同じビルドを
 何もインストールせずに使うもの——展開して起動し、フォルダごと消せば跡が残りません——
-ただし署名が無いぶん、Windows が一度だけ警告を出します。
+ただし署名が無いぶん、**Windows が初回に一度だけ警告を出します**。どんな警告で、
+どうすれば消えるのかは下に書いてあります。
 </details>
+
+## zip に出る警告と、それを消す方法
+
+展開した zip を初めて起動すると、Windows が「**WindowsによってPCが保護されました**」と
+出します。SmartScreen です。**何も知らされずに出ると、正直かなり怖い**ので先に書いて
+おきます——**出るのが正常**で、「**詳細情報**」→「**実行**」で進めます。これはファイルに
+問題があるからではなく、zip にコード署名の証明書が付いていないからです。配布物はすべて
+公開の GitHub Actions がタグ付きコミットからビルドしていて、ダウンロードの隣に SHA256 を
+置いてあるので、受け取ったバイト列がビルドされたものと同一かを自分で確かめられます。
+
+**Store版ではこの警告は出ません**——Microsoft が署名しているからです。
+
+zip からもこれを消すには、コード署名の証明書が要ります。
+[SignPath Foundation](https://signpath.org/) はオープンソースに無料で発行していますが、
+このような実行ファイルに対しては、自分たちの名前で証明書を出す前に
+*「a certain verifiable reputation（一定の、検証可能な評判）」* を求めています。
+GitHub のプロジェクトにとって、その評判のいちばん見える形が**スター**です。
+
+**この道具が役に立つなら、[GitHub でスターを付けてください](https://github.com/styleio/ShikishaTerm)。**
+通りすがりの人が1秒でできて、署名付きビルドの実現に最も近づくことです——あなたの次に
+zip を落とす人のために。
 
 ---
 
