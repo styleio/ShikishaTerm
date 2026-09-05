@@ -101,11 +101,21 @@ have installed write it for you.
 
 An agent that does not know where it is will happily edit the wrong project.
 
-Tabs are grouped by the **working folder** they run in. Give a branch a folder of its own
-and the agent working on it stays there. A **git panel** opens where a terminal would:
-stage a piece of a file rather than the whole file, read the history from the same panel,
-write the commit message yourself or have it written for you, and settle a merge with an
-AI untangling it while you decide.
+Tabs are grouped by the **working folder** they run in, and the settings screen will cut a
+git worktree so that a branch gets a folder of its own. Two agents on two branches then
+stop editing one checkout out from under each other, and each keeps its own session
+history where its work is.
+
+Be clear about what that is: a starting point, not a fence. Nothing here stops a CLI you
+asked to edit the folder next door from doing it — and ticking **run without asking**, the
+box autonomous work needs, takes that CLI's own confirmation away as well. So give a tab a
+folder you are willing to let it work in. What this app does fence is
+[automation](/automation/): a script reaches no file and no URL until you have named that
+directory and that URL in `config.json`.
+
+A **git panel** opens where a terminal would: stage a piece of a file rather than the whole
+file, read the history from the same panel, write the commit message yourself or have it
+written for you, and settle a merge with an AI untangling it while you decide.
 
 <img src="/git.png" alt="The git panel inside SHIKISHA-TERM — branches, files staged for the next commit, a diff with a hunk that can be dropped, and a button that writes the commit message" style="width:100%;border-radius:12px;margin-top:1.2em" />
 
