@@ -1,6 +1,6 @@
 ---
 title: SHIKISHA-TERM
-description: Claude Code / Codex / Gemini を Windows で同時に動かし、どれが自分の返事を待っているかを一目で分かるようにし、AI同士に仕事を渡させる。
+description: Claude Code・Codex・Gemini を Windows で同時に動かすターミナルです。どれが自分の返事を待っているかが一目で分かり、AI同士で仕事を渡し合えます。
 template: splash
 head:
   - tag: title
@@ -8,7 +8,7 @@ head:
 hero:
   image:
     file: ../../../assets/logo.png
-  tagline: 4体のコーディングAIを同時に動かし、どれが自分を待っているかを一目で。
+  tagline: コーディングAIを4体同時に。どれが自分を待っているかは、見れば分かります。
   actions:
     - text: 自動化の書き方
       link: /ja/automation/
@@ -28,9 +28,9 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   </a>
   <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0"><strong>インストールはこちら（Microsoft Store）</strong></a>
   <span style="opacity:.66;font-size:.9em">
-    Windows 10/11 ・無料・
+    Windows 10/11・無料。
     <a href="https://github.com/styleio/ShikishaTerm/releases/latest">持ち運べる zip</a> もあります
-    <br />（zip は未署名なので初回に Windows の警告が出ます —
+    <br />（zip は署名が無いので、初回に Windows の警告が出ます。
     <a href="#zip-に出る警告とそれを消す方法">理由はこちら</a>）
   </span>
 </div>
@@ -39,99 +39,103 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 {/* 信頼ブロック。書いてあることは全部その場で確かめられるものだけ */}
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1em;margin:1.6em 0 0;font-size:.92em;line-height:1.5">
-  <div><strong>Microsoft の署名付き</strong><br /><span style="opacity:.72">Store で配布しているので「WindowsによってPCが保護されました」は出ません。発行元は確認済みの WIRED &amp; ECO, K.K.</span></div>
-  <div><strong>アカウント不要・計測なし</strong><br /><span style="opacity:.72">情報は何も集めず、こちらのサーバーも存在しません（<a href="/ja/privacy/">プライバシーポリシー</a>）。</span></div>
-  <div><strong>MIT・全部読めます</strong><br /><span style="opacity:.72">ソースは <a href="https://github.com/styleio/ShikishaTerm">GitHub</a> に置いてあります。</span></div>
-  <div><strong>公開の場でビルド</strong><br /><span style="opacity:.72">配布物はタグ付きコミットから GitHub Actions が作り、SHA256 を並べて公開しています。</span></div>
+  <div><strong>Microsoft の署名付き</strong><br /><span style="opacity:.72">Store で配布しているので「WindowsによってPCが保護されました」は出ません。発行元は WIRED &amp; ECO, K.K. で、Microsoft が確認しています。</span></div>
+  <div><strong>アカウント不要・計測なし</strong><br /><span style="opacity:.72">利用状況は何も集めません。送り先になるサーバーも、こちらにはありません（<a href="/ja/privacy/">プライバシーポリシー</a>）。</span></div>
+  <div><strong>MIT・全部読めます</strong><br /><span style="opacity:.72">ソースは <a href="https://github.com/styleio/ShikishaTerm">GitHub</a> にあります。</span></div>
+  <div><strong>公開の場でビルド</strong><br /><span style="opacity:.72">配布物はタグ付きコミットから GitHub Actions が作ります。SHA256 も並べて公開しています。</span></div>
 </div>
 
 <p style="text-align:center;opacity:.72;font-size:.9em;margin:1.6em 0 0">
-  Claude Code・Codex・Gemini・Aider・Ollama・DeepSeek・Qwen、SSH越しの素のシェルでも
+  Claude Code・Codex・Gemini・Aider・Ollama・DeepSeek・Qwen。SSH 越しの素のシェルでも動きます
 </p>
 
 ---
 
-## AIが4体。窓が4つ。どれが待っているのか分からない。
+## AIが4体、ウィンドウが4つ。待っているのはどれか分からない
 
 ターミナルのAIを1体動かすのは簡単です。4体になると途端に破綻します。
 
-AIの数だけ窓が増え、止まっている1つを探してAlt+Tabを繰り返し、結果を手でコピペして回る
-ことになります。10分前に終わったAIは終わったまま座っていて、こちらがたまたま覗くまで
-気づけません。
+ウィンドウはAIの数だけ増えます。止まっている1つを探して Alt+Tab を繰り返し、出てきた
+結果は手でコピペして回るはめになります。10分前に答え終えたAIは、そのまま放置されます。
+こちらが画面を見に行くまで、終わったことに気づけません。
 
-**SHIKISHA-TERM は画面を読んで教えます。** どのタブも「**作業中**」「**完了**」
-「**あなた待ち**」のどれかを示します。ツールが実際に出力した文字から判定するので、
-特定の会社のAPIではなく、どのコマンドラインツールでも同じように働きます。
+SHIKISHA-TERM は画面を読んで教えます。どのタブにも「**処理中**」「**完了**」
+「**確認待ち**」のどれかが出ます。判定に使うのは、そのツールが実際に画面へ出した文字
+だけです。特定の会社のAPIに頼らないので、どのコマンドラインツールでも同じように動きます。
 
-<img src="/desktop.png" alt="SHIKISHA-TERM — 複数のAIを1つの窓に並べ、各行が作業中・完了・あなた待ちのどれかを示している画面" style="width:100%;border-radius:12px;margin-top:1.2em" />
+<img src="/desktop.png" alt="SHIKISHA-TERM — 複数のAIを1つの窓に並べ、各行が処理中・完了・確認待ちのどれかを示している画面" style="width:100%;border-radius:12px;margin-top:1.2em" />
 
-## 本当に面倒なのは、受け渡しの方
+## 本当に手が取られるのは、AI同士の受け渡し
 
-どれが待っているかが分かるのは半分です。残り半分は、**自分が運び屋をやめること**。
+どれが待っているか分かっても、まだ半分です。あとの半分は、**自分が運び屋をやめること**。
 
-一度だけ言っておけば——「これが終わったら結果をレビュー用のタブへ」——あとは勝手に
-起きます。Lua で書いてもいいし、普通の言葉で説明して、すでに入れてあるAIに書かせても
-構いません。
+「これが終わったら結果をレビュー用のタブへ」。一度そう決めておけば、あとは受け渡しが
+自動で起きます。決め方は Lua で書いてもいいですし、普通の言葉で説明して、すでにタブに
+入れてあるAIに書かせても構いません。
 
 <CardGrid>
   <Card title="AI同士で仕事を渡す" icon="random">
-    書く役とレビュー役を、通るまで往復させて、終わったら Slack に知らせる。
-    何回まで渡し続けてよいかは、あなたが決めます。
+    書く役とレビュー役を、通るまで往復させます。終わったら Slack に知らせます。
+    何回まで渡し続けるかの上限は、自分で決められます。
   </Card>
-  <Card title="AI同士を議論させる" icon="comment">
-    Claude・Codex・Gemini・DeepSeek に**同じ問いを議論させ**、審判役にまとめさせる。
+  <Card title="同じ問いを、4体に投げる" icon="comment">
+    Claude・Codex・Gemini・DeepSeek に同じ問いについて議論させ、審判役にまとめさせます。
     やり取りは丸ごと読める記録として残ります。
   </Card>
-  <Card title="効くブレーキ" icon="warning">
-    非常停止、タブ単位の入力ロック、連鎖の上限。自動化には、許可しない限り
-    ファイルもネットワークも触らせません。
+  <Card title="ちゃんと止まるブレーキ" icon="warning">
+    非常停止、タブ単位の入力ロック、連鎖の上限。自動化がファイルやネットワークに
+    触れるのは、許可したときだけです。
   </Card>
   <Card title="本物のターミナル" icon="laptop">
-    SSH、Docker、WSL、踏み台、鍵ファイル、ポート転送、セッションログ、レガシーな文字コード、
-    IME入力、マウス。何か1つのツールの皮ではありません。
+    SSH、Docker、WSL、踏み台、鍵ファイル、ポート転送、セッションログ、古い文字コード、
+    IME入力、マウス。特定のツールに皮をかぶせただけのものではありません。
   </Card>
 </CardGrid>
 
-## AIは「どこで」働いているのか
+## AIが触れる範囲は、フォルダで決まる
 
 自分がどこにいるか分かっていないAIは、平気で別のプロジェクトを書き換えます。
 
-タブは**作業フォルダ**ごとにまとまります。ブランチに専用のフォルダを与えれば、それを
-担当するAIはそこから出ません。**gitパネル**は端末が出る場所にそのまま開きます——
-ファイル単位ではなく**その一部だけをステージ**でき、同じパネルの裏側が履歴で、
-コミットメッセージは自分で書いても書かせてもよく、コンフリクトはAIに解きほぐさせて
-**判断だけ人間がします**。
+タブは**作業フォルダ**ごとにまとまります。ブランチごとに専用のフォルダを与えれば、その
+ブランチを担当するAIはフォルダの外へ出ません。
+
+gitパネルは、端末と同じ場所に開きます。ステージはファイル単位ではなく、**差分の一部だけ**
+を選べます。同じパネルの裏側は履歴です。コミットメッセージは自分で書いても、AIに書かせても
+構いません。コンフリクトはAIに解きほぐさせて、**判断だけ人間がします**。
 
 <img src="/git.png" alt="SHIKISHA-TERM の git パネル — ブランチ、次のコミットに入るファイル、一部だけ外せる差分、コミットメッセージを書かせるボタン" style="width:100%;border-radius:12px;margin-top:1.2em" />
 
 ## いつも机の前にいるわけではない
 
-QRコードを読むだけで、どのタブが何をしているかが見え、指示も送れます——電車の中でも、
-カフェでも、寝床からでも。[Tailscale](https://tailscale.com/) 越しなら、届くのは
-自分の端末だけ。暗号化されたまま、どこからでも。
+電車の中でも、カフェでも、寝床からでも、どのタブが何をしているかが見えて、指示も送れます。
+QRコードを1枚読むだけです。外出先で「確認待ち」に気づいて、その場で一言返しておけば、
+机に戻る頃には次の分が終わっています。
 
-<img src="/phone.png" alt="スマホで見る SHIKISHA-TERM — 複数のAIの状態が一覧で並び、作業中・完了・あなた待ちが分かる" style="display:block;margin:1.4em auto 0;width:340px;max-width:100%" />
+[Tailscale](https://tailscale.com/) 越しなら、画面が届く先は自分の端末だけです。経路は
+暗号化されたままで、どこにいても使えます。
+
+<img src="/phone.png" alt="スマホで見る SHIKISHA-TERM — 複数のAIの状態が一覧で並び、処理中・完了・確認待ちが分かる" style="display:block;margin:1.4em auto 0;width:340px;max-width:100%" />
 
 ---
 
 ## はじめかた
 
-1. **[Microsoft Store から入れる](https://apps.microsoft.com/detail/9PB8XQVM87Z0)**。
-   あるいは[持ち運べる版](https://github.com/styleio/ShikishaTerm/releases/latest)を
-   好きな場所に展開する（USBメモリでも動きます）。
-2. 起動する。端末のタブが最初から1つ開いています。
-3. `[e]` を押す。設定画面が**窓の中に**開くので、どのAIをどのフォルダで動かすかを選ぶ。
-   JSONを書く必要はありません。
+1. **[Microsoft Store から入れます](https://apps.microsoft.com/detail/9PB8XQVM87Z0)**。
+   [持ち運べる版](https://github.com/styleio/ShikishaTerm/releases/latest)を好きな場所に
+   展開しても構いません（USBメモリでも動きます）。
+2. 起動します。端末のタブが最初から1つ開いています。
+3. `[e]` を押します。設定画面はこのアプリの中に開くので、どのAIをどのフォルダで動かすかを
+   選びます。JSONを書く必要はありません。
 
 <img src="/settings.png" alt="SHIKISHA-TERM の設定画面 — タブごとの名前・コマンドやSSH接続先・作業フォルダ・自動化をフォームで設定でき、JSONを書く必要がない" style="width:100%;border-radius:12px;margin:.4em 0 1em" />
 
-## 最初によく訊かれること
+## 最初によく聞かれること
 
 <details>
 <summary><strong>APIキーは要りますか？</strong></summary>
 
-要りません。すでにインストールしてログイン済みのコマンドラインツールを、あなたが
-契約しているサブスクのまま動かします。キーは保存もしませんし、要求もしません。
+要りません。すでにインストールしてログインしてあるコマンドラインツールを、契約中の
+サブスクのまま動かします。キーは保存もしませんし、要求もしません。
 </details>
 
 <details>
@@ -144,61 +148,62 @@ QRコードを読むだけで、どのタブが何をしているかが見え、
 <details>
 <summary><strong>Windows だけですか？</strong></summary>
 
-現時点では、はい。クロスプラットフォームの薄い層ではなく、Windows の疑似コンソール
-（ConPTY）の上に作ってあります。SSH・WSL・IME入力・レガシーな文字コードが
+いまのところ Windows だけです。土台にしているのは Windows の疑似コンソール（ConPTY）
+そのもので、複数のOSに共通の薄い層はかぶせていません。SSH・WSL・IME入力・古い文字コードが
 Windows で素直に動くのは、そのためでもあります。
 </details>
 
 <details>
 <summary><strong>どこかに何か送りますか？</strong></summary>
 
-既定では何も送りません。アカウントもなく、こちらのサーバーも存在しません。通信は
-あなたが設定したときだけ起き、相手はあなたが選んだ先です——キーを入れたAIの提供元、
-登録したWebhook、あるいは自分のスマホ。全部
-[プライバシーポリシー](/ja/privacy/)に並べてあります。
+既定では何も送りません。アカウントもなく、こちらのサーバーもありません。通信が起きるのは
+自分で設定したときだけで、相手も自分で選んだ先だけです。キーを入れたAIの提供元、登録した
+Webhook、あるいは自分のスマホ。全部[プライバシーポリシー](/ja/privacy/)に並べてあります。
 </details>
 
 <details>
 <summary><strong>ターミナルですか、IDEですか？</strong></summary>
 
-ターミナルです。gitパネルもブラウザもありますが、それはAIがそれらを必要とするからで、
+ターミナルです。gitパネルもブラウザも付いていますが、AIが必要とするから付けただけで、
 エディタになろうとしているわけではありません。
 </details>
 
 <details>
 <summary><strong>Store版と zip、どちらを選べば？</strong></summary>
 
-Store版は Microsoft が署名しているので警告が出ず、更新も自動です。zip は同じビルドを
-何もインストールせずに使うもの——展開して起動し、フォルダごと消せば跡が残りません——
-ただし署名が無いぶん、**Windows が初回に一度だけ警告を出します**。どんな警告で、
-どうすれば消えるのかは下に書いてあります。
+Store版は Microsoft が署名しているので警告が出ず、更新も自動です。zip は同じビルドを、
+何もインストールせずに使うものです（展開して起動し、フォルダごと消せば跡が残りません）。
+ただし署名が無いぶん、**Windows が初回に一度だけ警告を出します**。「詳細情報」→「実行」で
+進めてください。
 </details>
 
 ## zip に出る警告と、それを消す方法
 
-展開した zip を初めて起動すると、Windows が「**WindowsによってPCが保護されました**」と
-出します。SmartScreen です。**何も知らされずに出ると、正直かなり怖い**ので先に書いて
-おきます——**出るのが正常**で、「**詳細情報**」→「**実行**」で進めます。これはファイルに
-問題があるからではなく、zip にコード署名の証明書が付いていないからです。配布物はすべて
-公開の GitHub Actions がタグ付きコミットからビルドしていて、ダウンロードの隣に SHA256 を
-置いてあるので、受け取ったバイト列がビルドされたものと同一かを自分で確かめられます。
+展開した zip を初めて起動すると、Windows が「**WindowsによってPCが保護されました**」という
+警告を表示します。SmartScreen です。何も知らされずに出ると正直かなり怖いので、先に書いて
+おきます。**この警告が出るのが正常です。**「**詳細情報**」→「**実行**」で進めてください。
 
-**Store版ではこの警告は出ません**——Microsoft が署名しているからです。
+出る理由は、zip にコード署名の証明書が付いていないからです。ファイルの中身に問題があるわけ
+ではありません。配布物はすべて、タグ付きコミットから公開の GitHub Actions がビルドしています。
+ダウンロードの隣に SHA256 を置いてあるので、受け取ったファイルがビルドされたものと同じ
+かどうかは自分で確かめられます。
 
-zip からもこれを消すには、コード署名の証明書が要ります。
-[SignPath Foundation](https://signpath.org/) はオープンソースに無料で発行していますが、
-このような実行ファイルに対しては、自分たちの名前で証明書を出す前に
-*「a certain verifiable reputation（一定の、検証可能な評判）」* を求めています。
-GitHub のプロジェクトにとって、その評判のいちばん見える形が**スター**です。
+Microsoft が署名しているので、**Store版ではこの警告は出ません**。
+
+zip からもこの警告を消すには、コード署名の証明書が要ります。
+[SignPath Foundation](https://signpath.org/) はオープンソースに証明書を無料で発行して
+います。ただしこういう実行ファイルには、自分たちの名前で証明書を出す前に
+*「a certain verifiable reputation（検証できる一定の評判）」* を求めています。GitHub では、
+その評判がいちばん見える形がスターです。
 
 **この道具が役に立つなら、[GitHub でスターを付けてください](https://github.com/styleio/ShikishaTerm)。**
-通りすがりの人が1秒でできて、署名付きビルドの実現に最も近づくことです——あなたの次に
-zip を落とす人のために。
+通りすがりの人でも1秒でできて、署名付きビルドにいちばん近づくのがスターです。次に zip を
+落とす人のためにもなります。
 
 ---
 
 <div style="text-align:center;margin:2.4em 0 .6em">
-  <p style="font-size:1.15em;margin-bottom:1em"><strong>AIとAIの間を、自分で往復するのをやめる。</strong></p>
+  <p style="font-size:1.15em;margin-bottom:1em"><strong>どれが待っているかを探すのも、AIとAIの間を往復するのも、もうやめる。</strong></p>
   <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0" style="display:inline-block;line-height:0">
     <img alt="Microsoft Store から入手" src="https://get.microsoft.com/images/ja%20dark.svg"
          style="height:64px;width:auto;max-width:100%" />
@@ -206,5 +211,9 @@ zip を落とす人のために。
   <p style="opacity:.72;font-size:.9em;margin-top:.8em">
     無料・Windows 10/11・<a href="https://github.com/styleio/ShikishaTerm/releases/latest">持ち運べる zip</a>・
     <a href="https://github.com/styleio/ShikishaTerm">ソース</a>
+  </p>
+  <p style="opacity:.72;font-size:.9em;margin-top:.2em">
+    Store から入れた方も、<a href="https://github.com/styleio/ShikishaTerm">GitHub のスター</a>だけは
+    押していってください。zip の警告を消す証明書に、それが要ります。
   </p>
 </div>

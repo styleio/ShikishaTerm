@@ -28,6 +28,9 @@ run/
 
 #AI
 .claude
+# 外から入れたスキルの実体。skills-lock.json に出所とハッシュが残るので、
+# 中身は追跡しない。入れ直しは npx skills experimental_install
+/.agents/
 
 # demo/scratch artifacts (not source)
 /demo*.mp4

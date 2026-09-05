@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "natural-japanese": {
+      "source": "coji/natural-japanese",
+      "sourceType": "github",
+      "skillPath": "skills/natural-japanese/SKILL.md",
+      "computedHash": "fddcb0ad9dcf3f415e34964f4ef05f168d0c368e2657361e11a38caf01c9e541"
+    }
+  }
+}
