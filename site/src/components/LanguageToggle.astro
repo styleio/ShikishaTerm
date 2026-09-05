@@ -1,0 +1,60 @@
+---
+/**
+ * 言語の切り替え。
+ *
+ * Starlight の既定は <select> で、ヘッダーの right-group ごと 50rem 未満で
+ * 消える。つまりスマホでは言語を変える手段が画面のどこにも無かった。
+ * ここは常に出しておきたいので、選択式ではなく2つのリンクにして自前で持つ。
+ *
+ * 国旗は使わない。言語と国は一対一ではなく、とくに英語の旗は 🇬🇧 と 🇺🇸 の
+ * どちらを出しても読者の半分に「自分の言語ではない」と読まれる。言語名を
+ * その言語自身の文字で出すほうが、旗より短く確実に伝わる。
+ *
+ * 経路の計算は自前。Starlight の localizedUrl はパッケージ内部の実装で、
+ * 公開されている入口ではない。ここは en が根、ja が /ja/ の2言語だけなので
+ * 素直に書ける。
+ */
+const path = Astro.url.pathname;
+const isJa = path === "/ja" || path.startsWith("/ja/");
+const enHref = isJa ? path.replace(/^\/ja/, "") || "/" : path;
+const jaHref = isJa ? path : "/ja" + (path === "/" ? "/" : path);
+---
+
+<div class="lang-toggle" role="group" aria-label="Language">
+  <a href={enHref} lang="en" hreflang="en" class={isJa ? "" : "on"} aria-current={isJa ? undefined : "true"}>EN</a>
+  <a href={jaHref} lang="ja" hreflang="ja" class={isJa ? "on" : ""} aria-current={isJa ? "true" : undefined}>日本語</a>
+</div>
+
+<style>
+  .lang-toggle {
+    display: flex;
+    align-items: stretch;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 999px;
+    overflow: hidden;
+    font-size: var(--sl-text-xs);
+    line-height: 1;
+    flex: none;
+  }
+  /* 押せるほうをリンクの色にする。いま見ているほうを派手に塗ると、
+     押せない側にいちばん目が行ってしまう */
+  .lang-toggle a {
+    display: flex;
+    align-items: center;
+    padding: 0.45rem 0.7rem;
+    color: var(--sl-color-text-accent);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .lang-toggle a + a {
+    border-inline-start: 1px solid var(--sl-color-gray-5);
+  }
+  .lang-toggle a:hover {
+    background: var(--sl-color-gray-6);
+  }
+  .lang-toggle a.on {
+    color: var(--sl-color-white);
+    background: var(--sl-color-gray-6);
+    cursor: default;
+  }
+</style>

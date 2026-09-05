@@ -34,6 +34,13 @@ export default defineConfig({
         { tag: "link", attrs: { rel: "apple-touch-icon", href: "/apple-touch-icon.png" } },
       ],
       social: [{ icon: "github", label: "GitHub", href: REPO }],
+      // 検索は入れない。ページは実質4枚で、索引は全部で3500語ほどしかない。
+      // それでいて検索欄はヘッダーの真ん中を丸ごと占め、狭い画面では唯一の
+      // ボタンとして残る。その場所は言語の切り替えに使いたい。
+      // ドキュメントが増えて Ctrl+F では追えなくなったら true に戻す。
+      pagefind: false,
+      // ヘッダーは自前。狭い画面でも言語と GitHub を出しておくため
+      components: { Header: "./src/components/Header.astro" },
       // 各ページに「編集する」リンクが出る。翻訳PRの入り口になる
       editLink: { baseUrl: `${REPO}/edit/main/site/` },
       lastUpdated: true,
