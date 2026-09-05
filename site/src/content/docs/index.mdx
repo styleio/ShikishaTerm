@@ -1,15 +1,15 @@
 ---
 title: SHIKISHA-TERM
-description: Run Claude Code, Codex and Gemini side by side — and let them hand work to each other. A portable terminal for orchestrating AI CLIs on Windows.
+description: Run Claude Code, Codex and Gemini side by side on Windows, see at a glance which one is waiting for you, and let them hand work to each other.
 template: splash
 # タイトルがサイト名と同じだと "X | X" になるので明示する
 head:
   - tag: title
-    content: "SHIKISHA-TERM — Run Claude Code, Codex and Gemini side by side"
+    content: "SHIKISHA-TERM — Run four coding agents at once, on Windows"
 hero:
   image:
     file: ../../assets/logo.png
-  tagline: Run Claude Code, Codex and Gemini side by side — and let them hand work to each other.
+  tagline: Run four coding agents at once — and know, at a glance, which one is waiting for you.
   actions:
     - text: How automation works
       link: /automation/
@@ -28,50 +28,62 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
          style="height:64px;width:auto;max-width:100%" />
   </a>
   <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0"><strong>Install from the Microsoft Store</strong></a>
+  <span style="opacity:.66;font-size:.9em">
+    Windows 10/11 · free · or take the
+    <a href="https://github.com/styleio/ShikishaTerm/releases/latest">portable zip</a>
+  </span>
 </div>
-
-**No API keys — it drives the AI CLIs you already have logged in.** The Store copy is
-signed by Microsoft and updates itself; the [portable zip](https://github.com/styleio/ShikishaTerm/releases/latest)
-is the same program with nothing installed, and Windows warns about it once because it is
-not signed.
 
 <video src="/demo.mp4" autoplay loop muted playsinline style="width:100%;border-radius:12px" />
 
-<p style="text-align:center;opacity:.72;font-size:.9em;margin:.7em 0 0">
+{/* Trust block — right below the hero, and every line of it is checkable. */}
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1em;margin:1.6em 0 0;font-size:.92em;line-height:1.5">
+  <div><strong>Signed by Microsoft</strong><br /><span style="opacity:.72">Published in the Store, so no “Windows protected your PC”. Publisher identity verified: WIRED &amp; ECO, K.K.</span></div>
+  <div><strong>No account. No telemetry.</strong><br /><span style="opacity:.72">Nothing is collected and there is no server of ours — <a href="/privacy/">read the policy</a>.</span></div>
+  <div><strong>MIT, and readable</strong><br /><span style="opacity:.72">Every line is on <a href="https://github.com/styleio/ShikishaTerm">GitHub</a>.</span></div>
+  <div><strong>Built in public</strong><br /><span style="opacity:.72">Each release is built by GitHub Actions from a tagged commit, with a SHA256 beside it.</span></div>
+</div>
+
+<p style="text-align:center;opacity:.72;font-size:.9em;margin:1.6em 0 0">
   Works with Claude Code · Codex · Gemini · Aider · Ollama · DeepSeek · Qwen — or any shell over SSH
 </p>
 
-<img src="/desktop.png" alt="SHIKISHA-TERM desktop — a mission-control dashboard of several AI agents, each showing whether it is working, waiting or done" style="width:100%;border-radius:12px;margin-top:1.2em" />
+---
 
-## Put your AIs in a room together
+## Four agents. Four windows. No idea who is waiting.
 
-Have **Claude, Codex, Gemini and DeepSeek debate a question**, or make one write code
-while the others review it. A judge sums it up, and the whole exchange is rendered as a
-chat-style **Result** tab — with a one-click Markdown download of the full record.
+Running one terminal AI is easy. Running four is not.
 
-It is the same engine underneath: a discussion, a code review, or a browser task all end
-as a readable transcript you can keep.
+You end up with a window per agent, a lot of alt-tabbing to find the one that stopped, and
+a lot of copy-pasting between them. The agent that finished ten minutes ago sits there
+finished, and you find out when you happen to look.
 
-## Check on your AI from your phone
+**SHIKISHA-TERM reads the screen and tells you.** Every tab says whether it is *working*,
+*done*, or *waiting for you* — read from what the tool actually printed, so it works with
+any CLI rather than one vendor's API.
 
-Scan a QR code and you can see what every tab is doing and send instructions — from the
-train, from a café, from bed. Over [Tailscale](https://tailscale.com/) only your own devices
-can reach it, encrypted, from anywhere.
+<img src="/desktop.png" alt="SHIKISHA-TERM — several AI agents in one window, each row showing whether it is working, waiting or done" style="width:100%;border-radius:12px;margin-top:1.2em" />
 
-<img src="/phone.png" alt="SHIKISHA-TERM on a phone — a live dashboard of several agents, each showing whether it is working, waiting or done" style="display:block;margin:1.4em auto 0;width:340px;max-width:100%" />
+## The handoff is the work
+
+Knowing who is waiting is half of it. The other half is not being the courier.
+
+Say it once — *when this one finishes, send the result to the review tab* — and it happens
+without you. Write it in Lua, or describe it in plain language and let an AI you already
+have installed write it for you.
 
 <CardGrid>
-  <Card title="Status you can trust" icon="approve-check">
-    Every tab shows whether it is **working**, **done**, or **waiting for you** — read from
-    the screen itself, so it works with any CLI rather than one vendor's API.
-  </Card>
   <Card title="Agents that hand off work" icon="random">
-    "When this finishes, send the result to the review tab." Write it in Lua, or describe it
-    in plain language and let an AI you already have installed write it.
+    A code-and-review loop that runs until it passes, then messages you on Slack. The
+    limit on how many times work may pass along is yours to set.
   </Card>
-  <Card title="Brakes that actually hold" icon="warning">
-    A limit on how many times agents may pass work along, an emergency stop, per-tab input
-    locks, and a sandbox with no file or network access by default.
+  <Card title="Put them in a room together" icon="comment">
+    Have Claude, Codex, Gemini and DeepSeek **debate a question**, with a judge to sum it
+    up. The whole exchange becomes a readable transcript you can keep.
+  </Card>
+  <Card title="Brakes that hold" icon="warning">
+    An emergency stop, per-tab input locks, a cap on chained hand-offs, and automation
+    that gets no file or network access unless you grant it.
   </Card>
   <Card title="A real terminal" icon="laptop">
     SSH, Docker, WSL, jump hosts, key files, port forwarding, session logs, legacy
@@ -79,38 +91,95 @@ can reach it, encrypted, from anywhere.
   </Card>
 </CardGrid>
 
-## Why it exists
+## Agents work in folders, not in a vacuum
 
-Running one terminal AI is easy. Running **four** is not.
+An agent that does not know where it is will happily edit the wrong project.
 
-You end up with a window per agent, no idea which one is waiting for you, and a lot of
-copy-pasting between them. SHIKISHA-TERM is a terminal that knows the difference between
-working, finished and waiting for a human — and can move work between agents on its own.
+Tabs are grouped by the **working folder** they run in. Give a branch a folder of its own
+and the agent working on it stays there. A **git panel** opens where a terminal would:
+stage a piece of a file rather than the whole file, read the history from the same panel,
+write the commit message yourself or have it written for you, and settle a merge with an
+AI untangling it while you decide.
 
-It talks to whatever runs in a terminal, so it is not tied to one vendor: Claude Code,
-Codex CLI, Gemini CLI, DeepSeek, Ollama, Aider, or a plain shell over SSH.
+## You are not always at the desk
 
-## Get started
+Scan a QR code and you can see what every tab is doing and send instructions — from the
+train, from a café, from bed. Over [Tailscale](https://tailscale.com/) only your own
+devices can reach it, encrypted, from anywhere.
 
-1. Download the zip from [Releases](https://github.com/styleio/ShikishaTerm/releases/latest)
-   and unzip it anywhere — a USB stick and a synced folder both work
-2. Run `SHIKISHA-TERM.exe`
-3. Press `[e]` to open the settings screen in your browser and pick which AI runs where
-
-<img src="/settings.png" alt="SHIKISHA-TERM settings — configure each tab (name, command or SSH host, working folder, automation) in a form, with no JSON editing" style="width:100%;border-radius:12px;margin:.4em 0 1em" />
-
-Nothing is written outside that folder.
-
-:::note[Where it fits]
-**Windows only** today — it is built on ConPTY. It **drives CLIs rather than replacing
-them**: your subscriptions, logins and settings stay exactly as they are. And it is a
-terminal, not an IDE.
-:::
+<img src="/phone.png" alt="SHIKISHA-TERM on a phone — a live dashboard of several agents, each showing whether it is working, waiting or done" style="display:block;margin:1.4em auto 0;width:340px;max-width:100%" />
 
 ---
 
-_Every Windows release is built by public GitHub Actions from this source, with a SHA256
-published next to the zip. A free code signing certificate has been applied for from
-[SignPath Foundation](https://signpath.org/); while that application is pending the builds are
-unsigned, so the first run shows a SmartScreen warning — choose **More info → Run anyway**. See the
-[code signing policy](https://github.com/styleio/ShikishaTerm/blob/main/SIGNING.md)._
+## Get started
+
+1. **[Install from the Microsoft Store](https://apps.microsoft.com/detail/9PB8XQVM87Z0)** —
+   or unzip the [portable copy](https://github.com/styleio/ShikishaTerm/releases/latest)
+   anywhere, including a USB stick.
+2. Open it. A terminal tab is already there.
+3. Press `[e]`. The settings screen opens **inside the window**, and you pick which AI runs
+   in which folder. No JSON to edit.
+
+<img src="/settings.png" alt="SHIKISHA-TERM settings — configure each tab (name, command or SSH host, working folder, automation) in a form, with no JSON editing" style="width:100%;border-radius:12px;margin:.4em 0 1em" />
+
+## Questions people ask first
+
+<details>
+<summary><strong>Do I need API keys?</strong></summary>
+
+No. It drives the command-line tools you have already installed and signed in to, using
+the subscriptions you already pay for. It stores no keys and asks for none.
+</details>
+
+<details>
+<summary><strong>Does it replace Claude Code / Codex / Gemini?</strong></summary>
+
+No — it runs them. Your logins, settings and history stay exactly where they are. If a new
+CLI comes out tomorrow, point a tab at it.
+</details>
+
+<details>
+<summary><strong>Windows only?</strong></summary>
+
+Today, yes. It is built on ConPTY, the Windows pseudo-console, rather than on a
+cross-platform shim — which is also why SSH, WSL, IME input and legacy encodings behave
+the way they do on Windows.
+</details>
+
+<details>
+<summary><strong>What does it send anywhere?</strong></summary>
+
+By default, nothing. There is no account and no server of ours. Connections happen only
+where you set them up, and go straight to the party you chose: the AI provider whose key
+you entered, a webhook you registered, or your own phone. The
+[privacy policy](/privacy/) lists every one of them.
+</details>
+
+<details>
+<summary><strong>Is it a terminal or an IDE?</strong></summary>
+
+A terminal. It has a git panel and a browser because agents need them, but it is not
+trying to become your editor.
+</details>
+
+<details>
+<summary><strong>Store copy or portable zip?</strong></summary>
+
+The Store copy is signed by Microsoft, shows no warning and updates itself. The zip is the
+same build with nothing installed — unzip it, run it, delete the folder to remove it — but
+Windows will warn about it once, because it is not code-signed.
+</details>
+
+---
+
+<div style="text-align:center;margin:2.4em 0 .6em">
+  <p style="font-size:1.15em;margin-bottom:1em"><strong>Stop being the courier between your agents.</strong></p>
+  <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0" style="display:inline-block;line-height:0">
+    <img alt="Get it from Microsoft" src="https://get.microsoft.com/images/en-us%20dark.svg"
+         style="height:64px;width:auto;max-width:100%" />
+  </a>
+  <p style="opacity:.72;font-size:.9em;margin-top:.8em">
+    Free · Windows 10/11 · <a href="https://github.com/styleio/ShikishaTerm/releases/latest">portable zip</a> ·
+    <a href="https://github.com/styleio/ShikishaTerm">source</a>
+  </p>
+</div>
