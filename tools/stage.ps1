@@ -1,9 +1,9 @@
 <#
   Put the payload named in dist.list into a folder.
 
-  One copier for every destination there is: the test machine (Deploy.cmd and the
-  deploy hook) and the download (release.yml). build.rs reads the same list from
-  the Rust side for the dev build. When something new has to travel, it is added
+  One copier for every destination there is: a test machine, and the download
+  (release.yml). build.rs reads the same list from the Rust side for the dev
+  build. When something new has to travel, it is added
   to dist.list and it reaches all of them at once — the arrangement that made a
   forgotten copy possible is the one this replaces.
 
