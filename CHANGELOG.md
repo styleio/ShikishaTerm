@@ -54,7 +54,8 @@ once it reaches its first tagged release.
   stopped being read, every tab in a settings file from the older version
   stopped existing — no error, no warning, a workspace that simply opened
   empty and no way to tell why. They are read again, into the folder they
-  would have been put in.
+  would have been put in, by the program and by the settings screen alike;
+  saving from that screen writes the file back in one shape rather than two.
 - **A progress bar is no longer read as a message.** A program reporting how far
   along it is sends the same escape sequence as one sending a notification, with
   a number in front. That number was being read as the message: a tab would say

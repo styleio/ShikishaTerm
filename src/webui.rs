@@ -5962,6 +5962,15 @@ function foldersOf(w) {
   const folders = (w.folders || []).map(f => ({name:f.name || "", id:f.id || "",
                                                cwd:f.cwd || "", tabs:f.tabs || []}));
   if (!folders.length) folders.push({name:"", id:"", cwd:"", tabs:[]});
+  // Tabs written the old way, beside the folders instead of inside one. The
+  // program reads them again (config.rs does the same folding), and this screen
+  // has to as well: showing "no tabs" for a workspace that is running two is
+  // worse than not showing them at all, because the next save would be made
+  // from what is on the screen. They join the folder they would have been put
+  // in, and saving writes them there.
+  if (Array.isArray(w.tabs) && w.tabs.length) {
+    folders[0].tabs = folders[0].tabs.concat(w.tabs);
+  }
   return folders;
 }
 
@@ -6049,7 +6058,10 @@ async function load() {
   loadedLanguage = (current.language || "").trim().toLowerCase();
   const list = (Array.isArray(current.workspaces) && current.workspaces.length)
       ? current.workspaces
-      : [{ name:"DEFAULT", tabs: current.tabs || [] }];
+      : [{ name:"DEFAULT", folders: current.folders || [], tabs: current.tabs || [] }];
+  // Read once, from wherever it was written, and then let go of the old spelling
+  // so that saving settles the file into one shape rather than both.
+  delete current.tabs;
   wss = [];
   for (const w of list) {
     const ws = { name:w.name || "", file:w.file || null,
