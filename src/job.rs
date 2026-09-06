@@ -96,19 +96,29 @@ mod tests {
     /// The whole promise, end to end: a process started inside the job is gone
     /// once the job is dropped -- and so is the child it started, which is the
     /// case that walking a process tree gets wrong.
+    ///
+    /// The waiting is done by something that does not read its input. `pause`
+    /// would be the obvious choice and is the wrong one: it reads a key, so
+    /// killing its parent closes the pipe under it and it puts an error on the
+    /// screen of whoever is running the tests. A test that leaves windows on a
+    /// person's desktop is a test that gets switched off.
     #[test]
     fn closing_the_job_ends_what_it_holds() {
+        use std::os::windows::process::CommandExt as _;
         use std::process::Stdio;
-        let job = Job::new().expect("ジョブが作れない");
-        // A shell that waits, holding a child that also waits. `pause` reads
-        // from a stdin that never speaks, so neither ends on its own.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // A shell that waits, holding a child that also waits. Nothing here
+        // reads a key, nothing draws a window, and both end on their own if
+        // this test is ever killed before it can tidy up.
         let mut parent = std::process::Command::new("cmd.exe")
-            .args(["/c", "cmd.exe /c pause"])
-            .stdin(Stdio::piped())
+            .args(["/c", "cmd.exe /c ping -n 60 127.0.0.1"])
+            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .expect("cmd.exe が起動できない");
+        let job = Job::new().expect("ジョブが作れない");
         assert!(job.take(parent.id()), "ジョブに入れられない");
 
         // Give the inner cmd.exe time to exist, or the test proves nothing
@@ -127,6 +137,8 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "ジョブを閉じても終わらない");
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+        // Whatever happens above, nothing is left running
+        let _ = parent.kill();
     }
 
     /// A process that has already gone cannot be taken, and saying so must not
@@ -134,10 +146,14 @@ mod tests {
     /// instant it starts.
     #[test]
     fn a_process_that_is_gone_is_simply_not_taken() {
+        use std::os::windows::process::CommandExt as _;
         let job = Job::new().expect("ジョブが作れない");
         let mut child = std::process::Command::new("cmd.exe")
             .args(["/c", "exit"])
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
             .spawn()
             .expect("cmd.exe が起動できない");
         let pid = child.id();
