@@ -1101,6 +1101,8 @@
   "settings.notify.token_ph": "Bot token",
   "settings.notify.chat_ph": "chat_id",
   "settings.notify.save": "Save",
+  "settings.notify.type.windows": "This PC",
+  "settings.notify.windows.hint": "A Windows notification on this PC. Nothing to fill in — click Test to check that notifications for this app are turned on. Clicking one opens the window at the tab it came from.",
   "settings.notify.saved": "Saved (encrypted)",
   "settings.notify.test": "Test",
   "settings.notify.test_ok": "Test sent — check the channel",

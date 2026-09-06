@@ -20,6 +20,11 @@ pub enum Destination {
     /// Discord webhook. Same shape as Slack's -- a URL that takes a JSON body
     /// -- with a different field name and a much shorter limit
     Discord { webhook: String },
+    /// This PC's own notification area. No address, no account, no network --
+    /// the one destination that is configured by choosing it. It reaches the
+    /// person sitting here with the window behind a browser, which is the one
+    /// person a chat app is the wrong way to reach.
+    Windows {},
 }
 
 impl Destination {
@@ -38,6 +43,10 @@ impl Destination {
             Destination::Telegram { .. } => 4_000,
             // Slack takes far more, but a long wall in a channel helps nobody
             Destination::Slack { .. } => 3_000,
+            // A banner is two lines on screen and one line in the tray.
+            // Windows itself stops drawing long before this; the cut is here
+            // so that what it does draw ends in a word rather than mid-way.
+            Destination::Windows {} => 200,
         }
     }
 
@@ -46,6 +55,7 @@ impl Destination {
             Destination::Slack { .. } => "slack",
             Destination::Telegram { .. } => "telegram",
             Destination::Discord { .. } => "discord",
+            Destination::Windows {} => "windows",
         }
     }
 }
@@ -67,15 +77,15 @@ pub struct Notifier {
     /// Sending happens on a separate thread, so it doesn't block the UI.
     /// The name travels with it: a failure that cannot say which destination
     /// failed is a failure nobody can act on.
-    tx: mpsc::Sender<(String, Destination, String)>,
+    tx: mpsc::Sender<(String, Destination, String, Option<usize>)>,
 }
 
 impl Notifier {
     pub fn new(dests: HashMap<String, Destination>, primary: Option<String>) -> Self {
-        let (tx, rx) = mpsc::channel::<(String, Destination, String)>();
+        let (tx, rx) = mpsc::channel::<(String, Destination, String, Option<usize>)>();
         std::thread::spawn(move || {
-            while let Ok((name, dest, text)) = rx.recv() {
-                if let Err(e) = send_blocking(&dest, &text) {
+            while let Ok((name, dest, text, tab)) = rx.recv() {
+                if let Err(e) = send_blocking_about(&dest, &text, tab) {
                     crate::append_hook_log(&crate::i18n::tp(
                         "err.notify.send_failed",
                         &[("e", &format!("{name} ({}): {e}", dest.name()))],
@@ -110,7 +120,7 @@ impl Notifier {
     pub fn send_all(&self, text: &str) -> String {
         let mut names: Vec<&str> = Vec::new();
         for (name, dest) in &self.dests {
-            let _ = self.tx.send((name.clone(), dest.clone(), text.to_string()));
+            let _ = self.tx.send((name.clone(), dest.clone(), text.to_string(), None));
             names.push(name);
         }
         names.sort_unstable();
@@ -120,9 +130,19 @@ impl Notifier {
     /// Queue a send by destination name. The return value is a message for
     /// on-screen display.
     pub fn send(&self, name: &str, text: &str) -> String {
+        self.send_about(name, text, None)
+    }
+
+    /// The same, saying which tab the message is about.
+    ///
+    /// Only this PC's own notification area has anywhere to put that: a banner
+    /// can be clicked, and a click that lands on the tab the message came from
+    /// saves the search that the notification was supposed to spare. A chat
+    /// app gets a link or nothing, and neither of those is a tab number.
+    pub fn send_about(&self, name: &str, text: &str, tab: Option<usize>) -> String {
         match self.dests.get(name) {
             Some(dest) => {
-                let _ = self.tx.send((name.to_string(), dest.clone(), text.to_string()));
+                let _ = self.tx.send((name.to_string(), dest.clone(), text.to_string(), tab));
                 format!(">> NOTIFY[{name}] {text}")
             }
             None => crate::i18n::tp("err.notify.unknown_target", &[("name", name)]),
@@ -131,6 +151,27 @@ impl Notifier {
 }
 
 pub fn send_blocking(dest: &Destination, text: &str) -> Result<(), String> {
+    send_blocking_about(dest, text, None)
+}
+
+pub fn send_blocking_about(
+    dest: &Destination,
+    text: &str,
+    tab: Option<usize>,
+) -> Result<(), String> {
+    // Nothing to post, nothing to time out: this one is a call into the shell.
+    if let Destination::Windows {} = dest {
+        // A banner has room for a heading and a line under it. The message is
+        // built with the most important thing first (which tab), the next most
+        // important on the line after (what it said), and everything below
+        // that -- a link to answer from a phone -- for the services that show
+        // a wall of text. So the banner takes the first two lines and lets the
+        // rest go, rather than showing a URL nobody at this PC needs.
+        let mut lines = text.lines();
+        let title = lines.next().unwrap_or_default();
+        let body = lines.next().unwrap_or_default();
+        return crate::wintoast::show(title, &clip(body, dest.limit()), tab);
+    }
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(10)))
         .build()
@@ -147,6 +188,8 @@ pub fn send_blocking(dest: &Destination, text: &str) -> Result<(), String> {
         Destination::Discord { webhook } => agent
             .post(webhook)
             .send_json(serde_json::json!({ "content": text })),
+        // Handled above, before an HTTP agent was ever built.
+        Destination::Windows {} => unreachable!(),
     };
     match result {
         Ok(_) => Ok(()),

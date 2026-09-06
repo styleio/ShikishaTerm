@@ -1099,6 +1099,8 @@
   "settings.notify.token_ph": "Bot トークン",
   "settings.notify.chat_ph": "chat_id",
   "settings.notify.save": "保存",
+  "settings.notify.type.windows": "このPC",
+  "settings.notify.windows.hint": "このPCのWindows通知に出します。入力は不要です。テストを押すと、このアプリの通知が有効かどうか確かめられます。通知をクリックすると、その通知を出したタブを開いた状態でウィンドウが前に出ます。",
   "settings.notify.saved": "保存しました（暗号化）",
   "settings.notify.test": "テスト送信",
   "settings.notify.test_ok": "テスト送信しました — 受信を確認してください",

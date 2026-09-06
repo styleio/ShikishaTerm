@@ -1162,6 +1162,7 @@ fn handle(
                             *token = deref(token);
                             *chat_id = deref(chat_id);
                         }
+                        crate::notify::Destination::Windows {} => {}
                     }
                     match crate::notify::send_blocking(
                         &dest,
@@ -4451,6 +4452,13 @@ function notifyCard() {
           if (r.ok) { d.token = "@" + sk; tokIn.value = ""; refreshSave(); return true; }
           toast(r.error || T["settings.secrets.save_failed"], true); return false;
         };
+      } else if (d.type === "windows") {
+        // Nothing to fill in. That is the whole appeal of it: no webhook to
+        // create, no bot to register, no account. Test still means something
+        // -- it is how you find out whether notifications are turned off for
+        // this app in the Windows settings.
+        fields.append(el("div", {class:"hint", style:"flex:1 1 0"}, T["settings.notify.windows.hint"]));
+        testPayload = () => ({type:"windows"});
       } else {
         const hasHook = (d.webhook || "").startsWith("@");
         const hookIn = el("input", {type:"password", style:"flex:1 1 0;min-width:180px",
@@ -4467,8 +4475,13 @@ function notifyCard() {
           toast(r.error || T["settings.secrets.save_failed"], true); return false;
         };
       }
-      const saveBtn = el("button", {class:"quiet", onclick: async () => {
-        if (await saveSecret()) { toast(T["settings.notify.saved"]); draw(); } }}, T["settings.notify.save"]);
+      // Only where there is a secret to keep. A destination with no address
+      // has nothing to save, and a button that saves nothing is a button that
+      // makes a person wonder what they forgot to fill in.
+      const saveBtn = saveSecret
+        ? el("button", {class:"quiet", onclick: async () => {
+            if (await saveSecret()) { toast(T["settings.notify.saved"]); draw(); } }}, T["settings.notify.save"])
+        : el("span", {style:"display:none"});
       const testBtn = el("button", {class:"quiet", onclick: async () => {
         const r = await fetch("/api/notify/test", {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
           body: JSON.stringify(testPayload())}).then(r=>r.json()).catch(()=>null);
@@ -4499,7 +4512,8 @@ function notifyCard() {
   const nameIn = el("input", {class:"mono", placeholder:T["settings.notify.name_ph"], style:"width:120px"});
   const typeSel = el("select", {style:"width:120px"});
   typeSel.append(el("option", {value:"slack"}, "Slack"), el("option", {value:"discord"}, "Discord"),
-                 el("option", {value:"telegram"}, "Telegram"));
+                 el("option", {value:"telegram"}, "Telegram"),
+                 el("option", {value:"windows"}, T["settings.notify.type.windows"]));
   const addBtn = el("button", {class:"primary", onclick: () => {
     // The display name may be anything (Japanese included); it's only the
     // derived secret key that has to be ASCII (see slugId below).

@@ -45,7 +45,23 @@ vt100 = "0.16"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
 # wry と同じ版に揃える (ICoreWebView2 の型が一致しないと CDP を呼べない)
 webview2-com = "0.38.2"
-windows = { version = "0.61.3", features = ["Win32_Foundation"] }
+windows = { version = "0.61.3", features = [
+  "Win32_Foundation",
+  # A real Windows notification, and what an unpackaged program needs before it
+  # is allowed to show one: an AppUserModelID, which means a Start Menu
+  # shortcut, which means the shell's own COM (src/wintoast.rs)
+  "UI_Notifications",
+  "Data_Xml_Dom",
+  "Foundation",
+  "Foundation_Collections",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_Storage_EnhancedStorage",
+  "Win32_Storage_FileSystem",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
+  "Win32_UI_WindowsAndMessaging",
+] }
 wry = "0.56.0"
 zeroize = "1.9.0"
 

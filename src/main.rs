@@ -60,6 +60,7 @@ mod uistate;
 mod update;
 mod watch;
 mod winpath;
+mod wintoast;
 mod ws;
 mod webui;
 mod worktree;
@@ -2956,6 +2957,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 flash = Some(format!("{} — {said}", t.title));
             }
 
+            // A Windows notification that was clicked. The whole point of the
+            // banner is that the person is not looking at this window, so the
+            // answer to a click is to put the window in front of them, showing
+            // the tab the notification was about.
+            if let Some(tab) = wintoast::clicked_tab() {
+                wintoast::raise();
+                append_hook_log(&format!("wintoast: clicked (tab{tab})"));
+                if tab >= 1 {
+                    for e in keys_for(&browser::Ev::Select { tab }) {
+                        surface.inject(e);
+                    }
+                }
+            }
+
             let mut fired_notes: Vec<(usize, String)> = Vec::new();
             for i in 0..tabs.len() {
                 let showing = session_at(&surfaces, active) == Some(i);
@@ -3413,7 +3428,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                 &ctx.output,
                                 reply.as_deref(),
                             );
-                            let status = notifier.send(&dest, &msg);
+                            // Which tab, so that a banner on this PC can be
+                            // clicked back to the thing it is about.
+                            let status = notifier.send_about(&dest, &msg, Some(idx));
                             append_hook_log(&format!("notify_on_done tab{idx} \"{dest}\": {status}"));
                         }
                     }

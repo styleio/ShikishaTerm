@@ -547,6 +547,8 @@ impl Config {
                     *token = deref(token);
                     *chat_id = deref(chat_id);
                 }
+                // Nothing to keep secret: it has no address and no account.
+                crate::notify::Destination::Windows {} => {}
             }
         }
         (map, err)
