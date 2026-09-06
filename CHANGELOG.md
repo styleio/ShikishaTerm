@@ -49,6 +49,12 @@ once it reaches its first tagged release.
   not in the list, and typing still works.
 
 ### Fixed
+- **Tabs written by an older version are not silently lost.** Tabs used to be
+  written beside the working folders rather than inside one. When that shape
+  stopped being read, every tab in a settings file from the older version
+  stopped existing — no error, no warning, a workspace that simply opened
+  empty and no way to tell why. They are read again, into the folder they
+  would have been put in.
 - **A progress bar is no longer read as a message.** A program reporting how far
   along it is sends the same escape sequence as one sending a notification, with
   a number in front. That number was being read as the message: a tab would say

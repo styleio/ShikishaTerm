@@ -23,6 +23,16 @@ pub struct Config {
     /// Working folders written directly when workspaces are not used
     #[serde(default)]
     pub folders: Vec<FolderConfig>,
+    /// Tabs written directly here, the way they were before folders existed.
+    ///
+    /// Kept because a settings file outlives the version that wrote it. When
+    /// this shape stopped being read, every tab in a file from the older
+    /// version stopped existing -- no error, no warning, a workspace that
+    /// simply opened empty. Reading them and folding them into the first
+    /// folder is what upgrading should have done in the first place.
+    #[serde(default)]
+    pub tabs: Vec<TabConfig>,
+
     /// The colour chosen for a project, against the folder git shares between
     /// its branches. Nothing here means every project still has a colour --
     /// one worked out from its own name -- so this only ever holds answers
@@ -746,6 +756,16 @@ pub struct WorkspaceSpec {
     /// Inline definition
     #[serde(default)]
     pub folders: Vec<FolderConfig>,
+    /// Tabs written directly here, the way they were before folders existed.
+    ///
+    /// Kept because a settings file outlives the version that wrote it. When
+    /// this shape stopped being read, every tab in a file from the older
+    /// version stopped existing -- no error, no warning, a workspace that
+    /// simply opened empty. Reading them and folding them into the first
+    /// folder is what upgrading should have done in the first place.
+    #[serde(default)]
+    pub tabs: Vec<TabConfig>,
+
     /// Automation shared across this workspace (used when a tab doesn't specify its own)
     #[serde(default)]
     pub automation: Option<String>,
@@ -775,6 +795,16 @@ pub struct WorkspaceFile {
     pub name: Option<String>,
     #[serde(default)]
     pub folders: Vec<FolderConfig>,
+    /// Tabs written directly here, the way they were before folders existed.
+    ///
+    /// Kept because a settings file outlives the version that wrote it. When
+    /// this shape stopped being read, every tab in a file from the older
+    /// version stopped existing -- no error, no warning, a workspace that
+    /// simply opened empty. Reading them and folding them into the first
+    /// folder is what upgrading should have done in the first place.
+    #[serde(default)]
+    pub tabs: Vec<TabConfig>,
+
     /// Automation shared across this workspace
     #[serde(default)]
     pub automation: Option<String>,
@@ -1422,6 +1452,19 @@ fn foldered(folders: &[FolderConfig]) -> Vec<FolderConfig> {
     out
 }
 
+/// Folders as written, plus any tabs written the old way.
+///
+/// The old shape put tabs beside the folders instead of inside one. Those
+/// belong to the folder a person would have put them in -- the first, which is
+/// the one that exists when nobody has made a second.
+fn foldered_with(folders: &[FolderConfig], legacy: &[TabConfig]) -> Vec<FolderConfig> {
+    let mut out = foldered(folders);
+    if !legacy.is_empty() {
+        out[0].tabs.extend(legacy.iter().cloned());
+    }
+    out
+}
+
 /// Turns written groups into ones with a real folder, and lays their tabs out
 /// in one list in the order they are shown.
 fn resolve_folders(defs: &[FolderConfig], protect: &[String]) -> (Vec<Folder>, Vec<FlatTab>) {
@@ -1921,8 +1964,11 @@ impl Config {
         let mut out = Vec::new();
         let mut errors = Vec::new();
         if self.workspaces.is_empty() {
-            if !self.folders.is_empty() {
-                let (folders, tabs) = resolve_folders(&foldered(&self.folders), &self.git.protected());
+            // Tabs written the old way, with no folder around them, are still
+            // a screenful of work somebody arranged
+            if !self.folders.is_empty() || !self.tabs.is_empty() {
+                let (folders, tabs) =
+                    resolve_folders(&foldered_with(&self.folders, &self.tabs), &self.git.protected());
                 out.push(Workspace {
                     name: "DEFAULT".into(),
                     folders,
@@ -1950,7 +1996,7 @@ impl Config {
             ) = match &ws.file {
                 Some(f) => match read_json::<WorkspaceFile>(&resolve_data_path(f)) {
                     Ok(p) => (
-                        foldered(&p.folders),
+                        foldered_with(&p.folders, &p.tabs),
                         p.name,
                         p.automation.or(p.lua),
                         (p.secrets_allow, p.secrets_allow_all),
@@ -1963,7 +2009,7 @@ impl Config {
                     }
                 },
                 None => (
-                    foldered(&ws.folders),
+                    foldered_with(&ws.folders, &ws.tabs),
                     None,
                     None,
                     (Vec::new(), false),
@@ -2313,6 +2359,60 @@ pub fn load() -> Option<Config> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A settings file outlives the version that wrote it.
+    ///
+    /// Tabs used to be written beside the folders rather than inside one. When
+    /// that stopped being read, every tab in an older file stopped existing --
+    /// no error, no warning, a workspace that opened empty and a person with
+    /// no way to tell why. They are read again, into the folder they would
+    /// have been put in.
+    #[test]
+    fn tabs_written_the_old_way_are_still_someones_tabs() {
+        let old: Config = serde_json::from_str(
+            r#"{"workspaces":[{"name":"project","tabs":[
+                 {"name":"coder","command":"claude"},
+                 {"name":"reviewer","command":"codex"}]}]}"#,
+        )
+        .unwrap();
+        let (ws, errs) = old.resolve_workspaces();
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(ws.len(), 1);
+        let names: Vec<&str> = ws[0].tabs.iter().map(|t| t.cfg.name.as_deref().unwrap_or("")).collect();
+        assert_eq!(names, vec!["coder", "reviewer"], "旧形式のタブが消えない");
+        assert_eq!(ws[0].folders.len(), 1, "入れ物のフォルダは1つだけ作る");
+
+        // Written both ways, the ones inside a folder come first and the older
+        // ones follow: the file says where they sit, and the migration adds
+        let both: Config = serde_json::from_str(
+            r#"{"workspaces":[{"name":"p",
+                 "folders":[{"cwd":"D:/a","tabs":[{"name":"inside","command":"cmd"}]}],
+                 "tabs":[{"name":"outside","command":"cmd"}]}]}"#,
+        )
+        .unwrap();
+        let (ws, _) = both.resolve_workspaces();
+        let names: Vec<&str> = ws[0].tabs.iter().map(|t| t.cfg.name.as_deref().unwrap_or("")).collect();
+        assert_eq!(names, vec!["inside", "outside"]);
+
+        // The same shape without workspaces at all
+        let flat: Config = serde_json::from_str(
+            r#"{"tabs":[{"name":"only","command":"cmd"}]}"#,
+        )
+        .unwrap();
+        let (ws, _) = flat.resolve_workspaces();
+        assert_eq!(ws.len(), 1, "タブだけの設定でも画面が1つできる");
+        assert_eq!(ws[0].tabs.len(), 1);
+
+        // And the current shape is untouched by any of this
+        let now: Config = serde_json::from_str(
+            r#"{"workspaces":[{"name":"p","folders":[{"cwd":"D:/a",
+                 "tabs":[{"name":"one","command":"cmd"}]}]}]}"#,
+        )
+        .unwrap();
+        let (ws, _) = now.resolve_workspaces();
+        assert_eq!(ws[0].tabs.len(), 1);
+        assert_eq!(ws[0].folders.len(), 1);
+    }
     use super::*;
 
     /// Which branches refuse a direct commit is the project's answer, and a

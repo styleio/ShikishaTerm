@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 const WSL_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Distributions that exist to serve other software and are not for people to
-/// open a shell in. Windows Terminal hides the same two.
+/// open a shell in: container tooling installs them, and nobody works in one.
 const SERVICE_DISTROS: [&str; 2] = ["docker-desktop", "rancher-desktop"];
 
 /// Biggest `~/.ssh/config` we will read, in bytes, per file. Generous for a
