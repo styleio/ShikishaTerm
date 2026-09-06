@@ -8,6 +8,24 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+
+## [0.6.0] - 2026-09-06
+
+The terminal underneath got faster and more honest, and the phone in your
+pocket got a way to answer.
+
+Windows hands every terminal a pseudo console, and the one it hands out is the
+older design: it parses what a program writes into a text buffer and re-renders
+a picture of that buffer down the pipe. Measured here, it drops whole sequences,
+rewrites others, and spends 286ms and 2.93MB where Microsoft's newer one spends
+119ms and 2.17MB on the same ten thousand lines of Japanese. That newer one now
+travels with the program, hash-pinned and never re-signed.
+
+And the notification a tab sends when it finishes can carry a link to a page
+holding one tab, what it said, and a box to answer in -- so "yes, go ahead" no
+longer means walking back to the PC. The link is not the key to anything: it is
+a ticket for that one tab, it expires, and disconnecting tears it up.
+
 ### Added
 - **Answering from the notification, without opening the board.** A message
   saying a tab has finished can carry a link to one small page: that tab's
