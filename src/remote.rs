@@ -744,6 +744,54 @@ fn handle(
         return req.respond(resp).map_err(Into::into);
     }
 
+    // What an installed copy needs before it has anything to show: the
+    // manifest and the icons.
+    //
+    // Ahead of the token gate, and it has to be -- a browser fetches a
+    // manifest on its own account, and a launcher fetches an icon days later,
+    // neither of them carrying anything the page was given. Nothing here is
+    // state: a name, a colour, and a drawing. See src/pwa.rs.
+    if method == "GET" && path == crate::pwa::MANIFEST_PATH {
+        return req
+            .respond(
+                Response::from_string(crate::pwa::manifest_json())
+                    .with_header(
+                        Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"application/manifest+json; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    )
+                    // It names the theme's colour, which the person can change.
+                    .with_header(
+                        Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
+                    ),
+            )
+            .map_err(Into::into);
+    }
+    if method == "GET" {
+        if let Some(bytes) = crate::pwa::icon(&path) {
+            return req
+                .respond(
+                    Response::from_data(bytes)
+                        .with_header(
+                            Header::from_bytes(&b"Content-Type"[..], &b"image/png"[..]).unwrap(),
+                        )
+                        // The drawing only changes when the program does, and
+                        // the launcher that wants it may ask while nothing of
+                        // ours is running to answer twice.
+                        .with_header(
+                            Header::from_bytes(
+                                &b"Cache-Control"[..],
+                                &b"public, max-age=604800, immutable"[..],
+                            )
+                            .unwrap(),
+                        ),
+                )
+                .map_err(Into::into);
+        }
+    }
+
     // The reply page a notification links to.
     //
     // Ahead of the token gate, and on purpose: the ticket in the path IS the
@@ -1581,6 +1629,39 @@ mod tests {
         // ...and the disconnect that ends every phone ends this too
         ui.cut_sessions();
         assert_eq!(phone.status(&format!("/r/{id}")), 404, "切断で無効になる");
+    }
+
+    /// A browser fetches a manifest on its own account, and a launcher fetches
+    /// an icon days later -- neither carrying anything the page was given. So
+    /// both answer without the token, and the test is that nothing else moved
+    /// with them.
+    #[test]
+    fn the_home_screen_gets_what_it_needs_and_nothing_more() {
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "board-token-0000".into(),
+            String::new(),
+        )
+        .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let phone = Phone::new(&base);
+
+        let (code, body) = phone.said(crate::pwa::MANIFEST_PATH);
+        assert_eq!(code, 200, "マニフェストはトークン無しで読めないと install できない");
+        assert!(!body.contains("board-token-0000"), "鍵は載らない");
+        let m: serde_json::Value = serde_json::from_str(&body).unwrap();
+        for i in m["icons"].as_array().unwrap() {
+            let src = i["src"].as_str().unwrap();
+            assert_eq!(phone.status(src), 200, "{src} が 404 だと install ごと拒否される");
+        }
+        assert_eq!(phone.status("/apple-touch-icon.png"), 200);
+
+        // Everything that can read or move something is where it was.
+        assert_eq!(phone.status("/api/state"), 403);
+        assert_eq!(phone.status("/cfg"), 403);
+        assert_eq!(phone.status("/pwa/nothing.png"), 403);
+        ui.shutdown();
     }
 
     #[test]

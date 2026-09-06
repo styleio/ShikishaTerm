@@ -130,7 +130,10 @@ impl Scheme {
         ]
     }
 
-    fn bg(&self) -> String {
+    /// The colour the screen is painted with. Also what the browser's own bar
+    /// and an installed app's splash screen are told to use, so that the app
+    /// does not flash a colour it never uses again (src/pwa.rs).
+    pub fn bg(&self) -> String {
         self.background
             .as_deref()
             .map(str::trim)

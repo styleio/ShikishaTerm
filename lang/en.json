@@ -258,6 +258,7 @@
   "tui.remote.cut.title": "A phone is connected — click to disconnect (rotates the token, so reconnecting needs the new QR) and restore this PC's width",
   "tui.remote.cut.title.sticky": "A phone is connected — click to disconnect (screen and control stop at once; the fixed token lets that phone open the link again)",
   "tui.net.cut.title": "Disconnected from this PC",
+  "pwa.description": "See what every agent on your PC is doing, and answer it, from wherever you are.",
   "tui.net.cut.sub": "The PC ended this session (its access code changed). Scan the new QR code on the PC to reconnect.",
   "tui.net.cut.sub.sticky": "The PC ended this session. Its access code is unchanged, so opening the link again reconnects this device.",
   "tui.net.cut.again": "Reconnect",

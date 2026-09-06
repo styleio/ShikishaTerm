@@ -43,6 +43,7 @@ mod netaddr;
 mod notify;
 mod pr;
 mod profile;
+mod pwa;
 mod reader;
 mod remote;
 mod reply;
@@ -1163,9 +1164,23 @@ fn run_in_window() -> Result<()> {
     let page = shell::page();
     std::thread::spawn(move || {
         for req in server.incoming_requests() {
-            // Only serves the shell page. The QR image rides along inside the state,
-            // so there's no separate route for it (works even when the window and
-            // the phone get served from different origins).
+            // The shell page and the pictures it names. The QR image rides
+            // along inside the state, so there's no separate route for it
+            // (works even when the window and the phone get served from
+            // different origins).
+            //
+            // The pictures are here because the page asks for them wherever it
+            // is served, and a page whose <link> answers with HTML is a page
+            // that lies about itself. It is the same drawing the phone gets.
+            let path = req.url().split('?').next().unwrap_or("/").to_string();
+            if let Some(bytes) = pwa::icon(&path) {
+                let r = tiny_http::Response::from_data(bytes).with_header(
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"image/png"[..])
+                        .expect("header"),
+                );
+                let _ = req.respond(r);
+                continue;
+            }
             let r = tiny_http::Response::from_string(page.clone()).with_header(
                 tiny_http::Header::from_bytes(
                     &b"Content-Type"[..],

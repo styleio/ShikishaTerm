@@ -25,6 +25,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      stops the mis-detection that sets the offer off in the first place -->
 <meta name="google" content="notranslate">
 <title>SHIKISHA-TERM</title>
+<!-- A colour for the browser's own bar, a picture for a bookmark, and --
+     when the pairing is the kind that outlives a tab -- what a phone
+     needs to keep this page on its home screen. See src/pwa.rs -->
+{{PWA}}
 <style>
   :root {
     /* Every colour in one place, written out by the app from the chosen
@@ -1089,11 +1093,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     /* Move the footer up into a top bar. The hamburger fits inside this bar,
        so it never overlaps any body content (the position:fixed ☰ sits in
        the bar's own left margin) */
+    /* The strip the phone keeps for itself -- the clock, the notch, the
+       camera -- is zero in a browser tab (the browser's own bar is already
+       there) and real when this page is installed and runs full-screen. Both
+       the bar and the drawer start below it, so nothing we draw ends up
+       underneath the time */
     #status { order:-1; width:100vw; box-sizing:border-box; gap:8px;
-      min-height:42px; padding-left:48px;
+      min-height:calc(42px + env(safe-area-inset-top)); padding-left:48px;
+      padding-top:calc(5px + env(safe-area-inset-top));
       border-top:none; border-bottom:1px solid var(--line); }
     /* ☰ sits on the left of the top bar (centered at the bar's height) */
-    #hamburger { display:flex; top:6px; left:8px; }
+    #hamburger { display:flex; top:calc(6px + env(safe-area-inset-top)); left:8px; }
     /* Save width on the emergency stop by showing just a red ■ (a universal stop symbol) */
     #stop { font-size:0; padding:2px 9px; }
     #stop::after { content:"\25A0"; font-size:13px; }
@@ -1107,7 +1117,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #tabs { position:fixed; top:0; left:0; bottom:0; z-index:30; width:240px;
       transform:translateX(-100%); transition:transform .2s ease;
       box-shadow:2px 0 14px rgba(0,0,0,.5);
-      padding-top:46px; }   /* leaves room so the hamburger doesn't cover the first item */
+      padding-top:calc(46px + env(safe-area-inset-top)); }   /* leaves room so the hamburger doesn't cover the first item */
     #app.drawer #tabs { transform:none; }
     #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
       background:rgba(0,0,0,.45); }
@@ -6279,6 +6289,7 @@ pub fn page_for(sticky: bool) -> String {
         )
         .replace("{{ACTIONS}}", &actions_json())
         .replace("{{STICKY}}", if sticky { "true" } else { "false" })
+        .replace("{{PWA}}", &crate::pwa::head(sticky))
         .replace(
         "{{BUILD}}",
         &serde_json::to_string(&format!(
