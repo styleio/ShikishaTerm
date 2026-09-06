@@ -5346,9 +5346,18 @@ function tabPane(ws, t) {
     const drawReply = () => {
       replyBox.textContent = "";
       warn.textContent = "";
-      if (!t.notify_on_done) { delete t.notify_reply; return; }
-      replyBox.append(check(t, "notify_reply", T["settings.tab.notify.reply"]));
-      if (t.notify_reply) {
+      // Always drawn, even with no destination chosen -- greyed rather than
+      // gone. A control that only appears once something else is set is a
+      // control nobody finds: you cannot look for what is not there.
+      const on = !!t.notify_on_done;
+      if (!on) delete t.notify_reply;
+      const label = check(t, "notify_reply", T["settings.tab.notify.reply"]);
+      const box = label.querySelector("input");
+      box.disabled = !on;
+      label.style.opacity = on ? "" : ".5";
+      if (!on) label.title = T["settings.tab.notify.reply.needs_dest"];
+      replyBox.append(label);
+      if (on && t.notify_reply) {
         warn.textContent = fill(T["settings.tab.notify.reply.warn"], {name: t.notify_on_done});
       }
     };

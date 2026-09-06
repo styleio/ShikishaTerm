@@ -1057,6 +1057,7 @@
   "settings.tab.notify.none": "しない",
   "settings.tab.notify.hint": "このAIが応答を返し終えるたびに、この通知先へ送ります。本文にはタブ名と、答えの冒頭が入ります。",
   "settings.tab.notify.reply": "返信用のリンクを付ける",
+  "settings.tab.notify.reply.needs_dest": "先に通知先を選んでください",
   "settings.tab.notify.reply.warn": "このリンクを開ける人は、このタブに指示を書き込めます。リンクが届くのはこのPCのプライベートネットワーク内（Tailscale か同じLAN）だけなので、対象は「その中にいて、かつ『{name}』を読める人」です。それがあなた以外にもいる場合、その人はあなたのAIアカウントを使うことになります。多くのAIサブスクリプションは複数人での利用を禁止しています。契約中の規約を確認してください。",
   "settings.tab.notify.none_hint": "先に「全体設定 → 通知先」で追加してください。",
   "settings.model.hint": "安いモデル/ローカルAIをタブにできます（例: model deepseek/deepseek-chat）。討論に混ぜられます。",

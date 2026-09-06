@@ -1059,6 +1059,7 @@
   "settings.tab.notify.none": "Off",
   "settings.tab.notify.hint": "Ping this destination each time this AI finishes a response. The message carries the tab's name and the first line of the answer.",
   "settings.tab.notify.reply": "Include a link for replying",
+  "settings.tab.notify.reply.needs_dest": "Choose where to notify first",
   "settings.tab.notify.reply.warn": "Anyone who can open that link can type into this tab. The link only works from this machine's private network (Tailscale, or this LAN), so it is the people who are both on that network and able to read “{name}”. If that is more than you, they would be using your AI account — and most AI subscriptions forbid sharing one. Check the terms of the plan you are on.",
   "settings.tab.notify.none_hint": "Add a destination in General → Notifications first.",
   "settings.model.hint": "Turn a cheap model / local AI into a tab (e.g. model deepseek/deepseek-chat). It can join discussions too.",
