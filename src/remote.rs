@@ -449,6 +449,16 @@ impl RemoteUi {
     /// Point the settings reverse-proxy at the local (loopback) settings web
     /// server: its origin (`http://127.0.0.1:<port>`) and its own token, which
     /// the proxy injects server-side. The phone never sees this token.
+    /// Where the board is, without the key to it.
+    ///
+    /// A phone that has been paired opens this and is back on the board -- its
+    /// token is in the browser's own storage. Anyone else gets a page that can
+    /// read nothing. That is the difference between a link worth putting in a
+    /// notification and a credential nobody should post into a chat room.
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+
     pub fn set_settings_backend(&self, origin: String, token: String) {
         *self.settings.lock().unwrap() = Some((origin, token));
     }

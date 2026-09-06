@@ -3366,9 +3366,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // Beginner-friendly "notify me when this AI answers": a
                         // per-tab shortcut for an on_done that calls notify.
                         if let Some(dest) = tabs[idx - 1].notify_on_done.clone() {
-                            let msg = i18n::tp(
-                                "msg.notify.on_done",
-                                &[("name", &tabs[idx - 1].title)],
+                            // Three lines, and each one earns its place. The
+                            // name, because a phone buzzing without saying
+                            // which tab finished is a phone that sends you to
+                            // the PC to find out. The opening of the answer,
+                            // because most of the time that IS the answer and
+                            // the walk can be skipped entirely. And where the
+                            // board is -- but never the key to it: a paired
+                            // phone opens this and is already signed in from
+                            // its own storage, while the same link in a shared
+                            // channel hands over nothing.
+                            let msg = on_done_message(
+                                &tabs[idx - 1].title,
+                                &ctx.output,
+                                remote_ui.as_ref().map(|r| r.origin()),
                             );
                             let status = notifier.send(&dest, &msg);
                             append_hook_log(&format!("notify_on_done tab{idx} \"{dest}\": {status}"));
@@ -7982,6 +7993,30 @@ fn touched_recently(t: &Tab, now_ms: u64) -> bool {
 
 /// An excerpt collapsed onto a single line, for logging. Full text isn't
 /// readable, so keep only the beginning.
+/// What a phone is told when a tab finishes, for the people who asked to be
+/// told rather than writing a hook for it.
+///
+/// Three lines, and each one earns its place. The name, because a phone that
+/// buzzes without saying which tab finished sends you to the PC to find out.
+/// The opening of the answer, because most of the time that IS the answer and
+/// the walk can be skipped entirely. And where the board is -- but never the
+/// key to it: a paired phone opens this and is already signed in from its own
+/// storage, while the same link sitting in a shared channel hands over
+/// nothing. A notification is not a place to put a credential.
+fn on_done_message(name: &str, output: &str, origin: Option<&str>) -> String {
+    let mut msg = i18n::tp("msg.notify.on_done", &[("name", name)]);
+    let said = log_excerpt(output, 160);
+    if !said.is_empty() {
+        msg.push('\n');
+        msg.push_str(&said);
+    }
+    if let Some(o) = origin {
+        msg.push('\n');
+        msg.push_str(o);
+    }
+    msg
+}
+
 fn log_excerpt(text: &str, max: usize) -> String {
     let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out: String = one.chars().take(max).collect();
@@ -8965,6 +9000,46 @@ fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the phone is told when a tab finishes.
+    ///
+    /// The point of the feature is not being told THAT something finished --
+    /// that only says "come back to the PC". It is being told enough to decide
+    /// whether to.
+    #[test]
+    fn a_finished_tab_says_enough_to_act_on() {
+        crate::i18n::init(Some("en"), &[std::path::PathBuf::from("lang")]);
+        let msg = on_done_message(
+            "reviewer",
+            "  Found 3 problems.
+  The first is in tab.rs.  ",
+            Some("http://100.64.1.2:8787/"),
+        );
+        let lines: Vec<&str> = msg.lines().collect();
+        assert_eq!(lines.len(), 3, "3行のはず: {msg:?}");
+        assert!(lines[0].contains("reviewer"), "どのタブか: {}", lines[0]);
+        // The answer itself, folded onto one line -- a notification is not a
+        // place to reproduce a screen
+        assert_eq!(lines[1], "Found 3 problems. The first is in tab.rs.");
+        assert_eq!(lines[2], "http://100.64.1.2:8787/");
+        // The link never carries the token. A paired phone is signed in from
+        // its own storage; the same line in a shared channel is inert
+        assert!(!msg.contains('?'), "リンクに問い合わせ文字列がない: {msg:?}");
+
+        // No remote running: two lines, and no dangling blank one
+        let quiet = on_done_message("builder", "done", None);
+        assert_eq!(quiet.lines().count(), 2);
+        assert!(!quiet.ends_with('\n'));
+
+        // Nothing said (a tab that finished silently): just the name
+        assert_eq!(on_done_message("x", "   ", None).lines().count(), 1);
+
+        // A long answer is cut where a person can still read it, and says so
+        let long = on_done_message("x", &"あ".repeat(400), None);
+        let said = long.lines().nth(1).unwrap();
+        assert_eq!(said.chars().count(), 161, "160字＋省略記号");
+        assert!(said.ends_with('…'));
+    }
 
     /// The whole way through, from the message the window sends when a key is
     /// pressed to the bytes the program receives.

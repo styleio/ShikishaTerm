@@ -9,6 +9,12 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **Discord, beside Slack and Telegram.** Same shape as a Slack webhook — a URL
+  that takes a JSON body — so it is one more entry in the notification list,
+  with the webhook saved encrypted like the others. Messages are now cut to fit
+  each service's ceiling rather than being refused whole: a notification that
+  fails is worse than one that is short, because nobody is waiting for the log
+  line that says so. And a send that fails now names the destination it was for.
 - **The newer ConPTY travels with the program.** Windows carries two pseudo
   consoles. The one in the box parses what a program writes into a text buffer
   and re-renders a picture of that buffer into our pipe; the newer one, which
@@ -56,6 +62,13 @@ once it reaches its first tagged release.
   gone at 16.
 
 ### Changed
+- **"Tell me when this tab answers" now says enough to act on.** It said "X
+  finished responding", which really means "come back to the PC and look". The
+  message now carries the opening of the answer — most of the time that is the
+  answer, and the walk can be skipped — and the address of the board, so a
+  phone can go straight there. That address never carries the access token: a
+  phone that has been paired opens it and is already signed in from its own
+  storage, while the same line sitting in a team channel hands over nothing.
 - **A tab that is not sending UTF-8 says so.** The characters came out wrong and
   nothing else happened: the program was fine, the terminal was fine, and the
   one setting that fixes it is the one nobody knows to look for. A tab now says

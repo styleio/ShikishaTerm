@@ -1154,7 +1154,10 @@ fn handle(
                         }
                     };
                     match &mut dest {
-                        crate::notify::Destination::Slack { webhook } => *webhook = deref(webhook),
+                        crate::notify::Destination::Slack { webhook }
+                        | crate::notify::Destination::Discord { webhook } => {
+                            *webhook = deref(webhook)
+                        }
                         crate::notify::Destination::Telegram { token, chat_id } => {
                             *token = deref(token);
                             *chat_id = deref(chat_id);
@@ -4453,7 +4456,7 @@ function notifyCard() {
         const hookIn = el("input", {type:"password", style:"flex:1 1 0;min-width:180px",
           placeholder: hasHook ? T["settings.providers.key_set_ph"] : T["settings.notify.webhook_ph"]});
         fields.append(hookIn);
-        testPayload = () => ({type:"slack", webhook: hookIn.value.trim() || d.webhook || ""});
+        testPayload = () => ({type: d.type, webhook: hookIn.value.trim() || d.webhook || ""});
         saveSecret = async () => {
           const v = hookIn.value.trim();
           if (!v) { toast(T["settings.secrets.value_required"], true); return false; }
@@ -4495,7 +4498,8 @@ function notifyCard() {
   };
   const nameIn = el("input", {class:"mono", placeholder:T["settings.notify.name_ph"], style:"width:120px"});
   const typeSel = el("select", {style:"width:120px"});
-  typeSel.append(el("option", {value:"slack"}, "Slack"), el("option", {value:"telegram"}, "Telegram"));
+  typeSel.append(el("option", {value:"slack"}, "Slack"), el("option", {value:"discord"}, "Discord"),
+                 el("option", {value:"telegram"}, "Telegram"));
   const addBtn = el("button", {class:"primary", onclick: () => {
     // The display name may be anything (Japanese included); it's only the
     // derived secret key that has to be ASCII (see slugId below).

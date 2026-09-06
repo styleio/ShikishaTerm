@@ -531,7 +531,8 @@ impl Config {
         };
         for d in map.values_mut() {
             match d {
-                crate::notify::Destination::Slack { webhook } => *webhook = deref(webhook),
+                crate::notify::Destination::Slack { webhook }
+                | crate::notify::Destination::Discord { webhook } => *webhook = deref(webhook),
                 crate::notify::Destination::Telegram { token, chat_id } => {
                     *token = deref(token);
                     *chat_id = deref(chat_id);

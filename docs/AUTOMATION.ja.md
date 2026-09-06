@@ -96,7 +96,7 @@ shikisha.send_to_tab("reviewer", "レビューして")   -- 名前を変えて�
 | `shikisha.sleep(ミリ秒)` | 待つ（待っている間も他のタブは動きます） |
 | `shikisha.state(tab)` | **今の**状態を読む（ループの終了条件に使う） |
 | `shikisha.wait_state(tab, "DONE", ミリ秒)` | その状態になるまで待つ |
-| `shikisha.notify("宛先", "文字列")` | Slack / Telegram へ通知（設定済みの宛先のみ） |
+| `shikisha.notify("宛先", "文字列")` | Slack / Discord / Telegram へ通知（設定済みの宛先のみ） |
 | `shikisha.restart(tab)` | そのタブを会話ごと再起動する。`shikisha.restart(tab, "fresh")` なら新しい会話で |
 | `shikisha.log("文字列")` | `logs/hooks.log` に記録 |
 | `shikisha.set_session("id")` | **このタブ**のCLIが動かしている会話のIDを伝える（再起動で引き継ぐため）。タブを指定しないのは、呼んだ側がそのタブだから |
@@ -551,7 +551,7 @@ Cookieバナーは失敗ではありませんが、**それを知っているの
   ステータス行にも同じボタンがあり、どの画面でも同じ位置に出ます
 - **入力ロック** … 中間タブを🔒にしておけば、人間が誤って指示を出せません
 - **サンドボックス** … 自動化からはファイル操作もインターネット接続も**既定ではできません**。
-  通知先も、設定に登録済みのSlack / Telegramにしか送れません
+  通知先も、設定に登録済みのSlack / Discord / Telegramにしか送れません
 
 ---
 

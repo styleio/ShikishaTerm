@@ -96,7 +96,7 @@ shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
 | `shikisha.sleep(ms)` | Wait (other tabs keep running while you wait) |
 | `shikisha.state(tab)` | Read the state **right now** (use this as a loop condition) |
 | `shikisha.wait_state(tab, "DONE", ms)` | Wait until it reaches that state |
-| `shikisha.notify("target", "text")` | Notify Slack / Telegram (only configured targets) |
+| `shikisha.notify("target", "text")` | Notify Slack / Discord / Telegram (only configured targets) |
 | `shikisha.restart(tab)` | Restart that tab, carrying its conversation over. `shikisha.restart(tab, "fresh")` starts a new one |
 | `shikisha.log("text")` | Record in `logs/hooks.log` |
 | `shikisha.set_session("id")` | Say which conversation THIS tab's CLI is running, so a restart can pick it up. No tab argument: the caller is the tab |
@@ -526,7 +526,7 @@ Several brakes keep automation from running away.
   The status bar carries the same button, in the same corner on every screen
 - **Input lock** … put 🔒 on the middle tabs so nobody instructs them by mistake
 - **Sandbox** … automation can **neither touch files nor reach the internet by default**.
-  Notifications only go to the Slack / Telegram targets you registered
+  Notifications only go to the Slack / Discord / Telegram targets you registered
 
 ---
 
@@ -774,7 +774,7 @@ thought of.
 |---|---|
 | `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared within the workspace |
 | `shikisha.log("text")` | Write a line to `logs/hooks.log` |
-| `shikisha.notify("text")` / `shikisha.notify("target", "text")` | Notify Slack / Telegram (only targets you configured). With no target named, it goes to the default one |
+| `shikisha.notify("text")` / `shikisha.notify("target", "text")` | Notify Slack / Discord / Telegram (only targets you configured). With no target named, it goes to the default one |
 | `shikisha.remote_url()` | The URL a phone can reach this app on, or `nil` while remote is off. Put it in a notification so "come and help" is one tap away |
 | `shikisha.t("key")` / `shikisha.tf("key", {name="..."})` | Look up a translated string (`tf` also substitutes `{name}`). Used by the built-in orchestrators so they speak the app's language |
 

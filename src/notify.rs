@@ -1,4 +1,4 @@
-//! Notification destinations (Slack / Telegram). DESIGN.md section 8.4.
+//! Notification destinations (Slack / Discord / Telegram). DESIGN.md section 8.4.
 //!
 //! The Lua sandbox can't talk to arbitrary URLs. Notifications are sent by
 //! the Rust side, and only to destinations already registered here
@@ -17,6 +17,45 @@ pub enum Destination {
     Slack { webhook: String },
     /// Telegram Bot API
     Telegram { token: String, chat_id: String },
+    /// Discord webhook. Same shape as Slack's -- a URL that takes a JSON body
+    /// -- with a different field name and a much shorter limit
+    Discord { webhook: String },
+}
+
+impl Destination {
+    /// How much text this service will take.
+    ///
+    /// Kept under each documented ceiling rather than at it. A message that
+    /// runs over is not shortened by the service, it is refused, and a
+    /// notification that fails is worse than one that is cut: nobody is
+    /// waiting for a log line. Counted in characters, because the message
+    /// this program sends most often is Japanese.
+    fn limit(&self) -> usize {
+        match self {
+            // 2,000 is the documented ceiling
+            Destination::Discord { .. } => 1_900,
+            // 4,096 for sendMessage
+            Destination::Telegram { .. } => 4_000,
+            // Slack takes far more, but a long wall in a channel helps nobody
+            Destination::Slack { .. } => 3_000,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Destination::Slack { .. } => "slack",
+            Destination::Telegram { .. } => "telegram",
+            Destination::Discord { .. } => "discord",
+        }
+    }
+}
+
+/// Cut to `max` characters, marking the cut.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    text.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
 }
 
 pub struct Notifier {
@@ -26,18 +65,20 @@ pub struct Notifier {
     /// stands in when no primary was chosen
     primary: Option<String>,
     /// Sending happens on a separate thread, so it doesn't block the UI.
-    tx: mpsc::Sender<(Destination, String)>,
+    /// The name travels with it: a failure that cannot say which destination
+    /// failed is a failure nobody can act on.
+    tx: mpsc::Sender<(String, Destination, String)>,
 }
 
 impl Notifier {
     pub fn new(dests: HashMap<String, Destination>, primary: Option<String>) -> Self {
-        let (tx, rx) = mpsc::channel::<(Destination, String)>();
+        let (tx, rx) = mpsc::channel::<(String, Destination, String)>();
         std::thread::spawn(move || {
-            while let Ok((dest, text)) = rx.recv() {
+            while let Ok((name, dest, text)) = rx.recv() {
                 if let Err(e) = send_blocking(&dest, &text) {
                     crate::append_hook_log(&crate::i18n::tp(
                         "err.notify.send_failed",
-                        &[("e", e.as_str())],
+                        &[("e", &format!("{name} ({}): {e}", dest.name()))],
                     ));
                 }
             }
@@ -69,7 +110,7 @@ impl Notifier {
     pub fn send_all(&self, text: &str) -> String {
         let mut names: Vec<&str> = Vec::new();
         for (name, dest) in &self.dests {
-            let _ = self.tx.send((dest.clone(), text.to_string()));
+            let _ = self.tx.send((name.clone(), dest.clone(), text.to_string()));
             names.push(name);
         }
         names.sort_unstable();
@@ -81,7 +122,7 @@ impl Notifier {
     pub fn send(&self, name: &str, text: &str) -> String {
         match self.dests.get(name) {
             Some(dest) => {
-                let _ = self.tx.send((dest.clone(), text.to_string()));
+                let _ = self.tx.send((name.to_string(), dest.clone(), text.to_string()));
                 format!(">> NOTIFY[{name}] {text}")
             }
             None => crate::i18n::tp("err.notify.unknown_target", &[("name", name)]),
@@ -94,6 +135,7 @@ pub fn send_blocking(dest: &Destination, text: &str) -> Result<(), String> {
         .timeout_global(Some(std::time::Duration::from_secs(10)))
         .build()
         .new_agent();
+    let text = &clip(text, dest.limit());
     let result = match dest {
         Destination::Slack { webhook } => agent
             .post(webhook)
@@ -101,6 +143,10 @@ pub fn send_blocking(dest: &Destination, text: &str) -> Result<(), String> {
         Destination::Telegram { token, chat_id } => agent
             .post(&format!("https://api.telegram.org/bot{token}/sendMessage"))
             .send_json(serde_json::json!({ "chat_id": chat_id, "text": text })),
+        // Discord answers 204 with no body when it takes the message
+        Destination::Discord { webhook } => agent
+            .post(webhook)
+            .send_json(serde_json::json!({ "content": text })),
     };
     match result {
         Ok(_) => Ok(()),
@@ -111,6 +157,7 @@ pub fn send_blocking(dest: &Destination, text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn unknown_destination_is_reported() {
@@ -146,10 +193,89 @@ mod tests {
     fn destination_parses_from_config_shape() {
         let d: HashMap<String, Destination> = serde_json::from_str(
             r#"{"slack":{"type":"slack","webhook":"https://example.com/x"},
+                "dc":{"type":"discord","webhook":"https://discord.com/api/webhooks/1/x"},
                 "tg":{"type":"telegram","token":"t","chat_id":"1"}}"#,
         )
         .unwrap();
         assert!(matches!(d["slack"], Destination::Slack { .. }));
+        assert!(matches!(d["dc"], Destination::Discord { .. }));
         assert!(matches!(d["tg"], Destination::Telegram { .. }));
+    }
+
+    /// A message over the service's ceiling is refused, not shortened, and a
+    /// notification that never arrives is the one failure this feature cannot
+    /// afford -- nobody is watching for it.
+    #[test]
+    fn a_message_too_long_is_cut_rather_than_lost() {
+        let discord = Destination::Discord { webhook: String::new() };
+        let telegram = Destination::Telegram { token: String::new(), chat_id: String::new() };
+        assert!(discord.limit() < 2000, "Discord の 2,000 文字を超えない");
+        assert!(telegram.limit() < 4096, "Telegram の 4,096 文字を超えない");
+
+        let long = "あ".repeat(5000);
+        for d in [&discord, &telegram] {
+            let cut = clip(&long, d.limit());
+            assert_eq!(cut.chars().count(), d.limit(), "上限ちょうどに収まる");
+            assert!(cut.ends_with('…'), "切ったことが読み手に分かる");
+        }
+        // Counted in characters, not bytes: three bytes each, and a limit
+        // measured in bytes would cut a Japanese message to a third
+        assert!(clip(&long, 100).len() > 100, "バイト数で切っていない");
+        // Short enough is left exactly as it was
+        assert_eq!(clip("そのまま", 10), "そのまま");
+        assert_eq!(clip("", 10), "");
+    }
+
+    /// What actually goes on the wire.
+    ///
+    /// Each service wants the text under a different name, and getting that
+    /// wrong is not visible from here -- the request succeeds or it does not,
+    /// and a webhook that answers 204 to a body it ignored looks exactly like
+    /// one that delivered. So the body is read back from a server of our own.
+    #[test]
+    fn each_service_gets_the_body_it_expects() {
+        use std::io::Read as _;
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("listen");
+        let port = server.server_addr().to_ip().expect("ip").port();
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&seen);
+        let t = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let Ok(mut req) = server.recv() else { return };
+                let mut body = String::new();
+                let _ = req.as_reader().read_to_string(&mut body);
+                kept.lock().unwrap().push((req.url().to_string(), body));
+                let _ = req.respond(tiny_http::Response::empty(204));
+            }
+        });
+
+        let hook = format!("http://127.0.0.1:{port}/hook");
+        send_blocking(&Destination::Discord { webhook: hook.clone() }, "終わりました").unwrap();
+        send_blocking(&Destination::Slack { webhook: hook }, "終わりました").unwrap();
+        t.join().unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "2件届いていない");
+        // Discord reads "content"; Slack reads "text". Neither accepts the other's
+        let discord: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
+        assert_eq!(discord["content"], "終わりました");
+        assert!(discord.get("text").is_none());
+        let slack: serde_json::Value = serde_json::from_str(&seen[1].1).unwrap();
+        assert_eq!(slack["text"], "終わりました");
+        assert!(slack.get("content").is_none());
+        // ...and the webhook URL is used as given, path and all
+        assert_eq!(seen[0].0, "/hook");
+    }
+
+    /// The name travels with the message so a failed send can say which
+    /// destination failed. Before, the log said only that something did.
+    #[test]
+    fn a_failure_can_name_the_destination() {
+        assert_eq!(Destination::Discord { webhook: String::new() }.name(), "discord");
+        assert_eq!(Destination::Slack { webhook: String::new() }.name(), "slack");
+        assert_eq!(
+            Destination::Telegram { token: String::new(), chat_id: String::new() }.name(),
+            "telegram"
+        );
     }
 }
