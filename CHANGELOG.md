@@ -9,6 +9,16 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **Answering from the notification, without opening the board.** A message
+  saying a tab has finished can carry a link to one small page: that tab's
+  name, what it said, and a box to answer in. Nothing else — no tab list, no
+  settings — because nothing else is being decided. When the answer was a
+  question with numbered choices, they become buttons. Off unless asked for,
+  per tab, with the reason in plain words beside the switch: whoever can open
+  that link can type into that tab, and if that is more than one person they
+  are sharing one AI account, which most subscriptions forbid.
+  Hand-written automation can build the same link with
+  `shikisha.reply_url(tab)`.
 - **Discord, beside Slack and Telegram.** Same shape as a Slack webhook — a URL
   that takes a JSON body — so it is one more entry in the notification list,
   with the webhook saved encrypted like the others. Messages are now cut to fit

@@ -1040,6 +1040,16 @@ pub struct TabConfig {
     /// response (a beginner-friendly shortcut for an on_done that calls notify).
     #[serde(default)]
     pub notify_on_done: Option<String>,
+    /// Whether that notification carries a link back: a page with this tab's
+    /// answer and a box to reply in.
+    ///
+    /// Off unless asked for, because it is the difference between telling
+    /// somebody something and letting them answer. Whoever can reach the link
+    /// can type into this tab -- which, for a subscription that forbids
+    /// sharing an account, is a term of that subscription and not only a
+    /// question of trust.
+    #[serde(default)]
+    pub notify_reply: bool,
     /// Automation dedicated to this tab (matched with the highest priority).
     /// A directory means per-event files; a .lua file means function definitions
     #[serde(default)]

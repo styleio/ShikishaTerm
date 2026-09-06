@@ -68,6 +68,20 @@ pub enum RemoteCmd {
     Send { tab: usize, text: String },
     /// Raw keys, e.g. an answer to a confirmation
     Keys { tab: usize, keys: String },
+    /// An answer typed on a reply page, which a notification linked to.
+    ///
+    /// Carries the tab's own id as well as its number because the two can
+    /// disagree by the time somebody answers: tabs are added and closed while
+    /// a phone sits in a pocket, and a "yes" delivered to whatever is now
+    /// third in the list is worse than one that arrives nowhere. `dest` is
+    /// where to report back that it landed
+    Reply {
+        tab_id: Option<String>,
+        tab: usize,
+        name: String,
+        dest: String,
+        text: String,
+    },
     /// Emergency stop / resume of automation
     SetAuto(bool),
     /// Operation from the screen (switch tab, menu, keystroke).
@@ -220,6 +234,10 @@ pub struct RemoteUi {
     accept_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// What a phone must hold besides the token, and where a cut lands (see Gate)
     gate: Arc<Gate>,
+    /// Tickets for the reply pages a notification can link to. Held here
+    /// because they die with the run, and because "disconnect" ends them
+    /// along with every phone
+    book: Arc<crate::reply::Book>,
 }
 
 /// How many sessions are remembered at once. Every re-pairing mints one and
@@ -395,6 +413,7 @@ impl RemoteUi {
             pw: Ids::new(),
             grants: Ids::new(),
         });
+        let book = Arc::new(crate::reply::Book::new());
 
         let server = Arc::new(server);
         let accept_thread = {
@@ -408,6 +427,7 @@ impl RemoteUi {
             let kf = Arc::clone(&keyframe_wanted);
             let settings = Arc::clone(&settings);
             let gate = Arc::clone(&gate);
+            let book_for_thread = Arc::clone(&book);
             std::thread::spawn(move || {
                 for req in server.incoming_requests() {
                     if stop.load(Ordering::SeqCst) {
@@ -416,7 +436,7 @@ impl RemoteUi {
                     if let Err(e) =
                         handle(
                             req, &token, &snapshot, &tx, &clients, &states, &polls, &kf,
-                            &settings, &gate, sticky,
+                            &settings, &gate, &book_for_thread, sticky,
                         )
                     {
                         crate::append_hook_log(&crate::i18n::tp(
@@ -441,6 +461,7 @@ impl RemoteUi {
             keyframe_wanted,
             settings,
             gate,
+            book,
             server: Mutex::new(Some(server)),
             accept_thread: Mutex::new(Some(accept_thread)),
         })
@@ -449,6 +470,20 @@ impl RemoteUi {
     /// Point the settings reverse-proxy at the local (loopback) settings web
     /// server: its origin (`http://127.0.0.1:<port>`) and its own token, which
     /// the proxy injects server-side. The phone never sees this token.
+    /// Write a ticket for a reply page and hand back the whole link.
+    ///
+    /// The caller has the tab and what it said; this is the only place that
+    /// knows the address. `None` when there is nowhere to point -- a board
+    /// with no address is a link to nothing.
+    pub fn reply_link(&self, t: crate::reply::Ticket) -> String {
+        crate::reply::link(&self.origin, &self.book.mint(t))
+    }
+
+    /// The ticket table, for the automation to write its own reply links with.
+    pub fn tickets(&self) -> Arc<crate::reply::Book> {
+        Arc::clone(&self.book)
+    }
+
     /// Where the board is, without the key to it.
     ///
     /// A phone that has been paired opens this and is back on the board -- its
@@ -489,6 +524,8 @@ impl RemoteUi {
     /// liked. Admission has to be revocable on its own, which is what Gate is.
     pub fn cut_sessions(&self) {
         self.gate.cut();
+        // The links sitting in a chat are somebody holding this terminal too
+        self.book.cut();
         // Say it on the way out. The phone's own poll would notice within a
         // second and a half; the screen it is holding should go dark the
         // instant the person here decides it does.
@@ -637,6 +674,7 @@ fn handle(
     keyframe_wanted: &Arc<AtomicBool>,
     settings: &Arc<Mutex<Option<(String, String)>>>,
     gate: &Arc<Gate>,
+    book: &Arc<crate::reply::Book>,
     sticky: bool,
 ) -> Result<()> {
     // Snapshot the current token for this request. It can be rotated at runtime
@@ -704,6 +742,81 @@ fn handle(
             );
         }
         return req.respond(resp).map_err(Into::into);
+    }
+
+    // The reply page a notification links to.
+    //
+    // Ahead of the token gate, and on purpose: the ticket in the path IS the
+    // credential, and it is a far smaller one than the token. It can say one
+    // thing to one tab. It cannot read the board, open the settings, reach a
+    // file, or survive the disconnect that ends every phone.
+    //
+    // A configured password is the one thing that stops it. Somebody who set a
+    // second factor decided the token alone was not enough; quietly letting a
+    // link in a chat past that decision is not ours to do.
+    if let Some(rest) = path.strip_prefix("/r/") {
+        let (id, verb) = match rest.split_once('/') {
+            Some((id, v)) => (id, v),
+            None => (rest, ""),
+        };
+        let html = |body: String| {
+            Response::from_string(body)
+                .with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+                        .unwrap(),
+                )
+                .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+                .with_header(
+                    Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap(),
+                )
+        };
+        if !gate.password.is_empty() {
+            return req
+                .respond(html(crate::reply::gone_page()).with_status_code(403))
+                .map_err(Into::into);
+        }
+        let Some(ticket) = book.get(id) else {
+            // Expired, torn up, or never ours. One answer for all three: a
+            // page that says the link is finished. Which of the three it was
+            // is not the visitor's business to learn by trying ids
+            return req
+                .respond(html(crate::reply::gone_page()).with_status_code(404))
+                .map_err(Into::into);
+        };
+        match (method.as_str(), verb) {
+            ("GET", "") => {
+                return req
+                    .respond(html(crate::reply::page(id, &ticket)))
+                    .map_err(Into::into);
+            }
+            ("POST", "say") => {
+                let mut req = req;
+                let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                    req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                    return Ok(());
+                };
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                if text.trim().is_empty() {
+                    req.respond(json_response(serde_json::json!({"ok": false})))?;
+                    return Ok(());
+                }
+                let _ = tx.send(RemoteCmd::Reply {
+                    tab_id: ticket.tab_id.clone(),
+                    tab: ticket.tab_index,
+                    name: ticket.tab_name.clone(),
+                    dest: ticket.dest.clone(),
+                    text,
+                });
+                req.respond(json_response(serde_json::json!({"ok": true})))?;
+                return Ok(());
+            }
+            _ => {
+                return req
+                    .respond(Response::from_string("not found").with_status_code(404))
+                    .map_err(Into::into);
+            }
+        }
     }
 
     // Everything past here is data or control — the token first.
@@ -1380,6 +1493,12 @@ mod tests {
                 .expect("no answer at all")
         }
 
+        /// A POST whose answer is worth reading, not only counting
+        fn said_post(&self, path: &str, body: &str) -> (u16, String) {
+            let mut r = self.post(path, body);
+            (r.status().as_u16(), r.body_mut().read_to_string().unwrap_or_default())
+        }
+
         fn post(&self, path: &str, body: &str) -> ureq::http::Response<ureq::Body> {
             self.agent
                 .post(&format!("{}{path}", self.base))
@@ -1409,6 +1528,59 @@ mod tests {
         fn state(&self, token: &str) -> u16 {
             self.status(&format!("/api/state?t={token}"))
         }
+    }
+
+    /// The reply link is a door of its own, and the whole design rests on how
+    /// small it is: it opens without the board's token, and it opens nothing
+    /// but itself.
+    #[test]
+    fn a_reply_ticket_opens_its_own_page_and_nothing_else() {
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "board-token-0000".into(),
+            String::new(),
+        )
+        .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let link = ui.reply_link(crate::reply::Ticket::new(
+            Some("coder".into()),
+            1,
+            "レビュワー".into(),
+            "終わりました".into(),
+            String::new(),
+        ));
+        let id = link.rsplit('/').next().unwrap().to_string();
+        let phone = Phone::new(&base);
+
+        // No token, no cookie, no pairing -- and the page is there
+        let r = phone.get(&format!("/r/{id}"));
+        assert_eq!(r.status(), 200, "切符だけで開ける");
+        let body = phone.text(&format!("/r/{id}"));
+        assert!(body.contains("レビュワー"), "そのタブの話だと分かる");
+        assert!(!body.contains("board-token-0000"), "盤面の鍵は載らない");
+
+        // What it cannot do is everything else. The board's own doors still
+        // want the board's token, and the ticket is not one
+        // A path that tries to climb out of the ticket's own area is not
+        // served by anything else: it is still inside /r/, where the only
+        // verb is "say"
+        assert_eq!(phone.status(&format!("/r/{id}/../api/state")), 404);
+        assert_eq!(phone.status("/api/state"), 403);
+        assert_eq!(phone.status("/cfg"), 403);
+
+        // A ticket that was never ours reads the same as one that has expired
+        assert_eq!(phone.status("/r/ZZZZZZZZZZZZ"), 404);
+        assert_eq!(phone.status("/r/"), 404);
+
+        // Saying nothing is not saying something
+        let (code, said) = phone.said_post(&format!("/r/{id}/say"), "{\"text\":\"   \"}");
+        assert_eq!(code, 200);
+        assert!(said.contains("false"), "空文は送らない: {said}");
+
+        // ...and the disconnect that ends every phone ends this too
+        ui.cut_sessions();
+        assert_eq!(phone.status(&format!("/r/{id}")), 404, "切断で無効になる");
     }
 
     #[test]

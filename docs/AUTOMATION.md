@@ -776,6 +776,7 @@ thought of.
 | `shikisha.log("text")` | Write a line to `logs/hooks.log` |
 | `shikisha.notify("text")` / `shikisha.notify("target", "text")` | Notify Slack / Discord / Telegram (only targets you configured). With no target named, it goes to the default one |
 | `shikisha.remote_url()` | The URL a phone can reach this app on, or `nil` while remote is off. Put it in a notification so "come and help" is one tap away |
+| `shikisha.reply_url(tab)` / `shikisha.reply_url(tab, "target")` | A link to a page holding that tab's last answer and a box to reply into it, or `nil` while remote is off. Each call writes one ticket: it can say something to that one tab and nothing else, it never carries the access token, and it dies at its expiry or when somebody presses disconnect. The second argument names where to report back that the reply landed (default: the primary target). **Handing this link out hands out the ability to type into that tab** — to anyone who can reach this machine's private network and read wherever you put it. If that is more than you, they are using your AI account, and most AI subscriptions forbid sharing one; check the terms of your plan |
 | `shikisha.t("key")` / `shikisha.tf("key", {name="..."})` | Look up a translated string (`tf` also substitutes `{name}`). Used by the built-in orchestrators so they speak the app's language |
 
 ### Reporting your own state

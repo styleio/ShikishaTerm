@@ -45,6 +45,7 @@ mod pr;
 mod profile;
 mod reader;
 mod remote;
+mod reply;
 mod repo;
 mod session_log;
 mod sessionfind;
@@ -3223,6 +3224,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // ...and where a phone can reach this app, for "a human is
                 // needed" notifications (shikisha.remote_url)
                 eng.set_remote_url(remote_ui.as_ref().map(|r| r.url.clone()));
+                eng.set_replies(
+                    remote_ui
+                        .as_ref()
+                        .map(|r| (r.origin().to_string(), r.tickets())),
+                );
                 // Discard waiting loops belonging to exited tabs (don't leave infinite loops behind)
                 for &(idx, old, new) in &transitions {
                     if new == TabState::Exited && old != TabState::Exited {
@@ -3376,10 +3382,21 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             // phone opens this and is already signed in from
                             // its own storage, while the same link in a shared
                             // channel hands over nothing.
+                            let reply = match (tabs[idx - 1].notify_reply, remote_ui.as_ref())
+                            {
+                                (true, Some(r)) => Some(r.reply_link(reply::Ticket::new(
+                                    tabs[idx - 1].id.clone(),
+                                    idx,
+                                    tabs[idx - 1].title.clone(),
+                                    ctx.output.clone(),
+                                    dest.clone(),
+                                ))),
+                                _ => None,
+                            };
                             let msg = on_done_message(
                                 &tabs[idx - 1].title,
                                 &ctx.output,
-                                remote_ui.as_ref().map(|r| r.origin()),
+                                reply.as_deref(),
                             );
                             let status = notifier.send(&dest, &msg);
                             append_hook_log(&format!("notify_on_done tab{idx} \"{dest}\": {status}"));
@@ -3604,6 +3621,48 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         ) {
                             append_hook_log(&format!("remote send tab{tab}: {excerpt}"));
                         }
+                    }
+                    // An answer typed on a reply page. The same act as
+                    // typing into the tab here -- it goes in as a person's
+                    // words and breaks the automatic chain -- with two
+                    // differences. The target is found by the tab's own id
+                    // first, because numbers shift while a phone sits in a
+                    // pocket and a "yes" delivered to whatever is third in the
+                    // list now is worse than one that arrives nowhere. And the
+                    // chat that carried the link is told what happened, either
+                    // way: somebody who pressed send on a train has no other
+                    // way to learn whether it landed
+                    remote::RemoteCmd::Reply { tab_id, tab, name, dest, text } => {
+                        let by_number = |n: usize| session_at(&surfaces, n).and_then(|i| tabs.get(i));
+                        let target = (1..=tabs.len())
+                            .find(|n| {
+                                tab_id.as_deref().is_some_and(|want| {
+                                    by_number(*n).and_then(|t| t.id.as_deref()) == Some(want)
+                                })
+                            })
+                            .or_else(|| {
+                                // No id to go on: the number stands, but only
+                                // if the tab there is still the one that asked
+                                (by_number(tab).map(|t| t.title.as_str()) == Some(name.as_str()))
+                                    .then_some(tab)
+                            });
+                        let said = log_excerpt(&text, 120);
+                        let to = (!dest.is_empty()).then_some(dest.as_str());
+                        let landed = target.is_some_and(|n| {
+                            hand_line(
+                                &mut tabs, &surfaces, n, text.clone(), now_ms,
+                                &mut pending_send, &mut ball,
+                            )
+                        });
+                        let told = match landed {
+                            true => i18n::tp("msg.notify.replied", &[("name", &name)]),
+                            false => i18n::tp("msg.notify.reply_lost", &[("name", &name)]),
+                        };
+                        append_hook_log(&format!(
+                            "reply -> \"{name}\" ({}): {said}",
+                            if landed { "sent" } else { "no such tab" }
+                        ));
+                        notifier.send_opt(to, &format!("{told}\n{text}"));
                     }
                     remote::RemoteCmd::Keys { tab, keys } => {
                         if let Some(t) = session_at(&surfaces, tab).and_then(|i| tabs.get_mut(i)) {
@@ -6961,6 +7020,7 @@ fn apply_ws_config(
                     t.depth = ft.depth;
                     t.id = ft.cfg.id.clone();
                     t.notify_on_done = ft.cfg.notify_on_done.clone();
+                    t.notify_reply = ft.cfg.notify_reply;
                     ordered.push(t);
                     added += 1;
                 }
@@ -7225,6 +7285,7 @@ fn spawn_workspace(
                 tab.depth = ft.depth;
                 tab.id = ft.cfg.id.clone();
                 tab.notify_on_done = ft.cfg.notify_on_done.clone();
+                tab.notify_reply = ft.cfg.notify_reply;
                 tabs.push(tab);
             }
             Err(e) => errors.push(tab::launch_problem(
@@ -7996,23 +8057,30 @@ fn touched_recently(t: &Tab, now_ms: u64) -> bool {
 /// What a phone is told when a tab finishes, for the people who asked to be
 /// told rather than writing a hook for it.
 ///
-/// Three lines, and each one earns its place. The name, because a phone that
-/// buzzes without saying which tab finished sends you to the PC to find out.
-/// The opening of the answer, because most of the time that IS the answer and
-/// the walk can be skipped entirely. And where the board is -- but never the
-/// key to it: a paired phone opens this and is already signed in from its own
-/// storage, while the same link sitting in a shared channel hands over
-/// nothing. A notification is not a place to put a credential.
-fn on_done_message(name: &str, output: &str, origin: Option<&str>) -> String {
+/// The name, because a phone that buzzes without saying which tab finished
+/// sends you to the PC to find out. The opening of the answer, because most of
+/// the time that IS the answer and the walk can be skipped entirely. And a way
+/// back, when one was asked for.
+///
+/// `reply` is a link to a page holding this tab's answer and a box to reply
+/// in. It is absent unless the person ticked the box for this tab, and the
+/// absence is total: no link, and no address either. Somebody who said "just
+/// tell me what it said" did not ask for the machine's address to travel with
+/// it. What never travels in either case is the access token -- a chat message
+/// is not a place to put the key to a terminal.
+fn on_done_message(name: &str, output: &str, reply: Option<&str>) -> String {
     let mut msg = i18n::tp("msg.notify.on_done", &[("name", name)]);
     let said = log_excerpt(output, 160);
     if !said.is_empty() {
         msg.push('\n');
         msg.push_str(&said);
     }
-    if let Some(o) = origin {
+    if let Some(link) = reply {
         msg.push('\n');
-        msg.push_str(o);
+        msg.push('\n');
+        msg.push_str(&i18n::t("msg.notify.reply_here"));
+        msg.push('\n');
+        msg.push_str(link);
     }
     msg
 }
@@ -9005,30 +9073,35 @@ mod tests {
     ///
     /// The point of the feature is not being told THAT something finished --
     /// that only says "come back to the PC". It is being told enough to decide
-    /// whether to.
+    /// whether to, and, when it was asked for, a way to answer from where you
+    /// are standing.
     #[test]
     fn a_finished_tab_says_enough_to_act_on() {
         crate::i18n::init(Some("en"), &[std::path::PathBuf::from("lang")]);
         let msg = on_done_message(
             "reviewer",
-            "  Found 3 problems.
-  The first is in tab.rs.  ",
-            Some("http://100.64.1.2:8787/"),
+            "  Found 3 problems.\n  The first is in tab.rs.  ",
+            Some("http://100.64.1.2:8787/r/K3fQ92mZxAbC"),
         );
         let lines: Vec<&str> = msg.lines().collect();
-        assert_eq!(lines.len(), 3, "3行のはず: {msg:?}");
         assert!(lines[0].contains("reviewer"), "どのタブか: {}", lines[0]);
         // The answer itself, folded onto one line -- a notification is not a
         // place to reproduce a screen
         assert_eq!(lines[1], "Found 3 problems. The first is in tab.rs.");
-        assert_eq!(lines[2], "http://100.64.1.2:8787/");
-        // The link never carries the token. A paired phone is signed in from
-        // its own storage; the same line in a shared channel is inert
-        assert!(!msg.contains('?'), "リンクに問い合わせ文字列がない: {msg:?}");
+        // ...then a blank line, a label, and the link, so the link is not
+        // mistaken for part of what the AI said
+        assert_eq!(lines[2], "");
+        assert!(!lines[3].is_empty(), "リンクの前に一言ある");
+        assert_eq!(lines[4], "http://100.64.1.2:8787/r/K3fQ92mZxAbC");
+        assert_eq!(lines.len(), 5);
+        // The link is a ticket, never the board's key
+        assert!(!msg.contains("?t="), "トークンが載っていない: {msg:?}");
 
-        // No remote running: two lines, and no dangling blank one
+        // Not asked for: the answer and nothing else. Not the link, and not
+        // the machine's address either
         let quiet = on_done_message("builder", "done", None);
         assert_eq!(quiet.lines().count(), 2);
+        assert!(!quiet.contains("http"), "住所も出さない: {quiet:?}");
         assert!(!quiet.ends_with('\n'));
 
         // Nothing said (a tab that finished silently): just the name

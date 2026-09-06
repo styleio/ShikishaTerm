@@ -2335,6 +2335,8 @@ pub struct Tab {
     pub auto_restart: bool,
     /// Notification destination to ping when this tab finishes a response.
     pub notify_on_done: Option<String>,
+    /// Whether that notification carries a reply link (config's notify_reply)
+    pub notify_reply: bool,
     /// Settings changed, but taking effect requires the session to be
     /// recreated
     /// (restart is left to the user so a running AI is never cut off unexpectedly)
@@ -2785,6 +2787,7 @@ impl Tab {
             locked: false,
             auto_restart: false,
             notify_on_done: None,
+            notify_reply: false,
             needs_restart: false,
             depth: 0,
             argv: argv.to_vec(),
@@ -3037,6 +3040,7 @@ impl Tab {
         fresh.auto_restart = self.auto_restart;
         fresh.id = self.id.clone();
         fresh.notify_on_done = self.notify_on_done.clone();
+        fresh.notify_reply = self.notify_reply;
         fresh.previous = self.previous.clone();
         fresh.clear_said();
         // Since it was recreated, any pending config changes are now in effect

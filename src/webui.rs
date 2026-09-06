@@ -5338,10 +5338,30 @@ function tabPane(ws, t) {
   {
     const dests = Object.keys(current.notify || {});
     const opts = [["", T["settings.tab.notify.none"]]].concat(dests.map(n => [n, n]));
-    const sel = choose(t, "notify_on_done", opts, v => { if (!v) delete t.notify_on_done; refreshSave(); });
+    // The reply link and its warning live directly under the destination, so
+    // the sentence can name the place the link is going. The risk is not the
+    // link, it is who can see it -- and only the person choosing knows that.
+    const warn = el("div", {class:"hint warn", style:"margin-top:6px"});
+    const replyBox = el("div");
+    const drawReply = () => {
+      replyBox.textContent = "";
+      warn.textContent = "";
+      if (!t.notify_on_done) { delete t.notify_reply; return; }
+      replyBox.append(check(t, "notify_reply", T["settings.tab.notify.reply"]));
+      if (t.notify_reply) {
+        warn.textContent = fill(T["settings.tab.notify.reply.warn"], {name: t.notify_on_done});
+      }
+    };
+    const sel = choose(t, "notify_on_done", opts, v => {
+      if (!v) { delete t.notify_on_done; delete t.notify_reply; }
+      drawReply(); refreshSave();
+    });
+    replyBox.addEventListener("change", () => { drawReply(); refreshSave(); });
+    drawReply();
     const hint = dests.length ? T["settings.tab.notify.hint"] : T["settings.tab.notify.none_hint"];
     box.append(card(T["settings.tab.notify.title"],
-      row(T["settings.tab.notify.label"], sel, el("span", {class:"hint"}, hint))));
+      row(T["settings.tab.notify.label"], sel, el("span", {class:"hint"}, hint)),
+      replyBox, warn));
   }
 
   // Automation: make it visible at a glance what's already configured
@@ -5953,7 +5973,7 @@ function flatten(tabs, depth, group, out) {
                user_agent: t.user_agent || "",
                locked: !!t.locked, auto_restart: !!t.auto_restart,
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
-               notify_on_done: t.notify_on_done || "",
+               notify_on_done: t.notify_on_done || "", notify_reply: !!t.notify_reply,
                nav: t.nav || null, ask: t.ask || null, depth, group });
     flatten(t.children, depth + 1, group, out);
   }
@@ -5976,6 +5996,7 @@ function nest(flat) {
     if (f.scrollback) node.scrollback = Number(f.scrollback);
     if (f.log) node.log = true;
     if (f.notify_on_done) node.notify_on_done = f.notify_on_done;
+    if (f.notify_on_done && f.notify_reply) node.notify_reply = true;
     // Don't write it if none are enabled. Leaving a block of all-false values just hurts readability
     if (f.nav && Object.values(f.nav).some(Boolean)) {
       node.nav = {};

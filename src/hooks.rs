@@ -1330,6 +1330,9 @@ pub struct HookEngine {
     /// The phone board's URL (with token), pushed in by the main loop.
     /// None while remote is off
     remote_url: Rc<RefCell<Option<String>>>,
+    /// Where reply pages live, and the table their tickets are written in.
+    /// `None` while the remote is off -- there is nowhere for a link to point
+    replies: Rc<RefCell<Option<(String, std::sync::Arc<crate::reply::Book>)>>>,
     /// Which assistant AI to ask (Settings > Basic). None means "whichever is
     /// installed", which is what the rest of the app does with it
     ai_engine: Rc<RefCell<Option<String>>>,
@@ -1407,6 +1410,8 @@ impl HookEngine {
         // script assembled (see docs/design/git-access.ja.md §1)
         let places: Rc<RefCell<Vec<TabPlace>>> = Rc::new(RefCell::new(Vec::new()));
         let remote_url: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let replies: Rc<RefCell<Option<(String, std::sync::Arc<crate::reply::Book>)>>> =
+            Rc::new(RefCell::new(None));
         let ai_engine: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
         let shikisha = lua.create_table().map_err(lerr)?;
@@ -1418,6 +1423,46 @@ impl HookEngine {
                 .set(
                     "remote_url",
                     lua.create_function(move |_, ()| Ok(u.borrow().clone()))
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // A link to a page holding this tab's last answer and a box to
+            // reply in -- the same page the built-in "tell me when it answers"
+            // can carry, for a hook that wants to word its own message.
+            //
+            // A function and not a value: each call writes a ticket for one
+            // tab and one answer, and a ticket is the whole credential. It can
+            // say something to that tab and nothing else -- no board, no
+            // settings, no files -- and it dies with the run, at its expiry,
+            // or when somebody presses disconnect.
+            //
+            // The second argument names where to report back that the reply
+            // landed; without it that goes to the primary destination.
+            //
+            // Handing this link out is handing out the ability to type into
+            // that tab, to whoever can reach it on this machine's private
+            // network. If that is more than one person, they are using one AI
+            // account, which most subscriptions forbid -- see AUTOMATION.md.
+            let r = Rc::clone(&replies);
+            shikisha
+                .set(
+                    "reply_url",
+                    lua.create_function(move |_, (tab, dest): (Table, Option<String>)| {
+                        let Some((origin, book)) = r.borrow().clone() else {
+                            return Ok(None);
+                        };
+                        let name: String = tab.get("name").unwrap_or_default();
+                        let ticket = crate::reply::Ticket::new(
+                            tab.get::<Option<String>>("id").unwrap_or(None),
+                            tab.get("index").unwrap_or(0),
+                            name,
+                            tab.get("output").unwrap_or_default(),
+                            dest.unwrap_or_default(),
+                        );
+                        Ok(Some(crate::reply::link(&origin, &book.mint(ticket))))
+                    })
                     .map_err(lerr)?,
                 )
                 .map_err(lerr)?;
@@ -3115,6 +3160,7 @@ impl HookEngine {
             attach: Attach::default(),
             caps,
             remote_url,
+            replies,
             ai_engine,
             snippets: Vec::new(),
             budget,
@@ -3285,6 +3331,12 @@ impl HookEngine {
     /// person can act from wherever the notification reached them
     pub fn set_remote_url(&self, url: Option<String>) {
         *self.remote_url.borrow_mut() = url;
+    }
+
+    /// Where reply pages live. Set when the remote comes up, cleared when it
+    /// goes: a link written while it is off would point at nothing.
+    pub fn set_replies(&self, at: Option<(String, std::sync::Arc<crate::reply::Book>)>) {
+        *self.replies.borrow_mut() = at;
     }
 
     /// Drop any loop waiting on that tab (on exit / restart)

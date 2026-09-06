@@ -140,6 +140,12 @@ pub const CATALOG: &[Entry] = &[
     e("note", Group::Report, true, true, false),
     e("notify", Group::Report, true, true, false),
     e("remote_url", Group::Report, true, true, false),
+    // Writing a reply link hands out the ability to type into that tab, to
+    // anyone who can reach this machine's private network and read wherever
+    // the link is put. A person choosing that for their own hook is one
+    // thing; code an AI wrote opening a door into the tab it is running in is
+    // another, so this one is closed to it by default
+    e("reply_url", Group::Report, true, false, false),
     // An AI CLI's own hooks report through these. Closing them would leave the
     // state dot guessing from the screen for the tools that were willing to say
     e("set_state", Group::Report, true, true, false),
@@ -387,6 +393,7 @@ mod tests {
             closed,
             vec![
                 "restart",
+                "reply_url",
                 "close_pane",
                 "git_status",
                 "git_diff",
