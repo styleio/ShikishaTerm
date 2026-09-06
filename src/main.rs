@@ -9517,7 +9517,15 @@ mod tests {
         }
         assert!(patterns.len() > 5, "dist.list を読めていない ({} 件)", patterns.len());
 
-        // A pattern matching nothing is a typo that deploys quietly and forever
+        // A pattern matching nothing is a typo that deploys quietly and forever.
+        //
+        // One payload is not in the repository at all: the ConPTY beside the
+        // exe is Microsoft's binary, fetched and hash-checked at build time,
+        // so a fresh checkout has an empty folder where it will go. The guard
+        // does not lapse for it -- it moves. What must agree there is this
+        // list and the tool that writes those files, and a rename in one
+        // without the other is exactly the silent loss this test exists for.
+        let fetcher = include_str!("../tools/conpty.ps1");
         for p in &patterns {
             let rel = p.trim_end_matches("/**");
             let (dir, file_pat) = rel.rsplit_once('/').unwrap_or((".", rel));
@@ -9533,7 +9541,13 @@ mod tests {
                     })
                 })
             });
-            assert!(hit, "dist.list の `{p}` に当てはまるものが1つも無い (綴り間違い?)");
+            if hit {
+                continue;
+            }
+            assert!(
+                !file_pat.contains('*') && fetcher.contains(file_pat),
+                "dist.list の `{p}` に当てはまるものが1つも無く、取得する道具も知らない (綴り間違い?)"
+            );
         }
 
         // ...and the consumers must go through it rather than keeping their own copy
