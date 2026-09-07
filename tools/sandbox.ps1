@@ -70,7 +70,13 @@ param(
     # How long to wait for done.txt, in seconds.
     [int]$Timeout = 300,
     # How many past runs to keep on disk.
-    [int]$KeepRuns = 5
+    [int]$KeepRuns = 5,
+    # What to give the machine, in MB. Deliberately modest: this shares a PC
+    # with whatever else is running, and a local model server can hold several
+    # gigabytes all day. A sandbox that takes the last of the memory does not
+    # fail politely -- Windows starts killing whatever it likes, which on this
+    # machine was the process waiting for the sandbox's own report.
+    [int]$MemoryInMB = 2048
 )
 
 $ErrorActionPreference = 'Stop'
@@ -459,7 +465,7 @@ $wsb = @"
 <Configuration>
   <VGpu>Enable</VGpu>
   <Networking>Enable</Networking>
-  <MemoryInMB>4096</MemoryInMB>
+  <MemoryInMB>$MemoryInMB</MemoryInMB>
   <MappedFolders>
     <MappedFolder>
       <HostFolder>$work</HostFolder>
