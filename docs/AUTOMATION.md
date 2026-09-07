@@ -526,7 +526,7 @@ Several brakes keep automation from running away.
   The status bar carries the same button, in the same corner on every screen
 - **Input lock** … put 🔒 on the middle tabs so nobody instructs them by mistake
 - **Sandbox** … automation can **neither touch files nor reach the internet by default**.
-  Notifications only go to the Slack / Discord / Telegram targets you registered
+  Notifications only go to the targets you registered (Slack / Discord / Telegram, this PC, a registered phone)
 
 ---
 

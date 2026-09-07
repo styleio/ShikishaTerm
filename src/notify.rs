@@ -96,10 +96,7 @@ impl Notifier {
         std::thread::spawn(move || {
             while let Ok((name, dest, text, tab)) = rx.recv() {
                 if let Err(e) = send_blocking_about(&dest, &text, tab) {
-                    crate::append_hook_log(&crate::i18n::tp(
-                        "err.notify.send_failed",
-                        &[("e", &format!("{name} ({}): {e}", dest.name()))],
-                    ));
+                    record_failure(&name, &dest, &e);
                 }
             }
         });
@@ -158,6 +155,37 @@ impl Notifier {
             None => crate::i18n::tp("err.notify.unknown_target", &[("name", name)]),
         }
     }
+}
+
+/// The sends that failed, waiting to be said on screen.
+///
+/// The sending thread has no screen of its own. Until this queue existed a
+/// failure went only to hooks.log, and a person whose phone stayed quiet had
+/// nothing in front of them to say why -- the board reads it off here
+/// (`take_failed`) and shows it as the same toast everything else uses.
+static FAILED: std::sync::Mutex<std::collections::VecDeque<String>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// A send that did not happen: logged, and queued for the screen. The
+/// destination is named, so the failure can say which one it was.
+fn record_failure(name: &str, dest: &Destination, e: &str) {
+    let said = crate::i18n::tp(
+        "err.notify.send_failed",
+        &[("e", &format!("{name} ({}): {e}", dest.name()))],
+    );
+    crate::append_hook_log(&said);
+    let mut q = FAILED.lock().unwrap_or_else(|p| p.into_inner());
+    // A destination that keeps failing is not a backlog to work through: the
+    // queue stays short, and the oldest goes first.
+    if q.len() >= 8 {
+        q.pop_front();
+    }
+    q.push_back(said);
+}
+
+/// The oldest failure not yet shown, if any.
+pub fn take_failed() -> Option<String> {
+    FAILED.lock().unwrap_or_else(|p| p.into_inner()).pop_front()
 }
 
 pub fn send_blocking(dest: &Destination, text: &str) -> Result<(), String> {
@@ -231,6 +259,21 @@ pub fn send_blocking_about(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A send that failed reaches the screen, naming the destination, once.
+    #[test]
+    fn a_failure_waits_to_be_shown_on_screen() {
+        record_failure("test", &Destination::Phone {}, "nobody there");
+        // Other tests may queue failures of their own beside this one; the
+        // one recorded here is found by its name.
+        let mut seen = Vec::new();
+        while let Some(said) = take_failed() {
+            seen.push(said);
+        }
+        let mine: Vec<&String> = seen.iter().filter(|s| s.contains("nobody there")).collect();
+        assert_eq!(mine.len(), 1, "一度の失敗は一度だけ画面に出る: {seen:?}");
+        assert!(mine[0].contains("test (phone)"), "宛先の名前が無い: {}", mine[0]);
+    }
     use std::sync::{Arc, Mutex};
 
     #[test]

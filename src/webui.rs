@@ -2222,7 +2222,7 @@ fn handle(
 fn themed(html: String) -> String {
     let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
     let scheme = look.scheme();
-    crate::toast::render(html)
+    crate::push::inject(crate::toast::render(html))
         .replace("{{THEME}}", &scheme.css_vars())
         .replace(
             "{{SCHEME}}",
@@ -2298,6 +2298,8 @@ const PAGE: &str = r##"<!doctype html>
    70%  { box-shadow:0 0 0 8px rgba(255,176,32,0); }
    100% { box-shadow:0 0 0 0 rgba(255,176,32,0); }
  }
+ /* The one thing to press next, wherever it is */
+ .pulse { animation:savepulse 1.1s ease-in-out infinite; }
  @media (prefers-reduced-motion: reduce) { #savebtn.dirty { animation:none; } }
 
  .layout { display:flex; align-items:flex-start; }
@@ -2697,6 +2699,14 @@ const navOpen = new Set();
 const navShut = new Set();
 // The global-settings group is expanded by default (the page opens onto it).
 let navGlobalOpen = true;
+// Put one global card on screen, by id, with its entry in the list in view.
+function goSection(id, block) {
+  navGlobalOpen = true;
+  sel = {ws:sel.ws, tab:null, global:true, section:id};
+  render();
+  const cur = document.querySelector(".navitem.sel");
+  if (cur) cur.scrollIntoView({block: block || "nearest"});
+}
 // When opened via a deep-link shortcut (?ret=1), returning to the board after a
 // successful save is the natural finish, so the caller doesn't have to close it.
 let returnOnSave = false;
@@ -2746,6 +2756,7 @@ async function readUserJson(res) {
 }
 
 {{TOAST_JS}}
+{{PUSH_JS}}
 // This screen reports results, and a result is either good news or bad — say
 // which. Declared as a function so it exists from the moment the script starts,
 // whatever order the pieces end up in
@@ -3263,8 +3274,7 @@ function renderNav() {
     el("span", {}, T["settings.global"])));
   if (gOpen) globalSections().forEach(s => {
     const b = el("button", {class:"navitem lvl1" + (sel.global && sel.section === s.id ? " sel" : ""),
-      onclick:() => { navGlobalOpen = true; sel = {ws:sel.ws, tab:null, global:true, section:s.id}; render();
-                      const cur = document.querySelector(".navitem.sel"); if (cur) cur.scrollIntoView({block:"nearest"}); }});
+      onclick:() => goSection(s.id)});
     b.append(el("span", {}, s.label));
     if (s.sub) b.append(el("span", {class:"sub"}, s.sub));
     nav.append(b);
@@ -4666,18 +4676,14 @@ function notifyCard() {
       } else if (d.type === "phone") {
         // Everything a phone needs is arranged by the phone itself: it asks
         // its own browser for permission, its browser hands back a
-        // subscription, and that is what gets stored. There is nothing here to
-        // type, and nothing that would work if it were typed on the PC --
-        // which is why the button says what it will register rather than
-        // "save".
-        const box = el("div", {style:"flex:1 1 0;min-width:220px"});
-        const said = el("div", {class:"hint"}, T["settings.notify.phone.checking"]);
-        const list = el("div", {style:"margin-top:4px"});
-        const add = el("button", {class:"quiet", onclick: () => subscribeThisDevice(said, list)},
-                       T["settings.notify.phone.add"]);
-        box.append(el("div", {class:"row", style:"gap:8px;align-items:center"}, add, said), list);
-        fields.append(box);
-        drawPhones(said, list);
+        // subscription, and that is what gets stored. Nothing here can be
+        // typed, and nothing typed on the PC would work -- so what this row
+        // shows depends on which side of that it is drawn on (phoneBox).
+        // Wide enough for a sentence: at a phone's width this pushes the
+        // test and delete buttons onto their own line instead of over the
+        // words (the row wraps by this box's width, not by its text).
+        fields.style.minWidth = "260px";
+        fields.append(phoneBox());
         testPayload = () => ({type:"phone"});
       } else if (d.type === "windows") {
         // Nothing to fill in. That is the whole appeal of it: no webhook to
@@ -4750,6 +4756,10 @@ function notifyCard() {
     if (current.notify[n]) { toast(T["settings.notify.name_dup"], true); return; }
     current.notify[n] = { type: typeSel.value };
     nameIn.value = ""; refreshSave(); draw();
+    // Adding "phone" on the phone is the whole registration, in one press:
+    // the press is what a browser wants before it will ask about
+    // notifications, and there is nothing else the person could mean by it.
+    if (typeSel.value === "phone" && canRegisterHere()) subscribeThisDevice();
   }}, T["settings.notify.add"]);
   const c = card(T["settings.notify.title"],
     el("div", {class:"hint"}, T["settings.notify.hint"]),
@@ -4764,105 +4774,159 @@ function notifyCard() {
 // The subscription is made by the browser this page is open in, so pressing
 // the button on the PC registers the PC and pressing it on a phone registers
 // that phone. That is not a quirk to work around -- it is the only way a push
-// subscription can be made at all -- so the button says "this device" and the
-// list says which ones there are.
+// subscription can be made at all. So the row is drawn one of two ways: in
+// the app's own window, where nothing it registers could be a phone, it shows
+// the way to the phone; in a browser, it is the one button to press. The
+// registering itself is shared with the phone's board (src/push.rs).
 
-// base64url in, the bytes a browser wants out.
-function b64bytes(s) {
-  const pad = "=".repeat((4 - (s.length % 4)) % 4);
-  const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
-  return Uint8Array.from(raw, c => c.charCodeAt(0));
-}
+// The settings screen's way of reaching the app, in the shape the shared
+// routine wants: a GET with no body, a JSON POST with one.
+const settingsApi = (path, body) => fetch(path, body === undefined
+  ? {headers:{"X-Token":TOKEN}}
+  : {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+     body: JSON.stringify(body)}).then(r => r.json());
 
-// ...and back again, for the two keys a subscription carries.
-function bytesB64(buf) {
-  return btoa(String.fromCharCode.apply(null, new Uint8Array(buf)))
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
+// Whether the browser drawing this page can register itself. The app's own
+// window (the one with the ipc bridge) is the PC, and a subscription made
+// there would buzz the PC -- which already has "This PC" for that.
+function canRegisterHere() { return !window.ipc; }
 
-async function drawPhones(said, list) {
-  let j;
-  try { j = await fetch("/api/push", {headers:{"X-Token":TOKEN}}).then(r => r.json()); }
-  catch (e) { said.textContent = T["settings.notify.phone.failed"]; return; }
-  if (j.error) { said.textContent = j.error; said.classList.add("warn"); return; }
-  const subs = j.subs || [];
-  said.classList.remove("warn");
-  said.textContent = subs.length
-    ? fill(T["settings.notify.phone.count"], {n: subs.length})
-    : T["settings.notify.phone.none"];
-  list.textContent = "";
-  for (const sub of subs) {
-    list.append(el("div", {class:"row", style:"gap:8px;align-items:center"},
-      el("span", {class:"hint", style:"flex:1 1 0"},
-         sub.name || sub.endpoint.slice(0, 40)),
-      el("button", {class:"quiet", onclick: async () => {
-        await fetch("/api/push/forget", {method:"POST",
-          headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-          body: JSON.stringify({endpoint: sub.endpoint})});
-        drawPhones(said, list);
-      }}, T["common.delete"])));
+// The registered phones, fetched once and shared by every card that needs to
+// know whether "notify a phone" would reach one. Dropped whenever a phone is
+// added or forgotten (phonesChanged), so the answer never outlives the list.
+let phonesKnown = null;
+function phones() {
+  if (!phonesKnown) {
+    phonesKnown = settingsApi("/api/push")
+      .catch(() => ({error: T["settings.notify.phone.failed"], subs: []}));
   }
+  return phonesKnown;
+}
+// Every drawing of the list redraws itself on this, so a phone registered
+// from the popup shows up in the row behind it too.
+function phonesChanged() {
+  phonesKnown = null;
+  document.dispatchEvent(new Event("phones-changed"));
 }
 
-async function subscribeThisDevice(said, list) {
-  // Three things have to be true, and a browser says so in three different
-  // ways. Which one is missing is the whole answer a person needs, so each is
-  // told apart rather than collapsed into "not supported".
-  if (!window.isSecureContext) { toast(T["settings.notify.phone.needs_https"], true); return; }
-  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-    // On an iPhone this is not a browser that cannot do it -- it is a page
-    // that has not been added to the home screen yet. Apple puts the whole
-    // mechanism behind that, so in a Safari tab it is simply absent, and
-    // "this browser does not carry push notifications" would send somebody
-    // looking for another browser to no purpose.
-    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent)
-             || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-    const installed = navigator.standalone === true
-             || window.matchMedia("(display-mode: standalone)").matches;
-    toast(ios && !installed ? T["settings.notify.phone.ios_home"]
-                            : T["settings.notify.phone.no_support"], true);
-    return;
-  }
-  try {
-    const reg = await navigator.serviceWorker.register("/sw.js");
-    await navigator.serviceWorker.ready;
-    // Asked here, from a press, because a browser only offers the choice in
-    // answer to something a person did.
-    const perm = await Notification.requestPermission();
-    if (perm !== "granted") { toast(T["settings.notify.phone.refused"], true); return; }
-    const j = await fetch("/api/push", {headers:{"X-Token":TOKEN}}).then(r => r.json());
-    if (!j.key) { toast(j.error || T["settings.notify.phone.failed"], true); return; }
-    const sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: b64bytes(j.key),
+async function subscribeThisDevice() {
+  if (await shikishaSubscribe(settingsApi, T, toast)) phonesChanged();
+}
+
+// The pairing QR, at whatever size the place has room for. The image is
+// loaded directly rather than via fetch, so auth rides as the token in the URL.
+function qrImage(px) {
+  return el("img", {src:"/api/remote/qr?token=" + encodeURIComponent(TOKEN),
+    style:"width:" + px + "px;height:" + px + "px;border-radius:8px;background:#fff;padding:6px"});
+}
+
+// One "phone" destination's row.
+function phoneBox() {
+  const box = el("div", {style:"flex:1 1 0;min-width:220px"});
+
+  // The phones there are, each with the way to forget it.
+  const drawList = (list, subs) => {
+    list.textContent = "";
+    for (const sub of subs) {
+      list.append(el("div", {class:"row", style:"gap:8px;align-items:center"},
+        el("span", {class:"hint", style:"flex:1 1 0"}, sub.name || sub.endpoint.slice(0, 40)),
+        el("button", {class:"quiet", onclick: async () => {
+          await settingsApi("/api/push/forget", {endpoint: sub.endpoint});
+          phonesChanged();
+        }}, T["common.delete"])));
+    }
+  };
+
+  // In a browser: the button. It is the one thing to press, so until it has
+  // been pressed it is drawn as the primary and blinks.
+  const drawHere = () => {
+    const said = el("div", {class:"hint", style:"margin-top:6px"}, T["settings.notify.phone.checking"]);
+    const add = el("button", {class:"quiet", onclick: () => subscribeThisDevice()},
+                   T["settings.notify.phone.add"]);
+    const list = el("div", {style:"margin-top:4px"});
+    // The button on a line of its own, the words under it: side by side, the
+    // words ran into the buttons to the right on a phone's width.
+    box.append(el("div", {}, add), said, list);
+    phones().then(j => {
+      if (j.error) { said.textContent = j.error; said.classList.add("warn"); return; }
+      const subs = j.subs || [];
+      add.className = subs.length ? "quiet" : "primary pulse";
+      said.textContent = subs.length ? fill(T["settings.notify.phone.count"], {n: subs.length})
+                                     : T["settings.notify.phone.none"];
+      said.classList.toggle("warn", !subs.length);
+      drawList(list, subs);
     });
-    const r = await fetch("/api/push/subscribe", {method:"POST",
-      headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-      body: JSON.stringify({
-        endpoint: sub.endpoint,
-        p256dh: bytesB64(sub.getKey("p256dh")),
-        auth: bytesB64(sub.getKey("auth")),
-        // Enough to tell two phones apart in a list, and no more: the whole
-        // user-agent string is a fingerprint nobody asked to store.
-        name: deviceName(),
-      })}).then(r => r.json());
-    if (!r.ok) { toast(r.error || T["settings.notify.phone.failed"], true); return; }
-    toast(T["settings.notify.phone.added"]);
-    drawPhones(said, list);
-  } catch (e) {
-    toast(String(e && e.message ? e.message : e), true);
-  }
+  };
+
+  // In the app's window: no button, because nothing it could register would
+  // be a phone. Instead, the two steps, the QR that makes the first one a
+  // scan, and what stands in the way when the link is not one a phone will
+  // accept. While no phone is registered the list is asked again every few
+  // seconds, so the row changes on its own the moment the phone presses.
+  const drawFromPc = async () => {
+    const said = el("div", {class:"hint"}, T["settings.notify.phone.checking"]);
+    const list = el("div", {style:"margin-top:4px"});
+    const side = el("div", {style:"flex:none"});
+    box.append(
+      el("div", {style:"font-weight:600;margin-bottom:4px"}, T["settings.notify.phone.pc.title"]),
+      el("div", {class:"row", style:"gap:14px;align-items:flex-start;flex-wrap:wrap"},
+        el("div", {style:"flex:1 1 220px"},
+          el("ol", {style:"margin:0 0 6px;padding-left:20px"},
+            el("li", {}, T["settings.notify.phone.pc.step1"]),
+            el("li", {}, T["settings.notify.phone.pc.step2"])),
+          said, list),
+        side));
+    const [j, r] = await Promise.all([phones(),
+      settingsApi("/api/remote").catch(() => ({}))]);
+    if (j.error) { said.textContent = j.error; said.classList.add("warn"); }
+    else {
+      const subs = j.subs || [];
+      said.textContent = subs.length ? fill(T["settings.notify.phone.count"], {n: subs.length})
+                                     : T["settings.notify.phone.pc.none"];
+      said.classList.toggle("warn", !subs.length);
+      drawList(list, subs);
+      if (!subs.length) setTimeout(() => {
+        if (box.isConnected) { phonesKnown = null; draw(); }
+      }, 4000);
+    }
+    if (r.running && r.origin && r.https) side.append(qrImage(140));
+    else {
+      side.append(el("div", {class:"hint warn", style:"max-width:220px"},
+        r.running ? T["settings.notify.phone.pc.needs_https"]
+                  : T["settings.notify.phone.pc.needs_remote"], " ",
+        el("a", {href:"#", onclick: e => { e.preventDefault(); goSection("remote"); }},
+           T["settings.notify.phone.pc.go_remote"])));
+    }
+  };
+
+  const draw = () => {
+    box.textContent = "";
+    if (canRegisterHere()) drawHere(); else drawFromPc();
+  };
+  // Redrawn whenever the list changes -- and let go of once this row is no
+  // longer on the page (a popup that closed), so it does not keep drawing
+  // into nothing.
+  const onChange = () => {
+    if (!box.isConnected) { document.removeEventListener("phones-changed", onChange); return; }
+    draw();
+  };
+  document.addEventListener("phones-changed", onChange);
+  draw();
+  return box;
 }
 
-// A short, human name for whatever is looking at this page.
-function deviceName() {
-  const ua = navigator.userAgent || "";
-  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad"
-           : /Android/.test(ua) ? "Android" : /Mac OS X/.test(ua) ? "Mac"
-           : /Windows/.test(ua) ? "Windows" : "";
-  const app = /EdgA?\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox"
-            : /CriOS|Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
-  return [os, app].filter(Boolean).join(" / ") || "device";
+// The inline "add a destination" flow: the Notifications card in a popup, so
+// a tab can be pointed at a phone or a channel without leaving this screen.
+// The global card stays too (this reuses it).
+function openNotifyPopup() {
+  return new Promise(resolve => {
+    const m = openModal(
+      el("h2", {}, T["settings.tab.notify.add_title"]),
+      notifyCard(),
+      el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:12px;justify-content:flex-end"},
+        el("button", {class:"primary", onclick: () => { m.remove(); resolve(); }}, T["common.done"])));
+    m.addEventListener("click", e => { if (e.target === m) resolve(); });
+  });
 }
 
 async function loadSecrets() {
@@ -5713,62 +5777,96 @@ function tabPane(ws, t) {
   box.append(card(T["settings.tab.launch"], cmdRow, detailBox,
     row(T["settings.tab.command"], cmdInput), real.box));
 
-  // Notify on answer: a beginner-friendly way to get a Slack/Telegram ping when
-  // this tab's AI finishes, without writing on_done Lua. Lists the destinations
-  // registered under General → Notifications.
+  // Notify on answer: a beginner-friendly way to get a ping when this tab's AI
+  // finishes, without writing on_done Lua. Lists the destinations registered
+  // under General → Notifications, and ends with the way to add one, so a
+  // person who arrives here first does not have to know where that is.
   {
-    const dests = Object.keys(current.notify || {});
-    const opts = [["", T["settings.tab.notify.none"]]].concat(dests.map(n => [n, n]));
-    // The reply link and its warning live directly under the destination, so
-    // the sentence can name the place the link is going. The risk is not the
-    // link, it is who can see it -- and only the person choosing knows that.
-    const warn = el("div", {class:"hint warn", style:"margin-top:6px"});
-    const replyBox = el("div");
-    const drawReply = () => {
-      replyBox.textContent = "";
-      warn.textContent = "";
-      // Always drawn, even with no destination chosen -- greyed rather than
-      // gone. A control that only appears once something else is set is a
-      // control nobody finds: you cannot look for what is not there.
-      const dest = t.notify_on_done;
-      // A link to a page you answer from is for somewhere you are not. A
-      // notification on this very PC is already one click from the tab
-      // itself, so the link would be a longer way round to the same place --
-      // and it never even appears, because a banner shows two lines and the
-      // link is on the third. Say so rather than let it be ticked for nothing.
-      const kind = ((current.notify || {})[dest] || {}).type;
-      const here = kind === "windows";
-      const on = !!dest && !here;
-      if (!on) delete t.notify_reply;
-      const label = check(t, "notify_reply", T["settings.tab.notify.reply"]);
-      const box = label.querySelector("input");
-      box.disabled = !on;
-      label.style.opacity = on ? "" : ".5";
-      if (!on) {
-        label.title = here ? T["settings.tab.notify.reply.here"]
-                           : T["settings.tab.notify.reply.needs_dest"];
-      }
-      replyBox.append(label);
-      if (here) {
-        warn.classList.remove("warn");
-        warn.textContent = T["settings.tab.notify.reply.here"];
-      } else {
-        warn.classList.add("warn");
-        if (on && t.notify_reply) {
-          warn.textContent = fill(T["settings.tab.notify.reply.warn"], {name: dest});
+    const nbox = el("div");
+    const drawNotify = () => {
+      nbox.textContent = "";
+      const dests = Object.keys(current.notify || {});
+      const opts = [["", T["settings.tab.notify.none"]]]
+        .concat(dests.map(n => [n, n]), [["add-dest", T["settings.tab.notify.add"]]]);
+      // The reply link and its warning live directly under the destination, so
+      // the sentence can name the place the link is going. The risk is not the
+      // link, it is who can see it -- and only the person choosing knows that.
+      const warn = el("div", {class:"hint warn", style:"margin-top:6px"});
+      // A phone destination with no phone behind it sends nothing. Said here,
+      // where the destination is being chosen, with the way to put it right --
+      // the failure itself would otherwise only ever show on the board, after.
+      const unreached = el("div", {class:"hint warn", style:"margin-top:6px"});
+      const replyBox = el("div");
+      const drawReply = () => {
+        replyBox.textContent = "";
+        warn.textContent = "";
+        unreached.textContent = "";
+        // Always drawn, even with no destination chosen -- greyed rather than
+        // gone. A control that only appears once something else is set is a
+        // control nobody finds: you cannot look for what is not there.
+        const dest = t.notify_on_done;
+        // A link to a page you answer from is for somewhere you are not. A
+        // notification on this very PC is already one click from the tab
+        // itself, so the link would be a longer way round to the same place --
+        // and it never even appears, because a banner shows two lines and the
+        // link is on the third. Say so rather than let it be ticked for nothing.
+        const kind = ((current.notify || {})[dest] || {}).type;
+        const here = kind === "windows";
+        const on = !!dest && !here;
+        if (!on) delete t.notify_reply;
+        const label = check(t, "notify_reply", T["settings.tab.notify.reply"]);
+        const box = label.querySelector("input");
+        box.disabled = !on;
+        label.style.opacity = on ? "" : ".5";
+        if (!on) {
+          label.title = here ? T["settings.tab.notify.reply.here"]
+                             : T["settings.tab.notify.reply.needs_dest"];
         }
-      }
+        replyBox.append(label);
+        if (here) {
+          warn.classList.remove("warn");
+          warn.textContent = T["settings.tab.notify.reply.here"];
+        } else {
+          warn.classList.add("warn");
+          if (on && t.notify_reply) {
+            warn.textContent = fill(T["settings.tab.notify.reply.warn"], {name: dest});
+          }
+        }
+        if (kind === "phone") {
+          phones().then(j => {
+            if (t.notify_on_done !== dest || j.error || (j.subs || []).length) return;
+            unreached.append(fill(T["settings.tab.notify.phone_none"], {name: dest}), " ",
+              el("a", {href:"#", onclick: async e => {
+                e.preventDefault(); await openNotifyPopup(); drawNotify();
+              }}, T["settings.tab.notify.phone_how"]));
+          });
+        }
+      };
+      const before = t.notify_on_done;
+      const sel = choose(t, "notify_on_done", opts, async v => {
+        if (v === "add-dest") {
+          // Not a destination: put back what was chosen, open the editor, and
+          // point the tab at whatever it added.
+          if (before) t.notify_on_done = before; else delete t.notify_on_done;
+          const had = new Set(Object.keys(current.notify || {}));
+          await openNotifyPopup();
+          const added = Object.keys(current.notify || {}).find(n => !had.has(n));
+          if (added) t.notify_on_done = added;
+          drawNotify(); refreshSave();
+          return;
+        }
+        if (!v) { delete t.notify_on_done; delete t.notify_reply; }
+        drawReply(); refreshSave();
+      });
+      replyBox.addEventListener("change", () => { drawReply(); refreshSave(); });
+      drawReply();
+      const hint = dests.length ? T["settings.tab.notify.hint"] : T["settings.tab.notify.none_hint"];
+      nbox.append(card(T["settings.tab.notify.title"],
+        row(T["settings.tab.notify.label"], sel, el("span", {class:"hint"}, hint)),
+        unreached, replyBox, warn));
     };
-    const sel = choose(t, "notify_on_done", opts, v => {
-      if (!v) { delete t.notify_on_done; delete t.notify_reply; }
-      drawReply(); refreshSave();
-    });
-    replyBox.addEventListener("change", () => { drawReply(); refreshSave(); });
-    drawReply();
-    const hint = dests.length ? T["settings.tab.notify.hint"] : T["settings.tab.notify.none_hint"];
-    box.append(card(T["settings.tab.notify.title"],
-      row(T["settings.tab.notify.label"], sel, el("span", {class:"hint"}, hint)),
-      replyBox, warn));
+    drawNotify();
+    box.append(nbox);
   }
 
   // Automation: make it visible at a glance what's already configured
@@ -6723,11 +6821,7 @@ load().then(() => {
   // ?section=<id> deep-links straight to one global card (the ⚙ shortcuts).
   const sec = q.get("section");
   if (sec && globalSections().some(s => s.id === sec)) {
-    navGlobalOpen = true;
-    sel = {ws:sel.ws, tab:null, global:true, section:sec};
-    render();
-    const s = document.querySelector(".navitem.sel");
-    if (s) s.scrollIntoView({block:"center"});
+    goSection(sec, "center");
     return;
   }
   const wi = idx("addtab");

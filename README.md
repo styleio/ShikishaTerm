@@ -137,7 +137,7 @@ starting), double-click **`Settings.cmd`**.
   for you by an AI you already have installed
 - **Runaway protection** — a limit on how many times agents may hand work to each other,
   an emergency stop, and per-tab input locks
-- **Notifications** — Slack / Telegram when a job finishes
+- **Notifications** — Slack / Telegram, this PC, or your phone when a job finishes
 - **Phone access** — check status and send instructions from outside (see below)
 - **A real terminal** — SSH, Docker, WSL, jump hosts, key files, port forwarding, session
   logs, legacy encodings, IME input and mouse support

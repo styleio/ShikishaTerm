@@ -106,6 +106,115 @@ self.addEventListener("notificationclick", e => {
 });
 "#;
 
+/// The client half of registering: the piece of JavaScript that turns a
+/// browser into a subscriber and hands the result back here.
+///
+/// Shared by the settings screen (src/webui.rs) and the phone's board
+/// (src/shell.rs) by way of `inject`, so there is exactly one answer to "what
+/// does registering take" and a fix to it lands on both pages at once. Each
+/// page passes its own way of reaching the app (`api`), its own dictionary
+/// (`T`) and its own toast, because those are the three things the two pages
+/// do differently.
+pub const SUBSCRIBE_JS: &str = r#"// -- Registering this browser for push (src/push.rs) -----------------------
+
+// Resolves to true when this browser is registered at the end of it. Every
+// way it can fall short is said on screen, told apart rather than collapsed
+// into "not supported": which of the three things a browser wants is missing
+// is the whole answer a person needs.
+//
+// `api(path)` fetches JSON from the app, `api(path, body)` posts it.
+async function shikishaSubscribe(api, T, toast) {
+  const say = (k, warn) => toast(T[k] || k, warn);
+  if (!window.isSecureContext) { say("settings.notify.phone.needs_https", true); return false; }
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    // On an iPhone this is not a browser that cannot do it -- it is a page
+    // that has not been added to the home screen yet. Apple puts the whole
+    // mechanism behind that, so in a Safari tab it is simply absent, and
+    // "this browser does not carry push notifications" would send somebody
+    // looking for another browser to no purpose.
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent)
+             || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const installed = navigator.standalone === true
+             || window.matchMedia("(display-mode: standalone)").matches;
+    say(ios && !installed ? "settings.notify.phone.ios_home" : "settings.notify.phone.no_support", true);
+    return false;
+  }
+  try {
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+    // Asked here, from a press, because a browser only offers the choice in
+    // answer to something a person did.
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { say("settings.notify.phone.refused", true); return false; }
+    const j = await api("/api/push");
+    if (!j || !j.key) { toast((j && j.error) || T["settings.notify.phone.failed"], true); return false; }
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: shikishaB64Bytes(j.key),
+    });
+    const r = await api("/api/push/subscribe", {
+      endpoint: sub.endpoint,
+      p256dh: shikishaBytesB64(sub.getKey("p256dh")),
+      auth: shikishaBytesB64(sub.getKey("auth")),
+      // Enough to tell two phones apart in a list, and no more: the whole
+      // user-agent string is a fingerprint nobody asked to store.
+      name: shikishaDeviceName(),
+    });
+    if (!r || !r.ok) { toast((r && r.error) || T["settings.notify.phone.failed"], true); return false; }
+    say("settings.notify.phone.added");
+    return true;
+  } catch (e) {
+    toast(String(e && e.message ? e.message : e), true);
+    return false;
+  }
+}
+
+// Whether this browser is registered -- with the app, not merely with itself.
+// A phone that registered and was then deleted from the PC's list still holds
+// the browser's half of the subscription, and asking the browser alone would
+// call that done. Answers false, never throws: a browser with none of this is
+// simply not registered.
+async function shikishaSubscribed(api) {
+  try {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return false;
+    const reg = await navigator.serviceWorker.getRegistration("/");
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (!sub) return false;
+    const j = await api("/api/push");
+    return !!(j && (j.subs || []).some(s => s.endpoint === sub.endpoint));
+  } catch (e) { return false; }
+}
+
+// base64url in, the bytes a browser wants out.
+function shikishaB64Bytes(s) {
+  const pad = "=".repeat((4 - (s.length % 4)) % 4);
+  const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+
+// ...and back again, for the two keys a subscription carries.
+function shikishaBytesB64(buf) {
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(buf)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// A short, human name for whatever is looking at this page.
+function shikishaDeviceName() {
+  const ua = navigator.userAgent || "";
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad"
+           : /Android/.test(ua) ? "Android" : /Mac OS X/.test(ua) ? "Mac"
+           : /Windows/.test(ua) ? "Windows" : "";
+  const app = /EdgA?\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox"
+            : /CriOS|Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
+  return [os, app].filter(Boolean).join(" / ") || "device";
+}
+"#;
+
+/// Pour the client half into a page that carries a `{{PUSH_JS}}` mark.
+pub fn inject(html: String) -> String {
+    html.replace("{{PUSH_JS}}", SUBSCRIBE_JS)
+}
+
 // ── Where the two files live ────────────────────────────────────────────────
 
 fn vapid_path() -> PathBuf {

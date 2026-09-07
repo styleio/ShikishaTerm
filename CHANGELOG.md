@@ -23,6 +23,16 @@ address instead — for the QR code, for the reply pages a notification links to
 and for the board's own address as automation sees it.
 
 ### Added
+- **A phone offers to be notified, by itself.** Naming "a phone" as where a
+  tab's answers go used to leave the last step — pressing "Register this
+  device" on the phone, under its settings — to be found. Now the phone's own
+  board says it at the top, in one press, whenever the settings ask for a phone
+  and that phone is not one yet. On the PC the settings show the QR code and
+  the two steps instead of a button that could only ever have registered the
+  PC, and change by themselves the moment the phone presses; a tab's list of
+  destinations ends with "Add a destination…", the way its list of AIs ends
+  with "Add an AI…"; and a notification that could not be sent is said on the
+  board, not only in the log.
 - **This PC's own notification area, as a notification destination.** Slack,
   Telegram and Discord all reach a phone. None of them reaches the person
   sitting at this PC with the window behind a browser, which is the one place a

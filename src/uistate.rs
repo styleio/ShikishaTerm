@@ -588,6 +588,12 @@ pub struct UiState {
     pub aim: Option<usize>,
     /// First launch, before any settings exist yet
     pub first_run: bool,
+    /// Whether the settings name a phone as somewhere answers go. Only the
+    /// browser holding the page can know whether it is that phone yet, so
+    /// the app says just that one is wanted, and the phone's board offers
+    /// to become it (src/shell.rs, drawPushBar).
+    #[serde(default)]
+    pub push_wanted: bool,
     pub tabs: Vec<TabState>,
     pub ball: BallState,
     /// Transient notification (saved, emergency stop, etc.)

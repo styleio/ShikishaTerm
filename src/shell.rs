@@ -630,6 +630,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      so the AI screens are never covered, and returns when the round finishes so
      the next topic can be posed. Placed at the very top: the AI CLIs keep their
      input line at the bottom, so this never sits on top of it. */
+  /* The one press that puts a phone on the list of places answers go. Shown
+     only on a phone, only while the settings ask for one and this browser is
+     not yet it. Blinks two values a second like everything else that says
+     "press this next" -- a smooth pulse costs a core a fifth of itself */
+  #pushbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:26;
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; padding:10px 14px;
+    background:linear-gradient(180deg,var(--tint),var(--panel));
+    border-bottom:2px solid var(--live); box-shadow:0 8px 22px rgba(0,0,0,.45); font-size:14px; }
+  #pushbar[hidden] { display:none; }
+  #pushbar .pb-ico { font-size:18px; flex:none; }
+  #pushbar .pb-text { flex:1 1 220px; min-width:0; }
+  /* The two answers stay together, and go to the right -- or, on a narrow
+     screen, to their own line under the words */
+  #pushbar .pb-actions { flex:none; margin-left:auto; display:flex; gap:8px; }
+  #pushbar button { flex:none; padding:8px 14px; border-radius:8px; border:0; font:inherit; font-weight:700; }
+  #pushbar .pb-go { background:var(--brand); color:var(--bg); animation:pulse 1.2s step-end infinite; }
+  #pushbar .pb-later { background:transparent; color:var(--muted); }
   #topicbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:24;
     display:flex; align-items:center; gap:10px; flex-wrap:wrap;
     padding:11px 16px; background:linear-gradient(180deg,var(--tint),var(--panel));
@@ -1162,6 +1179,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="tabgrip"></div>
   <div id="main">
     <div id="panes"></div>
+    <div id="pushbar" hidden></div>
     <div id="nav" hidden></div>
     <div id="page"></div>
     <div id="board" hidden></div>
@@ -1378,6 +1396,48 @@ let lastFlash = null;
 // The shared toast (src/toast.rs). Declared this early because the very first
 // state can arrive with a message already in it.
 {{TOAST_JS}}
+{{PUSH_JS}}
+
+// -- A phone that should be getting notifications, and is not one yet --------
+//
+// The settings can name "a phone" as where answers go, and the only thing
+// that can make this phone one of them is this phone. So when the app says a
+// phone is wanted (S.push_wanted) and this browser is not registered, the
+// board offers it in one press, at the top, rather than leaving a person to
+// find a button under the settings. "Later" puts it away until the page is
+// opened again; registering, or the PC forgetting this phone, decides the
+// rest. The window never sees it: nothing it registered would be a phone.
+const pushApi = (path, body) => fetch(path + "?t=" + encodeURIComponent(TOKEN), body === undefined
+  ? {}
+  : {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)})
+  .then(r => r.json());
+let pushKnown = null;   // whether this browser is registered, asked once per page
+function drawPushBar() {
+  const bar = document.getElementById("pushbar");
+  if (!bar) return;
+  let later = false;
+  try { later = !!sessionStorage.getItem("shikisha_push_later"); } catch (e) {}
+  if (!REMOTE || !S.push_wanted || later) { bar.hidden = true; return; }
+  if (!pushKnown) pushKnown = shikishaSubscribed(pushApi);
+  pushKnown.then(done => {
+    if (done || !S.push_wanted) { bar.hidden = true; return; }
+    if (!bar.hidden) return;
+    bar.textContent = "";
+    bar.append(
+      el("span", {class:"pb-ico"}, "\u{1F514}"),
+      el("span", {class:"pb-text"}, T["tui.push.offer"] || ""),
+      el("span", {class:"pb-actions"},
+        el("button", {class:"pb-go", onclick: async () => {
+          if (await shikishaSubscribe(pushApi, T, toast)) { pushKnown = Promise.resolve(true); bar.hidden = true; }
+        }}, T["tui.push.go"] || ""),
+        el("button", {class:"pb-later", onclick: () => {
+          try { sessionStorage.setItem("shikisha_push_later", "1"); } catch (e) {}
+          bar.hidden = true;
+        }}, T["tui.push.later"] || "")));
+    bar.hidden = false;
+  });
+}
+
 // Where the toast sits in this window. The composer bar owns the bottom edge
 // while it's open — and rises with the phone's on-screen keyboard — so the
 // toast stands on top of it instead of over the thing being typed into.
@@ -2683,6 +2743,7 @@ window.__state = function (json) {
   drawBranch();
   drawRepair();
   drawBrowse();
+  drawPushBar();
   // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");
   const away = !screen.hidden && S.scrolled > 0;
@@ -6337,7 +6398,7 @@ pub fn page_for(sticky: bool) -> String {
     let words: std::collections::BTreeMap<&str, &str> = MENU.iter().copied().collect();
     // The message toast is the app's, not this screen's — every surface that
     // says anything to the user says it the same way (src/toast.rs)
-    crate::toast::render(PAGE.to_string()).replace(
+    crate::push::inject(crate::toast::render(PAGE.to_string())).replace(
         "{{MENU_KEYS}}",
         &serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()),
     )
@@ -6384,6 +6445,17 @@ pub fn page_for(sticky: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::{PAGE, screen_html, screen_rows};
+
+    /// The phone's board carries the one shared way of registering for push
+    /// (src/push.rs), exactly once, and the bar that offers it.
+    #[test]
+    fn the_board_can_register_a_phone_for_push() {
+        let page = super::page_for(false);
+        assert_eq!(page.matches("async function shikishaSubscribe(").count(), 1);
+        assert!(!page.contains("{{PUSH_JS}}"), "登録の JavaScript が流し込まれていない");
+        assert!(page.contains("id=\"pushbar\""), "通知を受け取るバーが無い");
+        assert!(page.contains("S.push_wanted"), "スマホが求められているかを見ていない");
+    }
 
     /// Every message this screen shows goes through the one shared toast.
     ///

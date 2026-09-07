@@ -2018,6 +2018,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         remote_sticky: ui.remote_sticky,
         aim: ui.aim,
         first_run: ui.first_run,
+        push_wanted: ui.push_wanted,
         // Keep the order exactly as written in the config.
         // Listing sessions and browsers separately would push the browser
         // written first to the back.
@@ -2982,6 +2983,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
             if let Ok(v) = update_rx.try_recv() {
                 flash = Some(i18n::tp("msg.update_available", &[("version", &v)]));
             }
+        }
+        // A notification that could not be sent, said here too. It used to go
+        // only to hooks.log, and a person whose phone stayed quiet had nothing
+        // on screen to say why.
+        if flash.is_none() {
+            flash = notify::take_failed();
         }
 
         // Check every tab's state every 200ms (completion of inactive tabs is
@@ -4145,6 +4152,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
             .map_or((None, None), |(p, n)| (Some(p), Some(n)));
         let ui = Ui {
             first_run,
+            push_wanted: cfg.as_ref().is_some_and(|c| {
+                c.notify.values().any(|d| matches!(d, notify::Destination::Phone {}))
+            }),
             active,
             board: board_open,
             settings: settings_open,
@@ -9006,6 +9016,9 @@ fn show_line<CB: vt100::Callbacks>(
 struct Ui {
     /// First-ever run, before config exists (shows onboarding on INDEX)
     first_run: bool,
+    /// Whether the settings name a phone as somewhere answers go (see
+    /// UiState::push_wanted)
+    push_wanted: bool,
     /// Whether what's in view can be put back the way it started (see
     /// `restartable_page`). Drives the restart button beside the stop button
     restartable: bool,
