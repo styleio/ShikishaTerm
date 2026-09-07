@@ -34,7 +34,7 @@ export default defineConfig({
         { tag: "link", attrs: { rel: "apple-touch-icon", href: "/apple-touch-icon.png" } },
       ],
       social: [{ icon: "github", label: "GitHub", href: REPO }],
-      // 検索は入れない。ページは実質4枚で、索引は全部で3500語ほどしかない。
+      // 検索は入れない。ページは実質5枚で、索引は4500語ほどしかない。
       // それでいて検索欄はヘッダーの真ん中を丸ごと占め、狭い画面では唯一の
       // ボタンとして残る。その場所は言語の切り替えに使いたい。
       // ドキュメントが増えて Ctrl+F では追えなくなったら true に戻す。
@@ -45,6 +45,10 @@ export default defineConfig({
       editLink: { baseUrl: `${REPO}/edit/main/site/` },
       lastUpdated: true,
       sidebar: [
+        // 一番手前に置く。スマホの画面は看板の売りのひとつだが、外出先から
+        // 使うには他社製品 (Tailscale) の作業が挟まる。それを黙っていると
+        // 「で、結局どうやるの」で止まる
+        { label: "From your phone", link: "/phone/" },
         { label: "Automation", link: "/automation/" },
         { label: "Translating", link: "/translating/" },
         { label: "Privacy", link: "/privacy/" },

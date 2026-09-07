@@ -673,6 +673,8 @@
   "settings.phone.lan": "Tailscale not found. Your home network ({ip}) can be used",
   "settings.phone.none": "No usable network was found",
   "settings.phone.scan": "Scan this with your phone camera",
+  "settings.phone.guide": "Step by step:",
+  "settings.phone.guide.url": "https://shikisha-term.com/phone/",
   "settings.phone.https.on": "Served over HTTPS, so a phone can keep this on its home screen.",
   "settings.phone.https.hint": "To keep this on a phone's home screen, the link has to be HTTPS. Tailscale does that in one line — run it once, in any tab:",
   "settings.phone.copy": "Copy the connection link (it includes the key that opens it — paste it somewhere only you can read)",

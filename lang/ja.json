@@ -671,6 +671,8 @@
   "settings.phone.lan": "Tailscaleは未導入。家庭内LAN（{ip}）で使えます",
   "settings.phone.none": "接続できるネットワークが見つかりません",
   "settings.phone.scan": "スマホのカメラで読み取ってください",
+  "settings.phone.guide": "詳しい手順:",
+  "settings.phone.guide.url": "https://shikisha-term.com/ja/phone/",
   "settings.phone.https.on": "HTTPSで配信しています。スマホのホーム画面に追加できます。",
   "settings.phone.https.hint": "スマホのホーム画面に置くには、リンクがHTTPSである必要があります。Tailscaleなら1行で済みます。どれかのタブで一度だけ実行してください:",
   "settings.phone.copy": "接続リンクをコピー（開くための鍵が入っています。自分だけが見える場所に貼ってください）",

@@ -4972,6 +4972,14 @@ function remoteCard() {
           el("code", {style:"display:block;margin-top:4px;user-select:all;word-break:break-all"},
              "tailscale serve --bg " + (r.port || 8787)));
       }
+      // Where the whole thing is written out: what works on the same Wi-Fi
+      // with nothing installed, what reaching it from a cafe costs, and what
+      // the line above is for. The address is the link's own text, so it is
+      // readable and typable even where a window will not follow it.
+      qrbox.append(el("div", {style:"margin-top:10px"},
+        el("span", {class:"hint"}, T["settings.phone.guide"] + " "),
+        el("a", {class:"hint", href:T["settings.phone.guide.url"], target:"_blank"},
+           T["settings.phone.guide.url"])));
     }
   }
 
