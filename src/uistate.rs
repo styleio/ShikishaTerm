@@ -169,6 +169,11 @@ pub struct GroupState {
     /// you notice rather than something you find out
     #[serde(default)]
     pub drift: crate::folders::Drift,
+    /// Whether nothing runs in it yet. The list is worked out from tabs, so
+    /// a folder with none would not be on it at all -- and a folder somebody
+    /// just added is exactly that folder. It is shown so its + can be pressed
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub empty: bool,
 }
 
 impl GroupState {
@@ -178,9 +183,15 @@ impl GroupState {
     /// Tabs that are in no folder at all -- a browser is in none -- get no
     /// heading and belong to nothing, which is why the answer is looked up by
     /// path rather than handed out by position
+    ///
+    /// `configured` is what the settings say the workspace's folders are, by
+    /// path and name. Any of them no tab is in comes last, marked empty:
+    /// added a minute ago, or emptied out, either way somewhere with a + to
+    /// press and nothing else to say for it
     pub fn all(
         tabs: &[crate::tab::Tab],
         chosen: &std::collections::HashMap<String, String>,
+        configured: &[(std::path::PathBuf, String)],
     ) -> Vec<(std::path::PathBuf, GroupState)> {
         let mut out: Vec<(std::path::PathBuf, GroupState)> = Vec::new();
         for t in tabs {
@@ -214,6 +225,30 @@ impl GroupState {
                     // disk, and the disk is asked away from the list being built
                     health: Default::default(),
                     drift: Default::default(),
+                    empty: false,
+                },
+            ));
+        }
+        for (cwd, name) in configured {
+            if out.iter().any(|(k, _)| same_folder(k, cwd)) {
+                continue;
+            }
+            out.push((
+                cwd.clone(),
+                GroupState {
+                    name: Some(name.trim())
+                        .filter(|n| !n.is_empty())
+                        .map(str::to_string)
+                        .or_else(|| cwd.file_name().map(|n| n.to_string_lossy().to_string()))
+                        .unwrap_or_default(),
+                    folder: cwd.display().to_string(),
+                    // No colour: which project it belongs to is read off a
+                    // running tab's place, and nothing is running here yet
+                    color: None,
+                    linked: false,
+                    health: Default::default(),
+                    drift: Default::default(),
+                    empty: true,
                 },
             ));
         }
@@ -337,6 +372,15 @@ pub struct Project {
     pub at: String,
     /// What to call it in the list
     pub name: String,
+}
+
+/// Whether two paths name one folder, the way Windows sees it: case does
+/// not tell them apart, and neither does a trailing separator
+fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let key = |p: &std::path::Path| {
+        p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase()
+    };
+    key(a) == key(b)
 }
 
 /// Folders to choose from, when somewhere new is being opened.
@@ -774,7 +818,7 @@ mod tests {
         // Two tabs in one folder are one heading, not two: what groups them is
         // the folder, so nothing has to be declared for them to be together
         let mut tabs = vec![in_folder("one", None), in_folder("one", None), in_folder("two", None)];
-        let found = GroupState::all(&tabs, &Default::default());
+        let found = GroupState::all(&tabs, &Default::default(), &[]);
         for t in tabs.iter_mut() {
             t.kill();
         }
@@ -789,9 +833,36 @@ mod tests {
     #[test]
     fn a_folder_someone_named_is_called_that() {
         let mut tabs = vec![in_folder("named", Some("feature/login"))];
-        let found = GroupState::all(&tabs, &Default::default());
+        let found = GroupState::all(&tabs, &Default::default(), &[]);
         tabs[0].kill();
         assert_eq!(found[0].1.name, "feature/login");
+    }
+
+    /// A folder the settings name and no tab is in still gets a heading --
+    /// marked empty, after the ones with tabs -- and a folder a tab IS in is
+    /// not listed twice because the settings spell it differently.
+    #[test]
+    fn a_folder_with_nothing_in_it_is_still_on_the_list() {
+        let mut tabs = vec![in_folder("Work", None)];
+        let work = tabs[0].cwd().unwrap().to_path_buf();
+        let fresh = std::env::temp_dir().join("shikisha-group-fresh");
+        let spelled = std::path::PathBuf::from(work.display().to_string().to_lowercase() + "\\");
+        let found = GroupState::all(
+            &tabs,
+            &Default::default(),
+            &[(spelled, String::new()), (fresh.clone(), "New one".into())],
+        );
+        // Without a name it is called by its folder
+        let unnamed = GroupState::all(&tabs, &Default::default(), &[(fresh.clone(), String::new())]);
+        for t in tabs.iter_mut() {
+            t.kill();
+        }
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(!found[0].1.empty, "タブのあるフォルダが空扱い");
+        assert_eq!(found[1].0, fresh);
+        assert!(found[1].1.empty, "タブの無いフォルダが空と分からない");
+        assert_eq!(found[1].1.name, "New one");
+        assert_eq!(unnamed[1].1.name, "shikisha-group-fresh");
     }
 
     #[test]

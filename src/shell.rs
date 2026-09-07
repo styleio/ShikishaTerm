@@ -124,6 +124,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The "+" stays muted by default; it only reaches full contrast on hover/touch */
   .tab.addtab { color:var(--dim); }
   .tab.addtab:hover { color:inherit; }
+  /* The one thing to press next, said by blinking it rather than by adding a
+     button: an empty folder's +, and "add a folder" when there is none at
+     all. Two values a second, like the busy dot -- a smooth pulse in this
+     page costs a core a fifth of itself for as long as it runs */
+  .tab.folder .more.pulse, .tab.addtab.pulse { color:var(--brand); font-weight:700;
+    animation:pulse 1.2s step-end infinite; }
   /* Workspace switcher above INDEX. Clicking it opens the workspace list popup */
   .tab.wsrow { color:var(--dim); font-weight:700; border-bottom:1px solid var(--line); }
   .tab.wsrow:hover { color:inherit; }
@@ -1523,11 +1529,28 @@ function drawTabs() {
       nav.lastChild.append(el("span", {class:"said", title:t.status}, t.status));
     }
   }
+  // Folders with nothing in them yet. The loop above walks tabs, so it never
+  // reaches one -- and a folder just added is exactly that, which left
+  // "add a folder" ending in nothing on screen. Its + blinks: that is the
+  // same + every folder has, and the whole reason to show an empty one
+  for (const g of folders) {
+    if (!g.empty) continue;
+    nav.append(el("div", {class:"tab folder empty", title:g.folder || "",
+        onclick:e => folderMenu(e, g)},
+      el("span", {class:"chip"}),
+      ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
+      el("span", {class:"nm"}, g.name || ""),
+      el("span", {class:"more pulse", title:T["tui.tab.add"] || "+",
+          onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+")));
+  }
   // A "+" at the end of the list. Opens the settings page already in the "add tab" state
   // A folder, not a tab: a tab has to go somewhere, and at the bottom of the
   // whole list there was no saying where. Tabs are added from the folder they
-  // will run in
-  nav.append(el("div", {class:"tab addtab", onclick:e => addMenu(e)},
+  // will run in.
+  // Blinking on a machine that has nothing set up yet: the shell that opened
+  // says the program runs, and this says what to press next
+  const bare = !!S.first_run && !folders.length;
+  nav.append(el("div", {class:"tab addtab" + (bare ? " pulse" : ""), onclick:e => addMenu(e)},
     el("span", {class:"num"}, "+"),
     el("span", {class:"nm"}, T["tui.folder.add"] || "ADD A FOLDER")));
   // The settings gear, pinned to the very bottom of the sidebar. Always visible.
@@ -1695,7 +1718,7 @@ function addMenu(e) {
   openList(e.currentTarget, [
     here ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
                 () => openBranch(here)) : null,
-    item(T["tui.folder.another"] || "Open another folder", () => openBrowse("")),
+    item(T["tui.folder.another"] || "Add a working folder", () => openBrowse("")),
   ]);
 }
 
@@ -1706,8 +1729,8 @@ function openBrowse(at) {
   const b = document.getElementById("browse");
   if (!b) return;
   b.hidden = false;
-  b.querySelector(".vtitle").textContent = T["tui.browse.title"] || "OPEN A FOLDER";
-  b.querySelector(".go").textContent = T["tui.browse.open"] || "Open";
+  b.querySelector(".vtitle").textContent = T["tui.browse.title"] || "ADD A WORKING FOLDER";
+  b.querySelector(".go").textContent = T["tui.browse.open"] || "Add this folder";
   send({kind:"browse", path:at || "", open:false});
 }
 function closeBrowse() {
@@ -7032,6 +7055,19 @@ mod tests {
         assert!(
             guards >= acts,
             "Enter を拾う箇所 {acts} に対し、変換中を通す守りが {guards} しかない"
+        );
+    }
+
+    /// A folder with no tab in it is on the list, and the next thing to press
+    /// blinks. Adding a folder used to end in nothing on screen: the list was
+    /// walked from tabs, and a new folder has none.
+    #[test]
+    fn an_empty_folder_is_drawn_and_its_plus_blinks() {
+        assert!(PAGE.contains("if (!g.empty) continue;"), "空のフォルダが描かれない");
+        assert!(PAGE.contains(r#"class:"more pulse""#), "空のフォルダの + が光らない");
+        assert!(
+            PAGE.contains("const bare = !!S.first_run && !folders.length;"),
+            "何も無い機で「作業フォルダを追加」が光らない"
         );
     }
 

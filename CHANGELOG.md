@@ -77,7 +77,21 @@ and for the board's own address as automation sees it.
   search and network places and the list does not.
 
 ### Fixed
-- **"Open another folder" works from a phone now.** The sidebar's folder list
+- **A folder just added is on screen.** The sidebar's folder headings were
+  worked out from the tabs, so a folder with no tab in it -- which is what a
+  folder just added is -- was nowhere at all; the settings had it, the window
+  did not, and whether adding it had worked was anyone's guess. An empty
+  folder now has its heading, its + blinks, and that + is the same one every
+  folder has: the next thing to press, not another way to press it. On a
+  machine with nothing set up yet, "add a working folder" blinks the same way.
+  The three names one act had -- add a folder, open another folder, work
+  here -- are now one.
+- **Adding a folder no longer takes the tabs a workspace already had.** A
+  workspace written the old way, with its tabs beside the folders rather than
+  inside one, read those tabs as the first folder's. Adding a folder made the
+  new one the first, so every tab moved into it and asked for a restart. The
+  old tabs are now put into a folder of their own before anything is added.
+- **"Add a working folder" works from a phone now.** The sidebar's folder list
   was built so a phone could walk it, and then the request that asks for it
   was refused at the phone's gate — and, behind that, had no route to the list
   — so the dialog opened, and stayed empty. The list reads folder names;

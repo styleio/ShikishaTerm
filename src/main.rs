@@ -1975,7 +1975,7 @@ fn screen_key(session: usize, t: &Tab) -> ScreenKey {
 fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
     // The folders these tabs are actually in. Worked out here, once, so the
     // window and the phone are looking at the same list
-    let mut groups = crate::uistate::GroupState::all(tabs, &ui.folder_colors);
+    let mut groups = crate::uistate::GroupState::all(tabs, &ui.folder_colors, &ui.folders);
     // And whether each of them is on this machine. Asked here because this is
     // the one place the list is built, and answered from a table kept up to
     // date on its own threads -- a drive that has stopped answering must not
@@ -4168,6 +4168,17 @@ fn run(mut surface: WinSurface) -> Result<()> {
             folder_colors: cfg
                 .as_ref()
                 .map(|c| c.folder_colors.clone())
+                .unwrap_or_default(),
+            folders: workspaces
+                .get(ws_index)
+                .map(|w| {
+                    w.folders
+                        .iter()
+                        .filter_map(|f| {
+                            f.cwd.clone().map(|c| (c, f.name.clone().unwrap_or_default()))
+                        })
+                        .collect()
+                })
                 .unwrap_or_default(),
             self_cost: self_cost.clone(),
             // With a stand-in laid out there is a link to show even when
@@ -9044,6 +9055,9 @@ struct Ui {
     browse: Option<crate::uistate::BrowseState>,
     /// The colours chosen for projects, by the folder git shares
     folder_colors: std::collections::HashMap<String, String>,
+    /// The current workspace's folders as the settings have them, so one with
+    /// no tab in it is still on the list (uistate::GroupState::all)
+    folders: Vec<(std::path::PathBuf, String)>,
     /// The controls shown over the browser being viewed (None = don't show)
     nav: Option<crate::uistate::NavState>,
     /// How many lines back from the current screen we're scrolled (0 = live)

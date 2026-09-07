@@ -1861,9 +1861,30 @@ fn with_folders(
 }
 
 /// Makes sure there is a list of folders to put something in.
+///
+/// Tabs written the old way -- beside the folders rather than inside one --
+/// are read as the first folder's (`foldered_with`). They are written into
+/// it here, before anything is added, so that a folder added after them does
+/// not become "the first" and take them: adding an empty folder to a
+/// workspace written the old way used to move every tab it had into it.
 fn ensure_folders(holder: &mut serde_json::Value) {
     if !holder.get("folders").map(|f| f.is_array()).unwrap_or(false) {
         holder["folders"] = serde_json::json!([]);
+    }
+    let legacy = holder
+        .as_object_mut()
+        .and_then(|o| o.remove("tabs"))
+        .and_then(|t| t.as_array().cloned())
+        .filter(|t| !t.is_empty());
+    if let Some(mut legacy) = legacy {
+        let folders = holder["folders"].as_array_mut().expect("作ったばかり");
+        if folders.is_empty() {
+            folders.push(serde_json::json!({ "tabs": [] }));
+        }
+        match folders[0].get_mut("tabs").and_then(|t| t.as_array_mut()) {
+            Some(had) => had.append(&mut legacy),
+            None => folders[0]["tabs"] = serde_json::Value::Array(legacy),
+        }
     }
 }
 
@@ -2534,6 +2555,38 @@ mod tests {
         assert_eq!(ws.cwd_of(&ws.tabs[1]), ws.cwd_of(&ws.tabs[0]));
         // Relative stays relative to the settings, so a folder of them travels
         assert_eq!(ws.cwd_of(&ws.tabs[2]), Some(root_dir().join("scripts")));
+    }
+
+    /// A workspace written the old way, tabs beside the folders, keeps them
+    /// when a folder is added: they go into the first folder, which is where
+    /// launching already read them from, and the new folder comes after.
+    #[test]
+    fn adding_a_folder_to_the_old_shape_does_not_take_its_tabs() {
+        let dir = std::env::temp_dir().join(format!("shikisha-legacy-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        std::fs::write(
+            &file,
+            r#"{"workspaces": [{"name": "orion", "tabs": [
+                 {"name": "backend", "command": "claude"},
+                 {"name": "frontend", "command": "codex"}]}]}"#,
+        )
+        .unwrap();
+
+        append_folder_at(&file, "orion", None, Path::new("D:/work/fresh"), None).unwrap();
+
+        let text = std::fs::read_to_string(&file).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(raw["workspaces"][0].get("tabs").is_none(), "古い置き場が残っている: {text}");
+        let cfg: Config = serde_json::from_str(&text).unwrap();
+        let ws = &cfg.resolve_workspaces().0[0];
+        assert_eq!(ws.folders.len(), 2, "元のタブの入れ物と、足した1つ: {text}");
+        assert_eq!(ws.folders[0].cwd, None, "元のタブはアプリの場所のまま");
+        assert_eq!(ws.folders[1].cwd.as_deref(), Some(Path::new("D:/work/fresh")));
+        let in_folder = |g: usize| ws.tabs.iter().filter(|t| t.folder == g).count();
+        assert_eq!(in_folder(0), 2, "元のタブが元の入れ物に居ない: {text}");
+        assert_eq!(in_folder(1), 0, "足したフォルダにタブが移った: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Writing down "work on another branch too", and reading it back the way
