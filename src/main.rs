@@ -52,6 +52,7 @@ mod session_log;
 mod sessionfind;
 mod shell;
 mod tab;
+mod tailscale;
 mod theme;
 mod toast;
 mod usage;
@@ -7701,6 +7702,13 @@ fn start_remote_bg(
                             errors.push(n.clone());
                         }
                         r.note = note;
+                        // Asked here rather than at the bind, because it is the
+                        // slow part and this thread is the one that exists for
+                        // slow parts. It ends in a real request through the
+                        // address before any link is built from it.
+                        if let Some(front) = tailscale::front(r.port()) {
+                            r.reached_at(front);
+                        }
                         Some(r)
                     }
                     Err(e) => {

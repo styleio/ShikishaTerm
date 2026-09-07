@@ -1967,6 +1967,12 @@ fn handle(
                 // What the link leads to, said in one word so the page can put
                 // a colour on it
                 "kind": crate::netaddr::shown_link(&info.url).1,
+                // Whether a browser will treat this link as a secure context,
+                // which decides whether a phone will keep the page on its home
+                // screen. Sent as the answer rather than left to be read off
+                // the origin: the origin is only ever a "is there anything to
+                // show" flag on that page, and it stays that way.
+                "https": origin.starts_with("https://"),
             });
             req.respond(
                 Response::from_string(resp.to_string()).with_header(
@@ -2276,6 +2282,8 @@ const PAGE: &str = r##"<!doctype html>
     claiming the row's label column. */
  .row > label.beside { width:auto; }
  .hint { color:var(--muted); font-size:12px; }
+ /* A hint that is good news rather than an instruction */
+ .hint.ok { color:var(--accent); }
  /* The line a tab will really be launched with. It wraps rather than scrolls:
     an argument pushed off the right edge is exactly the argument nobody would
     have seen otherwise */
@@ -4790,6 +4798,22 @@ function remoteCard() {
       const img = el("img", {src:"/api/remote/qr?token=" + encodeURIComponent(TOKEN),
         style:"width:200px;height:200px;border-radius:8px;background:#fff;padding:6px"});
       qrbox.append(el("div", {class:"hint"}, T["settings.phone.scan"]), img, linkRow(j.kind));
+      // Whether this link is one a browser will treat as a secure context,
+      // which is what a phone wants before it will keep the page on its home
+      // screen. The link itself is never drawn (it carries the token), so
+      // without saying it here there is no way to tell which one you have.
+      if (j.https) {
+        qrbox.append(el("div", {class:"hint ok", style:"margin-top:8px"},
+                        T["settings.phone.https.on"]));
+      } else if (j.tailscale) {
+        // Built from the two things this card already shows -- the address in
+        // the status line above and the port in the field above that -- so it
+        // tells nobody anything they are not already looking at.
+        qrbox.append(
+          el("div", {class:"hint", style:"margin-top:8px"}, T["settings.phone.https.hint"]),
+          el("code", {style:"display:block;margin-top:4px;user-select:all;word-break:break-all"},
+             "tailscale serve --bg http://" + j.tailscale + ":" + (r.port || 8787)));
+      }
     }
   }
 

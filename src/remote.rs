@@ -199,8 +199,13 @@ type StateClients = Arc<Mutex<Vec<Sender<String>>>>;
 pub struct RemoteUi {
     pub url: String,
     /// The origin (scheme://host:port) without the token, kept so `url` can be
-    /// rebuilt when the token is rotated.
+    /// rebuilt when the token is rotated. Not necessarily where the server is
+    /// listening -- see `reached_at`.
     origin: String,
+    /// The port actually bound, which is not always the port asked for (0 means
+    /// "any"). Kept because the address the world reaches this by can change
+    /// while the port cannot.
+    port: u16,
     /// The access token, shared with the server thread's request handlers so a
     /// runtime rotation takes effect immediately.
     token: Arc<Mutex<String>>,
@@ -450,6 +455,7 @@ impl RemoteUi {
         Ok(Self {
             url,
             origin,
+            port: real_port,
             token,
             note: None,
             snapshot,
@@ -482,6 +488,23 @@ impl RemoteUi {
     /// The ticket table, for the automation to write its own reply links with.
     pub fn tickets(&self) -> Arc<crate::reply::Book> {
         Arc::clone(&self.book)
+    }
+
+    /// Say that this board is reached at another address than the one it
+    /// listens on -- an HTTPS front door put there by `tailscale serve`
+    /// (src/tailscale.rs).
+    ///
+    /// Everything that hands out a link reads `origin`, so this is the only
+    /// place that has to change: the QR, the reply pages a notification links
+    /// to, and the board's own address as the automation sees it.
+    /// The port this is really listening on.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn reached_at(&mut self, origin: String) {
+        self.url = format!("{origin}/?t={}", self.token.lock().unwrap());
+        self.origin = origin;
     }
 
     /// Where the board is, without the key to it.

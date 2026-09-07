@@ -84,7 +84,17 @@ pub fn url_host(url: &str) -> String {
 /// overlay, the settings card) say it — and they say it from here, because two
 /// opinions about what counts as private is how one of them ends up wrong.
 pub fn url_kind(url: &str) -> &'static str {
-    let Ok(ip) = url_host(url).parse::<Ipv4Addr>() else {
+    let host = url_host(url);
+    // A MagicDNS name, which is what `tailscale serve` puts in front of this
+    // address so a browser will treat it as a secure context (src/tailscale.rs).
+    // It names a machine inside one tailnet and resolves nowhere else, so it is
+    // the same answer as the 100.x address it stands for -- and a plainer one
+    // to read. The publicly reachable version of such a name (funnel) is never
+    // adopted, so there is no case where this suffix means anything else.
+    if host.ends_with(".ts.net") {
+        return "tailscale";
+    }
+    let Ok(ip) = host.parse::<Ipv4Addr>() else {
         return "unknown";
     };
     if is_tailscale(&ip) {
@@ -222,9 +232,17 @@ mod tests {
         assert_eq!(url_kind("http://10.1.2.3:8787/?t=abc"), "lan");
         assert_eq!(url_kind("http://127.0.0.1:8787/?t=abc"), "local");
         assert_eq!(url_kind("http://8.8.8.8:8787/?t=abc"), "public");
+        // The HTTPS front door `tailscale serve` puts on the same machine.
+        // It reads as the same network, because it is -- and if it did not,
+        // turning HTTPS on would quietly take the badge away, which is worse
+        // than either answer.
+        assert_eq!(url_kind("https://ipc.tail4871ca.ts.net/?t=abc"), "tailscale");
+        assert_eq!(url_kind("https://ipc.tail4871ca.ts.net:8443/?t=abc"), "tailscale");
         // Nothing to show beats a guess: the screens draw no badge for these
         assert_eq!(url_kind(""), "unknown");
         assert_eq!(url_kind("http://nas.local:8787/"), "unknown");
+        // ...and a name that merely ends the same way as ours is not ours
+        assert_eq!(url_kind("http://evil-ts.net.example.com/"), "unknown");
     }
 
     /// The stand-in is off unless a file says so, and says so cleanly.

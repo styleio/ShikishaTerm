@@ -237,7 +237,7 @@ fn included_files(arg: &str, home: &std::path::Path) -> Vec<PathBuf> {
 /// exit waits for us -- and neither ever moves again. And the window is
 /// suppressed: this program has no console of its own, so a child console
 /// would flash a black rectangle over whatever the person is reading.
-fn run_briefly(exe: &str, args: &[&str], limit: Duration) -> Option<Vec<u8>> {
+pub(crate) fn run_briefly(exe: &str, args: &[&str], limit: Duration) -> Option<Vec<u8>> {
     let mut cmd = std::process::Command::new(exe);
     cmd.args(args)
         .stdin(std::process::Stdio::null())
