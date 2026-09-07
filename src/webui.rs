@@ -3069,8 +3069,16 @@ const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 // Others map 1:1. CLI AIs and API providers then sit side by side inside the AI panel.
 const catOf = c => { const k = kindOf(cmdToText(c));
   return k === "model" ? "ai" : k === "cmd" ? (isAiCli(c) ? "ai" : "cmd") : k; };
-const CAT_START = {ai:"claude", cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl ",
+// The AI a tab starts as when nobody has chosen yet: the first CLI that is
+// actually installed here, else Claude Code. Aider is skipped -- it has no
+// detection, so picking it would only mean "we never looked".
+const defaultAiCommand = () =>
+  (AI_CLIS.find(c => c.check && aiEngines.some(e => e.id === c.check)) || AI_CLIS[0]).cmd;
+// What picking a kind puts in the command field. The AI entry is a function
+// because its answer depends on which CLI this machine has.
+const CAT_START = {ai:defaultAiCommand, cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl ",
   browser:"browser https://", git:"git"};
+const catStart = v => { const s = CAT_START[v]; return (typeof s === "function" ? s() : s) || ""; };
 const CAT_LIST = [
   ["ai",      T["settings.tab.cat.ai"]],
   ["cmd",     T["settings.tab.cat.cmd"]],
@@ -3174,13 +3182,11 @@ const newTab = (o = {}) => Object.assign(
    browser_profile:"", private:false,
    encoding:"", scrollback:"", log:false, depth:0, group:0}, o);
 
-// Index of a tab with both an empty name and empty command (still in progress). -1 if there is none.
-// Even if "Add tab" is clicked repeatedly, if an empty, unwritten tab already exists,
-// this just jumps to it instead — so empty tabs don't pile up
-function firstEmptyTab(ws) {
-  return (ws.tabs || []).findIndex(t =>
-    !(t.name || "").trim() && !(t.command || "").trim() && !(t.id || "").trim());
-}
+// A tab nobody has filled in yet: no name, no id, and a command still at what
+// "Add tab" left there. The empty case is kept because tabs written before
+// tabs started arriving as AI have no command at all.
+const blankTab = t => !(t.name || "").trim() && !(t.id || "").trim()
+  && ["", defaultAiCommand()].includes(cmdToText(t.command).trim());
 
 // Adds one tab. But if there's already an in-progress empty tab, just selects that instead.
 // Returns the index of the added (or found) tab
@@ -3194,13 +3200,16 @@ function addTabTo(ws, group) {
     const at = ws.tabs[sel.tab];
     group = at ? (at.group || 0) : (sel.grp || 0);
   }
-  let i = ws.tabs.findIndex(t => (t.group || 0) === group
-    && !(t.name || "").trim() && !(t.command || "").trim() && !(t.id || "").trim());
+  let i = ws.tabs.findIndex(t => (t.group || 0) === group && blankTab(t));
   if (i < 0) {
     // Beside the others in the same folder, so the list stays in folder order
     let j = ws.tabs.length;
     while (j > 0 && (ws.tabs[j - 1].group || 0) > group) j--;
-    ws.tabs.splice(j, 0, newTab({group}));
+    // A new tab starts as an AI. This is a terminal for running AIs, and the
+    // AI panel is where the switches that decide how one runs live -- a tab
+    // that began as a plain shell hid them behind a dropdown nobody knew to
+    // open. A shell is one pick away in the Kind row above.
+    ws.tabs.splice(j, 0, newTab({group, command: defaultAiCommand()}));
     i = j;
   }
   return i;
@@ -5541,7 +5550,7 @@ function tabPane(ws, t) {
   const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild)); };
   cmdRow.append(el("label", {}, T["settings.tab.kind"]),
     choose({k:catOf(t.command)}, "k", CAT_LIST, v => {
-      setCommand(t, cmdInput, CAT_START[v] || ""); rebuild();
+      setCommand(t, cmdInput, catStart(v)); rebuild();
     }));
   rebuild();
   box.append(card(T["settings.tab.launch"], cmdRow, detailBox,

@@ -558,7 +558,7 @@
   "settings.tab.common.pick": "Pick one…",
   "settings.tab.common.missing": " (not installed)",
   "settings.tab.command": "Command",
-  "settings.tab.command.ph": "e.g. claude",
+  "settings.tab.command.ph": "e.g. powershell.exe",
   "settings.tab.command.real": "What actually runs",
   "settings.tab.command.real_note": "The highlighted arguments are added by the app. That number is the conversation's name, and it is what lets a restart pick the same conversation up again instead of starting a new one.",
   "settings.tab.command.real_note.off": "The highlighted arguments are added by the app. That number is the conversation's name. This tab is set to start clean, so reopening the app begins a new one — but the number is kept, so Ctrl+B r still brings this conversation back.",

@@ -556,7 +556,7 @@
   "settings.tab.common.pick": "選んで入力…",
   "settings.tab.common.missing": "（未インストール）",
   "settings.tab.command": "コマンド",
-  "settings.tab.command.ph": "例: claude",
+  "settings.tab.command.ph": "例: powershell.exe",
   "settings.tab.command.real": "実際に走る行",
   "settings.tab.command.real_note": "色の付いた引数はアプリが付けています。この番号が会話の名前で、これがあるおかげで再起動したとき新しい会話にせず、同じ会話の続きから再開できます。",
   "settings.tab.command.real_note.off": "色の付いた引数はアプリが付けています。この番号が会話の名前です。上の設定を切ってあるので開き直すと新しい会話で始まりますが、番号は控えてあるので Ctrl+B r でこの会話に戻せます。",
