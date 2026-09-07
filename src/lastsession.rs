@@ -249,6 +249,44 @@ mod tests {
         assert!(saved.panes_for("elsewhere").is_none());
     }
 
+    /// Frozen on purpose: this is the file as the released 0.5.1 wrote it, and
+    /// it has to keep loading, because the people who install the next version
+    /// are the people who already had that one. Their tabs come back or they
+    /// do not, and there is no second chance to notice.
+    ///
+    /// So do not edit this string to make it pass. A change here means a shape
+    /// somebody already has on disk stopped being readable, and the fix is
+    /// either to keep reading it or to raise VERSION and say what happens to
+    /// the old one.
+    #[test]
+    fn the_file_an_earlier_release_wrote_still_loads() {
+        const AS_0_5_1_WROTE_IT: &str = r#"{
+          "version": 1,
+          "workspaces": [{
+            "name": "work",
+            "panes": null,
+            "tabs": [{
+              "title": "AGENT",
+              "id": "coder",
+              "cwd": "D:\\Test",
+              "program": "claude",
+              "session": "abc",
+              "source": "Minted"
+            }]
+          }]
+        }"#;
+
+        let saved: Saved = serde_json::from_str(AS_0_5_1_WROTE_IT).expect("an earlier file still parses");
+        assert!(saved.version <= VERSION, "load() would refuse anything above");
+        assert_eq!(
+            saved
+                .conversation_of("work", "claude", Some("D:\\Test"), Some("coder"), "AGENT")
+                .map(|s| s.id),
+            Some("abc".into()),
+            "the conversation that tab was having comes back"
+        );
+    }
+
     #[test]
     fn a_file_from_a_newer_version_is_not_guessed_at() {
         let dir = std::env::temp_dir().join("shikisha-lastsession");

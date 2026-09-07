@@ -22,11 +22,32 @@
     tools/sandbox.ps1                    probe a bare machine and report
     tools/sandbox.ps1 -App <folder>      ...then run the unzipped copy in it
     tools/sandbox.ps1 -Msix <path>       ...or install the packaged one
+    tools/sandbox.ps1 -Msix <new> -From <old> -WithRuntime
+                                         install the old one, let it settle in,
+                                         then upgrade to the new one over it
     tools/sandbox.ps1 -App <folder> -Keep leave the sandbox open to look at
 
   -App and -Msix are the two ways this program reaches anyone -- the download
   and the Store -- so both can be tried the same way. -App wants a folder
   staged by tools/stage.ps1, which is what the zip is made of.
+
+  A NEW INSTALL AND AN UPGRADE ARE DIFFERENT ROADS. A new install arrives on
+  bare ground; an upgrade arrives on top of what the last version left behind,
+  which for an installed package is everything under LOCALAPPDATA\SHIKISHA-TERM
+  -- config, workspaces, the last session. A version that cannot read what the
+  one before it wrote takes away the settings of everyone who updates, and no
+  amount of testing a clean install will ever show it. -From is that road.
+
+  What -From does NOT test is the Store carrying the update to anyone. Nothing
+  here talks to the Store, to Partner Center or to an account: the packages are
+  signed with our own test certificate and put in by hand, inside a machine that
+  is destroyed afterwards. Acquisition -- sign in, buy, licence, download -- is
+  the one road that needs a real Windows and a real account.
+
+  -WithRuntime installs the WebView2 runtime inside the sandbox first, from
+  Microsoft's own address. Without it no version of this program can start
+  there, so nothing can write the state an upgrade is supposed to inherit. Leave
+  it off to test what a bare machine does; turn it on to test the program.
 
   The sandbox has no way to talk back to us, so it writes instead: one folder
   is shared read-write, the script inside puts report.json, log.txt and
@@ -38,8 +59,14 @@ param(
     [string]$App,
     # A package built by tools/msix.ps1 -SelfSign. Omit to only probe.
     [string]$Msix,
+    # An earlier package to install first, so -Msix arrives as an upgrade.
+    [string]$From,
+    # Install the WebView2 runtime in the sandbox, so the program can start.
+    [switch]$WithRuntime,
     # Leave the sandbox running after the report is written.
     [switch]$Keep,
+    # Close a sandbox that is already running, rather than refusing to start.
+    [switch]$Replace,
     # How long to wait for done.txt, in seconds.
     [int]$Timeout = 300
 )
@@ -59,6 +86,10 @@ It needs Windows Pro, Enterprise or Education. Home cannot run it.
 
 if ($Msix) { $Msix = (Resolve-Path $Msix).Path }
 if ($App) { $App = (Resolve-Path $App).Path }
+if ($From) {
+    $From = (Resolve-Path $From).Path
+    if (-not $Msix) { throw "-From is the version to upgrade FROM; -Msix is the one to upgrade to" }
+}
 
 # The shared folder. Under LOCALAPPDATA for the same reason the installed
 # program keeps its own things there: it belongs to the person, not the build.
@@ -66,7 +97,9 @@ $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $work = Join-Path $env:LOCALAPPDATA "SHIKISHA-TERM\sandbox\$stamp"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 if ($Msix) { Copy-Item $Msix (Join-Path $work 'package.msix') }
+if ($From) { Copy-Item $From (Join-Path $work 'previous.msix') }
 if ($App) { Copy-Item $App (Join-Path $work 'app') -Recurse }
+if ($WithRuntime) { 'runtime' | Set-Content (Join-Path $work 'runtime.txt') }
 
 # ---------------------------------------------------------------- inside ---
 # Everything below runs on the other machine. It must never throw: a script
@@ -77,6 +110,12 @@ $inside = @'
 $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $log  = Join-Path $here 'log.txt'
+
+# A dead man's handle. Only one sandbox can exist at a time, so a run that
+# hangs in here does not merely fail -- it holds the machine, and every run
+# after it waits out its own timeout against a machine that will never be
+# free. Schedule the end before doing anything that could not come back.
+shutdown /s /t 1800 2>&1 | Out-Null
 function Say($m) { "$([DateTime]::Now.ToString('HH:mm:ss')) $m" | Tee-Object -FilePath $log -Append }
 
 $r = [ordered]@{}
@@ -153,6 +192,27 @@ try {
 }
 catch { Say "probe failed: $_" }
 
+# ----------------------------------------------------------- the runtime ---
+# Microsoft's own bootstrapper, from Microsoft's own address. Nothing here is
+# ours to sign or to host; this is the same download the dialog points a person
+# at, taken automatically because there is nobody in here to click it.
+
+if (Test-Path (Join-Path $here 'runtime.txt')) {
+    try {
+        $setup = Join-Path $env:TEMP 'MicrosoftEdgeWebview2Setup.exe'
+        # With a limit on it. A download with no timeout does not fail when the
+        # network sulks, it waits -- and this side has nobody to notice, so the
+        # whole run is spent sitting on one request that was never coming back.
+        Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $setup -UseBasicParsing -TimeoutSec 120
+        Say 'installing the WebView2 runtime'
+        Start-Process $setup -ArgumentList '/silent', '/install' -Wait
+        $wv2 = (Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" -ErrorAction SilentlyContinue).pv
+        $r.runtime_installed = if ($wv2) { $wv2 } else { 'FAILED' }
+        Say "runtime now: $($r.runtime_installed)"
+    }
+    catch { $r.runtime_installed = "failed: $_"; Say "runtime install failed: $_" }
+}
+
 # --------------------------------------------------------- the unzipped copy --
 
 $appDir = Join-Path $here 'app'
@@ -190,22 +250,93 @@ if (Test-Path $appDir) {
 # ------------------------------------------------------------- the package --
 
 $pkg = Join-Path $here 'package.msix'
+$prev = Join-Path $here 'previous.msix'
+
+# What an installed package leaves behind between versions. An upgrade that
+# cannot read this is an upgrade that empties everyone's settings.
+#
+# Two places, because a packaged program does not necessarily write where it
+# thinks it does: MSIX redirects what an app puts under LOCALAPPDATA into the
+# package's own corner, and which of the two it lands in is not ours to decide.
+# Looking in only one of them is how a survey comes back empty from a machine
+# that has plenty.
+function Survey($when) {
+    $roots = @(Join-Path $env:LOCALAPPDATA 'SHIKISHA-TERM')
+    $roots += @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter '*SHIKISHA*' -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName 'LocalCache\Local\SHIKISHA-TERM' })
+    $files = @()
+    foreach ($root in $roots) {
+        if (-not (Test-Path $root)) { continue }
+        $files += @(Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue |
+            ForEach-Object { "$($_.FullName.Substring($env:LOCALAPPDATA.Length)) ($($_.Length))" })
+    }
+    @{ when = $when; files = @($files | Sort-Object) }
+}
+# Ask it to close, do not shoot it. What a version writes on its way out --
+# last-session above all, which carries a format version and is read by the
+# version that comes next -- is exactly the state an upgrade has to inherit,
+# and killing the process means testing the upgrade against a machine where
+# the previous version never finished a sentence.
+function StopIt {
+    foreach ($p in @(Get-Process SHIKISHA-TERM -ErrorAction SilentlyContinue)) {
+        $null = $p.CloseMainWindow()
+    }
+    Start-Sleep -Seconds 10
+    Get-Process SHIKISHA-TERM -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 3
+}
+function LaunchIt($app) {
+    $manifest = [xml](Get-Content (Join-Path $app.InstallLocation 'AppxManifest.xml'))
+    $aumid = "$($app.PackageFamilyName)!$($manifest.Package.Applications.Application.Id)"
+    Start-Process explorer.exe "shell:AppsFolder\$aumid"
+    $aumid
+}
+function TheApp { Get-AppxPackage | Where-Object { $_.Name -like '*SHIKISHA*' } | Select-Object -First 1 }
+
 if (Test-Path $pkg) {
     try {
         # Trust the signer. Taking the certificate out of the package itself
         # means this side needs nothing from the machine that built it.
-        $sig = Get-AuthenticodeSignature $pkg
-        if ($sig.SignerCertificate) {
-            $cer = Join-Path $here 'signer.cer'
-            [IO.File]::WriteAllBytes($cer, $sig.SignerCertificate.Export('Cert'))
-            Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
-            Say "trusted $($sig.SignerCertificate.Subject)"
-        } else {
-            Say 'package carries no signature -- Windows will refuse it'
+        foreach ($p in @($prev, $pkg)) {
+            if (-not (Test-Path $p)) { continue }
+            $sig = Get-AuthenticodeSignature $p
+            if ($sig.SignerCertificate) {
+                $cer = Join-Path $here "signer-$([IO.Path]::GetFileNameWithoutExtension($p)).cer"
+                [IO.File]::WriteAllBytes($cer, $sig.SignerCertificate.Export('Cert'))
+                Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+                Say "trusted $($sig.SignerCertificate.Subject) (from $(Split-Path $p -Leaf))"
+            } else {
+                Say "$(Split-Path $p -Leaf) carries no signature -- Windows will refuse it"
+            }
+        }
+
+        # The version before, first: let it install, start, and write down
+        # whatever it writes down, so the upgrade has something to inherit.
+        if (Test-Path $prev) {
+            Add-AppxPackage -Path $prev -ErrorAction Stop
+            $was = TheApp
+            Say "installed the earlier version: $($was.Version)"
+            LaunchIt $was | Out-Null
+            Start-Sleep -Seconds 30
+            StopIt
+            $r.before = Survey 'after the earlier version ran'
+            Say "the earlier version left $($r.before.files.Count) file(s) behind"
         }
 
         Add-AppxPackage -Path $pkg -ErrorAction Stop
-        $app = Get-AppxPackage | Where-Object { $_.Name -like '*SHIKISHA*' } | Select-Object -First 1
+        $app = TheApp
+        if (Test-Path $prev) {
+            $r.upgraded = [ordered]@{
+                from = $was.Version
+                to   = $app.Version
+                # Windows refuses an upgrade that does not go up.
+                ok   = ([version]$app.Version -gt [version]$was.Version)
+            }
+            $r.after = Survey 'after the upgrade'
+            $lost = @($r.before.files | Where-Object { $_ -notin $r.after.files })
+            $r.upgraded.lost = $lost
+            Say "upgrade $($was.Version) -> $($app.Version); $($lost.Count) file(s) gone"
+        }
         $r.install = [ordered]@{
             ok       = $true
             name     = $app.Name
@@ -222,11 +353,7 @@ if (Test-Path $pkg) {
 
         # Launch it the way the shell does. A packaged app has no exe path to
         # run; it has an identity, and explorer is what resolves one.
-        $manifest = [xml](Get-Content (Join-Path $app.InstallLocation 'AppxManifest.xml'))
-        $appId = $manifest.Package.Applications.Application.Id
-        $aumid = "$($app.PackageFamilyName)!$appId"
-        Say "launching $aumid"
-        Start-Process explorer.exe "shell:AppsFolder\$aumid"
+        Say "launching $(LaunchIt $app)"
 
         # Long enough for a cold WebView2 to finish its first paint.
         Start-Sleep -Seconds 25
@@ -235,6 +362,13 @@ if (Test-Path $pkg) {
             Where-Object { $_.Path -and $_.Path.StartsWith($app.InstallLocation) } |
             ForEach-Object { $_.ProcessName }) | Sort-Object -Unique
         Say "running: $($r.running -join ', ')"
+
+        # And what the new version made of what it inherited. A settings file
+        # it could not read is a settings file it would have replaced.
+        if (Test-Path $prev) {
+            $r.after_running = Survey 'after the new version ran'
+            Say "state now: $($r.after_running.files.Count) file(s)"
+        }
     }
     catch {
         $r.install = [ordered]@{ ok = $false; error = "$_" }
@@ -259,9 +393,24 @@ try {
 
 # A dialog that offers a page is only worth anything if the page opens, and
 # that is not something the message text can be read to prove. Press OK.
+#
+# Only a real dialog, though. A message box is window class #32770 and the
+# program's own window is not, which is the only way to tell them apart that
+# does not depend on what language the title happens to be in -- and pressing
+# Enter into a running terminal because its title also said SHIKISHA is a way
+# to make a test that types into the thing it is watching.
+Add-Type @"
+using System;using System.Text;using System.Runtime.InteropServices;
+public class Win {
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+  public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  public static string ClassOf(IntPtr h) { var s = new StringBuilder(64); GetClassName(h, s, 64); return s.ToString(); }
+}
+"@
 try {
     $dlg = Get-Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.MainWindowTitle -like '*SHIKISHA*' } | Select-Object -First 1
+        Where-Object { $_.MainWindowTitle -like '*SHIKISHA*' -and [Win]::ClassOf($_.MainWindowHandle) -eq '#32770' } |
+        Select-Object -First 1
     if ($dlg) {
         Add-Type -AssemblyName Microsoft.VisualBasic
         [Microsoft.VisualBasic.Interaction]::AppActivate($dlg.Id)
@@ -284,6 +433,7 @@ try {
 $r | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $here 'report.json') -Encoding UTF8
 'done' | Set-Content (Join-Path $here 'done.txt')
 
+shutdown /a 2>&1 | Out-Null
 if (-not (Test-Path (Join-Path $here 'keep.txt'))) {
     Start-Sleep -Seconds 2
     shutdown /s /t 0
@@ -316,6 +466,45 @@ $wsbPath = Join-Path $work 'run.wsb'
 Set-Content -Path $wsbPath -Value $wsb -Encoding UTF8
 
 Write-Host "work folder: $work"
+
+# Windows allows exactly one sandbox. Starting a second does not queue, it
+# arrives at nothing -- and this side then spends its whole timeout waiting for
+# a report from a machine that was never built. Say so instead.
+$busy = Get-Process -Name 'WindowsSandboxServer' -ErrorAction SilentlyContinue
+if ($busy) {
+    if (-not $Replace) {
+        throw @"
+A sandbox is already running, and Windows only allows one. Close it, or pass
+-Replace to have this close it -- its contents are destroyed either way, which
+is what a sandbox is for.
+"@
+    }
+    Write-Host 'closing the sandbox that was already running...'
+    # Ask the window to close, the way a person would. Shooting the server
+    # leaves the virtual machine behind with nobody to shut it down, and a
+    # wedged one holds the single slot against every run after it -- which is a
+    # worse state than the one being cleaned up.
+    Get-Process -Name 'WindowsSandboxClient' -ErrorAction SilentlyContinue |
+        ForEach-Object { $null = $_.CloseMainWindow() }
+
+    # vmmemWindowsSandbox is the machine's memory, owned by the system and not
+    # ours to stop -- asking is an access denied. It goes when the machine goes.
+    $gone = $false
+    for ($i = 0; $i -lt 40; $i++) {
+        if (-not (Get-Process -Name 'vmmemWindowsSandbox' -ErrorAction SilentlyContinue)) { $gone = $true; break }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $gone) {
+        throw @"
+The sandbox would not close, and its virtual machine is still holding the one
+slot Windows allows. Clear it with an elevated:
+
+  Restart-Service vmcompute -Force
+"@
+    }
+    Start-Sleep -Seconds 3
+}
+
 Write-Host 'starting a machine that has never seen this project...'
 Start-Process 'C:\Windows\System32\WindowsSandbox.exe' $wsbPath
 
