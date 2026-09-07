@@ -8,6 +8,77 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+The phone stops needing the page open.
+
+A tab that finishes can now reach three places it could not before: this PC's
+own notification area, where a banner arrives over whatever is on top and a
+click puts the window back at the tab it came from; a phone, by Web Push, with
+nothing in the middle that can read it; and the home screen, as something that
+opens like an app rather than as one browser tab among thirty.
+
+All three sit behind the same gate, which is that a browser will only do this
+for a page it considers secure. `tailscale serve` settles that in one command,
+and the program now notices when somebody has run it and hands out the HTTPS
+address instead — for the QR code, for the reply pages a notification links to,
+and for the board's own address as automation sees it.
+
+### Added
+- **This PC's own notification area, as a notification destination.** Slack,
+  Telegram and Discord all reach a phone. None of them reaches the person
+  sitting at this PC with the window behind a browser, which is the one place a
+  chat app is the wrong answer. "This PC" joins the list by name, so a tab's
+  notify setting and `shikisha.notify()` reach it the same way as the rest, and
+  there is nothing to fill in — no webhook, no token, no account. Clicking the
+  banner brings the window forward showing the tab the notification came from.
+  The portable copy writes itself a Start Menu shortcut the first time one is
+  actually asked for, because Windows will not accept a notification from a
+  program the shell has never seen; never at startup, since a program told to
+  notify nobody has no business putting itself in anyone's Start Menu.
+- **A phone, with nobody in the middle.** The other destinations reach a phone
+  by way of an account somebody else runs, which means the answer an AI gave on
+  this machine travels through a company's servers to get back to the person
+  who asked for it. "Phone" does the same job without that: the phone's own
+  browser keeps a subscription, each message is encrypted **for that phone**
+  before it leaves this machine, and the browser vendor's push service carries
+  a sealed envelope it cannot open. No account is created and nothing is signed
+  up for. A phone registers itself from the settings screen; the reply link,
+  where there is one, becomes where a tap goes rather than a line of text
+  nobody can tap.
+- **HTTPS, when Tailscale is already in front.** The phone link is an
+  `http://100.x.y.z` address — encrypted and reachable only by your own devices,
+  and still not a *secure context* as a browser counts them, which is the gate
+  in front of home screens and notifications alike. `tailscale serve --bg 8787`
+  puts a real certificate there, and the program adopts that address only after
+  two things hold: a serve rule names our own port, and a request through it
+  comes back. A link handed out from a train that does not work is worse than a
+  plain one. A publicly funnelled address is refused outright — it is
+  indistinguishable from a private one by looking at it, and adopting it would
+  mean the badge under the QR code lying about who can reach this.
+- **The board can live on a phone's home screen.** A manifest, the icons a
+  launcher asks for, and a service worker, all served without the access token
+  because a browser fetches them on its own account, days later, with none of
+  the page's credentials. The token is never put in the manifest — the page
+  goes to some trouble to keep it out of anything that persists — so the offer
+  only appears when the pairing is the fixed kind that outlives a browser tab.
+  An icon that opens and asks to be paired, and cannot be, is worse than no
+  icon.
+- **A page about all of it**, at
+  [shikisha-term.com/phone](https://shikisha-term.com/phone/): what works on
+  your own Wi-Fi with nothing installed, what reaching the machine from a café
+  costs, and what the one command is for.
+
+### Fixed
+- The board now also answers on `127.0.0.1`, through the same handler and the
+  same token. `tailscale serve` will not proxy to this machine's own tailnet
+  address — every request comes back 502 — so without this the HTTPS front door
+  could not reach it at all.
+- On a phone, the top bar and the tab drawer now start below the strip the
+  screen keeps for its clock and camera. In a browser tab that strip is zero;
+  it is only real once the page runs full-screen, which it now can.
+- The "add a reply link" switch is no longer offered for a notification to this
+  PC. Clicking that notification already opens the tab, which is a shorter way
+  to the same place, and the link would never have appeared anyway.
+
 
 ## [0.6.0] - 2026-09-06
 
