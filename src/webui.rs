@@ -4651,7 +4651,18 @@ async function subscribeThisDevice(said, list) {
   // told apart rather than collapsed into "not supported".
   if (!window.isSecureContext) { toast(T["settings.notify.phone.needs_https"], true); return; }
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-    toast(T["settings.notify.phone.no_support"], true); return;
+    // On an iPhone this is not a browser that cannot do it -- it is a page
+    // that has not been added to the home screen yet. Apple puts the whole
+    // mechanism behind that, so in a Safari tab it is simply absent, and
+    // "this browser does not carry push notifications" would send somebody
+    // looking for another browser to no purpose.
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent)
+             || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const installed = navigator.standalone === true
+             || window.matchMedia("(display-mode: standalone)").matches;
+    toast(ios && !installed ? T["settings.notify.phone.ios_home"]
+                            : T["settings.notify.phone.no_support"], true);
+    return;
   }
   try {
     const reg = await navigator.serviceWorker.register("/sw.js");

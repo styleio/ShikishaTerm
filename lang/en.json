@@ -1122,6 +1122,7 @@
   "settings.notify.phone.refused": "The browser was not given permission to show notifications.",
   "settings.notify.phone.needs_https": "This needs an HTTPS address. Turn it on in the phone settings above, then open this page again.",
   "settings.notify.phone.no_support": "This browser does not carry push notifications.",
+  "settings.notify.phone.ios_home": "On iPhone and iPad, add this to the home screen first (Share → Add to Home Screen), open it from that icon, and press this again.",
   "settings.notify.windows.hint": "A Windows notification on this PC. Nothing to fill in — click Test to check that notifications for this app are turned on. Clicking one opens the window at the tab it came from.",
   "settings.notify.saved": "Saved (encrypted)",
   "settings.notify.test": "Test",

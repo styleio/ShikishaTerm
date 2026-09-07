@@ -103,7 +103,14 @@ the first line of what it said — and tapping it opens a small page with that
 answer and a box to reply in, so "yes, go ahead" does not mean walking back to
 the PC.
 
-Notifications do not need the fixed token; only the home-screen icon does.
+On Android and on a desktop, notifications do not need the fixed token; only
+the home-screen icon does.
+
+**On iPhone and iPad it is the other way round.** Apple delivers web
+notifications only to something that has been added to the home screen — in a
+Safari tab the machinery is not there at all. So on an iPhone the step above
+is the prerequisite for this one, fixed token included. Add it to the home
+screen, open it from that icon, and press the button there.
 
 The message is encrypted for that phone before it leaves your machine. It goes
 through your browser vendor's push service, which can carry it and cannot read
