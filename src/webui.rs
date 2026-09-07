@@ -2959,17 +2959,33 @@ function uniqueId(ws, base, self) {
   if (!used.has(base)) return base;
   for (let n = 2; ; n++) { const c = base + "-" + n; if (!used.has(c)) return c; }
 }
-// Fills in an id derived from the name for tabs with an empty id (a safety net at save time). Leaves it alone if the name is also empty
+// A unique automation id, of no folder's making: for a tab with no name to
+// derive one from. Short enough to keep or to change.
+function freshTabId(ws, self) {
+  const used = new Set((ws.tabs || [])
+    .filter(t => t !== self).map(t => (t.id || "").trim()).filter(Boolean));
+  let id;
+  do { id = "tab-" + hash5(Date.now() + "-" + Math.random()); } while (used.has(id));
+  return id;
+}
+// Fills in an id for every tab that has none, a safety net at save time. From
+// the name where there is one; otherwise a unique string of its own, because
+// a tab with no id at all cannot be pointed at -- not by automation, and not
+// by the gear that opens its settings. Editable afterwards like any other.
 function ensureIds(ws) {
   const tabs = ws.tabs || [];
   const used = new Set(tabs.map(t => (t.id || "").trim()).filter(Boolean));
   for (const t of tabs) {
     if ((t.id || "").trim()) continue;
     const base = slugId(t.name);
-    if (!base) continue;
-    let id = base, n = 2;
-    while (used.has(id)) id = base + "-" + (n++);
-    t.id = id; used.add(id);
+    if (base) {
+      let id = base, n = 2;
+      while (used.has(id)) id = base + "-" + (n++);
+      t.id = id; used.add(id);
+    } else {
+      const id = freshTabId(ws, t);
+      t.id = id; used.add(id);
+    }
   }
 }
 // A dropdown for picking a tab id (candidates = existing tab ids). emptyLabel is the label for the empty option.
@@ -5656,6 +5672,13 @@ function tabPane(ws, t) {
   // Basics: name and ID are identity, so place them side by side.
   // If ID is empty, auto-derive one from the name (English → slug / Japanese-only → 5-char hash).
   // The guessed value is shown as a placeholder and finalized once the name field is left
+  // A tab that reaches here with no id gets one now -- from its name if it has
+  // one, else a unique string -- so the field is never blank and the tab can
+  // always be pointed at. The person can change it; it is a normal field.
+  if (!(t.id || "").trim()) {
+    t.id = uniqueId(ws, slugId(t.name), t) || freshTabId(ws, t);
+    refreshSave(); renderNav();
+  }
   const idInput = field(t, "id", "", {grow:false, width:280, mono:true});
   const refreshIdPh = () => {
     idInput.placeholder = uniqueId(ws, slugId(t.name), t) || T["settings.tab.id.ph"];
@@ -6733,25 +6756,31 @@ load().then(() => {
   // search when two folders have a tab of the same name; failing that, any
   // folder's will do, and failing that the page lands where it would have
   const cur = idx("ws");
-  const tabWant = (q.get("tab") || "").trim();
-  if (tabWant && wss[cur]) {
+  // ?tabpos=<n>&folder=<cwd> lands on the n-th terminal tab of that folder:
+  // the gear pressed while a tab is in view. A place, not a name, so a tab
+  // that was never named lands the same. An empty folder means the one with
+  // no path of its own (the app's folder), where a group-less tab lives.
+  const tabPos = /^\d+$/.test(q.get("tabpos") || "") ? Number(q.get("tabpos")) : -1;
+  if (tabPos >= 0 && wss[cur]) {
     const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
     const from = (q.get("folder") || "").trim();
     const gi = from
       ? (wss[cur].folders || []).findIndex(g => same(g.cwd) === same(from))
-      : -1;
-    const tabs = wss[cur].tabs || [];
-    const named = t => (t.id || "").trim() === tabWant || (t.name || "").trim() === tabWant;
-    let ti = gi >= 0 ? tabs.findIndex(t => (t.group || 0) === gi && named(t)) : -1;
-    if (ti < 0) ti = tabs.findIndex(named);
-    if (ti >= 0) {
-      navGlobalOpen = false;
-      navShut.delete(cur); navOpen.add(cur);
-      sel = {ws:cur, grp:tabs[ti].group || 0, tab:ti, global:false};
-      render();
-      const s = document.querySelector(".navitem.sel");
-      if (s) s.scrollIntoView({block:"center"});
-      return;
+      : (wss[cur].folders || []).findIndex(g => !(g.cwd || "").trim());
+    if (gi >= 0) {
+      const tabs = wss[cur].tabs || [];
+      const here = [];
+      tabs.forEach((t, i) => { if ((t.group || 0) === gi) here.push(i); });
+      const ti = here[tabPos];
+      if (ti != null) {
+        navGlobalOpen = false;
+        navShut.delete(cur); navOpen.add(cur);
+        sel = {ws:cur, grp:gi, tab:ti, global:false};
+        render();
+        const s = document.querySelector(".navitem.sel");
+        if (s) s.scrollIntoView({block:"center"});
+        return;
+      }
     }
   }
   // ?folder=<path> lands on that folder's own page: the tab list's edit

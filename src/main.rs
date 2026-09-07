@@ -579,7 +579,7 @@ struct WinSurface {
     /// The sidebar gear (or a deep-link shortcut) was pressed. The loop opens the
     /// settings page. Carries an optional section to land on and whether to return
     /// to the board once saved (Some = requested, None = not requested).
-    open_settings: Option<(Option<String>, bool, Option<String>, Option<String>)>,
+    open_settings: Option<(Option<String>, bool, Option<String>, Option<u32>)>,
     /// The status bar's "remote connected" control was pressed. The loop cuts every
     /// remote session (rotates the token, drops the connections).
     remote_cut: bool,
@@ -711,7 +711,7 @@ impl WinSurface {
     /// working folder to land on), if any, clearing it.
     fn take_open_settings(
         &mut self,
-    ) -> Option<(Option<String>, bool, Option<String>, Option<String>)> {
+    ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)> {
         self.open_settings.take()
     }
 
@@ -935,8 +935,8 @@ impl WinSurface {
                 // The settings page's "close settings" button. Where the tab actually
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.close_settings = true,
-                Ev::OpenSettings { section, ret, folder, tab } => {
-                    self.open_settings = Some((section, ret, folder, tab))
+                Ev::OpenSettings { section, ret, folder, tabpos } => {
+                    self.open_settings = Some((section, ret, folder, tabpos))
                 }
                 Ev::VaultSearch { query } => self.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
@@ -5545,7 +5545,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // The sidebar gear. Opens settings from any tab (the menu "e" key only
         // fires while INDEX is in view, so the gear needs its own path).
         // The workspace being viewed rides along so its group opens expanded.
-        if let Some((section, ret, folder, tab)) = surface.take_open_settings() {
+        if let Some((section, ret, folder, tabpos)) = surface.take_open_settings() {
             // The gear passes the workspace being viewed, and the tab in view so
             // the page opens on its card; a deep-link shortcut may instead name
             // a section to land on and ask to return once saved.
@@ -5553,8 +5553,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
             if let Some(f) = folder {
                 query += &format!("&folder={}", urlish(&f));
             }
-            if let Some(t) = tab {
-                query += &format!("&tab={}", urlish(&t));
+            if let Some(n) = tabpos {
+                query += &format!("&tabpos={n}");
             }
             if let Some(s) = section {
                 query += &format!("&section={s}");

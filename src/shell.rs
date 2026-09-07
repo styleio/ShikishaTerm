@@ -4455,33 +4455,39 @@ let castTarget = null;
 // section: deep-link to one settings card (e.g. "actions"). ret: come back to the
 // board once it's saved. Both optional — the sidebar gear passes neither.
 function openSettings(section, ret, folder) {
-  // The tab being looked at rides along, so the page opens on it: the gear
-  // pressed while on tab 2 means "the settings for this", not "the settings".
-  // Only when the ask names no place of its own (a section, a folder's row),
-  // and only when a tab is actually in view -- INDEX names none
-  let tab = null;
+  // The tab in view rides along by its PLACE, not its name: which folder it is
+  // in, and which tab it is within that folder. A tab need never have been
+  // named for this to land on it -- a gear pressed on tab 2 means "the settings
+  // for this tab". Only when the ask names no place of its own (a section, a
+  // folder's row) and a tab is actually in view (INDEX is no tab).
+  let tabpos = null;
   if (!section && !folder && S && !S.board) {
     const at = (S.tabs || []).find(t => t.index === S.active);
-    if (at && !at.settings && (at.id || at.name)) {
-      tab = at.id || at.name;
-      // Its folder too, so a name two folders both use finds the right one
-      const g = at.group != null ? (S.groups || [])[at.group] : null;
+    if (at && at.kind === "pty" && !at.settings) {
+      const grp = at.group == null ? null : at.group;
+      // Its ordinal among the terminal tabs of the same folder, in order.
+      // Browsers and the git panel are not tabs the settings list, so they
+      // are not counted -- the count has to match the settings' own list
+      const sibs = (S.tabs || []).filter(t =>
+        t.kind === "pty" && !t.settings && (t.group == null ? null : t.group) === grp);
+      tabpos = sibs.indexOf(at);
+      const g = grp != null ? (S.groups || [])[grp] : null;
       if (g && g.folder) folder = g.folder;
     }
   }
   if (typeof REMOTE !== "undefined" && REMOTE) {
     // The workspace in view goes first, as the window's path sends it: the
-    // page reads the tab and the folder against that workspace, and without
-    // it landed on the general cards whatever else was asked for
+    // page reads the folder and place against that workspace, and without it
+    // landed on the general cards whatever else was asked for
     const p = {ws: (S && S.ws_index) || 0};
     if (section) p.section = section;
     if (ret) p.ret = "1";
     if (folder) p.folder = folder;
-    if (tab) p.tab = tab;
+    if (tabpos != null) p.tabpos = tabpos;
     walkToSettings(p);
   } else {
     send({kind:"opensettings", section: section || null, ret: !!ret, folder: folder || null,
-          tab: tab});
+          tabpos: tabpos});
   }
 }
 // The phone's only way in: hand the token over once (the proxy trades it for a
@@ -7078,21 +7084,23 @@ mod tests {
     }
 
     /// The gear opens the settings on the tab in view, from the window and
-    /// from a phone alike. It used to carry only the workspace, so pressing it
-    /// on tab 2 landed on the workspace's page and left the tab to be found.
+    /// from a phone alike. It carries the tab's PLACE (folder + ordinal), not
+    /// its name, so a tab that was never named -- no display name, no
+    /// automation id -- lands just the same. It used to carry only the
+    /// workspace, so pressing it on tab 2 landed on the workspace's page.
     #[test]
     fn the_gear_carries_the_tab_in_view() {
         assert!(
             PAGE.contains("const at = (S.tabs || []).find(t => t.index === S.active);")
-                && PAGE.contains("tab = at.id || at.name;"),
-            "歯車が見ているタブを拾わない"
+                && PAGE.contains("tabpos = sibs.indexOf(at);"),
+            "歯車が見ているタブの位置を拾わない"
         );
-        assert!(PAGE.contains("if (tab) p.tab = tab;"), "スマホの道にタブが乗らない");
+        assert!(PAGE.contains("if (tabpos != null) p.tabpos = tabpos;"), "スマホの道に位置が乗らない");
         assert!(
             PAGE.contains("const p = {ws: (S && S.ws_index) || 0};"),
             "スマホの道にワークスペースが乗らない（無いと基本カードに落ちる）"
         );
-        assert!(PAGE.contains("tab: tab});"), "窓の道にタブが乗らない");
+        assert!(PAGE.contains("tabpos: tabpos});"), "窓の道に位置が乗らない");
     }
 
     /// A folder with no tab in it is on the list, and the next thing to press

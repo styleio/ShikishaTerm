@@ -827,12 +827,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
             ret: v.get("ret").and_then(|x| x.as_bool()).unwrap_or(false),
-            tab: v
-                .get("tab")
-                .and_then(|x| x.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string),
+            tabpos: v.get("tabpos").and_then(|x| x.as_u64()).map(|n| n as u32),
         },
         Some("menu") => Ev::Menu {
             key: v
@@ -1259,9 +1254,10 @@ pub enum Ev {
         ret: bool,
         /// A working folder to land on, when the ask came from its row
         folder: Option<String>,
-        /// The tab in view when the gear was pressed (its id, else its name),
-        /// so the page opens on that tab's card
-        tab: Option<String>,
+        /// The tab in view when the gear was pressed, as its ordinal among the
+        /// terminal tabs of `folder` (0-based). A place, not a name, so a tab
+        /// that was never named lands the same. Paired with `folder`.
+        tabpos: Option<u32>,
     },
     /// Save the newest run's replay.lua to the user's Downloads folder
     ReplaySave,
@@ -4437,17 +4433,17 @@ mod nav_tests {
             parse_intent(&v)
         };
         assert!(matches!(read(r#"{"kind":"openws"}"#), Some(Ev::OpenWs)));
-        // The gear names the tab in view; an empty name is no name
-        match read(r#"{"kind":"opensettings","tab":"coder","folder":"D:/work"}"#) {
-            Some(Ev::OpenSettings { tab, folder, section, ret }) => {
-                assert_eq!(tab.as_deref(), Some("coder"), "見ていたタブが落ちた");
+        // The gear names the tab in view by its place in the folder
+        match read(r#"{"kind":"opensettings","tabpos":1,"folder":"D:/work"}"#) {
+            Some(Ev::OpenSettings { tabpos, folder, section, ret }) => {
+                assert_eq!(tabpos, Some(1), "見ていたタブの位置が落ちた");
                 assert_eq!(folder.as_deref(), Some("D:/work"));
                 assert!(section.is_none() && !ret);
             }
             other => panic!("opensettings が読めていない: {other:?}"),
         }
-        match read(r#"{"kind":"opensettings","tab":"  "}"#) {
-            Some(Ev::OpenSettings { tab, .. }) => assert!(tab.is_none(), "空白がタブ名になった"),
+        match read(r#"{"kind":"opensettings"}"#) {
+            Some(Ev::OpenSettings { tabpos, .. }) => assert!(tabpos.is_none(), "位置が無いのに入った"),
             other => panic!("opensettings が読めていない: {other:?}"),
         }
         match read(r#"{"kind":"say","tab":3,"text":"hello"}"#) {
