@@ -1587,6 +1587,28 @@ mod tests {
     }
 
     #[test]
+    fn the_conversation_switch_says_when_it_decides_nothing() {
+        // Read against the shipped profiles, like the line above it
+        assert_eq!(super::carry_unused(&argv("claude"), &None), None);
+        // Whoever wrote the resume words meant them, and the launch obeys them
+        // rather than the tick -- so the tick stops claiming to decide
+        assert_eq!(
+            super::carry_unused(&argv("claude --resume"), &None),
+            Some("own"),
+            "自分で書いた指定が優先される"
+        );
+        assert_eq!(
+            super::carry_unused(&argv("claude --continue"), &None),
+            Some("own")
+        );
+        // A shell has no conversation to come back to at all
+        assert_eq!(
+            super::carry_unused(&argv("powershell.exe"), &None),
+            Some("unsupported")
+        );
+    }
+
+    #[test]
     fn continuing_the_newest_here_names_no_conversation() {
         // The CLI picks it, so afterwards we do not know which one it picked —
         // and saying we do would be a lie the next restart would act on
@@ -2126,6 +2148,28 @@ pub fn launch_line(
         }
     }
     LaunchLine { argv: out, added }
+}
+
+/// Why the "come back to this conversation" tick has nothing to act on, or
+/// None when it decides something.
+///
+/// Two answers, both ordinary. The command may already name a conversation, in
+/// which case `plan_launch` stands aside and the tick is not consulted; and the
+/// CLI may have no way of being told which conversation to open, in which case
+/// every launch is a new one whatever the tick says. The settings screen greys
+/// the switch and says which, rather than leave one standing that changes
+/// nothing whichever way it is set.
+pub fn carry_unused(argv: &[String], profile_spec: &Option<String>) -> Option<&'static str> {
+    let Some(spec) = Tab::resolve_profile(argv, profile_spec).resume else {
+        return Some("unsupported");
+    };
+    if already_resumes(&spec, argv) {
+        return Some("own");
+    }
+    match spec.with_id.is_empty() {
+        true => Some("unsupported"),
+        false => None,
+    }
 }
 
 /// Whether the command as written already asks this CLI to resume something.

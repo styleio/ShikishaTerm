@@ -545,6 +545,8 @@
   "settings.tab.ai.autoapprove": "Run without asking for approval (needed for autonomous discussion / automation)",
   "settings.tab.restore_conv": "Pick up where this tab left off",
   "settings.tab.restore_conv.hint": "Reopening the app launches this tab back into the conversation it was having, with its history on screen. Turn it off to start clean every time; Ctrl+B r still brings the old one back.",
+  "settings.tab.restore_conv.own": "Not used here. The command names a conversation of its own, and that is the one that opens.",
+  "settings.tab.restore_conv.unsupported": "Not used here. This AI cannot be told which conversation to open, so every launch starts a new one.",
   "settings.tab.ai.autoapprove_risk": "⚠️ This lets the AI edit files and run commands without confirmation. Use it only in a folder you trust.",
   "settings.tab.ai.add_title": "Add an AI (API connection)",
   "settings.tab.ai.api_hint": "To add an API-type AI such as DeepSeek or a local LLM, register its connection (Providers) below. Once registered, it appears in the AI list.",

@@ -1262,8 +1262,16 @@ fn handle(
                 crate::resume_plan_of(str_of("resume").as_deref()),
                 &crate::i18n::t("settings.tab.command.newid"),
             );
+            // Whether the tab's "come back to this conversation" switch has
+            // anything to act on for this command, so the screen can grey a
+            // switch that would decide nothing (and say which of the two
+            // reasons it is)
+            let carry = match argv.is_empty() {
+                true => None,
+                false => crate::tab::carry_unused(&argv, &str_of("profile")),
+            };
             req.respond(json_resp(serde_json::json!({
-                "argv": line.argv, "added": line.added
+                "argv": line.argv, "added": line.added, "carry": carry
             })))?;
         }
         // Recent rally history (newest first). Returns the id plus an excerpt to help a human tell them apart
@@ -2806,6 +2814,12 @@ function launchLine(t) {
   const box = el("div", {class:"realcmd"},
     el("div", {class:"hint"}, T["settings.tab.command.real"]), line, note);
   let seq = 0, timer = null;
+  // The same answer says whether the conversation switch above decides
+  // anything, and the AI panel is redrawn on its own -- so the last answer is
+  // kept, and a panel that arrives afterwards is told it straight away rather
+  // than waiting for the next keystroke
+  let carry, watch = null;
+  const tell = v => { carry = v; if (watch) watch(v); };
   const refresh = async () => {
     const mine = ++seq;
     let r = null;
@@ -2818,8 +2832,9 @@ function launchLine(t) {
     // A later keystroke has already asked; its answer is the current one
     if (mine !== seq) return;
     line.textContent = ""; note.textContent = "";
-    if (!r || !r.argv || !r.argv.length) { box.hidden = true; return; }
+    if (!r || !r.argv || !r.argv.length) { box.hidden = true; tell(undefined); return; }
     box.hidden = false;
+    tell(r.carry || null);
     r.argv.forEach((a, i) => {
       if (i) line.append(document.createTextNode(" "));
       line.append(el("span", {class: (i >= 1 && i <= r.added) ? "added" : ""}, a));
@@ -2838,7 +2853,7 @@ function launchLine(t) {
   // half-typed command is not worth showing
   const schedule = () => { clearTimeout(timer); timer = setTimeout(refresh, 250); };
   refresh();
-  return { box, schedule };
+  return { box, schedule, onCarry: fn => { watch = fn; fn(carry); } };
 }
 function row(label, ...kids) { return el("div", {class:"row"}, el("label", {}, label), ...kids); }
 function card(title, ...kids) { return el("div", {class:"card"}, el("h2", {}, title), ...kids); }
@@ -5547,7 +5562,7 @@ function tabPane(ws, t) {
     {mono:true, onInput:() => { renderNav(); real.schedule(); }});
   cmdInput.setAttribute("list", "cmdlist");
   const detailBox = el("div");
-  const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild)); };
+  const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild, real)); };
   cmdRow.append(el("label", {}, T["settings.tab.kind"]),
     choose({k:catOf(t.command)}, "k", CAT_LIST, v => {
       setCommand(t, cmdInput, catStart(v)); rebuild();
@@ -5715,7 +5730,7 @@ async function showCliHelp(head) {
   } catch (e) { pre.textContent = T["settings.tab.ai.flags_failed"]; }
 }
 
-function aiPanel(t, cmdInput, rebuild) {
+function aiPanel(t, cmdInput, rebuild, real) {
   const box = el("div");
   const sel = el("select");
   for (const c of AI_CLIS) {
@@ -5826,11 +5841,21 @@ function aiPanel(t, cmdInput, rebuild) {
       // the one path every other writer of that line already goes through
       cmdInput.dispatchEvent(new Event("input", {bubbles: true}));
     });
-    carry.append(
-      el("label", {class:"row", style:"cursor:pointer;gap:8px"}, cb,
-        el("span", {}, T["settings.tab.restore_conv"])),
-      el("div", {class:"row"}, el("label", {}, ""),
-        el("span", {class:"hint"}, T["settings.tab.restore_conv.hint"])));
+    const label = el("label", {class:"row", style:"cursor:pointer;gap:8px"}, cb,
+      el("span", {}, T["settings.tab.restore_conv"]));
+    const hint = el("span", {class:"hint"});
+    carry.append(label, el("div", {class:"row"}, el("label", {}, ""), hint));
+    // A command that names its own conversation is obeyed as written, and a
+    // CLI that cannot be told which conversation to open starts a new one
+    // either way. In both, this switch changes nothing -- so it says so
+    // instead of standing there looking like it decides.
+    real.onCarry(why => {
+      cb.disabled = !!why;
+      label.style.opacity = why ? ".5" : "";
+      label.style.cursor = why ? "default" : "pointer";
+      hint.textContent = why ? T["settings.tab.restore_conv." + why]
+                             : T["settings.tab.restore_conv.hint"];
+    });
   }
 
   box.append(el("div", {class:"row"}, el("label", {}, T["settings.tab.ai.pick"]), sel, helpBtn));
@@ -5857,8 +5882,8 @@ function openProvidersPopup() {
   });
 }
 
-function kindPanel(t, cmdInput, rebuild) {
-  if (catOf(t.command) === "ai") return aiPanel(t, cmdInput, rebuild);
+function kindPanel(t, cmdInput, rebuild, real) {
+  if (catOf(t.command) === "ai") return aiPanel(t, cmdInput, rebuild, real);
   const box = el("div");
   const ssh = parseSsh(t.command), dk = parseDocker(t.command), wsl = parseWsl(t.command);
   const web = parseBrowser(t.command);

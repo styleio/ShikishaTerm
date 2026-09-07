@@ -543,6 +543,8 @@
   "settings.tab.ai.autoapprove": "確認なしで自動実行する（討論・自動化に必要）",
   "settings.tab.restore_conv": "前回の会話の続きから始める",
   "settings.tab.restore_conv.hint": "アプリを開き直したとき、このタブは前回の会話に入り直して起動し、それまでのやり取りが画面に戻ります。切ると毎回まっさらな会話で開きます（切っていても Ctrl+B r で前の会話に戻せます）。",
+  "settings.tab.restore_conv.own": "この設定は使いません。コマンドが会話を自分で指定していて、開くのはそちらの会話です。",
+  "settings.tab.restore_conv.unsupported": "この設定は使いません。このAIには開く会話を指定できず、起動するたびに新しい会話になります。",
   "settings.tab.ai.autoapprove_risk": "⚠️ このAIがファイル編集やコマンド実行を確認なしで行えるようになります。信頼できるフォルダでのみ使用してください。",
   "settings.tab.ai.add_title": "AIを追加（API接続）",
   "settings.tab.ai.api_hint": "DeepSeek やローカル LLM などの API型 AI を追加したい場合は、下で接続先（Providers）を登録してください。登録すると AI の一覧に並びます。",
