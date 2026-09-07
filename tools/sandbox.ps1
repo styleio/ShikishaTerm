@@ -68,7 +68,9 @@ param(
     # Close a sandbox that is already running, rather than refusing to start.
     [switch]$Replace,
     # How long to wait for done.txt, in seconds.
-    [int]$Timeout = 300
+    [int]$Timeout = 300,
+    # How many past runs to keep on disk.
+    [int]$KeepRuns = 5
 )
 
 $ErrorActionPreference = 'Stop'
@@ -94,8 +96,16 @@ if ($From) {
 # The shared folder. Under LOCALAPPDATA for the same reason the installed
 # program keeps its own things there: it belongs to the person, not the build.
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$work = Join-Path $env:LOCALAPPDATA "SHIKISHA-TERM\sandbox\$stamp"
+$runs = Join-Path $env:LOCALAPPDATA 'SHIKISHA-TERM\sandbox'
+$work = Join-Path $runs $stamp
 New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+# Each run carries a copy of whatever was tested, so this grows by ten megabytes
+# a go and nobody ever comes back to look at the twentieth one. Keep the recent
+# few and let the rest go.
+Get-ChildItem $runs -Directory -ErrorAction SilentlyContinue |
+    Sort-Object Name -Descending | Select-Object -Skip $KeepRuns |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 if ($Msix) { Copy-Item $Msix (Join-Path $work 'package.msix') }
 if ($From) { Copy-Item $From (Join-Path $work 'previous.msix') }
 if ($App) { Copy-Item $App (Join-Path $work 'app') -Recurse }

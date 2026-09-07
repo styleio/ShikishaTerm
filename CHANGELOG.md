@@ -68,6 +68,18 @@ and for the board's own address as automation sees it.
   costs, and what the one command is for.
 
 ### Fixed
+- **On a machine without the WebView2 runtime, the program now says so instead
+  of disappearing.** Every window here is drawn with WebView2, so a machine
+  without it cannot show one — including the message explaining that. What
+  happened until now was twenty seconds of nothing followed by a program that
+  closed without a word, which is the second half of a Store review that
+  reported the app "loads indefinitely on a clean test device"; the first half,
+  an undeclared Visual C++ dependency, was answered a while ago by linking the
+  C runtime into the binary. The runtime is now asked for before the first
+  window rather than discovered through its failure, and the dialog offers to
+  open the page it comes from — or hands over the address, on a machine with
+  nothing registered to open a web page with. Windows 11 carries the runtime in
+  the box; Windows 10 does not.
 - The board now also answers on `127.0.0.1`, through the same handler and the
   same token. `tailscale serve` will not proxy to this machine's own tailnet
   address — every request comes back 502 — so without this the HTTPS front door
