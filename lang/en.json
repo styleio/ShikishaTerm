@@ -785,6 +785,8 @@
   "err.browser.bad_url": "Cannot open this URL: {url}",
   "err.browser.log_open_failed": "Could not open the browser: {e}",
   "err.browser.startup_timeout": "The browser did not finish starting (WebView2 may be missing)",
+  "err.fatal.title": "SHIKISHA-TERM cannot start",
+  "err.webview2.missing": "SHIKISHA-TERM draws its window with the Microsoft Edge WebView2 Runtime, and this machine does not have it.\n\nInstall the Evergreen Runtime from:\nhttps://developer.microsoft.com/microsoft-edge/webview2/\n\nThen start SHIKISHA-TERM again.",
   "err.browser.page_not_ready": "The page is not ready",
   "err.browser.closed": "The browser has closed",
   "err.browser.not_connected": "The browser is closed",

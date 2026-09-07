@@ -783,6 +783,8 @@
   "err.browser.bad_url": "開けないURLです: {url}",
   "err.browser.log_open_failed": "ブラウザを開けません: {e}",
   "err.browser.startup_timeout": "ブラウザの起動が終わりません (WebView2 が無い可能性)",
+  "err.fatal.title": "SHIKISHA-TERM を起動できません",
+  "err.webview2.missing": "SHIKISHA-TERM は画面を Microsoft Edge WebView2 ランタイムで描きます。このパソコンには入っていません。\n\n次の場所から Evergreen ランタイムを入れてください。\nhttps://developer.microsoft.com/microsoft-edge/webview2/\n\n入れ終わったら SHIKISHA-TERM をもう一度起動してください。",
   "err.browser.page_not_ready": "ページが用意できません",
   "err.browser.closed": "ブラウザが閉じました",
   "err.browser.not_connected": "ブラウザが閉じています",

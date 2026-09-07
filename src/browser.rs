@@ -1609,6 +1609,25 @@ mod profile_tests {
     }
 }
 
+/// The WebView2 runtime on this machine, if it has one.
+///
+/// Every window this program opens is a WebView2, so a machine without the
+/// runtime cannot show anything at all -- including the message saying why.
+/// That is why this is asked before the first window rather than discovered
+/// through its failure: by then there is nowhere left to say it.
+///
+/// Windows 11 carries the runtime in the box. Windows 10 does not, and neither
+/// does an image somebody has stripped, which is where this was found.
+pub fn runtime_version() -> Option<String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::GetAvailableCoreWebView2BrowserVersionString;
+    use windows::core::{PCWSTR, PWSTR};
+
+    let mut raw = PWSTR::null();
+    unsafe { GetAvailableCoreWebView2BrowserVersionString(PCWSTR::null(), &mut raw) }.ok()?;
+    let v = webview2_com::take_pwstr(raw);
+    (!v.is_empty()).then_some(v)
+}
+
 impl Browser {
     /// Open the window and get it ready to accept instructions
     pub fn spawn(url: &str, title: &str) -> Result<Self> {

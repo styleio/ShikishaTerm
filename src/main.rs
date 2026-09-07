@@ -104,7 +104,49 @@ fn install_crash_log() {
     }));
 }
 
+/// Say something where it can be seen when there is no window yet.
+///
+/// This is a GUI subsystem binary, so it has no console: an error returned
+/// from `main` is written to a stderr that nobody owns, and the program simply
+/// vanishes. Anything that can fail before the first window exists has to
+/// borrow the shell's own dialog or it says nothing at all -- which is what a
+/// person who double-clicks the exe and gets no answer is looking at.
+fn say_fatally(text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+    let body = wide(text);
+    let title = wide(&i18n::t("err.fatal.title"));
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        )
+    };
+}
+
 fn main() -> Result<()> {
+    let r = boot();
+    if let Err(e) = &r {
+        // The modes that run as somebody else's subprocess stay silent. A hook
+        // must never make a sound the agent could mistake for its own, and a
+        // dialog with nobody there to close it would hang the caller instead of
+        // failing it.
+        let quiet = matches!(
+            std::env::args().nth(1).as_deref(),
+            Some("--bridge") | Some("--hook")
+        );
+        if !quiet {
+            say_fatally(&format!("{e}"));
+        }
+    }
+    r
+}
+
+fn boot() -> Result<()> {
     install_crash_log();
     // Child-process mode for the model bridge. It receives its connection info via env,
     // relays stdin -> response, then exits. It never spins up the main window/WebView etc.
@@ -1195,6 +1237,14 @@ fn run_in_window() -> Result<()> {
         }
     });
 
+    // Ask before opening the first window, not through its failure. Without the
+    // runtime the window thread dies at once and says so only to the log, while
+    // this side waits out its twenty second timeout -- so the machine that
+    // cannot run this program at all spends twenty seconds looking like one
+    // that is merely slow, and then closes without a word.
+    if browser::runtime_version().is_none() {
+        return Err(anyhow::anyhow!(crate::i18n::t("err.webview2.missing")));
+    }
     let win = std::rc::Rc::new(browser::Browser::spawn(
         &format!("http://127.0.0.1:{port}/"),
         "SHIKISHA-TERM",
