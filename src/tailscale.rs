@@ -135,7 +135,11 @@ pub fn front(port: u16) -> Option<String> {
     // Reusing the short-command runner from the other file that asks this
     // machine what it has: same shape of question, same need for a window that
     // never flashes up and a command that cannot hang the start-up.
-    let out = crate::discover::run_briefly(&exe, &["serve", "status", "--json"], Duration::from_secs(4))?;
+    // Two seconds is generous for what it is: a question asked of a daemon on
+    // this same machine, which answers in milliseconds or not at all. The QR
+    // waits for this, so a Tailscale that is installed but not running must
+    // not be able to hold the phone card up for long.
+    let out = crate::discover::run_briefly(&exe, &["serve", "status", "--json"], Duration::from_secs(2))?;
     let origin = declared(&String::from_utf8_lossy(&out), port)?;
     if !answers(&origin) {
         crate::append_hook_log(&format!(
