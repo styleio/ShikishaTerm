@@ -8,6 +8,8 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-08
+
 The phone stops needing the page open.
 
 A tab that finishes can now reach three places it could not before: this PC's
@@ -86,7 +88,41 @@ and for the board's own address as automation sees it.
   PC the operating system's dialog stays, since it knows about quick access,
   search and network places and the list does not.
 
+### Changed
+- **A correction to 0.6.0's terminal-engine claims.** That release said the
+  bundled console was faster than the one in Windows and that the older one
+  drops or rewrites some sequences, with figures. Measured again, this time
+  through the program itself rather than at the pipe's mouth — a stand-in
+  program that draws the way a terminal application does, run through a real
+  tab in three shapes, on both engines, with and without the passthrough flag
+  the newer engine offers — the two are indistinguishable on this machine:
+  byte-identical output, timings that overlap completely, and the older engine
+  carrying the image blocks it is documented to drop. The figures could not be
+  supported by anything this program can measure, so they are withdrawn: the
+  settings hint, the log line and the landing page now say only what is
+  checkable, which is which engine is in use and that the shipped one is a
+  fixed version we have checked, so the answer does not depend on how up to
+  date the machine happens to be. The bundled engine still ships, for that
+  reason alone. The measuring instrument stays in the tree as ignored tests.
+
 ### Fixed
+- **A new tab starts as an AI.** Adding a tab landed on "Command (PowerShell /
+  cmd)" with "e.g. claude" under it, which is an example from the wrong
+  category and the one route that skips the AI panel where the auto-approve
+  switch and the conversation switch live. A tab now arrives as the AI CLI this
+  machine actually has, and the command field's example is a shell, as its
+  category says.
+- **The "pick up where this tab left off" switch says when it cannot.** It sat
+  there lit whether or not it had anything to act on. A command that names its
+  own conversation is obeyed as written, and a CLI that cannot be told which
+  conversation to open starts a new one either way; both now grey the switch
+  and say which of the two it is.
+- **On a phone, the 🎯 row's sentence has a line of its own.** The row's fixed
+  parts already filled the width, so the reason a tab could not be driven was
+  squeezed to nothing and ran on under the Settings button and off the edge.
+  The sentence now wraps on a full-width line under the row, the way to
+  Settings is the bar's fixed ⚙ at the right like every other panel's, and the
+  📼 panel's status line gets the same treatment.
 - **The gear opens the settings on the tab in view -- even a tab with no
   name.** Pressed while on tab 2, it used to land on the workspace's page and
   leave the tab to be found in the list. The tab now rides along by its place
@@ -1320,7 +1356,11 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/styleio/ShikishaTerm/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/styleio/ShikishaTerm/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/styleio/ShikishaTerm/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/styleio/ShikishaTerm/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/styleio/ShikishaTerm/compare/v0.3.7...v0.4.0
 [0.3.7]: https://github.com/styleio/ShikishaTerm/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/styleio/ShikishaTerm/compare/v0.3.5...v0.3.6
