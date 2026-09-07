@@ -377,7 +377,7 @@
   "settings.tui_clipboard.label": "タブの中のプログラムがクリップボードに入れるのを許可する",
   "settings.tui_clipboard.hint": "tmux・Neovim・fzf など全画面のツールは、ssh 越しも含めてこの方法でコピーします。切ると、その中でのコピーが何も起きなくなります。読み取りは常に禁止なので、他で copy したものがタブの中から見えることはありません",
   "settings.conpty": "端末エンジン",
-  "settings.conpty.hint": "Windows には2種類あります。新しい方はプログラムの出力をそのまま通します。古い方は描き直すため、遅く、プログラムが送ったものの一部が失われます。",
+  "settings.conpty.hint": "Windows にも入っていますが、このソフトは自前のものを持ち歩きます。どちらが使われるかで、プログラムの出力が画面に届くまでの経路が決まります。同梱しているのは版を固定して検証したものなので、このPCがどれだけ新しいかに左右されません。古い Windows では、OS側のものがだいぶ遅れていることがあります。",
   "settings.conpty.on": "新しいエンジン (このソフトに同梱)",
   "settings.conpty.off": "Windows の古いエンジン。",
   "settings.conpty.off.not_shipped": "Windows の古いエンジンです。conpty.dll がこのソフトの隣にありません。このソフトをダウンロードし直してください。",

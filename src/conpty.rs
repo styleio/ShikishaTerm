@@ -79,7 +79,12 @@ impl Report {
                 self.path.display()
             ),
             Some(m) => format!(
-                "ConPTY: in-box ({}) -- terminal output is slower and some sequences are dropped",
+                // Says what is true and checkable -- which console is in use,
+                // and why -- and not what it costs. Measured on Windows 11
+                // 10.0.26200 the two are indistinguishable (frame_bench in
+                // src/main.rs); on an older Windows the one in the box can be
+                // behind, which is the reason for carrying our own.
+                "ConPTY: in-box ({}) -- the copy that ships with this program is not beside it",
                 m.id()
             ),
         }

@@ -10821,6 +10821,127 @@ mod frame_bench {
         );
     }
 
+    /// The same measurement with the writer as the tab's own program, and no
+    /// shell under it.
+    ///
+    /// `cmd.exe` leans on the console API, which is the thing passthrough
+    /// cannot serve -- a pseudo console in passthrough mode stops rendering on
+    /// the child's behalf, and a program that expected it to renders nothing.
+    /// So for that question the child has to be a program that speaks only VT.
+    #[test]
+    #[ignore]
+    fn a_burst_from_a_vt_only_program() {
+        println!("{}", crate::conpty::report().line());
+        let writer = writer();
+        for kind in ["poured", "redrawn", "sequences"] {
+            let tab = Tab::spawn(
+                writer.display().to_string(),
+                &[writer.display().to_string(), kind.to_string()],
+                None,
+                40,
+                120,
+                TabOptions::default(),
+            )
+            .expect("起動");
+            let start = Instant::now();
+            let mut had: Vec<String> = Vec::new();
+            let mut arrived = None;
+            while start.elapsed() < Duration::from_secs(30) {
+                std::thread::sleep(Duration::from_millis(16));
+                had = {
+                    let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::shell::screen_rows(p.screen())
+                };
+                if had.iter().any(|r| r.contains(END)) {
+                    arrived = Some(start.elapsed());
+                    break;
+                }
+            }
+            match arrived {
+                Some(took) => println!(
+                    "  {kind:>9}: {:>4}ms  {:>9} bytes from the pty",
+                    took.as_millis(),
+                    tab.output_count()
+                ),
+                None => println!("  {kind:>9}: 時間切れ ({} bytes)", tab.output_count()),
+            }
+        }
+    }
+
+    /// Does what came out arrive in the order it went in?
+    ///
+    /// Read off the raw pipe rather than the screen: the sequences at issue --
+    /// an image block, a Sixel, a hyperlink -- leave no text behind, so the
+    /// only place their position is visible is the byte stream itself.
+    #[test]
+    #[ignore]
+    fn what_came_out_is_still_in_order() {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+        use std::io::Read as _;
+
+        println!("{}", crate::conpty::report().line());
+        let pair = native_pty_system()
+            .openpty(PtySize { rows: 40, cols: 120, pixel_width: 0, pixel_height: 0 })
+            .expect("openpty");
+        let mut cmd = CommandBuilder::new(writer().display().to_string());
+        cmd.arg("ordered");
+        let mut child = pair.slave.spawn_command(cmd).expect("spawn");
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().expect("reader");
+        let mut writer_side = pair.master.take_writer().expect("writer");
+
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut seen: Vec<u8> = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(chunk) => seen.extend_from_slice(&chunk),
+                Err(_) => {
+                    if child.try_wait().ok().flatten().is_some() {
+                        break;
+                    }
+                }
+            }
+            // The console asks who it is talking to before it will go on. Not
+            // answering is how a probe stops after forty bytes.
+            if seen.windows(4).any(|w| w == b"\x1b[6n") {
+                let _ = writer_side.write_all(b"\x1b[40;1R");
+            }
+        }
+        let _ = child.kill();
+
+        let text = String::from_utf8_lossy(&seen).to_string();
+        let at = |needle: &str| text.find(needle);
+        println!("  {} bytes", seen.len());
+        for m in ["MARK1", "MARK2", "MARK3", "MARK4"] {
+            println!("    {m}: {:?}", at(m));
+        }
+        for (name, needle) in [
+            ("kitty APC", "\u{1b}_G"),
+            ("Sixel DCS", "\u{1b}P"),
+            ("OSC 8", "\u{1b}]8;;"),
+        ] {
+            println!("    {name}: {:?}", at(needle));
+        }
+        let marks: Vec<usize> = ["MARK1", "MARK2", "MARK3", "MARK4"]
+            .iter()
+            .filter_map(|m| at(m))
+            .collect();
+        println!(
+            "    markers in order: {}",
+            marks.len() == 4 && marks.windows(2).all(|w| w[0] < w[1])
+        );
+    }
+
     #[test]
     #[ignore]
     fn a_burst_of_japanese_reaches_the_window() {

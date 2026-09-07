@@ -377,7 +377,7 @@
   "settings.tui_clipboard.label": "Let a program in a tab put text on the clipboard",
   "settings.tui_clipboard.hint": "tmux, Neovim, fzf and most full-screen tools copy this way, including over ssh -- with this off, copying inside them does nothing. Reading the clipboard is never allowed, so nothing running in a tab can see what you copied elsewhere",
   "settings.conpty": "Terminal engine",
-  "settings.conpty.hint": "Windows carries two of these. The newer one hands a program's output through exactly as it was written; the older one redraws it, which is slower and loses part of what some programs send.",
+  "settings.conpty.hint": "Windows has one of these and this program carries its own. Which one is in use decides how a program's output reaches the screen. The one shipped here is a fixed version we have checked, so the answer does not depend on how up to date this machine happens to be — on an older Windows, the one in the box can be some way behind.",
   "settings.conpty.on": "Newer engine, shipped with this program",
   "settings.conpty.off": "Windows' older engine.",
   "settings.conpty.off.not_shipped": "Windows' older engine, because conpty.dll is not beside this program. Download this program again to get it back.",

@@ -57,6 +57,20 @@ fn main() {
             }
             out.extend_from_slice(b"\r\n");
         }
+        // Markers with sequences wedged between them. Nothing here is about
+        // speed: it is about whether what comes out the other end is still in
+        // the order it went in. Passthrough is reported to lose that ordering
+        // (microsoft/terminal#8698), and this program decides what a tab is
+        // doing by reading its output in order.
+        "ordered" => {
+            out.extend_from_slice(b"MARK1\r\n");
+            out.extend_from_slice(b"\x1b_Gf=24,s=1,v=1;AAAA\x1b\\");
+            out.extend_from_slice(b"MARK2\r\n");
+            out.extend_from_slice(b"\x1bP0;1;0q#0;2;0;0;0#0~~@@vv@@~~@@~~$\x1b\\");
+            out.extend_from_slice(b"MARK3\r\n");
+            out.extend_from_slice(b"\x1b]8;;https://example.com\x1b\\LINK\x1b]8;;\x1b\\");
+            out.extend_from_slice(b"MARK4\r\n");
+        }
         other => {
             eprintln!("unknown shape {other}");
             std::process::exit(2);
