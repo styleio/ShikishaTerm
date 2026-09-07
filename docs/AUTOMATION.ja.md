@@ -96,7 +96,7 @@ shikisha.send_to_tab("reviewer", "レビューして")   -- 名前を変えて�
 | `shikisha.sleep(ミリ秒)` | 待つ（待っている間も他のタブは動きます） |
 | `shikisha.state(tab)` | **今の**状態を読む（ループの終了条件に使う） |
 | `shikisha.wait_state(tab, "DONE", ミリ秒)` | その状態になるまで待つ |
-| `shikisha.notify("宛先", "文字列")` | Slack / Discord / Telegram、またはこのPCのWindows通知へ（設定済みの宛先のみ） |
+| `shikisha.notify("宛先", "文字列")` | Slack / Discord / Telegram、このPCのWindows通知、登録済みのスマホへ（設定済みの宛先のみ） |
 | `shikisha.restart(tab)` | そのタブを会話ごと再起動する。`shikisha.restart(tab, "fresh")` なら新しい会話で |
 | `shikisha.log("文字列")` | `logs/hooks.log` に記録 |
 | `shikisha.set_session("id")` | **このタブ**のCLIが動かしている会話のIDを伝える（再起動で引き継ぐため）。タブを指定しないのは、呼んだ側がそのタブだから |
@@ -808,7 +808,7 @@ shikisha.show("br")            -- そこにブラウザが入る
 |---|---|
 | `shikisha.get_var("キー")` / `shikisha.set_var("キー", 値)` | 記憶しておける変数。ワークスペース内で共有 |
 | `shikisha.log("文字列")` | `logs/hooks.log` に1行書く |
-| `shikisha.notify("文字列")` / `shikisha.notify("宛先", "文字列")` | Slack / Discord / Telegram、またはこのPCのWindows通知へ（設定済みの宛先のみ）。宛先を書かなければ既定の宛先へ |
+| `shikisha.notify("文字列")` / `shikisha.notify("宛先", "文字列")` | Slack / Discord / Telegram、このPCのWindows通知、登録済みのスマホへ（設定済みの宛先のみ）。宛先を書かなければ既定の宛先へ |
 | `shikisha.remote_url()` | スマホからこのアプリにつながるURL。リモートが切れているときは `nil`。通知に入れておくと「手伝いに来て」がワンタップになります |
 | `shikisha.reply_url(tab)` / `shikisha.reply_url(tab, "宛先")` | そのタブの最後の回答と入力欄だけを置いたページへのリンク。リモートが切れているときは `nil`。呼ぶたびに切符を1枚書きます。できるのは**そのタブに1件送ること**だけで、盤面のトークンは載らず、期限切れか「切断」で無効になります。第2引数は送信できたことを報告し返す宛先（省略時はプライマリ）。**このリンクを渡すことは、そのタブに書き込む権限を渡すことです** —— このPCのプライベートネットワーク（Tailscale か同じLAN）に届き、かつリンクを読める人が対象です。それがあなた以外にもいる場合、その人はあなたのAIアカウントを使うことになり、多くのAIサブスクリプションは複数人での利用を禁止しています。契約中の規約を確認してください |
 | `shikisha.t("キー")` / `shikisha.tf("キー", {name="…"})` | 訳語を引く（`tf` は `{name}` も差し込む）。組み込みの進行役がアプリの言語で話すために使っています |

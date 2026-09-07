@@ -1135,6 +1135,49 @@ fn handle(
         // Sends a test notification to one destination described in the body
         // ({"type":"slack","webhook":…} etc). "@name" fields are expanded from
         // the secret store, so a saved destination can be tested too.
+        // The phones that have asked to be buzzed, and the key a browser needs
+        // to ask. Behind the token like every other settings route: the list
+        // says which devices a person has, which is theirs to know.
+        ("GET", "/api/push") => {
+            let (key, err) = match crate::push::public_key() {
+                Ok(k) => (k, String::new()),
+                Err(e) => (String::new(), e),
+            };
+            let subs: Vec<serde_json::Value> = crate::push::subs()
+                .into_iter()
+                .map(|s| serde_json::json!({ "endpoint": s.endpoint, "name": s.name }))
+                .collect();
+            req.respond(json_resp(serde_json::json!({
+                "key": key, "error": err, "subs": subs,
+            })))?;
+        }
+        ("POST", "/api/push/subscribe") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let resp = match serde_json::from_str::<crate::push::Sub>(&body) {
+                Ok(sub) if !sub.endpoint.is_empty() => {
+                    crate::push::remember(sub);
+                    serde_json::json!({ "ok": true })
+                }
+                Ok(_) => serde_json::json!({ "ok": false, "error": "no endpoint" }),
+                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+            };
+            req.respond(json_resp(resp))?;
+        }
+        ("POST", "/api/push/forget") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let endpoint = v.get("endpoint").and_then(|e| e.as_str()).unwrap_or("");
+            let gone = crate::push::forget(endpoint);
+            req.respond(json_resp(serde_json::json!({ "ok": gone })))?;
+        }
         ("POST", "/api/notify/test") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -1162,7 +1205,8 @@ fn handle(
                             *token = deref(token);
                             *chat_id = deref(chat_id);
                         }
-                        crate::notify::Destination::Windows {} => {}
+                        crate::notify::Destination::Windows {}
+                        | crate::notify::Destination::Phone {} => {}
                     }
                     match crate::notify::send_blocking(
                         &dest,
@@ -4460,6 +4504,22 @@ function notifyCard() {
           if (r.ok) { d.token = "@" + sk; tokIn.value = ""; refreshSave(); return true; }
           toast(r.error || T["settings.secrets.save_failed"], true); return false;
         };
+      } else if (d.type === "phone") {
+        // Everything a phone needs is arranged by the phone itself: it asks
+        // its own browser for permission, its browser hands back a
+        // subscription, and that is what gets stored. There is nothing here to
+        // type, and nothing that would work if it were typed on the PC --
+        // which is why the button says what it will register rather than
+        // "save".
+        const box = el("div", {style:"flex:1 1 0;min-width:220px"});
+        const said = el("div", {class:"hint"}, T["settings.notify.phone.checking"]);
+        const list = el("div", {style:"margin-top:4px"});
+        const add = el("button", {class:"quiet", onclick: () => subscribeThisDevice(said, list)},
+                       T["settings.notify.phone.add"]);
+        box.append(el("div", {class:"row", style:"gap:8px;align-items:center"}, add, said), list);
+        fields.append(box);
+        drawPhones(said, list);
+        testPayload = () => ({type:"phone"});
       } else if (d.type === "windows") {
         // Nothing to fill in. That is the whole appeal of it: no webhook to
         // create, no bot to register, no account. Test still means something
@@ -4521,7 +4581,8 @@ function notifyCard() {
   const typeSel = el("select", {style:"width:120px"});
   typeSel.append(el("option", {value:"slack"}, "Slack"), el("option", {value:"discord"}, "Discord"),
                  el("option", {value:"telegram"}, "Telegram"),
-                 el("option", {value:"windows"}, T["settings.notify.type.windows"]));
+                 el("option", {value:"windows"}, T["settings.notify.type.windows"]),
+                 el("option", {value:"phone"}, T["settings.notify.type.phone"]));
   const addBtn = el("button", {class:"primary", onclick: () => {
     // The display name may be anything (Japanese included); it's only the
     // derived secret key that has to be ASCII (see slugId below).
@@ -4537,6 +4598,101 @@ function notifyCard() {
     el("div", {class:"row", style:"gap:10px;margin-top:12px;align-items:flex-end"}, nameIn, typeSel, addBtn));
   setTimeout(draw, 0);
   return c;
+}
+
+// -- Phones that have asked to be notified ---------------------------------
+//
+// The subscription is made by the browser this page is open in, so pressing
+// the button on the PC registers the PC and pressing it on a phone registers
+// that phone. That is not a quirk to work around -- it is the only way a push
+// subscription can be made at all -- so the button says "this device" and the
+// list says which ones there are.
+
+// base64url in, the bytes a browser wants out.
+function b64bytes(s) {
+  const pad = "=".repeat((4 - (s.length % 4)) % 4);
+  const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+
+// ...and back again, for the two keys a subscription carries.
+function bytesB64(buf) {
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(buf)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function drawPhones(said, list) {
+  let j;
+  try { j = await fetch("/api/push", {headers:{"X-Token":TOKEN}}).then(r => r.json()); }
+  catch (e) { said.textContent = T["settings.notify.phone.failed"]; return; }
+  if (j.error) { said.textContent = j.error; said.classList.add("warn"); return; }
+  const subs = j.subs || [];
+  said.classList.remove("warn");
+  said.textContent = subs.length
+    ? fill(T["settings.notify.phone.count"], {n: subs.length})
+    : T["settings.notify.phone.none"];
+  list.textContent = "";
+  for (const sub of subs) {
+    list.append(el("div", {class:"row", style:"gap:8px;align-items:center"},
+      el("span", {class:"hint", style:"flex:1 1 0"},
+         sub.name || sub.endpoint.slice(0, 40)),
+      el("button", {class:"quiet", onclick: async () => {
+        await fetch("/api/push/forget", {method:"POST",
+          headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+          body: JSON.stringify({endpoint: sub.endpoint})});
+        drawPhones(said, list);
+      }}, T["common.delete"])));
+  }
+}
+
+async function subscribeThisDevice(said, list) {
+  // Three things have to be true, and a browser says so in three different
+  // ways. Which one is missing is the whole answer a person needs, so each is
+  // told apart rather than collapsed into "not supported".
+  if (!window.isSecureContext) { toast(T["settings.notify.phone.needs_https"], true); return; }
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    toast(T["settings.notify.phone.no_support"], true); return;
+  }
+  try {
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+    // Asked here, from a press, because a browser only offers the choice in
+    // answer to something a person did.
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { toast(T["settings.notify.phone.refused"], true); return; }
+    const j = await fetch("/api/push", {headers:{"X-Token":TOKEN}}).then(r => r.json());
+    if (!j.key) { toast(j.error || T["settings.notify.phone.failed"], true); return; }
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: b64bytes(j.key),
+    });
+    const r = await fetch("/api/push/subscribe", {method:"POST",
+      headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+      body: JSON.stringify({
+        endpoint: sub.endpoint,
+        p256dh: bytesB64(sub.getKey("p256dh")),
+        auth: bytesB64(sub.getKey("auth")),
+        // Enough to tell two phones apart in a list, and no more: the whole
+        // user-agent string is a fingerprint nobody asked to store.
+        name: deviceName(),
+      })}).then(r => r.json());
+    if (!r.ok) { toast(r.error || T["settings.notify.phone.failed"], true); return; }
+    toast(T["settings.notify.phone.added"]);
+    drawPhones(said, list);
+  } catch (e) {
+    toast(String(e && e.message ? e.message : e), true);
+  }
+}
+
+// A short, human name for whatever is looking at this page.
+function deviceName() {
+  const ua = navigator.userAgent || "";
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad"
+           : /Android/.test(ua) ? "Android" : /Mac OS X/.test(ua) ? "Mac"
+           : /Windows/.test(ua) ? "Windows" : "";
+  const app = /EdgA?\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox"
+            : /CriOS|Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
+  return [os, app].filter(Boolean).join(" / ") || "device";
 }
 
 async function loadSecrets() {

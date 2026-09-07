@@ -43,6 +43,7 @@ mod netaddr;
 mod notify;
 mod pr;
 mod profile;
+mod push;
 mod pwa;
 mod reader;
 mod remote;
@@ -7763,12 +7764,22 @@ pub fn random_uuid() -> String {
 }
 
 pub fn random_hex(bytes: usize) -> String {
-    use rand::TryRng as _;
-    let mut buf = vec![0u8; bytes];
-    if rand::rngs::SysRng.try_fill_bytes(&mut buf).is_err() {
-        return "shikisha-fallback-token".into();
+    match random_bytes(bytes) {
+        Some(buf) => buf.iter().map(|b| format!("{b:02x}")).collect(),
+        None => "shikisha-fallback-token".into(),
     }
-    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Randomness from the system, or nothing.
+///
+/// `None` rather than a fallback, because the callers that want raw bytes want
+/// them for keys (src/push.rs), and a key made from a stand-in is worse than
+/// no key at all: it works, so nobody looks at it again.
+pub fn random_bytes(n: usize) -> Option<Vec<u8>> {
+    use rand::TryRng as _;
+    let mut buf = vec![0u8; n];
+    rand::rngs::SysRng.try_fill_bytes(&mut buf).ok()?;
+    Some(buf)
 }
 
 /// The root of the portable layout (base for relative paths; where the exe and its folders sit side by side)

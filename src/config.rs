@@ -547,8 +547,9 @@ impl Config {
                     *token = deref(token);
                     *chat_id = deref(chat_id);
                 }
-                // Nothing to keep secret: it has no address and no account.
-                crate::notify::Destination::Windows {} => {}
+                // Nothing to keep secret: neither has an address or an account.
+                crate::notify::Destination::Windows {}
+                | crate::notify::Destination::Phone {} => {}
             }
         }
         (map, err)

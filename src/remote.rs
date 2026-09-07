@@ -815,6 +815,37 @@ fn handle(
         }
     }
 
+    // The service worker: the piece of this program that runs inside the
+    // phone's browser with the page shut (src/push.rs).
+    //
+    // Token-free for the same reason the manifest is, and one more: a browser
+    // re-fetches this file on its own schedule to see whether the worker has
+    // changed, long after whatever page installed it has gone. It is inert
+    // code that can read nothing -- every route it might call still wants the
+    // token, and it never has one.
+    //
+    // Served from the root so its scope covers the whole board. A worker
+    // registered from a deeper path can only ever control that path.
+    if method == "GET" && path == "/sw.js" {
+        return req
+            .respond(
+                Response::from_string(crate::push::SERVICE_WORKER)
+                    .with_header(
+                        Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"text/javascript; charset=utf-8"[..],
+                        )
+                        .unwrap(),
+                    )
+                    // Never a stale worker after an update: the browser asks,
+                    // and the answer has to be this build's.
+                    .with_header(
+                        Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
+                    ),
+            )
+            .map_err(Into::into);
+    }
+
     // The reply page a notification links to.
     //
     // Ahead of the token gate, and on purpose: the ticket in the path IS the
@@ -1747,6 +1778,30 @@ mod tests {
                 println!("GOT: {cmd:?}");
             }
         }
+        ui.shutdown();
+    }
+
+    /// Holds a board open on the loopback, for a browser to subscribe against.
+    ///
+    /// Ignored by default and run by hand (`cargo test -- --ignored
+    /// hold_a_board_for_push --nocapture`). `127.0.0.1` is a secure context as
+    /// far as a browser is concerned, which is what makes it possible to test
+    /// the whole push path on one machine, with no certificate and no phone:
+    /// open the printed address, subscribe, and the subscription is a real one
+    /// with the browser vendor's own push service.
+    #[test]
+    #[ignore]
+    fn hold_a_board_for_push() {
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "board-token-0000".into(),
+            String::new(),
+        )
+        .unwrap();
+        println!("ORIGIN: {}", ui.url.split("/?").next().unwrap());
+        println!("VAPID: {:?}", crate::push::public_key());
+        std::thread::sleep(std::time::Duration::from_secs(240));
         ui.shutdown();
     }
 

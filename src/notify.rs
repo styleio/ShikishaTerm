@@ -25,6 +25,11 @@ pub enum Destination {
     /// person sitting here with the window behind a browser, which is the one
     /// person a chat app is the wrong way to reach.
     Windows {},
+    /// The phones that have asked to be notified (src/push.rs). Also no
+    /// address and no account -- a phone subscribes itself from the settings
+    /// screen, and the message is encrypted for that phone before it is handed
+    /// to anybody to carry.
+    Phone {},
 }
 
 impl Destination {
@@ -47,6 +52,10 @@ impl Destination {
             // Windows itself stops drawing long before this; the cut is here
             // so that what it does draw ends in a word rather than mid-way.
             Destination::Windows {} => 200,
+            // A push service guarantees to carry 4KB, and what it carries here
+            // is encrypted, which costs a little more than what went in. A
+            // phone's lock screen shows two or three lines regardless.
+            Destination::Phone {} => 1_000,
         }
     }
 
@@ -56,6 +65,7 @@ impl Destination {
             Destination::Telegram { .. } => "telegram",
             Destination::Discord { .. } => "discord",
             Destination::Windows {} => "windows",
+            Destination::Phone {} => "phone",
         }
     }
 }
@@ -159,6 +169,27 @@ pub fn send_blocking_about(
     text: &str,
     tab: Option<usize>,
 ) -> Result<(), String> {
+    // A phone that subscribed for itself. The message is split the same way a
+    // banner splits it -- a heading and a line -- and the link, when there is
+    // one, becomes where a tap goes rather than text nobody can tap.
+    if let Destination::Phone {} = dest {
+        let mut lines = text.lines();
+        let title = lines.next().unwrap_or_default();
+        let rest: Vec<&str> = lines.collect();
+        // The reply link is written on its own line, last (see
+        // on_done_message). On a phone it is worth more as the destination of
+        // a tap than as a line of text, so it is lifted out of the body.
+        let link = rest
+            .last()
+            .copied()
+            .filter(|l| l.starts_with("http://") || l.starts_with("https://"));
+        let body = match link {
+            Some(_) => &rest[..rest.len() - 1],
+            None => &rest[..],
+        };
+        let body = clip(body.join(" ").trim(), dest.limit());
+        return crate::push::send(title, &body, link).map(|_| ());
+    }
     // Nothing to post, nothing to time out: this one is a call into the shell.
     if let Destination::Windows {} = dest {
         // A banner has room for a heading and a line under it. The message is
@@ -188,8 +219,8 @@ pub fn send_blocking_about(
         Destination::Discord { webhook } => agent
             .post(webhook)
             .send_json(serde_json::json!({ "content": text })),
-        // Handled above, before an HTTP agent was ever built.
-        Destination::Windows {} => unreachable!(),
+        // Both handled above, before an HTTP agent was ever built.
+        Destination::Windows {} | Destination::Phone {} => unreachable!(),
     };
     match result {
         Ok(_) => Ok(()),
