@@ -10694,6 +10694,172 @@ mod tests {
 }
 
 
+/// How long a burst of output takes to reach the rows the window is handed.
+///
+/// The published figures for the two pseudo consoles were measured at the PTY
+/// mouth: bytes out of the pipe, and nothing after that. Everything after that
+/// is ours -- the vt100 parse, the row diff, the JSON that goes to the page --
+/// and whatever extra the older console sends goes through every one of those
+/// steps. So this measures the last point this program controls.
+///
+/// Two shapes, because the answer turned out to depend entirely on which:
+///
+/// The output comes from `vt_writer` (src/bin/vt_writer.rs), which announces
+/// itself as a terminal program before it writes. `type` will not do: it writes
+/// through a handle whose console mode says nothing about escape sequences, and
+/// then both pseudo consoles behave identically because neither is being asked
+/// to do the thing they differ at. Measured that way, they looked the same.
+///
+///   - **poured**: ten thousand lines of Japanese, written once, never
+///     revisited. This is a build log, a `cat`.
+///   - **redrawn**: the same characters put on screen over and over, each
+///     frame beginning by sending the cursor home and colouring as it goes.
+///     This is what an AI CLI looks like while it is thinking, and it is the
+///     shape the older console re-renders rather than forwards.
+///
+/// Run by hand, twice, with `vendor\conpty` beside the test binary and then
+/// moved aside:
+///
+///   cargo test -- --ignored a_burst_of_japanese --nocapture
+///
+/// Both runs print which console they used, so the pair cannot be mixed up.
+#[cfg(test)]
+mod frame_bench {
+    use super::*;
+    use crate::tab::{Tab, TabOptions};
+    use std::time::{Duration, Instant};
+
+    const END: &str = "SHIKISHA-BURST-END";
+    /// 39 characters, the width the published figures were taken at, and wide
+    /// enough that a re-render has real work to do on every line.
+    const LINE: &str = "吾輩は猫である。名前はまだ無い。どこで生れたか頓と見当がつかぬ。何でも薄暗いじ";
+
+    /// Where the stand-in terminal program is, beside the test binary or one
+    /// folder up from it (`cargo test` puts tests under `deps/`).
+    fn writer() -> std::path::PathBuf {
+        let exe = std::env::current_exe().expect("current_exe");
+        let here = exe.parent().expect("dir");
+        for dir in [here, here.parent().unwrap_or(here)] {
+            let p = dir.join("vt_writer.exe");
+            if p.exists() {
+                return p;
+            }
+        }
+        panic!("vt_writer が見つからない (cargo build --bin vt_writer)");
+    }
+
+    /// Wait until the tab has stopped saying anything for `quiet`.
+    fn settle(tab: &Tab, quiet: Duration, cap: Duration) {
+        let start = Instant::now();
+        let (mut last, mut still) = (0u64, Instant::now());
+        while start.elapsed() < cap {
+            std::thread::sleep(Duration::from_millis(50));
+            let n = tab.output_count();
+            if n != last {
+                last = n;
+                still = Instant::now();
+            } else if last > 0 && still.elapsed() > quiet {
+                return;
+            }
+        }
+    }
+
+    fn measure(tab: &Tab, writer: &std::path::Path, kind: &str) {
+        let before = tab.output_count();
+        let start = Instant::now();
+        tab.write_bytes(format!("\"{}\" {kind}\r", writer.display()).as_bytes())
+            .expect("write");
+
+        // Exactly what the window does: read the parser at the rate the loop
+        // polls at, work out which rows moved, and count what would have been
+        // handed over.
+        let mut had: Vec<String> = Vec::new();
+        let (mut rows_sent, mut whole_sent, mut to_page) = (0usize, 0usize, 0usize);
+        let mut arrived = None;
+        while start.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(16));
+            let now = {
+                let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
+                crate::shell::screen_rows(p.screen())
+            };
+            match screen_push(&had, &now) {
+                ScreenPush::Nothing => {}
+                ScreenPush::Rows(moved) => {
+                    rows_sent += 1;
+                    let list: Vec<(usize, &str)> =
+                        moved.iter().map(|&i| (i, now[i].as_str())).collect();
+                    to_page += serde_json::to_string(&list).unwrap_or_default().len();
+                }
+                ScreenPush::Whole => {
+                    whole_sent += 1;
+                    to_page += serde_json::to_string(&now.join("\n")).unwrap_or_default().len();
+                }
+            }
+            had = now;
+            // What comes back from screen_rows is the HTML the page is handed,
+            // not plain text, so the row is searched rather than compared. The
+            // echo of the typed command holds the writer's path and the shape,
+            // never this word, so finding it means the burst has landed.
+            if had.iter().any(|r| r.contains(END)) {
+                arrived = Some(start.elapsed());
+                break;
+            }
+        }
+
+        let Some(took) = arrived else {
+            for (i, r) in had.iter().enumerate().rev().take(4).collect::<Vec<_>>().iter().rev() {
+                println!("  row {i}: {:?}", r.chars().take(120).collect::<String>());
+            }
+            panic!("{kind}: 最後の行が画面に出ないまま時間切れ");
+        };
+        println!(
+            "  {kind:>7}: {:>4}ms  {:>9} bytes from the pty  \
+             {rows_sent} row updates + {whole_sent} whole redraws  \
+             {to_page} bytes to the page",
+            took.as_millis(),
+            tab.output_count() - before,
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn a_burst_of_japanese_reaches_the_window() {
+        println!("{}", crate::conpty::report().line());
+        let tab = Tab::spawn(
+            "cmd.exe".into(),
+            &["cmd.exe".into()],
+            None,
+            40,
+            120,
+            TabOptions::default(),
+        )
+        .expect("起動");
+        settle(&tab, Duration::from_millis(600), Duration::from_secs(10));
+        // The codepage is the one condition worth being able to change.
+        //
+        // The published figures had the older console inflating Japanese by
+        // 35%; measured here with the console told to be UTF-8, the two send
+        // byte-identical output. Which raises the obvious question, and
+        // SHIKISHA_BENCH_CHCP=0 is how it gets asked: leave the console on
+        // whatever codepage the machine boots with, and measure again.
+        let utf8 = std::env::var("SHIKISHA_BENCH_CHCP").unwrap_or_else(|_| "1".into()) != "0";
+        println!(
+            "  codepage: {}",
+            if utf8 { "65001, set here" } else { "left as the machine had it" }
+        );
+        if utf8 {
+            tab.write_bytes(b"chcp 65001 >nul\r").expect("chcp");
+            settle(&tab, Duration::from_millis(600), Duration::from_secs(10));
+        }
+
+        let writer = writer();
+        for kind in ["poured", "redrawn", "sequences"] {
+            measure(&tab, &writer, kind);
+            settle(&tab, Duration::from_millis(400), Duration::from_secs(10));
+        }
+    }
+}
+
 #[cfg(test)]
 mod shutdown_tests {
     /// Must be built as a windowed app.
