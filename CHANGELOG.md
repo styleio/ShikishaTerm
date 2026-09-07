@@ -77,6 +77,10 @@ and for the board's own address as automation sees it.
   search and network places and the list does not.
 
 ### Fixed
+- **The gear opens the settings on the tab in view.** Pressed while on tab 2,
+  it used to land on the workspace's page and leave the tab to be found in
+  the list. The tab rides along now -- from the window and from a phone
+  alike -- and the page opens on its card.
 - **A folder just added is on screen.** The sidebar's folder headings were
   worked out from the tabs, so a folder with no tab in it -- which is what a
   folder just added is -- was nowhere at all; the settings had it, the window

@@ -827,6 +827,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
             ret: v.get("ret").and_then(|x| x.as_bool()).unwrap_or(false),
+            tab: v
+                .get("tab")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
         },
         Some("menu") => Ev::Menu {
             key: v
@@ -1253,6 +1259,9 @@ pub enum Ev {
         ret: bool,
         /// A working folder to land on, when the ask came from its row
         folder: Option<String>,
+        /// The tab in view when the gear was pressed (its id, else its name),
+        /// so the page opens on that tab's card
+        tab: Option<String>,
     },
     /// Save the newest run's replay.lua to the user's Downloads folder
     ReplaySave,
@@ -4428,6 +4437,19 @@ mod nav_tests {
             parse_intent(&v)
         };
         assert!(matches!(read(r#"{"kind":"openws"}"#), Some(Ev::OpenWs)));
+        // The gear names the tab in view; an empty name is no name
+        match read(r#"{"kind":"opensettings","tab":"coder","folder":"D:/work"}"#) {
+            Some(Ev::OpenSettings { tab, folder, section, ret }) => {
+                assert_eq!(tab.as_deref(), Some("coder"), "見ていたタブが落ちた");
+                assert_eq!(folder.as_deref(), Some("D:/work"));
+                assert!(section.is_none() && !ret);
+            }
+            other => panic!("opensettings が読めていない: {other:?}"),
+        }
+        match read(r#"{"kind":"opensettings","tab":"  "}"#) {
+            Some(Ev::OpenSettings { tab, .. }) => assert!(tab.is_none(), "空白がタブ名になった"),
+            other => panic!("opensettings が読めていない: {other:?}"),
+        }
         match read(r#"{"kind":"say","tab":3,"text":"hello"}"#) {
             Some(Ev::Say { tab, text }) => {
                 assert_eq!((tab, text.as_str()), (3, "hello"), "宛名と本文が揃っていない");

@@ -6728,10 +6728,35 @@ load().then(() => {
   // "Edit settings" (?gen=1), or an open with no workspace to focus, lands on the
   // General group expanded. The sidebar gear (?ws=N, no gen) lands on the workspace
   // it came from with General collapsed — press its ▸ to open it.
+  // ?tab=<id or name> lands on that tab's card: the gear pressed while a
+  // tab is in view means the settings for that tab. Its folder narrows the
+  // search when two folders have a tab of the same name; failing that, any
+  // folder's will do, and failing that the page lands where it would have
+  const cur = idx("ws");
+  const tabWant = (q.get("tab") || "").trim();
+  if (tabWant && wss[cur]) {
+    const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
+    const from = (q.get("folder") || "").trim();
+    const gi = from
+      ? (wss[cur].folders || []).findIndex(g => same(g.cwd) === same(from))
+      : -1;
+    const tabs = wss[cur].tabs || [];
+    const named = t => (t.id || "").trim() === tabWant || (t.name || "").trim() === tabWant;
+    let ti = gi >= 0 ? tabs.findIndex(t => (t.group || 0) === gi && named(t)) : -1;
+    if (ti < 0) ti = tabs.findIndex(named);
+    if (ti >= 0) {
+      navGlobalOpen = false;
+      navShut.delete(cur); navOpen.add(cur);
+      sel = {ws:cur, grp:tabs[ti].group || 0, tab:ti, global:false};
+      render();
+      const s = document.querySelector(".navitem.sel");
+      if (s) s.scrollIntoView({block:"center"});
+      return;
+    }
+  }
   // ?folder=<path> lands on that folder's own page: the tab list's edit
   // entry knows the folder, not which line of the settings file it is on
   const want = (q.get("folder") || "").trim();
-  const cur = idx("ws");
   if (want && wss[cur]) {
     const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
     const gi = (wss[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
