@@ -277,7 +277,6 @@ mod tests {
     /// one that delivered. So the body is read back from a server of our own.
     #[test]
     fn each_service_gets_the_body_it_expects() {
-        use std::io::Read as _;
         let server = tiny_http::Server::http("127.0.0.1:0").expect("listen");
         let port = server.server_addr().to_ip().expect("ip").port();
         let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));

@@ -1626,6 +1626,30 @@ mod tests {
         assert_eq!(code, 200);
         assert!(said.contains("false"), "空文は送らない: {said}");
 
+        // ...and what is said arrives as it was written. The message this
+        // feature exists for is a sentence typed on a phone, which in this
+        // house means Japanese: it travels as JSON, through a body read by
+        // length, into a command the terminal will type. Every one of those
+        // steps has a way of turning it into mojibake, and none of them says
+        // so -- the reply simply arrives wrong.
+        let words = "2でお願いします。ドキュメントを直してから、まとめてコミットしてください。";
+        let body = serde_json::json!({ "text": words }).to_string();
+        let (code, said) = phone.said_post(&format!("/r/{id}/say"), &body);
+        assert_eq!(code, 200);
+        assert!(said.contains("true"), "本文が送られていない: {said}");
+        match ui.rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(RemoteCmd::Reply { tab_id, tab, name, dest, text }) => {
+                assert_eq!(text, words, "本文が化けた");
+                assert_eq!(tab_id.as_deref(), Some("coder"));
+                assert_eq!(tab, 1);
+                assert_eq!(name, "レビュワー");
+                // The destination rides along so the confirmation goes back to
+                // the same chat the notification came from, not the default one
+                assert_eq!(dest, "");
+            }
+            other => panic!("返信が届いていない: {other:?}"),
+        }
+
         // ...and the disconnect that ends every phone ends this too
         ui.cut_sessions();
         assert_eq!(phone.status(&format!("/r/{id}")), 404, "切断で無効になる");
@@ -1661,6 +1685,45 @@ mod tests {
         assert_eq!(phone.status("/api/state"), 403);
         assert_eq!(phone.status("/cfg"), 403);
         assert_eq!(phone.status("/pwa/nothing.png"), 403);
+        ui.shutdown();
+    }
+
+    /// Holds one reply page open, on this machine, for a person to look at.
+    ///
+    /// Ignored by default and run by hand (`cargo test -- --ignored
+    /// hold_a_reply_page --nocapture`). The automated test above proves the
+    /// door is the right size; this one is for the other question, which no
+    /// assertion answers: whether the page reads like something a person would
+    /// answer from a phone. It prints the link and then reports whatever is
+    /// said back through it.
+    #[test]
+    #[ignore]
+    fn hold_a_reply_page_open() {
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "board-token-0000".into(),
+            String::new(),
+        )
+        .unwrap();
+        let link = ui.reply_link(crate::reply::Ticket::new(
+            Some("coder".into()),
+            2,
+            "レビュワー".into(),
+            "テストは全部通りました。次はどうしますか？
+
+1. このままコミットする
+2. 先にドキュメントを直す
+3. いったん止める".into(),
+            "telegram".into(),
+        ));
+        println!("REPLY LINK: {link}");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        while std::time::Instant::now() < until {
+            if let Ok(cmd) = ui.rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                println!("GOT: {cmd:?}");
+            }
+        }
         ui.shutdown();
     }
 

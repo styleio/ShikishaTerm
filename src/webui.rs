@@ -5363,16 +5363,33 @@ function tabPane(ws, t) {
       // Always drawn, even with no destination chosen -- greyed rather than
       // gone. A control that only appears once something else is set is a
       // control nobody finds: you cannot look for what is not there.
-      const on = !!t.notify_on_done;
+      const dest = t.notify_on_done;
+      // A link to a page you answer from is for somewhere you are not. A
+      // notification on this very PC is already one click from the tab
+      // itself, so the link would be a longer way round to the same place --
+      // and it never even appears, because a banner shows two lines and the
+      // link is on the third. Say so rather than let it be ticked for nothing.
+      const kind = ((current.notify || {})[dest] || {}).type;
+      const here = kind === "windows";
+      const on = !!dest && !here;
       if (!on) delete t.notify_reply;
       const label = check(t, "notify_reply", T["settings.tab.notify.reply"]);
       const box = label.querySelector("input");
       box.disabled = !on;
       label.style.opacity = on ? "" : ".5";
-      if (!on) label.title = T["settings.tab.notify.reply.needs_dest"];
+      if (!on) {
+        label.title = here ? T["settings.tab.notify.reply.here"]
+                           : T["settings.tab.notify.reply.needs_dest"];
+      }
       replyBox.append(label);
-      if (on && t.notify_reply) {
-        warn.textContent = fill(T["settings.tab.notify.reply.warn"], {name: t.notify_on_done});
+      if (here) {
+        warn.classList.remove("warn");
+        warn.textContent = T["settings.tab.notify.reply.here"];
+      } else {
+        warn.classList.add("warn");
+        if (on && t.notify_reply) {
+          warn.textContent = fill(T["settings.tab.notify.reply.warn"], {name: dest});
+        }
       }
     };
     const sel = choose(t, "notify_on_done", opts, v => {
