@@ -389,12 +389,24 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     box-shadow:0 4px 16px rgba(0,0,0,.45); opacity:.85; transition:opacity .15s ease; }
   #composerfab:hover { opacity:1; }
   /* The switchable panel: a fixed switcher (left) + the scrolling content (right). */
-  #castpanel { display:flex; align-items:center; gap:8px; padding:0 8px;
+  #castpanel { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:0 8px;
     background:var(--panel); border-top:1px solid var(--line); }
   .castswitch { flex:none; margin:6px 0; padding:6px 8px; font-size:13px;
     background:var(--bg); color:var(--text); border:1px solid var(--line);
     border-radius:8px; }
   .castpanelhint { flex:1 1 0; padding:10px 4px; color:var(--dim); font-size:13px; }
+  /* A sentence about the panel (🎯's hint or its "can't drive" reason, 📼's
+     status) gets a line of its own under the row, full width, wrapping. It
+     used to sit IN the row, which scrolls sideways for chips and keys: on a
+     phone the row's fixed parts already fill the width, so the sentence was
+     squeezed to nothing and its nowrap text ran on under the next button and
+     off the edge -- read as "red text behind the gear", and the gear rode
+     away when the text was scrolled to. The buttons that must stay put live
+     outside the row too (renderPanel's ⚙) */
+  .castnote { flex:1 1 100%; min-width:0; white-space:normal; margin-top:-4px; padding:0 4px 8px;
+    font-size:13px; line-height:1.35; color:var(--dim); }
+  .castnote.bad { color:var(--danger); }
+  .castnote.good { color:var(--brand); }
   /* The "🎯 still aimed" chip: visible on EVERY panel while a target is set,
      because the composer's Send goes to the operate goal, not the terminal.
      Its ✕ releases the target. */
@@ -4547,10 +4559,13 @@ async function downloadReplayLua() {
 // Driving requires the operator (the active tab) to act WITHOUT confirmation — a
 // model tab always does, a CLI only with its bypass flag. When it can't, the
 // picker is disabled and a jump to settings is offered instead of a dead end.
+function operatorCanDrive() {
+  const operator = (S && S.tabs) ? S.tabs.find(t => t && t.index === S.active) : null;
+  return !!(operator && operator.auto);
+}
 function buildTargetPanel() {
   const wrap = el("div", {id:"casttarget"});
-  const operator = (S && S.tabs) ? S.tabs.find(t => t && t.index === S.active) : null;
-  const canOperate = !!(operator && operator.auto);
+  const canOperate = operatorCanDrive();
   // An aim outlives the page: it was written down against this tab when it was
   // picked, and S.aim is it, come back. Adopt it when this page has no aim of
   // its own yet, so a restart (or a phone opening the board) finds the 🎯 where
@@ -4593,17 +4608,20 @@ function buildTargetPanel() {
   // chosen. Always present: before any run exists, pressing it just says so
   wrap.append(el("button", {class:"castbtn", style:"flex:none", onclick: downloadReplayLua},
     T["tui.cast.target.replay"] || "⬇ Lua"));
-  if (!canOperate) {
-    castTarget = null;  // an unusable operator can't be aimed at anything
-    wrap.append(
-      el("span", {class:"hint", style:"flex:1 1 0;min-width:0;color:var(--danger)"},
-        T["tui.cast.target.needauto"] || "This AI must be allowed to act without confirmation."),
-      el("button", {class:"castbtn", style:"flex:none", onclick:openSettings},
-        T["tui.cast.target.settings"] || "Settings"));
-  } else {
-    wrap.append(el("span", {class:"hint", style:"flex:1 1 0;min-width:0"}, T["tui.cast.target.hint"] || ""));
-  }
+  // What this row means (or why it can't be used) is the panel's note, on
+  // its own line under the row -- and the way to Settings is the bar's ⚙ at
+  // the right edge. renderPanel places both outside this scrolling row, so
+  // they stay put and stay whole; in here they rode off the edge with the row
+  if (!canOperate) castTarget = null;  // an unusable operator can't be aimed at anything
   return wrap;
+}
+// The 🎯 panel's line of explanation: the reason it can't drive, else what
+// aiming does
+function targetNote() {
+  return operatorCanDrive()
+    ? { text: T["tui.cast.target.hint"] || "", tone: "" }
+    : { text: T["tui.cast.target.needauto"] || "This AI must be allowed to act without confirmation.",
+        tone: "bad" };
 }
 // Panels available on this surface. "target" (operate a tab) shows a placeholder
 // until that feature lands, but it's listed now so the switcher is present on both
@@ -4814,19 +4832,20 @@ function buildLuaPanel() {
     lab.append(r, document.createTextNode(glyph + " " + label));
     return lab;
   };
-  const hint = luaNote ? luaNote.text
-    : luaMode === "rec"
-      ? (T["tui.cast.lua.rechint"] || "Type and tap as usual — every step is recorded. ▶ shows the Lua.")
-      : (T["tui.cast.lua.runhint"] || "The recorded Lua — edit it, Run it, 📋 copies it.");
-  const tone = luaNote ? (luaNote.bad ? ";color:var(--danger)" : ";color:var(--brand)") : "";
   wrap.append(
     mk("rec", "⏺", T["tui.cast.lua.rec"] || "Record"),
     mk("run", "▶", T["tui.cast.lua.run"] || "Run"),
     el("button", {class:"castbtn", style:"flex:none",
       title: T["tui.cast.lua.copy"] || "Copy the recorded Lua",
-      onclick: copySheet}, "📋"),
-    el("span", {class:"hint", style:"flex:1 1 0;min-width:0" + tone, title: hint}, hint));
+      onclick: copySheet}, "📋"));
   return wrap;
+}
+// The 📼 panel's line: the last result if there is one, else what the mode does
+function luaNoteLine() {
+  if (luaNote) return { text: luaNote.text, tone: luaNote.bad ? "bad" : "good" };
+  return { tone: "", text: luaMode === "rec"
+    ? (T["tui.cast.lua.rechint"] || "Type and tap as usual — every step is recorded. ▶ shows the Lua.")
+    : (T["tui.cast.lua.runhint"] || "The recorded Lua — edit it, Run it, 📋 copies it.") };
 }
 // 📋: the Lua sheet to the clipboard (whether or not it's currently loaded in
 // the composer). copyText() is the toast's, and it is the page's only way onto
@@ -5598,6 +5617,19 @@ function renderPanel() {
   // end of the bar, in the one shape the bar has for gears
   if (castPanel === "git") {
     castPanelEl.append(gearTo("git", T["settings.sec.git"] || ""));
+  }
+  // A 🎯 that can't aim (the operator still asks for confirmation) gets the
+  // same gear: no section, so it opens THIS tab's own card -- where that is
+  // switched on -- and comes back here once saved
+  if (castPanel === "target" && !operatorCanDrive()) {
+    castPanelEl.append(gearTo(null, T["tui.cast.target.settings"] || "Settings"));
+  }
+  // The panel's sentence comes last, and takes a line of its own under the
+  // row (it is the only child allowed to wrap): there it can be read whole
+  // on a phone, where the row's fixed parts leave it no room beside them
+  const note = castPanel === "target" ? targetNote() : castPanel === "lua" ? luaNoteLine() : null;
+  if (note && note.text) {
+    castPanelEl.append(el("span", {class:"castnote" + (note.tone ? " " + note.tone : ""), title: note.text}, note.text));
   }
   // After the reset above, castPanel is final for this render — load the
   // panel's composer document and relabel Send to its verb.
