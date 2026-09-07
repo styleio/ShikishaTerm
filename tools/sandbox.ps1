@@ -136,6 +136,20 @@ try {
     $r.conpty_in_os = ([int]((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuild) -ge 17763)
 
     $r.internet = try { (Invoke-WebRequest 'http://www.msftconnecttest.com/connecttest.txt' -UseBasicParsing -TimeoutSec 10).StatusCode -eq 200 } catch { $false }
+
+    # Can this machine open a web page when asked? Anything that offers a link
+    # as the answer to a problem is relying on it, and a machine can have a
+    # browser installed and still have nothing registered to open http with.
+    # Only in probe mode: it would put a browser in front of the app otherwise.
+    if (-not (Test-Path (Join-Path $here 'package.msix')) -and -not (Test-Path (Join-Path $here 'app'))) {
+        try {
+            Start-Process 'https://example.com' -ErrorAction Stop
+            Start-Sleep -Seconds 10
+            $r.can_open_page = @(Get-Process msedge -ErrorAction SilentlyContinue).Count -gt 0
+            Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force
+        } catch { $r.can_open_page = "no: $_" }
+        Say "can open a page: $($r.can_open_page)"
+    }
 }
 catch { Say "probe failed: $_" }
 
@@ -242,6 +256,30 @@ try {
     $g.Dispose(); $bmp.Dispose()
     Say 'photographed the screen'
 } catch { Say "screenshot failed: $_" }
+
+# A dialog that offers a page is only worth anything if the page opens, and
+# that is not something the message text can be read to prove. Press OK.
+try {
+    $dlg = Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.MainWindowTitle -like '*SHIKISHA*' } | Select-Object -First 1
+    if ($dlg) {
+        Add-Type -AssemblyName Microsoft.VisualBasic
+        [Microsoft.VisualBasic.Interaction]::AppActivate($dlg.Id)
+        Start-Sleep -Seconds 1
+        [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+        Say 'answered the dialog with OK'
+        Start-Sleep -Seconds 15
+        $r.page_opened = @(Get-Process msedge -ErrorAction SilentlyContinue).Count -gt 0
+        Say "page opened: $($r.page_opened)"
+
+        $b2 = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bmp2 = New-Object Drawing.Bitmap $b2.Width, $b2.Height
+        $g2 = [Drawing.Graphics]::FromImage($bmp2)
+        $g2.CopyFromScreen($b2.Location, [Drawing.Point]::Empty, $b2.Size)
+        $bmp2.Save((Join-Path $here 'screen2.png'), [Drawing.Imaging.ImageFormat]::Png)
+        $g2.Dispose(); $bmp2.Dispose()
+    }
+} catch { Say "answering the dialog failed: $_" }
 
 $r | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $here 'report.json') -Encoding UTF8
 'done' | Set-Content (Join-Path $here 'done.txt')

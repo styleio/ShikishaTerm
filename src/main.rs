@@ -104,6 +104,10 @@ fn install_crash_log() {
     }));
 }
 
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 /// Say something where it can be seen when there is no window yet.
 ///
 /// This is a GUI subsystem binary, so it has no console: an error returned
@@ -113,9 +117,6 @@ fn install_crash_log() {
 /// person who double-clicks the exe and gets no answer is looking at.
 fn say_fatally(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-    fn wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain(std::iter::once(0)).collect()
-    }
     let body = wide(text);
     let title = wide(&i18n::t("err.fatal.title"));
     unsafe {
@@ -126,6 +127,50 @@ fn say_fatally(text: &str) {
             MB_OK | MB_ICONERROR,
         )
     };
+}
+
+/// Say it, and offer to go where the answer is.
+///
+/// An address in a message box is an address somebody has to copy out by hand,
+/// onto a machine where this program will not start. When the fix is a page,
+/// opening the page is the fix -- and the browser is there even when the
+/// runtime is not, because it is part of Windows.
+fn say_fatally_with_page(text: &str, url: &str) {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        IDOK, MB_ICONERROR, MB_OKCANCEL, MessageBoxW, SW_SHOWNORMAL,
+    };
+    let body = wide(text);
+    let title = wide(&i18n::t("err.fatal.title"));
+    let answer = unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_OKCANCEL | MB_ICONERROR,
+        )
+    };
+    if answer == IDOK {
+        let open = wide("open");
+        let wurl = wide(url);
+        let ok = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                open.as_ptr(),
+                wurl.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        // Anything at or below 32 is a failure, and a machine with nothing
+        // registered to open http with is a real one -- Windows Sandbox is
+        // exactly that. Having promised a page, hand over the address rather
+        // than doing nothing where a button was pressed.
+        if (ok as isize) <= 32 {
+            say_fatally(&crate::i18n::tp("err.webview2.address", &[("url", url)]));
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -1243,7 +1288,14 @@ fn run_in_window() -> Result<()> {
     // cannot run this program at all spends twenty seconds looking like one
     // that is merely slow, and then closes without a word.
     if browser::runtime_version().is_none() {
-        return Err(anyhow::anyhow!(crate::i18n::t("err.webview2.missing")));
+        // Said here rather than returned, because this is the one failure whose
+        // answer is known: the generic path can only repeat an error, and this
+        // one can hand over the page that fixes it.
+        say_fatally_with_page(
+            &crate::i18n::t("err.webview2.missing"),
+            "https://developer.microsoft.com/microsoft-edge/webview2/",
+        );
+        std::process::exit(1);
     }
     let win = std::rc::Rc::new(browser::Browser::spawn(
         &format!("http://127.0.0.1:{port}/"),
