@@ -346,6 +346,82 @@ document.getElementById("text").addEventListener("keydown", e => {{
     )
 }
 
+/// The page that asks for the password, once per device.
+///
+/// A reply link is a ticket for one tab, and a password is a second factor
+/// somebody chose to put in front of everything. Both apply: the ticket says
+/// which tab, the password says who. Refusing the link outright (which is what
+/// this used to do) protected nothing that asking does not, and cost the
+/// feature to everybody who set a password.
+///
+/// Nothing about the tab is on this page -- not its name, not what it said.
+/// Whoever is looking has not proved anything yet.
+pub fn ask_page(id: &str, wrong: bool) -> String {
+    format!(
+        r##"<!doctype html><html lang="{lang}"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>SHIKISHA-TERM</title>
+<style>
+:root {{ color-scheme: dark; --bg:#11131a; --fg:#e8eaf0; --dim:#9aa3b2;
+        --line:#262a36; --accent:#3aa0ff; --card:#171a23; }}
+* {{ box-sizing:border-box; }}
+body {{ margin:0 auto; background:var(--bg); color:var(--fg); padding:16px;
+        max-width:420px; font:16px/1.6 system-ui,"Segoe UI",
+        "Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif; }}
+h1 {{ font-size:13px; margin:0 0 18px; letter-spacing:.12em; color:var(--dim); }}
+p {{ margin:0 0 12px; }}
+input {{ width:100%; font:inherit; padding:12px; border-radius:10px;
+         border:1px solid var(--line); background:var(--card); color:var(--fg); }}
+button {{ font:inherit; border-radius:10px; border:1px solid var(--accent);
+          background:var(--accent); color:#04121f; font-weight:600;
+          width:100%; padding:14px; margin-top:10px; cursor:pointer; }}
+button:disabled {{ opacity:.5; cursor:default; }}
+.note {{ color:var(--dim); font-size:13px; }}
+.err {{ color:#ff8f8f; font-size:13px; margin:0 0 12px; }}
+</style></head><body>
+<h1>SHIKISHA-TERM</h1>
+<p>{ask}</p>
+<p class="err" id="err">{wrong}</p>
+<form id="f">
+  <input id="pw" type="password" autocomplete="current-password" autofocus>
+  <button id="go" type="submit">{open}</button>
+</form>
+<p class="note">{once}</p>
+<script>
+const ID = {id};
+const T = {{ wrong: {t_wrong}, failed: {t_failed} }};
+document.getElementById("f").addEventListener("submit", async e => {{
+  e.preventDefault();
+  const go = document.getElementById("go");
+  const err = document.getElementById("err");
+  go.disabled = true; err.textContent = "";
+  try {{
+    const r = await fetch("/r/" + ID + "/unlock", {{
+      method: "POST", headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{password: document.getElementById("pw").value}})
+    }}).then(r => r.json());
+    // The cookie rode in on that answer, so simply asking for the page again
+    // is what opens it -- no token, nothing kept in this page.
+    if (r.ok) {{ location.reload(); return; }}
+    err.textContent = T.wrong;
+  }} catch (e) {{ err.textContent = T.failed; }}
+  go.disabled = false;
+}});
+</script>
+</body></html>"##,
+        lang = esc(&crate::i18n::lang()),
+        ask = esc(&crate::i18n::t("reply.ask")),
+        open = esc(&crate::i18n::t("reply.open")),
+        once = esc(&crate::i18n::t("reply.ask.once")),
+        wrong = if wrong { esc(&crate::i18n::t("reply.ask.wrong")) } else { String::new() },
+        id = js(id),
+        t_wrong = js(&crate::i18n::t("reply.ask.wrong")),
+        t_failed = js(&crate::i18n::t("reply.failed")),
+    )
+}
+
 /// The page shown when a ticket is not one of ours any more.
 pub fn gone_page() -> String {
     format!(

@@ -75,6 +75,14 @@ and for the board's own address as automation sees it.
 - On a phone, the top bar and the tab drawer now start below the strip the
   screen keeps for its clock and camera. In a browser tab that strip is zero;
   it is only real once the page runs full-screen, which it now can.
+- A reply link now works when the board has a password. It used to refuse the
+  link outright, which protected nothing that asking does not and took the
+  feature away from everybody who had set a second factor. The page asks for
+  the password once, on that device, and remembers it afterwards; nothing about
+  the tab -- not its name, not what it said -- is on the page until it has been
+  given. Wrong answers are made to wait, a little longer each time: a reply link
+  is meant to be posted into a chat, so it is the one door somebody could reach
+  without a full-machine credential in their hand.
 - The "add a reply link" switch is no longer offered for a notification to this
   PC. Clicking that notification already opens the tab, which is a shorter way
   to the same place, and the link would never have appeared anyway.

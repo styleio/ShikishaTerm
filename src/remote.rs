@@ -318,6 +318,14 @@ struct Gate {
     pw: Ids,
     /// Sessions handed to phones that opened the pairing link
     grants: Ids,
+    /// Wrong passwords in a row, and when the last one was.
+    ///
+    /// The board's own password prompt sits behind the access token, so
+    /// reaching it at all means holding a full-machine credential. A reply
+    /// link does not: it is a short ticket, and it is posted into chat rooms
+    /// on purpose. Somebody who ends up with one must not be able to sit
+    /// there trying passwords at machine speed.
+    misses: Mutex<(u32, Instant)>,
 }
 
 impl Gate {
@@ -329,6 +337,31 @@ impl Gate {
     /// Whether the password factor is satisfied (always, when none is set)
     fn unlocked(&self, id: &str) -> bool {
         self.password.is_empty() || self.pw.has(id)
+    }
+
+    /// Answer a wrong password slowly, and more slowly each time.
+    ///
+    /// Capped, because the point is to make guessing pointless rather than to
+    /// lock anybody out: somebody who mistypes their own password four times
+    /// still gets in on the fifth without a wait worth complaining about. The
+    /// count is forgotten after ten quiet minutes.
+    fn slow_down(&self) {
+        let wait = {
+            let mut m = self.misses.lock().unwrap_or_else(|e| e.into_inner());
+            if m.1.elapsed() > Duration::from_secs(600) {
+                m.0 = 0;
+            }
+            m.0 = m.0.saturating_add(1);
+            m.1 = Instant::now();
+            Duration::from_millis(250 * u64::from(m.0.min(12)))
+        };
+        std::thread::sleep(wait);
+    }
+
+    /// A right password clears the score.
+    fn forgive(&self) {
+        let mut m = self.misses.lock().unwrap_or_else(|e| e.into_inner());
+        m.0 = 0;
     }
 
     /// The disconnect. Every session is gone, so nothing that was let in
@@ -343,6 +376,23 @@ impl Gate {
 /// never read it out, SameSite=Strict so nothing but this origin can send it.
 fn session_cookie(id: &str) -> String {
     format!("rs={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
+}
+
+/// The cookie that says this device has already given the password for a reply
+/// page. Its own cookie, and deliberately not the board's.
+///
+/// **`Lax`, where the board's is `Strict`, and the whole feature depends on
+/// it.** A reply link is followed from a chat app, which is another site; a
+/// `Strict` cookie is withheld on exactly that navigation, so the password
+/// would be asked for again every single time -- which is the thing this is
+/// meant to stop.
+///
+/// It is safe to loosen here because of what it is scoped to. `Path=/r/` keeps
+/// it off every other route, and the board reads `rp` and never this, so
+/// holding it grants no more than the reply page a ticket already names. The
+/// only method it can arrive on is the GET that opens that page.
+fn reply_cookie(id: &str) -> String {
+    format!("rq={id}; Path=/r/; HttpOnly; SameSite=Lax; Max-Age=2592000")
 }
 
 impl RemoteUi {
@@ -422,6 +472,7 @@ impl RemoteUi {
             password,
             pw: Ids::new(),
             grants: Ids::new(),
+            misses: Mutex::new((0, Instant::now())),
         });
         let book = Arc::new(crate::reply::Book::new());
 
@@ -950,11 +1001,6 @@ fn handle(
                     Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap(),
                 )
         };
-        if !gate.password.is_empty() {
-            return req
-                .respond(html(crate::reply::gone_page()).with_status_code(403))
-                .map_err(Into::into);
-        }
         let Some(ticket) = book.get(id) else {
             // Expired, torn up, or never ours. One answer for all three: a
             // page that says the link is finished. Which of the three it was
@@ -963,7 +1009,42 @@ fn handle(
                 .respond(html(crate::reply::gone_page()).with_status_code(404))
                 .map_err(Into::into);
         };
+        // The second factor, when one is set. Asked on this page's own terms
+        // and remembered in this page's own cookie, so it is asked once per
+        // device rather than once per notification.
+        let unlocked = gate.unlocked(&cookie_value(&req, "rq"));
         match (method.as_str(), verb) {
+            ("POST", "unlock") => {
+                let mut req = req;
+                let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                    req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                    return Ok(());
+                };
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                let given = v.get("password").and_then(|p| p.as_str()).unwrap_or("");
+                if !crate::crypto::token_eq(given, &gate.password) {
+                    gate.slow_down();
+                    req.respond(json_response(serde_json::json!({"ok": false})))?;
+                    return Ok(());
+                }
+                gate.forgive();
+                let id = gate.pw.keep("");
+                req.respond(
+                    json_response(serde_json::json!({"ok": true})).with_header(
+                        Header::from_bytes(&b"Set-Cookie"[..], reply_cookie(&id).as_bytes())
+                            .unwrap(),
+                    ),
+                )?;
+                return Ok(());
+            }
+            // Nothing below here happens until that is settled. The asking
+            // page carries nothing about the tab: whoever is looking has not
+            // said who they are yet.
+            (_, _) if !unlocked => {
+                return req
+                    .respond(html(crate::reply::ask_page(id, false)))
+                    .map_err(Into::into);
+            }
             ("GET", "") => {
                 return req
                     .respond(html(crate::reply::page(id, &ticket)))
@@ -1835,7 +1916,8 @@ mod tests {
             "127.0.0.1".parse().unwrap(),
             0,
             "board-token-0000".into(),
-            String::new(),
+            // SHIKISHA_HOLD_PW=... to look at the password gate as well
+            std::env::var("SHIKISHA_HOLD_PW").unwrap_or_default(),
         )
         .unwrap();
         let link = ui.reply_link(crate::reply::Ticket::new(
@@ -1917,6 +1999,95 @@ mod tests {
             RemoteUi::start(ip, port, "board-token-0000".into(), String::new()).is_ok(),
             "閉じたのに片方のポートが残っている"
         );
+    }
+
+    /// A password does not close the reply link. It asks, once per device.
+    ///
+    /// This used to answer 403 and be done with it, which protected nothing
+    /// that asking does not and cost the feature to everybody who set a second
+    /// factor. What it must still not do is let the answer through before the
+    /// password, tell an unproven visitor anything about the tab, or turn into
+    /// a way onto the board.
+    #[test]
+    fn a_password_is_asked_once_and_then_remembered() {
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "board-token-0000".into(),
+            "aikotoba".into(),
+        )
+        .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let link = ui.reply_link(crate::reply::Ticket::new(
+            Some("coder".into()),
+            1,
+            "レビュワー".into(),
+            "終わりました。進めますか".into(),
+            String::new(),
+        ));
+        let id = link.rsplit('/').next().unwrap().to_string();
+        let mut phone = Phone::new(&base);
+
+        // Locked: a page that asks, and says nothing about the tab.
+        let body = phone.text(&format!("/r/{id}"));
+        assert!(body.contains("password") || body.contains("パスワード"), "訊いていない");
+        assert!(!body.contains("レビュワー"), "名乗る前にタブ名を見せている");
+        assert!(!body.contains("終わりました"), "名乗る前に答えを見せている");
+
+        // ...and nothing can be said through it yet. The proof is not in what
+        // the answer looks like -- the asking page comes back either way --
+        // but in whether anything reached the board behind it.
+        let (code, said) = phone.said_post(
+            &format!("/r/{id}/say"),
+            "{\"text\":\"勝手に送る\"}",
+        );
+        assert_eq!(code, 200);
+        assert!(said.contains("<!doctype"), "送信が受け付けられている: {said}");
+        assert!(
+            ui.rx.try_recv().is_err(),
+            "パスワードを言う前の書き込みがタブに届いてしまう"
+        );
+
+        // A wrong password is refused, and hands out nothing to keep.
+        let mut wrong = phone.post(&format!("/r/{id}/unlock"), "{\"password\":\"chigau\"}");
+        assert_eq!(wrong.status().as_u16(), 200);
+        assert!(!wrong.body_mut().read_to_string().unwrap_or_default().contains("true"));
+        assert!(wrong.headers().get("set-cookie").is_none(), "誤答に鍵を渡している");
+
+        // The right one is remembered in a cookie of the reply pages' own.
+        let right = phone.post(&format!("/r/{id}/unlock"), "{\"password\":\"aikotoba\"}");
+        let set = right
+            .headers()
+            .get("set-cookie")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(set.starts_with("rq="), "返信ページ専用のクッキーではない: {set}");
+        // Lax, and it has to be: a reply link is followed from a chat app,
+        // which is another site, and a Strict cookie is withheld on exactly
+        // that navigation -- so the password would be asked every single time.
+        assert!(set.contains("SameSite=Lax"), "Strict では chat から来たとき送られない: {set}");
+        assert!(set.contains("Path=/r/"), "返信ページの外まで届いてしまう: {set}");
+        assert!(set.contains("HttpOnly"), "ページから読み出せてしまう: {set}");
+
+        phone.also(set.split(';').next().unwrap_or(""));
+
+        // Now the real page, and a reply that lands.
+        let body = phone.text(&format!("/r/{id}"));
+        assert!(body.contains("レビュワー"), "名乗ったのに開かない");
+        let (code, said) = phone.said_post(&format!("/r/{id}/say"), "{\"text\":\"進めて\"}");
+        assert_eq!(code, 200);
+        assert!(said.contains("true"), "送れない: {said}");
+
+        // What it is not: a way onto the board. That still wants the token,
+        // the session, and the password on its own cookie.
+        assert_eq!(phone.status("/api/state"), 403);
+        assert_eq!(
+            phone.said("/api/state?t=board-token-0000"),
+            (403, "cut".to_string()),
+            "返信の鍵で盤面が開いてしまう"
+        );
+        ui.shutdown();
     }
 
     #[test]
