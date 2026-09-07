@@ -90,8 +90,9 @@ pub const REMOTE_CLIENT_HEADER: &str = "X-Remote-Client";
 /// Endpoints whose whole job is to open a native dialog on this PC. From a phone
 /// there is nobody standing at that screen to answer it, so the request would sit
 /// there until it timed out — the app looking frozen from the phone's side. These
-/// are refused outright when the caller is remote, and the buttons that call them
-/// are left off the page.
+/// are refused outright when the caller is remote. The page knows: its Browse
+/// button walks the PC's folders over /api/walk instead, and export/import are
+/// left off.
 const NATIVE_DIALOG_PATHS: [&str; 3] = [
     "/api/pick",
     "/api/workspace/export",
@@ -1775,6 +1776,66 @@ fn handle(
                 ),
             )?;
         }
+        // The same folder list the sidebar walks, for the settings screen.
+        //
+        // A phone has no file dialog of its own, and /api/pick opens one on
+        // the PC -- so this hands back what is in a folder and the page walks
+        // it, the way the sidebar's "open another folder" already does. A file
+        // is answered as itself, so a walk that lands on one is a choice made.
+        // Read-only: nothing here writes, the form saves what was chosen
+        ("POST", "/api/walk") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let want_files = p.get("files").and_then(|v| v.as_bool()).unwrap_or(false);
+            let asked = p.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+            // Paths in the settings are written relative to the config folder
+            // when they are under it (display_path); read them back the same way
+            let at = match asked {
+                "" => String::new(),
+                a => {
+                    let raw = std::path::Path::new(a);
+                    let full = if raw.is_absolute() {
+                        raw.to_path_buf()
+                    } else {
+                        config_path.parent().unwrap_or(std::path::Path::new(".")).join(raw)
+                    };
+                    full.display().to_string()
+                }
+            };
+            let here = std::path::Path::new(&at);
+            let resp = if !at.is_empty() && here.is_file() {
+                serde_json::json!({
+                    "ok": true,
+                    "file": true,
+                    "chosen": display_path(here, config_path),
+                })
+            } else {
+                let walk = if want_files {
+                    crate::uistate::BrowseState::with_files(&at)
+                } else {
+                    crate::uistate::BrowseState::of(&at)
+                };
+                serde_json::json!({
+                    "ok": true,
+                    "at": walk.at,
+                    "up": walk.up,
+                    "dirs": walk.dirs,
+                    "files": walk.files,
+                    "error": walk.error,
+                    // What choosing this folder would write into the settings
+                    "chosen": if walk.at.is_empty() {
+                        String::new()
+                    } else {
+                        display_path(std::path::Path::new(&walk.at), config_path)
+                    },
+                })
+            };
+            req.respond(json_resp(resp))?;
+        }
         // Status of the phone-usable feature (also returns which network is available)
         // What each AI CLI can do about carrying its conversation across a
         // restart, and — where it needs one — whether its hook is installed.
@@ -2417,6 +2478,14 @@ const PAGE: &str = r##"<!doctype html>
  .modal-inner { background:var(--panel); border:1px solid var(--line); border-radius:12px;
    width:min(880px,92vw); max-height:88vh; overflow:auto; padding:20px 24px; }
  .modal-inner h2 { text-transform:none; font-size:15px; color:var(--text); margin:0 0 4px; }
+ /* The folder list walked on the page (walkPath) */
+ .walkat { font-size:12px; color:var(--muted); margin:6px 0; overflow-wrap:anywhere; }
+ .walkerr { color:var(--danger); font-size:12px; white-space:pre-wrap; }
+ .walklist { display:flex; flex-direction:column; gap:2px; max-height:52vh; overflow:auto; }
+ .walkrow { display:flex; gap:8px; align-items:center; padding:9px 10px; border-radius:8px; cursor:pointer; }
+ .walkrow:hover { background:var(--panel2); }
+ .walkmark { width:1.4em; text-align:center; flex:none; }
+ .walknm { overflow-wrap:anywhere; }
  /* The exact character a parser stopped at, inside an excerpt. */
  pre .at { background:var(--danger); color:#fff; border-radius:2px; padding:0 1px; }
  pre { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:12px;
@@ -2928,13 +2997,63 @@ async function pickPath(kind, title, start) {
     return j.ok ? j.path : null;
   } catch (e) { return null; }
 }
+// The folder list, walked on the page. The same list the sidebar's "open
+// another folder" shows, asked of this PC over /api/walk -- so a phone, which
+// has no file dialog of its own, chooses from what is actually on the machine
+// instead of typing a path from memory. Resolves to what was chosen, in the
+// form the settings write it, or null
+function walkPath(kind, title, start) {
+  return new Promise(resolve => {
+    const where = el("div", {class:"walkat mono"});
+    const err = el("div", {class:"walkerr"});
+    const list = el("div", {class:"walklist"});
+    const use = el("button", {class:"primary"}, T["settings.pick.here"]);
+    const cancel = el("button", {class:"quiet"}, T["common.cancel"]);
+    const back = openModal(el("h2", {}, title || T["settings.pick.title"]), where, err, list,
+      el("div", {class:"row", style:"justify-content:flex-end;margin-top:10px"}, cancel, use));
+    let chosen = "";
+    const done = p => { back.remove(); resolve(p); };
+    // The backdrop closes it too (openModal); that is a cancel
+    back.addEventListener("mousedown", e => { if (e.target === back) resolve(null); });
+    cancel.onclick = () => done(null);
+    use.onclick = () => done(chosen);
+    // Folders only when a folder is wanted; files as well, and a file is the
+    // answer, when a file is
+    use.hidden = kind !== "dir";
+    const leaf = p => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
+    const line = (mark, name, full, go) => el("div", {class:"walkrow", title:full || "", onclick:go},
+      el("span", {class:"walkmark"}, mark), el("span", {class:"walknm"}, name));
+    async function go(path) {
+      let j = null;
+      try {
+        const r = await fetch("/api/walk", {method:"POST",
+            headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+            body: JSON.stringify({path: path || "", files: kind !== "dir"})});
+        j = await r.json();
+      } catch (e) { j = null; }
+      if (!j || !j.ok) { err.textContent = T["settings.pick.failed"]; return; }
+      if (j.file) { done(j.chosen); return; }
+      chosen = j.chosen || "";
+      where.textContent = j.at || T["tui.browse.top"];
+      err.textContent = j.error || "";
+      list.textContent = "";
+      if (j.up != null) list.append(line("←", "..", "", () => go(j.up)));
+      for (const d of j.dirs || []) list.append(line("\u{1F4C1}", leaf(d), d, () => go(d)));
+      for (const f of j.files || []) list.append(line("\u{1F4C4}", leaf(f), f, () => go(f)));
+      use.disabled = !j.at;
+    }
+    go(start || "");
+  });
+}
 function pathField(obj, key, ph, kind, title) {
   const i = field(obj, key, ph, {mono:true});
-  // On a phone the path is typed in; the picker would open on the PC
-  if (REMOTE) return [i];
+  // On this PC the operating system's own dialog, which knows about quick
+  // access, search and network places. On a phone that dialog would open at
+  // a screen nobody is looking at, so the page walks the PC's folders itself
+  const pick = REMOTE ? walkPath : pickPath;
   const b = el("button", {class:"quiet", onclick: async () => {
-    const p = await pickPath(kind, title, obj[key]);
-    if (p !== null) { obj[key] = p; i.value = p; }
+    const p = await pick(kind, title, obj[key]);
+    if (p !== null) { obj[key] = p; i.value = p; refreshSave(); }
   }}, T["common.browse"]);
   return [i, b];
 }
@@ -7383,6 +7502,76 @@ mod tests {
                 "{path} should say why"
             );
         }
+        ui.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The phone chooses a folder from what is on the PC, not from memory. The
+    /// walk is the sidebar's (uistate::BrowseState), reached from the settings
+    /// screen, and it reads settings-style paths back the way they are written.
+    #[test]
+    fn a_phone_walks_the_pcs_folders_instead() {
+        let dir = std::env::temp_dir().join(format!("shikitest_{}", crate::random_hex(8)));
+        std::fs::create_dir_all(dir.join("scripts").join("inner")).unwrap();
+        std::fs::write(dir.join("scripts").join("secrets.json"), "{}").unwrap();
+        let cfg = dir.join("config.json");
+        std::fs::write(&cfg, "{}").unwrap();
+        let ui = WebUi::start_with(
+            cfg,
+            Arc::new(std::sync::Mutex::new(RemoteInfo::default())),
+            Arc::new(std::sync::Mutex::new(None)),
+        )
+        .unwrap();
+        let (base, token) = ui.url.split_once("/?token=").unwrap();
+        let (base, token) = (base.to_string(), token.to_string());
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
+        let walk = |body: &str| -> serde_json::Value {
+            let mut r = agent
+                .post(&format!("{base}/api/walk"))
+                .header("X-Token", &token)
+                .header(REMOTE_CLIENT_HEADER, "1")
+                .header("Content-Type", "application/json")
+                .send(body)
+                .unwrap();
+            serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap()
+        };
+
+        // The top is this computer: the person's own folder and the drives
+        let top = walk(r#"{"path":""}"#);
+        assert_eq!(top["ok"], serde_json::json!(true), "{top}");
+        assert!(top["up"].is_null(), "一番上には戻る先が無い: {top}");
+        assert!(!top["dirs"].as_array().unwrap().is_empty(), "ドライブが出ていない: {top}");
+        assert_eq!(top["chosen"], serde_json::json!(""), "一番上は選べる場所ではない");
+
+        // A settings-style relative path is read against the config folder, and
+        // choosing the folder writes it back the same way
+        let sub = walk(r#"{"path":"scripts"}"#);
+        assert_eq!(sub["ok"], serde_json::json!(true), "{sub}");
+        assert!(sub["at"].as_str().unwrap().ends_with("scripts"), "{sub}");
+        assert_eq!(sub["chosen"], serde_json::json!("scripts"), "{sub}");
+        let dirs = sub["dirs"].as_array().unwrap();
+        assert_eq!(dirs.len(), 1, "{sub}");
+        assert!(dirs[0].as_str().unwrap().ends_with("inner"));
+        assert!(sub["files"].as_array().unwrap().is_empty(), "フォルダ選びにファイルが混ざった: {sub}");
+
+        // Asked for files, the same folder lists them; walking onto one is the choice
+        let with = walk(r#"{"path":"scripts","files":true}"#);
+        let files = with["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "{with}");
+        let file = files[0].as_str().unwrap().to_string();
+        let picked = walk(&serde_json::json!({"path": file, "files": true}).to_string());
+        assert_eq!(picked["file"], serde_json::json!(true), "{picked}");
+        assert_eq!(picked["chosen"], serde_json::json!("scripts/secrets.json"), "{picked}");
+
+        // A folder that cannot be read says why rather than showing nothing
+        let gone = walk(&serde_json::json!({"path": dir.join("nowhere")}).to_string());
+        assert_eq!(gone["ok"], serde_json::json!(true), "{gone}");
+        assert!(gone["error"].as_str().map(|e| !e.is_empty()).unwrap_or(false), "{gone}");
+
         ui.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

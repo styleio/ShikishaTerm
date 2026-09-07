@@ -184,6 +184,13 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // would mean the answer to "my folder is gone" is "wait until you are
         // home", which is not an answer this app is allowed to give.
         Ev::Branch { .. } | Ev::Repair { .. } => true,
+        // Walking this PC's folders to open another one. The list exists
+        // precisely because a phone has no folder dialog of its own
+        // (uistate::BrowseState) -- refusing it here left the phone a dialog
+        // that opened and stayed empty. Looking reads folder names; choosing
+        // writes one folder into the settings, which is what adding a tab from
+        // the phone already does.
+        Ev::Browse { .. } => true,
         // Paste stays local — one long-press would flow straight into the AI's input box
         _ => false,
     }
@@ -1654,6 +1661,18 @@ mod tests {
         assert!(
             super::allowed_from_afar(&Ev::Scroll { by: 3, row: 0, col: 0 }),
             "遠くから履歴を遡れない"
+        );
+
+        // The folder list is the phone's only way to open another folder;
+        // the window has the same list, so nothing is let through that the
+        // person could not do by adding a tab
+        assert!(
+            super::allowed_from_afar(&Ev::Browse { path: String::new(), open: false }),
+            "スマホからフォルダ一覧を歩けない"
+        );
+        assert!(
+            super::allowed_from_afar(&Ev::Browse { path: r"C:\work".into(), open: true }),
+            "スマホから選んだフォルダを開けない"
         );
 
         assert!(!menu("k"), "マスターパスワードを遠くから呼べてしまう");

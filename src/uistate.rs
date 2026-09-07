@@ -353,6 +353,11 @@ pub struct BrowseState {
     pub up: Option<String>,
     /// What is inside, folders only -- files are not somewhere to work
     pub dirs: Vec<String>,
+    /// The files inside as well, when the walk was asked for them. Somewhere
+    /// to work is a folder, so the sidebar never asks; a setting that names a
+    /// file (a key, a secrets file) does
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
     /// Why nothing is listed, when nothing is
     #[serde(default)]
     pub error: Option<String>,
@@ -385,9 +390,21 @@ impl BrowseState {
     /// with fifty thousand entries in it is not a list anyone scrolls, and
     /// building it would stall the frame it was asked in
     pub fn of(path: &str) -> Self {
+        Self::walk(path, false)
+    }
+
+    /// The same walk, with the files in each folder listed too.
+    ///
+    /// For choosing a file rather than a folder. Files are listed, never
+    /// entered, and the same cap applies to them
+    pub fn with_files(path: &str) -> Self {
+        Self::walk(path, true)
+    }
+
+    fn walk(path: &str, want_files: bool) -> Self {
         let at = path.trim().to_string();
         if at.is_empty() {
-            return Self { at, up: None, dirs: Self::top(), error: None };
+            return Self { at, up: None, dirs: Self::top(), files: Vec::new(), error: None };
         }
         let here = std::path::Path::new(&at);
         // A drive has no folder above it, but there is still somewhere to go
@@ -395,6 +412,7 @@ impl BrowseState {
         // one is a door that only opens inwards
         let up = Some(here.parent().map(|p| p.display().to_string()).unwrap_or_default());
         let mut dirs = Vec::new();
+        let mut files = Vec::new();
         let mut error = None;
         match std::fs::read_dir(here) {
             Ok(entries) => {
@@ -409,19 +427,26 @@ impl BrowseState {
                             n.starts_with('.') || n.starts_with('$')
                         })
                         .unwrap_or(false);
-                    if hidden || !p.is_dir() {
+                    if hidden {
                         continue;
                     }
-                    dirs.push(p.display().to_string());
-                    if dirs.len() >= 400 {
+                    if p.is_dir() {
+                        if dirs.len() < 400 {
+                            dirs.push(p.display().to_string());
+                        }
+                    } else if want_files && files.len() < 400 {
+                        files.push(p.display().to_string());
+                    }
+                    if dirs.len() >= 400 && (!want_files || files.len() >= 400) {
                         break;
                     }
                 }
                 dirs.sort_by_key(|d| d.to_lowercase());
+                files.sort_by_key(|f| f.to_lowercase());
             }
             Err(e) => error = Some(e.to_string()),
         }
-        Self { at, up, dirs, error }
+        Self { at, up, dirs, files, error }
     }
 }
 
@@ -781,7 +806,15 @@ mod tests {
         // keep their own things are not either
         assert_eq!(at.dirs.len(), 1, "{:?}", at.dirs);
         assert!(at.dirs[0].ends_with("work"));
+        assert!(at.files.is_empty(), "作業場所を選ぶ一覧にファイルが混ざった: {:?}", at.files);
         assert_eq!(at.up.as_deref(), Some(root.parent().unwrap().display().to_string().as_str()));
+        // Asked for the files as well -- choosing a key or a secrets file --
+        // the same walk lists them, still leaving out what tools keep for
+        // themselves
+        let with = BrowseState::with_files(&root.display().to_string());
+        assert_eq!(with.dirs, at.dirs, "ファイルを足しても、フォルダの一覧は変わらない");
+        assert_eq!(with.files.len(), 1, "{:?}", with.files);
+        assert!(with.files[0].ends_with("notes.txt"));
 
         // The top is the drives, and every drive can get back to it
         let top = BrowseState::of("");

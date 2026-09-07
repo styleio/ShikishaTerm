@@ -66,8 +66,23 @@ and for the board's own address as automation sees it.
   [shikisha-term.com/phone](https://shikisha-term.com/phone/): what works on
   your own Wi-Fi with nothing installed, what reaching the machine from a café
   costs, and what the one command is for.
+- **Browse…, on a phone.** The settings' folder and file fields used to lose
+  their Browse button on a phone, with a note to type the path in instead —
+  the button opens the PC's own file dialog, and there is nobody at that screen
+  to answer it. The phone now gets the list the sidebar already walks: the
+  PC's drives and folders, one level at a time, and a file where a file is
+  wanted (an SSH key, the secrets file). What is chosen is written the way the
+  settings write it, relative to the config folder when it is under it. On the
+  PC the operating system's dialog stays, since it knows about quick access,
+  search and network places and the list does not.
 
 ### Fixed
+- **"Open another folder" works from a phone now.** The sidebar's folder list
+  was built so a phone could walk it, and then the request that asks for it
+  was refused at the phone's gate — and, behind that, had no route to the list
+  — so the dialog opened, and stayed empty. The list reads folder names;
+  choosing one writes a folder into the settings, which is no more than adding
+  a tab from the phone already does.
 - **On a machine without the WebView2 runtime, the program now says so instead
   of disappearing.** Every window here is drawn with WebView2, so a machine
   without it cannot show one — including the message explaining that. What

@@ -3904,6 +3904,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }) => {
                         surface.repairs.push((folder, choose, branch, take));
                     }
+                    // Walking the folders to open another one: the list the
+                    // phone has instead of a dialog. Same queue as the window's
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Browse { path, open }) => {
+                        surface.browses.push((path, open));
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         let keys = keys_for(&ev);
