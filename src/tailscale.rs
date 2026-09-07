@@ -16,6 +16,12 @@
 //! and it stays inside the tailnet — the public version is a different verb
 //! (`funnel`), which is why this file refuses to adopt one.
 //!
+//! What it proxies to has to be the **loopback**. Handed this machine's own
+//! tailnet address, it does not route back to itself: every request answers
+//! 502, measured with the board listening at exactly that address. That is
+//! why the board keeps a second door on 127.0.0.1 (see `RemoteUi::start_with`)
+//! and why the command this program suggests names a port and nothing else.
+//!
 //! ## Nothing here is assumed
 //!
 //! A link this program hands out is the only way back to the board from a

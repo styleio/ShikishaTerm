@@ -206,6 +206,11 @@ pub struct RemoteUi {
     /// "any"). Kept because the address the world reaches this by can change
     /// while the port cannot.
     port: u16,
+    /// The same board, answering on 127.0.0.1 as well, so a proxy on this
+    /// machine can reach it. `None` when the board is already on the loopback,
+    /// or when something else holds that port there.
+    loopback: Mutex<Option<Arc<Server>>>,
+    loopback_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The access token, shared with the server thread's request handlers so a
     /// runtime rotation takes effect immediately.
     token: Arc<Mutex<String>>,
@@ -420,6 +425,38 @@ impl RemoteUi {
         });
         let book = Arc::new(crate::reply::Book::new());
 
+        // A second door on the loopback, sharing this one's handler.
+        //
+        // `tailscale serve` is what puts HTTPS in front of this board
+        // (src/tailscale.rs), and what it can proxy to is a service on the
+        // loopback. Handed this machine's own tailnet address instead, it does
+        // not route back to itself: every request answers 502. Measured, not
+        // assumed -- a rule pointing at 100.x:8787, with the board listening
+        // exactly there, got nothing through.
+        //
+        // So the board also answers on 127.0.0.1, at the same port. It is the
+        // same handler behind the same token; what changes is that a proxy
+        // running on this machine can reach it. Nothing off this machine can,
+        // which is what the loopback is -- and the settings server has always
+        // sat there for the same reason.
+        //
+        // A loopback port already taken is not an error. It costs the HTTPS
+        // front door and nothing else, and the address a person was given
+        // still works.
+        let loopback = if bind.is_loopback() {
+            None
+        } else {
+            match Server::http((std::net::Ipv4Addr::LOCALHOST, real_port)) {
+                Ok(s) => Some(Arc::new(s)),
+                Err(e) => {
+                    crate::append_hook_log(&format!(
+                        "remote: no second door on 127.0.0.1:{real_port} ({e});                          an HTTPS proxy in front of this will not reach it"
+                    ));
+                    None
+                }
+            }
+        };
+
         let server = Arc::new(server);
         let accept_thread = {
             let server = Arc::clone(&server);
@@ -433,6 +470,7 @@ impl RemoteUi {
             let settings = Arc::clone(&settings);
             let gate = Arc::clone(&gate);
             let book_for_thread = Arc::clone(&book);
+            let tx = tx.clone();
             std::thread::spawn(move || {
                 for req in server.incoming_requests() {
                     if stop.load(Ordering::SeqCst) {
@@ -452,6 +490,36 @@ impl RemoteUi {
                 }
             })
         };
+        let loopback_thread = loopback.as_ref().map(|server| {
+            let server = Arc::clone(server);
+            let token = Arc::clone(&token);
+            let snapshot = Arc::clone(&snapshot);
+            let stop = Arc::clone(&stop);
+            let clients = Arc::clone(&frame_clients);
+            let states = Arc::clone(&state_clients);
+            let polls = Arc::clone(&last_poll);
+            let kf = Arc::clone(&keyframe_wanted);
+            let settings = Arc::clone(&settings);
+            let gate = Arc::clone(&gate);
+            let book_for_thread = Arc::clone(&book);
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for req in server.incoming_requests() {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Err(e) = handle(
+                        req, &token, &snapshot, &tx, &clients, &states, &polls, &kf,
+                        &settings, &gate, &book_for_thread, sticky,
+                    ) {
+                        crate::append_hook_log(&crate::i18n::tp(
+                            "err.remote.hook_log",
+                            &[("e", &e.to_string())],
+                        ));
+                    }
+                }
+            })
+        });
         Ok(Self {
             url,
             origin,
@@ -470,6 +538,8 @@ impl RemoteUi {
             book,
             server: Mutex::new(Some(server)),
             accept_thread: Mutex::new(Some(accept_thread)),
+            loopback: Mutex::new(loopback),
+            loopback_thread: Mutex::new(loopback_thread),
         })
     }
 
@@ -490,6 +560,11 @@ impl RemoteUi {
         Arc::clone(&self.book)
     }
 
+    /// The port this is really listening on -- on both of its addresses.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     /// Say that this board is reached at another address than the one it
     /// listens on -- an HTTPS front door put there by `tailscale serve`
     /// (src/tailscale.rs).
@@ -497,11 +572,6 @@ impl RemoteUi {
     /// Everything that hands out a link reads `origin`, so this is the only
     /// place that has to change: the QR, the reply pages a notification links
     /// to, and the board's own address as the automation sees it.
-    /// The port this is really listening on.
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-
     pub fn reached_at(&mut self, origin: String) {
         self.url = format!("{origin}/?t={}", self.token.lock().unwrap());
         self.origin = origin;
@@ -616,15 +686,23 @@ impl RemoteUi {
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
         let server = self.server.lock().unwrap().take();
-        if let Some(s) = &server {
+        let loopback = self.loopback.lock().unwrap().take();
+        for s in [server.as_ref(), loopback.as_ref()].into_iter().flatten() {
             s.unblock();
         }
-        if let Some(h) = self.accept_thread.lock().unwrap().take() {
+        for h in [
+            self.accept_thread.lock().unwrap().take(),
+            self.loopback_thread.lock().unwrap().take(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             let _ = h.join();
         }
-        // The thread is gone; dropping the last Arc closes the listener, so
-        // the port is free for an immediate rebind by the time this returns
+        // The threads are gone; dropping the last Arc closes each listener, so
+        // both ports are free for an immediate rebind by the time this returns
         drop(server);
+        drop(loopback);
     }
 }
 
@@ -1803,6 +1881,42 @@ mod tests {
         println!("VAPID: {:?}", crate::push::public_key());
         std::thread::sleep(std::time::Duration::from_secs(240));
         ui.shutdown();
+    }
+
+    /// A board that listens on a network address answers on the loopback too.
+    ///
+    /// This is what lets `tailscale serve` put HTTPS in front of it. That
+    /// proxy will not route to this machine's own tailnet address -- pointed
+    /// at one, every request came back 502 -- so the only way in for it is
+    /// 127.0.0.1. If this ever stops being true, HTTPS stops working and the
+    /// only symptom is a phone that cannot install the page.
+    ///
+    /// Skipped where the machine has no address but the loopback, which is the
+    /// one case where a second door would be the same door.
+    #[test]
+    fn a_board_on_the_network_answers_on_the_loopback_too() {
+        let Some(ip) = crate::netaddr::tailscale_ip().or_else(crate::netaddr::lan_ip) else {
+            println!("no network address on this machine; nothing to test");
+            return;
+        };
+        let ui = RemoteUi::start(ip, 0, "board-token-0000".into(), String::new()).unwrap();
+        let port = ui.port();
+        let phone = Phone::new(&format!("http://127.0.0.1:{port}"));
+        assert_eq!(
+            phone.status(crate::pwa::MANIFEST_PATH),
+            200,
+            "127.0.0.1:{port} が答えない = HTTPS を前に立てられない"
+        );
+        // The same board, so the same rules: the loopback is a way in for a
+        // proxy on this machine, not a way past the token.
+        assert_eq!(phone.status("/api/state"), 403, "ループバックが鍵を迂回している");
+
+        // ...and both doors are let go of together, or the next start fails.
+        ui.shutdown();
+        assert!(
+            RemoteUi::start(ip, port, "board-token-0000".into(), String::new()).is_ok(),
+            "閉じたのに片方のポートが残っている"
+        );
     }
 
     #[test]

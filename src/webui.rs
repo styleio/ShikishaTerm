@@ -4962,13 +4962,15 @@ function remoteCard() {
         qrbox.append(el("div", {class:"hint ok", style:"margin-top:8px"},
                         T["settings.phone.https.on"]));
       } else if (j.tailscale) {
-        // Built from the two things this card already shows -- the address in
-        // the status line above and the port in the field above that -- so it
-        // tells nobody anything they are not already looking at.
+        // Just the port. `tailscale serve` reads that as the loopback, which
+        // is the only place it can reach: handed this machine's own tailnet
+        // address it does not route back to itself, and every request comes
+        // back 502. The board listens on the loopback as well for exactly
+        // this (see RemoteUi::start_with).
         qrbox.append(
           el("div", {class:"hint", style:"margin-top:8px"}, T["settings.phone.https.hint"]),
           el("code", {style:"display:block;margin-top:4px;user-select:all;word-break:break-all"},
-             "tailscale serve --bg http://" + j.tailscale + ":" + (r.port || 8787)));
+             "tailscale serve --bg " + (r.port || 8787)));
       }
     }
   }
