@@ -8,7 +8,51 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-09
+
+The window learns to run several AIs on one project at once.
+
+A project and the branches cut from it are one household in the tab bar; the
+dialog that cuts a branch can start an AI in it, or cut one folder per AI so the
+same task goes to several at once. The first run points at what to press, a
+manual says what everything is, and while a Claude tab is in view the status
+line says how much of Claude's allowance is used and when it comes back. The
+window also stays alive when closed, and a second start brings it back.
+
 ### Added
+- **A project and the branches cut from it are one household in the tab
+  bar.** The project's own folder heads it, wearing the branch it is on and a
+  count of its branches; the branches stand a step in under it, in one box,
+  and the count puts them all away or brings them all back. The depth is
+  git's own: a folder with no branch open, or a branch whose project is not
+  open, is drawn flat as before. A folder nothing runs in yet is placed by
+  its path alone, so the list never touches a disk while it draws.
+- **The "Parallel work" dialog says what the new folder runs, and can cut one
+  folder per AI.** "Start here" chooses between the same tabs as the project,
+  one of the AIs installed on this machine, or nothing. "One folder per AI"
+  makes a folder for each AI ticked, its branch named for that AI, so the
+  same task can be handed to several at once; every `git worktree add` line
+  is shown before any of them runs. A machine with no AI installed sees the
+  dialog it always had.
+- **The first run points at the next thing to press.** A bubble beside "Add
+  a working folder" while there is none, then beside that folder's + while
+  nothing has been started in it. Each is closed by its ✕ or by doing the
+  thing, and never comes back.
+- **A manual.** `docs/MANUAL.md` (and Japanese) says what each part of the
+  screen is, what every key does as it ships, how a project and its branches
+  are made, and what to do when something is wrong. The `?` beside the gear
+  opens it on the site; the zip carries it beside the exe.
+- **After the first answer an AI finishes here, a small card asks once for a
+  star** (a Store review, for the Store copy) and then goes for good.
+- **How much of Claude's allowance is used, while a Claude tab is in view.**
+  The status line shows the 5-hour and the 7-day window each as a bar with
+  words beside it — "20% used · resets in 3h 45m" — asked of Claude's own
+  service with the sign-in Claude Code keeps on this PC, once a minute while
+  a Claude tab exists, on a thread of its own. Anything that fails — no
+  sign-in, an expired one, no answer, a body of another shape — is no bar,
+  never an error. A setting under AI providers turns it off. When Claude Code
+  itself prints that a limit is near or reached, that line is shown there too
+  until it is read.
 - **Closing the window no longer ends what the AIs are doing.** The ✕ puts
   the program away in the notification area instead: every tab goes on
   working, automation goes on running, and a phone stays connected and can
@@ -1414,7 +1458,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/styleio/ShikishaTerm/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/styleio/ShikishaTerm/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/styleio/ShikishaTerm/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/styleio/ShikishaTerm/compare/v0.5.0...v0.5.1
