@@ -42,10 +42,18 @@
 
   <Applications>
     <Application Id="SHIKISHATERM" Executable="SHIKISHA-TERM.exe" EntryPoint="Windows.FullTrustApplication">
+      <!--
+        The pictures are written by .private/icon/make-icon.py from the same
+        drawings as the exe's icon; the taskbar-sized variants beside these five
+        files are found through resources.pri, which tools/msix.ps1 builds.
+        BackgroundColor is the disc's own blue: wherever Windows still puts the
+        icon on a plate, the disc merges into it instead of sitting in a square
+        of some other blue.
+      -->
       <uap:VisualElements
         DisplayName="SHIKISHA-TERM"
         Description="Run Claude Code, Codex and Gemini side by side and let them hand work to each other."
-        BackgroundColor="transparent"
+        BackgroundColor="#00AAFF"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png">
         <uap:DefaultTile

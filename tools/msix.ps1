@@ -74,6 +74,7 @@ $sdk = Get-ChildItem $kits -Directory -ErrorAction SilentlyContinue |
        Sort-Object Name -Descending | Select-Object -First 1
 if (-not $sdk) { throw "makeappx.exe not found under $kits -- install the Windows SDK" }
 $makeappx = Join-Path $sdk.FullName 'x64\makeappx.exe'
+$makepri  = Join-Path $sdk.FullName 'x64\makepri.exe'
 $signtool = Join-Path $sdk.FullName 'x64\signtool.exe'
 
 # The version comes from the one place that already carries it. MSIX wants four
@@ -122,6 +123,33 @@ $manifest = $manifest.Replace('{{IDENTITY_NAME}}', (Esc $IdentityName)).
                       Replace('{{PUBLISHER_DISPLAY_NAME}}', (Esc $PublisherDisplayName))
 [System.IO.File]::WriteAllText((Join-Path $stage 'AppxManifest.xml'), $manifest,
                                [System.Text.UTF8Encoding]::new($false))
+
+# The index of pictures. The manifest names five files; Assets holds seventy,
+# because the taskbar wants `Square44x44Logo.targetsize-24_altform-unplated.png`
+# for a 24px icon and a 200% screen wants `Square150x150Logo.scale-200.png`,
+# and Windows finds those variants only through resources.pri. Without the
+# index it reads the five literal files, shrinks the 44px logo for the taskbar
+# and paints it on an accent-colour plate: a blue square with a smudge on it,
+# which is how the Store copy looked in its first releases.
+#
+# The index is built from a folder holding nothing but Assets, so the payload
+# (lang, profiles, scripts) is not catalogued as if it were pictures, and the
+# names inside the index come out as `Assets\...`, matching the manifest.
+$priRoot = Join-Path $out 'pri'
+if (Test-Path $priRoot) { Remove-Item $priRoot -Recurse -Force }
+New-Item -ItemType Directory -Force $priRoot | Out-Null
+Copy-Item (Join-Path $root 'packaging\msix\Assets') $priRoot -Recurse -Force
+$priConfig = Join-Path $out 'priconfig.xml'
+& $makepri createconfig /cf $priConfig /dq lang-en-US_scale-100 /pv 10.0.0 /o | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "makepri createconfig failed" }
+# The generated config wants one index per scale (resources.scale-200.pri and
+# so on), which is for bundles that hand each screen its own download. This is
+# one package for every screen, so everything goes in the one index.
+$config = Get-Content $priConfig | Where-Object { $_ -notmatch 'autoResourcePackage' }
+[System.IO.File]::WriteAllLines($priConfig, $config)
+& $makepri new /pr $priRoot /cf $priConfig /mn (Join-Path $stage 'AppxManifest.xml') `
+               /of (Join-Path $stage 'resources.pri') /o | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "makepri new failed" }
 
 $suffix = if ($Store) { '-store' } else { '-test' }
 $msix = Join-Path $out "SHIKISHA-TERM-$version$suffix.msix"
