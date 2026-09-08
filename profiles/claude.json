@@ -14,7 +14,16 @@
     "yes/no",
     "Allow .+\\?"
   ],
-  "title_busy": ["◐", "◑"],
+  "limit_patterns": [
+    "You've hit your limit",
+    "Usage limit (reached|approaching)",
+    "reached your weekly usage limit",
+    "until your limit resets at"
+  ],
+  "title_busy": [
+    "◐",
+    "◑"
+  ],
   "silence_ms": 2000,
   "resume": {
     "new_id": [

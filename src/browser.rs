@@ -879,6 +879,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("thanks") => Ev::Thanks { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
         Some("help") => Ev::Help,
+        Some("limit_ack") => Ev::LimitAck {
+            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        },
         // A quick-action chip whose payload is Lua (the code stays server-side —
         // the page only knows the index). Runs it against the active tab.
         Some("runaction") => Ev::RunAction {
@@ -1352,6 +1355,8 @@ pub enum Ev {
     /// either way the card is put away for good. Window-only: the page it
     /// opens is this PC's
     Thanks { open: bool },
+    /// The usage-limit notice on a tab was read. `tab` is the screen number
+    LimitAck { tab: usize },
     /// The `?` beside the gear: the manual on the site, in the PC's browser.
     /// Window-only -- a phone reaches the same page through a plain link
     Help,

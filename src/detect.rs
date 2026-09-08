@@ -271,6 +271,25 @@ impl Detector {
         screen
     }
 
+    /// The line on screen about the CLI's usage limit, if there is one.
+    ///
+    /// The whole line, not just the words that matched: "You've hit your
+    /// limit · resets 3pm" is the notice, and the time is the half a person
+    /// wants. Nothing about busy or done is decided here -- a limit is
+    /// something to know about the tab, not something the tab is doing
+    pub fn limit_line(&self, screen_text: &str) -> Option<String> {
+        self.profile.limit.iter().find_map(|r| {
+            r.find(screen_text).map(|m| {
+                let head = screen_text[..m.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let tail = screen_text[m.end()..]
+                    .find('\n')
+                    .map(|i| m.end() + i)
+                    .unwrap_or(screen_text.len());
+                screen_text[head..tail].trim().to_string()
+            })
+        })
+    }
+
     /// The screen's own reading, on its own. Priority within it:
     /// QUESTION > BUSY (pattern) > bell completion > activity timer > silence timer
     fn screen_tick(&mut self, screen_text: &str, ms_since_output: u64, bell_count: u64) -> TabState {
@@ -337,8 +356,27 @@ mod tests {
             ignore_bottom_rows: 2,
             done_confirm_ms: None,
             title_busy: vec![],
+            limit_patterns: vec!["hit your limit".into(), "Usage limit (reached|approaching)".into()],
         })
         .unwrap()
+    }
+
+    /// A limit notice is the whole line it is on, and it decides nothing
+    /// about the state: the tab that printed it is exactly as done as it was.
+    #[test]
+    fn a_limit_notice_is_read_whole_and_changes_no_state() {
+        let mut d = Detector::new(claude_like());
+        let screen = "  > fix the tests\n\n  You've hit your limit · resets 3pm (Asia/Tokyo)\n\n  > ";
+        assert_eq!(
+            d.limit_line(screen).as_deref(),
+            Some("You've hit your limit · resets 3pm (Asia/Tokyo)"),
+            "行ごと取れていない"
+        );
+        assert_eq!(d.limit_line("  > \n  Usage limit approaching\n").as_deref(), Some("Usage limit approaching"));
+        assert_eq!(d.limit_line("  > all good\n"), None);
+        // The screen's verdict is what it always was
+        d.tick("Thinking… (esc to interrupt)", 0, 0);
+        assert_eq!(d.tick(screen, 5_000, 0), TabState::Done, "上限の知らせが状態を変えた");
     }
 
     /// Three signals now say what a tab is doing, so the order they are

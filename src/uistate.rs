@@ -52,6 +52,10 @@ pub struct TabState {
     /// shell keeps it out of the tab strip and reaches it via a fixed gear.
     #[serde(default)]
     pub settings: bool,
+    /// What the CLI last said about its usage limit, while it still stands.
+    /// Shown beside the tab only while it is the one being looked at
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<String>,
     /// Which AI this tab runs (claude / codex / gemini / deepseek / …), if any.
     /// A plain identity, not a look: the display side turns it into a brand
     /// colour so the "run several AIs side by side" story reads at a glance.
@@ -832,6 +836,7 @@ impl TabState {
             busy: t.is_generating(),
             settings: false,
             ai: t.ai_kind(),
+            limit: t.limit_note().map(str::to_string),
             auto: t.auto_runs(),
             status: t.status_line(),
             progress: t.progress.as_ref().map(|(p, _)| *p),
@@ -871,6 +876,7 @@ impl TabState {
             state: "WEB".into(),
             state_label: crate::i18n::t("tui.state.web"),
             profile: String::new(),
+            limit: None,
             locked: false,
             depth: 0,
             activity: Vec::new(),
@@ -1150,6 +1156,7 @@ mod tests {
             busy: false,
             settings: false,
             ai: None,
+            limit: None,
             auto: false,
             status: None,
             progress: None,

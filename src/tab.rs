@@ -1618,6 +1618,37 @@ mod tests {
         assert_eq!(session, None);
     }
 
+    /// The notice outlives its line, but not a fresh answer or half an hour.
+    #[test]
+    fn a_limit_notice_stays_until_an_answer_or_half_an_hour() {
+        use super::{limit_note_after, LIMIT_NOTE_MS};
+        let line = || Some("You've hit your limit · resets 3pm".to_string());
+        // Printed: kept, stamped now
+        assert_eq!(limit_note_after(None, line(), 100, false), Some(("You've hit your limit · resets 3pm".into(), 100)));
+        // The quiet right after it printed is not an answer -- the line is still there
+        assert!(limit_note_after(Some(("x".into(), 100)), line(), 3_000, true).is_some());
+        // Scrolled away, no answer yet: kept, with its original stamp
+        assert_eq!(limit_note_after(Some(("x".into(), 100)), None, 60_000, false), Some(("x".into(), 100)));
+        // A fresh answer with no such line on screen: gone
+        assert_eq!(limit_note_after(Some(("x".into(), 100)), None, 60_000, true), None);
+        // Half an hour: gone
+        assert_eq!(limit_note_after(Some(("x".into(), 100)), None, 100 + LIMIT_NOTE_MS + 1, false), None);
+        assert_eq!(limit_note_after(None, None, 5, false), None);
+    }
+
+    /// Pressing the notice away holds while its line stays on screen, and
+    /// no longer once the line has gone.
+    #[test]
+    fn a_read_notice_stays_away_while_its_line_is_still_there() {
+        use super::unread_limit;
+        let mut acked = Some("You've hit your limit".to_string());
+        assert_eq!(unread_limit(Some("You've hit your limit".into()), &mut acked), None, "読んだ行が戻ってきた");
+        assert_eq!(unread_limit(Some("Usage limit approaching".into()), &mut acked).as_deref(), Some("Usage limit approaching"), "別の行が隠れた");
+        assert_eq!(unread_limit(None, &mut acked), None);
+        assert_eq!(acked, None, "行が消えたら忘れる");
+        assert_eq!(unread_limit(Some("You've hit your limit".into()), &mut acked).as_deref(), Some("You've hit your limit"), "改めて出た行が新しい知らせにならない");
+    }
+
     #[test]
     fn auto_runs_needs_the_bypass_flag_for_a_cli() {
         // A bare CLI still asks for confirmation, so it can't drive a tab...
@@ -2208,6 +2239,46 @@ pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
     )
 }
 
+/// How long a limit notice is kept once its line has scrolled away.
+const LIMIT_NOTE_MS: u64 = 30 * 60 * 1000;
+
+/// What the limit notice becomes after one tick.
+///
+/// A line on screen refreshes it; a fresh answer finishing with no such line
+/// on screen clears it (the notice printed itself, then went quiet -- that
+/// first quiet is not an answer, so it is the line's absence that counts);
+/// and half an hour clears it regardless, because "resets 3pm" is stale by
+/// then. Nothing here reads the clock but `now`, so it can be checked
+fn limit_note_after(
+    had: Option<(String, u64)>,
+    on_screen: Option<String>,
+    now: u64,
+    answered: bool,
+) -> Option<(String, u64)> {
+    match (on_screen, had) {
+        (Some(line), _) => Some((line, now)),
+        (None, Some(_)) if answered => None,
+        (None, Some((line, at))) if now.saturating_sub(at) <= LIMIT_NOTE_MS => Some((line, at)),
+        _ => None,
+    }
+}
+
+/// The limit line on screen, unless it is the one that was read and put away.
+///
+/// A line that is still there after the press is not news; a line that has
+/// gone leaves nothing to hold against the next one, so the same words
+/// printed again later count as new
+fn unread_limit(on_screen: Option<String>, acked: &mut Option<String>) -> Option<String> {
+    match on_screen {
+        Some(line) if acked.as_deref() == Some(line.as_str()) => None,
+        Some(line) => Some(line),
+        None => {
+            *acked = None;
+            None
+        }
+    }
+}
+
 /// The "act without asking" flag a CLI needs to run unattended, or None if it has
 /// none. Single source of truth for the operator-readiness gate; the settings JS
 /// (webui `cliFlagOf`) mirrors these strings for the editable checkbox.
@@ -2331,6 +2402,15 @@ pub struct Tab {
     /// detection, kept because automation has no other way to see a program
     /// that draws instead of printing (shikisha.tab_screen)
     pub last_screen: String,
+    /// What the CLI last said about its usage limit, and when (tick ms).
+    /// Kept after the line has scrolled away, because the time it names is
+    /// the part worth keeping; dropped when a fresh answer lands with no such
+    /// line on screen, when it is dismissed, or after half an hour
+    limit_note: Option<(String, u64)>,
+    /// The notice that was read and put away, while its line is still on
+    /// screen. Without this, a line that stays put would bring the notice
+    /// straight back on the next tick, and the press would do nothing
+    limit_acked: Option<String>,
     /// Where this tab's output is being recorded, when it is. Automation reads
     /// it back from its own mark (shikisha.tab_read)
     pub log_path: Option<std::path::PathBuf>,
@@ -2802,6 +2882,8 @@ impl Tab {
             notes,
             window_title,
             last_screen: String::new(),
+            limit_note: None,
+            limit_acked: None,
             log_path,
             keyboard,
             previous: None,
@@ -3358,6 +3440,15 @@ impl Tab {
         self.state = self
             .detector
             .tick(&screen_text, since, self.bell_count.load(Ordering::Relaxed));
+        // The CLI's word about its usage limit, kept beside the state rather
+        // than in it
+        let limit_now = unread_limit(self.detector.limit_line(&screen_text), &mut self.limit_acked);
+        self.limit_note = limit_note_after(
+            self.limit_note.take(),
+            limit_now,
+            now,
+            old_state == TabState::Busy && self.state == TabState::Done,
+        );
         self.last_screen = screen_text;
         // A model bridge is working with nothing on screen to show for it: the
         // request is in flight over HTTP and not a pixel moves until the reply
@@ -3393,6 +3484,16 @@ impl Tab {
             self.last_response = Some(self.capture_since_marker());
         }
         (old_state, self.state)
+    }
+
+    /// What the CLI last said about its usage limit, while it still stands.
+    pub fn limit_note(&self) -> Option<&str> {
+        self.limit_note.as_ref().map(|(s, _)| s.as_str())
+    }
+
+    /// The notice was read; put it away until the CLI says something new.
+    pub fn dismiss_limit_note(&mut self) {
+        self.limit_acked = self.limit_note.take().map(|(line, _)| line);
     }
 
     /// Push this tick's output volume onto the history.

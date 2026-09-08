@@ -714,6 +714,8 @@ struct WinSurface {
     thanks: Option<bool>,
     /// The `?` beside the gear was pressed
     help_site: bool,
+    /// Tabs whose usage-limit notice was read, by screen number
+    limit_acks: Vec<usize>,
     /// Lines a person finished in the composer, each with the tab it is for,
     /// awaiting delivery. Filled from both surfaces: the window's ipc and the
     /// phone's relay.
@@ -872,6 +874,10 @@ impl WinSurface {
 
     fn take_help_site(&mut self) -> bool {
         std::mem::take(&mut self.help_site)
+    }
+
+    fn take_limit_acks(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.limit_acks)
     }
 
     /// Takes ownership of pages that finished loading (id, URL, whether settled)
@@ -1130,6 +1136,7 @@ impl WinSurface {
                 Ev::Coach { step } => self.coach_done = Some(step),
                 Ev::Thanks { open } => self.thanks = Some(open),
                 Ev::Help => self.help_site = true,
+                Ev::LimitAck { tab } => self.limit_acks.push(tab),
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
                 Ev::RunAction { index } => self.run_actions.push(index),
@@ -1519,6 +1526,7 @@ fn run_in_window() -> Result<()> {
         coach_done: None,
         thanks: None,
         help_site: false,
+        limit_acks: Vec::new(),
         says: Vec::new(),
         run_actions: Vec::new(),
         vault_queries: Vec::new(),
@@ -5901,6 +5909,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         if surface.take_help_site() {
             crate::webui::open_external(&i18n::t("tui.help.url"));
+        }
+        for idx in surface.take_limit_acks() {
+            if let Some(i) = session_at(&surfaces, idx) {
+                if let Some(t) = tabs.get_mut(i) {
+                    t.dismiss_limit_note();
+                }
+            }
         }
         if surface.take_remote_cut() && remote_ui.is_some() {
             if let Some(r) = remote_ui.as_mut() {

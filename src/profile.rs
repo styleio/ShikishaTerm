@@ -23,6 +23,14 @@ pub struct ProfileFile {
     /// Regex: if it matches the screen, treat as QUESTION (waiting on a choice)
     #[serde(default)]
     pub question_patterns: Vec<String>,
+    /// Regex: a line the CLI prints about its own usage limit ("you've hit
+    /// your limit", "usage limit approaching"). Not a state -- it changes
+    /// nothing about busy or done -- but a notice, shown beside the tab while
+    /// it is being looked at. Written from what the CLI actually prints, never
+    /// guessed: a pattern that matches the wrong line is a warning nobody can
+    /// act on
+    #[serde(default)]
+    pub limit_patterns: Vec<String>,
     /// If the screen doesn't change for this long (ms), treat as done/idle
     #[serde(default = "default_silence_ms")]
     pub silence_ms: u64,
@@ -202,6 +210,8 @@ pub struct Profile {
     pub name: String,
     pub busy: Vec<regex::Regex>,
     pub question: Vec<regex::Regex>,
+    /// Lines about the CLI's usage limit (see `ProfileFile::limit_patterns`)
+    pub limit: Vec<regex::Regex>,
     /// Title marks. Plain text on purpose (see `ProfileFile::title_busy`)
     pub title_busy: Vec<String>,
     pub silence_ms: u64,
@@ -218,6 +228,7 @@ impl Profile {
             name: GENERIC.into(),
             busy: Vec::new(),
             question: Vec::new(),
+            limit: Vec::new(),
             title_busy: Vec::new(),
             silence_ms: default_silence_ms(),
             ignore_bottom_rows: default_ignore_bottom_rows(),
@@ -240,6 +251,7 @@ impl Profile {
         Ok(Self {
             busy: compile_all(&f.busy_patterns)?,
             question: compile_all(&f.question_patterns)?,
+            limit: compile_all(&f.limit_patterns)?,
             title_busy: f.title_busy,
             silence_ms: f.silence_ms,
             done_confirm_ms: f.done_confirm_ms,

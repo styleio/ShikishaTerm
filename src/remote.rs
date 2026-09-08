@@ -187,6 +187,8 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // Closing the first-run pointer. It is drawn on the phone as well, and
         // a pointer that cannot be closed from where it is seen is a nag
         Ev::Coach { .. } => true,
+        // Putting away a tab's usage-limit notice. Reading it is the whole act
+        Ev::LimitAck { .. } => true,
         // Walking this PC's folders to open another one. The list exists
         // precisely because a phone has no folder dialog of its own
         // (uistate::BrowseState) -- refusing it here left the phone a dialog
