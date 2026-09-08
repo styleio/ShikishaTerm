@@ -346,6 +346,51 @@ pub struct BranchPlan {
     pub lines: Vec<String>,
 }
 
+/// What Claude's subscription has left, as the status line says it.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct UsageState {
+    /// The pill's own words: both windows, percent used
+    pub text: String,
+    /// The long form on hover: percent used and time to reset, per window
+    pub title: String,
+    /// Whether either window is nearly used up, so the pill can say so in colour
+    pub high: bool,
+}
+
+impl UsageState {
+    /// Worded from a reading, at `now` (seconds since the epoch).
+    pub fn of(l: &crate::limits::Limits, now: i64) -> Self {
+        let pct = |w: &Option<crate::limits::Window>| w.as_ref().map(|w| w.pct.to_string()).unwrap_or_else(|| "–".into());
+        let left = |w: &Option<crate::limits::Window>| {
+            w.as_ref()
+                .and_then(|w| w.resets_at)
+                .map(|at| until(at - now))
+                .unwrap_or_else(|| crate::i18n::t("tui.usage.unknown"))
+        };
+        let five = pct(&l.five_hour);
+        let week = pct(&l.seven_day);
+        UsageState {
+            text: crate::i18n::tp("tui.usage.pill", &[("five", &five), ("week", &week)]),
+            title: crate::i18n::tp(
+                "tui.usage.title",
+                &[("five", &five), ("five_in", &left(&l.five_hour)), ("week", &week), ("week_in", &left(&l.seven_day))],
+            ),
+            high: [&l.five_hour, &l.seven_day].iter().any(|w| w.as_ref().is_some_and(|w| w.pct >= 80)),
+        }
+    }
+}
+
+/// A span of seconds as a person reads it: days and hours, or hours and
+/// minutes. Never negative -- a reset already past is "now"
+fn until(secs: i64) -> String {
+    let s = secs.max(0);
+    let (d, h, m) = (s / 86_400, (s % 86_400) / 3600, (s % 3600) / 60);
+    match d {
+        0 => crate::i18n::tp("tui.usage.hm", &[("h", &h.to_string()), ("m", &m.to_string())]),
+        _ => crate::i18n::tp("tui.usage.dh", &[("d", &d.to_string()), ("h", &h.to_string())]),
+    }
+}
+
 /// An AI this machine can start, as the dialog offers it.
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct AiChoice {
@@ -726,6 +771,10 @@ pub struct UiState {
     /// The AIs this machine can start in a folder just made
     #[serde(default)]
     pub ais: Vec<AiChoice>,
+    /// What Claude's subscription has left, when it is known. The page shows
+    /// it only while a Claude tab is in view
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageState>,
     /// The first-run pointer that is up: 1 = add a folder, 2 = press its +
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coach: Option<u8>,
@@ -1016,6 +1065,29 @@ mod tests {
         assert!(found[1].1.empty, "タブの無いフォルダが空と分からない");
         assert_eq!(found[1].1.name, "New one");
         assert_eq!(unnamed[1].1.name, "shikisha-group-fresh");
+    }
+
+    /// The pill says both windows in percent; the hover says when each
+    /// resets, in days and hours or hours and minutes.
+    #[test]
+    fn the_usage_reading_is_worded_for_the_status_line() {
+        use crate::limits::{Limits, Window};
+        let l = Limits {
+            five_hour: Some(Window { pct: 19, resets_at: Some(1_000 + 3 * 3600 + 45 * 60) }),
+            seven_day: Some(Window { pct: 83, resets_at: Some(1_000 + 4 * 86_400 + 10 * 3600) }),
+        };
+        let u = UsageState::of(&l, 1_000);
+        assert!(u.text.contains("19") && u.text.contains("83"), "{}", u.text);
+        assert!(u.title.contains("3h 45m") || u.title.contains("3時間45分"), "{}", u.title);
+        assert!(u.title.contains("4d 10h") || u.title.contains("4日10時間"), "{}", u.title);
+        assert!(u.high, "8割を超えたのに高いと言わない");
+        // A window the service withheld shows as a dash, and a reset already
+        // past never goes negative
+        let l = Limits { five_hour: None, seven_day: Some(Window { pct: 2, resets_at: Some(0) }) };
+        let u = UsageState::of(&l, 5_000);
+        assert!(u.text.contains("–") && u.text.contains("2"), "{}", u.text);
+        assert!(u.title.contains("0h 0m") || u.title.contains("0時間0分"), "{}", u.title);
+        assert!(!u.high);
     }
 
     /// One household is drawn together, checkout first, wherever its members

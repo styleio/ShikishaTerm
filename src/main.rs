@@ -58,6 +58,7 @@ mod tailscale;
 mod theme;
 mod toast;
 mod usage;
+mod limits;
 mod vault;
 mod uistate;
 mod update;
@@ -2215,6 +2216,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         ais: ui.ais.clone(),
         coach: ui.coach,
         thanks: ui.thanks.clone(),
+        usage: ui.usage.clone(),
         // Keep the order exactly as written in the config.
         // Listing sessions and browsers separately would push the browser
         // written first to the back.
@@ -2744,6 +2746,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut auto_switch = cfg.as_ref().and_then(|c| c.auto_switch).unwrap_or(true);
     // Whether the ✕ puts the window away rather than quitting (see the loop)
     let mut resident = cfg.as_ref().and_then(|c| c.resident).unwrap_or(true);
+    // What Claude's subscription has left, on a thread of its own. Nothing
+    // is asked until a Claude tab exists (limits::Meter::want)
+    let limits = crate::limits::Meter::start();
+    let mut claude_usage_on = cfg.as_ref().and_then(|c| c.claude_usage).unwrap_or(true);
     // The last time a human touched the screen. Don't auto-follow right after that.
     let mut view_touched_ms: u64 = 0;
     // Clickable spots on INDEX. Rebuilt every frame at draw time.
@@ -3091,6 +3097,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 max_chain = newcfg.max_chain.unwrap_or(10);
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
                 resident = newcfg.resident.unwrap_or(true);
+                claude_usage_on = newcfg.claude_usage.unwrap_or(true);
                 busy_repeat_ms = newcfg.busy_repeat_sec.filter(|s| *s > 0).map(|s| s * 1000);
                 busy_again.clear();
                 done_confirm_ms = newcfg
@@ -4392,9 +4399,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
             coach_seen = seen;
             let _ = crate::crypto::write_atomic(&config::state_path("coach"), &seen.to_string());
         }
+        // Asked only while a Claude tab exists and the setting is on; shown
+        // only while such a tab is in view (the page decides that)
+        limits.want(claude_usage_on && tabs.iter().any(|t| t.ai_kind().as_deref() == Some("claude")));
+        let usage = limits.current().map(|l| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            crate::uistate::UsageState::of(&l, now)
+        });
         let ui = Ui {
             ais: ai_choices.clone(),
             coach,
+            usage,
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             first_run,
             push_wanted: cfg.as_ref().is_some_and(|c| {
@@ -9423,6 +9441,8 @@ struct Ui {
     ais: Vec<crate::uistate::AiChoice>,
     /// Which first-run pointer is up, if one is (see `coach_step`)
     coach: Option<u8>,
+    /// What Claude's subscription has left, when known
+    usage: Option<crate::uistate::UsageState>,
     /// The thanks card, when it is up: which page it would open
     thanks: Option<String>,
 }

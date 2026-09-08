@@ -4263,6 +4263,10 @@ function secretsCard() {
 function providersCard() {
   current.providers = current.providers || {};
   const listBox = el("div", {id:"providerslist"});
+  // Claude's allowance, read with Claude Code's own sign-in. A setting, so it
+  // can be turned off on a machine where asking is not wanted
+  const usageRow = row(T["settings.claude_usage"], checkDefaultOn(current, "claude_usage", T["settings.claude_usage.label"]),
+    el("span", {class:"hint"}, T["settings.claude_usage.hint"]));
   const draw = () => {
     listBox.textContent = "";
     const names = Object.keys(current.providers);
@@ -4324,7 +4328,8 @@ function providersCard() {
     el("div", {class:"hint"},
       T["settings.providers.hint"]),
     listBox,
-    el("div", {class:"row", style:"gap:10px;margin-top:12px;align-items:flex-end"}, nameIn, addBtn));
+    el("div", {class:"row", style:"gap:10px;margin-top:12px;align-items:flex-end"}, nameIn, addBtn),
+    usageRow);
   setTimeout(draw, 0);
   return c;
 }

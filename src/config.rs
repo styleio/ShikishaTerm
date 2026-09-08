@@ -59,6 +59,11 @@ pub struct Config {
     /// rather than quitting (default: yes). Put away, the tabs go on working
     /// and the phone stays connected; the icon's menu is where quitting is
     pub resident: Option<bool>,
+    /// Whether to ask Claude's service how much of the subscription's 5-hour
+    /// and 7-day allowance is used, with the sign-in Claude Code keeps on
+    /// this PC, and show it while a Claude tab is in view (default: yes).
+    /// Nothing is asked on a machine with no such sign-in
+    pub claude_usage: Option<bool>,
     /// Whether to overlay the browser on the terminal (default: overlay).
     /// Turning it off makes it a standalone window you can move yourself, but it no longer feels like a tab
     pub browser_overlay: Option<bool>,

@@ -820,6 +820,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .pill.limit { color:var(--warn, #e0a80a); border-color:var(--warn, #e0a80a); cursor:pointer;
     max-width:38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap !important; }
   .pill.limit:hover { background:var(--tint); }
+  /* What the subscription has left. Plain until a window is nearly used up */
+  .pill.usage { color:var(--text); font-variant-numeric:tabular-nums; cursor:default; }
+  .pill.usage.high { color:var(--warn, #e0a80a); border-color:var(--warn, #e0a80a); }
   .pill.live:hover { background:var(--tint); }
   #stop { cursor:pointer; color:var(--stop); border:1px solid color-mix(in srgb, var(--stop) 40%, var(--bg));
     padding:2px 10px; border-radius:7px; font-weight:700; }
@@ -2660,6 +2663,15 @@ function limitPill() {
       onclick:() => send({kind:"limit_ack", tab:t.index})},
     (who ? who + ": " : "") + t.limit);
 }
+// What Claude's subscription has left, while a Claude tab is in view. The
+// number is the account's, not the tab's, but it is the tab that makes it
+// the question -- over a Codex tab it would be an answer to nothing
+function usagePill() {
+  const t = (S && S.tabs || []).find(t => t.index === S.active);
+  if (!t || t.ai !== "claude" || !S.usage) return null;
+  return el("span", {class:"pill usage" + (S.usage.high ? " high" : ""), title:S.usage.title},
+    S.usage.text);
+}
 function drawStatus() {
   const s = document.getElementById("status");
   s.textContent = "";
@@ -2689,6 +2701,7 @@ function drawStatus() {
     // Only the tab being looked at: a limit is that CLI's, and a bar that
     // said "Claude" over a Codex tab would be a bar nobody believed
     limitPill(),
+    usagePill(),
     el("span", {class:"grow"}),
     el("span", {class:"build"}, BUILD),
     restartBtn(),
@@ -7486,13 +7499,21 @@ mod tests {
         assert!(PAGE.contains("tabpos: tabpos});"), "窓の道に位置が乗らない");
     }
 
+    /// The subscription's reading is shown only over a Claude tab, and only
+    /// when there is one.
+    #[test]
+    fn the_usage_reading_follows_a_claude_tab_in_view() {
+        assert!(PAGE.contains(r#"if (!t || t.ai !== "claude" || !S.usage) return null;"#), "Claude 以外のタブで出る");
+        assert!(PAGE.contains("    limitPill(),\n    usagePill(),"), "下段に無い");
+    }
+
     /// A usage-limit notice is the tab's own, so it is shown only over the
     /// tab being looked at, and pressing it puts it away.
     #[test]
     fn the_limit_notice_follows_the_tab_in_view() {
         assert!(PAGE.contains("const t = (S && S.tabs || []).find(t => t.index === S.active);\n  if (!t || !t.limit) return null;"), "見ているタブ以外の知らせが出る");
         assert!(PAGE.contains(r#"send({kind:"limit_ack", tab:t.index})"#), "押しても消えない");
-        assert!(PAGE.contains("    limitPill(),\n    el(\"span\", {class:\"grow\"}),"), "下段に札が無い");
+        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n    el(\"span\", {class:\"grow\"}),"), "下段に札が無い");
     }
 
     /// Two pointers and no more, each beside the thing it names, closed by
