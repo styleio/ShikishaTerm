@@ -820,9 +820,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .pill.limit { color:var(--warn, #e0a80a); border-color:var(--warn, #e0a80a); cursor:pointer;
     max-width:38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap !important; }
   .pill.limit:hover { background:var(--tint); }
-  /* What the subscription has left. Plain until a window is nearly used up */
-  .pill.usage { color:var(--text); font-variant-numeric:tabular-nums; cursor:default; }
-  .pill.usage.high { color:var(--warn, #e0a80a); border-color:var(--warn, #e0a80a); }
+  /* What the subscription has left: the AI's name in its own colour, then a
+     bar and a sentence per window. The bar is the number; the words say what
+     the number is of and when it goes back to zero. Nothing here moves */
+  #status .usage { display:flex; align-items:center; gap:10px; flex:0 1 auto; min-width:0;
+    font-variant-numeric:tabular-nums; cursor:default; white-space:nowrap; }
+  #status .usage .who { color:var(--ai); font-weight:600; }
+  #status .usage .win { display:flex; align-items:center; gap:6px; min-width:0; }
+  #status .usage .wname { color:var(--dim); }
+  #status .usage .bar { display:inline-block; width:54px; height:6px; border-radius:3px;
+    background:var(--line); overflow:hidden; flex:none; }
+  #status .usage .bar i { display:block; height:100%; border-radius:3px; background:var(--live); }
+  #status .usage .bar i.warn { background:var(--warn, #e0a80a); }
+  #status .usage .bar i.hot { background:var(--stop, #e5644d); }
+  #status .usage .wsay { overflow:hidden; text-overflow:ellipsis; }
   .pill.live:hover { background:var(--tint); }
   #stop { cursor:pointer; color:var(--stop); border:1px solid color-mix(in srgb, var(--stop) 40%, var(--bg));
     padding:2px 10px; border-radius:7px; font-weight:700; }
@@ -2669,8 +2680,21 @@ function limitPill() {
 function usagePill() {
   const t = (S && S.tabs || []).find(t => t.index === S.active);
   if (!t || t.ai !== "claude" || !S.usage) return null;
-  return el("span", {class:"pill usage" + (S.usage.high ? " high" : ""), title:S.usage.title},
-    S.usage.text);
+  // One bar per window, the number as its length and the words beside it.
+  // The bar's colour says how close to the end it is; nothing here moves
+  const win = w => {
+    if (!w) return null;
+    const fill = el("i", {class: w.pct >= 95 ? "hot" : w.pct >= 80 ? "warn" : ""});
+    fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";
+    return el("span", {class:"win"},
+      el("span", {class:"wname"}, w.name),
+      el("span", {class:"bar"}, fill),
+      el("span", {class:"wsay"}, w.used + (w.resets ? " · " + w.resets : "")));
+  };
+  return el("span", {class:"usage ai-claude", title:S.usage.title},
+    el("span", {class:"who"}, "Claude"),
+    win(S.usage.five),
+    win(S.usage.week));
 }
 function drawStatus() {
   const s = document.getElementById("status");
@@ -7504,6 +7528,9 @@ mod tests {
     #[test]
     fn the_usage_reading_follows_a_claude_tab_in_view() {
         assert!(PAGE.contains(r#"if (!t || t.ai !== "claude" || !S.usage) return null;"#), "Claude 以外のタブで出る");
+        // A bar per window, with words beside it -- not a number in a pill
+        assert!(PAGE.contains(r#"fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";"#), "棒が無い");
+        assert!(PAGE.contains(r#"el("span", {class:"wsay"}, w.used + (w.resets ? " · " + w.resets : ""))"#), "言葉が無い");
         assert!(PAGE.contains("    limitPill(),\n    usagePill(),"), "下段に無い");
     }
 

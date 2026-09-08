@@ -346,36 +346,64 @@ pub struct BranchPlan {
     pub lines: Vec<String>,
 }
 
-/// What Claude's subscription has left, as the status line says it.
+/// What Claude's subscription has left, as the status line draws it.
+///
+/// Numbers and words apart, so the page can draw a bar for the number and
+/// put the words beside it: "20% used · resets in 3h 45m" reads; "5h 20%"
+/// does not. Each window is absent when the service withheld it
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct UsageState {
-    /// The pill's own words: both windows, percent used
-    pub text: String,
-    /// The long form on hover: percent used and time to reset, per window
+    /// The 5-hour window
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub five: Option<UsageWindow>,
+    /// The 7-day window
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub week: Option<UsageWindow>,
+    /// The whole reading in one sentence, for hover
     pub title: String,
-    /// Whether either window is nearly used up, so the pill can say so in colour
-    pub high: bool,
+}
+
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct UsageWindow {
+    /// What the window is called: "5h" / "7d", in the person's language
+    pub name: String,
+    /// Whole percent used
+    pub pct: u32,
+    /// "20% used", in the person's language
+    pub used: String,
+    /// "resets in 3h 45m", in the person's language; absent when the service
+    /// did not say when
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets: Option<String>,
 }
 
 impl UsageState {
     /// Worded from a reading, at `now` (seconds since the epoch).
     pub fn of(l: &crate::limits::Limits, now: i64) -> Self {
-        let pct = |w: &Option<crate::limits::Window>| w.as_ref().map(|w| w.pct.to_string()).unwrap_or_else(|| "–".into());
-        let left = |w: &Option<crate::limits::Window>| {
+        let window = |w: &Option<crate::limits::Window>, name_key: &str| {
+            w.as_ref().map(|w| UsageWindow {
+                name: crate::i18n::t(name_key),
+                pct: w.pct,
+                used: crate::i18n::tp("tui.usage.used", &[("pct", &w.pct.to_string())]),
+                resets: w
+                    .resets_at
+                    .map(|at| crate::i18n::tp("tui.usage.resets", &[("t", &until(at - now))])),
+            })
+        };
+        let five = window(&l.five_hour, "tui.usage.five");
+        let week = window(&l.seven_day, "tui.usage.week");
+        let say = |w: &Option<UsageWindow>| {
             w.as_ref()
-                .and_then(|w| w.resets_at)
-                .map(|at| until(at - now))
+                .map(|w| match &w.resets {
+                    Some(r) => format!("{}: {} · {}", w.name, w.used, r),
+                    None => format!("{}: {}", w.name, w.used),
+                })
                 .unwrap_or_else(|| crate::i18n::t("tui.usage.unknown"))
         };
-        let five = pct(&l.five_hour);
-        let week = pct(&l.seven_day);
         UsageState {
-            text: crate::i18n::tp("tui.usage.pill", &[("five", &five), ("week", &week)]),
-            title: crate::i18n::tp(
-                "tui.usage.title",
-                &[("five", &five), ("five_in", &left(&l.five_hour)), ("week", &week), ("week_in", &left(&l.seven_day))],
-            ),
-            high: [&l.five_hour, &l.seven_day].iter().any(|w| w.as_ref().is_some_and(|w| w.pct >= 80)),
+            title: crate::i18n::tp("tui.usage.title", &[("five", &say(&five)), ("week", &say(&week))]),
+            five,
+            week,
         }
     }
 }
@@ -1067,8 +1095,8 @@ mod tests {
         assert_eq!(unnamed[1].1.name, "shikisha-group-fresh");
     }
 
-    /// The pill says both windows in percent; the hover says when each
-    /// resets, in days and hours or hours and minutes.
+    /// Each window comes as a number for the bar and words for beside it,
+    /// with the time to reset in days and hours or hours and minutes.
     #[test]
     fn the_usage_reading_is_worded_for_the_status_line() {
         use crate::limits::{Limits, Window};
@@ -1077,17 +1105,26 @@ mod tests {
             seven_day: Some(Window { pct: 83, resets_at: Some(1_000 + 4 * 86_400 + 10 * 3600) }),
         };
         let u = UsageState::of(&l, 1_000);
-        assert!(u.text.contains("19") && u.text.contains("83"), "{}", u.text);
-        assert!(u.title.contains("3h 45m") || u.title.contains("3時間45分"), "{}", u.title);
-        assert!(u.title.contains("4d 10h") || u.title.contains("4日10時間"), "{}", u.title);
-        assert!(u.high, "8割を超えたのに高いと言わない");
-        // A window the service withheld shows as a dash, and a reset already
-        // past never goes negative
+        let five = u.five.as_ref().unwrap();
+        assert_eq!(five.pct, 19);
+        assert!(five.used.contains("19"), "{}", five.used);
+        let r = five.resets.clone().unwrap();
+        assert!(r.contains("3h 45m") || r.contains("3時間45分"), "{r}");
+        let week = u.week.as_ref().unwrap();
+        assert_eq!(week.pct, 83);
+        let r = week.resets.clone().unwrap();
+        assert!(r.contains("4d 10h") || r.contains("4日10時間"), "{r}");
+        assert!(u.title.contains("19") && u.title.contains("83"), "{}", u.title);
+        // A window the service withheld is absent, and a reset already past
+        // never goes negative
         let l = Limits { five_hour: None, seven_day: Some(Window { pct: 2, resets_at: Some(0) }) };
         let u = UsageState::of(&l, 5_000);
-        assert!(u.text.contains("–") && u.text.contains("2"), "{}", u.text);
-        assert!(u.title.contains("0h 0m") || u.title.contains("0時間0分"), "{}", u.title);
-        assert!(!u.high);
+        assert!(u.five.is_none());
+        let r = u.week.as_ref().unwrap().resets.clone().unwrap();
+        assert!(r.contains("0h 0m") || r.contains("0時間0分"), "{r}");
+        // No time at all: the words say how much, and nothing about when
+        let l = Limits { five_hour: Some(Window { pct: 7, resets_at: None }), seven_day: None };
+        assert_eq!(UsageState::of(&l, 0).five.unwrap().resets, None);
     }
 
     /// One household is drawn together, checkout first, wherever its members
