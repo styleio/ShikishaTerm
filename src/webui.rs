@@ -157,7 +157,7 @@ fn pct(s: &str) -> String {
 /// Uses ShellExecuteW so the whole URL — query string, '&' and percent-escapes
 /// included — is handed to the shell verbatim (explorer.exe mis-parses those
 /// and falls back to opening a file window instead).
-fn open_external(url: &str) {
+pub(crate) fn open_external(url: &str) {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let op: Vec<u16> = "open\0".encode_utf16().collect();

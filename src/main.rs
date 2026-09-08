@@ -442,6 +442,30 @@ fn abs_line(offset: usize, rows: u16, cursor_row: u16) -> usize {
 }
 
 /// Generates a tab name from argv ("ssh" -> "SSH")
+/// Where thanks go. The Store's own review page for the Store's copy; the
+/// repository for the zip's
+const STORE_REVIEW_URL: &str = "ms-windows-store://review/?ProductId=9PB8XQVM87Z0";
+const REPO_URL: &str = "https://github.com/styleio/ShikishaTerm";
+
+/// Which first-run pointer to show, and what to remember about it.
+///
+/// Two steps and no more: "add a folder" while there is none, then "press
+/// this folder's +" while there is one folder and nothing has been started in
+/// it. `seen` is how far the pointing has got on this machine (0, 1 or 2),
+/// and comes back moved on when the step it names is over -- shown once, or
+/// done -- so a person who has been past a step is never pointed at it again.
+/// Somebody with folders and no record has been here since before the
+/// pointer existed, and is not pointed at anything
+fn coach_step(folders: usize, seen: u8, past_the_plus: bool) -> (Option<u8>, u8) {
+    match (folders, seen) {
+        // Up until a folder exists, however many frames that takes
+        (0, 0) | (0, 1) => (Some(1), 1),
+        (1, 1) if !past_the_plus => (Some(2), 1),
+        (_, 1) if past_the_plus => (None, 2),
+        _ => (None, seen),
+    }
+}
+
 /// The AIs this machine can start, one per profile whose command is on PATH.
 ///
 /// Offered the way the settings' own form would launch them: with the CLI's
@@ -684,6 +708,12 @@ struct WinSurface {
     /// The status bar's "remote connected" control was pressed. The loop cuts every
     /// remote session (rotates the token, drops the connections).
     remote_cut: bool,
+    /// The first-run pointer that was closed, by step
+    coach_done: Option<u8>,
+    /// The thanks card was pressed: open the page, or just put it away
+    thanks: Option<bool>,
+    /// The `?` beside the gear was pressed
+    help_site: bool,
     /// Lines a person finished in the composer, each with the tab it is for,
     /// awaiting delivery. Filled from both surfaces: the window's ipc and the
     /// phone's relay.
@@ -830,6 +860,18 @@ impl WinSurface {
     /// True if the "remote connected" control was pressed (and clears the flag if so)
     fn take_remote_cut(&mut self) -> bool {
         std::mem::take(&mut self.remote_cut)
+    }
+
+    fn take_coach_done(&mut self) -> Option<u8> {
+        self.coach_done.take()
+    }
+
+    fn take_thanks(&mut self) -> Option<bool> {
+        self.thanks.take()
+    }
+
+    fn take_help_site(&mut self) -> bool {
+        std::mem::take(&mut self.help_site)
     }
 
     /// Takes ownership of pages that finished loading (id, URL, whether settled)
@@ -1085,6 +1127,9 @@ impl WinSurface {
                 Ev::FolderClose { folder } => self.folder_closes.push(folder),
                 Ev::FolderDiscard { folder } => self.folder_discards.push(folder),
                 Ev::RemoteCut => self.remote_cut = true,
+                Ev::Coach { step } => self.coach_done = Some(step),
+                Ev::Thanks { open } => self.thanks = Some(open),
+                Ev::Help => self.help_site = true,
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
                 Ev::RunAction { index } => self.run_actions.push(index),
@@ -1471,6 +1516,9 @@ fn run_in_window() -> Result<()> {
         close_settings: false,
         open_settings: None,
         remote_cut: false,
+        coach_done: None,
+        thanks: None,
+        help_site: false,
         says: Vec::new(),
         run_actions: Vec::new(),
         vault_queries: Vec::new(),
@@ -2157,6 +2205,8 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         first_run: ui.first_run,
         push_wanted: ui.push_wanted,
         ais: ui.ais.clone(),
+        coach: ui.coach,
+        thanks: ui.thanks.clone(),
         // Keep the order exactly as written in the config.
         // Listing sessions and browsers separately would push the browser
         // written first to the back.
@@ -2758,6 +2808,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // commands exist, and the answer does not change while the app runs
     // except by somebody installing one, which a settings save also notices
     let mut ai_choices = startable_ais();
+    // What has been pointed at on this machine, and whether thanks were asked
+    let mut coach_seen: u8 = std::fs::read_to_string(config::state_path("coach"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let mut thanks_asked = config::state_path("thanks-asked").exists();
+    let mut thanks_show = false;
+    // Where thanks would go: the Store's review page for the Store's copy, the
+    // repository for the zip's
+    let thanks_kind = if config::packaged() { "store" } else { "github" };
     // What the Vault overlay is showing right now: the last search and its
     // hits. Kept across frames so the results stay put until the next search,
     // and dropped from the state entirely while the overlay is closed
@@ -3151,6 +3211,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
             for (i, t) in tabs.iter_mut().enumerate() {
                 let (old, new) = t.tick(start);
                 transitions.push((i + 1, old, new));
+            }
+            // The first answer an AI has ever finished on this machine is the
+            // moment to ask for a star: something worked. Busy first, so a
+            // conversation put back at startup does not count as an answer
+            if !thanks_asked && !thanks_show {
+                thanks_show = transitions.iter().any(|&(idx, old, new)| {
+                    old == TabState::Busy
+                        && new == TabState::Done
+                        && tabs.get(idx - 1).is_some_and(|t| t.is_ai())
+                });
             }
 
             // A tab whose launch command changed in settings is flagged for
@@ -4301,8 +4371,23 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 Some((pane, name))
             })
             .map_or((None, None), |(p, n)| (Some(p), Some(n)));
+        // The first-run pointer: worked out from what is on screen, and what
+        // has been pointed at before. Written down the moment it moves on, so
+        // the next start does not point at the same thing twice
+        let folder_count = workspaces
+            .get(ws_index)
+            .map(|w| w.folders.iter().filter(|f| f.cwd.is_some()).count())
+            .unwrap_or(0);
+        let past_the_plus = tabs.iter().any(|t| t.is_ai() || t.place.linked);
+        let (coach, seen) = coach_step(folder_count, coach_seen, past_the_plus);
+        if seen != coach_seen {
+            coach_seen = seen;
+            let _ = crate::crypto::write_atomic(&config::state_path("coach"), &seen.to_string());
+        }
         let ui = Ui {
             ais: ai_choices.clone(),
+            coach,
+            thanks: thanks_show.then(|| thanks_kind.to_string()),
             first_run,
             push_wanted: cfg.as_ref().is_some_and(|c| {
                 c.notify.values().any(|d| matches!(d, notify::Destination::Phone {}))
@@ -5796,6 +5881,27 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // person wrote into settings, so the cut only drops connections and
         // password sessions; revoking a phone means changing that string.
         let sticky = cfg.as_ref().is_some_and(|c| c.remote.sticky_token);
+        if let Some(step) = surface.take_coach_done() {
+            if step > coach_seen {
+                coach_seen = step;
+                let _ = crate::crypto::write_atomic(&config::state_path("coach"), &step.to_string());
+            }
+        }
+        if let Some(open) = surface.take_thanks() {
+            if open {
+                crate::webui::open_external(match thanks_kind {
+                    "store" => STORE_REVIEW_URL,
+                    _ => REPO_URL,
+                });
+            }
+            // Asked once. Pressed either way, it is over
+            thanks_show = false;
+            thanks_asked = true;
+            let _ = crate::crypto::write_atomic(&config::state_path("thanks-asked"), "1");
+        }
+        if surface.take_help_site() {
+            crate::webui::open_external(&i18n::t("tui.help.url"));
+        }
         if surface.take_remote_cut() && remote_ui.is_some() {
             if let Some(r) = remote_ui.as_mut() {
                 if sticky {
@@ -9300,6 +9406,10 @@ struct Ui {
     /// The AIs this machine can start, for the dialog that makes a folder
     /// and starts one in it
     ais: Vec<crate::uistate::AiChoice>,
+    /// Which first-run pointer is up, if one is (see `coach_step`)
+    coach: Option<u8>,
+    /// The thanks card, when it is up: which page it would open
+    thanks: Option<String>,
 }
 
 
@@ -10028,6 +10138,26 @@ mod tests {
     }
 
     /// The tab bar's + must arrive with the prefix key attached, so it works no matter which tab is being viewed
+    /// Two pointers, each shown until its step is over, never again after.
+    #[test]
+    fn the_first_run_pointer_moves_on_and_never_comes_back() {
+        // Nothing yet: point at "add a folder", and remember having done so
+        assert_eq!(super::coach_step(0, 0, false), (Some(1), 1));
+        // ...and it stays up on the next frame, once "shown" is written down
+        assert_eq!(super::coach_step(0, 1, false), (Some(1), 1), "1歩目が次のフレームで消える");
+        // One folder, nothing started in it: point at its +
+        assert_eq!(super::coach_step(1, 1, false), (Some(2), 1));
+        // An AI (or a branch) appeared: over, for good
+        assert_eq!(super::coach_step(1, 1, true), (None, 2));
+        assert_eq!(super::coach_step(1, 2, false), (None, 2), "閉じた歩が戻ってきた");
+        // Two folders at once: the second pointer is skipped, not shown later
+        assert_eq!(super::coach_step(2, 1, false), (None, 1));
+        // Somebody from before the pointer existed is not pointed at anything
+        assert_eq!(super::coach_step(3, 0, false), (None, 0));
+        // Folders all removed later: not a first run any more
+        assert_eq!(super::coach_step(0, 2, false), (None, 2));
+    }
+
     #[test]
     fn the_add_tab_button_arrives_prefixed() {
         let evs = super::keys_for(&crate::browser::Ev::AddTab { pane: None, folder: None });

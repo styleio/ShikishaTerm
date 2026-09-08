@@ -184,6 +184,9 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // would mean the answer to "my folder is gone" is "wait until you are
         // home", which is not an answer this app is allowed to give.
         Ev::Branch { .. } | Ev::Repair { .. } => true,
+        // Closing the first-run pointer. It is drawn on the phone as well, and
+        // a pointer that cannot be closed from where it is seen is a nag
+        Ev::Coach { .. } => true,
         // Walking this PC's folders to open another one. The list exists
         // precisely because a phone has no folder dialog of its own
         // (uistate::BrowseState) -- refusing it here left the phone a dialog

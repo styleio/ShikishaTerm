@@ -722,6 +722,13 @@ pub struct UiState {
     /// The AIs this machine can start in a folder just made
     #[serde(default)]
     pub ais: Vec<AiChoice>,
+    /// The first-run pointer that is up: 1 = add a folder, 2 = press its +
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coach: Option<u8>,
+    /// The thanks card, when it is up: `github` or `store`, which is where
+    /// its button leads
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thanks: Option<String>,
     /// Whether the settings name a phone as somewhere answers go. Only the
     /// browser holding the page can know whether it is that phone yet, so
     /// the app says just that one is wanted, and the phone's board offers

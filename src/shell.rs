@@ -79,6 +79,33 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.gearrow:hover { color:inherit; }
   .tab.gearrow.sel { color:var(--text); }
   .tab.gearrow .gear { font-size:17px; line-height:1; }
+  .tab.gearrow { gap:18px; }
+  .tab.gearrow .help { font-size:15px; line-height:1; color:var(--dim); text-decoration:none;
+    width:22px; height:22px; border:1px solid var(--line); border-radius:50%;
+    display:inline-flex; align-items:center; justify-content:center; }
+  .tab.gearrow .help:hover { color:var(--text); border-color:var(--text); }
+  /* The first-run pointer: a bubble beside the one thing to press next,
+     with a corner pointing at it. Nothing about it moves on its own */
+  #coach { position:fixed; z-index:55; max-width:260px; background:var(--panel); color:var(--text);
+    border:1px solid var(--brand); border-radius:10px; padding:10px 12px; font-size:12.5px;
+    line-height:1.45; box-shadow:0 8px 24px #0007; display:flex; gap:10px; align-items:flex-start; }
+  #coach[hidden] { display:none; }
+  #coach::before { content:""; position:absolute; left:-7px; top:14px; width:12px; height:12px;
+    background:var(--panel); border-left:1px solid var(--brand); border-bottom:1px solid var(--brand);
+    transform:rotate(45deg); }
+  #coach.below::before { left:14px; top:-7px; transform:rotate(135deg); }
+  #coach .cx { color:var(--dim); cursor:pointer; flex:none; }
+  #coach .cx:hover { color:var(--text); }
+  /* Once: a star, if you like it. Sits above the gear, and goes for good */
+  .thanks { margin:auto 8px 6px; padding:10px 12px; border:1px solid var(--line); border-radius:10px;
+    background:var(--raise); font-size:12px; }
+  .thanks + .tab.gearrow { margin-top:0; }
+  .thanks .tt { font-weight:600; margin-bottom:4px; }
+  .thanks .tb { color:var(--dim); margin-bottom:8px; line-height:1.4; white-space:normal; }
+  .thanks .tr { display:flex; gap:6px; }
+  .thanks button { font:inherit; font-size:12px; padding:5px 10px; border-radius:7px;
+    border:1px solid var(--line); background:var(--bg); color:var(--text); cursor:pointer; }
+  .thanks button.go { border-color:var(--brand); color:var(--brand); }
   .tab { display:flex; align-items:center; gap:8px; padding:7px 10px;
     cursor:pointer; border-left:3px solid transparent; user-select:none; }
   .tab:hover { background:var(--hover); }
@@ -1601,13 +1628,30 @@ function drawTabs() {
   // whole list there was no saying where. Tabs are added from the folder they
   // will run in.
   // Blinking on a machine that has nothing set up yet: the shell that opened
-  // says the program runs, and this says what to press next
-  const bare = !!S.first_run && !folders.length;
+  // says the program runs, and this says what to press next. The pointer
+  // beside it says the same in words (drawCoach)
+  const bare = (S.coach || 0) === 1;
   nav.append(el("div", {class:"tab addtab" + (bare ? " pulse" : ""), onclick:e => addMenu(e)},
     el("span", {class:"num"}, "+"),
     el("span", {class:"nm"}, T["tui.folder.add"] || "ADD A FOLDER")));
+  // Once, after the first answer an AI has finished here: a star, if you
+  // like it. On the window only -- the page it opens is this PC's
+  if (S.thanks && !REMOTE) {
+    const kind = S.thanks;
+    nav.append(el("div", {class:"thanks"},
+      el("div", {class:"tt"}, T["tui.thanks.title"] || ""),
+      el("div", {class:"tb"}, T["tui.thanks.body." + kind] || ""),
+      el("div", {class:"tr"},
+        el("button", {class:"go", onclick:() => send({kind:"thanks", open:true})},
+          T["tui.thanks.open." + kind] || ""),
+        el("button", {class:"quiet", onclick:() => send({kind:"thanks", open:false})},
+          T["tui.thanks.close"] || ""))));
+  }
   // The settings gear, pinned to the very bottom of the sidebar. Always visible.
+  // Beside it, the manual on the site: the window asks the app to open the
+  // PC's browser, the phone follows a plain link
   const settingsOpen = !!S.settings_open;
+  const manual = T["tui.help.url"] || "https://shikisha-term.com/manual/";
   nav.append(el("div", {class:"tab gearrow" + (settingsOpen ? " sel" : ""),
       title:T["tui.menu.settings"] || "SETTINGS",
       // On the phone, settings is served by reverse-proxy at /cfg and rendered
@@ -1615,7 +1659,58 @@ function drawTabs() {
       // the URL (it's traded for a cookie and stripped on arrival). In the window
       // it opens as the child WebView, as before.
       onclick:() => openSettings()},
-    el("span", {class:"gear"}, "⚙️")));
+    el("span", {class:"gear"}, "⚙️"),
+    REMOTE
+      ? el("a", {class:"help", href:manual, target:"_blank", rel:"noopener",
+          title:T["tui.help.site"] || "Manual", onclick:e => e.stopPropagation()}, "?")
+      : el("span", {class:"help", title:T["tui.help.site"] || "Manual",
+          onclick:e => { e.stopPropagation(); send({kind:"help"}); }}, "?")));
+  drawCoach();
+}
+
+// ── The first-run pointer ────────────────────
+// A bubble beside the one thing to press next: "add a folder" while there is
+// none, then that folder's + while nothing has been started in it. Which of
+// the two is up is the app's decision (it knows what has been pointed at
+// before); this only draws it. Closed with its ✕, or by doing the thing
+let coachShut = 0;
+function drawCoach() {
+  let box = document.getElementById("coach");
+  const step = (S && S.coach) || 0;
+  const anchor = step === 1 ? document.querySelector("#tabs .tab.addtab")
+    : step === 2 ? document.querySelector("#tabs .tab.folder .more") : null;
+  if (!step || step === coachShut || !anchor) {
+    if (box) box.hidden = true;
+    return;
+  }
+  if (!box) {
+    box = el("div", {id:"coach"},
+      el("span", {class:"ctext"}),
+      el("span", {class:"cx", title:T["tui.coach.close"] || "Close", onclick:() => {
+        coachShut = (S && S.coach) || 0;
+        box.hidden = true;
+        send({kind:"coach", step:coachShut});
+      }}, "✕"));
+    document.body.append(box);
+  }
+  // Touched only when the words change: the list is redrawn several times a
+  // second, and a bubble rebuilt each time would flicker
+  const text = step === 1 ? (T["tui.coach.folder"] || "") : (T["tui.coach.plus"] || "");
+  const t = box.querySelector(".ctext");
+  if (t.textContent !== text) t.textContent = text;
+  box.hidden = false;
+  // To the right of what it points at, and below it when there is no room
+  const r = anchor.getBoundingClientRect();
+  const w = box.getBoundingClientRect().width || 240;
+  if (r.right + 8 + w <= window.innerWidth) {
+    box.style.left = (r.right + 8) + "px";
+    box.style.top = Math.max(4, r.top - 8) + "px";
+    box.classList.remove("below");
+  } else {
+    box.style.left = Math.max(4, Math.min(r.left, window.innerWidth - w - 8)) + "px";
+    box.style.top = (r.bottom + 8) + "px";
+    box.classList.add("below");
+  }
 }
 
 // A folder's heading. One mark, saying two things at once: the colour is
@@ -1649,8 +1744,10 @@ function folderRow(g, kin, head) {
   }
   // A raw append writes a null out as the word "null"; el() filters it, so
   // the tail goes through el() too
+  // The + blinks while the pointer says to press it
+  const next = (S.coach || 0) === 2 ? " pulse" : "";
   row.append(...[drifted(g),
-    el("span", {class:"more", title:T["tui.folder.add"] || "+",
+    el("span", {class:"more" + next, title:T["tui.folder.add"] || "+",
         onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+")].filter(Boolean));
   return row;
 }
@@ -7369,6 +7466,22 @@ mod tests {
         assert!(PAGE.contains("tabpos: tabpos});"), "窓の道に位置が乗らない");
     }
 
+    /// Two pointers and no more, each beside the thing it names, closed by
+    /// its ✕ or by doing the thing. The thanks card and the `?` live by the
+    /// gear: the window asks the app, the phone follows a link.
+    #[test]
+    fn the_first_run_pointer_the_thanks_card_and_the_manual_link_are_drawn() {
+        assert!(PAGE.contains(r##"const anchor = step === 1 ? document.querySelector("#tabs .tab.addtab")"##), "1歩目の刺す先が無い");
+        assert!(PAGE.contains(r##": step === 2 ? document.querySelector("#tabs .tab.folder .more") : null;"##), "2歩目の刺す先が無い");
+        assert!(PAGE.contains(r#"send({kind:"coach", step:coachShut});"#), "閉じたことが伝わらない");
+        assert!(PAGE.contains("if (t.textContent !== text) t.textContent = text;"), "毎フレーム作り直している");
+        assert!(PAGE.contains(r#"const next = (S.coach || 0) === 2 ? " pulse" : "";"#), "2歩目で + が光らない");
+        assert!(PAGE.contains("if (S.thanks && !REMOTE) {"), "スマホにお礼の札が出る");
+        assert!(PAGE.contains(r#"send({kind:"thanks", open:true})"#) && PAGE.contains(r#"send({kind:"thanks", open:false})"#));
+        assert!(PAGE.contains(r#"el("a", {class:"help", href:manual, target:"_blank", rel:"noopener","#), "スマホの ? がリンクでない");
+        assert!(PAGE.contains(r#"send({kind:"help"})"#), "窓の ? がアプリに頼まない");
+    }
+
     /// The branch dialog says what the new folder runs, and can make one
     /// folder per AI. Both roads (asking and making) carry the same two
     /// answers, so what was shown is what happens.
@@ -7420,7 +7533,7 @@ mod tests {
         assert!(PAGE.contains("if (g.empty) { into.append(emptyRow(g)); continue; }"), "空のフォルダが描かれない");
         assert!(PAGE.contains(r#"class:"more pulse""#), "空のフォルダの + が光らない");
         assert!(
-            PAGE.contains("const bare = !!S.first_run && !folders.length;"),
+            PAGE.contains("const bare = (S.coach || 0) === 1;"),
             "何も無い機で「作業フォルダを追加」が光らない"
         );
     }

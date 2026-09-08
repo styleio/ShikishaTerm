@@ -874,6 +874,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             keep: v.get("keep").and_then(|x| x.as_bool()).unwrap_or(true),
         },
         Some("remotecut") => Ev::RemoteCut,
+        Some("coach") => Ev::Coach {
+            step: v.get("step").and_then(|x| x.as_u64()).unwrap_or(0).min(255) as u8,
+        },
+        Some("thanks") => Ev::Thanks { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
+        Some("help") => Ev::Help,
         // A quick-action chip whose payload is Lua (the code stays server-side —
         // the page only knows the index). Runs it against the active tab.
         Some("runaction") => Ev::RunAction {
@@ -1339,6 +1344,17 @@ pub enum Ev {
     /// and drop the open connections. Window-only — a phone can't disconnect
     /// itself (allowed_from_afar leaves it on the reject side).
     RemoteCut,
+    /// The first-run pointer was closed, or the thing it pointed at was done.
+    /// `step` is which of the two it was; a closed step never comes back
+    Coach { step: u8 },
+    /// The card that asks for a star (or a Store review) after the first
+    /// answer was pressed. `open` says whether the page is to be opened;
+    /// either way the card is put away for good. Window-only: the page it
+    /// opens is this PC's
+    Thanks { open: bool },
+    /// The `?` beside the gear: the manual on the site, in the PC's browser.
+    /// Window-only -- a phone reaches the same page through a plain link
+    Help,
     /// A Lua quick-action fired from the bar. `index` is its position in
     /// config.actions; the code is looked up and run server-side (the page never
     /// holds Lua source). Allowed from afar — it runs the user's own action.
