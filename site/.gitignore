@@ -3,6 +3,8 @@ dist/
 .astro/
 
 # docs/ から毎ビルド生成されるページ (情報源は docs/ 側だけ)
+src/content/docs/manual.md
+src/content/docs/ja/manual.md
 src/content/docs/automation.md
 src/content/docs/translating.md
 src/content/docs/ja/automation.md
