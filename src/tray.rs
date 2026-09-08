@@ -4,36 +4,56 @@
 //! Closing the window used to end the program, and with it every AI at work
 //! in a tab and the phone's connection. Now the window is only put away, and
 //! this icon is the one thing left on screen that says the program is still
-//! there: a left press brings the window back, a right press offers "Open"
-//! and "Quit", the latter being the only way to end the program from here.
+//! there: a press brings the window back, a right press offers "Open" and
+//! "Quit", the latter being the only way to end the program from here.
 //!
 //! Hand-rolled over `Shell_NotifyIcon` rather than a crate: it is one icon,
-//! one message and a two-line menu, and the message loop it has to fit into
-//! is `tao`'s, which offers a hook for exactly this.
+//! one message and a two-line menu.
+//!
+//! The shell reports a press by *sending* the callback message to the
+//! window, straight into its window procedure -- not by posting it to the
+//! queue. The first cut listened on the queue (tao's message hook), which a
+//! test that posted the message itself passed, and which a real press never
+//! reached. So the window procedure is taken over here (`attach`), and the
+//! events are read there.
 
 use std::ffi::c_void;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
-use windows_sys::Win32::Foundation::POINT;
+use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIM_SETVERSION, NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
+    Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, GetSystemMetrics, IMAGE_ICON,
-    LR_DEFAULTCOLOR, LoadImageW, MF_STRING, MSG, PostMessageW, SM_CXSMICON, SM_CYSMICON,
-    SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP,
-    WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
+    AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GWLP_WNDPROC, GetCursorPos,
+    GetSystemMetrics, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW, MF_STRING, PostMessageW,
+    SM_CXSMICON, SM_CYSMICON, SetForegroundWindow, SetWindowLongPtrW, TPM_NONOTIFY,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_CONTEXTMENU, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDPROC,
 };
+use windows_sys::Win32::UI::Shell::{NIN_POPUPCLOSE, NIN_POPUPOPEN};
 
-/// The message the shell sends the window about the icon. Anything above
-/// `WM_APP` is ours to define; the offset only has to be one nothing else in
-/// this program uses
-const CALLBACK: u32 = WM_APP + 0x5348;
+/// The message the shell sends the window about the icon. `WM_APP` up to
+/// `0xBFFF` is the range a program may define for itself; the first cut of
+/// this went past it (`WM_APP + 0x5348`, into the range Windows keeps for
+/// registered messages)
+const CALLBACK: u32 = WM_APP + 0x0348;
 /// This program's one icon
 const ID: u32 = 1;
 const MENU_OPEN: usize = 1;
 const MENU_QUIT: usize = 2;
+/// A press made with the keyboard (Enter or Space on the icon)
+const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
+/// What the shell says about the icon when asked in the modern way
+/// (`NOTIFYICON_VERSION_4`): the event in the low word of `lParam`, and a
+/// press is `NIN_SELECT`, not a mouse message. The mouse messages are kept as
+/// well, for a shell that still sends them
+const OPEN_EVENTS: [u32; 4] = [NIN_SELECT, NIN_KEYSELECT, WM_LBUTTONUP, WM_LBUTTONDBLCLK];
+const MENU_EVENTS: [u32; 2] = [WM_CONTEXTMENU, WM_RBUTTONUP];
 
 /// What a press on the icon asked for
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +71,18 @@ pub enum Pressed {
 pub struct Tray {
     hwnd: isize,
 }
+
+/// Where a press is reported, and the two words on the menu. One window,
+/// one of these
+struct Sink {
+    on: Box<dyn Fn(Pressed) + Send>,
+    open: String,
+    quit: String,
+}
+
+static SINK: Mutex<Option<Sink>> = Mutex::new(None);
+/// The window procedure this one stands in front of
+static PREVIOUS: AtomicIsize = AtomicIsize::new(0);
 
 /// Writes `s` into a fixed UTF-16 field, cut to fit, always terminated
 fn fill(field: &mut [u16], s: &str) {
@@ -73,9 +105,17 @@ fn data(hwnd: isize) -> NOTIFYICONDATAW {
 
 impl Tray {
     /// Puts the icon up, wearing the program's own picture at the size the
-    /// notification area wants, with `tip` as the text under the pointer
-    pub fn add(hwnd: isize, tip: &str) -> Self {
+    /// notification area wants, with `tip` as the text under the pointer, and
+    /// stands in front of the window's procedure to read what the shell says
+    /// about it. `on` is told of every press; `open` and `quit` are the menu
+    pub fn add(hwnd: isize, tip: &str, on: impl Fn(Pressed) + Send + 'static, open: &str, quit: &str) -> Self {
         const OUR_ICON: *const u16 = 1 as *const u16; // MAKEINTRESOURCE(1)
+        *SINK.lock().unwrap() = Some(Sink { on: Box::new(on), open: open.into(), quit: quit.into() });
+        unsafe {
+            let previous = SetWindowLongPtrW(hwnd as *mut c_void, GWLP_WNDPROC, procedure as isize);
+            PREVIOUS.store(previous, Ordering::Relaxed);
+        }
+
         let mut d = data(hwnd);
         d.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         d.uCallbackMessage = CALLBACK;
@@ -91,7 +131,16 @@ impl Tray {
         }
         fill(&mut d.szTip, tip);
         unsafe {
-            Shell_NotifyIconW(NIM_ADD, &d);
+            let added = Shell_NotifyIconW(NIM_ADD, &d);
+            // Ask for the modern events (see OPEN_EVENTS). Has to be asked
+            // after the icon exists
+            d.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+            let versioned = Shell_NotifyIconW(NIM_SETVERSION, &d);
+            if added == 0 || versioned == 0 {
+                crate::append_hook_log(&format!(
+                    "tray: the icon could not be put up (add={added}, version={versioned})"
+                ));
+            }
         }
         Self { hwnd }
     }
@@ -119,24 +168,55 @@ impl Tray {
     }
 }
 
-/// Reads one message off the loop. `None` when it is not about the icon;
-/// otherwise what the press asked for, the menu having been shown and
-/// answered here when the press was a right one.
-///
-/// `msg` is what tao's message hook hands over: a pointer to the `MSG`
-pub fn pressed(msg: *const c_void, hwnd: isize, open: &str, quit: &str) -> Option<Pressed> {
-    if msg.is_null() || hwnd == 0 {
-        return None;
+/// The window procedure, in front of the window's own. Reads the icon's
+/// events and the "show yourself" request of a second copy; everything else
+/// goes on to where it went before
+unsafe extern "system" fn procedure(hwnd: *mut c_void, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    if msg == CALLBACK {
+        let (open, quit) = {
+            let sink = SINK.lock().unwrap();
+            sink.as_ref().map(|s| (s.open.clone(), s.quit.clone())).unwrap_or_default()
+        };
+        // The menu runs its own message loop; the lock must not be held
+        // across it, or a press made from inside would wait on itself
+        let pressed = event(hwnd as isize, l, &open, &quit);
+        if let Some(sink) = SINK.lock().unwrap().as_ref() {
+            (sink.on)(pressed);
+        }
+        return 0;
     }
-    let m = unsafe { &*(msg as *const MSG) };
-    if m.hwnd as isize != hwnd || m.message != CALLBACK {
-        return None;
+    if crate::instance::is_show_id(msg) {
+        if let Some(sink) = SINK.lock().unwrap().as_ref() {
+            (sink.on)(Pressed::Open);
+        }
+        return 0;
     }
-    match m.lParam as u32 {
-        WM_LBUTTONUP | WM_LBUTTONDBLCLK => Some(Pressed::Open),
-        WM_RBUTTONUP | WM_CONTEXTMENU => Some(menu(hwnd, open, quit)),
-        _ => Some(Pressed::Nothing),
+    let previous: WNDPROC = unsafe { std::mem::transmute(PREVIOUS.load(Ordering::Relaxed)) };
+    unsafe { CallWindowProcW(previous, hwnd, msg, w, l) }
+}
+
+/// What one callback asked for, the menu having been shown and answered here
+/// when the press was a right one
+fn event(hwnd: isize, lparam: LPARAM, open: &str, quit: &str) -> Pressed {
+    // Version 4 puts the event in the low word (the icon's id is in the high
+    // one); the older shape is the bare mouse message, which fits in the low
+    // word as well
+    let event = (lparam as u32) & 0xffff;
+    if OPEN_EVENTS.contains(&event) {
+        return Pressed::Open;
     }
+    if MENU_EVENTS.contains(&event) {
+        return menu(hwnd, open, quit);
+    }
+    // Anything unexpected is worth a line: this is how "a press does nothing"
+    // gets its name next time. The pointer passing over, the halves of a
+    // press that arrive before the press itself, and the tip opening and
+    // closing are the expected traffic of every press, so those are not
+    const EXPECTED: [u32; 5] = [WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, NIN_POPUPOPEN, NIN_POPUPCLOSE];
+    if !EXPECTED.contains(&event) {
+        crate::append_hook_log(&format!("tray: event 0x{event:x} (nothing to do)"));
+    }
+    Pressed::Nothing
 }
 
 /// Shows the two-line menu under the pointer and waits for the answer.
@@ -197,18 +277,14 @@ mod tests {
         assert_eq!(g[2], 0);
     }
 
-    /// A message for some other window, or about something else, is not ours
+    /// A press is a press in both shapes the shell uses, and the pointer
+    /// passing over is not one
     #[test]
-    fn a_message_that_is_not_about_the_icon_is_left_alone() {
-        assert_eq!(pressed(std::ptr::null(), 1, "o", "q"), None);
-        let mut m: MSG = unsafe { std::mem::zeroed() };
-        m.hwnd = 7 as *mut c_void;
-        m.message = CALLBACK;
-        m.lParam = WM_LBUTTONUP as isize;
-        assert_eq!(pressed(&m as *const MSG as *const c_void, 8, "o", "q"), None);
-        m.message = CALLBACK + 1;
-        assert_eq!(pressed(&m as *const MSG as *const c_void, 7, "o", "q"), None);
-        m.message = CALLBACK;
-        assert_eq!(pressed(&m as *const MSG as *const c_void, 7, "o", "q"), Some(Pressed::Open));
+    fn a_press_is_read_in_both_shapes_the_shell_uses() {
+        assert_eq!(event(7, WM_LBUTTONUP as isize, "o", "q"), Pressed::Open);
+        // The modern shape: the event low, the icon's id high
+        assert_eq!(event(7, ((ID as isize) << 16) | NIN_SELECT as isize, "o", "q"), Pressed::Open);
+        assert_eq!(event(7, ((ID as isize) << 16) | NIN_KEYSELECT as isize, "o", "q"), Pressed::Open);
+        assert_eq!(event(7, ((ID as isize) << 16) | WM_MOUSEMOVE as isize, "o", "q"), Pressed::Nothing);
     }
 }

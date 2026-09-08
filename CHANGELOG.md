@@ -14,8 +14,8 @@ once it reaches its first tagged release.
   working, automation goes on running, and a phone stays connected and can
   still be notified. The icon there brings the window back with a click, and
   its menu has the one real Quit. The first time the window is put away a
-  banner says where it went, since on Windows 11 the icon starts out under the
-  ^ at the end of the taskbar. A setting under Basic ("The ✕ button") makes ✕
+  banner says it is still running in the background and how to get it back.
+  A setting under Basic ("The ✕ button") makes ✕
   quit instead, for those who want the old way. Quitting — from the icon,
   from Ctrl+B q, or from ✕ with that setting — asks first while a tab is
   still working, because the conversation comes back next time and the work

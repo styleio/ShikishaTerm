@@ -18,14 +18,11 @@
 //! show is a message registered under the same name and posted to every
 //! top-level window; only the window of the copy on this layout knows it.
 
-use std::ffi::c_void;
 use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
 use windows_sys::Win32::System::Threading::CreateMutexW;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    HWND_BROADCAST, MSG, PostMessageW, RegisterWindowMessageW,
-};
+use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_BROADCAST, PostMessageW, RegisterWindowMessageW};
 
 /// Held for the life of the process. Dropping it (or dying) lets the next
 /// start be the first again
@@ -107,14 +104,9 @@ pub fn ask_to_show() {
     }
 }
 
-/// Whether a message off the loop is that request. `msg` is what tao's
-/// message hook hands over: a pointer to the `MSG`
-pub fn is_show(msg: *const c_void) -> bool {
-    if msg.is_null() {
-        return false;
-    }
-    let m = unsafe { &*(msg as *const MSG) };
-    m.message == show_message()
+/// Whether a message reaching the window's procedure is that request
+pub fn is_show_id(message: u32) -> bool {
+    message == show_message()
 }
 
 #[cfg(test)]
@@ -138,11 +130,7 @@ mod tests {
     /// Only the registered message is the request, and nothing else is
     #[test]
     fn only_the_registered_message_is_the_request() {
-        assert!(!is_show(std::ptr::null()));
-        let mut m: MSG = unsafe { std::mem::zeroed() };
-        m.message = show_message() + 1;
-        assert!(!is_show(&m as *const MSG as *const c_void));
-        m.message = show_message();
-        assert!(is_show(&m as *const MSG as *const c_void));
+        assert!(!is_show_id(show_message() + 1));
+        assert!(is_show_id(show_message()));
     }
 }

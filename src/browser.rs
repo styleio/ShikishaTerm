@@ -3337,36 +3337,9 @@ fn run_window(
     use tao::window::WindowBuilder;
     use wry::{WebContext, WebViewBuilder};
 
-    // The notification-area icon reports to the window as a message, and the
-    // loop's message hook is the one place those pass through. The window
-    // does not exist yet, so its handle is filled in below, once it does
-    let tray_hwnd = std::sync::Arc::new(std::sync::atomic::AtomicIsize::new(0));
-    let hook_hwnd = std::sync::Arc::clone(&tray_hwnd);
-    let hook_tx = ev_tx.clone();
-    let (open_label, quit_label) = (crate::i18n::t("tray.open"), crate::i18n::t("tray.quit"));
     // Runs on a separate thread from the TUI's render loop, so lift the main-thread restriction
     let mut ev_loop = EventLoopBuilder::<Cmd>::with_user_event()
         .with_any_thread(true)
-        .with_msg_hook(move |msg| {
-            // A second copy started over this layout asks for the window
-            if crate::instance::is_show(msg) {
-                let _ = hook_tx.send(Ev::TrayOpen);
-                return true;
-            }
-            let hwnd = hook_hwnd.load(Ordering::Relaxed);
-            match crate::tray::pressed(msg, hwnd, &open_label, &quit_label) {
-                Some(crate::tray::Pressed::Open) => {
-                    let _ = hook_tx.send(Ev::TrayOpen);
-                    true
-                }
-                Some(crate::tray::Pressed::Quit) => {
-                    let _ = hook_tx.send(Ev::TrayQuit);
-                    true
-                }
-                Some(crate::tray::Pressed::Nothing) => true,
-                None => false,
-            }
-        })
         .build();
     proxy_tx
         .send(ev_loop.create_proxy())
@@ -3380,10 +3353,24 @@ fn run_window(
             .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0))
             .build(&ev_loop)?,
     );
+    // The notification-area icon. Its presses, and a second copy's request
+    // for the window, arrive through the window's own procedure (see tray.rs)
     let tray = {
         use tao::platform::windows::WindowExtWindows;
-        tray_hwnd.store(window.hwnd(), Ordering::Relaxed);
-        crate::tray::Tray::add(window.hwnd(), title)
+        let tell = ev_tx.clone();
+        crate::tray::Tray::add(
+            window.hwnd(),
+            title,
+            move |pressed| {
+                let _ = match pressed {
+                    crate::tray::Pressed::Open => tell.send(Ev::TrayOpen),
+                    crate::tray::Pressed::Quit => tell.send(Ev::TrayQuit),
+                    crate::tray::Pressed::Nothing => Ok(()),
+                };
+            },
+            &crate::i18n::t("tray.open"),
+            &crate::i18n::t("tray.quit"),
+        )
     };
     #[cfg(windows)]
     {
