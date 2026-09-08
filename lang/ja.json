@@ -43,6 +43,7 @@
   "tui.folder.behind": "最後に取り寄せた時点で、リモートにあってこのフォルダに無いコミットが{n}個",
   "tui.folder.ahead": "最後に取り寄せた時点で、このフォルダにあってリモートに無いコミットが{n}個",
   "tui.folder.kin": "枝 {n}",
+  "tui.folder.kin.one": "枝 1",
   "tui.folder.kin.title": "この元から切った枝をまとめて畳む／開く",
   "tui.folder.on.title": "元のフォルダが乗っているブランチ",
   "tui.repair.title": "このフォルダをこのPCに用意する",

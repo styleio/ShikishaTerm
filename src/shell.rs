@@ -1745,7 +1745,8 @@ function folderRow(g, kin, head) {
     const away = folded.has("kin:" + g.family);
     row.append(el("span", {class:"kin", title:T["tui.folder.kin.title"] || "",
         onclick:e => { e.stopPropagation(); fold("kin:" + g.family); }},
-      (T["tui.folder.kin"] || "{n} branches").replace("{n}", n) + " " + (away ? "▸" : "▾")));
+      ((n === 1 && T["tui.folder.kin.one"]) || (T["tui.folder.kin"] || "{n} branches")).replace("{n}", n)
+        + " " + (away ? "▸" : "▾")));
   }
   // A raw append writes a null out as the word "null"; el() filters it, so
   // the tail goes through el() too
