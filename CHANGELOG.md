@@ -21,6 +21,17 @@ once it reaches its first tagged release.
   file from before this fix would have opened as an empty workspace on a
   version that only knew the old shape, so the file's version number went up:
   such a version now says it cannot read it instead.
+- **The Store copy runs the scripts a person writes.** An installed copy keeps
+  its settings under `%LOCALAPPDATA%\SHIKISHA-TERM`, and its `scripts\` folder
+  belongs there with them — but automation was looked for only beside the exe
+  (the read-only package folder, where the shipped examples are) and in the
+  working folder, which for a program started from the Start menu is
+  `C:\Windows\System32`. So a script written there never ran, and a folder the
+  settings screen made for one went to System32. Automation is now looked for
+  under the layout root first, then beside the exe, and made under the root
+  when it does not exist yet. Nothing changes for the download, where the two
+  are the same folder. A script that could not be read is also written to
+  `logs\hooks.log` now, not only flashed on the board for a few seconds.
 - **An imported workspace does not grant itself this machine's secrets.** The
   allow-list travels out with the workspace, as a note of what it needs, but
   is dropped on the way in; the person grants it again in the settings,

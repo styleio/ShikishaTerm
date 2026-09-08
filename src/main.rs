@@ -2656,6 +2656,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut last_beat = Instant::now();
     // Whether an overlaid browser is currently being shown. Leaving it up would
     // permanently hide the terminal, so it's hidden by default.
+    // The board flashes only the first of these, and a flash fades. Every one
+    // of them goes to the log as well, so that a script that never ran can be
+    // told apart, afterwards, from a script that ran and did nothing
+    for e in &startup_errors {
+        append_hook_log(&format!("Startup: {e}"));
+    }
     let mut flash: Option<String> = startup_errors
         .first()
         .map(|e| i18n::tp("msg.startup_failed", &[("error", e)]))
@@ -6824,7 +6830,12 @@ fn build_engine(
         }
     };
     let load = |engine: &mut HookEngine, path: &str, errors: &mut Vec<String>| -> Option<usize> {
-        match engine.load_path(&resolve_data_path(path)) {
+        // One lookup, shared with the settings screen and the config loader, so
+        // "where the program runs it from" and "where the screen reads and
+        // writes it" cannot drift apart. A second copy used to live here, without
+        // the layout root, which is how the Store copy came to run none of the
+        // scripts a person wrote
+        match engine.load_path(&config::resolve_data_path(path)) {
             Ok(id) => Some(id),
             Err(e) => {
                 errors.push(format!("Lua({path}): {e:#}"));
@@ -8028,23 +8039,6 @@ fn open_result(
         &url,
         browser::BrowserProfile::shared_default(),
     )
-}
-
-/// Resolves a data file's path, preferring the location beside the exe (portable layout).
-/// Used to resolve the automation directory. The settings GUI (webui) uses this
-/// same resolution too, so "where the main app runs it from" and "where the
-/// GUI reads/writes it" never drift apart.
-pub(crate) fn resolve_data_path(p: &str) -> std::path::PathBuf {
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
-    {
-        let cand = dir.join(p);
-        if cand.exists() {
-            return cand;
-        }
-    }
-    std::path::PathBuf::from(p)
 }
 
 /// Builds a placed page's context from the screen layout.

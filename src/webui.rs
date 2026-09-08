@@ -305,9 +305,9 @@ fn safe_dir_path(url: &str, _config_path: &std::path::Path) -> Option<std::path:
     }) {
         return None;
     }
-    // Uses the same resolution as the main app's automation loader. Prefers next to the exe over next to config.
+    // Uses the same resolution as the main app's automation loader: the layout root first, then beside the exe.
     // If this drifts, you get "the GUI says it's unconfigured but it actually runs" / "editing in the GUI has no effect"
-    Some(crate::resolve_data_path(&decoded))
+    Some(crate::config::resolve_data_path(&decoded))
 }
 
 /// The manual is embedded in the exe. It can always be referenced regardless of where it's

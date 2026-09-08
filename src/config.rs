@@ -1959,15 +1959,34 @@ fn data_path_candidates(p: &str) -> Vec<String> {
     out
 }
 
-/// Resolve a data file path, preferring beside the exe (portable layout).
+/// Where a relative path written in the settings -- an automation folder, a
+/// workspace file -- is looked for, in order:
+///
+/// 1. the layout root (`root_dir`): the person's own folder, where the
+///    settings screen writes and where a carried-over `scripts\` lands;
+/// 2. beside the exe: what ships with the program, such as the examples.
+///    The same place as 1 for the download, and the read-only package
+///    folder for the Store copy;
+/// 3. the working folder, for a path typed relative to wherever the program
+///    was started from.
+///
+/// Nothing found means a place to make it, and that is the root: the one of
+/// the three that is always writable. The Store copy used to look only in 2
+/// and 3, so a script under `%LOCALAPPDATA%\SHIKISHA-TERM\scripts` was never
+/// found, and a folder the settings screen made went to the working folder
+/// -- `C:\Windows\System32` when started from the Start menu.
+///
 /// Configs pointing at the old projects/ name also fall back to workspaces/ (compat)
 pub fn resolve_data_path(p: &str) -> std::path::PathBuf {
     let candidates = data_path_candidates(p);
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(std::path::Path::to_path_buf));
+    let root = root_dir();
+    let mut dirs = vec![root.clone()];
+    let exe = exe_dir();
+    if exe != root {
+        dirs.push(exe);
+    }
     for cand in &candidates {
-        if let Some(dir) = &exe_dir {
+        for dir in &dirs {
             let full = dir.join(cand);
             if full.exists() {
                 return full;
@@ -1978,7 +1997,7 @@ pub fn resolve_data_path(p: &str) -> std::path::PathBuf {
             return local;
         }
     }
-    std::path::PathBuf::from(p)
+    root.join(p)
 }
 
 impl Config {
@@ -2739,6 +2758,28 @@ mod tests {
         );
         // Anything else is only ever itself
         assert_eq!(data_path_candidates("scripts/x.lua"), ["scripts/x.lua"]);
+    }
+
+    /// A relative path in the settings is found under the layout root, and a
+    /// path that exists nowhere yet is placed there too -- not in the working
+    /// folder, which for an installed copy started from the Start menu is
+    /// System32
+    #[test]
+    fn a_written_path_is_found_under_the_root_and_made_there() {
+        let stamp = format!("resolve-test-{}", std::process::id());
+        let dir = root_dir().join(&stamp);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rel = format!("{stamp}/on_done.lua");
+        std::fs::write(root_dir().join(&rel), "").unwrap();
+        assert_eq!(resolve_data_path(&rel), root_dir().join(&rel), "根の下にあるのに見つからない");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let missing = format!("{stamp}-missing/scripts/new");
+        assert_eq!(
+            resolve_data_path(&missing),
+            root_dir().join(&missing),
+            "無いものの置き場所が根の下になっていない"
+        );
     }
 
     #[test]
