@@ -166,7 +166,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the sidebar, and never on the left edge, which belongs to the AI's own
      colour */
   .tab.folder { padding-top:9px; padding-bottom:3px; gap:6px; }
-  .tab.folder .nm { font-size:11px; opacity:.75; letter-spacing:.02em; }
+  .tab.folder .nm { font-size:11.5px; opacity:.85; letter-spacing:.02em; }
+  /* A household: a project's own folder with the branches cut from it. One
+     box, so the eye reads them as one project; the head of it a shade
+     heavier than any other heading, since it is the row that names the
+     project, and the branches a step in from it. The step is 14px -- enough
+     to read as "under", not enough to eat the branch's name */
+  .family { margin:4px 6px; padding:2px 0 4px; border-radius:8px; background:var(--raise); }
+  .tab.folder.head .nm { font-size:12px; font-weight:600; opacity:1; }
+  .family .tab.folder.cut { padding-left:24px; }
+  .family .tab.intab.deep { padding-left:40px; }
+  /* Which branch the project itself is standing on, worn by the head of a
+     household only: alone, a folder's own branch is already on its tabs */
+  .tab.folder .on { flex:0 0 auto; font-size:10px; color:var(--dim); font-family:var(--mono);
+    border:1px solid var(--line); border-radius:4px; padding:0 4px; max-width:90px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* How many branches hang under this project, and the one press that puts
+     them all away or brings them all back */
+  .tab.folder .kin { margin-left:auto; flex:0 0 auto; font-size:10px; color:var(--dim);
+    cursor:pointer; padding:0 4px; white-space:nowrap; }
+  .tab.folder .kin:hover { color:var(--text); }
+  .tab.folder .kin ~ .drift { margin-left:6px; }
+  .tab.folder .kin ~ .more { margin-left:6px; }
   /* Both marks take the same slot, so every folder's name starts on one
      column whichever kind it is */
   .tab.folder .chip { width:8px; height:8px; border-radius:2px; flex:0 0 auto;
@@ -1524,97 +1545,43 @@ function drawTabs() {
   // so a page declared between two tabs does not split their folder in two
   const folders = S.groups || [];
   troubleRow(nav, folders);
-  let shownFolder = -1;
+  // Tabs by the folder they are in, each list in its own order. A tab in no
+  // folder at all (a browser) comes after every folder, in the order it came
+  const inside = folders.map(() => []);
+  const loose = [];
   for (const t of S.tabs) {
     // Settings isn't a tab — it's reached via the gear pinned at the bottom.
     if (t.settings) continue;
-    if (t.group != null && t.group !== shownFolder) {
-      shownFolder = t.group;
-      const g = folders[t.group] || {};
-      const shut = folded.has(g.folder);
-      // One mark, saying two things at once: the colour is which project, the
-      // shape is whether this is the project's own folder or a branch of it
-      const chip = g.linked ? cutMark() : el("span", {class:"chip"});
-      if (g.color) {
-        if (g.linked) chip.style.color = g.color;
-        else chip.style.background = g.color;
-      }
-      nav.append(el("div", {class:"tab folder",
-          title:g.folder || "", onclick:() => { fold(g.folder); }},
-        chip,
-        el("span", {class:"caret"}, shut ? "▸" : "▾"),
-        // On the row itself as well as in the count above, so a folded list
-        // still shows which folder is the one with the problem
-        ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
-        el("span", {class:"nm"}, g.name || ""),
-        drifted(g),
-        el("span", {class:"more", title:T["tui.folder.add"] || "+",
-            onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+")));
+    if (t.group != null && inside[t.group]) inside[t.group].push(t);
+    else loose.push(t);
+  }
+  // One household, when a project's own folder and at least one branch cut
+  // from it are both on the list: the project heads it, the branches stand a
+  // step in, and the whole of it sits in one box so the eye reads them as one
+  // project. A project with no branch open, or a branch whose project is not
+  // open, is drawn exactly as it always was -- the depth is git's, not ours
+  const kinOf = g => g.family ? folders.filter(o => o.family === g.family) : [g];
+  const heads = g => !!g.family && !g.linked && kinOf(g).some(o => o.linked);
+  const housed = g => !!g.family && g.linked && kinOf(g).some(o => !o.linked);
+  let box = null, boxKey = null;
+  for (let gi = 0; gi < folders.length; gi++) {
+    const g = folders[gi];
+    const key = (heads(g) || housed(g)) ? g.family : null;
+    if (key !== boxKey) {
+      box = key ? el("div", {class:"family"}) : null;
+      boxKey = key;
+      if (box) nav.append(box);
     }
+    const into = box || nav;
+    // The household's branches put away together, from the pill on its head
+    if (housed(g) && folded.has("kin:" + g.family)) continue;
+    if (g.empty) { into.append(emptyRow(g)); continue; }
+    into.append(folderRow(g, kinOf(g), heads(g)));
     // Its tabs are hidden while it is folded, and the heading says so
-    if (t.group != null && folded.has((folders[t.group] || {}).folder)) continue;
-    // Running several AIs side by side is the headline feature, so brand each
-    // AI tab in its own colour (a left bar + a tinted name). The status dot
-    // stays separate — colour = which AI, dot = what it's doing. Nothing is
-    // inserted before the dot, so every row's dot sits at the same x and the
-    // column reads as one line down the sidebar.
-    const brand = t.ai ? " aitab ai-" + t.ai : "";
-    // A branch's tabs stand where its heading does. Moving the heading alone
-    // left them looking like they belonged to the folder above it
-    nav.append(el("div", {class:"tab intab" + (S.active === t.index ? " sel" : "") + brand,
-        onclick:() => send({kind:"select", tab:t.index})},
-      el("span", {class:"dot " + t.state}),
-      el("span", {class:"num"}, String(t.index)),
-      el("span", {class:"nm", title:t.profile}, t.name),
-      t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
-      spark(t.activity)));
-    // What it says it is doing, under its name. Only when it has said
-    // something: an empty second line on every tab would spend half the
-    // sidebar saying nothing
-    // Where it is, then what it last said. Each only when there is one: a
-    // blank line on every tab would spend the sidebar saying nothing
-    if (t.place) {
-      const p = t.place;
-      const line = el("span", {class:"place"});
-      // Not when the heading right above already says it. Two tabs under
-      // "feature/login" saying "feature/login" each is the sidebar spending
-      // three lines on one fact
-      const heading = t.group != null ? (folders[t.group] || {}).name : null;
-      if (p.branch && p.branch !== heading) {
-        // A long branch name is shortened from the front. The end of a branch
-        // name is the part someone chose ("…/fix-login"); the front is the
-        // part a tool prepended, and cutting the tail throws away the half
-        // that says which branch this is
-        const short = p.branch.length > 28 ? "…" + p.branch.slice(-27) : p.branch;
-        line.append(el("span", {class:"br"}, short));
-      }
-      if (p.pr) line.append(el("span", {class:"pr"}, p.pr));
-      for (const port of (p.ports || [])) {
-        line.append(el("span", {class:"pt"}, ":" + port));
-      }
-      // The whole of it on hover, since the row cannot hold it all
-      line.title = [p.branch, p.pr].filter(Boolean)
-        .concat((p.ports || []).map(x => ":" + x)).join("  ");
-      nav.lastChild.append(line);
-    }
-    if (t.status) {
-      nav.lastChild.append(el("span", {class:"said", title:t.status}, t.status));
-    }
+    if (folded.has(g.folder)) continue;
+    for (const t of inside[gi]) into.append(tabRow(t, g, housed(g), heads(g)));
   }
-  // Folders with nothing in them yet. The loop above walks tabs, so it never
-  // reaches one -- and a folder just added is exactly that, which left
-  // "add a folder" ending in nothing on screen. Its + blinks: that is the
-  // same + every folder has, and the whole reason to show an empty one
-  for (const g of folders) {
-    if (!g.empty) continue;
-    nav.append(el("div", {class:"tab folder empty", title:g.folder || "",
-        onclick:e => folderMenu(e, g)},
-      el("span", {class:"chip"}),
-      ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
-      el("span", {class:"nm"}, g.name || ""),
-      el("span", {class:"more pulse", title:T["tui.tab.add"] || "+",
-          onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+")));
-  }
+  for (const t of loose) nav.append(tabRow(t, null, false, false));
   // A "+" at the end of the list. Opens the settings page already in the "add tab" state
   // A folder, not a tab: a tab has to go somewhere, and at the bottom of the
   // whole list there was no saying where. Tabs are added from the folder they
@@ -1635,6 +1602,107 @@ function drawTabs() {
       // it opens as the child WebView, as before.
       onclick:() => openSettings()},
     el("span", {class:"gear"}, "⚙️")));
+}
+
+// A folder's heading. One mark, saying two things at once: the colour is
+// which project, the shape is whether this is the project's own folder or a
+// branch of it. The head of a household also says which branch the project
+// itself is standing on, and how many branches hang under it
+function folderRow(g, kin, head) {
+  const shut = folded.has(g.folder);
+  const chip = g.linked ? cutMark() : el("span", {class:"chip"});
+  if (g.color) {
+    if (g.linked) chip.style.color = g.color;
+    else chip.style.background = g.color;
+  }
+  const row = el("div", {class:"tab folder" + (g.linked ? " cut" : "") + (head ? " head" : ""),
+      title:g.folder || "", onclick:() => { fold(g.folder); }},
+    chip,
+    el("span", {class:"caret"}, shut ? "▸" : "▾"),
+    // On the row itself as well as in the count above, so a folded list
+    // still shows which folder is the one with the problem
+    ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
+    el("span", {class:"nm"}, g.name || ""));
+  if (head && g.branch) {
+    row.append(el("span", {class:"on", title:T["tui.folder.on.title"] || ""}, g.branch));
+  }
+  if (head) {
+    const n = kin.filter(o => o.linked).length;
+    const away = folded.has("kin:" + g.family);
+    row.append(el("span", {class:"kin", title:T["tui.folder.kin.title"] || "",
+        onclick:e => { e.stopPropagation(); fold("kin:" + g.family); }},
+      (T["tui.folder.kin"] || "{n} branches").replace("{n}", n) + " " + (away ? "▸" : "▾")));
+  }
+  // A raw append writes a null out as the word "null"; el() filters it, so
+  // the tail goes through el() too
+  row.append(...[drifted(g),
+    el("span", {class:"more", title:T["tui.folder.add"] || "+",
+        onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+")].filter(Boolean));
+  return row;
+}
+// A folder with nothing in it yet. The tab walk never reaches one -- and a
+// folder just added is exactly that, which left "add a folder" ending in
+// nothing on screen. Its + blinks: that is the same + every folder has, and
+// the whole reason to show an empty one
+function emptyRow(g) {
+  return el("div", {class:"tab folder empty" + (g.linked ? " cut" : ""), title:g.folder || "",
+      onclick:e => folderMenu(e, g)},
+    g.linked ? cutMark() : el("span", {class:"chip"}),
+    ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
+    el("span", {class:"nm"}, g.name || ""),
+    el("span", {class:"more pulse", title:T["tui.tab.add"] || "+",
+        onclick:e => { e.stopPropagation(); folderMenu(e, g); }}, "+"));
+}
+// One tab's row. `g` is the folder it stands under, if any; `deep` when that
+// folder is a branch standing inside its project's household, so the tab
+// stands where its heading does; `head` when the folder is the project
+// itself and its heading already wears the branch it is on
+function tabRow(t, g, deep, head) {
+  // Running several AIs side by side is the headline feature, so brand each
+  // AI tab in its own colour (a left bar + a tinted name). The status dot
+  // stays separate — colour = which AI, dot = what it's doing. Nothing is
+  // inserted before the dot, so every row's dot sits at the same x and the
+  // column reads as one line down the sidebar.
+  const brand = t.ai ? " aitab ai-" + t.ai : "";
+  const row = el("div", {class:"tab intab" + (S.active === t.index ? " sel" : "") + brand
+        + (deep ? " deep" : ""),
+      onclick:() => send({kind:"select", tab:t.index})},
+    el("span", {class:"dot " + t.state}),
+    el("span", {class:"num"}, String(t.index)),
+    el("span", {class:"nm", title:t.profile}, t.name),
+    t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
+    spark(t.activity));
+  // Where it is, then what it last said. Each only when there is one: a
+  // blank line on every tab would spend the sidebar saying nothing
+  if (t.place) {
+    const p = t.place;
+    const line = el("span", {class:"place"});
+    // Not when the heading right above already says it. Two tabs under
+    // "feature/login" saying "feature/login" each is the sidebar spending
+    // three lines on one fact
+    const heading = g ? g.name : null;
+    const worn = head && g && p.branch === g.branch;
+    if (p.branch && p.branch !== heading && !worn) {
+      // A long branch name is shortened from the front. The end of a branch
+      // name is the part someone chose ("…/fix-login"); the front is the
+      // part a tool prepended, and cutting the tail throws away the half
+      // that says which branch this is
+      const short = p.branch.length > 28 ? "…" + p.branch.slice(-27) : p.branch;
+      line.append(el("span", {class:"br"}, short));
+    }
+    if (p.pr) line.append(el("span", {class:"pr"}, p.pr));
+    for (const port of (p.ports || [])) {
+      line.append(el("span", {class:"pt"}, ":" + port));
+    }
+    // The whole of it on hover, since the row cannot hold it all
+    line.title = [p.branch, p.pr].filter(Boolean)
+      .concat((p.ports || []).map(x => ":" + x)).join("  ");
+    row.append(line);
+  }
+  if (t.status) {
+    row.append(el("span", {class:"said", title:t.status}, t.status));
+  }
+  return row;
 }
 
 // Folders whose tabs are put away for now. Kept here rather than in the app:
@@ -7207,12 +7275,40 @@ mod tests {
         assert!(PAGE.contains("tabpos: tabpos});"), "窓の道に位置が乗らない");
     }
 
+    /// A project and the branches cut from it are one household: one box,
+    /// the project at its head with its own branch and a count of the
+    /// branches, each branch a step in. The depth is git's -- a folder with
+    /// no branch open, or a branch whose project is not open, is drawn flat.
+    #[test]
+    fn a_project_and_its_branches_are_drawn_as_one_household() {
+        assert!(PAGE.contains(r#"el("div", {class:"family"})"#), "家族の箱が無い");
+        assert!(
+            PAGE.contains("const heads = g => !!g.family && !g.linked && kinOf(g).some(o => o.linked);")
+                && PAGE.contains("const housed = g => !!g.family && g.linked && kinOf(g).some(o => !o.linked);"),
+            "元と枝が両方あるときだけ家族、の条件が消えている"
+        );
+        assert!(PAGE.contains(r#"fold("kin:" + g.family)"#), "枝をまとめて畳む札が無い");
+        assert!(
+            PAGE.contains(r#"if (housed(g) && folded.has("kin:" + g.family)) continue;"#),
+            "畳んだ枝の見出しが消えない"
+        );
+        assert!(PAGE.contains(r#"row.append(el("span", {class:"on""#), "元が乗っているブランチの札が無い");
+        assert!(PAGE.contains(".family .tab.folder.cut { padding-left:24px; }"), "枝の見出しが一段入っていない");
+        assert!(PAGE.contains(".family .tab.intab.deep { padding-left:40px; }"), "枝のタブが見出しに揃っていない");
+        // Tabs are numbered on their rows, so moving a heading never moves a number
+        assert!(PAGE.contains(r#"el("span", {class:"num"}, String(t.index))"#));
+        // A browser belongs to no folder and comes after every folder
+        assert!(PAGE.contains("for (const t of loose) nav.append(tabRow(t, null, false, false));"));
+        // The head's own branch is said once, on the head, not again under each tab
+        assert!(PAGE.contains("const worn = head && g && p.branch === g.branch;"));
+    }
+
     /// A folder with no tab in it is on the list, and the next thing to press
     /// blinks. Adding a folder used to end in nothing on screen: the list was
     /// walked from tabs, and a new folder has none.
     #[test]
     fn an_empty_folder_is_drawn_and_its_plus_blinks() {
-        assert!(PAGE.contains("if (!g.empty) continue;"), "空のフォルダが描かれない");
+        assert!(PAGE.contains("if (g.empty) { into.append(emptyRow(g)); continue; }"), "空のフォルダが描かれない");
         assert!(PAGE.contains(r#"class:"more pulse""#), "空のフォルダの + が光らない");
         assert!(
             PAGE.contains("const bare = !!S.first_run && !folders.length;"),

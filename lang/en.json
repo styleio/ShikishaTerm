@@ -42,6 +42,9 @@
   "tui.folder.looking_any": "Still looking ({secs}s)",
   "tui.folder.behind": "{n} commits on the remote that this folder does not have (as of the last fetch)",
   "tui.folder.ahead": "{n} commits here that the remote does not have (as of the last fetch)",
+  "tui.folder.kin": "{n} branches",
+  "tui.folder.kin.title": "Put away, or bring back, every branch of this project",
+  "tui.folder.on.title": "The branch this project's own folder is on",
   "tui.repair.title": "PUT THIS FOLDER BACK",
   "tui.repair.go": "Put it here",
   "tui.repair.save": "Remember this",
@@ -1354,7 +1357,6 @@
   "settings.sec.snapshots.sub": "Page pictures a rally took",
   "settings.snapshots.intro": "Pictures of browser pages, taken with browser_snapshot. A rally can keep a visual record of what it did; here you can look back and clear them out.",
   "settings.snapshots.none": "No snapshots yet.",
-
   "//grant": "Automation permissions: one line per command, shown on the settings card",
   "settings.sec.permissions": "Automation permissions",
   "settings.sec.git": "Commit messages",

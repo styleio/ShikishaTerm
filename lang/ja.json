@@ -42,6 +42,9 @@
   "tui.folder.looking_any": "確認しています（{secs}秒）",
   "tui.folder.behind": "最後に取り寄せた時点で、リモートにあってこのフォルダに無いコミットが{n}個",
   "tui.folder.ahead": "最後に取り寄せた時点で、このフォルダにあってリモートに無いコミットが{n}個",
+  "tui.folder.kin": "枝 {n}",
+  "tui.folder.kin.title": "この元から切った枝をまとめて畳む／開く",
+  "tui.folder.on.title": "元のフォルダが乗っているブランチ",
   "tui.repair.title": "このフォルダをこのPCに用意する",
   "tui.repair.go": "このPCに用意する",
   "tui.repair.save": "これで覚える",
@@ -1352,7 +1355,6 @@
   "settings.sec.snapshots.sub": "ラリーが撮ったページ画像",
   "settings.snapshots.intro": "browser_snapshot で撮ったブラウザページの画像です。ラリーが「何をしたか」の視覚記録を残せます。ここで見返して削除できます。",
   "settings.snapshots.none": "スナップショットはまだありません。",
-
   "//grant": "Automation permissions: one line per command, shown on the settings card",
   "settings.sec.permissions": "自動化の権限",
   "settings.sec.git": "コミットメッセージ",

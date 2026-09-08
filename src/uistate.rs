@@ -158,6 +158,18 @@ pub struct GroupState {
     /// Whether this folder is a branch cut from the family's checkout
     #[serde(default)]
     pub linked: bool,
+    /// The family itself: the git folder this checkout and every branch cut
+    /// from it share, spelled one way. Two headings holding the same one are
+    /// drawn as one household -- the checkout first, its branches under it --
+    /// which is the only depth the list draws, because it is the only depth
+    /// git has
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    /// The branch this folder is on. Worn by the checkout's heading when it
+    /// has branches under it, so the row that is the project says which
+    /// branch the project itself is standing on
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     /// Whether the folder is actually on this machine. Settings travel between
     /// PCs on a sync folder or a stick, and a path that is right on one of them
     /// is simply not there on the other -- which the list has to say, because
@@ -220,6 +232,8 @@ impl GroupState {
                         .as_deref()
                         .map(|f| Self::color_of(f, chosen)),
                     linked: t.place.linked,
+                    family: t.place.family.as_ref().map(|f| f.display().to_string()),
+                    branch: t.place.branch.clone(),
                     // Filled in by whoever is drawing: whether a folder is
                     // here, and how far it has drifted, are questions for the
                     // disk, and the disk is asked away from the list being built
@@ -233,6 +247,12 @@ impl GroupState {
             if out.iter().any(|(k, _)| same_folder(k, cwd)) {
                 continue;
             }
+            // Which household an empty folder belongs to is read off its
+            // path alone. Nothing is running in it, so nothing has looked at
+            // its git folder -- and this list is built on every frame, so it
+            // must not start looking now: a drive that has stopped answering
+            // would stop the drawing
+            let family = family_by_path(cwd).map(|f| f.display().to_string());
             out.push((
                 cwd.clone(),
                 GroupState {
@@ -245,14 +265,17 @@ impl GroupState {
                     // No colour: which project it belongs to is read off a
                     // running tab's place, and nothing is running here yet
                     color: None,
-                    linked: false,
+                    linked: family.is_some(),
+                    family,
+                    branch: None,
                     health: Default::default(),
                     drift: Default::default(),
                     empty: true,
                 },
             ));
         }
-        out
+        adopt_checkouts(&mut out);
+        by_family(out)
     }
 
     /// The colour a project is drawn in: the one someone chose for it, or one
@@ -376,6 +399,98 @@ pub struct Project {
 
 /// Whether two paths name one folder, the way Windows sees it: case does
 /// not tell them apart, and neither does a trailing separator
+/// Where a branch folder's family would be, read off nothing but its path.
+///
+/// The shape this app gives a branch's folder is
+/// `<parent>/<name>.worktrees/<branch as folders>`, and the project's own git
+/// folder is then `<parent>/<name>/.git`. That is a guess about a folder
+/// nothing is running in yet, made without touching the disk; the moment a
+/// tab starts there, what git actually says takes over
+fn family_by_path(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut at = cwd;
+    loop {
+        let parent = at.parent()?;
+        let leaf = parent.file_name()?.to_string_lossy().to_string();
+        if let Some(name) = leaf.strip_suffix(".worktrees") {
+            return Some(parent.parent()?.join(name).join(".git"));
+        }
+        at = parent;
+    }
+}
+
+/// Gives an empty checkout its household.
+///
+/// A project folder with nothing running in it has no family of its own --
+/// nothing has read its git folder -- but its branches have, and each of them
+/// names the git folder that sits inside the checkout. A folder standing
+/// exactly there is the checkout, and is drawn as the head of that household
+/// rather than as a stranger next to it
+fn adopt_checkouts(list: &mut [(std::path::PathBuf, GroupState)]) {
+    let known: Vec<String> = list
+        .iter()
+        .filter_map(|(_, g)| g.family.clone())
+        .collect();
+    for (cwd, g) in list.iter_mut() {
+        if g.family.is_some() || !g.empty {
+            continue;
+        }
+        let mine = known.iter().find(|f| {
+            std::path::Path::new(f)
+                .parent()
+                .is_some_and(|checkout| same_folder(checkout, cwd))
+        });
+        if let Some(f) = mine {
+            g.family = Some(f.clone());
+            g.linked = false;
+        }
+    }
+}
+
+/// The list in the order it is drawn: each household together, its checkout
+/// first and its branches after, at the place the household first appeared.
+///
+/// Within a household the settings' order is kept, and folders belonging to
+/// no household stay exactly where they were. Tabs keep their numbers
+/// whatever the order here -- the number is on the row -- so the only thing
+/// that moves is which heading stands under which
+fn by_family(list: Vec<(std::path::PathBuf, GroupState)>) -> Vec<(std::path::PathBuf, GroupState)> {
+    let mut out = Vec::with_capacity(list.len());
+    let mut placed = vec![false; list.len()];
+    for i in 0..list.len() {
+        if placed[i] {
+            continue;
+        }
+        let Some(fam) = list[i].1.family.clone() else {
+            out.push(list[i].clone());
+            placed[i] = true;
+            continue;
+        };
+        let kin: Vec<usize> = (i..list.len())
+            .filter(|&j| {
+                !placed[j]
+                    && list[j].1.family.as_deref().is_some_and(|f| {
+                        same_folder(std::path::Path::new(f), std::path::Path::new(&fam))
+                    })
+            })
+            .collect();
+        // Spelled the one way for the whole household, so whoever draws it
+        // can tell kin apart by the string alone
+        let mut take = |j: usize| {
+            let mut g = list[j].clone();
+            g.1.family = Some(fam.clone());
+            out.push(g);
+            placed[j] = true;
+        };
+        for &j in kin.iter().filter(|&&j| !list[j].1.linked) {
+            take(j);
+        }
+        for &j in kin.iter().filter(|&&j| list[j].1.linked) {
+            take(j);
+        }
+    }
+    out
+}
+
 fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
     let key = |p: &std::path::Path| {
         p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase()
@@ -869,6 +984,74 @@ mod tests {
         assert!(found[1].1.empty, "タブの無いフォルダが空と分からない");
         assert_eq!(found[1].1.name, "New one");
         assert_eq!(unnamed[1].1.name, "shikisha-group-fresh");
+    }
+
+    /// One household is drawn together, checkout first, wherever its members
+    /// were in the settings; folders with no household stay put.
+    #[test]
+    fn a_household_stands_together_with_the_checkout_first() {
+        let g = |folder: &str, family: Option<&str>, linked: bool| {
+            (
+                std::path::PathBuf::from(folder),
+                GroupState {
+                    name: folder.rsplit('\\').next().unwrap().to_string(),
+                    folder: folder.to_string(),
+                    family: family.map(str::to_string),
+                    linked,
+                    ..Default::default()
+                },
+            )
+        };
+        let f = Some(r"D:\proj\.git");
+        let list = vec![
+            g(r"D:\proj.worktrees\a", f, true),
+            g(r"D:\other", None, false),
+            g(r"D:\proj", f, false),
+            g(r"D:\proj.worktrees\b", f, true),
+            g(r"D:\lone.worktrees\x", Some(r"D:\lone\.git"), true),
+        ];
+        let names: Vec<String> = by_family(list).into_iter().map(|(_, g)| g.name).collect();
+        assert_eq!(names, ["proj", "a", "b", "other", "x"], "元→枝→その他、の順になっていない");
+        // Spelled differently, still one family
+        let list = vec![
+            g(r"D:\proj.worktrees\a", Some(r"d:\PROJ\.git\"), true),
+            g(r"D:\proj", f, false),
+        ];
+        let out = by_family(list);
+        let names: Vec<&str> = out.iter().map(|(_, g)| g.name.as_str()).collect();
+        assert_eq!(names, ["proj", "a"], "綴りが違うだけで別の家族にされた");
+        assert_eq!(out[0].1.family, out[1].1.family, "家族の綴りが揃っていない");
+    }
+
+    /// A folder nothing runs in is placed by its path: a branch folder under
+    /// `<name>.worktrees` belongs to `<name>`, and a folder that IS `<name>`
+    /// heads the household its branches already named.
+    #[test]
+    fn an_empty_folder_finds_its_household_without_touching_the_disk() {
+        assert_eq!(
+            family_by_path(std::path::Path::new(r"D:\proj.worktrees\feature\login")),
+            Some(std::path::PathBuf::from(r"D:\proj\.git"))
+        );
+        assert_eq!(family_by_path(std::path::Path::new(r"D:\plain\folder")), None);
+
+        let mut list = vec![
+            (
+                std::path::PathBuf::from(r"D:\proj.worktrees\a"),
+                GroupState { family: Some(r"D:\proj\.git".into()), linked: true, ..Default::default() },
+            ),
+            (
+                std::path::PathBuf::from(r"D:\proj"),
+                GroupState { empty: true, ..Default::default() },
+            ),
+            (
+                std::path::PathBuf::from(r"D:\elsewhere"),
+                GroupState { empty: true, ..Default::default() },
+            ),
+        ];
+        adopt_checkouts(&mut list);
+        assert_eq!(list[1].1.family.as_deref(), Some(r"D:\proj\.git"), "空の元フォルダが家族に入らない");
+        assert!(!list[1].1.linked, "元が枝扱い");
+        assert_eq!(list[2].1.family, None, "無関係のフォルダが家族にされた");
     }
 
     #[test]
