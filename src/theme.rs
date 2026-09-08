@@ -488,6 +488,30 @@ pub fn resolve(setting: Option<&serde_json::Value>) -> Scheme {
 mod tests {
     use super::*;
 
+    /// Every colour token the app writes out has its role written down in
+    /// the style guide, in both languages. A token nobody can look up is a
+    /// token the next screen will use for the wrong thing.
+    #[test]
+    fn every_token_has_its_role_written_down() {
+        let scheme = built_in().into_iter().find(|s| s.name == DEFAULT_NAME).expect("自前のテーマ");
+        let vars = scheme.css_vars();
+        let names: Vec<&str> = vars
+            .split(';')
+            .filter_map(|kv| kv.split(':').next())
+            .map(str::trim)
+            .filter(|n| n.starts_with("--") && !n.starts_with("--c"))
+            .collect();
+        assert!(names.len() >= 12, "{names:?}");
+        for (lang, guide) in [
+            ("en", include_str!("../docs/design/STYLEGUIDE.md")),
+            ("ja", include_str!("../docs/design/STYLEGUIDE.ja.md")),
+        ] {
+            for n in &names {
+                assert!(guide.contains(&format!("`{n}`")), "{lang}: {n} の役割が規約に書かれていない");
+            }
+        }
+    }
+
     #[test]
     fn what_ships_with_the_app_is_the_app_own_and_nobody_else_s() {
         let list = built_in();
