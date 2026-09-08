@@ -55,6 +55,10 @@ pub struct Config {
     pub auto_switch: Option<bool>,
     /// Whether to start from the last-opened workspace (default: yes)
     pub restore_workspace: Option<bool>,
+    /// Whether the window's ✕ puts the program away in the notification area
+    /// rather than quitting (default: yes). Put away, the tabs go on working
+    /// and the phone stays connected; the icon's menu is where quitting is
+    pub resident: Option<bool>,
     /// Whether to overlay the browser on the terminal (default: overlay).
     /// Turning it off makes it a standalone window you can move yourself, but it no longer feels like a tab
     pub browser_overlay: Option<bool>,

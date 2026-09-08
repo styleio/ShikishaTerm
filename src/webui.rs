@@ -3886,6 +3886,8 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.auto_switch.hint"])),
     row(T["settings.restore_ws"], checkDefaultOn(current, "restore_workspace", T["settings.restore_ws.label"]),
         el("span", {class:"hint"}, T["settings.restore_ws.hint"])),
+    row(T["settings.resident"], checkDefaultOn(current, "resident", T["settings.resident.label"]),
+        el("span", {class:"hint"}, T["settings.resident.hint"])),
     row(T["settings.tui_clipboard"], checkDefaultOn(current, "tui_clipboard", T["settings.tui_clipboard.label"]),
         el("span", {class:"hint"}, T["settings.tui_clipboard.hint"])),
     row(T["settings.conpty"], conptyState(),

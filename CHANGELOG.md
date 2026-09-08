@@ -8,6 +8,29 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **Closing the window no longer ends what the AIs are doing.** The ✕ puts
+  the program away in the notification area instead: every tab goes on
+  working, automation goes on running, and a phone stays connected and can
+  still be notified. The icon there brings the window back with a click, and
+  its menu has the one real Quit. The first time the window is put away a
+  banner says where it went, since on Windows 11 the icon starts out under the
+  ^ at the end of the taskbar. A setting under Basic ("The ✕ button") makes ✕
+  quit instead, for those who want the old way. Quitting — from the icon,
+  from Ctrl+B q, or from ✕ with that setting — asks first while a tab is
+  still working, because the conversation comes back next time and the work
+  in progress does not. A Windows notification clicked while the window is
+  put away brings it back to the tab it was about.
+- **A window put away gives its memory back.** The board is a Chromium page,
+  and Chromium keeps a browser process and a renderer for it — some two
+  hundred megabytes for an empty board, and hiding the window released none
+  of it. Put away, the board's page is dropped altogether and built again
+  when the window comes back, which takes about a third of a second; measured
+  on an empty board, the program went from 216 MB to 13 MB while away. The
+  pages placed inside the window — a browser a rally is driving, the settings
+  — are kept, because those hold state a person would lose, so with one of
+  those open what is given back is the board's share.
+
 ### Fixed
 - **Exporting a workspace exports the workspace.** Since tabs moved inside
   working folders, the file "Export this workspace" wrote had the name and

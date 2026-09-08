@@ -7,7 +7,8 @@
 //!   SHIKISHA-TERM.exe claude          # debug: launch the given command in a single tab
 //!
 //! Controls (prefix key Ctrl+B):
-//!   Ctrl+B q      quit / Ctrl+B 0-9 switch tab (0=INDEX) / Ctrl+B n/p next/prev tab
+//!   Ctrl+B q      quit (asks first while an AI is at work) / Ctrl+B 0-9 switch tab (0=INDEX) / Ctrl+B n/p next/prev tab
+//!   ✕ on the window puts it away in the notification area (a setting); the icon there opens it again or quits
 //!   Ctrl+B [      copy mode / Ctrl+B b send a literal Ctrl+B
 //! Mouse: wheel=scroll (copy mode) / left-drag=select & copy instantly / right-click=paste
 
@@ -67,6 +68,7 @@ mod ws;
 mod webui;
 mod worktree;
 mod wspack;
+mod tray;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -135,6 +137,39 @@ fn say_fatally(text: &str) {
 /// onto a machine where this program will not start. When the fix is a page,
 /// opening the page is the fix -- and the browser is there even when the
 /// runtime is not, because it is part of Windows.
+/// Whether to quit now. Yes without a word when nothing is at work; when an
+/// AI is, the person is asked, because quitting ends it mid-sentence -- the
+/// conversation comes back next time, the work it was doing does not.
+///
+/// A native box rather than the board's own, so it is there for a quit asked
+/// from the notification area with the window put away
+fn quit_confirmed(tabs: &[Tab], parked: &[Vec<Tab>]) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MessageBoxW,
+    };
+    let busy = tabs
+        .iter()
+        .chain(parked.iter().flatten())
+        .filter(|t| t.state == TabState::Busy)
+        .count();
+    if busy == 0 {
+        return true;
+    }
+    let body = wide(&i18n::tp("msg.quit.busy", &[("n", &busy.to_string())]));
+    let title = wide("SHIKISHA-TERM");
+    let answer = unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
+        )
+    };
+    let yes = answer == IDYES;
+    append_hook_log(&format!("Quit asked with {busy} tab(s) at work: {}", if yes { "yes" } else { "no" }));
+    yes
+}
+
 fn say_fatally_with_page(text: &str, url: &str) {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -574,6 +609,16 @@ struct WinSurface {
     frames: Vec<Vec<u8>>,
     /// The window was closed. With nowhere left to draw, the loop has no choice but to shut down.
     closed: bool,
+    /// The window's ✕ was pressed. The loop decides between putting the
+    /// window away and quitting (a setting, and a question if an AI is at work)
+    close_requested: bool,
+    /// The notification-area icon asked for the window back
+    tray_open: bool,
+    /// "Quit" was chosen on the notification-area icon's menu
+    tray_quit: bool,
+    /// The window is put away. Drawing goes on regardless (the phone reads the
+    /// same state), but a notification's click has to bring it back first
+    hidden: bool,
     /// The settings page's "close settings" button was pressed. The loop closes the settings tab.
     close_settings: bool,
     /// The sidebar gear (or a deep-link shortcut) was pressed. The loop opens the
@@ -903,6 +948,35 @@ impl WinSurface {
             .eval(&format!("window.__setTheme({vars}, {light});"));
     }
 
+    /// Puts the window away. Everything else goes on: the tabs, the phone,
+    /// automation. The icon in the notification area is the way back
+    fn hide(&mut self) {
+        let _ = self.win.hide();
+        self.hidden = true;
+        append_hook_log("Window put away; the program goes on in the notification area");
+    }
+
+    /// Brings the window back in front of the person
+    fn show(&mut self) {
+        let _ = self.win.show();
+        if self.hidden {
+            append_hook_log("Window brought back from the notification area");
+        }
+        self.hidden = false;
+    }
+
+    /// Says, the first time the window is put away, that the program is still
+    /// there and where to find it. Once: after that the icon speaks for itself,
+    /// and a banner on every ✕ would be nagging
+    fn say_where_it_went(&self) {
+        let told = config::state_path("tray-noticed");
+        if told.exists() {
+            return;
+        }
+        let _ = crypto::write_atomic(&told, "1");
+        let _ = self.win.tray_notice("SHIKISHA-TERM", &i18n::t("msg.tray.resident"));
+    }
+
     fn take_events(&mut self, active_tab: Option<&Tab>) {
         use crate::browser::Ev;
         for ev in self.win.drain() {
@@ -932,6 +1006,9 @@ impl WinSurface {
                 // The window was closed. If we don't shut down here, a process with
                 // nowhere left to draw stays alive unseen, still holding the listening port.
                 Ev::Closed => self.closed = true,
+                Ev::CloseRequested => self.close_requested = true,
+                Ev::TrayOpen => self.tray_open = true,
+                Ev::TrayQuit => self.tray_quit = true,
                 // The settings page's "close settings" button. Where the tab actually
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.close_settings = true,
@@ -1331,6 +1408,10 @@ fn run_in_window() -> Result<()> {
         loading: Vec::new(),
         frames: Vec::new(),
         closed: false,
+        close_requested: false,
+        tray_open: false,
+        tray_quit: false,
+        hidden: false,
         close_settings: false,
         open_settings: None,
         remote_cut: false,
@@ -2546,6 +2627,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut pending_done: Vec<(usize, u64)> = Vec::new();
     // Whether automation may switch which tab is on screen (see ViewMove)
     let mut auto_switch = cfg.as_ref().and_then(|c| c.auto_switch).unwrap_or(true);
+    // Whether the ✕ puts the window away rather than quitting (see the loop)
+    let mut resident = cfg.as_ref().and_then(|c| c.resident).unwrap_or(true);
     // The last time a human touched the screen. Don't auto-follow right after that.
     let mut view_touched_ms: u64 = 0;
     // Clickable spots on INDEX. Rebuilt every frame at draw time.
@@ -2877,6 +2960,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 workspaces = new_ws;
                 max_chain = newcfg.max_chain.unwrap_or(10);
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
+                resident = newcfg.resident.unwrap_or(true);
                 busy_repeat_ms = newcfg.busy_repeat_sec.filter(|s| *s > 0).map(|s| s * 1000);
                 busy_again.clear();
                 done_confirm_ms = newcfg
@@ -3081,6 +3165,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // answer to a click is to put the window in front of them, showing
             // the tab the notification was about.
             if let Some(tab) = wintoast::clicked_tab() {
+                // Put away, the window is not among the visible ones `raise`
+                // looks through; it has to be brought back before it can be raised
+                if surface.hidden {
+                    surface.show();
+                }
                 wintoast::raise();
                 append_hook_log(&format!("wintoast: clicked (tab{tab})"));
                 if tab >= 1 {
@@ -5721,6 +5810,22 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if surface.closed {
             break;
         }
+        if std::mem::take(&mut surface.tray_open) {
+            surface.show();
+        }
+        // The ✕ puts the window away by default: the AIs in the tabs go on
+        // working and the phone stays connected, which is the point of a
+        // program that conducts things. Quitting is the icon's menu, Ctrl+B q,
+        // or the ✕ for those who set it so -- and every one of those asks
+        // first when an AI is at work
+        let close_pressed = std::mem::take(&mut surface.close_requested);
+        let quit_chosen = std::mem::take(&mut surface.tray_quit);
+        if close_pressed && resident {
+            surface.hide();
+            surface.say_where_it_went();
+        } else if (close_pressed || quit_chosen) && quit_confirmed(&tabs, &ws_tabs) {
+            break;
+        }
         let Some(ev) = polled else {
             continue;
         };
@@ -5793,7 +5898,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 };
                 if let Some(code) = meant {
                     match code {
-                        KeyCode::Char('q') => break,
+                        KeyCode::Char('q') => {
+                            if quit_confirmed(&tabs, &ws_tabs) {
+                                break;
+                            }
+                        }
                         // Open the command palette from any tab. It is drawn by
                         // the page, so this only nudges it open
                         KeyCode::Char(':') => surface.open_palette(),
@@ -6160,7 +6269,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // phone reaches the same overlay by tapping the entry
                         KeyCode::Char('f') => surface.open_vault(),
                         KeyCode::Char('p') => surface.open_palette(),
-                        KeyCode::Char('q') => break,
+                        KeyCode::Char('q') => {
+                            if quit_confirmed(&tabs, &ws_tabs) {
+                                break;
+                            }
+                        }
                         _ => {}
                     }
                     // INDEX-END (a test checks whether keys the board offers are received here)

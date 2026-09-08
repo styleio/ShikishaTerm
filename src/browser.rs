@@ -678,6 +678,14 @@ pub enum Cmd {
         user: String,
         pass: String,
     },
+    /// Put the window away. The program, its tabs and the phone's connection
+    /// go on; only the picture is gone, and the icon in the notification area
+    /// is how it comes back
+    Hide,
+    /// Bring the window back in front of the person, from put away or minimised
+    Show,
+    /// A notice from the notification-area icon (a banner Windows draws)
+    TrayNotice { title: String, text: String },
     /// Close the window (when the conductor is gone)
     Close,
 }
@@ -1139,6 +1147,14 @@ pub enum Ev {
     },
     /// The result of `Eval`. `value` is JSON
     Result { id: u64, ok: bool, value: String },
+    /// The window's ✕ was pressed. Not acted on here: whether that puts the
+    /// window away or ends the program is the conductor's call (a setting,
+    /// and a question when an AI is at work)
+    CloseRequested,
+    /// The notification-area icon was pressed, or "Open" chosen on its menu
+    TrayOpen,
+    /// "Quit" chosen on the notification-area icon's menu
+    TrayQuit,
     /// The bar's button was pressed = the human finished their turn.
     /// `from` is the name of the page it was pressed on (`None` is the
     /// main view). Since multiple pages can be placed at once, without
@@ -1426,6 +1442,8 @@ pub struct Browser {
     proxy: tao::event_loop::EventLoopProxy<Cmd>,
     events: Receiver<Ev>,
     next_id: AtomicU64,
+    /// The window is put away and the board's page dropped with it (see `hide`)
+    away: std::sync::atomic::AtomicBool,
     /// The bar that should be showing. Navigation wipes out the whole JS
     /// world, so it gets re-shown every time a new document is ready.
     /// Logins commonly bounce through SSO two or three times, and without
@@ -1669,6 +1687,7 @@ impl Browser {
             proxy,
             events: ev_rx,
             next_id: AtomicU64::new(1),
+            away: std::sync::atomic::AtomicBool::new(false),
             pending_ask: std::sync::Mutex::new(std::collections::HashMap::new()),
             pending_rec: std::sync::Mutex::new(std::collections::HashSet::new()),
             spare: std::sync::Mutex::new(Vec::new()),
@@ -1711,6 +1730,25 @@ impl Browser {
             .map_err(|_| anyhow!(crate::i18n::t("err.browser.not_connected")))
     }
 
+    /// Put the window away (see `Cmd::Hide`). From here until `show`, JS for
+    /// the main view is refused at this end: the page is gone, and sending
+    /// every screen change to it would be a message per keystroke into nothing
+    pub fn hide(&self) -> Result<()> {
+        self.away.store(true, Ordering::Relaxed);
+        self.send(Cmd::Hide)
+    }
+
+    /// Bring the window back in front of the person
+    pub fn show(&self) -> Result<()> {
+        self.away.store(false, Ordering::Relaxed);
+        self.send(Cmd::Show)
+    }
+
+    /// A banner from the notification-area icon
+    pub fn tray_notice(&self, title: &str, text: &str) -> Result<()> {
+        self.send(Cmd::TrayNotice { title: title.to_string(), text: text.to_string() })
+    }
+
     /// Evaluate JS. The result arrives later as `Ev::Result`
     pub fn eval(&self, js: &str) -> Result<u64> {
         self.eval_in(None, js)
@@ -1718,6 +1756,9 @@ impl Browser {
 
     /// Evaluate JS against a target. `None` is the main view
     pub fn eval_in(&self, to: Option<&str>, js: &str) -> Result<u64> {
+        if to.is_none() && self.away.load(Ordering::Relaxed) {
+            return Err(anyhow!(crate::i18n::t("err.browser.page_not_placed")));
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.send(Cmd::Eval {
             id,
@@ -2962,14 +3003,19 @@ pub fn key_known(named: &str) -> bool {
 /// driving, and while a sign-in window is up, that is the sign-in window.
 type Overlays = std::collections::HashMap<String, Vec<(String, wry::WebView)>>;
 
+/// The board's page, while there is one (none while the window is put away)
+fn main_view(shell: &Option<(wry::WebContext, wry::WebView)>) -> Option<&wry::WebView> {
+    shell.as_ref().map(|(_, view)| view)
+}
+
 fn target<'a>(
-    main: &'a wry::WebView,
+    main: Option<&'a wry::WebView>,
     children: &'a std::collections::HashMap<String, wry::WebView>,
     overlays: &'a Overlays,
     to: &Option<String>,
 ) -> Option<&'a wry::WebView> {
     match to {
-        None => Some(main),
+        None => main,
         Some(name) => overlays
             .get(name)
             .and_then(|stack| stack.last())
@@ -3291,9 +3337,31 @@ fn run_window(
     use tao::window::WindowBuilder;
     use wry::{WebContext, WebViewBuilder};
 
+    // The notification-area icon reports to the window as a message, and the
+    // loop's message hook is the one place those pass through. The window
+    // does not exist yet, so its handle is filled in below, once it does
+    let tray_hwnd = std::sync::Arc::new(std::sync::atomic::AtomicIsize::new(0));
+    let hook_hwnd = std::sync::Arc::clone(&tray_hwnd);
+    let hook_tx = ev_tx.clone();
+    let (open_label, quit_label) = (crate::i18n::t("tray.open"), crate::i18n::t("tray.quit"));
     // Runs on a separate thread from the TUI's render loop, so lift the main-thread restriction
     let mut ev_loop = EventLoopBuilder::<Cmd>::with_user_event()
         .with_any_thread(true)
+        .with_msg_hook(move |msg| {
+            let hwnd = hook_hwnd.load(Ordering::Relaxed);
+            match crate::tray::pressed(msg, hwnd, &open_label, &quit_label) {
+                Some(crate::tray::Pressed::Open) => {
+                    let _ = hook_tx.send(Ev::TrayOpen);
+                    true
+                }
+                Some(crate::tray::Pressed::Quit) => {
+                    let _ = hook_tx.send(Ev::TrayQuit);
+                    true
+                }
+                Some(crate::tray::Pressed::Nothing) => true,
+                None => false,
+            }
+        })
         .build();
     proxy_tx
         .send(ev_loop.create_proxy())
@@ -3307,31 +3375,53 @@ fn run_window(
             .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0))
             .build(&ev_loop)?,
     );
+    let tray = {
+        use tao::platform::windows::WindowExtWindows;
+        tray_hwnd.store(window.hwnd(), Ordering::Relaxed);
+        crate::tray::Tray::add(window.hwnd(), title)
+    };
     #[cfg(windows)]
     {
         use tao::platform::windows::WindowExtWindows;
         wear_our_own_icon(window.hwnd());
     }
 
-    let ipc = ev_tx.clone();
+    // The board's own page. Built here, and built again whenever the window
+    // comes back from being put away: while it is away the page is dropped
+    // altogether, because the page is where the memory is. Chromium keeps a
+    // browser process and a renderer for it -- some two hundred megabytes
+    // for an empty board -- and hiding the window releases none of that.
+    // The pages placed inside the window (a browser a rally is driving, the
+    // settings) are kept: those hold state a person would lose.
+    //
     // The shell gets an explicit folder for the same reason the pages do: without
     // one, WebView2 writes "<exe>.WebView2" next to the binary — into the folder
     // that is meant to hold nothing but the exe
-    let mut shell_ctx = WebContext::new(Some(shell_data_dir()));
-    let webview = WebViewBuilder::new_with_web_context(&mut shell_ctx)
-        .with_url(url)
-        .with_initialization_script(INIT_JS)
-        .with_ipc_handler(move |req| {
-            let body: &str = req.body();
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
-                return;
-            };
-            let Some(ev) = parse_intent(&v) else {
-                return;
-            };
-            let _ = ipc.send(ev);
-        })
-        .build(&*window)?;
+    let shell_of = {
+        let window = std::rc::Rc::clone(&window);
+        let ev_tx = ev_tx.clone();
+        let url = url.to_string();
+        move || -> Result<(WebContext, wry::WebView)> {
+            let ipc = ev_tx.clone();
+            let mut ctx = WebContext::new(Some(shell_data_dir()));
+            let view = WebViewBuilder::new_with_web_context(&mut ctx)
+                .with_url(&url)
+                .with_initialization_script(INIT_JS)
+                .with_ipc_handler(move |req| {
+                    let body: &str = req.body();
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+                        return;
+                    };
+                    let Some(ev) = parse_intent(&v) else {
+                        return;
+                    };
+                    let _ = ipc.send(ev);
+                })
+                .build(&*window)?;
+            Ok((ctx, view))
+        }
+    };
+    let mut shell: Option<(WebContext, wry::WebView)> = Some(shell_of()?);
 
     // Pages placed inside the same window. Looked up by name
     let mut children: std::collections::HashMap<String, wry::WebView> =
@@ -3404,7 +3494,7 @@ fn run_window(
                 Cmd::Eval { id, to, js } => {
                     // When the destination can't be found, don't fall back
                     // to the main view. That would run site-facing JS against our own screen
-                    if let Some(v) = target(&webview, &children, &overlays, &to) {
+                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                         let _ = v.evaluate_script(&wrap_eval(id, &js));
                     } else {
                         let _ = ev_tx.send(Ev::Result {
@@ -3425,7 +3515,7 @@ fn run_window(
                         // its parameters and stopping it later would kill
                         // the relay's frames. So wake only when nothing casts
                         if !wakes.contains_key(&to) && !casts.contains_key(&to) {
-                            if let Some(v) = target(&webview, &children, &overlays, &to) {
+                            if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                                 let wv = cdp::webview_of(v);
                                 // Hidden = this child is currently sized 0.
                                 // Borrow it a real surface, parked outside
@@ -3460,7 +3550,7 @@ fn run_window(
                             // Give back whatever the layout last decreed —
                             // including a rect that changed mid-wake
                             if let (Some(v), Some(r)) = (
-                                target(&webview, &children, &overlays, &to),
+                                target(main_view(&shell), &children, &overlays, &to),
                                 to.as_ref()
                                     .and_then(|n| child_sizes.get(n))
                                     .map(|seat| seat.get()),
@@ -3472,7 +3562,7 @@ fn run_window(
                 }
                 Cmd::Cdp { id, to, method, params } => {
                     // Same guard as Eval: an unplaced page must answer, not hang
-                    if let Some(v) = target(&webview, &children, &overlays, &to) {
+                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                         let tx = ev_tx.clone();
                         cdp::call_result(
                             &cdp::webview_of(v),
@@ -3497,7 +3587,7 @@ fn run_window(
                     // If credentials are already armed, swap them; otherwise enable Fetch and arm them
                     if let Some(arm) = auths.get(&to) {
                         *arm.creds.borrow_mut() = (user, pass);
-                    } else if let Some(v) = target(&webview, &children, &overlays, &to) {
+                    } else if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                         let wv = cdp::webview_of(v);
                         match cdp::arm_basic_auth(&wv, &user, &pass) {
                             Some(arm) => {
@@ -3510,12 +3600,12 @@ fn run_window(
                     }
                 }
                 Cmd::Ask { to, text, label } => {
-                    if let Some(v) = target(&webview, &children, &overlays, &to) {
+                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                         let _ = v.evaluate_script(&ask_js(&text, &label));
                     }
                 }
                 Cmd::Unask { to } => {
-                    if let Some(v) = target(&webview, &children, &overlays, &to) {
+                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                         let _ = v.evaluate_script(
                             "window.__shikisha_unask&&window.__shikisha_unask();",
                         );
@@ -3716,7 +3806,7 @@ fn run_window(
                     }
                 }
                 Cmd::Focus { to } => {
-                    if let Some(v) = target(&webview, &children, &overlays, &to) {
+                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                         if let Err(e) = v.focus() {
                             crate::append_hook_log(&crate::i18n::tp(
                                 "err.browser.log_focus_failed",
@@ -3725,7 +3815,7 @@ fn run_window(
                         }
                     }
                 }
-                Cmd::Move { to, go } => match target(&webview, &children, &overlays, &to) {
+                Cmd::Move { to, go } => match target(main_view(&shell), &children, &overlays, &to) {
                     Some(v) => {
                         let r = match &go {
                             Go::Back => v.go_back(),
@@ -3758,7 +3848,7 @@ fn run_window(
                     )),
                 },
                 Cmd::Where { to } => {
-                    if let Some(v) = target(&webview, &children, &overlays, &to) {
+                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                         let _ = where_tx.send(Ev::Where {
                             from: to,
                             url: v.url().unwrap_or_default(),
@@ -3774,10 +3864,10 @@ fn run_window(
                             // but re-issue startScreencast to push out one
                             // fresh frame (otherwise a new viewer joining
                             // while the page is static would see nothing indefinitely)
-                            if let Some(view) = target(&webview, &children, &overlays, &to) {
+                            if let Some(view) = target(main_view(&shell), &children, &overlays, &to) {
                                 cdp::kick(&cdp::webview_of(view));
                             }
-                        } else if let Some(view) = target(&webview, &children, &overlays, &to) {
+                        } else if let Some(view) = target(main_view(&shell), &children, &overlays, &to) {
                             let wv = cdp::webview_of(view);
                             let tx = ev_tx.clone();
                             let from = to.clone();
@@ -3801,7 +3891,7 @@ fn run_window(
                     } else if let Some(cast) = casts.remove(&to) {
                         // Give the page its own shape back before the stream goes away
                         if naturals.remove(&to).is_some() {
-                            if let Some(view) = target(&webview, &children, &overlays, &to) {
+                            if let Some(view) = target(main_view(&shell), &children, &overlays, &to) {
                                 cdp::call(
                                     &cdp::webview_of(view),
                                     "Emulation.clearDeviceMetricsOverride",
@@ -3813,7 +3903,7 @@ fn run_window(
                     }
                 }
                 Cmd::Inject { to, input } => {
-                    if let Some(view) = target(&webview, &children, &overlays, &to) {
+                    if let Some(view) = target(main_view(&shell), &children, &overlays, &to) {
                         let wv = cdp::webview_of(view);
                         let (cw, ch) = cast_dims.get();
                         match input {
@@ -3910,20 +4000,89 @@ fn run_window(
                         }
                     }
                 }
+                Cmd::Hide => {
+                    window.set_visible(false);
+                    // Let go of the board's page, and of everything holding a
+                    // reference to it -- a reference kept would keep Chromium's
+                    // processes alive, and with them the memory this is for
+                    wakes.remove(&None);
+                    casts.remove(&None);
+                    auths.remove(&None);
+                    dialogs.remove(&None);
+                    shell = None;
+                    crate::append_hook_log("Board page dropped while the window is put away");
+                }
+                Cmd::Show => {
+                    if shell.is_none() {
+                        let born = std::time::Instant::now();
+                        match shell_of() {
+                            Ok(s) => {
+                                shell = Some(s);
+                                // The page made last sits on top of the ones
+                                // made before it, so the new board would cover
+                                // every page placed inside the window. Put
+                                // those back above it, each overlay above the
+                                // page it stands on
+                                {
+                                    use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                        HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+                                        SetWindowPos,
+                                    };
+                                    use wry::WebViewExtWindows;
+                                    let raise = |v: &wry::WebView| unsafe {
+                                        SetWindowPos(
+                                            v.hwnd().0,
+                                            HWND_TOP,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                                        );
+                                    };
+                                    for v in children.values() {
+                                        raise(v);
+                                    }
+                                    for stack in overlays.values() {
+                                        for (_, v) in stack {
+                                            raise(v);
+                                        }
+                                    }
+                                }
+                                crate::append_hook_log(&format!(
+                                    "Board page built again in {} ms",
+                                    born.elapsed().as_millis()
+                                ));
+                            }
+                            Err(e) => crate::append_hook_log(&format!(
+                                "Board page could not be built again: {e:#}"
+                            )),
+                        }
+                    }
+                    window.set_visible(true);
+                    if window.is_minimized() {
+                        window.set_minimized(false);
+                    }
+                    window.set_focus();
+                }
+                Cmd::TrayNotice { title, text } => tray.notice(&title, &text),
                 Cmd::Close => {
                     *control = ControlFlow::Exit;
                 }
             },
+            // The ✕. Not the end of the program: the conductor answers with
+            // `Hide` or `Close`, having asked the person if an AI is at work
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                *control = ControlFlow::Exit;
+                let _ = ev_tx.send(Ev::CloseRequested);
             }
             _ => {}
         }
     });
 
+    tray.remove();
     let _ = closed_tx.send(Ev::Closed);
     Ok(())
 }
