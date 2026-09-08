@@ -336,6 +336,22 @@ pub struct BranchPlan {
     /// Set once it has actually been made
     #[serde(default)]
     pub done: bool,
+    /// Every command, when more than one folder is being made at once (one
+    /// per AI). Empty when it is one folder and `line` says it
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<String>,
+}
+
+/// An AI this machine can start, as the dialog offers it.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct AiChoice {
+    /// The command, which is also the word the dialog sends back
+    pub key: String,
+    /// What the profile calls it
+    pub name: String,
+    /// The whole launch line, flag and all. Not the page's business
+    #[serde(skip)]
+    pub command: String,
 }
 
 /// Putting a working folder back on this machine.
@@ -703,6 +719,9 @@ pub struct UiState {
     pub aim: Option<usize>,
     /// First launch, before any settings exist yet
     pub first_run: bool,
+    /// The AIs this machine can start in a folder just made
+    #[serde(default)]
+    pub ais: Vec<AiChoice>,
     /// Whether the settings name a phone as somewhere answers go. Only the
     /// browser holding the page can know whether it is that phone yet, so
     /// the app says just that one is wanted, and the phone's board offers

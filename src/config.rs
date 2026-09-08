@@ -1636,7 +1636,29 @@ pub fn set_folder_color(family: &Path, color: &str) -> Result<()> {
 /// values, not as our own types, so a key this version has never heard of
 /// still comes out the other side.
 pub fn append_folder(ws_name: &str, like: Option<&Path>, cwd: &Path, name: Option<&str>) -> Result<()> {
-    append_folder_at(&config_file_path(), ws_name, like, cwd, name)
+    append_folder_at(&config_file_path(), ws_name, like, cwd, name, &Start::Same)
+}
+
+/// The same, saying what the new folder runs.
+pub fn append_folder_starting(
+    ws_name: &str,
+    like: Option<&Path>,
+    cwd: &Path,
+    name: Option<&str>,
+    start: &Start,
+) -> Result<()> {
+    append_folder_at(&config_file_path(), ws_name, like, cwd, name, start)
+}
+
+/// What a folder just made should run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    /// The same tabs as the folder it was cut from: same faces, new branch
+    Same,
+    /// Nothing. The folder is there, with a + to press
+    Nothing,
+    /// One tab, running this. `name` is what the tab is called
+    One { name: String, command: String },
 }
 
 /// The same, told which settings file to edit. Split out so it can be checked
@@ -1647,21 +1669,27 @@ pub fn append_folder_at(
     like: Option<&Path>,
     cwd: &Path,
     name: Option<&str>,
+    start: &Start,
 ) -> Result<()> {
     with_folders(path, ws_name, |folders| {
         // The tabs to bring along: whoever is already working in the folder
-        // this was asked for from. Same faces, new branch
-        let tabs = like
-            .and_then(|want| {
-                folders.iter().find(|g| {
-                    g.get("cwd")
-                        .and_then(|c| c.as_str())
-                        .map(resolve_folder_cwd)
-                        .is_some_and(|c| c == want)
+        // this was asked for from. Same faces, new branch -- unless the ask
+        // said what should run instead
+        let tabs = match start {
+            Start::Same => like
+                .and_then(|want| {
+                    folders.iter().find(|g| {
+                        g.get("cwd")
+                            .and_then(|c| c.as_str())
+                            .map(resolve_folder_cwd)
+                            .is_some_and(|c| c == want)
+                    })
                 })
-            })
-            .and_then(|g| g.get("tabs").cloned())
-            .unwrap_or_else(|| serde_json::json!([]));
+                .and_then(|g| g.get("tabs").cloned())
+                .unwrap_or_else(|| serde_json::json!([])),
+            Start::Nothing => serde_json::json!([]),
+            Start::One { name, command } => serde_json::json!([{ "name": name, "command": command }]),
+        };
         // What marks the copies apart. The branch when there is one, since two
         // branches can end in the same word (`feature/login`, `fix/login`) and
         // their folders would then hand out the same name twice
@@ -2596,7 +2624,7 @@ mod tests {
         )
         .unwrap();
 
-        append_folder_at(&file, "orion", None, Path::new("D:/work/fresh"), None).unwrap();
+        append_folder_at(&file, "orion", None, Path::new("D:/work/fresh"), None, &Start::Same).unwrap();
 
         let text = std::fs::read_to_string(&file).unwrap();
         let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2634,6 +2662,7 @@ mod tests {
             Some(Path::new("D:/work/proj")),
             Path::new("D:/work/proj.worktrees/feature/login"),
             Some("feature/login"),
+            &Start::Same,
         )
         .unwrap();
 
@@ -2671,6 +2700,49 @@ mod tests {
         assert_eq!(ids, ["coder@feature-login", "rev@feature-login"]);
         assert!(duplicate_keys(ws).is_empty(), "自動化から指す名前がぶつかっていない");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder can be made to run one AI, or nothing, instead of copying
+    /// whatever its project runs.
+    #[test]
+    fn a_new_folder_runs_what_it_was_told_to() {
+        let dir = std::env::temp_dir().join(format!("shikisha-start-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        std::fs::write(
+            &file,
+            r#"{"workspaces": [{"name": "Demo", "folders": [
+                {"cwd": "D:/work/proj", "tabs": [{"name": "実装", "id": "coder", "command": "claude"}]}]}]}"#,
+        )
+        .unwrap();
+        append_folder_at(
+            &file,
+            "Demo",
+            Some(Path::new("D:/work/proj")),
+            Path::new("D:/work/proj.worktrees/a-codex"),
+            Some("a-codex"),
+            &Start::One { name: "codex".into(), command: "codex --flag".into() },
+        )
+        .unwrap();
+        append_folder_at(
+            &file,
+            "Demo",
+            Some(Path::new("D:/work/proj")),
+            Path::new("D:/work/proj.worktrees/quiet"),
+            Some("quiet"),
+            &Start::Nothing,
+        )
+        .unwrap();
+        let cfg: Config = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let ws = &cfg.resolve_workspaces().0[0];
+        assert_eq!(ws.folders.len(), 3);
+        let in_folder = |g: usize| ws.tabs.iter().filter(|t| t.folder == g).collect::<Vec<_>>();
+        let one = in_folder(1);
+        assert_eq!(one.len(), 1, "AIを1つだけ");
+        assert_eq!(one[0].cfg.name.as_deref(), Some("codex"));
+        assert_eq!(one[0].cfg.command.argv(), ["codex", "--flag"]);
+        assert!(in_folder(2).is_empty(), "何も起動しない、のはずがタブがある");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

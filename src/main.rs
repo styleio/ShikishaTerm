@@ -442,6 +442,47 @@ fn abs_line(offset: usize, rows: u16, cursor_row: u16) -> usize {
 }
 
 /// Generates a tab name from argv ("ssh" -> "SSH")
+/// The AIs this machine can start, one per profile whose command is on PATH.
+///
+/// Offered the way the settings' own form would launch them: with the CLI's
+/// "act without asking" flag, because an AI started to work in a folder of
+/// its own is started to work unattended. A profile whose command is not
+/// installed is not offered -- a choice that fails on pressing is worse than
+/// no choice
+fn startable_ais() -> Vec<crate::uistate::AiChoice> {
+    let mut out = Vec::new();
+    for pf in crate::profile::files() {
+        let Some(cmd) = pf.command_match.first().map(|c| c.trim().to_string()) else { continue };
+        if cmd.is_empty() || crate::tab::resolve_command(&cmd).is_none() {
+            continue;
+        }
+        let command = match crate::tab::bypass_flag(&cmd) {
+            Some(flag) => format!("{cmd} {flag}"),
+            None => cmd.clone(),
+        };
+        out.push(crate::uistate::AiChoice { key: cmd, name: pf.name.clone(), command });
+    }
+    out
+}
+
+/// What a new folder should run, from the word the dialog sent.
+///
+/// Empty is "the same as the folder it is cut from", `none` is nothing, and
+/// anything else names one of the AIs offered. A name that is not on the list
+/// -- an AI uninstalled between the offer and the press -- runs nothing rather
+/// than a command that would fail on screen
+fn start_of(said: &str, ais: &[crate::uistate::AiChoice]) -> config::Start {
+    match said.trim() {
+        "" => config::Start::Same,
+        "none" => config::Start::Nothing,
+        key => ais
+            .iter()
+            .find(|a| a.key == key)
+            .map(|a| config::Start::One { name: a.key.clone(), command: a.command.clone() })
+            .unwrap_or(config::Start::Nothing),
+    }
+}
+
 fn title_of(argv: &[String]) -> String {
     argv.first()
         .map(|c| {
@@ -686,7 +727,7 @@ struct WinSurface {
     vault_opens: Vec<crate::browser::Ev>,
     /// Branches asked about, and asked for: (folder cut from, branch, what to
     /// grow it from, make it, what to bring along)
-    branches: Vec<(String, String, String, bool, Vec<String>)>,
+    branches: Vec<crate::browser::BranchAsk>,
     /// Working folders asked about, and asked for: (the folder, the project
     /// chosen when one had to be, the branch, go ahead)
     repairs: Vec<(String, String, String, bool)>,
@@ -878,7 +919,7 @@ impl WinSurface {
         std::mem::take(&mut self.vault_opens)
     }
 
-    fn take_branches(&mut self) -> Vec<(String, String, String, bool, Vec<String>)> {
+    fn take_branches(&mut self) -> Vec<crate::browser::BranchAsk> {
         std::mem::take(&mut self.branches)
     }
 
@@ -1032,8 +1073,8 @@ impl WinSurface {
                 }
                 Ev::VaultSearch { query } => self.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
-                Ev::Branch { from, branch, base, make, carry } => {
-                    self.branches.push((from, branch, base, make, carry))
+                ev @ Ev::Branch { .. } => {
+                    self.branches.extend(crate::browser::BranchAsk::of(ev));
                 }
                 Ev::Repair { folder, choose, branch, take } => {
                     self.repairs.push((folder, choose, branch, take))
@@ -2115,6 +2156,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         aim: ui.aim,
         first_run: ui.first_run,
         push_wanted: ui.push_wanted,
+        ais: ui.ais.clone(),
         // Keep the order exactly as written in the config.
         // Listing sessions and browsers separately would push the browser
         // written first to the back.
@@ -2712,6 +2754,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // where it is. The meter keeps last time's totals so processor use comes
     // out as a rate rather than a running sum
     let mut meter = crate::usage::Meter::default();
+    // The AIs that can be started here. Read once: it asks the disk which
+    // commands exist, and the answer does not change while the app runs
+    // except by somebody installing one, which a settings save also notices
+    let mut ai_choices = startable_ais();
     // What the Vault overlay is showing right now: the last search and its
     // hits. Kept across frames so the results stay put until the next search,
     // and dropped from the state entirely while the overlay is closed
@@ -2973,6 +3019,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     .map(|_| crate::layout::Layout::single(0))
                     .collect();
                 workspaces = new_ws;
+                ai_choices = startable_ais();
                 max_chain = newcfg.max_chain.unwrap_or(10);
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
                 resident = newcfg.resident.unwrap_or(true);
@@ -4006,14 +4053,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // folder back on this machine. Neither is a keystroke, so
                     // neither can be turned into one -- they go to the same
                     // queues the window's dialogs fill
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Branch {
-                        from,
-                        branch,
-                        base,
-                        make,
-                        carry,
-                    }) => {
-                        surface.branches.push((from, branch, base, make, carry));
+                    remote::RemoteCmd::Ui(ev @ crate::browser::Ev::Branch { .. }) => {
+                        surface.branches.extend(crate::browser::BranchAsk::of(ev));
                     }
                     remote::RemoteCmd::Ui(crate::browser::Ev::Repair {
                         folder,
@@ -4261,6 +4302,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             })
             .map_or((None, None), |(p, n)| (Some(p), Some(n)));
         let ui = Ui {
+            ais: ai_choices.clone(),
             first_run,
             push_wanted: cfg.as_ref().is_some_and(|c| {
                 c.notify.values().any(|d| matches!(d, notify::Destination::Phone {}))
@@ -5292,8 +5334,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // Another branch of a project already open. The same call answers "what
         // would this do" and does it, so the line shown before it happens is
         // the line that happens
-        for (from, name, base, make, carry) in surface.take_branches() {
-            let from = std::path::PathBuf::from(&from);
+        for ask in surface.take_branches() {
+            let from = std::path::PathBuf::from(&ask.from);
+            let name = ask.branch.clone();
             // What this project can offer -- the branches to grow from, and
             // the things git will not carry -- is a fact about the folder, not
             // about what has been typed so far. Answered even when the name is
@@ -5306,12 +5349,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // What it would grow from, even when there is no name yet to grow.
             // Echoing back the empty answer would leave the picker with nothing
             // to show until somebody typed
-            let chosen = match base.trim().is_empty() {
+            let chosen = match ask.base.trim().is_empty() {
                 true => repo
                     .as_deref()
                     .map(crate::worktree::default_base)
                     .unwrap_or_default(),
-                false => base.clone(),
+                false => ask.base.clone(),
             };
             // Nothing typed yet: propose one, so the dialog opens with a
             // complete answer and pressing the button is enough
@@ -5319,70 +5362,121 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 true => repo.as_deref().map(crate::worktree::suggest).unwrap_or_default(),
                 false => name.clone(),
             };
-            branch_view = Some(match crate::worktree::plan(&from, &wanted, Some(&base)) {
-                Err(e) => crate::uistate::BranchPlan {
-                    from: from.display().to_string(),
-                    branch: name.clone(),
-                    asked: name,
-                    base: chosen,
-                    bases,
-                    carry: carryable,
-                    error: Some(format!("{e:#}")),
-                    ..Default::default()
-                },
-                Ok(plan) => {
-                    let mut view = crate::uistate::BranchPlan {
-                        from: from.display().to_string(),
-                        branch: plan.branch.clone(),
-                        asked: name.clone(),
-                        folder: plan.folder.display().to_string(),
-                        line: plan.line(),
-                        base: plan.base.clone(),
-                        bases,
-                        carry: carryable,
-                        error: None,
-                        done: false,
-                    };
-                    if make {
-                        // Made first, written down second: settings naming a
-                        // folder that does not exist would launch tabs into
-                        // nowhere on the next reload
-                        let ws = workspaces
-                            .get(ws_index)
-                            .map(|w| w.name.clone())
-                            .unwrap_or_default();
-                        let wrote = crate::worktree::create(&plan).and_then(|()| {
-                            config::append_folder(
+            let ws = workspaces
+                .get(ws_index)
+                .map(|w| w.name.clone())
+                .unwrap_or_default();
+            // What the new folder runs, chosen from what this machine has
+            let start = start_of(&ask.start, &ai_choices);
+            let mut view = crate::uistate::BranchPlan {
+                from: from.display().to_string(),
+                branch: name.clone(),
+                asked: name.clone(),
+                base: chosen.clone(),
+                bases,
+                carry: carryable,
+                ..Default::default()
+            };
+            if ask.ais.is_empty() {
+                match crate::worktree::plan(&from, &wanted, Some(&ask.base)) {
+                    Err(e) => view.error = Some(format!("{e:#}")),
+                    Ok(plan) => {
+                        view.branch = plan.branch.clone();
+                        view.folder = plan.folder.display().to_string();
+                        view.line = plan.line();
+                        view.base = plan.base.clone();
+                        if ask.make {
+                            // Made first, written down second: settings naming a
+                            // folder that does not exist would launch tabs into
+                            // nowhere on the next reload
+                            let wrote = crate::worktree::create(&plan).and_then(|()| {
+                                config::append_folder_starting(
+                                    &ws,
+                                    Some(&plan.main),
+                                    &plan.folder,
+                                    Some(&plan.branch),
+                                    &start,
+                                )
+                            });
+                            match wrote {
+                                Ok(()) => {
+                                    view.done = true;
+                                    // What could not be brought along is said out
+                                    // loud: the folder is made either way, and the
+                                    // first build is what would otherwise fail
+                                    let missed = crate::worktree::carry_into(&plan, &ask.carry);
+                                    flash = Some(match missed.is_empty() {
+                                        true => i18n::tp(
+                                            "msg.branch.made",
+                                            &[("name", &plan.branch)],
+                                        ),
+                                        false => i18n::tp(
+                                            "msg.branch.made_partly",
+                                            &[("name", &plan.branch), ("missed", &missed.join(", "))],
+                                        ),
+                                    });
+                                }
+                                Err(e) => view.error = Some(format!("{e:#}")),
+                            }
+                        }
+                    }
+                }
+            } else {
+                // One folder per AI, each branch named for its AI. Every line
+                // is shown before any of them runs; one that cannot be made
+                // stops the whole ask, because "three of the four were made"
+                // is a state nobody asked for
+                let fanned = crate::worktree::fan(&from, &wanted, Some(&ask.base), &ask.ais);
+                view.branch = wanted.clone();
+                view.lines = fanned.iter().filter_map(|(_, p)| p.as_ref().ok().map(|p| p.line())).collect();
+                view.folder = fanned
+                    .iter()
+                    .filter_map(|(_, p)| p.as_ref().ok().map(|p| p.folder.display().to_string()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if let Some((_, Err(e))) = fanned.iter().find(|(_, p)| p.is_err()) {
+                    view.error = Some(format!("{e:#}"));
+                } else if ask.make {
+                    let mut made: Vec<String> = Vec::new();
+                    let mut failed: Vec<String> = Vec::new();
+                    for (ai, plan) in fanned.iter() {
+                        let Ok(plan) = plan else { continue };
+                        let one = start_of(ai, &ai_choices);
+                        let wrote = crate::worktree::create(plan).and_then(|()| {
+                            config::append_folder_starting(
                                 &ws,
                                 Some(&plan.main),
                                 &plan.folder,
                                 Some(&plan.branch),
+                                &one,
                             )
                         });
                         match wrote {
                             Ok(()) => {
-                                view.done = true;
-                                // What could not be brought along is said out
-                                // loud: the folder is made either way, and the
-                                // first build is what would otherwise fail
-                                let missed = crate::worktree::carry_into(&plan, &carry);
-                                flash = Some(match missed.is_empty() {
-                                    true => i18n::tp(
-                                        "msg.branch.made",
-                                        &[("name", &plan.branch)],
-                                    ),
-                                    false => i18n::tp(
-                                        "msg.branch.made_partly",
-                                        &[("name", &plan.branch), ("missed", &missed.join(", "))],
-                                    ),
-                                });
+                                crate::worktree::carry_into(plan, &ask.carry);
+                                made.push(plan.branch.clone());
                             }
-                            Err(e) => view.error = Some(format!("{e:#}")),
+                            Err(e) => {
+                                append_hook_log(&format!("could not make {}: {e:#}", plan.branch));
+                                failed.push(plan.branch.clone());
+                            }
                         }
                     }
-                    view
+                    view.done = !made.is_empty();
+                    flash = Some(match (made.is_empty(), failed.is_empty()) {
+                        (true, _) => i18n::tp("msg.branch.fanned_none", &[("failed", &failed.join(", "))]),
+                        (false, true) => i18n::tp("msg.branch.fanned", &[("names", &made.join(", "))]),
+                        (false, false) => i18n::tp(
+                            "msg.branch.fanned_partly",
+                            &[("names", &made.join(", ")), ("failed", &failed.join(", "))],
+                        ),
+                    });
+                    if made.is_empty() {
+                        view.error = flash.clone();
+                    }
                 }
-            });
+            }
+            branch_view = Some(view);
         }
         for ev in surface.take_vault_opens() {
             if let crate::browser::Ev::VaultOpen { program, id, cwd, title } = ev {
@@ -9203,6 +9297,9 @@ struct Ui {
     nav: Option<crate::uistate::NavState>,
     /// How many lines back from the current screen we're scrolled (0 = live)
     scrolled: usize,
+    /// The AIs this machine can start, for the dialog that makes a folder
+    /// and starts one in it
+    ais: Vec<crate::uistate::AiChoice>,
 }
 
 

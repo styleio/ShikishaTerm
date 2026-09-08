@@ -878,13 +878,24 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      is picked, because one of them is new and the other already exists */
   #branch .brow2 { display:flex; gap:8px; align-items:stretch; }
   #branch .brow2 #bq { flex:1; min-width:0; }
-  #branch #bbase { font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
+  /* What the new folder runs: the same tabs as its project, nothing, or one
+     AI -- or one folder per AI, ticked below. Only shown when this machine
+     has an AI to start; without one the dialog is what it always was */
+  #branch .bstartrow { display:flex; gap:8px; align-items:center; }
+  /* A display rule of their own would otherwise beat the hidden attribute */
+  #branch .bstartrow[hidden], #branch .bfan[hidden], #branch .bais[hidden] { display:none; }
+  #branch .bstartrow .say { color:var(--dim); font-size:11.5px; flex:0 0 auto; }
+  #branch .bfan { display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; }
+  #branch .bais { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding-left:22px; }
+  #branch .bais label { display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer; }
+  #branch #bbase, #branch #bstart { font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
     border:1px solid var(--line); border-radius:8px; padding:0 10px; cursor:pointer;
     max-width:42%; flex:0 0 auto; display:flex; align-items:center; gap:6px;
     white-space:nowrap; overflow:hidden; }
-  #branch #bbase:hover { border-color:var(--brand); }
-  #branch #bbase .nm { overflow:hidden; text-overflow:ellipsis; }
-  #branch #bbase .caret { color:var(--dim); font-size:9px; }
+  #branch #bbase:hover, #branch #bstart:hover { border-color:var(--brand); }
+  #branch #bbase .nm, #branch #bstart .nm { overflow:hidden; text-overflow:ellipsis; }
+  #branch #bbase .caret, #branch #bstart .caret { color:var(--dim); font-size:9px; }
+  #branch #bstart { max-width:none; flex:1 1 auto; }
   .fmenu.tall { max-height:min(52vh, 420px); overflow:auto; }
   #browse .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; max-height:52vh; }
   #browse .vrow { padding:8px 10px; border-radius:8px; cursor:pointer; }
@@ -1258,6 +1269,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
       <div class="bsay"></div>
       <div class="brow2"><div id="bbase"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
+      <div class="bstartrow" hidden><span class="say"></span><div id="bstart"></div></div>
+      <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
+      <div class="bais" hidden></div>
       <div class="bwhere"></div>
       <div class="bcmd"></div>
       <div class="bcarry"></div>
@@ -2030,6 +2044,14 @@ function openBranch(g) {
   const sel = document.getElementById("bbase");
   sel.dataset.said = "";
   sel.textContent = "";
+  // What it runs: the same as its project until somebody says otherwise
+  branchStart = "";
+  const fan = document.getElementById("bfanon");
+  if (fan) fan.checked = false;
+  const ais = b.querySelector(".bais");
+  ais.dataset.key = "";
+  ais.textContent = "";
+  drawStart(b);
   drawBranch();
   // Asked before a single letter is typed: what this project can be grown
   // from does not depend on the name, and a picker that is empty until you
@@ -2049,8 +2071,74 @@ function askBranch() {
   branchTimer = setTimeout(() => {
     const q = document.getElementById("bq");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
-          make:false, carry:carrying()});
+          make:false, carry:carrying(), start:starting(), ais:fanning()});
   }, 180);
+}
+
+// What the new folder runs: "" for the same tabs as its project, "none" for
+// nothing, or the command of one AI
+let branchStart = "";
+function starting() { return fanning().length ? "" : branchStart; }
+// The AIs ticked for one folder each, or nothing when that box is off
+function fanning() {
+  const on = document.getElementById("bfanon");
+  if (!on || !on.checked) return [];
+  const b = document.getElementById("branch");
+  return Array.from(b.querySelectorAll(".bais input:checked")).map(i => i.value);
+}
+// The picker for what runs, and the tick for one-per-AI. Only where this
+// machine has an AI to offer: without one the dialog is what it always was
+function drawStart(b) {
+  const ais = (S && S.ais) || [];
+  const row = b.querySelector(".bstartrow");
+  const fan = b.querySelector(".bfan");
+  const list = b.querySelector(".bais");
+  row.hidden = !ais.length;
+  fan.hidden = !ais.length;
+  if (!ais.length) { list.hidden = true; return; }
+  const on = document.getElementById("bfanon").checked;
+  row.hidden = on;
+  list.hidden = !on;
+  row.querySelector(".say").textContent = T["tui.branch.start"] || "Start here:";
+  fan.querySelector("span").textContent = T["tui.branch.fan"] || "One folder per AI";
+  const said = branchStart === "" ? (T["tui.branch.start.same"] || "the same tabs as the project")
+    : branchStart === "none" ? (T["tui.branch.start.none"] || "nothing")
+    : ((ais.find(a => a.key === branchStart) || {}).name || branchStart);
+  const box = document.getElementById("bstart");
+  // Written only when it changed: every touch of this document is another
+  // chance to shut a list that somebody has open
+  if (box.dataset.said !== said) {
+    box.dataset.said = said;
+    box.textContent = "";
+    box.append(el("span", {class:"nm"}, said), el("span", {class:"caret"}, "\u25BE"));
+  }
+  box.onclick = e => {
+    e.stopPropagation();
+    const pick = (key, label) => el("div", {onclick:() => {
+      closeFolderMenu();
+      branchStart = key;
+      drawStart(b);
+      askBranch();
+    }}, label);
+    openList(box, [
+      pick("", T["tui.branch.start.same"] || "the same tabs as the project"),
+      ...ais.map(a => pick(a.key, a.name)),
+      pick("none", T["tui.branch.start.none"] || "nothing"),
+    ]);
+  };
+  // The tick boxes, drawn once per set of AIs: rebuilding them on every
+  // answer would untick whatever was just unticked
+  const key = ais.map(a => a.key).join("\u0000");
+  if (list.dataset.key !== key) {
+    list.dataset.key = key;
+    list.textContent = "";
+    for (const a of ais) {
+      const cb = el("input", {type:"checkbox", value:a.key});
+      cb.checked = true;
+      cb.onchange = askBranch;
+      list.append(el("label", {}, cb, el("span", {}, a.name)));
+    }
+  }
 }
 
 // What it will grow from: whatever the picker is showing
@@ -2084,7 +2172,11 @@ function drawBranch() {
   const here = p && p.from === branchFrom;
   if (mine && p.done) { closeBranch(); return; }
   b.querySelector(".bwhere").textContent = mine && !p.error ? p.folder : "";
-  b.querySelector(".bcmd").textContent = mine && !p.error ? p.line : "";
+  // Every line when several folders are being made, so what is shown is
+  // the whole of what will run
+  b.querySelector(".bcmd").textContent = mine && !p.error
+    ? ((p.lines && p.lines.length) ? p.lines.join("\n") : p.line) : "";
+  drawStart(b);
   drawCarry(b, here ? (p.carry || []) : []);
   drawBases(b, here ? p : null);
   b.querySelector(".berr").textContent = mine && p.error ? p.error : "";
@@ -2179,8 +2271,10 @@ function drawCarry(b, items) {
   b.querySelector(".go").onclick = () => {
     const q = document.getElementById("bq");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
-          make:true, carry:carrying()});
+          make:true, carry:carrying(), start:starting(), ais:fanning()});
   };
+  const fan = document.getElementById("bfanon");
+  if (fan) fan.addEventListener("change", () => { drawStart(b); askBranch(); });
   const q = document.getElementById("bq");
   q.addEventListener("input", askBranch);
   q.addEventListener("keydown", e => {
@@ -7273,6 +7367,21 @@ mod tests {
             "スマホの道にワークスペースが乗らない（無いと基本カードに落ちる）"
         );
         assert!(PAGE.contains("tabpos: tabpos});"), "窓の道に位置が乗らない");
+    }
+
+    /// The branch dialog says what the new folder runs, and can make one
+    /// folder per AI. Both roads (asking and making) carry the same two
+    /// answers, so what was shown is what happens.
+    #[test]
+    fn the_branch_dialog_says_what_runs_and_can_fan_out() {
+        assert!(PAGE.contains(r#"make:false, carry:carrying(), start:starting(), ais:fanning()});"#), "尋ねる道に起動先が乗らない");
+        assert!(PAGE.contains(r#"make:true, carry:carrying(), start:starting(), ais:fanning()});"#), "作る道に起動先が乗らない");
+        // With the fan-out ticked, the single choice is not sent as well
+        assert!(PAGE.contains(r#"function starting() { return fanning().length ? "" : branchStart; }"#));
+        // Nothing offered on a machine with no AI: the dialog is what it was
+        assert!(PAGE.contains("row.hidden = !ais.length;") && PAGE.contains("fan.hidden = !ais.length;"));
+        // Every line is shown when several folders are being made
+        assert!(PAGE.contains(r#"(p.lines && p.lines.length) ? p.lines.join("\n") : p.line"#));
     }
 
     /// A project and the branches cut from it are one household: one box,

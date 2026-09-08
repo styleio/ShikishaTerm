@@ -819,6 +819,16 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                         .collect()
                 })
                 .unwrap_or_default(),
+            start: v.get("start").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            ais: v
+                .get("ais")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
         },
         Some("closesettings") => Ev::CloseSettings,
         Some("opensettings") => Ev::OpenSettings {
@@ -1241,6 +1251,12 @@ pub enum Ev {
         make: bool,
         /// What to bring along, of what was offered
         carry: Vec<String>,
+        /// What runs in the new folder: empty for the same tabs as the folder
+        /// it is cut from, `none` for nothing, or the command of one AI
+        start: String,
+        /// One folder per AI named here, each branch named for its AI,
+        /// instead of one folder. Empty means one
+        ais: Vec<String>,
     },
     /// A colour was chosen for the project a folder belongs to. Empty means
     /// "go back to the one you work out yourselves"
@@ -5354,5 +5370,29 @@ mod tests {
         let id = b.eval("return location.href;").unwrap();
         println!("after click url = {:?}", b.wait_result(id, Duration::from_secs(10)));
         drop(b);
+    }
+}
+
+/// One ask from the branch dialog, as the loop reads it off its queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchAsk {
+    pub from: String,
+    pub branch: String,
+    pub base: String,
+    pub make: bool,
+    pub carry: Vec<String>,
+    pub start: String,
+    pub ais: Vec<String>,
+}
+
+impl BranchAsk {
+    /// The ask carried by a branch event, or nothing for any other event.
+    pub fn of(ev: Ev) -> Option<Self> {
+        match ev {
+            Ev::Branch { from, branch, base, make, carry, start, ais } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais })
+            }
+            _ => None,
+        }
     }
 }

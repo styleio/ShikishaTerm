@@ -559,6 +559,19 @@ pub fn suggest(main: &Path) -> String {
     String::new()
 }
 
+/// One folder per AI: the same name with the AI's own on the end, so the
+/// branches say at a glance who is working on which. Every plan is made
+/// before any runs, so what is shown is the whole of what will happen
+pub fn fan(main: &Path, name: &str, base: Option<&str>, ais: &[String]) -> Vec<(String, Result<Plan>)> {
+    ais.iter()
+        .map(|ai| {
+            let ai = ai.trim().to_string();
+            let branch = format!("{}-{ai}", name.trim());
+            (ai.clone(), plan(main, &branch, base))
+        })
+        .collect()
+}
+
 /// Whether a branch of this name is already in the repository.
 fn branch_exists(main: &Path, branch: &str) -> bool {
     match crate::repo::family_of(main) {
@@ -695,6 +708,26 @@ mod tests {
     /// Everything else here is arithmetic on paths and strings; this is the one
     /// that proves the folder comes out on its own branch, belonging to the
     /// same project, with the note about where it came from actually written.
+    /// One folder per AI: the same name, each with its AI on the end, and a
+    /// plan for every one before any is made.
+    #[test]
+    fn a_name_fans_out_into_one_branch_per_ai() {
+        let main = repo("fan");
+        let ais = vec!["claude".to_string(), "codex".to_string(), " gemini ".to_string()];
+        let out = fan(&main, "kanban", Some("main"), &ais);
+        let names: Vec<String> = out.iter().map(|(_, p)| p.as_ref().unwrap().branch.clone()).collect();
+        assert_eq!(names, ["kanban-claude", "kanban-codex", "kanban-gemini"]);
+        assert_eq!(out[2].0, "gemini", "AI の名前は整えて持つ");
+        // Each gets its own folder, and every line is the one that will run
+        let folders: std::collections::HashSet<_> =
+            out.iter().map(|(_, p)| p.as_ref().unwrap().folder.clone()).collect();
+        assert_eq!(folders.len(), 3);
+        assert!(out.iter().all(|(_, p)| p.as_ref().unwrap().line().contains("worktree add")));
+        // A name git would refuse is refused per branch, and the others still plan
+        let bad = fan(&main, "kan ban", Some("main"), &ais);
+        assert!(bad.iter().all(|(_, p)| p.is_err()), "空白入りの名前が通った");
+    }
+
     #[test]
     fn a_branch_really_gets_its_own_folder() {
         let main = std::env::temp_dir().join("shikisha-wt-real").join("myproject");

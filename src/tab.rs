@@ -2211,7 +2211,7 @@ pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
 /// The "act without asking" flag a CLI needs to run unattended, or None if it has
 /// none. Single source of truth for the operator-readiness gate; the settings JS
 /// (webui `cliFlagOf`) mirrors these strings for the editable checkbox.
-fn bypass_flag(head: &str) -> Option<&'static str> {
+pub(crate) fn bypass_flag(head: &str) -> Option<&'static str> {
     match head {
         "claude" => Some("--dangerously-skip-permissions"),
         "codex" => Some("--dangerously-bypass-approvals-and-sandbox"),
