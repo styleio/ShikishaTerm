@@ -21,6 +21,12 @@ once it reaches its first tagged release.
   still working, because the conversation comes back next time and the work
   in progress does not. A Windows notification clicked while the window is
   put away brings it back to the tab it was about.
+- **Starting it again brings the running one back.** With the program living
+  on after its window is closed, a second click on the shortcut would have
+  started a second copy over the same settings, session file and phone port.
+  Now the second one asks the first to show its window and leaves, the way a
+  chat app does. Only a copy on the same folders counts: a demo copy or a
+  portable copy elsewhere runs beside it as before.
 - **A window put away gives its memory back.** The board is a Chromium page,
   and Chromium keeps a browser process and a renderer for it — some two
   hundred megabytes for an empty board, and hiding the window released none

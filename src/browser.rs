@@ -3348,6 +3348,11 @@ fn run_window(
     let mut ev_loop = EventLoopBuilder::<Cmd>::with_user_event()
         .with_any_thread(true)
         .with_msg_hook(move |msg| {
+            // A second copy started over this layout asks for the window
+            if crate::instance::is_show(msg) {
+                let _ = hook_tx.send(Ev::TrayOpen);
+                return true;
+            }
             let hwnd = hook_hwnd.load(Ordering::Relaxed);
             match crate::tray::pressed(msg, hwnd, &open_label, &quit_label) {
                 Some(crate::tray::Pressed::Open) => {

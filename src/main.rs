@@ -69,6 +69,7 @@ mod webui;
 mod worktree;
 mod wspack;
 mod tray;
+mod instance;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -302,6 +303,20 @@ fn boot() -> Result<()> {
         let url = std::env::args().nth(2).unwrap_or_else(|| "https://example.com/".into());
         return cast_test(&url);
     }
+
+    // One program per layout (see instance.rs). Started again over the same
+    // folders -- a second click on the shortcut while the first is put away in
+    // the notification area -- this one asks the first to show its window and
+    // leaves, the way any resident program does. A copy on another layout
+    // (demo, portable beside a different exe) is not this one and runs
+    let _instance = match instance::claim() {
+        instance::Standing::First(claim) => claim,
+        instance::Standing::Second => {
+            append_hook_log("Already running from this layout; asked the running copy to show its window");
+            instance::ask_to_show();
+            return Ok(());
+        }
+    };
 
     // Which pseudo console this run got, written down before the first tab
     // opens. Both ways of ending up on the older one are silent -- a download
