@@ -392,6 +392,27 @@ impl Keys {
     }
 }
 
+#[cfg(test)]
+mod manual_tests {
+    use super::ACTIONS;
+
+    /// The manual lists every key as it ships. A key that moved in the code
+    /// and not in the manual is a manual that lies, so both languages are
+    /// held to the table here.
+    #[test]
+    fn the_manual_lists_every_key_it_ships_with() {
+        for (lang, text) in [
+            ("en", include_str!("../docs/MANUAL.md")),
+            ("ja", include_str!("../docs/MANUAL.ja.md")),
+        ] {
+            for a in ACTIONS {
+                let want = format!("`Ctrl+B {}`", a.key);
+                assert!(text.contains(&want), "{lang}: {} ({}) が手引きに無い", a.name, want);
+            }
+        }
+    }
+}
+
 /// The character an action is dispatched on, by name. Used to run an action
 /// the palette picked without the palette needing to know the keys.
 pub fn char_for(name: &str) -> Option<char> {

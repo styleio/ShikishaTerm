@@ -15,6 +15,9 @@ const REPO_URL = "https://github.com/styleio/ShikishaTerm";
 
 /** src: リポジトリ上の位置 / dest: サイト上の位置 / order: サイドバーの並び */
 const PAGES = [
+  // The manual first: it is where the ? beside the app's gear leads
+  { src: "docs/MANUAL.md", dest: "manual.md", order: 0 },
+  { src: "docs/MANUAL.ja.md", dest: "ja/manual.md", order: 0 },
   { src: "docs/AUTOMATION.md", dest: "automation.md", order: 1 },
   { src: "docs/TRANSLATING.md", dest: "translating.md", order: 2 },
   // Microsoft Store の掲載情報がこのURLを指す。消すとストアの審査が落ちる
@@ -41,6 +44,8 @@ function firstParagraph(body) {
  */
 function fixLinks(body, dest) {
   const onSite = new Map([
+    ["docs/MANUAL.md", "/manual/"],
+    ["docs/MANUAL.ja.md", "/ja/manual/"],
     ["docs/AUTOMATION.md", "/automation/"],
     ["docs/AUTOMATION.ja.md", "/ja/automation/"],
     ["docs/TRANSLATING.md", "/translating/"],

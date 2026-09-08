@@ -45,13 +45,15 @@ export default defineConfig({
       editLink: { baseUrl: `${REPO}/edit/main/site/` },
       lastUpdated: true,
       sidebar: [
-        // 一番手前に置く。スマホの画面は看板の売りのひとつだが、外出先から
+        // 手引きが先頭。アプリの歯車の隣の ? がここへ来る
+        { label: "Manual", link: "/manual/", translations: { ja: "手引き" } },
+        // スマホの画面は看板の売りのひとつだが、外出先から
         // 使うには他社製品 (Tailscale) の作業が挟まる。それを黙っていると
         // 「で、結局どうやるの」で止まる
-        { label: "From your phone", link: "/phone/" },
-        { label: "Automation", link: "/automation/" },
+        { label: "From your phone", link: "/phone/", translations: { ja: "スマホから使う" } },
+        { label: "Automation", link: "/automation/", translations: { ja: "自動化" } },
         { label: "Translating", link: "/translating/" },
-        { label: "Privacy", link: "/privacy/" },
+        { label: "Privacy", link: "/privacy/", translations: { ja: "プライバシー" } },
         { label: "Microsoft Store", link: "https://apps.microsoft.com/detail/9PB8XQVM87Z0", attrs: { target: "_blank" } },
         { label: "Portable zip", link: `${REPO}/releases/latest`, attrs: { target: "_blank" } },
       ],
