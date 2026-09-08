@@ -1867,7 +1867,7 @@ fn with_folders(
 /// it here, before anything is added, so that a folder added after them does
 /// not become "the first" and take them: adding an empty folder to a
 /// workspace written the old way used to move every tab it had into it.
-fn ensure_folders(holder: &mut serde_json::Value) {
+pub(crate) fn ensure_folders(holder: &mut serde_json::Value) {
     if !holder.get("folders").map(|f| f.is_array()).unwrap_or(false) {
         holder["folders"] = serde_json::json!([]);
     }

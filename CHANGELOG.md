@@ -8,6 +8,24 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **Exporting a workspace exports the workspace.** Since tabs moved inside
+  working folders, the file "Export this workspace" wrote had the name and
+  nothing else: no folders, no tabs, and no scripts, because they were only
+  looked for where tabs used to be. Scripts were also looked for one folder too
+  deep — inside `config\` rather than beside it, where a tab runs them from —
+  so even a workspace written the old way went out without them. The file now
+  carries the folders with their tabs, the tabs nested under tabs, and every
+  script they point at; a file written by the older version still imports, its
+  tabs landing in the first folder as the program has read them all along. A
+  file from before this fix would have opened as an empty workspace on a
+  version that only knew the old shape, so the file's version number went up:
+  such a version now says it cannot read it instead.
+- **An imported workspace does not grant itself this machine's secrets.** The
+  allow-list travels out with the workspace, as a note of what it needs, but
+  is dropped on the way in; the person grants it again in the settings,
+  knowing what is being handed over.
+
 ## [0.7.0] - 2026-09-08
 
 The phone stops needing the page open.
