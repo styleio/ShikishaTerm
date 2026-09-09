@@ -336,12 +336,77 @@ struct Gate {
     grants: Ids,
     /// Wrong passwords in a row, and when the last one was.
     ///
-    /// The board's own password prompt sits behind the access token, so
-    /// reaching it at all means holding a full-machine credential. A reply
-    /// link does not: it is a short ticket, and it is posted into chat rooms
-    /// on purpose. Somebody who ends up with one must not be able to sit
-    /// there trying passwords at machine speed.
-    misses: Mutex<(u32, Instant)>,
+    /// One score for every door the password has — the board's `/auth` and
+    /// the reply page's unlock — because they open the same password, and a
+    /// guesser turned away at one must not walk round to the other. The board's
+    /// door sits behind the access token, so reaching it at all means holding a
+    /// full-machine credential; a reply link is a short ticket posted into
+    /// chat rooms on purpose. Neither may be tried at machine speed.
+    misses: Mutex<Misses>,
+}
+
+/// The score of wrong passwords, and what it costs.
+///
+/// The first two slips cost nothing — that is a person mistyping. The third
+/// shuts the door for a second, and from there the wait doubles, up to a
+/// minute; ten quiet minutes forget the score. Guessing is thereby held to
+/// about one try a minute, while a person who mistyped three times is in after
+/// a second. Nobody is made to sleep: the answer is "come back in n seconds",
+/// so the listener — one thread, serving every phone — keeps serving the phone
+/// that is already in. (It used to sleep the thread; a guesser then slowed
+/// everybody's screen along with their own.)
+///
+/// Time is handed in rather than read, so the ladder can be tested without
+/// waiting on it
+struct Misses {
+    count: u32,
+    last: Instant,
+}
+
+impl Misses {
+    /// Wrong passwords in a row that cost nothing
+    const FREE: u32 = 2;
+    /// The longest the door stays shut after one wrong password
+    const LONGEST: Duration = Duration::from_secs(60);
+    /// How long a score is remembered after the last wrong password
+    const FORGOTTEN_AFTER: Duration = Duration::from_secs(600);
+
+    fn new(now: Instant) -> Self {
+        Self { count: 0, last: now }
+    }
+
+    /// How long the door stays shut after `count` wrong passwords in a row
+    fn shut_for(count: u32) -> Duration {
+        if count <= Self::FREE {
+            return Duration::ZERO;
+        }
+        let doublings = (count - Self::FREE - 1).min(16);
+        Duration::from_secs(1u64 << doublings).min(Self::LONGEST)
+    }
+
+    /// How much longer the door is shut at `now`, or `None` if a try is welcome
+    fn wait_at(&mut self, now: Instant) -> Option<Duration> {
+        if now.saturating_duration_since(self.last) > Self::FORGOTTEN_AFTER {
+            self.count = 0;
+        }
+        let shut = Self::shut_for(self.count);
+        let since = now.saturating_duration_since(self.last);
+        (since < shut).then(|| shut - since)
+    }
+
+    /// One more wrong password at `now`
+    fn missed_at(&mut self, now: Instant) {
+        if now.saturating_duration_since(self.last) > Self::FORGOTTEN_AFTER {
+            self.count = 0;
+        }
+        self.count = self.count.saturating_add(1);
+        self.last = now;
+    }
+
+    /// A right password clears the score
+    fn forgive(&mut self) {
+        self.count = 0;
+    }
 }
 
 impl Gate {
@@ -355,29 +420,28 @@ impl Gate {
         self.password.is_empty() || self.pw.has(id)
     }
 
-    /// Answer a wrong password slowly, and more slowly each time.
-    ///
-    /// Capped, because the point is to make guessing pointless rather than to
-    /// lock anybody out: somebody who mistypes their own password four times
-    /// still gets in on the fifth without a wait worth complaining about. The
-    /// count is forgotten after ten quiet minutes.
-    fn slow_down(&self) {
-        let wait = {
-            let mut m = self.misses.lock().unwrap_or_else(|e| e.into_inner());
-            if m.1.elapsed() > Duration::from_secs(600) {
-                m.0 = 0;
-            }
-            m.0 = m.0.saturating_add(1);
-            m.1 = Instant::now();
-            Duration::from_millis(250 * u64::from(m.0.min(12)))
-        };
-        std::thread::sleep(wait);
+    /// How much longer no password will be looked at, or `None` if one may be
+    /// offered now. Asked before the password is compared, so a right one
+    /// offered during the wait is turned away too — that is what makes the
+    /// wait count against a guesser
+    fn wait(&self) -> Option<Duration> {
+        self.misses
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .wait_at(Instant::now())
     }
 
-    /// A right password clears the score.
+    /// Score a wrong password
+    fn missed(&self) {
+        self.misses
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .missed_at(Instant::now());
+    }
+
+    /// A right password clears the score
     fn forgive(&self) {
-        let mut m = self.misses.lock().unwrap_or_else(|e| e.into_inner());
-        m.0 = 0;
+        self.misses.lock().unwrap_or_else(|e| e.into_inner()).forgive();
     }
 
     /// The disconnect. Every session is gone, so nothing that was let in
@@ -488,7 +552,7 @@ impl RemoteUi {
             password,
             pw: Ids::new(),
             grants: Ids::new(),
-            misses: Mutex::new((0, Instant::now())),
+            misses: Mutex::new(Misses::new(Instant::now())),
         });
         let book = Arc::new(crate::reply::Book::new());
 
@@ -815,6 +879,11 @@ fn json_response(v: serde_json::Value) -> Response<std::io::Cursor<Vec<u8>>> {
         .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
 }
 
+/// The header that says when a turned-away password may be offered again
+fn retry_after(secs: u64) -> Header {
+    Header::from_bytes(&b"Retry-After"[..], secs.max(1).to_string().as_bytes()).unwrap()
+}
+
 /// Maximum accepted request-body size (see webui::read_body).
 const MAX_BODY: usize = 1 << 20; // 1 MiB
 /// Body cap for the attach route (a base64-encoded file, ~1.33x its raw size).
@@ -1036,10 +1105,22 @@ fn handle(
                     req.respond(Response::from_string("payload too large").with_status_code(413))?;
                     return Ok(());
                 };
+                // The door is shut for a while after wrong passwords: said
+                // before the password is looked at, so a right one offered
+                // during the wait is turned away too (see Misses)
+                if let Some(left) = gate.wait() {
+                    let secs = left.as_secs_f64().ceil() as u64;
+                    req.respond(
+                        json_response(serde_json::json!({"ok": false, "wait": secs}))
+                            .with_status_code(429)
+                            .with_header(retry_after(secs)),
+                    )?;
+                    return Ok(());
+                }
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let given = v.get("password").and_then(|p| p.as_str()).unwrap_or("");
                 if !crate::crypto::token_eq(given, &gate.password) {
-                    gate.slow_down();
+                    gate.missed();
                     req.respond(json_response(serde_json::json!({"ok": false})))?;
                     return Ok(());
                 }
@@ -1117,12 +1198,39 @@ fn handle(
     // hasn't presented the password yet may do exactly one thing: trade the
     // password for a session cookie at /auth. Everything else answers 403 with
     // the body "password", which the shell reads as "prompt the person and try
-    // again"
+    // again".
+    //
+    // The password travels in a POST body, never in the address: an address is
+    // what proxies, browsers and screenshots keep. And the door is shut for a
+    // while after wrong passwords — the same score as the reply page's, so a
+    // guesser cannot alternate doors — with "come back in n seconds" (429)
+    // rather than a slept thread, which would have slowed every phone
     let unlocked = gate.unlocked(&cookie_value(&req, "rp"));
     if !unlocked {
-        if method == "GET" && path == "/auth" {
-            let given = query_value(req.url(), "p");
-            if crate::crypto::token_eq(&given, &gate.password) {
+        if method == "POST" && path == "/auth" {
+            if let Some(left) = gate.wait() {
+                let secs = left.as_secs_f64().ceil() as u64;
+                return req
+                    .respond(
+                        Response::from_string("wait")
+                            .with_status_code(429)
+                            .with_header(retry_after(secs))
+                            .with_header(
+                                Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..])
+                                    .unwrap(),
+                            ),
+                    )
+                    .map_err(Into::into);
+            }
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let given = v.get("password").and_then(|p| p.as_str()).unwrap_or("");
+            if crate::crypto::token_eq(given, &gate.password) {
+                gate.forgive();
                 let id = gate.pw.keep("");
                 let cookie = format!(
                     "rp={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"
@@ -1140,6 +1248,7 @@ fn handle(
                     )
                     .map_err(Into::into);
             }
+            gate.missed();
             return req
                 .respond(Response::from_string("forbidden").with_status_code(403))
                 .map_err(Into::into);
@@ -2215,6 +2324,119 @@ mod tests {
         again.shutdown();
     }
 
+    /// The cost of wrong passwords: two slips are free, the third shuts the
+    /// door for a second, the wait doubles to a minute and no further, a right
+    /// password clears it, and ten quiet minutes forget it. Told with a clock
+    /// that is handed in, so nothing here waits
+    #[test]
+    fn wrong_passwords_shut_the_door_for_longer_each_time() {
+        let t0 = Instant::now();
+        let mut m = Misses::new(t0);
+        assert_eq!(m.wait_at(t0), None, "最初から閉まっている");
+        m.missed_at(t0);
+        assert_eq!(m.wait_at(t0), None, "一度の打ち間違いで待たされる");
+        m.missed_at(t0);
+        assert_eq!(m.wait_at(t0), None, "二度の打ち間違いで待たされる");
+        m.missed_at(t0);
+        assert_eq!(m.wait_at(t0), Some(Duration::from_secs(1)), "三度目で閉まらない");
+        assert_eq!(
+            m.wait_at(t0 + Duration::from_millis(400)),
+            Some(Duration::from_millis(600)),
+            "残り時間が減らない"
+        );
+        assert_eq!(m.wait_at(t0 + Duration::from_secs(1)), None, "時間が来ても開かない");
+        // Doubling: 1, 2, 4, 8, 16, 32, 60, 60...
+        for (n, secs) in [(4, 2), (5, 4), (6, 8), (7, 16), (8, 32), (9, 60), (10, 60), (40, 60)] {
+            assert_eq!(
+                Misses::shut_for(n),
+                Duration::from_secs(secs),
+                "{n}回目の待ち時間が違う"
+            );
+        }
+        // A right password clears the score
+        m.forgive();
+        assert_eq!(m.wait_at(t0 + Duration::from_secs(2)), None, "正解のあとも閉まっている");
+        // Ten quiet minutes forget it: a person who slipped last week starts afresh
+        for _ in 0..9 {
+            m.missed_at(t0);
+        }
+        assert_eq!(m.wait_at(t0), Some(Duration::from_secs(60)));
+        let later = t0 + Duration::from_secs(601);
+        assert_eq!(m.wait_at(later), None, "十分経っても忘れない");
+        m.missed_at(later);
+        assert_eq!(m.wait_at(later), None, "忘れたあとの一度目で待たされる");
+    }
+
+    /// Over the wire: after wrong passwords in a row the door answers 429 with
+    /// a Retry-After, to a right password as much as to a wrong one, and the
+    /// phone that is already in keeps being served the while. The reply page's
+    /// unlock shares the score, so a guesser turned away at one door cannot
+    /// walk round to the other
+    #[test]
+    fn guessing_the_password_is_turned_away_at_both_doors() {
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "tok123456789012".into(),
+            "aikotoba".into(),
+        )
+        .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        // One phone that is already in
+        let mut inside = Phone::new(&base);
+        inside.pair("tok123456789012");
+        let resp = inside.post("/auth?t=tok123456789012", r#"{"password":"aikotoba"}"#);
+        assert_eq!(resp.status().as_u16(), 200);
+        let cookie = resp
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        inside.also(&cookie);
+        assert_eq!(inside.state("tok123456789012"), 200);
+
+        // And one guessing
+        let mut guesser = Phone::new(&base);
+        guesser.pair("tok123456789012");
+        for _ in 0..3 {
+            assert_eq!(
+                guesser.said_post("/auth?t=tok123456789012", r#"{"password":"chigau"}"#).0,
+                403
+            );
+        }
+        // The door is shut now — to the right password as well
+        let shut = guesser.post("/auth?t=tok123456789012", r#"{"password":"aikotoba"}"#);
+        assert_eq!(shut.status().as_u16(), 429, "続けて間違えても閉まらない");
+        let after = shut
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .expect("Retry-After が無い");
+        assert!((1..=60).contains(&after), "待ち時間の案内がおかしい: {after}");
+        // ...and so is the reply page's, on the same score
+        let link = ui.reply_link(crate::reply::Ticket::new(
+            Some("coder".into()),
+            1,
+            "reviewer".into(),
+            "done".into(),
+            String::new(),
+        ));
+        let ticket = link.rsplit('/').next().unwrap().to_string();
+        let (status, body) =
+            guesser.said_post(&format!("/r/{ticket}/unlock"), r#"{"password":"aikotoba"}"#);
+        assert_eq!(status, 429, "返信ページの扉が別勘定になっている");
+        assert!(body.contains("\"wait\""), "待ち時間を返していない: {body}");
+        // The phone that is in was never made to wait
+        assert_eq!(inside.state("tok123456789012"), 200, "中の人まで止まった");
+        ui.shutdown();
+    }
+
     /// Actually starts the server and confirms auth and command delivery
     #[test]
     fn password_gate_requires_the_second_factor() {
@@ -2240,10 +2462,22 @@ mod tests {
         );
 
         // Wrong password → refused
-        assert_eq!(phone.status("/auth?t=tok123456789012&p=chigau"), 403, "誤パスワードで通る");
+        assert_eq!(
+            phone.said_post("/auth?t=tok123456789012", r#"{"password":"chigau"}"#),
+            (403, "forbidden".to_string()),
+            "誤パスワードで通る"
+        );
+        // The password rides in the body only. In the address — where the old
+        // route took it, and where proxies and histories keep it — it is not a
+        // password at all, and this is a phone that has not given one
+        assert_eq!(
+            phone.said("/auth?t=tok123456789012&p=aikotoba"),
+            (403, "password".to_string()),
+            "アドレスに書いたパスワードが通る"
+        );
 
         // Right password → a session cookie, and data routes open with it
-        let resp = phone.get("/auth?t=tok123456789012&p=aikotoba");
+        let resp = phone.post("/auth?t=tok123456789012", r#"{"password":"aikotoba"}"#);
         assert_eq!(resp.status().as_u16(), 200, "正しいパスワードが通らない");
         let cookie = resp
             .headers()

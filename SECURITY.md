@@ -47,6 +47,13 @@ at startup if a plaintext secret is sitting there without one.
 **Settings screen.** Bound to `127.0.0.1` on a random port, with a random one-time token
 required on every request. It is not reachable from other machines.
 
+**Web pages in browser tabs.** A page placed in the window talks to the app over the same
+channel the app's own screens use, so what it says is judged by where it speaks from. A page
+that is not the app's own can only *report* — a press on the bar the app draws over it, a
+step it recorded, that it has loaded, the answer to a question the app put to it — and the
+answer is taken only from the page that was asked. It cannot type into a tab, run an
+automation, touch git, or open the settings, whatever it posts.
+
 **Phone access (off by default).** When enabled:
 
 - The bind address is resolved to a **private network only** — Tailscale (100.64.0.0/10)

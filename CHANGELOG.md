@@ -36,6 +36,33 @@ once it reaches its first tagged release.
 - The one-line "a new version is available" notice on the board is gone; the
   card and the settings card replace it. The privacy policy says what the
   daily look asks, and that fetching happens only when the button is pressed.
+- The phone sends its password for the board in the body of the request, not
+  in the address, where proxies and browser histories keep addresses.
+
+### Security
+- **A web page open in a browser tab could type into your terminals.** Every
+  page placed in the window talks to the program over the same channel the
+  board itself uses, and until now what a page said was taken at face value:
+  a page could post the message the board posts when you finish a line in
+  the composer, and it went into the tab it named as if you had typed it.
+  Now a page that is not the program's own — judged by the address it speaks
+  from, not by anything it claims — is heard only for what it may *report*
+  (a press on the bar drawn over it, a step it recorded, that it has loaded,
+  the answer to something the program asked it) and never for anything that
+  types, runs, changes or opens. The answer to a question is taken only from
+  the page it was put to, so a tab beside cannot fill in what an automation
+  read from the tab you meant. Nothing about ordinary browsing or the
+  automations changes; the settings page keeps its full voice. Found in a
+  code review on 2026-09-09; no report of it being used.
+- **Guessing the phone's password is turned away at both doors.** A phone
+  holding the link but not the password could try passwords as fast as it
+  liked at the board's door, and the reply page's door slowed a guesser by
+  sleeping the one thread that serves every phone. Now the two doors share one
+  score: two slips cost nothing, the third shuts both for a second, and the
+  wait doubles to a minute and no further. A turned-away phone is told how
+  long to wait (HTTP 429 with Retry-After) instead of being made to wait, so
+  the phone that is already in keeps its screen. Ten quiet minutes forget the
+  score.
 
 ## [0.8.0] - 2026-09-09
 

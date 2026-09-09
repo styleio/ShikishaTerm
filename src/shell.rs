@@ -4318,8 +4318,19 @@ if (REMOTE) {
         if (body === "password") {
           const pw = prompt(T["tui.remote.password_prompt"] || "パスワード");
           if (pw !== null && pw !== "") {
-            const a = await fetch("auth?t=" + encodeURIComponent(TOKEN) + "&p=" + encodeURIComponent(pw), {cache:"no-store"});
+            // In the body, not the address: an address is what gets kept
+            const a = await fetch("auth?t=" + encodeURIComponent(TOKEN), {
+              method: "POST", cache: "no-store",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({password: pw})
+            });
             if (a.ok) { location.reload(); return; }
+            if (a.status === 429) {
+              // Too many wrong ones in a row; the door opens again in a moment
+              const n = a.headers.get("Retry-After") || "60";
+              alert((T["tui.remote.password_wait"] || "しばらく待ってからもう一度お試しください（{n}秒）").replace("{n}", n));
+              return;
+            }
             alert(T["tui.remote.password_wrong"] || "パスワードが違います");
           }
           return;

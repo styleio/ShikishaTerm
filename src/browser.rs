@@ -1138,6 +1138,164 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
     })
 }
 
+/// Whether a page placed in the window — somebody else's page — may say this.
+///
+/// A placed page runs whatever script its site serves, and that script can
+/// call `window.ipc.postMessage` exactly as ours do. So a page is let to
+/// *report* — a press on the bar we drew over it, a step it recorded, that it
+/// is loading or has loaded, the answer to a question we put to it — and never
+/// to *ask*: nothing here types into a tab, runs Lua, touches git, or opens the
+/// settings. Before this list existed, `{kind:"say"}` from any web page went
+/// into the terminal as if the person had typed it.
+///
+/// Written from the side that enumerates what gets through, like
+/// `remote::allowed_from_afar` is for the phone. Add to it only after writing
+/// down why a stranger's page needs it
+pub fn allowed_from_page(ev: &Ev) -> bool {
+    matches!(
+        ev,
+        Ev::Ready { .. }
+            | Ev::Loading { .. }
+            | Ev::Button { .. }
+            | Ev::Touched { .. }
+            | Ev::Compose { .. }
+            | Ev::Recorded { .. }
+            | Ev::Result { .. }
+    )
+}
+
+/// The part of an address that says which site a page belongs to: scheme,
+/// host and port (the scheme's usual port when none is written). `None` for
+/// anything that is not an address with a host
+fn origin_of(addr: &str) -> Option<(String, String, u16)> {
+    let uri: wry::http::Uri = addr.trim().parse().ok()?;
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    let host = uri.host()?.to_ascii_lowercase();
+    let port = uri.port_u16().or(match scheme.as_str() {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    })?;
+    Some((scheme, host, port))
+}
+
+/// Whether two addresses belong to the same site. Judged by parsing both, not
+/// by the front of the string: `http://127.0.0.1:8787.evil.example/` starts
+/// with our address and is not ours
+pub fn same_origin(a: &str, b: &str) -> bool {
+    match (origin_of(a), origin_of(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// The questions the app has put to pages, by id, and whom each was asked.
+///
+/// A result is believed only from the page it was asked of. Without this, any
+/// placed page could answer for another — a stranger's tab filling in what
+/// `browser_text` read from the tab beside it — by posting `{kind:"result"}`
+/// with a guessed id (ids count up from one). Bounded, because a page that
+/// navigates away mid-question never answers, and its entry would otherwise
+/// stay for the life of the window
+#[derive(Default)]
+pub struct Asked {
+    of: std::collections::HashMap<u64, Option<String>>,
+    order: std::collections::VecDeque<u64>,
+}
+
+impl Asked {
+    /// The most questions kept waiting for an answer at once
+    const KEPT: usize = 4096;
+
+    /// Remember that question `id` went to `to` (`None` is the board itself)
+    pub fn ask(&mut self, id: u64, to: Option<String>) {
+        if self.of.insert(id, to).is_none() {
+            self.order.push_back(id);
+        }
+        while self.order.len() > Self::KEPT {
+            if let Some(old) = self.order.pop_front() {
+                self.of.remove(&old);
+            }
+        }
+    }
+
+    /// Whether `by` is who question `id` was put to. True once: the question
+    /// is closed by its answer, so a second answer — from anyone — is refused
+    pub fn answered(&mut self, id: u64, by: Option<&str>) -> bool {
+        match self.of.get(&id) {
+            Some(to) if to.as_deref() == by => {
+                self.of.remove(&id);
+                self.order.retain(|x| *x != id);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Read what a page in the window said, and keep only what it may say.
+///
+/// `who` is the page's name (`None` for the board itself). `ours` is whether the
+/// page is one of the app's own — judged by the address it spoke from, so the
+/// settings page keeps its full voice while the same pane, navigated to another
+/// site, loses it. A stranger is held to `allowed_from_page`; everyone's
+/// answers are checked against `asked`; and the report's sender is stamped
+/// here, never taken from the message, so no page can speak as another
+pub fn heard(
+    body: &str,
+    who: Option<&str>,
+    ours: bool,
+    asked: &mut Asked,
+) -> Option<Ev> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let ev = parse_intent(&v)?;
+    if !ours && !allowed_from_page(&ev) {
+        return None;
+    }
+    let from = who.map(str::to_string);
+    Some(match ev {
+        Ev::Result { id, ok, value } => {
+            if !asked.answered(id, who) {
+                return None;
+            }
+            Ev::Result { id, ok, value }
+        }
+        // Reports that say who sent them. The board's own carry no name; a
+        // placed page's carry its name, whatever the message claimed
+        Ev::Button { .. } => Ev::Button { from },
+        Ev::Touched { .. } => Ev::Touched { from },
+        Ev::Compose { .. } => Ev::Compose { from },
+        Ev::Recorded { act, sel, value, xpath, hint, .. } => {
+            Ev::Recorded { from, act, sel, value, xpath, hint }
+        }
+        Ev::Ready { url, complete, .. } => Ev::Ready { from, url, complete },
+        Ev::Loading { busy, .. } => Ev::Loading { from, busy },
+        other => other,
+    })
+}
+
+/// A line in the log for a message the window refused, from whom and why.
+/// Said a handful of times per page and then no more: a page that keeps
+/// trying must not be able to fill the log
+fn note_refused(said: &std::cell::Cell<u8>, who: Option<&str>, at: &str, body: &str) {
+    if said.get() >= 5 {
+        return;
+    }
+    said.set(said.get() + 1);
+    let kind = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "?".into());
+    // The site, not the whole address: a page's query string is its business
+    let site = origin_of(at)
+        .map(|(s, h, p)| format!("{s}://{h}:{p}"))
+        .unwrap_or_else(|| "?".into());
+    crate::append_hook_log(&format!(
+        "[browser] refused '{kind}' from page '{}' at {site} (a placed page may report, not ask)",
+        who.unwrap_or("(board)")
+    ));
+}
+
 /// One pane as the page measured it.
 ///
 /// Rows and columns are what the terminal in that pane must be resized to;
@@ -3440,25 +3598,44 @@ fn run_window(
     // The shell gets an explicit folder for the same reason the pages do: without
     // one, WebView2 writes "<exe>.WebView2" next to the binary — into the folder
     // that is meant to hold nothing but the exe
+    //
+    // Every message a page posts is judged by the address it was posted from
+    // (WebView2 reports it with the message; it is not something the page
+    // writes). The board's own address is the app's, and only a page speaking
+    // from that address is heard in full — see `heard`
+    let own = url.to_string();
+    // The questions put to pages and not yet answered, shared with every
+    // page's handler: an answer is taken only from the page that was asked
+    let asked = std::rc::Rc::new(std::cell::RefCell::new(Asked::default()));
     let shell_of = {
         let window = std::rc::Rc::clone(&window);
         let ev_tx = ev_tx.clone();
         let url = url.to_string();
+        let own = own.clone();
+        let asked = std::rc::Rc::clone(&asked);
         move || -> Result<(WebContext, wry::WebView)> {
             let ipc = ev_tx.clone();
+            let own = own.clone();
+            let asked = std::rc::Rc::clone(&asked);
+            let refused = std::cell::Cell::new(0u8);
             let mut ctx = WebContext::new(Some(shell_data_dir()));
             let view = WebViewBuilder::new_with_web_context(&mut ctx)
                 .with_url(&url)
                 .with_initialization_script(INIT_JS)
                 .with_ipc_handler(move |req| {
+                    let at = req.uri().to_string();
                     let body: &str = req.body();
-                    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+                    // The board is the app's own page. Were it ever led to
+                    // another site, that site would hold the whole keyboard;
+                    // so a board speaking from anywhere else is not the board
+                    if !same_origin(&at, &own) {
+                        note_refused(&refused, None, &at, body);
                         return;
-                    };
-                    let Some(ev) = parse_intent(&v) else {
-                        return;
-                    };
-                    let _ = ipc.send(ev);
+                    }
+                    let ev = heard(body, None, true, &mut asked.borrow_mut());
+                    if let Some(ev) = ev {
+                        let _ = ipc.send(ev);
+                    }
                 })
                 .build(&*window)?;
             Ok((ctx, view))
@@ -3538,6 +3715,9 @@ fn run_window(
                     // When the destination can't be found, don't fall back
                     // to the main view. That would run site-facing JS against our own screen
                     if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
+                        // Written down before the page is asked, so the answer
+                        // is expected — from this page — by the time it comes
+                        asked.borrow_mut().ask(id, to.clone());
                         let _ = v.evaluate_script(&wrap_eval(id, &js));
                     } else {
                         let _ = ev_tx.send(Ev::Result {
@@ -3684,6 +3864,9 @@ fn run_window(
                     // Without them, a placed page would just be something displayed, nothing more
                     let ipc = ev_tx.clone();
                     let who = name.clone();
+                    let ipc_own = own.clone();
+                    let ipc_asked = std::rc::Rc::clone(&asked);
+                    let refused = std::cell::Cell::new(0u8);
                     // Signaling "in progress" from the in-page script (at
                     // document creation) is too late. If the server is slow,
                     // the document isn't created until the response comes
@@ -3726,44 +3909,21 @@ fn run_window(
                             ua.clone(),
                         ))
                         .with_ipc_handler(move |req| {
+                            let at = req.uri().to_string();
                             let body: &str = req.body();
-                            let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
-                                return;
-                            };
-                            let Some(ev) = parse_intent(&v) else {
-                                return;
-                            };
+                            // The app's own pages (settings, a result view) are
+                            // served from the board's address and keep their
+                            // full voice. Anything else in this pane is
+                            // somebody's website: it may report, not ask
+                            let ours = same_origin(&at, &ipc_own);
                             // There's no way to know who pressed it except here
-                            let ev = match ev {
-                                Ev::Button { .. } => Ev::Button {
-                                    from: Some(who.clone()),
-                                },
-                                Ev::Touched { .. } => Ev::Touched {
-                                    from: Some(who.clone()),
-                                },
-                                Ev::Compose { .. } => Ev::Compose {
-                                    from: Some(who.clone()),
-                                },
-                                Ev::Recorded { act, sel, value, xpath, hint, .. } => Ev::Recorded {
-                                    from: Some(who.clone()),
-                                    act,
-                                    sel,
-                                    value,
-                                    xpath,
-                                    hint,
-                                },
-                                Ev::Ready { url, complete, .. } => Ev::Ready {
-                                    from: Some(who.clone()),
-                                    url,
-                                    complete,
-                                },
-                                Ev::Loading { busy, .. } => Ev::Loading {
-                                    from: Some(who.clone()),
-                                    busy,
-                                },
-                                other => other,
-                            };
-                            let _ = ipc.send(ev);
+                            let ev = heard(body, Some(&who), ours, &mut ipc_asked.borrow_mut());
+                            match ev {
+                                Some(ev) => {
+                                    let _ = ipc.send(ev);
+                                }
+                                None => note_refused(&refused, Some(&who), &at, body),
+                            }
                         })
                         .build_as_child(&*window)
                     {
@@ -4715,6 +4875,164 @@ mod nav_tests {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// A page placed in the window may report, and may not ask. Every intent
+    /// that types, runs, changes or opens something is refused from a
+    /// stranger's page; the handful of reports our own scripts post from inside
+    /// a page still come through. This is the list itself, pinned: a variant
+    /// added to `Ev` is refused from a page until somebody writes down why not
+    #[test]
+    fn a_stranger_page_may_report_but_never_ask() {
+        let read = |s: &str| {
+            let v: serde_json::Value = serde_json::from_str(s).unwrap();
+            parse_intent(&v).unwrap_or_else(|| panic!("parse_intent が読めない: {s}"))
+        };
+        for s in [
+            r#"{"kind":"say","tab":1,"text":"rm -rf ~"}"#,
+            r#"{"kind":"key","text":"x"}"#,
+            r#"{"kind":"runlua","code":"print(1)"}"#,
+            r#"{"kind":"runaction","index":0}"#,
+            r#"{"kind":"runkey","name":"x"}"#,
+            r#"{"kind":"git","panel":"a","act":"commit"}"#,
+            r#"{"kind":"opensettings"}"#,
+            r#"{"kind":"closesettings"}"#,
+            r#"{"kind":"select","tab":2}"#,
+            r#"{"kind":"menu","key":"q"}"#,
+            r#"{"kind":"operate","target":1,"goal":"x"}"#,
+            r#"{"kind":"attach","id":1,"name":"a","data":"b"}"#,
+            r#"{"kind":"paste"}"#,
+            r#"{"kind":"copy","text":"x"}"#,
+            r#"{"kind":"stop"}"#,
+            r#"{"kind":"restart"}"#,
+            r#"{"kind":"go","what":"to","url":"https://example.com"}"#,
+            r#"{"kind":"inject","what":"text","text":"x"}"#,
+            r#"{"kind":"suggest","text":"x"}"#,
+            r#"{"kind":"password","text":"x"}"#,
+            r#"{"kind":"addtab"}"#,
+            r#"{"kind":"branch","from":"a","branch":"b"}"#,
+        ] {
+            assert!(!allowed_from_page(&read(s)), "よそのページから通ってしまう: {s}");
+        }
+        for s in [
+            r#"{"kind":"button"}"#,
+            r#"{"kind":"touched"}"#,
+            r#"{"kind":"compose"}"#,
+            r##"{"kind":"recorded","act":"click","sel":"#a"}"##,
+            r#"{"kind":"ready","url":"https://example.com"}"#,
+            r#"{"kind":"loading","busy":false}"#,
+            r#"{"kind":"result","id":1,"ok":true,"value":"x"}"#,
+        ] {
+            assert!(allowed_from_page(&read(s)), "ページの報告が落とされる: {s}");
+        }
+    }
+
+    /// What a stranger's page says is sifted: its asks vanish, its reports
+    /// arrive stamped with the pane's name (whatever the message claimed), and
+    /// the app's own page — judged by the address it spoke from — keeps its
+    /// full voice. Broken JSON and unknown kinds are dropped without a word
+    #[test]
+    fn a_placed_page_is_heard_only_as_a_report() {
+        let mut asked = Asked::default();
+        let stranger = |body: &str, asked: &mut Asked| heard(body, Some("web"), false, asked);
+        // The very message the review found going into the terminal
+        assert!(
+            stranger(r#"{"kind":"say","tab":1,"text":"SECURITY_REVIEW_MARKER"}"#, &mut asked)
+                .is_none(),
+            "よそのページの say が端末へ届く"
+        );
+        assert!(stranger(r#"{"kind":"key","text":"x"}"#, &mut asked).is_none());
+        assert!(stranger(r#"{"kind":"runlua","code":"1"}"#, &mut asked).is_none());
+        assert!(stranger("not json", &mut asked).is_none());
+        assert!(stranger(r#"{"kind":"nosuchthing"}"#, &mut asked).is_none());
+        // A report gets the pane's name, not the one it wrote
+        match stranger(r#"{"kind":"button","from":"settings"}"#, &mut asked) {
+            Some(Ev::Button { from }) => assert_eq!(from.as_deref(), Some("web")),
+            other => panic!("ボタンの報告が届かない: {other:?}"),
+        }
+        match stranger(r#"{"kind":"ready","url":"https://a.example/"}"#, &mut asked) {
+            Some(Ev::Ready { from, url, .. }) => {
+                assert_eq!(from.as_deref(), Some("web"));
+                assert_eq!(url, "https://a.example/");
+            }
+            other => panic!("読み込み完了の報告が届かない: {other:?}"),
+        }
+        // Our own page, speaking from our address, still asks
+        assert!(matches!(
+            heard(r#"{"kind":"closesettings"}"#, Some("settings"), true, &mut asked),
+            Some(Ev::CloseSettings)
+        ));
+        assert!(matches!(
+            heard(r#"{"kind":"select","tab":0}"#, Some("settings"), true, &mut asked),
+            Some(Ev::Select { tab: 0 })
+        ));
+        // The board's own reports carry no name
+        assert!(matches!(
+            heard(r#"{"kind":"say","tab":1,"text":"ls"}"#, None, true, &mut asked),
+            Some(Ev::Say { tab: 1, .. })
+        ));
+    }
+
+    /// An answer is believed only from the page that was asked, and only once.
+    /// A neighbour's page guessing the id cannot answer for it; a second
+    /// answer, even from the right page, is refused; and the bookkeeping does
+    /// not grow without end
+    #[test]
+    fn an_answer_is_believed_only_from_the_page_that_was_asked() {
+        let mut asked = Asked::default();
+        asked.ask(7, Some("bank".into()));
+        asked.ask(8, None);
+        let answer = |id: u64| format!(r#"{{"kind":"result","id":{id},"ok":true,"value":"x"}}"#);
+        // The neighbour answers first, with the right id
+        assert!(
+            heard(&answer(7), Some("evil"), false, &mut asked).is_none(),
+            "隣のページが答えを差し替えられる"
+        );
+        // Then the page that was asked
+        assert!(matches!(
+            heard(&answer(7), Some("bank"), false, &mut asked),
+            Some(Ev::Result { id: 7, ok: true, .. })
+        ));
+        // ...and nobody answers the same question twice
+        assert!(heard(&answer(7), Some("bank"), false, &mut asked).is_none());
+        // The board's question is not a page's to answer, nor a page's the board's
+        assert!(heard(&answer(8), Some("bank"), true, &mut asked).is_none());
+        assert!(matches!(
+            heard(&answer(8), None, true, &mut asked),
+            Some(Ev::Result { id: 8, .. })
+        ));
+        // A question nobody asked has no answer
+        assert!(heard(&answer(9), None, true, &mut asked).is_none());
+        // Bounded: the oldest question is forgotten past the cap
+        let mut many = Asked::default();
+        for id in 0..(Asked::KEPT as u64 + 10) {
+            many.ask(id, None);
+        }
+        assert_eq!(many.of.len(), Asked::KEPT);
+        assert!(!many.answered(0, None), "上限を超えても古い問いが残る");
+        assert!(many.answered(Asked::KEPT as u64 + 9, None));
+    }
+
+    /// "The same site" is scheme, host and port, read by parsing — a prefix
+    /// match would let `http://127.0.0.1:8787.evil.example/` pass as ours
+    #[test]
+    fn same_site_means_scheme_host_and_port() {
+        let own = "http://127.0.0.1:8787/";
+        assert!(same_origin("http://127.0.0.1:8787/?token=abc", own));
+        assert!(same_origin("http://127.0.0.1:8787/settings?x=1#y", own));
+        assert!(same_origin("HTTP://127.0.0.1:8787/", own));
+        assert!(!same_origin("http://127.0.0.1:8788/", own), "別のポートが同一視される");
+        assert!(!same_origin("https://127.0.0.1:8787/", own), "別のスキームが同一視される");
+        assert!(!same_origin("http://localhost:8787/", own), "別のホスト名が同一視される");
+        assert!(!same_origin("http://127.0.0.1:8787.evil.example/", own), "前方一致で通る");
+        assert!(!same_origin("http://evil.example/http://127.0.0.1:8787/", own));
+        assert!(!same_origin("about:blank", own));
+        assert!(!same_origin("", own));
+        assert!(!same_origin("garbage", own));
+        // The usual port is the written port
+        assert!(same_origin("https://a.example/", "https://a.example:443/x"));
+        assert!(same_origin("http://a.example/", "http://a.example:80/x"));
+        assert!(!same_origin("http://a.example/", "https://a.example/"));
+    }
 
     /// A placed page can draw the app's own two pieces of chrome, because
     /// nothing of the window's can be drawn over it: the pen that summons the

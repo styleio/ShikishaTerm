@@ -391,7 +391,7 @@ button:disabled {{ opacity:.5; cursor:default; }}
 <p class="note">{once}</p>
 <script>
 const ID = {id};
-const T = {{ wrong: {t_wrong}, failed: {t_failed} }};
+const T = {{ wrong: {t_wrong}, failed: {t_failed}, wait: {t_wait} }};
 document.getElementById("f").addEventListener("submit", async e => {{
   e.preventDefault();
   const go = document.getElementById("go");
@@ -405,7 +405,8 @@ document.getElementById("f").addEventListener("submit", async e => {{
     // The cookie rode in on that answer, so simply asking for the page again
     // is what opens it -- no token, nothing kept in this page.
     if (r.ok) {{ location.reload(); return; }}
-    err.textContent = T.wrong;
+    // Too many wrong ones in a row: the door opens again in a moment
+    err.textContent = r.wait ? T.wait.replace("{{n}}", r.wait) : T.wrong;
   }} catch (e) {{ err.textContent = T.failed; }}
   go.disabled = false;
 }});
@@ -419,6 +420,7 @@ document.getElementById("f").addEventListener("submit", async e => {{
         id = js(id),
         t_wrong = js(&crate::i18n::t("reply.ask.wrong")),
         t_failed = js(&crate::i18n::t("reply.failed")),
+        t_wait = js(&crate::i18n::t("reply.ask.wait")),
     )
 }
 
