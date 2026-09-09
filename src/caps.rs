@@ -498,6 +498,14 @@ impl Capabilities {
 
     /// Open a browser (navigates there if the same name already exists).
     /// profile specifies how data is stored (profile name / private)
+    /// Tell the window that pages from this address are the app's own (the
+    /// settings server, once it has started). Nothing to tell without a window
+    pub fn trust_origin(&self, url: &str) {
+        if let Some(h) = self.host.borrow().as_ref() {
+            let _ = h.trust(url);
+        }
+    }
+
     pub fn browser_open(
         &self,
         name: &str,

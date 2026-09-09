@@ -552,6 +552,10 @@ const INIT_JS: &str = r##"
 /// An instruction from the conductor to the browser
 #[derive(Debug, Clone)]
 pub enum Cmd {
+    /// Another address the app's own pages come from. The settings and the
+    /// result view are served by a second local server whose port is only
+    /// known once it starts, so it is told here rather than at the window's birth
+    Trust { origin: String },
     /// Evaluate JS and return the result (matched up by `id`).
     /// `to` is the destination page name. `None` means the main view
     Eval {
@@ -1151,6 +1155,13 @@ pub fn same_origin(a: &str, b: &str) -> bool {
         (Some(x), Some(y)) => x == y,
         _ => false,
     }
+}
+
+/// Whether `at` is one of the app's own addresses (the board's, the settings
+/// server's). Two servers, because the settings and the result view are
+/// served by one that starts on its own port when first needed
+fn from_ours(own: &[String], at: &str) -> bool {
+    own.iter().any(|o| same_origin(at, o))
 }
 
 /// The questions the app has put to pages, by id, and whom each was asked.
@@ -1905,6 +1916,13 @@ impl Browser {
     pub fn show(&self) -> Result<()> {
         self.away.store(false, Ordering::Relaxed);
         self.send(Cmd::Show)
+    }
+
+    /// Say that pages from this address are the app's own and are heard in
+    /// full (see `heard`). The board's own address is trusted from the start;
+    /// the settings server's is told here once it has started
+    pub fn trust(&self, url: &str) -> Result<()> {
+        self.send(Cmd::Trust { origin: url.to_string() })
     }
 
     /// A banner from the notification-area icon
@@ -3528,8 +3546,9 @@ fn run_window(
     // Every message a page posts is judged by the address it was posted from
     // (WebView2 reports it with the message; it is not something the page
     // writes). The board's own address is the app's, and only a page speaking
-    // from that address is heard in full — see `heard`
-    let own = url.to_string();
+    // from one of the app's addresses is heard in full — see `heard`. The
+    // settings server's address joins the list when it starts (Cmd::Trust)
+    let own = std::rc::Rc::new(std::cell::RefCell::new(vec![url.to_string()]));
     // The questions put to pages and not yet answered, shared with every
     // page's handler: an answer is taken only from the page that was asked
     let asked = std::rc::Rc::new(std::cell::RefCell::new(Asked::default()));
@@ -3537,11 +3556,11 @@ fn run_window(
         let window = std::rc::Rc::clone(&window);
         let ev_tx = ev_tx.clone();
         let url = url.to_string();
-        let own = own.clone();
+        let own = std::rc::Rc::clone(&own);
         let asked = std::rc::Rc::clone(&asked);
         move || -> Result<(WebContext, wry::WebView)> {
             let ipc = ev_tx.clone();
-            let own = own.clone();
+            let own = std::rc::Rc::clone(&own);
             let asked = std::rc::Rc::clone(&asked);
             let refused = std::cell::Cell::new(0u8);
             let mut ctx = WebContext::new(Some(shell_data_dir()));
@@ -3554,7 +3573,7 @@ fn run_window(
                     // The board is the app's own page. Were it ever led to
                     // another site, that site would hold the whole keyboard;
                     // so a board speaking from anywhere else is not the board
-                    if !same_origin(&at, &own) {
+                    if !from_ours(&own.borrow(), &at) {
                         note_refused(&refused, None, &at, body);
                         return;
                     }
@@ -3637,6 +3656,12 @@ fn run_window(
         *control = ControlFlow::Wait;
         match event {
             Event::UserEvent(cmd) => match cmd {
+                Cmd::Trust { origin } => {
+                    let mut list = own.borrow_mut();
+                    if !list.iter().any(|o| same_origin(o, &origin)) {
+                        list.push(origin);
+                    }
+                }
                 Cmd::Eval { id, to, js } => {
                     // When the destination can't be found, don't fall back
                     // to the main view. That would run site-facing JS against our own screen
@@ -3778,7 +3803,7 @@ fn run_window(
                     // Without them, a placed page would just be something displayed, nothing more
                     let ipc = ev_tx.clone();
                     let who = name.clone();
-                    let ipc_own = own.clone();
+                    let ipc_own = std::rc::Rc::clone(&own);
                     let ipc_asked = std::rc::Rc::clone(&asked);
                     let refused = std::cell::Cell::new(0u8);
                     // Signaling "in progress" from the in-page script (at
@@ -3829,7 +3854,7 @@ fn run_window(
                             // served from the board's address and keep their
                             // full voice. Anything else in this pane is
                             // somebody's website: it may report, not ask
-                            let ours = same_origin(&at, &ipc_own);
+                            let ours = from_ours(&ipc_own.borrow(), &at);
                             // There's no way to know who pressed it except here
                             let ev = heard(body, Some(&who), ours, &mut ipc_asked.borrow_mut());
                             match ev {
@@ -4936,6 +4961,21 @@ mod tests {
         assert_eq!(many.of.len(), Asked::KEPT);
         assert!(!many.answered(0, None), "上限を超えても古い問いが残る");
         assert!(many.answered(Asked::KEPT as u64 + 9, None));
+    }
+
+    /// The app's pages come from two local servers: the board's, and the one
+    /// serving the settings and the result view on a port of its own. A page
+    /// from either is ours; a page from any other port on the same machine is
+    /// not (a dev server in a browser tab is somebody else's code)
+    #[test]
+    fn our_pages_come_from_two_servers() {
+        let own = vec!["http://127.0.0.1:8787/".to_string(), "http://127.0.0.1:51604/?token=x".to_string()];
+        assert!(from_ours(&own, "http://127.0.0.1:8787/?token=abc"));
+        assert!(from_ours(&own, "http://127.0.0.1:51604/?token=abc&ws=2"), "設定ページがよそ者扱い");
+        assert!(from_ours(&own, "http://127.0.0.1:51604/result?token=abc&run=1"));
+        assert!(!from_ours(&own, "http://127.0.0.1:3000/"), "同じ機械の別サーバが自前扱い");
+        assert!(!from_ours(&own, "https://example.com/"));
+        assert!(!from_ours(&[], "http://127.0.0.1:8787/"));
     }
 
     /// "The same site" is scheme, host and port, read by parsing — a prefix

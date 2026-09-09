@@ -2990,7 +2990,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // before anyone has opened it on the PC. The config UI stays on loopback.
         if !settings_linked {
             if let Some(r) = remote_ui.as_ref() {
-                if let Ok(u) = ensure_web_url(&mut web, &config_file, &remote_info, &web_password) {
+                if let Ok(u) = ensure_web_url(&mut web, &config_file, &remote_info, &web_password, &caps) {
                     if let (Some(origin), Some(tok)) =
                         (u.split("/?").next(), u.split("token=").nth(1))
                     {
@@ -8398,7 +8398,7 @@ fn open_settings(
     caps: &hooks::Caps,
     query: &str,
 ) -> Result<()> {
-    let url = ensure_web_url(web, config_file, remote_info, web_password)?;
+    let url = ensure_web_url(web, config_file, remote_info, web_password, caps)?;
     // The settings screen is a local UI page. It holds no cookies, so the shared default profile is plenty.
     caps.browser_open(
         SETTINGS_TAB,
@@ -8453,6 +8453,7 @@ fn ensure_web_url(
     config_file: &std::path::Path,
     remote_info: &Arc<Mutex<webui::RemoteInfo>>,
     web_password: &Arc<Mutex<Option<String>>>,
+    caps: &hooks::Caps,
 ) -> Result<String> {
     match web.as_ref() {
         Some(w) => Ok(w.url.clone()),
@@ -8463,6 +8464,10 @@ fn ensure_web_url(
                 Arc::clone(web_password),
             )?;
             let u = w.url.clone();
+            // The pages this server serves (settings, the result view) are the
+            // app's own and must be heard in full by the window -- it judges a
+            // page by the address it speaks from, and this one is only known now
+            caps.trust_origin(&u);
             *web = Some(w);
             Ok(u)
         }
@@ -8482,7 +8487,7 @@ fn open_result(
     caps: &hooks::Caps,
     run_id: &str,
 ) -> Result<()> {
-    let base = ensure_web_url(web, config_file, remote_info, web_password)?;
+    let base = ensure_web_url(web, config_file, remote_info, web_password, caps)?;
     // base is ".../?token=<t>"; move to the /result page and carry the run id.
     let url = format!(
         "{}&run={}",
