@@ -63,6 +63,9 @@ once it reaches its first tagged release.
   long to wait (HTTP 429 with Retry-After) instead of being made to wait, so
   the phone that is already in keeps its screen. Ten quiet minutes forget the
   score.
+- The website's build tools were brought up to date (Astro 7, Starlight 0.42,
+  Sharp 0.35), which clears every finding of `npm audit` for the site,
+  including one about image processing. The site itself is unchanged.
 
 ## [0.8.0] - 2026-09-09
 
