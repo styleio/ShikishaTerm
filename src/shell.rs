@@ -803,9 +803,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     font-size:10px; color:var(--dim); font-weight:400; white-space:nowrap; }
 
   /* ── Status line ─────────────────────────── */
+  /* min-width:0 + overflow:hidden are what keep this row the width of its
+     column. A grid item's automatic minimum is its min-content width, and a
+     no-wrap flex row's min-content is every word in it laid out in full --
+     so with the usage sentences in the row, the 1fr column quietly grew past
+     the window and STOP went off the right edge, at exactly the width a
+     person needs it. With the item allowed to be narrower than its words,
+     the shrinkable parts (workspace name, usage words) truncate instead */
   #status { grid-column:2; display:flex; align-items:center; gap:12px;
     padding:5px 12px; border-top:1px solid var(--line); background:var(--panel);
-    font-size:12px; color:var(--dim); flex-wrap:nowrap; }
+    font-size:12px; color:var(--dim); flex-wrap:nowrap; min-width:0; overflow:hidden; }
   #status .grow { flex:1; }
   /* Only the workspace name gets truncated when space is tight — pills and STOP never shrink */
   #status > span:first-child { min-width:0; white-space:nowrap;
@@ -833,7 +840,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #status .usage .bar i { display:block; height:100%; border-radius:3px; background:var(--live); }
   #status .usage .bar i.warn { background:var(--warn, #e0a80a); }
   #status .usage .bar i.hot { background:var(--stop, #e5644d); }
-  #status .usage .wsay { overflow:hidden; text-overflow:ellipsis; }
+  /* The words give way before the bars do: a bar with its sentence cut short
+     still says how much is left; a sentence with no bar says less */
+  #status .usage .wsay { overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
   .pill.live:hover { background:var(--tint); }
   #stop { cursor:pointer; color:var(--stop); border:1px solid color-mix(in srgb, var(--stop) 40%, var(--bg));
     padding:2px 10px; border-radius:7px; font-weight:700; }
@@ -7547,6 +7556,10 @@ mod tests {
         assert!(PAGE.contains(r#"fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";"#), "棒が無い");
         assert!(PAGE.contains(r#"el("span", {class:"wsay"}, w.used + (w.resets ? " · " + w.resets : ""))"#), "言葉が無い");
         assert!(PAGE.contains("    limitPill(),\n    usagePill(),"), "下段に無い");
+        // The row must stay the width of its column, or the reading pushes
+        // STOP off the right edge (it did, at 1280px, on 2026-09-09)
+        assert!(PAGE.contains("flex-wrap:nowrap; min-width:0; overflow:hidden; }"), "下段が窓より広がる");
+        assert!(PAGE.contains("#status .usage .wsay { overflow:hidden; text-overflow:ellipsis; min-width:0;"), "言葉が縮まない");
     }
 
     /// A usage-limit notice is the tab's own, so it is shown only over the
