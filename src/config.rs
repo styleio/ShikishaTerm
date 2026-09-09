@@ -1617,6 +1617,36 @@ impl Workspace {
     }
 }
 
+/// Where a tab's terminal is, when it is not on this machine.
+///
+/// Written the way the world writes it -- `ssh://deploy@example.com:22` -- and
+/// told apart by the head of the command, the same way a browser and a docker
+/// tab are. A command that merely *starts with* the word `ssh` is not this:
+/// that is `ssh.exe`, a program like any other, and it keeps working exactly
+/// as it did. This is the app's own connection (see [`crate::ssh`]), which is
+/// what lets a stored password be sent without anybody typing it.
+///
+/// Nothing here is a secret: a host and a user are the address on an envelope.
+/// What the password is called is worked out from the workspace and the tab,
+/// by whoever is launching, so that it is not something to write down twice
+pub fn ssh_endpoint(argv: &[String]) -> Option<(String, u16, String)> {
+    let head = argv.first()?;
+    let rest = head.strip_prefix("ssh://").or_else(|| head.strip_prefix("SSH://"))?;
+    let (user, hostport) = rest.split_once('@')?;
+    if user.trim().is_empty() {
+        return None;
+    }
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h, p.parse().ok()?),
+        None => (hostport, 22u16),
+    };
+    let host = host.trim_matches(['[', ']']).trim_end_matches('/');
+    if host.is_empty() {
+        return None;
+    }
+    Some((host.to_string(), port, user.to_string()))
+}
+
 /// Whether this tab is a browser. Returns the URL if so.
 ///
 /// Told apart the same way as ssh/docker/wsl: by the head of the command string.

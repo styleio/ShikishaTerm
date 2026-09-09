@@ -53,6 +53,7 @@ mod repo;
 mod session_log;
 mod sessionfind;
 mod shell;
+mod ssh;
 mod tab;
 mod tailscale;
 mod theme;
@@ -2568,6 +2569,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // the launch itself makes, and asking afterwards would mean minting a
     // conversation only to throw it away. The division of the screen is put
     // back further down, once there are tabs for the panes to point at
+    // What the SSH tabs sign in with, handed to the connection thread before
+    // anything is launched: a tab that comes up before its password is known
+    // would be told there is none (the store lives on this thread, the
+    // connections on another -- see `ssh::use_secrets`)
+    if let Some(c) = cfg.as_ref() {
+        ssh::use_secrets(c.resolve_tokens(None));
+    }
     let mut last_session = crate::lastsession::Saved::load();
     if !cmd_args.is_empty() {
         tabs.push(Tab::spawn(
@@ -2648,6 +2656,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
     }
 
+    // ...and the connections, for the same reason and at the same moment: what
+    // was handed over before the prompt came from a store that could not be
+    // opened yet, so an encrypted one had nothing in it
+    if let Some(c) = cfg.as_ref() {
+        ssh::use_secrets(c.resolve_tokens(password.as_deref()));
+    }
     // Resolve the model bridge's connection info again now that the password is confirmed
     // (encrypted-secret keys get unlocked here too). Tabs spawned before the
     // prompt hold keys that could not be decrypted yet, so they are handed the
@@ -3161,6 +3175,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     newcfg.resolve_secret_terms(password.as_deref()),
                     newcfg.automation_permissions.clone(),
                 );
+                // ...and the same for the connections, which keep their own
+                // copy: a password taken out of the settings stops working
+                ssh::use_secrets(newcfg.resolve_tokens(password.as_deref()));
                 if let Some(eng) = engine.as_ref() {
                     eng.set_ai_engine(newcfg.ai_engine.clone().filter(|s| !s.is_empty()));
                 }
@@ -7476,6 +7493,23 @@ fn resolve_launch(
     ws: Option<&config::Workspace>,
     id: Option<&str>,
 ) -> Vec<String> {
+    // A terminal on another machine. What it is *called* -- the workspace and
+    // the tab -- is what its password is filed under, so the name is worked
+    // out here, where both are known, and never written into the settings
+    if let Some((host, port, user)) = config::ssh_endpoint(&argv) {
+        let under = |what: &str| {
+            let (w, t) = (ws.map(|w| w.id.as_str())?, id?);
+            Some(format!("ssh/{w}/{t}/{what}"))
+        };
+        opts.remote = Some(ssh::Spec {
+            host,
+            port,
+            user,
+            password_key: under("password"),
+            key: None,
+            passphrase_key: under("passphrase"),
+        });
+    }
     if let Some(mut conn) = bridge::launch_for(&argv) {
         if let (Some(d), Some(id)) = (ws.and_then(|w| w.discuss.as_ref()), id) {
             conn.persona = d.personas.get(id).filter(|p| !p.trim().is_empty()).cloned();
@@ -7573,6 +7607,9 @@ fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> tab:
         log: cfg.log,
         model: None,
         held,
+        // Settled by resolve_launch, which is where a command line becomes a
+        // decision about what to start
+        remote: None,
     }
 }
 

@@ -43,6 +43,10 @@ pub struct TabOptions {
     /// project worked on whatever it landed in, with nothing on screen to say
     /// so. Not launching is the only honest answer: the folder is the job
     pub held: Option<Held>,
+    /// Where this tab's terminal actually is, when it is not on this machine.
+    /// The bytes come from a connection instead of a child process; everything
+    /// above that is the same, which is the point of [`crate::ssh`]
+    pub remote: Option<crate::ssh::Spec>,
 }
 
 /// Why a tab is being held rather than started.
@@ -104,6 +108,7 @@ impl Default for TabOptions {
         Self {
             cwd: None,
             group: None,
+            remote: None,
             // The guarded ones, for anything built without an answer: a tab
             // that lost the setting on the way here must refuse a commit to
             // main, not wave it through
@@ -858,7 +863,11 @@ pub fn launch_problem(
             );
         }
     }
-    if !prog.is_empty() && resolve_command(prog).is_none() {
+    // A remote tab's command line is an address, not a program, so "install it"
+    // would be the wrong advice: what went wrong is on the wire, and the error
+    // itself already says so
+    let remote = crate::config::ssh_endpoint(std::slice::from_ref(&prog.to_string())).is_some();
+    if !remote && !prog.is_empty() && resolve_command(prog).is_none() {
         return crate::i18n::tp("msg.start.no_command", &[("name", name), ("cmd", prog)]);
     }
     crate::i18n::tp(
@@ -2664,13 +2673,21 @@ impl Tab {
         plan: Resume,
     ) -> Result<Self> {
         let profile = Self::resolve_profile(argv, &profile_spec);
-        let pty_system = native_pty_system();
-        let pair = pty_system.openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
+        // Where this tab's terminal is. A local one is a process behind a
+        // ConPTY; a remote one is a channel on a connection (see `crate::ssh`).
+        // The difference ends here: from the writer down, both are a thing that
+        // reads bytes, writes bytes, and has a size
+        let local = opts.remote.is_none();
+        let pair = local
+            .then(|| {
+                native_pty_system().openpty(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+            })
+            .transpose()?;
         // A model tab doesn't start a real CLI — it starts an idle process
         // that just holds the display.
         // The turn's response is injected into the parser by the main
@@ -2682,8 +2699,11 @@ impl Tab {
         let resume_spec = if opts.model.is_some() { None } else { profile.resume.clone() };
         let (resumed, session) = plan_launch(resume_spec.as_ref(), argv, plan);
         // A held tab holds the display the same way a model tab does, and for
-        // the same reason: the thing it would run must not run
-        let spawn_argv: &[String] = if opts.model.is_some() || opts.held.is_some() {
+        // the same reason: the thing it would run must not run. A remote tab
+        // has nothing local to run either -- its command line says where to
+        // connect, not what to start -- so it takes the placeholder too, and
+        // the placeholder is never spawned because there is no local pty
+        let spawn_argv: &[String] = if opts.model.is_some() || opts.held.is_some() || !local {
             idle = idle_argv();
             &idle
         } else {
@@ -2713,6 +2733,9 @@ impl Tab {
         // the table that is already keeping it, so this costs a lookup rather
         // than a disk that may not be answering
         let cwd = match (&opts.held, &opts.cwd) {
+            // A remote tab works where the far end puts it. Its local folder,
+            // if it has one, is only where git commands about it look
+            _ if !local => std::env::current_dir()?,
             (None, Some(p)) => {
                 if crate::folders::watch()
                     .settled(p, crate::folders::BEFORE_LAUNCH)
@@ -2725,10 +2748,29 @@ impl Tab {
             _ => std::env::current_dir()?,
         };
         cmd.cwd(cwd);
-        let mut child = pair.slave.spawn_command(cmd)?;
-        drop(pair.slave);
-        let pid = child.process_id();
-        let killer = child.clone_killer();
+        // The terminal itself, and whatever ends it
+        #[allow(clippy::type_complexity)]
+        let (master, killer, pid, child): (
+            Box<dyn MasterPty + Send>,
+            Box<dyn ChildKiller + Send + Sync>,
+            Option<u32>,
+            Option<Box<dyn portable_pty::Child + Send + Sync>>,
+        ) = match (pair, opts.remote.as_ref()) {
+            (Some(pair), _) => {
+                let child = pair.slave.spawn_command(cmd)?;
+                drop(pair.slave);
+                let pid = child.process_id();
+                (pair.master, child.clone_killer(), pid, Some(child))
+            }
+            // Nothing of ours runs for a remote tab: the shell is the far end's
+            // own, started by the far end, and there is no local process id to
+            // put in a job object
+            (None, Some(spec)) => {
+                let (m, k) = crate::ssh::shell(spec, rows, cols)?;
+                (m, k, None, None)
+            }
+            (None, None) => anyhow::bail!("a tab with no terminal of any kind"),
+        };
         // Everything this tab goes on to start belongs to this tab. Killing the
         // program we launched has never reached what it launched -- a .cmd shim
         // is a cmd.exe holding a node, and killing the shim left the node
@@ -2742,7 +2784,7 @@ impl Tab {
             }
         }
 
-        let writer: PtyWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
+        let writer: PtyWriter = Arc::new(Mutex::new(master.take_writer()?));
         let bell_count = Arc::new(AtomicU64::new(0));
         // Cumulative output volume. The INDEX waveform is drawn from its deltas
         // (the change in screen hash alone doesn't tell us "how much is moving")
@@ -2794,7 +2836,7 @@ impl Tab {
             let parser = Arc::clone(&parser);
             let counter = Arc::clone(&bytes_out);
             let mojibake = Arc::clone(&not_utf8);
-            let mut reader = pair.master.try_clone_reader()?;
+            let mut reader = master.try_clone_reader()?;
             let enc = opts.encoding;
             let mut log = opts
                 .log
@@ -2876,8 +2918,11 @@ impl Tab {
                 }
             });
         }
-        // Detect child process exit
-        {
+        // Notice the far side ending. A local tab has a process to wait on;
+        // a remote one has nothing here to wait on -- its shell belongs to the
+        // other machine -- so the end arrives the way the reader sees it, as a
+        // stream that stops, and the reader raises the flag itself
+        if let Some(mut child) = child {
             let flag = Arc::clone(&child_exited);
             std::thread::spawn(move || {
                 let _ = child.wait();
@@ -2927,7 +2972,7 @@ impl Tab {
             profile_spec,
             opts,
             last_manual_ms: None,
-            master: pair.master,
+            master,
             killer,
             child_exited,
             bell_count,

@@ -1,0 +1,808 @@
+//! Talking SSH ourselves, instead of running `ssh.exe` in a terminal.
+//!
+//! `ssh.exe` is a fine program, and a tab can still run it. But it asks for a
+//! password by printing `user@host's password:` and reading the keyboard --
+//! which means a stored password cannot be handed over without pretending to
+//! type it, and the prompt appears on screen either way. Every program that
+//! remembers a password for you (PuTTY, WinSCP, Termius) speaks the protocol
+//! itself, because the password belongs in the *authentication* that happens
+//! before a terminal exists, not in the terminal.
+//!
+//! So this module opens the connection: it authenticates, checks the server is
+//! the one we met last time, and then hands out two things over the same
+//! connection --
+//!
+//!   - a **terminal**, dressed as a [`portable_pty::MasterPty`] so that a tab
+//!     cannot tell the difference between it and a local program. Everything a
+//!     tab does with bytes -- the screen, the state detector, the automation
+//!     hooks, the recording -- keeps working with nothing changed.
+//!   - a **file connection** for the SFTP tab, which is a separate tab because
+//!     transferring files and typing commands are separate jobs, whatever the
+//!     wire underneath happens to be.
+//!
+//! Everything to do with the network runs on one background thread with its
+//! own runtime. The window thread never waits for a socket, and nothing async
+//! leaks into the rest of the program: what leaves this module is byte queues
+//! and plain function calls.
+
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use anyhow::{Result, anyhow, bail};
+
+/// How long to wait for a server to answer at all
+const CONNECT_MS: u64 = 20_000;
+/// How long an idle connection is kept after its last tab has gone
+const IDLE_KEEP_MS: u64 = 60_000;
+
+/// Where to connect, as who, and with what.
+///
+/// It carries the *name* a credential is filed under, never the credential:
+/// the same rule the rest of the program follows, so that a tab's settings can
+/// be read, written, exported and looked at without a password being in them.
+/// The value is fetched at the moment of connecting, through [`use_secrets`]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Spec {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    /// The name the password is stored under (`ssh/<workspace>/<tab>/password`)
+    pub password_key: Option<String>,
+    /// A private key file, and the name its passphrase is stored under
+    pub key: Option<String>,
+    pub passphrase_key: Option<String>,
+}
+
+/// The connection credentials, handed over whenever the settings are read.
+///
+/// A copy, and deliberately a small one: only the `ssh/` names, and only
+/// because the store itself lives on the window's thread and cannot be reached
+/// from this one. Nothing else is copied, and a reload replaces the lot rather
+/// than adding to it -- a password taken out of the settings must not go on
+/// working because this thread still remembers it.
+static SECRETS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn store() -> &'static Mutex<HashMap<String, String>> {
+    SECRETS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Tell the connection thread what the ssh credentials are now. Called when
+/// the settings are read and again whenever they are read afresh
+pub fn use_secrets(mut all: HashMap<String, String>) {
+    all.retain(|k, _| k.starts_with("ssh/"));
+    if let Ok(mut m) = store().lock() {
+        *m = all;
+    }
+}
+
+fn secret(key: &Option<String>) -> Option<String> {
+    let key = key.as_ref()?;
+    store().lock().ok()?.get(key).cloned()
+}
+
+impl Spec {
+    /// What the person sees this connection called, and what its remembered
+    /// host key is filed under. The user is part of it only in the sense that
+    /// the same machine is the same machine: the key belongs to the address
+    pub fn address(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
+/// The fingerprints of the servers we have met, by address.
+///
+/// The same promise `known_hosts` makes, kept in the shape everything else
+/// here is kept in. A server whose key has changed is refused rather than
+/// asked about: at that moment there is no way to tell "they reinstalled it"
+/// from "somebody is standing in the middle", and the second one is the one
+/// that costs a password.
+fn known_hosts_path() -> std::path::PathBuf {
+    crate::config::root_dir().join("data").join("known-hosts.json")
+}
+
+fn known_hosts() -> HashMap<String, String> {
+    std::fs::read_to_string(known_hosts_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn remember_host(addr: &str, fingerprint: &str) -> Result<()> {
+    let mut all = known_hosts();
+    all.insert(addr.to_string(), fingerprint.to_string());
+    let path = known_hosts_path();
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&all)?)
+}
+
+/// What the connection thread is asked to do. One enum, because one thread
+/// answers all of it and a second queue would be a second order of events
+enum Job {
+    /// Open a terminal on `spec` and report where its bytes will arrive
+    Shell {
+        spec: Spec,
+        rows: u16,
+        cols: u16,
+        out: Sender<Vec<u8>>,
+        reply: Sender<Result<u64>>,
+    },
+    /// Type at a terminal that is already open
+    Write { id: u64, data: Vec<u8> },
+    /// The window changed shape
+    Resize { id: u64, rows: u16, cols: u16 },
+    /// Nobody is looking at this terminal any more
+    Close { id: u64 },
+}
+
+/// The way in. One thread, one runtime, started the first time anything here
+/// is asked for -- the same shape the HTTP gateway uses, and for the same
+/// reason: the window thread must never wait on a socket
+fn hub() -> &'static Sender<Job> {
+    static HUB: OnceLock<Sender<Job>> = OnceLock::new();
+    HUB.get_or_init(|| {
+        let (tx, rx) = channel::<Job>();
+        std::thread::Builder::new()
+            .name("ssh".into())
+            .spawn(move || run_hub(rx))
+            .expect("could not start the ssh thread");
+        tx
+    })
+}
+
+/// Numbers handed to terminals, so that a message about one cannot be about
+/// another after a restart
+fn next_id() -> u64 {
+    static N: AtomicU64 = AtomicU64::new(1);
+    N.fetch_add(1, Ordering::Relaxed)
+}
+
+/// What the thread keeps: connections by address, and open terminals by id.
+///
+/// A terminal is kept as its writing half only. The reading half goes to a
+/// task of its own the moment it exists, because the two directions have
+/// nothing to do with each other -- a person typing must not wait for the far
+/// end to say something, and a busy screen must not wait for a keystroke
+struct Live {
+    sessions: HashMap<String, russh::client::Handle<Client>>,
+    shells: HashMap<u64, russh::ChannelWriteHalf<russh::client::Msg>>,
+    /// When each connection last had a terminal on it, so an unused one can be
+    /// let go rather than held open for the life of the program
+    idle_since: HashMap<String, std::time::Instant>,
+}
+
+fn run_hub(rx: Receiver<Job>) {
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(r) => r,
+        Err(e) => {
+            crate::append_hook_log(&format!("ssh: could not start the runtime: {e}"));
+            return;
+        }
+    };
+    let mut live = Live {
+        sessions: HashMap::new(),
+        shells: HashMap::new(),
+        idle_since: HashMap::new(),
+    };
+    rt.block_on(async move {
+        loop {
+            // The queue is a blocking one, and this thread is the only one that
+            // reads it. Waiting on it inside the runtime would stop the timers
+            // the connections need, so it is drained without blocking and the
+            // thread sleeps between looks
+            match rx.try_recv() {
+                Ok(job) => handle(&mut live, job).await,
+                Err(TryRecvError::Empty) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+                    close_idle(&mut live).await;
+                }
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    });
+}
+
+async fn close_idle(live: &mut Live) {
+    let now = std::time::Instant::now();
+    let gone: Vec<String> = live
+        .idle_since
+        .iter()
+        .filter(|(_, since)| now.duration_since(**since).as_millis() as u64 > IDLE_KEEP_MS)
+        .map(|(a, _)| a.clone())
+        .collect();
+    for addr in gone {
+        live.idle_since.remove(&addr);
+        if let Some(h) = live.sessions.remove(&addr) {
+            let _ = h
+                .disconnect(russh::Disconnect::ByApplication, "", "en")
+                .await;
+        }
+    }
+}
+
+async fn handle(live: &mut Live, job: Job) {
+    match job {
+        Job::Shell { spec, rows, cols, out, reply } => {
+            let r = open_shell(live, &spec, rows, cols, out).await;
+            let _ = reply.send(r);
+        }
+        Job::Write { id, data } => {
+            if let Some(ch) = live.shells.get(&id) {
+                if let Err(e) = ch.data(&data[..]).await {
+                    crate::append_hook_log(&format!("ssh: could not send: {e}"));
+                }
+            }
+        }
+        Job::Resize { id, rows, cols } => {
+            if let Some(ch) = live.shells.get(&id) {
+                let _ = ch.window_change(cols as u32, rows as u32, 0, 0).await;
+            }
+        }
+        Job::Close { id } => {
+            if let Some(ch) = live.shells.remove(&id) {
+                let _ = ch.eof().await;
+                let _ = ch.close().await;
+            }
+            // A connection with nothing left on it starts its clock
+            for (addr, _) in live.sessions.iter() {
+                live.idle_since.insert(addr.clone(), std::time::Instant::now());
+            }
+        }
+    }
+}
+
+/// Make sure there is a connection to this server, and say what it is filed
+/// under. The one place "have we met this server" and "who are we" are
+/// answered, so that a terminal and a file transfer agree about both
+async fn session(live: &mut Live, spec: &Spec) -> Result<String> {
+    let addr = spec.address();
+    if let Some(h) = live.sessions.get(&addr) {
+        if !h.is_closed() {
+            live.idle_since.remove(&addr);
+            return Ok(addr);
+        }
+        live.sessions.remove(&addr);
+    }
+    let config = Arc::new(russh::client::Config {
+        inactivity_timeout: Some(std::time::Duration::from_secs(3600)),
+        ..Default::default()
+    });
+    let seen = known_hosts().get(&addr).cloned();
+    let met = Arc::new(Mutex::new(None::<String>));
+    let handler = Client { expected: seen.clone(), met: Arc::clone(&met) };
+    let connect = russh::client::connect(config, (spec.host.as_str(), spec.port), handler);
+    let mut handle = match tokio::time::timeout(
+        std::time::Duration::from_millis(CONNECT_MS),
+        connect,
+    )
+    .await
+    {
+        Err(_) => bail!(crate::i18n::tp("err.ssh.timeout", &[("host", &addr)])),
+        Ok(Err(e)) => {
+            // The one failure worth its own words: we did meet this server
+            // before, and what answered is not it. Everything else is "could
+            // not reach it", which is what the message says
+            let now = met.lock().ok().and_then(|m| m.clone());
+            if let (Some(before), Some(now)) = (&seen, &now) {
+                if before != now {
+                    crate::append_hook_log(&format!(
+                        "ssh: the key at {addr} changed: {before} -> {now}"
+                    ));
+                    bail!(crate::i18n::tp("err.ssh.host_changed", &[("host", &addr)]));
+                }
+            }
+            bail!(crate::i18n::tp(
+                "err.ssh.connect",
+                &[("host", &addr), ("e", &e.to_string())]
+            ))
+        }
+        Ok(Ok(h)) => h,
+    };
+    // A server we had not met is remembered now, with its fingerprint, so that
+    // the next time it changes we are able to say so
+    if seen.is_none() {
+        if let Some(fp) = met.lock().ok().and_then(|m| m.clone()) {
+            let _ = remember_host(&addr, &fp);
+            crate::append_hook_log(&format!("ssh: first time at {addr}, key {fp}"));
+        }
+    }
+
+    // A key if one is named, and the stored password otherwise. Asked for now
+    // rather than kept: this is the only moment it is needed
+    let password = secret(&spec.password_key);
+    let ok = match (&spec.key, &password) {
+        (None, None) => bail!(crate::i18n::tp(
+            "err.ssh.no_credential",
+            &[("host", &addr)]
+        )),
+        (None, Some(pw)) => handle
+            .authenticate_password(spec.user.clone(), pw.clone())
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+            .success(),
+        (Some(path), _) => {
+            let phrase = secret(&spec.passphrase_key);
+            let key = russh::keys::load_secret_key(path, phrase.as_deref())
+                .map_err(|e| anyhow!(crate::i18n::tp("err.ssh.key", &[("e", &e.to_string())])))?;
+            let alg = handle.best_supported_rsa_hash().await.ok().flatten().flatten();
+            handle
+                .authenticate_publickey(
+                    spec.user.clone(),
+                    russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), alg),
+                )
+                .await
+                .map_err(|e| anyhow!("{e}"))?
+                .success()
+        }
+    };
+    if !ok {
+        bail!(crate::i18n::tp(
+            "err.ssh.refused",
+            &[("user", &spec.user), ("host", &addr)]
+        ));
+    }
+    live.sessions.insert(addr.clone(), handle);
+    live.idle_since.remove(&addr);
+    Ok(addr)
+}
+
+async fn open_shell(
+    live: &mut Live,
+    spec: &Spec,
+    rows: u16,
+    cols: u16,
+    out: Sender<Vec<u8>>,
+) -> Result<u64> {
+    let addr = session(live, spec).await?;
+    let handle = live
+        .sessions
+        .get(&addr)
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &addr), ("e", "gone")])))?;
+    let channel = handle.channel_open_session().await?;
+    channel
+        .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
+        .await?;
+    channel.request_shell(true).await?;
+    let id = next_id();
+    let (mut reading, writing) = channel.split();
+    live.shells.insert(id, writing);
+    // Everything the far end says goes straight to the tab's queue, from a task
+    // of its own, so one quiet connection never holds up a busy one
+    tokio::spawn(async move {
+        while let Some(msg) = reading.wait().await {
+            let chunk = match msg {
+                // A terminal has one screen. What a program writes to its
+                // error output belongs on it, in the order it arrived, exactly
+                // as it would locally -- keeping them apart here would put the
+                // two halves of a compiler's opinion in different places
+                russh::ChannelMsg::Data { data } => data.to_vec(),
+                russh::ChannelMsg::ExtendedData { data, .. } => data.to_vec(),
+                russh::ChannelMsg::Eof | russh::ChannelMsg::Close => break,
+                _ => continue,
+            };
+            if out.send(chunk).is_err() {
+                break;
+            }
+        }
+    });
+    Ok(id)
+}
+
+/// Whether the server is the one we met before.
+///
+/// The first time, whatever answers is taken as the truth and written down --
+/// there is nothing to compare against, and refusing would mean nobody could
+/// ever connect to anything. Every time after that the fingerprint has to
+/// match, and a mismatch ends the connection rather than asking: the moment a
+/// key changes is the moment you cannot tell a reinstall from somebody
+/// standing in the middle, and only one of those costs you a password.
+struct Client {
+    expected: Option<String>,
+    met: Arc<Mutex<Option<String>>>,
+}
+
+impl russh::client::Handler for Client {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        key: &russh::keys::PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        let fp = match key {
+            russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => {
+                key.fingerprint(Default::default()).to_string()
+            }
+            russh::keys::PublicKeyOrCertificate::Certificate(c) => {
+                c.public_key().fingerprint(Default::default()).to_string()
+            }
+        };
+        if let Ok(mut m) = self.met.lock() {
+            *m = Some(fp.clone());
+        }
+        Ok(match &self.expected {
+            None => true,
+            Some(seen) => seen == &fp,
+        })
+    }
+}
+
+// ── What a tab is handed ────────────────────────────────────────────────────
+
+/// The reading half of a terminal on the far end.
+///
+/// A queue rather than a socket, because everything above it reads with
+/// `std::io::Read` on a thread of its own and knows nothing about runtimes
+struct ShellReader {
+    rx: Receiver<Vec<u8>>,
+    /// What was read but did not fit in the caller's buffer last time
+    rest: Vec<u8>,
+    at: usize,
+}
+
+impl Read for ShellReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.at >= self.rest.len() {
+            match self.rx.recv() {
+                Ok(chunk) => {
+                    self.rest = chunk;
+                    self.at = 0;
+                }
+                // The far end has gone. Read returning 0 is how every reader
+                // above this says "that was the end", the same as a local
+                // program exiting
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = (self.rest.len() - self.at).min(buf.len());
+        buf[..n].copy_from_slice(&self.rest[self.at..self.at + n]);
+        self.at += n;
+        Ok(n)
+    }
+}
+
+/// The writing half. Typing goes to the thread, which is the only thing that
+/// touches the connection
+struct ShellWriter {
+    id: u64,
+}
+
+impl Write for ShellWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _ = hub().send(Job::Write { id: self.id, data: buf.to_vec() });
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A terminal on another machine, wearing the same face as a local one.
+///
+/// Implementing `MasterPty` is what lets the rest of the program stay exactly
+/// as it is: a tab reads bytes, writes bytes and says how big it is, and never
+/// asks which of those crossed a network
+#[derive(Debug)]
+pub struct SshPty {
+    id: u64,
+    size: Mutex<portable_pty::PtySize>,
+    reader: Mutex<Option<ShellReader>>,
+    writer_taken: AtomicBool,
+}
+
+impl portable_pty::MasterPty for SshPty {
+    fn resize(&self, size: portable_pty::PtySize) -> Result<(), anyhow::Error> {
+        if let Ok(mut s) = self.size.lock() {
+            *s = size;
+        }
+        let _ = hub().send(Job::Resize {
+            id: self.id,
+            rows: size.rows,
+            cols: size.cols,
+        });
+        Ok(())
+    }
+
+    fn get_size(&self) -> Result<portable_pty::PtySize, anyhow::Error> {
+        Ok(*self.size.lock().map_err(|_| anyhow!("size"))?)
+    }
+
+    fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+        // Once, like the writer: there is one queue of bytes from the far end,
+        // and two readers of it would each get half a screen
+        match self.reader.lock().map_err(|_| anyhow!("reader"))?.take() {
+            Some(r) => Ok(Box::new(r)),
+            None => bail!("the reader for this connection has already been taken"),
+        }
+    }
+
+    fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+        if self.writer_taken.swap(true, Ordering::SeqCst) {
+            bail!("the writer for this connection has already been taken");
+        }
+        Ok(Box::new(ShellWriter { id: self.id }))
+    }
+}
+
+impl std::fmt::Debug for ShellReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ShellReader")
+    }
+}
+
+/// Ending a remote terminal: there is no process here to kill, so this closes
+/// the channel and lets the far end tidy up after its own shell
+#[derive(Debug, Clone)]
+pub struct SshKiller {
+    id: u64,
+}
+
+impl portable_pty::ChildKiller for SshKiller {
+    fn kill(&mut self) -> std::io::Result<()> {
+        let _ = hub().send(Job::Close { id: self.id });
+        Ok(())
+    }
+    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+        Box::new(self.clone())
+    }
+}
+
+/// Open a terminal on another machine.
+///
+/// Returns the pair a tab needs and nothing else, so that the tab's own code
+/// reads the same whether the shell is here or on the other side of the world
+pub fn shell(
+    spec: &Spec,
+    rows: u16,
+    cols: u16,
+) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>)>
+{
+    let (out_tx, out_rx) = channel::<Vec<u8>>();
+    let (reply_tx, reply_rx) = channel::<Result<u64>>();
+    hub()
+        .send(Job::Shell {
+            spec: spec.clone(),
+            rows,
+            cols,
+            out: out_tx,
+            reply: reply_tx,
+        })
+        .map_err(|_| anyhow!(crate::i18n::t("err.ssh.no_thread")))?;
+    let id = reply_rx
+        .recv_timeout(std::time::Duration::from_millis(CONNECT_MS + 5_000))
+        .map_err(|_| anyhow!(crate::i18n::tp("err.ssh.timeout", &[("host", &spec.address())])))??;
+    let pty = SshPty {
+        id,
+        size: Mutex::new(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }),
+        reader: Mutex::new(Some(ShellReader { rx: out_rx, rest: Vec::new(), at: 0 })),
+        writer_taken: AtomicBool::new(false),
+    };
+    Ok((Box::new(pty), Box::new(SshKiller { id })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reader hands out exactly what arrived, in order, however the caller
+    /// happens to divide it into buffers -- a screen is a stream of bytes, and
+    /// one that loses a byte at a buffer edge is a screen with a hole in it
+    #[test]
+    fn what_the_far_end_says_arrives_whole() {
+        let (tx, rx) = channel::<Vec<u8>>();
+        tx.send(b"hello ".to_vec()).unwrap();
+        tx.send("せかい".as_bytes().to_vec()).unwrap();
+        drop(tx);
+        let mut r = ShellReader { rx, rest: Vec::new(), at: 0 };
+        let mut got = Vec::new();
+        let mut small = [0u8; 4];
+        loop {
+            match r.read(&mut small).unwrap() {
+                0 => break,
+                n => got.extend_from_slice(&small[..n]),
+            }
+        }
+        assert_eq!(String::from_utf8(got).unwrap(), "hello せかい");
+    }
+
+    /// The far end going away has to look like a program ending, because that
+    /// is the only thing the reader above knows how to notice
+    #[test]
+    fn a_closed_connection_reads_as_the_end() {
+        let (tx, rx) = channel::<Vec<u8>>();
+        drop(tx);
+        let mut r = ShellReader { rx, rest: Vec::new(), at: 0 };
+        assert_eq!(r.read(&mut [0u8; 8]).unwrap(), 0);
+    }
+
+    /// One queue, one reader. Two would each get part of the screen
+    #[test]
+    fn the_stream_is_handed_out_once() {
+        let (_tx, rx) = channel::<Vec<u8>>();
+        let pty = SshPty {
+            id: 1,
+            size: Mutex::new(portable_pty::PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }),
+            reader: Mutex::new(Some(ShellReader { rx, rest: Vec::new(), at: 0 })),
+            writer_taken: AtomicBool::new(false),
+        };
+        use portable_pty::MasterPty;
+        assert!(pty.try_clone_reader().is_ok());
+        assert!(pty.try_clone_reader().is_err(), "二人目に画面の半分が渡る");
+        assert!(pty.take_writer().is_ok());
+        assert!(pty.take_writer().is_err());
+    }
+
+    /// A whole conversation with a real server, over a real socket.
+    ///
+    /// There is no pretending here: a server is started on the loopback with a
+    /// key of its own, and the client half of this module signs in with a
+    /// stored password, asks for a terminal, types into it, and reads back
+    /// what comes out. It is the only way to know that the thing a tab holds
+    /// really is a terminal -- every piece of it (the password never being
+    /// typed, the pty request, the two directions of bytes, the size) fails
+    /// separately and silently otherwise.
+    #[test]
+    fn a_terminal_on_another_machine_reads_and_writes_like_any_other() {
+        use portable_pty::MasterPty;
+        use std::io::Write as _;
+
+        let (port_tx, port_rx) = channel::<u16>();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            rt.block_on(async move {
+                let config = Arc::new(russh::server::Config {
+                    inactivity_timeout: Some(std::time::Duration::from_secs(30)),
+                    auth_rejection_time: std::time::Duration::from_millis(1),
+                    keys: vec![
+                        russh::keys::PrivateKey::random(
+                            &mut rand::rng(),
+                            russh::keys::Algorithm::Ed25519,
+                        )
+                        .expect("host key"),
+                    ],
+                    ..Default::default()
+                });
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .expect("listen");
+                let _ = port_tx.send(listener.local_addr().expect("addr").port());
+                let mut server = Fake;
+                use russh::server::Server as _;
+                let _ = server.run_on_socket(config, &listener).await;
+            });
+        });
+        let port = port_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the test server did not start");
+
+        // The password is not in the settings: it is a name, and this is the
+        // store standing in for the real one
+        use_secrets(HashMap::from([(
+            "ssh/ws/prod/password".to_string(),
+            "hunter2".to_string(),
+        )]));
+        let spec = Spec {
+            host: "127.0.0.1".into(),
+            port,
+            user: "tester".into(),
+            password_key: Some("ssh/ws/prod/password".into()),
+            key: None,
+            passphrase_key: None,
+        };
+        // A first meeting: nothing is remembered about this server, and the
+        // test must not write into the real settings folder either
+        let (pty, mut killer) = shell(&spec, 24, 80).expect("the terminal did not open");
+        let mut reader = pty.try_clone_reader().expect("reader");
+        let mut writer = pty.take_writer().expect("writer");
+
+        let mut seen = String::new();
+        let mut buf = [0u8; 1024];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        // The far end greets, then echoes. Both have to arrive
+        writer.write_all(b"hello").expect("typing");
+        writer.flush().expect("flush");
+        while std::time::Instant::now() < deadline && !seen.contains("echo:hello") {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
+                Err(_) => break,
+            }
+        }
+        assert!(seen.contains("welcome"), "画面に何も届いていない: {seen:?}");
+        assert!(seen.contains("echo:hello"), "打った文字が届いていない: {seen:?}");
+        // Resizing is a message to the far end, not a local setting
+        pty.resize(portable_pty::PtySize { rows: 40, cols: 120, pixel_width: 0, pixel_height: 0 })
+            .expect("resize");
+        assert_eq!(pty.get_size().expect("size").cols, 120);
+        killer.kill().expect("kill");
+    }
+
+    /// The far side of that conversation. It asks for a password, insists on
+    /// the one it was told, and gives out a terminal that echoes
+    #[derive(Clone)]
+    struct Fake;
+
+    impl russh::server::Server for Fake {
+        type Handler = Self;
+        fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self {
+            self.clone()
+        }
+    }
+
+    impl russh::server::Handler for Fake {
+        type Error = russh::Error;
+
+        async fn auth_password(
+            &mut self,
+            user: &str,
+            password: &str,
+        ) -> Result<russh::server::Auth, Self::Error> {
+            Ok(match (user, password) {
+                ("tester", "hunter2") => russh::server::Auth::Accept,
+                _ => russh::server::Auth::reject(),
+            })
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            _channel: russh::Channel<russh::server::Msg>,
+            reply: russh::server::ChannelOpenHandle,
+            _session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            reply.accept().await;
+            Ok(())
+        }
+
+        async fn pty_request(
+            &mut self,
+            channel: russh::ChannelId,
+            _term: &str,
+            _cols: u32,
+            _rows: u32,
+            _pw: u32,
+            _ph: u32,
+            _modes: &[(russh::Pty, u32)],
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            session.channel_success(channel)?;
+            Ok(())
+        }
+
+        async fn shell_request(
+            &mut self,
+            channel: russh::ChannelId,
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            session.channel_success(channel)?;
+            session.data(channel, russh::keys::ssh_encoding::bytes::Bytes::from_static(b"welcome\r\n"))?;
+            Ok(())
+        }
+
+        async fn data(
+            &mut self,
+            channel: russh::ChannelId,
+            data: &[u8],
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            let back = format!("echo:{}\r\n", String::from_utf8_lossy(data));
+            session.data(channel, russh::keys::ssh_encoding::bytes::Bytes::from(back.into_bytes()))?;
+            Ok(())
+        }
+    }
+
+    /// The address is what a host key is filed under, and it has to tell two
+    /// servers apart even when they share a name on different ports
+    #[test]
+    fn a_server_is_known_by_its_address() {
+        let a = Spec { host: "example.com".into(), port: 22, ..Default::default() };
+        let b = Spec { host: "example.com".into(), port: 2222, ..Default::default() };
+        assert_eq!(a.address(), "example.com:22");
+        assert_ne!(a.address(), b.address());
+    }
+}
