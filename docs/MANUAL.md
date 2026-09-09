@@ -118,14 +118,43 @@ Turn on phone access in the settings and scan the QR code. Every tab, its state,
 and a box to reply are on the phone; what the PC can do, the phone can do too.
 See [From your phone](https://shikisha-term.com/phone/) for the three levels of setup.
 
-## 5. Automation
+## 5. Connecting to a server
+
+Choose **Server (this program connects)** as a tab's kind, give it the address,
+the port and the user, and save a password. The password is never shown again,
+and no `user@host's password:` prompt appears. Opening the tab gives you that
+server's terminal.
+
+Automation can read and write files there too, by naming that tab (`sftp_ls`,
+`sftp_get`, `sftp_put` and the rest -- see the automation reference).
+
+**A server whose key is not the one from last time is refused.** If you
+reinstalled the server, delete its line from `data/known-hosts.json`.
+
+A tab that runs the `ssh` command itself still works as before (the kind is
+"SSH (ssh.exe)").
+
+## 6. Where passwords and tokens live
+
+Register them under **Secrets** on the workspace's settings page. Automation
+names them in one short word and never receives the value. Two things are asked
+when you register one:
+
+- **Which sites it may be typed into** -- it is filled in there and nowhere else
+- **AI may use this** -- off to begin with; turn it on for the ones a script an
+  AI set going should be able to use
+
+Settings › Secrets lists everything this machine holds and lets one go, and
+Settings › Update many secrets changes the ones that share a name together.
+
+## 7. Automation
 
 What to do when a tab finishes, asks a question, or goes quiet: hand the answer to
 another tab, answer a confirmation, send a notification. Written in a few lines of
 Lua, or described in plain words and written for you by an AI you already have.
 See the [automation reference](https://shikisha-term.com/automation/).
 
-## 6. When something is wrong
+## 8. When something is wrong
 
 - **The program does not start after a settings change** — double-click
   `Settings.cmd` beside the program. It opens only the settings screen, where the
@@ -144,7 +173,7 @@ See the [automation reference](https://shikisha-term.com/automation/).
 - **The zip shows a Windows warning on first start** — the zip is not code-signed;
   the Store copy is. [Why, and how to check the download](https://github.com/styleio/ShikishaTerm/blob/main/SIGNING.md).
 
-## 7. Updating
+## 9. Updating
 
 The program looks, once at start and once a day while it runs, whether a newer
 version is published. If one is, a small card in the sidebar says so, once. Its
