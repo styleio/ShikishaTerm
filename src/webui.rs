@@ -1500,7 +1500,14 @@ fn handle(
                     Ok(list) => (
                         if encrypted { "encrypted" } else { "plaintext" },
                         list.into_iter()
-                            .map(|(k, d)| serde_json::json!({ "key": k, "description": d }))
+                            .map(|(k, m)| {
+                                serde_json::json!({
+                                    "key": k,
+                                    "description": m.desc,
+                                    "ai": m.ai,
+                                    "hosts": m.hosts,
+                                })
+                            })
                             .collect(),
                     ),
                     Err(_) => ("locked", Vec::new()),
@@ -1520,16 +1527,30 @@ fn handle(
             };
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let s = |k| p.get(k).and_then(|v| v.as_str()).unwrap_or("");
-            let (key, desc, value) = (s("key").trim(), s("description"), s("value"));
+            let (key, value) = (s("key").trim(), s("value"));
             let path = secrets_file(config_path);
             let pw = password.lock().unwrap().clone();
-            let resp = if value.is_empty() {
-                serde_json::json!({ "ok": false, "error": crate::i18n::t("webui.err.empty_value") })
-            } else {
-                match crate::config::upsert_secret(&path, pw.as_deref(), key, desc, value) {
-                    Ok(()) => serde_json::json!({ "ok": true }),
-                    Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
-                }
+            // An empty value means "leave the password alone" -- what a secret
+            // is *for* can be changed without going to find it again. The store
+            // refuses that for a name it has never seen
+            let meta = crate::config::SecretMeta {
+                ai: p.get("ai").and_then(|v| v.as_bool()).unwrap_or(false),
+                hosts: p
+                    .get("hosts")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|h| h.as_str())
+                            .map(|h| h.trim().to_ascii_lowercase())
+                            .filter(|h| !h.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                desc: s("description").to_string(),
+            };
+            let resp = match crate::config::upsert_secret(&path, pw.as_deref(), key, &meta, value) {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
             };
             req.respond(json_resp(resp))?;
         }
@@ -4228,6 +4249,7 @@ function globalSections() {
     {id:"resume",    label:T["settings.sec.resume"],    sub:T["settings.sec.resume.sub"],    build:resumeCard},
     {id:"files",     label:T["settings.sec.files"],     sub:T["settings.sec.files.sub"],     build:filesCard},
     {id:"secrets",   label:T["settings.sec.secrets"],   sub:T["settings.sec.secrets.sub"],   build:secretsCard},
+    {id:"secretsbulk", label:T["settings.sec.secretsbulk"], sub:T["settings.sec.secretsbulk.sub"], build:secretsBulkCard},
     {id:"results",   label:T["settings.sec.results"],   sub:T["settings.sec.results.sub"],   build:rallyResultCard},
   ];
 }
@@ -4390,42 +4412,177 @@ async function downloadRally(runId) {
   }
 }
 
+// ── Secrets ────────────────────────────────────────────────────────────────
+// A secret a script can ask for belongs to one workspace and is stored under
+// that workspace's name; the ones the program keeps for itself (an ssh
+// password, a provider's key) stand behind a "/" and no script can name them.
+// The person types a bare name and never sees the punctuation.
+const SECRET_INTERNAL = k => k.includes("/");
+const secretKey = (ws, name) => (ws.id || "") + "." + name;
+// The short name of a secret belonging to this workspace, or null for one that
+// does not
+function secretShortName(ws, key) {
+  const head = (ws.id || "") + ".";
+  return key.startsWith(head) ? key.slice(head.length) : null;
+}
+// Everything the store holds, asked for once and handed to whoever is drawing.
+// The value is never part of it
+async function fetchSecrets() {
+  try { return await fetch("/api/secrets", {headers:{"X-Token":TOKEN}}).then(r=>r.json()); }
+  catch (e) { return null; }
+}
+async function saveSecret(body) {
+  return await fetch("/api/secrets/set", {method:"POST",
+    headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+    body: JSON.stringify(body)}).then(r=>r.json()).catch(() => ({ok:false}));
+}
+async function deleteSecret(key) {
+  return await fetch("/api/secrets/delete", {method:"POST",
+    headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+    body: JSON.stringify({key})}).then(r=>r.json()).catch(() => ({ok:false}));
+}
+// The sites a secret may be typed into, as typed: one per line or comma-separated
+const hostsOf = text => text.split(/[\s,]+/).map(h => h.trim()).filter(Boolean);
+// The ones written as plain http. A site named without a scheme is an https
+// site; writing http:// is how a person says they want it anyway, and that is
+// the case worth stopping to think about
+const plainHosts = list => list.filter(h => /^http:\/\//i.test(h.trim()));
+// A warning and a tick, shown only while an unprotected site is being *added*.
+// Living with one you already agreed to does not ask again -- what needs a
+// moment's thought is taking on the risk, not keeping it
+function riskGate(before) {
+  const was = new Set(plainHosts(before).map(h => h.toLowerCase()));
+  const box = el("input", {type:"checkbox"});
+  const label = el("label", {class:"check warn"});
+  label.append(box, document.createTextNode(T["settings.secrets.plain_ok"]));
+  const note = el("div", {class:"hint warn", style:"flex-basis:100%"});
+  const row = el("div", {class:"row", style:"flex-basis:100%;gap:10px"}, note, label);
+  row.hidden = true;
+  return {
+    row,
+    // Whether this list may be saved, and what to say when it may not
+    check(list) {
+      const now = plainHosts(list).filter(h => !was.has(h.toLowerCase()));
+      row.hidden = !now.length;
+      if (!now.length) return true;
+      note.textContent = fill(T["settings.secrets.plain_warn"], {hosts: now.join(", ")});
+      if (box.checked) return true;
+      toast(T["settings.secrets.plain_blocked"], true);
+      return false;
+    },
+    // Keep the warning in step while someone is typing
+    watch(input) {
+      input.addEventListener("input", () => {
+        const now = plainHosts(hostsOf(input.value)).filter(h => !was.has(h.toLowerCase()));
+        row.hidden = !now.length;
+        if (now.length) note.textContent = fill(T["settings.secrets.plain_warn"], {hosts: now.join(", ")});
+      });
+    },
+  };
+}
+
 // Secrets (equivalent to GitHub Secrets). Referenced by key; once saved, the value is never shown again.
 // Encrypted if a master password is set, plaintext otherwise (at the user's own risk) — both handled through the same UI
+// Everything the store holds, in one place. Not where a secret is added --
+// that happens on the workspace it belongs to, or in the field that needs it --
+// but where you can see what this machine is keeping, and let one go
 function secretsCard() {
   const status = el("div", {class:"hint", id:"secretsmode"});
   // Where the master password is set. The password itself is only ever typed
   // into the native app (never this page), so point the user at [k] on INDEX.
   const pwhint = el("div", {class:"hint"}, T["settings.secrets.master_hint"]);
   const head = el("div", {}, status, pwhint);
-  const listBox = el("div", {id:"secretslist"}, el("div", {class:"hint"}, T["common.reload"] ? "…" : "…"));
-  const keyIn = el("input", {class:"mono", placeholder:T["settings.secrets.key_ph"], style:"width:200px"});
-  const descIn = el("input", {placeholder:T["settings.secrets.desc_ph"], style:"width:220px"});
-  const valIn = el("input", {type:"password", placeholder:T["settings.secrets.value_ph"], style:"width:220px"});
-  const addBtn = el("button", {class:"primary", onclick: async () => {
-    const key = keyIn.value.trim();
-    if (!key) { toast(T["settings.secrets.key_required"], true); return; }
-    if (!valIn.value) { toast(T["settings.secrets.value_required"], true); return; }
-    const r = await fetch("/api/secrets/set", {method:"POST",
-      headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-      body: JSON.stringify({key, description: descIn.value, value: valIn.value})}).then(r=>r.json());
-    if (r.ok) { toast(fill(T["settings.secrets.saved_key"], {key})); keyIn.value=""; descIn.value=""; valIn.value=""; loadSecrets(); }
-    else toast(r.error || T["settings.secrets.save_failed"], true);
-  }}, T["settings.secrets.add_update"]);
-  // Label each field explicitly with a heading. A placeholder alone got truncated and was hard to read
-  const labeled = (title, hint, input) => el("div", {style:"display:flex;flex-direction:column;gap:3px"},
-    el("span", {style:"font-size:12px;color:var(--text)"}, title),
-    input,
-    el("span", {class:"hint", style:"font-size:11px"}, hint));
-  const form = el("div", {class:"row", style:"flex-wrap:wrap;gap:14px;margin-top:12px;align-items:flex-end"},
-    labeled(T["settings.secrets.key_label"], T["settings.secrets.key_hint"], keyIn),
-    labeled(T["settings.secrets.desc_label"], T["settings.secrets.desc_hint"], descIn),
-    labeled(T["settings.secrets.value_label"], T["settings.secrets.value_hint"], valIn),
-    addBtn);
-  const c = card(T["settings.secrets.title"], head, listBox, form);
+  const listBox = el("div", {id:"secretslist"}, el("div", {class:"hint"}, "…"));
+  const c = card(T["settings.secrets.title"],
+    head,
+    el("div", {class:"hint"}, T["settings.secrets.inventory_hint"]),
+    listBox);
   // Load only after the card is in the DOM (so getElementById works)
   setTimeout(loadSecrets, 0);
   return c;
+}
+
+// Change one thing about many secrets at once: the password behind a name that
+// several workspaces know, or what they are allowed to do with it. Its own
+// place, so that the everyday screens stay one-at-a-time and nothing here
+// happens by accident
+function secretsBulkCard() {
+  const findIn = el("input", {class:"mono", placeholder:T["settings.secrets.bulk.find_ph"], style:"width:220px"});
+  const listBox = el("div", {id:"bulklist"}, el("div", {class:"hint"}, T["settings.secrets.bulk.start"]));
+  const chosen = new Set();
+  let found = [];
+  const draw = () => {
+    listBox.textContent = "";
+    if (!found.length) { listBox.append(el("div", {class:"hint"}, T["settings.secrets.bulk.none"])); return; }
+    for (const s of found) {
+      const cb = el("input", {type:"checkbox"});
+      cb.checked = chosen.has(s.key);
+      cb.addEventListener("change", () => { cb.checked ? chosen.add(s.key) : chosen.delete(s.key); });
+      const where = SECRET_INTERNAL(s.key) ? T["settings.secrets.bulk.internal"]
+                  : (s.key.split(".")[0] || "");
+      const l = el("label", {class:"check", style:"display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)"});
+      l.append(cb,
+        el("span", {class:"mono", style:"min-width:220px;color:var(--text)"}, s.key),
+        el("span", {class:"hint", style:"min-width:110px"}, where),
+        el("span", {class:"hint", style:"flex:1"}, s.description || T["settings.secrets.no_desc"]),
+        el("span", {class:"hint mono"}, (s.hosts || []).join(", ") || "—"),
+        el("span", {class:"hint"}, s.ai ? T["settings.secrets.ai_on"] : T["settings.secrets.ai_off"]));
+      listBox.append(l);
+    }
+  };
+  const search = async () => {
+    const q = findIn.value.trim().toLowerCase();
+    const j = await fetchSecrets();
+    if (!j) { toast(T["settings.secrets.load_failed"], true); return; }
+    found = (j.secrets || []).filter(s => !q || s.key.toLowerCase().includes(q));
+    chosen.clear();
+    draw();
+  };
+  findIn.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); search(); } });
+
+  // Each button changes one thing, and only for the rows that are ticked.
+  // `change` is given the row as it stands, so a change can build on what is
+  // already there (adding a site rather than replacing the list)
+  const apply = async (change) => {
+    if (!chosen.size) { toast(T["settings.secrets.bulk.pick_first"], true); return; }
+    let done = 0;
+    for (const key of chosen) {
+      const s = found.find(x => x.key === key);
+      if (!s) continue;
+      // Everything is sent back, so nothing a button did not touch is dropped.
+      // An empty value means "leave the password alone"
+      const body = {key, description: s.description || "", ai: !!s.ai,
+                    hosts: s.hosts || [], value: "", ...change(s)};
+      const r = await saveSecret(body);
+      if (r.ok) done++;
+    }
+    toast(fill(T["settings.secrets.bulk.done"], {n: done}));
+    search();
+  };
+  const valIn = el("input", {type:"password", placeholder:T["settings.secrets.value_ph"], style:"width:200px"});
+  const hostIn = el("input", {class:"mono", placeholder:"github.com", style:"width:200px"});
+  const bulkGate = riskGate([]);
+  bulkGate.watch(hostIn);
+  const bar = el("div", {class:"row", style:"flex-wrap:wrap;gap:10px;margin-top:12px;align-items:center"},
+    valIn,
+    el("button", {onclick: () => {
+      if (!valIn.value) { toast(T["settings.secrets.value_required"], true); return; }
+      apply(() => ({value: valIn.value}));
+    }}, T["settings.secrets.bulk.set_value"]),
+    hostIn,
+    el("button", {onclick: () => {
+      const add = hostsOf(hostIn.value);
+      if (!add.length) { toast(T["settings.secrets.bulk.host_required"], true); return; }
+      if (!bulkGate.check(add)) return;
+      apply(s => ({hosts: [...new Set([...(s.hosts || []), ...add])]}));
+    }}, T["settings.secrets.bulk.add_host"]),
+    el("button", {onclick: () => apply(() => ({ai: true}))}, T["settings.secrets.bulk.ai_on"]),
+    el("button", {class:"danger", onclick: () => apply(() => ({ai: false}))}, T["settings.secrets.bulk.ai_off"]),
+    bulkGate.row);
+  return card(T["settings.secrets.bulk.title"],
+    el("div", {class:"hint"}, T["settings.secrets.bulk.hint"]),
+    el("div", {class:"row"}, findIn, el("button", {onclick: search}, T["settings.secrets.bulk.find"])),
+    listBox, bar);
 }
 
 // Model bridge connections (Providers). Registers OpenAI-compatible APIs by name.
@@ -5131,15 +5288,21 @@ async function loadSecrets() {
   for (const s of j.secrets) {
     const del = el("button", {class:"quiet", onclick: async () => {
       if (!confirm(fill(T["settings.secrets.delete_confirm"], {key: s.key}))) return;
-      const r = await fetch("/api/secrets/delete", {method:"POST",
-        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-        body: JSON.stringify({key: s.key})}).then(r=>r.json());
+      const r = await deleteSecret(s.key);
       if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: s.key})); loadSecrets(); }
       else toast(r.error || T["settings.secrets.delete_failed"], true);
     }}, T["common.delete"]);
+    // Where it came from, said in words rather than in punctuation: the
+    // workspace whose name is in front of it, or the program itself
+    const where = SECRET_INTERNAL(s.key)
+      ? T["settings.secrets.owner_internal"]
+      : fill(T["settings.secrets.owner_ws"], {name: s.key.split(".")[0] || ""});
     listBox.append(el("div", {class:"listrow"},
-      el("span", {class:"mono", style:"min-width:180px;color:var(--text)"}, s.key),
+      el("span", {class:"mono", style:"min-width:200px;color:var(--text)"}, s.key),
+      el("span", {class:"hint", style:"min-width:130px"}, where),
       el("span", {class:"hint", style:"flex:1"}, s.description || T["settings.secrets.no_desc"]),
+      el("span", {class:"hint mono", style:"min-width:120px"}, (s.hosts || []).join(", ") || "—"),
+      el("span", {class:"hint"}, s.ai ? T["settings.secrets.ai_on"] : T["settings.secrets.ai_off"]),
       el("span", {class:"hint mono", title:T["settings.secrets.value_hidden"]}, "••••"),
       del));
   }
@@ -5811,23 +5974,50 @@ function stopRow(ws, s, i, redraw) {
   return row;
 }
 
-// Restricts which secrets this workspace's rally (AI) is allowed to use. Denied by default.
-// Prevents a key meant for another purpose from being reused. Only key-name permissions are handled here, never values
+// The secrets this workspace has. A script running in it writes the short name
+// and gets this one: nothing here can be reached from another workspace, and
+// nothing the program keeps for itself can be reached from a script at all.
+//
+// The value is write-only. Leaving it blank changes what a secret is *for*
+// without asking anyone to go and find the password again
 function wsSecretsCard(ws) {
-  ws.secrets_allow = ws.secrets_allow || [];
   const listBox = el("div", {id:"wssecretslist"}, el("div", {class:"hint"}, "…"));
-  const allOn = el("input", {type:"checkbox"});
-  allOn.checked = !!ws.secrets_allow_all;
-  allOn.addEventListener("change", () => {
-    ws.secrets_allow_all = allOn.checked; loadWsSecrets(ws); refreshSave();
-  });
-  const allLabel = el("label", {class:"check"});
-  allLabel.append(allOn, document.createTextNode(T["settings.secrets.ws_allow_all"]));
+  const nameIn = el("input", {class:"mono", placeholder:T["settings.secrets.key_ph"], style:"width:170px"});
+  const valIn = el("input", {type:"password", placeholder:T["settings.secrets.value_ph"], style:"width:180px"});
+  const descIn = el("input", {placeholder:T["settings.secrets.desc_ph"], style:"width:190px"});
+  const hostIn = el("input", {class:"mono", placeholder:"github.com", style:"width:170px"});
+  const aiIn = el("input", {type:"checkbox"});
+  const aiLabel = el("label", {class:"check"});
+  aiLabel.append(aiIn, document.createTextNode(T["settings.secrets.ai_label"]));
+  const gate = riskGate([]);
+  gate.watch(hostIn);
+  const add = el("button", {class:"primary", onclick: async () => {
+    const name = nameIn.value.trim();
+    if (!name) { toast(T["settings.secrets.key_required"], true); return; }
+    if (!valIn.value) { toast(T["settings.secrets.value_required"], true); return; }
+    if (!(ws.id || "").trim()) { toast(T["settings.secrets.ws_needs_id"], true); return; }
+    if (!gate.check(hostsOf(hostIn.value))) return;
+    const r = await saveSecret({key: secretKey(ws, name), value: valIn.value,
+      description: descIn.value, ai: aiIn.checked, hosts: hostsOf(hostIn.value)});
+    if (r.ok) {
+      toast(fill(T["settings.secrets.saved_key"], {key: name}));
+      nameIn.value = valIn.value = descIn.value = hostIn.value = ""; aiIn.checked = false;
+      loadWsSecrets(ws);
+    } else toast(r.error || T["settings.secrets.save_failed"], true);
+  }}, T["settings.secrets.add"]);
+  const labeled = (title, hint, input) => el("div", {style:"display:flex;flex-direction:column;gap:3px"},
+    el("span", {style:"font-size:12px;color:var(--text)"}, title),
+    input,
+    el("span", {class:"hint", style:"font-size:11px"}, hint));
+  const form = el("div", {class:"row", style:"flex-wrap:wrap;gap:14px;margin-top:12px;align-items:flex-end"},
+    labeled(T["settings.secrets.key_label"], T["settings.secrets.key_hint"], nameIn),
+    labeled(T["settings.secrets.value_label"], T["settings.secrets.value_hint"], valIn),
+    labeled(T["settings.secrets.desc_label"], T["settings.secrets.desc_hint"], descIn),
+    labeled(T["settings.secrets.hosts_label"], T["settings.secrets.hosts_hint"], hostIn),
+    aiLabel, add, gate.row);
   const c = card(T["settings.secrets.ws_title"],
-    el("div", {class:"hint"},
-      T["settings.secrets.ws_hint"]),
-    listBox,
-    el("div", {class:"row", style:"margin-top:10px"}, allLabel));
+    el("div", {class:"hint"}, T["settings.secrets.ws_hint"]),
+    listBox, form);
   setTimeout(() => loadWsSecrets(ws), 0);
   return c;
 }
@@ -5835,35 +6025,48 @@ function wsSecretsCard(ws) {
 async function loadWsSecrets(ws) {
   const box = document.getElementById("wssecretslist");
   if (!box) return;
-  let j;
-  try { j = await fetch("/api/secrets", {headers:{"X-Token":TOKEN}}).then(r=>r.json()); }
-  catch (e) { box.textContent=""; box.append(el("div",{class:"hint warn"},T["settings.secrets.load_failed"])); return; }
+  const j = await fetchSecrets();
+  if (!j) { box.textContent=""; box.append(el("div",{class:"hint warn"},T["settings.secrets.load_failed"])); return; }
   box.textContent = "";
   if (j.mode === "locked") {
     box.append(el("div",{class:"hint warn"},T["settings.secrets.ws_locked"]));
     return;
   }
-  if (!j.secrets || !j.secrets.length) {
+  const mine = (j.secrets || [])
+    .map(s => ({...s, short: secretShortName(ws, s.key)}))
+    .filter(s => s.short !== null);
+  if (!mine.length) {
     box.append(el("div",{class:"hint"},T["settings.secrets.ws_none"]));
     return;
   }
-  const allowAll = !!ws.secrets_allow_all;
-  for (const s of j.secrets) {
-    const cb = el("input", {type:"checkbox"});
-    cb.checked = allowAll || ws.secrets_allow.includes(s.key);
-    cb.disabled = allowAll;
-    cb.addEventListener("change", () => {
-      const i = ws.secrets_allow.indexOf(s.key);
-      if (cb.checked && i < 0) ws.secrets_allow.push(s.key);
-      else if (!cb.checked && i >= 0) ws.secrets_allow.splice(i, 1);
-      refreshSave();
-    });
-    const l = el("label", {class:"check",
-      style:"display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)"});
-    l.append(cb,
-      el("span", {class:"mono", style:"min-width:170px;color:var(--text)"}, s.key),
-      el("span", {class:"hint", style:"flex:1"}, s.description || ""));
-    box.append(l);
+  for (const s of mine) {
+    // Everything about one secret sits on its row and is written together, so
+    // a half-made change is never what gets saved
+    const desc = el("input", {value: s.description || "", placeholder:T["settings.secrets.desc_ph"], style:"flex:1 1 150px;min-width:120px"});
+    const hosts = el("input", {class:"mono", value: (s.hosts || []).join(", "), placeholder:"github.com", style:"flex:1 1 150px;min-width:120px"});
+    const val = el("input", {type:"password", placeholder:T["settings.secrets.value_set_ph"], style:"flex:0 1 150px;min-width:110px"});
+    const ai = el("input", {type:"checkbox"});
+    ai.checked = !!s.ai;
+    const aiLabel = el("label", {class:"check"});
+    aiLabel.append(ai, document.createTextNode(T["settings.secrets.ai_label"]));
+    const gate = riskGate(s.hosts || []);
+    gate.watch(hosts);
+    const save = el("button", {onclick: async () => {
+      if (!gate.check(hostsOf(hosts.value))) return;
+      const r = await saveSecret({key: s.key, value: val.value, description: desc.value,
+        ai: ai.checked, hosts: hostsOf(hosts.value)});
+      if (r.ok) { toast(fill(T["settings.secrets.saved_key"], {key: s.short})); loadWsSecrets(ws); }
+      else toast(r.error || T["settings.secrets.save_failed"], true);
+    }}, T["common.save"]);
+    const del = el("button", {class:"quiet", onclick: async () => {
+      if (!confirm(fill(T["settings.secrets.delete_confirm"], {key: s.short}))) return;
+      const r = await deleteSecret(s.key);
+      if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: s.short})); loadWsSecrets(ws); }
+      else toast(r.error || T["settings.secrets.delete_failed"], true);
+    }}, T["common.delete"]);
+    box.append(el("div", {class:"listrow", style:"flex-wrap:wrap;gap:8px"},
+      el("span", {class:"mono", style:"min-width:130px;color:var(--text)"}, s.short),
+      desc, hosts, val, aiLabel, save, del, gate.row));
   }
 }
 
@@ -6923,6 +7126,10 @@ function payload() {
     // Don't lose a setting that isn't on screen just because it was saved from the screen
     if (w.browsers) o.browsers = w.browsers;
     // Allow-list of secrets the rally may use (denied by default)
+    // Which secrets a workspace was allowed to borrow, from when there was one
+    // pool of them to borrow from. Nothing reads it any more except the step
+    // that carries an older secrets file forward, which needs it to know whose
+    // secret was whose -- so it is kept rather than dropped on the first save
     if (w.secrets_allow && w.secrets_allow.length) o.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) o.secrets_allow_all = true;
     // Stop conditions (judge). Already written into the file for a file-referenced workspace, so don't duplicate it here

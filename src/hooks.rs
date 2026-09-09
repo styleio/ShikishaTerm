@@ -699,20 +699,18 @@ fn build_sandbox_env(
         c.push_replay(format!("browser_press({}, {})", lua_str(&name), lua_str(&key)));
         Ok(())
     });
-    // Fill a field with a secret value. The value is referenced by name and
-    // resolved/filled by Rust. The AI never sees the value (only the state
-    // is returned). secret_value rejects any key not on the allowlist
+    // Fill a field with a secret value. The script names the secret; Rust
+    // finds it, checks the page is the site that password belongs to, and
+    // types it. The AI never sees the value (only the state is returned)
+    let who_fill = Rc::clone(subject);
     bind!("browser_fill_secret", (String, Value, String), |lua_, c, al, (name, sel, secret_key)| {
         guard(&name, &al)?;
-        let value = c
-            .secret_value(&secret_key)
-            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
         let sel = sel_of(&sel)?;
         // The echo names only the field (attributes), never its value —
         // still safe to relay for a secret fill. The journal keeps the key
         // NAME, exactly like the human recorder does
         let rep = c
-            .browser_fill(&name, &sel, &value)
+            .browser_fill_secret(&name, &sel, &secret_key, who_fill.get())
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
         if let Some(s) = sel_replay(&sel, &rep.anchor) {
             c.push_replay(format!(
@@ -724,10 +722,12 @@ fn build_sandbox_env(
         }
         Ok((rep.state.as_str().to_string(), rep.echo))
     });
-    // Set up basic auth (credentials come from an allowlisted secret; the value never reaches the AI)
+    // Set up basic auth (the credential comes from the workspace's own
+    // secrets, and the value never reaches the AI)
+    let who_auth = Rc::clone(subject);
     bind!("browser_auth", (String, String), |lua_, c, al, (name, secret_key)| {
         guard(&name, &al)?;
-        c.browser_auth(&name, &secret_key)
+        c.browser_auth(&name, &secret_key, who_auth.get())
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
     bind!("browser_text", (String, Value), |lua_, c, al, (name, sel)| {
@@ -1847,15 +1847,13 @@ impl HookEngine {
             // AI. Only the key name is kept in the record (so it can still
             // be pasted to replay)
             let c = Caps::clone(&caps);
+            let who = Rc::clone(&subject);
             shikisha
                 .set(
                     "browser_fill_secret",
                     lua.create_function(move |_, (name, sel, key): (String, Value, String)| {
-                        let value = c
-                            .secret_value(&key)
-                            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
                         // The echo names only the field, never its value
-                        c.browser_fill(&name, &sel_of(&sel)?, &value)
+                        c.browser_fill_secret(&name, &sel_of(&sel)?, &key, who.get())
                             .map(|rep| (rep.state.as_str().to_string(), rep.echo))
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
@@ -1868,11 +1866,12 @@ impl HookEngine {
             // allowlisted secret. Calling this before navigating to /
             // reloading a protected page answers the 401 automatically
             let c = Caps::clone(&caps);
+            let who = Rc::clone(&subject);
             shikisha
                 .set(
                     "browser_auth",
                     lua.create_function(move |_, (name, key): (String, String)| {
-                        c.browser_auth(&name, &key)
+                        c.browser_auth(&name, &key, who.get())
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,
@@ -5077,6 +5076,7 @@ mod tests {
             Default::default(),
             std::path::PathBuf::from("."),
             std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
             Default::default(),
         ));
         let mut eng = super::HookEngine::with_caps(caps).expect("engine");
@@ -6331,6 +6331,7 @@ mod tests {
         let caps: Caps = std::rc::Rc::new(crate::caps::Capabilities::new(
             Default::default(),
             ".".into(),
+            Default::default(),
             Default::default(),
             spec,
         ));

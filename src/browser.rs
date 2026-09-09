@@ -178,6 +178,10 @@ const INIT_JS: &str = r##"
     return el ? (el.value !== undefined ? el.value : el.innerText) : null;
   };
 
+  // Where this page actually is. Asked before a stored password is typed into
+  // it: the address the page was opened at is not the address it is at now
+  window.__shikisha_href = function () { return location.href; };
+
   // ---- Auto-wait (actionability engine) ------------------------------------
   // An action waits until its element is genuinely operable:
   //  - visible  = non-empty box AND the computed visibility chain is visible
@@ -2060,6 +2064,17 @@ impl Browser {
     }
 
     /// Read text (an input field's contents, or the displayed string otherwise)
+    /// The address this page is at now.
+    ///
+    /// Read from the page itself rather than remembered from when it was
+    /// opened, because a page navigates -- a sign-in that hands off to another
+    /// site, a link, a redirect -- and the address that matters when a
+    /// password is about to be typed is the one on screen at that moment
+    pub fn href(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> {
+        let v = self.call(to, "__shikisha_href", &[], timeout_ms)?;
+        Ok(serde_json::from_str::<String>(&v).unwrap_or_default())
+    }
+
     pub fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Option<String>> {
         if let Sel::Ref(r) = sel {
             return self.text_ref(to, *r, timeout_ms);

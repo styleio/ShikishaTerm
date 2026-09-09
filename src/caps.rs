@@ -194,11 +194,15 @@ pub struct Capabilities {
     /// the settings screen. Only pages config opened are allowed to be closed when
     /// they disappear from config
     declared: std::cell::RefCell<std::collections::HashSet<String>>,
-    /// Secret keys this workspace is allowed to use (default is empty = deny all).
-    /// Narrows things down here so a rally (AI-authored Lua) can't repurpose a key meant for something else
-    secret_allow: std::cell::RefCell<std::collections::HashSet<String>>,
-    /// Allow all secrets, knowingly accepting the risk (a per-workspace toggle)
-    secret_allow_all: std::cell::Cell<bool>,
+    /// The name the workspace on screen is filed under. A script asking for
+    /// `token` means this workspace's `token` and can mean nothing else, so
+    /// there is no list of what it may borrow -- it has only its own
+    ws_id: std::cell::RefCell<String>,
+    /// What each secret is for, by its full name. Says whether an AI's turn
+    /// may use it and which sites it may be typed into; the values themselves
+    /// live in `tokens` and are never handed out. Read from the same file at
+    /// the same moment as those values, so the two describe the same secrets
+    secret_terms: std::cell::RefCell<HashMap<String, crate::config::SecretMeta>>,
     /// A pending "open the result view" request from a built-in orchestrator
     /// (discussion / code review / browser rally). Holds the exchange run id
     /// (folder name) whose transcript.md should be shown. Drained by the main
@@ -245,8 +249,8 @@ impl Capabilities {
             shown: std::cell::RefCell::new(Vec::new()),
             nav: std::cell::RefCell::new(HashMap::new()),
             declared: std::cell::RefCell::new(std::collections::HashSet::new()),
-            secret_allow: std::cell::RefCell::new(std::collections::HashSet::new()),
-            secret_allow_all: std::cell::Cell::new(false),
+            ws_id: std::cell::RefCell::new(String::new()),
+            secret_terms: std::cell::RefCell::new(HashMap::new()),
             open_result: std::cell::RefCell::new(None),
             replay: std::cell::RefCell::new(Vec::new()),
             grants: std::cell::RefCell::new(crate::grants::Grants::default()),
@@ -273,13 +277,14 @@ impl Capabilities {
         spec: CapabilitySpec,
         base: PathBuf,
         tokens: HashMap<String, String>,
+        terms: HashMap<String, crate::config::SecretMeta>,
         grants: crate::grants::GrantSpec,
     ) -> Self {
         let me = Self {
             base,
             ..Self::disabled()
         };
-        me.set_config(spec, tokens, grants);
+        me.set_config(spec, tokens, terms, grants);
         me
     }
 
@@ -291,11 +296,15 @@ impl Capabilities {
         &self,
         spec: CapabilitySpec,
         tokens: HashMap<String, String>,
+        terms: HashMap<String, crate::config::SecretMeta>,
         grants: crate::grants::GrantSpec,
     ) {
         let wants_http = !spec.http.is_empty() || !spec.allow_hosts.is_empty();
         *self.spec.borrow_mut() = spec;
         *self.tokens.borrow_mut() = tokens;
+        // Read from the same file at the same moment: a value and what it is
+        // for must never come from two different reads of the secrets
+        *self.secret_terms.borrow_mut() = terms;
         *self.grants.borrow_mut() = crate::grants::Grants::new(grants);
         if !wants_http || self.tx.borrow().is_some() {
             return;
@@ -458,28 +467,57 @@ impl Capabilities {
         out
     }
 
-    /// Tell it which secrets this workspace may use (called on every switch).
-    /// Default is deny-all. all=true is the knowingly-risky allow-all toggle
-    pub fn set_secret_allow(&self, keys: Vec<String>, all: bool) {
-        *self.secret_allow.borrow_mut() = keys.into_iter().collect();
-        self.secret_allow_all.set(all);
+    /// Say which workspace is on screen. Called at start and on every switch,
+    /// because a script asking for `token` means a different secret in each
+    pub fn set_workspace_id(&self, ws_id: &str) {
+        *self.ws_id.borrow_mut() = ws_id.to_string();
     }
 
     /// Retrieve a secret's raw value (Rust-internal only. Never returned to Lua).
     ///
-    /// Rejects keys not on the allowlist. Even if a rally tries to repurpose a key
-    /// meant for something else, it's stopped here. The value itself is only used
-    /// by the caller (browser_fill_secret etc) for auth or form-filling, and never surfaces into the AI's world
+    /// This is the program's own door: the SSH tab reaching for its password,
+    /// the HTTP gateway attaching the token config told it to. A script never
+    /// arrives here -- it comes through [`Self::script_secret`], which can
+    /// only ask for its own workspace's, and only what it is allowed
     pub fn secret_value(&self, key: &str) -> Result<String> {
-        if !self.secret_allow_all.get() && !self.secret_allow.borrow().contains(key) {
-            bail!(crate::i18n::tp("err.caps.secret_not_allowed", &[("key", key)]));
-        }
         self.tokens.borrow().get(key).cloned().ok_or_else(|| {
             anyhow::anyhow!(crate::i18n::tp(
                 "err.caps.secret_unregistered",
                 &[("key", key)]
             ))
         })
+    }
+
+    /// The secret a script means when it writes `token`, with what it is for.
+    ///
+    /// A script names one word. What it gets is that word inside its own
+    /// workspace and nothing else: no other workspace's, and none of the names
+    /// the program keeps for itself (an ssh password, a provider's key), which
+    /// carry punctuation a script is not allowed to type. An AI's turn is held
+    /// to the secrets that say so.
+    ///
+    /// Returns the terms as well, because the caller has one more question to
+    /// ask -- a password is for a site, and the page has to be that site
+    pub fn script_secret(
+        &self,
+        name: &str,
+        who: crate::grants::Subject,
+    ) -> Result<(String, crate::config::SecretMeta)> {
+        if !crate::config::valid_secret_name(name) {
+            bail!(crate::i18n::tp("err.caps.secret_bad_name", &[("key", name)]));
+        }
+        let ws = self.ws_id.borrow().clone();
+        let key = crate::config::workspace_secret_key(&ws, name);
+        let terms = self.secret_terms.borrow().get(&key).cloned().ok_or_else(|| {
+            anyhow::anyhow!(crate::i18n::tp(
+                "err.caps.secret_unregistered",
+                &[("key", name)]
+            ))
+        })?;
+        if matches!(who, crate::grants::Subject::Ai) && !terms.ai {
+            bail!(crate::i18n::tp("err.caps.secret_not_for_ai", &[("key", name)]));
+        }
+        Ok((self.secret_value(&key)?, terms))
     }
 
     /// Tell it where to place things inside the window. Reset every time config reloads
@@ -886,8 +924,47 @@ impl Capabilities {
 
     /// Set up basic auth. Credentials are resolved as `user:pass` from a secret (must be on the allowlist).
     /// The value is decoded here and passed straight to CDP -- never exposed to Lua/AI
-    pub fn browser_auth(&self, name: &str, secret_key: &str) -> Result<()> {
-        let val = self.secret_value(secret_key)?;
+    /// Type a stored password into a field.
+    ///
+    /// The whole act lives here rather than in the two places that offer it,
+    /// because it is one rule: find what the script may have, make sure the
+    /// page in front of us is the one that password belongs to, and only then
+    /// type it. The value passes through Rust and never touches Lua; the echo
+    /// that comes back names the field and not what went into it
+    pub fn browser_fill_secret(
+        &self,
+        name: &str,
+        sel: &crate::browser::Sel,
+        secret_key: &str,
+        who: crate::grants::Subject,
+    ) -> Result<crate::browser::OpReport> {
+        let (value, terms) = self.script_secret(secret_key, who)?;
+        let at = self.with(name, |b, to| b.href(to, OP_MS))?;
+        if !terms.may_fill(&at) {
+            bail!(crate::i18n::tp(
+                "err.caps.secret_wrong_site",
+                &[("key", secret_key), ("host", &at)]
+            ));
+        }
+        self.browser_fill(name, sel, &value)
+    }
+
+    pub fn browser_auth(
+        &self,
+        name: &str,
+        secret_key: &str,
+        who: crate::grants::Subject,
+    ) -> Result<()> {
+        let (val, terms) = self.script_secret(secret_key, who)?;
+        // Basic auth travels in a header, not in a field, but it goes to the
+        // same place a filled password would: the page's own site
+        let at = self.with(name, |b, to| b.href(to, OP_MS))?;
+        if !terms.may_fill(&at) {
+            bail!(crate::i18n::tp(
+                "err.caps.secret_wrong_site",
+                &[("key", secret_key), ("host", &at)]
+            ));
+        }
         let (user, pass) = val.split_once(':').ok_or_else(|| {
             anyhow::anyhow!(crate::i18n::tp(
                 "err.caps.secret_format",
@@ -1030,7 +1107,7 @@ mod reload_tests {
             .borrow_mut()
             .insert("0/html".into(), ("ログインしてください".into(), "できました".into()));
 
-        c.set_config(CapabilitySpec::default(), HashMap::new(), Default::default());
+        c.set_config(CapabilitySpec::default(), HashMap::new(), HashMap::new(), Default::default());
 
         assert_eq!(c.hosted_names(), vec!["settings".to_string()], "置いたページを忘れた");
         assert!(c.nav_of("html").is_some(), "上のバーを忘れた");
@@ -1086,6 +1163,7 @@ mod reload_tests {
         c.set_config(
             CapabilitySpec { files, ..Default::default() },
             HashMap::new(),
+            HashMap::new(),
             Default::default(),
         );
         // The gateway is registered (the read itself still fails since the file doesn't exist)
@@ -1111,7 +1189,7 @@ mod tests {
     use super::*;
 
     fn caps(spec: CapabilitySpec, base: PathBuf) -> Capabilities {
-        Capabilities::new(spec, base, HashMap::new(), Default::default())
+        Capabilities::new(spec, base, HashMap::new(), HashMap::new(), Default::default())
     }
 
     #[test]
@@ -1119,8 +1197,13 @@ mod tests {
         let mut tokens = HashMap::new();
         tokens.insert("diary".to_string(), "hunter2secret".to_string());
         tokens.insert("short".to_string(), "ab".to_string());
-        let c =
-            Capabilities::new(CapabilitySpec::default(), PathBuf::from("."), tokens, Default::default());
+        let c = Capabilities::new(
+            CapabilitySpec::default(),
+            PathBuf::from("."),
+            tokens,
+            HashMap::new(),
+            Default::default(),
+        );
         // A known secret value gets redacted
         let masked = c.redact("Authorization: hunter2secret\n本文");
         assert!(!masked.contains("hunter2secret"), "秘密値が残っている: {masked}");
@@ -1129,24 +1212,54 @@ mod tests {
         assert_eq!(c.redact("ab cd ab"), "ab cd ab");
     }
 
+    /// A script names one word and gets its own workspace's secret of that
+    /// name -- never another workspace's, never one of the program's own, and
+    /// never one an AI has not been let near
     #[test]
-    fn secret_value_respects_the_allowlist_and_default_denies() {
-        let mut tokens = HashMap::new();
-        tokens.insert("diary".to_string(), "hunter2secret".to_string());
-        tokens.insert("github".to_string(), "ghp_xxx".to_string());
-        let c =
-            Capabilities::new(CapabilitySpec::default(), PathBuf::from("."), tokens, Default::default());
-        // Default is deny-all (empty allowlist)
-        assert!(c.secret_value("diary").is_err(), "既定は全拒否のはず");
-        // Only an allowed key can be retrieved
-        c.set_secret_allow(vec!["diary".to_string()], false);
-        assert_eq!(c.secret_value("diary").unwrap(), "hunter2secret");
-        assert!(c.secret_value("github").is_err(), "別用途の鍵は流用できない");
-        // The knowingly-risky allow-all toggle
-        c.set_secret_allow(vec![], true);
-        assert_eq!(c.secret_value("github").unwrap(), "ghp_xxx");
-        // Even with allow-all, an unregistered key can't be retrieved
-        assert!(c.secret_value("nope").is_err(), "未登録は取れない");
+    fn a_script_reaches_only_its_own_workspaces_secrets() {
+        use crate::config::SecretMeta;
+        use crate::grants::Subject;
+        let open = |ai: bool| SecretMeta { ai, hosts: vec!["example.com".into()], desc: String::new() };
+        let tokens = HashMap::from([
+            ("blog.diary".to_string(), "hunter2secret".to_string()),
+            ("blog.deploy".to_string(), "ghp_xxx".to_string()),
+            ("other.diary".to_string(), "somebody else's".to_string()),
+            ("ssh/blog/prod/password".to_string(), "rootpw".to_string()),
+        ]);
+        let terms = HashMap::from([
+            ("blog.diary".to_string(), open(true)),
+            ("blog.deploy".to_string(), open(false)),
+            ("other.diary".to_string(), open(true)),
+            ("ssh/blog/prod/password".to_string(), open(true)),
+        ]);
+        let c = Capabilities::new(
+            CapabilitySpec::default(),
+            PathBuf::from("."),
+            tokens,
+            terms,
+            Default::default(),
+        );
+        c.set_workspace_id("blog");
+
+        let got = |name: &str, who| c.script_secret(name, who).map(|(v, _)| v);
+        assert_eq!(got("diary", Subject::Human).unwrap(), "hunter2secret");
+        assert_eq!(got("diary", Subject::Ai).unwrap(), "hunter2secret");
+        // Written for a person to use; an AI's turn is turned away
+        assert_eq!(got("deploy", Subject::Human).unwrap(), "ghp_xxx");
+        assert!(got("deploy", Subject::Ai).is_err(), "AIに開いていない鍵が渡った");
+        // Another workspace's cannot be named at all, however it is spelled
+        for reach in ["other.diary", "ssh/blog/prod/password", "../other.diary"] {
+            assert!(got(reach, Subject::Human).is_err(), "{reach} が通ってしまう");
+        }
+        assert!(got("nope", Subject::Human).is_err(), "未登録は取れない");
+
+        // Switching workspaces changes what the same word means
+        c.set_workspace_id("other");
+        assert_eq!(got("diary", Subject::Human).unwrap(), "somebody else's");
+        assert!(got("deploy", Subject::Human).is_err());
+
+        // The program's own door still reaches what the program needs
+        assert_eq!(c.secret_value("ssh/blog/prod/password").unwrap(), "rootpw");
     }
 
     #[test]

@@ -33,6 +33,21 @@ once it reaches its first tagged release.
   at a time. Nothing has changed shape yet; the list is empty.
 
 ### Changed
+- **A password or a token now belongs to a workspace, and says what it is for.**
+  Secrets used to be one pool with a list, per workspace, of which of them a
+  script was allowed to borrow — a shape nobody could follow, and one that made
+  every secret reachable from every rally that had been ticked. Each is now
+  registered on the workspace it belongs to (Secrets, on that workspace's
+  settings page), and a script names it in one word that means nothing outside
+  that workspace. Two more things are asked when you register one: **which
+  sites it may be typed into**, and whether **AI may use it** (off to begin
+  with). The credentials the program keeps for itself — an SSH password, a
+  provider's key — stand behind a name no script can spell. Settings › Secrets
+  is now the list of everything this machine holds rather than the way in, and
+  Settings › Update many secrets changes the ones that share a name together.
+  A secrets file from an earlier version is carried forward on the first start:
+  nothing is lost, and what each workspace could use it turns up under that
+  workspace's name.
 - **Automation addresses a tab by its automation name, and no longer by the
   name on screen.** The name on screen is a heading: you may write anything
   there, and two tabs may carry the same words. Sending work to one of those
@@ -62,6 +77,21 @@ once it reaches its first tagged release.
   made today lands in, so it found nothing and wrote nothing.
 
 ### Security
+- **A stored password could be typed into any page that happened to be open.**
+  `browser_fill_secret` put the value into whatever page the script named, and
+  a script an AI's turn set going can open a page of its own choosing — so a
+  password meant for one site could be put into a field on another, where that
+  page's own code could read it back out. (Masking does not help: it hides
+  secrets in text on its way *to* an AI, and this is the value on its way *out*
+  to a page.) Each secret now carries the sites it may be typed into, and the
+  address is read from the page at the moment of typing, so a page that
+  navigates somewhere else stops qualifying. Only `https` pages count: without
+  a certificate the name in the address proves nothing, and pointing that name
+  elsewhere is a line in a file. A plain `http` server inside your own network
+  can still be named, by writing `http://` in front of it: the screen warns
+  what that means and asks you to tick a box before it will save. Secrets
+  carried forward from an earlier version arrive with no site listed, and the
+  message says which setting to fill in.
 - **A web page open in a browser tab could type into your terminals.** Every
   page placed in the window talks to the program over the same channel the
   board itself uses, and until now what a page said was taken at face value:

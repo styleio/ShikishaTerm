@@ -2670,6 +2670,19 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         None => notify::Notifier::new(Default::default(), None),
     };
+    // Names inside the secrets file changed shape; a file written by an
+    // earlier version is brought forward here rather than in the ordinary
+    // migration steps, because those run before anyone has said the master
+    // password and this one may have to open an encrypted store
+    if let Some(c) = cfg.as_ref() {
+        if let Some(path) = c.secrets_path() {
+            match config::migrate_secrets(&path, password.as_deref(), &workspaces) {
+                Ok(true) => append_hook_log("secrets: names brought forward to the new shape"),
+                Ok(false) => {}
+                Err(e) => startup_errors.push(format!("secrets: {e:#}")),
+            }
+        }
+    }
     // Capabilities granted to automation (empty by default). An advanced feature that
     // can only be enabled by writing it into the config file.
     let caps: hooks::Caps = std::rc::Rc::new(match cfg.as_ref() {
@@ -2677,6 +2690,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             c.capabilities.clone(),
             config_file_dir(),
             c.resolve_tokens(password.as_deref()),
+            c.resolve_secret_terms(password.as_deref()),
             c.automation_permissions.clone(),
         ),
         None => caps::Capabilities::disabled(),
@@ -2686,8 +2700,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
     caps.set_host(surface.host());
     caps.set_workspace(ws_index);
     if let Some(w) = workspaces.get(ws_index) {
-        // Restrict which secrets this workspace is allowed to use (deny-all by default)
-        caps.set_secret_allow(w.secrets_allow.clone(), w.secrets_allow_all);
+        // A script's `token` means this workspace's, and no other's
+        caps.set_workspace_id(&w.id);
         engines[ws_index] = build_engine(cfg.as_ref(), Some(w), &mut startup_errors, &caps);
         // Declared browsers are NOT opened here: placing a page occupies the
         // window thread, and at startup the person is often already clicking.
@@ -3144,6 +3158,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 caps.set_config(
                     newcfg.capabilities.clone(),
                     newcfg.resolve_tokens(password.as_deref()),
+                    newcfg.resolve_secret_terms(password.as_deref()),
                     newcfg.automation_permissions.clone(),
                 );
                 if let Some(eng) = engine.as_ref() {
@@ -7969,10 +7984,7 @@ fn switch_workspace(
     // Ids only mean something within their own workspace.
     // Placed pages also only appear in the tab list for whichever one is currently viewed.
     caps.set_workspace(to);
-    caps.set_secret_allow(
-        workspaces[to].secrets_allow.clone(),
-        workspaces[to].secrets_allow_all,
-    );
+    caps.set_workspace_id(&workspaces[to].id);
     config::save_last_workspace(&workspaces[to].name);
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {
@@ -10396,6 +10408,7 @@ mod tests {
         let caps: crate::hooks::Caps = std::rc::Rc::new(crate::caps::Capabilities::new(
             Default::default(),
             std::path::PathBuf::from("."),
+            std::collections::HashMap::new(),
             std::collections::HashMap::new(),
             Default::default(),
         ));

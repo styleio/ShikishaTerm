@@ -842,13 +842,13 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.browser_find(id, セレクタ)` | あるか: `"visible"` / `"hidden"` / `"missing"` |
 | `shikisha.browser_click(id, セレクタ, opts)` | 押す。`opts` は `{ on_missing = "continue" }`（無ければ止めずに状態を返す） |
 | `shikisha.browser_fill(id, セレクタ, "文字列", opts)` | 入力する。**送信はしません** — 続けて `browser_press`。`opts` は `browser_click` と同じ |
-| `shikisha.browser_fill_secret(id, セレクタ, "キー")` | 登録済みの秘密情報から入力する。値はスクリプトに渡りません |
+| `shikisha.browser_fill_secret(id, セレクタ, "名前")` | 登録済みの秘密情報を入力する。値はスクリプトに渡りません（下の「秘密情報」） |
 | `shikisha.browser_press(id, "enter")` | ページ上でキーを押す |
 | `shikisha.browser_text(id, セレクタ)` | 見えている文字 |
 | `shikisha.browser_html(id)` | 文書全体 |
 | `shikisha.browser_digest(id)` | 操作できる要素の一覧（番号付き）。次の手を決める前に読むもの |
 | `shikisha.browser_fetch(id, url, opts)` | ページの中から通信する（cookieを引き継ぐ）。`{status, ok, url, headers, body}` を返す |
-| `shikisha.browser_auth(id, "キー")` | 登録済みの秘密情報でBasic認証に答える |
+| `shikisha.browser_auth(id, "名前")` | 登録済みの秘密情報でBasic認証に答える（同上） |
 | `shikisha.browser_state_save(id, "名前")` | このページのログイン（cookie と localStorage）を名前を付けて保存。保存した cookie 数を返す。一度ログインすれば後のラリーで読み込める |
 | `shikisha.browser_state_load(id, "名前")` | 保存済みのログインを入れ直す。ログインし直さずにサインイン状態にする |
 | `shikisha.browser_snapshot(id, "名前")` | ページの画像（PNG）を撮って保存。ファイルパスを返す。ラリーが「何をしたか」の視覚記録を残せる |
@@ -856,6 +856,24 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.browser_pressed(id)` | 押されたか |
 | `shikisha.browser_unask(id)` | 帯を消す |
 | `shikisha.browser_wait(id, {ask=…, selector=…, timeout_ms=…})` | 早い者勝ちで待つ。`"selector"` / `"button"` / `"timeout"` を返す |
+
+### 秘密情報（パスワードやトークン）
+
+パスワードやトークンは、**そのワークスペースの設定の「秘密情報」**に登録します。スクリプトは
+登録した名前を書くだけで、値そのものは受け取りません。
+
+```lua
+shikisha.browser_fill_secret("br", "#password", "github")
+```
+
+- 名前は**そのワークスペースの中**でだけ通じます。別のワークスペースの秘密情報や、このソフトが
+  自分で使っている分（SSHのパスワードなど）は、名前を書いても届きません
+- 登録するときに**入れてよいサイト**を書きます。そこに書いたサイトのページでだけ入力されます。
+  ページが別のサイトへ移ったら、その時点で入力されなくなります
+- `github.com` と書くと `https` のページだけです。社内の `http` のサーバーに入れたいときは
+  `http://例.local` のように書きます。通信が保護されないことを承知のうえで書く形にしています
+- **「AIも使える」**は、はじめは外れています。AIタブがきっかけで動いたスクリプトから使わせたい
+  ものにだけ入れてください
 
 ### 参加者のあいだで実行を受け渡す
 

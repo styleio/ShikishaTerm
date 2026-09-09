@@ -502,6 +502,72 @@ fn default_remote_port() -> u16 {
     8787
 }
 
+/// What a secret may be used for.
+///
+/// The value is only half of a credential; the other half is what it is for,
+/// and that half is not a secret. Kept beside the value rather than in
+/// `config.json` so that a settings file shared with somebody cannot quietly
+/// widen what a password on this machine is allowed to do.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+pub struct SecretMeta {
+    /// Whether a script that an AI's turn set going may use this.
+    ///
+    /// Off by default, and separately from the permission table: that table
+    /// says whether an AI may *fill in a password at all*, and this says
+    /// *which* ones -- "let it sign in to the forum" without also meaning
+    /// "let it sign in to the thing that can delete the DNS records"
+    #[serde(default)]
+    pub ai: bool,
+    /// The sites this may be typed into. Empty means nowhere: a stored
+    /// password is not something to hand to whatever page happens to be open.
+    ///
+    /// A bare host (`github.com`) means that site over `https`, and nothing
+    /// else -- without a certificate the name in an address proves nothing,
+    /// and pointing a name somewhere else is a line in a file. Writing
+    /// `http://intranet.local` instead says the plain connection is wanted
+    /// anyway, which is a thing people have inside their own walls, and is
+    /// then their own to decide
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    /// One line saying what this is, for the person reading the list later
+    #[serde(default)]
+    pub desc: String,
+}
+
+impl SecretMeta {
+    /// Whether a page at this address is one this secret may be typed into.
+    ///
+    /// Compared host by host after parsing, never by how the address starts:
+    /// `https://github.com.evil.example/` begins with the right letters and is
+    /// somebody else entirely. The scheme has to match as well as the name: a
+    /// site written plainly is an `https` site, and a plain `http` page
+    /// qualifies only where somebody wrote `http://` and meant it
+    pub fn may_fill(&self, url: &str) -> bool {
+        let Ok(uri) = url.trim().parse::<wry::http::Uri>() else {
+            return false;
+        };
+        let (Some(scheme), Some(host)) = (
+            uri.scheme_str().map(str::to_ascii_lowercase),
+            uri.host().map(str::to_ascii_lowercase),
+        ) else {
+            return false;
+        };
+        if !matches!(scheme.as_str(), "http" | "https") {
+            return false;
+        }
+        self.hosts.iter().any(|h| {
+            let h = h.trim().to_ascii_lowercase();
+            match h.strip_prefix("http://") {
+                Some(plain) => scheme == "http" && plain.trim_end_matches('/') == host,
+                None => {
+                    let named = h.strip_prefix("https://").unwrap_or(&h);
+                    scheme == "https" && named.trim_end_matches('/') == host
+                }
+            }
+        })
+    }
+}
+
 /// secrets.json: a file holding only credentials, kept separate (never share)
 #[derive(Debug, Deserialize, Default)]
 pub struct Secrets {
@@ -513,6 +579,10 @@ pub struct Secrets {
     /// Description of each token (shown in the GUI list; the value itself never is)
     #[serde(default)]
     pub descriptions: std::collections::HashMap<String, String>,
+    /// What each secret is allowed to be used for, beside its value. Absent
+    /// means the careful answer: not for AI, and no site to be typed into
+    #[serde(default)]
+    pub meta: std::collections::HashMap<String, SecretMeta>,
     /// Remote UI token. Setting this pins the URL and avoids needing to re-pair
     #[serde(default)]
     pub remote_token: Option<String>,
@@ -609,6 +679,21 @@ impl Config {
             .unwrap_or_default()
     }
 
+    /// What every stored secret is for, by its full name. Read beside the
+    /// values, from the same file and the same password, so the two cannot
+    /// disagree about which secret is which
+    pub fn resolve_secret_terms(
+        &self,
+        password: Option<&str>,
+    ) -> std::collections::HashMap<String, SecretMeta> {
+        let Some(path) = self.secrets_path() else {
+            return Default::default();
+        };
+        list_secrets(&path, password)
+            .map(|list| list.into_iter().collect())
+            .unwrap_or_default()
+    }
+
     /// Resolve connection info from a provider name. Returns (base_url, outgoing headers).
     /// An "@name" inside a value is expanded from secrets.json's tokens.
     /// If headers is unset and api_key is present, builds an Authorization: Bearer header.
@@ -684,33 +769,72 @@ fn write_secrets_value(
     }
 }
 
-/// Whether this is a valid key name (alphanumeric and _ - . only). Rejects substitution tricks and odd characters
+/// Whether the store may hold something under this name.
+///
+/// Two shapes live in one flat store, and the punctuation is what tells them
+/// apart. `.` separates a workspace from the name a person typed
+/// (`blog.github`); `/` marks the names the program makes for itself
+/// (`ssh/blog/prod/password`, `provider/deepseek`), which no script can ask
+/// for. Everything else is refused, so a name cannot be made to mean a
+/// different one
 pub fn valid_secret_key(key: &str) -> bool {
     !key.is_empty()
+        && !key.contains("..")
+        && !key.starts_with(['.', '/'])
+        && !key.ends_with(['.', '/'])
         && key
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
 }
 
-/// List of secrets (keys and descriptions only). **Values are never returned**
+/// Whether a person may type this as the name of a secret.
+///
+/// One word: no `.` and no `/`. Those two are how the store tells a
+/// workspace's secrets from the program's own, so a name carrying either
+/// could be made to read as something it is not
+pub fn valid_secret_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+}
+
+/// The name a workspace's secret is stored under: what the person typed, with
+/// the workspace it belongs to in front. One place decides this, because the
+/// screen that writes it and the script that asks for it must agree
+pub fn workspace_secret_key(ws_id: &str, name: &str) -> String {
+    format!("{ws_id}.{name}")
+}
+
+/// List of secrets (names and what they are for). **Values are never returned**
 pub fn list_secrets(
     path: &std::path::Path,
     password: Option<&str>,
-) -> anyhow::Result<Vec<(String, String)>> {
+) -> anyhow::Result<Vec<(String, SecretMeta)>> {
     let root = read_secrets_value(path, password)?;
+    let metas = root.get("meta").and_then(|v| v.as_object());
     let descs = root.get("descriptions").and_then(|v| v.as_object());
-    let mut out: Vec<(String, String)> = root
+    let mut out: Vec<(String, SecretMeta)> = root
         .get("tokens")
         .and_then(|v| v.as_object())
         .map(|t| {
             t.keys()
                 .map(|k| {
-                    let d = descs
-                        .and_then(|d| d.get(k))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    (k.clone(), d)
+                    let mut m: SecretMeta = metas
+                        .and_then(|m| m.get(k))
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    // A file written before secrets had anything but a line of
+                    // description still has that line, and it is still the
+                    // answer to "what is this"
+                    if m.desc.is_empty() {
+                        m.desc = descs
+                            .and_then(|d| d.get(k))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                    }
+                    (k.clone(), m)
                 })
                 .collect()
         })
@@ -719,12 +843,17 @@ pub fn list_secrets(
     Ok(out)
 }
 
-/// Add/update a secret (write-only; once saved, the value can't be read back)
+/// Add or change a secret (write-only; once saved, the value can't be read back).
+///
+/// `value` empty leaves whatever is stored alone, so what a secret is *for*
+/// can be changed without typing the password again -- the screen has no way
+/// to show it, so asking for it to toggle a checkbox would mean going to find
+/// it a second time
 pub fn upsert_secret(
     path: &std::path::Path,
     password: Option<&str>,
     key: &str,
-    desc: &str,
+    meta: &SecretMeta,
     value: &str,
 ) -> anyhow::Result<()> {
     if !valid_secret_key(key) {
@@ -734,7 +863,19 @@ pub fn upsert_secret(
     if !root.get("tokens").map(|v| v.is_object()).unwrap_or(false) {
         root["tokens"] = serde_json::json!({});
     }
-    root["tokens"][key] = serde_json::json!(value);
+    let known = root["tokens"].get(key).and_then(|v| v.as_str()).is_some();
+    if value.is_empty() && !known {
+        anyhow::bail!(crate::i18n::t("webui.err.empty_value"));
+    }
+    if !value.is_empty() {
+        root["tokens"][key] = serde_json::json!(value);
+    }
+    if !root.get("meta").map(|v| v.is_object()).unwrap_or(false) {
+        root["meta"] = serde_json::json!({});
+    }
+    root["meta"][key] = serde_json::to_value(meta)?;
+    // The line of description used to live on its own; keep that half in step
+    // so a version that only knows the old shape still says what this is
     if !root
         .get("descriptions")
         .map(|v| v.is_object())
@@ -742,8 +883,144 @@ pub fn upsert_secret(
     {
         root["descriptions"] = serde_json::json!({});
     }
-    root["descriptions"][key] = serde_json::json!(desc);
+    root["descriptions"][key] = serde_json::json!(meta.desc);
     write_secrets_value(path, password, &root)
+}
+
+/// Everything the store knows about one secret, except its value
+pub fn secret_meta(
+    path: &std::path::Path,
+    password: Option<&str>,
+    key: &str,
+) -> anyhow::Result<Option<SecretMeta>> {
+    Ok(list_secrets(path, password)?
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, m)| m))
+}
+
+/// The shape the secrets file is in. Bumped when the names inside change.
+///
+/// Kept in the file itself rather than beside it, because the file can be
+/// carried to another machine on its own -- and a copy that arrives already
+/// reshaped must not be reshaped a second time
+const SECRETS_SHAPE: u64 = 2;
+
+/// Bring a secrets file written by an earlier version up to date.
+///
+/// Names used to be one flat word each, and which of them a workspace could
+/// use was a list kept in the settings. Now the name says it: a secret a
+/// script can ask for belongs to one workspace and carries its name, and the
+/// program's own credentials stand behind a `/`. So:
+///
+/// - `provider_x` and `notify_x`, which only the program ever reads, become
+///   `provider/x` and `notify/x`;
+/// - every other name is **copied** to `<workspace>.<name>` for each
+///   workspace that was allowed to use it, and the original is left where it
+///   is -- a copy rather than a move, because two workspaces may have shared
+///   one, and because a name nobody listed still belongs to whoever wrote it.
+///
+/// A copy keeps whether an AI could use it (it could, if a workspace listed
+/// it) and leaves the list of sites empty, which is the one thing this cannot
+/// guess: nothing records where a password was being typed. The first attempt
+/// to use one says so and points at the setting.
+///
+/// This runs apart from the ordinary migration steps because those work on a
+/// JSON file with no password; this one has to be able to open an encrypted
+/// store, which only becomes possible once the person has said the word.
+pub fn migrate_secrets(
+    path: &std::path::Path,
+    password: Option<&str>,
+    workspaces: &[Workspace],
+) -> anyhow::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut root = read_secrets_value(path, password)?;
+    if root.get("secrets_shape").and_then(|v| v.as_u64()).unwrap_or(1) >= SECRETS_SHAPE {
+        return Ok(false);
+    }
+    let Some(tokens) = root.get("tokens").and_then(|v| v.as_object()).cloned() else {
+        root["secrets_shape"] = serde_json::json!(SECRETS_SHAPE);
+        write_secrets_value(path, password, &root)?;
+        return Ok(false);
+    };
+    let descs = root.get("descriptions").and_then(|v| v.as_object()).cloned();
+    let desc_of = |k: &str| {
+        descs
+            .as_ref()
+            .and_then(|d| d.get(k))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    let mut renames: Vec<(String, String)> = Vec::new();
+    let mut copies: Vec<(String, String, SecretMeta)> = Vec::new();
+    for key in tokens.keys() {
+        if key.contains('/') || key.contains('.') {
+            continue; // already in the new shape
+        }
+        if let Some(rest) = key.strip_prefix("provider_") {
+            renames.push((key.clone(), format!("provider/{rest}")));
+            continue;
+        }
+        if let Some(rest) = key.strip_prefix("notify_") {
+            renames.push((key.clone(), format!("notify/{rest}")));
+            continue;
+        }
+        for ws in workspaces {
+            let allowed = ws.secrets_allow_all || ws.secrets_allow.iter().any(|k| k == key);
+            if !allowed || ws.id.is_empty() {
+                continue;
+            }
+            copies.push((
+                key.clone(),
+                workspace_secret_key(&ws.id, key),
+                SecretMeta {
+                    // It was already usable by whatever the workspace set
+                    // going, an AI's turn included. Where a password may be
+                    // typed is the part that was never asked, and is asked now
+                    ai: true,
+                    hosts: Vec::new(),
+                    desc: desc_of(key),
+                },
+            ));
+        }
+    }
+
+    for (from, to) in &renames {
+        let val = tokens.get(from).cloned().unwrap_or_default();
+        root["tokens"][to] = val;
+        if let Some(t) = root["tokens"].as_object_mut() {
+            t.remove(from);
+        }
+        let d = desc_of(from);
+        for side in ["descriptions", "meta"] {
+            if let Some(m) = root.get_mut(side).and_then(|v| v.as_object_mut()) {
+                m.remove(from);
+            }
+        }
+        root["descriptions"][to] = serde_json::json!(d);
+        if !root.get("meta").map(|v| v.is_object()).unwrap_or(false) {
+            root["meta"] = serde_json::json!({});
+        }
+        root["meta"][to] = serde_json::to_value(SecretMeta { desc: d, ..Default::default() })?;
+    }
+    for (from, to, meta) in &copies {
+        if root["tokens"].get(to).is_some() {
+            continue; // somebody has already made this one
+        }
+        root["tokens"][to] = tokens.get(from).cloned().unwrap_or_default();
+        if !root.get("meta").map(|v| v.is_object()).unwrap_or(false) {
+            root["meta"] = serde_json::json!({});
+        }
+        root["meta"][to] = serde_json::to_value(meta)?;
+        root["descriptions"][to] = serde_json::json!(meta.desc);
+    }
+    root["secrets_shape"] = serde_json::json!(SECRETS_SHAPE);
+    write_secrets_value(path, password, &root)?;
+    Ok(!renames.is_empty() || !copies.is_empty())
 }
 
 /// Delete a secret
@@ -756,8 +1033,10 @@ pub fn delete_secret(
     if let Some(t) = root.get_mut("tokens").and_then(|v| v.as_object_mut()) {
         t.remove(key);
     }
-    if let Some(d) = root.get_mut("descriptions").and_then(|v| v.as_object_mut()) {
-        d.remove(key);
+    for side in ["descriptions", "meta"] {
+        if let Some(d) = root.get_mut(side).and_then(|v| v.as_object_mut()) {
+            d.remove(key);
+        }
     }
     write_secrets_value(path, password, &root)
 }
@@ -3080,40 +3359,166 @@ mod tests {
         let dir = std::env::temp_dir().join("shikisha-secrets-test");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("secrets.json");
+        let about = |desc: &str| SecretMeta { desc: desc.into(), ..Default::default() };
 
-        // Register in plaintext -> the list shows only key and description (no value)
-        upsert_secret(&path, None, "diary_saas", "日記SaaSのログイン", "hunter2秘密").unwrap();
+        // Register in plaintext -> the list shows what it is for, never the value
+        upsert_secret(&path, None, "blog.diary", &about("日記SaaSのログイン"), "hunter2秘密").unwrap();
         let list = list_secrets(&path, None).unwrap();
-        assert_eq!(list, vec![("diary_saas".into(), "日記SaaSのログイン".into())]);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0, "blog.diary");
+        assert_eq!(list[0].1.desc, "日記SaaSのログイン");
+        assert!(!list[0].1.ai, "既定でAIには開かない");
+        assert!(list[0].1.hosts.is_empty(), "既定でどのサイトにも入れない");
         // The value really is stored (retrievable via resolve_tokens)
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("hunter2秘密"), "値が保存されていない");
         // But the value never appears in the listing API
         assert!(!format!("{list:?}").contains("hunter2"), "一覧に値が漏れている");
 
-        // Update / add
-        upsert_secret(&path, None, "diary_saas", "説明更新", "newpass").unwrap();
-        upsert_secret(&path, None, "github", "PAT", "ghp_xxx").unwrap();
+        // What it is for can be changed without typing the password again
+        let opened = SecretMeta {
+            ai: true,
+            hosts: vec!["github.com".into()],
+            desc: "説明更新".into(),
+        };
+        upsert_secret(&path, None, "blog.diary", &opened, "").unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("hunter2秘密"), "値が空で上書きされた");
+        let list = list_secrets(&path, None).unwrap();
+        assert!(list[0].1.ai && list[0].1.hosts == ["github.com"], "用途が変わっていない");
+
+        // ...but a name with nothing behind it is not filed at all
+        assert!(upsert_secret(&path, None, "blog.nothing", &about("x"), "").is_err());
+
+        upsert_secret(&path, None, "blog.github", &about("PAT"), "ghp_xxx").unwrap();
         let keys: Vec<String> = list_secrets(&path, None).unwrap().into_iter().map(|(k, _)| k).collect();
-        assert_eq!(keys, vec!["diary_saas".to_string(), "github".to_string()], "整列済み");
+        assert_eq!(keys, vec!["blog.diary".to_string(), "blog.github".to_string()], "整列済み");
 
         // Delete
-        delete_secret(&path, None, "github").unwrap();
+        delete_secret(&path, None, "blog.github").unwrap();
         let keys: Vec<String> = list_secrets(&path, None).unwrap().into_iter().map(|(k, _)| k).collect();
-        assert_eq!(keys, vec!["diary_saas".to_string()]);
+        assert_eq!(keys, vec!["blog.diary".to_string()]);
 
         // With a master password set, it's saved encrypted
-        upsert_secret(&path, Some("master"), "enc_key", "暗号化テスト", "topsecret").unwrap();
+        upsert_secret(&path, Some("master"), "ssh/blog/prod/password", &about("暗号化テスト"), "topsecret")
+            .unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(crate::crypto::is_encrypted(&raw), "パスワードありなら暗号化される");
         assert!(!raw.contains("topsecret"), "暗号化後は生値が見えない");
         // With the correct password the list can be read; the value still doesn't appear
         let list = list_secrets(&path, Some("master")).unwrap();
-        assert!(list.iter().any(|(k, _)| k == "enc_key"));
-        // An invalid key is rejected
-        assert!(upsert_secret(&path, None, "../evil", "x", "y").is_err());
+        assert!(list.iter().any(|(k, _)| k == "ssh/blog/prod/password"));
+        // A name that could be made to read as another one is refused
+        for bad in ["../evil", ".hidden", "a..b", "trailing/", "sp ace", ""] {
+            assert!(
+                upsert_secret(&path, None, bad, &about("x"), "y").is_err(),
+                "{bad} が通ってしまう"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A secrets file written before names meant anything is brought forward
+    /// without anybody losing a password: the program's own credentials move
+    /// behind a `/`, and everything a workspace was allowed to use turns up
+    /// under that workspace's name
+    #[test]
+    fn an_older_secrets_file_is_brought_forward() {
+        let dir = std::env::temp_dir().join("shikisha-secrets-migrate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secrets.json");
+        std::fs::write(
+            &path,
+            r#"{"tokens":{"provider_deepseek":"sk-1","github":"ghp_2","private":"p3"},
+                "descriptions":{"github":"PAT"}}"#,
+        )
+        .unwrap();
+        let ws = |id: &str, allow: &[&str], all: bool| Workspace {
+            name: id.into(),
+            id: id.into(),
+            folders: Vec::new(),
+            tabs: Vec::new(),
+            automation: None,
+            browsers: Vec::new(),
+            secrets_allow: allow.iter().map(|s| s.to_string()).collect(),
+            secrets_allow_all: all,
+            stops: Vec::new(),
+            discuss: None,
+        };
+        let spaces = [ws("blog", &["github"], false), ws("shop", &[], true)];
+        assert!(migrate_secrets(&path, None, &spaces).unwrap(), "何も動かなかった");
+
+        let now: std::collections::HashMap<String, SecretMeta> =
+            list_secrets(&path, None).unwrap().into_iter().collect();
+        let mut names: Vec<&String> = now.keys().collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "blog.github",   // 使ってよいと書いてあったので、そのワークスペースの物に
+                "github",        // 元は残す (誰の物とも書いていなかったかもしれない)
+                "private",       // どのワークスペースも使えなかったものは、そのまま
+                "provider/deepseek",
+                "shop.github",   // 全部許可のワークスペースにも渡る
+                "shop.private",
+            ]
+        );
+        // What it was allowed to do carries over; where it may be typed does not,
+        // because nothing ever recorded that
+        assert!(now["blog.github"].ai, "AIから使えていたのに閉じられた");
+        assert!(now["blog.github"].hosts.is_empty());
+        assert_eq!(now["blog.github"].desc, "PAT", "説明が引き継がれていない");
+        // Values follow their names
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["tokens"]["blog.github"], "ghp_2");
+        assert_eq!(v["tokens"]["provider/deepseek"], "sk-1");
+        assert!(v["tokens"].get("provider_deepseek").is_none(), "古い名前が残っている");
+
+        // Running again changes nothing: the file says which shape it is in
+        assert!(!migrate_secrets(&path, None, &spaces).unwrap(), "二度目が走った");
+        let again = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(raw, again);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stored password goes into a page only where it belongs, and only over
+    /// a connection that proves the page is who it says. Without the second
+    /// half, pointing `github.com` at another machine (a hosts file will do)
+    /// would be enough to be handed the password
+    #[test]
+    fn a_secret_is_typed_only_into_the_site_it_belongs_to() {
+        let m = SecretMeta {
+            ai: false,
+            hosts: vec!["github.com".into(), "api.github.com".into()],
+            desc: String::new(),
+        };
+        assert!(m.may_fill("https://github.com/login"));
+        assert!(m.may_fill("https://GitHub.com/login"), "大文字小文字は同じサイト");
+        assert!(m.may_fill("https://api.github.com/"));
+        assert!(!m.may_fill("https://gist.github.com/"), "別のホストに入る");
+        assert!(!m.may_fill("https://github.com.evil.example/"), "前方一致で通る");
+        assert!(!m.may_fill("http://github.com/login"), "証明書のない経路に入る");
+        assert!(!m.may_fill("about:blank"));
+        assert!(!m.may_fill(""));
+        // Nothing listed means nowhere, not everywhere
+        let empty = SecretMeta::default();
+        assert!(!empty.may_fill("https://github.com/login"));
+
+        // A plain connection where somebody asked for one by name -- and only
+        // for the site they named, and only over the scheme they wrote
+        let inside = SecretMeta {
+            hosts: vec!["http://intranet.local".into(), "https://github.com".into()],
+            ..Default::default()
+        };
+        assert!(inside.may_fill("http://intranet.local/login"));
+        assert!(!inside.may_fill("https://intranet.local/login"), "書いた経路と違う");
+        assert!(inside.may_fill("https://github.com/login"));
+        assert!(!inside.may_fill("http://github.com/login"), "平文に落とされて通る");
+        assert!(!inside.may_fill("http://other.local/"));
     }
 
     #[test]

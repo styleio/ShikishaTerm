@@ -811,13 +811,13 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 | `shikisha.browser_find(id, sel)` | Is it there? `"visible"` / `"hidden"` / `"missing"` |
 | `shikisha.browser_click(id, sel, opts)` | Click it. `opts` is `{ on_missing = "continue" }` -- answer with the state instead of stopping |
 | `shikisha.browser_fill(id, sel, "text", opts)` | Type into it. **Does not submit** — follow with `browser_press`. `opts` is the same as `browser_click`'s |
-| `shikisha.browser_fill_secret(id, sel, "KEY")` | Fill from a registered secret. The value never reaches the script |
+| `shikisha.browser_fill_secret(id, sel, "name")` | Fill in a registered secret. The value never reaches the script (see below) |
 | `shikisha.browser_press(id, "enter")` | Press a key on the page |
 | `shikisha.browser_text(id, sel)` | The visible text |
 | `shikisha.browser_html(id)` | The whole document |
 | `shikisha.browser_digest(id)` | The operable elements, numbered — what to read before deciding a move |
 | `shikisha.browser_fetch(id, url, opts)` | Request from inside the page (keeps its cookies). Returns `{status, ok, url, headers, body}` |
-| `shikisha.browser_auth(id, "KEY")` | Answer basic-auth from a registered secret |
+| `shikisha.browser_auth(id, "name")` | Answer basic-auth from a registered secret (as above) |
 | `shikisha.browser_state_save(id, "label")` | Save this page's login — its cookies and its localStorage — under a name. Returns how many cookies were saved. Sign in once, then a later rally can load it |
 | `shikisha.browser_state_load(id, "label")` | Put a saved login back, so the page is signed in without logging in again |
 | `shikisha.browser_snapshot(id, "label")` | Take a picture of the page (PNG) and save it. Returns the file path — a rally can keep a visual record of what it did |
@@ -825,6 +825,27 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 | `shikisha.browser_pressed(id)` | Has it been pressed? |
 | `shikisha.browser_unask(id)` | Take the banner away |
 | `shikisha.browser_wait(id, {ask=..., selector=..., timeout_ms=...})` | Wait for whichever comes first. Returns `"selector"` / `"button"` / `"timeout"` |
+
+### Secrets (passwords and tokens)
+
+A password or a token is registered under **Secrets on the workspace's settings
+page**. A script writes the name it was given and never receives the value.
+
+```lua
+shikisha.browser_fill_secret("br", "#password", "github")
+```
+
+- The name means something **inside that workspace only**. Another workspace's
+  secrets, and the ones the program keeps for itself (an SSH password, say),
+  cannot be reached by naming them
+- Registering one asks **which sites it may be typed into**. It is filled in on
+  those and nowhere else, and stops being filled the moment the page goes
+  somewhere else
+- `github.com` means that site over `https`. To fill something in on a plain
+  `http` server inside your own network, write `http://intranet.local` — said
+  out loud, because nothing protects what goes over it
+- **"AI may use this"** starts off. Turn it on only for the secrets a script
+  that an AI's turn set going should be able to use
 
 ### Handing a run between participants
 
