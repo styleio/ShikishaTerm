@@ -1687,8 +1687,8 @@ fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
     surfaces
         .iter()
         .filter_map(|s| match s {
-            Surface::Git { key, name, dir: Some(d), protect, .. } => Some(hooks::TabPlace {
-                key: hooks::TabKey { id: Some(key.clone()), name: name.clone() },
+            Surface::Git { key, dir: Some(d), protect, .. } => Some(hooks::TabPlace {
+                key: hooks::TabKey { id: Some(key.clone()) },
                 dir: d.clone(),
                 protect: protect.clone(),
             }),
@@ -7144,7 +7144,8 @@ fn surface_of_id(ws: &config::Workspace, id: &str) -> Option<usize> {
             continue;
         }
         pane += 1;
-        if t.cfg.id.as_deref() == Some(id) || t.cfg.name.as_deref() == Some(id) {
+        // The id, and not the name on screen: see hooks::TabKey
+        if t.cfg.id.as_deref() == Some(id) {
             return Some(pane);
         }
     }
@@ -7197,8 +7198,7 @@ fn remember_aim(
     let Some(name) = operator else { return false };
     if let Some(ws) = ws {
         for t in ws.tabs.iter_mut() {
-            let named = t.cfg.id.as_deref() == Some(name) || t.cfg.name.as_deref() == Some(name);
-            if named {
+            if t.cfg.id.as_deref() == Some(name) {
                 t.cfg.drives = aim.map(str::to_string);
             }
         }
@@ -7230,14 +7230,11 @@ fn aim_of(
     surface: usize,
 ) -> Option<usize> {
     let t = session_at(surfaces, surface).and_then(|i| tabs.get(i))?;
-    let me = t.id.clone().unwrap_or_else(|| t.title.clone());
-    let named = |c: &config::TabConfig| {
-        c.id.as_deref() == Some(me.as_str()) || c.name.as_deref() == Some(me.as_str())
-    };
+    let me = t.id.clone()?;
     let aim = ws?
         .tabs
         .iter()
-        .find(|x| named(&x.cfg))?
+        .find(|x| x.cfg.id.as_deref() == Some(me.as_str()))?
         .cfg
         .drives
         .clone()
@@ -7868,14 +7865,6 @@ fn spawn_workspace(
     errors: &mut Vec<String>,
     carry: Option<&crate::lastsession::Saved>,
 ) {
-    // Warn when ids collide, since automation can't tell where to send in that case
-    let dups = config::duplicate_keys(ws);
-    if !dups.is_empty() {
-        errors.push(crate::i18n::tp(
-            "err.ws.duplicate_names",
-            &[("names", &dups.join(", "))],
-        ));
-    }
     for ft in &ws.tabs {
         let argv = ft.cfg.command.argv();
         if argv.is_empty() {
@@ -8915,13 +8904,11 @@ fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
         .iter()
         .map(|p| match p {
             Surface::Session(i) => tabs.get(*i).map(|t| t.key()).unwrap_or_default(),
-            // Browsers give priority to the id too; still lookup-able by display name
-            // A page and a panel both give priority to the id, and both stay
-            // lookup-able by the name on screen
-            Surface::Browser { key, name } | Surface::Git { key, name, .. } => hooks::TabKey {
-                id: Some(key.clone()),
-                name: name.clone(),
-            },
+            // A page and a panel are addressed the same way a session is:
+            // by the name automation knows them by, never the one on screen
+            Surface::Browser { key, .. } | Surface::Git { key, .. } => {
+                hooks::TabKey { id: Some(key.clone()) }
+            }
         })
         .collect()
 }
@@ -10568,8 +10555,8 @@ mod tests {
         assert_eq!(surface_of_id(&ws, "ai2"), Some(2));
         assert_eq!(surface_of_id(&ws, "ref"), Some(3));
         assert_eq!(surface_of_id(&ws, "いない"), None);
-        // Also lookup-able by name
-        assert_eq!(surface_of_id(&ws, "審判"), Some(3));
+        // The name on screen is a label, not an address: two tabs may share one
+        assert_eq!(surface_of_id(&ws, "審判"), None);
     }
 
     /// An aim is not automation, and must not take a tab's own automation away.
@@ -10641,6 +10628,7 @@ mod tests {
             .collect();
         config::Workspace {
             name: "試験".into(),
+            id: "shiken".into(),
             folders: vec![config::Folder::default()],
             tabs,
             automation: None,
@@ -11115,9 +11103,14 @@ mod tests {
             "ブラウザの後ろのタブを指せていない"
         );
         assert_eq!(
-            hooks::TabRef::Name("解析".into()).resolve(&keys),
+            hooks::TabRef::Name("html".into()).resolve(&keys),
             Some(1),
-            "ブラウザを名前で指せていない"
+            "ブラウザを自動化での呼び名で指せていない"
+        );
+        assert_eq!(
+            hooks::TabRef::Name("解析".into()).resolve(&keys),
+            None,
+            "画面の名前では届かない"
         );
     }
 

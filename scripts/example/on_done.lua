@@ -10,5 +10,5 @@ if tab.output:match("LGTM") or rounds >= 5 then
   return
 end
 shikisha.set_var("rounds", rounds + 1)
--- タブは名前で指定できる (並べ替えても壊れない)
-shikisha.send_to_tab("実装", "指摘を修正して:\n" .. tab.output)
+-- タブは「自動化での呼び名」で指定する (設定のタブ画面にある。並べ替えても表示名を変えても壊れない)
+shikisha.send_to_tab("coder", "指摘を修正して:\n" .. tab.output)

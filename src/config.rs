@@ -766,6 +766,12 @@ pub fn delete_secret(
 #[derive(Debug, Deserialize)]
 pub struct WorkspaceSpec {
     pub name: String,
+    /// What this workspace is called by everything that is not a person: the
+    /// name its secrets are filed under, and the one that survives renaming
+    /// the workspace on screen. Filled in from the display name when absent,
+    /// the same way a tab's is (see [`settle_workspace_ids`])
+    #[serde(default)]
+    pub id: Option<String>,
     /// Reference to a workspace definition file (e.g. "workspaces/projectx.json")
     #[serde(default)]
     pub file: Option<String>,
@@ -1298,6 +1304,9 @@ pub struct Folder {
 /// A workspace resolved at launch time (tabs are flattened; depth preserves the hierarchy)
 pub struct Workspace {
     pub name: String,
+    /// What automation and the secret store call this workspace. Unique across
+    /// the settings, and unchanged by renaming what is on screen
+    pub id: String,
     /// The folders this workspace works in. Always at least one, so that
     /// nothing downstream has to answer "what if a tab is in none"
     pub folders: Vec<Folder>,
@@ -1419,29 +1428,135 @@ pub struct FlatTab {
     pub folder: usize,
 }
 
-/// Verify each tab can be addressed uniquely from automation.
-/// If the same name is used more than once the destination is ambiguous, so this warns at startup
-pub fn duplicate_keys(ws: &Workspace) -> Vec<String> {
-    let mut seen: std::collections::HashMap<String, usize> = Default::default();
-    for t in &ws.tabs {
-        let key = t
-            .cfg
-            .id
-            .clone()
-            .or_else(|| t.cfg.name.clone())
-            .unwrap_or_default();
-        if key.is_empty() {
+/// A 5-character stand-in for a name that has no letters of its own.
+///
+/// FNV-1a over the name, in base 36. Short enough to keep or to change by
+/// hand. The settings screen computes the same thing in its own copy
+/// (`hash5` there) so that what it offers while you type is what the app
+/// settles on when it reads the file; changing one means changing both.
+fn hash5(s: &str) -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    // The screen hashes UTF-16 code units, because that is what a JavaScript
+    // string is made of. Matching it is the whole point of this function
+    for u in s.encode_utf16() {
+        h ^= u as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    let base36 = |mut n: u32| {
+        let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        let mut out = Vec::new();
+        while n > 0 {
+            out.push(digits[(n % 36) as usize]);
+            n /= 36;
+        }
+        if out.is_empty() {
+            out.push(b'0');
+        }
+        out.reverse();
+        String::from_utf8(out).expect("36進の数字")
+    };
+    let s = format!("{:0>5}", base36(h));
+    s[s.len() - 5..].to_string()
+}
+
+/// The name automation would call something, inferred from the name on screen.
+///
+/// Latin letters and digits become a slug (`My Tab` -> `my-tab`); a name made
+/// of anything else -- Japanese, say -- has no slug to give, so it stands
+/// behind a short hash instead. Same rule as the settings screen's `slugId`.
+pub fn slug_id(name: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for c in name.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            parts.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        parts.push(cur);
+    }
+    if !parts.is_empty() {
+        let joined = parts.join("-");
+        return joined.chars().take(24).collect();
+    }
+    match name.trim() {
+        "" => String::new(),
+        t => hash5(t),
+    }
+}
+
+/// `base`, or the first of `base-2`, `base-3`... that nobody has taken.
+/// The same walk the settings screen does, and the same one an imported
+/// workspace's folders take (see `wspack::free_name`)
+pub fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String {
+    if base.is_empty() {
+        return String::new();
+    }
+    if !used.contains(base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|c| !used.contains(c))
+        .expect("いつかは空く")
+}
+
+/// Give every tab a name automation can say, and make sure no two are the same.
+///
+/// Automation addresses a tab by this name and by nothing else, so a tab
+/// without one could not be reached, and two tabs sharing one would send work
+/// to whichever happened to be first in the list -- silently, and differently
+/// after a reorder. Both are settled here, once, on the way in: a tab with no
+/// name of its own is given the one its display name suggests, and a name
+/// already taken gets `-2` on the end.
+///
+/// Returns the names that had to be moved aside, so startup can say so. The
+/// settings screen fills the same field as you type; this is for the files it
+/// never touched -- hand-written settings, and workspaces brought in from
+/// somewhere else
+fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
+    let mut used: std::collections::HashSet<String> = tabs
+        .iter()
+        .filter_map(|t| t.cfg.id.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+        .map(str::to_string)
+        .collect();
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    let mut moved = Vec::new();
+    for i in 0..tabs.len() {
+        let written = tabs[i].cfg.id.as_deref().map(str::trim).unwrap_or("").to_string();
+        if !written.is_empty() && seen.insert(written.clone()) {
             continue;
         }
-        *seen.entry(key).or_insert(0) += 1;
+        // Either nothing was written, or this is the second tab to claim it
+        let base = match written.is_empty() {
+            false => written.clone(),
+            true => {
+                let name = tabs[i].cfg.name.clone().unwrap_or_default();
+                let from = match name.trim().is_empty() {
+                    false => name,
+                    // No name on screen either: the command is what the tab
+                    // will be called, so it is what the id comes from
+                    true => tabs[i].cfg.command.argv().first().cloned().unwrap_or_default(),
+                };
+                match slug_id(&from).is_empty() {
+                    false => slug_id(&from),
+                    true => "tab".into(),
+                }
+            }
+        };
+        let id = unique_id(&base, &used);
+        if !written.is_empty() {
+            moved.push(written);
+        }
+        used.insert(id.clone());
+        seen.insert(id.clone());
+        tabs[i].cfg.id = Some(id);
     }
-    let mut dups: Vec<String> = seen
-        .into_iter()
-        .filter(|(_, n)| *n > 1)
-        .map(|(k, _)| k)
-        .collect();
-    dups.sort();
-    dups
+    moved.sort();
+    moved.dedup();
+    moved
 }
 
 /// Flatten children depth-first (keeps display order matching tab numbers)
@@ -1483,7 +1598,9 @@ fn foldered_with(folders: &[FolderConfig], legacy: &[TabConfig]) -> Vec<FolderCo
 
 /// Turns written groups into ones with a real folder, and lays their tabs out
 /// in one list in the order they are shown.
-fn resolve_folders(defs: &[FolderConfig], protect: &[String]) -> (Vec<Folder>, Vec<FlatTab>) {
+/// The third value is the automation names that had to be moved aside because
+/// two tabs claimed the same one (see [`settle_tab_ids`])
+fn resolve_folders(defs: &[FolderConfig], protect: &[String]) -> (Vec<Folder>, Vec<FlatTab>, Vec<String>) {
     let mut folders = Vec::with_capacity(defs.len());
     let mut tabs = Vec::new();
     for (at, def) in defs.iter().enumerate() {
@@ -1513,7 +1630,10 @@ fn resolve_folders(defs: &[FolderConfig], protect: &[String]) -> (Vec<Folder>, V
         });
         flatten(&def.tabs, 0, at, &mut tabs);
     }
-    (folders, tabs)
+    // Every tab in the workspace at once: automation reaches across folders,
+    // so two folders holding a "reviewer" each is the same collision as two in one
+    let moved = settle_tab_ids(&mut tabs);
+    (folders, tabs, moved)
 }
 
 /// A byte-order mark is not JSON.
@@ -2051,10 +2171,12 @@ impl Config {
             // Tabs written the old way, with no folder around them, are still
             // a screenful of work somebody arranged
             if !self.folders.is_empty() || !self.tabs.is_empty() {
-                let (folders, tabs) =
+                let (folders, tabs, moved) =
                     resolve_folders(&foldered_with(&self.folders, &self.tabs), &self.git.protected());
+                errors.extend(moved_note("DEFAULT", &moved));
                 out.push(Workspace {
                     name: "DEFAULT".into(),
+                    id: String::new(),
                     folders,
                     tabs,
                     automation: None,
@@ -2101,14 +2223,17 @@ impl Config {
                     None,
                 ),
             };
-            let (folders, tabs) = resolve_folders(&folder_defs, &self.git.protected());
+            let (folders, tabs, moved) = resolve_folders(&folder_defs, &self.git.protected());
+            // Prefer the display name from config; fall back to the definition file's name if empty
+            let name = if ws.name.is_empty() {
+                file_name.unwrap_or_else(|| "UNNAMED".into())
+            } else {
+                ws.name.clone()
+            };
+            errors.extend(moved_note(&name, &moved));
             out.push(Workspace {
-                // Prefer the display name from config; fall back to the definition file's name if empty
-                name: if ws.name.is_empty() {
-                    file_name.unwrap_or_else(|| "UNNAMED".into())
-                } else {
-                    ws.name.clone()
-                },
+                name,
+                id: ws.id.clone().unwrap_or_default(),
                 folders,
                 tabs,
                 // Prefer config's setting; fall back to the definition file's if absent
@@ -2126,7 +2251,65 @@ impl Config {
                 discuss: ws.discuss.clone().or(file_discuss),
             });
         }
+        errors.extend(settle_workspace_ids(&mut out));
         (out, errors)
+    }
+}
+
+/// Give every workspace a name that is not the one on screen, and make sure no
+/// two are the same.
+///
+/// The display name is a label a person is free to change and free to reuse --
+/// two workspaces called "本番" is nobody's mistake. What a workspace's secrets
+/// are filed under cannot work that way, so it is settled here: unique across
+/// the settings, inferred from the display name when nothing was written, and
+/// left alone once it exists. Renaming the workspace on screen after that costs
+/// nothing; changing this is what costs a re-entry of its passwords.
+///
+/// Returns a note for each one that had to be moved aside
+fn settle_workspace_ids(list: &mut [Workspace]) -> Vec<String> {
+    let mut used: std::collections::HashSet<String> = list
+        .iter()
+        .map(|w| w.id.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    let mut notes = Vec::new();
+    for w in list.iter_mut() {
+        let written = w.id.trim().to_string();
+        if !written.is_empty() && seen.insert(written.clone()) {
+            w.id = written;
+            continue;
+        }
+        let base = match written.is_empty() {
+            false => written.clone(),
+            true => match slug_id(&w.name) {
+                s if s.is_empty() => "workspace".into(),
+                s => s,
+            },
+        };
+        let id = unique_id(&base, &used);
+        if !written.is_empty() {
+            notes.push(crate::i18n::tp(
+                "err.ws.duplicate_ids",
+                &[("name", &w.name), ("old", &written), ("new", &id)],
+            ));
+        }
+        used.insert(id.clone());
+        seen.insert(id.clone());
+        w.id = id;
+    }
+    notes
+}
+
+/// What to say when two tabs in one workspace claimed the same automation name
+fn moved_note(ws: &str, moved: &[String]) -> Vec<String> {
+    match moved.is_empty() {
+        true => Vec::new(),
+        false => vec![crate::i18n::tp(
+            "err.ws.duplicate_ids.tabs",
+            &[("ws", ws), ("names", &moved.join(", "))],
+        )],
     }
 }
 
@@ -2308,10 +2491,58 @@ pub fn append_tab(workspace: &str, tab: serde_json::Value, cwd: Option<&Path>) -
 /// answer must not live in two places. There is no separate "default target"
 /// setting — the thing you pick IS the setting, and this is where it lands.
 ///
+/// Walk every tab the settings file holds, and write the aim onto the one that
+/// answers to `tab_name`.
+///
+/// Recursive because tabs nest: a workspace holds working folders, a folder
+/// holds tabs, and a tab holds children. Written as one walk over anything
+/// called "tabs" rather than as a list of the places to look, because that
+/// list was already out of date -- it knew the flat `tabs` and a workspace's
+/// own, and not the working folder that every tab made today lands in, so an
+/// aim chosen on screen was never written down at all.
+///
+/// The tab is found by its automation name only, the same as everywhere else
+/// (see `hooks::TabKey`): matching the name on screen as well would let an aim
+/// land on a stranger that happens to be *called* what this one is *addressed* as
+fn write_aim(v: &mut serde_json::Value, tab_name: &str, target: Option<&str>, written: &mut bool) {
+    match v {
+        serde_json::Value::Array(list) => {
+            for item in list {
+                write_aim(item, tab_name, target, written);
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            let named =
+                obj.get("id").and_then(|v| v.as_str()).map(str::trim) == Some(tab_name);
+            if named {
+                match target {
+                    Some(t) => {
+                        obj.insert("drives".into(), serde_json::Value::String(t.to_string()));
+                    }
+                    // Cleared aims leave nothing behind: an empty key in a
+                    // person's file is a question they would have to answer
+                    // for themselves
+                    None => {
+                        obj.remove("drives");
+                    }
+                }
+                *written = true;
+            }
+            for (k, child) in obj.iter_mut() {
+                if matches!(k.as_str(), "tabs" | "children" | "folders" | "workspaces") {
+                    write_aim(child, tab_name, target, written);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Read-modify-write on the parsed JSON, like every other change here, so the
-/// person's own file keeps its shape and its order. The tab is found by the
-/// name it is written under, in the flat `tabs` list or inside any workspace.
-/// Returns whether it was written.
+/// person's own file keeps its shape and its order. The tab is found by its
+/// automation name, wherever it is written: the flat `tabs` list, a
+/// workspace's own, or -- where every tab a person makes today ends up -- a
+/// working folder inside one. Returns whether it was written.
 pub fn save_tab_aim(tab_name: &str, target: Option<&str>) -> bool {
     let path = config_file_path();
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
@@ -2320,59 +2551,8 @@ pub fn save_tab_aim(tab_name: &str, target: Option<&str>) -> bool {
         crate::append_hook_log("could not record the aim: settings are not readable");
         return false;
     };
-    // Every list of tabs the file can hold: the flat one and each workspace's
-    let mut lists: Vec<&mut serde_json::Value> = Vec::new();
-    let (flat, spaces) = {
-        let obj = doc.as_object_mut();
-        match obj {
-            Some(o) => {
-                let (mut f, mut w) = (None, None);
-                for (k, v) in o.iter_mut() {
-                    match k.as_str() {
-                        "tabs" => f = Some(v),
-                        "workspaces" => w = Some(v),
-                        _ => {}
-                    }
-                }
-                (f, w)
-            }
-            None => (None, None),
-        }
-    };
-    if let Some(f) = flat {
-        lists.push(f);
-    }
-    if let Some(list) = spaces.and_then(|w| w.as_array_mut()) {
-        for ws in list {
-            if let Some(t) = ws.get_mut("tabs") {
-                lists.push(t);
-            }
-        }
-    }
     let mut written = false;
-    for tabs in lists {
-        let Some(tabs) = tabs.as_array_mut() else { continue };
-        for tab in tabs.iter_mut() {
-            let named = ["id", "name"].iter().any(|k| {
-                tab.get(k).and_then(|v| v.as_str()).map(str::trim) == Some(tab_name)
-            });
-            if !named {
-                continue;
-            }
-            let Some(obj) = tab.as_object_mut() else { continue };
-            match target {
-                Some(t) => {
-                    obj.insert("drives".into(), serde_json::Value::String(t.to_string()));
-                }
-                // Cleared aims leave nothing behind: an empty key in a person's
-                // file is a question they would have to answer for themselves
-                None => {
-                    obj.remove("drives");
-                }
-            }
-            written = true;
-        }
-    }
+    write_aim(&mut doc, tab_name, target, &mut written);
     if !written {
         return false;
     }
@@ -2443,6 +2623,132 @@ pub fn load() -> Option<Config> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The screen offers an automation name while you type; the app settles on
+    /// one when it reads a file nobody typed into. They have to be the same
+    /// name, or a workspace would arrive under one spelling and be filed under
+    /// another. These are the settings screen's own answers (`slugId` in
+    /// webui.rs, run in node), so a change on either side breaks this test.
+    #[test]
+    fn an_inferred_name_matches_the_one_the_settings_screen_offers() {
+        use super::slug_id;
+        for (name, want) in [
+            ("My Tab", "my-tab"),
+            ("claude", "claude"),
+            ("a", "a"),
+            // Nothing latin to make a slug from: a short hash stands in
+            ("実装", "orgq9"),
+            ("検査", "z3cio"),
+            ("本番サーバー", "0iwye"),
+            ("レビュー担当", "bqqvx"),
+            ("日本語テスト", "83iht"),
+            // One latin letter is still a slug, hash or no hash
+            ("ワークスペースA", "a"),
+            ("", ""),
+        ] {
+            assert_eq!(slug_id(name), want, "{name} の呼び名");
+        }
+    }
+
+    /// Automation reaches a tab by its id and by nothing else, so every tab
+    /// needs one and no two may share one -- including tabs in different
+    /// working folders, which automation does not distinguish
+    #[test]
+    fn every_tab_ends_up_with_a_name_automation_can_say() {
+        let cfg: super::Config = serde_json::from_str(
+            r#"{"workspaces":[{"name":"project","folders":[
+                 {"tabs":[{"name":"実装","command":"claude"},
+                          {"name":"My Tab","command":"codex"},
+                          {"command":"bash"}]},
+                 {"tabs":[{"name":"実装","command":"claude"},
+                          {"id":"rev","name":"検査","command":"codex"},
+                          {"id":"rev","name":"検査2","command":"codex"}]}]}]}"#,
+        )
+        .unwrap();
+        let (ws, errs) = cfg.resolve_workspaces();
+        let ids: Vec<String> = ws[0].tabs.iter().map(|t| t.cfg.id.clone().unwrap()).collect();
+        assert_eq!(
+            ids,
+            [
+                "orgq9",   // 実装
+                "my-tab",  // My Tab
+                "bash",    // 名前がなければコマンドから
+                "orgq9-2", // もう一つの実装。フォルダが違っても同じ名前は使えない
+                "rev",
+                "rev-2", // 手で書いた重複はずらす
+            ]
+        );
+        assert!(
+            errs.iter().any(|e| e.contains("rev")),
+            "ずらしたことを黙っていない: {errs:?}"
+        );
+    }
+
+    /// The name on screen is a label -- two workspaces may be called the same
+    /// thing -- so what secrets and automation are filed under is settled apart
+    /// from it, once, and left alone afterwards
+    #[test]
+    fn every_workspace_ends_up_with_a_name_of_its_own() {
+        let cfg: super::Config = serde_json::from_str(
+            r#"{"workspaces":[{"name":"本番"},
+                              {"name":"本番"},
+                              {"name":"Blog","id":"written"},
+                              {"name":"Other","id":"written"}]}"#,
+        )
+        .unwrap();
+        let (ws, errs) = cfg.resolve_workspaces();
+        let ids: Vec<&str> = ws.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, ["fazcj", "fazcj-2", "written", "written-2"]);
+        // The display names are left exactly as the person wrote them
+        assert_eq!(ws[0].name, "本番");
+        assert_eq!(ws[1].name, "本番");
+        assert!(
+            errs.iter().any(|e| e.contains("written")),
+            "ずらしたことを黙っていない: {errs:?}"
+        );
+    }
+
+    /// The aim (🎯) is chosen on screen and has to survive the next start, so
+    /// it is written back into the settings. It has to reach the tab wherever
+    /// that tab is written: a working folder inside a workspace is where every
+    /// tab a person makes today lives, and an aim chosen on one used to be
+    /// dropped on the floor -- the walk only knew the flat list and a
+    /// workspace's own
+    #[test]
+    fn an_aim_reaches_a_tab_wherever_it_is_written() {
+        use serde_json::json;
+        let mut doc = json!({
+            "tabs": [{"id": "flat", "command": "sh"}],
+            "workspaces": [{
+                "name": "project",
+                "tabs": [{"id": "old", "command": "sh"}],
+                "folders": [{"tabs": [
+                    {"id": "coder", "name": "実装", "command": "claude", "children": [
+                        {"id": "deep", "command": "codex"}
+                    ]}
+                ]}]
+            }]
+        });
+        let aim = |doc: &mut serde_json::Value, who: &str, at: Option<&str>| {
+            let mut hit = false;
+            super::write_aim(doc, who, at, &mut hit);
+            hit
+        };
+        for who in ["flat", "old", "coder", "deep"] {
+            assert!(aim(&mut doc, who, Some("page")), "{who} に届いていない");
+        }
+        assert_eq!(doc["workspaces"][0]["folders"][0]["tabs"][0]["drives"], "page");
+        assert_eq!(
+            doc["workspaces"][0]["folders"][0]["tabs"][0]["children"][0]["drives"],
+            "page"
+        );
+        // Clearing takes the key away rather than leaving an empty one behind
+        assert!(aim(&mut doc, "coder", None));
+        assert!(doc["workspaces"][0]["folders"][0]["tabs"][0].get("drives").is_none());
+        // The name on screen is not an address, here either: aiming at "実装"
+        // must not land on the tab that merely displays that name
+        assert!(!aim(&mut doc, "実装", Some("page")), "画面の名前で書き込まれた");
+    }
 
     /// A settings file outlives the version that wrote it.
     ///
@@ -2707,7 +3013,10 @@ mod tests {
             .map(|t| t.cfg.id.clone().unwrap_or_default())
             .collect::<Vec<_>>();
         assert_eq!(ids, ["coder@feature-login", "rev@feature-login"]);
-        assert!(duplicate_keys(ws).is_empty(), "自動化から指す名前がぶつかっていない");
+        // ...and no two of them are the same, so automation can address each
+        let all: Vec<String> = ws.tabs.iter().filter_map(|t| t.cfg.id.clone()).collect();
+        let unique: std::collections::HashSet<&String> = all.iter().collect();
+        assert_eq!(all.len(), unique.len(), "自動化から指す名前がぶつかっていない");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

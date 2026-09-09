@@ -3376,10 +3376,7 @@ impl Tab {
 
     /// How automation identifies this tab
     pub fn key(&self) -> crate::hooks::TabKey {
-        crate::hooks::TabKey {
-            id: self.id.clone(),
-            name: self.title.clone(),
-        }
+        crate::hooks::TabKey { id: self.id.clone() }
     }
 
     /// Swap in settings that can take effect without a restart

@@ -33,11 +33,33 @@ once it reaches its first tagged release.
   at a time. Nothing has changed shape yet; the list is empty.
 
 ### Changed
+- **Automation addresses a tab by its automation name, and no longer by the
+  name on screen.** The name on screen is a heading: you may write anything
+  there, and two tabs may carry the same words. Sending work to one of those
+  went to whichever came first in the list — quietly, and to the other one
+  after a reorder. Every tab now has an automation name whether or not you
+  chose it (it is made from the tab's name, and the settings screen shows it),
+  no two in a workspace may share one, and that is what `send_to_tab`,
+  `show`, the git commands and 🎯 take. Scripts that named a tab by its
+  heading need the automation name instead; the manual's "how to point at a
+  tab" says where to find it.
+- **A workspace has an automation name of its own,** filled in from its
+  display name and shown beside it in the settings. It is what the coming
+  secret store files a workspace's passwords under, so renaming a workspace
+  on screen costs nothing. Bringing in a workspace whose name is already
+  taken gives the newcomer a number, the way its scripts folder already got
+  one.
 - The one-line "a new version is available" notice on the board is gone; the
   card and the settings card replace it. The privacy policy says what the
   daily look asks, and that fetching happens only when the button is pressed.
 - The phone sends its password for the board in the body of the request, not
   in the address, where proxies and browser histories keep addresses.
+
+### Fixed
+- **A tab aimed with 🎯 forgot what it was aimed at on the next start.** The
+  aim is written back into the settings, and the walk that looked for the tab
+  knew where tabs were kept two shapes ago — not the working folder every tab
+  made today lands in, so it found nothing and wrote nothing.
 
 ### Security
 - **A web page open in a browser tab could type into your terminals.** Every

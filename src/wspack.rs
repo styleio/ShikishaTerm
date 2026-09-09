@@ -377,9 +377,25 @@ fn rewrite(ws: &mut Value, moves: &[(String, String)]) {
 /// Picks a display name that isn't already used. If the same name appears
 /// twice, there's no way to tell which one the tab bar or a script is pointing at
 fn free_title(list: &[Value], want: &str) -> String {
+    free_field(list, "name", want)
+}
+
+/// The automation name to file this one under.
+///
+/// It travels in the bundle, so a workspace carried to another machine keeps
+/// the name its secrets are stored beside -- bring the secrets file too and
+/// nothing has to be typed again. Two copies of the same bundle on one machine
+/// are two different workspaces, though, and they cannot share a name: the
+/// second one takes `-2`, and is asked for its passwords when it first needs
+/// them
+fn free_ws_id(list: &[Value], want: &str) -> String {
+    free_field(list, "id", want)
+}
+
+fn free_field(list: &[Value], field: &str, want: &str) -> String {
     let taken = |n: &str| {
         list.iter()
-            .any(|w| w.get("name").and_then(Value::as_str) == Some(n))
+            .any(|w| w.get(field).and_then(Value::as_str) == Some(n))
     };
     if !taken(want) {
         return want.to_string();
@@ -491,6 +507,17 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     let want = ws.get("name").and_then(Value::as_str).unwrap_or("UNNAMED");
     let name = free_title(&list, want);
     ws["name"] = Value::String(name.clone());
+    // What automation and the secret store call it. Written down here rather
+    // than left for the loader, so that the answer does not change from one
+    // launch to the next
+    let want_id = match ws.get("id").and_then(Value::as_str).map(str::trim) {
+        Some(w) if !w.is_empty() => w.to_string(),
+        _ => match crate::config::slug_id(&name) {
+            s if s.is_empty() => "workspace".into(),
+            s => s,
+        },
+    };
+    ws["id"] = Value::String(free_ws_id(&list, &want_id));
     list.push(ws);
     cfg["workspaces"] = Value::Array(list);
     // Now that it's moved into workspaces, the folders and tabs written
@@ -522,6 +549,7 @@ mod tests {
             serde_json::to_string_pretty(&json!({
                 "workspaces": [{
                     "name": "編集部",
+                    "id": "henshu",
                     "automation": "scripts/ws1",
                     "secrets_allow": ["github"],
                     "folders": [
@@ -610,6 +638,18 @@ mod tests {
 
         let second = unpack(&cfg, &text).unwrap();
         assert_eq!(second.name, "編集部-3");
+
+        // Two copies of one bundle are two workspaces, and each is filed under
+        // a name of its own -- otherwise one copy's secrets would answer for the
+        // other's. The name is written down now, not guessed at every launch
+        let v = read_cfg(&cfg);
+        let ids: Vec<&str> = v["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["id"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(ids, ["henshu", "henshu-2", "henshu-3"], "取り込んだ写しが同じ呼び名を名乗っている");
 
         // The original scripts are untouched
         assert_eq!(

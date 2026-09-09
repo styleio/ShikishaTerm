@@ -876,11 +876,19 @@ pub enum TabRef {
     Name(String),
 }
 
-/// How automation identifies a tab (ID takes priority, falling back to tab name)
+/// How automation identifies a tab: by its id, and only by its id.
+///
+/// The name on screen is a label -- free to change, free to be the same as
+/// another tab's -- so it was never something to send work to. It used to be
+/// accepted as a fallback, and two tabs called "claude" meant whichever came
+/// first in the list quietly received everything addressed to either, with no
+/// error and a different answer after a reorder. Every tab is given an id on
+/// the way in now (`config::settle_tab_ids`), so there is always one to use.
 #[derive(Debug, Clone, Default)]
 pub struct TabKey {
+    /// `None` for a tab that somehow reached here without one, which is
+    /// therefore a tab automation cannot reach -- the safe way round
     pub id: Option<String>,
-    pub name: String,
 }
 
 impl TabKey {
@@ -888,11 +896,7 @@ impl TabKey {
     /// looks a panel up the same way Lua looks a tab up -- one rule for what a
     /// name means, not two
     pub fn matches(&self, s: &str) -> bool {
-        // Match by ID if one is set, otherwise match by name
-        match &self.id {
-            Some(id) => id == s,
-            None => self.name == s,
-        }
+        self.id.as_deref() == Some(s)
     }
 }
 
@@ -912,15 +916,12 @@ pub struct TabPlace {
 
 impl TabRef {
     /// Resolve the actual (1-indexed) number from a tab list.
-    /// A string spec is looked up first by ID, then by tab name
+    /// A string spec is the tab's id -- see [`TabKey`] for why the name on
+    /// screen is not accepted
     pub fn resolve(&self, keys: &[TabKey]) -> Option<usize> {
         match self {
             TabRef::Index(i) => (*i >= 1 && *i <= keys.len()).then_some(*i),
-            TabRef::Name(s) => keys
-                .iter()
-                .position(|k| k.matches(s))
-                .or_else(|| keys.iter().position(|k| &k.name == s))
-                .map(|i| i + 1),
+            TabRef::Name(s) => keys.iter().position(|k| k.matches(s)).map(|i| i + 1),
         }
     }
 }
@@ -5222,7 +5223,7 @@ mod tests {
     }
 
     #[test]
-    fn tabs_can_be_addressed_by_name_so_reordering_is_safe() {
+    fn tabs_can_be_addressed_by_id_so_reordering_is_safe() {
         let mut e = HookEngine::from_source(
             r#"
             function on_done(tab)
@@ -5236,12 +5237,14 @@ mod tests {
         let Command::SendPrompt { target, .. } = &cmds[0] else {
             panic!("送信コマンドが積まれるはず");
         };
-        // Even after reordering, the same name still resolves to the correct tab
-        let key = |n: &str| TabKey { id: None, name: n.to_string() };
+        // Even after reordering, the same id still resolves to the correct tab
+        let key = |n: &str| TabKey { id: Some(n.to_string()) };
         assert_eq!(target.resolve(&[key("実装"), key("検査")]), Some(2));
         assert_eq!(target.resolve(&[key("検査"), key("実装")]), Some(1));
-        // A nonexistent name can't resolve (avoids false hits)
+        // A nonexistent id can't resolve (avoids false hits)
         assert_eq!(target.resolve(&[key("別名")]), None);
+        // ...and neither can the name on screen, however tempting it looks
+        assert_eq!(target.resolve(&[key("rev")]), None, "別の呼び名では届かない");
     }
 
     #[test]
@@ -5262,8 +5265,8 @@ mod tests {
         let Command::ShowTab { target } = &cmds[0] else {
             panic!("ShowTabが積まれるはず");
         };
-        // A name resolves to the screen's index (sessions and browsers are listed together)
-        let key = |n: &str| TabKey { id: None, name: n.to_string() };
+        // An id resolves to the screen's index (sessions and browsers are listed together)
+        let key = |n: &str| TabKey { id: Some(n.to_string()) };
         assert_eq!(target.resolve(&[key("AI"), key("ブラウザ")]), Some(2));
         // 0 is the dashboard (INDEX). resolve doesn't catch it; main handles it specially
         assert!(
@@ -5370,7 +5373,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let key = |n: usize| TabKey { name: format!("tab{n}"), id: Some(format!("id{n}")) };
+        let key = |n: usize| TabKey { id: Some(format!("id{n}")) };
 
         let dir = std::env::temp_dir().join("shikisha-tabread");
         let _ = std::fs::remove_dir_all(&dir);
@@ -6059,8 +6062,8 @@ mod tests {
     #[test]
     fn a_repository_is_named_by_the_tab_that_sits_in_it() {
         let e = HookEngine::new().unwrap();
-        let key = TabKey { id: Some("work".into()), name: "作業".into() };
-        let nowhere = TabKey { id: Some("floating".into()), name: "浮いている".into() };
+        let key = TabKey { id: Some("work".into()) };
+        let nowhere = TabKey { id: Some("floating".into()) };
         e.set_states(vec![(key.clone(), "WAIT".into()), (nowhere.clone(), "WAIT".into())]);
         e.set_places(vec![
             TabPlace { key, dir: std::env::current_dir().unwrap(), protect: Vec::new() },
@@ -6120,7 +6123,7 @@ mod tests {
         crate::git::apply(&dir, &hunks[0].patch, true, false).unwrap();
 
         let e = HookEngine::new().unwrap();
-        let key = TabKey { id: Some("work".into()), name: "作業".into() };
+        let key = TabKey { id: Some("work".into()) };
         e.set_states(vec![(key.clone(), "WAIT".into())]);
         e.set_places(vec![TabPlace { key, dir: dir.clone(), protect: Vec::new() }]);
         let rows = e.call_primitive("git_status", &[serde_json::json!("work")]).unwrap();
@@ -6499,14 +6502,8 @@ mod tests {
     #[test]
     fn explicit_id_survives_renaming_the_tab() {
         let r = TabRef::Name("reviewer".into());
-        let with_id = |id: &str, name: &str| TabKey {
-            id: Some(id.to_string()),
-            name: name.to_string(),
-        };
-        let plain = |name: &str| TabKey {
-            id: None,
-            name: name.to_string(),
-        };
+        let with_id = |id: &str, _name: &str| TabKey { id: Some(id.to_string()) };
+        let plain = |name: &str| TabKey { id: Some(name.to_string()) };
         // With an ID attached, a tab can still be addressed even after its name changes
         assert_eq!(r.resolve(&[plain("実装"), with_id("reviewer", "検査")]), Some(2));
         assert_eq!(
@@ -6534,13 +6531,13 @@ mod tests {
             "#,
         )
         .unwrap();
-        e.set_states(vec![(TabKey { id: None, name: "tab1".into() }, "BUSY".into())]);
+        e.set_states(vec![(TabKey { id: Some("tab1".into()) }, "BUSY".into())]);
         e.fire("on_busy", &ctx(1, ""), None);
         // The loop keeps going while the state is BUSY
         std::thread::sleep(std::time::Duration::from_millis(1100));
         e.tick_pending(&|_| None);
         // Once the state changes, the loop exits
-        e.set_states(vec![(TabKey { id: None, name: "tab1".into() }, "DONE".into())]);
+        e.set_states(vec![(TabKey { id: Some("tab1".into()) }, "DONE".into())]);
         std::thread::sleep(std::time::Duration::from_millis(1100));
         e.tick_pending(&|_| None);
         let logs: Vec<String> = e

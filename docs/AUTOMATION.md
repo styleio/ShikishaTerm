@@ -68,24 +68,26 @@ shikisha.send_to_tab(2, "Please review this code:\n" .. tab.output)
 
 ### How to point at a tab
 
-Numbers **change when you reorder tabs**, so pointing by name is the default.
-
-```lua
-shikisha.send_to_tab("Review", "please review")   -- recommended
-shikisha.send_to_tab(2, "please review")          -- numbers work too (they shift on reorder)
-```
-
-If you plan to rename a tab, or if **several tabs share a name**, give it an
-"automation name" (`id`) in the settings. With an id you can rename the tab freely
-and the automation keeps working.
+A tab is addressed by its **name used by automation** -- the field on the tab's
+settings page, written as `id` in `config.json`.
 
 ```jsonc
 { "name": "Review", "id": "reviewer", "command": "codex" }
 ```
 
 ```lua
-shikisha.send_to_tab("reviewer", "please review")   -- survives renaming
+shikisha.send_to_tab("reviewer", "please review")   -- recommended
+shikisha.send_to_tab(2, "please review")            -- by number too (changes on reorder)
 ```
+
+**The name shown on the tab will not reach it.** That name is a heading: you can
+write anything there, including the same thing on two tabs. Two tabs called
+"Review" would leave nobody able to say which one received the work, so the
+address is the automation name only. It is unique within the workspace and does
+not change when you rename the tab.
+
+Every tab has one even if you never chose it (it is made from the tab's name).
+The tab's settings page shows it and lets you change it.
 
 | Command | Description |
 |---|---|
@@ -297,8 +299,8 @@ recorded in `logs/hooks.log` so a short answer is not a mystery.
 Handing work to a tab does not move the screen. Say so when you want to be watched:
 
 ```lua
-shikisha.show("Review")             -- put this tab on screen
-shikisha.send_to_tab("Review", msg) -- ...and hand it the work
+shikisha.show("reviewer")             -- put this tab on screen
+shikisha.send_to_tab("reviewer", msg) -- ...and hand it the work
 ```
 
 Two lines, in that order, and nothing moves behind your back. `shikisha.show(0)` goes

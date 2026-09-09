@@ -540,15 +540,12 @@ fn describe_tabs(parsed: &serde_json::Value) -> String {
         let i = t.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
         let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let id = t.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        if id.is_empty() {
-            s.push_str(&format!("{i}. {name}"));
-        } else {
-            // If there's an ID, use it for addressing instead (survives tab renames)
-            s.push_str(&format!(
-                "{i}. {name}{}",
-                crate::i18n::tp("ai.tabs.id", &[("id", id)])
-            ));
-        }
+        // The name is there so the AI can tell which tab is which; the id is
+        // the only thing that will actually reach it (see hooks::TabKey)
+        s.push_str(&format!(
+            "{i}. {name}{}",
+            crate::i18n::tp("ai.tabs.id", &[("id", id)])
+        ));
         if i == me {
             s.push_str(&crate::i18n::t("ai.tabs.self"));
         }
@@ -2990,42 +2987,73 @@ function slugId(name) {
   const src = (name || "").trim();
   return src ? hash5(src) : "";
 }
-// Turns base into an id that doesn't collide within ws (-2, -3, ... if already used). self excludes itself
-function uniqueId(ws, base, self) {
+// base, or the first of base-2, base-3... that nobody in `used` has taken.
+// The app walks the same way when it reads a file nobody typed into
+// (config.rs unique_id), so a name offered here is the name it settles on
+function freeId(base, used) {
   if (!base) return "";
-  const used = new Set((ws.tabs || [])
-    .filter(t => t !== self).map(t => (t.id || "").trim()).filter(Boolean));
   if (!used.has(base)) return base;
   for (let n = 2; ; n++) { const c = base + "-" + n; if (!used.has(c)) return c; }
 }
-// A unique automation id, of no folder's making: for a tab with no name to
-// derive one from. Short enough to keep or to change.
-function freshTabId(ws, self) {
-  const used = new Set((ws.tabs || [])
-    .filter(t => t !== self).map(t => (t.id || "").trim()).filter(Boolean));
-  let id;
-  do { id = "tab-" + hash5(Date.now() + "-" + Math.random()); } while (used.has(id));
-  return id;
+// Turns base into an id that doesn't collide within ws (-2, -3, ... if already used). self excludes itself
+function uniqueId(ws, base, self) {
+  return freeId(base, new Set((ws.tabs || [])
+    .filter(t => t !== self).map(t => (t.id || "").trim()).filter(Boolean)));
 }
-// Fills in an id for every tab that has none, a safety net at save time. From
-// the name where there is one; otherwise a unique string of its own, because
-// a tab with no id at all cannot be pointed at -- not by automation, and not
-// by the gear that opens its settings. Editable afterwards like any other.
+// The same, for a workspace's own name: automation and the secret store file it
+// under this, so it has to be unlike every other workspace's, not just unlike
+// its neighbours in a folder
+function uniqueWsId(base, self) {
+  return freeId(base, new Set(wss
+    .filter(w => w !== self).map(w => (w.id || "").trim()).filter(Boolean)));
+}
+// What a tab would be called by automation if nobody says otherwise: its
+// display name, or -- for a tab that has none, and is therefore shown by its
+// command -- the command. config.rs settles unnamed tabs the same way, and the
+// two have to agree: a workspace opened in the settings screen must not come
+// out under a different name than the one the app filed its secrets beside
+function inferredTabId(t) {
+  // The program, not the whole command line: two browser tabs become "browser"
+  // and "browser-2" rather than two mouthfuls of URL. config.rs reads argv()[0]
+  // here, which is the same token for every command written as one line
+  const prog = cmdToText(t.command).trim().split(/\s+/)[0] || "";
+  return slugId(t.name) || slugId(prog) || "tab";
+}
+// Fills in an id for every tab that has none, a safety net at save time: a tab
+// with no id at all cannot be pointed at -- not by automation, and not by the
+// gear that opens its settings. Editable afterwards like any other.
 function ensureIds(ws) {
   const tabs = ws.tabs || [];
   const used = new Set(tabs.map(t => (t.id || "").trim()).filter(Boolean));
   for (const t of tabs) {
     if ((t.id || "").trim()) continue;
-    const base = slugId(t.name);
-    if (base) {
-      let id = base, n = 2;
-      while (used.has(id)) id = base + "-" + (n++);
-      t.id = id; used.add(id);
-    } else {
-      const id = freshTabId(ws, t);
-      t.id = id; used.add(id);
+    const id = freeId(inferredTabId(t), used);
+    t.id = id; used.add(id);
+  }
+}
+// Every workspace gets a name of its own before writing, for the same reason
+// every tab does: what refers to it must not change when the label does
+function ensureWsIds() {
+  for (const w of wss) {
+    if ((w.id || "").trim()) continue;
+    w.id = uniqueWsId(slugId(w.name) || "workspace", w);
+  }
+}
+// The automation names that two things claim at once. Saving stops on these:
+// filling one in silently would send work somewhere nobody asked for
+function collidingIds() {
+  const out = [];
+  const seenWs = new Set();
+  for (const w of wss) {
+    const id = (w.id || "").trim();
+    if (id && seenWs.has(id)) out.push(id); else seenWs.add(id);
+    const seen = new Set();
+    for (const t of (w.tabs || [])) {
+      const ti = (t.id || "").trim();
+      if (ti && seen.has(ti)) out.push(ti); else seen.add(ti);
     }
   }
+  return [...new Set(out)].sort();
 }
 // A dropdown for picking a tab id (candidates = existing tab ids). emptyLabel is the label for the empty option.
 // Pass exclude(t)=>bool when tabs that are aimed at something should be excluded
@@ -5433,9 +5461,20 @@ function aiSelect() {
 
 function wsPane(ws) {
   const box = el("div");
+  // Name and id are identity, and sit together. The id is what automation and
+  // the secret store use, so it survives renaming what is on screen -- and a
+  // workspace that arrives here without one gets it now, from its name, rather
+  // than waiting for a save
+  if (!(ws.id || "").trim()) {
+    ws.id = uniqueWsId(slugId(ws.name) || "workspace", ws);
+    refreshSave();
+  }
+  const wsIdInput = field(ws, "id", "", {grow:false, width:280, mono:true});
   box.append(card(T["settings.workspace"],
     row(T["settings.workspace.name"], field(ws, "name", T["settings.workspace.name"], {grow:false, width:280,
         onInput:() => renderNav()})),
+    row(T["settings.workspace.id"], wsIdInput,
+        el("span", {class:"hint"}, T["settings.workspace.id.hint"])),
     ws.file ? row(T["settings.workspace.file"], el("span", {class:"hint mono"}, ws.file)) : null,
     row(T["settings.tab.automation"], ...pathField(ws, "automation", T["settings.workspace.automation.hint"], "dir",
         T["settings.tab.automation_dir.pick"]),
@@ -5663,7 +5702,7 @@ function wsDiscussCard(ws) {
     // Only candidate tabs that are a discussable AI (CLI/model API), not already a participant, and not aimed at anything
     const cand = (ws.tabs || [])
       .filter(t => isDiscussable(t) && !(t.drives||"").trim())
-      .map(t => (t.id || t.name || "").trim())
+      .map(t => (t.id || "").trim())
       .filter(id => id && !cur.includes(id));
     if (!cand.length) { chipBox.append(document.createTextNode(T["settings.discuss.no_candidates"])); return; }
     chipBox.append(document.createTextNode(T["settings.discuss.candidates_label"]));
@@ -5890,19 +5929,19 @@ function tabPane(ws, t) {
   // one, else a unique string -- so the field is never blank and the tab can
   // always be pointed at. The person can change it; it is a normal field.
   if (!(t.id || "").trim()) {
-    t.id = uniqueId(ws, slugId(t.name), t) || freshTabId(ws, t);
+    t.id = uniqueId(ws, inferredTabId(t), t);
     refreshSave(); renderNav();
   }
   const idInput = field(t, "id", "", {grow:false, width:280, mono:true});
   const refreshIdPh = () => {
-    idInput.placeholder = uniqueId(ws, slugId(t.name), t) || T["settings.tab.id.ph"];
+    idInput.placeholder = uniqueId(ws, inferredTabId(t), t);
   };
   const nameInput = field(t, "name", T["settings.tab.name.ph"], {grow:false, width:280,
     onInput:() => { renderNav(); refreshIdPh(); }});
   nameInput.addEventListener("blur", () => {
     if (!(t.id || "").trim()) {
-      const sug = uniqueId(ws, slugId(t.name), t);
-      if (sug) { t.id = sug; idInput.value = sug; refreshSave(); renderNav(); }
+      const sug = uniqueId(ws, inferredTabId(t), t);
+      t.id = sug; idInput.value = sug; refreshSave(); renderNav();
     }
   });
   refreshIdPh();
@@ -6720,7 +6759,7 @@ async function load() {
   delete current.tabs;
   wss = [];
   for (const w of list) {
-    const ws = { name:w.name || "", file:w.file || null,
+    const ws = { name:w.name || "", id:w.id || "", file:w.file || null,
                  automation:w.automation || w.lua || "", tabs:[], folders:[],
                  // Not touched from the screen, but kept so saving doesn't drop it
                  browsers:w.browsers || null,
@@ -6769,6 +6808,11 @@ async function save() {
       return;
     }
   }
+  // Two things answering to the same automation name is not a preference to
+  // save: whichever came first would quietly take everything addressed to
+  // either. Say which name, and let the person choose who keeps it
+  const clash = collidingIds();
+  if (clash.length) { result(fill(T["settings.id.duplicate"], {names: clash.join(", ")}), true); return; }
   const btn = document.getElementById("savebtn");
   btn.disabled = true;
   btn.classList.remove("dirty");
@@ -6873,7 +6917,7 @@ function payload() {
     files.push({ file:w.file, body });
   }
   out.workspaces = wss.map(w => {
-    const o = { name:w.name };
+    const o = { name:w.name, id:w.id };
     if (w.file) o.file = w.file;
     else { if (w.automation) o.automation = w.automation; o.folders = foldersOut(w); }
     // Don't lose a setting that isn't on screen just because it was saved from the screen
@@ -6894,6 +6938,7 @@ async function doSave() {
   // Tabs with an empty id get one derived from the name before writing (a safety net against dropped references).
   // Since this is a side effect, it's done only right before saving (never inside payload's unsaved-check)
   for (const w of wss) ensureIds(w);
+  ensureWsIds();
   const { out, files } = payload();
   for (const f of files) {
     const rf = await wsApi("POST", f.file, JSON.stringify(f.body, null, 2));
