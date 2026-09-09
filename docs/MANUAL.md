@@ -44,7 +44,7 @@ it is the only way in.
 
 **The status line** at the very bottom says which workspace this is, whether
 automation is on, whether a phone is connected, the build, and a stop button that
-halts every hand-over at once. While you are looking at a tab whose AI has said
+halts every hand-over and every working AI at once. While you are looking at a tab whose AI has said
 something about its usage limit, that line is shown here too; press it to put it
 away.
 
@@ -135,8 +135,9 @@ See the [automation reference](https://shikisha-term.com/automation/).
 - **A tab says it is working but nothing moves** — `Ctrl+B r` restarts it carrying
   the conversation over; `Ctrl+B R` starts a new one.
 - **A hand-over runs away** — the stop button on the status line, or `Ctrl+B x`,
-  halts every hand-over at once. Automation stays off until you turn it on again
-  with `Ctrl+B a`.
+  halts every hand-over at once and interrupts every AI in the middle of a turn
+  (the same Esc or Ctrl+C you would press in that tab; which key is written in
+  its profile). Automation stays off until you turn it on again with `Ctrl+B a`.
 - **What happened** — `logs/hooks.log` beside the program records every state
   change and every automation run, stamped with the seconds since the program
   started.

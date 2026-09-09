@@ -169,6 +169,11 @@ impl Detector {
         self.profile.done_confirm_ms
     }
 
+    /// What the emergency stop presses in this program (empty: nothing)
+    pub fn interrupt(&self) -> &[u8] {
+        &self.profile.interrupt
+    }
+
     /// The program's own word about what it is doing, through its hook.
     ///
     /// `sent_ms` is the sender's clock at the moment it was said. Returns
@@ -348,6 +353,7 @@ mod tests {
     fn claude_like() -> Profile {
         Profile::compile(ProfileFile {
             resume: None,
+            interrupt: vec![],
             name: "test".into(),
             command_match: vec![],
             busy_patterns: vec!["esc to interrupt".into()],

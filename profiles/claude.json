@@ -25,6 +25,7 @@
     "◑"
   ],
   "silence_ms": 2000,
+  "interrupt": ["esc"],
   "resume": {
     "new_id": [
       "--session-id",

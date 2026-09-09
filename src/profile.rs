@@ -83,6 +83,42 @@ pub struct ProfileFile {
     /// has none — an editor-style tool with no conversation to keep
     #[serde(default)]
     pub resume: Option<ResumeSpec>,
+    /// The keys this CLI takes as "stop what you are doing", by name (`esc`,
+    /// `ctrl+c`, `enter`, `tab`), sent in order. The emergency stop presses
+    /// them in every tab whose turn is running or whose question is waiting.
+    ///
+    /// Read from what the CLI itself prints: Claude Code, Codex and Gemini
+    /// say "esc to interrupt/cancel" while they work; Aider stops on Ctrl+C.
+    /// Empty means the emergency stop has nothing to press here -- the right
+    /// answer for a shell, where a Ctrl+C nobody asked for can end a build
+    #[serde(default)]
+    pub interrupt: Vec<String>,
+}
+
+/// The bytes a list of key names stands for, in order.
+///
+/// Names rather than escape codes, so a profile stays readable by the person
+/// editing it; a small fixed vocabulary, so a typo is an error at load time
+/// rather than a stray character typed into a working AI.
+pub fn key_bytes(names: &[String]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    for name in names {
+        let n = name.trim().to_ascii_lowercase();
+        let bytes: &[u8] = match n.as_str() {
+            "esc" | "escape" => b"\x1b",
+            "enter" | "return" => b"\r",
+            "tab" => b"\t",
+            _ => match n.strip_prefix("ctrl+").map(str::as_bytes) {
+                Some([c]) if c.is_ascii_lowercase() => {
+                    out.push(c & 0x1f);
+                    continue;
+                }
+                _ => anyhow::bail!(crate::i18n::tp("err.profile.bad_key", &[("name", name)])),
+            },
+        };
+        out.extend_from_slice(bytes);
+    }
+    Ok(out)
 }
 
 /// Everything about picking a conversation back up, as data.
@@ -218,6 +254,9 @@ pub struct Profile {
     pub ignore_bottom_rows: u16,
     pub done_confirm_ms: Option<u64>,
     pub resume: Option<ResumeSpec>,
+    /// What the emergency stop presses here (see `ProfileFile::interrupt`),
+    /// already as bytes. Empty: nothing
+    pub interrupt: Vec<u8>,
 }
 
 impl Profile {
@@ -234,6 +273,7 @@ impl Profile {
             ignore_bottom_rows: default_ignore_bottom_rows(),
             done_confirm_ms: None,
             resume: None,
+            interrupt: Vec::new(),
         }
     }
 
@@ -257,6 +297,7 @@ impl Profile {
             done_confirm_ms: f.done_confirm_ms,
             ignore_bottom_rows: f.ignore_bottom_rows,
             resume: f.resume,
+            interrupt: key_bytes(&f.interrupt)?,
             name: f.name,
         })
     }
@@ -402,4 +443,57 @@ pub fn load_by_name(name: &str) -> Profile {
             || pf.name.to_lowercase() == needle
     })
     .unwrap_or_else(Profile::generic)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn interrupt_key_names_become_the_bytes_a_terminal_sends() {
+        assert_eq!(key_bytes(&names(&["esc"])).unwrap(), b"\x1b");
+        assert_eq!(key_bytes(&names(&["ctrl+c"])).unwrap(), b"\x03");
+        assert_eq!(key_bytes(&names(&["Esc", "enter"])).unwrap(), b"\x1b\r");
+        assert_eq!(key_bytes(&names(&["tab"])).unwrap(), b"\t");
+        assert!(key_bytes(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_key_name_nobody_defined_is_refused_at_load() {
+        assert!(key_bytes(&names(&["ctrl+shift+c"])).is_err());
+        assert!(key_bytes(&names(&["escape key"])).is_err());
+        assert!(key_bytes(&names(&["ctrl+1"])).is_err());
+    }
+
+    #[test]
+    fn a_profile_without_interrupt_compiles_to_nothing_to_press() {
+        let f: ProfileFile = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
+        assert!(Profile::compile(f).unwrap().interrupt.is_empty());
+        let f: ProfileFile =
+            serde_json::from_str(r#"{"name":"x","interrupt":["esc"]}"#).unwrap();
+        assert_eq!(Profile::compile(f).unwrap().interrupt, b"\x1b");
+        let f: ProfileFile =
+            serde_json::from_str(r#"{"name":"x","interrupt":["f13"]}"#).unwrap();
+        assert!(Profile::compile(f).is_err());
+    }
+
+    /// The shipped profiles are the spec: each AI's stop key is written down,
+    /// and the one that quits on a second Ctrl+C is not given Esc by mistake
+    #[test]
+    fn shipped_profiles_name_a_stop_key_each() {
+        for (file, want) in [
+            ("claude", b"\x1b".as_slice()),
+            ("codex", b"\x1b".as_slice()),
+            ("gemini", b"\x1b".as_slice()),
+            ("aider", b"\x03".as_slice()),
+        ] {
+            let text = std::fs::read_to_string(format!("profiles/{file}.json")).unwrap();
+            let f: ProfileFile = serde_json::from_str(&text).unwrap();
+            assert_eq!(Profile::compile(f).unwrap().interrupt, want, "{file}");
+        }
+    }
 }

@@ -4454,7 +4454,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
             active,
             board: board_open,
             settings: settings_open,
-            auto: engine.as_ref().map(|_| auto_enabled),
+            // The flag itself, engine or no engine. It used to be sent only
+            // while a Lua engine existed, which left the bar saying AUTO ON
+            // after an emergency stop in a workspace with no automation of
+            // its own -- and the stop still means something there: it is
+            // what interrupted the AIs, and what keeps a hand-over from
+            // starting until it is turned back on
+            auto: Some(auto_enabled),
             ws_names: workspaces.iter().map(|w| w.name.clone()).collect(),
             ws_index,
             ws_open,
@@ -6377,8 +6383,26 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             if let Some(eng) = engine.as_mut() {
                                 eng.cancel_all();
                             }
-                            flash =
-                                Some(i18n::t("msg.emergency_stop"));
+                            // And the AIs themselves. Stopping the hand-overs
+                            // leaves whoever is mid-turn working, and the one
+                            // still working is the one the stop was for
+                            let halted: Vec<&str> = tabs
+                                .iter()
+                                .filter(|t| t.interrupt())
+                                .map(|t| t.title.as_str())
+                                .collect();
+                            append_hook_log(&format!(
+                                "Emergency stop: automation off, interrupted [{}]",
+                                halted.join(", ")
+                            ));
+                            flash = Some(if halted.is_empty() {
+                                i18n::t("msg.emergency_stop")
+                            } else {
+                                i18n::tp(
+                                    "msg.emergency_stop_ai",
+                                    &[("tabs", &halted.join(", "))],
+                                )
+                            });
                         }
                         // Ctrl+B c copies the latest captured response to the clipboard
                         KeyCode::Char('c') => {

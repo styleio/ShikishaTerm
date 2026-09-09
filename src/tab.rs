@@ -2585,6 +2585,13 @@ pub struct Tab {
     /// width, which would split long URLs). None until the first reply / for
     /// non-brain tabs.
     last_model_reply: Arc<Mutex<Option<String>>>,
+    /// Which model turn is the live one. The reply thread remembers the number
+    /// it started under and keeps its answer only if it is still that one; an
+    /// interrupt moves the number on, so an answer to a turn nobody wants any
+    /// more arrives nowhere. The API call itself cannot be cut short, and does
+    /// not need to be: what a stop must guarantee is that nothing more happens
+    /// here, not that the wire goes quiet.
+    model_turn: Arc<AtomicU64>,
 }
 
 impl Tab {
@@ -2947,6 +2954,7 @@ impl Tab {
             chat_history: Arc::new(Mutex::new(Vec::new())),
             model_busy: Arc::new(AtomicBool::new(false)),
             last_model_reply: Arc::new(Mutex::new(None)),
+            model_turn: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -3578,6 +3586,47 @@ impl Tab {
         self.model_busy.load(Ordering::Relaxed)
     }
 
+    /// Stop what is running in this tab, the way its own program is stopped.
+    ///
+    /// A CLI gets the key its profile names -- Esc for Claude Code, Codex and
+    /// Gemini, Ctrl+C for Aider -- and only while a turn is running or a
+    /// question is waiting. At an idle prompt the same key is a different act
+    /// (a second Ctrl+C quits Aider; Esc at Codex's composer clears it), and a
+    /// stop must never turn into a quit or an edit. A model bridge has no key
+    /// to press; its turn is ended by disowning the answer on its way in.
+    ///
+    /// This is the half of the emergency stop the person can see: halting the
+    /// automation stops the next hand-over, but the AI in the middle of a
+    /// turn goes on until something tells it not to, and a stop that leaves
+    /// Claude working is a stop that did not happen. Says whether anything
+    /// was done, so the notice can name the tabs it reached
+    pub fn interrupt(&self) -> bool {
+        if self.is_model() {
+            if !self.model_busy.load(Ordering::Relaxed) {
+                return false;
+            }
+            self.model_turn.fetch_add(1, Ordering::Relaxed);
+            self.model_busy.store(false, Ordering::Relaxed);
+            Self::inject_into(
+                &self.parser,
+                &self.bytes_out,
+                &format!(
+                    "\r\n\x1b[33m■ {}\x1b[0m\r\n",
+                    crate::i18n::t("agent.model.interrupted")
+                ),
+            );
+            return true;
+        }
+        if !matches!(self.state, TabState::Busy | TabState::Question) {
+            return false;
+        }
+        let keys = self.detector.interrupt();
+        if keys.is_empty() {
+            return false;
+        }
+        self.write_bytes(keys).is_ok()
+    }
+
     /// Aim (or unaim) a model tab at a browser.
     ///
     /// A model tab is a browser brain only while it is aimed at one, and this
@@ -3677,6 +3726,8 @@ impl Tab {
         let busy = Arc::clone(&self.model_busy);
         let history = Arc::clone(&self.chat_history);
         let last_reply = Arc::clone(&self.last_model_reply);
+        let turn = Arc::clone(&self.model_turn);
+        let this_turn = turn.load(Ordering::Relaxed);
         busy.store(true, Ordering::Relaxed);
         // Start the turn with no stashed reply, so if this turn errors out the
         // orchestrator won't re-extract and re-run the *previous* turn's ```lua.
@@ -3742,7 +3793,13 @@ impl Tab {
                 }
                 msgs
             };
-            match crate::bridge::complete_messages(&conn.url, &conn.model, &conn.headers, conn.timeout, &msgs) {
+            let answer = crate::bridge::complete_messages(&conn.url, &conn.model, &conn.headers, conn.timeout, &msgs);
+            // Interrupted while the call was out: the turn is over already,
+            // and this answer belongs to nobody
+            if turn.load(Ordering::Relaxed) != this_turn {
+                return;
+            }
+            match answer {
                 Ok(reply) => {
                     history
                         .lock()
@@ -3797,6 +3854,8 @@ impl Tab {
         // Raised for the whole turn, exactly as a chat turn does it. Both are
         // "this pane is waiting on the API"; only who asked differs.
         let busy = Arc::clone(&self.model_busy);
+        let turn = Arc::clone(&self.model_turn);
+        let this_turn = turn.load(Ordering::Relaxed);
         busy.store(true, Ordering::Relaxed);
         std::thread::spawn(move || {
             let inject = |s: &str| Self::inject_into(&parser, &counter, s);
@@ -3817,9 +3876,14 @@ impl Tab {
                 system.push('\n');
                 system.push_str(&crate::i18n::t("agent.model.persona_tail"));
             }
-            match crate::bridge::complete(
+            let answer = crate::bridge::complete(
                 &conn.url, &conn.model, &conn.headers, conn.timeout, Some(&system), prompt.trim(),
-            ) {
+            );
+            // Interrupted while the call was out (see chat_send)
+            if turn.load(Ordering::Relaxed) != this_turn {
+                return;
+            }
+            match answer {
                 Ok(text) => {
                     if let Some(say) = crate::bridge::extract_say(&prompt) {
                         match std::fs::write(&say, &text) {

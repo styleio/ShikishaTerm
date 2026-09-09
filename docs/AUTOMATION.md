@@ -522,7 +522,9 @@ Several brakes keep automation from running away.
 - **Automatic chain limit** … the number of consecutive automatic hand-offs between AIs is
   counted and stops at the limit (10 by default). Typing something yourself resets it to 0
 - **Manual work wins** … nothing is sent automatically for 5 seconds after you touch a tab
-- **Emergency stop** … `Ctrl+B x` halts all automation at once, `Ctrl+B a` toggles it.
+- **Emergency stop** … `Ctrl+B x` halts all automation at once and sends every AI that is
+  mid-turn its own interrupt key (`interrupt` in its profile: Esc for Claude Code, Codex
+  and Gemini, Ctrl+C for Aider). `Ctrl+B a` toggles automation back on.
   The status bar carries the same button, in the same corner on every screen
 - **Input lock** … put 🔒 on the middle tabs so nobody instructs them by mistake
 - **Sandbox** … automation can **neither touch files nor reach the internet by default**.

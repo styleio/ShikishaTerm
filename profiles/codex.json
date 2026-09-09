@@ -18,6 +18,7 @@
   ],
   "title_busy": ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
   "silence_ms": 2000,
+  "interrupt": ["esc"],
   "resume": {
     "with_id": [
       "resume",

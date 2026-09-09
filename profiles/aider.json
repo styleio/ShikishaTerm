@@ -7,5 +7,6 @@
     "\\(Y\\)es/\\(N\\)o/\\(D\\)",
     "Add .+ to the chat\\?"
   ],
-  "silence_ms": 2000
+  "silence_ms": 2000,
+  "interrupt": ["ctrl+c"]
 }
