@@ -369,25 +369,33 @@ pub struct UsageWindow {
     pub name: String,
     /// Whole percent used
     pub pct: u32,
-    /// "20% used", in the person's language
+    /// "20% used"
     pub used: String,
-    /// "resets in 3h 45m", in the person's language; absent when the service
-    /// did not say when
+    /// The time until the window resets, bare: "3h 45m", "9m", "4d 10h".
+    /// Beside the bar the span alone is enough -- what else would a time
+    /// next to "20% used" be -- and "resets in" is said only on hover, where
+    /// there is room. Absent when the service did not say when
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets: Option<String>,
 }
 
 impl UsageState {
     /// Worded from a reading, at `now` (seconds since the epoch).
+    ///
+    /// The words are English in every language on purpose (the shipped
+    /// Japanese carries no `tui.usage.*` entries, so they fall through to
+    /// the English). This row has one job -- keep STOP within reach -- and
+    /// "5時間枠 24% 使用 · 0時間9分後に回復" ran the reading to twice the
+    /// width of "5h 24% used 9m", pushing the button toward the edge. A
+    /// person's decision to translate these keys anyway is honoured, but it
+    /// is a decision to make the row wider
     pub fn of(l: &crate::limits::Limits, now: i64) -> Self {
         let window = |w: &Option<crate::limits::Window>, name_key: &str| {
             w.as_ref().map(|w| UsageWindow {
                 name: crate::i18n::t(name_key),
                 pct: w.pct,
                 used: crate::i18n::tp("tui.usage.used", &[("pct", &w.pct.to_string())]),
-                resets: w
-                    .resets_at
-                    .map(|at| crate::i18n::tp("tui.usage.resets", &[("t", &until(at - now))])),
+                resets: w.resets_at.map(|at| until(at - now)),
             })
         };
         let five = window(&l.five_hour, "tui.usage.five");
@@ -395,7 +403,12 @@ impl UsageState {
         let say = |w: &Option<UsageWindow>| {
             w.as_ref()
                 .map(|w| match &w.resets {
-                    Some(r) => format!("{}: {} · {}", w.name, w.used, r),
+                    Some(r) => format!(
+                        "{}: {} · {}",
+                        w.name,
+                        w.used,
+                        crate::i18n::tp("tui.usage.resets", &[("t", r)])
+                    ),
                     None => format!("{}: {}", w.name, w.used),
                 })
                 .unwrap_or_else(|| crate::i18n::t("tui.usage.unknown"))
@@ -409,13 +422,18 @@ impl UsageState {
 }
 
 /// A span of seconds as a person reads it: days and hours, or hours and
-/// minutes. Never negative -- a reset already past is "now"
+/// minutes, and never a zero in front ("9m", not "0h 9m" -- the zero is a
+/// character the row pays for and the reader gains nothing from). Never
+/// negative -- a reset already past is "0m"
 fn until(secs: i64) -> String {
     let s = secs.max(0);
     let (d, h, m) = (s / 86_400, (s % 86_400) / 3600, (s % 3600) / 60);
-    match d {
-        0 => crate::i18n::tp("tui.usage.hm", &[("h", &h.to_string()), ("m", &m.to_string())]),
-        _ => crate::i18n::tp("tui.usage.dh", &[("d", &d.to_string()), ("h", &h.to_string())]),
+    let (d, h, m) = (d.to_string(), h.to_string(), m.to_string());
+    match (d.as_str(), h.as_str()) {
+        ("0", "0") => crate::i18n::tp("tui.usage.m", &[("m", &m)]),
+        ("0", _) => crate::i18n::tp("tui.usage.hm", &[("h", &h), ("m", &m)]),
+        (_, "0") => crate::i18n::tp("tui.usage.d", &[("d", &d)]),
+        _ => crate::i18n::tp("tui.usage.dh", &[("d", &d), ("h", &h)]),
     }
 }
 
@@ -1112,23 +1130,33 @@ mod tests {
         let five = u.five.as_ref().unwrap();
         assert_eq!(five.pct, 19);
         assert!(five.used.contains("19"), "{}", five.used);
-        let r = five.resets.clone().unwrap();
-        assert!(r.contains("3h 45m") || r.contains("3時間45分"), "{r}");
+        // Beside the bar the span stands bare; "resets in" is for the hover
+        assert_eq!(five.resets.as_deref(), Some("3h 45m"));
         let week = u.week.as_ref().unwrap();
         assert_eq!(week.pct, 83);
-        let r = week.resets.clone().unwrap();
-        assert!(r.contains("4d 10h") || r.contains("4日10時間"), "{r}");
+        assert_eq!(week.resets.as_deref(), Some("4d 10h"));
         assert!(u.title.contains("19") && u.title.contains("83"), "{}", u.title);
+        assert!(u.title.contains("resets in 3h 45m"), "{}", u.title);
         // A window the service withheld is absent, and a reset already past
         // never goes negative
         let l = Limits { five_hour: None, seven_day: Some(Window { pct: 2, resets_at: Some(0) }) };
         let u = UsageState::of(&l, 5_000);
         assert!(u.five.is_none());
-        let r = u.week.as_ref().unwrap().resets.clone().unwrap();
-        assert!(r.contains("0h 0m") || r.contains("0時間0分"), "{r}");
+        assert_eq!(u.week.as_ref().unwrap().resets.as_deref(), Some("0m"));
         // No time at all: the words say how much, and nothing about when
         let l = Limits { five_hour: Some(Window { pct: 7, resets_at: None }), seven_day: None };
         assert_eq!(UsageState::of(&l, 0).five.unwrap().resets, None);
+    }
+
+    /// No leading zero in a span: the row is paid for by the character, and
+    /// STOP sits at the end of it
+    #[test]
+    fn a_span_never_starts_with_a_zero() {
+        assert_eq!(until(9 * 60), "9m");
+        assert_eq!(until(3 * 3600 + 45 * 60), "3h 45m");
+        assert_eq!(until(2 * 86_400), "2d");
+        assert_eq!(until(2 * 86_400 + 23 * 3600), "2d 23h");
+        assert_eq!(until(-5), "0m");
     }
 
     /// One household is drawn together, checkout first, wherever its members

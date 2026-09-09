@@ -211,6 +211,8 @@
   "tui.usage.resets": "resets in {t}",
   "tui.usage.hm": "{h}h {m}m",
   "tui.usage.dh": "{d}d {h}h",
+  "tui.usage.m": "{m}m",
+  "tui.usage.d": "{d}d",
   "tui.usage.unknown": "unknown",
   "tui.scrolled": "▲ {lines} lines back — click to return",
   "tui.qr.title": "Connect from your phone",

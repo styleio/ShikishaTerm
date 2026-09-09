@@ -817,7 +817,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Only the workspace name gets truncated when space is tight — pills and STOP never shrink */
   #status > span:first-child { min-width:0; white-space:nowrap;
     overflow:hidden; text-overflow:ellipsis; }
-  #status .pill, #status .build, #stop, #restart { flex:none; white-space:nowrap; }
+  #status .pill, #stop, #restart { flex:none; white-space:nowrap; }
+  /* The build stamp gives way first: it is for whoever built this, and the
+     usage words are for whoever is paying for the AI */
+  #status .build { flex:0 4 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .pill { padding:1px 8px; border-radius:9px; border:1px solid var(--line); }
   .pill.on { color:var(--live); border-color:color-mix(in srgb, var(--live) 40%, var(--bg)); }
   .pill.off { color:var(--dim); }
@@ -834,6 +837,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     font-variant-numeric:tabular-nums; cursor:default; white-space:nowrap; }
   #status .usage .who { color:var(--ai); font-weight:600; }
   #status .usage .win { display:flex; align-items:center; gap:6px; min-width:0; }
+  /* One dot between the windows, and none after the name */
+  #status .usage .win + .win::before { content:"·"; color:var(--dim); }
   #status .usage .wname { color:var(--dim); }
   #status .usage .bar { display:inline-block; width:54px; height:6px; border-radius:3px;
     background:var(--line); overflow:hidden; flex:none; }
@@ -2713,7 +2718,9 @@ function usagePill() {
     return el("span", {class:"win"},
       el("span", {class:"wname"}, w.name),
       el("span", {class:"bar"}, fill),
-      el("span", {class:"wsay"}, w.used + (w.resets ? " · " + w.resets : "")));
+      // "24% used 9m": the span bare, next to the words. The dot between
+      // the two windows is the stylesheet's, so the words stay this short
+      el("span", {class:"wsay"}, w.used + (w.resets ? " " + w.resets : "")));
   };
   return el("span", {class:"usage ai-claude", title:S.usage.title},
     el("span", {class:"who"}, "Claude"),
@@ -7554,7 +7561,8 @@ mod tests {
         assert!(PAGE.contains(r#"if (!t || t.ai !== "claude" || !S.usage) return null;"#), "Claude 以外のタブで出る");
         // A bar per window, with words beside it -- not a number in a pill
         assert!(PAGE.contains(r#"fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";"#), "棒が無い");
-        assert!(PAGE.contains(r#"el("span", {class:"wsay"}, w.used + (w.resets ? " · " + w.resets : ""))"#), "言葉が無い");
+        assert!(PAGE.contains(r#"el("span", {class:"wsay"}, w.used + (w.resets ? " " + w.resets : ""))"#), "言葉が無い");
+        assert!(PAGE.contains(r#"#status .usage .win + .win::before { content:"·";"#), "窓の間の点が無い");
         assert!(PAGE.contains("    limitPill(),\n    usagePill(),"), "下段に無い");
         // The row must stay the width of its column, or the reading pushes
         // STOP off the right edge (it did, at 1280px, on 2026-09-09)
