@@ -2254,7 +2254,11 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
                     ts
                 }),
                 Surface::Browser { key, name } => {
-                    Some(crate::uistate::TabState::browser(i + 1, key, name))
+                    let mut t = crate::uistate::TabState::browser(i + 1, key, name);
+                    // What a script is asking the person about this page, if
+                    // anything. The board draws the bar under the page from it
+                    t.ask = ui.asks.iter().find(|(k, _)| k == key).map(|(_, a)| a.clone());
+                    Some(t)
                 }
                 Surface::Git { key, name, dir, .. } => {
                     // The panel reports on a folder, so it stands under that
@@ -4154,6 +4158,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::Say { tab, text }) => {
                         surface.says.push((tab, text));
                     }
+                    // The bar's button, pressed on the phone: the same queue the
+                    // board's press fills. A person's answer from wherever they
+                    // are looking
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Button { from: Some(name) }) => {
+                        surface.presses.push(name);
+                    }
                     remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultSearch { .. })
                     | remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultOpen { .. }) => {
                         surface.queue_vault(ev);
@@ -4510,6 +4520,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
             aim: aim_of(workspaces.get(ws_index), &surfaces, &tabs, active),
             nav,
+            asks: caps.asks_now(),
             scrolled: session_at(&surfaces, active)
                 .and_then(|i| tabs.get(i))
                 .map(|t| {
@@ -4809,15 +4820,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
             caps.show_at(&shown);
             }
         }
-        // Hand off that a bar button was pressed.
-        // Only the main app can receive the window's reports, so it goes through here.
-        for child in surface.take_presses() {
-            caps.note_press(&child);
-            // Convert the name inside the window back to an id. Ones we can't
-            // convert belong to a different workspace.
-            let Some(name) = caps.name_of_child(&child) else {
-                continue;
-            };
+        // Hand off that the bar's button was pressed. The board (or the phone)
+        // names the page the bar stands under, by the name automation gives it;
+        // the bar is only ever drawn for the workspace in view, so that name is
+        // this workspace's
+        for name in surface.take_presses() {
+            caps.note_press(&name);
             append_hook_log(&format!("Bar pressed {name}"));
             if !auto_enabled {
                 flash = Some(i18n::t("msg.press_auto_off"));
@@ -9520,6 +9528,9 @@ struct Ui {
     folders: Vec<(std::path::PathBuf, String)>,
     /// The controls shown over the browser being viewed (None = don't show)
     nav: Option<crate::uistate::NavState>,
+    /// What each page of this workspace is asking the person, by the name
+    /// automation gives it. Drawn as a bar under that page
+    asks: Vec<(String, crate::uistate::AskState)>,
     /// How many lines back from the current screen we're scrolled (0 = live)
     scrolled: usize,
     /// The AIs this machine can start, for the dialog that makes a folder

@@ -131,6 +131,13 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // Finishing a line in the composer from the phone is just like typing
         // into the tab it names.
         Ev::Say { .. } => true,
+        // Pressing the bar a script put under a page ("done logging in"). The
+        // bar is drawn by the board so that only a person can press it, and
+        // the person may well be on the phone -- a login it was waiting for is
+        // often finished there. It reaches no further than browser_pressed and
+        // the page's own on_press, both of which the phone could have caused
+        // by typing the same instruction
+        Ev::Button { from: Some(_) } => true,
         // Firing one of the user's own quick actions (its Lua runs sandboxed).
         // No different in reach than typing the same instruction from the phone.
         Ev::RunAction { .. } => true,

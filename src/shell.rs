@@ -257,7 +257,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      top) and would otherwise need its own arithmetic. Undivided they are all
      zero, which is exactly what these rules hard-coded before panes existed. */
   #main { position:relative; overflow:hidden;
-    --fx:0px; --fy:0px; --fr:0px; --fb:0px; --navh:0px; }
+    --fx:0px; --fy:0px; --fr:0px; --fb:0px; --navh:0px; --askh:0px; }
   /* The panes themselves. Only the ones that aren't focused draw anything here
      — the focused pane's rectangle is filled by the full renderer above. */
   #panes { position:absolute; inset:0; }
@@ -360,7 +360,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #cast { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--navh));
     right:var(--fr); bottom:var(--fb);
     width:calc(100% - var(--fx) - var(--fr));
-    height:calc(100% - var(--fy) - var(--navh) - var(--fb));
+    height:calc(100% - var(--fy) - var(--navh) - var(--fb) - var(--askh, 0px));
     object-fit:contain; object-position:top center; background:#000; touch-action:none;
     transform-origin:0 0; }
   /* Trackpad-style synthetic cursor: a Windows-like arrow whose tip is the
@@ -647,6 +647,31 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     color:var(--text); background:var(--bg); border:1px solid var(--line);
     border-radius:6px; padding:3px 8px; outline:none; }
   #nav input:focus { border-color:var(--brand); }
+  /* The bar that asks the person something about the page in the focused
+     pane (shikisha.browser_ask): the words, and one button. Drawn HERE, under
+     the page, and never inside it: a page can post anything it likes to the
+     app, so a bar the page itself could press for the person would be no
+     question at all. Its edge is --warn, the colour of "needs a person"
+     (STYLEGUIDE §2); the button is the primary one. It sits above the
+     composer's dock, which is the other thing that takes room at the bottom */
+  #ask { position:absolute; left:var(--fx); right:var(--fr);
+    bottom:calc(var(--fb) + var(--dock, 0px)); height:44px; z-index:5;
+    display:flex; align-items:center; gap:12px; padding:0 12px;
+    background:var(--panel); border-top:2px solid var(--warn); }
+  #ask[hidden] { display:none; }
+  #ask .words, .pane .pask .words { flex:1; font-size:13px; color:var(--text);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #ask button, .pane .pask button { font:inherit; font-size:13px; font-weight:600;
+    color:var(--text); cursor:pointer; background:transparent;
+    border:1px solid var(--brand); border-radius:6px; padding:5px 16px; flex:none; }
+  #ask button:hover:not(:disabled), .pane .pask button:hover:not(:disabled) { background:var(--raise); }
+  #ask button:disabled, .pane .pask button:disabled { opacity:.45; cursor:default; }
+  /* The same bar under a browser in a pane that is not focused. The page in
+     that pane is held back by its height (see report()) */
+  .pane .pask { position:absolute; left:0; right:0; bottom:0; height:44px; display:none;
+    align-items:center; gap:12px; padding:0 12px; pointer-events:auto;
+    background:var(--panel); border-top:2px solid var(--warn); }
+  .pane .pask.on { display:flex; }
   /* While loading, tint the whole bar blue so it's obvious at a glance
      that something is in flight. Kept lit for at least 0.5s on the app
      side so even a near-instant load is visible */
@@ -669,7 +694,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      whole column -- over the pane below it, and over the pen it was supposed
      to be making room for. Same lesson as #castdock above */
   #page { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--navh));
-    right:var(--fr); bottom:calc(var(--fb) + var(--dock, 0px)); pointer-events:none; }
+    right:var(--fr); bottom:calc(var(--fb) + var(--dock, 0px) + var(--askh, 0px)); pointer-events:none; }
 
   /* ── Discussion topic banner ─────────────────────
      A prominent prompt floated over whatever tab is in view while an AI-vs-AI
@@ -1273,6 +1298,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="panes"></div>
     <div id="pushbar" hidden></div>
     <div id="nav" hidden></div>
+    <div id="ask" hidden></div>
     <div id="page"></div>
     <div id="board" hidden></div>
     <!-- notranslate as well as the page-wide opt-out above: this is the one
@@ -2947,6 +2973,50 @@ function drawNav() {
   layout();
 }
 
+// The bar that asks the person something about a page (shikisha.browser_ask).
+//
+// Drawn by the board under the page it is about, never inside the page: the
+// page could then press it for the person, and the whole point of the bar is
+// that a person said "done". The focused pane's bar is #ask; another pane's
+// is its own .pask. Pressing names the page; Rust turns that into
+// browser_pressed and the page's on_press
+function drawAsks() {
+  const bar = document.getElementById("ask");
+  const focused = S && S.tabs ? S.tabs.find(t => t.index === S.active) : null;
+  const want = !!(focused && focused.kind === "browser" && focused.ask);
+  bar.hidden = !want;
+  if (want) fillAsk(bar, focused);
+  if (PANES) for (const p of PANES.panes) {
+    const el = document.querySelector('#panes .pane[data-pid="' + p.id + '"]');
+    if (!el) continue;
+    const t = paneTab(p);
+    const box = el.querySelector(".pask");
+    const on = !!(t && t.kind === "browser" && t.ask && !el.classList.contains("focused"));
+    box.classList.toggle("on", on);
+    if (on) fillAsk(box, t);
+  }
+  layout();
+}
+function fillAsk(box, t) {
+  // Rebuilt only when the words change: a press mid-rebuild would be lost
+  const key = t.id + "\n" + t.ask.text + "\n" + t.ask.label;
+  if (box.dataset.ask === key) return;
+  box.dataset.ask = key;
+  box.textContent = "";
+  const b = el("button", {}, t.ask.label);
+  b.onclick = (e) => {
+    // Not a press on the pane (which would move the focus there)
+    e.stopPropagation();
+    // Say the click landed, and let one press be one press: the bar stays
+    // up until the script takes it down, so a second click a moment later
+    // would otherwise be a second answer
+    b.disabled = true;
+    setTimeout(() => { b.disabled = false; }, 800);
+    send({kind:"button", name: t.id});
+  };
+  box.append(el("span", {class:"words"}, t.ask.text), b);
+}
+
 // Push where the page sits down by the bar's height.
 // The screen-relay canvas must be pushed down by the same amount, or the
 // top edge of the browser view (often where a login form sits) ends up
@@ -2954,10 +3024,14 @@ function drawNav() {
 // canvas's position, so they follow along automatically
 function layout() {
   const n = document.getElementById("nav");
+  const a = document.getElementById("ask");
   // Reserved out of the focused pane's rectangle rather than pushed onto each
   // layer by hand: with panes, "the top of the screen" is no longer the top of
   // the window, and two layers being told different tops is how they drift
-  document.getElementById("main").style.setProperty("--navh", n.hidden ? "0px" : "36px");
+  const main = document.getElementById("main");
+  main.style.setProperty("--navh", n.hidden ? "0px" : "36px");
+  // ...and the bar asking the person something, out of the bottom
+  main.style.setProperty("--askh", a.hidden ? "0px" : "44px");
   report();
 }
 
@@ -2995,6 +3069,7 @@ window.__state = function (json) {
   drawTabs();
   drawStatus();
   drawNav();
+  drawAsks();
   const board = document.getElementById("board");
   const screen = document.getElementById("screen");
   // While viewing a browser tab, the embedded page covers the same spot.
@@ -3143,7 +3218,7 @@ window.__panes = function (json) {
         '<span class="rs rf" title="' + (T["tui.pane.restart_fresh"] || "") + '">&#10226;</span>' +
         '<span class="cl">&#10005;</span></div>' +
         '<div class="pbody"><pre class="pscreen notranslate" translate="no"></pre>' +
-        '<div class="pnew"></div></div>';
+        '<div class="pnew"></div><div class="pask"></div></div>';
       // Clicking anywhere in a pane you are not in moves you there. The close
       // control is the one thing inside it that means something else.
       el.onmousedown = (e) => {
@@ -3256,6 +3331,7 @@ function paintPaneHeads() {
     // empty as one holding none
     el.classList.toggle("empty", !t);
   }
+  drawAsks();
 }
 
 // The grab handles between panes.
@@ -3591,7 +3667,14 @@ function report() {
     // changes, only the page itself knows this — never let Rust guess the
     // coordinates. In the focused pane that rectangle is #page, which already
     // has the browser bar's height taken out of it.
-    const r = el.classList.contains("focused") ? area : b;
+    const focused = el.classList.contains("focused");
+    const r = focused ? area : b;
+    // In another pane, the bar asking the person something is drawn at the
+    // bottom of the pane; the page stops above it. (The focused pane's is
+    // already out of #page, through --askh)
+    const ask = el.querySelector(".pask");
+    const cut = (!focused && ask && ask.classList.contains("on"))
+      ? Math.round(ask.getBoundingClientRect().height) : 0;
     // A placed browser is a native layer ON TOP of this page, so wherever it
     // sits, the page underneath stops receiving the pointer. Left flush against
     // the divider, it would swallow the half of the grab handle that overhangs
@@ -3603,7 +3686,7 @@ function report() {
     return {id: +el.dataset.pid, rows: d.rows, cols: d.cols,
       rect: [Math.round(r.left) + in_, Math.round(r.top) + in_,
              Math.max(1, Math.round(r.width) - in_ * 2),
-             Math.max(1, Math.round(r.height) - in_ * 2)]};
+             Math.max(1, Math.round(r.height) - in_ * 2 - cut)]};
   });
   // The focused pane's numbers are the ones the rest of the app still speaks in
   if (laid) {
@@ -4193,7 +4276,7 @@ document.getElementById("rmore").addEventListener("click", () => rdShow());
 // #kbd — on a phone that would pop the soft keyboard up over the screen.
 // The ✏️ pen counts as "the bar": otherwise the phone's tap-on-terminal rule
 // below opened the bar on mouseup and the pen's own click toggled it shut again
-const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #pageui, #castdock, #composerfab, #reader");
+const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #ask, .pask, #pageui, #castdock, #composerfab, #reader");
 document.addEventListener("mouseup", e => {
   if (inBar(e)) return;
   const s = window.getSelection();
@@ -5081,7 +5164,9 @@ function panelOptions() {
 // set of panels actually changed (entering/leaving a browser tab, first open).
 let lastPanelSig = "";
 function syncBrowserDock() {
-  if (typeof REMOTE !== "undefined" && REMOTE) return;
+  // The phone builds its dock elsewhere; only the reserve is wanted here, so
+  // the bar asking the person something (#ask) knows to sit above the dock
+  if (typeof REMOTE !== "undefined" && REMOTE) { syncBrowserReserve(); return; }
   if (!onBrowserTab()) { lastPanelSig = ""; syncBrowserReserve(); return; }
   ensureBar();
   const sig = panelOptions().join();
@@ -5109,9 +5194,12 @@ function syncBrowserPen() {
   send({kind:"pen", on: want});
 }
 function syncBrowserReserve() {
-  if (typeof REMOTE !== "undefined" && REMOTE) return;
   syncBrowserPen();
-  const page = document.getElementById("page");
+  // On #main rather than on #page: the bar that asks the person something
+  // (#ask) sits above the dock and has to know its height too. On the phone
+  // the relay picture is not held back by it (the dock lies over the black
+  // band under the picture), but the bar still has to clear it
+  const page = document.getElementById("main");
   if (!onBrowserTab()) {
     if (page.style.getPropertyValue("--dock")) {
       page.style.removeProperty("--dock");
@@ -7093,7 +7181,7 @@ mod tests {
         // below. Its bottom is composed the same way, and the room held back
         // for the composer is a term added to it, never the whole of it
         assert!(
-            p.contains("bottom:calc(var(--fb) + var(--dock, 0px))"),
+            p.contains("bottom:calc(var(--fb) + var(--dock, 0px) + var(--askh, 0px))"),
             "ブラウザの位置が、フォーカス中のペイン基準になっていない"
         );
         assert!(
@@ -7297,7 +7385,7 @@ mod tests {
             "中継画面の幅がペインの幅になっていない"
         );
         assert!(
-            p.contains("height:calc(100% - var(--fy) - var(--navh) - var(--fb));"),
+            p.contains("height:calc(100% - var(--fy) - var(--navh) - var(--fb) - var(--askh, 0px));"),
             "中継画面の高さがペインの高さになっていない"
         );
         assert!(
@@ -7818,6 +7906,19 @@ mod tests {
     fn the_bar_is_drawn_by_the_app_not_injected_into_the_page() {
         assert!(PAGE.contains("id=\"nav\""), "バーの置き場所が無い");
         assert!(PAGE.contains("id=\"page\""), "ページを置く場所が無い");
+        // The bar asking the person something is the board's own, drawn under
+        // the page (never inside it, where the page could press it), and
+        // pressing it names the page it stands under
+        assert!(PAGE.contains("id=\"ask\" hidden"), "呼びかけの帯を置く場所が無い");
+        assert!(PAGE.contains("<div class=\"pask\"></div>"), "他ペインの帯を置く場所が無い");
+        assert!(
+            PAGE.contains("send({kind:\"button\", name: t.id});"),
+            "帯のボタンがどのページのものか言わない"
+        );
+        assert!(
+            PAGE.contains("setProperty(\"--askh\", a.hidden ? \"0px\" : \"44px\")"),
+            "帯を出してもページが上がらない"
+        );
         // Where the page sits is pushed down by exactly the bar's height.
         // Reserved out of the focused pane's rectangle rather than written onto
         // each layer: with panes, "the top" is no longer the top of the window

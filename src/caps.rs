@@ -150,8 +150,13 @@ pub struct Capabilities {
     tokens: std::cell::RefCell<HashMap<String, String>>,
     tx: std::cell::RefCell<Option<mpsc::Sender<HttpJob>>>,
     /// Browsers looked up by name. Rc/RefCell is fine since hooks run on a single thread
-    /// Whether a banner's button was pressed (per name). Cleared once read
+    /// Whether the bar's button was pressed (per in-window name). Cleared once read
     pressed: std::cell::RefCell<HashMap<String, bool>>,
+    /// What each page is asking the person: the words and the button (per
+    /// in-window name). Drawn by the board under the page, never inside it --
+    /// a page could press a bar of its own for the person. Remembered here
+    /// like `nav`, so it survives the page navigating
+    asks: std::cell::RefCell<HashMap<String, (String, String)>>,
     /// Whether to overlay the terminal
     /// If we have a host window, its handle. Keeping it here means it doesn't become a separate window
     host: std::cell::RefCell<Option<std::rc::Rc<crate::browser::Browser>>>,
@@ -231,6 +236,7 @@ impl Capabilities {
             tokens: std::cell::RefCell::new(HashMap::new()),
             tx: std::cell::RefCell::new(None),
             pressed: std::cell::RefCell::new(HashMap::new()),
+            asks: std::cell::RefCell::new(HashMap::new()),
             host: std::cell::RefCell::new(None),
             area: std::cell::Cell::new((0, 0, 0, 0)),
             hosted: std::cell::RefCell::new(Vec::new()),
@@ -628,11 +634,13 @@ impl Capabilities {
         f(&host, Some(&Self::key(ws, name)))
     }
 
-    /// Record that a banner's button was pressed.
-    /// For pages placed inside the window, this arrives via the main loop, which
-    /// receives the report. The name received is the in-window name (with the workspace number)
-    pub fn note_press(&self, child: &str) {
-        self.pressed.borrow_mut().insert(child.to_string(), true);
+    /// Record that the bar's button was pressed for a page. The board (or the
+    /// phone) reports it to the main loop, which hands it here by the page's
+    /// display name; the bar is only ever drawn for the workspace in view
+    pub fn note_press(&self, name: &str) {
+        self.pressed
+            .borrow_mut()
+            .insert(Self::key(self.ws.get(), name), true);
     }
 
     /// Turn an in-window name back into the human-facing display name.
@@ -741,16 +749,40 @@ impl Capabilities {
         self.with(name, |b, to| b.eval_in(to, &js).map(|_| ()))
     }
 
-    /// Show a banner asking the human something
+    /// Ask the person something about a page: a bar with the words and one
+    /// button, drawn by the board under the page. Stays up until `browser_unask`
     pub fn browser_ask(&self, name: &str, text: &str, label: &str) -> Result<()> {
+        // Can't ask about a page that isn't open. Rejected here
+        self.with(name, |_, _| Ok(()))?;
         self.forget_press(name);
-        self.with(name, |b, to| b.ask(to, text, label))
+        self.asks.borrow_mut().insert(
+            Self::key(self.ws.get(), name),
+            (text.to_string(), label.to_string()),
+        );
+        Ok(())
     }
 
-    /// Whether the banner's button was pressed. If so, clears it and returns true
+    /// Whether the bar's button was pressed. If so, clears it and returns true
     pub fn browser_pressed(&self, name: &str) -> Result<bool> {
         self.with(name, |_, _| Ok(()))?;
         Ok(self.forget_press(name))
+    }
+
+    /// What the pages of the workspace in view are asking, by display name,
+    /// for the board to draw
+    pub fn asks_now(&self) -> Vec<(String, crate::uistate::AskState)> {
+        let head = format!("{}/", self.ws.get());
+        self.asks
+            .borrow()
+            .iter()
+            .filter_map(|(k, (text, label))| {
+                let name = k.strip_prefix(&head)?;
+                Some((
+                    name.to_string(),
+                    crate::uistate::AskState { text: text.clone(), label: label.clone() },
+                ))
+            })
+            .collect()
     }
 
     /// Clear the pressed record. Keyed by the in-window name
@@ -760,8 +792,10 @@ impl Capabilities {
     }
 
     pub fn browser_unask(&self, name: &str) -> Result<()> {
+        self.with(name, |_, _| Ok(()))?;
         self.forget_press(name);
-        self.with(name, |b, to| b.unask(to))
+        self.asks.borrow_mut().remove(&Self::key(self.ws.get(), name));
+        Ok(())
     }
 
     /// Arm/disarm the Lua recorder (📼) on a page. One recorder at a time:
@@ -904,11 +938,11 @@ impl Capabilities {
         let ws = self.ws.get();
         let key = Self::key(ws, name);
         if let Some(h) = self.host.borrow().as_ref() {
-            let _ = h.unask(Some(&key));
             h.close_child(&key)?;
         }
         self.hosted.borrow_mut().retain(|(w, x)| !(*w == ws && x == name));
         self.pressed.borrow_mut().remove(&key);
+        self.asks.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
         self.declared.borrow_mut().remove(&key);
         self.shown.borrow_mut().clear();
@@ -983,13 +1017,28 @@ mod reload_tests {
         c.nav
             .borrow_mut()
             .insert("0/html".into(), crate::config::NavSpec::all());
-        c.note_press("0/html");
+        c.note_press("html");
+        c.asks
+            .borrow_mut()
+            .insert("0/html".into(), ("ログインしてください".into(), "できました".into()));
 
         c.set_config(CapabilitySpec::default(), HashMap::new(), Default::default());
 
         assert_eq!(c.hosted_names(), vec!["settings".to_string()], "置いたページを忘れた");
         assert!(c.nav_of("html").is_some(), "上のバーを忘れた");
         assert!(c.forget_press("html"), "押された帯を忘れた");
+        // The bar being asked is the workspace in view's, by display name
+        assert_eq!(
+            c.asks_now(),
+            vec![(
+                "html".to_string(),
+                crate::uistate::AskState {
+                    text: "ログインしてください".into(),
+                    label: "できました".into()
+                }
+            )],
+            "出している帯を忘れた"
+        );
     }
 
     /// A browser removed from config must be closed.

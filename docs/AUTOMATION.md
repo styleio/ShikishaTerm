@@ -374,12 +374,14 @@ about a document, so browsers get their own names.
 | `on_load.lua` | the page finished loading (**on every navigation**) |
 | `on_press.lua` | the human pressed the banner button |
 
-The banner does not appear on its own. `shikisha.browser_ask` puts it along the bottom
-of the page — your words on the left, the button on the right — and pressing it calls
-`on_press`. It is immune to the site's own CSS (it lives in a shadow root).
+The banner does not appear on its own. `shikisha.browser_ask` puts it under the page —
+your words on the left, the button on the right — and pressing it calls `on_press`. The
+app draws it, not the page: the page is held back by the banner's height and can neither
+see nor press it, so a press is always a person's. It stays up across navigations until
+`shikisha.browser_unask`, and a phone looking at the page can press it too.
 
 To let a person choose the page before handing it over, `shikisha.browser_nav` puts
-back / forward / reload / an address box in a row above it. Unlike the banner this is
+back / forward / reload / an address box in a row above it. Like the banner, this is
 **not** injected into the page: the page moves down and the app draws in the gap, so it
 survives navigation and never covers the site's own sticky header.
 
@@ -817,7 +819,7 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 | `shikisha.browser_state_save(id, "label")` | Save this page's login — its cookies and its localStorage — under a name. Returns how many cookies were saved. Sign in once, then a later rally can load it |
 | `shikisha.browser_state_load(id, "label")` | Put a saved login back, so the page is signed in without logging in again |
 | `shikisha.browser_snapshot(id, "label")` | Take a picture of the page (PNG) and save it. Returns the file path — a rally can keep a visual record of what it did |
-| `shikisha.browser_ask(id, "text", "label")` | Put a banner with a button along the bottom of the page |
+| `shikisha.browser_ask(id, "text", "label")` | Put a banner with a button under the page. The app draws it; only a person can press it |
 | `shikisha.browser_pressed(id)` | Has it been pressed? |
 | `shikisha.browser_unask(id)` | Take the banner away |
 | `shikisha.browser_wait(id, {ask=..., selector=..., timeout_ms=...})` | Wait for whichever comes first. Returns `"selector"` / `"button"` / `"timeout"` |

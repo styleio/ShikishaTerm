@@ -131,6 +131,7 @@ Use the part that exists. Adding a new kind of part is a change to this page.
 | **Bubble** (`#coach`) | Point at the next thing to press | one sentence · ✕ · a corner toward the anchor; at most one on screen |
 | **Card** (sidebar) | Ask once | title · one line · two buttons (one primary, one quiet); goes away for good |
 | **Toast** | Say what just happened | transient; never the only place an error lives |
+| **Ask bar** (`#ask`, `.pask`) | A script needs a person to do something on a page | one sentence · one primary button; `--warn` top edge (needs a person); drawn by the board under the page and never inside it, so only a person can press it; stays until the script takes it down |
 | **Button** | Do the thing | primary = `--brand` outline; quiet = `--line` outline; destructive = `--stop` outline. Cancel/Close are quiet, never coloured |
 
 Two rules from the rows above that are most often broken:

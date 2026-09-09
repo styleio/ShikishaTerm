@@ -365,7 +365,7 @@ shikisha.draft_to_tab("ai", "lp.html を読んでください。
 | `on_press.lua` | 人が帯のボタンを押した |
 
 **帯は放っておいても出ません。** `shikisha.browser_ask` を呼んだときだけ、
-ページの最下部に出ます（左に文言、右にボタン）。押されると `on_press` が呼ばれます。
+ページの下に出ます（左に文言、右にボタン）。押されると `on_press` が呼ばれます。
 出しっぱなしにしておけば、人がいつ押しても受け取れます。
 
 ```lua
@@ -378,12 +378,14 @@ shikisha.browser_unask(page.id)
 shikisha.draft_to_tab("ai", shikisha.browser_html(page.id))
 ```
 
-帯はページ側のCSSの影響を受けません（Shadow DOM に入れてあります）。
+帯を描くのはアプリで、ページではありません。ページは帯の高さだけ縮み、帯を見ることも
+押すこともできないので、押されたなら必ず人です。ページが移動しても消えず、
+`shikisha.browser_unask` まで残ります。スマホからページを見ている人も押せます。
 
 ### ページの上に、戻る・進む・更新・URL欄を出す
 
 人に自分でページを選んでもらってから解析させたいときは、`shikisha.browser_nav`
-でページの上に操作を出せます。**帯と違ってページの中には描きません。**
+でページの上に操作を出せます。**帯と同じく、ページの中には描きません。**
 ページを一段下げて、空いた場所にアプリが描くので、遷移しても消えず、
 サイト自身の固定ヘッダーを覆うこともありません。
 
@@ -850,7 +852,7 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.browser_state_save(id, "名前")` | このページのログイン（cookie と localStorage）を名前を付けて保存。保存した cookie 数を返す。一度ログインすれば後のラリーで読み込める |
 | `shikisha.browser_state_load(id, "名前")` | 保存済みのログインを入れ直す。ログインし直さずにサインイン状態にする |
 | `shikisha.browser_snapshot(id, "名前")` | ページの画像（PNG）を撮って保存。ファイルパスを返す。ラリーが「何をしたか」の視覚記録を残せる |
-| `shikisha.browser_ask(id, "文字列", "ラベル")` | ページの下端にボタン付きの帯を出す |
+| `shikisha.browser_ask(id, "文字列", "ラベル")` | ページの下にボタン付きの帯を出す。描くのはアプリで、押せるのは人だけ |
 | `shikisha.browser_pressed(id)` | 押されたか |
 | `shikisha.browser_unask(id)` | 帯を消す |
 | `shikisha.browser_wait(id, {ask=…, selector=…, timeout_ms=…})` | 早い者勝ちで待つ。`"selector"` / `"button"` / `"timeout"` を返す |

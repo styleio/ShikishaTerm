@@ -47,13 +47,21 @@ once it reaches its first tagged release.
   the composer, and it went into the tab it named as if you had typed it.
   Now a page that is not the program's own — judged by the address it speaks
   from, not by anything it claims — is heard only for what it may *report*
-  (a press on the bar drawn over it, a step it recorded, that it has loaded,
-  the answer to something the program asked it) and never for anything that
-  types, runs, changes or opens. The answer to a question is taken only from
-  the page it was put to, so a tab beside cannot fill in what an automation
-  read from the tab you meant. Nothing about ordinary browsing or the
-  automations changes; the settings page keeps its full voice. Found in a
-  code review on 2026-09-09; no report of it being used.
+  (a step it recorded, that it has loaded, the answer to something the
+  program asked it) and never for anything that types, runs, changes or
+  opens. The answer to a question is taken only from the page it was put to,
+  so a tab beside cannot fill in what an automation read from the tab you
+  meant. Nothing about ordinary browsing or the automations changes; the
+  settings page keeps its full voice. Found in a code review on 2026-09-09;
+  no report of it being used.
+- **The bar that asks you something about a page is now the program's own.**
+  `shikisha.browser_ask` used to draw its words and button inside the page,
+  where the page's own script could have pressed the button for you and let
+  an automation carry on as if you had. The bar is now drawn under the page
+  by the board — the page is held back by its height and never sees it — so
+  a press is always a person's. It looks the same, stays up across
+  navigations until the script takes it down, and can be pressed from the
+  phone. Scripts and `on_press.lua` need no change.
 - **Guessing the phone's password is turned away at both doors.** A phone
   holding the link but not the password could try passwords as fast as it
   liked at the board's door, and the reply page's door slowed a guesser by

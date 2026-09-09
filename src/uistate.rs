@@ -107,6 +107,19 @@ pub struct TabState {
     /// display offers the reader only where there is something to read
     #[serde(default)]
     pub readable: bool,
+    /// A script is asking the person something about this page (a browser):
+    /// the words and the button. The board draws the bar under the page from
+    /// this; the page itself never sees it, so it cannot press it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<AskState>,
+}
+
+/// What a script is asking the person about a page, for the bar the board
+/// draws under it: the words on the left, the button on the right
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct AskState {
+    pub text: String,
+    pub label: String,
 }
 
 /// The Vault overlay's contents: what was searched and what turned up.
@@ -946,6 +959,8 @@ impl TabState {
             }),
             cost: t.usage.line(),
             readable: readable(t),
+            // A session is not a page; nothing asks the person about it here
+            ask: None,
         }
     }
 
@@ -998,6 +1013,7 @@ impl TabState {
             auto: false,
             // Nothing was said here to read back
             readable: false,
+            ask: None,
         }
     }
 }
@@ -1304,6 +1320,7 @@ mod tests {
             place: None,
             cost: None,
             readable: false,
+            ask: None,
         }
     }
 

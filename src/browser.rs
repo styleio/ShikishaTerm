@@ -140,53 +140,14 @@ const POPUP_JS: &str = r#"
 
 /// Always injected into every document first.
 ///
-/// It runs on every navigation, so no matter how many times a login
-/// redirects, there's always a way to show the bar. But whether it
-/// *should* show right now is something the Rust side remembers and
-/// re-issues on every navigation (the JS world disappears on navigation).
+/// It runs on every navigation, so the helpers automation calls into are
+/// there however many times a login redirects. Nothing in here asks the
+/// person anything: the bar that does is the app's own, drawn under the page
+/// by the board (shell.rs), where a page cannot press it.
 const INIT_JS: &str = r##"
 (function () {
   if (window.__shikisha) return;
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
-
-  // Calls out to the human. Enclosed in a shadow root so it doesn't clash with the page's CSS
-  window.__shikisha_ask = function (text, label) {
-    let host = document.getElementById("__shikisha_bar");
-    if (!host) {
-      host = document.createElement("div");
-      host.id = "__shikisha_bar";
-      host.style.cssText =
-        "position:fixed;left:0;right:0;bottom:0;z-index:2147483647";
-      (document.body || document.documentElement).appendChild(host);
-      host.attachShadow({ mode: "open" });
-    }
-    host.shadowRoot.innerHTML =
-      '<div style="font:14px/1.5 system-ui,sans-serif;background:#0a0c0e;' +
-      'color:#e8eef4;border-top:3px solid #00aaff;padding:12px 16px;' +
-      'display:flex;align-items:center;gap:16px">' +
-      '<span style="flex:1"></span>' +
-      '<button style="font:600 14px system-ui;background:#00aaff;color:#04121c;' +
-      'border:0;border-radius:6px;padding:8px 18px;cursor:pointer"></button></div>';
-    host.shadowRoot.querySelector("span").textContent = text;
-    const b = host.shadowRoot.querySelector("button");
-    b.textContent = label;
-    // Give immediate feedback that the click registered. Without it,
-    // there's no way to tell whether the click landed, didn't land,
-    // or just triggered work that produces nothing visible.
-    // Also guards against double-clicks (the receiving side expects exactly one)
-    b.onclick = () => {
-      if (b.disabled) return;
-      b.disabled = true;
-      b.style.opacity = ".45";
-      b.style.cursor = "default";
-      send({ kind: "button" });
-    };
-  };
-
-  window.__shikisha_unask = function () {
-    const host = document.getElementById("__shikisha_bar");
-    if (host) host.remove();
-  };
 
   // A selector is either {css:"..."} or {xpath:"..."}.
   // XPath lets us express lookups CSS can't, like "the cell just to the
@@ -525,7 +486,6 @@ const INIT_JS: &str = r##"
     if (el && el.closest) el = el.closest("a,button,[role=button],input,select,summary,label") || el;
     if (!el || el.nodeType !== 1) return;
     if (recEditable(el) || el.tagName === "SELECT") return;
-    if (el.id === "__shikisha_bar") return;
     // Durable CSS first; a text-anchored XPath beats a positional path; the
     // path travels with a human hint (the text) so a broken line can be
     // repaired by a person or an AI without re-recording.
@@ -608,14 +568,6 @@ pub enum Cmd {
         method: String,
         params: String,
     },
-    /// Show a bar calling out to the human
-    Ask {
-        to: Option<String>,
-        text: String,
-        label: String,
-    },
-    /// Hide the bar
-    Unask { to: Option<String> },
     /// Place a named page inside the same window
     AddChild {
         name: String,
@@ -764,7 +716,15 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             from: None,
             busy: v.get("busy").and_then(|x| x.as_bool()).unwrap_or(false),
         },
-        Some("button") => Ev::Button { from: None },
+        // The bar's button. `name` is the page it stands under, as automation
+        // addresses it; only the board sends this (a placed page is refused)
+        Some("button") => Ev::Button {
+            from: v
+                .get("name")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        },
         Some("touched") => Ev::Touched { from: None },
         Some("compose") => Ev::Compose { from: None },
         Some("pen") => Ev::Pen {
@@ -1142,11 +1102,16 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
 ///
 /// A placed page runs whatever script its site serves, and that script can
 /// call `window.ipc.postMessage` exactly as ours do. So a page is let to
-/// *report* — a press on the bar we drew over it, a step it recorded, that it
-/// is loading or has loaded, the answer to a question we put to it — and never
-/// to *ask*: nothing here types into a tab, runs Lua, touches git, or opens the
-/// settings. Before this list existed, `{kind:"say"}` from any web page went
-/// into the terminal as if the person had typed it.
+/// *report* — a step it recorded, that it is loading or has loaded, that it
+/// took the focus or its pen was pressed, the answer to a question we put to
+/// it — and never to *ask*: nothing here types into a tab, runs Lua, touches
+/// git, or opens the settings. Before this list existed, `{kind:"say"}` from
+/// any web page went into the terminal as if the person had typed it.
+///
+/// Not on the list: the press of the bar that asks the person something
+/// (`Button`). A page cannot be believed about that -- the whole point of the
+/// bar is that a person, not the page, said "done" -- which is why the bar is
+/// drawn by the board, outside the page, and only the board reports the press
 ///
 /// Written from the side that enumerates what gets through, like
 /// `remote::allowed_from_afar` is for the phone. Add to it only after writing
@@ -1156,7 +1121,6 @@ pub fn allowed_from_page(ev: &Ev) -> bool {
         ev,
         Ev::Ready { .. }
             | Ev::Loading { .. }
-            | Ev::Button { .. }
             | Ev::Touched { .. }
             | Ev::Compose { .. }
             | Ev::Recorded { .. }
@@ -1260,8 +1224,11 @@ pub fn heard(
             }
             Ev::Result { id, ok, value }
         }
-        // Reports that say who sent them. The board's own carry no name; a
-        // placed page's carry its name, whatever the message claimed
+        // Reports that say who sent them. A placed page's carry its name,
+        // whatever the message claimed; the board's own carry none -- except
+        // the bar's press, which names the page the bar stands under, and
+        // only the board is heard on that (see `allowed_from_page`)
+        Ev::Button { from: named } if who.is_none() => Ev::Button { from: named },
         Ev::Button { .. } => Ev::Button { from },
         Ev::Touched { .. } => Ev::Touched { from },
         Ev::Compose { .. } => Ev::Compose { from },
@@ -1337,6 +1304,10 @@ pub enum Ev {
     /// main view). Since multiple pages can be placed at once, without
     /// tracking which one it was, a neighboring browser's turn could
     /// wrongly be marked as finished
+    /// The bar asking the person something was pressed. `from` is the page it
+    /// stands under, as automation addresses it. Sent by the board (and the
+    /// phone), never by a page: the bar is the app's own so that only a person
+    /// can press it
     Button { from: Option<String> },
     /// A page placed in the window has the keyboard: whoever is at the machine
     /// is working there, so that is the pane in focus
@@ -1644,13 +1615,6 @@ pub struct Browser {
     next_id: AtomicU64,
     /// The window is put away and the board's page dropped with it (see `hide`)
     away: std::sync::atomic::AtomicBool,
-    /// The bar that should be showing. Navigation wipes out the whole JS
-    /// world, so it gets re-shown every time a new document is ready.
-    /// Logins commonly bounce through SSO two or three times, and without
-    /// re-issuing it, it would "show only at the start and disappear partway".
-    /// The bar we keep showing. One per page.
-    /// A `None` key means the main view
-    pending_ask: std::sync::Mutex<std::collections::HashMap<Option<String>, (String, String)>>,
     /// Pages whose Lua recorder is armed (📼). The same navigation problem as
     /// the bar: the JS world (and its recOn flag) dies on every navigation, so
     /// membership here is what's true, re-issued per new document.
@@ -1888,7 +1852,6 @@ impl Browser {
             events: ev_rx,
             next_id: AtomicU64::new(1),
             away: std::sync::atomic::AtomicBool::new(false),
-            pending_ask: std::sync::Mutex::new(std::collections::HashMap::new()),
             pending_rec: std::sync::Mutex::new(std::collections::HashSet::new()),
             spare: std::sync::Mutex::new(Vec::new()),
             digests: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1968,18 +1931,6 @@ impl Browser {
         Ok(id)
     }
 
-    pub fn ask(&self, to: Option<&str>, text: &str, label: &str) -> Result<()> {
-        self.pending_ask.lock().unwrap().insert(
-            to.map(str::to_string),
-            (text.to_string(), label.to_string()),
-        );
-        self.send(Cmd::Ask {
-            to: to.map(str::to_string),
-            text: text.to_string(),
-            label: label.to_string(),
-        })
-    }
-
     /// Navigate a placed page
     pub fn go(&self, to: Option<&str>, go: Go) -> Result<()> {
         self.send(Cmd::Move {
@@ -2027,17 +1978,6 @@ impl Browser {
             to: to.map(str::to_string),
         })
     }
-
-    pub fn unask(&self, to: Option<&str>) -> Result<()> {
-        self.pending_ask
-            .lock()
-            .unwrap()
-            .remove(&to.map(str::to_string));
-        self.send(Cmd::Unask {
-            to: to.map(str::to_string),
-        })
-    }
-
 
     /// Place a page inside the same window.
     ///
@@ -2368,23 +2308,17 @@ impl Browser {
         }
     }
 
-    /// Re-dress a document that navigation just wiped: the ask bar and the
-    /// recorder arming are both Rust-remembered state, re-issued per new
-    /// document. Only for the page that navigated
+    /// Re-dress a document that navigation just wiped: the recorder arming is
+    /// Rust-remembered state, re-issued per new document. Only for the page
+    /// that navigated. (The bar asking the person something is not in the
+    /// page any more, so it needs no re-dressing: it stays up on the board
+    /// until the script takes it down)
     fn reask(&self, to: Option<&str>) {
         let key = to.map(str::to_string);
         // The digest died with the document (backendNodeIds are per-document).
         // Dropping it here turns a later `{ref=N}` into a clear "take a new
         // digest" instead of a click on a node that no longer exists
         self.digests.lock().unwrap().remove(&key);
-        let want = self.pending_ask.lock().unwrap().get(&key).cloned();
-        if let Some((t, l)) = want {
-            let _ = self.send(Cmd::Ask {
-                to: key.clone(),
-                text: t,
-                label: l,
-            });
-        }
         if self.pending_rec.lock().unwrap().contains(&key) {
             let _ = self.eval_in(to, "window.__shikisha_rec && window.__shikisha_rec(true);");
         }
@@ -3468,14 +3402,6 @@ fn search_url(words: &str) -> String {
     u
 }
 
-fn ask_js(text: &str, label: &str) -> String {
-    format!(
-        "window.__shikisha_ask({}, {});",
-        serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into()),
-        serde_json::to_string(label).unwrap_or_else(|_| "\"OK\"".into())
-    )
-}
-
 /// Put our own icon on the window.
 ///
 /// A window that never says which icon it wants gets Windows' default — the
@@ -3820,18 +3746,6 @@ fn run_window(
                                 "err.browser.log_basic_auth_failed",
                             )),
                         }
-                    }
-                }
-                Cmd::Ask { to, text, label } => {
-                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
-                        let _ = v.evaluate_script(&ask_js(&text, &label));
-                    }
-                }
-                Cmd::Unask { to } => {
-                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
-                        let _ = v.evaluate_script(
-                            "window.__shikisha_unask&&window.__shikisha_unask();",
-                        );
                     }
                 }
                 Cmd::AddChild { name, url, rect, profile } => {
@@ -4910,11 +4824,13 @@ mod tests {
             r#"{"kind":"password","text":"x"}"#,
             r#"{"kind":"addtab"}"#,
             r#"{"kind":"branch","from":"a","branch":"b"}"#,
+            // The bar's press: a page saying "the person pressed it" is the
+            // one report that must never be believed
+            r#"{"kind":"button","name":"web"}"#,
         ] {
             assert!(!allowed_from_page(&read(s)), "よそのページから通ってしまう: {s}");
         }
         for s in [
-            r#"{"kind":"button"}"#,
             r#"{"kind":"touched"}"#,
             r#"{"kind":"compose"}"#,
             r##"{"kind":"recorded","act":"click","sel":"#a"}"##,
@@ -4944,10 +4860,15 @@ mod tests {
         assert!(stranger(r#"{"kind":"runlua","code":"1"}"#, &mut asked).is_none());
         assert!(stranger("not json", &mut asked).is_none());
         assert!(stranger(r#"{"kind":"nosuchthing"}"#, &mut asked).is_none());
+        // A page cannot press the bar for the person
+        assert!(
+            stranger(r#"{"kind":"button","name":"web"}"#, &mut asked).is_none(),
+            "ページが帯のボタンを押せる"
+        );
         // A report gets the pane's name, not the one it wrote
-        match stranger(r#"{"kind":"button","from":"settings"}"#, &mut asked) {
-            Some(Ev::Button { from }) => assert_eq!(from.as_deref(), Some("web")),
-            other => panic!("ボタンの報告が届かない: {other:?}"),
+        match stranger(r#"{"kind":"touched","from":"settings"}"#, &mut asked) {
+            Some(Ev::Touched { from }) => assert_eq!(from.as_deref(), Some("web")),
+            other => panic!("フォーカスの報告が届かない: {other:?}"),
         }
         match stranger(r#"{"kind":"ready","url":"https://a.example/"}"#, &mut asked) {
             Some(Ev::Ready { from, url, .. }) => {
@@ -4965,11 +4886,16 @@ mod tests {
             heard(r#"{"kind":"select","tab":0}"#, Some("settings"), true, &mut asked),
             Some(Ev::Select { tab: 0 })
         ));
-        // The board's own reports carry no name
+        // The board's own reports carry no name -- except the bar's press,
+        // which names the page the bar stands under
         assert!(matches!(
             heard(r#"{"kind":"say","tab":1,"text":"ls"}"#, None, true, &mut asked),
             Some(Ev::Say { tab: 1, .. })
         ));
+        match heard(r#"{"kind":"button","name":"br"}"#, None, true, &mut asked) {
+            Some(Ev::Button { from }) => assert_eq!(from.as_deref(), Some("br")),
+            other => panic!("盤面の帯の押下が届かない: {other:?}"),
+        }
     }
 
     /// An answer is believed only from the page that was asked, and only once.
@@ -5276,38 +5202,6 @@ mod tests {
 
         let id = b.eval("return document.documentElement.outerHTML.length;").unwrap();
         println!("HTML長 = {}", b.wait_result(id, Duration::from_secs(20)).unwrap());
-
-        b.ask(None, "ログインしてください", "できました").unwrap();
-        std::thread::sleep(Duration::from_millis(800));
-        let id = b.eval("return !!document.getElementById('__shikisha_bar');").unwrap();
-        let v = b.wait_result(id, Duration::from_secs(20)).unwrap();
-        println!("帯が出ているか = {v}");
-        assert_eq!(v, "true", "呼びかけの帯が出ていない");
-
-        // The banner button lives in a shadow root — the digest must still
-        // list it, and a ref click on it must fire the button's own handler
-        // (that's how a human's proxy — or a phone — presses it)
-        let text = b.digest(None, 20_000).expect("digestが取れない");
-        let bar = text
-            .lines()
-            .find(|l| l.contains("できました"))
-            .unwrap_or_else(|| panic!("帯のボタンがdigestに載らない:\n{text}"));
-        println!("banner line: {bar}");
-        let br: u32 = bar
-            .strip_prefix('[')
-            .and_then(|l| l.split(']').next())
-            .and_then(|n| n.parse().ok())
-            .expect("帯ボタンのref");
-        let rep = b.click(None, &Sel::Ref(br), 10_000).unwrap();
-        println!("banner click echo: {:?}", rep.echo);
-        // The press reports Ev::Button — the same signal a human's tap sends
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let mut pressed = false;
-        while std::time::Instant::now() < deadline && !pressed {
-            pressed = b.drain().iter().any(|e| matches!(e, Ev::Button { .. }));
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        assert!(pressed, "refクリックで帯のボタンが押せていない (Ev::Buttonが来ない)");
 
         drop(b);
         std::thread::sleep(Duration::from_millis(600));
