@@ -4052,7 +4052,19 @@ fn run_window(
                     casts.remove(&None);
                     auths.remove(&None);
                     dialogs.remove(&None);
+                    // The page's container window outlives the page: wry
+                    // destroys it for a child page and not for a top-level
+                    // one (wry 0.56), so every put-away left one more empty
+                    // WRY_WEBVIEW child under the board that came back
+                    let stale = {
+                        use wry::WebViewExtWindows;
+                        main_view(&shell).map(|v| v.hwnd().0)
+                    };
                     shell = None;
+                    if let Some(h) = stale {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
+                        let _ = unsafe { DestroyWindow(h) };
+                    }
                     crate::append_hook_log("Board page dropped while the window is put away");
                 }
                 Cmd::Show => {
@@ -4120,6 +4132,48 @@ fn run_window(
                 ..
             } => {
                 let _ = ev_tx.send(Ev::CloseRequested);
+            }
+            // The board follows the window's size from here, not from the
+            // runtime's own hook. wry sizes a top-level page by subclassing
+            // the window for WM_SIZE -- and takes that subclass down again
+            // whenever ANY page in the window is dropped, a child page
+            // included (InnerWebView::drop detaches the parent subclass
+            // unconditionally, wry 0.56). So from the first closed settings
+            // page or browser tab onward, maximizing grew the window frame
+            // and left the board at the size it was: the "pane widens, the
+            // body does not" picture (2026-09-09). Setting the bounds here on
+            // every Resized is the same call the hook made, from a place
+            // nothing takes down. Doing it twice while the hook still lives
+            // costs nothing
+            Event::WindowEvent {
+                event: WindowEvent::Resized(size),
+                ..
+            } => {
+                if size.width > 0 && size.height > 0 {
+                    if let Some(v) = main_view(&shell) {
+                        let _ = v.set_bounds(wry::Rect {
+                            position: wry::dpi::PhysicalPosition::new(0, 0).into(),
+                            size: wry::dpi::PhysicalSize::new(size.width, size.height).into(),
+                        });
+                    }
+                }
+            }
+            // The move notice the same hook gave, for the same reason:
+            // Chromium places its popups (select lists, tooltips) by where
+            // it last heard the window was, and a moved window whose page
+            // was never told drops them in the old place. The hook's third
+            // duty, handing focus to the board when the window gets it, is
+            // left alone on purpose: Windows already gives focus back to
+            // the page that had it, and a settings page being typed into
+            // must not lose it to the board on every Alt+Tab
+            Event::WindowEvent {
+                event: WindowEvent::Moved(_),
+                ..
+            } => {
+                use wry::WebViewExtWindows;
+                if let Some(v) = main_view(&shell) {
+                    let _ = unsafe { v.controller().NotifyParentWindowPositionChanged() };
+                }
             }
             _ => {}
         }
