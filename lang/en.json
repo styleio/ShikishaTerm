@@ -726,6 +726,8 @@
   "settings.tab.move_down": "↓ Move down",
   "settings.tab.indent": "→ Make it a child",
   "settings.tab.outdent": "← Move it out",
+  "settings.tab.cat.remote": "Server (this program connects)",
+  "settings.ssh.password.saved": "Password saved",
   "settings.ssh.host": "Host",
   "settings.ssh.port": "Port",
   "settings.ssh.user": "User",

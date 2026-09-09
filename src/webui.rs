@@ -3266,8 +3266,17 @@ const DEFAULT_MODEL = {deepseek: "deepseek-chat"};
 // The git panel is the word on its own -- `git status` in a tab is somebody
 // who wants a terminal that runs git, and it stays one
 const isGitPanel = c => cmdToText(c).trim().toLowerCase() === "git";
+// A terminal on another machine that this program connects to itself, written
+// the way the world writes it. Checked before the plain `ssh` command, which is
+// a different thing: that one runs ssh.exe and this one does not
+function parseRemote(cmd) {
+  const m = /^ssh:\/\/([^@\s]+)@([^\s:/]+)(?::(\d+))?\/?$/i.exec((cmdToText(cmd) || "").trim());
+  return m ? {user: m[1], host: m[2], port: m[3] || ""} : null;
+}
+const buildRemote = o =>
+  "ssh://" + (o.user || "") + "@" + (o.host || "") + (o.port ? ":" + o.port : "");
 const kindOf = c => isGitPanel(c) ? "git" : parseBrowser(c) ? "browser" : parseModel(c) ? "model"
-  : parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
+  : parseRemote(c) ? "remote" : parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
 // CLI-type AIs (external programs the user installs). check = engine id to
 // look up in aiEngines for the "(not installed)" note.
 const AI_CLIS = [
@@ -3314,13 +3323,14 @@ const defaultAiCommand = () =>
   (AI_CLIS.find(c => c.check && aiEngines.some(e => e.id === c.check)) || AI_CLIS[0]).cmd;
 // What picking a kind puts in the command field. The AI entry is a function
 // because its answer depends on which CLI this machine has.
-const CAT_START = {ai:defaultAiCommand, cmd:"", ssh:"ssh ", docker:"docker exec -it ", wsl:"wsl ",
-  browser:"browser https://", git:"git"};
+const CAT_START = {ai:defaultAiCommand, cmd:"", remote:"ssh://user@example.com:22", ssh:"ssh ",
+  docker:"docker exec -it ", wsl:"wsl ", browser:"browser https://", git:"git"};
 const catStart = v => { const s = CAT_START[v]; return (typeof s === "function" ? s() : s) || ""; };
 const CAT_LIST = [
   ["ai",      T["settings.tab.cat.ai"]],
   ["cmd",     T["settings.tab.cat.cmd"]],
-  ["ssh",     "SSH"],
+  ["remote",  T["settings.tab.cat.remote"]],
+  ["ssh",     "SSH (ssh.exe)"],
   ["docker",  "Docker"],
   ["wsl",     "WSL"],
   ["browser", T["settings.tab.kind.browser"]],
@@ -6518,6 +6528,7 @@ function kindPanel(t, cmdInput, rebuild, real) {
   if (catOf(t.command) === "ai") return aiPanel(t, cmdInput, rebuild, real);
   const box = el("div");
   const ssh = parseSsh(t.command), dk = parseDocker(t.command), wsl = parseWsl(t.command);
+  const remote = parseRemote(t.command);
   const web = parseBrowser(t.command);
   const mdl = parseModel(t.command);
   const sync = (build, o) => () => {
@@ -6531,7 +6542,49 @@ function kindPanel(t, cmdInput, rebuild, real) {
     if (sug) suggest(i, sug);
     return [el("label", {}, label), i];
   };
-  if (ssh) {
+  if (remote) {
+    // This program does the connecting, so what it needs is an address, a user
+    // and -- kept where every other credential is kept -- a password
+    const upd = sync(buildRemote, remote);
+    box.append(el("div", {class:"row"},
+      ...f(remote, "host", T["settings.ssh.host"], "example.com", upd, 240, "ssh"),
+      el("label", {class:"beside"}, T["settings.phone.port"]),
+      (() => { const i = el("input", {type:"text", class:"mono", style:"width:70px"});
+               i.value = remote.port || ""; i.placeholder = "22";
+               i.addEventListener("input", () => { remote.port = i.value.trim(); upd(); }); return i; })(),
+      el("label", {class:"beside"}, T["settings.ssh.user"]),
+      (() => { const i = el("input", {type:"text", class:"mono", style:"width:130px"});
+               i.value = remote.user || ""; i.placeholder = "root";
+               i.addEventListener("input", () => { remote.user = i.value.trim(); upd(); }); return i; })()));
+    // The password is filed under the workspace and the tab, so nothing about
+    // it is written into the settings and the same name is not typed twice
+    const pwIn = el("input", {type:"password", class:"grow", placeholder:T["settings.ssh.password.hint"]});
+    const note = el("span", {class:"hint"});
+    const key = () => {
+      const ws = wss[sel.ws];
+      const w = (ws && (ws.id || "").trim()), tid = (t.id || "").trim();
+      return w && tid ? "ssh/" + w + "/" + tid + "/password" : "";
+    };
+    const refreshNote = async () => {
+      const k = key();
+      if (!k) { note.textContent = T["settings.secrets.ws_needs_id"]; return; }
+      const j = await fetchSecrets();
+      const has = j && (j.secrets || []).some(x => x.key === k);
+      note.textContent = has ? T["settings.ssh.password.set"] : "";
+    };
+    setTimeout(refreshNote, 0);
+    box.append(el("div", {class:"row"}, el("label", {}, T["settings.ssh.password"]), pwIn,
+      el("button", {onclick: async () => {
+        const k = key();
+        if (!k) { toast(T["settings.secrets.ws_needs_id"], true); return; }
+        if (!pwIn.value) { toast(T["settings.secrets.value_required"], true); return; }
+        const r = await saveSecret({key: k, value: pwIn.value, description: buildRemote(remote),
+                                    ai: false, hosts: []});
+        if (r.ok) { pwIn.value = ""; toast(T["settings.ssh.password.saved"]); refreshNote(); }
+        else toast(r.error || T["settings.secrets.save_failed"], true);
+      }}, T["common.save"]), note));
+    box.append(el("div", {class:"hint"}, T["settings.ssh.builtin.hint"]));
+  } else if (ssh) {
     const upd = sync(buildSsh, ssh);
     box.append(el("div", {class:"row"}, ...f(ssh, "host", T["settings.ssh.host"], "example.com", upd, 240, "ssh"),
       el("label", {class:"beside"}, T["settings.phone.port"]),

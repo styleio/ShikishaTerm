@@ -714,6 +714,8 @@
   "settings.tab.move_down": "↓ 下へ",
   "settings.tab.indent": "→ 子にする",
   "settings.tab.outdent": "← 親に戻す",
+  "settings.tab.cat.remote": "サーバー（このソフトで接続）",
+  "settings.ssh.password.saved": "パスワードを登録しました",
   "settings.ssh.host": "接続先",
   "settings.ssh.port": "ポート",
   "settings.ssh.user": "ユーザー",
