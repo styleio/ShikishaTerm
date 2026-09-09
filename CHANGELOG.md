@@ -8,6 +8,35 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **The program can update itself, when asked.** It looks once at start and
+  once a day whether a newer version is published (one request for the
+  version number; a setting turns it off). If one is, a small card in the
+  sidebar says so, once; its two buttons install nothing — one opens
+  Settings › Update, the other puts the card away for that version. Settings
+  › Update is the one place a version is installed, whichever way you came:
+  **Fetch and install** downloads the zip, checks it against its published
+  SHA256 *and* a signature made with a key only the release workflow holds,
+  unpacks it beside the program's data, and — after the same question quitting
+  asks while an AI is at work — swaps the files and starts the new copy. What
+  you wrote (`config/`, `data/`, `logs/`, `workspaces/`, `scripts/`) is never
+  overwritten; an interrupted swap is put back on the next start; the version
+  replaced is kept, and **Go back** puts it back. The Store copy asks the
+  Store instead, and its button lets the Store install and then restarts the
+  program — which a copy living in the notification area otherwise never
+  gives the Store the chance to do.
+- **Your settings are copied before a new version first touches them,** to
+  `data/backup/`, five copies deep. A version that changes the shape of the
+  settings file now adds one step to a list the program carries, and a start
+  over a file from several versions back runs every step between in order —
+  the program is replaced in one go, the files are carried forward one version
+  at a time. Nothing has changed shape yet; the list is empty.
+
+### Changed
+- The one-line "a new version is available" notice on the board is gone; the
+  card and the settings card replace it. The privacy policy says what the
+  daily look asks, and that fetching happens only when the button is pressed.
+
 ## [0.8.0] - 2026-09-09
 
 The window learns to run several AIs on one project at once.

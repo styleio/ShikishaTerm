@@ -13,10 +13,19 @@ project does not have to buy or hold. Free certificates were applied for
 elsewhere first — [SignPath Foundation](https://signpath.org/) — and that
 application was not accepted.
 
-The portable zip stays unsigned. It is the same program, built by the same
-workflow from the same tagged commit; what it lacks is a certificate, not
-provenance. Until that changes, check the download against the SHA256 published
-next to it rather than trusting the absence of a warning.
+The portable zip stays unsigned in Windows' sense: it carries no code-signing
+certificate, so SmartScreen has nothing to check. It is the same program, built
+by the same workflow from the same tagged commit; what it lacks is a certificate,
+not provenance. Check the download against the SHA256 published next to it rather
+than trusting the absence of a warning.
+
+It does carry one signature of its own. `SHIKISHA-TERM.zip.sig` is an Ed25519
+signature over the zip, made in the release workflow with a key that exists only
+in the repository's secrets; the public half is compiled into the program
+(`src/update.rs`). It is what the program's own updater checks before it puts a
+downloaded version in place — a zip whose signature the key does not accept is
+refused, whatever its SHA256 says. Windows does not read it, and it is not a
+substitute for a certificate.
 
 ## Roles
 

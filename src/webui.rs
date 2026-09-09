@@ -1069,6 +1069,7 @@ fn handle(
                 Some("discussions") => {
                     Some("https://github.com/styleio/ShikishaTerm/discussions".to_string())
                 }
+                Some("update-notes") => crate::update::notes_url(),
                 _ => None,
             };
             match url {
@@ -2174,6 +2175,30 @@ fn handle(
                 ),
             )?;
         }
+        // The update: where it stands, and the presses that move it. All of
+        // them answer with the state as it is afterwards, so the page draws
+        // what the program holds and never what it hoped
+        ("GET", "/api/update") => req.respond(json_resp(crate::update::snapshot()))?,
+        ("POST", "/api/update/check") => {
+            crate::update::request_check();
+            req.respond(json_resp(crate::update::snapshot()))?;
+        }
+        ("POST", "/api/update/install") => match crate::update::request_install() {
+            Ok(()) => req.respond(json_resp(crate::update::snapshot()))?,
+            Err(e) => req.respond(json_resp(serde_json::json!({ "ok": false, "error": e.to_string() })).with_status_code(409))?,
+        },
+        ("POST", "/api/update/skip") => {
+            crate::update::skip();
+            req.respond(json_resp(crate::update::snapshot()))?;
+        }
+        ("POST", "/api/update/discard") => {
+            crate::update::discard();
+            req.respond(json_resp(crate::update::snapshot()))?;
+        }
+        ("POST", "/api/update/rollback") => match crate::update::request_rollback() {
+            Ok(()) => req.respond(json_resp(crate::update::snapshot()))?,
+            Err(e) => req.respond(json_resp(serde_json::json!({ "ok": false, "error": e.to_string() })).with_status_code(409))?,
+        },
         ("POST", "/api/config") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -2566,6 +2591,9 @@ const PAGE: &str = r##"<!doctype html>
       the end of the previous field's line, reading as if it named that one.
       A checkbox's own label is the exception: it belongs beside its box. */
    .row { flex-wrap:wrap; gap:6px 10px; }
+   /* A fetch under way: the bar is the number, the line under it the words */
+   .ubar { height:6px; border-radius:3px; background:var(--line); overflow:hidden; margin:4px 0 2px; }
+   .ubar i { display:block; height:100%; background:var(--live); transition:width .3s; }
    .row > label:not(.check), .row > label.beside { width:100%; }
    .hint { flex-basis:100%; }
    /* Fixed pixel widths on inputs/selects overflow a phone; cap them all, and
@@ -4156,6 +4184,7 @@ function filesCard() {
 function globalSections() {
   return [
     {id:"basic",     label:T["settings.sec.basic"],     sub:T["settings.sec.basic.sub"],     build:basicCard},
+    {id:"update",    label:T["settings.sec.update"],    sub:T["settings.sec.update.sub"],    build:updateCard},
     {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],      build:keysCard},
     {id:"logins",    label:T["settings.sec.logins"],    sub:T["settings.sec.logins.sub"],    build:loginsCard},
     {id:"snapshots", label:T["settings.sec.snapshots"], sub:T["settings.sec.snapshots.sub"], build:snapshotsCard},
@@ -4173,6 +4202,120 @@ function globalSections() {
     {id:"secrets",   label:T["settings.sec.secrets"],   sub:T["settings.sec.secrets.sub"],   build:secretsCard},
     {id:"results",   label:T["settings.sec.results"],   sub:T["settings.sec.results.sub"],   build:rallyResultCard},
   ];
+}
+
+// ── Update ─────────────────────────────────────────────────────
+// The one place a newer version is fetched, checked and put in place. The
+// sidebar's card and a person who came here on their own press the same
+// button, so one road carries everyone -- and a broken road is noticed.
+// Draws from /api/update; polls once a second only while something is under
+// way, and stops the moment the card leaves the screen.
+let updateTimer = null;
+function updateCard() {
+  const box = el("div", {id:"updatebox"}, el("div", {class:"hint"}, "…"));
+  const auto = row(T["settings.update.auto"], checkDefaultOn(current, "update_check", T["settings.update.auto.label"]),
+    el("span", {class:"hint"}, T["settings.update.auto.hint"]));
+  setTimeout(refreshUpdate, 0);
+  return card(T["settings.update.title"], box, auto);
+}
+async function updateApi(path, post) {
+  const r = await fetch("/api/update" + path, {method: post ? "POST" : "GET", headers:{"X-Token":TOKEN}});
+  return r.json();
+}
+async function refreshUpdate() {
+  const box = document.getElementById("updatebox");
+  if (!box) { if (updateTimer) { clearInterval(updateTimer); updateTimer = null; } return; }
+  let u = null;
+  try { u = await updateApi(""); } catch (e) {
+    box.textContent = ""; box.append(el("div", {class:"hint"}, T["settings.update.unreachable"])); return;
+  }
+  drawUpdate(box, u);
+  const busy = ["checking", "downloading", "verifying", "applying"].includes(u.phase);
+  if (busy && !updateTimer) updateTimer = setInterval(refreshUpdate, 1000);
+  if (!busy && updateTimer) { clearInterval(updateTimer); updateTimer = null; }
+}
+// Megabytes with one decimal, for a person: "12.3 MB"
+function mb(n) { return (n / 1048576).toFixed(1) + " MB"; }
+function drawUpdate(box, u) {
+  box.textContent = "";
+  const act = async (path) => { try { await updateApi(path, true); } catch (e) {} refreshUpdate(); };
+  // Line 1: this version, and when the newest was last looked for
+  const when = u.checked_at ? fill(T["settings.update.checked"], {when: new Date(u.checked_at * 1000).toLocaleString()})
+                            : T["settings.update.never"];
+  box.append(el("div", {class:"row"},
+    el("span", {}, fill(T["settings.update.current"], {version: u.current})),
+    el("span", {class:"hint", style:"flex-basis:auto"}, when),
+    // (an attribute, so absent rather than "false": disabled="false" still disables)
+    el("button", {class:"quiet", disabled: u.phase === "checking" ? "" : null, onclick: () => act("/check")},
+      u.phase === "checking" ? T["settings.update.checking"] : T["settings.update.check"])));
+  // Line 2: where things stand, and the one button
+  const v = u.version || "";
+  const state = el("div", {class:"row", style:"align-items:center"});
+  const main = el("div", {class:"row", style:"gap:8px"});
+  const text = (k, args) => el("span", {}, fill(T[k] || k, args || {}));
+  const notes = () => u.notes ? el("a", {href: REMOTE ? u.notes : "#", target: REMOTE ? "_blank" : null, rel:"noopener",
+      onclick: REMOTE ? null : (e) => { e.preventDefault(); fetch("/api/open?dest=update-notes", {headers:{"X-Token":TOKEN}}); }},
+      T["settings.update.notes"]) : null;
+  const primary = (label, path) => el("button", {class:"primary", onclick: () => act(path)}, label);
+  const quiet = (label, path) => el("button", {class:"quiet", onclick: () => act(path)}, label);
+  switch (u.phase) {
+    case "idle":
+    case "checking":
+      break;
+    case "up_to_date":
+      state.append(text("settings.update.uptodate"));
+      break;
+    case "available":
+      state.append(text(u.packaged ? "settings.update.available.store" : "settings.update.available", {version: v}), notes());
+      main.append(primary(u.packaged ? T["settings.update.install.store"] : T["settings.update.install"], "/install"),
+                  quiet(T["settings.update.skip"], "/skip"));
+      break;
+    case "downloading": {
+      const pct = u.total ? Math.min(100, Math.round(u.got * 100 / u.total)) : 0;
+      const bar = el("div", {class:"ubar"}, el("i", {style:"width:" + pct + "%"}));
+      state.append(el("div", {style:"flex:1 1 100%"}, bar,
+        el("div", {class:"hint"}, u.total ? fill(T["settings.update.downloading"], {got: mb(u.got), total: mb(u.total)})
+                                          : fill(T["settings.update.downloading.some"], {got: mb(u.got)}))));
+      break;
+    }
+    case "verifying":
+      state.append(text("settings.update.verifying"));
+      break;
+    case "staged":
+      state.append(text("settings.update.staged", {version: v}), notes());
+      main.append(primary(T["settings.update.install.staged"], "/install"),
+                  quiet(T["settings.update.skip"], "/skip"),
+                  quiet(T["settings.update.discard"], "/discard"));
+      break;
+    case "applying":
+      state.append(text("settings.update.applying"));
+      break;
+    case "failed":
+      state.append(el("span", {style:"color:var(--danger)"},
+        v ? fill(T["settings.update.failed"], {version: v, message: u.message || ""})
+          : fill(T["settings.update.failed.check"], {message: u.message || ""})));
+      if (v) main.append(primary(T["settings.update.install"], "/install"), quiet(T["settings.update.skip"], "/skip"));
+      break;
+  }
+  if (state.childNodes.length) box.append(state);
+  if (main.childNodes.length) {
+    box.append(main);
+    if (REMOTE) box.append(el("div", {class:"hint"}, T["settings.update.phone"]));
+    if (!u.packaged) box.append(el("div", {class:"hint"}, T["settings.update.sync_hint"]));
+  }
+  // Line 3: what the last update did, and the way back
+  if (u.migration_failed) {
+    box.append(el("div", {class:"hint", style:"color:var(--danger)"},
+      fill(T["settings.update.carry_failed"], {version: u.migrated_from || "", message: u.migration_failed, path: u.backup || ""})));
+  } else if (u.migrated_from) {
+    box.append(el("div", {class:"hint"}, fill(T["settings.update.carried"], {version: u.migrated_from})));
+  }
+  if (u.backup) box.append(el("div", {class:"hint"}, fill(T["settings.update.backup"], {path: u.backup})));
+  if (u.prev && !u.packaged) {
+    box.append(el("div", {class:"row", style:"margin-top:6px"},
+      quiet(fill(T["settings.update.rollback"], {version: u.prev}), "/rollback"),
+      el("span", {class:"hint"}, T["settings.update.rollback.hint"])));
+  }
 }
 
 // Downloads the latest rally result.

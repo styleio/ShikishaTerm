@@ -142,3 +142,22 @@ See the [automation reference](https://shikisha-term.com/automation/).
   started.
 - **The zip shows a Windows warning on first start** — the zip is not code-signed;
   the Store copy is. [Why, and how to check the download](https://github.com/styleio/ShikishaTerm/blob/main/SIGNING.md).
+
+## 7. Updating
+
+The program looks, once at start and once a day while it runs, whether a newer
+version is published. If one is, a small card in the sidebar says so, once. Its
+two buttons install nothing: **Open Update** leads to Settings › Update, and
+**Not now** puts the card away for that version.
+
+Settings › Update is the one place a version is installed, whether you came from
+the card or on your own. **Fetch and install** downloads the zip, checks it against
+its published SHA256 and its signature, and then — after the same question
+quitting asks while an AI is at work — swaps the files and starts the program
+again. Your settings, data, logs, workspaces and scripts are not touched, and a
+copy of the settings is made before the first start of the new version. The
+version replaced is kept, and **Go back** on the same card puts it back. The
+Store copy hands the same button to the Store, which installs and restarts.
+
+Skipped a few versions? The newest one carries your settings forward one version
+at a time, so nothing has to be installed in between.

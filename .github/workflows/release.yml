@@ -84,6 +84,24 @@ jobs:
           (Get-FileHash "SHIKISHA-TERM.zip" -Algorithm SHA256).Hash.ToLower() +
             "  SHIKISHA-TERM.zip" | Set-Content "SHIKISHA-TERM.zip.sha256"
 
+      # The signature the program checks a fetched update against before it
+      # puts it in place (src/update.rs). The key exists only in the
+      # repository's secrets; the public half is in the source. A release
+      # built without the key carries no .sig, and every copy that checks
+      # signatures refuses to install it -- so its absence is said loudly
+      - name: Sign
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if (-not $env:UPDATE_SIGNING_KEY) {
+            Write-Warning "UPDATE_SIGNING_KEY is not set: the zip goes out unsigned and self-update will refuse it"
+            exit 0
+          }
+          cargo run --release --locked --bin sign -- sign SHIKISHA-TERM.zip
+          $pub = (Select-String -Path src/update.rs -Pattern 'PUBLIC_KEY_HEX: &str = "([0-9a-f]{64})"').Matches[0].Groups[1].Value
+          cargo run --release --locked --bin sign -- verify SHIKISHA-TERM.zip $pub
+
       # 空撃ち: リリースを作らず、中身を確認できる形で置いておく
       - name: Upload as an artifact (dry run)
         if: github.event_name == 'workflow_dispatch'
@@ -93,6 +111,7 @@ jobs:
           path: |
             SHIKISHA-TERM.zip
             SHIKISHA-TERM.zip.sha256
+            SHIKISHA-TERM.zip.sig
           retention-days: 7
 
       # The Store copy: the same binary, packaged. Built here rather than on a
@@ -131,6 +150,7 @@ jobs:
           files: |
             SHIKISHA-TERM.zip
             SHIKISHA-TERM.zip.sha256
+            SHIKISHA-TERM.zip.sig
           body: |
             ## Which copy do you want?
 

@@ -1,0 +1,51 @@
+{
+  "//automation": "全体共通の自動化。フォルダならイベント別ファイル方式 (推奨)",
+  "automation": "scripts/common",
+  "done_confirm_ms": 10000,
+  "max_chain": 10,
+
+  "//tab_bar_width": "左タブバーの幅(ピクセル)。省略時は既定の幅。画面で境界線をドラッグしても変わり、その値がここに書き戻される。0 でタブバーをしまう (Ctrl+B s でも同じ)",
+  "tab_bar_width": 290,
+
+  "//secrets": "Slack/Discord/Telegramのトークンはここではなくsecretsファイルへ (共有厳禁)",
+  "secrets": "secrets.json",
+
+  "//remote": "スマホ等から監視・指示するリモートUI。既定は無効。bindはauto(Tailscale→LAN)を推奨",
+  "remote": {
+    "enabled": false,
+    "bind": "auto",
+    "port": 8787
+  },
+
+  "//keys": "キーの割り当て。操作の名前に対してキーを書く（キーに対して操作ではない）。修飾キー付き(ctrl+shift+d)はそれ単体で効き、1文字だけ(z)は接頭キーのあと。off でそのキーを返上。名前の一覧は設定画面の「キー」に出る",
+  "keys": {
+    "prefix": "ctrl+b"
+  },
+
+  "//appearance": "端末の見た目。font は空なら既定(罫線と日本語が1マスに収まる組み合わせ)。font_size は端末の上で Ctrl+ホイールでも変えられ、その値がここに書き戻される",
+  "//appearance.theme": "配色の名前。設定画面の一覧に出るもの(このPCの Windows ターミナルが持っている配色 + config/themes に置いた配色ファイル + 組み込み)から選ぶ。色を直接書いてもよい: {\"background\":\"#1e1e2e\",\"red\":\"#f38ba8\", ...}",
+  "appearance": {
+    "font": "",
+    "font_size": 14,
+    "theme": "SHIKISHA"
+  },
+
+  "//external_api": "外部から操るための名前付きパイプ。children=このアプリが起動したプロセスのみ(既定) / user=あなたの権限で動くもの全部(合言葉が data/api-token に書かれる) / off=作らない",
+  "external_api": {
+    "access": "children"
+  },
+
+  "//workspaces": "切り替える単位。file で定義ファイルを参照するか、tabs を直書きする",
+  "workspaces": [
+    {
+      "name": "ProjectX",
+      "file": "workspaces/projectx.json"
+    },
+    {
+      "name": "雑用",
+      "tabs": [
+        { "name": "shell", "command": "powershell.exe" }
+      ]
+    }
+  ]
+}

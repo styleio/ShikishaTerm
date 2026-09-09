@@ -62,6 +62,7 @@ mod limits;
 mod vault;
 mod uistate;
 mod update;
+mod migrate;
 mod watch;
 mod winpath;
 mod wintoast;
@@ -248,9 +249,19 @@ fn boot() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--hook") {
         return hook_mode(std::env::args().nth(2).unwrap_or_default());
     }
+    // A copy started to finish an update waits for the copy that started it
+    // to leave, so nothing below reads files the old one is still writing
+    update::wait_for_handoff();
+    // An update that was interrupted mid-swap is put back, and one that
+    // finished is tidied, before any of the files it touched is read
+    update::finish_last();
     // Move the legacy layout (config.json under the root) into the config folder (once only).
     // This must happen before loading, or we'd start up with the pre-migration empty config.
     config::migrate_legacy_config();
+    // The first start of a version over these files: a copy is kept, then
+    // they are carried forward one step per version (migrate.rs). Before
+    // anything reads them, so what is read is already in this version's shape
+    update::set_outcome(migrate::on_start());
     // Clean up the exchange hand-off area. Sweep old run folders left behind by an abnormal
     // exit, collecting them at startup (temp files from a normal exit are already gone by
     // the time they're consumed). Anything older than 30 days.
@@ -713,6 +724,9 @@ struct WinSurface {
     coach_done: Option<u8>,
     /// The thanks card was pressed: open the page, or just put it away
     thanks: Option<bool>,
+    /// The update card was pressed: open the settings' Update card, or just
+    /// put the card away
+    update_card: Option<bool>,
     /// The `?` beside the gear was pressed
     help_site: bool,
     /// Tabs whose usage-limit notice was read, by screen number
@@ -871,6 +885,10 @@ impl WinSurface {
 
     fn take_thanks(&mut self) -> Option<bool> {
         self.thanks.take()
+    }
+
+    fn take_update_card(&mut self) -> Option<bool> {
+        self.update_card.take()
     }
 
     fn take_help_site(&mut self) -> bool {
@@ -1136,6 +1154,7 @@ impl WinSurface {
                 Ev::RemoteCut => self.remote_cut = true,
                 Ev::Coach { step } => self.coach_done = Some(step),
                 Ev::Thanks { open } => self.thanks = Some(open),
+                Ev::Update { open } => self.update_card = Some(open),
                 Ev::Help => self.help_site = true,
                 Ev::LimitAck { tab } => self.limit_acks.push(tab),
                 // A Lua quick-action was tapped. Remember its index; the loop looks
@@ -1526,6 +1545,7 @@ fn run_in_window() -> Result<()> {
         remote_cut: false,
         coach_done: None,
         thanks: None,
+        update_card: None,
         help_site: false,
         limit_acks: Vec::new(),
         says: Vec::new(),
@@ -2216,6 +2236,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         ais: ui.ais.clone(),
         coach: ui.coach,
         thanks: ui.thanks.clone(),
+        update: ui.update.clone(),
         usage: ui.usage.clone(),
         // Keep the order exactly as written in the config.
         // Listing sessions and browsers separately would push the browser
@@ -2905,8 +2926,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     ws_panes.resize_with(workspaces.len(), || crate::layout::Layout::single(0));
     // Watch the config file for changes (saving takes effect without a restart)
     let mut watcher = watch::Watcher::new(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
-    // Check once in the background for whether a newer version is out (only notifies; doesn't update)
-    let update_rx = update::spawn_check();
+    // Look for a newer version: now, and once a day while this runs. Looking
+    // is all it does by itself; installing is a button on the settings screen
+    update::start(cfg.as_ref().and_then(|c| c.update_check).unwrap_or(true));
     let mut cfg = cfg;
 
     let mut ws_open = false;
@@ -3098,6 +3120,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
                 resident = newcfg.resident.unwrap_or(true);
                 claude_usage_on = newcfg.claude_usage.unwrap_or(true);
+                update::set_auto(newcfg.update_check.unwrap_or(true));
                 busy_repeat_ms = newcfg.busy_repeat_sec.filter(|s| *s > 0).map(|s| s * 1000);
                 busy_again.clear();
                 done_confirm_ms = newcfg
@@ -3205,10 +3228,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
-        // Update notification. Shown once the screen is free, so it doesn't overwrite other output.
+        // Settings that could not be carried into this version, said once.
+        // Shown once the screen is free, so it doesn't overwrite other output.
         if flash.is_none() {
-            if let Ok(v) = update_rx.try_recv() {
-                flash = Some(i18n::tp("msg.update_available", &[("version", &v)]));
+            if let Some((from, path)) = update::take_carry_failure() {
+                flash = Some(i18n::tp("msg.update.carry_failed", &[("version", &from), ("path", &path)]));
             }
         }
         // A notification that could not be sent, said here too. It used to go
@@ -4154,6 +4178,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::Browse { path, open }) => {
                         surface.browses.push((path, open));
                     }
+                    // The update card and the first-run pointer, answered on
+                    // the phone: the same fields the window's presses fill
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Update { open }) => {
+                        surface.update_card = Some(open);
+                    }
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Coach { step }) => {
+                        surface.coach_done = Some(step);
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         let keys = keys_for(&ev);
@@ -4414,6 +4446,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             coach,
             usage,
             thanks: thanks_show.then(|| thanks_kind.to_string()),
+            update: update::ask(),
             first_run,
             push_wanted: cfg.as_ref().is_some_and(|c| {
                 c.notify.values().any(|d| matches!(d, notify::Destination::Phone {}))
@@ -5928,6 +5961,16 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if surface.take_help_site() {
             crate::webui::open_external(&i18n::t("tui.help.url"));
         }
+        // The update card was answered. Either answer puts it away for this
+        // version; "open" leads to the settings' Update card, where the one
+        // button that fetches and installs is -- the card itself installs
+        // nothing, so a press by mistake costs nothing
+        if let Some(open) = surface.take_update_card() {
+            update::card_answered();
+            if open {
+                surface.open_settings = Some((Some("update".into()), false, None, None));
+            }
+        }
         for idx in surface.take_limit_acks() {
             if let Some(i) = session_at(&surfaces, idx) {
                 if let Some(t) = tabs.get_mut(i) {
@@ -6066,6 +6109,25 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // program that conducts things. Quitting is the icon's menu, Ctrl+B q,
         // or the ✕ for those who set it so -- and every one of those asks
         // first when an AI is at work
+        // The settings' Update button was pressed on a version that is ready.
+        // Putting it in place ends this program, so the same question quitting
+        // asks is asked first; the swap itself is update::apply, and the new
+        // copy is started from there. The Store copy hands the job to the
+        // Store instead, which ends the program itself when it is done
+        if let Some(what) = update::take_apply() {
+            if quit_confirmed(&tabs, &ws_tabs) {
+                match what {
+                    update::Apply::Store { version } => update::store::install(browser::main_hwnd(), version),
+                    other => {
+                        if update::apply(&other).is_ok() {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                update::apply_declined();
+            }
+        }
         let close_pressed = std::mem::take(&mut surface.close_requested);
         let quit_chosen = std::mem::take(&mut surface.tray_quit);
         if close_pressed && resident {
@@ -9445,6 +9507,8 @@ struct Ui {
     usage: Option<crate::uistate::UsageState>,
     /// The thanks card, when it is up: which page it would open
     thanks: Option<String>,
+    /// The version the update card asks about, when it is up
+    update: Option<String>,
 }
 
 

@@ -64,6 +64,10 @@ pub struct Config {
     /// this PC, and show it while a Claude tab is in view (default: yes).
     /// Nothing is asked on a machine with no such sign-in
     pub claude_usage: Option<bool>,
+    /// Whether to look, at start and once a day, for a newer published
+    /// version (default: yes). Looking is all it does: one request for the
+    /// newest version number. Installing is a button on the settings screen
+    pub update_check: Option<bool>,
     /// Whether to overlay the browser on the terminal (default: overlay).
     /// Turning it off makes it a standalone window you can move yourself, but it no longer feels like a tab
     pub browser_overlay: Option<bool>,

@@ -810,6 +810,10 @@ pub struct UiState {
     /// its button leads
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thanks: Option<String>,
+    /// The version the update card asks about, when it is up. Answered
+    /// once, either way, and not shown again for that version
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<String>,
     /// Whether the settings name a phone as somewhere answers go. Only the
     /// browser holding the page can know whether it is that phone yet, so
     /// the app says just that one is wanted, and the phone's board offers

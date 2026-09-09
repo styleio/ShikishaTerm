@@ -878,6 +878,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             step: v.get("step").and_then(|x| x.as_u64()).unwrap_or(0).min(255) as u8,
         },
         Some("thanks") => Ev::Thanks { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
+        Some("update") => Ev::Update { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
         Some("help") => Ev::Help,
         Some("limit_ack") => Ev::LimitAck {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
@@ -1355,6 +1356,10 @@ pub enum Ev {
     /// either way the card is put away for good. Window-only: the page it
     /// opens is this PC's
     Thanks { open: bool },
+    /// The card that says a newer version is out was pressed. `open` says
+    /// whether the settings' Update card is to be opened; either way the
+    /// card is put away for that version. Nothing is installed from here
+    Update { open: bool },
     /// The usage-limit notice on a tab was read. `tab` is the screen number
     LimitAck { tab: usize },
     /// The `?` beside the gear: the manual on the site, in the PC's browser.
@@ -3329,6 +3334,14 @@ fn ask_js(text: &str, label: &str) -> String {
 /// "whatever" (0, 0) takes the first entry and squeezes it, which is how a
 /// 256-pixel drawing ends up as a smear in a 16-pixel corner.
 #[cfg(windows)]
+/// The window's handle, for the few things that must be told which window
+/// they belong to (the Store's update dialog)
+static MAIN_HWND: std::sync::OnceLock<isize> = std::sync::OnceLock::new();
+
+pub fn main_hwnd() -> isize {
+    MAIN_HWND.get().copied().unwrap_or(0)
+}
+
 fn wear_our_own_icon(hwnd: isize) {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -3413,6 +3426,7 @@ fn run_window(
     {
         use tao::platform::windows::WindowExtWindows;
         wear_our_own_icon(window.hwnd());
+        let _ = MAIN_HWND.set(window.hwnd());
     }
 
     // The board's own page. Built here, and built again whenever the window

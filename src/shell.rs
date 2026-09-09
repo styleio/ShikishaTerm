@@ -1666,6 +1666,21 @@ function drawTabs() {
         el("button", {class:"quiet", onclick:() => send({kind:"thanks", open:false})},
           T["tui.thanks.close"] || ""))));
   }
+  // Once per newer version: a card that says one is out. Both of its
+  // buttons lead to the same place or nowhere -- the settings' Update card,
+  // where the one button that fetches and installs is, or the card is put
+  // away. Nothing is installed from here, so a press by mistake costs
+  // nothing. Drawn on the phone too: the settings it opens are /cfg there
+  if (S.update) {
+    nav.append(el("div", {class:"thanks update"},
+      el("div", {class:"tt"}, (T["tui.update.title"] || "{version}").replace("{version}", S.update)),
+      el("div", {class:"tb"}, T["tui.update.body"] || ""),
+      el("div", {class:"tr"},
+        el("button", {class:"go", onclick:() => send({kind:"update", open:true})},
+          T["tui.update.open"] || ""),
+        el("button", {class:"quiet", onclick:() => send({kind:"update", open:false})},
+          T["tui.update.close"] || ""))));
+  }
   // The settings gear, pinned to the very bottom of the sidebar. Always visible.
   // Beside it, the manual on the site: the window asks the app to open the
   // PC's browser, the phone follows a plain link
@@ -7555,6 +7570,10 @@ mod tests {
         assert!(PAGE.contains(r#"const next = (S.coach || 0) === 2 ? " pulse" : "";"#), "2歩目で + が光らない");
         assert!(PAGE.contains("if (S.thanks && !REMOTE) {"), "スマホにお礼の札が出る");
         assert!(PAGE.contains(r#"send({kind:"thanks", open:true})"#) && PAGE.contains(r#"send({kind:"thanks", open:false})"#));
+        // The update card: the same part, both buttons answer, neither installs
+        assert!(PAGE.contains("if (S.update) {"), "更新の札が無い");
+        assert!(PAGE.contains(r#"send({kind:"update", open:true})"#) && PAGE.contains(r#"send({kind:"update", open:false})"#));
+        assert!(!PAGE.contains("/api/update/install"), "札から直接入れている");
         assert!(PAGE.contains(r#"el("a", {class:"help", href:manual, target:"_blank", rel:"noopener","#), "スマホの ? がリンクでない");
         assert!(PAGE.contains(r#"send({kind:"help"})"#), "窓の ? がアプリに頼まない");
     }
