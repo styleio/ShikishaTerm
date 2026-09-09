@@ -2622,6 +2622,12 @@ impl Tab {
         &self.opts.protect
     }
 
+    /// The machine this tab's terminal is on, when it is not this one. What
+    /// the file commands connect to when they are told this tab's name
+    pub fn remote(&self) -> Option<&crate::ssh::Spec> {
+        self.opts.remote.as_ref()
+    }
+
     /// Why this tab is not running what it was asked to run, when it is not.
     pub fn held(&self) -> Option<&Held> {
         self.opts.held.as_ref()

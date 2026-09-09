@@ -9,6 +9,24 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A tab can be a terminal on another machine, opened by the program itself.**
+  Write `ssh://user@host:port` as a tab's command and it connects, signs in,
+  checks the server is the one it met last time, and gives you a terminal --
+  with the password taken from that workspace's Secrets rather than typed at a
+  prompt. `user@host's password:` is `ssh.exe` asking on its own screen, which
+  is why a saved password could never answer it. Everything else about the tab
+  is unchanged: the screen, the state light, the automation, the recording and
+  the session log all read it the same way. **`ssh …` as a command still runs
+  `ssh.exe`** exactly as before, agent forwarding and X11 included; this is a
+  second way, not a replacement. A server whose key has changed since last time
+  is refused rather than asked about, and told plainly.
+- **Files on that machine, from automation.** `sftp_ls`, `sftp_stat`,
+  `sftp_get`, `sftp_put`, `sftp_mkdir`, `sftp_rename` and `sftp_rm` work over
+  the connection a tab already has, and are told which machine by naming that
+  tab -- the way the git commands are told a tab. A file already there is not
+  replaced unless you say `{overwrite = true}`, deleting takes a file or an
+  empty folder and never a full one, and rearranging and deleting are for
+  people by default while reading and sending can be opened to an AI.
 - **The program can update itself, when asked.** It looks once at start and
   once a day whether a newer version is published (one request for the
   version number; a setting turns it off). If one is, a small card in the

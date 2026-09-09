@@ -120,6 +120,45 @@ fn remember_host(addr: &str, fingerprint: &str) -> Result<()> {
     crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&all)?)
 }
 
+/// One thing in a folder on the far end
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub dir: bool,
+    pub size: u64,
+    /// Seconds since the epoch, as the far end reports it. 0 when it says nothing
+    pub modified: u64,
+}
+
+/// What to do with files on the far end.
+///
+/// Reading, writing and rearranging, each one thing. Copying a whole folder is
+/// not here: it is a loop over these, written by whoever wants it, in the same
+/// way `split_pane` and `show` stayed two commands
+#[derive(Debug, Clone)]
+pub enum FileJob {
+    List { path: String },
+    Stat { path: String },
+    /// Bring a file here
+    Get { from: String, to: std::path::PathBuf },
+    /// Send a file there
+    Put { from: std::path::PathBuf, to: String, overwrite: bool },
+    MakeDir { path: String },
+    Rename { from: String, to: String },
+    /// A file, or a folder with nothing in it. Never a folder with things in it:
+    /// one wrong path would take everything under it, and there is no undo on
+    /// the far end
+    Remove { path: String },
+}
+
+/// What came back. `Nothing` is a job that either worked or said why
+#[derive(Debug, Clone)]
+pub enum FileAnswer {
+    Nothing,
+    Listing(Vec<Entry>),
+    One(Entry),
+}
+
 /// What the connection thread is asked to do. One enum, because one thread
 /// answers all of it and a second queue would be a second order of events
 enum Job {
@@ -137,6 +176,12 @@ enum Job {
     Resize { id: u64, rows: u16, cols: u16 },
     /// Nobody is looking at this terminal any more
     Close { id: u64 },
+    /// Something to do with files, on the same connection a terminal uses
+    Files {
+        spec: Spec,
+        job: FileJob,
+        reply: Sender<Result<FileAnswer>>,
+    },
 }
 
 /// The way in. One thread, one runtime, started the first time anything here
@@ -241,6 +286,10 @@ async fn handle(live: &mut Live, job: Job) {
             if let Some(ch) = live.shells.get(&id) {
                 let _ = ch.window_change(cols as u32, rows as u32, 0, 0).await;
             }
+        }
+        Job::Files { spec, job, reply } => {
+            let r = do_file_job(live, &spec, job).await;
+            let _ = reply.send(r);
         }
         Job::Close { id } => {
             if let Some(ch) = live.shells.remove(&id) {
@@ -390,6 +439,96 @@ async fn open_shell(
         }
     });
     Ok(id)
+}
+
+/// One file job, on the connection the terminals are already using.
+///
+/// A file session is opened for the job and closed after it. Holding one open
+/// would be faster and would also mean a tab that transfers nothing keeps a
+/// channel open on the far end for as long as the app runs; a transfer is not
+/// something that happens hundreds of times a second
+async fn do_file_job(live: &mut Live, spec: &Spec, job: FileJob) -> Result<FileAnswer> {
+    let addr = session(live, spec).await?;
+    let handle = live
+        .sessions
+        .get(&addr)
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &addr), ("e", "gone")])))?;
+    let channel = handle.channel_open_session().await?;
+    // Asking for a reply, so a server that has no file service says so here
+    // rather than leaving the first packet unanswered
+    channel.request_subsystem(true, "sftp").await?;
+    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream()).await?;
+    let out = run_file_job(&sftp, job).await;
+    let _ = sftp.close().await;
+    out
+}
+
+async fn run_file_job(
+    sftp: &russh_sftp::client::SftpSession,
+    job: FileJob,
+) -> Result<FileAnswer> {
+    match job {
+        FileJob::List { path } => {
+            let mut out = Vec::new();
+            for e in sftp.read_dir(&path).await? {
+                let m = e.metadata();
+                out.push(Entry {
+                    name: e.file_name(),
+                    dir: m.is_dir(),
+                    size: m.size.unwrap_or(0),
+                    modified: m.mtime.unwrap_or(0) as u64,
+                });
+            }
+            // Folders first and then by name, which is the order a person
+            // reading a list expects and not the order a server happens to
+            // answer in
+            out.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.cmp(&b.name)));
+            Ok(FileAnswer::Listing(out))
+        }
+        FileJob::Stat { path } => {
+            let m = sftp.metadata(&path).await?;
+            Ok(FileAnswer::One(Entry {
+                name: path.rsplit('/').next().unwrap_or(&path).to_string(),
+                dir: m.is_dir(),
+                size: m.size.unwrap_or(0),
+                modified: m.mtime.unwrap_or(0) as u64,
+            }))
+        }
+        FileJob::Get { from, to } => {
+            let bytes = sftp.read(&from).await?;
+            if let Some(d) = to.parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            std::fs::write(&to, bytes)?;
+            Ok(FileAnswer::Nothing)
+        }
+        FileJob::Put { from, to, overwrite } => {
+            if !overwrite && sftp.try_exists(&to).await.unwrap_or(false) {
+                bail!(crate::i18n::tp("err.ssh.file_exists", &[("path", &to)]));
+            }
+            let bytes = std::fs::read(&from)?;
+            sftp.write(&to, &bytes).await?;
+            Ok(FileAnswer::Nothing)
+        }
+        FileJob::MakeDir { path } => {
+            sftp.create_dir(&path).await?;
+            Ok(FileAnswer::Nothing)
+        }
+        FileJob::Rename { from, to } => {
+            sftp.rename(&from, &to).await?;
+            Ok(FileAnswer::Nothing)
+        }
+        FileJob::Remove { path } => {
+            // A folder is only let go when it is empty, and the far end is the
+            // one that decides that -- asking here and deleting after would be
+            // a race with whoever else is on that machine
+            match sftp.metadata(&path).await?.is_dir() {
+                true => sftp.remove_dir(&path).await?,
+                false => sftp.remove_file(&path).await?,
+            }
+            Ok(FileAnswer::Nothing)
+        }
+    }
 }
 
 /// Whether the server is the one we met before.
@@ -581,6 +720,20 @@ pub fn shell(
         writer_taken: AtomicBool::new(false),
     };
     Ok((Box::new(pty), Box::new(SshKiller { id })))
+}
+
+/// Do something with files on another machine.
+///
+/// Blocks until the far end answers, like every other file call in the program.
+/// Whoever calls it decides how long they are willing to wait
+pub fn files(spec: &Spec, job: FileJob, wait_ms: u64) -> Result<FileAnswer> {
+    let (reply_tx, reply_rx) = channel::<Result<FileAnswer>>();
+    hub()
+        .send(Job::Files { spec: spec.clone(), job, reply: reply_tx })
+        .map_err(|_| anyhow!(crate::i18n::t("err.ssh.no_thread")))?;
+    reply_rx
+        .recv_timeout(std::time::Duration::from_millis(wait_ms))
+        .map_err(|_| anyhow!(crate::i18n::tp("err.ssh.timeout", &[("host", &spec.address())])))?
 }
 
 #[cfg(test)]

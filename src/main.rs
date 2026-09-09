@@ -1691,6 +1691,9 @@ fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
             Surface::Git { key, dir: Some(d), protect, .. } => Some(hooks::TabPlace {
                 key: hooks::TabKey { id: Some(key.clone()) },
                 dir: d.clone(),
+                // A panel reports on a folder on this machine, and is not a
+                // place files can be sent to
+                remote: None,
                 protect: protect.clone(),
             }),
             _ => None,
@@ -1711,7 +1714,12 @@ fn tab_places(tabs: &[Tab]) -> Vec<hooks::TabPlace> {
                 Some(p) => std::env::current_dir().map(|c| c.join(&p)).unwrap_or(p),
                 None => std::path::PathBuf::new(),
             };
-            hooks::TabPlace { key: t.key(), dir, protect: t.protect().to_vec() }
+            hooks::TabPlace {
+                key: t.key(),
+                dir,
+                remote: t.remote().cloned(),
+                protect: t.protect().to_vec(),
+            }
         })
         .collect()
 }

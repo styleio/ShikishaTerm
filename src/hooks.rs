@@ -413,6 +413,30 @@ fn git_folder(
     git_place(places, origin, tab).map(|(dir, _)| dir)
 }
 
+/// Which machine a tab is on, for the file commands.
+///
+/// Named the same way a repository is named -- by the tab that sits there --
+/// so that `sftp_put("本番", ...)` and `git_commit("本番", ...)` read alike and
+/// neither needs a second thing to register. A tab that is not a remote one
+/// says so plainly, because "nothing happened" is the worst possible answer
+fn remote_of(
+    places: &RefCell<Vec<TabPlace>>,
+    origin: &Cell<usize>,
+    tab: &Value,
+) -> mlua::Result<crate::ssh::Spec> {
+    let list = places.borrow();
+    let index = match tab {
+        Value::Nil => origin.get(),
+        other => {
+            let keys: Vec<TabKey> = list.iter().map(|p| p.key.clone()).collect();
+            tab_ref_of(other)?.resolve(&keys).unwrap_or(0)
+        }
+    };
+    list.get(index.wrapping_sub(1))
+        .and_then(|p| p.remote.clone())
+        .ok_or_else(|| mlua::Error::runtime(crate::i18n::t("err.hooks.not_remote")))
+}
+
 /// The same folder, with the branches it will not take a direct commit onto.
 ///
 /// Asked together because they are answered together: which repository a tab
@@ -910,6 +934,9 @@ pub struct TabPlace {
     pub key: TabKey,
     /// The tab's working folder. Empty for a tab that is in none
     pub dir: std::path::PathBuf,
+    /// The machine it is on, for a tab whose terminal is not on this one. The
+    /// file commands are told a tab and reach this
+    pub remote: Option<crate::ssh::Spec>,
     /// The branches this folder guards, already settled by the settings
     pub protect: Vec<String>,
 }
@@ -1220,6 +1247,10 @@ const LUA_STEP_BUDGET: u64 = 20_000_000;
 /// The text is never shown to anyone -- `resume_thread` matches on it to tell
 /// "this run decided there was nothing to do" apart from "this run broke",
 /// and only the second is worth logging as a fault.
+/// How long a file command waits for the far end. A transfer over a slow link
+/// is still a transfer; a connection that has gone is what this catches
+const FILE_WAIT_MS: u64 = 120_000;
+
 const SKIP_MARKER: &str = "__shikisha_skip__";
 
 /// What a running snippet's `hook` name starts with.
@@ -2659,6 +2690,118 @@ impl HookEngine {
             // can answer during a rebase), and that stays as it is -- these are
             // the list and the diffs a person asked to see, which cannot be
             // read correctly without git itself. See docs/design/git-access.ja.md
+        }
+        // ── Files on another machine ──────────────────────────────
+        // Told a tab, the way the git commands are told a tab: the tab is
+        // already the name of a place, so nothing new has to be registered and
+        // nothing about the connection is written twice. Paths are the far
+        // end's own; a path here is a path on this machine
+        {
+            let places = Rc::clone(&places);
+            let origin = Rc::clone(&current_origin);
+            let f = |lua: &mlua::Lua, e: &crate::ssh::Entry| -> mlua::Result<mlua::Table> {
+                let row = lua.create_table()?;
+                row.set("name", e.name.clone())?;
+                row.set("dir", e.dir)?;
+                row.set("size", e.size)?;
+                row.set("modified", e.modified)?;
+                Ok(row)
+            };
+            let job = move |tab: &Value, job: crate::ssh::FileJob| {
+                let spec = remote_of(&places, &origin, tab)?;
+                crate::ssh::files(&spec, job, FILE_WAIT_MS)
+                    .map_err(|e| mlua::Error::runtime(e.to_string()))
+            };
+            let job = Rc::new(job);
+
+            let j = Rc::clone(&job);
+            shikisha.set(
+                "sftp_ls",
+                lua.create_function(move |lua, (tab, path): (Value, String)| {
+                    let out = lua.create_table()?;
+                    if let crate::ssh::FileAnswer::Listing(list) =
+                        j(&tab, crate::ssh::FileJob::List { path })?
+                    {
+                        for (i, e) in list.iter().enumerate() {
+                            out.set(i + 1, f(lua, e)?)?;
+                        }
+                    }
+                    Ok(out)
+                })
+                .map_err(lerr)?,
+            ).map_err(lerr)?;
+
+            let j = Rc::clone(&job);
+            shikisha.set(
+                "sftp_stat",
+                lua.create_function(move |lua, (tab, path): (Value, String)| {
+                    // Nothing there is not a fault: asking whether something
+                    // exists is the ordinary reason to ask at all
+                    match j(&tab, crate::ssh::FileJob::Stat { path }) {
+                        Ok(crate::ssh::FileAnswer::One(e)) => Ok(Value::Table(f(lua, &e)?)),
+                        _ => Ok(Value::Nil),
+                    }
+                })
+                .map_err(lerr)?,
+            ).map_err(lerr)?;
+
+            let j = Rc::clone(&job);
+            shikisha.set(
+                "sftp_get",
+                lua.create_function(move |_, (tab, from, to): (Value, String, String)| {
+                    j(&tab, crate::ssh::FileJob::Get { from, to: to.into() })?;
+                    Ok(())
+                })
+                .map_err(lerr)?,
+            ).map_err(lerr)?;
+
+            let j = Rc::clone(&job);
+            shikisha.set(
+                "sftp_put",
+                lua.create_function(
+                    move |_, (tab, from, to, opts): (Value, String, String, Option<Value>)| {
+                        // Replacing what is there is asked for, never assumed:
+                        // the far end may be the only copy
+                        let overwrite = match &opts {
+                            Some(Value::Table(t)) => t.get::<bool>("overwrite").unwrap_or(false),
+                            _ => false,
+                        };
+                        j(&tab, crate::ssh::FileJob::Put { from: from.into(), to, overwrite })?;
+                        Ok(())
+                    },
+                )
+                .map_err(lerr)?,
+            ).map_err(lerr)?;
+
+            let j = Rc::clone(&job);
+            shikisha.set(
+                "sftp_mkdir",
+                lua.create_function(move |_, (tab, path): (Value, String)| {
+                    j(&tab, crate::ssh::FileJob::MakeDir { path })?;
+                    Ok(())
+                })
+                .map_err(lerr)?,
+            ).map_err(lerr)?;
+
+            let j = Rc::clone(&job);
+            shikisha.set(
+                "sftp_rename",
+                lua.create_function(move |_, (tab, from, to): (Value, String, String)| {
+                    j(&tab, crate::ssh::FileJob::Rename { from, to })?;
+                    Ok(())
+                })
+                .map_err(lerr)?,
+            ).map_err(lerr)?;
+
+            let j = Rc::clone(&job);
+            shikisha.set(
+                "sftp_rm",
+                lua.create_function(move |_, (tab, path): (Value, String)| {
+                    j(&tab, crate::ssh::FileJob::Remove { path })?;
+                    Ok(())
+                })
+                .map_err(lerr)?,
+            ).map_err(lerr)?;
         }
         {
             // What has changed, one row per file, in git's own two letters
@@ -6066,7 +6209,7 @@ mod tests {
         let nowhere = TabKey { id: Some("floating".into()) };
         e.set_states(vec![(key.clone(), "WAIT".into()), (nowhere.clone(), "WAIT".into())]);
         e.set_places(vec![
-            TabPlace { key, dir: std::env::current_dir().unwrap(), protect: Vec::new() },
+            TabPlace { key, dir: std::env::current_dir().unwrap(), ..Default::default() },
             // A tab with no folder of its own. It must not quietly answer
             // about the app's own repository
             TabPlace { key: nowhere, ..Default::default() },
@@ -6125,7 +6268,7 @@ mod tests {
         let e = HookEngine::new().unwrap();
         let key = TabKey { id: Some("work".into()) };
         e.set_states(vec![(key.clone(), "WAIT".into())]);
-        e.set_places(vec![TabPlace { key, dir: dir.clone(), protect: Vec::new() }]);
+        e.set_places(vec![TabPlace { key, dir: dir.clone(), ..Default::default() }]);
         let rows = e.call_primitive("git_status", &[serde_json::json!("work")]).unwrap();
         let row = rows
             .as_array()

@@ -208,6 +208,16 @@ pub const CATALOG: &[Entry] = &[
     // Closed to an AI to begin with, reads included. Letting an AI look at a
     // diff is a reasonable thing to want and a one-click decision to make; it
     // is not something to arrive switched on
+    // Files on another machine. Reading and sending are what an AI is asked
+    // to do ("put the build on the server"); rearranging and deleting are not,
+    // because the far end has no undo and no second copy
+    e("sftp_ls", Group::Files, true, true, false),
+    e("sftp_stat", Group::Files, true, true, false),
+    e("sftp_get", Group::Files, true, true, false),
+    e("sftp_put", Group::Files, true, true, false),
+    e("sftp_mkdir", Group::Files, true, false, false),
+    e("sftp_rename", Group::Files, true, false, false),
+    e("sftp_rm", Group::Files, true, false, false),
     e("git_status", Group::Git, true, false, false),
     e("git_diff", Group::Git, true, false, false),
     e("git_log", Group::Git, true, false, false),
@@ -395,6 +405,11 @@ mod tests {
                 "restart",
                 "reply_url",
                 "close_pane",
+                // Rearranging and deleting files on another machine. Reading
+                // them and sending them are open; there is no undo over there
+                "sftp_mkdir",
+                "sftp_rename",
+                "sftp_rm",
                 "git_status",
                 "git_diff",
                 "git_log",

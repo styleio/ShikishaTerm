@@ -847,6 +847,30 @@ shikisha.browser_fill_secret("br", "#password", "github")
 - **"AI may use this"** starts off. Turn it on only for the secrets a script
   that an AI's turn set going should be able to use
 
+### Files on another machine
+
+The files where an SSH tab is connected. **Which machine is said by naming the
+tab that is connected to it**, the same way the git commands are told a tab. A
+path over there is the far end's; a path here is this machine's.
+
+| Command | Description |
+|---|---|
+| `shikisha.sftp_ls(tab, "public/")` | A listing: `{name, dir, size, modified}` each. Folders first, then by name |
+| `shikisha.sftp_stat(tab, "public/index.html")` | One of them, or `nil` if it is not there |
+| `shikisha.sftp_get(tab, "there", "here")` | Bring a file here |
+| `shikisha.sftp_put(tab, "here", "there", opts)` | Send one. `opts` is `{ overwrite = true }` (a file that is already there is not replaced otherwise) |
+| `shikisha.sftp_mkdir(tab, "public/img")` | Make a folder |
+| `shikisha.sftp_rename(tab, "a.txt", "b.txt")` | Rename or move |
+| `shikisha.sftp_rm(tab, "b.txt")` | Delete. **A file, or a folder with nothing in it** |
+
+**There is no "send the whole folder".** Write it as `sftp_ls` and `sftp_put` in
+a loop. One command for it could only ever be the first arrangement somebody
+thought of -- the same reason `split_pane` and `show` stayed two.
+
+**Deleting, making and renaming are for people by default** (automation
+permissions). Open the reading ones (`sftp_ls` / `sftp_get`) and `sftp_put` to
+an AI first, if any.
+
 ### Handing a run between participants
 
 How the rally works: files in and out, plus a judge. You can build your own the same way.
