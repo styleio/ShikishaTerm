@@ -508,8 +508,16 @@ fn default_remote_port() -> u16 {
 /// and that half is not a secret. Kept beside the value rather than in
 /// `config.json` so that a settings file shared with somebody cannot quietly
 /// widen what a password on this machine is allowed to do.
-#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct SecretMeta {
+    /// Whether a script a person set going may use this.
+    ///
+    /// On by default, because that is what registering a password is normally
+    /// for. Off is meaningful too: a key that only an AI's errands ever touch
+    /// is one a person cannot spend by hand, and the two questions are asked
+    /// separately for that reason
+    #[serde(default = "yes")]
+    pub human: bool,
     /// Whether a script that an AI's turn set going may use this.
     ///
     /// Off by default, and separately from the permission table: that table
@@ -534,7 +542,34 @@ pub struct SecretMeta {
     pub desc: String,
 }
 
+fn yes() -> bool {
+    true
+}
+
+impl Default for SecretMeta {
+    fn default() -> Self {
+        Self {
+            human: true,
+            ai: false,
+            hosts: Vec::new(),
+            desc: String::new(),
+        }
+    }
+}
+
 impl SecretMeta {
+    /// Whether this side of the machine may use it at all.
+    ///
+    /// The two answers are independent: a secret may be for people, for an
+    /// AI's errands, for both, or -- while somebody is in the middle of
+    /// setting one up -- for neither, which simply means nothing can use it
+    pub fn may_use(&self, who: crate::grants::Subject) -> bool {
+        match who {
+            crate::grants::Subject::Ai => self.ai,
+            crate::grants::Subject::Human => self.human,
+        }
+    }
+
     /// Whether a page at this address is one this secret may be typed into.
     ///
     /// Compared host by host after parsing, never by how the address starts:
@@ -981,6 +1016,7 @@ pub fn migrate_secrets(
                     // It was already usable by whatever the workspace set
                     // going, an AI's turn included. Where a password may be
                     // typed is the part that was never asked, and is asked now
+                    human: true,
                     ai: true,
                     hosts: Vec::new(),
                     desc: desc_of(key),
@@ -3410,6 +3446,7 @@ mod tests {
             ai: true,
             hosts: vec!["github.com".into()],
             desc: "説明更新".into(),
+            ..Default::default()
         };
         upsert_secret(&path, None, "blog.diary", &opened, "").unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -3519,12 +3556,26 @@ mod tests {
     /// a connection that proves the page is who it says. Without the second
     /// half, pointing `github.com` at another machine (a hosts file will do)
     /// would be enough to be handed the password
+    /// Every secret filed before the question was asked was one a person
+    /// used, so that is what it stays. Reading it back any other way would
+    /// quietly stop working automation that has run for months
+    #[test]
+    fn a_secret_filed_before_the_question_belongs_to_a_person() {
+        let old: SecretMeta = serde_json::from_str(r#"{"ai":true,"desc":"前からある"}"#).unwrap();
+        assert!(old.human, "人が使えなくなっている");
+        assert!(old.ai);
+        // ...and saying so outright is still allowed to say no
+        let ai_only: SecretMeta = serde_json::from_str(r#"{"human":false,"ai":true}"#).unwrap();
+        assert!(!ai_only.human && ai_only.ai);
+        assert!(SecretMeta::default().human, "登録したての秘密を人が使えない");
+        assert!(!SecretMeta::default().ai, "既定でAIには開かない");
+    }
+
     #[test]
     fn a_secret_is_typed_only_into_the_site_it_belongs_to() {
         let m = SecretMeta {
-            ai: false,
             hosts: vec!["github.com".into(), "api.github.com".into()],
-            desc: String::new(),
+            ..Default::default()
         };
         assert!(m.may_fill("https://github.com/login"));
         assert!(m.may_fill("https://GitHub.com/login"), "大文字小文字は同じサイト");

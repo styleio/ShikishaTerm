@@ -844,8 +844,10 @@ shikisha.browser_fill_secret("br", "#password", "github")
 - `github.com` means that site over `https`. To fill something in on a plain
   `http` server inside your own network, write `http://intranet.local` — said
   out loud, because nothing protects what goes over it
-- **"AI may use this"** starts off. Turn it on only for the secrets a script
-  that an AI's turn set going should be able to use
+- **Who may use it** is two answers, **a person** and **an AI**, and starts as
+  the first alone. Tick the AI only for the secrets a script that an AI's turn
+  set going should be able to use. Ticking the AI alone is allowed too, and
+  then a script somebody ran by hand cannot reach it
 
 ### Files on another machine
 

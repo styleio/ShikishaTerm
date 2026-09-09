@@ -1504,6 +1504,7 @@ fn handle(
                                 serde_json::json!({
                                     "key": k,
                                     "description": m.desc,
+                                    "human": m.human,
                                     "ai": m.ai,
                                     "hosts": m.hosts,
                                 })
@@ -1533,8 +1534,10 @@ fn handle(
             // An empty value means "leave the password alone" -- what a secret
             // is *for* can be changed without going to find it again. The store
             // refuses that for a name it has never seen
+            let flag = |k, or| p.get(k).and_then(|v| v.as_bool()).unwrap_or(or);
             let meta = crate::config::SecretMeta {
-                ai: p.get("ai").and_then(|v| v.as_bool()).unwrap_or(false),
+                human: flag("human", true),
+                ai: flag("ai", false),
                 hosts: p
                     .get("hosts")
                     .and_then(|v| v.as_array())
@@ -2460,6 +2463,35 @@ const PAGE: &str = r##"<!doctype html>
  /* For entries whose fields are taller than their buttons (a quick action's
     body box), so the buttons sit at the top rather than floating mid-height. */
  .listrow.tall { align-items:flex-start; gap:8px; padding:8px 0; }
+ /* One secret. Reads across on a window, and stacks into a card on a phone. */
+ .secretrow { cursor:pointer; }
+ .secretrow:hover { background:var(--panel2); }
+ .secretname { min-width:150px; color:var(--text); }
+ /* The facts after the name are columns, so a list of them can be read down
+    rather than across: what it is, where it goes, and that a value is held */
+ .secretdesc { flex:1 1 140px; }
+ .secretsite { min-width:104px; text-align:right; }
+ /* Somewhere the connection is not protected -- the one thing on this row
+    worth catching from across the room */
+ .secretsite.plain { color:var(--danger); }
+ .secretdots { min-width:44px; text-align:right; }
+ .chip { font-size:11px; color:var(--muted); border:1px solid var(--line);
+   border-radius:4px; padding:1px 6px; white-space:nowrap; }
+ /* Nothing may use it yet: somebody has to say who before it does anything */
+ .chip.none { color:var(--warn); border-color:var(--warn); }
+ /* One thing to fill in: its name above it, what it does under it. */
+ .field { display:flex; flex-direction:column; gap:5px; margin-top:14px; }
+ .field > label { font-size:12px; color:var(--text); }
+ .field > input, .field > select { width:100%; }
+ /* A thumb needs more than a glyph. */
+ .hit { min-width:34px; min-height:34px; }
+ /* The warning about a plain connection, and the tick that takes it on.
+    A class rather than an inline style, so `hidden` still hides it */
+ /* Two answers to one question, side by side. Not a `.row`, whose first
+    label is the 150px name column every settings line starts with */
+ .whorow { display:flex; align-items:center; gap:24px; flex-wrap:wrap; padding:2px 0 4px; }
+ .riskrow { display:flex; flex-direction:column; gap:6px; }
+ .riskrow[hidden] { display:none; }
  .grow { flex:1; min-width:180px; }
  .stoprow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px;
    margin:6px 0; border:1px solid var(--line); border-radius:8px; }
@@ -2523,6 +2555,13 @@ const PAGE: &str = r##"<!doctype html>
  .modal-inner { background:var(--panel); border:1px solid var(--line); border-radius:12px;
    width:min(880px,92vw); max-height:88vh; overflow:auto; padding:20px 24px; }
  .modal-inner h2 { text-transform:none; font-size:15px; color:var(--text); margin:0 0 4px; }
+ /* A dialog that keeps something below its frame -- the red way out, which is
+    outside every other pane's last card for the same reason */
+ .modal-stack { display:flex; flex-direction:column; gap:10px; max-height:92vh; }
+ .modal-stack > .modal-inner { min-height:0; }
+ /* Its title and the one button that finishes it, on the same line */
+ .modalhead { display:flex; align-items:center; gap:12px; margin-bottom:2px; }
+ .modalhead h2 { flex:1; margin:0; }
  /* The folder list walked on the page (walkPath) */
  .walkat { font-size:12px; color:var(--muted); margin:6px 0; overflow-wrap:anywhere; }
  .walkerr { color:var(--danger); font-size:12px; white-space:pre-wrap; }
@@ -2624,6 +2663,15 @@ const PAGE: &str = r##"<!doctype html>
    /* Paths, URLs and ids have no spaces to break at — break them anyway. */
    .hint, .event .name, code { overflow-wrap:anywhere; }
    .modal-inner { width:96vw; max-height:92vh; padding:16px 14px; }
+   /* A row of facts becomes a small card: the name on its own line, the rest
+      under it, and the way in still a whole-row press. */
+   .secretrow { align-items:flex-start; padding:10px 0; row-gap:2px; }
+   .secretname { flex-basis:100%; font-size:13px; }
+   .secretdesc { flex:1 1 auto; }
+   /* The last line: where it may go, and the way in at the end of it */
+   .secretsite { flex:1 1 auto; text-align:left; min-width:0; }
+   .secretdots { display:none; }
+   .secretedit { margin-left:auto; }
  }
  /* Never let the page itself scroll sideways, whatever a stray wide child does. */
  @media (max-width: 760px) { body { overflow-x:hidden; } }
@@ -4457,39 +4505,11 @@ const hostsOf = text => text.split(/[\s,]+/).map(h => h.trim()).filter(Boolean);
 // site; writing http:// is how a person says they want it anyway, and that is
 // the case worth stopping to think about
 const plainHosts = list => list.filter(h => /^http:\/\//i.test(h.trim()));
-// A warning and a tick, shown only while an unprotected site is being *added*.
-// Living with one you already agreed to does not ask again -- what needs a
-// moment's thought is taking on the risk, not keeping it
-function riskGate(before) {
-  const was = new Set(plainHosts(before).map(h => h.toLowerCase()));
-  const box = el("input", {type:"checkbox"});
-  const label = el("label", {class:"check warn"});
-  label.append(box, document.createTextNode(T["settings.secrets.plain_ok"]));
-  const note = el("div", {class:"hint warn", style:"flex-basis:100%"});
-  const row = el("div", {class:"row", style:"flex-basis:100%;gap:10px"}, note, label);
-  row.hidden = true;
-  return {
-    row,
-    // Whether this list may be saved, and what to say when it may not
-    check(list) {
-      const now = plainHosts(list).filter(h => !was.has(h.toLowerCase()));
-      row.hidden = !now.length;
-      if (!now.length) return true;
-      note.textContent = fill(T["settings.secrets.plain_warn"], {hosts: now.join(", ")});
-      if (box.checked) return true;
-      toast(T["settings.secrets.plain_blocked"], true);
-      return false;
-    },
-    // Keep the warning in step while someone is typing
-    watch(input) {
-      input.addEventListener("input", () => {
-        const now = plainHosts(hostsOf(input.value)).filter(h => !was.has(h.toLowerCase()));
-        row.hidden = !now.length;
-        if (now.length) note.textContent = fill(T["settings.secrets.plain_warn"], {hosts: now.join(", ")});
-      });
-    },
-  };
-}
+// ...and of those, the ones that are new here. Living with a plain site that
+// was already agreed to does not ask again: what needs a moment's thought is
+// taking on the risk, not keeping it
+const freshPlain = (list, was) =>
+  plainHosts(list).filter(h => !was.has(h.trim().toLowerCase()));
 
 // Secrets (equivalent to GitHub Secrets). Referenced by key; once saved, the value is never shown again.
 // Encrypted if a master password is set, plaintext otherwise (at the user's own risk) — both handled through the same UI
@@ -4535,8 +4555,9 @@ function secretsBulkCard() {
         el("span", {class:"mono", style:"min-width:220px;color:var(--text)"}, s.key),
         el("span", {class:"hint", style:"min-width:110px"}, where),
         el("span", {class:"hint", style:"flex:1"}, s.description || T["settings.secrets.no_desc"]),
-        el("span", {class:"hint mono"}, (s.hosts || []).join(", ") || "—"),
-        el("span", {class:"hint"}, s.ai ? T["settings.secrets.ai_on"] : T["settings.secrets.ai_off"]));
+        el("span", {class:"hint mono", style:"flex:1 1 120px;overflow:hidden;text-overflow:ellipsis"},
+           (s.hosts || []).join(", ") || "—"),
+        el("span", {class:"hint", style:"min-width:92px;text-align:right"}, secretWhoText(s)));
       listBox.append(l);
     }
   };
@@ -4561,7 +4582,7 @@ function secretsBulkCard() {
       if (!s) continue;
       // Everything is sent back, so nothing a button did not touch is dropped.
       // An empty value means "leave the password alone"
-      const body = {key, description: s.description || "", ai: !!s.ai,
+      const body = {key, description: s.description || "", human: secretHuman(s), ai: !!s.ai,
                     hosts: s.hosts || [], value: "", ...change(s)};
       const r = await saveSecret(body);
       if (r.ok) done++;
@@ -4571,28 +4592,49 @@ function secretsBulkCard() {
   };
   const valIn = el("input", {type:"password", placeholder:T["settings.secrets.value_ph"], style:"width:200px"});
   const hostIn = el("input", {class:"mono", placeholder:"github.com", style:"width:200px"});
-  const bulkGate = riskGate([]);
-  bulkGate.watch(hostIn);
-  const bar = el("div", {class:"row", style:"flex-wrap:wrap;gap:10px;margin-top:12px;align-items:center"},
-    valIn,
-    el("button", {onclick: () => {
-      if (!valIn.value) { toast(T["settings.secrets.value_required"], true); return; }
-      apply(() => ({value: valIn.value}));
-    }}, T["settings.secrets.bulk.set_value"]),
-    hostIn,
-    el("button", {onclick: () => {
-      const add = hostsOf(hostIn.value);
-      if (!add.length) { toast(T["settings.secrets.bulk.host_required"], true); return; }
-      if (!bulkGate.check(add)) return;
-      apply(s => ({hosts: [...new Set([...(s.hosts || []), ...add])]}));
-    }}, T["settings.secrets.bulk.add_host"]),
-    el("button", {onclick: () => apply(() => ({ai: true}))}, T["settings.secrets.bulk.ai_on"]),
-    el("button", {class:"danger", onclick: () => apply(() => ({ai: false}))}, T["settings.secrets.bulk.ai_off"]),
-    bulkGate.row);
+  // Adding a site to many secrets at once asks the same thing the dialog does
+  const riskBox = el("input", {type:"checkbox"});
+  const riskLabel = el("label", {class:"check warn"});
+  riskLabel.append(riskBox, document.createTextNode(T["settings.secrets.plain_ok"]));
+  const riskNote = el("div", {class:"hint warn"});
+  const riskRow = el("div", {class:"riskrow", style:"margin-top:10px"}, riskNote, riskLabel);
+  riskRow.hidden = true;
+  const watchPlain = () => {
+    const fresh = freshPlain(hostsOf(hostIn.value), new Set());
+    riskRow.hidden = !fresh.length;
+    if (fresh.length) riskNote.textContent = fill(T["settings.secrets.plain_warn"], {hosts: fresh.join(", ")});
+  };
+  hostIn.addEventListener("input", watchPlain);
+  // One line per thing that can be changed, each with what to type and the
+  // button that does it. Five controls on one line wrap into a shape where a
+  // red button ends up alone on a row of its own
+  const bar = el("div", {style:"margin-top:12px"},
+    el("div", {class:"row", style:"gap:10px"},
+      valIn,
+      el("button", {onclick: () => {
+        if (!valIn.value) { toast(T["settings.secrets.value_required"], true); return; }
+        apply(() => ({value: valIn.value}));
+      }}, T["settings.secrets.bulk.set_value"])),
+    el("div", {class:"row", style:"gap:10px"},
+      hostIn,
+      el("button", {onclick: () => {
+        const add = hostsOf(hostIn.value);
+        if (!add.length) { toast(T["settings.secrets.bulk.host_required"], true); return; }
+        if (freshPlain(add, new Set()).length && !riskBox.checked) {
+          toast(T["settings.secrets.plain_blocked"], true);
+          return;
+        }
+        apply(s => ({hosts: [...new Set([...(s.hosts || []), ...add])]}));
+      }}, T["settings.secrets.bulk.add_host"])),
+    el("div", {class:"row", style:"gap:10px"},
+      el("button", {onclick: () => apply(() => ({ai: true}))}, T["settings.secrets.bulk.ai_on"]),
+      el("button", {class:"danger", onclick: () => apply(() => ({ai: false}))}, T["settings.secrets.bulk.ai_off"])));
+  // Under the buttons rather than among them: it is about what was typed, and
+  // wrapping it into the row leaves a button stranded on a line of its own
   return card(T["settings.secrets.bulk.title"],
     el("div", {class:"hint"}, T["settings.secrets.bulk.hint"]),
     el("div", {class:"row"}, findIn, el("button", {onclick: search}, T["settings.secrets.bulk.find"])),
-    listBox, bar);
+    listBox, bar, riskRow);
 }
 
 // Model bridge connections (Providers). Registers OpenAI-compatible APIs by name.
@@ -5312,7 +5354,7 @@ async function loadSecrets() {
       el("span", {class:"hint", style:"min-width:130px"}, where),
       el("span", {class:"hint", style:"flex:1"}, s.description || T["settings.secrets.no_desc"]),
       el("span", {class:"hint mono", style:"min-width:120px"}, (s.hosts || []).join(", ") || "—"),
-      el("span", {class:"hint"}, s.ai ? T["settings.secrets.ai_on"] : T["settings.secrets.ai_off"]),
+      el("span", {class:"hint", style:"min-width:92px;text-align:right"}, secretWhoText(s)),
       el("span", {class:"hint mono", title:T["settings.secrets.value_hidden"]}, "••••"),
       del));
   }
@@ -5984,52 +6026,47 @@ function stopRow(ws, s, i, redraw) {
   return row;
 }
 
-// The secrets this workspace has. A script running in it writes the short name
-// and gets this one: nothing here can be reached from another workspace, and
-// nothing the program keeps for itself can be reached from a script at all.
+// The secrets a workspace has.
 //
-// The value is write-only. Leaving it blank changes what a secret is *for*
-// without asking anyone to go and find the password again
+// A list you can read across, and one thing at a time to fill in. The row says
+// what a person needs in order to pick one out -- its name, who may use it,
+// what it is for, and where it may be typed -- and everything that changes it
+// happens in a dialog, one field per line. It was a row of eight controls
+// before, which is unreadable at any width and unusable at a narrow one.
 function wsSecretsCard(ws) {
   const listBox = el("div", {id:"wssecretslist"}, el("div", {class:"hint"}, "…"));
-  const nameIn = el("input", {class:"mono", placeholder:T["settings.secrets.key_ph"], style:"width:170px"});
-  const valIn = el("input", {type:"password", placeholder:T["settings.secrets.value_ph"], style:"width:180px"});
-  const descIn = el("input", {placeholder:T["settings.secrets.desc_ph"], style:"width:190px"});
-  const hostIn = el("input", {class:"mono", placeholder:"github.com", style:"width:170px"});
-  const aiIn = el("input", {type:"checkbox"});
-  const aiLabel = el("label", {class:"check"});
-  aiLabel.append(aiIn, document.createTextNode(T["settings.secrets.ai_label"]));
-  const gate = riskGate([]);
-  gate.watch(hostIn);
-  const add = el("button", {class:"primary", onclick: async () => {
-    const name = nameIn.value.trim();
-    if (!name) { toast(T["settings.secrets.key_required"], true); return; }
-    if (!valIn.value) { toast(T["settings.secrets.value_required"], true); return; }
+  const add = el("button", {class:"primary", onclick: () => {
     if (!(ws.id || "").trim()) { toast(T["settings.secrets.ws_needs_id"], true); return; }
-    if (!gate.check(hostsOf(hostIn.value))) return;
-    const r = await saveSecret({key: secretKey(ws, name), value: valIn.value,
-      description: descIn.value, ai: aiIn.checked, hosts: hostsOf(hostIn.value)});
-    if (r.ok) {
-      toast(fill(T["settings.secrets.saved_key"], {key: name}));
-      nameIn.value = valIn.value = descIn.value = hostIn.value = ""; aiIn.checked = false;
-      loadWsSecrets(ws);
-    } else toast(r.error || T["settings.secrets.save_failed"], true);
+    secretDialog(ws, null);
   }}, T["settings.secrets.add"]);
-  const labeled = (title, hint, input) => el("div", {style:"display:flex;flex-direction:column;gap:3px"},
-    el("span", {style:"font-size:12px;color:var(--text)"}, title),
-    input,
-    el("span", {class:"hint", style:"font-size:11px"}, hint));
-  const form = el("div", {class:"row", style:"flex-wrap:wrap;gap:14px;margin-top:12px;align-items:flex-end"},
-    labeled(T["settings.secrets.key_label"], T["settings.secrets.key_hint"], nameIn),
-    labeled(T["settings.secrets.value_label"], T["settings.secrets.value_hint"], valIn),
-    labeled(T["settings.secrets.desc_label"], T["settings.secrets.desc_hint"], descIn),
-    labeled(T["settings.secrets.hosts_label"], T["settings.secrets.hosts_hint"], hostIn),
-    aiLabel, add, gate.row);
   const c = card(T["settings.secrets.ws_title"],
     el("div", {class:"hint"}, T["settings.secrets.ws_hint"]),
-    listBox, form);
+    el("div", {class:"row", style:"margin:10px 0 4px"}, add),
+    listBox);
   setTimeout(() => loadWsSecrets(ws), 0);
   return c;
+}
+
+// Who may use one. Two independent answers, in the same words the
+// automation permission table uses, so the same question reads the same way in
+// both places. Neither ticked is a real state -- a secret nothing may use yet
+const secretHuman = s => s.human !== false;
+const secretWhoText = s => {
+  const who = [secretHuman(s) ? T["grant.who.human"] : null, s.ai ? T["grant.who.ai"] : null]
+    .filter(Boolean);
+  return who.length ? who.join(" / ") : T["settings.secrets.who.none"];
+};
+// The same, as something to hang in a row of facts: marked when nothing can
+// use it, because that is the one answer worth noticing in passing
+const secretWhoChip = s => el("span",
+  {class: (secretHuman(s) || s.ai) ? "chip" : "chip none"}, secretWhoText(s));
+// Where it may be typed, as a count -- with a mark when one of them is a plain
+// connection, because that is the thing worth noticing from across the room
+function secretWhere(s) {
+  const hosts = s.hosts || [];
+  if (!hosts.length) return {text: T["settings.secrets.hosts_none"], warn: false};
+  const text = fill(T["settings.secrets.hosts_count"], {n: hosts.length});
+  return {text, warn: plainHosts(hosts).length > 0};
 }
 
 async function loadWsSecrets(ws) {
@@ -6050,36 +6087,161 @@ async function loadWsSecrets(ws) {
     return;
   }
   for (const s of mine) {
-    // Everything about one secret sits on its row and is written together, so
-    // a half-made change is never what gets saved
-    const desc = el("input", {value: s.description || "", placeholder:T["settings.secrets.desc_ph"], style:"flex:1 1 150px;min-width:120px"});
-    const hosts = el("input", {class:"mono", value: (s.hosts || []).join(", "), placeholder:"github.com", style:"flex:1 1 150px;min-width:120px"});
-    const val = el("input", {type:"password", placeholder:T["settings.secrets.value_set_ph"], style:"flex:0 1 150px;min-width:110px"});
-    const ai = el("input", {type:"checkbox"});
-    ai.checked = !!s.ai;
-    const aiLabel = el("label", {class:"check"});
-    aiLabel.append(ai, document.createTextNode(T["settings.secrets.ai_label"]));
-    const gate = riskGate(s.hosts || []);
-    gate.watch(hosts);
-    const save = el("button", {onclick: async () => {
-      if (!gate.check(hostsOf(hosts.value))) return;
-      const r = await saveSecret({key: s.key, value: val.value, description: desc.value,
-        ai: ai.checked, hosts: hostsOf(hosts.value)});
-      if (r.ok) { toast(fill(T["settings.secrets.saved_key"], {key: s.short})); loadWsSecrets(ws); }
-      else toast(r.error || T["settings.secrets.save_failed"], true);
-    }}, T["common.save"]);
-    const del = el("button", {class:"quiet", onclick: async () => {
-      if (!confirm(fill(T["settings.secrets.delete_confirm"], {key: s.short}))) return;
-      const r = await deleteSecret(s.key);
-      if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: s.short})); loadWsSecrets(ws); }
-      else toast(r.error || T["settings.secrets.delete_failed"], true);
-    }}, T["common.delete"]);
-    box.append(el("div", {class:"listrow", style:"flex-wrap:wrap;gap:8px"},
-      el("span", {class:"mono", style:"min-width:130px;color:var(--text)"}, s.short),
-      desc, hosts, val, aiLabel, save, del, gate.row));
+    const where = secretWhere(s);
+    // The whole row opens it, and so does the button: a name is a bigger
+    // target than a word at the end of a line, and on a phone it is the only
+    // one worth aiming at
+    const row = el("div", {class:"listrow secretrow", onclick: () => secretDialog(ws, s)},
+      el("span", {class:"mono secretname"}, s.short),
+      secretWhoChip(s),
+      el("span", {class:"hint secretdesc"}, s.description || T["settings.secrets.no_desc"]),
+      el("span", {class: where.warn ? "hint secretsite plain" : "hint secretsite"},
+         (where.warn ? "⚠ " : "") + where.text),
+      el("span", {class:"hint mono secretdots", title:T["settings.secrets.value_hidden"]}, "••••"),
+      el("button", {class:"quiet secretedit"}, T["common.edit"]));
+    box.append(row);
   }
 }
 
+// Adding one, or changing one. `have` is null for a new secret.
+//
+// One field per line, in the order a person answers them: what it is called,
+// what it is, who may use it, and where it may go. The value is write-only --
+// there is nothing to show, because nothing here can read it back -- so an
+// existing secret asks for one only if you want to replace it.
+function secretDialog(ws, have) {
+  const editing = !!have;
+  const name = el("input", {class:"mono", placeholder:T["settings.secrets.key_ph"]});
+  name.value = editing ? have.short : "";
+  name.disabled = editing;
+  const value = el("input", {type:"password",
+    placeholder: editing ? T["settings.secrets.value_set_ph"] : T["settings.secrets.value_ph"]});
+  const desc = el("input", {placeholder:T["settings.secrets.desc_ph"]});
+  desc.value = editing ? (have.description || "") : "";
+
+  // Who may use it: the same two boxes, in the same order, as the automation
+  // permission table. They are not two halves of one choice -- a key that only
+  // an AI's errands ever touch is a thing somebody may want, and so is a
+  // secret parked with neither ticked while it is being set up
+  const whoBox = (on) => { const i = el("input", {type:"checkbox"}); i.checked = on; return i; };
+  const humanIn = whoBox(editing ? secretHuman(have) : true);
+  const aiIn = whoBox(editing ? !!have.ai : false);
+  const whoNote = el("div", {class:"hint warn"}, T["settings.secrets.who_none_warn"]);
+  const whoLabel = (input, text) => {
+    const l = el("label", {class:"check"});
+    l.append(input, document.createTextNode(text));
+    input.addEventListener("change", () => {
+      whoNote.hidden = humanIn.checked || aiIn.checked;
+    });
+    return l;
+  };
+  const who = el("div", {},
+    el("div", {class:"whorow"},
+      whoLabel(humanIn, T["grant.who.human"]),
+      whoLabel(aiIn, T["grant.who.ai"])),
+    whoNote);
+  whoNote.hidden = humanIn.checked || aiIn.checked;
+
+  // The sites, one per line, each with a way to take it away
+  const hostBox = el("div", {style:"display:flex;flex-direction:column;gap:6px"});
+  const was = new Set(plainHosts(editing ? (have.hosts || []) : []).map(h => h.toLowerCase()));
+  const risk = el("label", {class:"check warn"});
+  const riskBox = el("input", {type:"checkbox"});
+  risk.append(riskBox, document.createTextNode(T["settings.secrets.plain_ok"]));
+  const riskNote = el("div", {class:"hint warn"});
+  const riskRow = el("div", {class:"riskrow"}, riskNote, risk);
+  const save = el("button", {class:"primary"}, T["common.save"]);
+  const blocked = el("span", {class:"hint warn"});
+
+  const hostsNow = () =>
+    [...hostBox.querySelectorAll("input")].map(i => i.value.trim()).filter(Boolean);
+  // A plain connection that was not already agreed to is the one thing that
+  // stops a save. Everything else about this dialog is just typing
+  const recheck = () => {
+    const fresh = freshPlain(hostsNow(), was);
+    riskRow.hidden = !fresh.length;
+    if (fresh.length) riskNote.textContent = fill(T["settings.secrets.plain_warn"], {hosts: fresh.join(", ")});
+    const stop = fresh.length && !riskBox.checked;
+    save.disabled = !!stop;
+    blocked.textContent = stop ? T["settings.secrets.plain_blocked"] : "";
+  };
+  riskBox.addEventListener("change", recheck);
+  const addHost = (v) => {
+    const i = el("input", {class:"mono grow", placeholder:"github.com", value: v || ""});
+    i.addEventListener("input", recheck);
+    const x = el("button", {class:"quiet hit", title:T["common.delete"], onclick: () => {
+      wrap.remove(); recheck();
+    }}, "✕");
+    const wrap = el("div", {class:"row", style:"gap:6px"}, i, x);
+    hostBox.append(wrap);
+    return i;
+  };
+  for (const h of (editing ? (have.hosts || []) : [])) addHost(h);
+  if (!hostBox.children.length) addHost("");
+
+  const field = (label, control, hint) => el("div", {class:"field"},
+    el("label", {}, label), control,
+    hint ? el("div", {class:"hint"}, hint) : null);
+
+  // Save sits at the top right and delete outside the frame in red, the way
+  // every other thing in these settings is saved and let go of
+  const back = openModal(
+    el("div", {class:"modalhead"},
+      el("h2", {}, editing ? T["settings.secrets.edit_title"] : T["settings.secrets.add_title"]),
+      el("div", {class:"row", style:"gap:10px;align-items:center"}, blocked, save,
+        el("button", {class:"quiet hit", title:T["common.close"],
+                      onclick: () => back.remove()}, "✕"))),
+    field(T["settings.secrets.key_label"], name,
+          editing ? T["settings.secrets.name_fixed"] : T["settings.secrets.key_hint"]),
+    field(T["settings.secrets.value_label"], value,
+          editing ? T["settings.secrets.value_keep"] : T["settings.secrets.value_hint"]),
+    field(T["settings.secrets.who_label"], who, T["settings.secrets.who_hint"]),
+    field(T["settings.secrets.desc_label"], desc, T["settings.secrets.desc_hint"]),
+    field(T["settings.secrets.hosts_label"],
+          el("div", {}, hostBox,
+             el("div", {class:"row", style:"margin-top:6px"},
+                el("button", {class:"quiet", onclick: () => addHost("").focus()},
+                   T["settings.secrets.hosts_add"])),
+             riskRow),
+          T["settings.secrets.hosts_hint"]));
+
+  // Below the frame, where letting a workspace or a tab go also lives
+  if (editing) {
+    const inner = back.firstChild;
+    const stack = el("div", {class:"modal-stack"});
+    back.replaceChild(stack, inner);
+    stack.append(inner, el("div", {class:"row"},
+      el("button", {class:"danger", onclick: async () => {
+        if (!confirm(fill(T["settings.secrets.delete_confirm"], {key: have.short}))) return;
+        const r = await deleteSecret(have.key);
+        if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: have.short})); back.remove(); loadWsSecrets(ws); }
+        else toast(r.error || T["settings.secrets.delete_failed"], true);
+      }}, T["settings.secrets.delete"])));
+  }
+
+  // Enter finishes it and Esc leaves it, from anywhere inside. A dialog that
+  // is all short fields is one people type through without reaching for the
+  // mouse -- except in the description, where a stray Enter would be a save
+  back.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); back.remove(); return; }
+    if (e.key !== "Enter" || e.target.tagName !== "INPUT" || e.target.type === "checkbox") return;
+    e.preventDefault();
+    if (!save.disabled) save.click();
+  });
+
+  save.addEventListener("click", async () => {
+    const short = name.value.trim();
+    if (!short) { toast(T["settings.secrets.key_required"], true); return; }
+    if (!editing && !value.value) { toast(T["settings.secrets.value_required"], true); return; }
+    const r = await saveSecret({key: editing ? have.key : secretKey(ws, short),
+      value: value.value, description: desc.value,
+      human: humanIn.checked, ai: aiIn.checked, hosts: hostsNow()});
+    if (r.ok) { toast(fill(T["settings.secrets.saved_key"], {key: short})); back.remove(); loadWsSecrets(ws); }
+    else toast(r.error || T["settings.secrets.save_failed"], true);
+  });
+  recheck();
+  setTimeout(() => (editing ? value : name).focus(), 0);
+}
 // Both export and import operate against the config that's on disk.
 // Exporting the in-progress editing state would create a config that only the recipient has
 function savedAlready() {
@@ -6579,7 +6741,7 @@ function kindPanel(t, cmdInput, rebuild, real) {
         if (!k) { toast(T["settings.secrets.ws_needs_id"], true); return; }
         if (!pwIn.value) { toast(T["settings.secrets.value_required"], true); return; }
         const r = await saveSecret({key: k, value: pwIn.value, description: buildRemote(remote),
-                                    ai: false, hosts: []});
+                                    human: true, ai: false, hosts: []});
         if (r.ok) { pwIn.value = ""; toast(T["settings.ssh.password.saved"]); refreshNote(); }
         else toast(r.error || T["settings.secrets.save_failed"], true);
       }}, T["common.save"]), note));

@@ -141,8 +141,10 @@ names them in one short word and never receives the value. Two things are asked
 when you register one:
 
 - **Which sites it may be typed into** -- it is filled in there and nowhere else
-- **AI may use this** -- off to begin with; turn it on for the ones a script an
-  AI set going should be able to use
+- **Who may use it** -- two answers, **a person** and **an AI**, and to begin
+  with only the first. Tick the AI as well for the ones a script an AI set
+  going should be able to use; tick only the AI and it becomes a key kept for
+  an AI's errands, which nobody spends by hand
 
 Settings › Secrets lists everything this machine holds and lets one go, and
 Settings › Update many secrets changes the ones that share a name together.

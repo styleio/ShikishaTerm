@@ -514,8 +514,12 @@ impl Capabilities {
                 &[("key", name)]
             ))
         })?;
-        if matches!(who, crate::grants::Subject::Ai) && !terms.ai {
-            bail!(crate::i18n::tp("err.caps.secret_not_for_ai", &[("key", name)]));
+        if !terms.may_use(who) {
+            let why = match who {
+                crate::grants::Subject::Ai => "err.caps.secret_not_for_ai",
+                crate::grants::Subject::Human => "err.caps.secret_not_for_human",
+            };
+            bail!(crate::i18n::tp(why, &[("key", name)]));
         }
         Ok((self.secret_value(&key)?, terms))
     }
@@ -1219,7 +1223,11 @@ mod tests {
     fn a_script_reaches_only_its_own_workspaces_secrets() {
         use crate::config::SecretMeta;
         use crate::grants::Subject;
-        let open = |ai: bool| SecretMeta { ai, hosts: vec!["example.com".into()], desc: String::new() };
+        let open = |ai: bool| SecretMeta {
+            ai,
+            hosts: vec!["example.com".into()],
+            ..Default::default()
+        };
         let tokens = HashMap::from([
             ("blog.diary".to_string(), "hunter2secret".to_string()),
             ("blog.deploy".to_string(), "ghp_xxx".to_string()),
@@ -1260,6 +1268,43 @@ mod tests {
 
         // The program's own door still reaches what the program needs
         assert_eq!(c.secret_value("ssh/blog/prod/password").unwrap(), "rootpw");
+    }
+
+    /// Who may use a secret is two questions, not one. A key that only an AI's
+    /// errands touch is a real thing to want -- and a person holding the
+    /// keyboard is then the one turned away, which is the half that would go
+    /// unnoticed if the pair were ever folded back into a single answer
+    #[test]
+    fn a_secret_can_be_for_the_ai_alone() {
+        use crate::config::SecretMeta;
+        use crate::grants::Subject;
+        let for_whom = |human, ai| SecretMeta { human, ai, ..Default::default() };
+        let tokens = HashMap::from([
+            ("blog.errand".to_string(), "ai only".to_string()),
+            ("blog.byhand".to_string(), "person only".to_string()),
+            ("blog.parked".to_string(), "nobody yet".to_string()),
+        ]);
+        let terms = HashMap::from([
+            ("blog.errand".to_string(), for_whom(false, true)),
+            ("blog.byhand".to_string(), for_whom(true, false)),
+            ("blog.parked".to_string(), for_whom(false, false)),
+        ]);
+        let c = Capabilities::new(
+            CapabilitySpec::default(),
+            PathBuf::from("."),
+            tokens,
+            terms,
+            Default::default(),
+        );
+        c.set_workspace_id("blog");
+        let got = |name: &str, who| c.script_secret(name, who).map(|(v, _)| v);
+        assert_eq!(got("errand", Subject::Ai).unwrap(), "ai only");
+        assert!(got("errand", Subject::Human).is_err(), "人だけに閉じた鍵が渡った");
+        assert_eq!(got("byhand", Subject::Human).unwrap(), "person only");
+        assert!(got("byhand", Subject::Ai).is_err());
+        // Neither ticked is a secret nothing may spend, and it stays that way
+        assert!(got("parked", Subject::Human).is_err());
+        assert!(got("parked", Subject::Ai).is_err());
     }
 
     #[test]
