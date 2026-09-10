@@ -214,6 +214,10 @@ hint             11.5px / --faint
 
 - The name goes **above** the control, at every width. A column of labels down
   the left leaves both halves short of room and is the shape of an admin panel.
+- **A table is the exception.** A screen that asks the same question two dozen
+  times over (the key bindings) is a table, not two dozen forms. There the name
+  keeps its own column, because what the eye does there is run down a column
+  looking for one row, not read a row (`.row.pair`).
 - A checkbox is the exception: its own label sits beside it, 15px box, `--s2`
   between, label at 14px `--text`. Two related checkboxes sit `--s5` apart on
   one line, not in a column.

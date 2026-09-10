@@ -84,7 +84,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.gearrow:hover { color:inherit; }
   .tab.gearrow.sel { color:var(--text); }
   .tab.gearrow .gear { font-size:17px; line-height:1; }
-  .tab.gearrow { gap:18px; }
+  .tab.gearrow { gap:var(--s5); }
   .tab.gearrow .help { font-size:15px; line-height:1; color:var(--dim); text-decoration:none;
     width:22px; height:22px; border:1px solid var(--line); border-radius:50%;
     display:inline-flex; align-items:center; justify-content:center; }
@@ -103,16 +103,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #coach .cx { color:var(--dim); cursor:pointer; flex:none; }
   #coach .cx:hover { color:var(--text); }
   /* Once: a star, if you like it. Sits above the gear, and goes for good */
-  .thanks { margin:auto 8px 6px; padding:10px 12px; border:1px solid var(--line); border-radius:10px;
+  .thanks { margin:auto var(--s2) var(--s2); padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-card);
     background:var(--raise); font-size:12px; }
   .thanks + .tab.gearrow { margin-top:0; }
   .thanks .tt { font-weight:600; margin-bottom:4px; }
   .thanks .tb { color:var(--dim); margin-bottom:8px; line-height:1.4; white-space:normal; }
-  .thanks .tr { display:flex; gap:6px; }
-  .thanks button { font:inherit; font-size:12px; padding:5px 10px; border-radius:7px;
+  .thanks .tr { display:flex; gap:var(--s2); }
+  .thanks button { font:inherit; font-size:12px; padding:5px 10px; border-radius:var(--r-ctl);
     border:1px solid var(--line); background:var(--bg); color:var(--text); cursor:pointer; }
   .thanks button.go { border-color:var(--brand); color:var(--brand); }
-  .tab { display:flex; align-items:center; gap:8px; padding:7px 10px;
+  .tab { display:flex; align-items:center; gap:var(--s2); padding:7px 10px;
     cursor:pointer; border-left:3px solid transparent; user-select:none; }
   .tab:hover { background:var(--hover); }
   .tab.sel { background:var(--raise); border-left-color:var(--brand); }
@@ -131,7 +131,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the row nobody could have guessed */
   .sub .selfcost { color:var(--dim); font-variant-numeric:tabular-nums; }
   .tab .place { flex-basis:100%; margin-left:26px; margin-top:2px; font-size:10px;
-    color:var(--dim); display:flex; gap:6px; align-items:baseline; min-width:0; }
+    color:var(--dim); display:flex; gap:var(--s2); align-items:baseline; min-width:0; }
   .tab .place .br { min-width:0; overflow:hidden; text-overflow:ellipsis;
     white-space:nowrap; }
   .tab .place .pr, .tab .place .pt { flex:none; white-space:nowrap; }
@@ -205,14 +205,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      heavier than any other heading, since it is the row that names the
      project, and the branches a step in from it. The step is 14px -- enough
      to read as "under", not enough to eat the branch's name */
-  .family { margin:4px 6px; padding:2px 0 4px; border-radius:8px; background:var(--raise); }
+  .family { margin:var(--s1) var(--s2); padding:2px 0 4px; border-radius:var(--r-card); background:var(--raise); }
   .tab.folder.head .nm { font-size:12px; font-weight:600; opacity:1; }
   .family .tab.folder.cut { padding-left:24px; }
   .family .tab.intab.deep { padding-left:40px; }
   /* Which branch the project itself is standing on, worn by the head of a
      household only: alone, a folder's own branch is already on its tabs */
   .tab.folder .on { flex:0 0 auto; font-size:10px; color:var(--dim); font-family:var(--mono);
-    border:1px solid var(--line); border-radius:4px; padding:0 4px; max-width:90px;
+    border:1px solid var(--line); border-radius:var(--r-chip); padding:0 4px; max-width:90px;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* How many branches hang under this project, and the one press that puts
      them all away or brings them all back */
@@ -224,7 +224,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Both marks take the same slot, so every folder's name starts on one
      column whichever kind it is */
   .tab.folder .chip { width:8px; height:8px; border-radius:2px; flex:0 0 auto;
-    margin:0 2px; background:var(--line); }
+    margin:0 var(--s1); background:var(--line); }
   /* A branch's mark stands where another folder's square does, same width, so
      the names still start on one column. A thin line needs more contrast than
      a filled square to carry the same weight, hence dim rather than the rule
@@ -239,8 +239,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.intab { padding-left:26px; }
   /* Choosing one. The swatches are the colours picked from when nobody has,
      and the last square opens whatever the system offers */
-  .swatches { display:flex; flex-wrap:wrap; gap:6px; padding:6px 8px 8px; max-width:200px; }
-  .swatches i { width:20px; height:20px; border-radius:5px; cursor:pointer;
+  .swatches { display:flex; flex-wrap:wrap; gap:var(--s2); padding:6px 8px 8px; max-width:200px; }
+  .swatches i { width:20px; height:20px; border-radius:var(--r-ctl); cursor:pointer;
     border:1px solid #0004; display:block; }
   .swatches i.any { background:conic-gradient(red,yellow,lime,aqua,blue,magenta,red); }
   .swatches input { position:absolute; width:0; height:0; opacity:0; }
@@ -248,7 +248,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Hamburger and scrim. Not shown on wide screens (sidebar stays visible) */
   #hamburger { display:none; position:fixed; top:6px; left:6px; z-index:40;
     width:34px; height:30px; align-items:center; justify-content:center;
-    background:var(--panel); border:1px solid var(--line); border-radius:6px;
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r-ctl);
     color:var(--text); font-size:16px; cursor:pointer; }
   #backdrop { display:none; }
 
@@ -269,7 +269,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #panes { position:absolute; inset:0; }
   .pane { position:absolute; overflow:hidden; background:var(--bg); }
   .pane.focused { pointer-events:none; }
-  .pane .phead { pointer-events:auto; display:none; align-items:center; gap:6px;
+  .pane .phead { pointer-events:auto; display:none; align-items:center; gap:var(--s2);
     height:22px; padding:0 8px; font-size:11px; cursor:pointer; user-select:none;
     background:var(--panel); border-bottom:1px solid var(--line); color:var(--dim); }
   .pane.focused .phead { color:var(--text); background:var(--raise);
@@ -372,12 +372,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Trackpad-style synthetic cursor: a Windows-like arrow whose tip is the
      click point. The negative margin aligns the arrow tip (SVG coords 2,1)
      exactly with left/top */
-  #castcursor { position:absolute; width:19px; height:30px; margin:-2px 0 0 -2px;
+  #castcursor { position:absolute; width:19px; height:30px; margin:-var(--s1) 0 0 -var(--s1);
     pointer-events:none; z-index:15; display:none;
     filter:drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
   #castcursor svg { display:block; }
   /* Click ripple (feedback that the tap registered) */
-  .ripple { position:absolute; width:10px; height:10px; margin:-5px 0 0 -5px;
+  .ripple { position:absolute; width:10px; height:10px; margin:-var(--s2) 0 0 -var(--s2);
     border-radius:50%; border:2px solid var(--brand); pointer-events:none; z-index:14;
     animation:rip .48s ease-out forwards; }
   @keyframes rip { from { transform:scale(.4); opacity:.9 } to { transform:scale(4.5); opacity:0 } }
@@ -389,11 +389,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      marked out. The eye reads a blue rule as "a pane starts here" and finds a
      boundary that is not there. Full-strength brand is for state; structure
      inside a panel is drawn with --line */
-  #castbar { display:flex; align-items:flex-end; gap:6px; padding:6px 8px;
+  #castbar { display:flex; align-items:flex-end; gap:var(--s2); padding:6px 8px;
     background:var(--panel); border-top:1px solid var(--line); }
   #castinput { flex:1; min-width:0; font-family:inherit; font-size:16px;
     line-height:1.35; padding:8px 10px; background:var(--bg); color:var(--text);
-    border:1px solid var(--line); border-radius:8px; outline:none;
+    border:1px solid var(--line); border-radius:var(--r-ctl); outline:none;
     resize:none; overflow-y:auto; max-height:40vh; }
   /* The hint is one line or it is nothing. The field is the narrowest thing in
      the row (the clip, backspace, send and close buttons around it are fixed), so
@@ -410,10 +410,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #castbar.locked #castinput::placeholder { color:var(--muted); }
   #castbar.locked .castsend, #castbar.locked .castbtn, #castbar.locked .castatt {
     opacity:.35; pointer-events:none; }
-  #castbar .castsend { padding:8px 14px; border:0; border-radius:8px;
+  #castbar .castsend { padding:8px 14px; border:0; border-radius:var(--r-ctl);
     background:var(--brand); color:#04121c; font-weight:700; cursor:pointer; }
   #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);
-    border-radius:8px; background:var(--bg); color:var(--text); cursor:pointer; }
+    border-radius:var(--r-ctl); background:var(--bg); color:var(--text); cursor:pointer; }
   /* Indicator shown while in control mode (tap to release) */
   /* Release banner. Placed at the top of the dock so it rides up and down
      together with the auxiliary key row and the keyboard. Avoids both
@@ -443,11 +443,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     box-shadow:0 4px 16px rgba(0,0,0,.45); opacity:.85; transition:opacity .15s ease; }
   #composerfab:hover { opacity:1; }
   /* The switchable panel: a fixed switcher (left) + the scrolling content (right). */
-  #castpanel { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:0 8px;
+  #castpanel { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); padding:0 8px;
     background:var(--panel); border-top:1px solid var(--line); }
-  .castswitch { flex:none; margin:6px 0; padding:6px 8px; font-size:13px;
+  .castswitch { flex:none; margin:var(--s2) 0; padding:6px 8px; font-size:13px;
     background:var(--bg); color:var(--text); border:1px solid var(--line);
-    border-radius:8px; }
+    border-radius:var(--r-ctl); }
   .castpanelhint { flex:1 1 0; padding:10px 4px; color:var(--dim); font-size:13px; }
   /* A sentence about the panel (🎯's hint or its "can't drive" reason, 📼's
      status) gets a line of its own under the row, full width, wrapping. It
@@ -464,46 +464,46 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The "🎯 still aimed" chip: visible on EVERY panel while a target is set,
      because the composer's Send goes to the operate goal, not the terminal.
      Its ✕ releases the target. */
-  .castchip { flex:none; display:inline-flex; align-items:center; gap:6px; margin:6px 0;
+  .castchip { flex:none; display:inline-flex; align-items:center; gap:var(--s2); margin:var(--s2) 0;
     padding:4px 6px 4px 10px; font-size:13px; color:var(--text);
     background:var(--bg); border:1px solid var(--brand); border-radius:999px; }
   .castchipx { flex:none; border:0; background:none; color:var(--dim); font-size:13px;
     cursor:pointer; padding:2px 6px; border-radius:999px; }
   .castchipx:hover { color:var(--text); background:var(--line); }
   /* Fixed ⚙ at the right of the actions panel — edit the quick actions in settings. */
-  .castgear { flex:none; margin:6px 0; padding:6px 8px; font-size:14px; cursor:pointer;
-    background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; }
+  .castgear { flex:none; margin:var(--s2) 0; padding:6px 8px; font-size:14px; cursor:pointer;
+    background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); }
   .castgear:active { background:var(--brand); color:#04121c; }
   /* Keys / actions rows fill the rest and scroll horizontally under the switcher. */
-  #castkeys, #castactions { display:flex; gap:6px; overflow-x:auto; white-space:nowrap;
+  #castkeys, #castactions { display:flex; gap:var(--s2); overflow-x:auto; white-space:nowrap;
     flex:1 1 0; min-width:0; padding:6px 0;
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }
   #castkeys::-webkit-scrollbar, #castactions::-webkit-scrollbar { display:none; }
-  #casttarget { display:flex; align-items:center; gap:8px; flex:1 1 0; min-width:0;
+  #casttarget { display:flex; align-items:center; gap:var(--s2); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #casttarget::-webkit-scrollbar { display:none; }
   /* 🌿 commit: a chip and two ticks, the same row shape as 📼 and 🎯. The
      panels share one shape on purpose -- the bar is one bar, whichever panel
      is in front of it */
-  #castgit { display:flex; align-items:center; gap:12px; flex:1 1 0; min-width:0;
+  #castgit { display:flex; align-items:center; gap:var(--s3); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #castgit::-webkit-scrollbar { display:none; }
   /* 📼 record/run: two radios + a hint, same row shape as 🎯. */
-  #castlua { display:flex; align-items:center; gap:12px; flex:1 1 0; min-width:0;
+  #castlua { display:flex; align-items:center; gap:var(--s3); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #castlua::-webkit-scrollbar { display:none; }
-  .castradio { flex:none; display:flex; align-items:center; gap:5px; font-size:13px;
+  .castradio { flex:none; display:flex; align-items:center; gap:var(--s2); font-size:13px;
     color:var(--text); cursor:pointer; user-select:none; }
   .castradio input { accent-color:var(--brand); margin:0; }
   .castaction { flex:0 0 auto; max-width:60vw; overflow:hidden; text-overflow:ellipsis;
-    padding:7px 12px; font-size:13px; border:1px solid var(--brand); border-radius:14px;
+    padding:7px 12px; font-size:13px; border:1px solid var(--brand); border-radius:var(--r-ctl);
     background:color-mix(in srgb, var(--brand) 10%, transparent); color:var(--text); cursor:pointer; user-select:none; }
   .castaction:active { background:var(--brand); color:#04121c; }
   /* Lua actions run on tap (rather than filling the composer) — mark them. */
   .castaction.lua { border-style:dashed; }
   .castaction.lua::before { content:"▶"; margin-right:4px; opacity:.85; }
   .castkey { flex:0 0 auto; min-width:40px; padding:8px 10px; font-size:14px;
-    border:1px solid var(--line); border-radius:8px; background:var(--bg);
+    border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--bg);
     color:var(--text); cursor:pointer; user-select:none; }
   .castkey:active { background:var(--brand); color:#04121c; }
   /* Ctrl/Alt are latching toggles: while held on, light them up and wait for the next keypress */
@@ -517,10 +517,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel[hidden] { display:none; }
   #gitpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
     bottom:var(--fb); display:flex; flex-direction:column; overflow:hidden;
-    font-family:var(--ui); font-size:13px; user-select:text; }
-  #gitpanel .bar { display:flex; align-items:center; gap:6px; padding:6px 10px;
+    font-size:13px; user-select:text; }
+  #gitpanel .bar { display:flex; align-items:center; gap:var(--s2); padding:6px 10px;
     border-bottom:1px solid var(--line); flex:0 0 auto; flex-wrap:wrap; }
-  #gitpanel .bar button { padding:4px 12px; font-size:12.5px; border-radius:7px;
+  #gitpanel .bar button { padding:4px 12px; font-size:12.5px; border-radius:var(--r-ctl);
     border:1px solid var(--line); background:var(--panel); color:var(--text); cursor:pointer; }
   #gitpanel .bar button:hover { background:var(--panel2); }
   #gitpanel .bar button.go { border-color:var(--brand); color:var(--brand); }
@@ -545,12 +545,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .sec .list { overflow:auto; flex:1 1 auto; }
   #gitpanel h4 { margin:0; padding:6px 10px 4px; font-size:11px; letter-spacing:.06em;
     color:var(--muted); font-weight:600; text-transform:uppercase; flex:0 0 auto;
-    display:flex; align-items:center; gap:6px; }
+    display:flex; align-items:center; gap:var(--s2); }
   #gitpanel h4 .grow { flex:1; }
-  #gitpanel h4 button { font-size:11px; padding:2px 8px; border-radius:6px;
+  #gitpanel h4 button { font-size:11px; padding:2px 8px; border-radius:var(--r-ctl);
     border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
   #gitpanel h4 button:hover { color:var(--text); background:var(--panel2); }
-  #gitpanel .row { display:flex; align-items:center; gap:7px; padding:3px 10px;
+  #gitpanel .row { display:flex; align-items:center; gap:var(--s2); padding:3px 10px;
     cursor:pointer; }
   #gitpanel .row:hover { background:var(--panel2); }
   #gitpanel .row.on { background:var(--panel2); }
@@ -574,27 +574,27 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     white-space:pre; font-family:var(--mono); font-size:12px; line-height:1.35; }
   /* One hunk: what it covers, what can be done with it, and then the lines */
   #gitpanel .hunk { border-bottom:1px solid var(--line); }
-  #gitpanel .hunkhead { display:flex; align-items:center; gap:8px; padding:4px 10px;
-    background:var(--panel); font-family:var(--ui); font-size:11.5px; color:var(--muted);
+  #gitpanel .hunkhead { display:flex; align-items:center; gap:var(--s2); padding:4px 10px;
+    background:var(--panel); font-size:11.5px; color:var(--muted);
     position:sticky; top:0; }
   #gitpanel .hunkhead .grow { flex:1; }
-  #gitpanel .hunkhead button { font-size:11px; padding:2px 8px; border-radius:6px;
+  #gitpanel .hunkhead button { font-size:11px; padding:2px 8px; border-radius:var(--r-ctl);
     border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
   #gitpanel .hunkhead button:hover { color:var(--text); background:var(--panel2); }
   #gitpanel .hunk .lines { padding:4px 12px; }
-  #gitpanel .filehead { padding:5px 12px; font-family:var(--ui); font-size:12px;
+  #gitpanel .filehead { padding:5px 12px; font-size:12px;
     border-bottom:1px solid var(--line); color:var(--text); background:var(--panel); }
-  #gitpanel .diff .a { color:var(--ok); }
+  #gitpanel .diff .a { color:var(--live); }
   #gitpanel .diff .d { color:var(--danger); }
   #gitpanel .diff .h { color:var(--muted); }
   #gitpanel .empty { color:var(--muted); padding:12px 10px; font-size:12px; }
   /* On a phone the three columns become one, and the row of chips says which
      one is in front. Everything a person can reach on the window is reachable
      here -- it is the same panel, not a cut-down one */
-  #gitpanel .chips { display:none; gap:6px; padding:6px 10px; flex:0 0 auto;
+  #gitpanel .chips { display:none; gap:var(--s2); padding:6px 10px; flex:0 0 auto;
     border-bottom:1px solid var(--line); overflow-x:auto; }
   #gitpanel .chips button { flex:0 0 auto; padding:5px 12px; font-size:12.5px;
-    border-radius:14px; border:1px solid var(--line); background:none;
+    border-radius:var(--r-chip); border:1px solid var(--line); background:none;
     color:var(--muted); cursor:pointer; }
   #gitpanel .chips button.on { color:var(--text); border-color:var(--brand);
     background:color-mix(in srgb, var(--brand) 14%, transparent); }
@@ -605,16 +605,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel.narrow .hist { flex:1 1 auto; width:auto; }
   #gitpanel.narrow .hist .log, #gitpanel.narrow .hist .about { flex:1 1 auto; }
   #gitpanel.narrow .under { flex-direction:column; }
-  #gitpanel.narrow .bar { gap:4px; }
+  #gitpanel.narrow .bar { gap:var(--s1); }
   #gitpanel.narrow .bar button { padding:6px 10px; }
   #gitpanel.narrow .logrow .w, #gitpanel.narrow .logrow .a { display:none; }
 
   /* The history: the log across the top, and under it what one commit did */
   #gitpanel .hist { flex:1 1 auto; display:flex; flex-direction:column; min-width:0; min-height:0; }
-  #gitpanel .histhead { display:flex; align-items:center; gap:12px; padding:5px 10px;
+  #gitpanel .histhead { display:flex; align-items:center; gap:var(--s3); padding:5px 10px;
     border-bottom:1px solid var(--line); flex:0 0 auto; font-size:12px; }
   #gitpanel .log { flex:0 0 55%; overflow:auto; min-height:0; }
-  #gitpanel .logrow { display:flex; gap:10px; padding:2px 10px; cursor:pointer; font-size:12px; }
+  #gitpanel .logrow { display:flex; gap:var(--s3); padding:2px 10px; cursor:pointer; font-size:12px; }
   #gitpanel .logrow:hover { background:var(--panel2); }
   #gitpanel .logrow.on { background:color-mix(in srgb, var(--brand) 18%, transparent); }
   #gitpanel .logrow .g { font-family:var(--mono); white-space:pre; color:var(--muted);
@@ -631,7 +631,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .about dt { color:var(--muted); font-size:11px; margin-top:6px; }
   #gitpanel .about dd { margin:0; font-family:var(--mono); font-size:11.5px;
     word-break:break-all; }
-  #gitpanel .about .body { margin-top:8px; white-space:pre-wrap; font-family:var(--ui);
+  #gitpanel .about .body { margin-top:8px; white-space:pre-wrap; 
     font-size:12px; }
 
   /* ── Bar above the browser view ──────────────────
@@ -640,18 +640,18 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      fight with the site's own CSS, disappear on every navigation, and
      cover the site's own fixed header from above */
   #nav { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr); height:36px; z-index:5;
-    display:flex; align-items:center; gap:6px; padding:0 8px;
+    display:flex; align-items:center; gap:var(--s2); padding:0 8px;
     border-bottom:1px solid var(--line); background:var(--panel);
     transition:background .15s, border-color .15s; }
   #nav[hidden] { display:none; }
   #nav button { font:inherit; font-size:13px; color:var(--text); cursor:pointer;
-    background:transparent; border:1px solid var(--line); border-radius:6px;
+    background:transparent; border:1px solid var(--line); border-radius:var(--r-ctl);
     width:28px; height:24px; line-height:1; padding:0; flex:none; }
   #nav button:hover:not(:disabled) { background:var(--raise); border-color:var(--brand); }
   #nav button:disabled { color:var(--line); cursor:default; }
   #nav input { flex:1; min-width:60px; font:inherit; font-size:12px;
     color:var(--text); background:var(--bg); border:1px solid var(--line);
-    border-radius:6px; padding:3px 8px; outline:none; }
+    border-radius:var(--r-ctl); padding:3px 8px; outline:none; }
   #nav input:focus { border-color:var(--brand); }
   /* The bar that asks the person something about the page in the focused
      pane (shikisha.browser_ask): the words, and one button. Drawn HERE, under
@@ -662,20 +662,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      composer's dock, which is the other thing that takes room at the bottom */
   #ask { position:absolute; left:var(--fx); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); height:44px; z-index:5;
-    display:flex; align-items:center; gap:12px; padding:0 12px;
+    display:flex; align-items:center; gap:var(--s3); padding:0 12px;
     background:var(--panel); border-top:2px solid var(--warn); }
   #ask[hidden] { display:none; }
   #ask .words, .pane .pask .words { flex:1; font-size:13px; color:var(--text);
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #ask button, .pane .pask button { font:inherit; font-size:13px; font-weight:600;
     color:var(--text); cursor:pointer; background:transparent;
-    border:1px solid var(--brand); border-radius:6px; padding:5px 16px; flex:none; }
+    border:1px solid var(--brand); border-radius:var(--r-ctl); padding:5px 16px; flex:none; }
   #ask button:hover:not(:disabled), .pane .pask button:hover:not(:disabled) { background:var(--raise); }
   #ask button:disabled, .pane .pask button:disabled { opacity:.45; cursor:default; }
   /* The same bar under a browser in a pane that is not focused. The page in
      that pane is held back by its height (see report()) */
   .pane .pask { position:absolute; left:0; right:0; bottom:0; height:44px; display:none;
-    align-items:center; gap:12px; padding:0 12px; pointer-events:auto;
+    align-items:center; gap:var(--s3); padding:0 12px; pointer-events:auto;
     background:var(--panel); border-top:2px solid var(--warn); }
   .pane .pask.on { display:flex; }
   /* While loading, tint the whole bar blue so it's obvious at a glance
@@ -714,7 +714,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      not yet it. Blinks two values a second like everything else that says
      "press this next" -- a smooth pulse costs a core a fifth of itself */
   #pushbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:26;
-    display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; padding:10px 14px;
+    display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2) var(--s3); padding:10px 14px;
     background:linear-gradient(180deg,var(--tint),var(--panel));
     border-bottom:2px solid var(--live); box-shadow:0 8px 22px rgba(0,0,0,.45); font-size:14px; }
   #pushbar[hidden] { display:none; }
@@ -723,21 +723,21 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The two answers stay together, and go to the right -- or, on a narrow
      screen, to their own line under the words */
   #pushbar .pb-actions { flex:none; margin-left:auto; display:flex; gap:8px; }
-  #pushbar button { flex:none; padding:8px 14px; border-radius:8px; border:0; font:inherit; font-weight:700; }
+  #pushbar button { flex:none; padding:8px 14px; border-radius:var(--r-ctl); border:0; font:inherit; font-weight:700; }
   #pushbar .pb-go { background:var(--brand); color:var(--bg); animation:pulse 1.2s step-end infinite; }
   #pushbar .pb-later { background:transparent; color:var(--muted); }
   #topicbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:24;
-    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap;
     padding:11px 16px; background:linear-gradient(180deg,var(--tint),var(--panel));
     border-bottom:2px solid var(--live); box-shadow:0 8px 22px rgba(0,0,0,.55); }
   #topicbar[hidden] { display:none; }
   #topicbar .tb-ico { font-size:16px; flex:none; }
   #topicbar .tb-label { font-weight:700; color:var(--text); font-size:13px; flex:none; }
   #topicbar input { flex:1 1 220px; min-width:140px; padding:9px 12px;
-    border-radius:8px; border:1px solid var(--line); background:var(--bg);
+    border-radius:var(--r-ctl); border:1px solid var(--line); background:var(--bg);
     color:var(--text); font-size:14px; outline:none; }
   #topicbar input:focus { border-color:var(--live); }
-  #topicbar button { flex:none; padding:9px 22px; border-radius:8px; border:0;
+  #topicbar button { flex:none; padding:9px 22px; border-radius:var(--r-ctl); border:0;
     background:var(--live); color:#04121c; font-weight:700; cursor:pointer;
     font-size:14px; animation:tbpulse 1.7s ease-in-out 6; }
   #topicbar button:hover { filter:brightness(1.08); }
@@ -749,7 +749,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   @keyframes tbpulse { 0%,100% { box-shadow:0 0 0 0 color-mix(in srgb, var(--live) 55%, transparent) }
     50% { box-shadow:0 0 0 7px color-mix(in srgb, var(--live) 0%, transparent) } }
   /* The topic hint drops onto its own line below on narrow widths */
-  #topicbar .tb-hint { color:var(--dim); font-size:12px; flex:1 1 100%; margin:-2px 0 0; }
+  #topicbar .tb-hint { color:var(--dim); font-size:12px; flex:1 1 100%; margin:-var(--s1) 0 0; }
   @media (prefers-reduced-motion: reduce) { #topicbar button { animation:none; } }
   /* Claude-style "thinking" bubble floated over the conversation while a reply
      generates — bouncing dots + a bubble that breathes, so the wait feels alive.
@@ -758,10 +758,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      (where "generating" used to print), so it reads as part of the
      conversation. left/top are set from the cursor position by JS. */
   #thinking { position:absolute; z-index:22; white-space:nowrap;
-    display:inline-flex; align-items:center; gap:8px;
+    display:inline-flex; align-items:center; gap:var(--s2);
     color:var(--text); font-size:14px; font-weight:500; }
   #thinking[hidden] { display:none; }
-  #thinking .th-dots { display:flex; align-items:center; gap:4px; height:16px; }
+  #thinking .th-dots { display:flex; align-items:center; gap:var(--s1); height:16px; }
   #thinking .th-dots span { width:6px; height:6px; background:var(--live);
     border-radius:50%; animation:thinking-dot 1.15s ease-in-out infinite; }
   #thinking .th-dots span:nth-child(2) { animation-delay:.14s; }
@@ -787,12 +787,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .mark-lite { display:none; color:var(--brand); font-weight:700;
     font-size:22px; letter-spacing:2px; }
   .sub { color:var(--dim); font-size:12px; margin-top:4px; }
-  .card { margin-top:20px; border:1px solid var(--line); border-radius:10px;
+  .card { margin-top:20px; border:1px solid var(--line); border-radius:var(--r-card);
     background:var(--panel); padding:14px 16px; }
-  .card h2 { margin:0 0 10px; font-size:12px; font-weight:600; color:var(--dim);
+  .card h2 { margin:0 0 var(--s3); font-size:12px; font-weight:600; color:var(--dim);
     letter-spacing:1px; text-transform:uppercase; }
   /* Chain gauge — a real bar, not a run of ━ characters */
-  .gauge { height:8px; border-radius:4px; background:var(--sunk); overflow:hidden; }
+  .gauge { height:8px; border-radius:var(--r-chip); background:var(--sunk); overflow:hidden; }
   .gauge i { display:block; height:100%; background:var(--live);
     transition:width .3s ease, background .3s ease; }
   .rows { width:100%; border-collapse:collapse; font-size:13px; }
@@ -805,8 +805,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      them quiet until one is worth noticing */
   .rows td.cost { font-variant-numeric:tabular-nums; color:var(--dim); white-space:nowrap; }
   .menu { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
-    gap:6px; }
-  .mi { display:flex; gap:9px; align-items:center; padding:7px 9px; border-radius:7px;
+    gap:var(--s2); }
+  .mi { display:flex; gap:var(--s3); align-items:center; padding:7px 9px; border-radius:var(--r-ctl);
     cursor:pointer; }
   .mi:hover { background:var(--hover); }
   /* Only the window can carry this one out. Shown, but plainly not tappable
@@ -815,7 +815,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .mi.windowonly:hover { background:none; }
   .mi .only { font-size:11px; color:var(--dim); }
   .row.dim { color:var(--dim); margin-top:8px; }
-  .key { font-size:11px; color:#04121c; background:var(--brand); border-radius:4px;
+  .key { font-size:11px; color:#04121c; background:var(--brand); border-radius:var(--r-chip);
     padding:1px 6px; font-weight:700; }
 
   /* ── The ball. A real circle that actually moves ────────── */
@@ -841,7 +841,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the window and STOP went off the right edge, at exactly the width a
      person needs it. With the item allowed to be narrower than its words,
      the shrinkable parts (workspace name, usage words) truncate instead */
-  #status { grid-column:2; display:flex; align-items:center; gap:12px;
+  #status { grid-column:2; display:flex; align-items:center; gap:var(--s3);
     padding:5px 12px; border-top:1px solid var(--line); background:var(--panel);
     font-size:12px; color:var(--dim); flex-wrap:nowrap; min-width:0; overflow:hidden; }
   #status .grow { flex:1; }
@@ -852,7 +852,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The build stamp gives way first: it is for whoever built this, and the
      usage words are for whoever is paying for the AI */
   #status .build { flex:0 4 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .pill { padding:1px 8px; border-radius:9px; border:1px solid var(--line); }
+  .pill { padding:1px 8px; border-radius:999px; border:1px solid var(--line); }
   .pill.on { color:var(--live); border-color:color-mix(in srgb, var(--live) 40%, var(--bg)); }
   .pill.off { color:var(--dim); }
   .pill.live { color:var(--brand); border-color:var(--brand); cursor:pointer; }
@@ -864,10 +864,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* What the subscription has left: the AI's name in its own colour, then a
      bar and a sentence per window. The bar is the number; the words say what
      the number is of and when it goes back to zero. Nothing here moves */
-  #status .usage { display:flex; align-items:center; gap:10px; flex:0 1 auto; min-width:0;
+  #status .usage { display:flex; align-items:center; gap:var(--s3); flex:0 1 auto; min-width:0;
     font-variant-numeric:tabular-nums; cursor:default; white-space:nowrap; }
   #status .usage .who { color:var(--ai); font-weight:600; }
-  #status .usage .win { display:flex; align-items:center; gap:6px; min-width:0; }
+  #status .usage .win { display:flex; align-items:center; gap:var(--s2); min-width:0; }
   /* One dot between the windows, and none after the name */
   #status .usage .win + .win::before { content:"·"; color:var(--dim); }
   #status .usage .wname { color:var(--dim); }
@@ -881,12 +881,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #status .usage .wsay { overflow:hidden; text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
   .pill.live:hover { background:var(--tint); }
   #stop { cursor:pointer; color:var(--stop); border:1px solid color-mix(in srgb, var(--stop) 40%, var(--bg));
-    padding:2px 10px; border-radius:7px; font-weight:700; }
+    padding:2px 10px; border-radius:var(--r-ctl); font-weight:700; }
   #stop:hover { background:var(--stop); color:var(--bg); }
   /* Relaunch the tab in view. Same shape as the stop button but a notch quieter:
      they sit side by side, and the red one has to stay the one that catches the eye */
   #restart { cursor:pointer; color:var(--dim); border:1px solid var(--line);
-    padding:2px 10px; border-radius:7px; font-weight:700; }
+    padding:2px 10px; border-radius:var(--r-ctl); font-weight:700; }
   #restart:hover { background:var(--line); color:var(--text); }
   /* Armed - the next press kills and relaunches what is running */
   #restart.armed { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 45%, var(--bg)); background:color-mix(in srgb, var(--warn) 14%, var(--bg)); }
@@ -916,7 +916,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Startup splash. Visible on load, hidden once the first board state arrives.
      Sits below the password veil (z-index 50) so the prompt shows on top of it. */
   #splash { position:fixed; inset:0; z-index:40; display:flex; flex-direction:column;
-    align-items:center; justify-content:center; gap:20px; background:var(--bg); }
+    align-items:center; justify-content:center; gap:var(--s5); background:var(--bg); }
   #splash[hidden] { display:none; }
   #splash .logo { font-size:26px; letter-spacing:3px; font-weight:700; color:var(--brand); }
   #splash .spin { width:34px; height:34px; border:3px solid var(--line);
@@ -936,7 +936,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #netveil .nvtitle { font-size:17px; font-weight:700; color:var(--text); margin-bottom:10px; }
   #netveil .nvsub { font-size:13px; color:var(--dim); line-height:1.55; }
   #netveil.cut .nvtitle { color:var(--warn); }
-  #netveil .nvbtn { margin-top:18px; padding:11px 22px; border-radius:10px; font-size:14px;
+  #netveil .nvbtn { margin-top:18px; padding:11px 22px; border-radius:var(--r-ctl); font-size:14px;
     border:1px solid var(--line); background:var(--panel); color:var(--text); }
   #netveil .nvbtn[hidden] { display:none; }
 
@@ -964,7 +964,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #vault .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
   #browse .vclose:hover, #repair .vclose:hover { color:var(--text); }
   #vault #vq, #palette #pq, #branch #bq { font:inherit; font-size:14px; background:var(--bg);
-    color:var(--text); border:1px solid var(--line); border-radius:8px; padding:9px 12px; outline:none; }
+    color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); padding:9px 12px; outline:none; }
   #vault #vq:focus, #palette #pq:focus, #branch #bq:focus { border-color:var(--brand); }
   /* What is about to happen, said before it does: where the folder will be, and
      the command itself. Never typed into -- the branch name above is the only
@@ -972,28 +972,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bsay { color:var(--dim); font-size:11.5px; }
   /* The name to give it, and what it starts from. One is typed and the other
      is picked, because one of them is new and the other already exists */
-  #branch .brow2 { display:flex; gap:8px; align-items:stretch; }
+  #branch .brow2 { display:flex; gap:var(--s2); align-items:stretch; }
   #branch .brow2 #bq { flex:1; min-width:0; }
   /* What the new folder runs: the same tabs as its project, nothing, or one
      AI -- or one folder per AI, ticked below. Only shown when this machine
      has an AI to start; without one the dialog is what it always was */
-  #branch .bstartrow { display:flex; gap:8px; align-items:center; }
+  #branch .bstartrow { display:flex; gap:var(--s2); align-items:center; }
   /* A display rule of their own would otherwise beat the hidden attribute */
   #branch .bstartrow[hidden], #branch .bfan[hidden], #branch .bais[hidden] { display:none; }
   #branch .bstartrow .say { color:var(--dim); font-size:11.5px; flex:0 0 auto; }
-  #branch .bfan { display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; }
+  #branch .bfan { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
   #branch .bais { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding-left:22px; }
-  #branch .bais label { display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer; }
+  #branch .bais label { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
   #branch #bbase, #branch #bstart { font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
-    border:1px solid var(--line); border-radius:8px; padding:0 10px; cursor:pointer;
-    max-width:42%; flex:0 0 auto; display:flex; align-items:center; gap:6px;
+    border:1px solid var(--line); border-radius:var(--r-ctl); padding:0 10px; cursor:pointer;
+    max-width:42%; flex:0 0 auto; display:flex; align-items:center; gap:var(--s2);
     white-space:nowrap; overflow:hidden; }
   #branch #bbase:hover, #branch #bstart:hover { border-color:var(--brand); }
   #branch #bbase .nm, #branch #bstart .nm { overflow:hidden; text-overflow:ellipsis; }
   #branch #bbase .caret, #branch #bstart .caret { color:var(--dim); font-size:9px; }
   #branch #bstart { max-width:none; flex:1 1 auto; }
   .fmenu.tall { max-height:min(52vh, 420px); overflow:auto; }
-  #browse .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; max-height:52vh; }
+  #browse .vlist { overflow:auto; display:flex; flex-direction:column; gap:var(--s1); max-height:52vh; }
   #browse .vrow { padding:var(--s2) var(--s3); border-radius:var(--r-ctl); cursor:pointer; }
   #browse .vrow:hover { background:var(--raise); }
   #branch .bwhere, #branch .bcmd, #browse .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--text);
@@ -1002,12 +1002,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bcmd { color:var(--dim); }
   /* What the new folder cannot get from git. Ticked as it will happen, so
      nobody has to read it unless they disagree */
-  #branch .bcarry { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; }
+  #branch .bcarry { display:flex; flex-wrap:wrap; gap:var(--s2) var(--s4); align-items:center; }
   #branch .bcarry .say { color:var(--dim); font-size:11.5px; }
-  #branch .bcarry label { display:flex; align-items:center; gap:5px; font-size:12px;
+  #branch .bcarry label { display:flex; align-items:center; gap:var(--s2); font-size:12px;
     color:var(--text); cursor:pointer; }
   #branch .bcarry .link { font-size:10.5px; color:var(--dim); border:1px solid var(--line);
-    border-radius:5px; padding:0 4px; }
+    border-radius:var(--r-chip); padding:0 4px; }
   #branch .berr, #browse .berr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
   /* Putting a folder back. The same frame as the branch dialog, because it is
      the same kind of question -- what will happen, said before it happens */
@@ -1015,22 +1015,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #repair .rsay { color:var(--dim); font-size:11.5px; white-space:pre-wrap; line-height:1.5; }
   #repair .rwill { color:var(--dim); font-size:11px; padding-top:2px; }
   #repair .rcmd { font-family:var(--mono); font-size:11.5px; color:var(--text);
-    background:var(--raise); border-radius:6px; padding:5px 7px; margin-top:3px;
+    background:var(--raise); border-radius:var(--r-ctl); padding:5px 7px; margin-top:3px;
     overflow-x:auto; white-space:pre; }
-  #repair .rsteps, #repair .rask { display:flex; flex-direction:column; gap:2px; }
+  #repair .rsteps, #repair .rask { display:flex; flex-direction:column; gap:var(--s1); }
   /* A display of its own beats the hidden attribute unless it is said again
      here. Without this the question stayed on screen after it was answered */
   #repair .rask[hidden] { display:none; }
-  #repair .rproj { display:flex; gap:7px; align-items:baseline; padding:3px 2px; cursor:pointer; }
+  #repair .rproj { display:flex; gap:var(--s2); align-items:baseline; padding:3px 2px; cursor:pointer; }
   #repair .rproj .nm { font-size:12.5px; }
   #repair .rproj .at { color:var(--dim); font-size:11px; font-family:var(--mono); }
   #repair .rbrow { display:flex; gap:8px; align-items:center; padding-top:4px; }
   #repair .rblabel { color:var(--dim); font-size:11.5px; flex:0 0 auto; }
   #repair .rbranch { font:inherit; font-size:12.5px; flex:1 1 auto; min-width:0;
     background:var(--bg); color:var(--text); border:1px solid var(--brand);
-    border-radius:6px; padding:4px 6px; outline:none; }
+    border-radius:var(--r-ctl); padding:4px 6px; outline:none; }
   #repair .rerr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
-  #branch .brow, #browse .brow { display:flex; gap:8px; justify-content:flex-end; }
+  #branch .brow, #browse .brow { display:flex; gap:var(--s2); justify-content:flex-end; }
   #branch button, #browse button { font:inherit; font-size:13px; padding:7px var(--s4);
     border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--raise);
     color:var(--text); cursor:pointer; }
@@ -1061,7 +1061,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      a warning per folder on a PC that has none of them is four warnings nobody
      reads -- and a warning nobody reads is the same as no warning at all. The
      count is the whole message; the names are one click away */
-  .tab.trouble { gap:6px; color:var(--warn, #e0a80a); align-items:flex-start; }
+  .tab.trouble { gap:var(--s2); color:var(--warn, #e0a80a); align-items:flex-start; }
   /* The one line wraps rather than being cut: the count is the whole message,
      and a message that ends in an ellipsis is a message nobody acts on. Every
      language spends a different width on it, so nothing here depends on it
@@ -1085,15 +1085,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The + keeps its place at the very end */
   .tab.folder .drift + .more { margin-left:6px; }
   #vault .vhint { color:var(--dim); font-size:11.5px; }
-  #vault .vlist, #palette .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; }
-  #vault .vrow, #palette .prow { padding:9px 10px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
-  #palette .prow { display:flex; gap:10px; align-items:baseline; }
+  #vault .vlist, #palette .vlist { overflow:auto; display:flex; flex-direction:column; gap:var(--s1); }
+  #vault .vrow, #palette .prow { padding:9px 10px; border-radius:var(--r-ctl); cursor:pointer; border:1px solid transparent; }
+  #palette .prow { display:flex; gap:var(--s3); align-items:baseline; }
   #palette .prow.sel { background:var(--raise); border-color:var(--brand); }
   #palette .pgrp { flex:none; font-size:10px; color:var(--brand); text-transform:uppercase;
     width:64px; letter-spacing:.5px; }
   #palette .plabel { color:var(--text); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #vault .vrow:hover { background:var(--raise); border-color:var(--line); }
-  #vault .vrow .vr1 { display:flex; gap:8px; align-items:baseline; }
+  #vault .vrow .vr1 { display:flex; gap:var(--s2); align-items:baseline; }
   #vault .vrow .vprog { color:var(--brand); font-size:11px; flex:none; }
   #vault .vrow .vname { color:var(--text); font-size:13px; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
@@ -1101,23 +1101,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #vault .vrow .vsnip { color:var(--dim); font-size:11.5px; margin-top:2px;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #veil .box { background:var(--panel); border:1px solid var(--brand);
-    border-radius:12px; padding:20px 24px; max-width:min(760px,86vw);
+    border-radius:var(--r-card); padding:20px 24px; max-width:min(760px,86vw);
     max-height:84vh; overflow:auto; }
-  #veil h3 { margin:0 0 12px; font-size:13px; color:var(--brand);
+  #veil h3 { margin:0 0 var(--s3); font-size:13px; color:var(--brand);
     letter-spacing:1px; text-transform:uppercase; }
-  #veil .row { display:flex; gap:10px; align-items:center; padding:5px 0;
+  #veil .row { display:flex; gap:var(--s3); align-items:center; padding:5px 0;
     font-size:13px; }
-  #veil .pick { cursor:pointer; padding:7px 10px; border-radius:7px; }
+  #veil .pick { cursor:pointer; padding:7px 10px; border-radius:var(--r-ctl); }
   #veil .pick:hover { background:var(--raise); }
-  #veil .qr { background:#fff; padding:12px; border-radius:8px; }
+  #veil .qr { background:#fff; padding:12px; border-radius:var(--r-ctl); }
   /* Under the QR: the one press that hands the link over, and what network it
      leads to. Nothing here is the link itself — see drawVeil. */
   #veil .qrrow { display:flex; align-items:center; gap:10px; margin-top:12px; }
   #veil .qrcopy { flex:none; font:inherit; font-size:16px; line-height:1;
     background:var(--raise); color:var(--text); border:1px solid var(--line);
-    border-radius:8px; padding:7px 11px; cursor:pointer; }
+    border-radius:var(--r-ctl); padding:7px 11px; cursor:pointer; }
   #veil .qrcopy:hover { border-color:var(--brand); }
-  .netbadge { display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:600;
+  .netbadge { display:inline-flex; align-items:center; gap:var(--s2); font-size:12px; font-weight:600;
     line-height:1.5; white-space:nowrap; border-radius:999px; padding:2px 10px; border:1px solid; }
   .netbadge.ok   { color:var(--live); border-color:var(--live);
     background:color-mix(in srgb, var(--live) 14%, transparent); }
@@ -1129,7 +1129,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Marker shown while scrolled back through history. Without it, the output looks like it has frozen */
   #back { position:absolute; right:calc(var(--fr) + 14px); top:calc(var(--fy) + 10px); z-index:6;
     background:var(--raise); border:1px solid var(--brand); color:var(--text);
-    padding:4px 12px; border-radius:14px; font-size:12px; cursor:pointer; }
+    padding:4px 12px; border-radius:var(--r-ctl); font-size:12px; cursor:pointer; }
   #back:hover { background:var(--brand); color:#04121c; }
   /* Every message this window shows — the app's own line and the ones the page
      raises itself — is the shared toast (src/toast.rs). Seated inside #main
@@ -1157,7 +1157,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      shown only on a terminal tab, remote. */
   #pageui { position:absolute; right:calc(var(--fr) + 12px);
     top:calc(var(--fy) + (100% - var(--fy) - var(--fb)) / 2); transform:translateY(-50%);
-    display:none; flex-direction:column; align-items:center; gap:10px; z-index:8; }
+    display:none; flex-direction:column; align-items:center; gap:var(--s3); z-index:8; }
   #pageui.on { display:flex; }
   .pagebtn { width:50px; height:50px; border-radius:50%; border:1px solid var(--line);
     background:color-mix(in srgb, var(--panel) 66%, transparent); color:var(--text); font-size:19px; line-height:1;
@@ -1189,12 +1189,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #reader { position:fixed; inset:0; z-index:30; display:none; flex-direction:column;
     background:var(--bg); color:var(--text); }
   #reader.on { display:flex; }
-  #rhead { flex:0 0 auto; display:flex; align-items:center; gap:10px; padding:10px 12px;
+  #rhead { flex:0 0 auto; display:flex; align-items:center; gap:var(--s3); padding:10px 12px;
     padding-top:calc(10px + env(safe-area-inset-top)); background:var(--panel);
     border-bottom:1px solid var(--line); }
   #rname { flex:1 1 auto; font-weight:700; min-width:0;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #rclose { flex:none; width:34px; height:34px; border-radius:10px; border:1px solid var(--line);
+  #rclose { flex:none; width:34px; height:34px; border-radius:var(--r-ctl); border:1px solid var(--line);
     background:transparent; color:var(--text); font-size:16px; line-height:1; cursor:pointer;
     display:flex; align-items:center; justify-content:center; touch-action:manipulation; }
   #rbody { flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain;
@@ -1205,27 +1205,27 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The one place in this app where text is NOT monospace: this is prose to be
      read, and a proportional face fits more of it on a phone's width */
   #rbody, #rhead { font-family:system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif; }
-  .rturn { margin:0 0 26px; }
+  .rturn { margin:0 0 var(--s6); }
   .rwho { font-size:11px; font-weight:700; letter-spacing:.09em; color:var(--dim);
     margin-bottom:6px; }
   /* What the person said is set back from what the AI answered: on a phone the
      eye needs the turn boundary more than it needs a bubble */
   .rturn.you { border-left:3px solid var(--line); padding-left:12px; color:var(--dim); }
-  .rturn p { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; }
-  .rturn h1, .rturn h2, .rturn h3 { font-size:1.05em; margin:18px 0 8px; }
+  .rturn p { margin:0 0 var(--s3); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .rturn h1, .rturn h2, .rturn h3 { font-size:1.05em; margin:var(--s5) 0 var(--s2); }
   .rturn ul { margin:0 0 12px; padding-left:1.3em; }
-  .rturn li { margin:0 0 6px; }
+  .rturn li { margin:0 0 var(--s2); }
   .rturn code { font-family:ui-monospace, Consolas, monospace; font-size:.88em;
-    background:var(--panel); border-radius:4px; padding:1px 4px; }
+    background:var(--panel); border-radius:var(--r-chip); padding:1px 4px; }
   /* A code block scrolls itself rather than widening the page. Long lines are
      the one thing that must not turn the whole reader into a horizontal pan */
-  .rturn pre { margin:0 0 14px; padding:10px 12px; border-radius:8px; overflow-x:auto;
+  .rturn pre { margin:0 0 var(--s4); padding:10px 12px; border-radius:var(--r-ctl); overflow-x:auto;
     background:var(--panel); border:1px solid var(--line); }
   .rturn pre code { background:none; padding:0; font-size:13px; line-height:1.5; }
   /* A table gets its own scroller for the same reason a code block does: on a
      phone it is nearly always wider than the screen, and the page itself must
      never be the thing that pans sideways */
-  .rtable { overflow-x:auto; margin:0 0 14px; }
+  .rtable { overflow-x:auto; margin:0 0 var(--s4); }
   .rturn table { border-collapse:collapse; font-size:14px; }
   .rturn th, .rturn td { border:1px solid var(--line); padding:6px 10px;
     text-align:left; vertical-align:top; }
@@ -1236,8 +1236,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The way back into the past, at the head of the document — which is where
      the conversation carries on upward. Full width so a thumb cannot miss it,
      and quiet, because it is not the thing you came here to read */
-  #rearlier { display:none; width:100%; margin:0 0 22px; padding:11px 12px;
-    border:1px dashed var(--line); border-radius:10px; background:transparent;
+  #rearlier { display:none; width:100%; margin:0 0 var(--s5); padding:11px 12px;
+    border:1px dashed var(--line); border-radius:var(--r-ctl); background:transparent;
     color:var(--dim); font:inherit; font-size:13px; cursor:pointer;
     touch-action:manipulation; }
   #rearlier:disabled { opacity:.6; }
@@ -1268,7 +1268,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
        there) and real when this page is installed and runs full-screen. Both
        the bar and the drawer start below it, so nothing we draw ends up
        underneath the time */
-    #status { order:-1; width:100vw; box-sizing:border-box; gap:8px;
+    #status { order:-1; width:100vw; box-sizing:border-box; gap:var(--s2);
       min-height:calc(42px + env(safe-area-inset-top)); padding-left:48px;
       padding-top:calc(5px + env(safe-area-inset-top));
       border-top:none; border-bottom:1px solid var(--line); }
@@ -5291,7 +5291,7 @@ function panelContent(p) {
 let suggestBusy = false, suggestDraft = "";
 function buildSuggestPanel() {
   const wrap = el("div", {id:"castsuggest", style:"display:flex;flex:1 1 0;gap:8px;align-items:center;min-width:0;padding:6px 0"});
-  const inp = el("input", {type:"text", style:"flex:1 1 0;min-width:120px;padding:6px 10px;font-size:13px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px",
+  const inp = el("input", {type:"text", style:"flex:1 1 0;min-width:120px;padding:6px 10px;font-size:13px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:var(--r-ctl)",
     placeholder: T["tui.cast.suggest.ph"] || "What do you want to do?"});
   inp.value = suggestDraft;
   inp.addEventListener("input", () => { suggestDraft = inp.value; });
@@ -5575,7 +5575,7 @@ function gitBuild(box) {
   // Making a branch asks for a name here rather than in a dialog: this window
   // has no dialogs to open, and the answer belongs next to the button anyway
   const name = el("input", {type:"text", placeholder:T["git.branch.name"] || "",
-    style:"padding:3px 8px;font-size:12.5px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--text)"});
+    style:"padding:3px 8px;font-size:12.5px;border-radius:var(--r-ctl);border:1px solid var(--line);background:var(--bg);color:var(--text)"});
   name.addEventListener("keydown", e => {
     if (typingIME(e)) return;
     if (e.key === "Enter" && name.value.trim()) gitAsk("branch_new", {text: name.value.trim()});

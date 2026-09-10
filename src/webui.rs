@@ -2342,7 +2342,8 @@ const PAGE: &str = r##"<!doctype html>
    --r-ctl:6px; --r-card:10px; --r-chip:4px; }
  body { margin:0; background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
    font-family:system-ui,"Segoe UI","Yu Gothic UI","Hiragino Sans",sans-serif; }
- code, .mono, input.mono { font-family:ui-monospace,Consolas,"Courier New",monospace; }
+ :root { --mono:ui-monospace,Consolas,"Courier New",monospace; }
+ code, .mono, input.mono { font-family:var(--mono); }
 
  header { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:12px;
    padding:12px 20px; background:color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter:blur(8px);
@@ -2351,12 +2352,12 @@ const PAGE: &str = r##"<!doctype html>
  header .spacer { flex:1; }
  /* The secondary links live in one element so a narrow screen can MOVE them into
     the drawer instead of a second copy being written for the phone. */
- .headlinks { display:flex; align-items:center; gap:12px; }
+ .headlinks { display:flex; align-items:center; gap:var(--s3); }
  /* Drawer handle and current-section label: phone only (see the narrow block). */
  .navtoggle { display:none; font-size:17px; line-height:1; padding:6px 10px; }
  /* Where you are, in two parts: the workspace gives way first (it ellipsises),
     the thing actually being edited always stays whole. */
- #crumb { display:none; align-items:baseline; gap:6px; min-width:0;
+ #crumb { display:none; align-items:baseline; gap:var(--s2); min-width:0;
    font-weight:600; font-size:14px; white-space:nowrap; }
  #crumb .up { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
    font-weight:400; color:var(--muted); }
@@ -2364,11 +2365,11 @@ const PAGE: &str = r##"<!doctype html>
  #navscrim { display:none; }
  /* Label on a desktop, icon on a phone — one button, two skins. */
  .atnarrow { display:none; }
- #msg { color:var(--muted); font-size:13px; border-radius:6px; padding:4px 10px; }
+ #msg { color:var(--muted); font-size:13px; border-radius:var(--r-ctl); padding:4px 10px; }
  #msg.warn { color:var(--danger); }
  /* A setting that could not be used. Said in the place it was set, not in a
     log nobody opens */
- .warn { color:var(--danger); font-size:13px; margin:0 0 8px; }
+ .warn { color:var(--danger); font-size:13px; margin:0 0 var(--s2); }
  /* Replay the animation every time, so a click still registers even if the message text repeats */
  #msg.flash { animation:msgflash 1.1s ease-out; }
  @keyframes msgflash {
@@ -2412,11 +2413,11 @@ const PAGE: &str = r##"<!doctype html>
  .navitem .sub { display:block; color:var(--muted); font-size:11.5px; margin-top:1px;
    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
  .navgroup { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
-   margin:14px 10px 4px; }
+   margin:var(--s4) var(--s3) var(--s1); }
  /* The sign at the top: which workspace everything under here belongs to.
     Pressing the name (or the gear) opens that workspace's own page; the caret
     is how you go to another one */
- .wsbanner { display:flex; align-items:center; gap:2px; padding:2px;
+ .wsbanner { display:flex; align-items:center; gap:var(--s1); padding:2px;
    border-radius:var(--r-ctl); }
  .wsbanner.sel { background:var(--panel2); }
  .wsbanner .wsname { flex:0 1 auto; min-width:0; display:flex; align-items:center;
@@ -2450,10 +2451,10 @@ const PAGE: &str = r##"<!doctype html>
  .fmenuitem.add { color:var(--dim); border-top:1px solid var(--line);
    border-radius:0 0 var(--r-ctl) var(--r-ctl); margin-top:4px; padding-top:10px; }
  .navgrouphead { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
-   margin:12px 0 2px; display:flex; align-items:center; gap:6px; }
+   margin:var(--s3) 0 var(--s1); display:flex; align-items:center; gap:var(--s2); }
  .navgrouphead.sel { color:var(--text); }
  .navgrouphead .caret { font-size:10px; width:14px; display:inline-block; text-align:center;
-   border-radius:4px; }
+   border-radius:var(--r-chip); }
  .navgrouphead .caret:hover { background:var(--panel2); }
  /* The tree, drawn the way a terminal draws one. A rule down the indent was
     what was here before: it broke at every gap between rows and ran too close
@@ -2461,7 +2462,7 @@ const PAGE: &str = r##"<!doctype html>
     fault, and they say one thing more -- which row is the last of its kind.
     Drawn only where they are true: `railsFor` works out, for every row,
     whether anything of its own depth comes after it */
- .navitem { position:relative; display:flex; align-items:flex-start; gap:6px; }
+ .navitem { position:relative; display:flex; align-items:flex-start; gap:var(--s2); }
  .rail { flex:none; display:flex; color:var(--edge-hi); font-family:var(--mono);
    font-size:12px; line-height:20px; user-select:none; }
  .rail i { width:15px; text-align:center; font-style:normal; }
@@ -2499,8 +2500,8 @@ const PAGE: &str = r##"<!doctype html>
  .card > .hint + .rows, .card > .hint + .field, .card > .hint + label.check { margin-top:0; }
  /* The colours a project can be given. Squares rather than a list of names:
     the thing being chosen is the colour itself */
- .swatches { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:4px 0 2px; }
- .swatches i { width:22px; height:22px; border-radius:6px; cursor:pointer; display:block;
+ .swatches { display:flex; flex-wrap:wrap; gap:var(--s2); align-items:center; padding:4px 0 2px; }
+ .swatches i { width:22px; height:22px; border-radius:var(--r-ctl); cursor:pointer; display:block;
    border:1px solid #0004; }
  .swatches i.on { outline:2px solid var(--text); outline-offset:2px; }
  .swatches i.any { background:conic-gradient(red,yellow,lime,aqua,blue,magenta,red); }
@@ -2514,23 +2515,29 @@ const PAGE: &str = r##"<!doctype html>
    color:var(--text); font-size:12px; font-weight:500; line-height:1.4; }
  /* ...and what a field means goes under it, not out to one side */
  .row > .hint { flex-basis:100%; margin-top:-2px; }
+ /* A row of a table: the same question, asked many times over. The name keeps
+    its own column so the eye can run down it, and nothing wraps */
+ .row.pair { padding:var(--s1) 0; }
+ .row.pair > label:not(.check):not(.beside) { flex:0 0 210px; align-self:center;
+   color:var(--dim); font-weight:400; }
+ .row.pair > .hint { flex:0 0 auto; margin-top:0; }
  /* Automation permissions. Two narrow columns on the right, everything else
     on the left, so the eye runs down a column instead of hunting across a row */
  .grantcols { display:flex; align-items:flex-end; gap:0; justify-content:flex-end;
    position:sticky; top:0; background:var(--panel); padding:6px 0 4px; z-index:1; }
  .grantcols span { width:104px; text-align:center; color:var(--muted); font-size:11.5px; }
  .grantcols .grow { width:auto; flex:1; }
- .granthead { display:flex; align-items:center; gap:8px; padding:10px 0 4px;
+ .granthead { display:flex; align-items:center; gap:var(--s2); padding:10px 0 4px;
    border-top:1px solid var(--line); margin-top:4px; }
  .granthead b { font-size:12.5px; font-weight:600; }
  /* Who counts as what, and the one case where the answer surprises people */
- .grantwho { font-size:12.5px; line-height:1.65; margin:2px 0 10px; }
+ .grantwho { font-size:12.5px; line-height:1.65; margin:var(--s1) 0 var(--s3); }
  .grantwho div + div { margin-top:4px; }
- .grantwarn { font-size:12.5px; line-height:1.65; margin:0 0 12px; padding:8px 12px;
+ .grantwarn { font-size:12.5px; line-height:1.65; margin:0 0 var(--s3); padding:8px 12px;
    border-left:3px solid var(--danger); background:var(--panel2); border-radius:0 6px 6px 0; }
- .granthead .foldable { cursor:pointer; display:flex; align-items:center; gap:8px; }
+ .granthead .foldable { cursor:pointer; display:flex; align-items:center; gap:var(--s2); }
  .granthead .caret { font-size:11px; width:14px; text-align:center; color:var(--muted); }
- .grantrow { display:flex; align-items:center; gap:8px; padding:4px 0; }
+ .grantrow { display:flex; align-items:center; gap:var(--s2); padding:4px 0; }
  .grantrow .nm { font-size:12.5px; }
  /* The name is a link, but a quiet one: the eye is here to find a row, not to
     be sold a destination */
@@ -2556,8 +2563,8 @@ const PAGE: &str = r##"<!doctype html>
  /* The line a tab will really be launched with. It wraps rather than scrolls:
     an argument pushed off the right edge is exactly the argument nobody would
     have seen otherwise */
- .realcmd { margin:6px 0 2px 0; }
- .realcmd code { display:block; margin:3px 0; padding:7px 9px; border-radius:6px;
+ .realcmd { margin:var(--s2) 0 var(--s1) 0; }
+ .realcmd code { display:block; margin:var(--s1) 0; padding:7px 9px; border-radius:var(--r-chip);
    background:var(--raise); border:1px solid var(--line);
    white-space:pre-wrap; word-break:break-all; font-size:12px; }
  .realcmd .added { color:var(--brand); font-weight:600; }
@@ -2566,11 +2573,11 @@ const PAGE: &str = r##"<!doctype html>
     hairline. It wraps, so a narrow screen stacks the parts instead of pushing
     them off the edge — which is also why this is a class and not four copies
     of the same inline style. */
- .listrow { display:flex; align-items:center; flex-wrap:wrap; gap:10px;
+ .listrow { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s3);
    padding:7px 0; border-bottom:1px solid var(--line); }
  /* For entries whose fields are taller than their buttons (a quick action's
     body box), so the buttons sit at the top rather than floating mid-height. */
- .listrow.tall { align-items:flex-start; gap:8px; padding:8px 0; }
+ .listrow.tall { align-items:flex-start; gap:var(--s2); padding:8px 0; }
  /* A list of things, boxed. The border round the whole makes it one object
     instead of a stack of loose lines */
  .rows { border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
@@ -2615,12 +2622,12 @@ const PAGE: &str = r##"<!doctype html>
     A class rather than an inline style, so `hidden` still hides it */
  /* Two answers to one question, side by side. Not a `.row`, whose first
     label is the 150px name column every settings line starts with */
- .whorow { display:flex; align-items:center; gap:24px; flex-wrap:wrap; padding:2px 0 4px; }
- .riskrow { display:flex; flex-direction:column; gap:6px; }
+ .whorow { display:flex; align-items:center; gap:var(--s6); flex-wrap:wrap; padding:2px 0 4px; }
+ .riskrow { display:flex; flex-direction:column; gap:var(--s2); }
  /* What this field is allowed to hold, said before anything is typed in it */
  label.check.allow { font-size:12px; color:var(--dim); margin-bottom:var(--s3); }
  /* ...and the row that needs it says so, under itself */
- .site-warn { display:flex; gap:6px; margin:2px 0 var(--s2); padding:var(--s2) var(--s3);
+ .site-warn { display:flex; gap:var(--s2); margin:var(--s1) 0 var(--s2); padding:var(--s2) var(--s3);
    border-radius:var(--r-ctl); font-size:11.5px; line-height:1.5; color:var(--warn);
    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent);
    background:color-mix(in srgb, var(--warn) 9%, transparent); }
@@ -2651,8 +2658,8 @@ const PAGE: &str = r##"<!doctype html>
    background:var(--panel2); border-color:var(--line); filter:none; }
  .lblopt { color:var(--faint); font-weight:400; }
  .grow { flex:1; min-width:180px; }
- .stoprow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px;
-   margin:6px 0; border:1px solid var(--line); border-radius:8px; }
+ .stoprow { display:flex; align-items:center; gap:var(--s2); flex-wrap:wrap; padding:8px;
+   margin:var(--s2) 0; border:1px solid var(--line); border-radius:var(--r-ctl); }
  .stoprow input { width:auto; }
  .stoprow input[type=number] { width:80px; }
  .stoprow .arrow { color:var(--muted); }
@@ -2661,7 +2668,7 @@ const PAGE: &str = r##"<!doctype html>
  /* Which network the phone's connection link leads to. The tone names are its
     own (not the page-wide .warn, which is a paragraph of danger text) so that
     a badge stays a badge whatever else those words come to mean. */
- .netbadge { display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:600;
+ .netbadge { display:inline-flex; align-items:center; gap:var(--s2); font-size:12px; font-weight:600;
    line-height:1.5; white-space:nowrap; border-radius:999px; padding:2px 10px; border:1px solid; }
  .netbadge.ok   { color:var(--live);   border-color:var(--live);
    background:color-mix(in srgb, var(--live) 14%, transparent); }
@@ -2690,7 +2697,7 @@ const PAGE: &str = r##"<!doctype html>
  input[type=text]::placeholder, textarea::placeholder {
    color:color-mix(in srgb, var(--muted) 72%, var(--bg)); }
  input[type=checkbox] { width:16px; height:16px; accent-color:var(--accent); margin:0; }
- label.check { display:flex; align-items:center; gap:8px; width:auto; color:var(--text);
+ label.check { display:flex; align-items:center; gap:var(--s2); width:auto; color:var(--text);
    font-size:14px; cursor:pointer; }
  textarea { width:100%; min-height:220px; line-height:1.55; resize:vertical; }
 
@@ -2711,7 +2718,7 @@ const PAGE: &str = r##"<!doctype html>
  /* A glyph on its own is square, and big enough for a thumb */
  button.icon { width:32px; padding:0; display:inline-flex; align-items:center;
    justify-content:center; }
- a.quiet { font-size:13px; border-radius:7px; padding:6px 8px; color:var(--muted); text-decoration:none; align-self:center; white-space:nowrap; }
+ a.quiet { font-size:13px; border-radius:var(--r-ctl); padding:6px 8px; color:var(--muted); text-decoration:none; align-self:center; white-space:nowrap; }
  a.quiet:hover { color:var(--text); background:var(--panel2); }
  button.danger { color:var(--danger); background:none; border-color:transparent; }
  button.danger:hover { background:color-mix(in srgb, var(--danger) 12%, transparent); }
@@ -2748,40 +2755,40 @@ const PAGE: &str = r##"<!doctype html>
  .framed > .mfoot { display:flex; align-items:center; gap:var(--s2);
    padding:var(--s3) var(--s5); border-top:1px solid var(--line); }
  .framed > .mfoot .grow { flex:1; }
- .modal-inner h2 { text-transform:none; font-size:15px; color:var(--text); margin:0 0 4px; }
+ .modal-inner h2 { text-transform:none; font-size:15px; color:var(--text); margin:0 0 var(--s1); }
  /* A dialog that keeps something below its frame -- the red way out, which is
     outside every other pane's last card for the same reason */
- .modal-stack { display:flex; flex-direction:column; gap:10px; max-height:92vh; }
+ .modal-stack { display:flex; flex-direction:column; gap:var(--s3); max-height:92vh; }
  .modal-stack > .modal-inner { min-height:0; }
  /* Its title and the one button that finishes it, on the same line */
  .modalhead { display:flex; align-items:center; gap:var(--s3); padding-bottom:var(--s4);
    border-bottom:1px solid var(--line); }
  .modalhead h2 { flex:1; margin:0; }
  /* The folder list walked on the page (walkPath) */
- .walkat { font-size:12px; color:var(--muted); margin:6px 0; overflow-wrap:anywhere; }
+ .walkat { font-size:12px; color:var(--muted); margin:var(--s2) 0; overflow-wrap:anywhere; }
  .walkerr { color:var(--danger); font-size:12px; white-space:pre-wrap; }
- .walklist { display:flex; flex-direction:column; gap:2px; max-height:52vh; overflow:auto; }
- .walkrow { display:flex; gap:8px; align-items:center; padding:9px 10px; border-radius:8px; cursor:pointer; }
+ .walklist { display:flex; flex-direction:column; gap:var(--s1); max-height:52vh; overflow:auto; }
+ .walkrow { display:flex; gap:var(--s2); align-items:center; padding:9px 10px; border-radius:var(--r-ctl); cursor:pointer; }
  .walkrow:hover { background:var(--panel2); }
  .walkmark { width:1.4em; text-align:center; flex:none; }
  .walknm { overflow-wrap:anywhere; }
  /* The exact character a parser stopped at, inside an excerpt. */
- pre .at { background:var(--danger); color:#fff; border-radius:2px; padding:0 1px; }
- pre { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:12px;
+ pre .at { background:var(--danger); color:#fff; border-radius:var(--r-chip); padding:0 1px; }
+ pre { background:var(--panel2); border:1px solid var(--line); border-radius:var(--r-ctl); padding:12px;
    overflow:auto; max-height:240px; font-size:12.5px; }
  a { color:var(--accent); }
  /* AI generation can take tens of seconds. Line up a spinner, a growing bar, and a
     progressing number so it's obvious at a glance that it hasn't stalled */
  #aibusy { flex-direction:column; gap:9px; margin-top:10px; padding:12px 14px;
-   background:var(--panel2); border:1px solid var(--accent); border-radius:9px; }
- #aibusy .head { display:flex; align-items:center; gap:10px; }
+   background:var(--panel2); border:1px solid var(--accent); border-radius:var(--r-ctl); }
+ #aibusy .head { display:flex; align-items:center; gap:var(--s3); }
  #aibusytext { color:var(--accent); font-weight:600; }
  .spin { width:16px; height:16px; flex:none; border-radius:50%;
    border:2px solid var(--line); border-top-color:var(--accent);
    animation:spin .8s linear infinite; }
  @keyframes spin { to { transform:rotate(360deg); } }
- .bar { height:4px; border-radius:2px; background:var(--line); overflow:hidden; }
- .bar > i { display:block; height:100%; width:35%; border-radius:2px;
+ .bar { height:4px; border-radius:3px; background:var(--line); overflow:hidden; }
+ .bar > i { display:block; height:100%; width:35%; border-radius:3px;
    background:var(--accent); animation:slide 1.3s ease-in-out infinite; }
  @keyframes slide { from { margin-left:-35%; } to { margin-left:100%; } }
 
@@ -2796,7 +2803,7 @@ const PAGE: &str = r##"<!doctype html>
     column layout's cross axis is horizontal, so flex-start would size `main` to
     its widest child and push the text off the edge instead of wrapping it. */
  @media (max-width: 760px) {
-   header { padding:10px 12px; gap:10px; flex-wrap:nowrap; }
+   header { padding:10px 12px; gap:var(--s3); flex-wrap:nowrap; }
    header h1 { display:none; }
    /* Where you are beats what the app is called when the screen is this narrow. */
    #crumb { display:flex; flex:1; }
@@ -2828,7 +2835,7 @@ const PAGE: &str = r##"<!doctype html>
      nav, #navscrim { transition:none; }
    }
    /* In the drawer the links stack at the bottom, under a divider. */
-   .headlinks { flex-direction:column; align-items:stretch; gap:2px;
+   .headlinks { flex-direction:column; align-items:stretch; gap:var(--s1);
      margin-top:14px; padding-top:10px; border-top:1px solid var(--line); }
    /* a.quiet centres itself in the header row; in the drawer it lines up with
       the nav items above it instead. */
@@ -2842,9 +2849,9 @@ const PAGE: &str = r##"<!doctype html>
       fields (host / port / user) would otherwise leave each label stranded at
       the end of the previous field's line, reading as if it named that one.
       A checkbox's own label is the exception: it belongs beside its box. */
-   .row { flex-wrap:wrap; gap:6px 10px; }
+   .row { flex-wrap:wrap; gap:var(--s2) var(--s3); }
    /* A fetch under way: the bar is the number, the line under it the words */
-   .ubar { height:6px; border-radius:3px; background:var(--line); overflow:hidden; margin:4px 0 2px; }
+   .ubar { height:6px; border-radius:3px; background:var(--line); overflow:hidden; margin:var(--s1) 0 var(--s1); }
    .ubar i { display:block; height:100%; background:var(--live); transition:width .3s; }
    .row > label:not(.check), .row > label.beside { width:100%; }
    .hint { flex-basis:100%; }
@@ -2860,7 +2867,7 @@ const PAGE: &str = r##"<!doctype html>
    .modal-inner { width:96vw; max-height:92vh; padding:16px 14px; }
    /* A row of facts becomes a small card: the name on its own line, the rest
       under it, and the way in still a whole-row press. */
-   .secretrow { align-items:flex-start; padding:10px 0; row-gap:2px; }
+   .secretrow { align-items:flex-start; padding:10px 0; row-gap:var(--s1); }
    .secretname { flex-basis:100%; font-size:13px; }
    .secretdesc { flex:1 1 auto; }
    /* The last line: where it may go, and the way in at the end of it */
@@ -3346,7 +3353,7 @@ function walkPath(kind, title, start) {
     const use = el("button", {class:"primary"}, T["settings.pick.here"]);
     const cancel = el("button", {class:"quiet"}, T["common.cancel"]);
     const back = openModal(el("h2", {}, title || T["settings.pick.title"]), where, err, list,
-      el("div", {class:"row", style:"justify-content:flex-end;margin-top:10px"}, cancel, use));
+      el("div", {class:"row", style:"justify-content:flex-end;margin-top:var(--s3)"}, cancel, use));
     let chosen = "";
     const done = p => { back.remove(); resolve(p); };
     // The backdrop closes it too (openModal); that is a cancel
@@ -3874,7 +3881,7 @@ function cliFlagOf(head) {
 // the provider spec {base_url, api_key, headers?}; onPick(id) fills the model.
 // Returns { btn, chips } — put btn inline and chips just below.
 function modelCandidates(getProv, onPick) {
-  const chips = el("div", {style:"display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"});
+  const chips = el("div", {style:"display:flex;gap:var(--s2);flex-wrap:wrap;margin-top:var(--s2)"});
   // Fetch the provider's real models, render them as chips, and return the list
   // (empty on failure). Callers can auto-select the first when nothing is set.
   async function load() {
@@ -3896,7 +3903,7 @@ function modelCandidates(getProv, onPick) {
     const models = r.models || [];
     if (!models.length) { chips.append(el("span", {class:"hint"}, T["settings.model.candidates_none"])); return []; }
     for (const id of models) chips.append(el("button", {class:"quiet", type:"button",
-      style:"font-size:12px;padding:2px 8px", onclick:() => onPick(id)}, id));
+      style:"font-size:12px;padding:var(--s1) var(--s2)", onclick:() => onPick(id)}, id));
     return models;
   }
   const btn = el("button", {class:"quiet", type:"button", onclick: load}, T["settings.model.candidates"]);
@@ -3904,7 +3911,7 @@ function modelCandidates(getProv, onPick) {
 }
 
 function aiPick(st) {
-  const row = el("span", {style:"display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap"});
+  const row = el("span", {style:"display:inline-flex;gap:var(--s2);align-items:center;flex-wrap:wrap"});
   const sel = el("select");
   for (const c of aiChoices()) sel.append(el("option", {value:c.key}, c.label));
   sel.value = st.key || "claude"; st.key = sel.value;
@@ -3949,16 +3956,16 @@ function addWs() {
   const m = openModal();
   const pick = fn => { m.remove(); fn(); };
   const opt = (emoji, title, desc, fn) => el("button",
-    {class:"quiet", style:"display:flex;gap:12px;align-items:flex-start;text-align:left;" +
-      "width:100%;padding:14px;border:1px solid var(--line);border-radius:10px;margin:8px 0",
+    {class:"quiet", style:"display:flex;gap:var(--s3);align-items:flex-start;text-align:left;" +
+      "width:100%;padding:14px;border:1px solid var(--line);border-radius:10px;margin:var(--s2) 0",
      onclick:() => pick(fn)},
     el("span", {style:"font-size:22px;line-height:1"}, emoji),
-    el("span", {}, el("div", {style:"color:var(--text);font-weight:600;margin-bottom:2px"}, title),
+    el("span", {}, el("div", {style:"color:var(--text);font-weight:600;margin-bottom:var(--s1)"}, title),
       el("div", {class:"hint"}, desc)));
   m.firstChild.append(
     el("h2", {}, T["wizard.pick.title"]),
     el("div", {class:"hint"}, T["wizard.pick.hint"]),
-    el("div", {style:"margin-top:8px"},
+    el("div", {style:"margin-top:var(--s2)"},
       opt("🗣", T["wizard.pick.discuss.title"], T["wizard.pick.discuss.desc"], wizardDiscuss),
       opt("🌐", T["wizard.pick.browser.title"], T["wizard.pick.browser.desc"], wizardBrowser),
       opt("👨\u200d💻", T["wizard.pick.review.title"], T["wizard.pick.review.desc"], wizardReview),
@@ -3966,7 +3973,7 @@ function addWs() {
       // A file dialog is the only way in, and a phone has none to open
       REMOTE ? null
              : opt("📂", T["wizard.pick.import.title"], T["wizard.pick.import.desc"], importWs)),
-    el("div", {class:"row", style:"margin-top:6px"},
+    el("div", {class:"row", style:"margin-top:var(--s2)"},
       el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
 }
 function createBlankWs() {
@@ -3985,15 +3992,15 @@ function wizardDiscuss() {
     parts.forEach((p, i) => {
       const nm = el("input", {value:p.name || "", placeholder:T["wizard.discuss.name_ph"], style:"width:160px"});
       nm.addEventListener("input", () => p.name = nm.value);
-      const persona = el("textarea", {rows:2, style:"width:100%;box-sizing:border-box;margin-top:6px",
+      const persona = el("textarea", {rows:2, style:"width:100%;box-sizing:border-box;margin-top:var(--s2)",
         placeholder:T["wizard.discuss.persona_ph"]});
       persona.value = p.persona || "";
       persona.addEventListener("input", () => p.persona = persona.value);
       const del = el("button", {class:"quiet", onclick:() => {
         if (parts.length > 2) { parts.splice(i, 1); draw(); } else toast(T["wizard.discuss.min_participants"], true);
       }}, T["common.delete"]);
-      list.append(el("div", {style:"border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0"},
-        el("div", {class:"row", style:"align-items:center;gap:8px"},
+      list.append(el("div", {style:"border:1px solid var(--line);border-radius:var(--r-ctl);padding:var(--s3);margin:var(--s2) 0"},
+        el("div", {class:"row", style:"align-items:center;gap:var(--s2)"},
           el("span", {class:"mono", style:"color:var(--muted)"}, "#" + (i + 1)), nm, aiPick(p), del),
         persona));
     });
@@ -4015,12 +4022,12 @@ function wizardDiscuss() {
     el("h2", {}, T["wizard.discuss.title"]),
     el("div", {class:"hint"}, T["wizard.discuss.hint"]),
     row(T["settings.workspace.name"], nameIn),
-    el("div", {style:"margin-top:10px;color:var(--text);font-size:13px"}, T["wizard.discuss.participants_label"]), list, addBtn,
-    el("div", {class:"row", style:"margin-top:12px"}, el("label", {}, T["wizard.discuss.judge_label"]), judgeSel,
+    el("div", {style:"margin-top:var(--s3);color:var(--text);font-size:13px"}, T["wizard.discuss.participants_label"]), list, addBtn,
+    el("div", {class:"row", style:"margin-top:var(--s3)"}, el("label", {}, T["wizard.discuss.judge_label"]), judgeSel,
       el("label", {class:"beside"}, T["wizard.discuss.verdict_label"]), verdictSel),
     el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["wizard.discuss.note"])),
-    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:14px"},
+    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s4)"},
       el("button", {class:"primary", onclick:() => {
         const err = partsValid(parts); if (err) { toast(err, true); return; }
         const tabs = [], personas = {}, agents = [];
@@ -4048,9 +4055,9 @@ function wizardBrowser() {
     el("h2", {}, T["wizard.browser.title"]),
     el("div", {class:"hint"}, T["wizard.browser.hint"]),
     row(T["settings.workspace.name"], nameIn),
-    el("div", {class:"row", style:"margin-top:8px"}, el("label", {}, T["wizard.browser.url_label"]), urlIn),
+    el("div", {class:"row", style:"margin-top:var(--s2)"}, el("label", {}, T["wizard.browser.url_label"]), urlIn),
     el("div", {class:"row"}, el("label", {}, T["wizard.browser.ai_label"]), aiPick(ai)),
-    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:14px"},
+    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s4)"},
       el("button", {class:"primary", onclick:() => {
         const url = urlIn.value.trim();
         if (!openableUrl(url)) { toast(T["wizard.browser.url_required"], true); return; }
@@ -4095,7 +4102,7 @@ function wizardReview() {
       const del = el("button", {class:"quiet", onclick:() => {
         if (revs.length > 1) { revs.splice(i, 1); draw(); } else toast(T["wizard.review.min_reviewers"], true);
       }}, T["common.delete"]);
-      list.append(el("div", {class:"row", style:"align-items:center;gap:8px;border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0"},
+      list.append(el("div", {class:"row", style:"align-items:center;gap:var(--s2);border:1px solid var(--line);border-radius:var(--r-ctl);padding:var(--s3);margin:var(--s2) 0"},
         el("span", {class:"mono", style:"color:var(--muted)"}, "#" + (i + 1)), roleSel, aiPick(r), del));
     });
   };
@@ -4107,10 +4114,10 @@ function wizardReview() {
     el("h2", {}, T["wizard.review.title"]),
     el("div", {class:"hint"}, T["wizard.review.hint"]),
     row(T["settings.workspace.name"], nameIn),
-    el("div", {class:"row", style:"margin-top:8px"}, el("label", {}, T["wizard.review.repo_label"]), repoIn, repoBtn),
+    el("div", {class:"row", style:"margin-top:var(--s2)"}, el("label", {}, T["wizard.review.repo_label"]), repoIn, repoBtn),
     el("div", {class:"row"}, el("label", {}, T["wizard.review.coder_label"]), aiPick(coder)),
-    el("div", {style:"margin-top:10px;color:var(--text);font-size:13px"}, T["wizard.review.reviewers_label"]), list, addBtn,
-    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:14px"},
+    el("div", {style:"margin-top:var(--s3);color:var(--text);font-size:13px"}, T["wizard.review.reviewers_label"]), list, addBtn,
+    el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s4)"},
       el("button", {class:"primary", onclick:() => {
         if (!repo.dir.trim()) { toast(T["wizard.review.repo_required"], true); return; }
         const err = partsValid([coder].concat(revs)); if (err) { toast(err, true); return; }
@@ -4224,10 +4231,10 @@ function showLoadFailure(f) {
   d.textContent = "";
   d.append(card(T["settings.broken.title"],
     f.path ? el("div", {class:"hint mono"}, f.path) : null,
-    el("div", {style:"color:var(--danger);margin:8px 0"}, f.error),
+    el("div", {style:"color:var(--danger);margin:var(--s2) 0"}, f.error),
     brokenExcerpt(f),
     el("div", {class:"hint"}, T["settings.broken.body"]),
-    el("div", {class:"row", style:"margin-top:10px"},
+    el("div", {class:"row", style:"margin-top:var(--s3)"},
       el("button", {class:"primary", onclick:() => load()}, T["common.reload"]))));
   renderCrumb();
   placeHeadLinks();
@@ -4343,7 +4350,7 @@ function basicCard() {
         (() => {
           current.appearance = current.appearance || {};
           const a = current.appearance;
-          const wrap = el("div", {style:"display:flex;gap:8px;min-width:0;flex:1"});
+          const wrap = el("div", {style:"display:flex;gap:var(--s2);min-width:0;flex:1"});
           const fam = field(a, "font", T["settings.font.ph"], {grow:true});
           const size = el("input", {type:"number", style:"width:80px", min:"8", max:"32"});
           size.value = a.font_size || 14;
@@ -4416,9 +4423,9 @@ function githubState() {
 function themePicker() {
   current.appearance = current.appearance || {};
   const a = current.appearance;
-  const wrap = el("div", {style:"display:flex;gap:10px;align-items:center;min-width:0;flex:1;flex-wrap:wrap"});
+  const wrap = el("div", {style:"display:flex;gap:var(--s3);align-items:center;min-width:0;flex:1;flex-wrap:wrap"});
   const sel = el("select", {style:"min-width:190px"});
-  const strip = el("div", {style:"display:flex;gap:3px"});
+  const strip = el("div", {style:"display:flex;gap:var(--s1)"});
   wrap.append(sel, strip);
   // A scheme written out in the settings by hand is not in any list, and
   // picking from the list is how someone would replace it -- so it is offered
@@ -4429,7 +4436,7 @@ function themePicker() {
     const found = sel.value ? known.find(t => t.name === sel.value) : mine;
     strip.textContent = "";
     for (const c of (found ? found.colors : [])) {
-      strip.append(el("span", {style:"width:14px;height:14px;border-radius:3px;" +
+      strip.append(el("span", {style:"width:14px;height:14px;border-radius:var(--r-chip);" +
         "border:1px solid var(--line);background:" + c}));
     }
   };
@@ -4467,7 +4474,7 @@ function keysCard() {
   const list = el("div", {}, el("div", {class:"hint"}, "…"));
   const problems = el("div", {});
   const box = card(T["settings.sec.keys"],
-    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.keys.intro"]),
+    el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.keys.intro"]),
     problems,
     row(T["settings.keys.prefix"], field(k, "prefix", "ctrl+b", {width:150, grow:false}),
         el("span", {class:"hint"}, T["settings.keys.prefix.hint"])),
@@ -4493,7 +4500,7 @@ function keysCard() {
         const v = inp.value.trim();
         if (v) k[r.name] = v; else delete k[r.name];
       });
-      list.append(el("div", {class:"row"},
+      list.append(el("div", {class:"row pair"},
         el("label", {}, r.desc),
         inp,
         el("span", {class:"hint"}, r.now ? T["settings.keys.now"] + " " + r.now
@@ -4512,7 +4519,7 @@ function keysCard() {
 function loginsCard() {
   const list = el("div", {}, el("div", {class:"hint"}, "…"));
   const box = card(T["settings.sec.logins"],
-    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.logins.intro"]),
+    el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.logins.intro"]),
     list);
   load();
   async function load() {
@@ -4547,9 +4554,9 @@ function loginsCard() {
 // image rides in as a data URL, so the card needs no second request that would
 // have to carry the token an <img> tag cannot.
 function snapshotsCard() {
-  const grid = el("div", {style:"display:flex;flex-wrap:wrap;gap:12px"}, el("div", {class:"hint"}, "…"));
+  const grid = el("div", {style:"display:flex;flex-wrap:wrap;gap:var(--s3)"}, el("div", {class:"hint"}, "…"));
   const box = card(T["settings.sec.snapshots"],
-    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.snapshots.intro"]),
+    el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.snapshots.intro"]),
     grid);
   load();
   async function load() {
@@ -4561,8 +4568,8 @@ function snapshotsCard() {
     for (const r of rows) {
       const cell = el("div", {style:"width:220px"});
       const img = el("img", {src:r.data, alt:r.label,
-        style:"width:220px;height:140px;object-fit:cover;object-position:top;border:1px solid var(--line);border-radius:8px;background:var(--bg)"});
-      const row = el("div", {style:"display:flex;align-items:center;gap:6px;margin-top:4px"});
+        style:"width:220px;height:140px;object-fit:cover;object-position:top;border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--bg)"});
+      const row = el("div", {style:"display:flex;align-items:center;gap:var(--s2);margin-top:var(--s1)"});
       const del = el("button", {class:"btn"}, T["settings.logins.forget"]);
       del.addEventListener("click", async () => {
         del.disabled = true;
@@ -4684,7 +4691,7 @@ function drawUpdate(box, u) {
   // Line 2: where things stand, and the one button
   const v = u.version || "";
   const state = el("div", {class:"row", style:"align-items:center"});
-  const main = el("div", {class:"row", style:"gap:8px"});
+  const main = el("div", {class:"row", style:"gap:var(--s2)"});
   const text = (k, args) => el("span", {}, fill(T[k] || k, args || {}));
   const notes = () => u.notes ? el("a", {href: REMOTE ? u.notes : "#", target: REMOTE ? "_blank" : null, rel:"noopener",
       onclick: REMOTE ? null : (e) => { e.preventDefault(); fetch("/api/open?dest=update-notes", {headers:{"X-Token":TOKEN}}); }},
@@ -4745,7 +4752,7 @@ function drawUpdate(box, u) {
   }
   if (u.backup) box.append(el("div", {class:"hint"}, fill(T["settings.update.backup"], {path: u.backup})));
   if (u.prev && !u.packaged) {
-    box.append(el("div", {class:"row", style:"margin-top:6px"},
+    box.append(el("div", {class:"row", style:"margin-top:var(--s2)"},
       quiet(fill(T["settings.update.rollback"], {version: u.prev}), "/rollback"),
       el("span", {class:"hint"}, T["settings.update.rollback.hint"])));
   }
@@ -4772,7 +4779,7 @@ async function loadRallyList() {
   if (!runs.length) { box.append(el("div", {class:"hint"}, T["settings.rally.empty"])); return; }
   runs.forEach((r, i) => {
     const label = (i === 0 ? T["settings.rally.latest_prefix"] : "") + (r.title || r.id);
-    box.append(el("div", {class:"row", style:"gap:10px"},
+    box.append(el("div", {class:"row", style:"gap:var(--s3)"},
       el("span", {class:"grow", style:"min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis",
         title:r.title || r.id}, label),
       el("button", {class: i === 0 ? "primary" : "", onclick:() => downloadRally(r.id)}, T["settings.rally.download"])));
@@ -5118,7 +5125,7 @@ function actionsCard() {
       // Advanced, per action: the body is Lua run on tap, not text to insert.
       const luaChk = el("input", {type:"checkbox"}); luaChk.checked = isLua;
       luaChk.addEventListener("change", () => { a.lua = luaChk.checked; refreshSave(); draw(); });
-      const luaLbl = el("label", {class:"hint", style:"display:flex;align-items:center;gap:4px;flex:none"},
+      const luaLbl = el("label", {class:"hint", style:"display:flex;align-items:center;gap:var(--s1);flex:none"},
         luaChk, T["settings.actions.lua"]);
       const up = el("button", {class:"quiet", style:"flex:none", title:T["settings.actions.up"], onclick:() => {
         if (i > 0) { const t = current.actions[i-1]; current.actions[i-1] = current.actions[i]; current.actions[i] = t; refreshSave(); draw(); } }}, "↑");
@@ -5141,7 +5148,7 @@ function actionsCard() {
     current.actions.push({label:"", body:""}); refreshSave(); draw(); }}, T["settings.actions.add"]);
   const c = card(T["settings.actions.title"],
     el("div", {class:"hint"}, T["settings.actions.hint"]),
-    listBox, el("div", {class:"row", style:"margin-top:10px"}, addBtn));
+    listBox, el("div", {class:"row", style:"margin-top:var(--s3)"}, addBtn));
   draw();
   return c;
 }
@@ -5354,14 +5361,14 @@ function gitCard() {
     if (!useLua.checked) return;
     luaBox.append(el("div", {class:"hint"}, T["settings.git.lua.hint"]));
     luaBox.append(lua);
-    luaBox.append(el("div", {style:"margin-top:6px"},
+    luaBox.append(el("div", {style:"margin-top:var(--s2)"},
       el("button", {class:"quiet", onclick:() => {
         // The built-in one, as a starting point rather than a blank sheet
         lua.value = GIT_MESSAGE_LUA;
         g.message_lua = lua.value;
         refreshSave();
       }}, T["settings.git.lua.default"]),
-      el("a", {href:manualHref("ai_ask"), target:"_blank", style:"margin-left:10px"},
+      el("a", {href:manualHref("ai_ask"), target:"_blank", style:"margin-left:var(--s3)"},
         T["settings.git.lua.manual"])));
   };
   useLua.addEventListener("change", () => {
@@ -5374,8 +5381,8 @@ function gitCard() {
 
   return card(T["settings.sec.git"],
     el("div", {class:"hint"}, T["settings.git.hint.about"]),
-    el("div", {style:"margin:6px 0 14px"}, hint),
-    el("label", {class:"row", style:"cursor:pointer;gap:8px"}, useLua,
+    el("div", {style:"margin:var(--s2) 0 var(--s4)"}, hint),
+    el("label", {class:"row", style:"cursor:pointer;gap:var(--s2)"}, useLua,
       el("span", {}, T["settings.git.lua.label"])),
     luaBox);
 }
@@ -5717,7 +5724,7 @@ function phoneBox() {
   const drawList = (list, subs) => {
     list.textContent = "";
     for (const sub of subs) {
-      list.append(el("div", {class:"row", style:"gap:8px;align-items:center"},
+      list.append(el("div", {class:"row", style:"gap:var(--s2);align-items:center"},
         el("span", {class:"hint", style:"flex:1 1 0"}, sub.name || sub.endpoint.slice(0, 40)),
         el("button", {class:"quiet", onclick: async () => {
           await settingsApi("/api/push/forget", {endpoint: sub.endpoint});
@@ -5729,10 +5736,10 @@ function phoneBox() {
   // In a browser: the button. It is the one thing to press, so until it has
   // been pressed it is drawn as the primary and blinks.
   const drawHere = () => {
-    const said = el("div", {class:"hint", style:"margin-top:6px"}, T["settings.notify.phone.checking"]);
+    const said = el("div", {class:"hint", style:"margin-top:var(--s2)"}, T["settings.notify.phone.checking"]);
     const add = el("button", {class:"quiet", onclick: () => subscribeThisDevice()},
                    T["settings.notify.phone.add"]);
-    const list = el("div", {style:"margin-top:4px"});
+    const list = el("div", {style:"margin-top:var(--s1)"});
     // The button on a line of its own, the words under it: side by side, the
     // words ran into the buttons to the right on a phone's width.
     box.append(el("div", {}, add), said, list);
@@ -5754,13 +5761,13 @@ function phoneBox() {
   // seconds, so the row changes on its own the moment the phone presses.
   const drawFromPc = async () => {
     const said = el("div", {class:"hint"}, T["settings.notify.phone.checking"]);
-    const list = el("div", {style:"margin-top:4px"});
+    const list = el("div", {style:"margin-top:var(--s1)"});
     const side = el("div", {style:"flex:none"});
     box.append(
-      el("div", {style:"font-weight:600;margin-bottom:4px"}, T["settings.notify.phone.pc.title"]),
-      el("div", {class:"row", style:"gap:14px;align-items:flex-start;flex-wrap:wrap"},
+      el("div", {style:"font-weight:600;margin-bottom:var(--s1)"}, T["settings.notify.phone.pc.title"]),
+      el("div", {class:"row", style:"gap:var(--s4);align-items:flex-start;flex-wrap:wrap"},
         el("div", {style:"flex:1 1 220px"},
-          el("ol", {style:"margin:0 0 6px;padding-left:20px"},
+          el("ol", {style:"margin:0 0 var(--s2);padding-left:var(--s5)"},
             el("li", {}, T["settings.notify.phone.pc.step1"]),
             el("li", {}, T["settings.notify.phone.pc.step2"])),
           said, list),
@@ -5812,7 +5819,7 @@ function openNotifyPopup() {
     const m = openModal(
       el("h2", {}, T["settings.tab.notify.add_title"]),
       notifyCard(),
-      el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:12px;justify-content:flex-end"},
+      el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s3);justify-content:flex-end"},
         el("button", {class:"primary", onclick: () => { m.remove(); resolve(); }}, T["common.done"])));
     m.addEventListener("click", e => { if (e.target === m) resolve(); });
   });
@@ -5842,14 +5849,14 @@ function resumeCard() {
   };
   const list = el("div", {}, el("div", {class:"hint"}, "…"));
   const box = card(T["settings.section.resume"],
-    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.resume.intro"]),
+    el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.resume.intro"]),
     // This page is what somebody reads when they ask whether their conversation
     // comes back, so it has to say where the switch for that is. The switch
     // itself stays in one place -- two controls for one setting is how they
     // start disagreeing
-    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.resume.where"]),
+    el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.resume.where"]),
     list,
-    el("div", {class:"hint", style:"margin-top:12px"}, T["settings.resume.note"]));
+    el("div", {class:"hint", style:"margin-top:var(--s3)"}, T["settings.resume.note"]));
   load();
   async function load() {
     let rows = [];
@@ -5861,7 +5868,7 @@ function resumeCard() {
   }
   function row_for(r) {
     const wrap = el("div", {class:"row", style:"align-items:flex-start"});
-    const right = el("div", {style:"display:flex;flex-direction:column;gap:6px;min-width:0;flex:1"});
+    const right = el("div", {style:"display:flex;flex-direction:column;gap:var(--s2);min-width:0;flex:1"});
     right.append(el("span", {class:"hint"}, HOW[r.how] || ""));
     if (r.hook) {
       const state = el("span", {class:"hint"},
@@ -5880,7 +5887,7 @@ function resumeCard() {
         load();
       });
       // What would be written, before agreeing to it — not a description of it
-      const pre = el("pre", {class:"mono", style:"display:none;white-space:pre-wrap;margin:4px 0;" +
+      const pre = el("pre", {class:"mono", style:"display:none;white-space:pre-wrap;margin:var(--s1) 0;" +
         "padding:8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:11px"},
         r.hook.preview);
       const show = el("a", {href:"#"}, T["settings.resume.show"]);
@@ -5888,7 +5895,7 @@ function resumeCard() {
         e.preventDefault();
         pre.style.display = pre.style.display === "none" ? "block" : "none";
       });
-      right.append(state, el("div", {style:"display:flex;gap:8px;align-items:center"}, btn, show), pre);
+      right.append(state, el("div", {style:"display:flex;gap:var(--s2);align-items:center"}, btn, show), pre);
     }
     wrap.append(el("label", {}, r.name), right);
     return wrap;
@@ -5909,10 +5916,10 @@ function apiCard() {
   if (!a.access) a.access = "children";
   const status = el("div", {class:"hint"}, "…");
   const where = el("div", {class:"row"});
-  const keyfile = el("div", {class:"hint", style:"margin-top:6px"});
+  const keyfile = el("div", {class:"hint", style:"margin-top:var(--s2)"});
 
   const box = card(T["settings.section.api"],
-    el("div", {class:"hint", style:"margin-bottom:10px"}, T["settings.api.intro"]),
+    el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.api.intro"]),
     row(T["settings.api.access"],
         choose(a, "access", [
           ["children", T["settings.api.access.children"]],
@@ -5923,8 +5930,8 @@ function apiCard() {
     el("div", {class:"row"}, status),
     where,
     keyfile,
-    el("div", {class:"hint", style:"margin-top:10px"}, T["settings.api.note"]),
-    el("div", {style:"margin-top:8px"},
+    el("div", {class:"hint", style:"margin-top:var(--s3)"}, T["settings.api.note"]),
+    el("div", {style:"margin-top:var(--s2)"},
       el("a", {href:"/help?token=" + encodeURIComponent(TOKEN), target:"_blank"},
         T["settings.api.help"])));
 
@@ -5953,7 +5960,7 @@ function remoteCard() {
   const r = current.remote;
   const box = el("div", {class:"card"}, el("h2", {}, T["settings.section.phone"]));
   const status = el("div", {class:"hint"}, T["settings.phone.checking"]);
-  const qrbox = el("div", {style:"margin:10px 0"});
+  const qrbox = el("div", {style:"margin:var(--s3) 0"});
 
   const onoff = el("input", {type:"checkbox"});
   onoff.checked = !!r.enabled;
@@ -5992,7 +5999,7 @@ function remoteCard() {
   // to shut a phone out. Plain text in config.json: the trade they accept
   box.append(el("div", {class:"row"}, el("label", {}, T["settings.phone.sticky"]),
     (() => {
-      const wrap = el("div", {style:"display:flex;flex-direction:column;gap:6px;min-width:0"});
+      const wrap = el("div", {style:"display:flex;flex-direction:column;gap:var(--s2);min-width:0"});
       const on = el("input", {type:"checkbox"});
       on.checked = !!r.sticky_token;
       const tok = el("input", {type:"text", style:"width:340px;max-width:100%;font-family:monospace",
@@ -6004,11 +6011,11 @@ function remoteCard() {
         tok.disabled = !on.checked;
         if (on.checked && !tok.value.trim()) { tok.value = gen(); r.fixed_token = tok.value; }
       });
-      const bad = el("span", {class:"hint", style:"color:var(--bad,#e5534b)"});
+      const bad = el("span", {class:"hint", style:"color:var(--danger)"});
       const check = () => {
         const short = on.checked && tok.value.trim().length < 16;
         bad.textContent = short ? fill(T["settings.phone.sticky.short"], {n: 16}) : "";
-        tok.style.borderColor = short ? "var(--bad,#e5534b)" : "";
+        tok.style.borderColor = short ? "var(--danger)" : "";
       };
       tok.addEventListener("input", () => { r.fixed_token = tok.value.trim(); check(); });
       on.addEventListener("change", check);
@@ -6020,7 +6027,7 @@ function remoteCard() {
     })()));
   box.append(el("div", {class:"row"}, status));
   box.append(qrbox);
-  box.append(el("div", {class:"hint", style:"margin-top:6px"},
+  box.append(el("div", {class:"hint", style:"margin-top:var(--s2)"},
     T["settings.phone.note"]));
 
   refreshRemote();
@@ -6038,14 +6045,14 @@ function remoteCard() {
     if (j.running && j.origin) {
       // The image is loaded directly rather than via fetch, so pass auth as the token in the URL
       const img = el("img", {src:"/api/remote/qr?token=" + encodeURIComponent(TOKEN),
-        style:"width:200px;height:200px;border-radius:8px;background:#fff;padding:6px"});
+        style:"width:200px;height:200px;border-radius:var(--r-ctl);background:#fff;padding:var(--s2)"});
       qrbox.append(el("div", {class:"hint"}, T["settings.phone.scan"]), img, linkRow(j.kind));
       // Whether this link is one a browser will treat as a secure context,
       // which is what a phone wants before it will keep the page on its home
       // screen. The link itself is never drawn (it carries the token), so
       // without saying it here there is no way to tell which one you have.
       if (j.https) {
-        qrbox.append(el("div", {class:"hint ok", style:"margin-top:8px"},
+        qrbox.append(el("div", {class:"hint ok", style:"margin-top:var(--s2)"},
                         T["settings.phone.https.on"]));
       } else if (j.tailscale) {
         // Just the port. `tailscale serve` reads that as the loopback, which
@@ -6054,15 +6061,15 @@ function remoteCard() {
         // back 502. The board listens on the loopback as well for exactly
         // this (see RemoteUi::start_with).
         qrbox.append(
-          el("div", {class:"hint", style:"margin-top:8px"}, T["settings.phone.https.hint"]),
-          el("code", {style:"display:block;margin-top:4px;user-select:all;word-break:break-all"},
+          el("div", {class:"hint", style:"margin-top:var(--s2)"}, T["settings.phone.https.hint"]),
+          el("code", {style:"display:block;margin-top:var(--s1);user-select:all;word-break:break-all"},
              "tailscale serve --bg " + (r.port || 8787)));
       }
       // Where the whole thing is written out: what works on the same Wi-Fi
       // with nothing installed, what reaching it from a cafe costs, and what
       // the line above is for. The address is the link's own text, so it is
       // readable and typable even where a window will not follow it.
-      qrbox.append(el("div", {style:"margin-top:10px"},
+      qrbox.append(el("div", {style:"margin-top:var(--s3)"},
         el("span", {class:"hint"}, T["settings.phone.guide"] + " "),
         el("a", {class:"hint", href:T["settings.phone.guide.url"], target:"_blank"},
            T["settings.phone.guide.url"])));
@@ -6077,7 +6084,7 @@ function remoteCard() {
   function linkRow(kind) {
     const copy = el("button", {class:"quiet", style:"font-size:16px;line-height:1",
       title: T["settings.phone.copy"], onclick: () => copyUrl(copy)}, "📋");
-    const row = el("div", {style:"display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap"},
+    const row = el("div", {style:"display:flex;align-items:center;gap:var(--s2);margin-top:var(--s2);flex-wrap:wrap"},
       copy, netBadge(kind));
     return row;
   }
@@ -6372,8 +6379,8 @@ function wsDiscussCard(ws) {
         placeholder:T["settings.discuss.persona_ph"]});
       ta.value = dd.personas[id] || "";
       ta.addEventListener("input", () => { dd.personas[id] = ta.value; refreshSave(); });
-      personaBox.append(el("div", {style:"margin:6px 0"},
-        el("div", {class:"mono", style:"font-size:12px;color:var(--text);margin-bottom:3px"}, id), ta));
+      personaBox.append(el("div", {style:"margin:var(--s2) 0"},
+        el("div", {class:"mono", style:"font-size:12px;color:var(--text);margin-bottom:var(--s1)"}, id), ta));
     });
   };
 
@@ -6381,7 +6388,7 @@ function wsDiscussCard(ws) {
     v => { ensure().agents = v.split(",").map(s=>s.trim()).filter(Boolean); drawChips(); drawPersonas(); });
   // Participant-candidate chips: one click appends an existing tab id to the end of the turn order.
   // A tab aimed at another tab (🎯) already has a turn to keep, so it can't also be a discussion participant
-  const chipBox = el("div", {class:"hint", style:"display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px"});
+  const chipBox = el("div", {class:"hint", style:"display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center;margin-top:var(--s1)"});
   const drawChips = () => {
     chipBox.textContent = "";
     const cur = (ws.discuss && ws.discuss.agents) || [];
@@ -6417,7 +6424,7 @@ function wsDiscussCard(ws) {
     row(T["settings.discuss.judge_field_label"], judgeIn, el("span", {class:"hint"}, T["settings.discuss.judge_hint"])),
     row(T["settings.discuss.moderator_label"], modIn, el("span", {class:"hint"}, T["settings.discuss.moderator_hint"])),
     row(T["wizard.discuss.verdict_label"], verdictSel),
-    el("div", {style:"margin-top:8px"},
+    el("div", {style:"margin-top:var(--s2)"},
       el("div", {style:"font-size:12px;color:var(--text)"}, T["settings.discuss.persona_section_label"]),
       el("div", {class:"hint"}, T["settings.discuss.persona_section_hint"]),
       personaBox));
@@ -6427,7 +6434,7 @@ function wsDiscussCard(ws) {
   return card(T["settings.discuss.title"],
     el("div", {class:"hint"},
       T["settings.discuss.card_hint"]),
-    el("div", {class:"row", style:"margin-top:6px"}, onLabel),
+    el("div", {class:"row", style:"margin-top:var(--s2)"}, onLabel),
     body);
 }
 
@@ -6448,7 +6455,7 @@ function wsStopsCard(ws) {
     el("div", {class:"hint"},
       T["settings.stops.hint"]),
     list,
-    el("div", {class:"row", style:"margin-top:10px"}, add));
+    el("div", {class:"row", style:"margin-top:var(--s3)"}, add));
   redraw();
   return c;
 }
@@ -6624,7 +6631,7 @@ function secretDialog(ws, have) {
   const riskLabel = el("label", {class:"check allow"});
   riskLabel.append(riskBox, document.createTextNode(T["settings.secrets.plain_ok"]));
   riskBox.addEventListener("change", recheck);
-  const urlBox = el("div", {style:"display:flex;flex-direction:column;gap:8px"});
+  const urlBox = el("div", {style:"display:flex;flex-direction:column;gap:var(--s2)"});
   const save = el("button", {class:"primary"}, T["common.save"]);
   const why = el("span", {class:"why"});
   why.hidden = true;
@@ -6862,11 +6869,11 @@ function tabPane(ws, t) {
       // The reply link and its warning live directly under the destination, so
       // the sentence can name the place the link is going. The risk is not the
       // link, it is who can see it -- and only the person choosing knows that.
-      const warn = el("div", {class:"hint warn", style:"margin-top:6px"});
+      const warn = el("div", {class:"hint warn", style:"margin-top:var(--s2)"});
       // A phone destination with no phone behind it sends nothing. Said here,
       // where the destination is being chosen, with the way to put it right --
       // the failure itself would otherwise only ever show on the board, after.
-      const unreached = el("div", {class:"hint warn", style:"margin-top:6px"});
+      const unreached = el("div", {class:"hint warn", style:"margin-top:var(--s2)"});
       const replyBox = el("div");
       const drawReply = () => {
         replyBox.textContent = "";
@@ -7031,12 +7038,12 @@ function moveTab(ws, d) {
 async function showCliHelp(head) {
   if (!head) return;
   const pre = el("pre", {class:"mono",
-    style:"max-height:60vh;overflow:auto;white-space:pre-wrap;font-size:12px;line-height:1.5;margin:0;padding:12px;background:var(--panel);border-radius:8px"},
+    style:"max-height:60vh;overflow:auto;white-space:pre-wrap;font-size:12px;line-height:1.5;margin:0;padding:var(--s3);background:var(--panel);border-radius:var(--r-ctl)"},
     T["settings.tab.ai.flags_loading"]);
   let back;
   const close = el("button", {class:"quiet", onclick:() => back && back.remove()}, T["common.close"]);
   back = openModal(el("h2", {}, head + " --help"), pre,
-    el("div", {class:"row", style:"justify-content:flex-end;margin-top:10px"}, close));
+    el("div", {class:"row", style:"justify-content:flex-end;margin-top:var(--s3)"}, close));
   try {
     const r = await fetch("/api/cli-help?cmd=" + encodeURIComponent(head),
       {headers:{"X-Token":TOKEN}}).then(r => r.json());
@@ -7090,7 +7097,7 @@ function aiPanel(t, cmdInput, rebuild, real) {
         setCommand(t, cmdInput, parts.join(" "));
       });
       detail.append(
-        el("label", {class:"row", style:"cursor:pointer;gap:8px"}, cb,
+        el("label", {class:"row", style:"cursor:pointer;gap:var(--s2)"}, cb,
           el("span", {}, T["settings.tab.ai.autoapprove"])),
         el("div", {class:"row"}, el("label", {}, ""),
           el("span", {class:"hint", style:"color:var(--danger)"}, T["settings.tab.ai.autoapprove_risk"])));
@@ -7156,7 +7163,7 @@ function aiPanel(t, cmdInput, rebuild, real) {
       // the one path every other writer of that line already goes through
       cmdInput.dispatchEvent(new Event("input", {bubbles: true}));
     });
-    const label = el("label", {class:"row", style:"cursor:pointer;gap:8px"}, cb,
+    const label = el("label", {class:"row", style:"cursor:pointer;gap:var(--s2)"}, cb,
       el("span", {}, T["settings.tab.restore_conv"]));
     const hint = el("span", {class:"hint"});
     carry.append(label, el("div", {class:"row"}, el("label", {}, ""), hint));
@@ -7191,7 +7198,7 @@ function openProvidersPopup() {
       el("h2", {}, T["settings.tab.ai.add_title"]),
       el("div", {class:"hint"}, T["settings.tab.ai.api_hint"]),
       providersCard(),
-      el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:12px;padding-top:12px;justify-content:flex-end"},
+      el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s3);justify-content:flex-end"},
         el("button", {class:"primary", onclick: () => { m.remove(); resolve(); }}, T["common.done"])));
     m.addEventListener("click", e => { if (e.target === m) resolve(); });
   });
@@ -8055,37 +8062,37 @@ const RESULT_PAGE: &str = r##"<!doctype html>
  header h1 { font-size:15px; font-weight:600; margin:0; letter-spacing:.02em; }
  header .sub { color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
  header .spacer { flex:1; }
- button { font-family:inherit; font-size:13px; border-radius:8px; border:1px solid var(--line);
+ button { font-family:inherit; font-size:13px; border-radius:var(--r-ctl); border:1px solid var(--line);
    background:var(--panel2); color:var(--text); padding:8px 14px; cursor:pointer; }
  button:hover { border-color:var(--accent); }
  button.primary { background:var(--accent); border-color:var(--accent); color:#04121c; font-weight:600; }
  button.ghost { background:none; }
 
  main { max-width:900px; margin:0 auto; padding:20px 18px 80px; }
- .caption { text-align:center; color:var(--muted); font-size:12px; margin:6px auto 16px; }
+ .caption { text-align:center; color:var(--muted); font-size:12px; margin:var(--s2) auto var(--s4); }
 
- .turn { display:flex; margin:14px 0; gap:10px; align-items:flex-end; }
+ .turn { display:flex; margin:var(--s4) 0; gap:var(--s3); align-items:flex-end; }
  .turn.right { flex-direction:row-reverse; }
  .avatar { flex:none; width:34px; height:34px; border-radius:50%; display:flex; align-items:center;
    justify-content:center; font-weight:700; font-size:14px; color:#04121c; }
  .col { max-width:78%; min-width:0; display:flex; flex-direction:column; }
  .turn.right .col { align-items:flex-end; }
- .who { font-size:12px; color:var(--muted); margin:0 4px 3px; }
+ .who { font-size:12px; color:var(--muted); margin:0 var(--s1) var(--s1); }
  .who .badge { opacity:.6; margin-left:6px; }
  .bubble { position:relative; background:var(--panel); border:1px solid var(--line);
-   border-radius:14px; padding:10px 14px; overflow:hidden; }
+   border-radius:var(--r-card); padding:10px 14px; overflow:hidden; }
  .turn.left .bubble { border-top-left-radius:4px; }
  .turn.right .bubble { border-top-right-radius:4px; }
  .bubble .body { overflow-x:auto; }
- .bubble .body p { margin:0 0 8px; }
+ .bubble .body p { margin:0 0 var(--s2); }
  .bubble .body p:last-child { margin-bottom:0; }
- .bubble .body pre { background:#0c0f13; border:1px solid var(--line); border-radius:8px;
-   padding:10px 12px; margin:8px 0; overflow-x:auto; font-size:12.5px; line-height:1.5; }
+ .bubble .body pre { background:#0c0f13; border:1px solid var(--line); border-radius:var(--r-ctl);
+   padding:10px 12px; margin:var(--s2) 0; overflow-x:auto; font-size:12.5px; line-height:1.5; }
  .bubble .body pre .add { color:#7ee787; display:block; }
  .bubble .body pre .del { color:#ff9a9a; display:block; }
  .bubble .body pre .hunk { color:#79c0ff; display:block; }
  .bubble .body code.inline { background:#0c0f13; border:1px solid var(--line);
-   border-radius:4px; padding:1px 5px; font-size:12.5px; }
+   border-radius:var(--r-chip); padding:1px 5px; font-size:12.5px; }
 
  /* Tall bubbles clamp; the fade + button invite a click to see the rest. */
  .bubble.clamped .body { max-height:320px; overflow:hidden; }
@@ -8095,15 +8102,15 @@ const RESULT_PAGE: &str = r##"<!doctype html>
 
  /* The verdict / judge ruling: a full-width report, not a chat bubble. */
  .report { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent);
-   border-radius:12px; padding:14px 20px; margin:24px 0 12px; overflow:hidden; }
- .report > h3 { margin:0 0 10px; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--accent); }
+   border-radius:var(--r-card); padding:14px 20px; margin:var(--s6) 0 var(--s3); overflow:hidden; }
+ .report > h3 { margin:0 0 var(--s3); font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--accent); }
  .report .body { overflow-x:auto; }
  /* Speakers' own Markdown, rendered inside a bubble or report. */
- .body .mh { font-weight:700; margin:12px 0 5px; }
+ .body .mh { font-weight:700; margin:var(--s3) 0 var(--s2); }
  .body .mh1, .body .mh2 { font-size:15px; color:var(--text); }
  .body .mh3, .body .mh4, .body .mh5, .body .mh6 { font-size:13px; color:var(--muted);
    letter-spacing:.03em; }
- .body table { border-collapse:collapse; margin:8px 0; font-size:12.5px; max-width:100%; }
+ .body table { border-collapse:collapse; margin:var(--s2) 0; font-size:12.5px; max-width:100%; }
  .body th, .body td { border:1px solid var(--line); padding:4px 11px; text-align:left; white-space:nowrap; }
  .body th { background:var(--panel2); font-weight:600; }
  .note { text-align:center; color:var(--muted); font-size:12px; margin:12px auto; font-style:italic; }
@@ -8429,10 +8436,10 @@ const HELP_PAGE: &str = r##"<!doctype html>
         margin:0; padding:24px 32px; line-height:1.7; }
  h1,h2,h3 { color:var(--c6); border-bottom:1px solid var(--line); padding-bottom:6px; }
  h1 { font-size:20px; } h2 { font-size:17px; margin-top:32px; } h3 { font-size:15px; }
- code { background:var(--panel); color:var(--warn); padding:1px 5px; border-radius:3px; }
+ code { background:var(--panel); color:var(--warn); padding:1px 5px; border-radius:var(--r-chip); }
  pre { background:var(--panel); border:1px solid var(--line); padding:12px; overflow:auto; }
  pre code { color:var(--c6); background:none; padding:0; }
- table { border-collapse:collapse; margin:12px 0; }
+ table { border-collapse:collapse; margin:var(--s3) 0; }
  th,td { border:1px solid var(--line); padding:5px 10px; text-align:left; }
  th { color:var(--accent); }
  hr { border:0; border-top:1px solid var(--line); margin:28px 0; }
