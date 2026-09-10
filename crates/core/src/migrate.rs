@@ -294,7 +294,7 @@ mod tests {
     /// settings file the present can read. Running them twice changes nothing
     #[test]
     fn every_fixture_walks_to_the_present_and_is_idempotent() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures");
+        let dir = crate::repo_root().join("tests").join("fixtures");
         let mut seen = 0;
         for e in std::fs::read_dir(&dir).unwrap().flatten() {
             let name = e.file_name().to_string_lossy().to_string();

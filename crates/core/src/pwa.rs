@@ -37,15 +37,15 @@
 //! nothing about them is worth gating and a stale launcher may still ask.
 
 /// The mark, drawn edge to edge, for launchers that show an icon whole.
-const ICON_192: &[u8] = include_bytes!("../assets/pwa/icon-192.png");
-const ICON_512: &[u8] = include_bytes!("../assets/pwa/icon-512.png");
+const ICON_192: &[u8] = include_bytes!("../../../assets/pwa/icon-192.png");
+const ICON_512: &[u8] = include_bytes!("../../../assets/pwa/icon-512.png");
 /// The same mark inside the safe zone, on a field, for launchers that cut a
 /// shape out of what they are given.
-const MASKABLE_192: &[u8] = include_bytes!("../assets/pwa/maskable-192.png");
-const MASKABLE_512: &[u8] = include_bytes!("../assets/pwa/maskable-512.png");
+const MASKABLE_192: &[u8] = include_bytes!("../../../assets/pwa/maskable-192.png");
+const MASKABLE_512: &[u8] = include_bytes!("../../../assets/pwa/maskable-512.png");
 /// iOS reads neither `purpose` nor `sizes`; it takes this one and rounds the
 /// corners itself.
-const APPLE_TOUCH: &[u8] = include_bytes!("../assets/pwa/apple-touch-icon.png");
+const APPLE_TOUCH: &[u8] = include_bytes!("../../../assets/pwa/apple-touch-icon.png");
 
 /// Where the manifest lives. Named, rather than spelled out at each use, so
 /// the page and the route cannot drift apart.

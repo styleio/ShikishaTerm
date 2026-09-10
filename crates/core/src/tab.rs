@@ -479,7 +479,9 @@ impl vt100::Callbacks for QueryResponder {
         let Some(text) = clipboard_text_of(ty, data, self.clipboard_writes) else {
             return;
         };
-        let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
+        if let Some(c) = crate::clipboard() {
+            c.set_text(text);
+        }
     }
 
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
@@ -2291,7 +2293,7 @@ fn unread_limit(on_screen: Option<String>, acked: &mut Option<String>) -> Option
 /// The "act without asking" flag a CLI needs to run unattended, or None if it has
 /// none. Single source of truth for the operator-readiness gate; the settings JS
 /// (webui `cliFlagOf`) mirrors these strings for the editable checkbox.
-pub(crate) fn bypass_flag(head: &str) -> Option<&'static str> {
+pub fn bypass_flag(head: &str) -> Option<&'static str> {
     match head {
         "claude" => Some("--dangerously-skip-permissions"),
         "codex" => Some("--dangerously-bypass-approvals-and-sandbox"),
@@ -4746,7 +4748,7 @@ mod resize_survival_tests {
 #[cfg(test)]
 mod long_paste_probe {
     use super::{Tab, TabOptions};
-    use crate::{PendingSend, Step, paste_chunks};
+    use crate::send::{PendingSend, Step, paste_chunks};
     use std::time::{Duration, Instant};
 
     /// A long paste must actually be sent, not left sitting in the input box.
@@ -4878,7 +4880,7 @@ mod long_paste_probe {
 #[cfg(test)]
 mod codex_session_probe {
     use super::{Tab, TabOptions};
-    use crate::{PendingSend, Step, paste_chunks};
+    use crate::send::{PendingSend, Step, paste_chunks};
     use std::time::{Duration, Instant};
 
     /// Does a Codex tab's conversation get found at all?

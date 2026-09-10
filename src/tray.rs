@@ -137,7 +137,7 @@ impl Tray {
             d.Anonymous.uVersion = NOTIFYICON_VERSION_4;
             let versioned = Shell_NotifyIconW(NIM_SETVERSION, &d);
             if added == 0 || versioned == 0 {
-                crate::append_hook_log(&format!(
+                shikisha_core::append_hook_log(&format!(
                     "tray: the icon could not be put up (add={added}, version={versioned})"
                 ));
             }
@@ -185,7 +185,7 @@ unsafe extern "system" fn procedure(hwnd: *mut c_void, msg: u32, w: WPARAM, l: L
         }
         return 0;
     }
-    if crate::instance::is_show_id(msg) {
+    if shikisha_core::instance::is_show_id(msg) {
         if let Some(sink) = SINK.lock().unwrap().as_ref() {
             (sink.on)(Pressed::Open);
         }
@@ -214,7 +214,7 @@ fn event(hwnd: isize, lparam: LPARAM, open: &str, quit: &str) -> Pressed {
     // closing are the expected traffic of every press, so those are not
     const EXPECTED: [u32; 5] = [WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, NIN_POPUPOPEN, NIN_POPUPCLOSE];
     if !EXPECTED.contains(&event) {
-        crate::append_hook_log(&format!("tray: event 0x{event:x} (nothing to do)"));
+        shikisha_core::append_hook_log(&format!("tray: event 0x{event:x} (nothing to do)"));
     }
     Pressed::Nothing
 }

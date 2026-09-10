@@ -16,64 +16,77 @@
 // Windows allocate one. (Only the terminal-facing --settings mode opens one itself, on demand.)
 #![windows_subsystem = "windows"]
 
-mod agenthook;
-mod api;
-mod attach;
-mod ball;
-mod bridge;
+use shikisha_core::send::{
+    PASTE_ACK_MS, PASTE_CHUNK, PendingSend, SUBMIT_GIVE_UP_MS, SUBMIT_QUIET_MS, Step, paste_chunks,
+};
+use shikisha_core::{
+    FIXED_TOKEN_MIN,
+    append_hook_log,
+    detach_console,
+    random_bytes,
+    random_hex,
+    random_uuid,
+    remote_token,
+    resume_plan_of,
+    agenthook,
+    api,
+    attach,
+    ball,
+    bridge,
+    browserstate,
+    caps,
+    config,
+    conpty,
+    crypto,
+    detect,
+    digest,
+    discover,
+    exchange,
+    folders,
+    git,
+    grants,
+    hooks,
+    i18n,
+    instance,
+    job,
+    keys,
+    lastsession,
+    layout,
+    limits,
+    migrate,
+    netaddr,
+    notify,
+    pr,
+    profile,
+    push,
+    pwa,
+    reader,
+    remote,
+    reply,
+    repo,
+    session_log,
+    sessionfind,
+    shell,
+    ssh,
+    tab,
+    tailscale,
+    theme,
+    toast,
+    uistate,
+    update,
+    usage,
+    vault,
+    watch,
+    webui,
+    winpath,
+    worktree,
+    ws,
+    wspack,
+};
 mod browser;
-mod browserstate;
-mod caps;
-mod config;
-mod conpty;
-mod crypto;
-mod detect;
-mod digest;
-mod discover;
-mod exchange;
-mod folders;
-mod git;
-mod grants;
-mod hooks;
-mod i18n;
-mod job;
-mod lastsession;
-mod keys;
-mod layout;
-mod netaddr;
-mod notify;
 mod picker;
-mod pr;
-mod profile;
-mod push;
-mod pwa;
-mod reader;
-mod remote;
-mod reply;
-mod repo;
-mod session_log;
-mod sessionfind;
-mod shell;
-mod ssh;
-mod tab;
-mod tailscale;
-mod theme;
-mod toast;
-mod usage;
-mod limits;
-mod vault;
-mod uistate;
-mod update;
-mod migrate;
-mod watch;
-mod winpath;
 mod wintoast;
-mod ws;
-mod webui;
-mod worktree;
-mod wspack;
 mod tray;
-mod instance;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -208,7 +221,7 @@ fn say_fatally_with_page(text: &str, url: &str) {
         // exactly that. Having promised a page, hand over the address rather
         // than doing nothing where a button was pressed.
         if (ok as isize) <= 32 {
-            say_fatally(&crate::i18n::tp("err.webview2.address", &[("url", url)]));
+            say_fatally(&shikisha_core::i18n::tp("err.webview2.address", &[("url", url)]));
         }
     }
 }
@@ -359,10 +372,10 @@ fn cast_test(url: &str) -> Result<()> {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
 
-    println!("{}", crate::i18n::tp("cli.cast_test.opening", &[("url", url)]));
+    println!("{}", shikisha_core::i18n::tp("cli.cast_test.opening", &[("url", url)]));
     let browser = browser::Browser::spawn(url, "cast-test")?;
     browser.screencast(None, true)?;
-    println!("{}", crate::i18n::t("cli.cast_test.relaying"));
+    println!("{}", shikisha_core::i18n::t("cli.cast_test.relaying"));
 
     let status = config::logs_dir().join("cast-test.txt");
     // The very first frame tends to be blank white, before anything's drawn.
@@ -374,7 +387,7 @@ fn cast_test(url: &str) -> Result<()> {
         for ev in browser.drain() {
             if let shikisha_shared::Ev::Frame { data, w, h, .. } = ev {
                 let bytes = b64.decode(data.as_bytes()).map_err(|e| {
-                    anyhow::anyhow!(crate::i18n::tp(
+                    anyhow::anyhow!(shikisha_core::i18n::tp(
                         "cli.cast_test.bad_base64",
                         &[("e", &e.to_string())]
                     ))
@@ -401,11 +414,11 @@ fn cast_test(url: &str) -> Result<()> {
                 count
             );
             let _ = std::fs::write(&status, &msg);
-            print!("{}", crate::i18n::tp("cli.cast_test.saved", &[("msg", &msg)]));
+            print!("{}", shikisha_core::i18n::tp("cli.cast_test.saved", &[("msg", &msg)]));
         }
         None => {
             let _ = std::fs::write(&status, "TIMEOUT: no frame in 5s\n");
-            println!("{}", crate::i18n::t("cli.cast_test.no_frame"));
+            println!("{}", shikisha_core::i18n::t("cli.cast_test.no_frame"));
         }
     }
     Ok(())
@@ -491,18 +504,18 @@ fn coach_step(folders: usize, seen: u8, past_the_plus: bool) -> (Option<u8>, u8)
 /// its own is started to work unattended. A profile whose command is not
 /// installed is not offered -- a choice that fails on pressing is worse than
 /// no choice
-fn startable_ais() -> Vec<crate::uistate::AiChoice> {
+fn startable_ais() -> Vec<shikisha_core::uistate::AiChoice> {
     let mut out = Vec::new();
-    for pf in crate::profile::files() {
+    for pf in shikisha_core::profile::files() {
         let Some(cmd) = pf.command_match.first().map(|c| c.trim().to_string()) else { continue };
-        if cmd.is_empty() || crate::tab::resolve_command(&cmd).is_none() {
+        if cmd.is_empty() || shikisha_core::tab::resolve_command(&cmd).is_none() {
             continue;
         }
-        let command = match crate::tab::bypass_flag(&cmd) {
+        let command = match shikisha_core::tab::bypass_flag(&cmd) {
             Some(flag) => format!("{cmd} {flag}"),
             None => cmd.clone(),
         };
-        out.push(crate::uistate::AiChoice { key: cmd, name: pf.name.clone(), command });
+        out.push(shikisha_core::uistate::AiChoice { key: cmd, name: pf.name.clone(), command });
     }
     out
 }
@@ -513,7 +526,7 @@ fn startable_ais() -> Vec<crate::uistate::AiChoice> {
 /// anything else names one of the AIs offered. A name that is not on the list
 /// -- an AI uninstalled between the offer and the press -- runs nothing rather
 /// than a command that would fail on screen
-fn start_of(said: &str, ais: &[crate::uistate::AiChoice]) -> config::Start {
+fn start_of(said: &str, ais: &[shikisha_core::uistate::AiChoice]) -> config::Start {
     match said.trim() {
         "" => config::Start::Same,
         "none" => config::Start::Nothing,
@@ -636,7 +649,7 @@ struct WinSurface {
     /// two different questions, and `terminal_size` picks between them.
     phone: Option<(u16, u16)>,
     /// The last state we sent. Only send again when it changes.
-    last: Option<crate::uistate::UiState>,
+    last: Option<shikisha_core::uistate::UiState>,
     /// The terminal contents as the page last got them, row by row. Kept in
     /// pieces because that is the shape of a change: an AI's spinner turning
     /// over moves one line, and the page can be told to repair just that one
@@ -1080,10 +1093,10 @@ impl WinSurface {
     /// rule being replaced -- the terminal's sixteen included, since the cells
     /// name their colour rather than carry it
     fn push_theme(&self) {
-        let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
+        let look = shikisha_core::config::load().map(|c| c.appearance).unwrap_or_default();
         let scheme = look.scheme();
         let vars = serde_json::to_string(&scheme.css_vars()).unwrap_or_else(|_| "\"\"".into());
-        let light = crate::theme::is_light(&scheme);
+        let light = shikisha_core::theme::is_light(&scheme);
         let _ = self
             .win
             .eval(&format!("window.__setTheme({vars}, {light});"));
@@ -1142,7 +1155,7 @@ impl WinSurface {
                 Ev::FontSize { px } => self.font_size = Some(px),
                 Ev::TabWidth { px } => self.tab_width = Some(px),
                 Ev::JsError { msg } => {
-                    crate::append_hook_log(&format!("Screen failure: {msg}"));
+                    shikisha_core::append_hook_log(&format!("Screen failure: {msg}"));
                 }
                 // The window was closed. If we don't shut down here, a process with
                 // nowhere left to draw stays alive unseen, still holding the listening port.
@@ -1210,7 +1223,7 @@ impl WinSurface {
                 // the page. Same saver the phone's /api/attach route uses.
                 Ev::Attach { id, name, data } => {
                     let cwd = active_tab.map(tab_cwd_abs).unwrap_or_default();
-                    let result = crate::remote::attach_save(&cwd, &name, &data);
+                    let result = shikisha_core::remote::attach_save(&cwd, &name, &data);
                     let _ = self
                         .win
                         .eval(&format!("window.__attachDone({id}, {result});"));
@@ -1376,7 +1389,7 @@ fn keys_for(ev: &shikisha_shared::Ev) -> Vec<Event> {
     // button that went on pressing Ctrl+B after the prefix moved would be a
     // button that silently stopped working
     let prefixed = |c: char| {
-        let p = crate::keys::prefix_now();
+        let p = shikisha_core::keys::prefix_now();
         vec![
             Event::Key(KeyEvent::new(p.code, p.mods)),
             plain(c),
@@ -1429,7 +1442,7 @@ fn keys_for(ev: &shikisha_shared::Ev) -> Vec<Event> {
         // The palette picked an action by name. Run it as the keystroke it
         // stands for, through the very path a button or a keypress takes -- so
         // a rebound key and a moved prefix are both already accounted for
-        Ev::RunKey { name } => match crate::keys::char_for(name) {
+        Ev::RunKey { name } => match shikisha_core::keys::char_for(name) {
             Some(c) => prefixed(c),
             None => Vec::new(),
         },
@@ -1467,7 +1480,7 @@ fn named_key(n: &str) -> Option<KeyCode> {
 fn run_in_window() -> Result<()> {
     // Serve the shell page. file:// breaks wry's IPC, so serve it over local HTTP instead.
     let server = tiny_http::Server::http("127.0.0.1:0").map_err(|e| {
-        anyhow::anyhow!(crate::i18n::tp(
+        anyhow::anyhow!(shikisha_core::i18n::tp(
             "err.main.local_server",
             &[("e", &e.to_string())]
         ))
@@ -1475,7 +1488,7 @@ fn run_in_window() -> Result<()> {
     let port = server
         .server_addr()
         .to_ip()
-        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.main.no_port")))?
+        .ok_or_else(|| anyhow::anyhow!(shikisha_core::i18n::t("err.main.no_port")))?
         .port();
     let page = shell::page();
     std::thread::spawn(move || {
@@ -1518,7 +1531,7 @@ fn run_in_window() -> Result<()> {
         // answer is known: the generic path can only repeat an error, and this
         // one can hand over the page that fixes it.
         say_fatally_with_page(
-            &crate::i18n::t("err.webview2.missing"),
+            &shikisha_core::i18n::t("err.webview2.missing"),
             "https://developer.microsoft.com/microsoft-edge/webview2/",
         );
         std::process::exit(1);
@@ -1875,29 +1888,6 @@ mod hook_report_tests {
     }
 }
 
-/// What a restart should do about this tab's conversation, and — when it cannot
-/// carry it — the reason to put on screen.
-///
-/// The decision lives here rather than in the tab because it depends on the
-/// other tabs: continuing "whatever ran in this folder last" is only safe when
-/// nobody else could have been what ran there.
-///
-/// Resuming the wrong conversation is worse than starting a new one, so every
-/// uncertain case ends up at Fresh with something to say for itself.
-/// The launch plan for a config tab: resume the id it names, or start fresh.
-///
-/// A tab reopened from the Vault carries the conversation's id; a plain tab
-/// carries nothing and begins a new one. The id is trusted as a Store id --
-/// it came from the CLI's own record, which is exactly what Store means
-pub(crate) fn resume_plan_of(id: Option<&str>) -> tab::Resume {
-    match id.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(id) => tab::Resume::Id(tab::Session {
-            id: id.to_string(),
-            source: tab::SessionSource::Store,
-        }),
-        None => tab::Resume::Fresh,
-    }
-}
 
 fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'static str>) {
     if !keep {
@@ -2003,7 +1993,7 @@ fn only_one_here(tabs: &[Tab], index: usize) -> bool {
         i != index
             && o.program() == me.program()
             && match (o.cwd(), me.cwd()) {
-                (Some(a), Some(b)) => crate::sessionfind::same_folder(a, b),
+                (Some(a), Some(b)) => shikisha_core::sessionfind::same_folder(a, b),
                 (a, b) => a.is_none() && b.is_none(),
             }
     })
@@ -2038,8 +2028,8 @@ fn restart_tab(t: &mut Tab, alone: bool, keep: bool, rows: u16, cols: u16) -> St
 /// they must divide identically: which surface the new half shows, and where
 /// focus lands, are decisions, not details of whichever door was used
 fn split_focused(
-    l: &mut crate::layout::Layout,
-    dir: crate::layout::Dir,
+    l: &mut shikisha_core::layout::Layout,
+    dir: shikisha_core::layout::Dir,
     surface_count: usize,
     active: usize,
 ) -> usize {
@@ -2048,7 +2038,7 @@ fn split_focused(
     l.focused_surface()
 }
 
-fn free_surface(l: &crate::layout::Layout, surface_count: usize, from: usize) -> usize {
+fn free_surface(l: &shikisha_core::layout::Layout, surface_count: usize, from: usize) -> usize {
     (1..=surface_count)
         .map(|n| (from + n) % (surface_count + 1))
         .find(|n| *n != 0 && l.pane_of(*n).is_none())
@@ -2062,10 +2052,10 @@ fn free_surface(l: &crate::layout::Layout, surface_count: usize, from: usize) ->
 /// state dot, whether it is a browser — the page already has from `__state`,
 /// looked up by surface number. Sending it twice would let the two copies
 /// disagree, and the pane would caption itself with a stale name.
-fn panes_json(l: &crate::layout::Layout) -> String {
+fn panes_json(l: &shikisha_core::layout::Layout) -> String {
     #[derive(serde::Serialize)]
     struct Pane {
-        id: crate::layout::PaneId,
+        id: shikisha_core::layout::PaneId,
         x: f32,
         y: f32,
         w: f32,
@@ -2113,7 +2103,7 @@ fn panes_json(l: &crate::layout::Layout) -> String {
             w: r.w,
             h: r.h,
             ratio,
-            down: dir == crate::layout::Dir::Col,
+            down: dir == shikisha_core::layout::Dir::Col,
         })
         .collect();
     serde_json::json!({
@@ -2300,10 +2290,10 @@ fn screen_key(session: usize, t: &Tab) -> ScreenKey {
     ScreenKey { session, bytes: t.output_count(), rows, cols, scrollback: s.scrollback() }
 }
 
-fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::UiState {
+fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> shikisha_core::uistate::UiState {
     // The folders these tabs are actually in. Worked out here, once, so the
     // window and the phone are looking at the same list
-    let mut groups = crate::uistate::GroupState::all(tabs, &ui.folder_colors, &ui.folders);
+    let mut groups = shikisha_core::uistate::GroupState::all(tabs, &ui.folder_colors, &ui.folders);
     // And whether each of them is on this machine. Asked here because this is
     // the one place the list is built, and answered from a table kept up to
     // date on its own threads -- a drive that has stopped answering must not
@@ -2328,7 +2318,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         if g.empty
             && ui.surfaces.iter().any(|s| match s {
                 Surface::Git { dir: Some(d), .. } | Surface::Sftp { dir: Some(d), .. } => {
-                    crate::uistate::same_folder(d, at)
+                    shikisha_core::uistate::same_folder(d, at)
                 }
                 _ => false,
             })
@@ -2337,8 +2327,8 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         }
     }
     // The pairing link as it should be shown, with the network it leads to
-    let shown = ui.qr.as_deref().map(crate::netaddr::shown_link);
-    crate::uistate::UiState {
+    let shown = ui.qr.as_deref().map(shikisha_core::netaddr::shown_link);
+    shikisha_core::uistate::UiState {
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
         branch: ui.branch.clone(),
         repair: ui.repair.clone(),
@@ -2374,14 +2364,14 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
             .enumerate()
             .filter_map(|(i, p)| match p {
                 Surface::Session(s) => tabs.get(*s).map(|t| {
-                    let mut ts = crate::uistate::TabState::of(i + 1, t);
+                    let mut ts = shikisha_core::uistate::TabState::of(i + 1, t);
                     ts.group = t.cwd().and_then(|c| {
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, c))
+                        groups.iter().position(|(k, _)| shikisha_core::uistate::same_folder(k, c))
                     });
                     ts
                 }),
                 Surface::Browser { key, name } => {
-                    let mut t = crate::uistate::TabState::browser(i + 1, key, name);
+                    let mut t = shikisha_core::uistate::TabState::browser(i + 1, key, name);
                     // What a script is asking the person about this page, if
                     // anything. The board draws the bar under the page from it
                     t.ask = ui.asks.iter().find(|(k, _)| k == key).map(|(_, a)| a.clone());
@@ -2389,9 +2379,9 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
                 }
                 Surface::Sftp { key, name, dir, .. } => {
                     let group = dir.as_deref().and_then(|d| {
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
+                        groups.iter().position(|(k, _)| shikisha_core::uistate::same_folder(k, d))
                     });
-                    Some(crate::uistate::TabState::sftp(i + 1, key, name, group))
+                    Some(shikisha_core::uistate::TabState::sftp(i + 1, key, name, group))
                 }
                 Surface::Git { key, name, dir, .. } => {
                     // The panel reports on a folder, so it stands under that
@@ -2400,14 +2390,14 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
                     // as a number decided elsewhere, it was never filled in, and
                     // a panel belonging to nothing sat on outside a folded folder
                     let group = dir.as_deref().and_then(|d| {
-                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
+                        groups.iter().position(|(k, _)| shikisha_core::uistate::same_folder(k, d))
                     });
-                    Some(crate::uistate::TabState::git(i + 1, key, name, group))
+                    Some(shikisha_core::uistate::TabState::git(i + 1, key, name, group))
                 }
             })
             .collect(),
         // The ball moves by session number; what we display is the screen number
-        ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
+        ball: shikisha_core::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
         flash: flash.map(str::to_string),
         help_open: ui.help_open,
         help_rows: ui.help_rows.clone(),
@@ -2422,7 +2412,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
         // same state, so the same QR shows up regardless of origin (this ends the
         // link-rot we used to get back when it was served as a separate image).
         qr: shown.as_ref().map(|(url, _)| url.clone()),
-        qr_svg: shown.as_ref().map(|(url, _)| crate::netaddr::qr_svg(url, 6)),
+        qr_svg: shown.as_ref().map(|(url, _)| shikisha_core::netaddr::qr_svg(url, 6)),
         qr_kind: shown.as_ref().map(|(_, kind)| kind.to_string()),
         nav: ui.nav.clone(),
         scrolled: ui.scrolled,
@@ -2449,7 +2439,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
                 // Neither a page nor a panel is doing anything on its own
                 Surface::Browser { .. } | Surface::Git { .. } | Surface::Sftp { .. } => false,
             });
-            let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
+            let ring_idle = matches!(ui.ball.phase(ui.now_ms), shikisha_core::ball::Phase::Idle);
             !anyone_active && ring_idle
         },
     }
@@ -2533,7 +2523,7 @@ impl WinSurface {
                 if w.last.as_ref() != Some(&state) {
                     let json = serde_json::to_string(&state).unwrap_or_default();
                     if w.last.is_none() {
-                        crate::append_hook_log(&format!(
+                        shikisha_core::append_hook_log(&format!(
                             "Sending state: {} tabs, workspace \"{}\", {} chars",
                             state.tabs.len(),
                             state.workspace,
@@ -2588,7 +2578,7 @@ impl WinSurface {
                     }
                     let html = {
                         let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-                        crate::shell::screen_html(p.screen())
+                        shikisha_core::shell::screen_html(p.screen())
                     };
                     if w.last_pane_screens.get(&id).map(|(_, h)| h.as_str()) != Some(html.as_str()) {
                         let _ = w.win.eval(&format!(
@@ -2610,7 +2600,7 @@ impl WinSurface {
                             let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
                             let s = p.screen();
                             let (r, c) = s.cursor_position();
-                            (crate::shell::screen_rows(s), (r, c, !s.hide_cursor()))
+                            (shikisha_core::shell::screen_rows(s), (r, c, !s.hide_cursor()))
                         };
                         w.send_screen(rows);
                         // Placing the cursor forces a layout recompute in the
@@ -2708,7 +2698,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
     if let Some(c) = cfg.as_ref() {
         ssh::use_secrets(c.resolve_tokens(None));
     }
-    let mut last_session = crate::lastsession::Saved::load();
+    let mut last_session = shikisha_core::lastsession::Saved::load();
     if !cmd_args.is_empty() {
         tabs.push(Tab::spawn(
             title_of(&cmd_args),
@@ -2936,7 +2926,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let mut resident = cfg.as_ref().and_then(|c| c.resident).unwrap_or(true);
     // What Claude's subscription has left, on a thread of its own. Nothing
     // is asked until a Claude tab exists (limits::Meter::want)
-    let limits = crate::limits::Meter::start();
+    let limits = shikisha_core::limits::Meter::start();
     let mut claude_usage_on = cfg.as_ref().and_then(|c| c.claude_usage).unwrap_or(true);
     // The last time a human touched the screen. Don't auto-follow right after that.
     let mut view_touched_ms: u64 = 0;
@@ -2958,7 +2948,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // every code path that knows only `active` was written for: the focused
     // pane's surface *is* `active`, and the two are re-synced once per frame
     // below, so splitting the screen adds panes without rewriting the loop.
-    let mut pane_layout = crate::layout::Layout::single(active);
+    let mut pane_layout = shikisha_core::layout::Layout::single(active);
     // The other half of what was remembered (the conversations were used at
     // launch, above). The division of the screen is put back unconditionally:
     // it is a shape, not a conversation, and nobody is surprised to find their
@@ -2996,7 +2986,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // were when it asked. Cleared when the tab arrives or the form is shut
     let mut awaiting_tab: Option<(u32, usize)> = None;
     // What was last written, so an unchanged screen writes nothing at all
-    let mut last_saved: Option<(crate::layout::Layout, Vec<Option<tab::Session>>)> = None;
+    let mut last_saved: Option<(shikisha_core::layout::Layout, Vec<Option<tab::Session>>)> = None;
     // Which key does what, this run. Read once and re-read when the settings
     // change, the same as everything else that can be edited while running
     // When to look again at where the tabs are. Starts now so the first frame
@@ -3005,7 +2995,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // What each tab costs the machine, measured on the same 2-second beat as
     // where it is. The meter keeps last time's totals so processor use comes
     // out as a rate rather than a running sum
-    let mut meter = crate::usage::Meter::default();
+    let mut meter = shikisha_core::usage::Meter::default();
     // The AIs that can be started here. Read once: it asks the disk which
     // commands exist, and the answer does not change while the app runs
     // except by somebody installing one, which a settings save also notices
@@ -3023,23 +3013,23 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // What the Vault overlay is showing right now: the last search and its
     // hits. Kept across frames so the results stay put until the next search,
     // and dropped from the state entirely while the overlay is closed
-    let mut vault_view: Option<crate::uistate::VaultState> = None;
+    let mut vault_view: Option<shikisha_core::uistate::VaultState> = None;
     // What making a branch would do. Answered while the name is being typed,
     // and cleared once the folder exists so the dialog can close itself
-    let mut branch_view: Option<crate::uistate::BranchPlan> = None;
+    let mut branch_view: Option<shikisha_core::uistate::BranchPlan> = None;
     // What it would take to have a missing working folder here. Answered when
     // one is opened, and cleared once the folder exists so the dialog closes
-    let mut repair_view: Option<crate::uistate::RepairPlan> = None;
+    let mut repair_view: Option<shikisha_core::uistate::RepairPlan> = None;
     // The folders being looked through, while somewhere new is being chosen
-    let mut browse_view: Option<crate::uistate::BrowseState> = None;
+    let mut browse_view: Option<shikisha_core::uistate::BrowseState> = None;
     // What this whole app is costing the machine, refreshed on the same beat as
     // the per-tab figures. Shown in the board's header
     let mut self_cost: Option<String> = None;
     // Somewhere to ask about pull requests, on its own thread. Quiet and
     // harmless when the person has no GitHub token: it simply never knows
     // anything, and no row grows a line
-    let prs = crate::pr::Watch::start();
-    let (mut keymap, key_errs) = crate::keys::Keys::load(cfg.as_ref());
+    let prs = shikisha_core::pr::Watch::start();
+    let (mut keymap, key_errs) = shikisha_core::keys::Keys::load(cfg.as_ref());
     startup_errors.extend(key_errs);
     let mut prefix_active = false;
     // The last state drawn. This is what gets handed to the phone (keeps the
@@ -3088,9 +3078,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // Launched tabs live in `tabs`; the shelf reserves space for the remaining workspaces.
     let mut ws_tabs: Vec<Vec<Tab>> = Vec::new();
     // One pane tree per workspace, parked here while that workspace is off screen
-    let mut ws_panes: Vec<crate::layout::Layout> = Vec::new();
+    let mut ws_panes: Vec<shikisha_core::layout::Layout> = Vec::new();
     ws_tabs.resize_with(workspaces.len(), Vec::new);
-    ws_panes.resize_with(workspaces.len(), || crate::layout::Layout::single(0));
+    ws_panes.resize_with(workspaces.len(), || shikisha_core::layout::Layout::single(0));
     // Watch the config file for changes (saving takes effect without a restart)
     let mut watcher = watch::Watcher::new(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
     // Look for a newer version: now, and once a day while this runs. Looking
@@ -3279,7 +3269,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // wrong workspace into panes pointing at the wrong tabs, which
                 // looks deliberate and is not — start those over instead.
                 ws_panes = (0..new_ws.len().max(1))
-                    .map(|_| crate::layout::Layout::single(0))
+                    .map(|_| shikisha_core::layout::Layout::single(0))
                     .collect();
                 workspaces = new_ws;
                 ai_choices = startable_ais();
@@ -3391,9 +3381,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 flash = Some(format!(">> {note}"));
                 // A settings save may have changed the quick actions — push them
                 // into the shell so the composer updates without a reload.
-                surface.push_actions(&crate::shell::actions_json());
+                surface.push_actions(&shikisha_core::shell::actions_json());
                 surface.push_theme();
-                let (next, errs) = crate::keys::Keys::load(cfg.as_ref());
+                let (next, errs) = shikisha_core::keys::Keys::load(cfg.as_ref());
                 keymap = next;
                 startup_errors.extend(errs);
             }
@@ -3416,7 +3406,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // quietly -- the sentence went to the script and to hooks.log, and the
         // person watching automation stop had nothing in front of them
         if flash.is_none() {
-            flash = crate::caps::take_refusal();
+            flash = shikisha_core::caps::take_refusal();
         }
 
         // Check every tab's state every 200ms (completion of inactive tabs is
@@ -3499,7 +3489,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 if !t.take_not_utf8() {
                     continue;
                 }
-                let said = match crate::discover::legacy_console_encoding() {
+                let said = match shikisha_core::discover::legacy_console_encoding() {
                     Some((name, _)) => i18n::tp("msg.encoding.not_utf8", &[("enc", name)]),
                     None => i18n::t("msg.encoding.not_utf8.plain"),
                 };
@@ -3618,19 +3608,19 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // terminal, agents, embedded browser -- as honestly as it
                 // measures each agent
                 roots.push((usize::MAX, std::process::id()));
-                let ports = crate::repo::ports_below(&roots);
+                let ports = shikisha_core::repo::ports_below(&roots);
                 let cost = meter.sample(&roots);
                 self_cost = cost.get(&usize::MAX).and_then(|u| u.line());
                 for (i, t) in tabs.iter_mut().enumerate() {
                     t.usage = cost.get(&i).copied().unwrap_or_default();
-                    let branch = t.cwd().and_then(crate::repo::branch_of);
+                    let branch = t.cwd().and_then(shikisha_core::repo::branch_of);
                     // Where it pushes to is only worth working out when there
                     // is a branch to ask about, and only worth asking about
                     // when GitHub is where it lives
                     let repo = branch
                         .as_ref()
                         .and_then(|_| t.cwd())
-                        .and_then(crate::repo::origin_of);
+                        .and_then(shikisha_core::repo::origin_of);
                     // What is known right now, and a nudge to find out. The
                     // asking happens elsewhere; a row that waited on GitHub
                     // would be a window that stops drawing
@@ -3642,10 +3632,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // the checkout or a branch cut from it. Same kind of look
                     // as the branch above -- a file read, not a git run
                     let (family, linked) = match t.cwd() {
-                        Some(c) => (crate::repo::family_of(c), crate::repo::is_linked(c)),
+                        Some(c) => (shikisha_core::repo::family_of(c), shikisha_core::repo::is_linked(c)),
                         None => (None, false),
                     };
-                    t.place = crate::repo::Place {
+                    t.place = shikisha_core::repo::Place {
                         branch,
                         ports: ports.get(&i).cloned().unwrap_or_default(),
                         repo,
@@ -4144,7 +4134,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // worth of commands to offer; make one rather than answer
                 // "not available" (the same gap-filler as 🎯 operate and ▶)
                 if engine.is_none() {
-                    match crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)) {
+                    match shikisha_core::hooks::HookEngine::with_caps(shikisha_core::hooks::Caps::clone(&caps)) {
                         Ok(eng) => engine = Some(eng),
                         Err(e) => {
                             let _ = call.reply.send(Err(e.to_string()));
@@ -4542,7 +4532,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         let nav = showing.as_deref().and_then(|key| {
             let spec = caps.nav_of(key)?;
             let w = where_now.as_ref().filter(|w| w.0 == key);
-            Some(crate::uistate::NavState {
+            Some(shikisha_core::uistate::NavState {
                 back: spec.back,
                 forward: spec.forward,
                 reload: spec.reload,
@@ -4604,7 +4594,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         let (coach, seen) = coach_step(folder_count, coach_seen, past_the_plus);
         if seen != coach_seen {
             coach_seen = seen;
-            let _ = crate::crypto::write_atomic(&config::state_path("coach"), &seen.to_string());
+            let _ = shikisha_core::crypto::write_atomic(&config::state_path("coach"), &seen.to_string());
         }
         // Asked only while a Claude tab exists and the setting is on; shown
         // only while such a tab is in view (the page decides that)
@@ -4614,7 +4604,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            crate::uistate::UsageState::of(&l, now)
+            shikisha_core::uistate::UsageState::of(&l, now)
         });
         let ui = Ui {
             ais: ai_choices.clone(),
@@ -5133,7 +5123,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // the window keeps drawing while the AI thinks
                 if engine.is_none() {
                     engine =
-                        crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+                        shikisha_core::hooks::HookEngine::with_caps(shikisha_core::hooks::Caps::clone(&caps)).ok();
                 }
                 let Some(eng) = engine.as_mut() else { continue };
                 let mut folders = tab_places(&tabs);
@@ -5144,7 +5134,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 let code = spec
                     .message_lua
                     .filter(|l| !l.trim().is_empty())
-                    .unwrap_or_else(|| crate::hooks::COMMIT_MESSAGE_LUA.to_string());
+                    .unwrap_or_else(|| shikisha_core::hooks::COMMIT_MESSAGE_LUA.to_string());
                 let _ = eng.call_primitive_as(
                     None,
                     grants::Subject::Human,
@@ -5198,15 +5188,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             .filter(|s| !s.is_empty());
                         std::thread::spawn(move || {
                             let done = match act2.as_str() {
-                                "fetch" => crate::git::fetch(&dir),
-                                "pull" => crate::git::pull(&dir),
-                                "push" => crate::git::push(&dir),
+                                "fetch" => shikisha_core::git::fetch(&dir),
+                                "pull" => shikisha_core::git::pull(&dir),
+                                "push" => shikisha_core::git::push(&dir),
                                 #[allow(unreachable_patterns)]
                                 // Every file git left marked, one at a time.
                                 // Nothing is staged and nothing is committed:
                                 // what comes back is written into the tree, and
                                 // the person reads it as a diff like any other
-                                "resolve" => crate::git::tangled(&dir).and_then(|files| {
+                                "resolve" => shikisha_core::git::tangled(&dir).and_then(|files| {
                                     let mut done: Vec<String> = Vec::new();
                                     let mut failed: Vec<String> = Vec::new();
                                     for f in &files {
@@ -5214,7 +5204,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                         let said = std::fs::read_to_string(&at)
                                             .map_err(anyhow::Error::from)
                                             .and_then(|body| {
-                                                crate::webui::resolve_conflict(f, &body, ai.as_deref())
+                                                shikisha_core::webui::resolve_conflict(f, &body, ai.as_deref())
                                             })
                                             .and_then(|text| {
                                                 std::fs::write(&at, text).map_err(Into::into)
@@ -5227,7 +5217,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     if done.is_empty() && !failed.is_empty() {
                                         anyhow::bail!("{}", failed.join("\n"));
                                     }
-                                    Ok(crate::i18n::tp(
+                                    Ok(shikisha_core::i18n::tp(
                                         "msg.git.resolved",
                                         &[("n", &done.len().to_string())],
                                     ) + if failed.is_empty() { "" } else { "\n" }
@@ -5256,7 +5246,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 continue;
             }
             if engine.is_none() {
-                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+                engine = shikisha_core::hooks::HookEngine::with_caps(shikisha_core::hooks::Caps::clone(&caps)).ok();
             }
             let Some(eng) = engine.as_mut() else { continue };
             let mut folders = tab_places(&tabs);
@@ -5419,7 +5409,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // Running needs an engine; make a bare one if this workspace didn't
             // otherwise have any Lua (same gap-filler as 🎯 operate).
             if engine.is_none() {
-                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+                engine = shikisha_core::hooks::HookEngine::with_caps(shikisha_core::hooks::Caps::clone(&caps)).ok();
             }
             let Some(eng) = engine.as_mut() else { continue };
             let err = eng.run_browser_lua(key, &code);
@@ -5508,11 +5498,11 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // every open tab comes first -- a live match is more likely the
             // thing being looked for than an old conversation -- then the
             // records on disk. One box finds both
-            let mut hits: Vec<crate::vault::Hit> = Vec::new();
+            let mut hits: Vec<shikisha_core::vault::Hit> = Vec::new();
             if !query.trim().is_empty() {
                 for (i, t) in tabs.iter().enumerate() {
                     for (_, line) in t.search_lines(&query, 6) {
-                        hits.push(crate::vault::Hit {
+                        hits.push(shikisha_core::vault::Hit {
                             program: String::new(),
                             id: String::new(),
                             cwd: None,
@@ -5527,9 +5517,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                 }
             }
-            let found = crate::vault::search(&query, 40);
+            let found = shikisha_core::vault::search(&query, 40);
             hits.extend(found.hits);
-            vault_view = Some(crate::uistate::VaultState {
+            vault_view = Some(shikisha_core::uistate::VaultState {
                 query,
                 hits,
                 capped: found.capped,
@@ -5550,7 +5540,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // the removal itself waits for them to actually be gone
         for folder in surface.take_folder_discards() {
             let at = std::path::PathBuf::from(&folder);
-            if let Err(e) = crate::worktree::ready_to_discard(&at) {
+            if let Err(e) = shikisha_core::worktree::ready_to_discard(&at) {
                 flash = Some(format!("{e:#}"));
                 continue;
             }
@@ -5561,7 +5551,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         "msg.folder.discarded",
                         &[("path", &at.display().to_string())],
                     ));
-                    crate::worktree::discard_soon(at);
+                    shikisha_core::worktree::discard_soon(at);
                 }
                 Err(e) => flash = Some(format!("{e:#}")),
             }
@@ -5583,7 +5573,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // writes the folder into the settings, and the reload opens it
         for (path, open) in surface.take_browses() {
             if !open {
-                browse_view = Some(crate::uistate::BrowseState::of(&path));
+                browse_view = Some(shikisha_core::uistate::BrowseState::of(&path));
                 continue;
             }
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
@@ -5600,7 +5590,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // between its branches, so all of them change at once
         for (folder, color) in surface.take_folder_colors() {
             let at = std::path::PathBuf::from(&folder);
-            if let Some(family) = crate::repo::family_of(&at) {
+            if let Some(family) = shikisha_core::repo::family_of(&at) {
                 if let Err(e) = config::set_folder_color(&family, &color) {
                     flash = Some(format!("{e:#}"));
                 }
@@ -5652,12 +5642,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
             let checkout = ws.and_then(|w| {
                 w.folders.iter().find_map(|f| {
                     let cwd = f.cwd.as_deref()?;
-                    let url = crate::repo::remote_url_of(cwd)?;
+                    let url = shikisha_core::repo::remote_url_of(cwd)?;
                     match &source {
                         config::Source::Worktree { origin, .. }
-                            if crate::folders::scrub(&url) == crate::folders::scrub(origin) =>
+                            if shikisha_core::folders::scrub(&url) == shikisha_core::folders::scrub(origin) =>
                         {
-                            crate::repo::main_checkout(cwd)
+                            shikisha_core::repo::main_checkout(cwd)
                         }
                         _ => None,
                     }
@@ -5669,8 +5659,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 .unwrap_or_else(|| {
                     at.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
                 });
-            let planned = crate::folders::plan(&at, &source, checkout.as_deref());
-            let mut view = crate::uistate::RepairPlan {
+            let planned = shikisha_core::folders::plan(&at, &source, checkout.as_deref());
+            let mut view = shikisha_core::uistate::RepairPlan {
                 folder: folder.clone(),
                 name,
                 trouble: trouble_of(&at),
@@ -5687,7 +5677,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     if take && !steps.is_empty() {
                         // Stopped at the first thing that will not work: the
                         // second step is built on the first having happened
-                        match steps.iter().try_for_each(|s| crate::folders::take(s, &source)) {
+                        match steps.iter().try_for_each(|s| shikisha_core::folders::take(s, &source)) {
                             Ok(()) => view.done = at.is_dir(),
                             Err(e) => view.error = Some(format!("{e:#}")),
                         }
@@ -5695,7 +5685,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         // loud rather than waited out, so the folder stops
                         // being called missing the instant it is made -- and
                         // the tabs held back for it start on the next beat
-                        crate::folders::watch().forget(&at);
+                        shikisha_core::folders::watch().forget(&at);
                         if view.done {
                             flash = Some(i18n::tp(
                                 "msg.folder.ready",
@@ -5708,7 +5698,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // Nothing was ever written down about this folder. This is
                     // the only case that asks, and the answer ends the asking
                     // for every machine, not just this one
-                    view.asking = matches!(blocked, crate::folders::Blocked::Unknown);
+                    view.asking = matches!(blocked, shikisha_core::folders::Blocked::Unknown);
                     view.projects = projects_here(ws);
                     view.said = blocked_said(&blocked);
                     view.blocked = Some(blocked);
@@ -5726,9 +5716,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // the things git will not carry -- is a fact about the folder, not
             // about what has been typed so far. Answered even when the name is
             // still empty, so the pickers are filled the moment the dialog opens
-            let repo = crate::repo::main_checkout(&from);
+            let repo = shikisha_core::repo::main_checkout(&from);
             let offers = repo.as_deref().map(|main| {
-                (crate::worktree::bases(main), crate::worktree::carryables(main))
+                (shikisha_core::worktree::bases(main), shikisha_core::worktree::carryables(main))
             });
             let (bases, carryable) = offers.unwrap_or_default();
             // What it would grow from, even when there is no name yet to grow.
@@ -5737,14 +5727,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
             let chosen = match ask.base.trim().is_empty() {
                 true => repo
                     .as_deref()
-                    .map(crate::worktree::default_base)
+                    .map(shikisha_core::worktree::default_base)
                     .unwrap_or_default(),
                 false => ask.base.clone(),
             };
             // Nothing typed yet: propose one, so the dialog opens with a
             // complete answer and pressing the button is enough
             let wanted = match name.trim().is_empty() {
-                true => repo.as_deref().map(crate::worktree::suggest).unwrap_or_default(),
+                true => repo.as_deref().map(shikisha_core::worktree::suggest).unwrap_or_default(),
                 false => name.clone(),
             };
             let ws = workspaces
@@ -5753,7 +5743,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 .unwrap_or_default();
             // What the new folder runs, chosen from what this machine has
             let start = start_of(&ask.start, &ai_choices);
-            let mut view = crate::uistate::BranchPlan {
+            let mut view = shikisha_core::uistate::BranchPlan {
                 from: from.display().to_string(),
                 branch: name.clone(),
                 asked: name.clone(),
@@ -5763,7 +5753,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 ..Default::default()
             };
             if ask.ais.is_empty() {
-                match crate::worktree::plan(&from, &wanted, Some(&ask.base)) {
+                match shikisha_core::worktree::plan(&from, &wanted, Some(&ask.base)) {
                     Err(e) => view.error = Some(format!("{e:#}")),
                     Ok(plan) => {
                         view.branch = plan.branch.clone();
@@ -5774,7 +5764,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             // Made first, written down second: settings naming a
                             // folder that does not exist would launch tabs into
                             // nowhere on the next reload
-                            let wrote = crate::worktree::create(&plan).and_then(|()| {
+                            let wrote = shikisha_core::worktree::create(&plan).and_then(|()| {
                                 config::append_folder_starting(
                                     &ws,
                                     Some(&plan.main),
@@ -5789,7 +5779,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                                     // What could not be brought along is said out
                                     // loud: the folder is made either way, and the
                                     // first build is what would otherwise fail
-                                    let missed = crate::worktree::carry_into(&plan, &ask.carry);
+                                    let missed = shikisha_core::worktree::carry_into(&plan, &ask.carry);
                                     flash = Some(match missed.is_empty() {
                                         true => i18n::tp(
                                             "msg.branch.made",
@@ -5811,7 +5801,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 // is shown before any of them runs; one that cannot be made
                 // stops the whole ask, because "three of the four were made"
                 // is a state nobody asked for
-                let fanned = crate::worktree::fan(&from, &wanted, Some(&ask.base), &ask.ais);
+                let fanned = shikisha_core::worktree::fan(&from, &wanted, Some(&ask.base), &ask.ais);
                 view.branch = wanted.clone();
                 view.lines = fanned.iter().filter_map(|(_, p)| p.as_ref().ok().map(|p| p.line())).collect();
                 view.folder = fanned
@@ -5827,7 +5817,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     for (ai, plan) in fanned.iter() {
                         let Ok(plan) = plan else { continue };
                         let one = start_of(ai, &ai_choices);
-                        let wrote = crate::worktree::create(plan).and_then(|()| {
+                        let wrote = shikisha_core::worktree::create(plan).and_then(|()| {
                             config::append_folder_starting(
                                 &ws,
                                 Some(&plan.main),
@@ -5838,7 +5828,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         });
                         match wrote {
                             Ok(()) => {
-                                crate::worktree::carry_into(plan, &ask.carry);
+                                shikisha_core::worktree::carry_into(plan, &ask.carry);
                                 made.push(plan.branch.clone());
                             }
                             Err(e) => {
@@ -6081,7 +6071,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // Operating needs an engine to run in; make a bare one if this
             // workspace didn't otherwise have any Lua (same gap as Lua actions).
             if engine.is_none() {
-                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+                engine = shikisha_core::hooks::HookEngine::with_caps(shikisha_core::hooks::Caps::clone(&caps)).ok();
             }
             // Attach the active AI as the operator once per (source, target).
             if operating != Some((src_pane, target)) {
@@ -6184,12 +6174,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if let Some(step) = surface.take_coach_done() {
             if step > coach_seen {
                 coach_seen = step;
-                let _ = crate::crypto::write_atomic(&config::state_path("coach"), &step.to_string());
+                let _ = shikisha_core::crypto::write_atomic(&config::state_path("coach"), &step.to_string());
             }
         }
         if let Some(open) = surface.take_thanks() {
             if open {
-                crate::webui::open_external(match thanks_kind {
+                shikisha_core::webui::open_external(match thanks_kind {
                     "store" => STORE_REVIEW_URL,
                     _ => REPO_URL,
                 });
@@ -6197,10 +6187,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // Asked once. Pressed either way, it is over
             thanks_show = false;
             thanks_asked = true;
-            let _ = crate::crypto::write_atomic(&config::state_path("thanks-asked"), "1");
+            let _ = shikisha_core::crypto::write_atomic(&config::state_path("thanks-asked"), "1");
         }
         if surface.take_help_site() {
-            crate::webui::open_external(&i18n::t("tui.help.url"));
+            shikisha_core::webui::open_external(&i18n::t("tui.help.url"));
         }
         // The update card was answered. Either answer puts it away for this
         // version; "open" leads to the settings' Update card, where the one
@@ -6796,7 +6786,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             flash = Some(if notifier.is_empty() {
                                 i18n::t("msg.notify_none")
                             } else {
-                                notifier.send_all(&crate::i18n::t("err.main.test_notify_body"))
+                                notifier.send_all(&shikisha_core::i18n::t("err.main.test_notify_body"))
                             });
                         }
                         // Set, change, or remove the master password (all within the TUI)
@@ -6857,7 +6847,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                             // Soft lock: viewing and copying still work, but input is ignored
                             locked_hit = true;
                         } else if let Some(bytes) =
-                            key_to_bytes_with(&key, crate::tab::keyboard_flags(&t.keyboard))
+                            key_to_bytes_with(&key, shikisha_core::tab::keyboard_flags(&t.keyboard))
                         {
                             // Manual input breaks the chain. Except input to a tab that
                             // received a draft doesn't break it — that's not a takeover,
@@ -6946,171 +6936,11 @@ fn urlish(text: &str) -> String {
     out
 }
 
-/// Keeps a child process from popping up a window.
-///
-/// Console apps like cmd.exe show a black window if launched quietly.
-/// That would flash briefly every time a browser is opened, so it's suppressed from the start.
-pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
-    use std::os::windows::process::CommandExt as _;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    cmd.creation_flags(CREATE_NO_WINDOW)
-}
 
-/// Minimum gap between sending the text body and sending submit (Enter).
-/// How long the recipient actually takes to process it depends on device and load,
-/// so this is only a floor.
-const SUBMIT_FLOOR_MS: u64 = 100;
-/// The no-output duration after which paste intake is considered finished.
-///
-/// This waits for "finished", not "started responding". A long paste keeps
-/// redrawing over several round trips, so sending Enter as soon as it starts
-/// would arrive mid-intake and get dropped.
-/// (measured: around 600 chars goes through fine, around 1900 chars fails)
-const SUBMIT_QUIET_MS: u64 = 400;
-/// The cap on how long to wait before sending submit anyway, when the recipient
-/// keeps responding and never settles
-const SUBMIT_GIVE_UP_MS: u64 = 8_000;
 
-/// How much of a paste to hand over at a time.
-///
-/// The recipient takes a paste in one character at a time — on Windows the
-/// console turns the stream into individual key events — and it is far slower at
-/// that than we are at writing. Give it the whole thing in one go and it spends
-/// seconds working through a backlog nothing on our side can see.
-const PASTE_CHUNK: usize = 1024;
-/// How long to give the recipient to draw something before handing over the next
-/// chunk anyway. Drawing is the only way it has of saying "I've caught up";
-/// the timeout is for a recipient that draws nothing at all.
-const PASTE_ACK_MS: u64 = 600;
 
-/// What to do with a send on this pass.
-enum Step {
-    /// Nothing yet: the recipient hasn't caught up, or hasn't settled
-    Wait,
-    /// Hand over this much more of the paste
-    Hand(Vec<u8>),
-    /// The body is all in. Press Enter (or, for a draft, stop here)
-    Submit { settled: bool },
-}
 
-/// A paste on its way to a tab, and the Enter that finishes it.
-///
-/// Both halves are here because they are one problem. The recipient reads the
-/// paste one character at a time and falls behind; the Enter we write next joins
-/// the same queue, so it is taken *inside* the paste, where it counts as a
-/// newline and not as "send this" — the text sits in the input box, unsent,
-/// until the next thing typed carries it in. Waiting longer before pressing
-/// Enter cannot fix that: the wait is on our clock, and the queue is on theirs.
-///
-/// So the paste is handed over a chunk at a time, and the next chunk only goes
-/// out once the recipient has drawn something (= caught up). Nothing here is a
-/// guess about how fast the recipient is; it sets its own pace, and by the time
-/// the last chunk is out it is at most one chunk behind.
-///
-/// Measured against a real Codex CLI on Windows: 20,000 characters written in
-/// one go left the whole thing in the input box (it drew *nothing at all* for
-/// two seconds mid-intake, so "output has stopped" looked exactly like
-/// "finished"). Handed over in chunks, the same text sends.
-struct PendingSend {
-    tab: usize,
-    /// The paste, already encoded for the recipient, split at character
-    /// boundaries. Split before encoding so no character is ever cut in half.
-    chunks: Vec<Vec<u8>>,
-    /// How many chunks have gone out
-    handed: usize,
-    /// Whether to press Enter at the end. A draft is placed for a person to
-    /// finish, so it stops with the text in the box.
-    submit: bool,
-    /// The cumulative output amount last seen. A change means the recipient drew.
-    seen: u64,
-    /// When the last chunk was handed over
-    handed_ms: u64,
-    /// The point output stopped (None = hasn't stopped yet)
-    quiet_since: Option<u64>,
-    /// The earliest time submission is allowed, to prevent sending too early
-    not_before: u64,
-    /// The time to give up and send anyway, if things never settle
-    give_up: u64,
-}
 
-impl PendingSend {
-    fn new(tab: usize, chunks: Vec<Vec<u8>>, submit: bool, seen: u64, now_ms: u64) -> Self {
-        Self {
-            tab,
-            chunks,
-            handed: 0,
-            submit,
-            seen,
-            handed_ms: now_ms,
-            quiet_since: None,
-            not_before: now_ms + SUBMIT_FLOOR_MS,
-            give_up: now_ms + SUBMIT_GIVE_UP_MS,
-        }
-    }
-
-    /// Everything still owed, handed over at once.
-    ///
-    /// For when something else is about to write to the same tab. A paste that
-    /// goes over in pieces owns that tab until the last piece is in: a
-    /// keystroke, or another message, arriving in the gaps is typed into the
-    /// middle of somebody's sentence. The pacing is what gets given up here,
-    /// never the order.
-    fn rest(&mut self, now_ms: u64) -> Vec<u8> {
-        if self.handed >= self.chunks.len() {
-            return Vec::new();
-        }
-        let out = self.chunks[self.handed..].concat();
-        self.handed = self.chunks.len();
-        self.quiet_since = None;
-        self.not_before = now_ms + SUBMIT_FLOOR_MS;
-        self.give_up = now_ms + SUBMIT_GIVE_UP_MS;
-        out
-    }
-
-    /// The next thing to do for this send.
-    ///
-    /// While the body is going out, what we wait on is the recipient drawing.
-    /// Once it is all out, what we wait on is the drawing *stopping* — the same
-    /// "it has taken it in" signal as before, which is now trustworthy because
-    /// the recipient was never allowed to fall behind.
-    fn step(&mut self, output_count: u64, now_ms: u64) -> Step {
-        if self.handed < self.chunks.len() {
-            let drew = output_count != self.seen;
-            if !drew && now_ms.saturating_sub(self.handed_ms) < PASTE_ACK_MS && self.handed > 0 {
-                return Step::Wait;
-            }
-            let chunk = self.chunks[self.handed].clone();
-            self.handed += 1;
-            self.seen = output_count;
-            self.handed_ms = now_ms;
-            // The clock for "has it settled?" starts when the last chunk is out
-            if self.handed == self.chunks.len() {
-                self.quiet_since = None;
-                self.not_before = now_ms + SUBMIT_FLOOR_MS;
-                self.give_up = now_ms + SUBMIT_GIVE_UP_MS;
-            }
-            return Step::Hand(chunk);
-        }
-        if output_count != self.seen {
-            // Still mid-intake. Restart the measurement from when it stops.
-            self.seen = output_count;
-            self.quiet_since = None;
-        } else if self.quiet_since.is_none() {
-            self.quiet_since = Some(now_ms);
-        }
-        if now_ms < self.not_before {
-            return Step::Wait;
-        }
-        let settled = self
-            .quiet_since
-            .is_some_and(|q| now_ms.saturating_sub(q) >= SUBMIT_QUIET_MS);
-        if settled || now_ms >= self.give_up {
-            Step::Submit { settled }
-        } else {
-            Step::Wait
-        }
-    }
-}
 
 /// Work out the model connections again, and hand them to the tabs that are
 /// using them.
@@ -7149,33 +6979,6 @@ fn finish_paste(pending: &mut [PendingSend], t: &Tab, tab: usize, now_ms: u64) {
     }
 }
 
-/// The paste to hand a tab, cut into chunks small enough for it to swallow one
-/// at a time. Cut before encoding, so a character never straddles two writes.
-///
-/// One place builds this, for every door that pastes into a tab: a person's
-/// line, an automated hand-off, and a draft left for someone to finish.
-fn paste_chunks(t: &Tab, text: &str) -> Vec<Vec<u8>> {
-    let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
-    let body = text.replace("\r\n", "\r").replace('\n', "\r");
-    // If bracketed paste is supported, multi-line text still arrives as a single input
-    let payload = if bracketed {
-        format!("\x1b[200~{body}\x1b[201~")
-    } else {
-        body
-    };
-    let mut chunks = Vec::new();
-    let mut rest = payload.as_str();
-    while !rest.is_empty() {
-        let mut cut = PASTE_CHUNK.min(rest.len());
-        while !rest.is_char_boundary(cut) {
-            cut += 1;
-        }
-        let (head, tail) = rest.split_at(cut);
-        chunks.push(t.encode_out(head));
-        rest = tail;
-    }
-    chunks
-}
 
 /// The name used when placing the settings page inside the window.
 /// If the spelling drifts, it gets treated as a different browser and a second copy opens.
@@ -7400,7 +7203,7 @@ fn automation_by_pane(ws: &config::Workspace) -> Vec<(usize, TabAuto)> {
 /// Two things need this and must agree: the pen (which that page draws for
 /// itself) and a message raised while it is in front (same reason -- a window
 /// of its own cannot be drawn over).
-fn focused_page(layout: &crate::layout::Layout, surfaces: &[Surface]) -> Option<String> {
+fn focused_page(layout: &shikisha_core::layout::Layout, surfaces: &[Surface]) -> Option<String> {
     match surfaces.get(layout.surface_of(layout.focus())?.checked_sub(1)?)? {
         Surface::Browser { key, .. } => Some(key.clone()),
         // The panel is drawn by the board, so there is no page in front of
@@ -7595,7 +7398,7 @@ fn build_engine(
                 let moderator = d.moderator.as_deref().filter(|s| !s.trim().is_empty());
                 for (i, id) in agents.iter().enumerate() {
                     let Some(pane) = surface_of_id(w, id) else {
-                        errors.push(crate::i18n::tp(
+                        errors.push(shikisha_core::i18n::tp(
                             "err.ws.discuss_tab_missing",
                             &[("id", id)],
                         ));
@@ -7620,7 +7423,7 @@ fn build_engine(
                         persona,
                     ) {
                         Ok(sid) => engine.set_tab(pane, sid),
-                        Err(e) => errors.push(crate::i18n::tp(
+                        Err(e) => errors.push(shikisha_core::i18n::tp(
                             "err.ws.discuss_agent_failed",
                             &[("id", id), ("e", &format!("{e:#}"))],
                         )),
@@ -7635,12 +7438,12 @@ fn build_engine(
                             &d.verdict, &d.order, moderator, false, persona,
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
-                            Err(e) => errors.push(crate::i18n::tp(
+                            Err(e) => errors.push(shikisha_core::i18n::tp(
                                 "err.ws.discuss_judge_failed",
                                 &[("j", j), ("e", &format!("{e:#}"))],
                             )),
                         },
-                        None => errors.push(crate::i18n::tp(
+                        None => errors.push(shikisha_core::i18n::tp(
                             "err.ws.discuss_judge_missing",
                             &[("j", j)],
                         )),
@@ -7655,19 +7458,19 @@ fn build_engine(
                             &names_lua, &stops_lua, &d.verdict, &d.order, moderator, true, persona,
                         ) {
                             Ok(sid) => engine.set_tab(pane, sid),
-                            Err(e) => errors.push(crate::i18n::tp(
+                            Err(e) => errors.push(shikisha_core::i18n::tp(
                                 "err.ws.discuss_moderator_failed",
                                 &[("m", m), ("e", &format!("{e:#}"))],
                             )),
                         },
-                        None => errors.push(crate::i18n::tp(
+                        None => errors.push(shikisha_core::i18n::tp(
                             "err.ws.discuss_moderator_missing",
                             &[("m", m)],
                         )),
                     }
                 }
             } else if !d.agents.is_empty() {
-                errors.push(crate::i18n::t("err.ws.discuss_needs_two"));
+                errors.push(shikisha_core::i18n::t("err.ws.discuss_needs_two"));
             }
         }
     }
@@ -7696,7 +7499,7 @@ fn sftp_answer(
     act: &str,
     args: &serde_json::Value,
     surfaces: &[Surface],
-    caps: &std::rc::Rc<crate::caps::Capabilities>,
+    caps: &std::rc::Rc<shikisha_core::caps::Capabilities>,
     tx: &std::sync::mpsc::Sender<String>,
 ) -> Option<String> {
     let fail = |e: String| {
@@ -7847,7 +7650,7 @@ fn sftp_answer(
     let (act, panel) = (act.to_string(), panel.to_string());
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let said = crate::ssh::files(&spec, job, SFTP_WAIT_MS);
+        let said = shikisha_core::ssh::files(&spec, job, SFTP_WAIT_MS);
         let payload = match said {
             Ok(ssh::FileAnswer::Listing(rows)) => serde_json::json!({
                 "act": act,
@@ -8052,17 +7855,17 @@ fn blocked_said(why: &folders::Blocked) -> String {
 /// Taken from the folders that are open, because those are the projects this
 /// person actually works on -- and each is named by its remote, which is the
 /// same string on every machine and therefore the thing worth writing down.
-fn projects_here(ws: Option<&config::Workspace>) -> Vec<crate::uistate::Project> {
-    let mut out: Vec<crate::uistate::Project> = Vec::new();
+fn projects_here(ws: Option<&config::Workspace>) -> Vec<shikisha_core::uistate::Project> {
+    let mut out: Vec<shikisha_core::uistate::Project> = Vec::new();
     for f in ws.map(|w| w.folders.as_slice()).unwrap_or_default() {
         let Some(cwd) = f.cwd.as_deref() else { continue };
-        let Some(url) = crate::repo::remote_url_of(cwd) else { continue };
+        let Some(url) = shikisha_core::repo::remote_url_of(cwd) else { continue };
         let origin = folders::scrub(&url);
         if out.iter().any(|p| p.origin == origin) {
             continue;
         }
-        let at = crate::repo::main_checkout(cwd).unwrap_or_else(|| cwd.to_path_buf());
-        out.push(crate::uistate::Project {
+        let at = shikisha_core::repo::main_checkout(cwd).unwrap_or_else(|| cwd.to_path_buf());
+        out.push(shikisha_core::uistate::Project {
             name: at
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -8241,7 +8044,7 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
         .calling_itself(b.user_agent.clone());
         match caps.browser_open(&b.id, &b.url, profile) {
             Ok(()) => caps.note_declared(&b.id),
-            Err(e) => errors.push(crate::i18n::tp(
+            Err(e) => errors.push(shikisha_core::i18n::tp(
                 "err.ws.browser_open",
                 &[("id", &b.id), ("e", &format!("{e:#}"))],
             )),
@@ -8267,7 +8070,7 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             )
             .calling_itself(ft.cfg.user_agent.clone());
             if let Err(e) = caps.browser_open(&name, &url, profile) {
-                errors.push(crate::i18n::tp(
+                errors.push(shikisha_core::i18n::tp(
                     "err.ws.browser_open",
                     &[("id", &name), ("e", &format!("{e:#}"))],
                 ));
@@ -8356,7 +8159,7 @@ fn apply_browser_chrome(ws: &config::Workspace, caps: &hooks::Caps) {
 /// the same spelling: the program is `argv[0]` and the folder is the resolved
 /// `cwd`, exactly as a running tab would report them.
 fn carried_conversation(
-    carry: Option<&crate::lastsession::Saved>,
+    carry: Option<&shikisha_core::lastsession::Saved>,
     ws: &config::Workspace,
     argv: &[String],
     cfg: &config::TabConfig,
@@ -8398,7 +8201,7 @@ fn spawn_workspace(
     cols: u16,
     tabs: &mut Vec<Tab>,
     errors: &mut Vec<String>,
-    carry: Option<&crate::lastsession::Saved>,
+    carry: Option<&shikisha_core::lastsession::Saved>,
 ) {
     for ft in &ws.tabs {
         let argv = ft.cfg.command.argv();
@@ -8465,8 +8268,8 @@ fn switch_workspace(
     ws_tabs: &mut [Vec<Tab>],
     workspaces: &[config::Workspace],
     active: &mut usize,
-    panes: &mut crate::layout::Layout,
-    ws_panes: &mut [crate::layout::Layout],
+    panes: &mut shikisha_core::layout::Layout,
+    ws_panes: &mut [shikisha_core::layout::Layout],
     rows: u16,
     cols: u16,
     errors: &mut Vec<String>,
@@ -8475,7 +8278,7 @@ fn switch_workspace(
     engine: &mut Option<HookEngine>,
     engines: &mut [Option<HookEngine>],
     caps: &hooks::Caps,
-    last: &crate::lastsession::Saved,
+    last: &shikisha_core::lastsession::Saved,
 ) {
     // Guard against every backing array, not just `workspaces`: the per-workspace
     // `engines`/`ws_tabs` caches are resized on config reload, and a mismatch must
@@ -8524,7 +8327,7 @@ fn switch_workspace(
     started_fired.clear();
     started_fired.resize(tabs.len(), false);
     *active = if tabs.is_empty() { 0 } else { 1 };
-    *panes = std::mem::replace(&mut ws_panes[to], crate::layout::Layout::single(*active));
+    *panes = std::mem::replace(&mut ws_panes[to], shikisha_core::layout::Layout::single(*active));
     panes.show(*active);
 }
 
@@ -8569,7 +8372,7 @@ enum Surface {
         key: String,
         name: String,
         dir: Option<std::path::PathBuf>,
-        spec: Option<crate::ssh::Spec>,
+        spec: Option<shikisha_core::ssh::Spec>,
         /// Where the far side's list opens. Empty starts wherever signing in
         /// puts you
         remote_dir: String,
@@ -8746,7 +8549,7 @@ fn terminal_size(window: (u16, u16), phone: Option<(u16, u16)>, watched: bool) -
 /// they keep the window's own measurement.
 fn tab_sizes(
     tabs: usize,
-    layout: &crate::layout::Layout,
+    layout: &shikisha_core::layout::Layout,
     surfaces: &[Surface],
     geom: &[shikisha_shared::PaneGeom],
     front: (u16, u16),
@@ -8808,28 +8611,7 @@ fn trim_for_phone(s: &str, max_lines: usize) -> String {
 /// phones each time and make it impossible to show the QR from settings).
 /// Shortest fixed token accepted (hex chars of a 64-bit secret; anything
 /// shorter is guessable from the open internet a Tailscale-less LAN may be)
-pub const FIXED_TOKEN_MIN: usize = 16;
 
-pub fn remote_token(cfg: &config::Config, password: Option<&str>) -> String {
-    // A sticky pairing with a written token: the person's own string wins.
-    // (A shorter string never reaches here — start_remote_bg refuses to start)
-    if cfg.remote.sticky_token && cfg.remote.fixed_token.trim().len() >= FIXED_TOKEN_MIN {
-        return cfg.remote.fixed_token.trim().to_string();
-    }
-    if let Some(t) = cfg.remote_token(password) {
-        return t;
-    }
-    let path = config::state_path("remote-token");
-    if let Ok(t) = std::fs::read_to_string(&path) {
-        let t = t.trim().to_string();
-        if t.len() >= 16 {
-            return t;
-        }
-    }
-    let t = random_hex(24);
-    let _ = crypto::write_atomic(&path, &t);
-    t
-}
 
 /// Starts the remote UI according to config (None if disabled)
 /// Start the remote server WITHOUT making the caller wait for the bind (a
@@ -8876,7 +8658,7 @@ fn start_remote_bg(
                         Some(r)
                     }
                     Err(e) => {
-                        errors.push(crate::i18n::tp(
+                        errors.push(shikisha_core::i18n::tp(
                             "err.ws.remote_ui",
                             &[("e", &e.to_string())],
                         ));
@@ -8889,7 +8671,7 @@ fn start_remote_bg(
         Err(e) => {
             let _ = tx.send((
                 None,
-                vec![crate::i18n::tp("err.ws.remote_ui", &[("e", &e.to_string())])],
+                vec![shikisha_core::i18n::tp("err.ws.remote_ui", &[("e", &e.to_string())])],
             ));
         }
     }
@@ -8909,41 +8691,8 @@ fn publish_remote(info: &Arc<Mutex<webui::RemoteInfo>>, ui: &Option<remote::Remo
     }
 }
 
-/// A random hex string (for the remote UI's token)
-/// A random UUID (version 4), in the spelling CLIs expect.
-///
-/// Written out here rather than pulled in: it is sixteen random bytes with six
-/// bits set to say which kind of UUID it is, and a dependency for that would
-/// weigh more than the function.
-pub fn random_uuid() -> String {
-    let hex = random_hex(16);
-    let mut b: Vec<u8> = (0..16)
-        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap_or(0))
-        .collect();
-    b[6] = (b[6] & 0x0f) | 0x40; // version 4
-    b[8] = (b[8] & 0x3f) | 0x80; // variant 1
-    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
-}
 
-pub fn random_hex(bytes: usize) -> String {
-    match random_bytes(bytes) {
-        Some(buf) => buf.iter().map(|b| format!("{b:02x}")).collect(),
-        None => "shikisha-fallback-token".into(),
-    }
-}
 
-/// Randomness from the system, or nothing.
-///
-/// `None` rather than a fallback, because the callers that want raw bytes want
-/// them for keys (src/push.rs), and a key made from a stand-in is worse than
-/// no key at all: it works, so nobody looks at it again.
-pub fn random_bytes(n: usize) -> Option<Vec<u8>> {
-    use rand::TryRng as _;
-    let mut buf = vec![0u8; n];
-    rand::rngs::SysRng.try_fill_bytes(&mut buf).ok()?;
-    Some(buf)
-}
 
 /// The root of the portable layout (base for relative paths; where the exe and its folders sit side by side)
 fn config_file_dir() -> std::path::PathBuf {
@@ -9455,19 +9204,6 @@ fn save_replay_to_downloads() -> std::io::Result<Option<std::path::PathBuf>> {
     Ok(Some(dest))
 }
 
-pub fn append_hook_log(msg: &str) {
-    use std::sync::OnceLock;
-    static START: OnceLock<std::time::Instant> = OnceLock::new();
-    let t = START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64();
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(config::logs_dir().join("hooks.log"))
-    {
-        use std::io::Write as _;
-        let _ = writeln!(f, "[{t:>8.3}] {msg}");
-    }
-}
 
 /// The list of ids in the same order they're laid out on screen.
 ///
@@ -9533,7 +9269,7 @@ fn exec_commands(
     cmds: Vec<Command>,
     tabs: &mut [Tab],
     surfaces: &[Surface],
-    panes: &mut crate::layout::Layout,
+    panes: &mut shikisha_core::layout::Layout,
     surface_count: usize,
     max_chain: u32,
     auto_enabled: bool,
@@ -9614,7 +9350,7 @@ fn exec_commands(
                     "code": code, "reason": reason, "tab": origin, "at": at,
                 });
                 let path = config::state_path("last-result.json");
-                if let Err(e) = crate::crypto::write_atomic(&path, &json.to_string()) {
+                if let Err(e) = shikisha_core::crypto::write_atomic(&path, &json.to_string()) {
                     append_hook_log(&format!("Failed to write result: {e}"));
                 }
                 append_hook_log(&format!("Result code={code} reason={reason} (tab{origin})"));
@@ -9639,7 +9375,7 @@ fn exec_commands(
             // said so in as many words, unlike ShowTab, which is a side effect
             // of automation running elsewhere and so has to ask first
             Command::Pane(op) => {
-                use crate::hooks::PaneOp;
+                use shikisha_core::hooks::PaneOp;
                 match op {
                     PaneOp::Split(dir) => {
                         *active = split_focused(panes, dir, surface_count, *active);
@@ -10075,37 +9811,37 @@ struct Ui {
     surfaces: Vec<Surface>,
     /// How the content area is divided, and which pane the keyboard is aimed at.
     /// `active` is always the surface in the focused pane
-    layout: crate::layout::Layout,
+    layout: shikisha_core::layout::Layout,
     /// If the current workspace is a discussion, the opening speaker's session
     /// number (1-based) and display name — for the dashboard's "start" card
     discuss_start: Option<usize>,
     discuss_start_name: Option<String>,
     /// What making a branch would do, while someone is naming one
-    branch: Option<crate::uistate::BranchPlan>,
+    branch: Option<shikisha_core::uistate::BranchPlan>,
     /// What it would take to put a working folder back on this machine, while
     /// somebody is looking at the one that is missing
-    repair: Option<crate::uistate::RepairPlan>,
+    repair: Option<shikisha_core::uistate::RepairPlan>,
     /// The folders being looked through, while somewhere new is being chosen
-    browse: Option<crate::uistate::BrowseState>,
+    browse: Option<shikisha_core::uistate::BrowseState>,
     /// The colours chosen for projects, by the folder git shares
     folder_colors: std::collections::HashMap<String, String>,
     /// The current workspace's folders as the settings have them, so one with
     /// no tab in it is still on the list (uistate::GroupState::all)
     folders: Vec<(std::path::PathBuf, String)>,
     /// The controls shown over the browser being viewed (None = don't show)
-    nav: Option<crate::uistate::NavState>,
+    nav: Option<shikisha_core::uistate::NavState>,
     /// What each page of this workspace is asking the person, by the name
     /// automation gives it. Drawn as a bar under that page
-    asks: Vec<(String, crate::uistate::AskState)>,
+    asks: Vec<(String, shikisha_core::uistate::AskState)>,
     /// How many lines back from the current screen we're scrolled (0 = live)
     scrolled: usize,
     /// The AIs this machine can start, for the dialog that makes a folder
     /// and starts one in it
-    ais: Vec<crate::uistate::AiChoice>,
+    ais: Vec<shikisha_core::uistate::AiChoice>,
     /// Which first-run pointer is up, if one is (see `coach_step`)
     coach: Option<u8>,
     /// What Claude's subscription has left, when known
-    usage: Option<crate::uistate::UsageState>,
+    usage: Option<shikisha_core::uistate::UsageState>,
     /// The thanks card, when it is up: which page it would open
     thanks: Option<String>,
     /// The version the update card asks about, when it is up
@@ -10320,7 +10056,7 @@ mod tests {
     /// are standing.
     #[test]
     fn a_finished_tab_says_enough_to_act_on() {
-        crate::i18n::init(Some("en"), &[std::path::PathBuf::from("lang")]);
+        shikisha_core::i18n::init(Some("en"), &[std::path::PathBuf::from("lang")]);
         let msg = on_done_message(
             "reviewer",
             "  Found 3 problems.\n  The first is in tab.rs.  ",
@@ -10556,8 +10292,8 @@ mod tests {
     #[test]
     fn the_tab_in_front_is_sized_by_whoever_is_watching_it() {
         use shikisha_shared::PaneGeom;
-        let mut layout = crate::layout::Layout::single(1);
-        let front = layout.split(crate::layout::Dir::Row, 2);
+        let mut layout = shikisha_core::layout::Layout::single(1);
+        let front = layout.split(shikisha_core::layout::Dir::Row, 2);
         let back = layout
             .leaves()
             .into_iter()
@@ -10576,7 +10312,7 @@ mod tests {
         assert_eq!(want[0], (50, 200), "奥のペインが窓の実測を失った");
         // Undivided — every phone's case, and the window's most of the time —
         // the one pane there is takes the reported size whole
-        let alone = crate::layout::Layout::single(1);
+        let alone = shikisha_core::layout::Layout::single(1);
         assert_eq!(
             tab_sizes(1, &alone, &surfaces, &[], (24, 40))[0],
             (24, 40),
@@ -10610,7 +10346,7 @@ mod tests {
             Tab::spawn("B".into(), &argv, None, 10, 40, opts).unwrap(),
         ];
         // A CLI that can only be told "continue the newest one here"
-        let only_newest = crate::profile::ResumeSpec {
+        let only_newest = shikisha_core::profile::ResumeSpec {
             newest_here: vec!["--continue".into()],
             ..Default::default()
         };
@@ -10627,7 +10363,7 @@ mod tests {
 
         // ...and knowing WHICH conversation it was settles it either way:
         // this is why an id is worth minting at launch
-        tabs[0].resume = Some(crate::profile::ResumeSpec {
+        tabs[0].resume = Some(shikisha_core::profile::ResumeSpec {
             with_id: vec!["--resume".into(), "{id}".into()],
             ..only_newest
         });
@@ -10742,12 +10478,12 @@ mod tests {
         let cfg = &ws.tabs[0].cfg;
         let argv = vec!["claude".to_string()];
         let here = Some(std::path::PathBuf::from("D:\\Work"));
-        let remembered = |program: &str, session: &str| crate::lastsession::Saved {
+        let remembered = |program: &str, session: &str| shikisha_core::lastsession::Saved {
             version: 1,
-            workspaces: vec![crate::lastsession::SavedWs {
+            workspaces: vec![shikisha_core::lastsession::SavedWs {
                 name: "W".into(),
                 panes: None,
-                tabs: vec![crate::lastsession::SavedTab {
+                tabs: vec![shikisha_core::lastsession::SavedTab {
                     title: "AGENT".into(),
                     id: None,
                     cwd: Some("D:\\Work".into()),
@@ -10757,7 +10493,7 @@ mod tests {
                 }],
             }],
         };
-        let plan = |saved: &crate::lastsession::Saved| {
+        let plan = |saved: &shikisha_core::lastsession::Saved| {
             carried_conversation(Some(saved), &ws, &argv, cfg, &here, "AGENT")
         };
 
@@ -10803,7 +10539,7 @@ mod tests {
         );
 
         // Nothing remembered at all -- a tab that is new since last time
-        let empty = crate::lastsession::Saved { version: 1, workspaces: Vec::new() };
+        let empty = shikisha_core::lastsession::Saved { version: 1, workspaces: Vec::new() };
         assert_eq!(plan(&empty), tab::Resume::Fresh);
     }
 
@@ -10851,7 +10587,7 @@ mod tests {
             .expect("Missing the end-of-INDEX-branch marker");
         let body = &src[from..from + len];
 
-        for (key, _) in crate::shell::MENU {
+        for (key, _) in shikisha_core::shell::MENU {
             let want = format!("KeyCode::Char('{key}')");
             assert!(
                 body.contains(&want),
@@ -10990,7 +10726,7 @@ mod tests {
 
     #[test]
     fn the_apps_own_screens_are_not_restartable_pages() {
-        let caps: crate::hooks::Caps = std::rc::Rc::new(crate::caps::Capabilities::new(
+        let caps: shikisha_core::hooks::Caps = std::rc::Rc::new(shikisha_core::caps::Capabilities::new(
             Default::default(),
             std::path::PathBuf::from("."),
             std::collections::HashMap::new(),
@@ -11040,7 +10776,7 @@ mod tests {
     /// Adding Ctrl+B would mean only characters that also exist on the prefix-key side work.
     #[test]
     fn a_menu_press_arrives_as_a_plain_key() {
-        for (key, _) in crate::shell::MENU {
+        for (key, _) in shikisha_core::shell::MENU {
             let evs = super::keys_for(&shikisha_shared::Ev::Menu {
                 key: key.to_string(),
             });
@@ -11945,7 +11681,7 @@ mod tests {
 #[cfg(test)]
 mod frame_bench {
     use super::*;
-    use crate::tab::{Tab, TabOptions};
+    use shikisha_core::tab::{Tab, TabOptions};
     use std::time::{Duration, Instant};
 
     const END: &str = "SHIKISHA-BURST-END";
@@ -11999,7 +11735,7 @@ mod frame_bench {
             std::thread::sleep(Duration::from_millis(16));
             let now = {
                 let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
-                crate::shell::screen_rows(p.screen())
+                shikisha_core::shell::screen_rows(p.screen())
             };
             match screen_push(&had, &now) {
                 ScreenPush::Nothing => {}
@@ -12050,7 +11786,7 @@ mod frame_bench {
     #[test]
     #[ignore]
     fn a_burst_from_a_vt_only_program() {
-        println!("{}", crate::conpty::report().line());
+        println!("{}", shikisha_core::conpty::report().line());
         let writer = writer();
         for kind in ["poured", "redrawn", "sequences"] {
             let tab = Tab::spawn(
@@ -12069,7 +11805,7 @@ mod frame_bench {
                 std::thread::sleep(Duration::from_millis(16));
                 had = {
                     let p = tab.parser.lock().unwrap_or_else(|e| e.into_inner());
-                    crate::shell::screen_rows(p.screen())
+                    shikisha_core::shell::screen_rows(p.screen())
                 };
                 if had.iter().any(|r| r.contains(END)) {
                     arrived = Some(start.elapsed());
@@ -12098,7 +11834,7 @@ mod frame_bench {
         use portable_pty::{CommandBuilder, PtySize, native_pty_system};
         use std::io::Read as _;
 
-        println!("{}", crate::conpty::report().line());
+        println!("{}", shikisha_core::conpty::report().line());
         let pair = native_pty_system()
             .openpty(PtySize { rows: 40, cols: 120, pixel_width: 0, pixel_height: 0 })
             .expect("openpty");
@@ -12164,7 +11900,7 @@ mod frame_bench {
     #[test]
     #[ignore]
     fn a_burst_of_japanese_reaches_the_window() {
-        println!("{}", crate::conpty::report().line());
+        println!("{}", shikisha_core::conpty::report().line());
         let tab = Tab::spawn(
             "cmd.exe".into(),
             &["cmd.exe".into()],

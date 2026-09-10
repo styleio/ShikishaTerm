@@ -161,7 +161,7 @@ fn pct(s: &str) -> String {
 /// Uses ShellExecuteW so the whole URL — query string, '&' and percent-escapes
 /// included — is handed to the shell verbatim (explorer.exe mis-parses those
 /// and falls back to opening a file window instead).
-pub(crate) fn open_external(url: &str) {
+pub fn open_external(url: &str) {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let op: Vec<u16> = "open\0".encode_utf16().collect();
@@ -318,8 +318,8 @@ fn safe_dir_path(url: &str, _config_path: &std::path::Path) -> Option<std::path:
 /// launched from, and won't break even if the docs are forgotten in the distribution.
 /// To bundle a translation into the exe, add one line here (it's still read if placed in docs/ instead)
 const EMBEDDED_MANUALS: &[(&str, &str)] = &[
-    ("en", include_str!("../docs/AUTOMATION.md")),
-    ("ja", include_str!("../docs/AUTOMATION.ja.md")),
+    ("en", include_str!("../../../docs/AUTOMATION.md")),
+    ("ja", include_str!("../../../docs/AUTOMATION.ja.md")),
 ];
 
 /// Prefers a file placed alongside it, if any (so the user can add to it).

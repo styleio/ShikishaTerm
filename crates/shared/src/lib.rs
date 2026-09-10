@@ -1062,3 +1062,14 @@ pub trait FilePicker: Send + Sync {
     fn save(&self, title: &str, start: Option<&std::path::Path>, name: &str, ext: (&str, &str)) -> Option<std::path::PathBuf>;
 }
 
+/// Putting text on the clipboard of the machine a person is sitting at.
+///
+/// A program in a tab can ask for this (OSC 52), and on a runtime with no
+/// desktop there is no clipboard to put it on -- the ask is dropped, which is
+/// also what happens today when the desktop refuses. Reading the clipboard is
+/// deliberately not here: what someone copied last, from any application, is
+/// not something the far end of an ssh session gets to see.
+pub trait Clipboard: Send + Sync {
+    fn set_text(&self, text: String);
+}
+

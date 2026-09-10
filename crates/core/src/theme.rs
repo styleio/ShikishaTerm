@@ -514,8 +514,8 @@ mod tests {
             .collect();
         assert!(names.len() >= 12, "{names:?}");
         for (lang, guide) in [
-            ("en", include_str!("../docs/design/STYLEGUIDE.md")),
-            ("ja", include_str!("../docs/design/STYLEGUIDE.ja.md")),
+            ("en", include_str!("../../../docs/design/STYLEGUIDE.md")),
+            ("ja", include_str!("../../../docs/design/STYLEGUIDE.ja.md")),
         ] {
             for n in &names {
                 assert!(guide.contains(&format!("`{n}`")), "{lang}: {n} の役割が規約に書かれていない");

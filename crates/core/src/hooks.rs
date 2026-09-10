@@ -5188,8 +5188,8 @@ mod tests {
         assert!(fields.len() > 5, "tab の項目の抽出に失敗している");
 
         for (doc, text) in [
-            ("AUTOMATION.md", include_str!("../docs/AUTOMATION.md")),
-            ("AUTOMATION.ja.md", include_str!("../docs/AUTOMATION.ja.md")),
+            ("AUTOMATION.md", include_str!("../../../docs/AUTOMATION.md")),
+            ("AUTOMATION.ja.md", include_str!("../../../docs/AUTOMATION.ja.md")),
         ] {
             let missing: Vec<&String> = names
                 .iter()
@@ -6341,8 +6341,8 @@ mod tests {
     #[test]
     fn the_manual_lists_every_command_and_no_others() {
         for (name, text) in [
-            ("AUTOMATION.md", include_str!("../docs/AUTOMATION.md")),
-            ("AUTOMATION.ja.md", include_str!("../docs/AUTOMATION.ja.md")),
+            ("AUTOMATION.md", include_str!("../../../docs/AUTOMATION.md")),
+            ("AUTOMATION.ja.md", include_str!("../../../docs/AUTOMATION.ja.md")),
         ] {
             let section = text
                 .split_once("## 9")
@@ -6611,9 +6611,9 @@ mod tests {
     fn rally_example_orchestrator_parses_and_runs() {
         let _g = RALLY_FILE_LOCK.lock().unwrap();
         // The template (docs/rally-example) must parse, and the essentials of start and judging must work
-        let dir = std::path::Path::new("docs/rally-example");
+        let dir = crate::repo_root().join("docs/rally-example");
         let mut e = HookEngine::new().unwrap();
-        let id = e.load_path(dir).expect("雛形が読めない (構文エラー?)");
+        let id = e.load_path(&dir).expect("雛形が読めない (構文エラー?)");
         e.set_base(id);
 
         // on_start: sends the file-handoff protocol to the AI (has it write to in.lua rather than the screen)

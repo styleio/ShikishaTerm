@@ -1627,7 +1627,7 @@ fn handle(
 /// JSON result (`{ok, path}` or `{ok:false, error}`). The size cap and allowed
 /// extensions come from config; nothing here runs the file (see `attach`). Shared
 /// by the phone's HTTP route and the desktop composer's ipc path.
-pub(crate) fn attach_save(cwd: &str, name: &str, data_b64: &str) -> serde_json::Value {
+pub fn attach_save(cwd: &str, name: &str, data_b64: &str) -> serde_json::Value {
     use base64::Engine as _;
     if cwd.is_empty() {
         return serde_json::json!({ "ok": false, "error": crate::i18n::t("attach.err.no_folder") });

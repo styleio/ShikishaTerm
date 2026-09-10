@@ -818,7 +818,7 @@ fn note_refused(said: &std::cell::Cell<u8>, who: Option<&str>, at: &str, body: &
     let site = origin_of(at)
         .map(|(s, h, p)| format!("{s}://{h}:{p}"))
         .unwrap_or_else(|| "?".into());
-    crate::append_hook_log(&format!(
+    shikisha_core::append_hook_log(&format!(
         "[browser] refused '{kind}' from page '{}' at {site} (a placed page may report, not ask)",
         who.unwrap_or("(board)")
     ));
@@ -880,7 +880,7 @@ pub fn is_openable(url: &str) -> bool {
 /// here, and that folder is the ONLY thing that separates one page's cookies from
 /// another's. Point two pages at the same folder and they are the same visitor.
 fn profiles_root() -> std::path::PathBuf {
-    crate::config::browser_data_dir()
+    shikisha_core::config::browser_data_dir()
 }
 
 /// The window's own shell page (tab bar, board, terminal). It is our HTML, not
@@ -996,7 +996,7 @@ impl Browser {
     /// Open the window and get it ready to accept instructions
     pub fn spawn(url: &str, title: &str) -> Result<Self> {
         if !is_openable(url) {
-            return Err(anyhow!(crate::i18n::tp("err.browser.bad_url", &[("url", url)])));
+            return Err(anyhow!(shikisha_core::i18n::tp("err.browser.bad_url", &[("url", url)])));
         }
         Self::start(url, title)
     }
@@ -1011,7 +1011,7 @@ impl Browser {
             .name("shikisha-browser".into())
             .spawn(move || {
                 if let Err(e) = run_window(&url, &title, proxy_tx, ev_tx.clone()) {
-                    crate::append_hook_log(&crate::i18n::tp(
+                    shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
                         "err.browser.log_open_failed",
                         &[("e", &format!("{e}"))],
                     ));
@@ -1022,7 +1022,7 @@ impl Browser {
         // Wait until the window exists (if it can't be created, the proxy never arrives)
         let proxy = proxy_rx
             .recv_timeout(std::time::Duration::from_secs(20))
-            .map_err(|_| anyhow!(crate::i18n::t("err.browser.startup_timeout")))?;
+            .map_err(|_| anyhow!(shikisha_core::i18n::t("err.browser.startup_timeout")))?;
 
         let me = Self {
             proxy,
@@ -1048,18 +1048,18 @@ impl Browser {
         loop {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
-                .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.page_not_ready")))?;
+                .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.page_not_ready")))?;
             match self.events.recv_timeout(left) {
                 Ok(Ev::Ready { from, url, .. }) => {
                     self.reask(from.as_deref());
                     return Ok(url);
                 }
-                Ok(Ev::Closed) => return Err(anyhow!(crate::i18n::t("err.browser.closed"))),
+                Ok(Ev::Closed) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.closed"))),
                 Ok(other) => {
                     self.spare.lock().unwrap().push(other);
                     continue;
                 }
-                Err(_) => return Err(anyhow!(crate::i18n::t("err.browser.page_not_ready"))),
+                Err(_) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.page_not_ready"))),
             }
         }
     }
@@ -1067,7 +1067,7 @@ impl Browser {
     fn send(&self, cmd: Cmd) -> Result<()> {
         self.proxy
             .send_event(cmd)
-            .map_err(|_| anyhow!(crate::i18n::t("err.browser.not_connected")))
+            .map_err(|_| anyhow!(shikisha_core::i18n::t("err.browser.not_connected")))
     }
 
     /// Put the window away (see `Cmd::Hide`). From here until `show`, JS for
@@ -1104,7 +1104,7 @@ impl Browser {
     /// Evaluate JS against a target. `None` is the main view
     pub fn eval_in(&self, to: Option<&str>, js: &str) -> Result<u64> {
         if to.is_none() && self.away.load(Ordering::Relaxed) {
-            return Err(anyhow!(crate::i18n::t("err.browser.page_not_placed")));
+            return Err(anyhow!(shikisha_core::i18n::t("err.browser.page_not_placed")));
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.send(Cmd::Eval {
@@ -1176,7 +1176,7 @@ impl Browser {
         profile: BrowserProfile,
     ) -> Result<()> {
         if !is_openable(url) {
-            return Err(anyhow!(crate::i18n::tp("err.browser.bad_url", &[("url", url)])));
+            return Err(anyhow!(shikisha_core::i18n::tp("err.browser.bad_url", &[("url", url)])));
         }
         self.send(Cmd::AddChild {
             name: name.to_string(),
@@ -1372,10 +1372,10 @@ impl Browser {
         let data = v
             .get("data")
             .and_then(|d| d.as_str())
-            .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.no_snapshot")))?;
+            .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.no_snapshot")))?;
         base64::engine::general_purpose::STANDARD
             .decode(data.as_bytes())
-            .map_err(|e| anyhow!(crate::i18n::tp("err.browser.no_snapshot_decode", &[("e", &e.to_string())])))
+            .map_err(|e| anyhow!(shikisha_core::i18n::tp("err.browser.no_snapshot_decode", &[("e", &e.to_string())])))
     }
 
     /// Put a set of cookies back into this page's profile.
@@ -1526,15 +1526,15 @@ impl Browser {
         loop {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
-                .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.no_input")))?;
+                .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.no_input")))?;
             match self.events.recv_timeout(left) {
                 Ok(Ev::Password { text }) => return Ok(text),
-                Ok(Ev::Closed) => return Err(anyhow!(crate::i18n::t("err.browser.window_closed"))),
+                Ok(Ev::Closed) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.window_closed"))),
                 Ok(other) => {
                     self.spare.lock().unwrap().push(other);
                     continue;
                 }
-                Err(_) => return Err(anyhow!(crate::i18n::t("err.browser.no_input"))),
+                Err(_) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.no_input"))),
             }
         }
     }
@@ -1545,7 +1545,7 @@ impl Browser {
         if ok {
             Ok(value)
         } else {
-            Err(anyhow!(crate::i18n::tp(
+            Err(anyhow!(shikisha_core::i18n::tp(
                 "err.browser.js_eval_failed",
                 &[("value", &value)]
             )))
@@ -1559,7 +1559,7 @@ impl Browser {
         loop {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
-                .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.no_result")))?;
+                .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.no_result")))?;
             match self.events.recv_timeout(left) {
                 Ok(Ev::Result { id: got, ok, value }) if got == id => return Ok((ok, value)),
                 Ok(Ev::Ready { from, .. }) => {
@@ -1570,7 +1570,7 @@ impl Browser {
                     self.spare.lock().unwrap().push(other);
                     continue;
                 }
-                Err(_) => return Err(anyhow!(crate::i18n::t("err.browser.no_result"))),
+                Err(_) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.no_result"))),
             }
         }
     }
@@ -1600,7 +1600,7 @@ impl Browser {
         })?;
         let (ok, value) = self.wait_ev(id, std::time::Duration::from_millis(timeout_ms))?;
         if !ok {
-            return Err(anyhow!(crate::i18n::tp(
+            return Err(anyhow!(shikisha_core::i18n::tp(
                 "err.browser.cdp_failed",
                 &[("method", method), ("e", &value)]
             )));
@@ -1608,7 +1608,7 @@ impl Browser {
         Ok(serde_json::from_str(&value).unwrap_or(serde_json::Value::Null))
     }
 
-    /// Distill the page into its operable elements (see `crate::digest`), and
+    /// Distill the page into its operable elements (see `shikisha_core::digest`), and
     /// remember the ref-number → backendNodeId mapping for `{ref=N}` calls
     pub fn digest(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> {
         let metrics = self.cdp(to, "Page.getLayoutMetrics", serde_json::json!({}), timeout_ms)?;
@@ -1625,7 +1625,7 @@ impl Browser {
             serde_json::json!({}),
             timeout_ms,
         )?;
-        let d = crate::digest::build(&ax, &snap, &metrics);
+        let d = shikisha_core::digest::build(&ax, &snap, &metrics);
         self.digests
             .lock()
             .unwrap()
@@ -1638,13 +1638,13 @@ impl Browser {
         let map = self.digests.lock().unwrap();
         let refs = map
             .get(&to.map(str::to_string))
-            .ok_or_else(|| anyhow!(crate::i18n::t("err.browser.ref_no_digest")))?;
+            .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.ref_no_digest")))?;
         (r as usize)
             .checked_sub(1)
             .and_then(|i| refs.get(i))
             .copied()
             .ok_or_else(|| {
-                anyhow!(crate::i18n::tp(
+                anyhow!(shikisha_core::i18n::tp(
                     "err.browser.ref_unknown",
                     &[("ref", &r.to_string()), ("max", &refs.len().to_string())]
                 ))
@@ -1654,7 +1654,7 @@ impl Browser {
     /// Word a CDP failure on a ref as what it almost always is: the element
     /// (or the whole document) is gone since the digest was taken
     fn ref_stale(r: u32, e: anyhow::Error) -> anyhow::Error {
-        anyhow!(crate::i18n::tp(
+        anyhow!(shikisha_core::i18n::tp(
             "err.browser.ref_stale",
             &[("ref", &r.to_string()), ("e", &e.to_string())]
         ))
@@ -1907,7 +1907,7 @@ impl Browser {
 
         if !ok {
             if why == "not_found" {
-                return Err(anyhow!(crate::i18n::tp(
+                return Err(anyhow!(shikisha_core::i18n::tp(
                     "err.browser.ref_stale",
                     &[("ref", &r.to_string()), ("e", "detached")]
                 )));
@@ -1915,7 +1915,7 @@ impl Browser {
             // Never actionable within the deadline (covered / unstable /
             // hidden): honor the ref with the element's own click() — the
             // pre-auto-wait behavior — and record why
-            crate::append_hook_log(&format!(
+            shikisha_core::append_hook_log(&format!(
                 "ref click {r}: not actionable ({why}) — using the element's own click()"
             ));
             synthetic_click()?;
@@ -1942,7 +1942,7 @@ impl Browser {
             }
             return Ok(OpReport { state: Found::Visible, echo: desc, anchor });
         }
-        crate::append_hook_log(&format!(
+        shikisha_core::append_hook_log(&format!(
             "ref click {r}: no input ack — falling back to synthetic click"
         ));
         synthetic_click()?;
@@ -1965,7 +1965,7 @@ impl Browser {
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| {
-                anyhow!(crate::i18n::tp(
+                anyhow!(shikisha_core::i18n::tp(
                     "err.browser.ref_stale",
                     &[("ref", &r.to_string()), ("e", "resolveNode")]
                 ))
@@ -2029,7 +2029,7 @@ impl Browser {
             .ref_ready(to, &oid, false, deadline, timeout_ms)
             .map_err(|e| Self::ref_stale(r, e))?;
         if !ok && why == "not_found" {
-            return Err(anyhow!(crate::i18n::tp(
+            return Err(anyhow!(shikisha_core::i18n::tp(
                 "err.browser.ref_stale",
                 &[("ref", &r.to_string()), ("e", "detached")]
             )));
@@ -2122,7 +2122,7 @@ impl Browser {
             });
         if got.as_deref() != Some(value) {
             // Never log the value itself (it may be sensitive) — only the fact
-            crate::append_hook_log(&format!(
+            shikisha_core::append_hook_log(&format!(
                 "ref fill {r}: keystrokes didn't land (page hidden?) — falling back to native setter"
             ));
             set_native()?;
@@ -2441,7 +2441,7 @@ fn adopt_windows(
                 if let Some(ua) = user_agent.as_deref() {
                     cdp::call(&raw, "Emulation.setUserAgentOverride", &ua_override(ua));
                 }
-                crate::append_hook_log(&format!(
+                shikisha_core::append_hook_log(&format!(
                     "[browser] '{opener}' opened a window -> '{name}' ({uri})"
                 ));
                 if let Ok(mut ib) = inbox.try_borrow_mut() {
@@ -2451,7 +2451,7 @@ fn adopt_windows(
                 NewWindowResponse::Create { webview: raw }
             }
             Err(e) => {
-                crate::append_hook_log(&format!(
+                shikisha_core::append_hook_log(&format!(
                     "[browser] '{opener}' asked for a window ({uri}) and it could not be made: {e}"
                 ));
                 NewWindowResponse::Deny
@@ -2608,7 +2608,7 @@ fn run_window(
         .build();
     proxy_tx
         .send(ev_loop.create_proxy())
-        .map_err(|_| anyhow!(crate::i18n::t("err.browser.proxy_connect_failed")))?;
+        .map_err(|_| anyhow!(shikisha_core::i18n::t("err.browser.proxy_connect_failed")))?;
 
     // Shared, because a page asking to open a window is answered on the
     // message loop, and the answer is a page built inside this same window
@@ -2633,8 +2633,8 @@ fn run_window(
                     crate::tray::Pressed::Nothing => Ok(()),
                 };
             },
-            &crate::i18n::t("tray.open"),
-            &crate::i18n::t("tray.quit"),
+            &shikisha_core::i18n::t("tray.open"),
+            &shikisha_core::i18n::t("tray.quit"),
         )
     };
     #[cfg(windows)]
@@ -2706,7 +2706,7 @@ fn run_window(
         std::collections::HashMap::new();
     // What the browser calls itself. Read once, here: a name that changed
     // under a page would be a different browser halfway through a login
-    let user_agent = crate::config::user_agent();
+    let user_agent = shikisha_core::config::user_agent();
     // Windows those pages asked to open, kept in the seat of whoever asked
     let mut overlays: Overlays = std::collections::HashMap::new();
     // How those handlers hand their work back to this loop
@@ -2787,7 +2787,7 @@ fn run_window(
                         let _ = ev_tx.send(Ev::Result {
                             id,
                             ok: false,
-                            value: serde_json::Value::String(crate::i18n::tp(
+                            value: serde_json::Value::String(shikisha_core::i18n::tp(
                                 "err.browser.page_not_placed",
                                 &[("to", &to.unwrap_or_default())],
                             ))
@@ -2863,7 +2863,7 @@ fn run_window(
                         let _ = ev_tx.send(Ev::Result {
                             id,
                             ok: false,
-                            value: crate::i18n::tp(
+                            value: shikisha_core::i18n::tp(
                                 "err.browser.page_not_placed",
                                 &[("to", &to.unwrap_or_default())],
                             ),
@@ -2880,7 +2880,7 @@ fn run_window(
                             Some(arm) => {
                                 auths.insert(to.clone(), arm);
                             }
-                            None => crate::append_hook_log(&crate::i18n::t(
+                            None => shikisha_core::append_hook_log(&shikisha_core::i18n::t(
                                 "err.browser.log_basic_auth_failed",
                             )),
                         }
@@ -2990,14 +2990,14 @@ fn run_window(
                             if let Some(arm) = cdp::arm_dialogs(&wvh) {
                                 dialogs.insert(Some(name.clone()), arm);
                             }
-                            crate::append_hook_log(&format!(
+                            shikisha_core::append_hook_log(&format!(
                                 "[browser] placed page '{}' in {} ms (window input is frozen while a page is being created)",
                                 name,
                                 born.elapsed().as_millis()
                             ));
                             children.insert(name, v);
                         }
-                        Err(e) => crate::append_hook_log(&crate::i18n::tp(
+                        Err(e) => shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
                             "err.browser.log_place_failed",
                             &[("name", &name), ("e", &format!("{e}"))],
                         )),
@@ -3063,7 +3063,7 @@ fn run_window(
                 Cmd::Focus { to } => {
                     if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                         if let Err(e) = v.focus() {
-                            crate::append_hook_log(&crate::i18n::tp(
+                            shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
                                 "err.browser.log_focus_failed",
                                 &[("to", &format!("{to:?}")), ("e", &format!("{e}"))],
                             ));
@@ -3091,13 +3091,13 @@ fn run_window(
                             Go::To(u) => v.load_url(u),
                         };
                         if let Err(e) = r {
-                            crate::append_hook_log(&crate::i18n::tp(
+                            shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
                                 "err.browser.log_move_failed",
                                 &[("go", &format!("{go:?}")), ("e", &format!("{e}"))],
                             ));
                         }
                     }
-                    None => crate::append_hook_log(&crate::i18n::tp(
+                    None => shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
                         "err.browser.log_no_target",
                         &[("to", &format!("{to:?}"))],
                     )),
@@ -3138,7 +3138,7 @@ fn run_window(
                             }) {
                                 casts.insert(to.clone(), cast);
                             } else {
-                                crate::append_hook_log(&crate::i18n::t(
+                                shikisha_core::append_hook_log(&shikisha_core::i18n::t(
                                     "err.browser.log_screencast_failed",
                                 ));
                             }
@@ -3277,7 +3277,7 @@ fn run_window(
                         use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
                         let _ = unsafe { DestroyWindow(h) };
                     }
-                    crate::append_hook_log("Board page dropped while the window is put away");
+                    shikisha_core::append_hook_log("Board page dropped while the window is put away");
                 }
                 Cmd::Show => {
                     if shell.is_none() {
@@ -3316,12 +3316,12 @@ fn run_window(
                                         }
                                     }
                                 }
-                                crate::append_hook_log(&format!(
+                                shikisha_core::append_hook_log(&format!(
                                     "Board page built again in {} ms",
                                     born.elapsed().as_millis()
                                 ));
                             }
-                            Err(e) => crate::append_hook_log(&format!(
+                            Err(e) => shikisha_core::append_hook_log(&format!(
                                 "Board page could not be built again: {e:#}"
                             )),
                         }

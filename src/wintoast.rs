@@ -129,7 +129,7 @@ mod win {
 
     fn notifier() -> Result<&'static ToastNotifier, String> {
         match NOTIFIER.get_or_init(|| {
-            if crate::config::packaged() {
+            if shikisha_core::config::packaged() {
                 // The package is the identity. Asking for one of our own here
                 // would be asking to be somebody else.
                 ToastNotificationManager::CreateToastNotifier()
@@ -333,7 +333,7 @@ mod win {
             file.Save(&HSTRING::from(link.as_os_str()), true)
                 .map_err(|e| format!("{e}"))?;
         }
-        crate::append_hook_log(&format!(
+        shikisha_core::append_hook_log(&format!(
             "wintoast: wrote {} so Windows will accept notifications from this copy",
             link.display()
         ));

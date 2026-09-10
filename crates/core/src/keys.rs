@@ -402,8 +402,8 @@ mod manual_tests {
     #[test]
     fn the_manual_lists_every_key_it_ships_with() {
         for (lang, text) in [
-            ("en", include_str!("../docs/MANUAL.md")),
-            ("ja", include_str!("../docs/MANUAL.ja.md")),
+            ("en", include_str!("../../../docs/MANUAL.md")),
+            ("ja", include_str!("../../../docs/MANUAL.ja.md")),
         ] {
             for a in ACTIONS {
                 let want = format!("`Ctrl+B {}`", a.key);
@@ -455,7 +455,7 @@ mod tests {
         }
         // Every line the help screen shows has to exist in the dictionary
         let en: serde_json::Value =
-            serde_json::from_str(include_str!("../lang/en.json")).unwrap();
+            serde_json::from_str(include_str!("../../../lang/en.json")).unwrap();
         for a in ACTIONS {
             assert!(en.get(a.desc).is_some(), "{} の説明が辞書に無い", a.desc);
         }

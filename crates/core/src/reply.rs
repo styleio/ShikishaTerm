@@ -542,7 +542,7 @@ mod tests {
     /// them: no token, and no way to type HTML into it from a tab's output.
     #[test]
     fn the_page_shows_the_answer_and_leaks_nothing() {
-        crate::i18n::init(Some("en"), &[std::path::PathBuf::from("lang")]);
+        crate::i18n::init(Some("en"), &[std::path::PathBuf::from(crate::repo_root().join("lang"))]);
         let mut t = ticket("レビュワー");
         t.said = "<script>alert(1)</script> & \"done\"".into();
         let html = page("K3fQ92mZxAbC", &t);

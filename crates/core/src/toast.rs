@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn every_word_the_block_asks_for_is_in_the_dictionary() {
         let en: serde_json::Value =
-            serde_json::from_str(include_str!("../lang/en.json")).unwrap();
+            serde_json::from_str(include_str!("../../../lang/en.json")).unwrap();
         let mut rest = JS;
         while let Some(i) = rest.find("T[\"") {
             rest = &rest[i + 3..];

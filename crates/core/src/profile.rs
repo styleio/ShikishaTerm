@@ -318,7 +318,11 @@ fn candidate_dirs() -> Vec<std::path::PathBuf> {
     if let Some(d) = crate::config::config_file_path().parent() {
         dirs.push(d.join("profiles"));
     }
+    // Last, the working directory: how a dev build finds the shipped profiles,
+    // and how a test does when it is run from the repository
     dirs.push(std::path::PathBuf::from("profiles"));
+    #[cfg(test)]
+    dirs.push(crate::repo_root().join("profiles"));
     dirs
 }
 
@@ -491,7 +495,7 @@ mod tests {
             ("gemini", b"\x1b".as_slice()),
             ("aider", b"\x03".as_slice()),
         ] {
-            let text = std::fs::read_to_string(format!("profiles/{file}.json")).unwrap();
+            let text = std::fs::read_to_string(crate::repo_root().join(format!("profiles/{file}.json"))).unwrap();
             let f: ProfileFile = serde_json::from_str(&text).unwrap();
             assert_eq!(Profile::compile(f).unwrap().interrupt, want, "{file}");
         }

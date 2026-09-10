@@ -3633,6 +3633,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
+name = "shikisha-core"
+version = "0.9.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2 0.5.3",
+ "base64 0.23.1",
+ "crossterm",
+ "ed25519-dalek 2.2.0",
+ "encoding_rs",
+ "hkdf",
+ "mlua",
+ "p256",
+ "portable-pty",
+ "qrcode",
+ "rand",
+ "regex",
+ "russh",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "shikisha-shared",
+ "tiny_http",
+ "tokio",
+ "unicode-width",
+ "ureq",
+ "vt100",
+ "windows 0.61.3",
+ "windows-sys 0.61.2",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
 name = "shikisha-shared"
 version = "0.9.0"
 dependencies = [
@@ -3666,6 +3701,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "shikisha-core",
  "shikisha-shared",
  "tao",
  "tiny_http",

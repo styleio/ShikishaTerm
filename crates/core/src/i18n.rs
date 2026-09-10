@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
 /// The baseline English. Embedded so it works even without a language file in the distribution
-const EN: &str = include_str!("../lang/en.json");
+const EN: &str = include_str!("../../../lang/en.json");
 
 static DICT: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
 static LANG: OnceLock<RwLock<String>> = OnceLock::new();
@@ -183,7 +183,7 @@ mod tests {
         let en = parse(EN);
         // A relative path would break when running in parallel with another
         // test that changes the current directory (this actually happened)
-        let lang_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lang");
+        let lang_dir = crate::repo_root().join("lang");
         for entry in std::fs::read_dir(&lang_dir).expect("langフォルダ") {
             let path = entry.unwrap().path();
             if path.file_name().unwrap() == "en.json" {
@@ -210,13 +210,8 @@ mod tests {
     #[test]
     fn every_word_a_page_asks_for_exists() {
         let en = parse(EN);
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut asked = 0;
-        for entry in std::fs::read_dir(&src).expect("srcフォルダ") {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
+        for path in crate::source_files() {
             let text = std::fs::read_to_string(&path).unwrap();
             for (at, _) in text.match_indices("T[\"") {
                 let rest = &text[at + 3..];

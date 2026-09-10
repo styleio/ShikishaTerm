@@ -7586,7 +7586,7 @@ fn key_actions_json() -> String {
     serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
 }
 
-pub(crate) fn actions_json() -> String {
+pub fn actions_json() -> String {
     let configured = crate::config::actions();
     let list: Vec<serde_json::Value> = if configured.is_empty() {
         // A localized starter set, so the bar isn't empty out of the box (this was
@@ -7737,7 +7737,7 @@ mod tests {
     #[test]
     fn every_word_the_page_builds_is_in_the_dictionary() {
         let en: serde_json::Value =
-            serde_json::from_str(include_str!("../lang/en.json")).unwrap();
+            serde_json::from_str(include_str!("../../../lang/en.json")).unwrap();
         let p = super::page();
         let mut checked = 0;
         // The dynamically-built form (T["tui.help." + k]). The names are read
