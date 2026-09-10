@@ -627,6 +627,8 @@
   "settings.browser.ask.label": "Button",
   "settings.browser.ask.hint": "Drawn by the app under the page, so only a person can press it. Pressing it calls on_press.lua, which is where you hand the HTML over. Calling shikisha.browser_ask from automation wins over this",
   "tui.ask.label": "Done",
+  "settings.ws.switch": "Go to another workspace",
+  "settings.ws.settings": "This workspace's settings",
   "settings.ws.share": "Export",
   "settings.ws.export": "Export this workspace",
   "settings.ws.share.hint": "The tab settings and the automation scripts go into one file. Notification targets, secrets.json and capabilities do not. Commands and working folders are written as-is, so check that the file is safe to hand over",

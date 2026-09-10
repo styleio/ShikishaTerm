@@ -615,6 +615,8 @@
   "settings.browser.ask.label": "ボタンの字",
   "settings.browser.ask.hint": "ページの下にアプリが描くので、押せるのは人だけです。押されると on_press.lua が呼ばれるので、そこにHTMLの受け渡しを書きます。自動化から shikisha.browser_ask を呼べば、こちらより優先されます",
   "tui.ask.label": "できました",
+  "settings.ws.switch": "ほかのワークスペースへ",
+  "settings.ws.settings": "このワークスペースの設定",
   "settings.ws.share": "書き出し",
   "settings.ws.export": "このワークスペースを書き出す",
   "settings.ws.share.hint": "タブの設定と自動化スクリプトが1つのファイルに入ります。通知先・secrets.json・能力(capabilities)の設定は入りません。コマンドや作業フォルダはそのまま書かれるので、渡す相手に見せてよい内容か確かめてください",

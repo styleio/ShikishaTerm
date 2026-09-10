@@ -173,6 +173,8 @@ Use the part that exists. Adding a new kind of part is a change to this page.
 | **Dialog** (settings, `.framed`) | One record, edited | **header** (title · ✕) · **body** (fields) · **footer** (destructive at the left, then the reason it cannot be saved, then Cancel and the primary at the right), each divided by a `--line` |
 | **Field** | One thing to fill in | its name above it (12px `--text`), the control, the line that explains it under (11.5px `--faint`); `--s2` between them and `--s5` to the next field |
 | **Boxed list** (`.rows`) | Several of the same thing | one border round the whole, `--line` between rows, `--panel2` on hover, a `›` at the right when the row opens something |
+| **Sidebar** (settings) | What is being edited | a **sign** (initial plate · name · gear · `▾` at the far right), one row for the program's own settings, then the tree. Name and gear open that workspace's page, `▾` goes to another one, and the app row puts its list where the tree was |
+| **Tree row** | One thing inside another | `├ └ │` worked out per row (is there anything of my depth after me), folded with `▾ / ▸`, marked by kind: a folder drawn in its project's colour, a tab as a dot in its AI's. A row with no mark still keeps the column |
 | **List** (`.fmenu`) | Choose one of a few | floating, radius 10, one line per choice, closes on any press elsewhere |
 | **Bubble** (`#coach`) | Point at the next thing to press | one sentence · ✕ · a corner toward the anchor; at most one on screen |
 | **Card** (sidebar) | Ask once | title · one line · two buttons (one primary, one quiet); goes away for good |

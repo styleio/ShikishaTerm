@@ -2413,6 +2413,42 @@ const PAGE: &str = r##"<!doctype html>
    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
  .navgroup { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
    margin:14px 10px 4px; }
+ /* The sign at the top: which workspace everything under here belongs to.
+    Pressing the name (or the gear) opens that workspace's own page; the caret
+    is how you go to another one */
+ .wsbanner { display:flex; align-items:center; gap:2px; padding:2px;
+   border-radius:var(--r-ctl); }
+ .wsbanner.sel { background:var(--panel2); }
+ .wsbanner .wsname { flex:0 1 auto; min-width:0; display:flex; align-items:center;
+   gap:var(--s2); background:none; border:0; color:var(--text); font-size:14px;
+   font-weight:600; padding:6px 4px; cursor:pointer; text-align:left; min-height:32px; }
+ .wsbanner .wsname:hover { background:var(--panel); border-radius:var(--r-ctl); }
+ .wsbanner .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .wsgap { flex:1 1 auto; }
+ .wspick { font-size:12px; color:var(--dim); }
+ .wsbanner:hover .wspick, .wsbanner:hover .wsgear { color:var(--text); }
+ /* The initial, as a plate. A workspace has no colour of its own, so this is
+    the one thing on the row that says "a workspace" rather than "a name" */
+ .wsbadge { flex:none; width:22px; height:22px; border-radius:var(--r-chip);
+   background:var(--raise); color:var(--dim); font-size:11px; font-weight:600;
+   display:flex; align-items:center; justify-content:center; }
+ /* The program's own settings, and the way into them */
+ .approw { display:flex; align-items:center; gap:var(--s2); color:var(--dim);
+   margin-bottom:var(--s2); }
+ .approw.sel { color:var(--text); }
+ .approw .go { flex:none; color:var(--muted); }
+ .appitem { padding-left:var(--s4); }
+ /* Choosing another workspace. Floats, so the list under it does not move */
+ .fmenu { position:fixed; z-index:60; min-width:220px; max-width:280px;
+   background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
+   box-shadow:0 8px 24px #0007; padding:4px; display:flex; flex-direction:column; }
+ .fmenuitem { display:flex; align-items:center; gap:var(--s2); width:100%;
+   text-align:left; background:none; border:0; color:var(--text); font-size:13px;
+   padding:7px 8px; border-radius:var(--r-ctl); cursor:pointer; }
+ .fmenuitem:hover { background:var(--panel2); }
+ .fmenuitem.on { background:var(--panel2); }
+ .fmenuitem.add { color:var(--dim); border-top:1px solid var(--line);
+   border-radius:0 0 var(--r-ctl) var(--r-ctl); margin-top:4px; padding-top:10px; }
  .navgrouphead { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
    margin:12px 0 2px; display:flex; align-items:center; gap:6px; }
  .navgrouphead.sel { color:var(--text); }
@@ -2942,19 +2978,8 @@ const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(
 let current = {};        // Contents of config.json (holds the base settings)
 let wss = [];            // Workspaces and tabs
 let sel = {ws:0, tab:null, global:true, section:"basic"};
-// Which workspaces are expanded in the sidebar. Collapsed by default so
-// the nav stays tidy; the workspace you're editing auto-expands.
-const navOpen = new Set();
-// Workspaces somebody has folded on purpose. Kept apart from the ones opened
-// on purpose, because "what you are looking at counts as open" would otherwise
-// hold a workspace open for good -- selecting one is exactly what clicking its
-// row does now, so the caret could never win
-const navShut = new Set();
-// The global-settings group is expanded by default (the page opens onto it).
-let navGlobalOpen = true;
 // Put one global card on screen, by id, with its entry in the list in view.
 function goSection(id, block) {
-  navGlobalOpen = true;
   sel = {ws:sel.ws, tab:null, global:true, section:id};
   render();
   const cur = document.querySelector(".navitem.sel");
@@ -3570,6 +3595,18 @@ function folderMark(colour) {
   if (colour) s.style.color = colour;
   return s;
 }
+// Settings, in the shape everybody reads as settings
+function gearMark() {
+  const s = el("span", {class:"mark"});
+  s.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.15" stroke-linecap="round">' +
+    '<circle cx="8" cy="8" r="2.4"/>' +
+    '<path d="M8 2.2v1.5M8 12.3v1.5M13.8 8h-1.5M3.7 8H2.2' +
+    'M12.1 3.9 11 5M5 11l-1.1 1.1M12.1 12.1 11 11M5 5 3.9 3.9"/>' +
+    '</svg>';
+  return s;
+}
+
 // The fold, where everybody looks for it
 function foldCaret(open, onFold) {
   const c = el("span", {class:"twist", onclick: e => { e.stopPropagation(); onFold(); }},
@@ -3619,47 +3656,79 @@ function treeRow(rail, mark, opts, ...body) {
 // same as a workspace's own fold
 const folderShut = new Set();
 
+// Which workspace the sidebar is showing. A menu rather than a list, because
+// the list under it belongs to one of them at a time
+function pickWorkspace(anchor) {
+  const menu = el("div", {class:"fmenu"});
+  wss.forEach((w, i) => {
+    menu.append(el("button", {class:"fmenuitem" + (i === sel.ws ? " on" : ""),
+      onclick:() => { shut(); sel = {ws:i, grp:null, tab:null, global:false}; render(); }},
+      el("span", {class:"wsbadge"}, (w.name || "?").trim().slice(0, 1).toUpperCase()),
+      el("span", {class:"nm"}, w.name || T["settings.tab.unnamed"])));
+  });
+  menu.append(el("button", {class:"fmenuitem add",
+    onclick:() => { shut(); addWs(); }}, T["settings.workspace.add"]));
+  const at = anchor.getBoundingClientRect();
+  menu.style.top = Math.round(at.bottom + 4) + "px";
+  menu.style.left = Math.round(at.left - 200) + "px";
+  const away = e => { if (!menu.contains(e.target)) shut(); };
+  function shut() {
+    menu.remove();
+    document.removeEventListener("mousedown", away, true);
+  }
+  document.body.append(menu);
+  setTimeout(() => document.addEventListener("mousedown", away, true), 0);
+}
+
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
-  // Global settings: a collapsible group whose children are the flat, self-named
-  // cards. Its ▸/▾ caret toggles it freely (unlike a workspace group, it is NOT
-  // forced open while a section is selected) — so it can be collapsed even while
-  // you're viewing a section, and it starts collapsed when you arrive via the gear.
-  const gOpen = navGlobalOpen;
-  nav.append(el("button", {class:"navitem navgrouphead",
-    onclick:() => { navGlobalOpen = !navGlobalOpen; render(); }},
-    el("span", {class:"caret"}, gOpen ? "▾" : "▸"),
-    el("span", {}, T["settings.global"])));
-  if (gOpen) globalSections().forEach(s => {
-    const b = el("button", {class:"navitem lvl1" + (sel.global && sel.section === s.id ? " sel" : ""),
-      onclick:() => goSection(s.id)});
-    b.append(el("span", {}, s.label));
-    if (s.sub) b.append(el("span", {class:"sub"}, s.sub));
-    nav.append(b);
-  });
+  // The workspace being edited, as a sign at the top rather than one branch of
+  // a tree. The two things under it are not siblings -- one is the program's
+  // own settings, the other is what somebody built -- and showing them as
+  // equals in one list is what made this list hard to read
+  const ws = wss[sel.ws] || wss[0];
+  if (ws) {
+    const badge = el("span", {class:"wsbadge"},
+      (ws.name || "?").trim().slice(0, 1).toUpperCase());
+    nav.append(el("div", {class:"wsbanner" + (!sel.global && sel.tab == null
+        && (sel.grp ?? null) === null ? " sel" : "")},
+      el("button", {class:"wsname", onclick:() => {
+        sel = {ws:sel.ws, grp:null, tab:null, global:false}; render();
+      }}, badge, el("span", {class:"nm"}, ws.name || T["settings.tab.unnamed"])),
+      el("button", {class:"twist wsgear", title:T["settings.ws.settings"],
+        onclick:() => { sel = {ws:sel.ws, grp:null, tab:null, global:false}; render(); }},
+        gearMark()),
+      el("span", {class:"wsgap"}),
+      el("button", {class:"twist wspick", title:T["settings.ws.switch"],
+        onclick: e => { e.stopPropagation(); pickWorkspace(e.currentTarget); }}, "▾")));
+  }
+  // The program's own settings. Pressing it puts its list where the tree is,
+  // because a person is either setting up the program or setting up a
+  // workspace, and never reading both columns at once
+  nav.append(el("button", {class:"navitem approw" + (sel.global ? " sel" : ""),
+    onclick:() => { sel = {ws:sel.ws, tab:null, global:true,
+                           section: sel.section || globalSections()[0].id}; render(); }},
+    el("div", {class:"body"}, T["settings.global"]),
+    el("span", {class:"go"}, sel.global ? "▾" : "›")));
+  if (sel.global) {
+    globalSections().forEach(s => {
+      const b = el("button", {class:"navitem appitem" + (sel.section === s.id ? " sel" : ""),
+        onclick:() => goSection(s.id)});
+      b.append(el("div", {class:"body"}, el("span", {}, s.label),
+        s.sub ? el("span", {class:"sub"}, s.sub) : null));
+      nav.append(b);
+    });
+    return;
+  }
 
-  wss.forEach((ws, wi) => {
-    // The group you're editing counts as open even without an explicit toggle.
-    const open = !navShut.has(wi) && (navOpen.has(wi) || (!sel.global && sel.ws === wi));
+  [wss[sel.ws]].forEach((ws) => {
+    if (!ws) return;
+    const wi = sel.ws;
     // `?? null` because a selection made elsewhere (the gear, a deep link) may
     // simply not mention a folder, and "no folder" has to match "no folder"
-    const here = (g, t) => !sel.global && sel.ws === wi && (sel.grp ?? null) === g
+    const here = (g, t) => !sel.global && (sel.grp ?? null) === g
       && (sel.tab ?? null) === t;
-    // The name is the workspace's own page and the caret is the fold, the way
-    // a folder's row works everywhere else. A separate "workspace settings"
-    // row underneath made the folders look like its equals rather than its
-    // contents, which is the one thing this list has to get across
-    nav.append(el("button", {class:"navitem navgrouphead" + (here(null, null) ? " sel" : ""),
-      onclick:() => { sel = {ws:wi, grp:null, tab:null, global:false}; render(); }},
-      el("span", {class:"caret", onclick:e => {
-        e.stopPropagation();
-        if (open) { navShut.add(wi); navOpen.delete(wi); }
-        else { navShut.delete(wi); navOpen.add(wi); }
-        render();
-      }}, open ? "▾" : "▸"),
-      el("span", {}, ws.name || T["settings.tab.unnamed"])));
-    if (!open) return;
     // Every folder, always -- the one a workspace starts with is a folder like
     // any other, and hiding it is how "where does this actually run" became
     // impossible to find.
@@ -3717,8 +3786,6 @@ function renderNav() {
       }
     });
   });
-  nav.append(el("div", {class:"navgroup"}, ""));
-  nav.append(el("button", {class:"navitem navadd", onclick:addWs}, T["settings.workspace.add"]));
 }
 
 const newTab = (o = {}) => Object.assign(
@@ -7902,7 +7969,6 @@ load().then(() => {
   }
   const wi = idx("addtab");
   if (wss[wi]) {
-    navGlobalOpen = false;
     // Asked for from a folder: that is where it goes. The form used to add it
     // wherever the default was, which is the first folder -- so a tab asked
     // for from the third one turned up in the first
@@ -7943,8 +8009,6 @@ load().then(() => {
       tabs.forEach((t, i) => { if ((t.group || 0) === gi) here.push(i); });
       const ti = here[tabPos];
       if (ti != null) {
-        navGlobalOpen = false;
-        navShut.delete(cur); navOpen.add(cur);
         sel = {ws:cur, grp:gi, tab:ti, global:false};
         render();
         const s = document.querySelector(".navitem.sel");
