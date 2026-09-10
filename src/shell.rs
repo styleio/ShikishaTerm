@@ -606,6 +606,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sftppanel .foot .safe { margin-left:auto; color:var(--dim); font-size:11px;
     flex:0 0 auto; }
   #sftppanel .foot .bad { color:var(--stop); }
+  /* What just finished. Green because it is the one line that says a transfer
+     landed, and a person walking past should be able to read that at a glance */
+  #sftppanel .foot .done { color:var(--live); }
   /* Why a grey button is grey, in the place it cannot scroll away from */
   #sftppanel .why { color:var(--warn); font-size:11.5px; flex:1 1 100%;
     line-height:1.5; }
@@ -4600,6 +4603,12 @@ if (REMOTE) {
     // 📼 pushes: a recorded Lua line for the composer, or a ▶ run's verdict
     // (null = clean, so test for the key's presence, not its truthiness).
     if (d.recorded != null) window.__recorded(d.recorded);
+    // A panel's answers. The window gets these by being called directly; from
+    // here they arrive down the same socket as everything else, and without
+    // this line a panel opened on a phone asks its questions into the dark and
+    // waits for ever -- which is what both of them did
+    if (d.git) window.__git(d.git);
+    if (d.sftp) window.__sftp(d.sftp);
     if ("luadone" in d) window.__luaDone(d.luadone);
     if ("suggested" in d) window.__suggested(d.suggested);
     if ("surveyed" in d) window.__surveyed(d.surveyed);
@@ -6232,7 +6241,9 @@ function sftpNext() {
   if (!job) { F.moving = null; return; }
   F.moving = job;
   F.lastName = job.name;
-  F.said = (T["sftp." + job.act + ".doing"] || "")
+  // "local_mkdir" is the same act on this machine, and says so in its own words
+  const saying = job.act === "local_mkdir" ? "mkdir.here" : job.act;
+  F.said = (T["sftp." + saying + ".doing"] || "")
     .replace("{name}", job.name)
     .replace("{n}", F.done + 1)
     .replace("{of}", F.total);
@@ -6422,7 +6433,8 @@ function sftpCrumbs(box, which) {
   const side = F[which];
   box.textContent = "";
   box.append(el("span", {class:"who"},
-    which === "local" ? (T["sftp.here"] || "") : (F.server || (T["sftp.there"] || ""))));
+    (which === "local" ? (T["sftp.here.mark"] || "") : (T["sftp.there.mark"] || "")) + " "
+    + (which === "local" ? (T["sftp.here"] || "") : (F.server || (T["sftp.there"] || ""))) + ":"));
   const root = (side.root || "").replace(/\/+$/, "");
   const at = (side.at || root).replace(/\/+$/, "") || "/";
   const lead = at.startsWith("/") ? "/" : "";
@@ -6528,19 +6540,18 @@ function drawSftp() {
     ui.acts.textContent = "";
     ui.acts.append(el("button", {class:"quiet", title:T["sftp.reload"] || "",
       onclick: () => sftpGo(which, side.at)}, "↻"));
-    if (which === "remote") {
-      ui.acts.append(heldButton(which, T["sftp.mkdir"] || "",
-        () => F.server ? "" : (T["sftp.why.no_server"] || ""),
-        () => sftpQuestion({
-          title: T["sftp.mkdir.title"] || "",
-          say: T["sftp.mkdir.say"] || "",
-          what: side.at,
-          field: "",
-          label: T["sftp.mkdir.go"] || "",
-          go: name => name && sftpMove("mkdir",
-            [{act:"mkdir", name, args:{path: rjoin(side.at, name)}}]),
-        }), () => sftpUi.pick));
-    }
+    ui.acts.append(heldButton(which, "+ " + (T["sftp.mkdir"] || ""),
+      () => which === "local" ? "" : (F.server ? "" : (T["sftp.why.no_server"] || "")),
+      () => sftpQuestion({
+        title: T["sftp.mkdir.title"] || "",
+        say: which === "local" ? (T["sftp.mkdir.here.say"] || "") : (T["sftp.mkdir.say"] || ""),
+        what: side.at,
+        field: "",
+        label: T["sftp.mkdir.go"] || "",
+        go: name => name && sftpMove(which === "local" ? "local_mkdir" : "mkdir",
+          [{act: which === "local" ? "local_mkdir" : "mkdir", name,
+            args: {path: which === "local" ? ljoin(side.at, name) : rjoin(side.at, name)}}]),
+      }), () => sftpUi.pick));
     const other = which === "local" ? "remote" : "local";
     const stop = () => !F.server ? (T["sftp.why.no_server"] || "")
       : !side.sel.size ? (T["sftp.why.nothing"] || "")
@@ -6623,8 +6634,9 @@ function drawSftp() {
     ui.list.scrollTop = wasAt;
   }
 
-  u.say.textContent = F.said || (F.local.busy || F.remote.busy ? (T["sftp.reading"] || "") : "");
-  u.say.className = "say" + (F.bad ? " bad" : "");
+  u.say.textContent = F.said
+    || (F.local.busy || F.remote.busy ? (T["sftp.reading"] || "") : (T["sftp.idle"] || ""));
+  u.say.className = "say" + (F.bad ? " bad" : (F.said ? " done" : ""));
   u.safe.textContent = F.server ? (T["sftp.safe"] || "") : "";
 }
 
@@ -8689,6 +8701,11 @@ mod tests {
         assert!(!PAGE.contains("sftpPickServer"), "接続を他のタブから選ばせている");
         assert!(!PAGE.contains("\"point\""), "接続を指し直す道が残っている");
         assert!(PAGE.contains("sftp.open_settings"), "設定への入口が無い");
+        // A phone gets a panel's answers down the state socket. Without this
+        // the panel asks its questions into the dark and waits for ever, which
+        // is silence rather than a failure and so is worth pinning down
+        assert!(PAGE.contains("if (d.sftp) window.__sftp(d.sftp);"), "スマホに答えが届かない");
+        assert!(PAGE.contains("if (d.git) window.__git(d.git);"), "スマホに git の答えが届かない");
     }
 
     /// The top bar is drawn by the shell, not injected into the page.

@@ -2709,6 +2709,20 @@ const PAGE: &str = r##"<!doctype html>
  .under-check { padding-left:var(--s5); margin-left:7px;
    border-left:1px solid var(--line); }
  .under-check[hidden] { display:none; }
+ /* The three a connection will not be made without */
+ .must { color:var(--warn); font-style:normal; font-weight:600; }
+ /* A heading inside a folded section: several unrelated awkward cases live
+    there and each has to say which one it is */
+ .subhead { font-size:11.5px; font-weight:600; letter-spacing:.02em; color:var(--dim);
+   margin-top:var(--s5); padding-bottom:var(--s2); border-bottom:1px solid var(--line); }
+ .subhead:first-of-type { margin-top:var(--s4); }
+ /* What a tick above it means, in the smallest type on the page */
+ .note { font-size:11.5px; color:var(--faint); line-height:1.5; margin-top:var(--s2);
+   padding-left:22px; }
+ /* Proving the connection works, under a line of its own: it is the last thing
+    done on this card and it belongs to the whole of it, not to the field above */
+ .connfoot { display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap;
+   margin-top:var(--s5); padding-top:var(--s3); border-top:1px solid var(--line); }
  /* A thumb needs more than a glyph. */
  .hit { min-width:34px; min-height:34px; }
  /* The warning about a plain connection, and the tick that takes it on.
@@ -7006,14 +7020,22 @@ function tabPane(ws, t) {
       setCommand(t, cmdInput, catStart(v)); rebuild();
     }));
   rebuild();
-  box.append(card(T["settings.tab.launch"], cmdRow, detailBox,
-    row(T["settings.tab.command"], cmdInput), real.box));
+  // A tab that connects is not a tab that starts something, and the heading
+  // has to say which one this is
+  const conn = catOf(t.command) === "remote" || catOf(t.command) === "sftp";
+  box.append(card(conn ? T["settings.server.basics"] : T["settings.tab.launch"],
+    cmdRow, detailBox, row(T["settings.tab.command"], cmdInput), real.box));
 
   // Notify on answer: a beginner-friendly way to get a ping when this tab's AI
   // finishes, without writing on_done Lua. Lists the destinations registered
   // under General → Notifications, and ends with the way to add one, so a
   // person who arrives here first does not have to know where that is.
-  {
+  //
+  // Not for a panel: it has no process, so nothing ever starts, answers or
+  // exits, and every one of these questions would be about something that
+  // cannot happen
+  const runs = catOf(t.command) !== "sftp" && catOf(t.command) !== "git";
+  if (runs) {
     const nbox = el("div");
     const drawNotify = () => {
       nbox.textContent = "";
@@ -7109,8 +7131,10 @@ function tabPane(ws, t) {
       el("span", {class:"state", id:"st-" + id}, "—"),
       el("button", {class:"quiet", onclick:() => openAuto(ws, t, id)}, T["common.edit"])));
   }
-  box.append(card(T["settings.tab.automation"], ev));
-  loadAutoStates(ws, t);
+  if (runs) {
+    box.append(card(T["settings.tab.automation"], ev));
+    loadAutoStates(ws, t);
+  }
 
   // Details: fold away things that are rarely touched
   const det = el("details");
@@ -7378,21 +7402,25 @@ function connectionFields(box, t, conn, build, cmdInput) {
   // The unsaved mark is worked out by comparing what would be written, on a
   // timer, so nothing here has to remember to announce itself
   const save = () => refreshSave();
+  // A star on the three it will not connect without. Said once, in the label,
+  // rather than as a sentence under every field
+  const must = label => el("span", {}, label,
+    el("i", {class:"must"}, T["settings.server.required"]));
   box.append(el("div", {class:"row2"},
-    sfield(T["settings.ssh.host"], (() => {
+    sfield(must(T["settings.server.host"]), (() => {
       const i = el("input", {type:"text", class:"mono", placeholder:"example.com"});
       i.value = conn.host || "";
       suggest(i, "ssh");
       i.addEventListener("input", () => { conn.host = i.value.trim(); upd(); });
       return i;
     })()),
-    sfield(T["settings.phone.port"], (() => {
+    sfield(must(T["settings.phone.port"]), (() => {
       const i = el("input", {type:"text", class:"mono narrow", placeholder:"22"});
       i.value = conn.port || "";
       i.addEventListener("input", () => { conn.port = i.value.trim(); upd(); });
       return i;
     })())));
-  box.append(sfield(T["settings.ssh.user"], (() => {
+  box.append(sfield(must(T["settings.server.user"]), (() => {
     const i = el("input", {type:"text", class:"mono", placeholder:"root"});
     i.value = conn.user || "";
     i.addEventListener("input", () => { conn.user = i.value.trim(); upd(); });
@@ -7426,7 +7454,7 @@ function connectionFields(box, t, conn, build, cmdInput) {
     if (byKey && keyIn) keyIn.value = sv.key || "";
   };
   let keyIn = null;
-  box.append(sfield(T["settings.server.auth"], auth));
+  box.append(sfield(must(T["settings.server.auth"]), auth));
 
   keyIn = el("input", {type:"text", class:"mono", placeholder:"~/.ssh/id_ed25519"});
   keyIn.value = sv.key || "";
@@ -7436,15 +7464,15 @@ function connectionFields(box, t, conn, build, cmdInput) {
     const path = await pickPath("key", T["settings.ssh.key.pick"], sv.key);
     if (path !== null) { sv.key = path; keyIn.value = path; save(); }
   }}, T["common.browse"]));
-  keyPart.append(sfield(T["settings.server.key"], keyRow, T["settings.server.key.hint"]));
-  keyPart.append(secretField(t, "passphrase", T["settings.server.passphrase"],
+  keyPart.append(sfield(T["settings.server.key.formats"], keyRow));
+  keyPart.append(secretField(t, "passphrase", T["settings.server.passphrase.optional"],
     T["settings.server.passphrase.hint"], () => build(conn)));
   pwPart.append(secretField(t, "password", T["settings.ssh.password"],
     T["settings.ssh.password.hint"], () => build(conn)));
   box.append(keyPart, pwPart);
   drawAuth();
 
-  box.append(sfield(T["settings.server.remote_dir"], (() => {
+  box.append(sfield(T["settings.server.start_dir"], (() => {
     const i = el("input", {type:"text", class:"mono", placeholder:"/var/www/html"});
     i.value = sv.remote_dir || "";
     i.addEventListener("input", () => { sv.remote_dir = i.value.trim(); save(); });
@@ -7453,6 +7481,12 @@ function connectionFields(box, t, conn, build, cmdInput) {
 
   const adv = el("details");
   adv.append(el("summary", {}, T["settings.server.advanced"]));
+  // Three separate awkward cases, each with its own heading, because they have
+  // nothing to do with each other: a server you cannot reach directly, a server
+  // whose files belong to somebody else, and a network that cuts a quiet line
+  const group = label => el("div", {class:"subhead"}, label);
+  const note = text => el("div", {class:"note"}, text);
+  adv.append(group(T["settings.server.group.jump"]));
   const jumpPart = el("div", {class:"under-check"});
   const jumpOn = el("input", {type:"checkbox"});
   jumpOn.checked = !!(sv.jump && (sv.jump.host || "").trim());
@@ -7463,6 +7497,7 @@ function connectionFields(box, t, conn, build, cmdInput) {
   });
   adv.append(el("label", {class:"check"}, jumpOn,
     el("span", {}, T["settings.server.jump.on"])));
+  adv.append(note(T["settings.server.jump.note"]));
   const jf = (key, label, ph, narrow) => sfield(label, (() => {
     const i = el("input", {type:"text", class:"mono" + (narrow ? " narrow" : ""), placeholder:ph});
     i.value = (sv.jump && sv.jump[key]) || "";
@@ -7481,24 +7516,27 @@ function connectionFields(box, t, conn, build, cmdInput) {
   jumpPart.hidden = !jumpOn.checked;
   adv.append(jumpPart);
 
-  adv.append(sfield(T["settings.server.file_command"], (() => {
+  adv.append(group(T["settings.server.group.shell"]));
+  adv.append(sfield(T["settings.server.file_command.label"], (() => {
     const i = el("input", {type:"text", class:"mono", placeholder:"sudo su -c /usr/lib/openssh/sftp-server"});
     i.value = sv.file_command || "";
     i.addEventListener("input", () => { sv.file_command = i.value.trim(); save(); });
     return i;
   })(), T["settings.server.file_command.hint"]));
 
+  adv.append(group(T["settings.server.group.alive"]));
   const alive = el("input", {type:"checkbox"});
   alive.checked = !!sv.keepalive;
   alive.addEventListener("change", () => { sv.keepalive = alive.checked ? 30 : 0; save(); });
   adv.append(el("label", {class:"check"}, alive,
     el("span", {}, T["settings.server.keepalive.on"])));
+  adv.append(note(T["settings.server.alive.note"]));
   box.append(adv);
 
   // Proved before it is needed, so a wrong field is found here rather than
   // at launch. What comes back is the server's own words either way
   const said = el("div", {class:"hint"});
-  box.append(el("div", {class:"row"},
+  box.append(el("div", {class:"connfoot"},
     el("button", {onclick: async ev => {
       // Held on to now: an event's target is gone by the time the answer
       // arrives, and reaching for it then is how a button stays grey forever

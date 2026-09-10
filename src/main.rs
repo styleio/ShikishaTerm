@@ -7653,6 +7653,25 @@ fn sftp_answer(
         };
     }
 
+    // A folder on this machine, made from the panel so that a place to put
+    // what is coming back can be made without leaving the screen. Only making
+    // one: deleting and renaming here are what this machine's own file manager
+    // is for, and there is no primitive behind them to ask permission of
+    if act == "local_mkdir" {
+        let Some(root) = local_root.clone() else {
+            return fail(i18n::t("err.sftp.no_folder"));
+        };
+        let Some(at) = local_under(&root, &str_of("path")) else {
+            return fail(i18n::t("err.sftp.outside"));
+        };
+        return match std::fs::create_dir(&at) {
+            Ok(()) => Some(
+                serde_json::json!({"act": act, "panel": panel, "ok": true}).to_string(),
+            ),
+            Err(e) => fail(format!("{e}")),
+        };
+    }
+
     // Everything left goes to the far end, which needs an address
     let Some(spec) = spec else {
         return fail(i18n::t("err.sftp.no_address"));
