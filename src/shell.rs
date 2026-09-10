@@ -6557,15 +6557,25 @@ function drawSftp() {
         }), () => sftpUi.pick));
     }
     const other = which === "local" ? "remote" : "local";
-    ui.acts.append(heldButton(which,
+    const stop = () => !F.server ? (T["sftp.why.no_server"] || "")
+      : !side.sel.size ? (T["sftp.why.nothing"] || "")
+      : !F[other].at ? (T["sftp.why.no_folder"] || "") : "";
+    const move = heldButton(which,
       which === "local" ? (T["sftp.send"] || "") + " →" : "← " + (T["sftp.fetch"] || ""),
-      () => !F.server ? (T["sftp.why.no_server"] || "")
-        : !side.sel.size ? (T["sftp.why.nothing"] || "")
-        : !F[other].at ? (T["sftp.why.no_folder"] || "") : "",
+      stop,
       () => sftpSend(which),
-      () => (F.server ? u[which].list : sftpUi.pick)));
+      () => (F.server ? u[which].list : sftpUi.pick));
+    // The one thing to press, once there is something to press it about. Which
+    // side that is follows what has been ticked, so the filled button moves to
+    // where the person is working rather than being painted on both
+    if (!stop()) move.classList.add("go");
+    ui.acts.append(move);
     if (F.why && F.whySide === which) ui.acts.append(el("span", {class:"why"}, F.why));
 
+    // The board is redrawn several times a second. Rebuilding the rows moves
+    // the list back to the top, which on a long folder means it cannot be
+    // read at all -- so where it was scrolled to is put back
+    const wasAt = ui.list.scrollTop;
     ui.list.textContent = "";
     if (which === "remote" && !F.server) {
       ui.list.append(el("div", {class:"empty"},
@@ -6621,6 +6631,7 @@ function drawSftp() {
       line.addEventListener("contextmenu", ev => { ev.preventDefault(); sftpRowMenu(more, which, row); });
       ui.list.append(line);
     }
+    ui.list.scrollTop = wasAt;
   }
 
   u.say.textContent = F.said || (F.local.busy || F.remote.busy ? (T["sftp.reading"] || "") : "");
