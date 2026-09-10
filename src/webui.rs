@@ -3644,14 +3644,18 @@ const DEFAULT_MODEL = {deepseek: "deepseek-chat"};
 // The git panel is the word on its own -- `git status` in a tab is somebody
 // who wants a terminal that runs git, and it stays one
 const isGitPanel = c => cmdToText(c).trim().toLowerCase() === "git";
-// The file panel: the word on its own, or the word and the name of the server
-// tab whose connection it borrows. `sftp user@host` is somebody's sftp.exe
-// command line and stays one
-function sftpPanelOf(c) {
-  const m = /^sftp(?:\s+([^\s@:/]+))?$/i.exec(cmdToText(c).trim());
-  return m ? (m[1] || "") : null;
+// The file panel, addressed the way a terminal on another machine is. Told
+// apart from that one only by the scheme, so the two read as what they are:
+// the same connection, asked for different things. A half-written address is
+// still a panel -- the tab has to hold its place and say what it needs
+function parseSftpUrl(cmd) {
+  const text = (cmdToText(cmd) || "").trim();
+  if (!/^sftp:\/\//i.test(text)) return null;
+  const m = /^sftp:\/\/([^@\s]*)@?([^\s:/]*)(?::(\d+))?\/?$/i.exec(text);
+  return m ? {user: m[1] || "", host: m[2] || "", port: m[3] || ""} : {user:"", host:"", port:""};
 }
-const buildSftp = o => "sftp" + (o.server ? " " + o.server : "");
+const buildSftpUrl = o =>
+  "sftp://" + (o.user || "") + "@" + (o.host || "") + (o.port ? ":" + o.port : "");
 // A terminal on another machine that this program connects to itself, written
 // the way the world writes it. Checked before the plain `ssh` command, which is
 // a different thing: that one runs ssh.exe and this one does not
@@ -3661,7 +3665,7 @@ function parseRemote(cmd) {
 }
 const buildRemote = o =>
   "ssh://" + (o.user || "") + "@" + (o.host || "") + (o.port ? ":" + o.port : "");
-const kindOf = c => isGitPanel(c) ? "git" : sftpPanelOf(c) !== null ? "sftp"
+const kindOf = c => isGitPanel(c) ? "git" : parseSftpUrl(c) ? "sftp"
   : parseBrowser(c) ? "browser" : parseModel(c) ? "model"
   : parseRemote(c) ? "remote" : parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
 // CLI-type AIs (external programs the user installs). check = engine id to
@@ -3711,7 +3715,8 @@ const defaultAiCommand = () =>
 // What picking a kind puts in the command field. The AI entry is a function
 // because its answer depends on which CLI this machine has.
 const CAT_START = {ai:defaultAiCommand, cmd:"", remote:"ssh://user@example.com:22", ssh:"ssh ",
-  docker:"docker exec -it ", wsl:"wsl ", browser:"browser https://", git:"git", sftp:"sftp"};
+  docker:"docker exec -it ", wsl:"wsl ", browser:"browser https://", git:"git",
+  sftp:"sftp://user@example.com:22"};
 const catStart = v => { const s = CAT_START[v]; return (typeof s === "function" ? s() : s) || ""; };
 const CAT_LIST = [
   ["ai",      T["settings.tab.cat.ai"]],
@@ -7353,12 +7358,178 @@ function openProvidersPopup() {
   });
 }
 
+// Everything about one connection this program makes itself: where it is, who
+// signs in, with what, and -- folded away -- the awkward cases.
+//
+// One builder for both kinds of tab that have a connection. A terminal on
+// another machine and a panel of that machine's files are the same connection
+// asked for two different things, and a second copy of these fields would be
+// two screens that slowly stop agreeing about what a server is.
+//
+// `conn` is the parsed address and `build` puts it back into a command line,
+// which is what differs: `ssh://` opens a terminal, `sftp://` opens the lists
+function connectionFields(box, t, conn, build, cmdInput) {
+  const upd = () => setCommand(t, cmdInput, build(conn));
+  // This program does the connecting, so what it needs is an address, a user,
+  // one way of proving who that is, and -- for the file panel -- where on the
+  // far end to start looking. Everything below that is for the connections
+  // that are not straightforward, and stays folded until somebody has one
+  const sv = t.server || (t.server = {});
+  // The unsaved mark is worked out by comparing what would be written, on a
+  // timer, so nothing here has to remember to announce itself
+  const save = () => refreshSave();
+  box.append(el("div", {class:"row2"},
+    sfield(T["settings.ssh.host"], (() => {
+      const i = el("input", {type:"text", class:"mono", placeholder:"example.com"});
+      i.value = conn.host || "";
+      suggest(i, "ssh");
+      i.addEventListener("input", () => { conn.host = i.value.trim(); upd(); });
+      return i;
+    })()),
+    sfield(T["settings.phone.port"], (() => {
+      const i = el("input", {type:"text", class:"mono narrow", placeholder:"22"});
+      i.value = conn.port || "";
+      i.addEventListener("input", () => { conn.port = i.value.trim(); upd(); });
+      return i;
+    })())));
+  box.append(sfield(T["settings.ssh.user"], (() => {
+    const i = el("input", {type:"text", class:"mono", placeholder:"root"});
+    i.value = conn.user || "";
+    i.addEventListener("input", () => { conn.user = i.value.trim(); upd(); });
+    return i;
+  })()));
+
+  // Which credential this connection uses. Not a fallback chain: a key or a
+  // password, so that "why did it ask me for a password" has one answer.
+  // What is chosen is read from what is filled in -- the key's path is the
+  // whole of it -- rather than kept as a second field to disagree with it
+  const auth = el("div", {class:"segrow"});
+  const keyPart = el("div");
+  const pwPart = el("div");
+  const drawAuth = () => {
+    const byKey = !!(sv.key || "").trim();
+    auth.textContent = "";
+    for (const [id, label] of [["key", T["settings.server.auth.key"]],
+                               ["password", T["settings.server.auth.password"]]]) {
+      const on = (id === "key") === byKey;
+      const r = el("input", {type:"radio", name:"srvauth"});
+      r.checked = on;
+      r.addEventListener("change", () => {
+        if (id === "password") { sv.key = ""; }
+        else if (!(sv.key || "").trim()) { sv.key = "~/.ssh/id_ed25519"; }
+        save(); drawAuth();
+      });
+      auth.append(el("label", {class:"check"}, r, el("span", {}, label)));
+    }
+    keyPart.hidden = !byKey;
+    pwPart.hidden = byKey;
+    if (byKey && keyIn) keyIn.value = sv.key || "";
+  };
+  let keyIn = null;
+  box.append(sfield(T["settings.server.auth"], auth));
+
+  keyIn = el("input", {type:"text", class:"mono", placeholder:"~/.ssh/id_ed25519"});
+  keyIn.value = sv.key || "";
+  keyIn.addEventListener("input", () => { sv.key = keyIn.value.trim(); save(); });
+  const keyRow = el("div", {class:"row2"}, keyIn);
+  if (!REMOTE) keyRow.append(el("button", {class:"quiet", onclick: async () => {
+    const path = await pickPath("key", T["settings.ssh.key.pick"], sv.key);
+    if (path !== null) { sv.key = path; keyIn.value = path; save(); }
+  }}, T["common.browse"]));
+  keyPart.append(sfield(T["settings.server.key"], keyRow, T["settings.server.key.hint"]));
+  keyPart.append(secretField(t, "passphrase", T["settings.server.passphrase"],
+    T["settings.server.passphrase.hint"], () => build(conn)));
+  pwPart.append(secretField(t, "password", T["settings.ssh.password"],
+    T["settings.ssh.password.hint"], () => build(conn)));
+  box.append(keyPart, pwPart);
+  drawAuth();
+
+  box.append(sfield(T["settings.server.remote_dir"], (() => {
+    const i = el("input", {type:"text", class:"mono", placeholder:"/var/www/html"});
+    i.value = sv.remote_dir || "";
+    i.addEventListener("input", () => { sv.remote_dir = i.value.trim(); save(); });
+    return i;
+  })(), T["settings.server.remote_dir.hint"]));
+
+  const adv = el("details");
+  adv.append(el("summary", {}, T["settings.server.advanced"]));
+  const jumpPart = el("div", {class:"under-check"});
+  const jumpOn = el("input", {type:"checkbox"});
+  jumpOn.checked = !!(sv.jump && (sv.jump.host || "").trim());
+  jumpOn.addEventListener("change", () => {
+    sv.jump = jumpOn.checked ? (sv.jump || {host:"", port:"", user:"", key:""}) : null;
+    jumpPart.hidden = !jumpOn.checked;
+    save();
+  });
+  adv.append(el("label", {class:"check"}, jumpOn,
+    el("span", {}, T["settings.server.jump.on"])));
+  const jf = (key, label, ph, narrow) => sfield(label, (() => {
+    const i = el("input", {type:"text", class:"mono" + (narrow ? " narrow" : ""), placeholder:ph});
+    i.value = (sv.jump && sv.jump[key]) || "";
+    i.addEventListener("input", () => {
+      sv.jump = sv.jump || {};
+      sv.jump[key] = i.value.trim();
+      save();
+    });
+    return i;
+  })());
+  jumpPart.append(el("div", {class:"row2"},
+    jf("host", T["settings.server.jump.host"], "gw.example.com"),
+    jf("port", T["settings.phone.port"], "22", true)));
+  jumpPart.append(jf("user", T["settings.server.jump.user"], "root"));
+  jumpPart.append(jf("key", T["settings.server.jump.key"], "~/.ssh/id_ed25519"));
+  jumpPart.hidden = !jumpOn.checked;
+  adv.append(jumpPart);
+
+  adv.append(sfield(T["settings.server.file_command"], (() => {
+    const i = el("input", {type:"text", class:"mono", placeholder:"sudo su -c /usr/lib/openssh/sftp-server"});
+    i.value = sv.file_command || "";
+    i.addEventListener("input", () => { sv.file_command = i.value.trim(); save(); });
+    return i;
+  })(), T["settings.server.file_command.hint"]));
+
+  const alive = el("input", {type:"checkbox"});
+  alive.checked = !!sv.keepalive;
+  alive.addEventListener("change", () => { sv.keepalive = alive.checked ? 30 : 0; save(); });
+  adv.append(el("label", {class:"check"}, alive,
+    el("span", {}, T["settings.server.keepalive.on"])));
+  box.append(adv);
+
+  // Proved before it is needed, so a wrong field is found here rather than
+  // at launch. What comes back is the server's own words either way
+  const said = el("div", {class:"hint"});
+  box.append(el("div", {class:"row"},
+    el("button", {onclick: async ev => {
+      // Held on to now: an event's target is gone by the time the answer
+      // arrives, and reaching for it then is how a button stays grey forever
+      const btn = ev.currentTarget;
+      const ws = wss[sel.ws];
+      said.textContent = T["settings.server.test.doing"];
+      said.style.color = "";
+      btn.classList.add("held");
+      const r = await settingsApi("/api/server/test", {
+        host: conn.host || "", port: Number(conn.port || 22),
+        user: conn.user || "", key: sv.key || "",
+        jump: sv.jump || null, keepalive: sv.keepalive || 0,
+        file_command: sv.file_command || "",
+        ws: (ws && (ws.id || "").trim()) || "", tab: (t.id || "").trim(),
+      });
+      btn.classList.remove("held");
+      said.textContent = r && r.ok
+        ? (T["settings.server.test.ok"] || "")
+            .replace("{host}", conn.host || "").replace("{user}", conn.user || "")
+        : ((r && r.error) || "");
+      said.style.color = r && r.ok ? "var(--live)" : "var(--warn)";
+    }}, T["settings.server.test"]), said));
+  box.append(el("div", {class:"hint"}, T["settings.ssh.builtin.hint"]));
+}
+
 function kindPanel(t, cmdInput, rebuild, real) {
   if (catOf(t.command) === "ai") return aiPanel(t, cmdInput, rebuild, real);
   const box = el("div");
   const ssh = parseSsh(t.command), dk = parseDocker(t.command), wsl = parseWsl(t.command);
   const remote = parseRemote(t.command);
-  const sftpPanel = sftpPanelOf(t.command);
+  const sftpPanel = parseSftpUrl(t.command);
   const web = parseBrowser(t.command);
   const mdl = parseModel(t.command);
   const sync = (build, o) => () => {
@@ -7372,182 +7543,14 @@ function kindPanel(t, cmdInput, rebuild, real) {
     if (sug) suggest(i, sug);
     return [el("label", {}, label), i];
   };
-  if (sftpPanel !== null) {
-    // Two lists of files, and the one thing this screen decides about them:
-    // whose connection they use. Everything about that connection is on the
-    // server tab itself, which is where a person looking for a host will go
-    const o = {server: sftpPanel};
-    const upd = sync(buildSftp, o);
-    // Every server tab in this workspace. The page keeps them in one flat list
-    // with the folder as a number on each, so that is where they are read from
-    const servers = (((wss[sel.ws] || {}).tabs) || [])
-      .filter(x => x !== t && parseRemote(x.command))
-      .map(x => ({name: (x.id || x.name || "").trim(), at: cmdToText(x.command)}))
-      .filter(x => x.name);
-    const sel2 = el("select");
-    sel2.append(el("option", {value:""}, T["sftp.pick_server"]));
-    for (const s of servers) {
-      const op = el("option", {value:s.name}, s.name + "  ·  " + s.at);
-      if (s.name === o.server) op.selected = true;
-      sel2.append(op);
-    }
-    sel2.addEventListener("change", () => { o.server = sel2.value; upd(); });
-    box.append(sfield(T["settings.tab.cat.remote"], sel2,
-      servers.length ? T["settings.sftp.hint"] : T["sftp.no_servers"]));
+  if (sftpPanel) {
+    // The same connection, asked for its files instead of a terminal. Every
+    // field is here, on this tab, because that is where somebody adding a file
+    // panel looks for them
+    box.append(el("div", {class:"hint"}, T["settings.sftp.hint"]));
+    connectionFields(box, t, sftpPanel, buildSftpUrl, cmdInput);
   } else if (remote) {
-    // This program does the connecting, so what it needs is an address, a user,
-    // one way of proving who that is, and -- for the file panel -- where on the
-    // far end to start looking. Everything below that is for the connections
-    // that are not straightforward, and stays folded until somebody has one
-    const upd = sync(buildRemote, remote);
-    const sv = t.server || (t.server = {});
-    // The unsaved mark is worked out by comparing what would be written, on a
-    // timer, so nothing here has to remember to announce itself
-    const save = () => refreshSave();
-    box.append(el("div", {class:"row2"},
-      sfield(T["settings.ssh.host"], (() => {
-        const i = el("input", {type:"text", class:"mono", placeholder:"example.com"});
-        i.value = remote.host || "";
-        suggest(i, "ssh");
-        i.addEventListener("input", () => { remote.host = i.value.trim(); upd(); });
-        return i;
-      })()),
-      sfield(T["settings.phone.port"], (() => {
-        const i = el("input", {type:"text", class:"mono narrow", placeholder:"22"});
-        i.value = remote.port || "";
-        i.addEventListener("input", () => { remote.port = i.value.trim(); upd(); });
-        return i;
-      })())));
-    box.append(sfield(T["settings.ssh.user"], (() => {
-      const i = el("input", {type:"text", class:"mono", placeholder:"root"});
-      i.value = remote.user || "";
-      i.addEventListener("input", () => { remote.user = i.value.trim(); upd(); });
-      return i;
-    })()));
-
-    // Which credential this connection uses. Not a fallback chain: a key or a
-    // password, so that "why did it ask me for a password" has one answer.
-    // What is chosen is read from what is filled in -- the key's path is the
-    // whole of it -- rather than kept as a second field to disagree with it
-    const auth = el("div", {class:"segrow"});
-    const keyPart = el("div");
-    const pwPart = el("div");
-    const drawAuth = () => {
-      const byKey = !!(sv.key || "").trim();
-      auth.textContent = "";
-      for (const [id, label] of [["key", T["settings.server.auth.key"]],
-                                 ["password", T["settings.server.auth.password"]]]) {
-        const on = (id === "key") === byKey;
-        const r = el("input", {type:"radio", name:"srvauth"});
-        r.checked = on;
-        r.addEventListener("change", () => {
-          if (id === "password") { sv.key = ""; }
-          else if (!(sv.key || "").trim()) { sv.key = "~/.ssh/id_ed25519"; }
-          save(); drawAuth();
-        });
-        auth.append(el("label", {class:"check"}, r, el("span", {}, label)));
-      }
-      keyPart.hidden = !byKey;
-      pwPart.hidden = byKey;
-      if (byKey && keyIn) keyIn.value = sv.key || "";
-    };
-    let keyIn = null;
-    box.append(sfield(T["settings.server.auth"], auth));
-
-    keyIn = el("input", {type:"text", class:"mono", placeholder:"~/.ssh/id_ed25519"});
-    keyIn.value = sv.key || "";
-    keyIn.addEventListener("input", () => { sv.key = keyIn.value.trim(); save(); });
-    const keyRow = el("div", {class:"row2"}, keyIn);
-    if (!REMOTE) keyRow.append(el("button", {class:"quiet", onclick: async () => {
-      const path = await pickPath("key", T["settings.ssh.key.pick"], sv.key);
-      if (path !== null) { sv.key = path; keyIn.value = path; save(); }
-    }}, T["common.browse"]));
-    keyPart.append(sfield(T["settings.server.key"], keyRow, T["settings.server.key.hint"]));
-    keyPart.append(secretField(t, "passphrase", T["settings.server.passphrase"],
-      T["settings.server.passphrase.hint"], () => buildRemote(remote)));
-    pwPart.append(secretField(t, "password", T["settings.ssh.password"],
-      T["settings.ssh.password.hint"], () => buildRemote(remote)));
-    box.append(keyPart, pwPart);
-    drawAuth();
-
-    box.append(sfield(T["settings.server.remote_dir"], (() => {
-      const i = el("input", {type:"text", class:"mono", placeholder:"/var/www/html"});
-      i.value = sv.remote_dir || "";
-      i.addEventListener("input", () => { sv.remote_dir = i.value.trim(); save(); });
-      return i;
-    })(), T["settings.server.remote_dir.hint"]));
-
-    const adv = el("details");
-    adv.append(el("summary", {}, T["settings.server.advanced"]));
-    const jumpPart = el("div", {class:"under-check"});
-    const jumpOn = el("input", {type:"checkbox"});
-    jumpOn.checked = !!(sv.jump && (sv.jump.host || "").trim());
-    jumpOn.addEventListener("change", () => {
-      sv.jump = jumpOn.checked ? (sv.jump || {host:"", port:"", user:"", key:""}) : null;
-      jumpPart.hidden = !jumpOn.checked;
-      save();
-    });
-    adv.append(el("label", {class:"check"}, jumpOn,
-      el("span", {}, T["settings.server.jump.on"])));
-    const jf = (key, label, ph, narrow) => sfield(label, (() => {
-      const i = el("input", {type:"text", class:"mono" + (narrow ? " narrow" : ""), placeholder:ph});
-      i.value = (sv.jump && sv.jump[key]) || "";
-      i.addEventListener("input", () => {
-        sv.jump = sv.jump || {};
-        sv.jump[key] = i.value.trim();
-        save();
-      });
-      return i;
-    })());
-    jumpPart.append(el("div", {class:"row2"},
-      jf("host", T["settings.server.jump.host"], "gw.example.com"),
-      jf("port", T["settings.phone.port"], "22", true)));
-    jumpPart.append(jf("user", T["settings.server.jump.user"], "root"));
-    jumpPart.append(jf("key", T["settings.server.jump.key"], "~/.ssh/id_ed25519"));
-    jumpPart.hidden = !jumpOn.checked;
-    adv.append(jumpPart);
-
-    adv.append(sfield(T["settings.server.file_command"], (() => {
-      const i = el("input", {type:"text", class:"mono", placeholder:"sudo su -c /usr/lib/openssh/sftp-server"});
-      i.value = sv.file_command || "";
-      i.addEventListener("input", () => { sv.file_command = i.value.trim(); save(); });
-      return i;
-    })(), T["settings.server.file_command.hint"]));
-
-    const alive = el("input", {type:"checkbox"});
-    alive.checked = !!sv.keepalive;
-    alive.addEventListener("change", () => { sv.keepalive = alive.checked ? 30 : 0; save(); });
-    adv.append(el("label", {class:"check"}, alive,
-      el("span", {}, T["settings.server.keepalive.on"])));
-    box.append(adv);
-
-    // Proved before it is needed, so a wrong field is found here rather than
-    // at launch. What comes back is the server's own words either way
-    const said = el("div", {class:"hint"});
-    box.append(el("div", {class:"row"},
-      el("button", {onclick: async ev => {
-        // Held on to now: an event's target is gone by the time the answer
-        // arrives, and reaching for it then is how a button stays grey forever
-        const btn = ev.currentTarget;
-        const ws = wss[sel.ws];
-        said.textContent = T["settings.server.test.doing"];
-        said.style.color = "";
-        btn.classList.add("held");
-        const r = await settingsApi("/api/server/test", {
-          host: remote.host || "", port: Number(remote.port || 22),
-          user: remote.user || "", key: sv.key || "",
-          jump: sv.jump || null, keepalive: sv.keepalive || 0,
-          file_command: sv.file_command || "",
-          ws: (ws && (ws.id || "").trim()) || "", tab: (t.id || "").trim(),
-        });
-        btn.classList.remove("held");
-        said.textContent = r && r.ok
-          ? (T["settings.server.test.ok"] || "")
-              .replace("{host}", remote.host || "").replace("{user}", remote.user || "")
-          : ((r && r.error) || "");
-        said.style.color = r && r.ok ? "var(--live)" : "var(--warn)";
-      }}, T["settings.server.test"]), said));
-    box.append(el("div", {class:"hint"}, T["settings.ssh.builtin.hint"]));
+    connectionFields(box, t, remote, buildRemote, cmdInput);
   } else if (ssh) {
     const upd = sync(buildSsh, ssh);
     box.append(el("div", {class:"row"}, ...f(ssh, "host", T["settings.ssh.host"], "example.com", upd, 240, "ssh"),

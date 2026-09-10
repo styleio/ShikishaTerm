@@ -1705,10 +1705,19 @@ fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
             Surface::Git { key, dir: Some(d), protect, .. } => Some(hooks::TabPlace {
                 key: hooks::TabKey { id: Some(key.clone()) },
                 dir: d.clone(),
-                // A panel reports on a folder on this machine, and is not a
+                // A git panel reports on a folder on this machine, and is not a
                 // place files can be sent to
                 remote: None,
                 protect: protect.clone(),
+            }),
+            // A file panel is. `sftp_put("その呼び名", …)` reaches the same
+            // server the screen is showing, which is the whole point of the
+            // panel being a tab rather than a window of its own
+            Surface::Sftp { key, dir, spec, .. } => Some(hooks::TabPlace {
+                key: hooks::TabKey { id: Some(key.clone()) },
+                dir: dir.clone().unwrap_or_default(),
+                remote: spec.clone(),
+                protect: Vec::new(),
             }),
             _ => None,
         })
@@ -5274,17 +5283,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // a folder listing over a network is a wait and this loop draws the
         // window
         for (panel, act, args) in surface.take_sftps() {
-            let ws_name = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
-            let js = sftp_answer(
-                &panel,
-                &act,
-                &args,
-                &surfaces,
-                workspaces.get(ws_index),
-                &caps,
-                &ws_name,
-                &sftp_tx,
-            );
+            let js = sftp_answer(&panel, &act, &args, &surfaces, &caps, &sftp_tx);
             if let Some(js) = js {
                 surface.push_sftp(&js);
                 if let Some(r) = remote_ui.as_ref() {
@@ -7587,9 +7586,7 @@ fn sftp_answer(
     act: &str,
     args: &serde_json::Value,
     surfaces: &[Surface],
-    ws: Option<&config::Workspace>,
     caps: &std::rc::Rc<crate::caps::Capabilities>,
-    ws_name: &str,
     tx: &std::sync::mpsc::Sender<String>,
 ) -> Option<String> {
     let fail = |e: String| {
@@ -7598,93 +7595,34 @@ fn sftp_answer(
                 .to_string(),
         )
     };
-    let Some((server, local_root)) = surfaces.iter().find_map(|s| match s {
-        Surface::Sftp { key, server, dir, .. } if key == panel => {
-            Some((server.clone(), dir.clone()))
+    let Some((local_root, spec, remote_root)) = surfaces.iter().find_map(|s| match s {
+        Surface::Sftp { key, dir, spec, remote_dir, .. } if key == panel => {
+            Some((dir.clone(), spec.clone(), remote_dir.clone()))
         }
         _ => None,
     }) else {
         return fail(i18n::t("err.sftp.no_panel"));
     };
-    // Every server tab in this workspace, and what each one amounts to. Read
-    // from the settings rather than from what is running: a connection that
-    // will not come up is exactly when somebody opens this panel, and a picker
-    // that hides the tab they are trying to fix is a dead end
-    let servers: Vec<(String, String, crate::ssh::Spec)> = ws
-        .map(|w| {
-            w.tabs
-                .iter()
-                .filter_map(|ft| {
-                    let argv = ft.cfg.command.argv();
-                    let (host, port, user) = config::ssh_endpoint(&argv)?;
-                    let id = ft.cfg.id.clone().or_else(|| ft.cfg.name.clone())?;
-                    let name = ft.cfg.name.clone().unwrap_or_else(|| id.clone());
-                    let under = |what: &str| {
-                        let t = ft.cfg.id.as_deref()?;
-                        Some(format!("ssh/{}/{}/{}", w.id, t, what))
-                    };
-                    let spec = server_spec(&host, port, &user, ft.cfg.server.as_ref(), &under);
-                    Some((id, name, spec))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let pointed = servers.iter().find(|(id, name, _)| *id == server || *name == server);
-    let remote_root = ws
-        .and_then(|w| {
-            w.tabs
-                .iter()
-                .find(|ft| {
-                    let named = ft.cfg.id.as_deref().or(ft.cfg.name.as_deref()).unwrap_or("");
-                    !server.is_empty() && named == server
-                })
-                .and_then(|ft| ft.cfg.server.as_ref())
-                .and_then(|sp| sp.remote_dir.clone())
-        })
-        .unwrap_or_default();
     let str_of = |k: &str| {
         args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string()
     };
 
-    // Which server tabs this panel could be pointed at, and which it is
+    // Where this panel stands, on both sides, and whether it has been told
+    // enough to reach the far one
     if act == "hello" {
-        let list: Vec<serde_json::Value> = servers
-            .iter()
-            .map(|(id, name, spec)| {
-                serde_json::json!({
-                    "id": id,
-                    "name": name,
-                    "at": format!("{}@{}", spec.user, spec.address()),
-                })
-            })
-            .collect();
         return Some(
             serde_json::json!({
                 "act": "hello",
                 "panel": panel,
                 "ok": true,
                 "data": {
-                    "server": server,
-                    "servers": list,
+                    "server": spec.as_ref().map(|s| format!("{}@{}", s.user, s.address())),
                     "local_root": local_root.as_ref().map(|p| display_path_of(p)),
                     "remote_root": remote_root,
                 },
             })
             .to_string(),
         );
-    }
-
-    // Choosing a connection rewrites the panel's own command line, because
-    // that line is the choice -- there is no second field to disagree with it
-    if act == "point" {
-        let to = str_of("server");
-        return match config::point_sftp_panel(ws_name, panel, &to) {
-            Ok(()) => Some(
-                serde_json::json!({"act": "point", "panel": panel, "ok": true, "data": to})
-                    .to_string(),
-            ),
-            Err(e) => fail(format!("{e:#}")),
-        };
     }
 
     // This machine's side. No connection is involved, so it is answered here
@@ -7715,12 +7653,9 @@ fn sftp_answer(
         };
     }
 
-    // Everything left needs the connection the server tab is holding
-    if server.trim().is_empty() {
-        return fail(i18n::t("err.sftp.not_pointed"));
-    }
-    let Some(spec) = pointed.map(|(_, _, spec)| spec.clone()) else {
-        return fail(i18n::tp("err.sftp.no_server", &[("name", &server)]));
+    // Everything left goes to the far end, which needs an address
+    let Some(spec) = spec else {
+        return fail(i18n::t("err.sftp.no_address"));
     };
 
     // The name this act is asking permission under, and the job it becomes
@@ -8081,7 +8016,7 @@ fn apply_ws_config(
         // (open_declared_browsers opens the window)
         if config::browser_url_of(&argv).is_some()
             || config::is_git_panel(&argv)
-            || config::sftp_panel_of(&argv).is_some()
+            || config::is_sftp_panel(&argv)
         {
             continue;
         }
@@ -8347,7 +8282,7 @@ fn spawn_workspace(
         // (open_declared_browsers opens them)
         if config::browser_url_of(&argv).is_some()
             || config::is_git_panel(&argv)
-            || config::sftp_panel_of(&argv).is_some()
+            || config::is_sftp_panel(&argv)
         {
             continue;
         }
@@ -8496,15 +8431,19 @@ enum Surface {
     /// The file panel: two lists of files, one on this machine and one on a
     /// server, drawn by the board.
     ///
-    /// It has no connection of its own. `server` is the name of the tab whose
-    /// connection it borrows -- the same way of naming one the file commands
-    /// use -- and is empty for a panel nobody has pointed anywhere yet. `dir`
-    /// is its folder on this machine, which is the folder its group is in
+    /// It carries its own connection, written on its own command line, because
+    /// the settings for a tab belong on that tab. `spec` is absent while the
+    /// address is still half-written -- a state the panel has to have, and says
+    /// so on screen. `dir` is its folder on this machine, which is the folder
+    /// its group is in
     Sftp {
         key: String,
         name: String,
-        server: String,
         dir: Option<std::path::PathBuf>,
+        spec: Option<crate::ssh::Spec>,
+        /// Where the far side's list opens. Empty starts wherever signing in
+        /// puts you
+        remote_dir: String,
     },
 }
 
@@ -8523,7 +8462,7 @@ fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String
             if argv.is_empty() {
                 continue;
             }
-            if let Some(server) = config::sftp_panel_of(&argv) {
+            if config::is_sftp_panel(&argv) {
                 let key = ft
                     .cfg
                     .id
@@ -8531,7 +8470,23 @@ fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String
                     .or_else(|| ft.cfg.name.clone())
                     .unwrap_or_else(|| "sftp".into());
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
-                out.push(Surface::Sftp { key, name, server, dir: ws.cwd_of(ft) });
+                // Its credentials are filed under the workspace and this tab,
+                // exactly as a terminal's are, so the two are named the same
+                // way and neither is written into the settings
+                let under = |what: &str| {
+                    let t = ft.cfg.id.as_deref()?;
+                    Some(format!("ssh/{}/{}/{}", ws.id, t, what))
+                };
+                let spec = config::sftp_endpoint(&argv).map(|(host, port, user)| {
+                    server_spec(&host, port, &user, ft.cfg.server.as_ref(), &under)
+                });
+                let remote_dir = ft
+                    .cfg
+                    .server
+                    .as_ref()
+                    .and_then(|sp| sp.remote_dir.clone())
+                    .unwrap_or_default();
+                out.push(Surface::Sftp { key, name, dir: ws.cwd_of(ft), spec, remote_dir });
                 continue;
             }
             if config::is_git_panel(&argv) {

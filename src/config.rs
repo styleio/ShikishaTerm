@@ -1927,8 +1927,43 @@ impl Workspace {
 /// What the password is called is worked out from the workspace and the tab,
 /// by whoever is launching, so that it is not something to write down twice
 pub fn ssh_endpoint(argv: &[String]) -> Option<(String, u16, String)> {
+    endpoint_of(argv, "ssh")
+}
+
+/// The same, for a file panel: `sftp://deploy@example.com:22`.
+///
+/// A panel carries its own address rather than borrowing another tab's. It was
+/// the other way round for one afternoon and it was a maze: a person adding a
+/// file panel found a list with nothing in it and no way to say what they
+/// wanted, because the thing to fill in was on a tab they had not made yet.
+/// The settings for a tab are on that tab.
+///
+/// Nothing is lost by it. Two tabs written to the same address share one
+/// connection anyway -- [`crate::ssh::Spec::route`] is what a live connection
+/// is filed under -- so a terminal and its files still travel together without
+/// anybody having to say so
+pub fn sftp_endpoint(argv: &[String]) -> Option<(String, u16, String)> {
+    endpoint_of(argv, "sftp")
+}
+
+/// Whether this tab is the file panel at all, filled in or not.
+///
+/// A half-written address is still a panel: the tab has to hold its place on
+/// the screen and say what it needs, rather than being handed to the launcher
+/// as the name of a program
+pub fn is_sftp_panel(argv: &[String]) -> bool {
+    argv.first().is_some_and(|h| {
+        h.len() >= 7 && h[..7].eq_ignore_ascii_case("sftp://")
+    })
+}
+
+fn endpoint_of(argv: &[String], scheme: &str) -> Option<(String, u16, String)> {
     let head = argv.first()?;
-    let rest = head.strip_prefix("ssh://").or_else(|| head.strip_prefix("SSH://"))?;
+    let mark = format!("{scheme}://");
+    if head.len() < mark.len() || !head[..mark.len()].eq_ignore_ascii_case(&mark) {
+        return None;
+    }
+    let rest = &head[mark.len()..];
     let (user, hostport) = rest.split_once('@')?;
     if user.trim().is_empty() {
         return None;
@@ -2012,55 +2047,7 @@ pub fn is_git_panel(argv: &[String]) -> bool {
     matches!(argv, [head] if head.eq_ignore_ascii_case("git"))
 }
 
-/// Whether this tab is the file panel, and which server tab it is pointed at.
-///
-/// `sftp` on its own is a panel that has not been pointed anywhere yet, which
-/// is a state it has to have: a person adds the panel and then chooses. `sftp
-/// deploy` is one pointed at the tab called `deploy` -- the same way of naming
-/// a connection the file commands use, so that what the screen does and what a
-/// script does are addressed alike.
-///
-/// A word with an address in it is somebody's `sftp.exe` command line and is
-/// left alone, exactly as `git status` is left alone
-pub fn sftp_panel_of(argv: &[String]) -> Option<String> {
-    match argv {
-        [head] if head.eq_ignore_ascii_case("sftp") => Some(String::new()),
-        [head, at] if head.eq_ignore_ascii_case("sftp") && !at.contains(['@', ':', '/']) => {
-            Some(at.clone())
-        }
-        _ => None,
-    }
-}
 
-/// Point a file panel at a server tab, in the settings.
-///
-/// The panel's command line *is* the choice -- there is no second field to
-/// keep in step with it -- so choosing on the board rewrites that one line
-pub fn point_sftp_panel(ws_name: &str, panel: &str, server: &str) -> Result<()> {
-    with_folders(&config_file_path(), ws_name, |folders| {
-        for g in folders.iter_mut() {
-            let Some(tabs) = g.get_mut("tabs").and_then(|t| t.as_array_mut()) else {
-                continue;
-            };
-            for t in tabs.iter_mut() {
-                let named = t
-                    .get("id")
-                    .and_then(|i| i.as_str())
-                    .or_else(|| t.get("name").and_then(|n| n.as_str()))
-                    .unwrap_or_default();
-                if named != panel {
-                    continue;
-                }
-                t["command"] = match server.trim() {
-                    "" => serde_json::json!("sftp"),
-                    s => serde_json::json!(format!("sftp {s}")),
-                };
-                return Ok(());
-            }
-        }
-        Ok(())
-    })
-}
 
 impl TabConfig {
     /// Prefer automation, falling back to the old name lua
@@ -4116,22 +4103,17 @@ mod tests {
 
 #[cfg(test)]
 mod browser_kind_tests {
-    use super::{Config, browser_url_of, is_git_panel, sftp_panel_of};
+    use super::{Config, browser_url_of, is_git_panel, is_sftp_panel, sftp_endpoint, ssh_endpoint};
 
-    /// The file panel is the word on its own, or the word and the name of the
-    /// server tab it borrows a connection from. Anything with an address in it
-    /// is somebody's own sftp command line and stays one
     #[test]
-    fn the_file_panel_is_the_word_and_at_most_a_name() {
+    fn the_git_panel_is_the_word_on_its_own() {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(sftp_panel_of(&v(&["sftp"])), Some(String::new()), "まだどこにも向いていない");
-        assert_eq!(sftp_panel_of(&v(&["SFTP"])), Some(String::new()), "大文字でも同じもの");
-        assert_eq!(sftp_panel_of(&v(&["sftp", "deploy"])), Some("deploy".into()));
-        // A real command line, left alone
-        assert_eq!(sftp_panel_of(&v(&["sftp", "rocky@example.com"])), None);
-        assert_eq!(sftp_panel_of(&v(&["sftp", "-P", "22", "a@b"])), None);
-        assert_eq!(sftp_panel_of(&v(&["sftpx"])), None);
-        assert_eq!(sftp_panel_of(&[]), None);
+        assert!(is_git_panel(&v(&["git"])));
+        assert!(is_git_panel(&v(&["GIT"])), "大文字でも同じもの");
+        // Somebody wanting a terminal that runs git keeps their terminal
+        assert!(!is_git_panel(&v(&["git", "status"])));
+        assert!(!is_git_panel(&v(&["gitk"])));
+        assert!(!is_git_panel(&[]));
     }
 
     /// What a server tab knows beyond its address is read back whole, and a
@@ -4159,16 +4141,31 @@ mod browser_kind_tests {
         assert!(tabs[1].server.is_none(), "書いていないものが生えている");
     }
 
-
+    /// A file panel carries its own address, written the way the world writes
+    /// one, and is told apart from a terminal only by the scheme
     #[test]
-    fn the_git_panel_is_the_word_on_its_own() {
+    fn a_file_panel_is_an_address_like_any_other() {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert!(is_git_panel(&v(&["git"])));
-        assert!(is_git_panel(&v(&["GIT"])), "大文字でも同じもの");
-        // Somebody wanting a terminal that runs git keeps their terminal
-        assert!(!is_git_panel(&v(&["git", "status"])));
-        assert!(!is_git_panel(&v(&["gitk"])));
-        assert!(!is_git_panel(&[]));
+        assert_eq!(
+            sftp_endpoint(&v(&["sftp://deploy@example.com:2222"])),
+            Some(("example.com".into(), 2222, "deploy".into()))
+        );
+        assert_eq!(
+            sftp_endpoint(&v(&["SFTP://deploy@example.com"])),
+            Some(("example.com".into(), 22, "deploy".into())),
+            "大文字でも同じもの。ポートを書かなければ 22"
+        );
+        // Half-written is still a panel: it has to hold its place and say what
+        // it needs, not be handed to the launcher as the name of a program
+        assert!(is_sftp_panel(&v(&["sftp://"])));
+        assert_eq!(sftp_endpoint(&v(&["sftp://"])), None);
+        // Somebody's own sftp command line is a command line
+        assert!(!is_sftp_panel(&v(&["sftp", "deploy@example.com"])));
+        assert!(!is_sftp_panel(&v(&["sftp"])));
+        assert!(!is_sftp_panel(&[]));
+        // The two schemes do not answer for each other
+        assert_eq!(sftp_endpoint(&v(&["ssh://a@b:22"])), None);
+        assert_eq!(ssh_endpoint(&v(&["sftp://a@b:22"])), None);
     }
 
 

@@ -6110,7 +6110,7 @@ function buildGitPanel() {
 // that automation does not also hold.
 const SFTP_NARROW = 720;
 let F = {
-  panel: null, server: "", servers: [], asked: false,
+  panel: null, server: "", asked: false,
   local:  {root:"", at:"", rows:[], sel:new Set(), busy:false},
   remote: {root:"", at:"", rows:[], sel:new Set(), busy:false},
   side: "local", said: "", bad: false, why: "", whySide: "",
@@ -6173,21 +6173,11 @@ window.__sftp = msg => {
   if (act === "hello" && msg.ok) {
     const d = msg.data || {};
     F.server = d.server || "";
-    F.servers = d.servers || [];
     F.local.root = d.local_root || "";
     F.remote.root = d.remote_root || "";
     if (!F.local.at) F.local.at = F.local.root;
     if (!F.remote.at) F.remote.at = F.remote.root;
     sftpRefresh();
-    drawSftp();
-    return;
-  }
-  if (act === "point") {
-    // The command line has been rewritten; the settings coming back around
-    // will say so. Ask again from scratch rather than guessing what changed
-    F.asked = false;
-    F.remote.at = ""; F.remote.rows = []; F.remote.sel.clear();
-    F.said = ""; F.bad = false;
     drawSftp();
     return;
   }
@@ -6372,8 +6362,11 @@ function sftpRowMenu(anchor, which, row) {
 function sftpBuild(box) {
   box.textContent = "";
   const conn = el("div", {class:"conn"});
-  const pick = el("button", {class:"pick", onclick: ev => sftpPickServer(ev.currentTarget)});
-  const add = el("button", {onclick: () => addTabHere({folder: F.local.root})}, T["sftp.add"] || "");
+  // Not a chooser: this tab is the connection. Pressing it opens the settings
+  // for this tab, which is where its address and its key are
+  const pick = el("button", {class:"pick",
+    title: T["sftp.settings"] || "",
+    onclick: () => openSettings(null, true, F.local.root)});
   const swap = el("div", {class:"swap"});
   const test = heldButton("local", T["sftp.test"] || "",
     () => F.server ? "" : (T["sftp.why.no_server"] || ""),
@@ -6382,7 +6375,7 @@ function sftpBuild(box) {
   test.classList.add("quiet");
   const gear = el("button", {class:"quiet", title: T["sftp.settings"] || "",
     onclick: () => openSettings(null, true, F.local.root)}, "⚙️");
-  conn.append(pick, add, swap, el("span", {class:"grow"}), test, gear);
+  conn.append(pick, swap, el("span", {class:"grow"}), test, gear);
 
   const sides = el("div", {class:"sides"});
   const made = {};
@@ -6415,17 +6408,8 @@ function sftpBuild(box) {
     el("span", {class:"say"}),
     el("span", {class:"safe"}));
   box.append(conn, sides, foot);
-  sftpUi = {conn, pick, add, swap, test, gear, sides, foot,
+  sftpUi = {conn, pick, swap, test, gear, sides, foot,
             say: foot.querySelector(".say"), safe: foot.querySelector(".safe"), ...made};
-}
-
-function sftpPickServer(anchor) {
-  const rows = F.servers.map(s => el("div", {onclick: () => {
-    closeFolderMenu();
-    sftpAsk("point", {server: s.id || s.name});
-  }}, (s.name || s.id) + "  ·  " + s.at));
-  if (!rows.length) rows.push(el("div", {class:"dim"}, T["sftp.no_servers"] || ""));
-  openList(anchor, rows);
 }
 
 // Where you are, written out in full, and pressed to go back up a level.
@@ -6523,10 +6507,11 @@ function drawSftp() {
   // Which connection, and the two chips that stand in for the two columns when
   // there is only room for one
   u.pick.textContent = "";
+  u.pick.classList.toggle("unset", !F.server);
   u.pick.append(el("span", {class:"nm"},
-    "🖧 " + (F.server || (T["sftp.pick_server"] || ""))));
-  u.pick.append(el("span", {class:"caret"}, "▾"));
-  // Built once, so its grey has to be kept in step with the choice above it
+    "🖧 " + (F.server || (T["sftp.no_address"] || ""))));
+  u.pick.append(el("span", {class:"caret"}, "⚙"));
+  // Built once, so its grey has to be kept in step with the address above it
   u.test.classList.toggle("held", !F.server);
   u.swap.textContent = "";
   for (const which of ["local", "remote"]) {
@@ -6580,7 +6565,11 @@ function drawSftp() {
     if (which === "remote" && !F.server) {
       ui.list.append(el("div", {class:"empty"},
         el("b", {}, T["sftp.empty.no_server"] || ""),
-        document.createTextNode(T["sftp.empty.no_server.say"] || "")));
+        document.createTextNode(T["sftp.empty.no_server.say"] || ""),
+        el("div", {style:"margin-top:var(--s3)"},
+          el("button", {class:"go",
+            onclick: () => openSettings(null, true, F.local.root)},
+            T["sftp.open_settings"] || ""))));
       continue;
     }
     // One level up, and only while there is one to go to: the folder this
@@ -8694,6 +8683,12 @@ mod tests {
         // Grey buttons that answer, and the question before anything is replaced
         assert!(PAGE.contains("sftp.why.no_server"), "止まっている理由が無い");
         assert!(PAGE.contains("id=\"sask\" hidden"), "取り消せないことを聞く窓が無い");
+        // The panel is a connection, not a chooser of one. Nothing here offers
+        // a list of other tabs to borrow from: the address is this tab's own,
+        // and what the screen offers is the way to its settings
+        assert!(!PAGE.contains("sftpPickServer"), "接続を他のタブから選ばせている");
+        assert!(!PAGE.contains("\"point\""), "接続を指し直す道が残っている");
+        assert!(PAGE.contains("sftp.open_settings"), "設定への入口が無い");
     }
 
     /// The top bar is drawn by the shell, not injected into the page.

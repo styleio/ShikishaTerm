@@ -876,12 +876,18 @@ thought of -- the same reason `split_pane` and `show` stayed two.
 permissions). Open the reading ones (`sftp_ls` / `sftp_get`) and `sftp_put` to
 an AI first, if any.
 
-**The same seven on a screen.** A tab whose command is `sftp <the server tab's
-name>` is the file panel: two lists of files, this folder on the left and that
-server on the right. It has no way of moving a file that is not one of the
-commands above, and it asks the same permission table -- so what you can do by
-hand and what a script may do cannot come apart. Pick the connection at the top
-of the panel; everything about that connection lives on the server tab itself.
+**The same seven on a screen.** A tab whose command is
+`sftp://deploy@example.com:22` is the file panel: two lists of files, this
+tab's working folder on the left and that server on the right. It has no way of
+moving a file that is not one of the commands above, and it asks the same
+permission table -- so what you can do by hand and what a script may do cannot
+come apart.
+
+The panel is a connection, addressed exactly the way a terminal on another
+machine is, so it is a tab the file commands can be told: `sftp_put("その
+呼び名", "dist/a.txt", "public/a.txt")` sends to the server the screen is
+showing. A terminal tab written to the same address shares the connection with
+it; nobody has to say so.
 
 ### Handing a run between participants
 
