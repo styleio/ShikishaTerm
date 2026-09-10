@@ -4039,24 +4039,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
             // Hand the current status to the remote UI and run any operations it sent
             if let Some(r) = remote_ui.as_ref() {
-                // Read the parser once, as rows. The snapshot wants the whole
-                // screen (a viewer that has just joined has nothing to repair)
-                // and the push below wants the rows that moved, and reading it
-                // twice would let the two disagree by a frame.
-                let screen_now: Vec<String> = tabs
-                    .get(session_at(&surfaces, active).unwrap_or(usize::MAX))
-                    .map(|t| {
-                        let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-                        shell::screen_rows(p.screen())
-                    })
-                    .unwrap_or_default();
                 let snap = remote::Snapshot {
                     // What was built at draw time, read back from where the
                     // window keeps it. `ui` doesn't exist here yet, and
                     // building it again would be a second place that assembles
                     // state -- and one more full build of it every frame.
                     ui: surface.last.clone(),
-                    screen_html: screen_now.join("\n"),
+                    // What the screen push last sent, so a viewer that joins now
+                    // is handed the same picture the ones already here can see
+                    screen_html: last_remote_rows.join("\n"),
                     workspace: workspaces
                         .get(ws_index)
                         .map(|w| w.name.clone())
@@ -4110,32 +4101,6 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     if last_remote_ui.as_deref() != Some(ui_json.as_str()) {
                         r.push_state(format!("{{\"ui\":{ui_json}}}"));
                         last_remote_ui = Some(ui_json);
-                    }
-                    if last_remote_push.elapsed() >= remote_floor(r.max_pending()) {
-                        match screen_push(&last_remote_rows, &screen_now) {
-                            ScreenPush::Nothing => {}
-                            ScreenPush::Rows(moved) => {
-                                let rows = {
-                                    let list: Vec<(usize, &str)> = moved
-                                        .iter()
-                                        .map(|&i| (i, screen_now[i].as_str()))
-                                        .collect();
-                                    serde_json::to_string(&list)
-                                };
-                                if let Ok(rows) = rows {
-                                    r.push_state(format!("{{\"rows\":{rows}}}"));
-                                    last_remote_rows = screen_now;
-                                    last_remote_push = Instant::now();
-                                }
-                            }
-                            ScreenPush::Whole => {
-                                let scr =
-                                    serde_json::to_string(&snap.screen_html).unwrap_or_default();
-                                r.push_state(format!("{{\"screen_html\":{scr}}}"));
-                                last_remote_rows = screen_now;
-                                last_remote_push = Instant::now();
-                            }
-                        }
                     }
                     // The heartbeat. Carries nothing the page needs -- it reads
                     // it as "the line is alive" and drops it -- and exists so
@@ -4761,6 +4726,47 @@ fn run(mut surface: WinSurface) -> Result<()> {
             flash_shown = None;
         }
         surface.draw(&tabs, &ui, flash.as_deref())?;
+        // The screen goes to any watching phone or browser here, on every turn
+        // of the loop, rather than inside the 200ms state check below.
+        //
+        // It lived in that check for a long time, which quietly capped a remote
+        // screen at five frames a second however generous the rate limit was --
+        // and five frames is what scrolling from a phone looked like. Detection
+        // is cheap to do slowly; a screen is not.
+        if let Some(r) = remote_ui.as_ref() {
+            if r.has_state_clients() && last_remote_push.elapsed() >= remote_floor(r.max_pending()) {
+                let now: Vec<String> = tabs
+                    .get(session_at(&surfaces, active).unwrap_or(usize::MAX))
+                    .map(|t| {
+                        let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                        shell::screen_rows(p.screen())
+                    })
+                    .unwrap_or_default();
+                match screen_push(&last_remote_rows, &now) {
+                    ScreenPush::Nothing => {}
+                    ScreenPush::Rows(moved) => {
+                        let rows = {
+                            let list: Vec<(usize, &str)> =
+                                moved.iter().map(|&i| (i, now[i].as_str())).collect();
+                            serde_json::to_string(&list)
+                        };
+                        if let Ok(rows) = rows {
+                            r.push_state(format!("{{\"rows\":{rows}}}"));
+                            last_remote_rows = now;
+                            last_remote_push = Instant::now();
+                        }
+                    }
+                    ScreenPush::Whole => {
+                        if let Ok(scr) = serde_json::to_string(&now.join("
+")) {
+                            r.push_state(format!("{{\"screen_html\":{scr}}}"));
+                            last_remote_rows = now;
+                            last_remote_push = Instant::now();
+                        }
+                    }
+                }
+            }
+        }
         // The window's size can change. If we don't hand it back over, a placed
         // page stays at its previous size.
         caps.set_area(surface.area);
