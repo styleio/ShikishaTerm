@@ -60,6 +60,7 @@ pub mod view;
 pub mod watch;
 pub mod webui;
 pub mod winpath;
+pub mod workspace;
 pub mod worktree;
 pub mod ws;
 pub mod wspack;
