@@ -2426,7 +2426,7 @@ const PAGE: &str = r##"<!doctype html>
  .wsbanner .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
  .wsgap { flex:1 1 auto; }
  .wspick { font-size:12px; color:var(--dim); }
- .wsbanner:hover .wspick, .wsbanner:hover .wsgear { color:var(--text); }
+ .wsbanner:hover .wspick { color:var(--text); }
  /* The initial, as a plate. A workspace has no colour of its own, so this is
     the one thing on the row that says "a workspace" rather than "a name" */
  .wsbadge { flex:none; width:22px; height:22px; border-radius:var(--r-chip);
@@ -3595,18 +3595,6 @@ function folderMark(colour) {
   if (colour) s.style.color = colour;
   return s;
 }
-// Settings, in the shape everybody reads as settings
-function gearMark() {
-  const s = el("span", {class:"mark"});
-  s.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
-    'stroke="currentColor" stroke-width="1.15" stroke-linecap="round">' +
-    '<circle cx="8" cy="8" r="2.4"/>' +
-    '<path d="M8 2.2v1.5M8 12.3v1.5M13.8 8h-1.5M3.7 8H2.2' +
-    'M12.1 3.9 11 5M5 11l-1.1 1.1M12.1 12.1 11 11M5 5 3.9 3.9"/>' +
-    '</svg>';
-  return s;
-}
-
 // The fold, where everybody looks for it
 function foldCaret(open, onFold) {
   const c = el("span", {class:"twist", onclick: e => { e.stopPropagation(); onFold(); }},
@@ -3696,9 +3684,6 @@ function renderNav() {
       el("button", {class:"wsname", onclick:() => {
         sel = {ws:sel.ws, grp:null, tab:null, global:false}; render();
       }}, badge, el("span", {class:"nm"}, ws.name || T["settings.tab.unnamed"])),
-      el("button", {class:"twist wsgear", title:T["settings.ws.settings"],
-        onclick:() => { sel = {ws:sel.ws, grp:null, tab:null, global:false}; render(); }},
-        gearMark()),
       el("span", {class:"wsgap"}),
       el("button", {class:"twist wspick", title:T["settings.ws.switch"],
         onclick: e => { e.stopPropagation(); pickWorkspace(e.currentTarget); }}, "▾")));
@@ -8024,8 +8009,6 @@ load().then(() => {
     const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
     const gi = (wss[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
     if (gi >= 0) {
-      navGlobalOpen = false;
-      navShut.delete(cur); navOpen.add(cur);
       sel = {ws:cur, grp:gi, tab:null, global:false};
       render();
       const s = document.querySelector(".navitem.sel");
@@ -8034,11 +8017,8 @@ load().then(() => {
     }
   }
   if (q.get("gen") === "1" || !wss[cur]) {
-    navGlobalOpen = true;
     sel = {ws:(wss[cur] ? cur : sel.ws), grp:null, tab:null, global:true, section:"basic"};
   } else {
-    navGlobalOpen = false;
-    navShut.delete(cur); navOpen.add(cur);
     sel = {ws:cur, grp:null, tab:null, global:false};
   }
   render();
