@@ -8,6 +8,19 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-10
+
+The window reaches another machine: its terminal, and its files.
+
+Write `ssh://user@host:port` as a tab and the program makes the connection
+itself, so a saved password is handed over in the sign-in rather than typed at
+a prompt. Write `sftp://user@host:port` and the same connection becomes two
+lists of files, side by side with your own folder. Automation reaches the same
+files by naming the tab. A password or a token now belongs to a workspace and
+says which sites it may be typed into and whether an AI may use it -- and the
+settings page it is registered on was rebuilt, along with the rest of that
+page, to one set of sizes.
+
 ### Added
 - **A tab can be a terminal on another machine, opened by the program itself.**
   Write `ssh://user@host:port` as a tab's command and it connects, signs in,
@@ -20,6 +33,27 @@ once it reaches its first tagged release.
   `ssh.exe`** exactly as before, agent forwarding and X11 included; this is a
   second way, not a replacement. A server whose key has changed since last time
   is refused rather than asked about, and told plainly.
+- **Files on that machine, on a screen.** A tab whose command is
+  `sftp://user@host:port` is two lists of files: that tab's working folder on
+  the left, that server on the right. Walk either side by pressing a step in
+  the path, tick what you want and press **Send** or **Bring here**; the `...`
+  at the end of a row makes a folder, renames one or deletes one, and a right
+  click or a drag between the sides does the same. Anything that cannot be
+  undone -- replacing a file, renaming, deleting -- is asked about first, with
+  the path quoted. Neither side goes above the folder it opened on. On a phone
+  a switch at the top shows one side at a time. It moves files only with the
+  seven commands below and asks the same permission table, so what you can do
+  by hand and what a script may do cannot come apart -- and the panel is itself
+  a tab those commands can be told.
+- **A connection is set up on the tab that uses it.** Address, user, a private
+  key or a password, and where the far side opens are all on that tab's
+  settings, whether it is a terminal (`ssh://`) or a file panel (`sftp://`) --
+  one form, so the two cannot come to disagree about what a server is. Folded
+  under it: reaching a server through another one (ProxyJump), a command to
+  run when the files that matter belong to somebody else, and keepalives for a
+  network that cuts a quiet line. **Test the connection** proves the whole road
+  -- address, credential, and that the far end will serve files -- before
+  anything is saved, and says the server's own words when it will not.
 - **Files on that machine, from automation.** `sftp_ls`, `sftp_stat`,
   `sftp_get`, `sftp_put`, `sftp_mkdir`, `sftp_rename` and `sftp_rm` work over
   the connection a tab already has, and are told which machine by naming that
@@ -82,6 +116,17 @@ once it reaches its first tagged release.
   on screen costs nothing. Bringing in a workspace whose name is already
   taken gives the newcomer a number, the way its scripts folder already got
   one.
+- **The settings page was rebuilt to one set of sizes.** Every gap on it is
+  now one of seven steps, every corner one of three, and every field the same
+  shape: its name above it, the box itself 36px tall, and what it means
+  underneath. A button that cannot be pressed yet is grey rather than faint
+  blue, and pressing it says what is in the way and points at it instead of
+  doing nothing. The left column follows the workspace it is editing: that
+  workspace at the top, the app's own settings as one row, and under it a tree
+  drawn with elbows, a folder shape and each tab's own colour. Notifications
+  split into the three things they actually were, model providers were redrawn,
+  and the second list of secrets -- the one that showed every secret on the
+  machine as a way in -- is gone.
 - The one-line "a new version is available" notice on the board is gone; the
   card and the settings card replace it. The privacy policy says what the
   daily look asks, and that fetching happens only when the button is pressed.
@@ -89,6 +134,22 @@ once it reaches its first tagged release.
   in the address, where proxies and browser histories keep addresses.
 
 ### Fixed
+- **A script turned away from a secret now says so on screen.** The refusal
+  reached the script and the log, and neither is in front of a person: an
+  automation stopped and the reason was somewhere you had to know to look. It
+  is said on the board, in the same words the script fails with, for all four
+  refusals -- a name nothing is registered under, one not open to the AI, one
+  not open to a person, and one asked for on a page it does not belong to.
+- **A folder whose only tab was a panel was drawn as an empty folder,** and
+  every row under it went undrawn -- so the panel had no line to press. The git
+  panel had the same silence.
+- **A panel opened on a phone never answered.** The window is handed a panel's
+  answers directly; from a phone they come down the same socket as everything
+  else, and nothing was reading them off it. The git panel had been quiet there
+  for as long as it has existed.
+- **The bar along the bottom covered a panel's last line.** It floats over the
+  pane, which is right for a terminal because its contents scroll back into
+  view; a panel's last line does not scroll, so the panel now stops above it.
 - **A tab aimed with 🎯 forgot what it was aimed at on the next start.** The
   aim is written back into the settings, and the walk that looked for the tab
   knew where tabs were kept two shapes ago — not the working folder every tab
@@ -1595,7 +1656,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/styleio/ShikishaTerm/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/styleio/ShikishaTerm/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/styleio/ShikishaTerm/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/styleio/ShikishaTerm/compare/v0.5.1...v0.6.0
