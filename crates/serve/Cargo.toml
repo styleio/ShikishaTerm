@@ -1,0 +1,14 @@
+[package]
+name = "shikisha-serve"
+version = "0.9.0"
+edition = "2024"
+description = "SHIKISHA with no window: the runtime, serving its board over the network."
+license = "MIT"
+
+[[bin]]
+name = "shikisha-serve"
+path = "src/main.rs"
+
+[dependencies]
+shikisha-core = { path = "../core" }
+anyhow = { workspace = true }

@@ -498,7 +498,12 @@ pub fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[St
     out
 }
 
-/// UI state needed for drawing
+/// UI state needed for drawing.
+///
+/// `Default` is what a runtime with no shell reports: nothing is covering the
+/// screen, no overlay is open, no window has been resized. A shell fills in
+/// what it knows on top of that.
+#[derive(Default)]
 pub struct Ui {
     /// First-ever run, before config exists (shows onboarding on INDEX)
     pub first_run: bool,

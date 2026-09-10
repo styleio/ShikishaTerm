@@ -205,6 +205,14 @@ pub struct Layout {
     next_id: PaneId,
 }
 
+impl Default for Layout {
+    /// One pane, showing the first tab: what a runtime with no window has, and
+    /// what a window starts from before anything is split
+    fn default() -> Self {
+        Self::single(1)
+    }
+}
+
 impl Layout {
     /// One pane filling everything — what every workspace starts as.
     pub fn single(surface: usize) -> Layout {

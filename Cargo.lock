@@ -3668,6 +3668,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shikisha-serve"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "shikisha-core",
+]
+
+[[package]]
 name = "shikisha-shared"
 version = "0.9.0"
 dependencies = [

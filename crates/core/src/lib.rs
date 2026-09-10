@@ -45,6 +45,7 @@ pub mod reply;
 pub mod repo;
 pub mod session_log;
 pub mod send;
+pub mod serve;
 pub mod sessionfind;
 pub mod shell;
 pub mod ssh;
