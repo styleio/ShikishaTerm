@@ -170,6 +170,10 @@ impl Scheme {
         // already sit at a gentle contrast, and taking 45% off those left
         // labels that could not be read
         out.push_str(&format!("--dim:{};", mix(&fg, &bg, 0.35)));
+        // A third step down, for the line that explains a field. Two steps
+        // were not enough to tell a label from the sentence under it, and a
+        // form where everything is the same weight has no order to read in
+        out.push_str(&format!("--faint:{};", mix(&fg, &bg, 0.52)));
         // Status colours come from the scheme because a scheme's own green and
         // red are the ones chosen to be read against its background. The brand
         // blue does not: it is the app's, not the theme's.
@@ -203,6 +207,13 @@ impl Scheme {
         out.push_str(&format!("--hover:{};", mix(&bg, &fg, 0.05)));
         out.push_str(&format!("--raise:{};", mix(&bg, &fg, 0.10)));
         out.push_str(&format!("--sunk:{};", mix(&bg, &fg, 0.03)));
+        // The edge of something you can type in or press. `--line` divides the
+        // page and has to stay quiet to do that; a control has to be findable
+        // on its own, and at 16% of the way to the text it was not -- a form
+        // read as a flat sheet with words floating on it
+        out.push_str(&format!("--edge:{};", mix(&bg, &fg, 0.30)));
+        // ...and the same edge with the pointer on it
+        out.push_str(&format!("--edge-hi:{};", mix(&bg, &fg, 0.45)));
         // A surface that leans toward the accent -- the bar that is loading,
         // the button that is armed
         out.push_str(&format!("--tint:{};", mix(&bg, "#00aaff", 0.16)));

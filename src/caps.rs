@@ -1225,7 +1225,7 @@ mod tests {
         use crate::grants::Subject;
         let open = |ai: bool| SecretMeta {
             ai,
-            hosts: vec!["example.com".into()],
+            urls: vec!["https://example.com".into()],
             ..Default::default()
         };
         let tokens = HashMap::from([

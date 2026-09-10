@@ -1506,7 +1506,7 @@ fn handle(
                                     "description": m.desc,
                                     "human": m.human,
                                     "ai": m.ai,
-                                    "hosts": m.hosts,
+                                    "urls": m.urls,
                                 })
                             })
                             .collect(),
@@ -1535,25 +1535,39 @@ fn handle(
             // is *for* can be changed without going to find it again. The store
             // refuses that for a name it has never seen
             let flag = |k, or| p.get(k).and_then(|v| v.as_bool()).unwrap_or(or);
+            let urls: Vec<String> = p
+                .get("urls")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|h| h.as_str())
+                        .map(|h| h.trim().to_string())
+                        .filter(|h| !h.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            // The same question the screen asked while it was being typed. A
+            // line that reaches too far is refused here as well, because the
+            // screen is not the only way in
+            let bad = urls
+                .iter()
+                .find_map(|u| crate::config::url_fault(u).map(|why| (u.clone(), why)));
             let meta = crate::config::SecretMeta {
                 human: flag("human", true),
                 ai: flag("ai", false),
-                hosts: p
-                    .get("hosts")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|h| h.as_str())
-                            .map(|h| h.trim().to_ascii_lowercase())
-                            .filter(|h| !h.is_empty())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                urls,
                 desc: s("description").to_string(),
             };
-            let resp = match crate::config::upsert_secret(&path, pw.as_deref(), key, &meta, value) {
-                Ok(()) => serde_json::json!({ "ok": true }),
-                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+            let resp = match bad {
+                Some((u, why)) => serde_json::json!({
+                    "ok": false,
+                    "error": format!("{}: {}", u, crate::i18n::t(why)),
+                }),
+                None => match crate::config::upsert_secret(&path, pw.as_deref(), key, &meta, value)
+                {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+                },
             };
             req.respond(json_resp(resp))?;
         }
@@ -2293,7 +2307,16 @@ const PAGE: &str = r##"<!doctype html>
    color-scheme: {{SCHEME}};
  }
  * { box-sizing:border-box; }
- body { margin:0; background:var(--bg); color:var(--text); font-size:14px; line-height:1.6;
+ [hidden] { display:none !important; }
+ /* Space, in steps. Every gap on this page is one of these six numbers, so
+    that "near" and "apart" mean the same distance wherever they appear. What
+    went wrong without them: a label sat as far from its own field as the
+    field sat from the next question, and the form read as one long list of
+    unrelated lines */
+ :root { --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px;
+   /* Corners: what you press or type in, what holds them, what labels them */
+   --r-ctl:6px; --r-card:10px; --r-chip:4px; }
+ body { margin:0; background:var(--bg); color:var(--text); font-size:14px; line-height:1.5;
    font-family:system-ui,"Segoe UI","Yu Gothic UI","Hiragino Sans",sans-serif; }
  code, .mono, input.mono { font-family:ui-monospace,Consolas,"Courier New",monospace; }
 
@@ -2325,8 +2348,8 @@ const PAGE: &str = r##"<!doctype html>
  /* Replay the animation every time, so a click still registers even if the message text repeats */
  #msg.flash { animation:msgflash 1.1s ease-out; }
  @keyframes msgflash {
-   0%   { background:var(--accent); color:#04121c; }
-   60%  { background:var(--accent); color:#04121c; }
+   0%   { background:var(--accent); color:var(--bg); }
+   60%  { background:var(--accent); color:var(--bg); }
    100% { background:transparent; color:var(--muted); }
  }
  button.primary:disabled { opacity:.55; cursor:default; }
@@ -2336,17 +2359,17 @@ const PAGE: &str = r##"<!doctype html>
  /* Mark the save button while there are unsaved changes. It turns amber and
     pulses a glow ring so an unsaved edit is impossible to miss and you remember
     to press Save at the end (it goes back to the normal blue once saved). */
- #savebtn.dirty { background:#ffb020; border-color:#ffb020; color:#1a1205;
-   animation:savepulse 1.1s ease-in-out infinite; }
+ #savebtn.dirty { background:color-mix(in srgb, var(--warn) 18%, transparent);
+   border-color:var(--warn); color:var(--warn); }
  #savebtn.dirty::before { content:"● "; }
  @keyframes savepulse {
-   0%   { box-shadow:0 0 0 0 rgba(255,176,32,.6); }
-   70%  { box-shadow:0 0 0 8px rgba(255,176,32,0); }
-   100% { box-shadow:0 0 0 0 rgba(255,176,32,0); }
+   0%   { box-shadow:0 0 0 0 color-mix(in srgb, var(--warn) 60%, transparent); }
+   70%  { box-shadow:0 0 0 8px transparent; }
+   100% { box-shadow:0 0 0 0 transparent; }
  }
  /* The one thing to press next, wherever it is */
  .pulse { animation:savepulse 1.1s ease-in-out infinite; }
- @media (prefers-reduced-motion: reduce) { #savebtn.dirty { animation:none; } }
+ @media (prefers-reduced-motion: reduce) { .pulse { animation:none; } }
 
  .layout { display:flex; align-items:flex-start; }
  /* Wider than it was, because the settings have the window now: four levels of
@@ -2392,10 +2415,10 @@ const PAGE: &str = r##"<!doctype html>
  .navtab.child .nm { opacity:.9; }
  .navadd { color:var(--muted); font-size:12.5px; }
 
- .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
-   padding:6px 18px 14px; margin-bottom:18px; }
- .card h2 { font-size:12px; color:var(--muted); font-weight:600; letter-spacing:.06em;
-   margin:14px 0 10px; text-transform:uppercase; }
+ .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
+   padding:var(--s3) var(--s5) var(--s5); margin-bottom:var(--s4); }
+ .card h2 { font-size:13.5px; color:var(--text); font-weight:600; letter-spacing:0;
+   margin:var(--s1) 0 var(--s2); text-transform:none; }
  /* The colours a project can be given. Squares rather than a list of names:
     the thing being chosen is the colour itself */
  .swatches { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:4px 0 2px; }
@@ -2405,7 +2428,14 @@ const PAGE: &str = r##"<!doctype html>
  .swatches i.any { background:conic-gradient(red,yellow,lime,aqua,blue,magenta,red); }
  .swatches input[type="color"] { position:absolute; width:0; height:0; opacity:0; padding:0;
    border:0; }
- .row { display:flex; align-items:center; gap:12px; padding:7px 0; flex-wrap:wrap; }
+ .row { display:flex; align-items:center; gap:var(--s2) var(--s3);
+   padding:var(--s2) 0; flex-wrap:wrap; }
+ /* The label names the line, so it takes the line. A checkbox's own label and
+    one deliberately placed beside a field (a port after a host) stay put */
+ .row > label:not(.check):not(.beside) { flex:0 0 100%; width:auto;
+   color:var(--text); font-size:12px; font-weight:500; line-height:1.4; }
+ /* ...and what a field means goes under it, not out to one side */
+ .row > .hint { flex-basis:100%; margin-top:-2px; }
  /* Automation permissions. Two narrow columns on the right, everything else
     on the left, so the eye runs down a column instead of hunting across a row */
  .grantcols { display:flex; align-items:flex-end; gap:0; justify-content:flex-end;
@@ -2437,12 +2467,12 @@ const PAGE: &str = r##"<!doctype html>
  .grantrow .grow { min-width:0; }
  .grantrow.off .nm { color:var(--muted); }
  .grantmark { color:var(--muted); font-size:11px; margin-left:6px; }
- .row > label:first-child { width:150px; flex:none; color:var(--muted); font-size:13px; }
+ .row > label.beside { color:var(--muted); font-size:12px; flex:none; }
  /* A second (or third) label inside one row — "port", "user" next to a host.
     It names the field that follows it, so it sits tight against it rather than
     claiming the row's label column. */
  .row > label.beside { width:auto; }
- .hint { color:var(--muted); font-size:12px; }
+ .hint { color:var(--faint); font-size:11.5px; }
  /* A hint that is good news rather than an instruction */
  .hint.ok { color:var(--accent); }
  /* The line a tab will really be launched with. It wraps rather than scrolls:
@@ -2463,25 +2493,39 @@ const PAGE: &str = r##"<!doctype html>
  /* For entries whose fields are taller than their buttons (a quick action's
     body box), so the buttons sit at the top rather than floating mid-height. */
  .listrow.tall { align-items:flex-start; gap:8px; padding:8px 0; }
+ /* A list of things, boxed. The border round the whole makes it one object
+    instead of a stack of loose lines */
+ .rows { border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
+ .rows > * { border-bottom:1px solid var(--line); }
+ .rows > *:last-child { border-bottom:0; }
  /* One secret. Reads across on a window, and stacks into a card on a phone. */
- .secretrow { cursor:pointer; }
+ .secretrow { cursor:pointer; padding:10px var(--s3); gap:var(--s3); }
  .secretrow:hover { background:var(--panel2); }
- .secretname { min-width:150px; color:var(--text); }
+ .secretrow .go { color:var(--faint); font-size:14px; line-height:1; }
+ .secretrow:hover .go { color:var(--text); }
+ .secretname { flex:0 0 132px; color:var(--text); overflow:hidden;
+   text-overflow:ellipsis; white-space:nowrap; }
  /* The facts after the name are columns, so a list of them can be read down
     rather than across: what it is, where it goes, and that a value is held */
- .secretdesc { flex:1 1 140px; }
- .secretsite { min-width:104px; text-align:right; }
+ .secretdesc { flex:1 1 140px; overflow:hidden; text-overflow:ellipsis;
+   white-space:nowrap; }
+ .secretsite { flex:0 0 auto; text-align:right; font-variant-numeric:tabular-nums; }
  /* Somewhere the connection is not protected -- the one thing on this row
     worth catching from across the room */
  .secretsite.plain { color:var(--danger); }
  .secretdots { min-width:44px; text-align:right; }
- .chip { font-size:11px; color:var(--muted); border:1px solid var(--line);
-   border-radius:4px; padding:1px 6px; white-space:nowrap; }
+ .chip { font-size:11px; line-height:18px; height:18px; padding:0 7px;
+   color:var(--dim); background:var(--panel2); border:1px solid var(--edge);
+   border-radius:var(--r-chip); white-space:nowrap; }
  /* Nothing may use it yet: somebody has to say who before it does anything */
- .chip.none { color:var(--warn); border-color:var(--warn); }
+ .chip.none { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 45%, transparent);
+   background:color-mix(in srgb, var(--warn) 12%, transparent); }
  /* One thing to fill in: its name above it, what it does under it. */
- .field { display:flex; flex-direction:column; gap:5px; margin-top:14px; }
- .field > label { font-size:12px; color:var(--text); }
+ .field { display:flex; flex-direction:column; gap:var(--s2); margin-top:var(--s5); }
+ .field > label { font-size:12px; font-weight:500; color:var(--text); }
+ /* The line under a control is the smallest thing on the page, so the label
+    above it reads as the name of the pair rather than more of the same */
+ .field > .hint { font-size:11px; margin-top:-1px; }
  .field > input, .field > select { width:100%; }
  /* A thumb needs more than a glyph. */
  .hit { min-width:34px; min-height:34px; }
@@ -2491,7 +2535,35 @@ const PAGE: &str = r##"<!doctype html>
     label is the 150px name column every settings line starts with */
  .whorow { display:flex; align-items:center; gap:24px; flex-wrap:wrap; padding:2px 0 4px; }
  .riskrow { display:flex; flex-direction:column; gap:6px; }
- .riskrow[hidden] { display:none; }
+ /* What this field is allowed to hold, said before anything is typed in it */
+ label.check.allow { font-size:12px; color:var(--dim); margin-bottom:var(--s3); }
+ /* ...and the row that needs it says so, under itself */
+ .site-warn { display:flex; gap:6px; margin:2px 0 var(--s2); padding:var(--s2) var(--s3);
+   border-radius:var(--r-ctl); font-size:11.5px; line-height:1.5; color:var(--warn);
+   border:1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+   background:color-mix(in srgb, var(--warn) 9%, transparent); }
+ .site-row { display:flex; gap:var(--s2); }
+ .site-row input.bad { border-color:var(--warn); }
+ /* Where the answer points. Long enough to find, short enough not to nag */
+ @keyframes lookhere {
+   0%   { box-shadow:0 0 0 0 color-mix(in srgb, var(--warn) 55%, transparent); }
+   100% { box-shadow:0 0 0 6px transparent; }
+ }
+ .lookhere { animation:lookhere .9s ease-out 2; border-radius:var(--r-ctl); }
+ /* Why the save is held. Its own line above the buttons, and it stays */
+ .why { flex:1 1 100%; order:-1; font-size:11.5px; color:var(--warn);
+   line-height:1.5; padding-bottom:var(--s1); }
+ .mfoot { flex-wrap:wrap; }
+ .mfoot button { flex:none; white-space:nowrap; }
+ /* Off is grey, not a pale version of the live colour: a washed-out blue still
+    reads as blue. Held is the same grey, and still takes the press so it can
+    say why -- a button that greys out and then ignores you is a dead end */
+ button.primary:disabled, button.primary.held {
+   background:var(--panel2); border-color:var(--line); color:var(--faint);
+   cursor:not-allowed; filter:none; }
+ button.primary:disabled:hover, button.primary.held:hover {
+   background:var(--panel2); border-color:var(--line); filter:none; }
+ .lblopt { color:var(--faint); font-weight:400; }
  .grow { flex:1; min-width:180px; }
  .stoprow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px;
    margin:6px 0; border:1px solid var(--line); border-radius:8px; }
@@ -2513,26 +2585,47 @@ const PAGE: &str = r##"<!doctype html>
    background:color-mix(in srgb, var(--danger) 14%, transparent); }
  .netbadge.mute { color:var(--muted);  border-color:var(--line); }
 
- input[type=text], input[type=number], select, textarea {
-   background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:7px;
-   padding:7px 10px; font-size:13.5px; font-family:inherit; outline:none; }
- input:focus, select:focus, textarea:focus { border-color:var(--accent); }
- input[type=text]::placeholder, textarea::placeholder { color:#5d6773; }
+ /* A field is sunk into the surface it sits on: the page's own ground under
+    a card, which is what tells the eye where a thing can be typed. Reading it
+    off the card colour instead left the form with no edges at all */
+ input[type=text], input[type=number], input[type=password], select {
+   height:36px; padding:0 var(--s3); }
+ input[type=text], input[type=number], input[type=password], select, textarea {
+   background:var(--bg); color:var(--text); border:1px solid var(--edge);
+   border-radius:var(--r-ctl); font-size:13px; font-family:inherit; outline:none; }
+ textarea { padding:var(--s2) var(--s3); }
+ input:hover:not(:disabled), select:hover, textarea:hover { border-color:var(--edge-hi); }
+ /* Where the keyboard is going. A ring rather than a heavier border, so the
+    box does not change size as it is stepped through */
+ input:focus, select:focus, textarea:focus { border-color:var(--accent);
+   box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+ input:disabled, select:disabled { color:var(--dim); background:var(--panel2);
+   cursor:not-allowed; }
+ input[type=text]::placeholder, textarea::placeholder {
+   color:color-mix(in srgb, var(--muted) 72%, var(--bg)); }
  input[type=checkbox] { width:16px; height:16px; accent-color:var(--accent); margin:0; }
  label.check { display:flex; align-items:center; gap:8px; width:auto; color:var(--text);
-   font-size:13.5px; cursor:pointer; }
+   font-size:14px; cursor:pointer; }
  textarea { width:100%; min-height:220px; line-height:1.55; resize:vertical; }
 
- button { font-family:inherit; font-size:13px; border-radius:7px; cursor:pointer; padding:7px 14px;
-   border:1px solid var(--line); background:var(--panel2); color:var(--text); }
- button:hover { border-color:#39424f; }
- button.primary { background:var(--accent); border-color:var(--accent); color:#04121c; font-weight:600; }
- button.quiet { background:none; border-color:transparent; color:var(--muted); padding:6px 8px; }
- button.quiet:hover { color:var(--text); background:var(--panel2); }
+ button { font-family:inherit; font-size:12.5px; font-weight:500; height:32px;
+   border-radius:var(--r-ctl); cursor:pointer; padding:0 var(--s3);
+   border:1px solid var(--edge); background:var(--panel2); color:var(--text); }
+ button:hover { background:var(--raise); border-color:var(--edge-hi); }
+ /* The one that finishes the job. Filled, because there is one of it */
+ button.primary { background:var(--accent); border-color:var(--accent);
+   color:var(--bg); font-weight:600; }
+ button.primary:hover { filter:brightness(1.08); }
+ button.primary:disabled { opacity:.45; cursor:not-allowed; filter:none; }
+ button.quiet { background:none; border-color:transparent; color:var(--muted); }
+ button.quiet:hover { color:var(--text); background:var(--panel2); border-color:transparent; }
+ /* A glyph on its own is square, and big enough for a thumb */
+ button.icon { width:32px; padding:0; display:inline-flex; align-items:center;
+   justify-content:center; }
  a.quiet { font-size:13px; border-radius:7px; padding:6px 8px; color:var(--muted); text-decoration:none; align-self:center; white-space:nowrap; }
  a.quiet:hover { color:var(--text); background:var(--panel2); }
  button.danger { color:var(--danger); background:none; border-color:transparent; }
- button.danger:hover { background:rgba(229,83,75,.1); }
+ button.danger:hover { background:color-mix(in srgb, var(--danger) 12%, transparent); }
 
  details { border-top:1px solid var(--line); margin-top:6px; }
  details > summary { cursor:pointer; color:var(--muted); font-size:13px; padding:12px 0 4px;
@@ -2550,17 +2643,30 @@ const PAGE: &str = r##"<!doctype html>
  .empty { color:var(--muted); text-align:center; padding:40px 20px; }
  .empty .big { font-size:15px; color:var(--text); margin-bottom:6px; }
 
- .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center;
-   justify-content:center; z-index:20; }
- .modal-inner { background:var(--panel); border:1px solid var(--line); border-radius:12px;
-   width:min(880px,92vw); max-height:88vh; overflow:auto; padding:20px 24px; }
+ .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex;
+   align-items:flex-start; justify-content:center; overflow:auto;
+   padding:56px var(--s4); z-index:20; }
+ .modal-inner { background:var(--panel); border:1px solid var(--line);
+   border-radius:var(--r-card); width:min(560px,100%); box-shadow:0 8px 24px #0007;
+   padding:var(--s5) var(--s6) var(--s6); }
+ /* A dialog built as header / body / footer keeps its title and its way out
+    in the same place whatever is between them */
+ .modal-inner.framed { padding:0; }
+ .framed > .mhead { display:flex; align-items:center; gap:var(--s3);
+   padding:var(--s4) var(--s5); border-bottom:1px solid var(--line); }
+ .framed > .mhead h2 { flex:1; margin:0; font-size:13.5px; font-weight:600; }
+ .framed > .mbody { padding:var(--s5); }
+ .framed > .mfoot { display:flex; align-items:center; gap:var(--s2);
+   padding:var(--s3) var(--s5); border-top:1px solid var(--line); }
+ .framed > .mfoot .grow { flex:1; }
  .modal-inner h2 { text-transform:none; font-size:15px; color:var(--text); margin:0 0 4px; }
  /* A dialog that keeps something below its frame -- the red way out, which is
     outside every other pane's last card for the same reason */
  .modal-stack { display:flex; flex-direction:column; gap:10px; max-height:92vh; }
  .modal-stack > .modal-inner { min-height:0; }
  /* Its title and the one button that finishes it, on the same line */
- .modalhead { display:flex; align-items:center; gap:12px; margin-bottom:2px; }
+ .modalhead { display:flex; align-items:center; gap:var(--s3); padding-bottom:var(--s4);
+   border-bottom:1px solid var(--line); }
  .modalhead h2 { flex:1; margin:0; }
  /* The folder list walked on the page (walkPath) */
  .walkat { font-size:12px; color:var(--muted); margin:6px 0; overflow-wrap:anywhere; }
@@ -4501,15 +4607,43 @@ async function deleteSecret(key) {
 }
 // The sites a secret may be typed into, as typed: one per line or comma-separated
 const hostsOf = text => text.split(/[\s,]+/).map(h => h.trim()).filter(Boolean);
-// The ones written as plain http. A site named without a scheme is an https
-// site; writing http:// is how a person says they want it anyway, and that is
-// the case worth stopping to think about
-const plainHosts = list => list.filter(h => /^http:\/\//i.test(h.trim()));
-// ...and of those, the ones that are new here. Living with a plain site that
-// was already agreed to does not ask again: what needs a moment's thought is
-// taking on the risk, not keeping it
-const freshPlain = (list, was) =>
-  plainHosts(list).filter(h => !was.has(h.trim().toLowerCase()));
+// One address, read the same way here as in config.rs. Everything below is the
+// screen's half of that agreement: it refuses while somebody types what the
+// store would refuse on arrival, so nothing is turned away by surprise
+const isPlain = u => /^http:\/\//i.test((u || "").trim());
+// A person who types "example.com" means the safe one. Filling the scheme in
+// where they can see it beats a rule that says a bare name means https
+const withScheme = v => {
+  const t = (v || "").trim();
+  if (!t || /^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return t;
+  return "https://" + t.replace(/^\/+/, "");
+};
+// The suffixes everybody shares: "*." in front of one of them is not a site,
+// it is the whole internet with a shape
+const SHARED_SUFFIX = new Set(["com","net","org","jp","io","dev","app","co","ne","or",
+  "co.jp","ne.jp","or.jp","co.uk","com.au","com.br","co.kr","com.cn"]);
+// Why this line cannot be used, as the name of the sentence to show, or null.
+// The same answers, in the same order, as config.rs's url_fault
+function urlFault(text) {
+  const t = (text || "").trim();
+  if (!t) return "err.secret_url.empty";
+  if (/\s/.test(t)) return "err.secret_url.unreadable";
+  const at = t.indexOf("://");
+  if (at < 0) return "err.secret_url.scheme";
+  const scheme = t.slice(0, at).toLowerCase();
+  if (scheme !== "http" && scheme !== "https") return "err.secret_url.scheme";
+  const host = t.slice(at + 3).split(/[/?#]/)[0].toLowerCase();
+  if (!host || host.includes("@") || host.includes("[")) return "err.secret_url.unreadable";
+  const stars = (host.match(/\*/g) || []).length;
+  if (stars) {
+    if (stars > 1 || !host.startsWith("*.")) return "err.secret_url.star_place";
+    const under = host.slice(2).split(":")[0];
+    if (under.split(".").length < 2 || SHARED_SUFFIX.has(under)) return "err.secret_url.star_wide";
+  }
+  const port = host.split(":")[1];
+  if (port !== undefined && !/^\d{1,5}$/.test(port)) return "err.secret_url.unreadable";
+  return null;
+}
 
 // Secrets (equivalent to GitHub Secrets). Referenced by key; once saved, the value is never shown again.
 // Encrypted if a master password is set, plaintext otherwise (at the user's own risk) — both handled through the same UI
@@ -4556,7 +4690,7 @@ function secretsBulkCard() {
         el("span", {class:"hint", style:"min-width:110px"}, where),
         el("span", {class:"hint", style:"flex:1"}, s.description || T["settings.secrets.no_desc"]),
         el("span", {class:"hint mono", style:"flex:1 1 120px;overflow:hidden;text-overflow:ellipsis"},
-           (s.hosts || []).join(", ") || "—"),
+           (s.urls || []).join(", ") || "—"),
         el("span", {class:"hint", style:"min-width:92px;text-align:right"}, secretWhoText(s)));
       listBox.append(l);
     }
@@ -4583,7 +4717,7 @@ function secretsBulkCard() {
       // Everything is sent back, so nothing a button did not touch is dropped.
       // An empty value means "leave the password alone"
       const body = {key, description: s.description || "", human: secretHuman(s), ai: !!s.ai,
-                    hosts: s.hosts || [], value: "", ...change(s)};
+                    urls: s.urls || [], value: "", ...change(s)};
       const r = await saveSecret(body);
       if (r.ok) done++;
     }
@@ -4600,9 +4734,9 @@ function secretsBulkCard() {
   const riskRow = el("div", {class:"riskrow", style:"margin-top:10px"}, riskNote, riskLabel);
   riskRow.hidden = true;
   const watchPlain = () => {
-    const fresh = freshPlain(hostsOf(hostIn.value), new Set());
-    riskRow.hidden = !fresh.length;
-    if (fresh.length) riskNote.textContent = fill(T["settings.secrets.plain_warn"], {hosts: fresh.join(", ")});
+    const bad = hostsOf(hostIn.value).map(withScheme).filter(isPlain);
+    riskRow.hidden = !bad.length;
+    if (bad.length) riskNote.textContent = T["settings.secrets.plain_warn"];
   };
   hostIn.addEventListener("input", watchPlain);
   // One line per thing that can be changed, each with what to type and the
@@ -4620,11 +4754,13 @@ function secretsBulkCard() {
       el("button", {onclick: () => {
         const add = hostsOf(hostIn.value);
         if (!add.length) { toast(T["settings.secrets.bulk.host_required"], true); return; }
-        if (freshPlain(add, new Set()).length && !riskBox.checked) {
+        const fault = add.map(withScheme).find(u => urlFault(u));
+        if (fault) { toast(T[urlFault(withScheme(fault))], true); return; }
+        if (add.map(withScheme).some(isPlain) && !riskBox.checked) {
           toast(T["settings.secrets.plain_blocked"], true);
           return;
         }
-        apply(s => ({hosts: [...new Set([...(s.hosts || []), ...add])]}));
+        apply(s => ({urls: [...new Set([...(s.urls || []), ...add.map(withScheme)])]}));
       }}, T["settings.secrets.bulk.add_host"])),
     el("div", {class:"row", style:"gap:10px"},
       el("button", {onclick: () => apply(() => ({ai: true}))}, T["settings.secrets.bulk.ai_on"]),
@@ -5353,7 +5489,7 @@ async function loadSecrets() {
       el("span", {class:"mono", style:"min-width:200px;color:var(--text)"}, s.key),
       el("span", {class:"hint", style:"min-width:130px"}, where),
       el("span", {class:"hint", style:"flex:1"}, s.description || T["settings.secrets.no_desc"]),
-      el("span", {class:"hint mono", style:"min-width:120px"}, (s.hosts || []).join(", ") || "—"),
+      el("span", {class:"hint mono", style:"min-width:120px"}, (s.urls || []).join(", ") || "—"),
       el("span", {class:"hint", style:"min-width:92px;text-align:right"}, secretWhoText(s)),
       el("span", {class:"hint mono", title:T["settings.secrets.value_hidden"]}, "••••"),
       del));
@@ -6028,45 +6164,46 @@ function stopRow(ws, s, i, redraw) {
 
 // The secrets a workspace has.
 //
-// A list you can read across, and one thing at a time to fill in. The row says
-// what a person needs in order to pick one out -- its name, who may use it,
-// what it is for, and where it may be typed -- and everything that changes it
-// happens in a dialog, one field per line. It was a row of eight controls
-// before, which is unreadable at any width and unusable at a narrow one.
+// A boxed list you read down, and one dialog to change one of them. The row
+// says what a person needs in order to pick one out -- its name, who may use
+// it, what it is for, how many addresses it may be typed into -- and the whole
+// row is the way in, so there is no button to find.
 function wsSecretsCard(ws) {
   const listBox = el("div", {id:"wssecretslist"}, el("div", {class:"hint"}, "…"));
-  const add = el("button", {class:"primary", onclick: () => {
+  const add = el("button", {onclick: () => {
     if (!(ws.id || "").trim()) { toast(T["settings.secrets.ws_needs_id"], true); return; }
     secretDialog(ws, null);
   }}, T["settings.secrets.add"]);
   const c = card(T["settings.secrets.ws_title"],
     el("div", {class:"hint"}, T["settings.secrets.ws_hint"]),
-    el("div", {class:"row", style:"margin:10px 0 4px"}, add),
-    listBox);
+    listBox,
+    el("div", {class:"row"}, add));
   setTimeout(() => loadWsSecrets(ws), 0);
   return c;
 }
 
-// Who may use one. Two independent answers, in the same words the
-// automation permission table uses, so the same question reads the same way in
-// both places. Neither ticked is a real state -- a secret nothing may use yet
+// Who may use one. Two independent answers, in the same words the automation
+// permission table uses, so the same question reads the same way in both
+// places. Neither ticked is a real state -- a secret nothing may use yet
 const secretHuman = s => s.human !== false;
 const secretWhoText = s => {
   const who = [secretHuman(s) ? T["grant.who.human"] : null, s.ai ? T["grant.who.ai"] : null]
     .filter(Boolean);
   return who.length ? who.join(" / ") : T["settings.secrets.who.none"];
 };
-// The same, as something to hang in a row of facts: marked when nothing can
-// use it, because that is the one answer worth noticing in passing
 const secretWhoChip = s => el("span",
   {class: (secretHuman(s) || s.ai) ? "chip" : "chip none"}, secretWhoText(s));
-// Where it may be typed, as a count -- with a mark when one of them is a plain
-// connection, because that is the thing worth noticing from across the room
+// How many addresses, and whether one of them is unencrypted -- the thing on
+// this row worth catching from across the room
 function secretWhere(s) {
-  const hosts = s.hosts || [];
-  if (!hosts.length) return {text: T["settings.secrets.hosts_none"], warn: false};
-  const text = fill(T["settings.secrets.hosts_count"], {n: hosts.length});
-  return {text, warn: plainHosts(hosts).length > 0};
+  const urls = s.urls || [];
+  if (!urls.length) return {text: T["settings.secrets.urls_none"], warn: false};
+  const plain = urls.filter(isPlain).length;
+  return {
+    text: fill(T["settings.secrets.urls_count"], {n: urls.length})
+      + (plain ? T["settings.secrets.urls_has_http"] : ""),
+    warn: plain > 0,
+  };
 }
 
 async function loadWsSecrets(ws) {
@@ -6086,21 +6223,18 @@ async function loadWsSecrets(ws) {
     box.append(el("div",{class:"hint"},T["settings.secrets.ws_none"]));
     return;
   }
+  const rows = el("div", {class:"rows"});
   for (const s of mine) {
     const where = secretWhere(s);
-    // The whole row opens it, and so does the button: a name is a bigger
-    // target than a word at the end of a line, and on a phone it is the only
-    // one worth aiming at
-    const row = el("div", {class:"listrow secretrow", onclick: () => secretDialog(ws, s)},
+    rows.append(el("div", {class:"listrow secretrow", onclick: () => secretDialog(ws, s)},
       el("span", {class:"mono secretname"}, s.short),
       secretWhoChip(s),
       el("span", {class:"hint secretdesc"}, s.description || T["settings.secrets.no_desc"]),
       el("span", {class: where.warn ? "hint secretsite plain" : "hint secretsite"},
          (where.warn ? "⚠ " : "") + where.text),
-      el("span", {class:"hint mono secretdots", title:T["settings.secrets.value_hidden"]}, "••••"),
-      el("button", {class:"quiet secretedit"}, T["common.edit"]));
-    box.append(row);
+      el("span", {class:"go"}, "›")));
   }
+  box.append(rows);
 }
 
 // Adding one, or changing one. `have` is null for a new secret.
@@ -6111,12 +6245,12 @@ async function loadWsSecrets(ws) {
 // existing secret asks for one only if you want to replace it.
 function secretDialog(ws, have) {
   const editing = !!have;
-  const name = el("input", {class:"mono", placeholder:T["settings.secrets.key_ph"]});
+  const name = el("input", {type:"text", class:"mono", placeholder:T["settings.secrets.key_ph"]});
   name.value = editing ? have.short : "";
   name.disabled = editing;
   const value = el("input", {type:"password",
     placeholder: editing ? T["settings.secrets.value_set_ph"] : T["settings.secrets.value_ph"]});
-  const desc = el("input", {placeholder:T["settings.secrets.desc_ph"]});
+  const desc = el("input", {type:"text", placeholder:T["settings.secrets.desc_ph"]});
   desc.value = editing ? (have.description || "") : "";
 
   // Who may use it: the same two boxes, in the same order, as the automation
@@ -6142,101 +6276,131 @@ function secretDialog(ws, have) {
     whoNote);
   whoNote.hidden = humanIn.checked || aiIn.checked;
 
-  // The sites, one per line, each with a way to take it away
-  const hostBox = el("div", {style:"display:flex;flex-direction:column;gap:6px"});
-  const was = new Set(plainHosts(editing ? (have.hosts || []) : []).map(h => h.toLowerCase()));
-  const risk = el("label", {class:"check warn"});
+  // Where it may be typed. Every address is written out in full, and the one
+  // standing decision -- whether an unencrypted address is allowed here at all
+  // -- is made before anything is typed rather than sprung afterwards
   const riskBox = el("input", {type:"checkbox"});
-  risk.append(riskBox, document.createTextNode(T["settings.secrets.plain_ok"]));
-  const riskNote = el("div", {class:"hint warn"});
-  const riskRow = el("div", {class:"riskrow"}, riskNote, risk);
-  const save = el("button", {class:"primary"}, T["common.save"]);
-  const blocked = el("span", {class:"hint warn"});
-
-  const hostsNow = () =>
-    [...hostBox.querySelectorAll("input")].map(i => i.value.trim()).filter(Boolean);
-  // A plain connection that was not already agreed to is the one thing that
-  // stops a save. Everything else about this dialog is just typing
-  const recheck = () => {
-    const fresh = freshPlain(hostsNow(), was);
-    riskRow.hidden = !fresh.length;
-    if (fresh.length) riskNote.textContent = fill(T["settings.secrets.plain_warn"], {hosts: fresh.join(", ")});
-    const stop = fresh.length && !riskBox.checked;
-    save.disabled = !!stop;
-    blocked.textContent = stop ? T["settings.secrets.plain_blocked"] : "";
-  };
+  riskBox.checked = editing && (have.urls || []).some(isPlain);
+  const riskLabel = el("label", {class:"check allow"});
+  riskLabel.append(riskBox, document.createTextNode(T["settings.secrets.plain_ok"]));
   riskBox.addEventListener("change", recheck);
-  const addHost = (v) => {
-    const i = el("input", {class:"mono grow", placeholder:"github.com", value: v || ""});
+  const urlBox = el("div", {style:"display:flex;flex-direction:column;gap:8px"});
+  const save = el("button", {class:"primary"}, T["common.save"]);
+  const why = el("span", {class:"why"});
+  why.hidden = true;
+  let held = null;
+
+  const urlsNow = () =>
+    [...urlBox.querySelectorAll("input")].map(i => withScheme(i.value)).filter(Boolean);
+  // What is wrong with the field, said on the row that is wrong. The save is
+  // held rather than dead: it still takes the press, and answers it
+  function recheck() {
+    let first = null;
+    for (const i of urlBox.querySelectorAll("input")) {
+      const fault = urlFault(withScheme(i.value));
+      const reason = fault ? T[fault]
+        : (isPlain(i.value) && !riskBox.checked ? T["settings.secrets.plain_warn"] : null);
+      const wrap = i.parentElement.parentElement;
+      const had = wrap.querySelector(".site-warn");
+      i.classList.toggle("bad", !!reason);
+      if (had) had.remove();
+      if (reason) wrap.append(el("div", {class:"site-warn"},
+        el("span", {}, "⚠"), el("span", {}, reason)));
+      if (reason && !first) first = {at: i, why: fault ? T[fault] : T["settings.secrets.plain_held"]};
+    }
+    held = first;
+    save.classList.toggle("held", !!held);
+    if (!held) why.hidden = true;
+    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+  }
+  // Pressing a held button is a question. Answer it where the answer stays,
+  // and take the eye to the thing that has to change
+  function sayWhy() {
+    why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    why.hidden = false;
+    for (const n of [held.at, riskLabel]) {
+      n.classList.remove("lookhere");
+      void n.offsetWidth;
+      n.classList.add("lookhere");
+    }
+    held.at.scrollIntoView({block:"center", behavior:"smooth"});
+  }
+  const addUrl = (v) => {
+    const i = el("input", {type:"text", class:"mono grow", placeholder:"https://example.com/api",
+      value: v || ""});
     i.addEventListener("input", recheck);
-    const x = el("button", {class:"quiet hit", title:T["common.delete"], onclick: () => {
+    // Completed where it can be seen, when the box is left: a bare host means
+    // the safe one, and filling it in beats a rule nobody was told
+    i.addEventListener("blur", () => { i.value = withScheme(i.value); recheck(); });
+    const x = el("button", {class:"quiet icon", title:T["common.delete"], onclick: () => {
       wrap.remove(); recheck();
     }}, "✕");
-    const wrap = el("div", {class:"row", style:"gap:6px"}, i, x);
-    hostBox.append(wrap);
+    const wrap = el("div", {}, el("div", {class:"site-row"}, i, x));
+    urlBox.append(wrap);
     return i;
   };
-  for (const h of (editing ? (have.hosts || []) : [])) addHost(h);
-  if (!hostBox.children.length) addHost("");
+  for (const h of (editing ? (have.urls || []) : [])) addUrl(h);
+  if (!urlBox.children.length) addUrl("");
 
   const field = (label, control, hint) => el("div", {class:"field"},
     el("label", {}, label), control,
     hint ? el("div", {class:"hint"}, hint) : null);
 
-  // Save sits at the top right and delete outside the frame in red, the way
-  // every other thing in these settings is saved and let go of
+  const shut = () => back.remove();
   const back = openModal(
-    el("div", {class:"modalhead"},
+    el("div", {class:"mhead"},
       el("h2", {}, editing ? T["settings.secrets.edit_title"] : T["settings.secrets.add_title"]),
-      el("div", {class:"row", style:"gap:10px;align-items:center"}, blocked, save,
-        el("button", {class:"quiet hit", title:T["common.close"],
-                      onclick: () => back.remove()}, "✕"))),
-    field(T["settings.secrets.key_label"], name,
-          editing ? T["settings.secrets.name_fixed"] : T["settings.secrets.key_hint"]),
-    field(T["settings.secrets.value_label"], value,
-          editing ? T["settings.secrets.value_keep"] : T["settings.secrets.value_hint"]),
-    field(T["settings.secrets.who_label"], who, T["settings.secrets.who_hint"]),
-    field(T["settings.secrets.desc_label"], desc, T["settings.secrets.desc_hint"]),
-    field(T["settings.secrets.hosts_label"],
-          el("div", {}, hostBox,
-             el("div", {class:"row", style:"margin-top:6px"},
-                el("button", {class:"quiet", onclick: () => addHost("").focus()},
-                   T["settings.secrets.hosts_add"])),
-             riskRow),
-          T["settings.secrets.hosts_hint"]));
-
-  // Below the frame, where letting a workspace or a tab go also lives
-  if (editing) {
-    const inner = back.firstChild;
-    const stack = el("div", {class:"modal-stack"});
-    back.replaceChild(stack, inner);
-    stack.append(inner, el("div", {class:"row"},
-      el("button", {class:"danger", onclick: async () => {
-        if (!confirm(fill(T["settings.secrets.delete_confirm"], {key: have.short}))) return;
-        const r = await deleteSecret(have.key);
-        if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: have.short})); back.remove(); loadWsSecrets(ws); }
-        else toast(r.error || T["settings.secrets.delete_failed"], true);
-      }}, T["settings.secrets.delete"])));
-  }
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
+    el("div", {class:"mbody"},
+      field(T["settings.secrets.key_label"], name,
+            editing ? T["settings.secrets.name_fixed"] : T["settings.secrets.key_hint"]),
+      field(T["settings.secrets.value_label"], value,
+            editing ? T["settings.secrets.value_keep"] : T["settings.secrets.value_hint"]),
+      field(T["settings.secrets.who_label"], who, T["settings.secrets.who_hint"]),
+      field(T["settings.secrets.desc_label"], desc, T["settings.secrets.desc_hint"]),
+      el("div", {class:"field"},
+        el("label", {}, T["settings.secrets.urls_label"],
+           el("span", {class:"lblopt"}, T["settings.secrets.urls_many"])),
+        riskLabel,
+        urlBox,
+        el("div", {class:"row"},
+          el("button", {class:"quiet", onclick: () => addUrl("").focus()},
+             T["settings.secrets.urls_add"])),
+        el("div", {class:"hint"}, T["settings.secrets.urls_hint"]))),
+    el("div", {class:"mfoot"},
+      editing
+        ? el("button", {class:"danger", onclick: async () => {
+            if (!confirm(fill(T["settings.secrets.delete_confirm"], {key: have.short}))) return;
+            const r = await deleteSecret(have.key);
+            if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: have.short})); shut(); loadWsSecrets(ws); }
+            else toast(r.error || T["settings.secrets.delete_failed"], true);
+          }}, T["common.delete"])
+        : null,
+      why,
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
+      save));
+  back.firstChild.classList.add("framed");
 
   // Enter finishes it and Esc leaves it, from anywhere inside. A dialog that
   // is all short fields is one people type through without reaching for the
-  // mouse -- except in the description, where a stray Enter would be a save
+  // mouse
   back.addEventListener("keydown", e => {
-    if (e.key === "Escape") { e.preventDefault(); back.remove(); return; }
+    if (e.key === "Escape") { e.preventDefault(); shut(); return; }
     if (e.key !== "Enter" || e.target.tagName !== "INPUT" || e.target.type === "checkbox") return;
     e.preventDefault();
-    if (!save.disabled) save.click();
+    save.click();
   });
 
   save.addEventListener("click", async () => {
+    if (held) { sayWhy(); return; }
     const short = name.value.trim();
     if (!short) { toast(T["settings.secrets.key_required"], true); return; }
     if (!editing && !value.value) { toast(T["settings.secrets.value_required"], true); return; }
     const r = await saveSecret({key: editing ? have.key : secretKey(ws, short),
       value: value.value, description: desc.value,
-      human: humanIn.checked, ai: aiIn.checked, hosts: hostsNow()});
-    if (r.ok) { toast(fill(T["settings.secrets.saved_key"], {key: short})); back.remove(); loadWsSecrets(ws); }
+      human: humanIn.checked, ai: aiIn.checked, urls: urlsNow()});
+    if (r.ok) { toast(fill(T["settings.secrets.saved_key"], {key: short})); shut(); loadWsSecrets(ws); }
     else toast(r.error || T["settings.secrets.save_failed"], true);
   });
   recheck();
@@ -6741,7 +6905,7 @@ function kindPanel(t, cmdInput, rebuild, real) {
         if (!k) { toast(T["settings.secrets.ws_needs_id"], true); return; }
         if (!pwIn.value) { toast(T["settings.secrets.value_required"], true); return; }
         const r = await saveSecret({key: k, value: pwIn.value, description: buildRemote(remote),
-                                    human: true, ai: false, hosts: []});
+                                    human: true, ai: false, urls: []});
         if (r.ok) { pwIn.value = ""; toast(T["settings.ssh.password.saved"]); refreshNote(); }
         else toast(r.error || T["settings.secrets.save_failed"], true);
       }}, T["common.save"]), note));

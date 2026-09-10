@@ -838,12 +838,15 @@ shikisha.browser_fill_secret("br", "#password", "github")
 - The name means something **inside that workspace only**. Another workspace's
   secrets, and the ones the program keeps for itself (an SSH password, say),
   cannot be reached by naming them
-- Registering one asks **which sites it may be typed into**. It is filled in on
-  those and nowhere else, and stops being filled the moment the page goes
+- Registering one asks **where the secret may be used**. It is filled in on
+  those pages and nowhere else, and stops being filled the moment the page goes
   somewhere else
-- `github.com` means that site over `https`. To fill something in on a plain
-  `http` server inside your own network, write `http://intranet.local` — said
-  out loud, because nothing protects what goes over it
+- Addresses are written out in full: `https://example.com` is that whole site,
+  `https://example.com/api` only the pages under `/api`, and
+  `https://*.example.com` the site and every subdomain. Anything after `?` is
+  not looked at
+- An `http://` address reaches a machine that cannot prove who it is, so
+  registering one also asks for "Allow unencrypted connections, at my own risk"
 - **Who may use it** is two answers, **a person** and **an AI**, and starts as
   the first alone. Tick the AI only for the secrets a script that an AI's turn
   set going should be able to use. Ticking the AI alone is allowed too, and

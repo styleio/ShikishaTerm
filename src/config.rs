@@ -526,17 +526,17 @@ pub struct SecretMeta {
     /// "let it sign in to the thing that can delete the DNS records"
     #[serde(default)]
     pub ai: bool,
-    /// The sites this may be typed into. Empty means nowhere: a stored
+    /// The addresses this may be typed into. Empty means nowhere: a stored
     /// password is not something to hand to whatever page happens to be open.
     ///
-    /// A bare host (`github.com`) means that site over `https`, and nothing
-    /// else -- without a certificate the name in an address proves nothing,
-    /// and pointing a name somewhere else is a line in a file. Writing
-    /// `http://intranet.local` instead says the plain connection is wanted
-    /// anyway, which is a thing people have inside their own walls, and is
-    /// then their own to decide
+    /// Each one is a whole address, written out: `https://example.com`,
+    /// `https://example.com/api`, `https://*.example.com`. What is written is
+    /// what is compared -- there is no shorthand to learn and no rule that
+    /// turns one thing into another behind the person's back. See
+    /// [`url_fault`] for what a line may say and [`Self::may_fill`] for how
+    /// far each part reaches
     #[serde(default)]
-    pub hosts: Vec<String>,
+    pub urls: Vec<String>,
     /// One line saying what this is, for the person reading the list later
     #[serde(default)]
     pub desc: String,
@@ -546,12 +546,165 @@ fn yes() -> bool {
     true
 }
 
+/// One address, in the four parts that decide whether a password goes in.
+///
+/// Both sides of the comparison are read into this, so the page and the line
+/// somebody typed are held to the same reading of what an address is.
+#[derive(Debug)]
+pub struct Place {
+    scheme: String,
+    /// Lower case. `*.example.com` on an entry means the site and everything
+    /// under it; a page never carries a star
+    host: String,
+    port: u16,
+    /// Always begins with `/`. `/` means the whole site
+    path: String,
+}
+
+/// The suffixes everybody shares. `*.` in front of one of these is not a site,
+/// it is the whole internet with a shape, and a password would be handed to
+/// whoever registers next. Not the public suffix list -- the common ones, and
+/// the shape of the rest is caught by asking for two labels
+const SHARED_SUFFIX: &[&str] = &[
+    "com", "net", "org", "jp", "io", "dev", "app", "co", "ne", "or", "co.jp", "ne.jp", "or.jp",
+    "co.uk", "com.au", "com.br", "co.kr", "com.cn",
+];
+
+fn default_port(scheme: &str) -> u16 {
+    if scheme == "http" {
+        80
+    } else {
+        443
+    }
+}
+
+impl Place {
+    /// Split an address into its parts. Nothing is guessed: an address with no
+    /// scheme is not an address
+    fn split(text: &str) -> Option<Self> {
+        let t = text.trim();
+        let (scheme, rest) = t.split_once("://")?;
+        let scheme = scheme.to_ascii_lowercase();
+        if !matches!(scheme.as_str(), "http" | "https") {
+            return None;
+        }
+        // Anything after ? or # is not part of where the page is
+        let rest = rest.split(['?', '#']).next().unwrap_or("");
+        let (hostport, path) = match rest.find('/') {
+            Some(at) => (&rest[..at], rest[at..].to_string()),
+            None => (rest, "/".to_string()),
+        };
+        if hostport.is_empty() || hostport.contains('@') || hostport.contains('[') {
+            return None; // credentials in an address, and IPv6, are not read here
+        }
+        let (host, port) = match hostport.rsplit_once(':') {
+            Some((h, p)) => (h, p.parse::<u16>().ok()?),
+            None => (hostport, default_port(&scheme)),
+        };
+        if host.is_empty() {
+            return None;
+        }
+        Some(Place {
+            host: host.to_ascii_lowercase(),
+            port,
+            path,
+            scheme,
+        })
+    }
+
+    /// The page in front of the person
+    fn page(url: &str) -> Option<Self> {
+        let me = Self::split(url)?;
+        if me.host.contains('*') {
+            return None; // a page cannot be a pattern
+        }
+        Some(me)
+    }
+
+    /// A line somebody wrote in the settings
+    fn entry(text: &str) -> Option<Self> {
+        if url_fault(text).is_some() {
+            return None;
+        }
+        Self::split(text)
+    }
+
+    /// Whether this entry reaches that page
+    fn covers(&self, page: &Self) -> bool {
+        if self.scheme != page.scheme || self.port != page.port {
+            return false;
+        }
+        let host_ok = match self.host.strip_prefix("*.") {
+            // The site itself as well as what is under it: writing
+            // `*.example.com` and then not being let into example.com is the
+            // kind of surprise that gets worked around with a second entry
+            Some(under) => page.host == under || page.host.ends_with(&format!(".{under}")),
+            None => page.host == self.host,
+        };
+        if !host_ok {
+            return false;
+        }
+        let want = self.path.trim_end_matches('*');
+        let want = want.strip_suffix('/').unwrap_or(want);
+        // "" (the whole site) covers everything; otherwise the page's path has
+        // to be that path, or something inside it
+        want.is_empty()
+            || page.path == want
+            || page.path.starts_with(&format!("{want}/"))
+    }
+}
+
+/// Why this line cannot be used, as the key of the sentence to show, or None.
+///
+/// The screen asks this while somebody types and the store asks it before
+/// saving, so a line that is refused is refused for a reason that was already
+/// on the screen.
+pub fn url_fault(text: &str) -> Option<&'static str> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Some("err.secret_url.empty");
+    }
+    if t.chars().any(char::is_whitespace) {
+        return Some("err.secret_url.unreadable");
+    }
+    let Some((scheme, rest)) = t.split_once("://") else {
+        return Some("err.secret_url.scheme");
+    };
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
+        return Some("err.secret_url.scheme");
+    }
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if host.is_empty() || host.contains('@') {
+        return Some("err.secret_url.unreadable");
+    }
+    let stars = host.matches('*').count();
+    if stars > 0 {
+        // One star, at the front, followed by a dot. In the middle it either
+        // means nothing or matches a name somebody else owns
+        if stars > 1 || !host.starts_with("*.") {
+            return Some("err.secret_url.star_place");
+        }
+        let under = host[2..].split(':').next().unwrap_or("");
+        if under.split('.').count() < 2 || SHARED_SUFFIX.contains(&under) {
+            return Some("err.secret_url.star_wide");
+        }
+    }
+    if Place::split(t).is_none() {
+        return Some("err.secret_url.unreadable");
+    }
+    None
+}
+
 impl Default for SecretMeta {
     fn default() -> Self {
         Self {
             human: true,
             ai: false,
-            hosts: Vec::new(),
+            urls: Vec::new(),
             desc: String::new(),
         }
     }
@@ -572,34 +725,26 @@ impl SecretMeta {
 
     /// Whether a page at this address is one this secret may be typed into.
     ///
-    /// Compared host by host after parsing, never by how the address starts:
+    /// Compared part by part after parsing, never by how the address starts:
     /// `https://github.com.evil.example/` begins with the right letters and is
-    /// somebody else entirely. The scheme has to match as well as the name: a
-    /// site written plainly is an `https` site, and a plain `http` page
-    /// qualifies only where somebody wrote `http://` and meant it
+    /// somebody else entirely.
+    ///
+    /// - the scheme has to match, so a page dropped to `http` is not the
+    ///   `https` page that was allowed
+    /// - the host has to match, or fall under a `*.` written at the front
+    /// - a port written down has to match; left out, it is the scheme's own
+    /// - a path written down is a prefix, and it ends at a `/`: `/api` covers
+    ///   `/api` and `/api/keys`, and not `/apiary`. Nothing (or `/*`) covers
+    ///   the whole site
+    /// - what comes after `?` is never part of the decision
     pub fn may_fill(&self, url: &str) -> bool {
-        let Ok(uri) = url.trim().parse::<wry::http::Uri>() else {
+        let Some(page) = Place::page(url) else {
             return false;
         };
-        let (Some(scheme), Some(host)) = (
-            uri.scheme_str().map(str::to_ascii_lowercase),
-            uri.host().map(str::to_ascii_lowercase),
-        ) else {
-            return false;
-        };
-        if !matches!(scheme.as_str(), "http" | "https") {
-            return false;
-        }
-        self.hosts.iter().any(|h| {
-            let h = h.trim().to_ascii_lowercase();
-            match h.strip_prefix("http://") {
-                Some(plain) => scheme == "http" && plain.trim_end_matches('/') == host,
-                None => {
-                    let named = h.strip_prefix("https://").unwrap_or(&h);
-                    scheme == "https" && named.trim_end_matches('/') == host
-                }
-            }
-        })
+        self.urls
+            .iter()
+            .filter_map(|u| Place::entry(u))
+            .any(|e| e.covers(&page))
     }
 }
 
@@ -1018,7 +1163,7 @@ pub fn migrate_secrets(
                     // typed is the part that was never asked, and is asked now
                     human: true,
                     ai: true,
-                    hosts: Vec::new(),
+                    urls: Vec::new(),
                     desc: desc_of(key),
                 },
             ));
@@ -3434,7 +3579,7 @@ mod tests {
         assert_eq!(list[0].0, "blog.diary");
         assert_eq!(list[0].1.desc, "日記SaaSのログイン");
         assert!(!list[0].1.ai, "既定でAIには開かない");
-        assert!(list[0].1.hosts.is_empty(), "既定でどのサイトにも入れない");
+        assert!(list[0].1.urls.is_empty(), "既定でどのサイトにも入れない");
         // The value really is stored (retrievable via resolve_tokens)
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("hunter2秘密"), "値が保存されていない");
@@ -3444,7 +3589,7 @@ mod tests {
         // What it is for can be changed without typing the password again
         let opened = SecretMeta {
             ai: true,
-            hosts: vec!["github.com".into()],
+            urls: vec!["https://github.com".into()],
             desc: "説明更新".into(),
             ..Default::default()
         };
@@ -3452,7 +3597,7 @@ mod tests {
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("hunter2秘密"), "値が空で上書きされた");
         let list = list_secrets(&path, None).unwrap();
-        assert!(list[0].1.ai && list[0].1.hosts == ["github.com"], "用途が変わっていない");
+        assert!(list[0].1.ai && list[0].1.urls == ["https://github.com"], "用途が変わっていない");
 
         // ...but a name with nothing behind it is not filed at all
         assert!(upsert_secret(&path, None, "blog.nothing", &about("x"), "").is_err());
@@ -3535,7 +3680,7 @@ mod tests {
         // What it was allowed to do carries over; where it may be typed does not,
         // because nothing ever recorded that
         assert!(now["blog.github"].ai, "AIから使えていたのに閉じられた");
-        assert!(now["blog.github"].hosts.is_empty());
+        assert!(now["blog.github"].urls.is_empty());
         assert_eq!(now["blog.github"].desc, "PAT", "説明が引き継がれていない");
         // Values follow their names
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -3556,50 +3701,87 @@ mod tests {
     /// a connection that proves the page is who it says. Without the second
     /// half, pointing `github.com` at another machine (a hosts file will do)
     /// would be enough to be handed the password
-    /// Every secret filed before the question was asked was one a person
-    /// used, so that is what it stays. Reading it back any other way would
-    /// quietly stop working automation that has run for months
     #[test]
-    fn a_secret_filed_before_the_question_belongs_to_a_person() {
-        let old: SecretMeta = serde_json::from_str(r#"{"ai":true,"desc":"前からある"}"#).unwrap();
-        assert!(old.human, "人が使えなくなっている");
-        assert!(old.ai);
-        // ...and saying so outright is still allowed to say no
-        let ai_only: SecretMeta = serde_json::from_str(r#"{"human":false,"ai":true}"#).unwrap();
-        assert!(!ai_only.human && ai_only.ai);
-        assert!(SecretMeta::default().human, "登録したての秘密を人が使えない");
-        assert!(!SecretMeta::default().ai, "既定でAIには開かない");
-    }
-
-    #[test]
-    fn a_secret_is_typed_only_into_the_site_it_belongs_to() {
-        let m = SecretMeta {
-            hosts: vec!["github.com".into(), "api.github.com".into()],
+    fn a_secret_is_typed_only_into_the_place_it_belongs_to() {
+        let at = |urls: &[&str]| SecretMeta {
+            urls: urls.iter().map(|u| (*u).into()).collect(),
             ..Default::default()
         };
+
+        // A whole site
+        let m = at(&["https://github.com", "https://api.github.com"]);
         assert!(m.may_fill("https://github.com/login"));
         assert!(m.may_fill("https://GitHub.com/login"), "大文字小文字は同じサイト");
+        assert!(m.may_fill("https://github.com/?next=/x"), "?以降は見ない");
         assert!(m.may_fill("https://api.github.com/"));
         assert!(!m.may_fill("https://gist.github.com/"), "別のホストに入る");
         assert!(!m.may_fill("https://github.com.evil.example/"), "前方一致で通る");
         assert!(!m.may_fill("http://github.com/login"), "証明書のない経路に入る");
         assert!(!m.may_fill("about:blank"));
         assert!(!m.may_fill(""));
-        // Nothing listed means nowhere, not everywhere
-        let empty = SecretMeta::default();
-        assert!(!empty.may_fill("https://github.com/login"));
 
-        // A plain connection where somebody asked for one by name -- and only
-        // for the site they named, and only over the scheme they wrote
-        let inside = SecretMeta {
-            hosts: vec!["http://intranet.local".into(), "https://github.com".into()],
-            ..Default::default()
-        };
+        // Nothing listed means nowhere, not everywhere
+        assert!(!SecretMeta::default().may_fill("https://github.com/login"));
+
+        // A path is a prefix, and it ends at a slash
+        let deep = at(&["https://example.com/api"]);
+        assert!(deep.may_fill("https://example.com/api"));
+        assert!(deep.may_fill("https://example.com/api/keys?x=1"));
+        assert!(!deep.may_fill("https://example.com/apiary"), "語の途中で切れている");
+        assert!(!deep.may_fill("https://example.com/"), "site全体に広がっている");
+        // ...and saying "the whole site" out loud is the same as not saying it
+        assert!(at(&["https://example.com/*"]).may_fill("https://example.com/anything"));
+
+        // A star at the front covers the site and everything under it
+        let sub = at(&["https://*.example.com"]);
+        assert!(sub.may_fill("https://example.com/"), "元のサイトが外れている");
+        assert!(sub.may_fill("https://dev.example.com/"));
+        assert!(sub.may_fill("https://a.b.example.com/"));
+        assert!(!sub.may_fill("https://example.com.evil.test/"), "後ろに足せば通る");
+        assert!(!sub.may_fill("https://notexample.com/"), "点の前が一致していない");
+
+        // A port written down has to match; left out it is the scheme's own
+        assert!(at(&["https://example.com:8443"]).may_fill("https://example.com:8443/x"));
+        assert!(!at(&["https://example.com:8443"]).may_fill("https://example.com/x"));
+        assert!(at(&["https://example.com"]).may_fill("https://example.com:443/x"));
+
+        // A plain connection is a place like any other, once it is written out
+        let inside = at(&["http://intranet.local", "https://github.com"]);
         assert!(inside.may_fill("http://intranet.local/login"));
         assert!(!inside.may_fill("https://intranet.local/login"), "書いた経路と違う");
         assert!(inside.may_fill("https://github.com/login"));
         assert!(!inside.may_fill("http://github.com/login"), "平文に落とされて通る");
-        assert!(!inside.may_fill("http://other.local/"));
+    }
+
+    /// The screen and the store ask the same question of a line, so what the
+    /// screen refused cannot arrive by another door
+    #[test]
+    fn a_line_that_reaches_too_far_is_refused() {
+        let ok = |u: &str| assert!(url_fault(u).is_none(), "{u} が断られた: {:?}", url_fault(u));
+        let no = |u: &str, why: &str| assert_eq!(url_fault(u), Some(why), "{u}");
+
+        ok("https://example.com");
+        ok("https://example.com/api");
+        ok("https://example.com:8443/api");
+        ok("https://*.example.com");
+        ok("http://internal-dev.local");
+
+        no("", "err.secret_url.empty");
+        no("example.com", "err.secret_url.scheme");
+        no("ftp://example.com", "err.secret_url.scheme");
+        no("https://ex*.com", "err.secret_url.star_place");
+        no("https://*example.com", "err.secret_url.star_place");
+        no("https://*.*.com", "err.secret_url.star_place");
+        // The whole internet with a shape
+        no("https://*.com", "err.secret_url.star_wide");
+        no("https://*.co.jp", "err.secret_url.star_wide");
+        // Credentials in an address hide which host is really being asked for
+        no("https://user@example.com", "err.secret_url.unreadable");
+        no("https://exa mple.com", "err.secret_url.unreadable");
+
+        // And a refused line does not quietly work anyway
+        let bad = SecretMeta { urls: vec!["https://*.com".into()], ..Default::default() };
+        assert!(!bad.may_fill("https://anything.com/"), "断ったはずの行が効いている");
     }
 
     #[test]

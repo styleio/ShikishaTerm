@@ -140,7 +140,10 @@ Register them under **Secrets** on the workspace's settings page. Automation
 names them in one short word and never receives the value. Two things are asked
 when you register one:
 
-- **Which sites it may be typed into** -- it is filled in there and nowhere else
+- **Where this secret may be used** -- it is filled in on those pages and
+  nowhere else. `https://example.com` is that whole site,
+  `https://example.com/api` only the pages under `/api`, and
+  `https://*.example.com` the site and every subdomain
 - **Who may use it** -- two answers, **a person** and **an AI**, and to begin
   with only the first. Tick the AI as well for the ones a script an AI set
   going should be able to use; tick only the AI and it becomes a key kept for
