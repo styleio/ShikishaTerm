@@ -229,7 +229,10 @@ pub fn send_blocking_about(
         let mut lines = text.lines();
         let title = lines.next().unwrap_or_default();
         let body = lines.next().unwrap_or_default();
-        return crate::wintoast::show(title, &clip(body, dest.limit()), tab);
+        return match local_banners() {
+            Some(t) => t.show(title, &clip(body, dest.limit()), tab),
+            None => Err("no shell is running to show a banner".into()),
+        };
     }
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(10)))
@@ -394,4 +397,19 @@ mod tests {
             "telegram"
         );
     }
+}
+
+/// The shell that can show a banner here, if one is running.
+///
+/// Set once, by whatever owns the desktop, before notifications start flowing.
+/// The runtime never constructs one: it only asks whether there is one.
+static LOCAL_BANNERS: std::sync::OnceLock<Box<dyn shikisha_shared::Toasts>> =
+    std::sync::OnceLock::new();
+
+pub fn use_local_banners(t: Box<dyn shikisha_shared::Toasts>) {
+    let _ = LOCAL_BANNERS.set(t);
+}
+
+fn local_banners() -> Option<&'static dyn shikisha_shared::Toasts> {
+    LOCAL_BANNERS.get().map(|b| b.as_ref())
 }

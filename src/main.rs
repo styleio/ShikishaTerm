@@ -42,6 +42,7 @@ mod keys;
 mod layout;
 mod netaddr;
 mod notify;
+mod picker;
 mod pr;
 mod profile;
 mod push;
@@ -213,6 +214,10 @@ fn say_fatally_with_page(text: &str, url: &str) {
 }
 
 fn main() -> Result<()> {
+    // This process owns a desktop, so it is the one that can put a banner on it.
+    // Told once, before anything has cause to send one
+    notify::use_local_banners(Box::new(wintoast::WindowsBanners));
+    webui::use_file_picker(Box::new(picker::DesktopPicker));
     let r = boot();
     if let Err(e) = &r {
         // The modes that run as somebody else's subprocess stay silent. A hook

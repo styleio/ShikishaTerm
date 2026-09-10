@@ -1035,3 +1035,30 @@ pub const NAMED_KEYS: [&str; 27] = [
 pub fn key_known(named: &str) -> bool {
     NAMED_KEYS.contains(&named)
 }
+
+/// Showing a banner on the machine a person is sitting at.
+///
+/// Slack, Discord, Telegram and a phone's push are all posted by the runtime
+/// itself: they are somewhere else, reached over the network. A banner on this
+/// desktop is the one destination that needs whatever is running the desktop,
+/// which is why it arrives as a trait and not a function call. A runtime with
+/// no shell has none, and says so rather than pretending it sent one.
+pub trait Toasts: Send + Sync {
+    fn show(&self, title: &str, body: &str, tab: Option<usize>) -> Result<(), String>;
+}
+
+/// Asking the person at the desktop to point at a file or a folder.
+///
+/// The settings screen is a web page either way, but "choose a folder" is the
+/// one thing a page cannot do for itself: it needs the desktop's own dialog.
+/// A runtime with no desktop has no picker, and the page that asked is told so
+/// rather than left waiting on a dialog nobody can see.
+pub trait FilePicker: Send + Sync {
+    /// A folder. `title` is shown on the dialog; `start` is where it opens
+    fn folder(&self, title: &str, start: Option<&std::path::Path>) -> Option<std::path::PathBuf>;
+    /// A file to read, filtered to one extension (e.g. `json`)
+    fn open(&self, title: &str, start: Option<&std::path::Path>, ext: (&str, &str)) -> Option<std::path::PathBuf>;
+    /// Where to write a file, with a name already filled in
+    fn save(&self, title: &str, start: Option<&std::path::Path>, name: &str, ext: (&str, &str)) -> Option<std::path::PathBuf>;
+}
+

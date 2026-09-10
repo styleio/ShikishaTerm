@@ -399,3 +399,13 @@ mod tests {
         println!("clicked tab: {:?}", super::clicked_tab());
     }
 }
+
+/// This desktop, seen as somewhere a banner can appear.
+pub struct WindowsBanners;
+
+impl shikisha_shared::Toasts for WindowsBanners {
+    fn show(&self, title: &str, body: &str, tab: Option<usize>) -> Result<(), String> {
+        show(title, body, tab)
+    }
+}
+

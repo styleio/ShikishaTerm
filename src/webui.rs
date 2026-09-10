@@ -410,75 +410,7 @@ fn remote_for_display(shared: &Arc<std::sync::Mutex<RemoteInfo>>) -> (RemoteInfo
 /// Brings our own process's dialog to the front when it appears.
 /// Windows forbids background processes from popping themselves to the front on their own,
 /// so we set the topmost attribute to keep it from hiding behind the browser
-#[cfg(windows)]
-fn raise_own_dialog() {
-    use windows_sys::Win32::Foundation::{HWND, LPARAM};
-    type BOOL = i32;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible,
-        SetForegroundWindow, SetWindowPos, SwitchToThisWindow, HWND_TOPMOST, SWP_NOMOVE,
-        SWP_NOSIZE, SWP_SHOWWINDOW,
-    };
 
-    struct Found {
-        pid: u32,
-        hwnd: HWND,
-    }
-
-    unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let found = unsafe { &mut *(lparam as *mut Found) };
-        let mut pid = 0u32;
-        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-        if pid != found.pid || unsafe { IsWindowVisible(hwnd) } == 0 {
-            return 1;
-        }
-        // Standard dialogs have the class name "#32770". Consoles are excluded
-        let mut buf = [0u16; 64];
-        let n = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
-        let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
-        if class == "#32770" {
-            found.hwnd = hwnd;
-            return 0;
-        }
-        1
-    }
-
-    let pid = std::process::id();
-    std::thread::spawn(move || {
-        for _ in 0..50 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let mut found = Found {
-                pid,
-                hwnd: std::ptr::null_mut(),
-            };
-            unsafe { EnumWindows(Some(cb), &mut found as *mut Found as LPARAM) };
-            if !found.hwnd.is_null() {
-                unsafe {
-                    // Leave the topmost attribute set. It only lasts until the dialog closes,
-                    // and removing it would let it hide behind the browser
-                    SetWindowPos(
-                        found.hwnd,
-                        HWND_TOPMOST,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                    );
-                    BringWindowToTop(found.hwnd);
-                    // Foregrounding can be refused for a background process,
-                    // so also use an Alt+Tab-equivalent switch
-                    SwitchToThisWindow(found.hwnd, 1);
-                    SetForegroundWindow(found.hwnd);
-                }
-                break;
-            }
-        }
-    });
-}
-
-#[cfg(not(windows))]
-fn raise_own_dialog() {}
 
 /// Turns the chosen path into the form written to config.
 /// If it's under the config folder, makes it relative so the whole folder stays portable
@@ -1720,15 +1652,14 @@ fn handle(
             let index = p.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let resp = match crate::wspack::pack(config_path, index) {
                 Ok((name, text)) => {
-                    raise_own_dialog();
-                    let picked = rfd::FileDialog::new()
-                        .set_title(crate::i18n::t("settings.ws.export.title"))
-                        .set_file_name(&name)
-                        .add_filter(crate::i18n::t("settings.ws.file_kind"), &["json"])
-                        .set_directory(
-                            config_path.parent().unwrap_or(std::path::Path::new(".")),
+                    let picked = picker().and_then(|p| {
+                        p.save(
+                            &crate::i18n::t("settings.ws.export.title"),
+                            config_path.parent(),
+                            &name,
+                            (&crate::i18n::t("settings.ws.file_kind"), "json"),
                         )
-                        .save_file();
+                    });
                     match picked {
                         // Write to the chosen location. This is fine to be outside the config folder, since the user picked it
                         Some(path) => match crate::crypto::write_atomic(&path, &text) {
@@ -1757,12 +1688,13 @@ fn handle(
         }
         // Import an exported file. Adds one workspace to the config
         ("POST", "/api/workspace/import") => {
-            raise_own_dialog();
-            let picked = rfd::FileDialog::new()
-                .set_title(crate::i18n::t("settings.ws.import.title"))
-                .add_filter(crate::i18n::t("settings.ws.file_kind"), &["json"])
-                .set_directory(config_path.parent().unwrap_or(std::path::Path::new(".")))
-                .pick_file();
+            let picked = picker().and_then(|p| {
+                p.open(
+                    &crate::i18n::t("settings.ws.import.title"),
+                    config_path.parent(),
+                    (&crate::i18n::t("settings.ws.file_kind"), "json"),
+                )
+            });
             let resp = match picked {
                 Some(path) => match std::fs::read_to_string(&path)
                     .map_err(anyhow::Error::from)
@@ -1860,18 +1792,10 @@ fn handle(
                 .filter(|p| p.exists())
                 .or_else(|| default_pick_dir(kind, config_path));
 
-            // Bring the dialog to the front right after opening it
-            // (a background process can't foreground itself on its own)
-            raise_own_dialog();
-            let mut dlg = rfd::FileDialog::new().set_title(title);
-            if let Some(d) = start {
-                dlg = dlg.set_directory(d);
-            }
-            let picked = if kind == "dir" {
-                dlg.pick_folder()
-            } else {
-                dlg.pick_file()
-            };
+            let picked = picker().and_then(|p| match kind == "dir" {
+                true => p.folder(title, start.as_deref()),
+                false => p.open(title, start.as_deref(), ("", "")),
+            });
             let resp = match picked {
                 Some(path) => {
                     serde_json::json!({ "ok": true, "path": display_path(&path, config_path) })
@@ -9395,4 +9319,19 @@ mod tests {
         ui.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// The desktop that can open a file dialog, if one is running.
+///
+/// Set once by whatever owns that desktop. The settings server never builds
+/// one: a build with no desktop simply has no picker, and the page that asked
+/// is answered "no" instead of waiting on a dialog nobody can see.
+static PICKER: std::sync::OnceLock<Box<dyn shikisha_shared::FilePicker>> = std::sync::OnceLock::new();
+
+pub fn use_file_picker(p: Box<dyn shikisha_shared::FilePicker>) {
+    let _ = PICKER.set(p);
+}
+
+fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
+    PICKER.get().map(|p| p.as_ref())
 }
