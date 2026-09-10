@@ -126,6 +126,14 @@ fn token() -> Option<String> {
     token_in(&text, now_ms())
 }
 
+/// Whether Claude Code has a sign-in on this PC that is still good.
+///
+/// Whether, never what: the settings screen says why the pill is or is not
+/// there, and nothing hands the token back out
+pub fn signed_in() -> bool {
+    token().is_some()
+}
+
 fn token_in(text: &str, now_ms: i64) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
     let o = v.get("claudeAiOauth")?;

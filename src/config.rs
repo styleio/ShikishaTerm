@@ -654,6 +654,67 @@ impl Place {
     }
 }
 
+/// The secrets in the file that nothing in the settings claims any more.
+///
+/// A secret belongs to the thing that uses it and is let go of with it, so
+/// this should be empty. It will not always be: a settings file edited by
+/// hand, a workspace deleted in an older version, a name changed underneath.
+/// Rather than keep a screen for tidying, the settings say when there is
+/// something to tidy.
+///
+/// Only the shapes this program files things under are judged. Anything else
+/// -- a name a person invented, a key an older version wrote -- is left alone,
+/// because "I do not recognise it" is not the same as "nobody wants it".
+pub fn orphan_secrets(cfg: &Config, keys: &[String]) -> Vec<String> {
+    let (spaces, _) = cfg.resolve_workspaces();
+    // A destination keeps its token as "@name". Two fields carry one, and
+    // the rest of the destinations have nothing to keep
+    let refs: std::collections::HashSet<String> = cfg
+        .notify
+        .values()
+        .flat_map(|d| match d {
+            crate::notify::Destination::Slack { webhook }
+            | crate::notify::Destination::Discord { webhook } => vec![webhook.clone()],
+            crate::notify::Destination::Telegram { token, .. } => vec![token.clone()],
+            _ => Vec::new(),
+        })
+        .filter_map(|r| r.strip_prefix('@').map(str::to_string))
+        .collect();
+    keys.iter()
+        .filter(|k| {
+            let k = k.as_str();
+            if let Some(name) = k.strip_prefix("provider/") {
+                return !cfg.providers.contains_key(name);
+            }
+            if k.starts_with("notify/") || k.starts_with("notify_") {
+                return !refs.contains(k);
+            }
+            if let Some(rest) = k.strip_prefix("ssh/") {
+                // ssh/<workspace>/<tab>/<what>
+                let mut part = rest.split('/');
+                let (Some(ws), Some(tab)) = (part.next(), part.next()) else {
+                    return false;
+                };
+                return !spaces.iter().any(|s| {
+                    s.id == ws
+                        && s.tabs
+                            .iter()
+                            .any(|t| t.cfg.id.as_deref().unwrap_or_default() == tab)
+                });
+            }
+            if k.contains('/') {
+                return false; // a shape this version does not know
+            }
+            match k.split_once('.') {
+                // <workspace>.<name>, the ones automation asks for
+                Some((ws, _)) => !spaces.iter().any(|s| s.id == ws),
+                None => false,
+            }
+        })
+        .cloned()
+        .collect()
+}
+
 /// Why this line cannot be used, as the key of the sentence to show, or None.
 ///
 /// The screen asks this while somebody types and the store asks it before
@@ -3751,6 +3812,57 @@ mod tests {
         assert!(!inside.may_fill("https://intranet.local/login"), "書いた経路と違う");
         assert!(inside.may_fill("https://github.com/login"));
         assert!(!inside.may_fill("http://github.com/login"), "平文に落とされて通る");
+    }
+
+    /// What is offered for deletion is only what nothing claims. Getting this
+    /// wrong deletes a password somebody still needs, so each shape is asked
+    /// for by name and anything unrecognised is left alone
+    #[test]
+    fn only_what_nothing_claims_is_offered_for_tidying() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+              "workspaces": [
+                {"name":"Blog","id":"blog","tabs":[
+                   {"name":"prod","id":"prod","command":"ssh://me@example.com"}]}
+              ],
+              "providers": {"deepseek": {"base_url": "https://api.deepseek.com/v1"}},
+              "notify": {"team": {"type":"slack","webhook":"@notify/team"}}
+            }"#,
+        )
+        .unwrap();
+        let keys: Vec<String> = [
+            // claimed
+            "blog.diary",
+            "ssh/blog/prod/password",
+            "ssh/blog/prod/passphrase",
+            "provider/deepseek",
+            "notify/team",
+            // nobody's
+            "gone.diary",
+            "ssh/gone/prod/password",
+            "ssh/blog/gone/password",
+            "provider/openai",
+            "notify/old",
+            // not this program's shape: never judged, never offered
+            "something_a_person_made",
+            "weird/shape/here",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+        let mut left = orphan_secrets(&cfg, &keys);
+        left.sort();
+        assert_eq!(
+            left,
+            vec![
+                "gone.diary",
+                "notify/old",
+                "provider/openai",
+                "ssh/blog/gone/password",
+                "ssh/gone/prod/password",
+            ]
+        );
     }
 
     /// The screen and the store ask the same question of a line, so what the

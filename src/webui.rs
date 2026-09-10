@@ -1933,6 +1933,30 @@ fn handle(
                 "signed_in": crate::pr::signed_in(),
             })))?;
         }
+        // The secrets nothing in the settings claims any more. Answered here
+        // rather than worked out on the screen, because what owns what is a
+        // fact about the settings file and is tested with it
+        ("GET", "/api/secrets/orphans") => {
+            let path = secrets_file(config_path);
+            let pw = password.lock().unwrap().clone();
+            let keys: Vec<String> = crate::config::list_secrets(&path, pw.as_deref())
+                .map(|l| l.into_iter().map(|(k, _)| k).collect())
+                .unwrap_or_default();
+            let orphans = match crate::config::load() {
+                Some(cfg) => crate::config::orphan_secrets(&cfg, &keys),
+                // Without a config nothing can be said to be unclaimed, and
+                // guessing here would offer to delete somebody's passwords
+                None => Vec::new(),
+            };
+            req.respond(json_resp(serde_json::json!({ "orphans": orphans })))?;
+        }
+        // Whether Claude Code is signed in on this machine, so the settings can
+        // say why the allowance pill is or is not there
+        ("GET", "/api/claude") => {
+            req.respond(json_resp(serde_json::json!({
+                "signed_in": crate::limits::signed_in(),
+            })))?;
+        }
         // What this machine already offers to open a tab on: the installed WSL
         // distributions and the hosts in the person's own ssh config. Both were
         // things the settings screen asked people to type from memory
@@ -2528,6 +2552,10 @@ const PAGE: &str = r##"<!doctype html>
     above it reads as the name of the pair rather than more of the same */
  .field > .hint { font-size:11px; margin-top:-1px; }
  .field > input, .field > select { width:100%; }
+ /* A control and, under it, what is wrong with what was typed */
+ .field > .fieldctl { display:flex; flex-direction:column; gap:var(--s2); }
+ .field > .fieldctl > input, .field > .fieldctl > select { width:100%; }
+ .field > .fieldctl > input.narrow { width:140px; }
  /* A thumb needs more than a glyph. */
  .hit { min-width:34px; min-height:34px; }
  /* The warning about a plain connection, and the tick that takes it on.
@@ -2543,6 +2571,10 @@ const PAGE: &str = r##"<!doctype html>
    border-radius:var(--r-ctl); font-size:11.5px; line-height:1.5; color:var(--warn);
    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent);
    background:color-mix(in srgb, var(--warn) 9%, transparent); }
+ /* One fact's state, as a dot. Only the state colours go in it */
+ .dot { width:8px; height:8px; border-radius:50%; background:var(--dim); flex:none; }
+ .dot.on { background:var(--live); }
+ .dot.off { background:var(--warn); }
  .site-row { display:flex; gap:var(--s2); }
  .site-row input.bad { border-color:var(--warn); }
  /* Where the answer points. Long enough to find, short enough not to nag */
@@ -4388,13 +4420,37 @@ function snapshotsCard() {
   return box;
 }
 function filesCard() {
+  // A secret goes when the thing that used it goes, so this should never have
+  // anything to say. It says something when a settings file was edited by hand
+  // or an older version left something behind -- and nothing at all otherwise
+  const tidy = el("div", {class:"row"});
+  tidy.hidden = true;
+  const lookForOrphans = async () => {
+    const j = await fetch("/api/secrets/orphans", {headers:{"X-Token":TOKEN}})
+      .then(r => r.json()).catch(() => null);
+    const list = (j && j.orphans) || [];
+    tidy.textContent = "";
+    tidy.hidden = !list.length;
+    if (!list.length) return;
+    tidy.append(
+      el("span", {class:"hint warn"}, fill(T["settings.secrets.orphans"], {n: list.length})),
+      el("button", {onclick: async () => {
+        const lines = list.join(String.fromCharCode(10));
+        if (!confirm(fill(T["settings.secrets.orphans_confirm"], {list: lines}))) return;
+        await dropSecrets(list);
+        toast(fill(T["settings.secrets.orphans_done"], {n: list.length}));
+        lookForOrphans();
+      }}, T["settings.secrets.orphans_clean"]));
+  };
+  setTimeout(lookForOrphans, 0);
   return card(T["settings.section.files"],
     row(T["settings.automation_global"], ...pathField(current, "automation", "scripts/common", "dir",
         T["settings.tab.automation_dir.pick"]),
         el("span", {class:"hint"}, T["settings.automation_global.hint"])),
     row("secrets", ...pathField(current, "secrets", "secrets.json", "file",
         T["settings.secrets"]),
-        el("span", {class:"hint"}, T["settings.secrets.hint"])));
+        el("span", {class:"hint"}, T["settings.secrets.hint"])),
+    tidy);
 }
 // Ordered flat list of the global cards. `id` is the stable deep-link handle
 // (the sub-input bar's ⚙ opens ?section=actions, for instance).
@@ -4411,6 +4467,7 @@ function globalSections() {
     {id:"protect",   label:T["settings.sec.protect"],   sub:T["settings.sec.protect.sub"],   build:protectCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
     {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},
+    {id:"claudeusage", label:T["settings.sec.claudeusage"], sub:T["settings.sec.claudeusage.sub"], build:claudeUsageCard},
     {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:notifyCard},
     {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
     {id:"api",       label:T["settings.sec.api"],       sub:T["settings.sec.api.sub"],       build:apiCard},
@@ -4592,6 +4649,17 @@ async function fetchSecrets() {
   try { return await fetch("/api/secrets", {headers:{"X-Token":TOKEN}}).then(r=>r.json()); }
   catch (e) { return null; }
 }
+// A secret belongs to the thing that uses it, so it goes when that thing
+// goes. Named as a "@ref" in the settings, or by the shape the program files
+// it under. Nothing else knows these names, and there is no screen of
+// leftovers to tidy them away from later
+async function dropSecretRef(ref) {
+  const r = (ref || "").trim();
+  if (r.startsWith("@")) await deleteSecret(r.slice(1));
+}
+async function dropSecrets(keys) {
+  for (const k of keys) await deleteSecret(k);
+}
 async function saveSecret(body) {
   return await fetch("/api/secrets/set", {method:"POST",
     headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
@@ -4641,81 +4709,199 @@ function urlFault(text) {
 }
 
 // Secrets (equivalent to GitHub Secrets). Referenced by key; once saved, the value is never shown again.
-// Model bridge connections (Providers). Registers OpenAI-compatible APIs by name.
-// A directly typed key is saved behind the scenes into an encrypted secret, and only an @reference is put in config
-// (the user doesn't need to know about the "secret store" or the @name)
+// Model connections (Providers). An OpenAI-compatible API registered by name,
+// so a tab's command can say `model <name>/<model>`.
+//
+// A boxed list you read down and one dialog to change one of them, the same
+// shape as every other list of records on this page. The key is write-only:
+// it is kept in the secrets file and never comes back to the screen.
 function providersCard() {
   current.providers = current.providers || {};
   const listBox = el("div", {id:"providerslist"});
-  // Claude's allowance, read with Claude Code's own sign-in. A setting, so it
-  // can be turned off on a machine where asking is not wanted
-  const usageRow = row(T["settings.claude_usage"], checkDefaultOn(current, "claude_usage", T["settings.claude_usage.label"]),
-    el("span", {class:"hint"}, T["settings.claude_usage.hint"]));
   const draw = () => {
     listBox.textContent = "";
     const names = Object.keys(current.providers);
     if (!names.length) {
-      listBox.append(el("div", {class:"hint"},
-        T["settings.providers.empty"]));
+      listBox.append(el("div", {class:"hint"}, T["settings.providers.empty"]));
+      return;
     }
+    const rows = el("div", {class:"rows"});
     for (const name of names) {
-      const p = (current.providers[name] = current.providers[name] || {});
-      const urlIn = el("input", {class:"mono", value: p.base_url || "",
-        placeholder:"https://api.deepseek.com/v1", style:"flex:1 1 0;min-width:120px"});
-      urlIn.addEventListener("input", () => { p.base_url = urlIn.value; refreshSave(); });
-      const hasKey = (p.api_key || "").startsWith("@");
-      const keyIn = el("input", {type:"password", style:"flex:1 1 0;min-width:110px",
-        placeholder: hasKey ? T["settings.providers.key_set_ph"] : T["settings.providers.key_ph"]});
-      const keyBtn = el("button", {class:"quiet", onclick: async () => {
-        const v = keyIn.value.trim();
-        if (!v) { toast(T["settings.secrets.key_required"], true); return; }
-        // Secret keys allow only [A-Za-z0-9_-.], so namespace with "_" not ":".
-        const sk = "provider_" + name;
-        const r = await fetch("/api/secrets/set", {method:"POST",
-          headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-          body: JSON.stringify({key: sk, description: "model provider "+name, value: v})})
-          .then(r=>r.json());
-        if (r.ok) { p.api_key = "@" + sk; keyIn.value = ""; toast(fill(T["settings.providers.key_saved"], {name})); refreshSave(); draw(); }
-        else toast(r.error || T["settings.secrets.save_failed"], true);
-      }}, T["settings.providers.save_key"]);
-      // How long to wait for a whole reply. Blank means the app's own 180, and
-      // 0 means "as long as it takes" -- which is the only workable answer for
-      // a thinking model on the machine next door.
-      const waitIn = el("input", {type:"number", min:"0", step:"1", class:"mono",
-        style:"flex:none;width:80px", placeholder:T["settings.providers.timeout_ph"],
-        title:T["settings.providers.timeout_title"],
-        value: (p.timeout_sec === undefined || p.timeout_sec === null) ? "" : String(p.timeout_sec)});
-      waitIn.addEventListener("input", () => {
-        const v = waitIn.value.trim();
-        if (v === "") delete p.timeout_sec; else p.timeout_sec = Math.max(0, Math.floor(Number(v) || 0));
-        refreshSave();
-      });
-      const del = el("button", {class:"quiet", style:"flex:none", onclick: () => {
-        if (confirm(fill(T["settings.providers.delete_confirm"], {name}))) { delete current.providers[name]; refreshSave(); draw(); }
-      }}, T["common.delete"]);
-      listBox.append(el("div", {class:"listrow"},
-        el("span", {class:"mono", style:"flex:none;min-width:70px;color:var(--text)"}, name),
-        urlIn, keyIn,
-        el("span", {class:"mono", style:"flex:none;width:14px"}, hasKey ? "🔑" : ""),
-        waitIn, keyBtn, del));
+      const p = current.providers[name] || {};
+      const held = (p.api_key || "").startsWith("@");
+      rows.append(el("div", {class:"listrow secretrow", onclick: () => providerDialog(name, draw)},
+        el("span", {class:"mono secretname"}, name),
+        el("span", {class:"hint mono secretdesc"}, p.base_url || T["settings.providers.no_url"]),
+        el("span", {class:"hint"}, held ? "••••" : T["settings.providers.key_none"]),
+        el("span", {class:"hint secretsite"}, waitText(p.timeout_sec)),
+        el("span", {class:"go"}, "›")));
     }
+    listBox.append(rows);
   };
-  const nameIn = el("input", {class:"mono", placeholder:T["settings.providers.name_ph"], style:"width:130px"});
-  const addBtn = el("button", {class:"primary", onclick: () => {
-    const n = nameIn.value.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "");
-    if (!n) { toast(T["settings.providers.name_required"], true); return; }
-    if (current.providers[n]) { toast(T["settings.providers.name_dup"], true); return; }
-    current.providers[n] = { base_url: "" };
-    nameIn.value = ""; refreshSave(); draw();
-  }}, T["settings.providers.add"]);
   const c = card(T["settings.providers.title"],
-    el("div", {class:"hint"},
-      T["settings.providers.hint"]),
+    el("div", {class:"hint"}, T["settings.providers.hint"]),
     listBox,
-    el("div", {class:"row", style:"gap:10px;margin-top:12px;align-items:flex-end"}, nameIn, addBtn),
-    usageRow);
+    el("div", {class:"row"},
+      el("button", {onclick: () => providerDialog(null, draw)}, T["settings.providers.add"])),
+    el("div", {class:"hint"}, T["settings.providers.use_hint"]));
   setTimeout(draw, 0);
   return c;
+}
+// How long a reply may take, in the words the field uses. Blank is the app's
+// own 180 seconds, and 0 is "as long as it takes"
+const waitText = v => (v === undefined || v === null) ? fill(T["settings.providers.wait_default"], {n: 180})
+  : (Number(v) === 0 ? T["settings.providers.wait_forever"] : fill(T["settings.providers.wait_n"], {n: v}));
+
+// Adding a connection, or changing one. `name` is null for a new one.
+function providerDialog(name, redraw) {
+  const editing = !!name;
+  const p = editing ? (current.providers[name] || {}) : {};
+  const nameIn = el("input", {type:"text", class:"mono", placeholder:T["settings.providers.name_ph"]});
+  nameIn.value = name || "";
+  nameIn.disabled = editing;
+  const urlIn = el("input", {type:"text", class:"mono", placeholder:"https://api.deepseek.com/v1"});
+  urlIn.value = p.base_url || "";
+  const hasKey = (p.api_key || "").startsWith("@");
+  const keyIn = el("input", {type:"password",
+    placeholder: hasKey ? T["settings.providers.key_set_ph"] : T["settings.providers.key_ph"]});
+  const waitIn = el("input", {type:"number", min:"0", step:"1", class:"mono narrow",
+    placeholder:"180",
+    value: (p.timeout_sec === undefined || p.timeout_sec === null) ? "" : String(p.timeout_sec)});
+
+  const save = el("button", {class:"primary"}, T["common.save"]);
+  const why = el("span", {class:"why"});
+  why.hidden = true;
+  let held = null;
+
+  // What is wrong, said on the field that is wrong, with the save held rather
+  // than dead: it still takes the press, and answers it
+  let asked = false;   // has the save been pressed, or the box been typed in
+  function fieldFault(input, reason) {
+    const wrap = input.parentElement;
+    const had = wrap.querySelector(".site-warn");
+    const show = reason && (asked || input.value.trim() !== "");
+    if (had) had.remove();
+    input.classList.toggle("bad", !!show);
+    if (show) wrap.append(el("div", {class:"site-warn"},
+      el("span", {}, "⚠"), el("span", {}, reason)));
+  }
+  function recheck() {
+    const n = nameIn.value.trim();
+    let first = null;
+    const nameWhy = !n ? T["settings.providers.name_required"]
+      : (!/^[a-z0-9_.-]+$/i.test(n) ? T["settings.providers.name_bad"]
+      : (!editing && current.providers[n] ? T["settings.providers.name_dup"] : null));
+    fieldFault(nameIn, nameWhy);
+    if (nameWhy) first = {at: nameIn, why: nameWhy};
+
+    const u = urlIn.value.trim();
+    const urlWhy = !u ? T["settings.providers.url_required"]
+      : (urlFault(u) ? T[urlFault(u)] : null);
+    fieldFault(urlIn, urlWhy);
+    if (urlWhy && !first) first = {at: urlIn, why: urlWhy};
+
+    const w = waitIn.value.trim();
+    const waitWhy = w !== "" && !/^\d+$/.test(w) ? T["settings.providers.wait_bad"] : null;
+    fieldFault(waitIn, waitWhy);
+    if (waitWhy && !first) first = {at: waitIn, why: waitWhy};
+
+    held = first;
+    save.classList.toggle("held", !!held);
+    if (!held) why.hidden = true;
+    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+  }
+  function sayWhy() {
+    asked = true;
+    recheck();
+    why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    why.hidden = false;
+    held.at.classList.remove("lookhere");
+    void held.at.offsetWidth;
+    held.at.classList.add("lookhere");
+    held.at.focus();
+  }
+  for (const i of [nameIn, urlIn, waitIn]) i.addEventListener("input", recheck);
+
+  const field = (label, control, hint) => el("div", {class:"field"},
+    el("label", {}, label), el("div", {class:"fieldctl"}, control),
+    hint ? el("div", {class:"hint"}, hint) : null);
+
+  const shut = () => back.remove();
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, editing ? T["settings.providers.edit_title"] : T["settings.providers.add_title"]),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
+    el("div", {class:"mbody"},
+      field(T["settings.providers.name_label"], nameIn,
+            editing ? T["settings.providers.name_fixed"] : T["settings.providers.name_hint"]),
+      field(T["settings.providers.url_label"], urlIn, T["settings.providers.url_hint"]),
+      field(T["settings.providers.key_label"], keyIn, T["settings.providers.key_hint"]),
+      field(T["settings.providers.wait_label"], waitIn, T["settings.providers.wait_hint"])),
+    el("div", {class:"mfoot"},
+      editing
+        ? el("button", {class:"danger", onclick: async () => {
+            if (!confirm(fill(T["settings.providers.delete_confirm"], {name}))) return;
+            // Its key goes with it. Nothing else names that secret, and there
+            // is no screen of leftovers to tidy it away from later
+            if ((p.api_key || "").startsWith("@")) await deleteSecret(p.api_key.slice(1));
+            delete current.providers[name];
+            refreshSave(); shut(); redraw();
+          }}, T["settings.providers.delete"])
+        : null,
+      why,
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
+      save));
+  back.firstChild.classList.add("framed");
+
+  back.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); shut(); return; }
+    if (e.key !== "Enter" || e.target.tagName !== "INPUT") return;
+    e.preventDefault();
+    save.click();
+  });
+
+  save.addEventListener("click", async () => {
+    if (held) { sayWhy(); return; }
+    const n = editing ? name : nameIn.value.trim();
+    const it = (current.providers[n] = current.providers[n] || {});
+    it.base_url = urlIn.value.trim();
+    const w = waitIn.value.trim();
+    if (w === "") delete it.timeout_sec; else it.timeout_sec = Math.max(0, Math.floor(Number(w)));
+    // The key never sits in config.json: it goes to the secrets file and only
+    // the name of it is kept here
+    if (keyIn.value.trim()) {
+      const sk = "provider/" + n;
+      const r = await saveSecret({key: sk, description: "model provider " + n,
+        value: keyIn.value.trim(), human: true, ai: false, urls: []});
+      if (!r.ok) { toast(r.error || T["settings.secrets.save_failed"], true); return; }
+      it.api_key = "@" + sk;
+    }
+    refreshSave(); shut(); redraw();
+    toast(fill(T["settings.providers.saved"], {name: n}));
+  });
+  recheck();
+  setTimeout(() => (editing ? urlIn : nameIn).focus(), 0);
+}
+
+// Claude's allowance, read with Claude Code's own sign-in on this PC. Its own
+// card, because it is not a connection anybody registers -- it is a thing the
+// program can read when Claude Code is signed in, and nothing when it is not
+function claudeUsageCard() {
+  const state = el("div", {class:"hint"}, T["settings.claude_usage.checking"]);
+  const dot = el("span", {class:"dot"});
+  const line = el("div", {class:"row"}, dot, state);
+  fetch("/api/claude", {headers:{"X-Token":TOKEN}}).then(r => r.json()).then(j => {
+    dot.classList.add(j.signed_in ? "on" : "off");
+    state.textContent = j.signed_in
+      ? T["settings.claude_usage.signed_in"]
+      : T["settings.claude_usage.signed_out"];
+  }).catch(() => { state.textContent = T["settings.claude_usage.unknown"]; });
+  return card(T["settings.claude_usage"],
+    el("div", {class:"hint"}, T["settings.claude_usage.sub"]),
+    checkDefaultOn(current, "claude_usage", T["settings.claude_usage.label"]),
+    el("div", {class:"hint"}, T["settings.claude_usage.hint"]),
+    line);
 }
 
 // Notification destinations (Slack / Telegram). The sensitive webhook/token is
@@ -5058,7 +5244,7 @@ function notifyCard() {
         saveSecret = async () => {
           const v = tokIn.value.trim();
           if (!v) { toast(T["settings.secrets.value_required"], true); return false; }
-          const sk = "notify_" + slugId(name) + "_token";
+          const sk = "notify/" + slugId(name) + "-token";
           const r = await fetch("/api/secrets/set", {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
             body: JSON.stringify({key: sk, description: "notify " + name, value: v})}).then(r=>r.json());
           if (r.ok) { d.token = "@" + sk; tokIn.value = ""; refreshSave(); return true; }
@@ -5092,7 +5278,7 @@ function notifyCard() {
         saveSecret = async () => {
           const v = hookIn.value.trim();
           if (!v) { toast(T["settings.secrets.value_required"], true); return false; }
-          const sk = "notify_" + slugId(name);
+          const sk = "notify/" + slugId(name);
           const r = await fetch("/api/secrets/set", {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
             body: JSON.stringify({key: sk, description: "notify " + name, value: v})}).then(r=>r.json());
           if (r.ok) { d.webhook = "@" + sk; hookIn.value = ""; refreshSave(); return true; }
@@ -5111,8 +5297,12 @@ function notifyCard() {
           body: JSON.stringify(testPayload())}).then(r=>r.json()).catch(()=>null);
         toast((r && r.ok) ? T["settings.notify.test_ok"] : ((r && r.error) || T["settings.notify.test_failed"]), !(r && r.ok));
       }}, T["settings.notify.test"]);
-      const del = el("button", {class:"quiet", style:"flex:none", onclick: () => {
-        if (confirm(fill(T["settings.notify.delete_confirm"], {name}))) { delete current.notify[name]; refreshSave(); draw(); } }}, T["common.delete"]);
+      const del = el("button", {class:"quiet", style:"flex:none", onclick: async () => {
+        if (!confirm(fill(T["settings.notify.delete_confirm"], {name}))) return;
+        await dropSecretRef(d.token);
+        await dropSecretRef(d.webhook);
+        delete current.notify[name]; refreshSave(); draw();
+      }}, T["common.delete"]);
       // The primary: where an unnamed shikisha.notify(text) — e.g. the
       // "a human is needed" ring from an operate rally — gets delivered
       const prim = el("input", {type:"radio", name:"notifyprimary"});
@@ -5681,10 +5871,22 @@ function wsPane(ws) {
     el("div", {class:"hint"}, T["settings.ws.share.hint"])));
 
   box.append(el("div", {class:"row"},
-    el("button", {class:"danger", onclick:() => {
-      if (confirm(fill(T["settings.workspace.delete_confirm"], {name: ws.name}))) {
-        wss.splice(sel.ws, 1); sel = {ws:0, tab:null, global:true}; render();
+    el("button", {class:"danger", onclick: async () => {
+      if (!confirm(fill(T["settings.workspace.delete_confirm"], {name: ws.name}))) return;
+      // Everything filed under this workspace's name goes with it: what its
+      // automation used, and what its server tabs signed in with. Said out
+      // loud first, because a password cannot be got back
+      const id = (ws.id || "").trim();
+      if (id) {
+        const j = await fetchSecrets();
+        const mine = ((j && j.secrets) || [])
+          .map(s => s.key)
+          .filter(k => k.startsWith(id + ".") || k.startsWith("ssh/" + id + "/"));
+        if (mine.length &&
+            !confirm(fill(T["settings.workspace.delete_secrets"], {n: mine.length}))) return;
+        await dropSecrets(mine);
       }
+      wss.splice(sel.ws, 1); sel = {ws:0, tab:null, global:true}; render();
     }}, T["settings.workspace.delete"])));
   return box;
 }
@@ -6474,10 +6676,14 @@ function tabPane(ws, t) {
   box.append(el("div", {class:"card"}, det));
 
   box.append(el("div", {class:"row"},
-    el("button", {class:"danger", onclick:() => {
-      if (confirm(fill(T["settings.tab.delete_confirm"], {name: t.name || T["settings.tab.unnamed"]}))) {
-        ws.tabs.splice(sel.tab, 1); sel.tab = null; render();
-      }
+    el("button", {class:"danger", onclick: async () => {
+      if (!confirm(fill(T["settings.tab.delete_confirm"], {name: t.name || T["settings.tab.unnamed"]}))) return;
+      // The password this tab signs in with is this tab's, and nothing else
+      // can name it once the tab is gone
+      const w = (ws.id || "").trim(), tid = (t.id || "").trim();
+      if (w && tid) await dropSecrets(["ssh/" + w + "/" + tid + "/password",
+                                       "ssh/" + w + "/" + tid + "/passphrase"]);
+      ws.tabs.splice(sel.tab, 1); sel.tab = null; render();
     }}, T["settings.tab.delete"])));
   return box;
 }
