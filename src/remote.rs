@@ -11,7 +11,7 @@
 //!   - Requires a 32-byte token. Constant-time comparison
 //!   - Remote input is treated as "human operation" (resets the auto chain)
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -220,7 +220,19 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
 type FrameClients = Arc<Mutex<Vec<Sender<Vec<u8>>>>>;
 /// Destinations for state pushes — the terminal screen and UI, sent over a
 /// WebSocket instead of the phone polling. One text sender per connected viewer.
-type StateClients = Arc<Mutex<Vec<Sender<String>>>>;
+type StateClients = Arc<Mutex<Vec<StateClient>>>;
+
+/// One viewer on the state socket, and how many pushes it has not written yet.
+///
+/// The count is what tells a slow line apart from a slow loop. The loop can
+/// hand frames over faster than a socket drains, and only the socket knows:
+/// a backlog means the line is the narrow part, so the screen pace backs off
+/// (see `remote_floor` in `main.rs`) rather than piling up frames that will
+/// arrive too late to be worth drawing.
+struct StateClient {
+    tx: Sender<String>,
+    pending: Arc<AtomicUsize>,
+}
 
 pub struct RemoteUi {
     pub url: String,
@@ -814,7 +826,30 @@ impl RemoteUi {
     /// to every connected viewer. Drop lines whose peer has gone.
     pub fn push_state(&self, msg: String) {
         let mut clients = self.state_clients.lock().unwrap();
-        clients.retain(|tx| tx.send(msg.clone()).is_ok());
+        clients.retain(|c| {
+            // Counted before the send, so the writer thread -- which may drain
+            // it before this line returns -- can only ever take the count back
+            // down, and never below zero
+            c.pending.fetch_add(1, Ordering::SeqCst);
+            if c.tx.send(msg.clone()).is_ok() {
+                true
+            } else {
+                c.pending.fetch_sub(1, Ordering::SeqCst);
+                false
+            }
+        });
+    }
+
+    /// The largest backlog any viewer has: pushes handed over but not yet
+    /// written to its socket. Zero means every line is keeping up
+    pub fn max_pending(&self) -> usize {
+        self.state_clients
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c.pending.load(Ordering::SeqCst))
+            .max()
+            .unwrap_or(0)
     }
 
     /// Stop accepting and release the port before returning.
@@ -1382,22 +1417,37 @@ fn handle(
             );
             let stream = req.upgrade("websocket", resp);
             let (stx, srx) = channel::<String>();
+            let pending = Arc::new(AtomicUsize::new(0));
             // Give the new viewer the current screen and UI right away, so it
-            // isn't blank until something next changes.
+            // isn't blank until something next changes. Counted like any other
+            // push: the writer decrements every message it takes, so seeding
+            // without counting would run the backlog below zero and wrap.
             {
                 let snap = snapshot.lock().unwrap();
+                let seed = |m: String| {
+                    pending.fetch_add(1, Ordering::SeqCst);
+                    let _ = stx.send(m);
+                };
                 if let Ok(ui) = serde_json::to_string(&snap.ui) {
-                    let _ = stx.send(format!("{{\"ui\":{ui}}}"));
+                    seed(format!("{{\"ui\":{ui}}}"));
                 }
                 if let Ok(scr) = serde_json::to_string(&snap.screen_html) {
-                    let _ = stx.send(format!("{{\"screen_html\":{scr}}}"));
+                    seed(format!("{{\"screen_html\":{scr}}}"));
                 }
             }
-            state_clients.lock().unwrap().push(stx);
+            state_clients.lock().unwrap().push(StateClient {
+                tx: stx,
+                pending: Arc::clone(&pending),
+            });
             std::thread::spawn(move || {
                 let mut w = crate::ws::WsWriter::new(stream);
                 while let Ok(msg) = srx.recv() {
-                    if w.send_text(&msg).is_err() {
+                    let sent = w.send_text(&msg);
+                    // Down as the message leaves, whether or not it landed:
+                    // a line that just broke is about to be dropped anyway,
+                    // and a stuck count would hold the pace down for everyone
+                    pending.fetch_sub(1, Ordering::SeqCst);
+                    if sent.is_err() {
                         break;
                     }
                 }

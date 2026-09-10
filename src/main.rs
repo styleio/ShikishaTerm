@@ -2167,6 +2167,81 @@ fn screen_push(had: &[String], now: &[String]) -> ScreenPush {
     }
 }
 
+/// How long to wait before pushing the screen to a viewer again.
+///
+/// The window repairs rows sixty times a second. A phone used to get one whole
+/// screen every 140ms, which is fine while an AI types into the last line and
+/// ruinous while somebody scrolls -- every row moves, so seven whole frames a
+/// second is what the reader sees, and it reads as the page stuttering rather
+/// than as a terminal moving.
+///
+/// So the pace follows the viewer's line instead of a fixed number. `pending`
+/// is what that line has been handed and not yet written: nothing waiting means
+/// it is keeping up and can have frames as fast as the loop makes them, and a
+/// backlog means the socket is the narrow part, where sending more only queues
+/// pictures that will arrive too late to be worth drawing.
+fn remote_floor(pending: usize) -> Duration {
+    match pending {
+        0 => Duration::from_millis(33),
+        1..=2 => Duration::from_millis(70),
+        _ => Duration::from_millis(200),
+    }
+}
+
+#[cfg(test)]
+mod remote_floor_tests {
+    use super::{ScreenPush, remote_floor, screen_push};
+
+    /// Scrolling moves every row at once, so the row diff cannot help there --
+    /// the whole grid still goes out, exactly as before. What changed for
+    /// scrolling is the pace, and this is the honest size of that change
+    #[test]
+    fn scrolling_still_sends_the_whole_grid_but_four_times_as_often() {
+        let had: Vec<String> = (0..40).map(|i| format!("line {i}")).collect();
+        let now: Vec<String> = (1..41).map(|i| format!("line {i}")).collect();
+        assert_eq!(screen_push(&had, &now), ScreenPush::Whole);
+        let (was, is) = (140.0, remote_floor(0).as_millis() as f64);
+        assert!(was / is >= 4.0, "以前の 140ms の4倍以上になっていない: {is}ms");
+    }
+
+    /// An AI at work is the other shape: a spinner and a line of output, which
+    /// is a handful of rows out of fifty. That is where the diff earns its keep
+    #[test]
+    fn an_ai_typing_sends_only_the_rows_that_moved() {
+        let had: Vec<String> = (0..40).map(|i| format!("line {i}")).collect();
+        let mut now = had.clone();
+        now[38] = "spinner".into();
+        now[39] = "one more line".into();
+        assert_eq!(screen_push(&had, &now), ScreenPush::Rows(vec![38, 39]));
+    }
+
+    #[test]
+    fn a_line_that_is_keeping_up_gets_frames_at_thirty_a_second() {
+        assert_eq!(remote_floor(0).as_millis(), 33);
+    }
+
+    /// The page reads `list[i][0]` as the row number and `list[i][1]` as its
+    /// html (`window.__rows`), so the pair has to stay a pair on the wire
+    #[test]
+    fn a_row_repair_goes_out_as_number_and_html() {
+        let list: Vec<(usize, &str)> = vec![(0, "a"), (3, "<span>b</span>")];
+        assert_eq!(
+            serde_json::to_string(&list).unwrap(),
+            r#"[[0,"a"],[3,"<span>b</span>"]]"#
+        );
+    }
+
+    #[test]
+    fn a_backlog_slows_the_pace_instead_of_deepening_it() {
+        let (none, some, lots) = (remote_floor(0), remote_floor(2), remote_floor(8));
+        assert!(none < some, "a waiting frame should slow the pace");
+        assert!(some < lots, "a deeper backlog should slow it further");
+        // Never faster than the old fixed pace once the line is truly behind:
+        // that number was chosen so a burst can't saturate a slow link
+        assert!(lots.as_millis() >= 140);
+    }
+}
+
 #[cfg(test)]
 mod screen_push_tests {
     use super::{ScreenPush, screen_push};
@@ -2968,7 +3043,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
     // send on change. The screen is also rate-limited (see below) so a burst of
     // AI output doesn't flood a slow phone link the way pushing every frame would.
     let mut last_remote_ui: Option<String> = None;
-    let mut last_remote_screen = String::new();
+    let mut last_remote_rows: Vec<String> = Vec::new();
     let mut last_remote_push = Instant::now() - Duration::from_secs(1);
     /// How often a viewer that has said nothing is written to anyway.
     const BEAT: Duration = Duration::from_secs(3);
@@ -3266,7 +3341,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     settings_linked = false;
                     // Fresh server = fresh viewers; forget what the old one pushed.
                     last_remote_ui = None;
-                    last_remote_screen = String::new();
+                    last_remote_rows = Vec::new();
                     // Announce the INTENT (the bind hasn't landed yet); a bind
                     // failure still surfaces as a flash from the install above.
                     remote_changed = Some(if want.enabled {
@@ -3964,19 +4039,24 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
             // Hand the current status to the remote UI and run any operations it sent
             if let Some(r) = remote_ui.as_ref() {
+                // Read the parser once, as rows. The snapshot wants the whole
+                // screen (a viewer that has just joined has nothing to repair)
+                // and the push below wants the rows that moved, and reading it
+                // twice would let the two disagree by a frame.
+                let screen_now: Vec<String> = tabs
+                    .get(session_at(&surfaces, active).unwrap_or(usize::MAX))
+                    .map(|t| {
+                        let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                        shell::screen_rows(p.screen())
+                    })
+                    .unwrap_or_default();
                 let snap = remote::Snapshot {
                     // What was built at draw time, read back from where the
                     // window keeps it. `ui` doesn't exist here yet, and
                     // building it again would be a second place that assembles
                     // state -- and one more full build of it every frame.
                     ui: surface.last.clone(),
-                    screen_html: tabs
-                        .get(session_at(&surfaces, active).unwrap_or(usize::MAX))
-                        .map(|t| {
-                            let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-                            shell::screen_html(p.screen())
-                        })
-                        .unwrap_or_default(),
+                    screen_html: screen_now.join("\n"),
                     workspace: workspaces
                         .get(ws_index)
                         .map(|w| w.name.clone())
@@ -4022,21 +4102,40 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         .collect(),
                 };
                 // Push what changed to any state-socket viewers. The UI goes out
-                // whenever it changes; the screen is rate-limited to ~7Hz so a
-                // burst of output can't saturate a slow link (idle = nothing sent).
+                // whenever it changes; the screen goes out as the rows that
+                // moved, no faster than the viewer's line is draining
+                // (idle = nothing sent).
                 if r.has_state_clients() {
                     let ui_json = serde_json::to_string(&snap.ui).unwrap_or_default();
                     if last_remote_ui.as_deref() != Some(ui_json.as_str()) {
                         r.push_state(format!("{{\"ui\":{ui_json}}}"));
                         last_remote_ui = Some(ui_json);
                     }
-                    if snap.screen_html != last_remote_screen
-                        && last_remote_push.elapsed() >= Duration::from_millis(140)
-                    {
-                        let scr = serde_json::to_string(&snap.screen_html).unwrap_or_default();
-                        r.push_state(format!("{{\"screen_html\":{scr}}}"));
-                        last_remote_screen = snap.screen_html.clone();
-                        last_remote_push = Instant::now();
+                    if last_remote_push.elapsed() >= remote_floor(r.max_pending()) {
+                        match screen_push(&last_remote_rows, &screen_now) {
+                            ScreenPush::Nothing => {}
+                            ScreenPush::Rows(moved) => {
+                                let rows = {
+                                    let list: Vec<(usize, &str)> = moved
+                                        .iter()
+                                        .map(|&i| (i, screen_now[i].as_str()))
+                                        .collect();
+                                    serde_json::to_string(&list)
+                                };
+                                if let Ok(rows) = rows {
+                                    r.push_state(format!("{{\"rows\":{rows}}}"));
+                                    last_remote_rows = screen_now;
+                                    last_remote_push = Instant::now();
+                                }
+                            }
+                            ScreenPush::Whole => {
+                                let scr =
+                                    serde_json::to_string(&snap.screen_html).unwrap_or_default();
+                                r.push_state(format!("{{\"screen_html\":{scr}}}"));
+                                last_remote_rows = screen_now;
+                                last_remote_push = Instant::now();
+                            }
+                        }
                     }
                     // The heartbeat. Carries nothing the page needs -- it reads
                     // it as "the line is alive" and drops it -- and exists so

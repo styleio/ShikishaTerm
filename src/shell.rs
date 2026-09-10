@@ -4599,6 +4599,11 @@ if (REMOTE) {
     if (d.cut) { cutNow(); return; }
     connected();
     if (d.ui) window.__state(typeof d.ui === "string" ? d.ui : JSON.stringify(d.ui));
+    // The rows that moved, when the shape of the screen is unchanged. Scrolling
+    // a TUI moves every row, so this is what decides whether a phone sees a
+    // terminal move or a page stutter — the whole grid still arrives whenever
+    // the shape changed or most of it moved anyway.
+    if (d.rows) { window.__rows(d.rows); pgArrived(); }
     if (d.screen_html != null) { window.__screen(d.screen_html); pgArrived(); }
     // 📼 pushes: a recorded Lua line for the composer, or a ▶ run's verdict
     // (null = clean, so test for the key's presence, not its truthiness).
@@ -8647,6 +8652,13 @@ mod tests {
         // unfocused pane and the tests all read it)
         assert_eq!(screen_html(p.screen()), rows.join("\n"));
         assert!(PAGE.contains("window.__rows = function"), "行だけを直す口が無い");
+        // ...and the phone reaches it too. Without this line the relay could
+        // only ever hand over whole grids, which is what made scrolling from a
+        // phone stutter: every row moves, so every frame was a full rebuild
+        assert!(
+            PAGE.contains("if (d.rows) { window.__rows(d.rows);"),
+            "遠隔の状態ソケットが行の修復を受け取れない"
+        );
         assert!(
             PAGE.contains(r#"'<div class="r">'"#),
             "行が別々の要素になっていない"
