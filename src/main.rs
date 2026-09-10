@@ -367,7 +367,7 @@ fn cast_test(url: &str) -> Result<()> {
     let mut count = 0u32;
     loop {
         for ev in browser.drain() {
-            if let browser::Ev::Frame { data, w, h, .. } = ev {
+            if let shikisha_shared::Ev::Frame { data, w, h, .. } = ev {
                 let bytes = b64.decode(data.as_bytes()).map_err(|e| {
                     anyhow::anyhow!(crate::i18n::tp(
                         "cli.cast_test.bad_base64",
@@ -649,7 +649,7 @@ struct WinSurface {
     /// Every pane as the page last measured it. One entry while the content
     /// area is undivided, one per pane once it is split. The page is the only
     /// one that can measure this, so it is reported rather than computed here
-    pane_geom: Vec<crate::browser::PaneGeom>,
+    pane_geom: Vec<shikisha_shared::PaneGeom>,
     /// The whole content area. Where a screen that covers the window goes
     full: (i32, i32, i32, i32),
     /// Panes clicked in the window. The loop moves focus to them
@@ -691,7 +691,7 @@ struct WinSurface {
     /// Scroll-back requested via the wheel (positive = further into the past)
     scrolls: Vec<(i32, u16, u16)>,
     /// Navigation requested via the top bar
-    gos: Vec<crate::browser::Go>,
+    gos: Vec<shikisha_shared::Go>,
     /// The answer to a location query we asked for (name inside the window, URL, can-go-back, can-go-forward)
     wheres: Vec<(String, String, bool, bool)>,
     /// Browser load start/end notifications (name inside the window, whether loading).
@@ -761,7 +761,7 @@ struct WinSurface {
     /// Text/keys typed into the composer while viewing a browser tab. The loop
     /// injects them into the shown browser — the very same caps.browser_inject the
     /// phone's relay uses, so the desktop composer and the phone share one path.
-    injects: Vec<crate::browser::Input>,
+    injects: Vec<shikisha_shared::Input>,
     /// The 🎯 panel's "save the replay" button. The loop copies the newest
     /// run's replay.lua into Downloads and answers with a flash message.
     replay_saves: bool,
@@ -774,7 +774,7 @@ struct WinSurface {
     /// conversations. The loop runs the search and puts the hits into state
     vault_queries: Vec<String>,
     /// Past conversations asked to be reopened as resuming tabs
-    vault_opens: Vec<crate::browser::Ev>,
+    vault_opens: Vec<shikisha_shared::Ev>,
     /// Branches asked about, and asked for: (folder cut from, branch, what to
     /// grow it from, make it, what to bring along)
     branches: Vec<crate::browser::BranchAsk>,
@@ -908,7 +908,7 @@ impl WinSurface {
     }
 
     /// Takes ownership of navigation requested via the top bar
-    fn take_gos(&mut self) -> Vec<crate::browser::Go> {
+    fn take_gos(&mut self) -> Vec<shikisha_shared::Go> {
         std::mem::take(&mut self.gos)
     }
 
@@ -983,10 +983,10 @@ impl WinSurface {
     /// Takes the pending ✨ suggestion requests since the last drain.
     /// Route a Vault intent that arrived from the phone into the same queues a
     /// window-origin one uses, so both are drained in one place
-    fn queue_vault(&mut self, ev: crate::browser::Ev) {
+    fn queue_vault(&mut self, ev: shikisha_shared::Ev) {
         match ev {
-            crate::browser::Ev::VaultSearch { query } => self.vault_queries.push(query),
-            ev @ crate::browser::Ev::VaultOpen { .. } => self.vault_opens.push(ev),
+            shikisha_shared::Ev::VaultSearch { query } => self.vault_queries.push(query),
+            ev @ shikisha_shared::Ev::VaultOpen { .. } => self.vault_opens.push(ev),
             _ => {}
         }
     }
@@ -995,7 +995,7 @@ impl WinSurface {
         std::mem::take(&mut self.vault_queries)
     }
 
-    fn take_vault_opens(&mut self) -> Vec<crate::browser::Ev> {
+    fn take_vault_opens(&mut self) -> Vec<shikisha_shared::Ev> {
         std::mem::take(&mut self.vault_opens)
     }
 
@@ -1052,7 +1052,7 @@ impl WinSurface {
     }
 
     /// Takes the composer inputs bound for the shown browser since the last drain.
-    fn take_injects(&mut self) -> Vec<crate::browser::Input> {
+    fn take_injects(&mut self) -> Vec<shikisha_shared::Input> {
         std::mem::take(&mut self.injects)
     }
 
@@ -1114,7 +1114,7 @@ impl WinSurface {
     }
 
     fn take_events(&mut self, active_tab: Option<&Tab>) {
-        use crate::browser::Ev;
+        use shikisha_shared::Ev;
         for ev in self.win.drain() {
             match ev {
                 Ev::Resize { rows, cols, area, full, panes } => {
@@ -1241,7 +1241,7 @@ impl WinSurface {
                     if let Some(f) = folder {
                         self.add_tab_folder = Some(f);
                     }
-                    for e in keys_for(&crate::browser::Ev::AddTab {
+                    for e in keys_for(&shikisha_shared::Ev::AddTab {
                         pane: None,
                         folder: None,
                     }) {
@@ -1364,8 +1364,8 @@ fn recorded_lua(name: &str, step: &RecordedStep) -> Option<String> {
 /// doing this conversion, the same press could end up meaning different things
 /// depending on which one it came from.
 /// Intents that can't be converted to a keystroke (load-complete, resize, etc.) return empty.
-fn keys_for(ev: &crate::browser::Ev) -> Vec<Event> {
-    use crate::browser::Ev;
+fn keys_for(ev: &shikisha_shared::Ev) -> Vec<Event> {
+    use shikisha_shared::Ev;
     let plain = |c: char| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     // The prefix a person would actually press, not the one we shipped. A
     // button that went on pressing Ctrl+B after the prefix moved would be a
@@ -3516,7 +3516,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 wintoast::raise();
                 append_hook_log(&format!("wintoast: clicked (tab{tab})"));
                 if tab >= 1 {
-                    for e in keys_for(&browser::Ev::Select { tab }) {
+                    for e in keys_for(&shikisha_shared::Ev::Select { tab }) {
                         surface.inject(e);
                     }
                 }
@@ -4247,7 +4247,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         }
                     }
                     // Input on the relay screen is injected as real input into the browser being viewed
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Inject { input, .. }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Inject { input, .. }) => {
                         if let Some(key) = &shown_browser {
                             let _ = caps.browser_inject(key, input);
                         }
@@ -4256,7 +4256,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // keystrokes. Just like the window, push it onto `gos` and let the
                     // shared handling below pass it to the browser. Routing it through
                     // `keys_for` used to silently drop `Go` as unmatched.
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Go { go }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Go { go }) => {
                         surface.gos.push(go);
                     }
                     // Scrolling back through history isn't a keystroke, so keys_for()
@@ -4265,7 +4265,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // onto the very queue the window's own wheel feeds, so both are
                     // applied identically below (into a full-screen TUI's own scroll,
                     // or our kept scrollback for a plain shell).
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Scroll { by, row, col }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Scroll { by, row, col }) => {
                         surface.scrolls.push((by, row, col));
                     }
                     // The phone fits the terminal to its own screen. Its numbers are
@@ -4275,38 +4275,38 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // that positions the window's own browser child view, which the
                     // phone doesn't use (it watches the relay), so the window keeps
                     // the placement it measured for itself.
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Resize { rows, cols, .. }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Resize { rows, cols, .. }) => {
                         surface.phone = Some((rows, cols));
                         surface.pending.push_back(Event::Resize(cols, rows));
                     }
                     // A Lua quick-action fired from the phone. It's not a keystroke,
                     // so route it straight to the same queue the window's ipc path
                     // fills (drained and run against the active tab below).
-                    remote::RemoteCmd::Ui(crate::browser::Ev::RunAction { index }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::RunAction { index }) => {
                         surface.run_actions.push(index);
                     }
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Operate { target, goal }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Operate { target, goal }) => {
                         surface.operates.push((target, goal));
                     }
                     // 📼 / ▶ from the phone's composer: same queues as the window's.
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Record { on }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Record { on }) => {
                         surface.record_arms.push(on);
                     }
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Git { panel, act, args }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Git { panel, act, args }) => {
                         surface.gits.push((panel, act, args));
                     }
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Sftp { panel, act, args }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Sftp { panel, act, args }) => {
                         surface.sftps.push((panel, act, args));
                     }
-                    remote::RemoteCmd::Ui(crate::browser::Ev::RunLua { code }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::RunLua { code }) => {
                         surface.run_luas.push(code);
                     }
                     // ✨ a suggestion request from the phone: same queue as the
                     // window's (keys_for would silently drop it, like Go once was)
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Suggest { text }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Suggest { text }) => {
                         surface.suggests.push(text);
                     }
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Survey) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Survey) => {
                         surface.surveys += 1;
                     }
                     // A line the phone finished in the composer. Not a
@@ -4315,27 +4315,27 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // window's composer fills. Without this it fell through to
                     // keys_for and was dropped, which the loop's own
                     // fall-through guard had been saying all along.
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Say { tab, text }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Say { tab, text }) => {
                         surface.says.push((tab, text));
                     }
                     // The bar's button, pressed on the phone: the same queue the
                     // board's press fills. A person's answer from wherever they
                     // are looking
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Button { from: Some(name) }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Button { from: Some(name) }) => {
                         surface.presses.push(name);
                     }
-                    remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultSearch { .. })
-                    | remote::RemoteCmd::Ui(ev @ crate::browser::Ev::VaultOpen { .. }) => {
+                    remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultSearch { .. })
+                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultOpen { .. }) => {
                         surface.queue_vault(ev);
                     }
                     // Giving a branch its own folder, and putting a working
                     // folder back on this machine. Neither is a keystroke, so
                     // neither can be turned into one -- they go to the same
                     // queues the window's dialogs fill
-                    remote::RemoteCmd::Ui(ev @ crate::browser::Ev::Branch { .. }) => {
+                    remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::Branch { .. }) => {
                         surface.branches.extend(crate::browser::BranchAsk::of(ev));
                     }
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Repair {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Repair {
                         folder,
                         choose,
                         branch,
@@ -4345,15 +4345,15 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     }
                     // Walking the folders to open another one: the list the
                     // phone has instead of a dialog. Same queue as the window's
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Browse { path, open }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Browse { path, open }) => {
                         surface.browses.push((path, open));
                     }
                     // The update card and the first-run pointer, answered on
                     // the phone: the same fields the window's presses fill
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Update { open }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Update { open }) => {
                         surface.update_card = Some(open);
                     }
-                    remote::RemoteCmd::Ui(crate::browser::Ev::Coach { step }) => {
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Coach { step }) => {
                         surface.coach_done = Some(step);
                     }
                     // Convert other screen operations into the same keystrokes that come from the window
@@ -5859,7 +5859,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             branch_view = Some(view);
         }
         for ev in surface.take_vault_opens() {
-            if let crate::browser::Ev::VaultOpen { program, id, cwd, title } = ev {
+            if let shikisha_shared::Ev::VaultOpen { program, id, cwd, title } = ev {
                 // The command is the program alone; the resume id rides in its
                 // own field, where the launch path turns it into the CLI's
                 // resume flags. Writing the flags into the command here would
@@ -6261,7 +6261,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             let Some(spec) = caps.nav_of(key) else {
                 continue;
             };
-            use crate::browser::Go;
+            use shikisha_shared::Go;
             let allowed = match &go {
                 Go::Back => spec.back,
                 Go::Forward => spec.forward,
@@ -8743,7 +8743,7 @@ fn tab_sizes(
     tabs: usize,
     layout: &crate::layout::Layout,
     surfaces: &[Surface],
-    geom: &[crate::browser::PaneGeom],
+    geom: &[shikisha_shared::PaneGeom],
     front: (u16, u16),
 ) -> Vec<(u16, u16)> {
     let mut want = vec![front; tabs];
@@ -10362,7 +10362,7 @@ mod tests {
     #[test]
     fn a_shifted_return_arrives_shifted_all_the_way_to_the_program() {
         let pressed = |named: &str, shift: bool| {
-            let ev = crate::browser::Ev::Key {
+            let ev = shikisha_shared::Ev::Key {
                 text: None,
                 named: Some(named.into()),
                 ctrl: None,
@@ -10550,7 +10550,7 @@ mod tests {
     /// its foot, leaving a dead band underneath.
     #[test]
     fn the_tab_in_front_is_sized_by_whoever_is_watching_it() {
-        use crate::browser::PaneGeom;
+        use shikisha_shared::PaneGeom;
         let mut layout = crate::layout::Layout::single(1);
         let front = layout.split(crate::layout::Dir::Row, 2);
         let back = layout
@@ -10878,7 +10878,7 @@ mod tests {
 
     #[test]
     fn the_add_tab_button_arrives_prefixed() {
-        let evs = super::keys_for(&crate::browser::Ev::AddTab { pane: None, folder: None });
+        let evs = super::keys_for(&shikisha_shared::Ev::AddTab { pane: None, folder: None });
         assert_eq!(evs.len(), 2, "前置キー + 本体の2打鍵");
         let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
         assert_eq!(k.code, KeyCode::Char('b'));
@@ -10893,7 +10893,7 @@ mod tests {
     /// got typed into whatever session was showing ("wwww") instead of opening.
     #[test]
     fn the_workspace_button_arrives_prefixed() {
-        let evs = super::keys_for(&crate::browser::Ev::OpenWs);
+        let evs = super::keys_for(&shikisha_shared::Ev::OpenWs);
         assert_eq!(evs.len(), 2, "前置キー + 'w' の2打鍵");
         let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
         assert_eq!(k.code, KeyCode::Char('b'));
@@ -11014,7 +11014,7 @@ mod tests {
     /// into the session (the "wwww" bug the workspace button already ran into).
     #[test]
     fn the_restart_button_arrives_prefixed() {
-        let evs = super::keys_for(&crate::browser::Ev::Restart);
+        let evs = super::keys_for(&shikisha_shared::Ev::Restart);
         assert_eq!(evs.len(), 2, "前置キー + 'r' の2打鍵");
         let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
         assert_eq!(k.code, KeyCode::Char('b'));
@@ -11036,7 +11036,7 @@ mod tests {
     #[test]
     fn a_menu_press_arrives_as_a_plain_key() {
         for (key, _) in crate::shell::MENU {
-            let evs = super::keys_for(&crate::browser::Ev::Menu {
+            let evs = super::keys_for(&shikisha_shared::Ev::Menu {
                 key: key.to_string(),
             });
             assert_eq!(evs.len(), 1, "{key}: 打鍵が1つでない");
@@ -12220,7 +12220,7 @@ mod shutdown_tests {
     /// so a close can't be routed through there. The loop has to see it directly.
     #[test]
     fn closing_the_window_ends_the_run() {
-        use crate::browser::Ev;
+        use shikisha_shared::Ev;
         assert!(
             super::keys_for(&Ev::Closed).is_empty(),
             "閉じたことを打鍵として扱っている"

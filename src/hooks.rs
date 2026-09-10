@@ -131,8 +131,8 @@ fn sel_of(v: &Value) -> mlua::Result<crate::browser::Sel> {
 }
 
 /// Resolve a browser_go spec (back / forward / reload / to(URL))
-fn go_of(what: &str, url: Option<String>) -> mlua::Result<crate::browser::Go> {
-    use crate::browser::Go;
+fn go_of(what: &str, url: Option<String>) -> mlua::Result<shikisha_shared::Go> {
+    use shikisha_shared::Go;
     Ok(match what {
         "back" => Go::Back,
         "forward" => Go::Forward,

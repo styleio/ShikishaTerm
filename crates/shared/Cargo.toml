@@ -1,0 +1,10 @@
+[package]
+name = "shikisha-shared"
+version = "0.9.0"
+edition = "2024"
+description = "The words the runtime and its shell say to each other."
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

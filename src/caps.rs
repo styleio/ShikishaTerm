@@ -908,7 +908,7 @@ impl Capabilities {
 
     /// Navigate a page. Converting the display name to the in-window name is this side's job.
     /// If the caller had to do that conversion, forgetting it would show up as "nothing happens"
-    pub fn browser_go(&self, name: &str, go: crate::browser::Go) -> Result<()> {
+    pub fn browser_go(&self, name: &str, go: shikisha_shared::Go) -> Result<()> {
         self.with(name, |b, to| b.go(to, go))
     }
 
@@ -928,7 +928,7 @@ impl Capabilities {
     }
 
     /// Inject input into the relay screen (finger trails, swipes, characters)
-    pub fn browser_inject(&self, name: &str, input: crate::browser::Input) -> Result<()> {
+    pub fn browser_inject(&self, name: &str, input: shikisha_shared::Input) -> Result<()> {
         self.with(name, |b, to| b.inject(to, input))
     }
 
@@ -943,7 +943,7 @@ impl Capabilities {
         }
         self.browser_inject(
             name,
-            crate::browser::Input::Key {
+            shikisha_shared::Input::Key {
                 named,
                 ctrl: false,
                 alt: false,

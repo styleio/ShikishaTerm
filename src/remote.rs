@@ -86,7 +86,7 @@ pub enum RemoteCmd {
     SetAuto(bool),
     /// Operation from the screen (switch tab, menu, keystroke).
     /// Treated the same as one coming from the window, entering the same queue
-    Ui(crate::browser::Ev),
+    Ui(shikisha_shared::Ev),
 }
 
 /// Whether an operation is accepted from the phone.
@@ -95,8 +95,8 @@ pub enum RemoteCmd {
 /// as the window. But some only make sense in front of the window, and some
 /// would stop the window. This is written from the side that enumerates
 /// what's let through. Add to it only after writing down the reason
-fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
-    use crate::browser::Ev;
+fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
+    use shikisha_shared::Ev;
     match ev {
         // Pick/type into/stop the tab you want to view. The core of remote control
         Ev::Select { .. } | Ev::Key { .. } | Ev::Stop => true,
@@ -1816,7 +1816,7 @@ mod tests {
     /// that fits it, and the two sides hand off rather than oscillate.
     #[test]
     fn the_phone_cannot_reach_what_only_the_window_can_answer() {
-        use crate::browser::Ev;
+        use shikisha_shared::Ev;
         let menu = |k: &str| super::allowed_from_afar(&Ev::Menu { key: k.into() });
         assert!(super::allowed_from_afar(&Ev::Select { tab: 2 }));
         assert!(super::allowed_from_afar(&Ev::Stop));
@@ -1825,9 +1825,9 @@ mod tests {
         // keystroke it stands for
         assert!(super::allowed_from_afar(&Ev::Restart), "見ているタブを遠くから直せない");
         // Back/forward/reload/navigate must work from remote, or the top bar is just decoration
-        assert!(super::allowed_from_afar(&Ev::Go { go: crate::browser::Go::Back }));
+        assert!(super::allowed_from_afar(&Ev::Go { go: shikisha_shared::Go::Back }));
         assert!(super::allowed_from_afar(&Ev::Go {
-            go: crate::browser::Go::To("example.com".into())
+            go: shikisha_shared::Go::To("example.com".into())
         }));
         assert!(menu("a") && menu("?") && menu("w"), "普通の操作が通らない");
         // The board and this gate read one list, so nothing the window alone can
@@ -2639,7 +2639,7 @@ mod tests {
         // Operations from the screen reach the main loop
         phone.post("/api/intent?t=tok123456789012", r#"{"kind":"select","tab":2}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
-            RemoteCmd::Ui(crate::browser::Ev::Select { tab }) => assert_eq!(tab, 2),
+            RemoteCmd::Ui(shikisha_shared::Ev::Select { tab }) => assert_eq!(tab, 2),
             other => panic!("想定外: {other:?}"),
         }
 
@@ -2648,8 +2648,8 @@ mod tests {
         // allow-list, and after that fix, silently dropped by keys_for
         phone.post("/api/intent?t=tok123456789012", r#"{"kind":"go","what":"back"}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
-            RemoteCmd::Ui(crate::browser::Ev::Go {
-                go: crate::browser::Go::Back,
+            RemoteCmd::Ui(shikisha_shared::Ev::Go {
+                go: shikisha_shared::Go::Back,
             }) => {}
             other => panic!("戻るが本体まで届かない: {other:?}"),
         }
@@ -2660,7 +2660,7 @@ mod tests {
         phone.post("/api/intent?t=tok123456789012", r#"{"kind":"menu","key":"k"}"#);
         phone.post("/api/intent?t=tok123456789012", r#"{"kind":"select","tab":3}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
-            RemoteCmd::Ui(crate::browser::Ev::Select { tab }) => {
+            RemoteCmd::Ui(shikisha_shared::Ev::Select { tab }) => {
                 assert_eq!(tab, 3, "止めたはずの操作が先に届いた")
             }
             other => panic!("窓にしか答えられないものが通った: {other:?}"),
@@ -2933,8 +2933,8 @@ mod tests {
         sock.write_all(&mask_text_frame(intent)).unwrap();
 
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
-            RemoteCmd::Ui(crate::browser::Ev::Inject {
-                input: crate::browser::Input::Mouse { phase, x, y, .. },
+            RemoteCmd::Ui(shikisha_shared::Ev::Inject {
+                input: shikisha_shared::Input::Mouse { phase, x, y, .. },
                 ..
             }) => {
                 assert_eq!(phase, "pressed");
