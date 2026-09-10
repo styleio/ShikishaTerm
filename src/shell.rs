@@ -3768,6 +3768,20 @@ window.__screen = function (html) {
   const unit = cellH || 16;
   const nearBottom = (s.scrollHeight - s.clientHeight - s.scrollTop) <= unit * 1.5;
   const prevTop = s.scrollTop;
+  const rows = html.split("\n");
+  // Same number of rows as we already show: write into the elements that are
+  // there instead of replacing them. The grid is the same height either way,
+  // but a replaced grid throws away the elements the browser is scrolling --
+  // which on a phone means the frame is pulled out from under a finger that is
+  // mid-scroll, every time a frame arrives. Patching in place leaves the
+  // reader's scroll, and their momentum, where they put it.
+  if (s.children.length === rows.length) {
+    const kids = s.children;
+    for (let i = 0; i < rows.length; i++) {
+      if (kids[i].innerHTML !== rows[i]) kids[i].innerHTML = rows[i];
+    }
+    return;
+  }
   s.innerHTML = rowsHtml(html);
   if (REMOTE) s.scrollTop = nearBottom ? s.scrollHeight : prevTop;
 };
@@ -8658,6 +8672,12 @@ mod tests {
         assert!(
             PAGE.contains("if (d.rows) { window.__rows(d.rows);"),
             "遠隔の状態ソケットが行の修復を受け取れない"
+        );
+        // A whole grid still has to leave the reader's scroll alone: replacing
+        // the elements pulls the frame out from under a finger mid-scroll
+        assert!(
+            PAGE.contains("if (s.children.length === rows.length)"),
+            "同じ高さの画面が来たときに要素を作り直してしまう"
         );
         assert!(
             PAGE.contains(r#"'<div class="r">'"#),
