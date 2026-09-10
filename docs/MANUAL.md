@@ -149,8 +149,8 @@ when you register one:
   going should be able to use; tick only the AI and it becomes a key kept for
   an AI's errands, which nobody spends by hand
 
-Settings › Secrets lists everything this machine holds and lets one go, and
-Settings › Update many secrets changes the ones that share a name together.
+Listing, changing and deleting all happen in that same **Secrets** card on the
+workspace's settings page. Press a row to open it.
 
 ## 7. Automation
 

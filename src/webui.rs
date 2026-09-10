@@ -2380,8 +2380,9 @@ const PAGE: &str = r##"<!doctype html>
    top:var(--headh); max-height:calc(100vh - var(--headh)); overflow:auto; }
  main { flex:1; min-width:0; padding:24px 28px; max-width:820px; }
 
- .navitem { display:block; width:100%; text-align:left; border:0; background:none; color:var(--text);
-   padding:7px 10px; border-radius:7px; cursor:pointer; font-size:13.5px; font-family:inherit; }
+ .navitem { display:block; width:100%; height:auto; text-align:left; border:0; background:none;
+   color:var(--text); padding:7px 10px; border-radius:var(--r-ctl); cursor:pointer;
+   font-size:13.5px; font-weight:400; font-family:inherit; }
  .navitem:hover { background:var(--panel); }
  .navitem.sel { background:var(--panel2); }
  .navitem .sub { display:block; color:var(--muted); font-size:11.5px; margin-top:1px;
@@ -2608,7 +2609,10 @@ const PAGE: &str = r##"<!doctype html>
    font-size:14px; cursor:pointer; }
  textarea { width:100%; min-height:220px; line-height:1.55; resize:vertical; }
 
- button { font-family:inherit; font-size:12.5px; font-weight:500; height:32px;
+ /* One height keeps a row of buttons tidy. A minimum rather than a fixed one,
+    because a few buttons carry two lines (a nav item, a wizard's choice) and a
+    fixed height crushes them */
+ button { font-family:inherit; font-size:12.5px; font-weight:500; min-height:32px;
    border-radius:var(--r-ctl); cursor:pointer; padding:0 var(--s3);
    border:1px solid var(--edge); background:var(--panel2); color:var(--text); }
  button:hover { background:var(--raise); border-color:var(--edge-hi); }
@@ -4412,8 +4416,6 @@ function globalSections() {
     {id:"api",       label:T["settings.sec.api"],       sub:T["settings.sec.api.sub"],       build:apiCard},
     {id:"resume",    label:T["settings.sec.resume"],    sub:T["settings.sec.resume.sub"],    build:resumeCard},
     {id:"files",     label:T["settings.sec.files"],     sub:T["settings.sec.files.sub"],     build:filesCard},
-    {id:"secrets",   label:T["settings.sec.secrets"],   sub:T["settings.sec.secrets.sub"],   build:secretsCard},
-    {id:"secretsbulk", label:T["settings.sec.secretsbulk"], sub:T["settings.sec.secretsbulk.sub"], build:secretsBulkCard},
     {id:"results",   label:T["settings.sec.results"],   sub:T["settings.sec.results.sub"],   build:rallyResultCard},
   ];
 }
@@ -4577,11 +4579,6 @@ async function downloadRally(runId) {
 }
 
 // ── Secrets ────────────────────────────────────────────────────────────────
-// A secret a script can ask for belongs to one workspace and is stored under
-// that workspace's name; the ones the program keeps for itself (an ssh
-// password, a provider's key) stand behind a "/" and no script can name them.
-// The person types a bare name and never sees the punctuation.
-const SECRET_INTERNAL = k => k.includes("/");
 const secretKey = (ws, name) => (ws.id || "") + "." + name;
 // The short name of a secret belonging to this workspace, or null for one that
 // does not
@@ -4605,8 +4602,6 @@ async function deleteSecret(key) {
     headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
     body: JSON.stringify({key})}).then(r=>r.json()).catch(() => ({ok:false}));
 }
-// The sites a secret may be typed into, as typed: one per line or comma-separated
-const hostsOf = text => text.split(/[\s,]+/).map(h => h.trim()).filter(Boolean);
 // One address, read the same way here as in config.rs. Everything below is the
 // screen's half of that agreement: it refuses while somebody types what the
 // store would refuse on arrival, so nothing is turned away by surprise
@@ -4646,133 +4641,6 @@ function urlFault(text) {
 }
 
 // Secrets (equivalent to GitHub Secrets). Referenced by key; once saved, the value is never shown again.
-// Encrypted if a master password is set, plaintext otherwise (at the user's own risk) — both handled through the same UI
-// Everything the store holds, in one place. Not where a secret is added --
-// that happens on the workspace it belongs to, or in the field that needs it --
-// but where you can see what this machine is keeping, and let one go
-function secretsCard() {
-  const status = el("div", {class:"hint", id:"secretsmode"});
-  // Where the master password is set. The password itself is only ever typed
-  // into the native app (never this page), so point the user at [k] on INDEX.
-  const pwhint = el("div", {class:"hint"}, T["settings.secrets.master_hint"]);
-  const head = el("div", {}, status, pwhint);
-  const listBox = el("div", {id:"secretslist"}, el("div", {class:"hint"}, "…"));
-  const c = card(T["settings.secrets.title"],
-    head,
-    el("div", {class:"hint"}, T["settings.secrets.inventory_hint"]),
-    listBox);
-  // Load only after the card is in the DOM (so getElementById works)
-  setTimeout(loadSecrets, 0);
-  return c;
-}
-
-// Change one thing about many secrets at once: the password behind a name that
-// several workspaces know, or what they are allowed to do with it. Its own
-// place, so that the everyday screens stay one-at-a-time and nothing here
-// happens by accident
-function secretsBulkCard() {
-  const findIn = el("input", {class:"mono", placeholder:T["settings.secrets.bulk.find_ph"], style:"width:220px"});
-  const listBox = el("div", {id:"bulklist"}, el("div", {class:"hint"}, T["settings.secrets.bulk.start"]));
-  const chosen = new Set();
-  let found = [];
-  const draw = () => {
-    listBox.textContent = "";
-    if (!found.length) { listBox.append(el("div", {class:"hint"}, T["settings.secrets.bulk.none"])); return; }
-    for (const s of found) {
-      const cb = el("input", {type:"checkbox"});
-      cb.checked = chosen.has(s.key);
-      cb.addEventListener("change", () => { cb.checked ? chosen.add(s.key) : chosen.delete(s.key); });
-      const where = SECRET_INTERNAL(s.key) ? T["settings.secrets.bulk.internal"]
-                  : (s.key.split(".")[0] || "");
-      const l = el("label", {class:"check", style:"display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)"});
-      l.append(cb,
-        el("span", {class:"mono", style:"min-width:220px;color:var(--text)"}, s.key),
-        el("span", {class:"hint", style:"min-width:110px"}, where),
-        el("span", {class:"hint", style:"flex:1"}, s.description || T["settings.secrets.no_desc"]),
-        el("span", {class:"hint mono", style:"flex:1 1 120px;overflow:hidden;text-overflow:ellipsis"},
-           (s.urls || []).join(", ") || "—"),
-        el("span", {class:"hint", style:"min-width:92px;text-align:right"}, secretWhoText(s)));
-      listBox.append(l);
-    }
-  };
-  const search = async () => {
-    const q = findIn.value.trim().toLowerCase();
-    const j = await fetchSecrets();
-    if (!j) { toast(T["settings.secrets.load_failed"], true); return; }
-    found = (j.secrets || []).filter(s => !q || s.key.toLowerCase().includes(q));
-    chosen.clear();
-    draw();
-  };
-  findIn.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); search(); } });
-
-  // Each button changes one thing, and only for the rows that are ticked.
-  // `change` is given the row as it stands, so a change can build on what is
-  // already there (adding a site rather than replacing the list)
-  const apply = async (change) => {
-    if (!chosen.size) { toast(T["settings.secrets.bulk.pick_first"], true); return; }
-    let done = 0;
-    for (const key of chosen) {
-      const s = found.find(x => x.key === key);
-      if (!s) continue;
-      // Everything is sent back, so nothing a button did not touch is dropped.
-      // An empty value means "leave the password alone"
-      const body = {key, description: s.description || "", human: secretHuman(s), ai: !!s.ai,
-                    urls: s.urls || [], value: "", ...change(s)};
-      const r = await saveSecret(body);
-      if (r.ok) done++;
-    }
-    toast(fill(T["settings.secrets.bulk.done"], {n: done}));
-    search();
-  };
-  const valIn = el("input", {type:"password", placeholder:T["settings.secrets.value_ph"], style:"width:200px"});
-  const hostIn = el("input", {class:"mono", placeholder:"github.com", style:"width:200px"});
-  // Adding a site to many secrets at once asks the same thing the dialog does
-  const riskBox = el("input", {type:"checkbox"});
-  const riskLabel = el("label", {class:"check warn"});
-  riskLabel.append(riskBox, document.createTextNode(T["settings.secrets.plain_ok"]));
-  const riskNote = el("div", {class:"hint warn"});
-  const riskRow = el("div", {class:"riskrow", style:"margin-top:10px"}, riskNote, riskLabel);
-  riskRow.hidden = true;
-  const watchPlain = () => {
-    const bad = hostsOf(hostIn.value).map(withScheme).filter(isPlain);
-    riskRow.hidden = !bad.length;
-    if (bad.length) riskNote.textContent = T["settings.secrets.plain_warn"];
-  };
-  hostIn.addEventListener("input", watchPlain);
-  // One line per thing that can be changed, each with what to type and the
-  // button that does it. Five controls on one line wrap into a shape where a
-  // red button ends up alone on a row of its own
-  const bar = el("div", {style:"margin-top:12px"},
-    el("div", {class:"row", style:"gap:10px"},
-      valIn,
-      el("button", {onclick: () => {
-        if (!valIn.value) { toast(T["settings.secrets.value_required"], true); return; }
-        apply(() => ({value: valIn.value}));
-      }}, T["settings.secrets.bulk.set_value"])),
-    el("div", {class:"row", style:"gap:10px"},
-      hostIn,
-      el("button", {onclick: () => {
-        const add = hostsOf(hostIn.value);
-        if (!add.length) { toast(T["settings.secrets.bulk.host_required"], true); return; }
-        const fault = add.map(withScheme).find(u => urlFault(u));
-        if (fault) { toast(T[urlFault(withScheme(fault))], true); return; }
-        if (add.map(withScheme).some(isPlain) && !riskBox.checked) {
-          toast(T["settings.secrets.plain_blocked"], true);
-          return;
-        }
-        apply(s => ({urls: [...new Set([...(s.urls || []), ...add.map(withScheme)])]}));
-      }}, T["settings.secrets.bulk.add_host"])),
-    el("div", {class:"row", style:"gap:10px"},
-      el("button", {onclick: () => apply(() => ({ai: true}))}, T["settings.secrets.bulk.ai_on"]),
-      el("button", {class:"danger", onclick: () => apply(() => ({ai: false}))}, T["settings.secrets.bulk.ai_off"])));
-  // Under the buttons rather than among them: it is about what was typed, and
-  // wrapping it into the row leaves a button stranded on a line of its own
-  return card(T["settings.secrets.bulk.title"],
-    el("div", {class:"hint"}, T["settings.secrets.bulk.hint"]),
-    el("div", {class:"row"}, findIn, el("button", {onclick: search}, T["settings.secrets.bulk.find"])),
-    listBox, bar, riskRow);
-}
-
 // Model bridge connections (Providers). Registers OpenAI-compatible APIs by name.
 // A directly typed key is saved behind the scenes into an encrypted secret, and only an @reference is put in config
 // (the user doesn't need to know about the "secret store" or the @name)
@@ -5452,49 +5320,6 @@ function openNotifyPopup() {
   });
 }
 
-async function loadSecrets() {
-  const listBox = document.getElementById("secretslist");
-  const status = document.getElementById("secretsmode");
-  if (!listBox) return;
-  let j;
-  try { j = await fetch("/api/secrets", {headers:{"X-Token":TOKEN}}).then(r=>r.json()); }
-  catch (e) { listBox.textContent=""; listBox.append(el("div",{class:"hint warn"},T["settings.secrets.load_failed"])); return; }
-  const modes = {
-    plaintext: T["settings.secrets.mode.plaintext"],
-    encrypted: T["settings.secrets.mode.encrypted"],
-    locked: T["settings.secrets.mode.locked"],
-    empty: T["settings.secrets.mode.empty"],
-  };
-  status.textContent = modes[j.mode] || "";
-  status.classList.toggle("warn", j.mode === "locked");
-  listBox.textContent = "";
-  if (!j.secrets || !j.secrets.length) {
-    if (j.mode !== "empty" && j.mode !== "locked")
-      listBox.append(el("div", {class:"hint"}, T["settings.secrets.none"]));
-    return;
-  }
-  for (const s of j.secrets) {
-    const del = el("button", {class:"quiet", onclick: async () => {
-      if (!confirm(fill(T["settings.secrets.delete_confirm"], {key: s.key}))) return;
-      const r = await deleteSecret(s.key);
-      if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: s.key})); loadSecrets(); }
-      else toast(r.error || T["settings.secrets.delete_failed"], true);
-    }}, T["common.delete"]);
-    // Where it came from, said in words rather than in punctuation: the
-    // workspace whose name is in front of it, or the program itself
-    const where = SECRET_INTERNAL(s.key)
-      ? T["settings.secrets.owner_internal"]
-      : fill(T["settings.secrets.owner_ws"], {name: s.key.split(".")[0] || ""});
-    listBox.append(el("div", {class:"listrow"},
-      el("span", {class:"mono", style:"min-width:200px;color:var(--text)"}, s.key),
-      el("span", {class:"hint", style:"min-width:130px"}, where),
-      el("span", {class:"hint", style:"flex:1"}, s.description || T["settings.secrets.no_desc"]),
-      el("span", {class:"hint mono", style:"min-width:120px"}, (s.urls || []).join(", ") || "—"),
-      el("span", {class:"hint", style:"min-width:92px;text-align:right"}, secretWhoText(s)),
-      el("span", {class:"hint mono", title:T["settings.secrets.value_hidden"]}, "••••"),
-      del));
-  }
-}
 // The phone-usage setting. Explains the risk plainly, but still lets it be enabled with one click
 // Carrying conversations. Per CLI rather than per mechanism: the question a
 // person has is "will my conversation survive a restart", and the answer
@@ -6216,6 +6041,11 @@ async function loadWsSecrets(ws) {
     box.append(el("div",{class:"hint warn"},T["settings.secrets.ws_locked"]));
     return;
   }
+  // Kept in the open, because nobody has set a master password yet. Said here
+  // because here is where a password is about to be written down
+  if (j.mode === "plaintext") {
+    box.append(el("div", {class:"hint warn"}, T["settings.secrets.mode.plaintext"]));
+  }
   const mine = (j.secrets || [])
     .map(s => ({...s, short: secretShortName(ws, s.key)}))
     .filter(s => s.short !== null);
@@ -6297,9 +6127,12 @@ function secretDialog(ws, have) {
   function recheck() {
     let first = null;
     for (const i of urlBox.querySelectorAll("input")) {
-      const fault = urlFault(withScheme(i.value));
+      // An empty line is not a mistake: a secret with no address is one
+      // nothing on the web may use, which is the state every secret starts in
+      const wrote = withScheme(i.value);
+      const fault = wrote ? urlFault(wrote) : null;
       const reason = fault ? T[fault]
-        : (isPlain(i.value) && !riskBox.checked ? T["settings.secrets.plain_warn"] : null);
+        : (isPlain(wrote) && !riskBox.checked ? T["settings.secrets.plain_warn"] : null);
       const wrap = i.parentElement.parentElement;
       const had = wrap.querySelector(".site-warn");
       i.classList.toggle("bad", !!reason);
