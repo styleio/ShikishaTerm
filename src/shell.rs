@@ -49,6 +49,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
        -- one number for both, so "hidden" needs no second piece of state to
        disagree with the first */
     --tabw:{{TAB_W}}px;
+    /* Space and corners, in the steps the style guide gives. The board is a
+       denser surface than the settings and does not use the wide end of the
+       ladder, but a gap here is one of these or it is a mistake */
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px;
+    --r-ctl:6px; --r-card:10px; --r-chip:4px;
   }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; overflow:hidden;
@@ -87,8 +92,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The first-run pointer: a bubble beside the one thing to press next,
      with a corner pointing at it. Nothing about it moves on its own */
   #coach { position:fixed; z-index:55; max-width:260px; background:var(--panel); color:var(--text);
-    border:1px solid var(--brand); border-radius:10px; padding:10px 12px; font-size:12.5px;
-    line-height:1.45; box-shadow:0 8px 24px #0007; display:flex; gap:10px; align-items:flex-start; }
+    border:1px solid var(--brand); border-radius:var(--r-card); padding:var(--s3);
+    font-size:12.5px; line-height:1.45; box-shadow:0 8px 24px #0007; display:flex;
+    gap:var(--s3); align-items:flex-start; }
   #coach[hidden] { display:none; }
   #coach::before { content:""; position:absolute; left:-7px; top:14px; width:12px; height:12px;
     background:var(--panel); border-left:1px solid var(--brand); border-bottom:1px solid var(--brand);
@@ -940,10 +946,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #repair[hidden] { display:none; }
   #vault .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
   #repair .vbox { background:var(--panel); border:1px solid var(--brand);
-    border-radius:12px; padding:16px 18px; width:min(720px,92vw); max-height:82vh;
-    display:flex; flex-direction:column; gap:10px; }
+    border-radius:var(--r-card); padding:var(--s4) var(--s5); width:min(720px,92vw);
+    max-height:82vh; display:flex; flex-direction:column; gap:var(--s3); }
   #vault .vhead, #palette .vhead, #branch .vhead, #browse .vhead,
   #repair .vhead { display:flex; align-items:center; }
+  /* The title is one thing and what is under it is another */
+  #browse .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
+    margin-bottom:var(--s1); }
+  #browse .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
+  #browse .brow { padding-top:var(--s3); border-top:1px solid var(--line); }
   #vault .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle,
   #repair .vtitle { color:var(--brand);
     font-size:13px; letter-spacing:1px; text-transform:uppercase; flex:1; }
@@ -983,11 +994,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch #bstart { max-width:none; flex:1 1 auto; }
   .fmenu.tall { max-height:min(52vh, 420px); overflow:auto; }
   #browse .vlist { overflow:auto; display:flex; flex-direction:column; gap:2px; max-height:52vh; }
-  #browse .vrow { padding:8px 10px; border-radius:8px; cursor:pointer; }
+  #browse .vrow { padding:var(--s2) var(--s3); border-radius:var(--r-ctl); cursor:pointer; }
   #browse .vrow:hover { background:var(--raise); }
   #branch .bwhere, #branch .bcmd, #browse .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--text);
-    background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 9px;
-    overflow:auto; white-space:pre-wrap; word-break:break-all; }
+    background:var(--bg); border:1px solid var(--line); border-radius:var(--r-ctl);
+    padding:7px var(--s2); overflow:auto; white-space:pre-wrap; word-break:break-all; }
   #branch .bcmd { color:var(--dim); }
   /* What the new folder cannot get from git. Ticked as it will happen, so
      nobody has to read it unless they disagree */
@@ -997,7 +1008,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     color:var(--text); cursor:pointer; }
   #branch .bcarry .link { font-size:10.5px; color:var(--dim); border:1px solid var(--line);
     border-radius:5px; padding:0 4px; }
-  #branch .berr, #browse .berr { color:var(--bad, #e5644d); font-size:12px; white-space:pre-wrap; }
+  #branch .berr, #browse .berr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
   /* Putting a folder back. The same frame as the branch dialog, because it is
      the same kind of question -- what will happen, said before it happens */
   #repair .rname { font-size:13px; font-weight:600; }
@@ -1018,23 +1029,30 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #repair .rbranch { font:inherit; font-size:12.5px; flex:1 1 auto; min-width:0;
     background:var(--bg); color:var(--text); border:1px solid var(--brand);
     border-radius:6px; padding:4px 6px; outline:none; }
-  #repair .rerr { color:var(--bad, #e5644d); font-size:12px; white-space:pre-wrap; }
+  #repair .rerr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
   #branch .brow, #browse .brow { display:flex; gap:8px; justify-content:flex-end; }
-  #branch button, #browse button { font:inherit; font-size:13px; padding:7px 16px;
-    border-radius:8px; border:1px solid var(--line); background:var(--raise);
+  #branch button, #browse button { font:inherit; font-size:13px; padding:7px var(--s4);
+    border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--raise);
     color:var(--text); cursor:pointer; }
+  #branch button:hover, #browse button:hover { border-color:var(--edge-hi); }
   #branch button.go, #browse button.go { border-color:var(--brand); color:var(--brand); }
-  #branch button[disabled], #browse button[disabled] { opacity:.45; cursor:default; }
+  /* Off is grey, not a faded version of the live colour: a pale brand outline
+     still reads as the brand outline */
+  #branch button[disabled], #browse button[disabled] { background:var(--panel2);
+    border-color:var(--line); color:var(--dim); cursor:not-allowed; }
   /* The little menu a folder's heading opens. Not a hover thing: it has to be
      reachable by a finger as well as a pointer */
   .fmenu { position:fixed; z-index:60; background:var(--panel); border:1px solid var(--line);
-    border-radius:10px; padding:5px; min-width:190px; box-shadow:0 8px 24px #0007; }
-  .fmenu div { padding:8px 10px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text); }
+    border-radius:var(--r-card); padding:var(--s1); min-width:190px; box-shadow:0 8px 24px #0007; }
+  .fmenu div { padding:var(--s2) var(--s3); border-radius:var(--r-ctl); cursor:pointer;
+    font-size:12.5px; color:var(--text); }
   .fmenu div:hover { background:var(--raise); }
-  .fmenu div.warn:hover { color:var(--bad, #e5644d); }
+  .fmenu div.warn:hover { color:var(--stop); }
   .fmenu .fname { font:inherit; font-size:12.5px; width:100%; box-sizing:border-box;
-    background:var(--bg); color:var(--text); border:1px solid var(--brand);
-    border-radius:6px; padding:4px 6px; outline:none; }
+    background:var(--bg); color:var(--text); border:1px solid var(--edge);
+    border-radius:var(--r-ctl); padding:var(--s1) var(--s2); outline:none; }
+  .fmenu .fname:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
   .tab.folder .more { margin-left:auto; padding:0 4px; color:var(--dim); cursor:pointer;
     font-size:13px; line-height:1; }
   .tab.folder .more:hover { color:var(--text); }
@@ -1385,6 +1403,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="browse" hidden>
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
+      <div class="vsay"></div>
       <div class="bwhere"></div>
       <div class="berr"></div>
       <div class="vlist"></div>
@@ -1748,11 +1767,29 @@ function drawTabs() {
 // the two is up is the app's decision (it knows what has been pointed at
 // before); this only draws it. Closed with its ✕, or by doing the thing
 let coachShut = 0;
+// What each step points at. Asked for by name rather than held on to, because
+// the list it lives in is rebuilt several times a second
+const coachAt = step => step === 1 ? document.querySelector("#tabs .tab.addtab")
+  : step === 2 ? document.querySelector("#tabs .tab.folder .more") : null;
+// Doing the thing is an answer to being asked, so pressing what it points at
+// takes it down -- and takes it down for good, the same as its ✕. It waited
+// for the ✕ before, which left it sitting over the screen it had just sent
+// somebody to. One listener, high up: the row underneath is replaced
+// constantly, and a listener on the row would go with it
+document.addEventListener("pointerdown", e => {
+  const step = (S && S.coach) || 0;
+  if (!step || step === coachShut) return;
+  const at = coachAt(step);
+  if (!at || !at.contains(e.target)) return;
+  coachShut = step;
+  const box = document.getElementById("coach");
+  if (box) box.hidden = true;
+  send({kind:"coach", step});
+}, true);
 function drawCoach() {
   let box = document.getElementById("coach");
   const step = (S && S.coach) || 0;
-  const anchor = step === 1 ? document.querySelector("#tabs .tab.addtab")
-    : step === 2 ? document.querySelector("#tabs .tab.folder .more") : null;
+  const anchor = coachAt(step);
   if (!step || step === coachShut || !anchor) {
     if (box) box.hidden = true;
     return;
@@ -2056,6 +2093,7 @@ function openBrowse(at) {
   if (!b) return;
   b.hidden = false;
   b.querySelector(".vtitle").textContent = T["tui.browse.title"] || "ADD A WORKING FOLDER";
+  b.querySelector(".vsay").textContent = T["tui.browse.say"] || "";
   b.querySelector(".go").textContent = T["tui.browse.open"] || "Add this folder";
   send({kind:"browse", path:at || "", open:false});
 }
@@ -7683,9 +7721,16 @@ mod tests {
     /// gear: the window asks the app, the phone follows a link.
     #[test]
     fn the_first_run_pointer_the_thanks_card_and_the_manual_link_are_drawn() {
-        assert!(PAGE.contains(r##"const anchor = step === 1 ? document.querySelector("#tabs .tab.addtab")"##), "1歩目の刺す先が無い");
+        assert!(PAGE.contains(r##"const coachAt = step => step === 1 ? document.querySelector("#tabs .tab.addtab")"##), "1歩目の刺す先が無い");
         assert!(PAGE.contains(r##": step === 2 ? document.querySelector("#tabs .tab.folder .more") : null;"##), "2歩目の刺す先が無い");
         assert!(PAGE.contains(r#"send({kind:"coach", step:coachShut});"#), "閉じたことが伝わらない");
+        // Doing the thing is an answer to being asked. Without this the bubble
+        // sat over the screen it had just sent somebody to, until its ✕
+        assert!(
+            PAGE.contains("if (!at || !at.contains(e.target)) return;")
+                && PAGE.contains(r#"send({kind:"coach", step});"#),
+            "刺した先を押しても閉じない"
+        );
         assert!(PAGE.contains("if (t.textContent !== text) t.textContent = text;"), "毎フレーム作り直している");
         assert!(PAGE.contains(r#"const next = (S.coach || 0) === 2 ? " pulse" : "";"#), "2歩目で + が光らない");
         assert!(PAGE.contains("if (S.thanks && !REMOTE) {"), "スマホにお礼の札が出る");

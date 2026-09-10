@@ -54,6 +54,7 @@
   "tui.repair.branch": "ブランチ",
   "tui.repair.plain": "プロジェクトではない、ただのフォルダです",
   "tui.repair.elsewhere": "別のフォルダを選ぶ",
+  "tui.browse.say": "AIが働く場所です。フォルダを開いていき、そこでよければ下のボタンを押します",
   "tui.browse.title": "作業フォルダを追加",
   "tui.browse.open": "このフォルダを追加",
   "tui.browse.top": "このパソコン",

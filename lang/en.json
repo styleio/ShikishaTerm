@@ -54,6 +54,7 @@
   "tui.repair.branch": "Branch",
   "tui.repair.plain": "It is an ordinary folder, not a project",
   "tui.repair.elsewhere": "Choose another folder",
+  "tui.browse.say": "Where an AI will work. Open your way to a folder, and press the button below once you are in it",
   "tui.browse.title": "ADD A WORKING FOLDER",
   "tui.browse.open": "Add this folder",
   "tui.browse.top": "This computer",
