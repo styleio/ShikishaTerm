@@ -1652,9 +1652,64 @@ pub struct TabConfig {
     /// keeps no cookies/history and is wiped on close. browser_profile is unused in that case
     #[serde(default)]
     pub private: bool,
+    /// Everything about a built-in server connection that will not fit in
+    /// `ssh://user@host:port`.
+    ///
+    /// Absent for every other kind of tab, and absent for a server that only
+    /// needs an address and a password -- which is most of them. It exists so
+    /// that the address stays readable in the one place a person looks for it
+    #[serde(default)]
+    pub server: Option<ServerSpec>,
     /// Child tabs for display purposes (forwarding relationships are decided by Lua; this is display hierarchy only)
     #[serde(default)]
     pub children: Vec<TabConfig>,
+}
+
+/// A built-in server connection, beyond its address.
+///
+/// None of it is a secret. A private key is named by its path, and what opens
+/// that key -- like the password -- is filed in the vault under the workspace
+/// and the tab, so these settings can be read, copied and shared without
+/// carrying a credential with them
+#[derive(Debug, Deserialize, serde::Serialize, Clone, Default, PartialEq, Eq)]
+pub struct ServerSpec {
+    /// A private key file to authenticate with. Absent means the stored
+    /// password is used instead -- the two are a choice, not a fallback chain,
+    /// so that "why did it ask for a password" always has one answer
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// A server to reach this one *through*, when it is not reachable directly
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump: Option<JumpSpec>,
+    /// Seconds between keepalive packets, for a network that drops a
+    /// connection that has been quiet. Absent or 0 means none are sent
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive: Option<u64>,
+    /// What to run on the far end to serve files, for a server where the file
+    /// service has to be started as somebody else. Absent -- the ordinary case
+    /// -- asks the server for its own file service
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_command: Option<String>,
+    /// The folder the file lists open at, on the far end. Absent starts where
+    /// the server puts you when you sign in
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_dir: Option<String>,
+}
+
+/// The server a connection is made through.
+///
+/// Its own address and its own credential: a machine that can be reached from
+/// the outside, standing in front of one that cannot
+#[derive(Debug, Deserialize, serde::Serialize, Clone, Default, PartialEq, Eq)]
+pub struct JumpSpec {
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// A folder, and the tabs that work in it.
@@ -1955,6 +2010,56 @@ impl GitSpec {
 /// that
 pub fn is_git_panel(argv: &[String]) -> bool {
     matches!(argv, [head] if head.eq_ignore_ascii_case("git"))
+}
+
+/// Whether this tab is the file panel, and which server tab it is pointed at.
+///
+/// `sftp` on its own is a panel that has not been pointed anywhere yet, which
+/// is a state it has to have: a person adds the panel and then chooses. `sftp
+/// deploy` is one pointed at the tab called `deploy` -- the same way of naming
+/// a connection the file commands use, so that what the screen does and what a
+/// script does are addressed alike.
+///
+/// A word with an address in it is somebody's `sftp.exe` command line and is
+/// left alone, exactly as `git status` is left alone
+pub fn sftp_panel_of(argv: &[String]) -> Option<String> {
+    match argv {
+        [head] if head.eq_ignore_ascii_case("sftp") => Some(String::new()),
+        [head, at] if head.eq_ignore_ascii_case("sftp") && !at.contains(['@', ':', '/']) => {
+            Some(at.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Point a file panel at a server tab, in the settings.
+///
+/// The panel's command line *is* the choice -- there is no second field to
+/// keep in step with it -- so choosing on the board rewrites that one line
+pub fn point_sftp_panel(ws_name: &str, panel: &str, server: &str) -> Result<()> {
+    with_folders(&config_file_path(), ws_name, |folders| {
+        for g in folders.iter_mut() {
+            let Some(tabs) = g.get_mut("tabs").and_then(|t| t.as_array_mut()) else {
+                continue;
+            };
+            for t in tabs.iter_mut() {
+                let named = t
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .or_else(|| t.get("name").and_then(|n| n.as_str()))
+                    .unwrap_or_default();
+                if named != panel {
+                    continue;
+                }
+                t["command"] = match server.trim() {
+                    "" => serde_json::json!("sftp"),
+                    s => serde_json::json!(format!("sftp {s}")),
+                };
+                return Ok(());
+            }
+        }
+        Ok(())
+    })
 }
 
 impl TabConfig {
@@ -4011,7 +4116,49 @@ mod tests {
 
 #[cfg(test)]
 mod browser_kind_tests {
-    use super::{browser_url_of, is_git_panel};
+    use super::{Config, browser_url_of, is_git_panel, sftp_panel_of};
+
+    /// The file panel is the word on its own, or the word and the name of the
+    /// server tab it borrows a connection from. Anything with an address in it
+    /// is somebody's own sftp command line and stays one
+    #[test]
+    fn the_file_panel_is_the_word_and_at_most_a_name() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(sftp_panel_of(&v(&["sftp"])), Some(String::new()), "まだどこにも向いていない");
+        assert_eq!(sftp_panel_of(&v(&["SFTP"])), Some(String::new()), "大文字でも同じもの");
+        assert_eq!(sftp_panel_of(&v(&["sftp", "deploy"])), Some("deploy".into()));
+        // A real command line, left alone
+        assert_eq!(sftp_panel_of(&v(&["sftp", "rocky@example.com"])), None);
+        assert_eq!(sftp_panel_of(&v(&["sftp", "-P", "22", "a@b"])), None);
+        assert_eq!(sftp_panel_of(&v(&["sftpx"])), None);
+        assert_eq!(sftp_panel_of(&[]), None);
+    }
+
+    /// What a server tab knows beyond its address is read back whole, and a
+    /// tab that has none is not given an empty one
+    #[test]
+    fn a_server_tab_keeps_what_its_address_cannot_hold() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"workspaces":[{"name":"W","id":"w","folders":[{"cwd":"D:/a","tabs":[
+                 {"name":"prod","id":"prod","command":"ssh://rocky@example.com:22",
+                  "server":{"key":"~/.ssh/id_ed25519","remote_dir":"/var/www",
+                            "keepalive":30,"file_command":"sudo su -",
+                            "jump":{"host":"gw.example.com","port":2222,"user":"jump"}}},
+                 {"name":"plain","command":"ssh://a@b:22"}]}]}]}"#,
+        )
+        .unwrap();
+        let ws = &cfg.workspaces[0];
+        let tabs = &ws.folders[0].tabs;
+        let sv = tabs[0].server.as_ref().expect("接続の設定が読めていない");
+        assert_eq!(sv.key.as_deref(), Some("~/.ssh/id_ed25519"));
+        assert_eq!(sv.remote_dir.as_deref(), Some("/var/www"));
+        assert_eq!(sv.keepalive, Some(30));
+        assert_eq!(sv.file_command.as_deref(), Some("sudo su -"));
+        let j = sv.jump.as_ref().expect("踏み台が読めていない");
+        assert_eq!((j.host.as_str(), j.port, j.user.as_str()), ("gw.example.com", Some(2222), "jump"));
+        assert!(tabs[1].server.is_none(), "書いていないものが生えている");
+    }
+
 
     #[test]
     fn the_git_panel_is_the_word_on_its_own() {

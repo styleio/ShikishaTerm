@@ -753,6 +753,8 @@ struct WinSurface {
     run_luas: Vec<String>,
     /// What the git panel has asked for since the last drain: (panel, act, args)
     gits: Vec<(String, String, serde_json::Value)>,
+    /// The same, for the file panel
+    sftps: Vec<(String, String, serde_json::Value)>,
     /// Recorded steps reported by pages. The loop turns each into one Lua
     /// line for the composer.
     recorded: Vec<RecordedStep>,
@@ -956,6 +958,16 @@ impl WinSurface {
     /// Hand one answer back to the git panel (already JSON-encoded)
     fn push_git(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__git && window.__git({json});"));
+    }
+
+    /// Takes what the file panel has asked for since the last drain
+    fn take_sftps(&mut self) -> Vec<(String, String, serde_json::Value)> {
+        std::mem::take(&mut self.sftps)
+    }
+
+    /// Hand one answer back to the file panel (already JSON-encoded)
+    fn push_sftp(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__sftp && window.__sftp({json});"));
     }
 
     /// Takes the recorded steps reported by pages since the last drain.
@@ -1175,6 +1187,7 @@ impl WinSurface {
                 Ev::Record { on } => self.record_arms.push(on),
                 Ev::RunLua { code } => self.run_luas.push(code),
                 Ev::Git { panel, act, args } => self.gits.push((panel, act, args)),
+                Ev::Sftp { panel, act, args } => self.sftps.push((panel, act, args)),
                 Ev::Recorded {
                     from: Some(child),
                     act,
@@ -1530,6 +1543,7 @@ fn run_in_window() -> Result<()> {
         presses: Vec::new(),
         add_tab_folder: None,
         gits: Vec::new(),
+        sftps: Vec::new(),
         loads: Vec::new(),
         scrolls: Vec::new(),
         gos: Vec::new(),
@@ -2217,6 +2231,21 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
     for (at, g) in groups.iter_mut() {
         g.health = health.get(at).cloned().unwrap_or_default();
         g.drift = drift.get(at).cloned().unwrap_or_default();
+        // A folder with a panel in it is not empty. The list is built from
+        // running tabs, and a panel is not one -- it has no process. Left
+        // marked empty, the sidebar draws the heading as a folder with nothing
+        // in it and never draws the rows underneath, so the panel simply had
+        // no line to press
+        if g.empty
+            && ui.surfaces.iter().any(|s| match s {
+                Surface::Git { dir: Some(d), .. } | Surface::Sftp { dir: Some(d), .. } => {
+                    crate::uistate::same_folder(d, at)
+                }
+                _ => false,
+            })
+        {
+            g.empty = false;
+        }
     }
     // The pairing link as it should be shown, with the network it leads to
     let shown = ui.qr.as_deref().map(crate::netaddr::shown_link);
@@ -2257,9 +2286,9 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
             .filter_map(|(i, p)| match p {
                 Surface::Session(s) => tabs.get(*s).map(|t| {
                     let mut ts = crate::uistate::TabState::of(i + 1, t);
-                    ts.group = t
-                        .cwd()
-                        .and_then(|c| groups.iter().position(|(k, _)| k == c));
+                    ts.group = t.cwd().and_then(|c| {
+                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, c))
+                    });
                     ts
                 }),
                 Surface::Browser { key, name } => {
@@ -2269,15 +2298,21 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
                     t.ask = ui.asks.iter().find(|(k, _)| k == key).map(|(_, a)| a.clone());
                     Some(t)
                 }
+                Surface::Sftp { key, name, dir, .. } => {
+                    let group = dir.as_deref().and_then(|d| {
+                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
+                    });
+                    Some(crate::uistate::TabState::sftp(i + 1, key, name, group))
+                }
                 Surface::Git { key, name, dir, .. } => {
                     // The panel reports on a folder, so it stands under that
                     // folder's heading and is put away with it. Worked out from
                     // where it actually points, exactly as a tab's is -- carried
                     // as a number decided elsewhere, it was never filled in, and
                     // a panel belonging to nothing sat on outside a folded folder
-                    let group = dir
-                        .as_deref()
-                        .and_then(|d| groups.iter().position(|(k, _)| k == d));
+                    let group = dir.as_deref().and_then(|d| {
+                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
+                    });
                     Some(crate::uistate::TabState::git(i + 1, key, name, group))
                 }
             })
@@ -2323,7 +2358,7 @@ fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate::Ui
                     .map(|t| t.ms_since_change(ui.now_ms) < QUIET_MS)
                     .unwrap_or(false),
                 // Neither a page nor a panel is doing anything on its own
-                Surface::Browser { .. } | Surface::Git { .. } => false,
+                Surface::Browser { .. } | Surface::Git { .. } | Surface::Sftp { .. } => false,
             });
             let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
             !anyone_active && ring_idle
@@ -2743,6 +2778,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
     let (suggest_tx, suggest_rx) = std::sync::mpsc::channel::<String>();
     // The git panel's slow half: fetch, pull and push answer from a thread
     let (git_tx, git_rx) = std::sync::mpsc::channel::<String>();
+    // Everything the file panel asks of a server, which is all of it: a folder
+    // on the far end is a network round trip and the window cannot wait for one
+    let (sftp_tx, sftp_rx) = std::sync::mpsc::channel::<String>();
     // 🔍 environment cards: per tab (by id), the captured output of the last
     // survey the person ran. Ride along with every ✨ suggestion so the AI
     // keeps knowing the environment long after the survey scrolled away
@@ -4184,6 +4222,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     remote::RemoteCmd::Ui(crate::browser::Ev::Git { panel, act, args }) => {
                         surface.gits.push((panel, act, args));
                     }
+                    remote::RemoteCmd::Ui(crate::browser::Ev::Sftp { panel, act, args }) => {
+                        surface.sftps.push((panel, act, args));
+                    }
                     remote::RemoteCmd::Ui(crate::browser::Ev::RunLua { code }) => {
                         surface.run_luas.push(code);
                     }
@@ -5225,6 +5266,37 @@ fn run(mut surface: WinSurface) -> Result<()> {
             surface.push_git(&js);
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"git\":{js}}}"));
+            }
+        }
+
+        // What the file panel asked for. Reading this machine is answered on
+        // the spot; anything that touches the server goes to a thread, because
+        // a folder listing over a network is a wait and this loop draws the
+        // window
+        for (panel, act, args) in surface.take_sftps() {
+            let ws_name = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
+            let js = sftp_answer(
+                &panel,
+                &act,
+                &args,
+                &surfaces,
+                workspaces.get(ws_index),
+                &caps,
+                &ws_name,
+                &sftp_tx,
+            );
+            if let Some(js) = js {
+                surface.push_sftp(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"sftp\":{js}}}"));
+                }
+            }
+        }
+        while let Ok(js) = sftp_rx.try_recv() {
+            append_hook_log(&format!("sftp: {}", log_excerpt(&js, 200)));
+            surface.push_sftp(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"sftp\":{js}}}"));
             }
         }
 
@@ -7224,7 +7296,7 @@ fn focused_page(layout: &crate::layout::Layout, surfaces: &[Surface]) -> Option<
         Surface::Browser { key, .. } => Some(key.clone()),
         // The panel is drawn by the board, so there is no page in front of
         // anything -- a message can be raised over it like any other pane
-        Surface::Session(_) | Surface::Git { .. } => None,
+        Surface::Session(_) | Surface::Git { .. } | Surface::Sftp { .. } => None,
     }
 }
 
@@ -7496,6 +7568,347 @@ fn build_engine(
     (!engine.is_empty() || wants_notify || has_lua_actions).then_some(engine)
 }
 
+/// How long the panel waits on the far end before saying it did not answer.
+///
+/// Shorter than a script's own wait: a person is looking at the screen, and a
+/// list that takes a minute to arrive is a broken screen whatever it says
+const SFTP_WAIT_MS: u64 = 45_000;
+
+/// One thing the file panel asked for.
+///
+/// Returns the answer when there is one to give at once, and `None` when the
+/// far end has been asked and a thread will send it along. Everything that
+/// touches a server asks the same permission table a script does -- the panel
+/// is a screen a person opened, so it reaches exactly what their own
+/// automation would, and not one thing more.
+#[allow(clippy::too_many_arguments)]
+fn sftp_answer(
+    panel: &str,
+    act: &str,
+    args: &serde_json::Value,
+    surfaces: &[Surface],
+    ws: Option<&config::Workspace>,
+    caps: &std::rc::Rc<crate::caps::Capabilities>,
+    ws_name: &str,
+    tx: &std::sync::mpsc::Sender<String>,
+) -> Option<String> {
+    let fail = |e: String| {
+        Some(
+            serde_json::json!({"act": act, "panel": panel, "ok": false, "error": e})
+                .to_string(),
+        )
+    };
+    let Some((server, local_root)) = surfaces.iter().find_map(|s| match s {
+        Surface::Sftp { key, server, dir, .. } if key == panel => {
+            Some((server.clone(), dir.clone()))
+        }
+        _ => None,
+    }) else {
+        return fail(i18n::t("err.sftp.no_panel"));
+    };
+    // Every server tab in this workspace, and what each one amounts to. Read
+    // from the settings rather than from what is running: a connection that
+    // will not come up is exactly when somebody opens this panel, and a picker
+    // that hides the tab they are trying to fix is a dead end
+    let servers: Vec<(String, String, crate::ssh::Spec)> = ws
+        .map(|w| {
+            w.tabs
+                .iter()
+                .filter_map(|ft| {
+                    let argv = ft.cfg.command.argv();
+                    let (host, port, user) = config::ssh_endpoint(&argv)?;
+                    let id = ft.cfg.id.clone().or_else(|| ft.cfg.name.clone())?;
+                    let name = ft.cfg.name.clone().unwrap_or_else(|| id.clone());
+                    let under = |what: &str| {
+                        let t = ft.cfg.id.as_deref()?;
+                        Some(format!("ssh/{}/{}/{}", w.id, t, what))
+                    };
+                    let spec = server_spec(&host, port, &user, ft.cfg.server.as_ref(), &under);
+                    Some((id, name, spec))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let pointed = servers.iter().find(|(id, name, _)| *id == server || *name == server);
+    let remote_root = ws
+        .and_then(|w| {
+            w.tabs
+                .iter()
+                .find(|ft| {
+                    let named = ft.cfg.id.as_deref().or(ft.cfg.name.as_deref()).unwrap_or("");
+                    !server.is_empty() && named == server
+                })
+                .and_then(|ft| ft.cfg.server.as_ref())
+                .and_then(|sp| sp.remote_dir.clone())
+        })
+        .unwrap_or_default();
+    let str_of = |k: &str| {
+        args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string()
+    };
+
+    // Which server tabs this panel could be pointed at, and which it is
+    if act == "hello" {
+        let list: Vec<serde_json::Value> = servers
+            .iter()
+            .map(|(id, name, spec)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "at": format!("{}@{}", spec.user, spec.address()),
+                })
+            })
+            .collect();
+        return Some(
+            serde_json::json!({
+                "act": "hello",
+                "panel": panel,
+                "ok": true,
+                "data": {
+                    "server": server,
+                    "servers": list,
+                    "local_root": local_root.as_ref().map(|p| display_path_of(p)),
+                    "remote_root": remote_root,
+                },
+            })
+            .to_string(),
+        );
+    }
+
+    // Choosing a connection rewrites the panel's own command line, because
+    // that line is the choice -- there is no second field to disagree with it
+    if act == "point" {
+        let to = str_of("server");
+        return match config::point_sftp_panel(ws_name, panel, &to) {
+            Ok(()) => Some(
+                serde_json::json!({"act": "point", "panel": panel, "ok": true, "data": to})
+                    .to_string(),
+            ),
+            Err(e) => fail(format!("{e:#}")),
+        };
+    }
+
+    // This machine's side. No connection is involved, so it is answered here
+    if act == "local" {
+        let Some(root) = local_root.clone() else {
+            return fail(i18n::t("err.sftp.no_folder"));
+        };
+        let at = match str_of("at").trim() {
+            "" => root.clone(),
+            given => match local_under(&root, given) {
+                Some(p) => p,
+                None => return fail(i18n::t("err.sftp.outside")),
+            },
+        };
+        return match local_rows(&at) {
+            Ok(rows) => Some(
+                serde_json::json!({
+                    "act": "local",
+                    "panel": panel,
+                    "ok": true,
+                    "at": display_path_of(&at),
+                    "root": display_path_of(&root),
+                    "rows": rows,
+                })
+                .to_string(),
+            ),
+            Err(e) => fail(format!("{e:#}")),
+        };
+    }
+
+    // Everything left needs the connection the server tab is holding
+    if server.trim().is_empty() {
+        return fail(i18n::t("err.sftp.not_pointed"));
+    }
+    let Some(spec) = pointed.map(|(_, _, spec)| spec.clone()) else {
+        return fail(i18n::tp("err.sftp.no_server", &[("name", &server)]));
+    };
+
+    // The name this act is asking permission under, and the job it becomes
+    let at = |given: &str| match given.trim() {
+        "" => match remote_root.trim() {
+            "" => ".".to_string(),
+            r => r.to_string(),
+        },
+        g => g.to_string(),
+    };
+    let (name, job): (&str, ssh::FileJob) = match act {
+        "remote" => ("sftp_ls", ssh::FileJob::List { path: at(&str_of("at")) }),
+        "mkdir" => ("sftp_mkdir", ssh::FileJob::MakeDir { path: str_of("path") }),
+        "rename" => (
+            "sftp_rename",
+            ssh::FileJob::Rename { from: str_of("from"), to: str_of("to") },
+        ),
+        "rm" => ("sftp_rm", ssh::FileJob::Remove { path: str_of("path") }),
+        "put" => (
+            "sftp_put",
+            ssh::FileJob::Put {
+                from: std::path::PathBuf::from(str_of("from")),
+                to: str_of("to"),
+                overwrite: args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false),
+            },
+        ),
+        "get" => (
+            "sftp_get",
+            ssh::FileJob::Get { from: str_of("from"), to: std::path::PathBuf::from(str_of("to")) },
+        ),
+        // Reaching the far end at all, to say so before anything is saved
+        "test" => ("sftp_ls", ssh::FileJob::List { path: at("") }),
+        _ => return None,
+    };
+    // A transfer names a file on this machine, and that file has to be inside
+    // the panel's own folder -- the same promise the far side gets
+    if let (Some(root), ssh::FileJob::Put { from, .. }) = (&local_root, &job) {
+        if local_under(root, &from.display().to_string()).is_none() {
+            return fail(i18n::t("err.sftp.outside"));
+        }
+    }
+    if let (Some(root), ssh::FileJob::Get { to, .. }) = (&local_root, &job) {
+        if local_under(root, &to.display().to_string()).is_none() {
+            return fail(i18n::t("err.sftp.outside"));
+        }
+    }
+    if !caps.allows(name, grants::Subject::Human) {
+        return fail(i18n::tp(
+            "err.hooks.not_permitted",
+            &[("name", name), ("who", &i18n::t("grant.who.human"))],
+        ));
+    }
+    // The folder that was asked about, sent back with the answer: by the time
+    // it arrives the person may have moved on, and a listing that lands in the
+    // wrong folder is worse than one that never lands
+    let asked = match &job {
+        ssh::FileJob::List { path } => path.clone(),
+        _ => String::new(),
+    };
+    let (act, panel) = (act.to_string(), panel.to_string());
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let said = crate::ssh::files(&spec, job, SFTP_WAIT_MS);
+        let payload = match said {
+            Ok(ssh::FileAnswer::Listing(rows)) => serde_json::json!({
+                "act": act,
+                "panel": panel,
+                "ok": true,
+                "at": asked,
+                "rows": rows.iter().map(|e| serde_json::json!({
+                    "name": e.name,
+                    "dir": e.dir,
+                    "size": e.size,
+                    "modified": e.modified,
+                })).collect::<Vec<_>>(),
+            }),
+            Ok(_) => serde_json::json!({"act": act, "panel": panel, "ok": true}),
+            Err(e) => {
+                serde_json::json!({"act": act, "panel": panel, "ok": false, "error": format!("{e:#}")})
+            }
+        };
+        let _ = tx.send(payload.to_string());
+    });
+    None
+}
+
+/// What is in a folder on this machine, in the same shape the far end answers
+/// in -- folders first and then by name, so the two lists read alike
+fn local_rows(at: &std::path::Path) -> Result<Vec<serde_json::Value>> {
+    let mut rows: Vec<(bool, String, u64, u64)> = Vec::new();
+    for e in std::fs::read_dir(at)? {
+        let Ok(e) = e else { continue };
+        let name = e.file_name().to_string_lossy().to_string();
+        let Ok(m) = e.metadata() else { continue };
+        let modified = m
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        rows.push((m.is_dir(), name, m.len(), modified));
+    }
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(rows
+        .into_iter()
+        .map(|(dir, name, size, modified)| {
+            serde_json::json!({"name": name, "dir": dir, "size": size, "modified": modified})
+        })
+        .collect())
+}
+
+/// The same path, refused if it is not inside the folder this panel works in.
+///
+/// The folder is the fence. A panel opened on one project cannot be walked up
+/// into another, and `..` is not a way around it -- which is the promise the
+/// far side already keeps, said once more for this machine
+fn local_under(root: &std::path::Path, at: &str) -> Option<std::path::PathBuf> {
+    let want = std::path::PathBuf::from(at.replace('\\', "/"));
+    let want = if want.is_absolute() { want } else { root.join(want) };
+    // Worked out without touching the disk, so that a folder that is not there
+    // is a "not found" from the listing rather than a refusal from here
+    let mut out = std::path::PathBuf::new();
+    for part in want.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    let root = root.components().fold(std::path::PathBuf::new(), |mut acc, c| {
+        acc.push(c.as_os_str());
+        acc
+    });
+    out.starts_with(&root).then_some(out)
+}
+
+/// A path as a person reads it: one kind of slash, whatever the disk uses
+fn display_path_of(p: &std::path::Path) -> String {
+    p.display().to_string().replace('\\', "/")
+}
+
+/// Everything needed to reach a server, from what the settings say about it.
+///
+/// The address comes from the command line, where a person can read it; the
+/// rest comes from the tab's `server` block. Credentials are named, never
+/// carried: `under` works out what each one is filed under from the workspace
+/// and the tab, so nothing here is a secret and the same name is not written
+/// down twice.
+///
+/// A bastion is built by the same rules, one hop out, so that a server behind
+/// two of them needs no new idea -- only another `jump`.
+fn server_spec(
+    host: &str,
+    port: u16,
+    user: &str,
+    server: Option<&config::ServerSpec>,
+    under: &dyn Fn(&str) -> Option<String>,
+) -> ssh::Spec {
+    let key = |k: &Option<String>| k.clone().filter(|s| !s.trim().is_empty());
+    ssh::Spec {
+        host: host.to_string(),
+        port,
+        user: user.to_string(),
+        password_key: under("password"),
+        key: server.and_then(|s| key(&s.key)),
+        passphrase_key: under("passphrase"),
+        jump: server.and_then(|s| s.jump.as_ref()).filter(|j| !j.host.trim().is_empty()).map(
+            |j| {
+                Box::new(ssh::Spec {
+                    host: j.host.clone(),
+                    port: j.port.unwrap_or(22),
+                    user: j.user.clone(),
+                    password_key: under("jump_password"),
+                    key: key(&j.key),
+                    passphrase_key: under("jump_passphrase"),
+                    jump: None,
+                    keepalive: None,
+                    file_command: None,
+                })
+            },
+        ),
+        keepalive: server.and_then(|s| s.keepalive).filter(|n| *n > 0),
+        file_command: server.and_then(|s| key(&s.file_command)),
+    }
+}
+
 /// Converts a rebuilt tab config into TabOptions.
 /// For a `model <provider>/<model>` tab, loads the resolved connection info into opts.
 /// A discussion participant also gets its persona attached (so the stateless
@@ -7505,8 +7918,9 @@ fn resolve_launch(
     argv: Vec<String>,
     opts: &mut tab::TabOptions,
     ws: Option<&config::Workspace>,
-    id: Option<&str>,
+    cfg: &config::TabConfig,
 ) -> Vec<String> {
+    let id = cfg.id.as_deref();
     // A terminal on another machine. What it is *called* -- the workspace and
     // the tab -- is what its password is filed under, so the name is worked
     // out here, where both are known, and never written into the settings
@@ -7515,14 +7929,7 @@ fn resolve_launch(
             let (w, t) = (ws.map(|w| w.id.as_str())?, id?);
             Some(format!("ssh/{w}/{t}/{what}"))
         };
-        opts.remote = Some(ssh::Spec {
-            host,
-            port,
-            user,
-            password_key: under("password"),
-            key: None,
-            passphrase_key: under("passphrase"),
-        });
+        opts.remote = Some(server_spec(&host, port, &user, cfg.server.as_ref(), &under));
     }
     if let Some(mut conn) = bridge::launch_for(&argv) {
         if let (Some(d), Some(id)) = (ws.and_then(|w| w.discuss.as_ref()), id) {
@@ -7672,17 +8079,15 @@ fn apply_ws_config(
         }
         // Browsers aren't child processes, so don't launch them here
         // (open_declared_browsers opens the window)
-        if config::browser_url_of(&argv).is_some() || config::is_git_panel(&argv) {
+        if config::browser_url_of(&argv).is_some()
+            || config::is_git_panel(&argv)
+            || config::sftp_panel_of(&argv).is_some()
+        {
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
         let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
-        let argv = resolve_launch(
-            argv,
-            &mut opts,
-            Some(ws),
-            ft.cfg.id.as_deref(),
-        );
+        let argv = resolve_launch(argv, &mut opts, Some(ws), &ft.cfg);
         let cwd = opts.cwd.clone();
         match tabs.iter().position(|t| t.title == title) {
             Some(i) => {
@@ -7940,17 +8345,15 @@ fn spawn_workspace(
         // window. Trying to launch one here would produce a baffling "no
         // executable named browser" failure every time, out of nowhere.
         // (open_declared_browsers opens them)
-        if config::browser_url_of(&argv).is_some() || config::is_git_panel(&argv) {
+        if config::browser_url_of(&argv).is_some()
+            || config::is_git_panel(&argv)
+            || config::sftp_panel_of(&argv).is_some()
+        {
             continue;
         }
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
         let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
-        let argv = resolve_launch(
-            argv,
-            &mut opts,
-            Some(ws),
-            ft.cfg.id.as_deref(),
-        );
+        let argv = resolve_launch(argv, &mut opts, Some(ws), &ft.cfg);
         let cwd = opts.cwd.clone();
         let plan = match resume_plan_of(ft.cfg.resume.as_deref()) {
             named @ tab::Resume::Id(_) => named,
@@ -8090,6 +8493,19 @@ enum Surface {
         /// the folder's own
         protect: Vec<String>,
     },
+    /// The file panel: two lists of files, one on this machine and one on a
+    /// server, drawn by the board.
+    ///
+    /// It has no connection of its own. `server` is the name of the tab whose
+    /// connection it borrows -- the same way of naming one the file commands
+    /// use -- and is empty for a panel nobody has pointed anywhere yet. `dir`
+    /// is its folder on this machine, which is the folder its group is in
+    Sftp {
+        key: String,
+        name: String,
+        server: String,
+        dir: Option<std::path::PathBuf>,
+    },
 }
 
 /// Builds what's laid out on screen, in the order written in config.
@@ -8105,6 +8521,17 @@ fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String
         for ft in &ws.tabs {
             let argv = ft.cfg.command.argv();
             if argv.is_empty() {
+                continue;
+            }
+            if let Some(server) = config::sftp_panel_of(&argv) {
+                let key = ft
+                    .cfg
+                    .id
+                    .clone()
+                    .or_else(|| ft.cfg.name.clone())
+                    .unwrap_or_else(|| "sftp".into());
+                let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
+                out.push(Surface::Sftp { key, name, server, dir: ws.cwd_of(ft) });
                 continue;
             }
             if config::is_git_panel(&argv) {
@@ -8188,7 +8615,7 @@ fn ui_surface_at(surfaces: &[Surface], n: usize) -> Option<&Surface> {
 fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
     match surfaces.get(active.checked_sub(1)?)? {
         Surface::Session(i) => Some(*i),
-        Surface::Browser { .. } | Surface::Git { .. } => None,
+        Surface::Browser { .. } | Surface::Git { .. } | Surface::Sftp { .. } => None,
     }
 }
 
@@ -8969,7 +9396,7 @@ fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
             Surface::Session(i) => tabs.get(*i).map(|t| t.key()).unwrap_or_default(),
             // A page and a panel are addressed the same way a session is:
             // by the name automation knows them by, never the one on screen
-            Surface::Browser { key, .. } | Surface::Git { key, .. } => {
+            Surface::Browser { key, .. } | Surface::Git { key, .. } | Surface::Sftp { key, .. } => {
                 hooks::TabKey { id: Some(key.clone()) }
             }
         })
@@ -9777,6 +10204,29 @@ fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The file panel's own folder is a fence, and `..` is not a gate in it.
+    ///
+    /// The far side already keeps this promise. Without the same one here, a
+    /// panel opened on one project would be a way to read -- and send -- every
+    /// file on the machine
+    #[test]
+    fn the_panels_folder_is_as_far_as_it_goes() {
+        let root = std::path::Path::new("D:/work/site");
+        let under = |at: &str| local_under(root, at).map(|p| display_path_of(&p));
+
+        assert_eq!(under("public").as_deref(), Some("D:/work/site/public"), "中は通る");
+        assert_eq!(under("D:/work/site/public/a.txt").as_deref(),
+                   Some("D:/work/site/public/a.txt"), "絶対でも中なら通る");
+        assert_eq!(under("public/../a.txt").as_deref(), Some("D:/work/site/a.txt"),
+                   "行って戻るだけなら中");
+        assert_eq!(under(""), Some("D:/work/site".to_string()), "根そのもの");
+
+        assert_eq!(under(".."), None, "一つ上は外");
+        assert_eq!(under("public/../../../secrets"), None, "遠回りしても外");
+        assert_eq!(under("C:/Windows"), None, "別のドライブは外");
+        assert_eq!(under("D:/work/site-two"), None, "名前が続いているだけの別フォルダ");
+    }
 
     /// What the phone is told when a tab finishes.
     ///

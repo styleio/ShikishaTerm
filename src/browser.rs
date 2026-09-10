@@ -868,6 +868,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .unwrap_or_default()
                 .to_string(),
         },
+        // The file panel asking for a listing or a transfer (see `Ev::Sftp`).
+        Some("sftp") => Ev::Sftp {
+            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
         // The git panel asking for a list, a diff, or a change (see `Ev::Git`).
         Some("git") => Ev::Git {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
@@ -1536,6 +1542,14 @@ pub enum Ev {
         /// Whatever this act needs, as it was written on the screen. A JSON
         /// object rather than a fixed set of fields: the panel grows buttons
         /// far faster than this enum should grow shapes
+        args: serde_json::Value,
+    },
+    /// The file panel asking to see a folder, or to move a file between this
+    /// machine and the server its tab is connected to. Shaped like `Git` and
+    /// for the same reason: one message for a screen that grows buttons
+    Sftp {
+        panel: String,
+        act: String,
         args: serde_json::Value,
     },
     /// One recorded step reported by a page being recorded. The pane's ipc

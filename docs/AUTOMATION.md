@@ -876,6 +876,13 @@ thought of -- the same reason `split_pane` and `show` stayed two.
 permissions). Open the reading ones (`sftp_ls` / `sftp_get`) and `sftp_put` to
 an AI first, if any.
 
+**The same seven on a screen.** A tab whose command is `sftp <the server tab's
+name>` is the file panel: two lists of files, this folder on the left and that
+server on the right. It has no way of moving a file that is not one of the
+commands above, and it asks the same permission table -- so what you can do by
+hand and what a script may do cannot come apart. Pick the connection at the top
+of the panel; everything about that connection lives on the server tab itself.
+
 ### Handing a run between participants
 
 How the rally works: files in and out, plus a judge. You can build your own the same way.

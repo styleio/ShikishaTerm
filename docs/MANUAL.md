@@ -128,6 +128,12 @@ server's terminal.
 Automation can read and write files there too, by naming that tab (`sftp_ls`,
 `sftp_get`, `sftp_put` and the rest -- see the automation reference).
 
+**The same from a screen.** Add a tab, set its kind to Files (SFTP) and pick
+the server tab at the top: this PC's folder on the left, that server's on the
+right. Tick what you want and press Send or Bring here; the `...` at the end of
+a row makes a folder, renames one, or deletes one. On a phone the switch at the
+top shows one side at a time.
+
 **A server whose key is not the one from last time is refused.** If you
 reinstalled the server, delete its line from `data/known-hosts.json`.
 

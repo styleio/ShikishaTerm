@@ -511,6 +511,126 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Only this is selectable — the tab bar and frame never get pulled into a selection */
   #screen { user-select:text; }
 
+  /* ── The file panel ──────────────────────────────
+     Two lists of files side by side: this machine on the left, the server the
+     tab is connected to on the right. Same place as a terminal, same edges.
+     Borderless on purpose -- a grid of lines around every cell is what makes
+     a file list feel like a database, and the eye follows a row perfectly well
+     from the highlight it gets when it is pointed at */
+  #sftppanel[hidden] { display:none; }
+  /* The sub-input bar floats over the pane rather than taking room from it,
+     which is right for a terminal -- its contents scroll under and come back.
+     This panel's last line does not scroll: it says what is happening and what
+     this connection is, and a line hidden behind a bar is a line nobody reads.
+     So the panel stops above the bar, by however tall the bar is now */
+  #sftppanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:calc(var(--fb) + var(--sdock, 0px)); display:flex; flex-direction:column;
+    overflow:hidden; font-size:13px; user-select:text; }
+  /* The connection, and the way to make another. One row, because which server
+     this is pointed at is the first thing anyone needs to know about it */
+  #sftppanel .conn { display:flex; align-items:center; gap:var(--s2); padding:6px 10px;
+    border-bottom:1px solid var(--line); flex:0 0 auto; flex-wrap:wrap; }
+  #sftppanel button { font:inherit; font-size:12.5px; min-height:32px; padding:0 12px;
+    border-radius:var(--r-ctl); border:1px solid var(--line); background:var(--panel);
+    color:var(--text); cursor:pointer; display:inline-flex; align-items:center;
+    gap:var(--s2); white-space:nowrap; }
+  #sftppanel button:hover { background:var(--panel2); }
+  #sftppanel button.go { border-color:var(--brand); background:var(--brand); color:var(--bg); }
+  #sftppanel button.go:hover { filter:brightness(1.1); }
+  #sftppanel button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
+  #sftppanel button.quiet:hover { color:var(--text); background:var(--panel2); }
+  /* Grey, and it still answers. Never `disabled`: pressing it is how a person
+     finds out what is in the way (style guide 5.4) */
+  #sftppanel button.held, #sftppanel button.go.held { background:var(--panel2);
+    border-color:var(--line); color:var(--faint); cursor:not-allowed; }
+  #sftppanel button.held:hover { background:var(--panel2); filter:none; }
+  #sftppanel .pick { flex:0 0 auto; max-width:46%; }
+  #sftppanel .pick .nm { overflow:hidden; text-overflow:ellipsis; }
+  #sftppanel .pick .caret { color:var(--dim); font-size:9px; }
+  #sftppanel .grow { flex:1 1 auto; min-width:0; }
+  /* The two sides. One column each on a window; on a phone only the chosen one
+     is on screen, because two three-column tables at 400px is neither */
+  #sftppanel .sides { display:flex; flex:1 1 auto; min-height:0; }
+  #sftppanel .side { flex:1 1 0; min-width:0; display:flex; flex-direction:column;
+    min-height:0; }
+  #sftppanel .side + .side { border-left:1px solid var(--line); }
+  #sftppanel .side.drop { box-shadow:inset 0 0 0 2px var(--brand); }
+  /* Where you are, as a row of steps you can press. It takes the place of an
+     "up one level" button and of any way to choose a drive */
+  #sftppanel .crumbs { display:flex; align-items:center; gap:var(--s1); padding:6px 10px;
+    flex:0 0 auto; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
+  #sftppanel .crumbs::-webkit-scrollbar { display:none; }
+  #sftppanel .crumbs .who { color:var(--dim); font-size:11px; letter-spacing:.02em;
+    flex:0 0 auto; margin-right:var(--s1); }
+  #sftppanel .crumbs .step { color:var(--text); font-size:12px; padding:2px 4px;
+    border-radius:var(--r-chip); cursor:pointer; }
+  #sftppanel .crumbs .step:hover { background:var(--panel2); }
+  #sftppanel .crumbs .step.here { color:var(--dim); cursor:default; }
+  #sftppanel .crumbs .step.here:hover { background:transparent; }
+  #sftppanel .crumbs .sep { color:var(--faint); font-size:11px; }
+  #sftppanel .acts { display:flex; align-items:center; gap:var(--s2); padding:0 10px 6px;
+    flex:0 0 auto; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  #sftppanel .head { display:flex; align-items:center; gap:var(--s3); padding:4px 10px;
+    font-size:11px; color:var(--dim); letter-spacing:.02em; flex:0 0 auto;
+    border-bottom:1px solid var(--line); }
+  #sftppanel .list { flex:1 1 auto; overflow:auto; min-height:0; }
+  #sftppanel .frow { display:flex; align-items:center; gap:var(--s3); padding:5px 10px;
+    cursor:pointer; }
+  #sftppanel .frow:hover { background:var(--panel2); }
+  #sftppanel .frow.on { background:color-mix(in srgb, var(--brand) 18%, transparent); }
+  #sftppanel .frow .mark { flex:0 0 1.2em; display:flex; align-items:center;
+    justify-content:center; color:var(--dim); }
+  #sftppanel .frow.on .mark { color:var(--brand); }
+  #sftppanel .frow.dir .mark { color:var(--accent); }
+  #sftppanel .nm { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
+  /* Numbers that get compared line up under each other, and the columns are the
+     same two widths on both sides so the eye can cross the middle */
+  #sftppanel .sz { flex:0 0 76px; text-align:right; color:var(--muted); font-size:12px;
+    font-variant-numeric:tabular-nums; }
+  #sftppanel .when { flex:0 0 104px; text-align:right; color:var(--dim); font-size:12px;
+    font-variant-numeric:tabular-nums; }
+  #sftppanel .more { flex:0 0 auto; width:22px; height:22px; padding:0; min-height:0;
+    justify-content:center; border-color:transparent; background:transparent;
+    color:var(--dim); }
+  #sftppanel .more:hover { color:var(--text); background:var(--raise); }
+  /* Nothing here yet, or nothing pointed at yet. Both say what to press next */
+  #sftppanel .empty { padding:var(--s5) 10px; color:var(--dim); font-size:12px;
+    line-height:1.6; }
+  #sftppanel .empty b { color:var(--text); font-weight:600; display:block;
+    margin-bottom:var(--s2); }
+  /* What is happening, and what this connection is. The last line of the panel,
+     the way the board's own last line works */
+  #sftppanel .foot { display:flex; align-items:center; gap:var(--s3); padding:6px 10px;
+    border-top:1px solid var(--line); flex:0 0 auto; font-size:12px; color:var(--muted); }
+  #sftppanel .foot .safe { margin-left:auto; color:var(--dim); font-size:11px;
+    flex:0 0 auto; }
+  #sftppanel .foot .bad { color:var(--stop); }
+  /* Why a grey button is grey, in the place it cannot scroll away from */
+  #sftppanel .why { color:var(--warn); font-size:11.5px; flex:1 1 100%;
+    line-height:1.5; }
+  /* Where the answer is. Long enough to find, short enough not to nag */
+  @keyframes sftplook {
+    0%   { box-shadow:0 0 0 0 color-mix(in srgb, var(--warn) 55%, transparent); }
+    100% { box-shadow:0 0 0 6px transparent; }
+  }
+  #sftppanel .lookhere { animation:sftplook .9s ease-out 2; border-radius:var(--r-ctl); }
+  /* The switch between the two sides, on a phone only */
+  #sftppanel .swap { display:none; }
+  #sftppanel.narrow .swap { display:flex; flex:1 1 auto; gap:0; }
+  #sftppanel.narrow .swap button { flex:1 1 0; justify-content:center; border-radius:0; }
+  #sftppanel.narrow .swap button:first-child { border-radius:var(--r-ctl) 0 0 var(--r-ctl); }
+  #sftppanel.narrow .swap button:last-child { border-radius:0 var(--r-ctl) var(--r-ctl) 0; }
+  #sftppanel.narrow .swap button.on { background:var(--panel2); color:var(--text);
+    border-color:var(--brand); }
+  #sftppanel.narrow .side { display:none; }
+  #sftppanel.narrow .side.shown { display:flex; }
+  #sftppanel.narrow .side + .side { border-left:0; }
+  /* At that width the middle column is the first thing to go: a name and a date
+     are what people look for, and the size is on the row's own menu */
+  #sftppanel.narrow .sz { display:none; }
+  #sftppanel.narrow .pick { max-width:100%; }
+
   /* ── The git panel ───────────────────────────────
      A toolbar, then three columns: the branches, what is staged over what is
      not, and the change itself. Same place as a terminal, same edges */
@@ -940,29 +1060,48 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); background:var(--panel); color:var(--text); }
   #netveil .nvbtn[hidden] { display:none; }
 
-  #vault, #palette, #branch, #browse, #repair { position:fixed; inset:0; background:#00000099; display:flex;
+  #vault, #palette, #branch, #browse, #repair, #sask { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
   #vault[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
-  #repair[hidden] { display:none; }
+  #repair[hidden], #sask[hidden] { display:none; }
   #vault .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
-  #repair .vbox { background:var(--panel); border:1px solid var(--brand);
+  #sask .vbox { background:var(--panel); border:1px solid var(--brand);
     border-radius:var(--r-card); padding:var(--s4) var(--s5); width:min(720px,92vw);
     max-height:82vh; display:flex; flex-direction:column; gap:var(--s3); }
   #vault .vhead, #palette .vhead, #branch .vhead, #browse .vhead,
-  #repair .vhead { display:flex; align-items:center; }
+  #sask .vhead { display:flex; align-items:center; }
   /* The title is one thing and what is under it is another */
   #browse .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
     margin-bottom:var(--s1); }
-  #browse .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
+  #browse .vsay, #sask .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
+  #sask .vbox { width:min(560px,92vw); }
+  #sask .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
+    margin-bottom:var(--s1); }
+  #sask .brow { padding-top:var(--s3); border-top:1px solid var(--line);
+    display:flex; gap:var(--s2); justify-content:flex-end; }
+  #sask #sq { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:var(--r-ctl); padding:0 12px;
+    height:36px; outline:none; }
+  #sask #sq:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #sask #sq[hidden] { display:none; }
+  #sask .go { font:inherit; font-size:12.5px; min-height:32px; padding:0 14px;
+    border-radius:var(--r-ctl); border:1px solid var(--brand); background:var(--brand);
+    color:var(--bg); cursor:pointer; }
+  #sask .quiet { font:inherit; font-size:12.5px; min-height:32px; padding:0 14px;
+    border-radius:var(--r-ctl); border:1px solid transparent; background:transparent;
+    color:var(--dim); cursor:pointer; }
+  #sask .quiet:hover { color:var(--text); }
+  #sask .go.stop { border-color:var(--stop); background:transparent; color:var(--stop); }
   #browse .brow { padding-top:var(--s3); border-top:1px solid var(--line); }
   #vault .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle,
-  #repair .vtitle { color:var(--brand);
+  #sask .vtitle { color:var(--brand);
     font-size:13px; letter-spacing:1px; text-transform:uppercase; flex:1; }
   #vault .vclose, #palette .vclose, #branch .vclose, #browse .vclose,
-  #repair .vclose { cursor:pointer;
+  #sask .vclose { cursor:pointer;
     color:var(--dim); font-size:16px; padding:2px 6px; }
   #vault .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
-  #browse .vclose:hover, #repair .vclose:hover { color:var(--text); }
+  #browse .vclose:hover, #repair .vclose:hover, #sask .vclose:hover { color:var(--text); }
   #vault #vq, #palette #pq, #branch #bq { font:inherit; font-size:14px; background:var(--bg);
     color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); padding:9px 12px; outline:none; }
   #vault #vq:focus, #palette #pq:focus, #branch #bq:focus { border-color:var(--brand); }
@@ -996,7 +1135,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #browse .vlist { overflow:auto; display:flex; flex-direction:column; gap:var(--s1); max-height:52vh; }
   #browse .vrow { padding:var(--s2) var(--s3); border-radius:var(--r-ctl); cursor:pointer; }
   #browse .vrow:hover { background:var(--raise); }
-  #branch .bwhere, #branch .bcmd, #browse .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--text);
+  #branch .bwhere, #branch .bcmd, #browse .bwhere, #sask .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--text);
     background:var(--bg); border:1px solid var(--line); border-radius:var(--r-ctl);
     padding:7px var(--s2); overflow:auto; white-space:pre-wrap; word-break:break-all; }
   #branch .bcmd { color:var(--dim); }
@@ -1047,7 +1186,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu div { padding:var(--s2) var(--s3); border-radius:var(--r-ctl); cursor:pointer;
     font-size:12.5px; color:var(--text); }
   .fmenu div:hover { background:var(--raise); }
-  .fmenu div.warn:hover { color:var(--stop); }
+  .fmenu div.warn { color:var(--stop); }
+  /* A fact at the foot of a menu, not one of its choices */
+  .fmenu div.note { color:var(--dim); font-size:11px; cursor:default;
+    border-top:1px solid var(--line); border-radius:0; margin-top:var(--s1);
+    padding-top:var(--s2); }
+  .fmenu div.note:hover { background:transparent; }
   .fmenu .fname { font:inherit; font-size:12.5px; width:100%; box-sizing:border-box;
     background:var(--bg); color:var(--text); border:1px solid var(--edge);
     border-radius:var(--r-ctl); padding:var(--s1) var(--s2); outline:none; }
@@ -1326,6 +1470,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
          and no page of its own: the board draws it, and every button on it is
          one call to an automation command -->
     <div id="gitpanel" hidden></div>
+    <div id="sftppanel" hidden></div>
+    <!-- One question about one file: replace what is there, throw it away,
+         call it something else. Named rather than "are you sure", because the
+         far end is somebody else's machine and there is no way back from it -->
+    <div id="sask" hidden>
+      <div class="vbox">
+        <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
+        <div class="vsay"></div>
+        <div class="bwhere"></div>
+        <input id="sq" type="text" autocomplete="off" spellcheck="false" hidden>
+        <div class="brow"><button class="quiet"></button><button class="go"></button></div>
+      </div>
+    </div>
     <canvas id="cast" hidden></canvas>
     <div id="cur" hidden></div>
     <textarea id="kbd" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
@@ -2473,6 +2630,20 @@ function drawCarry(b, items) {
   });
 })();
 
+// The file panel's one question. Esc backs out, Enter is the button on it, and
+// a press on the dark outside is the same as backing out
+(function () {
+  const b = document.getElementById("sask");
+  if (!b) return;
+  b.querySelector(".vclose").onclick = closeAsk;
+  b.addEventListener("mousedown", e => { if (e.target === b) closeAsk(); });
+  b.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); closeAsk(); }
+    if (typingIME(e)) return;
+    if (e.key === "Enter" && sAskGo) { e.preventDefault(); sAskGo(); }
+  });
+})();
+
 (function () {
   const b = document.getElementById("branch");
   if (!b) return;
@@ -3116,6 +3287,8 @@ window.__state = function (json) {
   const web = S.tabs.some(t => t.index === S.active && t.kind === "browser");
   // The git panel stands where a terminal would, so the two take turns
   const git = S.tabs.some(t => t.index === S.active && t.kind === "git");
+  // And so does the file panel
+  const files = S.tabs.some(t => t.index === S.active && t.kind === "sftp");
   // INDEX covers the window; the panes are still there underneath and come
   // back the moment a running thing is picked. Nothing of the layout is drawn
   // while it is up, or the caption of a pane would show through the board
@@ -3126,7 +3299,7 @@ window.__state = function (json) {
   board.hidden = !S.board;
   document.getElementById("panes").hidden = cover;
   // Nothing to draw for a pane with nothing in it -- it says so itself
-  screen.hidden = cover || S.active === 0 || web || git;
+  screen.hidden = cover || S.active === 0 || web || git || files;
   const panel = document.getElementById("gitpanel");
   const wasGit = panel && !panel.hidden;
   if (panel) panel.hidden = cover || !git;
@@ -3143,6 +3316,25 @@ window.__state = function (json) {
       if (castPanelEl) renderPanel();
     }
     else drawGit();
+  }
+  const fpanel = document.getElementById("sftppanel");
+  const wasFiles = fpanel && !fpanel.hidden;
+  if (fpanel) fpanel.hidden = cover || !files;
+  if (fpanel && !fpanel.hidden) {
+    const t = sftpTab();
+    const key = (t && (t.id || t.name)) || null;
+    // A panel coming into view, or a different panel in the same place, starts
+    // over: what a list showed one connection ago is not worth drawing
+    if (!wasFiles || F.panel !== key || !F.asked) {
+      F.panel = key;
+      F.asked = true;
+      F.local = {root:"", at:"", rows:[], sel:new Set(), busy:true};
+      F.remote = {root:"", at:"", rows:[], sel:new Set(), busy:false};
+      F.said = ""; F.bad = false; F.why = "";
+      sftpUi = null;
+      sftpAsk("hello", {});
+    }
+    drawSftp();
   }
   // While viewing a browser tab, the phone shows the screen relay (canvas).
   // The window (PC) still layers the real page as before, so it never uses the relay
@@ -5911,6 +6103,531 @@ function buildGitPanel() {
   return wrap;
 }
 
+// ── The file panel ────────────────────────────────────────────────────────
+// Two lists of files: this machine, and the server the tab it is pointed at is
+// connected to. Everything it does is one of the seven file commands a script
+// has, asked for by the same names -- the screen holds no way of moving a file
+// that automation does not also hold.
+const SFTP_NARROW = 720;
+let F = {
+  panel: null, server: "", servers: [], asked: false,
+  local:  {root:"", at:"", rows:[], sel:new Set(), busy:false},
+  remote: {root:"", at:"", rows:[], sel:new Set(), busy:false},
+  side: "local", said: "", bad: false, why: "", whySide: "",
+  // What is still to be moved, one at a time: the connection is one thread and
+  // ten at once would only take turns anyway, out of order
+  queue: [], moving: null, done: 0, total: 0,
+};
+let sftpUi = null;
+
+function sftpTab() {
+  return (S && S.tabs || []).find(t => t.index === S.active && t.kind === "sftp");
+}
+function sftpAsk(act, args) {
+  const t = sftpTab();
+  if (!t) return;
+  send({kind:"sftp", panel: t.id || t.name || "", act, args: args || {}});
+}
+// Joining two halves of a path on the far end, which is always the one kind of
+// slash whatever this machine happens to use
+function rjoin(at, name) {
+  if (!at || at === ".") return name;
+  return at.replace(/\/+$/, "") + "/" + name;
+}
+function ljoin(at, name) { return at.replace(/\/+$/, "") + "/" + name; }
+// Where a path came from, one step up. Empty at the top, which is how the
+// crumbs know to stop
+function parentOf(path) {
+  const cut = path.replace(/\/+$/, "").lastIndexOf("/");
+  return cut <= 0 ? "" : path.slice(0, cut);
+}
+function bytesSay(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return Math.round(n / 1024) + " KB";
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+  return (n / 1024 / 1024 / 1024).toFixed(1) + " GB";
+}
+function whenSay(secs) {
+  if (!secs) return "";
+  const d = new Date(secs * 1000), two = n => String(n).padStart(2, "0");
+  return two(d.getMonth() + 1) + "/" + two(d.getDate()) + " " + two(d.getHours()) + ":" + two(d.getMinutes());
+}
+// Asking for both sides at once, which is what "show me this panel" means
+function sftpRefresh() {
+  sftpAsk("local", {at: F.local.at});
+  if (F.server) sftpAsk("remote", {at: F.remote.at});
+}
+function sftpGo(which, at) {
+  const side = F[which];
+  side.at = at;
+  side.sel.clear();
+  side.busy = true;
+  sftpAsk(which === "local" ? "local" : "remote", {at});
+  drawSftp();
+}
+
+// What arrives from the app: one answer to one thing that was asked
+window.__sftp = msg => {
+  if (!msg || typeof msg !== "object") return;
+  const act = msg.act || "";
+  if (act === "hello" && msg.ok) {
+    const d = msg.data || {};
+    F.server = d.server || "";
+    F.servers = d.servers || [];
+    F.local.root = d.local_root || "";
+    F.remote.root = d.remote_root || "";
+    if (!F.local.at) F.local.at = F.local.root;
+    if (!F.remote.at) F.remote.at = F.remote.root;
+    sftpRefresh();
+    drawSftp();
+    return;
+  }
+  if (act === "point") {
+    // The command line has been rewritten; the settings coming back around
+    // will say so. Ask again from scratch rather than guessing what changed
+    F.asked = false;
+    F.remote.at = ""; F.remote.rows = []; F.remote.sel.clear();
+    F.said = ""; F.bad = false;
+    drawSftp();
+    return;
+  }
+  if (act === "local" || act === "remote") {
+    const side = F[act];
+    side.busy = false;
+    if (msg.ok) {
+      if (msg.root != null) side.root = msg.root;
+      if (msg.at != null) side.at = msg.at;
+      side.rows = msg.rows || [];
+      side.failed = false;
+      F.said = ""; F.bad = false;
+    } else {
+      // Which side could not be read, so the list says "could not open this"
+      // rather than "nothing here" -- an empty folder and an unreachable one
+      // are not the same news
+      side.rows = [];
+      side.failed = true;
+      F.said = msg.error || ""; F.bad = true;
+    }
+    drawSftp();
+    return;
+  }
+  if (act === "test") {
+    F.bad = !msg.ok;
+    F.said = msg.ok ? (T["sftp.test.ok"] || "") : (msg.error || "");
+    drawSftp();
+    return;
+  }
+  // A transfer, a new folder, a rename or a removal: the next one starts when
+  // this one is answered, and a refusal stops the rest rather than plodding on
+  if (msg.ok) {
+    if (F.moving) F.done += 1;
+    F.moving = null;
+    if (F.queue.length) { sftpNext(); return; }
+    F.said = F.total > 1
+      ? (T["sftp.moved.many"] || "").replace("{n}", F.done)
+      : (T["sftp.moved.one"] || "").replace("{name}", F.lastName || "");
+    F.bad = false;
+    F.total = 0; F.done = 0;
+    sftpRefresh();
+  } else {
+    F.moving = null; F.queue = []; F.total = 0; F.done = 0;
+    F.said = msg.error || ""; F.bad = true;
+    sftpRefresh();
+  }
+  drawSftp();
+};
+
+function sftpNext() {
+  const job = F.queue.shift();
+  if (!job) { F.moving = null; return; }
+  F.moving = job;
+  F.lastName = job.name;
+  F.said = (T["sftp." + job.act + ".doing"] || "")
+    .replace("{name}", job.name)
+    .replace("{n}", F.done + 1)
+    .replace("{of}", F.total);
+  F.bad = false;
+  sftpAsk(job.act, job.args);
+  drawSftp();
+}
+// Line up a set of moves and start the first. Folders are left out and said
+// so: there is no command that copies one whole, by design -- a script writes
+// that loop when it wants it
+function sftpMove(act, jobs, skipped) {
+  if (!jobs.length) {
+    F.said = skipped ? (T["sftp.folders_only"] || "") : (T["sftp.pick_first"] || "");
+    F.bad = true;
+    drawSftp();
+    return;
+  }
+  F.queue = jobs; F.total = jobs.length; F.done = 0;
+  sftpNext();
+}
+
+// Sending what is ticked on the left to the folder open on the right, and the
+// other way round. Asked about first when something of that name is already
+// there, because the far end may be the only copy
+function sftpSend(which) {
+  const from = F[which], to = F[which === "local" ? "remote" : "local"];
+  const act = which === "local" ? "put" : "get";
+  const picked = from.rows.filter(r => from.sel.has(r.name));
+  const files = picked.filter(r => !r.dir);
+  const clash = files.filter(r => to.rows.some(o => o.name === r.name && !o.dir));
+  const build = over => files.map(r => ({
+    act, name: r.name,
+    args: act === "put"
+      ? {from: ljoin(from.at, r.name), to: rjoin(to.at, r.name), overwrite: over}
+      : {from: rjoin(from.at, r.name), to: ljoin(to.at, r.name)},
+  }));
+  if (!clash.length) return sftpMove(act, build(false), picked.length && !files.length);
+  askOver(clash.map(r => r.name), () => sftpMove(act, build(true), false));
+}
+
+// ── The question, for the three things that cannot be undone ───────────────
+let sAskGo = null;
+function sftpQuestion({title, say, what, field, label, danger, go}) {
+  const box = document.getElementById("sask");
+  box.hidden = false;
+  box.querySelector(".vtitle").textContent = title;
+  box.querySelector(".vsay").textContent = say;
+  const where = box.querySelector(".bwhere");
+  where.textContent = what || "";
+  where.hidden = !what;
+  const input = box.querySelector("#sq");
+  input.hidden = !field;
+  input.value = field || "";
+  const cancel = box.querySelector(".quiet");
+  cancel.textContent = T["common.cancel"] || "";
+  cancel.onclick = closeAsk;
+  const btn = box.querySelector(".go");
+  btn.textContent = label;
+  btn.classList.toggle("stop", !!danger);
+  sAskGo = () => { closeAsk(); go(input.value.trim()); };
+  btn.onclick = sAskGo;
+  setTimeout(() => (field ? input : btn).focus(), 0);
+}
+function closeAsk() {
+  const box = document.getElementById("sask");
+  if (box) box.hidden = true;
+  sAskGo = null;
+}
+function askOver(names, go) {
+  sftpQuestion({
+    title: T["sftp.over.title"] || "",
+    say: (T["sftp.over.say"] || "").replace("{n}", names.length),
+    what: names.join("\n"),
+    label: T["sftp.over.go"] || "",
+    danger: true,
+    go,
+  });
+}
+
+// What one row can do. The same list on a window and on a phone: it opens from
+// a button that is always there, not from hovering or from a right button a
+// finger does not have
+function sftpRowMenu(anchor, which, row) {
+  const side = F[which];
+  const rows = [];
+  const item = (label, warn, go) =>
+    el("div", {class: warn ? "warn" : "", onclick: () => { closeFolderMenu(); go(); }}, label);
+  if (row.dir) {
+    rows.push(item(T["sftp.open"] || "", false,
+      () => sftpGo(which, which === "local" ? ljoin(side.at, row.name) : rjoin(side.at, row.name))));
+  } else {
+    rows.push(item(which === "local" ? (T["sftp.send"] || "") : (T["sftp.fetch"] || ""), false, () => {
+      side.sel.clear(); side.sel.add(row.name); sftpSend(which);
+    }));
+  }
+  if (which === "remote") {
+    rows.push(item(T["sftp.rename"] || "", false, () => sftpQuestion({
+      title: T["sftp.rename.title"] || "",
+      say: T["sftp.rename.say"] || "",
+      what: rjoin(side.at, row.name),
+      field: row.name,
+      label: T["sftp.rename"] || "",
+      go: name => {
+        if (!name || name === row.name) return;
+        sftpMove("rename", [{act:"rename", name,
+          args:{from: rjoin(side.at, row.name), to: rjoin(side.at, name)}}]);
+      },
+    })));
+    rows.push(item(T["sftp.remove"] || "", true, () => sftpQuestion({
+      title: T["sftp.remove.title"] || "",
+      say: row.dir ? (T["sftp.remove.dir"] || "") : (T["sftp.remove.say"] || ""),
+      what: rjoin(side.at, row.name),
+      label: T["sftp.remove"] || "",
+      danger: true,
+      go: () => sftpMove("rm", [{act:"rm", name: row.name,
+        args:{path: rjoin(side.at, row.name)}}]),
+    })));
+  }
+  // What this one is, at the foot of the list. Written here because the size
+  // column is the first thing to go when the panel is narrow
+  rows.push(el("div", {class:"note"},
+    (row.dir ? "" : bytesSay(row.size || 0) + "  ") + whenSay(row.modified)));
+  openList(anchor, rows);
+}
+
+// ── Drawing ───────────────────────────────────────────────────────────────
+function sftpBuild(box) {
+  box.textContent = "";
+  const conn = el("div", {class:"conn"});
+  const pick = el("button", {class:"pick", onclick: ev => sftpPickServer(ev.currentTarget)});
+  const add = el("button", {onclick: () => addTabHere({folder: F.local.root})}, T["sftp.add"] || "");
+  const swap = el("div", {class:"swap"});
+  const test = heldButton("local", T["sftp.test"] || "",
+    () => F.server ? "" : (T["sftp.why.no_server"] || ""),
+    () => { F.said = T["sftp.test.doing"] || ""; F.bad = false; drawSftp(); sftpAsk("test", {}); },
+    () => sftpUi.pick);
+  test.classList.add("quiet");
+  const gear = el("button", {class:"quiet", title: T["sftp.settings"] || "",
+    onclick: () => openSettings(null, true, F.local.root)}, "⚙️");
+  conn.append(pick, add, swap, el("span", {class:"grow"}), test, gear);
+
+  const sides = el("div", {class:"sides"});
+  const made = {};
+  for (const which of ["local", "remote"]) {
+    const side = el("div", {class:"side"});
+    const crumbs = el("div", {class:"crumbs"});
+    const acts = el("div", {class:"acts"});
+    const head = el("div", {class:"head"},
+      el("span", {class:"mark"}, ""),
+      el("span", {class:"nm"}, T["sftp.col.name"] || ""),
+      el("span", {class:"sz"}, T["sftp.col.size"] || ""),
+      el("span", {class:"when"}, T["sftp.col.when"] || ""),
+      el("span", {style:"flex:0 0 22px"}, ""));
+    const list = el("div", {class:"list"});
+    side.append(crumbs, acts, head, list);
+    // Dropping onto a side is the same thing as pressing its button, so the
+    // two cannot come to mean different things
+    side.addEventListener("dragover", ev => { ev.preventDefault(); side.classList.add("drop"); });
+    side.addEventListener("dragleave", () => side.classList.remove("drop"));
+    side.addEventListener("drop", ev => {
+      ev.preventDefault();
+      side.classList.remove("drop");
+      const from = ev.dataTransfer && ev.dataTransfer.getData("text/x-side");
+      if (from && from !== which) sftpSend(from);
+    });
+    sides.append(side);
+    made[which] = {side, crumbs, acts, head, list};
+  }
+  const foot = el("div", {class:"foot"},
+    el("span", {class:"say"}),
+    el("span", {class:"safe"}));
+  box.append(conn, sides, foot);
+  sftpUi = {conn, pick, add, swap, test, gear, sides, foot,
+            say: foot.querySelector(".say"), safe: foot.querySelector(".safe"), ...made};
+}
+
+function sftpPickServer(anchor) {
+  const rows = F.servers.map(s => el("div", {onclick: () => {
+    closeFolderMenu();
+    sftpAsk("point", {server: s.id || s.name});
+  }}, (s.name || s.id) + "  ·  " + s.at));
+  if (!rows.length) rows.push(el("div", {class:"dim"}, T["sftp.no_servers"] || ""));
+  openList(anchor, rows);
+}
+
+// Where you are, written out in full, and pressed to go back up a level.
+//
+// The whole path, because "shinkoku" on its own is three different folders on
+// most machines. Only the steps at or below this panel's own folder can be
+// pressed: what is above it is there so you can read where you are, and is not
+// a way to walk out of the folder this panel was opened on
+function sftpCrumbs(box, which) {
+  const side = F[which];
+  box.textContent = "";
+  box.append(el("span", {class:"who"},
+    which === "local" ? (T["sftp.here"] || "") : (F.server || (T["sftp.there"] || ""))));
+  const root = (side.root || "").replace(/\/+$/, "");
+  const at = (side.at || root).replace(/\/+$/, "") || "/";
+  const lead = at.startsWith("/") ? "/" : "";
+  const steps = [];
+  // A path that starts at the top of a machine says so, and that mark is a
+  // step like any other: it is where "up" ends
+  if (lead) steps.push(["/", "/"]);
+  let walk = lead;
+  for (const part of at.split("/").filter(Boolean)) {
+    walk = walk === "/" ? "/" + part : (walk ? walk + "/" + part : part);
+    steps.push([walk, part]);
+  }
+  if (!steps.length) steps.push([at, at]);
+  steps.forEach(([path, label], i) => {
+    if (i) box.append(el("span", {class:"sep"}, "›"));
+    // Above this panel's own folder there is nothing to go back to
+    const stuck = i === steps.length - 1 || (root && path.length < root.length);
+    box.append(el("span", {class:"step" + (stuck ? " here" : ""),
+      onclick: stuck ? null : () => sftpGo(which, path)}, label));
+  });
+}
+
+// A folder, drawn rather than typed, and a file that says whether it is one of
+// the ones about to move. Every character that means "folder" is one some font
+// has never heard of, and what it falls back to is a box
+function fileMark(dir, on) {
+  const s = el("span", {class:"mark"});
+  const svg = body =>
+    '<svg viewBox="0 0 14 14" width="12" height="12" fill="none" ' +
+    'stroke="currentColor" stroke-linejoin="round">' + body + "</svg>";
+  s.innerHTML = dir
+    ? svg('<path stroke-width="1.3" d="M1.6 11.4V3.6a.8.8 0 0 1 .8-.8h2.6l1.2 1.4h4.2' +
+          'a.8.8 0 0 1 .8.8v6.4a.8.8 0 0 1-.8.8H2.4a.8.8 0 0 1-.8-.8z"/>')
+    : on
+      ? svg('<rect stroke-width="1.5" x="1.8" y="1.8" width="10.4" height="10.4" rx="2"/>' +
+            '<path stroke-width="1.6" d="M4.3 7.1l1.9 1.9 3.5-3.7"/>')
+      : svg('<rect stroke-width="1.2" x="1.8" y="1.8" width="10.4" height="10.4" rx="2"/>');
+  return s;
+}
+
+// A button that is grey and still answers: pressing it says what is missing
+function heldButton(which, label, why, go, look) {
+  const btn = el("button", {}, label);
+  btn.classList.toggle("held", !!why());
+  btn.onclick = () => {
+    const stop = why();
+    if (stop) {
+      F.why = stop;
+      F.whySide = which;
+      drawSftp();
+      // ...and the thing to change is pointed at, so the sentence is not the
+      // only thing standing between somebody and their answer
+      const at = look && look();
+      if (at) {
+        at.classList.remove("lookhere");
+        void at.offsetWidth;
+        at.classList.add("lookhere");
+      }
+      return;
+    }
+    F.why = ""; F.whySide = "";
+    go();
+  };
+  return btn;
+}
+
+function drawSftp() {
+  const box = document.getElementById("sftppanel");
+  if (!box || box.hidden) return;
+  if (!sftpUi || !box.firstChild) sftpBuild(box);
+  const u = sftpUi;
+  const narrow = box.clientWidth > 0 && box.clientWidth < SFTP_NARROW;
+  box.classList.toggle("narrow", narrow);
+  // How much of the bottom the sub-input bar is standing on right now. Read
+  // every draw because it grows and shrinks: a pasted line makes the composer
+  // taller, and the panel has to give up exactly that much
+  const dock = document.getElementById("castdock");
+  const over = dock && getComputedStyle(dock).display !== "none"
+    ? Math.round(dock.getBoundingClientRect().height) : 0;
+  box.style.setProperty("--sdock", over + "px");
+
+  // Which connection, and the two chips that stand in for the two columns when
+  // there is only room for one
+  u.pick.textContent = "";
+  u.pick.append(el("span", {class:"nm"},
+    "🖧 " + (F.server || (T["sftp.pick_server"] || ""))));
+  u.pick.append(el("span", {class:"caret"}, "▾"));
+  // Built once, so its grey has to be kept in step with the choice above it
+  u.test.classList.toggle("held", !F.server);
+  u.swap.textContent = "";
+  for (const which of ["local", "remote"]) {
+    u.swap.append(el("button", {class: F.side === which ? "on" : "",
+      onclick: () => { F.side = which; drawSftp(); }},
+      which === "local" ? (T["sftp.here"] || "") : (T["sftp.there"] || "")));
+  }
+
+  for (const which of ["local", "remote"]) {
+    const side = F[which], ui = u[which];
+    ui.side.classList.toggle("shown", F.side === which);
+    sftpCrumbs(ui.crumbs, which);
+
+    ui.acts.textContent = "";
+    ui.acts.append(el("button", {class:"quiet", title:T["sftp.reload"] || "",
+      onclick: () => sftpGo(which, side.at)}, "↻"));
+    if (which === "remote") {
+      ui.acts.append(heldButton(which, T["sftp.mkdir"] || "",
+        () => F.server ? "" : (T["sftp.why.no_server"] || ""),
+        () => sftpQuestion({
+          title: T["sftp.mkdir.title"] || "",
+          say: T["sftp.mkdir.say"] || "",
+          what: side.at,
+          field: "",
+          label: T["sftp.mkdir.go"] || "",
+          go: name => name && sftpMove("mkdir",
+            [{act:"mkdir", name, args:{path: rjoin(side.at, name)}}]),
+        }), () => sftpUi.pick));
+    }
+    const other = which === "local" ? "remote" : "local";
+    ui.acts.append(heldButton(which,
+      which === "local" ? (T["sftp.send"] || "") + " →" : "← " + (T["sftp.fetch"] || ""),
+      () => !F.server ? (T["sftp.why.no_server"] || "")
+        : !side.sel.size ? (T["sftp.why.nothing"] || "")
+        : !F[other].at ? (T["sftp.why.no_folder"] || "") : "",
+      () => sftpSend(which),
+      () => (F.server ? u[which].list : sftpUi.pick)));
+    if (F.why && F.whySide === which) ui.acts.append(el("span", {class:"why"}, F.why));
+
+    ui.list.textContent = "";
+    if (which === "remote" && !F.server) {
+      ui.list.append(el("div", {class:"empty"},
+        el("b", {}, T["sftp.empty.no_server"] || ""),
+        document.createTextNode(T["sftp.empty.no_server.say"] || "")));
+      continue;
+    }
+    // One level up, and only while there is one to go to: the folder this
+    // panel was opened on is the floor, on both sides
+    const floor = (side.root || "").replace(/\/+$/, "");
+    const now = (side.at || "").replace(/\/+$/, "");
+    const up = now && (!floor || now.length > floor.length) ? parentOf(now) : "";
+    if (up) {
+      ui.list.append(el("div", {class:"frow dir", onclick: () => sftpGo(which, up)},
+        el("span", {class:"mark"}, "↑"),
+        el("span", {class:"nm"}, ".."),
+        el("span", {class:"sz"}, ""), el("span", {class:"when"}, ""),
+        el("span", {style:"flex:0 0 22px"}, "")));
+    }
+    if (!side.rows.length && !side.busy) {
+      ui.list.append(el("div", {class:"empty"},
+        side.failed ? (T["sftp.empty.failed"] || "") : (T["sftp.empty.folder"] || "")));
+    }
+    for (const row of side.rows) {
+      const on = side.sel.has(row.name);
+      const at = which === "local" ? ljoin(side.at, row.name) : rjoin(side.at, row.name);
+      const line = el("div", {class:"frow" + (row.dir ? " dir" : "") + (on ? " on" : ""),
+        title: at,
+        onclick: () => {
+          if (row.dir) { sftpGo(which, at); return; }
+          on ? side.sel.delete(row.name) : side.sel.add(row.name);
+          F.why = ""; F.whySide = "";
+          drawSftp();
+        }});
+      if (!row.dir) {
+        line.draggable = true;
+        line.addEventListener("dragstart", ev => {
+          side.sel.add(row.name);
+          ev.dataTransfer.setData("text/x-side", which);
+          drawSftp();
+        });
+      }
+      line.append(
+        fileMark(row.dir, on),
+        el("span", {class:"nm"}, row.name),
+        el("span", {class:"sz"}, row.dir ? "" : bytesSay(row.size || 0)),
+        el("span", {class:"when"}, whenSay(row.modified)));
+      const more = el("button", {class:"more", title:T["sftp.more"] || "",
+        onclick: ev => { ev.stopPropagation(); sftpRowMenu(ev.currentTarget, which, row); }},
+        "⋯");
+      line.append(more);
+      // The right button does what the button does, for whoever has one
+      line.addEventListener("contextmenu", ev => { ev.preventDefault(); sftpRowMenu(more, which, row); });
+      ui.list.append(line);
+    }
+  }
+
+  u.say.textContent = F.said || (F.local.busy || F.remote.busy ? (T["sftp.reading"] || "") : "");
+  u.say.className = "say" + (F.bad ? " bad" : "");
+  u.safe.textContent = F.server ? (T["sftp.safe"] || "") : "";
+}
+
 function drawGit() {
   const box = document.getElementById("gitpanel");
   if (!box || box.hidden) return;
@@ -7939,6 +8656,33 @@ mod tests {
             PAGE.contains(".tab") && PAGE.contains("user-select:none"),
             "タブバーが選択に混ざる"
         );
+    }
+
+    /// The file panel stands where a terminal would, and everything it does is
+    /// asked for by the same names a script uses.
+    ///
+    /// The point of this one is the last part. A screen that grew its own way
+    /// of moving a file would be a second implementation of the seven file
+    /// commands, and the two would drift -- the panel would gain a folder copy
+    /// or lose the fence around the working folder, and nobody would notice
+    /// until somebody's server had the wrong files on it
+    #[test]
+    fn the_file_panel_asks_for_the_same_things_a_script_does() {
+        assert!(PAGE.contains("id=\"sftppanel\" hidden"), "ファイルのパネルの置き場所が無い");
+        assert!(
+            PAGE.contains("send({kind:\"sftp\", panel: t.id || t.name || \"\", act, args: args || {}})"),
+            "パネルの頼み方が一本になっていない"
+        );
+        for act in ["\"local\"", "\"remote\"", "\"put\"", "\"get\"", "\"mkdir\"", "\"rename\"", "\"rm\""] {
+            assert!(PAGE.contains(act), "頼めるはずのこと {act} が画面に無い");
+        }
+        // A whole folder is not one of them: there is no command that copies
+        // one, by design, and a screen that quietly looped would be that
+        // command under another name
+        assert!(PAGE.contains("sftp.folders_only"), "フォルダを送れないことを言っていない");
+        // Grey buttons that answer, and the question before anything is replaced
+        assert!(PAGE.contains("sftp.why.no_server"), "止まっている理由が無い");
+        assert!(PAGE.contains("id=\"sask\" hidden"), "取り消せないことを聞く窓が無い");
     }
 
     /// The top bar is drawn by the shell, not injected into the page.

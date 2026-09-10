@@ -153,6 +153,9 @@ fn allowed_from_afar(ev: &crate::browser::Ev) -> bool {
         // do on this PC by opening the same panel, and a phone that can hand an
         // AI a whole task can certainly stage a file
         Ev::Git { .. } => true,
+        // The file panel, on the same reasoning. Sending a photo from a phone
+        // to a server is one of the things this exists for
+        Ev::Sftp { .. } => true,
         // ✨ command suggestion: the reply is a draft the person still has to
         // send — same reach as typing the command from the phone themselves
         Ev::Suggest { .. } => true,

@@ -615,7 +615,7 @@ fn by_family(list: Vec<(std::path::PathBuf, GroupState)>) -> Vec<(std::path::Pat
     out
 }
 
-fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
+pub fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
     let key = |p: &std::path::Path| {
         p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase()
     };
@@ -970,6 +970,18 @@ impl TabState {
     /// Rather than pad it out to look similar, it's more readable left as-is
     /// The git panel. It has no process and no page of its own -- the board
     /// draws it -- so most of what a tab carries is simply absent
+    /// The file panel. Two lists of files and no process, like the git panel
+    pub fn sftp(index: usize, key: &str, name: &str, group: Option<usize>) -> Self {
+        Self {
+            kind: "sftp".into(),
+            state: "SFTP".into(),
+            state_label: crate::i18n::t("tui.state.sftp"),
+            group,
+            restartable: false,
+            ..Self::browser(index, key, name)
+        }
+    }
+
     pub fn git(index: usize, key: &str, name: &str, group: Option<usize>) -> Self {
         Self {
             kind: "git".into(),

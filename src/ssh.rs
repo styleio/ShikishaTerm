@@ -37,6 +37,9 @@ use anyhow::{Result, anyhow, bail};
 const CONNECT_MS: u64 = 20_000;
 /// How long an idle connection is kept after its last tab has gone
 const IDLE_KEEP_MS: u64 = 60_000;
+/// How many keepalives may go unanswered before the connection is given up.
+/// Three, so that one lost packet on a bad minute is not a disconnection
+const KEEPALIVE_MISSES: usize = 3;
 
 /// Where to connect, as who, and with what.
 ///
@@ -54,6 +57,19 @@ pub struct Spec {
     /// A private key file, and the name its passphrase is stored under
     pub key: Option<String>,
     pub passphrase_key: Option<String>,
+    /// The server this one is reached *through*, when it cannot be reached
+    /// directly. Its own address and its own credential -- and it may in turn
+    /// be reached through another, which is why this is a Spec and not a pair
+    /// of strings
+    pub jump: Option<Box<Spec>>,
+    /// Seconds between keepalive packets. None means none are sent, which is
+    /// right for a network that leaves a quiet connection alone and wrong for
+    /// one that cuts it after a few minutes
+    pub keepalive: Option<u64>,
+    /// What to run on the far end to serve files, instead of asking the server
+    /// for its own file service. For a machine where reading the files that
+    /// matter means being somebody else (`sudo su -`)
+    pub file_command: Option<String>,
 }
 
 /// The connection credentials, handed over whenever the settings are read.
@@ -89,6 +105,21 @@ impl Spec {
     /// the same machine is the same machine: the key belongs to the address
     pub fn address(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+
+    /// What a live connection is filed under while the program runs.
+    ///
+    /// Not the same question as [`Spec::address`]. A host key belongs to the
+    /// machine, so it is remembered by address alone. A *connection* is also
+    /// who signed in and which way it was reached -- two people on one server,
+    /// or the same server reached directly and through a bastion, are two
+    /// connections and must not be handed each other's
+    pub fn route(&self) -> String {
+        let mut at = format!("{}@{}", self.user, self.address());
+        if let Some(j) = &self.jump {
+            at = format!("{}>{at}", j.route());
+        }
+        at
     }
 }
 
@@ -307,23 +338,80 @@ async fn handle(live: &mut Live, job: Job) {
 /// Make sure there is a connection to this server, and say what it is filed
 /// under. The one place "have we met this server" and "who are we" are
 /// answered, so that a terminal and a file transfer agree about both
-async fn session(live: &mut Live, spec: &Spec) -> Result<String> {
+fn session<'a>(
+    live: &'a mut Live,
+    spec: &'a Spec,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + 'a>> {
+    // A bastion is reached the same way its server is, so this calls itself.
+    // An async function that does that has a size nobody can write down, which
+    // is what the box is for
+    Box::pin(open_session(live, spec))
+}
+
+async fn open_session(live: &mut Live, spec: &Spec) -> Result<String> {
     let addr = spec.address();
-    if let Some(h) = live.sessions.get(&addr) {
+    let route = spec.route();
+    if let Some(h) = live.sessions.get(&route) {
         if !h.is_closed() {
-            live.idle_since.remove(&addr);
-            return Ok(addr);
+            live.idle_since.remove(&route);
+            return Ok(route);
         }
-        live.sessions.remove(&addr);
+        live.sessions.remove(&route);
     }
     let config = Arc::new(russh::client::Config {
         inactivity_timeout: Some(std::time::Duration::from_secs(3600)),
+        // A quiet connection is cut by some networks after a few minutes. When
+        // the settings ask for it, something is said on the wire often enough
+        // that nothing in between decides the connection is over
+        keepalive_interval: spec
+            .keepalive
+            .filter(|n| *n > 0)
+            .map(std::time::Duration::from_secs),
+        keepalive_max: KEEPALIVE_MISSES,
         ..Default::default()
     });
     let seen = known_hosts().get(&addr).cloned();
     let met = Arc::new(Mutex::new(None::<String>));
     let handler = Client { expected: seen.clone(), met: Arc::clone(&met) };
-    let connect = russh::client::connect(config, (spec.host.as_str(), spec.port), handler);
+    // Through a bastion, the way in is a channel on that bastion's own
+    // connection rather than a socket this machine opened. It is made first,
+    // and on its own, so that "the bastion would not have us" is said in the
+    // bastion's own words instead of arriving as a failure to reach the server
+    // behind it. Everything after this point -- the host key included -- is the
+    // far server answering for itself
+    let hop = match &spec.jump {
+        None => None,
+        Some(via) => {
+            let through = session(live, via).await?;
+            let open = live
+                .sessions
+                .get(&through)
+                .ok_or_else(|| {
+                    anyhow!(crate::i18n::tp(
+                        "err.ssh.connect",
+                        &[("host", &through), ("e", "gone")]
+                    ))
+                })?
+                .channel_open_direct_tcpip(spec.host.clone(), spec.port as u32, "127.0.0.1", 0)
+                .await;
+            Some(open.map_err(|e| {
+                anyhow!(crate::i18n::tp(
+                    "err.ssh.jump",
+                    &[("jump", &through), ("host", &addr), ("e", &e.to_string())]
+                ))
+            })?)
+        }
+    };
+    let connect = async {
+        match hop {
+            None => {
+                russh::client::connect(config, (spec.host.as_str(), spec.port), handler).await
+            }
+            Some(hop) => {
+                russh::client::connect_stream(config, hop.into_stream(), handler).await
+            }
+        }
+    };
     let mut handle = match tokio::time::timeout(
         std::time::Duration::from_millis(CONNECT_MS),
         connect,
@@ -394,9 +482,9 @@ async fn session(live: &mut Live, spec: &Spec) -> Result<String> {
             &[("user", &spec.user), ("host", &addr)]
         ));
     }
-    live.sessions.insert(addr.clone(), handle);
-    live.idle_since.remove(&addr);
-    Ok(addr)
+    live.sessions.insert(route.clone(), handle);
+    live.idle_since.remove(&route);
+    Ok(route)
 }
 
 async fn open_shell(
@@ -406,11 +494,11 @@ async fn open_shell(
     cols: u16,
     out: Sender<Vec<u8>>,
 ) -> Result<u64> {
-    let addr = session(live, spec).await?;
+    let route = session(live, spec).await?;
     let handle = live
         .sessions
-        .get(&addr)
-        .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &addr), ("e", "gone")])))?;
+        .get(&route)
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &route), ("e", "gone")])))?;
     let channel = handle.channel_open_session().await?;
     channel
         .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
@@ -448,15 +536,22 @@ async fn open_shell(
 /// channel open on the far end for as long as the app runs; a transfer is not
 /// something that happens hundreds of times a second
 async fn do_file_job(live: &mut Live, spec: &Spec, job: FileJob) -> Result<FileAnswer> {
-    let addr = session(live, spec).await?;
+    let route = session(live, spec).await?;
     let handle = live
         .sessions
-        .get(&addr)
-        .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &addr), ("e", "gone")])))?;
+        .get(&route)
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &route), ("e", "gone")])))?;
     let channel = handle.channel_open_session().await?;
     // Asking for a reply, so a server that has no file service says so here
     // rather than leaving the first packet unanswered
-    channel.request_subsystem(true, "sftp").await?;
+    match spec.file_command.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        // The ordinary way: the server runs its own file service
+        None => channel.request_subsystem(true, "sftp").await?,
+        // A command instead, for a machine where the files that matter belong
+        // to somebody else. What it prints has to be the file protocol and
+        // nothing else -- a shell that greets you first will not be understood
+        Some(cmd) => channel.exec(true, cmd).await?,
+    }
     let sftp = russh_sftp::client::SftpSession::new(channel.into_stream()).await?;
     let out = run_file_job(&sftp, job).await;
     let _ = sftp.close().await;
@@ -740,6 +835,27 @@ pub fn files(spec: &Spec, job: FileJob, wait_ms: u64) -> Result<FileAnswer> {
 mod tests {
     use super::*;
 
+    /// A host key belongs to a machine; a connection belongs to a person and a
+    /// route. Filing both under the same name would hand one person's session
+    /// to another, or a direct connection to something that asked for a bastion
+    #[test]
+    fn one_machine_can_be_two_connections() {
+        let at = |user: &str| Spec {
+            host: "example.com".into(),
+            port: 22,
+            user: user.into(),
+            ..Default::default()
+        };
+        assert_eq!(at("a").address(), at("b").address(), "鍵は機械のもの");
+        assert_ne!(at("a").route(), at("b").route(), "人が違えば別の接続");
+
+        let mut through = at("a");
+        through.jump = Some(Box::new(at("gate")));
+        assert_eq!(through.address(), at("a").address(), "経路が変わっても機械は同じ");
+        assert_ne!(through.route(), at("a").route(), "踏み台越しは別の接続");
+        assert!(through.route().contains("gate"), "どこを通ったか読めない");
+    }
+
     /// The reader hands out exactly what arrived, in order, however the caller
     /// happens to divide it into buffers -- a screen is a stream of bytes, and
     /// one that loses a byte at a buffer edge is a screen with a hole in it
@@ -847,6 +963,7 @@ mod tests {
             password_key: Some("ssh/ws/prod/password".into()),
             key: None,
             passphrase_key: None,
+            ..Default::default()
         };
         // A first meeting: nothing is remembered about this server, and the
         // test must not write into the real settings folder either

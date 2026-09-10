@@ -146,14 +146,16 @@ re-authentication, and latency.
   `wsl.exe -d <distro> wslpath -a -u "<winpath>"`** (it respects the automount
   setting and absorbs WSL1/2). Take the distro from the launch command or the
   process, defaulting to the default distro.
-- **SSH tab**: a real upload is needed. **A later phase.** And not a plain SCP:
-  - Auth: an `scp` in a separate process may re-authenticate (key, password,
-    2FA) → avoid it with **OpenSSH's ControlMaster (connection reuse)**: launch
-    ssh with `-o ControlMaster=auto -o ControlPath=…` and reuse that socket
-    from scp/sftp. This needs the launch command to be extended.
-  - The remote cwd is unknown → put files in a fixed place such as
-    `~/.SHIKISHA/tmp/`.
-  - Cleanup, permissions, and directory creation are needed too.
+- **Server tab**: a real upload is needed. **Settled, and built** (2026-09-10):
+  the file commands and the panel that draws them, on the connection the tab is
+  already holding.
+  - Auth: nothing re-authenticates, because nothing else connects. The earlier
+    plan here was to reuse an `ssh.exe` socket with **ControlMaster** -- which
+    **the Windows build of OpenSSH does not have**, so that road never existed.
+    The app speaks the protocol itself instead (`src/ssh.rs`), and a transfer is
+    one more channel on the connection the terminal is using.
+  - Where files land is chosen on screen, in the panel's own two lists, so
+    there is no fixed drop folder to invent, clean up or explain.
 
 ---
 
@@ -360,7 +362,8 @@ Split the word along two axes:
 1. **File attachments** (the most concrete value, the lowest risk). "Inert save
    + reject executable magic + sniffed extension + never execute + clean up",
    local tabs first, WSL right away via `wslpath`, under the cwd with its own
-   gitignore. SSH later (ControlMaster + sftp/scp → `~/.SHIKISHA/tmp`).
+   gitignore. A server is its own thing, and is done: the file commands and
+   the panel, over the tab's own connection.
 2. **The action list** (text/lua per item; foldering can wait).
 3. **Making the bar summonable on the desktop** (the container for 1 and 2;
    never permanent).
@@ -373,8 +376,9 @@ Split the word along two axes:
   arbitrary folder.)
 - Attachments: the initial size limit and the initial set of extensions.
 - Attachments: when tmp gets cleaned.
-- SSH attachments: how to offer ControlMaster on every ssh tab (how to surface
-  the launch-command extension).
+- ~~SSH attachments: ControlMaster~~ — answered by connecting ourselves
+  (2026-09-10). Windows OpenSSH has no ControlMaster; the built-in connection
+  and the file panel replace the whole question.
 - Driving: **the initial readiness timeouts (per kind)**. The on-timeout
   behaviour is settled as a user setting (`proceed / ask / abort`), but **which
   one ships as the default** is not (usability argues for "proceed", with the
