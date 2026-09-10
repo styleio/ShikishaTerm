@@ -14,6 +14,31 @@ use std::sync::mpsc;
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
+/// A secret a script asked for and did not get, waiting to be said on screen.
+///
+/// A refusal used to reach only two places: the failure the script sees, and
+/// hooks.log. Neither is in front of the person, so automation that had been
+/// working simply stopped and the reason was somewhere they would have to know
+/// to look. The board reads this off here (`take_refusal`) and shows it as the
+/// toast everything else uses.
+///
+/// One at a time, and the newest wins: a script in a loop is not a backlog to
+/// work through, it is the same sentence over and over.
+static REFUSED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Log it, queue it for the screen, and hand the sentence back so the script
+/// fails with the same words the person is reading
+fn refused(why: String) -> String {
+    crate::append_hook_log(&why);
+    *REFUSED.lock().unwrap_or_else(|p| p.into_inner()) = Some(why.clone());
+    why
+}
+
+/// What the board shows next, if a secret was turned down since it last asked
+pub fn take_refusal() -> Option<String> {
+    REFUSED.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
 /// Files that must never be touched even inside an allowed directory
 /// (prevents self-modification and credential exfiltration)
 fn is_forbidden(path: &Path) -> bool {
@@ -509,19 +534,19 @@ impl Capabilities {
         let ws = self.ws_id.borrow().clone();
         let key = crate::config::workspace_secret_key(&ws, name);
         let terms = self.secret_terms.borrow().get(&key).cloned().ok_or_else(|| {
-            anyhow::anyhow!(crate::i18n::tp(
+            anyhow::anyhow!(refused(crate::i18n::tp(
                 "err.caps.secret_unregistered",
                 &[("key", name)]
-            ))
+            )))
         })?;
         if !terms.may_use(who) {
             let why = match who {
                 crate::grants::Subject::Ai => "err.caps.secret_not_for_ai",
                 crate::grants::Subject::Human => "err.caps.secret_not_for_human",
             };
-            bail!(crate::i18n::tp(why, &[("key", name)]));
+            bail!(refused(crate::i18n::tp(why, &[("key", name)])));
         }
-        Ok((self.secret_value(&key)?, terms))
+        Ok((self.secret_value(&key).map_err(|e| anyhow::anyhow!(refused(e.to_string())))?, terms))
     }
 
     /// Tell it where to place things inside the window. Reset every time config reloads
@@ -945,10 +970,10 @@ impl Capabilities {
         let (value, terms) = self.script_secret(secret_key, who)?;
         let at = self.with(name, |b, to| b.href(to, OP_MS))?;
         if !terms.may_fill(&at) {
-            bail!(crate::i18n::tp(
+            bail!(refused(crate::i18n::tp(
                 "err.caps.secret_wrong_site",
                 &[("key", secret_key), ("host", &at)]
-            ));
+            )));
         }
         self.browser_fill(name, sel, &value)
     }
@@ -964,10 +989,10 @@ impl Capabilities {
         // same place a filled password would: the page's own site
         let at = self.with(name, |b, to| b.href(to, OP_MS))?;
         if !terms.may_fill(&at) {
-            bail!(crate::i18n::tp(
+            bail!(refused(crate::i18n::tp(
                 "err.caps.secret_wrong_site",
                 &[("key", secret_key), ("host", &at)]
-            ));
+            )));
         }
         let (user, pass) = val.split_once(':').ok_or_else(|| {
             anyhow::anyhow!(crate::i18n::tp(
@@ -1268,6 +1293,44 @@ mod tests {
 
         // The program's own door still reaches what the program needs
         assert_eq!(c.secret_value("ssh/blog/prod/password").unwrap(), "rootpw");
+    }
+
+    /// A refusal reaches the person, not only the script.
+    ///
+    /// The sentence the script fails with and the sentence the board shows are
+    /// the same one: a person reading the toast and a person reading the log
+    /// are told the same thing, and nothing has to be kept in step by hand
+    #[test]
+    fn a_refused_secret_is_put_in_front_of_the_person() {
+        use crate::config::SecretMeta;
+        use crate::grants::Subject;
+        let c = Capabilities::new(
+            CapabilitySpec::default(),
+            PathBuf::from("."),
+            HashMap::from([("blog.errand".to_string(), "ai only".to_string())]),
+            HashMap::from([(
+                "blog.errand".to_string(),
+                SecretMeta { human: false, ai: true, ..Default::default() },
+            )]),
+            Default::default(),
+        );
+        c.set_workspace_id("blog");
+        let _ = take_refusal(); // anything another test left behind
+
+        // Allowed: nothing to say
+        assert!(c.script_secret("errand", Subject::Ai).is_ok());
+        assert_eq!(take_refusal(), None, "通ったのに何か言っている");
+
+        // Refused: the script's words and the screen's words are one sentence
+        let said = c.script_secret("errand", Subject::Human).unwrap_err().to_string();
+        assert_eq!(take_refusal().as_deref(), Some(said.as_str()));
+        assert!(said.contains("errand"), "どの秘密のことか言っていない: {said}");
+        // ...and it is handed over once, so a toast does not come back
+        assert_eq!(take_refusal(), None, "同じ断りが二度出る");
+
+        // A name nobody registered is the same kind of dead end
+        assert!(c.script_secret("nope", Subject::Human).is_err());
+        assert!(take_refusal().is_some(), "登録が無いことが伝わらない");
     }
 
     /// Who may use a secret is two questions, not one. A key that only an AI's

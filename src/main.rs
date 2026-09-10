@@ -3285,6 +3285,12 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if flash.is_none() {
             flash = notify::take_failed();
         }
+        // A script that asked for a password it may not have. It used to fail
+        // quietly -- the sentence went to the script and to hooks.log, and the
+        // person watching automation stop had nothing in front of them
+        if flash.is_none() {
+            flash = crate::caps::take_refusal();
+        }
 
         // Check every tab's state every 200ms (completion of inactive tabs is
         // reflected on INDEX too)
