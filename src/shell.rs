@@ -6436,7 +6436,11 @@ function sftpCrumbs(box, which) {
     (which === "local" ? (T["sftp.here.mark"] || "") : (T["sftp.there.mark"] || "")) + " "
     + (which === "local" ? (T["sftp.here"] || "") : (F.server || (T["sftp.there"] || ""))) + ":"));
   const root = (side.root || "").replace(/\/+$/, "");
-  const at = (side.at || root).replace(/\/+$/, "") || "/";
+  let at = (side.at || root).replace(/\/+$/, "") || "/";
+  // "." is what the far end is asked for when nobody has said where to open:
+  // it means "wherever signing in puts you". Drawn as a dot it is a full stop
+  // sitting on its own, which reads as nothing at all
+  if (at === ".") at = "~";
   const lead = at.startsWith("/") ? "/" : "";
   const steps = [];
   // A path that starts at the top of a machine says so, and that mark is a
