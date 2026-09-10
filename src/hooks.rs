@@ -107,21 +107,21 @@ fn rally_record_append(text: &str) -> std::io::Result<()> {
 }
 
 /// Resolve a selector spec: "#id" (CSS) or { xpath = "..." } / { css = "..." }
-fn sel_of(v: &Value) -> mlua::Result<crate::browser::Sel> {
+fn sel_of(v: &Value) -> mlua::Result<shikisha_shared::Sel> {
     match v {
-        Value::String(s) => Ok(crate::browser::Sel::Css(s.to_str()?.to_string())),
+        Value::String(s) => Ok(shikisha_shared::Sel::Css(s.to_str()?.to_string())),
         // A bare number is a digest ref — the friendliest spelling for a
         // small model: browser_click(BR, 12)
         Value::Integer(n) => u32::try_from(*n)
-            .map(crate::browser::Sel::Ref)
+            .map(shikisha_shared::Sel::Ref)
             .map_err(|_| mlua::Error::runtime(crate::i18n::t("err.hooks.selector"))),
         Value::Table(t) => {
             if let Ok(n) = t.get::<u32>("ref") {
-                Ok(crate::browser::Sel::Ref(n))
+                Ok(shikisha_shared::Sel::Ref(n))
             } else if let Ok(x) = t.get::<String>("xpath") {
-                Ok(crate::browser::Sel::Xpath(x))
+                Ok(shikisha_shared::Sel::Xpath(x))
             } else if let Ok(x) = t.get::<String>("css") {
-                Ok(crate::browser::Sel::Css(x))
+                Ok(shikisha_shared::Sel::Css(x))
             } else {
                 Err(mlua::Error::runtime(crate::i18n::t("err.hooks.selector")))
             }
@@ -181,8 +181,8 @@ fn lua_str(s: &str) -> String {
 /// css/xpath pass through as they were written; a `{ref=N}` is replaced by
 /// the anchor derived from the element it actually touched. None = a ref
 /// with nothing durable to anchor to (the journal notes it instead of lying)
-fn sel_replay(sel: &crate::browser::Sel, anchor: &Option<(String, String)>) -> Option<String> {
-    use crate::browser::Sel;
+fn sel_replay(sel: &shikisha_shared::Sel, anchor: &Option<(String, String)>) -> Option<String> {
+    use shikisha_shared::Sel;
     match sel {
         Sel::Css(s) => Some(lua_str(s)),
         Sel::Xpath(x) => Some(format!("{{xpath={}}}", lua_str(x))),
@@ -644,7 +644,7 @@ fn build_sandbox_env(
     }
     bind!("browser_open", (String, String, Option<String>, Option<bool>), |lua_, c, al, (name, url, profile, private)| {
         guard(&name, &al)?;
-        let prof = crate::browser::BrowserProfile::new(
+        let prof = shikisha_shared::BrowserProfile::new(
             profile.as_deref().unwrap_or_default(),
             private.unwrap_or(false),
         );
@@ -1775,7 +1775,7 @@ impl HookEngine {
                 .set(
                     "browser_open",
                     lua.create_function(move |_, (name, url, profile, private): (String, String, Option<String>, Option<bool>)| {
-                        let prof = crate::browser::BrowserProfile::new(
+                        let prof = shikisha_shared::BrowserProfile::new(
                             profile.as_deref().unwrap_or_default(),
                             private.unwrap_or(false),
                         );
@@ -6021,7 +6021,7 @@ mod tests {
 
     #[test]
     fn replay_spelling_is_durable_and_quoted() {
-        use crate::browser::Sel;
+        use shikisha_shared::Sel;
         // Values survive quoting untouched (quotes, backslashes, newlines)
         assert_eq!(lua_str("a\"b\\c\nd"), "\"a\\\"b\\\\c\\nd\"");
         // css/xpath pass through as written

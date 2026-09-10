@@ -1529,7 +1529,7 @@ fn handle(
                             let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
                                 continue;
                             };
-                            if let Some(ev) = crate::browser::parse_intent(&v) {
+                            if let Some(ev) = shikisha_shared::parse_intent(&v) {
                                 if allowed_from_afar(&ev) {
                                     let _ = tx.send(RemoteCmd::Ui(ev));
                                 }
@@ -1572,7 +1572,7 @@ fn handle(
             };
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let mut took = false;
-            if let Some(ev) = crate::browser::parse_intent(&v) {
+            if let Some(ev) = shikisha_shared::parse_intent(&v) {
                 if allowed_from_afar(&ev) {
                     let _ = tx.send(RemoteCmd::Ui(ev));
                     took = true;

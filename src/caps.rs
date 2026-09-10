@@ -184,7 +184,7 @@ pub struct Capabilities {
     asks: std::cell::RefCell<HashMap<String, (String, String)>>,
     /// Whether to overlay the terminal
     /// If we have a host window, its handle. Keeping it here means it doesn't become a separate window
-    host: std::cell::RefCell<Option<std::rc::Rc<crate::browser::Browser>>>,
+    host: std::cell::RefCell<Option<std::rc::Rc<dyn shikisha_shared::BrowserHost>>>,
     /// The area inside the window where the browser is placed
     area: std::cell::Cell<(i32, i32, i32, i32)>,
     /// Names of pages placed inside the window.
@@ -201,7 +201,7 @@ pub struct Capabilities {
     /// A page has no process to relaunch, so "put it back the way it started" has
     /// to be reconstructed — and only whoever opened it knows what that was. Kept
     /// past the close so an open can be undone and redone (see `browser_spec`)
-    opened: std::cell::RefCell<HashMap<String, (String, crate::browser::BrowserProfile)>>,
+    opened: std::cell::RefCell<HashMap<String, (String, shikisha_shared::BrowserProfile)>>,
     /// The workspace currently being viewed. Names are only meaningful within it
     ws: std::cell::Cell<usize>,
     /// Which pages are currently shown, and where. Skipped if unchanged.
@@ -552,7 +552,7 @@ impl Capabilities {
     /// Tell it where to place things inside the window. Reset every time config reloads
     pub fn set_host(
         &self,
-        host: Option<(std::rc::Rc<crate::browser::Browser>, (i32, i32, i32, i32))>,
+        host: Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))>,
     ) {
         match host {
             Some((h, area)) => {
@@ -577,7 +577,7 @@ impl Capabilities {
         &self,
         name: &str,
         url: &str,
-        profile: crate::browser::BrowserProfile,
+        profile: shikisha_shared::BrowserProfile,
     ) -> Result<()> {
         // If there's a host window, place it inside that. A separate window would mean handling position and stacking order ourselves
         let host = self
@@ -615,7 +615,7 @@ impl Capabilities {
     /// yet. `WEBVIEW2_USER_DATA_FOLDER` is set once for the whole process, so every
     /// page shares one cookie jar and the per-profile folders sit empty. Until that
     /// is untangled, reopening gets a fresh page, not a fresh identity.
-    pub fn browser_spec(&self, name: &str) -> Option<(String, crate::browser::BrowserProfile)> {
+    pub fn browser_spec(&self, name: &str) -> Option<(String, shikisha_shared::BrowserProfile)> {
         self.opened.borrow().get(&Self::key(self.ws.get(), name)).cloned()
     }
 
@@ -691,7 +691,7 @@ impl Capabilities {
     fn with<T>(
         &self,
         name: &str,
-        f: impl FnOnce(&crate::browser::Browser, Option<&str>) -> Result<T>,
+        f: impl FnOnce(&dyn shikisha_shared::BrowserHost, Option<&str>) -> Result<T>,
     ) -> Result<T> {
         let ws = self.ws.get();
         if !self.hosted.borrow().iter().any(|(w, x)| *w == ws && x == name) {
@@ -706,7 +706,7 @@ impl Capabilities {
             .as_ref()
             .map(std::rc::Rc::clone)
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.caps.no_host_window")))?;
-        f(&host, Some(&Self::key(ws, name)))
+        f(host.as_ref(), Some(&Self::key(ws, name)))
     }
 
     /// Record that the bar's button was pressed for a page. The board (or the
@@ -727,7 +727,7 @@ impl Capabilities {
         child.strip_prefix(&head).map(str::to_string)
     }
 
-    pub fn browser_find(&self, name: &str, sel: &crate::browser::Sel) -> Result<&'static str> {
+    pub fn browser_find(&self, name: &str, sel: &shikisha_shared::Sel) -> Result<&'static str> {
         self.with(name, |b, to| Ok(b.find(to, sel, OP_MS)?.as_str()))
     }
 
@@ -736,8 +736,8 @@ impl Capabilities {
     pub fn browser_click(
         &self,
         name: &str,
-        sel: &crate::browser::Sel,
-    ) -> Result<crate::browser::OpReport> {
+        sel: &shikisha_shared::Sel,
+    ) -> Result<shikisha_shared::OpReport> {
         self.with(name, |b, to| b.click(to, sel, ACT_MS))
     }
 
@@ -745,13 +745,13 @@ impl Capabilities {
     pub fn browser_fill(
         &self,
         name: &str,
-        sel: &crate::browser::Sel,
+        sel: &shikisha_shared::Sel,
         value: &str,
-    ) -> Result<crate::browser::OpReport> {
+    ) -> Result<shikisha_shared::OpReport> {
         self.with(name, |b, to| b.fill(to, sel, value, ACT_MS))
     }
 
-    pub fn browser_text(&self, name: &str, sel: &crate::browser::Sel) -> Result<Option<String>> {
+    pub fn browser_text(&self, name: &str, sel: &shikisha_shared::Sel) -> Result<Option<String>> {
         self.with(name, |b, to| b.text(to, sel, OP_MS))
     }
 
@@ -938,7 +938,7 @@ impl Capabilities {
     /// search or submit a form. Plain text still goes through browser_fill.
     pub fn browser_press(&self, name: &str, key: &str) -> Result<()> {
         let named = key.trim().to_lowercase();
-        if !crate::browser::key_known(&named) {
+        if !shikisha_shared::key_known(&named) {
             anyhow::bail!(crate::i18n::tp("err.caps.unknown_key", &[("key", key)]));
         }
         self.browser_inject(
@@ -963,10 +963,10 @@ impl Capabilities {
     pub fn browser_fill_secret(
         &self,
         name: &str,
-        sel: &crate::browser::Sel,
+        sel: &shikisha_shared::Sel,
         secret_key: &str,
         who: crate::grants::Subject,
-    ) -> Result<crate::browser::OpReport> {
+    ) -> Result<shikisha_shared::OpReport> {
         let (value, terms) = self.script_secret(secret_key, who)?;
         let at = self.with(name, |b, to| b.href(to, OP_MS))?;
         if !terms.may_fill(&at) {

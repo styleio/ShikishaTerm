@@ -777,7 +777,7 @@ struct WinSurface {
     vault_opens: Vec<shikisha_shared::Ev>,
     /// Branches asked about, and asked for: (folder cut from, branch, what to
     /// grow it from, make it, what to bring along)
-    branches: Vec<crate::browser::BranchAsk>,
+    branches: Vec<shikisha_shared::BranchAsk>,
     /// Working folders asked about, and asked for: (the folder, the project
     /// chosen when one had to be, the branch, go ahead)
     repairs: Vec<(String, String, String, bool)>,
@@ -999,7 +999,7 @@ impl WinSurface {
         std::mem::take(&mut self.vault_opens)
     }
 
-    fn take_branches(&mut self) -> Vec<crate::browser::BranchAsk> {
+    fn take_branches(&mut self) -> Vec<shikisha_shared::BranchAsk> {
         std::mem::take(&mut self.branches)
     }
 
@@ -1154,7 +1154,7 @@ impl WinSurface {
                 Ev::VaultSearch { query } => self.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
                 ev @ Ev::Branch { .. } => {
-                    self.branches.extend(crate::browser::BranchAsk::of(ev));
+                    self.branches.extend(shikisha_shared::BranchAsk::of(ev));
                 }
                 Ev::Repair { folder, choose, branch, take } => {
                     self.repairs.push((folder, choose, branch, take))
@@ -2471,8 +2471,8 @@ impl WinSurface {
 
     /// Where browsers get placed. Placing them inside the window lets the OS handle
     /// position and stacking order for us.
-    fn host(&self) -> Option<(std::rc::Rc<crate::browser::Browser>, (i32, i32, i32, i32))> {
-        Some((std::rc::Rc::clone(&self.win), self.area))
+    fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))> {
+        Some((std::rc::Rc::clone(&self.win) as std::rc::Rc<dyn shikisha_shared::BrowserHost>, self.area))
     }
 
     /// Asks for a password. Not shown on the phone (the page side doesn't show it there either).
@@ -4333,7 +4333,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // neither can be turned into one -- they go to the same
                     // queues the window's dialogs fill
                     remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::Branch { .. }) => {
-                        surface.branches.extend(crate::browser::BranchAsk::of(ev));
+                        surface.branches.extend(shikisha_shared::BranchAsk::of(ev));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Repair {
                         folder,
@@ -8229,7 +8229,7 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             caps.note_declared(&b.id);
             continue;
         }
-        let profile = browser::BrowserProfile::new(
+        let profile = shikisha_shared::BrowserProfile::new(
             b.browser_profile.as_deref().unwrap_or_default(),
             b.private,
         )
@@ -8256,7 +8256,7 @@ fn open_declared_browsers(ws: &config::Workspace, caps: &hooks::Caps, errors: &m
             .or_else(|| ft.cfg.name.clone())
             .unwrap_or_else(|| "browser".into());
         if !already(&name) {
-            let profile = browser::BrowserProfile::new(
+            let profile = shikisha_shared::BrowserProfile::new(
                 ft.cfg.browser_profile.as_deref().unwrap_or_default(),
                 ft.cfg.private,
             )
@@ -8961,7 +8961,7 @@ fn open_settings(
     caps.browser_open(
         SETTINGS_TAB,
         &format!("{url}{query}"),
-        browser::BrowserProfile::shared_default(),
+        shikisha_shared::BrowserProfile::shared_default(),
     )
 }
 
@@ -9055,7 +9055,7 @@ fn open_result(
     caps.browser_open(
         RESULT_TAB,
         &url,
-        browser::BrowserProfile::shared_default(),
+        shikisha_shared::BrowserProfile::shared_default(),
     )
 }
 

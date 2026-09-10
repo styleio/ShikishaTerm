@@ -11,7 +11,7 @@
 //! `process::exit` internally. Just closing the browser window would
 //! take down the whole app.
 
-use shikisha_shared::{Ev, Go, Input, PaneGeom};
+use shikisha_shared::{BranchAsk, BrowserProfile, Ev, Found, Go, Input, OpReport, PaneGeom, Sel, parse_intent};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -653,426 +653,6 @@ pub enum Cmd {
 
 
 
-/// Read one intent from the screen.
-///
-/// Arrives in the same shape whether from the window (ipc) or a phone
-/// (HTTP). If parsing lived in two places, the day would come when the
-/// same click gets interpreted two different ways, so it lives only here.
-/// An unknown `kind` is `None`. Silently discarding it is correct
-pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
-    Some(match v.get("kind").and_then(|k| k.as_str()) {
-        Some("ready") => Ev::Ready {
-            from: None,
-            complete: v
-                .get("complete")
-                .and_then(|x| x.as_bool())
-                .unwrap_or(true),
-            url: v
-                .get("url")
-                .and_then(|u| u.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        },
-        Some("loading") => Ev::Loading {
-            from: None,
-            busy: v.get("busy").and_then(|x| x.as_bool()).unwrap_or(false),
-        },
-        // The bar's button. `name` is the page it stands under, as automation
-        // addresses it; only the board sends this (a placed page is refused)
-        Some("button") => Ev::Button {
-            from: v
-                .get("name")
-                .and_then(|x| x.as_str())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string),
-        },
-        Some("touched") => Ev::Touched { from: None },
-        Some("compose") => Ev::Compose { from: None },
-        Some("pen") => Ev::Pen {
-            on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(false),
-        },
-        Some("select") => Ev::Select {
-            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-        },
-        Some("addtab") => Ev::AddTab {
-            pane: v.get("pane").and_then(|x| x.as_u64()).map(|n| n as u32),
-            folder: v
-                .get("folder")
-                .and_then(|x| x.as_str())
-                .filter(|f| !f.is_empty())
-                .map(str::to_string),
-        },
-        Some("foldername") => Ev::FolderName {
-            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        },
-        Some("folderclose") => Ev::FolderClose {
-            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        },
-        Some("folderdiscard") => Ev::FolderDiscard {
-            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        },
-        Some("browse") => Ev::Browse {
-            path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false),
-        },
-        Some("foldercolor") => Ev::FolderColor {
-            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            color: v.get("color").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        },
-        Some("repair") => Ev::Repair {
-            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            choose: v.get("choose").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            branch: v.get("branch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            take: v.get("take").and_then(|x| x.as_bool()).unwrap_or(false),
-        },
-        Some("branch") => Ev::Branch {
-            from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            branch: v.get("branch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            base: v.get("base").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            make: v.get("make").and_then(|x| x.as_bool()).unwrap_or(false),
-            carry: v
-                .get("carry")
-                .and_then(|x| x.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|s| s.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            start: v.get("start").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            ais: v
-                .get("ais")
-                .and_then(|x| x.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|s| s.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        },
-        Some("closesettings") => Ev::CloseSettings,
-        Some("opensettings") => Ev::OpenSettings {
-            folder: v
-                .get("folder")
-                .and_then(|x| x.as_str())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string),
-            // A deep-link may name a section to land on and ask to return to the
-            // board once saved (the sub-input bar's ⚙ shortcut does both).
-            section: v
-                .get("section")
-                .and_then(|x| x.as_str())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string),
-            ret: v.get("ret").and_then(|x| x.as_bool()).unwrap_or(false),
-            tabpos: v.get("tabpos").and_then(|x| x.as_u64()).map(|n| n as u32),
-        },
-        Some("menu") => Ev::Menu {
-            key: v
-                .get("key")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        },
-        Some("openws") => Ev::OpenWs,
-        Some("runkey") => Ev::RunKey {
-            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        },
-        Some("vaultsearch") => Ev::VaultSearch {
-            query: v.get("query").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        },
-        Some("vaultopen") => Ev::VaultOpen {
-            program: v.get("program").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
-            title: v.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        },
-        Some("stop") => Ev::Stop,
-        Some("restart") => Ev::Restart,
-        Some("restartpane") => Ev::RestartPane {
-            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-            keep: v.get("keep").and_then(|x| x.as_bool()).unwrap_or(true),
-        },
-        Some("remotecut") => Ev::RemoteCut,
-        Some("coach") => Ev::Coach {
-            step: v.get("step").and_then(|x| x.as_u64()).unwrap_or(0).min(255) as u8,
-        },
-        Some("thanks") => Ev::Thanks { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
-        Some("update") => Ev::Update { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
-        Some("help") => Ev::Help,
-        Some("limit_ack") => Ev::LimitAck {
-            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-        },
-        // A quick-action chip whose payload is Lua (the code stays server-side —
-        // the page only knows the index). Runs it against the active tab.
-        Some("runaction") => Ev::RunAction {
-            index: v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-        },
-        // 📼 record mode toggled in the composer (see `Ev::Record`).
-        Some("record") => Ev::Record {
-            on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(false),
-        },
-        // ▶ composer Lua to run sandboxed against the shown browser (see `Ev::RunLua`).
-        Some("runlua") => Ev::RunLua {
-            code: v
-                .get("code")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        },
-        // The file panel asking for a listing or a transfer (see `Ev::Sftp`).
-        Some("sftp") => Ev::Sftp {
-            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
-        },
-        // The git panel asking for a list, a diff, or a change (see `Ev::Git`).
-        Some("git") => Ev::Git {
-            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
-        },
-        // A recorded step from a page (who it came from is stamped by the pane's
-        // ipc handler, like "button").
-        Some("recorded") => Ev::Recorded {
-            from: None,
-            act: v
-                .get("act")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            sel: v
-                .get("sel")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            value: v
-                .get("value")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            xpath: v.get("xpath").and_then(|x| x.as_bool()).unwrap_or(false),
-            hint: v
-                .get("hint")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        },
-        // "Operate a target tab" (🎯): make the active AI drive tab `target`.
-        // target 0 detaches. An optional `goal` (natural language) is handed to
-        // the AI, which then writes Lua to operate the target.
-        Some("operate") => Ev::Operate {
-            target: v.get("target").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-            goal: v
-                .get("goal")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
-        },
-        // A file pasted/attached in the desktop composer. Saved beside the active
-        // tab; the result is handed back by eval-ing window.__attachDone(id, …).
-        // (The phone uses the /api/attach HTTP route instead, so this window-only
-        // intent is never accepted from afar.)
-        Some("attach") => Ev::Attach {
-            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
-            name: v
-                .get("name")
-                .and_then(|x| x.as_str())
-                .unwrap_or("file")
-                .to_string(),
-            data: v
-                .get("data")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        },
-        Some("scroll") => Ev::Scroll {
-            // A wheel tick or two from the window; up to a tall phone's whole
-            // screen (≈ one row per tick) when the pager turns a page.
-            by: v.get("by").and_then(|x| x.as_i64()).unwrap_or(0).clamp(-250, 250) as i32,
-            row: v.get("row").and_then(|x| x.as_u64()).unwrap_or(0).min(9999) as u16,
-            col: v.get("col").and_then(|x| x.as_u64()).unwrap_or(0).min(9999) as u16,
-        },
-        // The top bar. The destination is text the human typed, so narrow its type here
-        Some("go") => Ev::Go {
-            go: match v.get("what").and_then(|x| x.as_str()) {
-                Some("back") => Go::Back,
-                Some("forward") => Go::Forward,
-                Some("reload") => Go::Reload,
-                Some("hardreload") => Go::Hard,
-                Some("to") => Go::To(
-                    v.get("url")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                ),
-                _ => return None,
-            },
-        },
-        Some("jserror") => Ev::JsError {
-            msg: v
-                .get("msg")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        },
-        Some("password") => Ev::Password {
-            text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
-        },
-        Some("resize") => {
-            let a = v.get("area").and_then(|x| x.as_array());
-            let num = |i: usize| {
-                a.and_then(|a| a.get(i))
-                    .and_then(|x| x.as_i64())
-                    .unwrap_or(0) as i32
-            };
-            // Every pane's own measurements ride along with the focused one's.
-            // They arrive together because they are measured together: one
-            // reflow of the page decides all of them, and splitting them into
-            // two messages would let a pane act on a size the others no longer
-            // agree with.
-            let panes = v
-                .get("panes")
-                .and_then(|x| x.as_array())
-                .map(|list| {
-                    list.iter()
-                        .filter_map(|p| {
-                            let r = p.get("rect").and_then(|x| x.as_array());
-                            let n = |i: usize| {
-                                r.and_then(|r| r.get(i)).and_then(|x| x.as_i64()).unwrap_or(0) as i32
-                            };
-                            Some(PaneGeom {
-                                id: p.get("id").and_then(|x| x.as_u64())? as u32,
-                                rows: p.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
-                                cols: p.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,
-                                rect: (n(0), n(1), n(2), n(3)),
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let f = v.get("full").and_then(|x| x.as_array());
-            let fnum = |i: usize| {
-                f.and_then(|f| f.get(i)).and_then(|x| x.as_i64()).unwrap_or(0) as i32
-            };
-            Ev::Resize {
-                rows: v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16,
-                cols: v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16,
-                area: (num(0), num(1), num(2), num(3)),
-                full: (fnum(0), fnum(1), fnum(2), fnum(3)),
-                panes,
-            }
-        }
-        Some("focuspane") => Ev::FocusPane {
-            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-        },
-        Some("closepane") => Ev::ClosePane {
-            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-        },
-        Some("paneratio") => Ev::PaneRatio {
-            divider: v.get("divider").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-            ratio: v.get("ratio").and_then(|x| x.as_f64()).unwrap_or(0.5) as f32,
-        },
-        Some("fontsize") => Ev::FontSize {
-            px: v.get("px").and_then(|x| x.as_u64()).unwrap_or(14).clamp(8, 32) as u8,
-        },
-        Some("tabwidth") => Ev::TabWidth {
-            px: v.get("px").and_then(|x| x.as_u64()).unwrap_or(0).min(u16::MAX as u64) as u16,
-        },
-        Some("splitpane") => Ev::SplitPane {
-            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-            down: v.get("down").and_then(|x| x.as_bool()).unwrap_or(false),
-        },
-        Some("copy") => Ev::Copy {
-            text: v
-                .get("text")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        },
-        Some("paste") => Ev::Paste,
-        // Touch/mouse on the screencast view. Coordinates arrive as a fraction (0..1)
-        Some("inject") => {
-            let f = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
-            let what = v.get("what").and_then(|x| x.as_str()).unwrap_or("");
-            let input = match what {
-                "mouse" => Input::Mouse {
-                    phase: v.get("phase").and_then(|x| x.as_str()).unwrap_or("moved").to_string(),
-                    x: f("x").clamp(0.0, 1.0),
-                    y: f("y").clamp(0.0, 1.0),
-                    down: v.get("down").and_then(|x| x.as_bool()).unwrap_or(false),
-                },
-                "wheel" => Input::Wheel {
-                    x: f("x").clamp(0.0, 1.0),
-                    y: f("y").clamp(0.0, 1.0),
-                    dx: f("dx"),
-                    dy: f("dy"),
-                },
-                "text" => Input::Text {
-                    text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-                },
-                "key" => Input::Key {
-                    named: v.get("named").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-                    ctrl: v.get("ctrl").and_then(|x| x.as_bool()).unwrap_or(false),
-                    alt: v.get("alt").and_then(|x| x.as_bool()).unwrap_or(false),
-                },
-                "view" => Input::View {
-                    w: f("w").max(1.0),
-                    h: f("h").max(1.0),
-                },
-                _ => return None,
-            };
-            Ev::Inject { to: None, input }
-        }
-        Some("key") => Ev::Key {
-            text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
-            named: v.get("named").and_then(|x| x.as_str()).map(str::to_string),
-            ctrl: v.get("ctrl").and_then(|x| x.as_str()).map(str::to_string),
-            shift: v.get("shift").and_then(|x| x.as_bool()).unwrap_or(false),
-            alt: v.get("alt").and_then(|x| x.as_bool()).unwrap_or(false),
-        },
-        Some("say") => Ev::Say {
-            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-            text: v
-                .get("text")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        },
-        // Save the latest run's replay.lua where the user can grab it
-        // (the window board can't download over HTTP, so it asks the app)
-        Some("replaysave") => Ev::ReplaySave,
-        // ✨ ask the assistant AI to turn natural language into one shell
-        // command for the active terminal tab
-        Some("suggest") => Ev::Suggest {
-            text: v
-                .get("text")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        },
-        Some("survey") => Ev::Survey,
-        Some("result") => Ev::Result {
-            id: v.get("id").and_then(|i| i.as_u64()).unwrap_or(0),
-            ok: v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false),
-            value: v
-                .get("value")
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "null".into()),
-        },
-    _ => return None,
-    })
-}
-
-/// Whether a page placed in the window — somebody else's page — may say this.
-///
-/// A placed page runs whatever script its site serves, and that script can
-/// call `window.ipc.postMessage` exactly as ours do. So a page is let to
-/// *report* — a step it recorded, that it is loading or has loaded, that it
-/// took the focus or its pen was pressed, the answer to a question we put to
-/// it — and never to *ask*: nothing here types into a tab, runs Lua, touches
-/// git, or opens the settings. Before this list existed, `{kind:"say"}` from
 /// any web page went into the terminal as if the person had typed it.
 ///
 /// Not on the list: the press of the bar that asks the person something
@@ -1083,6 +663,14 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
 /// Written from the side that enumerates what gets through, like
 /// `remote::allowed_from_afar` is for the phone. Add to it only after writing
 /// down why a stranger's page needs it
+/// Whether a page placed in the window — somebody else's page — may say this.
+///
+/// A placed page runs whatever script its site serves, and that script can
+/// call `window.ipc.postMessage` exactly as ours do. So a page is let to
+/// *report* — a step it recorded, that it is loading or has loaded, that it
+/// took the focus or its pen was pressed, the answer to a question we put to
+/// it — and never to *ask*: nothing here types into a tab, runs Lua, touches
+/// git, or opens the settings. Before this list existed, `{kind:"say"}` from
 pub fn allowed_from_page(ev: &Ev) -> bool {
     matches!(
         ev,
@@ -1282,48 +870,7 @@ pub fn is_openable(url: &str) -> bool {
     scheme_ok && has_host && !u.contains(['\n', '\r', ' '])
 }
 
-/// A browser data-storage spec. Represents both profile isolation (a login
-/// box) and private (throwaway) mode in one type. When `private` is true,
-/// `name` is ignored and a temporary area that's wiped on close is used instead.
-///
-/// wry's `WebContext` takes one "data folder". Same folder = same
-/// cookies/login, different folder = different profile. Private mode just
-/// hands it a unique temp folder (matches wry's own docs: keep a separate
-/// context for normal tabs and one for private/incognito tabs).
-#[derive(Clone, Debug)]
-pub struct BrowserProfile {
-    /// The profile name ("default", etc). Ignored when `private` is true
-    pub name: String,
-    /// Throwaway. If true, opens in a temp folder that keeps no history/cookies
-    pub private: bool,
-    /// What this page calls itself, when it is not to be what everything else
-    /// calls itself. `None` takes the app-wide setting. It travels with the
-    /// profile because it is the same question — who this page is to a site —
-    /// and it is asked at every place a page is opened
-    pub user_agent: Option<String>,
-}
 
-impl BrowserProfile {
-    /// Build from a name and a private flag. An empty name falls back to "default"
-    pub fn new(name: &str, private: bool) -> Self {
-        let n = name.trim();
-        Self {
-            name: if n.is_empty() { "default".into() } else { n.to_string() },
-            private,
-            user_agent: None,
-        }
-    }
-
-    /// The same profile, with a name of its own to give sites
-    pub fn calling_itself(mut self, ua: Option<String>) -> Self {
-        self.user_agent = ua.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        self
-    }
-    /// The default (shared "default" profile, persistent)
-    pub fn shared_default() -> Self {
-        Self { name: "default".into(), private: false, user_agent: None }
-    }
-}
 
 /// Where browser data lives — every last byte of it, under the one folder the
 /// config names (`browser_data`). WebView2's store is heavy SQLite and cache, so
@@ -2658,82 +2205,11 @@ fn wrap_eval(id: u64, js: &str) -> String {
     )
 }
 
-/// A specifier for locating something on the page. CSS or XPath
-#[derive(Debug, Clone)]
-pub enum Sel {
-    Css(String),
-    Xpath(String),
-    /// A number from the latest `browser_digest` of that page. Resolved to a
-    /// CDP backendNodeId, and operated on with genuine (trusted) input —
-    /// synthetic-event blind spots don't apply to it
-    Ref(u32),
-}
 
-impl Sel {
-    fn json(&self) -> serde_json::Value {
-        match self {
-            Sel::Css(s) => serde_json::json!({ "css": s }),
-            Sel::Xpath(s) => serde_json::json!({ "xpath": s }),
-            // Never sent to the page (ref operations go through CDP); kept
-            // total so a stray call still serializes to something readable
-            Sel::Ref(n) => serde_json::json!({ "ref": n }),
-        }
-    }
-}
 
-/// What a click/fill reports back. `state` keeps the three-state vocabulary;
-/// the rest exists only on the `{ref=N}` path: `echo` is the human-readable
-/// "what was really touched", and `anchor` is a durable, digest-free address
-/// (id or text/attribute anchor) derived from the element itself — the raw
-/// material for a portable replay script
-#[derive(Debug)]
-pub struct OpReport {
-    pub state: Found,
-    pub echo: Option<String>,
-    /// ("css" | "xpath", value)
-    pub anchor: Option<(String, String)>,
-}
 
-impl OpReport {
-    fn bare(state: Found) -> Self {
-        Self { state, echo: None, anchor: None }
-    }
-}
 
-/// Where an element currently is. Click and fill return the same
-/// vocabulary (if we touched it, it was reachable, hence `Visible`).
-///
-/// Distinguishing "not in the DOM" from "in the DOM but off-screen"
-/// matters: the former means suspect the selector, the latter means
-/// suspect the wait or the scroll position. Collapsing both into one
-/// "failure" makes it impossible to know what to fix
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Found {
-    /// Visible on screen
-    Visible,
-    /// In the DOM but off-screen
-    OffScreen,
-    /// Not in the DOM
-    NotFound,
-}
 
-impl Found {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Found::Visible => "visible",
-            Found::OffScreen => "off_screen",
-            Found::NotFound => "not_found",
-        }
-    }
-
-    fn parse(json: &str) -> Self {
-        match json.trim_matches('"') {
-            "visible" => Found::Visible,
-            "off_screen" => Found::OffScreen,
-            _ => Found::NotFound,
-        }
-    }
-}
 
 /// Resolve an instruction's destination. `None` is the main view; a name is that page.
 /// If a name is given but not found, returns `None`.
@@ -2774,7 +2250,14 @@ fn named_vk(named: &str) -> Option<(&'static str, u32)> {
 /// Whether `named` is a control key we can dispatch (enter/tab/escape/arrows/
 /// f-keys/…). Lets `browser_press` reject a typo instead of silently no-op-ing.
 pub fn key_known(named: &str) -> bool {
-    named_vk(named).is_some()
+    // The list is shared vocabulary; this module only knows what to *do* with a
+    // name. Debug-checked so the two cannot drift apart unnoticed
+    debug_assert_eq!(
+        shikisha_shared::key_known(named),
+        named_vk(named).is_some(),
+        "key name known to one side and not the other: {named}"
+    );
+    shikisha_shared::key_known(named)
 }
 
 /// Windows the pages asked for, by the page that asked. Newest last.
@@ -5344,26 +4827,62 @@ mod tests {
     }
 }
 
-/// One ask from the branch dialog, as the loop reads it off its queue.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchAsk {
-    pub from: String,
-    pub branch: String,
-    pub base: String,
-    pub make: bool,
-    pub carry: Vec<String>,
-    pub start: String,
-    pub ais: Vec<String>,
-}
-
-impl BranchAsk {
-    /// The ask carried by a branch event, or nothing for any other event.
-    pub fn of(ev: Ev) -> Option<Self> {
-        match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais })
-            }
-            _ => None,
-        }
+/// The window, seen as "something that shows pages".
+///
+/// Every one of these already existed as an inherent method; the trait is what
+/// lets the runtime call them without knowing a window is what answers.
+impl shikisha_shared::BrowserHost for Browser {
+    fn go(&self, to: Option<&str>, go: Go) -> Result<()> { Browser::go(self, to, go) }
+    fn focus(&self, to: Option<&str>) -> Result<()> { Browser::focus(self, to) }
+    fn ask_where(&self, to: Option<&str>) -> Result<()> { Browser::ask_where(self, to) }
+    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> Result<()> {
+        Browser::basic_auth(self, to, user, pass)
     }
+    fn eval_in(&self, to: Option<&str>, js: &str) -> Result<u64> { Browser::eval_in(self, to, js) }
+    fn inject(&self, to: Option<&str>, input: Input) -> Result<()> { Browser::inject(self, to, input) }
+    fn screencast(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::screencast(self, to, on) }
+    fn record(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::record(self, to, on) }
+
+    fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {
+        Browser::find(self, to, sel, timeout_ms)
+    }
+    fn click(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<OpReport> {
+        Browser::click(self, to, sel, timeout_ms)
+    }
+    fn fill(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> Result<OpReport> {
+        Browser::fill(self, to, sel, value, timeout_ms)
+    }
+    fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Option<String>> {
+        Browser::text(self, to, sel, timeout_ms)
+    }
+    fn href(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> { Browser::href(self, to, timeout_ms) }
+    fn html(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> { Browser::html(self, to, timeout_ms) }
+    fn digest(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> { Browser::digest(self, to, timeout_ms) }
+    fn snapshot(&self, to: Option<&str>, timeout_ms: u64) -> Result<Vec<u8>> { Browser::snapshot(self, to, timeout_ms) }
+
+    fn cookies_out(&self, to: Option<&str>, timeout_ms: u64) -> Result<serde_json::Value> {
+        Browser::cookies_out(self, to, timeout_ms)
+    }
+    fn cookies_in(&self, to: Option<&str>, cookies: &serde_json::Value, timeout_ms: u64) -> Result<()> {
+        Browser::cookies_in(self, to, cookies, timeout_ms)
+    }
+    fn storage_out(&self, to: Option<&str>, timeout_ms: u64) -> Result<serde_json::Value> {
+        Browser::storage_out(self, to, timeout_ms)
+    }
+    fn storage_in(&self, to: Option<&str>, items: &serde_json::Value, timeout_ms: u64) -> Result<()> {
+        Browser::storage_in(self, to, items, timeout_ms)
+    }
+    fn fetch(&self, to: Option<&str>, url: &str, opts: &serde_json::Value, timeout_ms: u64) -> Result<String> {
+        Browser::fetch(self, to, url, opts, timeout_ms)
+    }
+
+    fn open_child(&self, name: &str, url: &str, rect: (i32, i32, i32, i32), profile: BrowserProfile) -> Result<()> {
+        Browser::open_child(self, name, url, rect, profile)
+    }
+    fn child_bounds(&self, name: &str, rect: (i32, i32, i32, i32)) -> Result<()> {
+        Browser::child_bounds(self, name, rect)
+    }
+    fn close_child(&self, name: &str) -> Result<()> { Browser::close_child(self, name) }
+    fn trust(&self, url: &str) -> Result<()> { Browser::trust(self, url) }
+    fn record_all_off(&self) { Browser::record_all_off(self) }
 }
