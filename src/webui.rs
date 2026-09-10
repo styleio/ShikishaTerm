@@ -2419,20 +2419,33 @@ const PAGE: &str = r##"<!doctype html>
  .navgrouphead .caret { font-size:10px; width:14px; display:inline-block; text-align:center;
    border-radius:4px; }
  .navgrouphead .caret:hover { background:var(--panel2); }
- /* Four levels: everything, a workspace, one of its working folders, a tab in
-    that folder. Depth is where the row starts, the way a file list does it --
-    elbows drawn between every row would be three times the ink for the same
-    three steps. The faint line is there to sight along when the names are long
-    enough to fill the width */
- .navitem { position:relative; }
- .lvl1 { padding-left:22px; }
- .lvl2 { padding-left:38px; }
- .lvl3 { padding-left:54px; }
- .lvl1::before, .lvl2::before, .lvl3::before { content:""; position:absolute;
-   top:0; bottom:0; width:1px; background:var(--line); }
- .lvl1::before { left:11px; }
- .lvl2::before { left:27px; }
- .lvl3::before { left:43px; }
+ /* The tree, drawn the way a terminal draws one. A rule down the indent was
+    what was here before: it broke at every gap between rows and ran too close
+    to the names to sight along. These say the same thing without either
+    fault, and they say one thing more -- which row is the last of its kind.
+    Drawn only where they are true: `railsFor` works out, for every row,
+    whether anything of its own depth comes after it */
+ .navitem { position:relative; display:flex; align-items:flex-start; gap:6px; }
+ .rail { flex:none; display:flex; color:var(--edge-hi); font-family:var(--mono);
+   font-size:12px; line-height:20px; user-select:none; }
+ .rail i { width:15px; text-align:center; font-style:normal; }
+ /* The name and what is under it, once the rails and the mark have had theirs */
+ .navitem .body { flex:1 1 auto; min-width:0; }
+ /* The mark: what kind of thing this row is, in the colour of which one.
+    A folder is drawn rather than typed, for the reason the board draws its
+    branch mark -- a character that means "folder" is one some font has never
+    heard of, and an emoji cannot take the project's colour */
+ .mark { flex:none; width:16px; height:20px; display:flex; align-items:center;
+   justify-content:center; color:var(--dim); }
+ .mark svg { display:block; }
+ /* A tab, as the dot the board uses, in the colour of the AI it runs */
+ .mark .dot { width:7px; height:7px; border-radius:50%; background:currentColor; }
+ /* The fold. Its own column, before the mark, because that is where a person
+    reaches for it -- and wide enough to hit without aiming */
+ .twist { flex:none; width:16px; height:20px; display:flex; align-items:center;
+   justify-content:center; color:var(--muted); font-size:10px; cursor:pointer;
+   border-radius:var(--r-chip); }
+ .twist:hover { background:var(--panel2); color:var(--text); }
  /* A folder is the level people are looking for, so it keeps its own weight
     while the tabs under it stay quiet */
  .navfolder { color:var(--text); font-size:12.5px; }
@@ -3541,6 +3554,71 @@ function folderLabel(g, i) {
   return cwd.split(/[\\/]/).filter(Boolean).pop() || cwd;
 }
 
+// Which colour a tab wears: its AI's own, or nothing in particular
+const AI_COLOURS = {claude:"#d97757", codex:"#19c37d", gemini:"#4285f4",
+  deepseek:"#5b7cff", qwen:"#a06bff", aider:"#e5644d", kimi:"#12b3a8"};
+const aiColour = c => AI_COLOURS[headOf(c)] || null;
+
+// A folder, drawn. Takes the colour of the row it sits in, so one mark says
+// both "this is a working folder" and "this is that project"
+function folderMark(colour) {
+  const s = el("span", {class:"mark"});
+  s.innerHTML = '<svg viewBox="0 0 14 14" width="13" height="13" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.3" stroke-linejoin="round">' +
+    '<path d="M1.6 11.2V3.4a.8.8 0 0 1 .8-.8h2.7l1.2 1.5h4.1a.8.8 0 0 1 .8.8v6.3' +
+    'a.8.8 0 0 1-.8.8H2.4a.8.8 0 0 1-.8-.8Z"/></svg>';
+  if (colour) s.style.color = colour;
+  return s;
+}
+// The fold, where everybody looks for it
+function foldCaret(open, onFold) {
+  const c = el("span", {class:"twist", onclick: e => { e.stopPropagation(); onFold(); }},
+    open ? "▾" : "▸");
+  return c;
+}
+function tabMark(colour) {
+  const s = el("span", {class:"mark"}, el("span", {class:"dot"}));
+  if (colour) s.style.color = colour;
+  return s;
+}
+
+// For every row, the elbows to its left: a `│` for each ancestor that has more
+// rows still to come, and `├` or `└` for itself. Worked out from the list
+// rather than written by hand at each call, so a row cannot claim to be the
+// last of its kind when it is not
+function railsFor(rows) {
+  const more = (i, depth) => {
+    for (let j = i + 1; j < rows.length; j++) {
+      if (rows[j].depth < depth) return false;
+      if (rows[j].depth === depth) return true;
+    }
+    return false;
+  };
+  return rows.map((r, i) => {
+    const rail = [];
+    for (let a = 1; a < r.depth; a++) rail.push(more(i, a) ? "│" : " ");
+    rail.push(more(i, r.depth) ? "├" : "└");
+    return rail;
+  });
+}
+// One row of the tree: its elbows, its mark, then what it says
+function treeRow(rail, mark, opts, ...body) {
+  const row = el("button", opts,
+    el("span", {class:"rail"}, ...rail.map(ch => el("i", {}, ch))));
+  // A row with nothing to show still keeps the columns, so every name in the
+  // tree starts on the same line
+  const marks = (Array.isArray(mark) ? mark : [mark]).filter(Boolean);
+  const want = Array.isArray(mark) ? mark.length : 1;
+  for (const m of marks) row.append(m);
+  for (let i = marks.length; i < want; i++) row.append(el("span", {class:"mark"}));
+  row.append(el("div", {class:"body"}, ...body));
+  return row;
+}
+
+// Folders the person has put away. Kept for as long as the page is open, the
+// same as a workspace's own fold
+const folderShut = new Set();
+
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
@@ -3584,35 +3662,60 @@ function renderNav() {
     if (!open) return;
     // Every folder, always -- the one a workspace starts with is a folder like
     // any other, and hiding it is how "where does this actually run" became
-    // impossible to find
+    // impossible to find.
+    //
+    // Laid out as a list first and drawn second, because an elbow can only be
+    // drawn once it is known what comes after it
+    const rows = [];
     (ws.folders || []).forEach((g, gi) => {
-      nav.append(el("button", {class:"navitem navfolder lvl1" + (here(gi, null) ? " sel" : ""),
-        onclick:() => { sel = {ws:wi, grp:gi, tab:null, global:false}; render(); }},
-        el("span", {}, folderLabel(g, gi)),
-        el("span", {class:"sub"}, g.cwd || T["settings.group.folder.ph"])));
+      rows.push({depth:1, kind:"folder", g, gi});
+      // A folder that is folded keeps its tabs to itself. What it is holding
+      // is still said by its mark, which is why the mark is the way to fold it
+      if (folderShut.has(wi + ":" + gi)) return;
       (ws.tabs || []).forEach((t, ti) => {
         if ((t.group || 0) !== gi) return;
-        const b = el("button", {class:"navitem navtab lvl" + (t.depth ? 3 : 2) +
-          (here(gi, ti) ? " sel" : ""),
-          onclick:() => { sel = {ws:wi, grp:gi, tab:ti, global:false}; render(); }});
-        b.append(el("span", {class:"nm"}, t.name || T["settings.tab.unnamed"]));
-        b.append(el("span", {class:"sub"}, cmdToText(t.command) || T["automation.unset"]));
-        nav.append(b);
+        rows.push({depth: t.depth ? 3 : 2, kind:"tab", t, ti, gi});
       });
-      nav.append(el("button", {class:"navitem navadd lvl2",
-        onclick:() => {
-          sel = {ws:wi, grp:gi, tab:addTabTo(ws, gi), global:false};
-          render();
-        }},
-        T["settings.tab.add"]));
+      rows.push({depth:2, kind:"addtab", gi});
     });
-    nav.append(el("button", {class:"navitem navadd lvl1",
-      onclick:() => {
-        (ws.folders = ws.folders || []).push({name:"", id:"", cwd:""});
-        sel = {ws:wi, grp:ws.folders.length - 1, tab:null, global:false};
-        render(); refreshSave();
-      }},
-      T["settings.group.add"]));
+    rows.push({depth:1, kind:"addfolder"});
+    const rails = railsFor(rows);
+    rows.forEach((r, i) => {
+      if (r.kind === "folder") {
+        const key = wi + ":" + r.gi;
+        const shut = folderShut.has(key);
+        const twist = foldCaret(!shut, () => {
+          if (shut) folderShut.delete(key); else folderShut.add(key);
+          render();
+        });
+        twist.title = shut ? T["settings.group.unfold"] : T["settings.group.fold"];
+        nav.append(treeRow(rails[i], [twist, folderMark(r.g.color)],
+          {class:"navitem navfolder" + (here(r.gi, null) ? " sel" : ""),
+           onclick:() => { sel = {ws:wi, grp:r.gi, tab:null, global:false}; render(); }},
+          el("span", {}, folderLabel(r.g, r.gi)),
+          el("span", {class:"sub"}, r.g.cwd || T["settings.group.folder.ph"])));
+      } else if (r.kind === "tab") {
+        nav.append(treeRow(rails[i], [null, tabMark(aiColour(r.t.command))],
+          {class:"navitem navtab" + (r.t.depth ? " child" : "") +
+             (here(r.gi, r.ti) ? " sel" : ""),
+           onclick:() => { sel = {ws:wi, grp:r.gi, tab:r.ti, global:false}; render(); }},
+          el("span", {class:"nm"}, r.t.name || T["settings.tab.unnamed"]),
+          el("span", {class:"sub"}, cmdToText(r.t.command) || T["automation.unset"])));
+      } else if (r.kind === "addtab") {
+        nav.append(treeRow(rails[i], [null, null], {class:"navitem navadd",
+          onclick:() => {
+            sel = {ws:wi, grp:r.gi, tab:addTabTo(ws, r.gi), global:false};
+            render();
+          }}, T["settings.tab.add"]));
+      } else {
+        nav.append(treeRow(rails[i], [null, null], {class:"navitem navadd",
+          onclick:() => {
+            (ws.folders = ws.folders || []).push({name:"", id:"", cwd:""});
+            sel = {ws:wi, grp:ws.folders.length - 1, tab:null, global:false};
+            render(); refreshSave();
+          }}, T["settings.group.add"]));
+      }
+    });
   });
   nav.append(el("div", {class:"navgroup"}, ""));
   nav.append(el("button", {class:"navitem navadd", onclick:addWs}, T["settings.workspace.add"]));

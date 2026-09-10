@@ -670,6 +670,8 @@
   "settings.tab.command.real_note": "色の付いた引数はアプリが付けています。この番号が会話の名前で、これがあるおかげで再起動したとき新しい会話にせず、同じ会話の続きから再開できます。",
   "settings.tab.command.real_note.off": "色の付いた引数はアプリが付けています。この番号が会話の名前です。上の設定を切ってあるので開き直すと新しい会話で始まりますが、番号は控えてあるので Ctrl+B r でこの会話に戻せます。",
   "settings.tab.command.newid": "<起動時に発行>",
+  "settings.group.fold": "畳む",
+  "settings.group.unfold": "開く",
   "settings.group.title": "作業フォルダ",
   "settings.group.name": "名前",
   "settings.group.name.hint": "一覧での呼び名。空にするとブランチ名、それも無ければフォルダ名になります",
