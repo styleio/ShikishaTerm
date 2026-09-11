@@ -14,6 +14,9 @@ use crate::tab::RecordedStep;
 /// Reports from a shell, sorted and waiting.
 #[derive(Default)]
 pub struct Mailbox {
+    /// The folder the person was looking at when they asked for a new tab, if
+    /// they asked from inside one
+    pub add_tab_folder: Option<String>,
     /// The window was closed. With nowhere left to draw, the loop has no choice but to shut down.
     pub closed: bool,
     /// The window's ✕ was pressed. The loop decides between putting the

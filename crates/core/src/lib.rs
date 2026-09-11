@@ -46,6 +46,7 @@ pub mod remote;
 pub mod reply;
 pub mod repo;
 pub mod session_log;
+pub mod runtime;
 pub mod send;
 pub mod serve;
 pub mod sessionfind;

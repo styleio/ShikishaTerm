@@ -413,3 +413,16 @@ pub fn use_local_banners(t: Box<dyn shikisha_shared::Toasts>) {
 fn local_banners() -> Option<&'static dyn shikisha_shared::Toasts> {
     LOCAL_BANNERS.get().map(|b| b.as_ref())
 }
+
+/// The tab a person pressed a banner for, if a shell is showing banners at all.
+pub fn banner_clicked_tab() -> Option<usize> {
+    local_banners().and_then(|t| t.clicked_tab())
+}
+
+/// Bring whatever is showing this to the front. Nothing to bring, nothing done.
+pub fn banner_raise() {
+    if let Some(t) = local_banners() {
+        t.raise();
+    }
+}
+

@@ -407,5 +407,13 @@ impl shikisha_shared::Toasts for WindowsBanners {
     fn show(&self, title: &str, body: &str, tab: Option<usize>) -> Result<(), String> {
         show(title, body, tab)
     }
+
+    fn clicked_tab(&self) -> Option<usize> {
+        clicked_tab()
+    }
+
+    fn raise(&self) {
+        raise()
+    }
 }
 

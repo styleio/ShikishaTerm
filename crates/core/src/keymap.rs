@@ -112,3 +112,28 @@ pub fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// Converts a control key sent by name into the terminal's key type
+pub fn named_key(n: &str) -> Option<KeyCode> {
+    Some(match n {
+        "enter" => KeyCode::Enter,
+        "bs" => KeyCode::Backspace,
+        "tab" => KeyCode::Tab,
+        // Both spellings: the page and the phone have always sent "escape"
+        // through their own map, and a name that works in one place and is
+        // silently ignored in another is the worst kind of half-support
+        "esc" | "escape" => KeyCode::Esc,
+        "del" => KeyCode::Delete,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "right" => KeyCode::Right,
+        "left" => KeyCode::Left,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pgup" => KeyCode::PageUp,
+        "pgdn" => KeyCode::PageDown,
+        _ => {
+            let f = n.strip_prefix('f')?.parse::<u8>().ok()?;
+            (1..=12).contains(&f).then_some(KeyCode::F(f))?
+        }
+    })
+}

@@ -1045,6 +1045,10 @@ pub fn key_known(named: &str) -> bool {
 /// no shell has none, and says so rather than pretending it sent one.
 pub trait Toasts: Send + Sync {
     fn show(&self, title: &str, body: &str, tab: Option<usize>) -> Result<(), String>;
+    /// The tab a person pressed a banner for, if one was pressed since last asked
+    fn clicked_tab(&self) -> Option<usize>;
+    /// Bring whatever is showing this to the front, because they asked for it
+    fn raise(&self);
 }
 
 /// Asking the person at the desktop to point at a file or a folder.

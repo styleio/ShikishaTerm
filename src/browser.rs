@@ -11,6 +11,7 @@
 //! `process::exit` internally. Just closing the browser window would
 //! take down the whole app.
 
+pub use shikisha_core::view::openable;
 use shikisha_shared::{BranchAsk, BrowserProfile, Ev, Found, Go, Input, OpReport, PaneGeom, Sel, parse_intent};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -2479,59 +2480,7 @@ fn to_rect((x, y, w, h): (i32, i32, i32, i32)) -> wry::Rect {
     }
 }
 
-/// Turn text a human typed into a destination we're allowed to open.
-///
-/// Works like a browser's combined address/search box: text that reads as a
-/// web address goes there (`example.com` -> `https://example.com`), and
-/// anything else — words with spaces, Japanese text, a lone word — becomes a
-/// Google search. `file:` can read local files and `javascript:` can hijack
-/// the current page, so neither passes through an address bar — a "gateway
-/// to anywhere"; they too fall through to search, which is inert.
-pub fn openable(raw: &str) -> Option<String> {
-    let s = raw.trim();
-    if s.is_empty() {
-        return None;
-    }
-    if let Some((scheme, rest)) = s.split_once("://") {
-        // An explicit scheme means the writer wanted a URL, not a search.
-        // Normalize its case so a pasted HTTPS:// still opens.
-        if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
-            return Some(format!("{}://{rest}", scheme.to_ascii_lowercase()));
-        }
-        // file:// and friends never open here — hand them to search instead
-        return Some(search_url(s));
-    }
-    // Scheme-less: a single token whose host part has a dot (example.com,
-    // 127.0.0.1) or is localhost reads as an address; everything else —
-    // including `javascript:alert(1)`, which has no dot — reads as words
-    let host = s.split(['/', '?', '#']).next().unwrap_or("");
-    let address_like = !s.chars().any(char::is_whitespace)
-        && (host.contains('.') || host == "localhost" || host.starts_with("localhost:"));
-    if address_like {
-        Some(format!("https://{s}"))
-    } else {
-        Some(search_url(s))
-    }
-}
 
-/// A Google search for the given words, with every byte outside the URL-safe
-/// set percent-encoded (UTF-8), so Japanese and symbols survive the trip
-fn search_url(words: &str) -> String {
-    use std::fmt::Write as _;
-    let mut u = String::from("https://www.google.com/search?q=");
-    for b in words.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                u.push(*b as char)
-            }
-            b' ' => u.push('+'),
-            _ => {
-                let _ = write!(u, "%{b:02X}");
-            }
-        }
-    }
-    u
-}
 
 /// Put our own icon on the window.
 ///
