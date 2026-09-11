@@ -58,6 +58,54 @@ Claude Code、Codex CLI、Gemini CLI、DeepSeek、Ollama、Aider、SSH越しの�
 
 > **手持ちのAIのサブスク認証をそのまま使います。** APIキーは保存しませんし、必要ありません。
 
+### サーバーに置く（Linux）
+
+**Linux に窓はありません。** 置くのは仕事をする側だけ——端末を開き、AIが何をしているかを見て、
+自動化を走らせる部分——で、画面はブラウザかスマホから見ます。VPS やクラウドVMに置けば、
+手元のPCを閉じてもAIは動き続けます。
+
+**Debian / Ubuntu**
+
+```sh
+curl -fsSL https://pkg.shikisha-term.com/shikisha-archive-key.asc \
+  | sudo tee /etc/apt/keyrings/shikisha.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/shikisha.asc] https://pkg.shikisha-term.com/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/shikisha.list
+sudo apt update && sudo apt install shikisha
+```
+
+**Fedora / RHEL / openSUSE**
+
+```sh
+sudo rpm --import https://pkg.shikisha-term.com/shikisha-archive-key.asc
+sudo tee /etc/yum.repos.d/shikisha.repo <<'REPO'
+[shikisha]
+name=SHIKISHA-TERM
+baseurl=https://pkg.shikisha-term.com/rpm
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://pkg.shikisha-term.com/shikisha-archive-key.asc
+REPO
+sudo dnf install shikisha
+```
+
+**それ以外** — 静的リンクの1ファイルを、自分のホームに。管理者権限は要りません:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/styleio/ShikishaTerm/main/packaging/linux/install.sh | sh
+```
+
+**入れただけでは始まりません。** 動かすときに:
+
+```sh
+systemctl --user enable --now shikisha
+loginctl enable-linger "$USER"   # ログアウト後も動かし続ける
+```
+
+起動すると盤面を開く住所を表示します。どの経路でも[同じ鍵](https://pkg.shikisha-term.com/shikisha-archive-key.asc)で
+署名を確かめてから入ります。
+
 ### Windowsの警告について
 
 **Store 版は Microsoft が署名しているので警告は出ません。** ここは zip の話です。

@@ -79,6 +79,56 @@ Nothing is written outside that folder. There is no installer and no runtime to 
 > It uses **your existing AI subscriptions** through their CLIs. No API keys are stored,
 > and none are needed.
 
+### On a server (Linux)
+
+**There is no window on Linux.** What runs there is the part that does the work — it opens
+the terminals, watches what each agent is doing, runs your automation — and you reach it
+from a browser or a phone. Put it on a VPS or a cloud VM and the agents keep going when
+your laptop is shut.
+
+**Debian / Ubuntu**
+
+```sh
+curl -fsSL https://pkg.shikisha-term.com/shikisha-archive-key.asc \
+  | sudo tee /etc/apt/keyrings/shikisha.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/shikisha.asc] https://pkg.shikisha-term.com/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/shikisha.list
+sudo apt update && sudo apt install shikisha
+```
+
+**Fedora / RHEL / openSUSE**
+
+```sh
+sudo rpm --import https://pkg.shikisha-term.com/shikisha-archive-key.asc
+sudo tee /etc/yum.repos.d/shikisha.repo <<'REPO'
+[shikisha]
+name=SHIKISHA-TERM
+baseurl=https://pkg.shikisha-term.com/rpm
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://pkg.shikisha-term.com/shikisha-archive-key.asc
+REPO
+sudo dnf install shikisha
+```
+
+**Anything else** — one static binary, into your own home folder, asking for nothing:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/styleio/ShikishaTerm/main/packaging/linux/install.sh | sh
+```
+
+Installing does not start anything. When you want it running:
+
+```sh
+systemctl --user enable --now shikisha
+loginctl enable-linger "$USER"   # keep it running after you log out
+```
+
+It prints the address to open the board at. Everything is signed with
+[one key](https://pkg.shikisha-term.com/shikisha-archive-key.asc), and every route above
+checks it before installing.
+
 ### About the Windows warning
 
 **The Store copy is signed by Microsoft and shows no warning.** This section is about the

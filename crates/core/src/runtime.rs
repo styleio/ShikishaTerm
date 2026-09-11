@@ -6929,7 +6929,7 @@ mod tests {
             cwd: Some(std::env::temp_dir()),
             ..Default::default()
         };
-        let argv = vec!["powershell.exe".to_string()];
+        let argv = vec![crate::test_shell()];
         let mut tabs = vec![
             Tab::spawn("A".into(), &argv, None, 10, 40, opts.clone()).unwrap(),
             Tab::spawn("B".into(), &argv, None, 10, 40, opts).unwrap(),
@@ -7043,8 +7043,11 @@ mod tests {
         p
     }
 
+    /// Settings, as a test writes them. `<sh>` stands for "something that
+    /// holds a terminal open" and becomes whatever this system calls that
     fn workspace_from(json: &str) -> config::Workspace {
-        let cfg: config::Config = serde_json::from_str(json).unwrap();
+        let json = json.replace("<sh>", &crate::test_shell());
+        let cfg: config::Config = serde_json::from_str(&json).unwrap();
         cfg.resolve_workspaces().0.into_iter().next().unwrap()
     }
 
@@ -7627,7 +7630,7 @@ mod tests {
     /// The activity wave reflects actual output, not decoration, so it must stay flat when nothing came out
     #[test]
     fn activity_wave_reflects_real_output() {
-        let argv = vec!["cmd.exe".to_string()];
+        let argv = vec![crate::test_shell()];
         let mut t =
             Tab::spawn("SHELL".into(), &argv, None, 20, 100, tab::TabOptions::default()).unwrap();
         assert_eq!(t.activity().len(), tab::ACTIVITY_LEN);
@@ -7658,7 +7661,7 @@ mod tests {
     /// submitted (this actually happened with sends from a phone).
     #[test]
     fn a_prompt_is_typed_first_and_submitted_after() {
-        let argv = vec!["cmd.exe".to_string()];
+        let argv = vec![crate::test_shell()];
         let mut t =
             Tab::spawn("shell".into(), &argv, None, 20, 60, tab::TabOptions::default()).unwrap();
 
@@ -7714,7 +7717,7 @@ mod tests {
     /// silently dropping startup automation.
     #[test]
     fn an_untouched_tab_is_not_mistaken_for_one_just_typed_into() {
-        let argv = vec!["cmd.exe".to_string()];
+        let argv = vec![crate::test_shell()];
         let mut t =
             Tab::spawn("T".into(), &argv, None, 20, 60, tab::TabOptions::default()).unwrap();
 
@@ -7924,7 +7927,7 @@ mod tests {
     /// across two writes (a broken character would be drawn as garbage).
     #[test]
     fn a_paste_is_cut_between_characters() {
-        let t = Tab::spawn("cmd".into(), &["cmd.exe".to_string()], None, 24, 80, tab::TabOptions::default())
+        let t = Tab::spawn("cmd".into(), &[crate::test_shell()], None, 24, 80, tab::TabOptions::default())
             .expect("起動");
         let text = "あ".repeat(PASTE_CHUNK); // 3 bytes each: boundaries never land on PASTE_CHUNK
         let chunks = paste_chunks(&t, &text);
@@ -8117,9 +8120,12 @@ mod tests {
             cwd: Some(dir.clone()),
             ..Default::default()
         };
-        let argv = vec!["cmd.exe".to_string(), "/c".into(), "cd".into()];
+        // Each shell's own way of saying where it is standing
+        let argv = match cfg!(windows) {
+            true => vec!["cmd.exe".to_string(), "/c".into(), "cd".into()],
+            false => vec!["sh".to_string(), "-c".into(), "pwd".into()],
+        };
         let mut t = Tab::spawn("cwd".into(), &argv, None, 10, 60, opts).unwrap();
-        // cmd's "cd" shows the current folder
         std::thread::sleep(std::time::Duration::from_millis(1200));
         let screen = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
         t.kill();
@@ -8148,7 +8154,7 @@ mod tests {
             cwd: Some(std::path::PathBuf::from("Z:/does/not/exist")),
             ..Default::default()
         };
-        let argv = vec!["cmd.exe".to_string()];
+        let argv = vec![crate::test_shell()];
         let out = Tab::spawn("nowhere".into(), &argv, None, 10, 60, opts);
         assert!(out.is_err(), "存在しないフォルダのまま起動してはいけない");
     }
@@ -8157,8 +8163,8 @@ mod tests {
     fn hot_reload_applies_changes_without_restarting_untouched_tabs() {
         let ws0 = workspace_from(
             r#"{"workspaces":[{"name":"T","folders":[{"tabs":[
-                {"name":"one","command":"cmd.exe"},
-                {"name":"two","command":"cmd.exe"}
+                {"name":"one","command":"<sh>"},
+                {"name":"two","command":"<sh>"}
             ]}]}]}"#,
         );
         let mut tabs = Vec::new();
@@ -8170,8 +8176,8 @@ mod tests {
         // one: gains a lock (applies immediately) / two: removed / three: added
         let ws1 = workspace_from(
             r#"{"workspaces":[{"name":"T","folders":[{"tabs":[
-                {"name":"one","command":"cmd.exe","locked":true},
-                {"name":"three","command":"cmd.exe"}
+                {"name":"one","command":"<sh>","locked":true},
+                {"name":"three","command":"<sh>"}
             ]}]}]}"#,
         );
         let msg = apply_ws_config(&mut tabs, &ws1, 24, 80, &mut errs);
@@ -8189,8 +8195,8 @@ mod tests {
         // A change to the encoding requires a rebuild, so it gets deferred and flagged
         let ws2 = workspace_from(
             r#"{"workspaces":[{"name":"T","folders":[{"tabs":[
-                {"name":"one","command":"cmd.exe","encoding":"shift_jis"},
-                {"name":"three","command":"cmd.exe"}
+                {"name":"one","command":"<sh>","encoding":"shift_jis"},
+                {"name":"three","command":"<sh>"}
             ]}]}]}"#,
         );
         let msg2 = apply_ws_config(&mut tabs, &ws2, 24, 80, &mut errs);
