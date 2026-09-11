@@ -16,85 +16,31 @@
 // Windows allocate one. (Only the terminal-facing --settings mode opens one itself, on demand.)
 #![windows_subsystem = "windows"]
 
-use shikisha_core::keymap::{key_to_bytes, key_to_bytes_with};
 use shikisha_core::tab::RecordedStep;
-use shikisha_core::workspace::{
-    TabAuto, apply_ws_config, automation_by_pane, carried_conversation, resolve_launch,
-    tab_options, build_engine, extract_env_block, open_declared_browsers, panel_places,
-    spawn_workspace, surface_of_id, switch_workspace,
-};
 use shikisha_core::runtime::{WORDMARK, config_file_dir, WORDMARK_SMALL, keys_for, run, session_at, tab_cwd_abs};
 use shikisha_core::view::{
-    Size, pty_dims, terminal_size,
-    RESULT_TAB, ScreenPush, Surface, Ui, panes_json, remote_floor, screen_push, server_spec,
-    surfaces_of, title_of, ui_state_of,
-};
-use shikisha_core::send::{
-    PASTE_ACK_MS, PASTE_CHUNK, PendingSend, SUBMIT_GIVE_UP_MS, SUBMIT_QUIET_MS, Step, paste_chunks,
+    Size, ScreenPush, Ui, panes_json, screen_push, ui_state_of,
 };
 use shikisha_core::{
-    FIXED_TOKEN_MIN,
     append_hook_log,
     detach_console,
-    random_bytes,
-    random_hex,
-    random_uuid,
-    remote_token,
-    resume_plan_of,
-    agenthook,
     api,
-    attach,
-    ball,
     bridge,
-    browserstate,
-    caps,
     config,
     conpty,
     crypto,
-    detect,
-    digest,
     discover,
     exchange,
-    folders,
-    git,
-    grants,
     hooks,
     i18n,
     instance,
-    job,
-    keys,
-    lastsession,
-    layout,
-    limits,
     migrate,
-    netaddr,
     notify,
-    pr,
-    profile,
-    push,
     pwa,
-    reader,
-    remote,
-    reply,
-    repo,
-    session_log,
-    sessionfind,
     shell,
-    ssh,
     tab,
-    tailscale,
-    theme,
-    toast,
-    uistate,
     update,
-    usage,
-    vault,
-    watch,
     webui,
-    winpath,
-    worktree,
-    ws,
-    wspack,
 };
 mod browser;
 mod picker;
@@ -105,12 +51,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::Event;
 
 
-use detect::TabState;
-use hooks::{Command, HookEngine, TabCtx};
-use tab::{CopyState, Tab, extract_text};
+use tab::Tab;
 
 
 
@@ -468,7 +412,6 @@ impl WinSurface {
     /// Put the keyboard back where a person expects it after a placed page
     /// had it (the window's own view, not the page's)
     fn take_keyboard_back(&self) {
-        use shikisha_shared::BrowserHost;
         let _ = self.win.focus(None);
     }
 
@@ -1500,14 +1443,6 @@ pub fn wordmark_lines(width: u16, height: u16) -> Vec<String> {
     Vec::new()
 }
 
-fn copy_to_clipboard(text: &str) -> String {
-    let lines = text.lines().count();
-    match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())) {
-        Ok(()) => i18n::tp("msg.copied", &[("lines", &lines.to_string())]),
-        Err(e) => i18n::tp("msg.copy_failed", &[("error", &e.to_string())]),
-    }
-}
-
 /// Pastes clipboard contents into the child process.
 /// Wraps it in \x1b[200~ ... \x1b[201~ if the child is in bracketed paste mode
 fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
@@ -1567,10 +1502,6 @@ mod frame_bench {
     use std::time::{Duration, Instant};
 
     const END: &str = "SHIKISHA-BURST-END";
-    /// 39 characters, the width the published figures were taken at, and wide
-    /// enough that a re-render has real work to do on every line.
-    const LINE: &str = "吾輩は猫である。名前はまだ無い。どこで生れたか頓と見当がつかぬ。何でも薄暗いじ";
-
     /// Where the stand-in terminal program is, beside the test binary or one
     /// folder up from it (`cargo test` puts tests under `deps/`).
     fn writer() -> std::path::PathBuf {
@@ -1681,7 +1612,7 @@ mod frame_bench {
             )
             .expect("起動");
             let start = Instant::now();
-            let mut had: Vec<String> = Vec::new();
+            let mut had: Vec<String>;
             let mut arrived = None;
             while start.elapsed() < Duration::from_secs(30) {
                 std::thread::sleep(Duration::from_millis(16));

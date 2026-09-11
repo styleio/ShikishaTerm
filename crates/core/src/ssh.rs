@@ -938,7 +938,6 @@ mod tests {
     /// separately and silently otherwise.
     #[test]
     fn a_terminal_on_another_machine_reads_and_writes_like_any_other() {
-        use portable_pty::MasterPty;
         use std::io::Write as _;
 
         let (port_tx, port_rx) = channel::<u16>();

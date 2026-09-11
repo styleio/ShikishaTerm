@@ -9238,7 +9238,13 @@ mod tests {
         // Path traversal, absolute paths, and non-JSON are rejected
         assert!(safe_workspace_path("/api/workspace?file=../secrets.json", cfg).is_none());
         assert!(safe_workspace_path("/api/workspace?file=workspaces/../../x.json", cfg).is_none());
-        assert!(safe_workspace_path("/api/workspace?file=C:/windows/x.json", cfg).is_none());
+        assert!(
+            safe_workspace_path(
+                &format!("/api/workspace?file={}", crate::outside_path("x.json")),
+                cfg
+            )
+            .is_none()
+        );
         assert!(safe_workspace_path("/api/workspace?file=workspaces/x.lua", cfg).is_none());
         // URL-encoded .. is rejected too
         assert!(safe_workspace_path("/api/workspace?file=%2E%2E%2Fsecrets.json", cfg).is_none());

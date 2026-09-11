@@ -695,11 +695,8 @@ mod tests {
     fn an_import_cannot_write_outside_the_settings_folder() {
         let d = tmp("escape");
         let cfg = setup(&d);
-        for path in [
-            "../逃げた.lua",
-            "scripts/../../逃げた.lua",
-            "C:/windows/逃げた.lua",
-        ] {
+        let away = crate::outside_path("逃げた.lua");
+        for path in ["../逃げた.lua", "scripts/../../逃げた.lua", away.as_str()] {
             let text = serde_json::to_string(&json!({
                 "shikisha_workspace": FORMAT,
                 "workspace": {"name": "わるいもの", "folders": []},

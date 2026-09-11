@@ -59,6 +59,7 @@ const OWNED: &[&str] = &["config", "data", "logs", "workspaces", "scripts"];
 /// How often the latest version is read while the program runs
 const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long the new copy waits for the old one to leave before claiming the layout
+#[cfg(windows)]
 const HANDOFF_WAIT: Duration = Duration::from_secs(15);
 
 /// What is known about the newest published version

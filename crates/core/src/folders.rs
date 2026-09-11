@@ -1007,14 +1007,15 @@ mod restore_tests {
     /// Where the project is, worked out from the branch folder's own path.
     #[test]
     fn the_project_is_found_from_the_branch_folder() {
-        let at = Path::new(r"D:\Simic.worktrees\work-2");
-        assert_eq!(checkout_for(at, "work-2"), Some(PathBuf::from(r"D:\Simic")));
+        let here = |p: &str| PathBuf::from(crate::local_path(p));
+        let simic = here(r"D:\Simic");
+        assert_eq!(checkout_for(&here(r"D:\Simic.worktrees\work-2"), "work-2"), Some(simic.clone()));
         // A branch with a slash in it is that many folders deep, which is why
         // the branch has to be known rather than read off the folder's label
-        let deep = Path::new(r"D:\Simic.worktrees\feature\login");
-        assert_eq!(checkout_for(deep, "feature/login"), Some(PathBuf::from(r"D:\Simic")));
+        let deep = here(r"D:\Simic.worktrees\feature\login");
+        assert_eq!(checkout_for(&deep, "feature/login"), Some(simic));
         // Somewhere that is not one of ours has no project to point back at
-        assert_eq!(checkout_for(Path::new(r"D:\just\a\folder"), "x"), None);
+        assert_eq!(checkout_for(&here(r"D:\just\a\folder"), "x"), None);
     }
 
 /// The whole of it, carried out. Everything above stops at deciding; this

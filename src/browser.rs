@@ -11,8 +11,7 @@
 //! `process::exit` internally. Just closing the browser window would
 //! take down the whole app.
 
-pub use shikisha_core::view::openable;
-use shikisha_shared::{BranchAsk, BrowserProfile, Ev, Found, Go, Input, OpReport, PaneGeom, Sel, parse_intent};
+use shikisha_shared::{BrowserProfile, Ev, Found, Go, Input, OpReport, Sel, parse_intent};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -2248,17 +2247,17 @@ fn named_vk(named: &str) -> Option<(&'static str, u32)> {
     })
 }
 
-/// Whether `named` is a control key we can dispatch (enter/tab/escape/arrows/
-/// f-keys/…). Lets `browser_press` reject a typo instead of silently no-op-ing.
-pub fn key_known(named: &str) -> bool {
-    // The list is shared vocabulary; this module only knows what to *do* with a
-    // name. Debug-checked so the two cannot drift apart unnoticed
-    debug_assert_eq!(
-        shikisha_shared::key_known(named),
-        named_vk(named).is_some(),
-        "key name known to one side and not the other: {named}"
-    );
-    shikisha_shared::key_known(named)
+/// Every key name the vocabulary offers is one this shell knows how to press.
+///
+/// A name is turned away up in the runtime, against the shared list and
+/// nothing else -- it cannot see this table. So a name on that list with no
+/// entry here would not be refused: it would be accepted, dispatched, and do
+/// nothing at all, which is the one failure a person cannot diagnose.
+#[test]
+fn every_named_key_has_something_to_press() {
+    for named in shikisha_shared::NAMED_KEYS {
+        assert!(named_vk(named).is_some(), "押し方の分からないキー名: {named}");
+    }
 }
 
 /// Windows the pages asked for, by the page that asked. Newest last.
@@ -2516,7 +2515,7 @@ fn wear_our_own_icon(hwnd: isize) {
     unsafe {
         let module = GetModuleHandleW(std::ptr::null());
         let hwnd = hwnd as *mut std::ffi::c_void;
-        let mut wear = |which: u32, w: i32, h: i32| {
+        let wear = |which: u32, w: i32, h: i32| {
             let icon = LoadImageW(module, OUR_ICON, IMAGE_ICON, w, h, LR_DEFAULTCOLOR);
             if !icon.is_null() {
                 SendMessageW(hwnd, WM_SETICON, which as usize, icon as isize);
@@ -3533,6 +3532,25 @@ mod cdp {
         pub creds: std::rc::Rc<std::cell::RefCell<(String, String)>>,
     }
 
+    impl Drop for AuthArm {
+        /// Catching every request is only safe while somebody is answering
+        /// them: `Fetch.enable` left on with nothing subscribed is a page
+        /// whose requests are held forever and never continued
+        fn drop(&mut self) {
+            call(&self.webview, "Fetch.disable", "{}");
+            unhook(&self.receivers);
+        }
+    }
+
+    /// Let go of subscriptions, by the tokens they were made under.
+    fn unhook(made: &[(ICoreWebView2DevToolsProtocolEventReceiver, i64)]) {
+        for (receiver, token) in made {
+            unsafe {
+                let _ = receiver.remove_DevToolsProtocolEventReceived(*token);
+            }
+        }
+    }
+
     /// Subscribe to one CDP event. Calls `on` with the received JSON
     fn subscribe<F>(
         webview: &ICoreWebView2,
@@ -3628,7 +3646,14 @@ mod cdp {
     /// immediately instead. Only active while this is held (unsubscribes on drop).
     pub struct DialogArm {
         pub receivers: Vec<(ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
-        pub webview: ICoreWebView2,
+    }
+
+    impl Drop for DialogArm {
+        /// Answering dialogs automatically is this arm's doing, and stops
+        /// being anybody's the moment it is let go of
+        fn drop(&mut self) {
+            unhook(&self.receivers);
+        }
     }
 
     pub fn arm_dialogs(webview: &ICoreWebView2) -> Option<DialogArm> {
@@ -3638,10 +3663,7 @@ mod cdp {
         })?;
         // Enable Page so the subscription actually fires (idempotent even if screencast already enabled it)
         call(webview, "Page.enable", "{}");
-        Some(DialogArm {
-            receivers: vec![opening],
-            webview: webview.clone(),
-        })
+        Some(DialogArm { receivers: vec![opening] })
     }
 
     /// Force the current screen out as one frame (re-issues startScreencast).
@@ -3664,6 +3686,7 @@ mod cdp {
 #[cfg(test)]
 mod nav_tests {
     use super::*;
+    use shikisha_core::view::openable;
 
     /// Fill in a missing scheme, and never allow anything but http/https.
     ///

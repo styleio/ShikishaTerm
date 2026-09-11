@@ -653,17 +653,26 @@ impl BrowseState {
     /// on `A:` makes everyone scroll past floppy disks to reach it
     fn top() -> Vec<String> {
         let mut out = Vec::new();
-        if let Ok(home) = std::env::var("USERPROFILE") {
-            if !home.is_empty() {
-                out.push(home);
+        // Where this person's own things are, whichever way the system spells it
+        for var in ["USERPROFILE", "HOME"] {
+            if let Ok(home) = std::env::var(var) {
+                if !home.is_empty() && std::path::Path::new(&home).is_dir() {
+                    out.push(home);
+                    break;
+                }
             }
         }
+        // Then everything there is. Windows has one tree per drive and a name
+        // for each; every other system has one tree, and `/` is its name
+        #[cfg(windows)]
         for letter in 'A'..='Z' {
             let root = format!("{letter}:\\");
             if std::path::Path::new(&root).is_dir() {
                 out.push(root);
             }
         }
+        #[cfg(not(windows))]
+        out.push("/".to_string());
         out
     }
 
@@ -1229,28 +1238,24 @@ mod tests {
     /// heads the household its branches already named.
     #[test]
     fn an_empty_folder_finds_its_household_without_touching_the_disk() {
+        let at = |p: &str| std::path::PathBuf::from(crate::local_path(p));
+        let git = crate::local_path(r"D:\proj\.git");
         assert_eq!(
-            family_by_path(std::path::Path::new(r"D:\proj.worktrees\feature\login")),
-            Some(std::path::PathBuf::from(r"D:\proj\.git"))
+            family_by_path(&at(r"D:\proj.worktrees\feature\login")),
+            Some(std::path::PathBuf::from(&git))
         );
-        assert_eq!(family_by_path(std::path::Path::new(r"D:\plain\folder")), None);
+        assert_eq!(family_by_path(&at(r"D:\plain\folder")), None);
 
         let mut list = vec![
             (
-                std::path::PathBuf::from(r"D:\proj.worktrees\a"),
-                GroupState { family: Some(r"D:\proj\.git".into()), linked: true, ..Default::default() },
+                at(r"D:\proj.worktrees\a"),
+                GroupState { family: Some(git.clone()), linked: true, ..Default::default() },
             ),
-            (
-                std::path::PathBuf::from(r"D:\proj"),
-                GroupState { empty: true, ..Default::default() },
-            ),
-            (
-                std::path::PathBuf::from(r"D:\elsewhere"),
-                GroupState { empty: true, ..Default::default() },
-            ),
+            (at(r"D:\proj"), GroupState { empty: true, ..Default::default() }),
+            (at(r"D:\elsewhere"), GroupState { empty: true, ..Default::default() }),
         ];
         adopt_checkouts(&mut list);
-        assert_eq!(list[1].1.family.as_deref(), Some(r"D:\proj\.git"), "空の元フォルダが家族に入らない");
+        assert_eq!(list[1].1.family.as_deref(), Some(git.as_str()), "空の元フォルダが家族に入らない");
         assert!(!list[1].1.linked, "元が枝扱い");
         assert_eq!(list[2].1.family, None, "無関係のフォルダが家族にされた");
     }

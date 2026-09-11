@@ -94,15 +94,20 @@ pub fn folders_seen(spec: &RecordSpec, since: SystemTime, most: usize) -> Vec<St
 /// as written, they are three folders, and a tab whose folder was spelled with
 /// the wrong case simply never found its conversation, silently, forever.
 ///
-/// Case is folded because this app runs on Windows, where it decides nothing.
+/// On Windows the case and the direction of the separators decide nothing, so
+/// both are folded away. On every other system they decide everything: two
+/// names differing in case are two folders, and a backslash is an ordinary
+/// character in a name. Folding there would quietly hand one conversation to a
+/// tab working somewhere else.
 pub fn same_folder(a: &Path, b: &Path) -> bool {
     let key = |p: &Path| -> Vec<String> {
         p.components()
             .map(|c| {
-                c.as_os_str()
-                    .to_string_lossy()
-                    .replace('\\', "/")
-                    .to_lowercase()
+                let part = c.as_os_str().to_string_lossy().to_string();
+                match cfg!(windows) {
+                    true => part.replace('\\', "/").to_lowercase(),
+                    false => part,
+                }
             })
             .filter(|s| !s.is_empty())
             .collect()
@@ -133,10 +138,16 @@ pub fn locate(pattern: &str, id: &str) -> Option<PathBuf> {
     if id.is_empty() {
         return None;
     }
-    let full = expand(&pattern.replace("{id}", id))
-        .display()
-        .to_string()
-        .replace('/', "\\");
+    // A profile's pattern is written with whichever separator its author had
+    // in mind. Windows takes either, so both are folded to one there; anywhere
+    // else a backslash is an ordinary character in a name and folding it would
+    // cut the path in the wrong place
+    let sep = std::path::MAIN_SEPARATOR;
+    let named = expand(&pattern.replace("{id}", id)).display().to_string();
+    let full = match cfg!(windows) {
+        true => named.replace('/', "\\"),
+        false => named,
+    };
     // Everything up to the first wildcard is a plain path and can be joined in
     // one step; only from there does anything have to be listed
     let (fixed, rest) = match full.find('*') {
@@ -145,11 +156,11 @@ pub fn locate(pattern: &str, id: &str) -> Option<PathBuf> {
             return one.exists().then_some(one);
         }
         Some(at) => {
-            let cut = full[..at].rfind('\\').map(|i| i + 1).unwrap_or(0);
+            let cut = full[..at].rfind(sep).map(|i| i + 1).unwrap_or(0);
             (full[..cut].to_string(), full[cut..].to_string())
         }
     };
-    let steps: Vec<String> = rest.split('\\').map(str::to_string).collect();
+    let steps: Vec<String> = rest.split(sep).map(str::to_string).collect();
     walk_glob(PathBuf::from(fixed), &steps)
 }
 
@@ -292,6 +303,7 @@ mod tests {
     /// matched the `D:\Simic2` its CLI wrote down the moment the disk held a
     /// different case, and the conversation was silently never found.
     #[test]
+    #[cfg(windows)]
     fn the_same_folder_spelled_differently_is_the_same_folder() {
         let same = |a: &str, b: &str| same_folder(Path::new(a), Path::new(b));
         assert!(same(r"D:\Simic2", "D:/Simic2"), "スラッシュの向きは関係ない");
@@ -301,6 +313,19 @@ mod tests {
         assert!(!same(r"D:\Simic2", "D:/Simic"), "別のフォルダは別のフォルダ");
         assert!(!same(r"D:\Simic2", r"C:\Simic2"), "ドライブが違えば別");
         assert!(!same(r"D:\a\Simic2", r"D:\Simic2"), "階層が違えば別");
+    }
+
+    /// The same promise where the filesystem means what it says: a redundant
+    /// spelling is the same folder, and a different case is not.
+    #[test]
+    #[cfg(unix)]
+    fn the_same_folder_spelled_differently_is_the_same_folder_on_unix() {
+        let same = |a: &str, b: &str| same_folder(Path::new(a), Path::new(b));
+        assert!(same("/home/dev/simic2/", "/home/dev/simic2"), "末尾の区切りは関係ない");
+        assert!(same("/home/dev/./simic2", "/home/dev/simic2"), "「ここ」を挟んでも同じ");
+        assert!(!same("/home/dev/Simic2", "/home/dev/simic2"), "大文字小文字は別のフォルダ");
+        assert!(!same("/home/dev/simic2", "/home/dev/simic"), "別のフォルダは別のフォルダ");
+        assert!(!same("/home/dev/a/simic2", "/home/dev/simic2"), "階層が違えば別");
     }
 
     fn tmp(name: &str) -> PathBuf {

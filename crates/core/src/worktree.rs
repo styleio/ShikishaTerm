@@ -251,20 +251,7 @@ pub fn carry_into(plan: &Plan, names: &[String]) -> Vec<String> {
             continue;
         }
         let done = match from.is_dir() {
-            // A junction, which Windows lets anyone make -- a symbolic link
-            // needs rights that most people running this do not have
-            true => {
-                let mut link = std::process::Command::new("cmd");
-                link.args(["/c", "mklink", "/J"])
-                    .arg(&to)
-                    .arg(&from)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
-                crate::detach_console(&mut link)
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false)
-            }
+            true => link_folder(&from, &to),
             false => std::fs::copy(&from, &to).is_ok(),
         };
         if !done {
@@ -272,6 +259,31 @@ pub fn carry_into(plan: &Plan, names: &[String]) -> Vec<String> {
         }
     }
     trouble
+}
+
+/// A second name for one folder, made the way this system lets anyone make one.
+///
+/// On Windows that is a junction: a symbolic link there needs rights most
+/// people running this do not have. Everywhere else a symbolic link is the
+/// ordinary thing and needs nothing.
+fn link_folder(from: &Path, to: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let mut link = std::process::Command::new("cmd");
+        link.args(["/c", "mklink", "/J"])
+            .arg(to)
+            .arg(from)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        crate::detach_console(&mut link)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(from, to).is_ok()
+    }
 }
 
 /// Gets rid of a branch's folder, once there is nothing in it to lose.

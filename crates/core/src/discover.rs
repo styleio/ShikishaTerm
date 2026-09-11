@@ -79,6 +79,7 @@ pub fn ssh_hosts() -> Vec<String> {
 /// This is the list of places where "it is not UTF-8" has an obvious next
 /// answer. Everywhere else, output that is not UTF-8 is a program's own doing
 /// and there is nothing sensible to suggest.
+#[cfg(windows)]
 const LEGACY_CODE_PAGES: [(u32, &str); 5] = [
     (932, "Shift_JIS"),
     (936, "GBK"),

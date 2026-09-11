@@ -3553,13 +3553,15 @@ mod tests {
 
     #[test]
     fn a_group_is_the_only_thing_that_says_where_work_happens() {
+        let work = crate::local_path("D:/work/proj");
         let cfg: Config = serde_json::from_str(
-            r#"{"folders": [
-                 {"name": "main", "cwd": "D:/work/proj",
+            &r#"{"folders": [
+                 {"name": "main", "cwd": "<work>",
                   "tabs": [{"name": "実装", "command": "claude"},
                            {"name": "レビュー", "command": "codex"}]},
                  {"name": "feature/login", "cwd": "scripts",
-                  "tabs": [{"name": "実装", "command": "claude"}]}]}"#,
+                  "tabs": [{"name": "実装", "command": "claude"}]}]}"#
+                .replace("<work>", &work),
         )
         .unwrap();
         let ws = &cfg.resolve_workspaces().0[0];
@@ -3567,7 +3569,7 @@ mod tests {
         assert_eq!(ws.tabs.len(), 3);
         // Everyone in a group works in the one folder -- the whole point, since
         // a reviewer pointed somewhere else reviews nothing
-        assert_eq!(ws.cwd_of(&ws.tabs[0]), Some("D:/work/proj".into()));
+        assert_eq!(ws.cwd_of(&ws.tabs[0]), Some(work.clone().into()));
         assert_eq!(ws.cwd_of(&ws.tabs[1]), ws.cwd_of(&ws.tabs[0]));
         // Relative stays relative to the settings, so a folder of them travels
         assert_eq!(ws.cwd_of(&ws.tabs[2]), Some(root_dir().join("scripts")));
@@ -3589,7 +3591,8 @@ mod tests {
         )
         .unwrap();
 
-        append_folder_at(&file, "orion", None, Path::new("D:/work/fresh"), None, &Start::Same).unwrap();
+        let fresh = crate::local_path("D:/work/fresh");
+        append_folder_at(&file, "orion", None, Path::new(&fresh), None, &Start::Same).unwrap();
 
         let text = std::fs::read_to_string(&file).unwrap();
         let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -3598,7 +3601,7 @@ mod tests {
         let ws = &cfg.resolve_workspaces().0[0];
         assert_eq!(ws.folders.len(), 2, "元のタブの入れ物と、足した1つ: {text}");
         assert_eq!(ws.folders[0].cwd, None, "元のタブはアプリの場所のまま");
-        assert_eq!(ws.folders[1].cwd.as_deref(), Some(Path::new("D:/work/fresh")));
+        assert_eq!(ws.folders[1].cwd.as_deref(), Some(Path::new(&fresh)));
         let in_folder = |g: usize| ws.tabs.iter().filter(|t| t.folder == g).count();
         assert_eq!(in_folder(0), 2, "元のタブが元の入れ物に居ない: {text}");
         assert_eq!(in_folder(1), 0, "足したフォルダにタブが移った: {text}");
@@ -3612,20 +3615,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("shikisha-append-{}", crate::random_hex(6)));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("config.json");
+        let proj = crate::local_path("D:/work/proj");
+        let branch = crate::local_path("D:/work/proj.worktrees/feature/login");
         std::fs::write(
             &file,
             r#"{"max_chain": 7, "workspaces": [{"name": "Demo", "secrets_allow": ["x"],
-                 "folders": [{"cwd": "D:/work/proj", "tabs": [
+                 "folders": [{"cwd": "<proj>", "tabs": [
                    {"name": "実装", "id": "coder", "command": "claude"},
-                   {"name": "レビュー", "id": "rev", "command": "codex"}]}]}]}"#,
+                   {"name": "レビュー", "id": "rev", "command": "codex"}]}]}]}"#
+                .replace("<proj>", &proj),
         )
         .unwrap();
 
         append_folder_at(
             &file,
             "Demo",
-            Some(Path::new("D:/work/proj")),
-            Path::new("D:/work/proj.worktrees/feature/login"),
+            Some(Path::new(&proj)),
+            Path::new(&branch),
             Some("feature/login"),
             &Start::Same,
         )
@@ -3638,12 +3644,9 @@ mod tests {
 
         let ws = &cfg.resolve_workspaces().0[0];
         assert_eq!(ws.folders.len(), 2, "元の1つと、足した1つ");
-        assert_eq!(ws.folders[0].cwd.as_deref(), Some(Path::new("D:/work/proj")));
+        assert_eq!(ws.folders[0].cwd.as_deref(), Some(Path::new(&proj)));
         assert_eq!(ws.folders[1].name.as_deref(), Some("feature/login"));
-        assert_eq!(
-            ws.folders[1].cwd.as_deref(),
-            Some(Path::new("D:/work/proj.worktrees/feature/login"))
-        );
+        assert_eq!(ws.folders[1].cwd.as_deref(), Some(Path::new(&branch)));
         // The same faces, working in the new folder
         let names = |g: usize| {
             ws.tabs

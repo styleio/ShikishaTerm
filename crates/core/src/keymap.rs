@@ -5,7 +5,7 @@
 //! keys a shell swallows. Nothing here knows how the key was pressed -- a
 //! window, a phone's soft keyboard and a script all arrive at the same place.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// distinction it had no way to make.
 /// A modified Enter, Tab, Backspace or Escape, spelled so the program can tell

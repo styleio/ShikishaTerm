@@ -604,7 +604,7 @@ mod tests {
         clickable: &[usize],
     ) -> (Value, Vec<String>) {
         let mut strings: Vec<String> = Vec::new();
-        let mut idx = |s: &str, strings: &mut Vec<String>| -> i64 {
+        let idx = |s: &str, strings: &mut Vec<String>| -> i64 {
             if let Some(i) = strings.iter().position(|x| x == s) {
                 i as i64
             } else {

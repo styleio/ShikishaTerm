@@ -7,11 +7,10 @@
 
 use crate::tab::Tab;
 use crate::view::Surface;
-use crate::hooks::{HookEngine, TabCtx};
+use crate::hooks::HookEngine;
 use crate::view::{server_spec, title_of};
 use crate::{append_hook_log, resume_plan_of};
-use crate::{bridge, caps, config, folders, hooks, i18n, layout, profile, tab, vault, view, worktree};
-use anyhow::Result;
+use crate::{bridge, config, hooks, i18n, tab};
 
 /// The folders the git panels report on, keyed by their own names.
 ///

@@ -5159,7 +5159,6 @@ mod tests {
     /// Tests touching data/last-rally.lua share the same file, so serialize them
     static RALLY_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    #[test]
     /// The tab a hook receives must carry its automation name.
     ///
     /// It is the only handle that survives a rename — the number shifts when tabs
@@ -5277,6 +5276,7 @@ mod tests {
         assert!(checked > 0, "テンプレートを1つも見ていない (目印が変わった?)");
     }
 
+    #[test]
     fn lint_lua_flags_broken_syntax_only() {
         // Sound code parses (nil), including calls to names that won't exist at run
         // time — lint is syntax-only, so undefined-name misuse isn't its job.

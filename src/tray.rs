@@ -112,7 +112,7 @@ impl Tray {
         const OUR_ICON: *const u16 = 1 as *const u16; // MAKEINTRESOURCE(1)
         *SINK.lock().unwrap() = Some(Sink { on: Box::new(on), open: open.into(), quit: quit.into() });
         unsafe {
-            let previous = SetWindowLongPtrW(hwnd as *mut c_void, GWLP_WNDPROC, procedure as isize);
+            let previous = SetWindowLongPtrW(hwnd as *mut c_void, GWLP_WNDPROC, procedure as *const () as isize);
             PREVIOUS.store(previous, Ordering::Relaxed);
         }
 

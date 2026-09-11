@@ -216,6 +216,34 @@ pub fn repo_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+/// The same path, spelled the way this system spells one.
+///
+/// The tests were written where this app grew up, so they say `D:\work\proj`.
+/// That is not an absolute path anywhere else -- it is an ordinary relative
+/// name -- so a test handing one over was quietly measuring the folder the
+/// test runner happened to be standing in. Give it the Windows spelling and it
+/// hands back that same path as written here.
+#[cfg(test)]
+pub fn local_path(win: &str) -> String {
+    match cfg!(windows) {
+        true => win.to_string(),
+        false => win.replacen("D:", "", 1).replace('\\', "/"),
+    }
+}
+
+/// A path that is absolute, and nowhere near anything this app owns.
+///
+/// Written once because it differs: `C:/windows/x` is an absolute path on
+/// Windows and an ordinary relative name everywhere else, so a test that used
+/// it to prove a fence holds proved nothing at all on Linux.
+#[cfg(test)]
+pub fn outside_path(name: &str) -> String {
+    match cfg!(windows) {
+        true => format!("C:/windows/{name}"),
+        false => format!("/etc/{name}"),
+    }
+}
+
 /// Every Rust source file in the repository, wherever a crate keeps it.
 ///
 /// The checks that read the source itself -- which words a page asks for, which

@@ -9,29 +9,32 @@
 
 use crate::hooks::{Command, HookEngine, TabCtx};
 use crate::host::Shell;
-use crate::keymap::{key_to_bytes, key_to_bytes_with, named_key};
-use crate::send::{
-    PASTE_ACK_MS, PASTE_CHUNK, PendingSend, SUBMIT_GIVE_UP_MS, SUBMIT_QUIET_MS, Step, paste_chunks,
-};
+use crate::keymap::{key_to_bytes_with, named_key};
+use crate::send::{PendingSend, Step, paste_chunks};
 use crate::tab::{CopyState, RecordedStep, Tab, extract_text};
 use crate::view::{
-    RESULT_TAB, ScreenPush, Size, Surface, Ui, panes_json, pty_dims, remote_floor, screen_push,
-    server_spec, surfaces_of, terminal_size, title_of, ui_state_of,
+    RESULT_TAB, ScreenPush, Size, Surface, Ui, pty_dims, remote_floor, screen_push, surfaces_of,
+    terminal_size, title_of,
 };
 use crate::workspace::{
-    TabAuto, apply_ws_config, automation_by_pane, build_engine, carried_conversation,
-    extract_env_block, open_declared_browsers, panel_places, resolve_launch, spawn_workspace,
-    surface_of_id, switch_workspace, tab_options,
+    apply_ws_config, build_engine, extract_env_block, open_declared_browsers, panel_places,
+    spawn_workspace, surface_of_id, switch_workspace,
 };
 use crate::{
-    api, ball, bridge, exchange, tailscale, caps, config, crypto, detect, folders, grants, hooks, i18n, layout, limits,
-    netaddr, notify, profile, push, reader, remote, reply, sessionfind, ssh, tab, theme, toast,
-    uistate, update, usage, vault, watch, webui, worktree, wspack,
+    api, ball, bridge, caps, config, crypto, exchange, folders, grants, hooks, i18n, layout,
+    netaddr, notify, profile, remote, reply, sessionfind, ssh, tab, tailscale, update, watch,
+    webui,
 };
 use crate::detect::TabState;
+// Names only the tests at the bottom of this file reach for
+#[cfg(test)]
 use crate::{
-    FIXED_TOKEN_MIN, append_hook_log, detach_console, random_hex, remote_token, resume_plan_of,
+    keymap::key_to_bytes,
+    resume_plan_of,
+    send::{PASTE_ACK_MS, PASTE_CHUNK, SUBMIT_GIVE_UP_MS, SUBMIT_QUIET_MS},
+    workspace::{TabAuto, automation_by_pane, carried_conversation},
 };
+use crate::{FIXED_TOKEN_MIN, append_hook_log, random_hex, remote_token};
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::sync::{Arc, Mutex};
@@ -6569,8 +6572,14 @@ mod survey_tests {
     /// The probe picker follows argv first, then the prompt's shape
     #[test]
     fn probe_matches_the_shell() {
+        assert_eq!(survey_probe("bash", ""), POSIX_PROBE);
         assert_eq!(survey_probe("powershell", ""), PS_PROBE);
-        assert_eq!(survey_probe("C:\\Windows\\System32\\cmd.exe", ""), CMD_PROBE);
+        assert_eq!(survey_probe("cmd", ""), CMD_PROBE);
+        // Named by a whole path, spelled the way this system spells one
+        #[cfg(windows)]
+        assert_eq!(survey_probe(r"C:\Windows\System32\cmd.exe", ""), CMD_PROBE);
+        #[cfg(unix)]
+        assert_eq!(survey_probe("/usr/bin/zsh", ""), POSIX_PROBE);
         assert_eq!(survey_probe("wsl", ""), POSIX_PROBE);
         assert_eq!(survey_probe("ssh user@host", "user@host:~$ "), POSIX_PROBE);
         assert_eq!(survey_probe("ssh user@host", "PS C:\\Users\\a> "), PS_PROBE);
@@ -6588,6 +6597,7 @@ mod tests {
     /// panel opened on one project would be a way to read -- and send -- every
     /// file on the machine
     #[test]
+    #[cfg(windows)]
     fn the_panels_folder_is_as_far_as_it_goes() {
         let root = std::path::Path::new("D:/work/site");
         let under = |at: &str| local_under(root, at).map(|p| display_path_of(&p));
@@ -6603,6 +6613,28 @@ mod tests {
         assert_eq!(under("public/../../../secrets"), None, "遠回りしても外");
         assert_eq!(under("C:/Windows"), None, "別のドライブは外");
         assert_eq!(under("D:/work/site-two"), None, "名前が続いているだけの別フォルダ");
+    }
+
+    /// The same fence, drawn where paths look like this instead.
+    #[test]
+    #[cfg(unix)]
+    fn the_panels_folder_is_as_far_as_it_goes_on_unix() {
+        let root = std::path::Path::new("/work/site");
+        let under = |at: &str| local_under(root, at).map(|p| display_path_of(&p));
+
+        assert_eq!(under("public").as_deref(), Some("/work/site/public"), "中は通る");
+        assert_eq!(
+            under("/work/site/public/a.txt").as_deref(),
+            Some("/work/site/public/a.txt"),
+            "絶対でも中なら通る"
+        );
+        assert_eq!(under("public/../a.txt").as_deref(), Some("/work/site/a.txt"), "行って戻るだけなら中");
+        assert_eq!(under(""), Some("/work/site".to_string()), "根そのもの");
+
+        assert_eq!(under(".."), None, "一つ上は外");
+        assert_eq!(under("public/../../../secrets"), None, "遠回りしても外");
+        assert_eq!(under("/etc"), None, "根の外は外");
+        assert_eq!(under("/work/site-two"), None, "名前が続いているだけの別フォルダ");
     }
 
     /// What the phone is told when a tab finishes.

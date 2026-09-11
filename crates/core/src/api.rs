@@ -27,6 +27,7 @@
 //!     account — not someone who is already you
 
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::ffi::c_void;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -260,11 +261,22 @@ impl ApiServer {
             *p = None;
         }
         self.stop.store(true, Ordering::SeqCst);
+        // The accept thread is parked waiting for somebody to arrive, so it is
+        // woken the only way it can be: by arriving. Opening the path as a file
+        // is what does that for a pipe; a socket has to be connected to, which
+        // is the difference that left the thread waiting for ever
+        #[cfg(windows)]
         let _ = std::fs::File::open(&self.path);
+        #[cfg(unix)]
+        let _ = std::os::unix::net::UnixStream::connect(&self.path);
         if let Some(t) = self.accept.take() {
             let _ = t.join();
         }
         let _ = std::fs::remove_file(crate::config::state_path(TOKEN_FILE));
+        // A socket is a file, and an abandoned one would keep the next start
+        // from binding the same name
+        #[cfg(unix)]
+        let _ = std::fs::remove_file(&self.path);
         // The log said when the door opened; it should say when it closed
         crate::append_hook_log(&format!("external API stopped listening on {}", self.path));
     }
@@ -830,7 +842,13 @@ mod tests {
         // every agent already running would be locked out of a door it was
         // given the key to, with nothing on screen to say why
         let keys = Tokens::default();
+        #[cfg(windows)]
         let path = format!(r"\\.\pipe\shikisha-test-restart-{}", std::process::id());
+        #[cfg(unix)]
+        let path = std::env::temp_dir()
+            .join(format!("shikisha-test-restart-{}.sock", std::process::id()))
+            .display()
+            .to_string();
         let mut first = ApiServer::listen(path.clone(), Arc::clone(&keys)).unwrap();
         let token = first.mint("worker");
         first.shutdown();
@@ -852,12 +870,23 @@ mod tests {
     #[test]
     fn the_pipe_is_gone_once_the_app_stops_listening() {
         let mut server = served(|_| {});
-        assert!(std::fs::File::open(&server.path).is_ok());
+        assert!(knockable(&server.path), "開いているのに繋がらない");
         let path = server.path.clone();
         server.shutdown();
-        assert!(
-            std::fs::File::open(&path).is_err(),
-            "閉じたあとのパイプには繋がらない"
-        );
+        assert!(!knockable(&path), "閉じたあとのパイプには繋がらない");
+    }
+
+    /// Whether anything answers at that address. A pipe opens like a file; a
+    /// socket has to be connected to, and opening one as a file fails whether
+    /// or not anybody is listening -- so asking that way would prove nothing
+    fn knockable(path: &str) -> bool {
+        #[cfg(windows)]
+        {
+            std::fs::File::open(path).is_ok()
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::net::UnixStream::connect(path).is_ok()
+        }
     }
 }

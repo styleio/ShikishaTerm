@@ -291,12 +291,19 @@ fn read_head(path: &Path) -> Option<String> {
 /// are trying to find, so it becomes a wildcard like `*`. Both live only in
 /// file and folder names, never spanning a separator
 fn list(pattern: &str) -> Vec<PathBuf> {
-    let full = expand(&pattern.replace("{id}", "*"))
-        .to_string_lossy()
-        .replace('/', "\\");
-    let mut parts = full.split('\\');
+    // A pattern is written by whoever wrote the profile, with whichever
+    // separator they had in mind. Windows takes either, so both are folded
+    // to one there; everywhere else a backslash is an ordinary character in
+    // a name and folding it would cut a path in the wrong place.
+    let sep = std::path::MAIN_SEPARATOR;
+    let expanded = expand(&pattern.replace("{id}", "*"));
+    let full = match cfg!(windows) {
+        true => expanded.to_string_lossy().replace('/', "\\"),
+        false => expanded.to_string_lossy().to_string(),
+    };
+    let mut parts = full.split(sep);
     let mut roots: Vec<PathBuf> = match parts.next() {
-        Some(first) => vec![PathBuf::from(format!("{first}\\"))],
+        Some(first) => vec![PathBuf::from(format!("{first}{sep}"))],
         None => return Vec::new(),
     };
     for seg in parts {
@@ -361,6 +368,11 @@ mod tests {
         std::fs::write(path, lines.join("\n")).unwrap();
     }
 
+    /// A pattern written with this system's own separator
+    fn with_seps(p: &str) -> String {
+        p.replace('/', &std::path::MAIN_SEPARATOR.to_string())
+    }
+
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("shikisha-vault-{name}"));
         let _ = std::fs::remove_dir_all(&d);
@@ -383,7 +395,7 @@ mod tests {
         let src = Source {
             program: "claude".into(),
             with_id: vec!["--resume".into(), "{id}".into()],
-            verify: format!("{}\\*\\{{id}}.jsonl", root.display()),
+            verify: with_seps(&format!("{}/*/{{id}}.jsonl", root.display())),
             id_path: None,
             cwd_path: None,
         };
@@ -406,7 +418,7 @@ mod tests {
         let src = Source {
             program: "codex".into(),
             with_id: vec!["resume".into(), "{id}".into()],
-            verify: format!("{}\\*\\*\\*\\rollout-*-{{id}}.jsonl", root.display()),
+            verify: with_seps(&format!("{}/*/*/*/rollout-*-{{id}}.jsonl", root.display())),
             id_path: Some("payload.session_id".into()),
             cwd_path: Some("payload.cwd".into()),
         };

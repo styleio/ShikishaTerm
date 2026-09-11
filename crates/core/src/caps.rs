@@ -1217,6 +1217,11 @@ fn host_of(url: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// There is one refusal slot in the program, because there is one line on
+    /// the board to show it. Tests that read it take turns, or one of them
+    /// picks up what another had just put there
+    static REFUSALS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn caps(spec: CapabilitySpec, base: PathBuf) -> Capabilities {
         Capabilities::new(spec, base, HashMap::new(), HashMap::new(), Default::default())
     }
@@ -1246,6 +1251,7 @@ mod tests {
     /// never one an AI has not been let near
     #[test]
     fn a_script_reaches_only_its_own_workspaces_secrets() {
+        let _turn = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
         use crate::config::SecretMeta;
         use crate::grants::Subject;
         let open = |ai: bool| SecretMeta {
@@ -1302,6 +1308,7 @@ mod tests {
     /// are told the same thing, and nothing has to be kept in step by hand
     #[test]
     fn a_refused_secret_is_put_in_front_of_the_person() {
+        let _turn = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
         use crate::config::SecretMeta;
         use crate::grants::Subject;
         let c = Capabilities::new(
@@ -1339,6 +1346,7 @@ mod tests {
     /// unnoticed if the pair were ever folded back into a single answer
     #[test]
     fn a_secret_can_be_for_the_ai_alone() {
+        let _turn = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
         use crate::config::SecretMeta;
         use crate::grants::Subject;
         let for_whom = |human, ai| SecretMeta { human, ai, ..Default::default() };
@@ -1397,7 +1405,7 @@ mod tests {
         assert_eq!(c.read("reports", "ok.md").unwrap(), "hello");
         // A path that tries to escape outward is rejected
         assert!(c.write("reports", "../escape.md", "x").is_err());
-        assert!(c.write("reports", "C:/windows/x.md", "x").is_err());
+        assert!(c.write("reports", &crate::outside_path("x.md"), "x").is_err());
         // An unregistered gateway can't be used
         assert!(c.write("other", "a.md", "x").is_err());
         let _ = std::fs::remove_dir_all(&dir);

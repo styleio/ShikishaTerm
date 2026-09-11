@@ -651,6 +651,7 @@ mod tests {
     /// so they were drawn as strangers and a branch could not find the checkout
     /// it was cut from.
     #[test]
+    #[cfg(windows)]
     fn one_folder_spelled_two_ways_is_one_project() {
         let (main, side, _) = a_repository_with_a_worktree("family-spelling");
         let shouted = PathBuf::from(main.display().to_string().to_uppercase());
@@ -661,6 +662,26 @@ mod tests {
         assert_eq!(family_of(&shouted), family_of(&side));
         // And the checkout still knows it is not one of its own branches
         assert!(!is_linked(&shouted), "本体が枝に見えている");
+        assert!(is_linked(&side));
+    }
+
+    /// The same promise where case is not what hands out a second name for one
+    /// folder. A link is: someone keeps their projects under a short name that
+    /// points at the long one, opens a tab through it, and the branches cut
+    /// from that repository have to still be its branches.
+    #[test]
+    #[cfg(unix)]
+    fn one_folder_reached_two_ways_is_one_project() {
+        let (main, side, _) = a_repository_with_a_worktree("family-spelling");
+        let other = main.with_file_name("by-another-name");
+        let _ = std::fs::remove_file(&other);
+        std::os::unix::fs::symlink(&main, &other).expect("リンクが作れない");
+        assert!(other.exists(), "リンクの先が無い");
+        assert_ne!(other, main, "綴りとしては別物");
+
+        assert_eq!(family_of(&other), family_of(&main), "同じ家族と見なされていない");
+        assert_eq!(family_of(&other), family_of(&side));
+        assert!(!is_linked(&other), "本体が枝に見えている");
         assert!(is_linked(&side));
     }
 

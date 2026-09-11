@@ -6,7 +6,7 @@
 //! front, whether a screen is covering them, what the workspace is called.
 
 use crate::tab::Tab;
-use crate::{ball, config, folders, i18n, layout, ssh, uistate};
+use crate::{ball, config, folders, i18n, ssh, uistate};
 use std::time::Duration;
 
 /// The pane tree in the form the page draws it: one rectangle per pane, in
