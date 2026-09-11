@@ -303,13 +303,29 @@ pub fn user_agent() -> Option<String> {
 }
 
 pub fn browser_data_dir() -> std::path::PathBuf {
+    browser_store("webview2")
+}
+
+/// Where the browser on this machine keeps its profiles.
+///
+/// Beside the window's store rather than inside it: these are two different
+/// browsers and their stores are different things, and one folder holding both
+/// is a folder neither can be told to clear.
+pub fn chromium_data_dir() -> std::path::PathBuf {
+    browser_store("chromium")
+}
+
+fn browser_store(leaf: &str) -> std::path::PathBuf {
     let mode = load()
         .and_then(|c| c.browser_data)
         .unwrap_or_default();
     match mode.trim() {
-        "portable" => root_dir().join("data").join("webview2"),
-        "" | "local" => local_appdata().join("ShikishaTerm").join("webview2"),
-        other => std::path::PathBuf::from(other),
+        "portable" => root_dir().join("data").join(leaf),
+        "" | "local" => local_appdata().join("ShikishaTerm").join(leaf),
+        // A folder the person named. The window's store went straight into it,
+        // so that is where it stays, and anything else goes beside it
+        other if leaf == "webview2" => std::path::PathBuf::from(other),
+        other => std::path::PathBuf::from(other).join(leaf),
     }
 }
 

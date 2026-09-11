@@ -73,11 +73,38 @@ pub struct Headless {
     rows: u16,
     cols: u16,
     last: Option<crate::uistate::UiState>,
+    /// The browser on this machine, and the pages open in it. Nothing starts
+    /// one until a page is asked for
+    pages: std::rc::Rc<crate::chrome::Pages>,
 }
+
+/// How big a page is, with no window to fit it into.
+///
+/// It has to be some size: it is what a picture of the page is taken at and
+/// what every coordinate in it is measured against. This is the size the
+/// window itself opens at, so a script written at one desk and run on a server
+/// is looking at the same page.
+const PAGE_SIZE: (i32, i32, i32, i32) = (0, 0, 1280, 900);
 
 impl Headless {
     pub fn new(rows: u16, cols: u16) -> Self {
-        Self { mail: Mailbox::default(), rows, cols, last: None }
+        Self::browsing(rows, cols, std::rc::Rc::new(crate::chrome::Pages::new()))
+    }
+
+    /// The same, with its pages opened somewhere of your choosing. For a test
+    /// that wants a real browser and nobody's real cookies.
+    pub(crate) fn browsing(rows: u16, cols: u16, pages: std::rc::Rc<crate::chrome::Pages>) -> Self {
+        Self { mail: Mailbox::default(), rows, cols, last: None, pages }
+    }
+
+    /// Take in whatever the pages have said since last time.
+    fn hear_pages(&mut self) -> bool {
+        let said = self.pages.drain();
+        let any = !said.is_empty();
+        for ev in said {
+            self.mail.page_report(ev);
+        }
+        any
     }
 }
 
@@ -125,8 +152,36 @@ impl Shell for Headless {
     fn show(&mut self) {}
     fn say_where_it_went(&self) {}
     fn size(&self) -> anyhow::Result<Size> { Ok(Size { width: self.cols.saturating_mul(8), height: self.rows.saturating_mul(16) }) }
-    fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> anyhow::Result<Option<Event>> { let _ = (timeout, active_tab); std::thread::sleep(timeout); Ok(None) }
-    fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))> { None }
+    /// Nobody presses anything here, so this only ever waits -- but it waits
+    /// in slices, because the pages are talking on their own threads and a
+    /// frame from one of them is worth going round the loop for.
+    fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> anyhow::Result<Option<Event>> {
+        let _ = active_tab;
+        let until = std::time::Instant::now() + timeout;
+        loop {
+            if self.hear_pages() {
+                return Ok(None);
+            }
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Ok(None);
+            }
+            std::thread::sleep(left.min(Duration::from_millis(20)));
+        }
+    }
+
+    /// The browser on this machine.
+    ///
+    /// Handed over whether or not one is installed: what is here is the
+    /// bookkeeping, and the browser behind it is started the first time a page
+    /// is actually asked for. Answering `None` would say "this runtime does
+    /// not do pages", and it does
+    fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))> {
+        Some((
+            std::rc::Rc::clone(&self.pages) as std::rc::Rc<dyn shikisha_shared::BrowserHost>,
+            PAGE_SIZE,
+        ))
+    }
     /// A runtime with no window still needs the key to its own secrets, and a
     /// server is where the secrets live -- a login on somebody's laptop does
     /// not carry to it. See `askpass`: a credential the service manager handed
