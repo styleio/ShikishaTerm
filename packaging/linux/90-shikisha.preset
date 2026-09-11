@@ -1,0 +1,7 @@
+# Installing it does not start it.
+#
+# The default preset on most systems is "enable everything", so a service that
+# said nothing here would be turned on by the next `systemctl --user
+# preset-all` -- on a machine whose owner never asked for it. This program
+# opens terminals and runs agents; it starts when a person says so.
+disable shikisha.service

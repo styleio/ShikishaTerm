@@ -186,43 +186,51 @@ jobs:
       - name: It is one file that needs nothing
         run: |
           BIN=target/${{ matrix.target }}/release/shikisha-serve
-          file "$BIN"
-          file "$BIN" | grep -qE "static-pie linked|statically linked"
+          file "$BIN" > /tmp/what
+          cat /tmp/what
+          grep -qE "static-pie linked|statically linked" /tmp/what
           "$BIN" --version
 
-      # 同梱するのは本体と service ファイルだけ。service が署名の内側に入るので、
-      # インストーラは2つ目のダウンロードをしなくて済む
+      # 3つの形で出す。curl で入れる tar、apt の .deb、dnf の .rpm。
+      # tar には service ファイルを同梱する——署名の内側に入るので、
+      # install.sh が2つ目のダウンロードをしなくて済む
       - name: Pack
         run: |
           VERSION=${GITHUB_REF_NAME}
           case "$VERSION" in v*) ;; *) VERSION=v0.0.0-dryrun ;; esac
-          NAME="shikisha-serve-$VERSION-${{ matrix.arch }}-linux.tar.gz"
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/shikisha-serve dist/
-          cp packaging/linux/shikisha.service dist/
-          tar -czf "$NAME" -C dist shikisha-serve shikisha.service
-          sha256sum "$NAME" | tee "$NAME.sha256"
-          echo "NAME=$NAME" >> "$GITHUB_ENV"
+          BIN=target/${{ matrix.target }}/release/shikisha-serve
+          mkdir -p tar out
+          cp "$BIN" packaging/linux/shikisha.service tar/
+          tar -czf "out/shikisha-serve-$VERSION-${{ matrix.arch }}-linux.tar.gz" \
+              -C tar shikisha-serve shikisha.service
+          sudo apt-get install -y rpm
+          sh packaging/linux/mkpkg.sh "$BIN" "$VERSION" "${{ matrix.arch }}" out
+          ls -la out
 
-      - name: Sign
+      # 配るもの全部に checksum と署名。apt/dnf は自分の索引で真贋を見るが、
+      # 単体で拾った .deb を確かめる手段は、これしか無い
+      - name: Checksum and sign
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
+          made=$(ls out)
+          for f in $made; do
+            ( cd out && sha256sum "$f" > "$f.sha256" )
+          done
           if [ -z "${UPDATE_SIGNING_KEY:-}" ]; then
             echo "::warning::UPDATE_SIGNING_KEY is not set: install.sh will refuse this build"
             exit 0
           fi
-          cargo run --release --locked -p shikisha-core --bin sign -- sign "$NAME"
           PUB=$(sed -n 's/.*PUBLIC_KEY_HEX: &str = "\([0-9a-f]\{64\}\)".*/\1/p' crates/core/src/update.rs)
-          cargo run --release --locked -p shikisha-core --bin sign -- verify "$NAME" "$PUB"
+          for f in $made; do
+            cargo run --release --locked -p shikisha-core --bin sign -- sign "out/$f"
+            cargo run --release --locked -p shikisha-core --bin sign -- verify "out/$f" "$PUB"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}
-          path: |
-            shikisha-serve-*-linux.tar.gz
-            shikisha-serve-*-linux.tar.gz.sha256
-            shikisha-serve-*-linux.tar.gz.sig
+          path: out/*
           retention-days: 7
           if-no-files-found: error
 

@@ -60,13 +60,28 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
             cargo build --release -p shikisha-serve --locked \
                         --target x86_64-unknown-linux-musl
-          file target/x86_64-unknown-linux-musl/release/shikisha-serve |
-            tee /dev/stderr | grep -qE "static-pie linked|statically linked"
+          file target/x86_64-unknown-linux-musl/release/shikisha-serve > /tmp/what
+          cat /tmp/what
+          grep -qE "static-pie linked|statically linked" /tmp/what
 
       # インストーラは POSIX sh で書いてある。bash しか無い機械で試すと、
       # 通ったのに配った先で落ちる
       - name: The installer is POSIX sh
         run: |
           sudo apt-get install -y dash shellcheck
-          dash -n packaging/linux/install.sh
-          shellcheck --shell=sh packaging/linux/install.sh
+          for f in packaging/linux/*.sh; do
+            dash -n "$f"
+            shellcheck --shell=sh "$f"
+          done
+
+      # 中身が正しい .deb と .rpm になるか。タグを打つ前に分かる場所で見る
+      - name: The packages hold what they claim
+        run: |
+          sudo apt-get install -y rpm
+          mkdir -p /tmp/pkg
+          sh packaging/linux/mkpkg.sh              target/x86_64-unknown-linux-musl/release/shikisha-serve v0.0.0 x86_64 /tmp/pkg
+          dpkg-deb -c /tmp/pkg/*.deb > /tmp/deb.list
+          grep -q usr/bin/shikisha-serve /tmp/deb.list
+          grep -q usr/lib/systemd/user/shikisha.service /tmp/deb.list
+          rpm -qpl /tmp/pkg/*.rpm > /tmp/rpm.list 2>/dev/null
+          grep -q /usr/bin/shikisha-serve /tmp/rpm.list
