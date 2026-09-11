@@ -1864,5 +1864,8 @@
   "sftp.idle": "✓ 転送しているものはありません",
   "sftp.mkdir.here": "新規作成",
   "sftp.mkdir.here.say": "この PC の、次の場所に作ります:",
-  "sftp.mkdir.here.doing": "{name} を作っています…"
+  "sftp.mkdir.here.doing": "{name} を作っています…",
+  "err.connect.no_url": "--connect には盤面の住所が要ります。例: --connect http://host:8787/?t=…",
+  "err.connect.bad_url": "{url} は開ける住所ではありません。http:// と https:// だけです。",
+  "msg.connected": ">> {url} に繋ぎました。窓を閉じると終わります。"
 }
