@@ -14,6 +14,23 @@ use crate::tab::RecordedStep;
 /// Reports from a shell, sorted and waiting.
 #[derive(Default)]
 pub struct Mailbox {
+    /// The window was closed. With nowhere left to draw, the loop has no choice but to shut down.
+    pub closed: bool,
+    /// The window's ✕ was pressed. The loop decides between putting the
+    /// window away and quitting (a setting, and a question if an AI is at work)
+    pub close_requested: bool,
+    /// The notification-area icon asked for the window back
+    pub tray_open: bool,
+    /// "Quit" was chosen on the notification-area icon's menu
+    pub tray_quit: bool,
+    /// The sidebar gear (or a deep-link shortcut) was pressed. The loop opens the
+    /// settings page. Carries an optional section to land on and whether to return
+    /// to the board once saved (Some = requested, None = not requested).
+    pub open_settings: Option<(Option<String>, bool, Option<String>, Option<u32>)>,
+    /// The 🎯 panel's "save the replay" button. The loop copies the newest
+    /// run's replay.lua into Downloads and answers with a flash message.
+    pub replay_saves: bool,
+
     /// Panes clicked in the window. The loop moves focus to them
     pub focus_panes: Vec<u32>,
     /// Panes whose ✕ was pressed. The loop closes the view, not the tab

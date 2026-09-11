@@ -682,31 +682,34 @@ struct WinSurface {
     /// Intents that arrived from the window, converted into the form the loop reads.
     /// The loop only understands terminal key input, so everything gets funneled there.
     pending: std::collections::VecDeque<Event>,
-    /// The window was closed. With nowhere left to draw, the loop has no choice but to shut down.
-    closed: bool,
-    /// The window's ✕ was pressed. The loop decides between putting the
-    /// window away and quitting (a setting, and a question if an AI is at work)
-    close_requested: bool,
-    /// The notification-area icon asked for the window back
-    tray_open: bool,
-    /// "Quit" was chosen on the notification-area icon's menu
-    tray_quit: bool,
     /// The window is put away. Drawing goes on regardless (the phone reads the
     /// same state), but a notification's click has to bring it back first
     hidden: bool,
-    /// The sidebar gear (or a deep-link shortcut) was pressed. The loop opens the
-    /// settings page. Carries an optional section to land on and whether to return
-    /// to the board once saved (Some = requested, None = not requested).
-    open_settings: Option<(Option<String>, bool, Option<String>, Option<u32>)>,
     /// The folder a tab was asked for from, when the ask named one. Read once
     /// by the door that opens the form
     add_tab_folder: Option<String>,
-    /// The 🎯 panel's "save the replay" button. The loop copies the newest
-    /// run's replay.lua into Downloads and answers with a flash message.
-    replay_saves: bool,
 }
 
 impl WinSurface {
+    // ── What this shell measured, as a runtime asks for it ──────────────
+    /// Put the keyboard back where a person expects it after a placed page
+    /// had it (the window's own view, not the page's)
+    fn take_keyboard_back(&self) {
+        use shikisha_shared::BrowserHost;
+        let _ = self.win.focus(None);
+    }
+
+    fn geom_area(&self) -> (i32, i32, i32, i32) { self.area }
+    fn geom_full(&self) -> (i32, i32, i32, i32) { self.full }
+    fn geom_rows(&self) -> u16 { self.rows }
+    fn geom_cols(&self) -> u16 { self.cols }
+    fn geom_panes(&self) -> &[shikisha_shared::PaneGeom] { &self.pane_geom }
+    fn phone_size(&self) -> Option<(u16, u16)> { self.phone }
+    fn set_phone_size(&mut self, size: Option<(u16, u16)>) { self.phone = size; }
+    fn is_hidden(&self) -> bool { self.hidden }
+    fn last_drawn(&self) -> Option<&shikisha_core::uistate::UiState> { self.last.as_ref() }
+    fn queue_input(&mut self, ev: Event) { self.pending.push_back(ev); }
+
     /// Puts an externally-arrived operation into the same queue as window keystrokes.
     /// Whether it came from a phone or not, the loop sees no difference.
     fn inject(&mut self, ev: Event) {
@@ -737,7 +740,7 @@ impl WinSurface {
     fn take_open_settings(
         &mut self,
     ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)> {
-        self.open_settings.take()
+        self.mail.open_settings.take()
     }
 
     /// Open the Vault overlay on this window's page (the keyboard path; the
@@ -903,15 +906,15 @@ impl WinSurface {
                 }
                 // The window was closed. If we don't shut down here, a process with
                 // nowhere left to draw stays alive unseen, still holding the listening port.
-                Ev::Closed => self.closed = true,
-                Ev::CloseRequested => self.close_requested = true,
-                Ev::TrayOpen => self.tray_open = true,
-                Ev::TrayQuit => self.tray_quit = true,
+                Ev::Closed => self.mail.closed = true,
+                Ev::CloseRequested => self.mail.close_requested = true,
+                Ev::TrayOpen => self.mail.tray_open = true,
+                Ev::TrayQuit => self.mail.tray_quit = true,
                 // The settings page's "close settings" button. Where the tab actually
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.mail.close_settings = true,
                 Ev::OpenSettings { section, ret, folder, tabpos } => {
-                    self.open_settings = Some((section, ret, folder, tabpos))
+                    self.mail.open_settings = Some((section, ret, folder, tabpos))
                 }
                 Ev::VaultSearch { query } => self.mail.vault_queries.push(query),
                 ev @ Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
@@ -939,7 +942,7 @@ impl WinSurface {
                 Ev::Operate { target, goal } => self.mail.operates.push((target, goal)),
                 // Save the newest replay.lua to Downloads (the board can't
                 // download over HTTP; the loop owns the answer message).
-                Ev::ReplaySave => self.replay_saves = true,
+                Ev::ReplaySave => self.mail.replay_saves = true,
                 // ✨ suggestion request; the loop owns the assistant AI call.
                 Ev::Suggest { text } => self.mail.suggests.push(text),
                 // 🔍 survey request; the loop types the probe and captures it.
@@ -1290,13 +1293,7 @@ fn run_in_window() -> Result<()> {
         last_pane_screens: std::collections::HashMap::new(),
         pending: std::collections::VecDeque::new(),
         add_tab_folder: None,
-        closed: false,
-        close_requested: false,
-        tray_open: false,
-        tray_quit: false,
         hidden: false,
-        open_settings: None,
-        replay_saves: false,
     })
 }
 
@@ -1745,7 +1742,7 @@ impl WinSurface {
     /// converted into key operations the loop knows about.
     fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> Result<Option<Event>> {
         self.take_events(active_tab);
-        if self.closed {
+        if self.mail.closed {
             return Ok(None);
         }
         if let Some(e) = self.pending.pop_front() {
@@ -2465,8 +2462,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // who is actually looking — is what keeps the two of them from taking
         // the terminal off each other.
         (rows, cols) = pty_dims(terminal_size(
-            (surface.rows, surface.cols),
-            surface.phone,
+            (surface.geom_rows(), surface.geom_cols()),
+            surface.phone_size(),
             remote_ui.as_ref().is_some_and(|r| r.watched()),
         ));
         // This is the only place a terminal is resized — two places deciding
@@ -2477,7 +2474,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 tabs.len(),
                 &pane_layout,
                 &surfaces,
-                &surface.pane_geom,
+                &surface.geom_panes(),
                 (rows, cols),
             );
             for (t, (r, c)) in tabs.iter().zip(want) {
@@ -2796,7 +2793,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             if let Some(tab) = wintoast::clicked_tab() {
                 // Put away, the window is not among the visible ones `raise`
                 // looks through; it has to be brought back before it can be raised
-                if surface.hidden {
+                if surface.is_hidden() {
                     surface.show();
                 }
                 wintoast::raise();
@@ -3330,7 +3327,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // window keeps it. `ui` doesn't exist here yet, and
                     // building it again would be a second place that assembles
                     // state -- and one more full build of it every frame.
-                    ui: surface.last.clone(),
+                    ui: surface.last_drawn().cloned(),
                     // What the screen push last sent, so a viewer that joins now
                     // is handed the same picture the ones already here can see
                     screen_html: last_remote_rows.join("\n"),
@@ -3562,8 +3559,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // phone doesn't use (it watches the relay), so the window keeps
                     // the placement it measured for itself.
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Resize { rows, cols, .. }) => {
-                        surface.phone = Some((rows, cols));
-                        surface.pending.push_back(Event::Resize(cols, rows));
+                        surface.set_phone_size(Some((rows, cols)));
+                        surface.queue_input(Event::Resize(cols, rows));
                     }
                     // A Lua quick-action fired from the phone. It's not a keystroke,
                     // so route it straight to the same queue the window's ipc path
@@ -4055,7 +4052,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         // The window's size can change. If we don't hand it back over, a placed
         // page stays at its previous size.
-        caps.set_area(surface.area);
+        caps.set_area(surface.geom_area());
         // Place only the one currently selected at the terminal content's position.
         // The OS handles minimize and stacking order via ownership, but position
         // still needs to be tracked by us.
@@ -4079,7 +4076,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         let _ = caps.browser_focus(name);
                     }
                     None => {
-                        let _ = surface.win.focus(None);
+                        surface.take_keyboard_back();
                     }
                 }
             }
@@ -4266,7 +4263,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // Collapsed to nothing when it has no pane — the page stays alive, so
         // coming back to it doesn't reload it.
         {
-            let geom = &surface.pane_geom;
+            let geom = &surface.geom_panes();
             // An overlay is drawn by the page, and a browser is not: it is a
             // window of its own living inside ours, and no amount of stacking
             // puts a drawn thing over it. So while something is being shown
@@ -4281,9 +4278,9 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // Nothing is placed in a rectangle with no size: before the page
             // has measured itself there is no window to cover, and a page
             // given nothing is a page nobody can find again
-            let room = surface.full.2 > 0 && surface.full.3 > 0;
+            let room = surface.geom_full().2 > 0 && surface.geom_full().3 > 0;
             if settings_open && !covered && room {
-                caps.show_at(&[(SETTINGS_TAB.to_string(), surface.full)]);
+                caps.show_at(&[(SETTINGS_TAB.to_string(), surface.geom_full())]);
             } else {
             let shown: Vec<(String, (i32, i32, i32, i32))> = pane_layout
                 .leaves()
@@ -4299,7 +4296,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         .iter()
                         .find(|g| g.id == id)
                         .map(|g| g.rect)
-                        .unwrap_or(surface.area);
+                        .unwrap_or(surface.geom_area());
                     Some((key.clone(), rect))
                 })
                 .filter(|_| !covered)
@@ -5242,7 +5239,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
         // The 🎯 panel's replay button: put the newest run's durable script
         // where the user can grab it (the board itself can't download files)
-        if std::mem::take(&mut surface.replay_saves) {
+        if std::mem::take(&mut surface.mail.replay_saves) {
             flash = Some(match save_replay_to_downloads() {
                 Ok(Some(path)) => {
                     i18n::tp("msg.replay.saved", &[("path", &path.display().to_string())])
@@ -5490,7 +5487,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         if let Some(open) = surface.mail.take_update_card() {
             update::card_answered();
             if open {
-                surface.open_settings = Some((Some("update".into()), false, None, None));
+                surface.mail.open_settings = Some((Some("update".into()), false, None, None));
             }
         }
         for idx in surface.mail.take_limit_acks() {
@@ -5620,10 +5617,10 @@ fn run(mut surface: WinSurface) -> Result<()> {
         )?;
         // Once the window is gone, fall through to the same place as Ctrl+B q.
         // We want cleanup to live in exactly one place.
-        if surface.closed {
+        if surface.mail.closed {
             break;
         }
-        if std::mem::take(&mut surface.tray_open) {
+        if std::mem::take(&mut surface.mail.tray_open) {
             surface.show();
         }
         // The ✕ puts the window away by default: the AIs in the tabs go on
@@ -5650,8 +5647,8 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 update::apply_declined();
             }
         }
-        let close_pressed = std::mem::take(&mut surface.close_requested);
-        let quit_chosen = std::mem::take(&mut surface.tray_quit);
+        let close_pressed = std::mem::take(&mut surface.mail.close_requested);
+        let quit_chosen = std::mem::take(&mut surface.mail.tray_quit);
         if close_pressed && resident {
             surface.hide();
             surface.say_where_it_went();
@@ -10099,13 +10096,13 @@ mod shutdown_tests {
         );
         let src = include_str!("main.rs");
         assert!(
-            src.contains("Ev::Closed => self.closed = true"),
+            src.contains("Ev::Closed => self.mail.closed = true"),
             "窓が閉じた報告を受けていない"
         );
         // How newlines are written varies by environment, so check line by line
         let mut lines = src.lines().map(str::trim);
         assert!(
-            lines.any(|l| l == "if surface.closed {") && lines.next() == Some("break;"),
+            lines.any(|l| l == "if surface.mail.closed {") && lines.next() == Some("break;"),
             "閉じてもループが終わらない"
         );
     }
