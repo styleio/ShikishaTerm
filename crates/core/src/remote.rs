@@ -215,6 +215,12 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
     }
 }
 
+/// The tunnels open right now, by the name their two lines agreed on.
+///
+/// A tunnel is two sockets -- one each way, like the screen and the input that
+/// drives it -- so the second has to find what the first made
+type Pipes = Arc<Mutex<std::collections::HashMap<String, Arc<crate::tunnel::Pipe>>>>;
+
 /// Destinations for relay frames (one per connected WS client).
 /// A line that can no longer send is cleaned up on the next frame
 type FrameClients = Arc<Mutex<Vec<Sender<Vec<u8>>>>>;
@@ -634,6 +640,7 @@ impl RemoteUi {
         let (tx, rx) = channel::<RemoteCmd>();
         let stop = Arc::new(AtomicBool::new(false));
         let frame_clients: FrameClients = Arc::new(Mutex::new(Vec::new()));
+        let pipes: Pipes = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let state_clients: StateClients = Arc::new(Mutex::new(Vec::new()));
         let last_poll: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
@@ -687,6 +694,7 @@ impl RemoteUi {
             let snapshot = Arc::clone(&snapshot);
             let stop = Arc::clone(&stop);
             let clients = Arc::clone(&frame_clients);
+            let pipes = Arc::clone(&pipes);
             let states = Arc::clone(&state_clients);
             let polls = Arc::clone(&last_poll);
             let kf = Arc::clone(&keyframe_wanted);
@@ -701,8 +709,8 @@ impl RemoteUi {
                     }
                     if let Err(e) =
                         handle(
-                            req, &token, &snapshot, &tx, &clients, &states, &polls, &kf,
-                            &settings, &gate, &book_for_thread, sticky,
+                            req, &token, &snapshot, &tx, &clients, &pipes, &states, &polls,
+                            &kf, &settings, &gate, &book_for_thread, sticky,
                         )
                     {
                         crate::append_hook_log(&crate::i18n::tp(
@@ -719,6 +727,7 @@ impl RemoteUi {
             let snapshot = Arc::clone(&snapshot);
             let stop = Arc::clone(&stop);
             let clients = Arc::clone(&frame_clients);
+            let pipes = Arc::clone(&pipes);
             let states = Arc::clone(&state_clients);
             let polls = Arc::clone(&last_poll);
             let kf = Arc::clone(&keyframe_wanted);
@@ -732,8 +741,8 @@ impl RemoteUi {
                         break;
                     }
                     if let Err(e) = handle(
-                        req, &token, &snapshot, &tx, &clients, &states, &polls, &kf,
-                        &settings, &gate, &book_for_thread, sticky,
+                        req, &token, &snapshot, &tx, &clients, &pipes, &states, &polls,
+                        &kf, &settings, &gate, &book_for_thread, sticky,
                     ) {
                         crate::append_hook_log(&crate::i18n::tp(
                             "err.remote.hook_log",
@@ -1038,6 +1047,15 @@ const MAX_BODY: usize = 1 << 20; // 1 MiB
 /// would need this raised too.
 const MAX_ATTACH: usize = 96 << 20; // 96 MiB
 
+/// The key a WebSocket handshake carries, or nothing when this is not one.
+fn websocket_key(req: &tiny_http::Request) -> String {
+    req.headers()
+        .iter()
+        .find(|h| h.field.equiv("Sec-WebSocket-Key"))
+        .map(|h| h.value.as_str().to_string())
+        .unwrap_or_default()
+}
+
 /// Read a request body, capped at `max` bytes; None if it would exceed the cap.
 fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option<String>> {
     use std::io::Read as _;
@@ -1053,6 +1071,7 @@ fn handle(
     snapshot: &Arc<Mutex<Snapshot>>,
     tx: &Sender<RemoteCmd>,
     frame_clients: &FrameClients,
+    pipes: &Pipes,
     state_clients: &StateClients,
     last_poll: &Arc<Mutex<Option<Instant>>>,
     keyframe_wanted: &Arc<AtomicBool>,
@@ -1619,6 +1638,99 @@ fn handle(
                     }
                 }
                 let _ = w.send_close();
+            });
+        }
+        // ── A way out to the network, through this machine ──────────────
+        //
+        // For a page drawn on somebody's desk whose network belongs here. The
+        // reason is `localhost`: an agent on this machine starts something on
+        // port 3000, and a browser reaching the network from its own desk
+        // would look for port 3000 there, which is the wrong machine.
+        //
+        // Two lines, like the screen and the hand that drives it: this one
+        // carries what this machine says, `/ws-tunnel-in` carries what the
+        // client says. They find each other by the name in `p`, which the
+        // client makes up.
+        //
+        // No more power than the caller already holds -- a paired client can
+        // type into any terminal here, and a terminal can open any socket --
+        // and it is let go the moment the line drops or the session is cut,
+        // so a page left open on a disconnected laptop stops fetching through
+        // this machine.
+        ("GET", "/ws-tunnel") => {
+            let name = query_value(req.url(), "p");
+            let key = websocket_key(&req);
+            if name.len() < 8 || key.is_empty() {
+                return req
+                    .respond(Response::from_string("expected websocket").with_status_code(400))
+                    .map_err(Into::into);
+            }
+            let accept = crate::ws::accept_key(&key);
+            let resp = Response::empty(101).with_header(
+                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
+            );
+            let stream = req.upgrade("websocket", resp);
+            let (ftx, frx) = channel::<Vec<u8>>();
+            let pipe = crate::tunnel::Pipe::new(move |f| {
+                let _ = ftx.send(f);
+            });
+            pipes.lock().unwrap().insert(name.clone(), Arc::clone(&pipe));
+            let pipes = Arc::clone(pipes);
+            let gate = Arc::clone(gate);
+            let session = session.clone();
+            std::thread::spawn(move || {
+                let mut w = crate::ws::WsWriter::new(stream);
+                while let Ok(f) = frx.recv() {
+                    // Asked on every frame, not once at the handshake: this
+                    // line outlives the moment it was opened, and a session
+                    // that was cut has to stop carrying traffic at once
+                    if !gate.granted(&session) || w.send_binary(&f).is_err() {
+                        break;
+                    }
+                }
+                pipe.shut();
+                pipes.lock().unwrap().remove(&name);
+                let _ = w.send_close();
+            });
+        }
+        // The other half: what the client says, on its way out through here
+        ("GET", "/ws-tunnel-in") => {
+            let name = query_value(req.url(), "p");
+            let key = websocket_key(&req);
+            let found = pipes.lock().unwrap().get(&name).map(Arc::clone);
+            let Some(pipe) = found else {
+                // The line it belongs to is not here. Making one now would be
+                // a tunnel nothing can answer through
+                return req
+                    .respond(Response::from_string("no such tunnel").with_status_code(404))
+                    .map_err(Into::into);
+            };
+            if key.is_empty() {
+                return req
+                    .respond(Response::from_string("expected websocket").with_status_code(400))
+                    .map_err(Into::into);
+            }
+            let accept = crate::ws::accept_key(&key);
+            let resp = Response::empty(101).with_header(
+                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
+            );
+            let mut stream = req.upgrade("websocket", resp);
+            let gate = Arc::clone(gate);
+            let session = session.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let frame = crate::ws::read_frame(&mut stream);
+                    if !gate.granted(&session) {
+                        break;
+                    }
+                    match frame {
+                        Ok((crate::ws::Op::Binary, payload)) => pipe.accept(&payload),
+                        Ok((crate::ws::Op::Close, _)) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+                // The hand let go. Everything it was holding open goes too
+                pipe.shut();
             });
         }
         // Upload path for input. Carries the finger trail with low latency,
@@ -3158,6 +3270,113 @@ mod tests {
             "切断したはずの端末の操作が本体まで届いている"
         );
         ui.shutdown();
+    }
+
+    /// The way out to the network: a client asks this machine to reach
+    /// somewhere, and what comes back comes back.
+    ///
+    /// The point of it is `localhost`. What this test reaches is a socket on
+    /// *this* machine that the client never addressed and could not have
+    /// reached on its own, which is exactly the case a page on somebody's desk
+    /// has when it asks for the port an agent here just opened.
+    #[test]
+    fn the_tunnel_carries_a_connection_out_through_this_machine() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        // Something on this machine, and nowhere else
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let far = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            for mut sock in listener.incoming().flatten() {
+                let mut buf = [0u8; 256];
+                if let Ok(n) = sock.read(&mut buf) {
+                    let said = String::from_utf8_lossy(&buf[..n]).to_uppercase();
+                    let _ = sock.write_all(said.as_bytes());
+                }
+            }
+        });
+
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
+        let hostport = ui.url.trim_start_matches("http://").split("/?").next().unwrap().to_string();
+        let mut phone = Phone::new(&format!("http://{hostport}"));
+        phone.pair("tok123456789012");
+
+        let shake = |path: &str| -> TcpStream {
+            let mut sock = TcpStream::connect(&hostport).unwrap();
+            let req = format!(
+                "GET {path} HTTP/1.1\r\n\
+                 Host: localhost\r\n\
+                 Upgrade: websocket\r\n\
+                 Connection: Upgrade\r\n\
+                 Cookie: {}\r\n\
+                 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                 Sec-WebSocket-Version: 13\r\n\r\n",
+                phone.cookie
+            );
+            sock.write_all(req.as_bytes()).unwrap();
+            let mut buf = Vec::new();
+            let mut one = [0u8; 1];
+            loop {
+                sock.read_exact(&mut one).unwrap();
+                buf.push(one[0]);
+                if buf.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head = String::from_utf8_lossy(&buf).to_string();
+            assert!(head.contains("101"), "{path} が格上げされていない: {head}");
+            sock
+        };
+
+        // The line that carries what this machine says has to exist before the
+        // one that carries what the client says: the second finds the first
+        let mut down = shake("/ws-tunnel?p=abcdef0123&t=tok123456789012");
+        let mut up = shake("/ws-tunnel-in?p=abcdef0123&t=tok123456789012");
+
+        use crate::tunnel::{Kind, frame, unframe};
+        up.write_all(&mask_binary_frame(&frame(1, Kind::Open, far.as_bytes()))).unwrap();
+        up.write_all(&mask_binary_frame(&frame(1, Kind::Data, "ここから".as_bytes()))).unwrap();
+
+        let said = read_binary_frame(&mut down);
+        let (id, kind, payload) = unframe(&said).expect("枠が読めない");
+        assert_eq!((id, kind), (1, Kind::Data));
+        assert_eq!(String::from_utf8_lossy(payload), "ここから");
+
+        // And a tunnel nobody opened a line for is not made on the spot
+        assert_eq!(phone.status("/ws-tunnel-in?p=nothinghere&t=tok123456789012"), 404);
+        ui.shutdown();
+    }
+
+    /// Test helper: a binary frame the way a client must send one (masked)
+    fn mask_binary_frame(payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x82u8]; // FIN + binary
+        let mask = [0xA1u8, 0xB2, 0xC3, 0xD4];
+        assert!(payload.len() < 126, "テストの本文は126バイト未満");
+        out.push(0x80 | payload.len() as u8);
+        out.extend_from_slice(&mask);
+        out.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
+        out
+    }
+
+    /// Test helper: one unmasked binary frame, as a server sends them
+    fn read_binary_frame(sock: &mut std::net::TcpStream) -> Vec<u8> {
+        use std::io::Read as _;
+        let mut hdr = [0u8; 2];
+        sock.read_exact(&mut hdr).unwrap();
+        assert_eq!(hdr[0] & 0x0F, 0x2, "バイナリフレームでない");
+        assert_eq!(hdr[1] & 0x80, 0, "サーバーフレームにマスクが付いている");
+        let len = match hdr[1] & 0x7F {
+            126 => {
+                let mut n = [0u8; 2];
+                sock.read_exact(&mut n).unwrap();
+                u16::from_be_bytes(n) as usize
+            }
+            n => n as usize,
+        };
+        let mut payload = vec![0u8; len];
+        sock.read_exact(&mut payload).unwrap();
+        payload
     }
 
     /// Test helper: build a text frame the way a client must (masked)
