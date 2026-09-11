@@ -186,6 +186,9 @@ pub enum Cmd {
         rect: (i32, i32, i32, i32),
         /// This page's data storage (profile / private)
         profile: BrowserProfile,
+        /// The port of a proxy on this machine that everything this page
+        /// fetches goes through, when its network belongs to another machine
+        through: Option<u16>,
     },
     /// Set the placed page's position and size. Width or height of 0 hides it
     ChildBounds {
@@ -402,7 +405,11 @@ fn note_refused(said: &std::cell::Cell<u8>, who: Option<&str>, at: &str, body: &
 /// A handle to one running browser
 pub struct Browser {
     proxy: tao::event_loop::EventLoopProxy<Cmd>,
-    events: Receiver<Ev>,
+    /// Behind a lock because two threads now wait here: the loop that runs
+    /// the window, and -- when this window is drawing a server's pages -- the
+    /// one answering that server. Only ever one at a time, and each wait is
+    /// bounded by the deadline it was given
+    events: std::sync::Mutex<Receiver<Ev>>,
     next_id: AtomicU64,
     /// The window is put away and the board's page dropped with it (see `hide`)
     away: std::sync::atomic::AtomicBool,
@@ -416,6 +423,12 @@ pub struct Browser {
     /// began vanishes forever. That's exactly how the window's column
     /// count once never arrived
     spare: std::sync::Mutex<Vec<Ev>>,
+    /// Where a placed page's traffic goes, when this window is drawing the
+    /// pages of a server somewhere else. Everything the page fetches then
+    /// leaves from *that* machine -- which is the only reason drawing it here
+    /// is worth anything, since `localhost` has to mean the same thing on
+    /// both sides (see `shikisha_core::tunnel`)
+    through: std::sync::Mutex<Option<u16>>,
     /// The latest digest per page: position N-1 holds the backendNodeId
     /// behind `{ref=N}`. Cleared when that page navigates (backend ids die
     /// with the document, and a stale ref must say so, not click thin air)
@@ -579,11 +592,12 @@ impl Browser {
 
         let me = Self {
             proxy,
-            events: ev_rx,
+            events: std::sync::Mutex::new(ev_rx),
             next_id: AtomicU64::new(1),
             away: std::sync::atomic::AtomicBool::new(false),
             pending_rec: std::sync::Mutex::new(std::collections::HashSet::new()),
             spare: std::sync::Mutex::new(Vec::new()),
+            through: std::sync::Mutex::new(None),
             digests: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         // Don't return until the document is ready. Returning as soon as
@@ -602,7 +616,7 @@ impl Browser {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.page_not_ready")))?;
-            match self.events.recv_timeout(left) {
+            match self.events.lock().unwrap_or_else(|e| e.into_inner()).recv_timeout(left) {
                 Ok(Ev::Ready { from, url, .. }) => {
                     self.reask(from.as_deref());
                     return Ok(url);
@@ -716,6 +730,16 @@ impl Browser {
         })
     }
 
+    /// Send everything placed pages fetch through this proxy from now on.
+    ///
+    /// Set once, when this window starts drawing another machine's pages. It
+    /// takes effect for pages opened afterwards, because the setting belongs
+    /// to the browser environment a page is born into and a page cannot be
+    /// moved between two of them
+    pub fn browse_through(&self, proxy_port: u16) {
+        *self.through.lock().unwrap_or_else(|e| e.into_inner()) = Some(proxy_port);
+    }
+
     /// Place a page inside the same window.
     ///
     /// Using a separate window would make ownership, position tracking,
@@ -736,6 +760,7 @@ impl Browser {
             url: url.to_string(),
             rect,
             profile,
+            through: self.through.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         })
     }
 
@@ -772,7 +797,7 @@ impl Browser {
     pub fn drain(&self) -> Vec<Ev> {
         // Return anything that arrived while we were waiting first (preserves arrival order)
         let mut evs: Vec<Ev> = std::mem::take(&mut *self.spare.lock().unwrap());
-        evs.extend(self.events.try_iter());
+        evs.extend(self.events.lock().unwrap_or_else(|e| e.into_inner()).try_iter());
         for e in &evs {
             if let Ev::Ready { from, .. } = e {
                 self.reask(from.as_deref());
@@ -831,7 +856,7 @@ impl Browser {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.no_input")))?;
-            match self.events.recv_timeout(left) {
+            match self.events.lock().unwrap_or_else(|e| e.into_inner()).recv_timeout(left) {
                 Ok(Ev::Password { text }) => return Ok(text),
                 Ok(Ev::Closed) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.window_closed"))),
                 Ok(other) => {
@@ -864,7 +889,7 @@ impl Browser {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.no_result")))?;
-            match self.events.recv_timeout(left) {
+            match self.events.lock().unwrap_or_else(|e| e.into_inner()).recv_timeout(left) {
                 Ok(Ev::Result { id: got, ok, value }) if got == id => return Ok((ok, value)),
                 Ok(Ev::Ready { from, .. }) => {
                     self.reask(from.as_deref());
@@ -1527,7 +1552,7 @@ fn run_window(
                         }
                     }
                 }
-                Cmd::AddChild { name, url, rect, profile } => {
+                Cmd::AddChild { name, url, rect, profile, through } => {
                     // Creating a WebView2 controller runs synchronously ON THIS
                     // event-loop thread, and this thread also pumps the whole
                     // window's messages — while it runs, every click is frozen.
@@ -1543,7 +1568,19 @@ fn run_window(
                     // browser-profiles/<name> (like Chrome's "person").
                     // Private mode gets a unique temp folder on every call
                     // and is removed on close.
-                    let data_dir = profile_dir(&profile);
+                    // A page whose network belongs to another machine is a
+                    // different visitor from a page of the same profile whose
+                    // network is this one's, so its store is a different
+                    // folder -- and its browser environment a different one,
+                    // which is what carrying a proxy setting requires anyway
+                    let data_dir = match through {
+                        Some(_) => {
+                            let d = profile_dir(&profile).with_extension("through");
+                            let _ = std::fs::create_dir_all(&d);
+                            d
+                        }
+                        None => profile_dir(&profile),
+                    };
                     if profile.private {
                         ephemeral_dirs.insert(name.clone(), data_dir.clone());
                     }
@@ -1572,6 +1609,12 @@ fn run_window(
                     let fin_tx = ev_tx.clone();
                     let fin_who = name.clone();
                     let mut b = WebViewBuilder::new_with_web_context(ctx);
+                    if let Some(port) = through {
+                        b = b.with_proxy_config(wry::ProxyConfig::Http(wry::ProxyEndpoint {
+                            host: "127.0.0.1".into(),
+                            port: port.to_string(),
+                        }));
+                    }
                     if let Some(ua) = ua.as_deref() {
                         b = b.with_user_agent(ua);
                     }

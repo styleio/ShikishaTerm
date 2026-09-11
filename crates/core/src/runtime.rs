@@ -22,8 +22,8 @@ use crate::workspace::{
 };
 use crate::{
     api, ball, bridge, caps, config, crypto, exchange, folders, grants, hooks, i18n, layout,
-    netaddr, notify, profile, remote, reply, sessionfind, ssh, tab, tailscale, update, watch,
-    webui,
+    netaddr, notify, placed, profile, remote, reply, sessionfind, ssh, tab, tailscale, update,
+    watch, webui,
 };
 use crate::detect::TabState;
 // Names only the tests at the bottom of this file reach for
@@ -567,6 +567,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut engines: Vec<Option<HookEngine>> = (0..workspaces.len().max(1)).map(|_| None).collect();
     // If we have a window, put browsers inside it
     caps.set_host(shell.host());
+    // ...and if pages can be drawn either here or on a connected device, the
+    // person's setting says which
+    shell.draw_pages(placed::Draw::of(
+        cfg.as_ref().and_then(|c| c.browser_draw.as_deref()).unwrap_or_default(),
+    ));
     caps.set_workspace(ws_index);
     if let Some(w) = workspaces.get(ws_index) {
         // A script's `token` means this workspace's, and no other's
@@ -849,6 +854,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Ok((ui, mut errs)) = rx.try_recv() {
                 remote_ui = ui;
                 remote_rx = None;
+                // Pages drawn on a connected device are driven through this
+                if let (Some(r), Some(line)) = (remote_ui.as_ref(), shell.far_pages()) {
+                    r.set_page_line(line);
+                }
                 publish_remote(&remote_info, &remote_ui);
                 last_remote_ui = None;
                 if flash.is_none() {

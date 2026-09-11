@@ -1889,7 +1889,8 @@ mod tests {
         assert!(found().is_some(), "この機械にブラウザが無い");
         let site = serve();
         let store = std::env::temp_dir().join(format!("shikisha-seam-{}", crate::random_hex(8)));
-        let mut shell = crate::host::Headless::browsing(24, 80, Rc::new(Pages::under(store, true)));
+        let mut shell =
+            crate::host::Headless::browsing(24, 80, Rc::new(crate::placed::Placed::under(store, true)));
 
         let (host, rect) = shell.host().expect("窓の無いランタイムがページを断っている");
         assert!(rect.2 > 0 && rect.3 > 0, "ページの寸法が無い: {rect:?}");

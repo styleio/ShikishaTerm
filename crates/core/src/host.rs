@@ -59,6 +59,21 @@ pub trait Shell {
     fn size(&self) -> anyhow::Result<Size>;
     fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> anyhow::Result<Option<Event>>;
     fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))>;
+
+    /// The end of the line a connected client answers browser asks on.
+    ///
+    /// Only a shell whose pages can be drawn on somebody else's machine has
+    /// one. A window draws its own pages, on the machine it is already on
+    fn far_pages(&self) -> Option<crate::faraway::Line> {
+        None
+    }
+
+    /// Where the next page should be drawn. Meaningless to a shell that can
+    /// only draw in one place, which is why it does nothing by default
+    fn draw_pages(&self, where_: crate::placed::Draw) {
+        let _ = where_;
+    }
+
     fn ask_password(&mut self, title: &str, note: &str) -> anyhow::Result<Option<String>>;
     fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> anyhow::Result<()>;
 }
@@ -73,9 +88,9 @@ pub struct Headless {
     rows: u16,
     cols: u16,
     last: Option<crate::uistate::UiState>,
-    /// The browser on this machine, and the pages open in it. Nothing starts
-    /// one until a page is asked for
-    pages: std::rc::Rc<crate::chrome::Pages>,
+    /// The pages the runtime has open, on this machine or on whoever is
+    /// connected. Nothing starts a browser until a page is asked for
+    pages: std::rc::Rc<crate::placed::Placed>,
 }
 
 /// How big a page is, with no window to fit it into.
@@ -88,12 +103,12 @@ const PAGE_SIZE: (i32, i32, i32, i32) = (0, 0, 1280, 900);
 
 impl Headless {
     pub fn new(rows: u16, cols: u16) -> Self {
-        Self::browsing(rows, cols, std::rc::Rc::new(crate::chrome::Pages::new()))
+        Self::browsing(rows, cols, std::rc::Rc::new(crate::placed::Placed::new()))
     }
 
     /// The same, with its pages opened somewhere of your choosing. For a test
     /// that wants a real browser and nobody's real cookies.
-    pub(crate) fn browsing(rows: u16, cols: u16, pages: std::rc::Rc<crate::chrome::Pages>) -> Self {
+    pub(crate) fn browsing(rows: u16, cols: u16, pages: std::rc::Rc<crate::placed::Placed>) -> Self {
         Self { mail: Mailbox::default(), rows, cols, last: None, pages }
     }
 
@@ -176,6 +191,15 @@ impl Shell for Headless {
     /// bookkeeping, and the browser behind it is started the first time a page
     /// is actually asked for. Answering `None` would say "this runtime does
     /// not do pages", and it does
+    fn far_pages(&self) -> Option<crate::faraway::Line> {
+        Some(self.pages.far())
+    }
+
+    /// Read from the config, and re-read whenever it changes
+    fn draw_pages(&self, where_: crate::placed::Draw) {
+        self.pages.prefer(where_);
+    }
+
     fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))> {
         Some((
             std::rc::Rc::clone(&self.pages) as std::rc::Rc<dyn shikisha_shared::BrowserHost>,
