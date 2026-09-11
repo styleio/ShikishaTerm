@@ -8,3 +8,4 @@
 *.service       text eol=lf
 *.preset        text eol=lf
 *.1             text eol=lf
+*.asc           text eol=lf
