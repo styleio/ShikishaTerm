@@ -1,0 +1,62 @@
+.TH SHIKISHA-SERVE 1 "2026-09-11" "SHIKISHA" "User Commands"
+.SH NAME
+shikisha-serve \- SHIKISHA with no window
+.SH SYNOPSIS
+.B shikisha-serve
+.RI [ options ]
+.SH DESCRIPTION
+Opens the terminals named in its settings, watches what the programs in them
+are doing, fires the automation they trigger, and serves the board \(em the
+screen you would otherwise be sitting in front of \(em over the network, to a
+browser, a phone, or a laptop somewhere else.
+.PP
+It is the same runtime the windowed program on Windows runs, given nothing to
+draw with. Meant for a machine nobody is sitting at: a server, a cloud VM.
+.SH OPTIONS
+.TP
+.BR \-V ", " \-\-version
+Print the version and the commit it was built from.
+.TP
+.BR \-h ", " \-\-help
+Print a summary and exit.
+.SH FILES
+Everything it is given \(em settings, data, logs, the workspaces you define \(em
+lives under one folder, chosen in this order:
+.TP
+.B $SHIKISHA_HOME
+If set. This is how two of them run on one machine.
+.TP
+.I beside the program
+If a
+.B config
+folder is sitting there. An unpacked copy keeps its settings with it.
+.TP
+.B $XDG_DATA_HOME/shikisha
+Otherwise \(em
+.IR ~/.local/share/shikisha .
+An installed copy cannot write beside itself, so this is where it goes.
+.SH ENVIRONMENT
+.TP
+.B SHIKISHA_HOME
+Where to keep everything, overriding the choice above.
+.SH SERVICE
+A systemd
+.I user
+unit is installed, and not enabled: starting something that keeps running is
+the machine owner's decision.
+.PP
+.nf
+.RS
+systemctl \-\-user enable \-\-now shikisha
+loginctl enable\-linger "$USER"
+.RE
+.fi
+.PP
+The second line is what keeps it running after you log out.
+.SH SECURITY
+The board is served with a token in its address, and the remote is off until
+you turn it on. Anyone holding that address can drive every terminal it shows.
+.SH SEE ALSO
+The manual, and everything this can be told to do:
+.UR https://github.com/styleio/ShikishaTerm
+.UE
