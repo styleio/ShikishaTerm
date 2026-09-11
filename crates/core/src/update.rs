@@ -477,7 +477,7 @@ fn releases_api() -> Option<String> {
     ))
 }
 
-fn agent(body: Duration) -> ureq::Agent {
+pub(crate) fn agent(body: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
@@ -647,7 +647,11 @@ pub fn verify_signature(bytes: &[u8], sig_hex: &str, key_hex: &str) -> Result<()
 }
 
 /// Unpacks a zip into a folder. Entries that would land outside it are refused
-fn unpack(zip_path: &Path, into: &Path) -> Result<()> {
+///
+/// The mode each entry was packed with is put back on unix, because a file
+/// that has lost its executable bit is a program that will not start -- and
+/// the reason is invisible from anywhere except a directory listing
+pub(crate) fn unpack(zip_path: &Path, into: &Path) -> Result<()> {
     let _ = std::fs::remove_dir_all(into);
     std::fs::create_dir_all(into)?;
     let file = std::fs::File::open(zip_path)?;
@@ -665,6 +669,11 @@ fn unpack(zip_path: &Path, into: &Path) -> Result<()> {
         }
         let mut f = std::fs::File::create(&out)?;
         std::io::copy(&mut entry, &mut f)?;
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode));
+        }
     }
     Ok(())
 }

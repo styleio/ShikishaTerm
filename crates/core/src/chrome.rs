@@ -48,10 +48,17 @@ const NAMES: &[&str] = &["chrome.exe", "msedge.exe"];
 /// Looked for rather than configured, because a person who installed a browser
 /// with their package manager has already said where it goes. A setting would
 /// be a second place for that answer to be wrong.
+///
+/// The one this program fetched for itself comes before the machine's, when
+/// there is one: its version is known, and a known version is the whole reason
+/// it was fetched.
 pub fn found() -> Option<std::path::PathBuf> {
     if let Some(told) = std::env::var_os("SHIKISHA_CHROME") {
         let p = std::path::PathBuf::from(told);
         return p.is_file().then_some(p);
+    }
+    if let Some(ours) = fetched() {
+        return Some(ours);
     }
     for name in NAMES {
         if let Some(p) = on_path(name) {
@@ -81,6 +88,183 @@ fn on_path(name: &str) -> Option<std::path::PathBuf> {
         .find(|p| p.is_file())
 }
 
+// ── a browser of this program's own ───────────────────────────────────────
+//
+// A machine with no browser used to be the end of it: the commands refused
+// and said `apt install chromium`. That is a fair thing to say to somebody
+// who is already installing things on a server, and a poor thing to say to
+// somebody whose agent just tried to look at the page it built.
+//
+// So: when there is none, fetch one. Not into the release -- a release
+// carrying a browser is several hundred megabytes larger on every channel,
+// and the thing that makes a Chromium your responsibility is shipping the
+// binary. This is Google's own build, downloaded from Google, kept under this
+// program's data folder. Nobody who does not use the browser pays for it.
+
+/// The version fetched when the machine has none.
+///
+/// Pinned, rather than whatever is newest. The DevTools protocol is not a
+/// stable interface, and the parts leaned on hardest here -- the accessibility
+/// tree and the layout snapshot the digest is built from -- are exactly the
+/// parts that differ between versions. A pinned version is the difference
+/// between a script behaving the same everywhere and a script behaving
+/// differently on every machine it is run on.
+const PINNED: &str = "153.0.8010.36";
+
+/// A build of that version, for one shape of machine.
+struct Build {
+    /// What the download calls this machine
+    platform: &'static str,
+    /// Where the browser is inside the zip
+    exe: &'static str,
+    /// What the zip weighed when it was measured here, as a check that it
+    /// arrived whole. `None` for a platform nobody has measured yet, where
+    /// the transport is all the assurance there is
+    sha256: Option<&'static str>,
+}
+
+/// The build for this machine, or nothing where no build is published.
+fn build_for_this_machine() -> Option<Build> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return Some(Build {
+        platform: "linux64",
+        exe: "chrome-linux64/chrome",
+        sha256: None,
+    });
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    return Some(Build {
+        platform: "linux-arm64",
+        exe: "chrome-linux-arm64/chrome",
+        sha256: None,
+    });
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return Some(Build {
+        platform: "win64",
+        exe: "chrome-win64/chrome.exe",
+        sha256: None,
+    });
+    #[cfg(not(any(
+        all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+        all(target_os = "windows", target_arch = "x86_64")
+    )))]
+    return None;
+}
+
+/// Where fetched browsers are kept. Under the version, so a later pin lands
+/// beside the one in use rather than on top of a browser that is running
+fn browsers_dir() -> std::path::PathBuf {
+    crate::config::chromium_data_dir().join("browsers")
+}
+
+/// The one this program fetched, if it is already here.
+pub fn fetched() -> Option<std::path::PathBuf> {
+    let build = build_for_this_machine()?;
+    let exe = browsers_dir().join(PINNED).join(build.platform).join(build.exe);
+    exe.is_file().then_some(exe)
+}
+
+/// Fetch the pinned browser, unless it is already here.
+///
+/// Google publishes these builds for exactly this purpose (Chrome for
+/// Testing): a version that can be named, at an address that does not move.
+/// What arrives is unpacked beside the version it belongs to, and only put
+/// under that name once it is whole -- so a download cut off halfway is never
+/// mistaken for a browser.
+pub fn fetch() -> anyhow::Result<std::path::PathBuf> {
+    if let Some(here) = fetched() {
+        return Ok(here);
+    }
+    let build = build_for_this_machine()
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.chrome.none")))?;
+    let platform = build.platform;
+    let url = format!(
+        "https://storage.googleapis.com/chrome-for-testing-public/{PINNED}/{platform}/chrome-{platform}.zip"
+    );
+    let root = browsers_dir();
+    std::fs::create_dir_all(&root)?;
+    let part = root.join(format!("part-{}", crate::random_hex(6)));
+    std::fs::create_dir_all(&part)?;
+
+    let outcome = (|| -> anyhow::Result<()> {
+        let zip = part.join("chrome.zip");
+        stream_to(&url, &zip)?;
+        if let Some(want) = build.sha256 {
+            crate::update::verify_sha256(&std::fs::read(&zip)?, want)?;
+        }
+        crate::update::unpack(&zip, &part.join("out"))?;
+        if !part.join("out").join(build.exe).is_file() {
+            anyhow::bail!(crate::i18n::t("err.chrome.download_empty"));
+        }
+        // Somebody else may have finished the same download while this one
+        // ran. Theirs is as good as ours, and theirs may already be running
+        if fetched().is_some() {
+            return Ok(());
+        }
+        let home = root.join(PINNED);
+        std::fs::create_dir_all(&home)?;
+        let _ = std::fs::remove_dir_all(home.join(platform));
+        std::fs::rename(part.join("out"), home.join(platform))?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&part);
+    outcome?;
+
+    fetched().ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.chrome.download_empty")))
+}
+
+/// Pull a large file down, saying how far along it is.
+///
+/// A few hundred megabytes with nothing said about it is indistinguishable
+/// from a program that has stopped, so it is said -- in the log, which is
+/// where a runtime with nobody in front of it can say anything at all.
+fn stream_to(url: &str, to: &std::path::Path) -> anyhow::Result<()> {
+    let mut resp = crate::update::agent(std::time::Duration::from_secs(20 * 60))
+        .get(url)
+        .call()?;
+    let total: Option<u64> = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+    let mut reader = resp.body_mut().as_reader();
+    let mut file = std::fs::File::create(to)?;
+    let mut got: u64 = 0;
+    let mut said = 0;
+    let mut buf = [0u8; 256 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut reader, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut file, &buf[..n])?;
+        got += n as u64;
+        let part = total.map_or(0, |t| got * 100 / t.max(1));
+        if part >= said + 20 {
+            said = part;
+            crate::append_hook_log(&format!("chrome: fetching {PINNED} -- {part}%"));
+        }
+    }
+    Ok(())
+}
+
+/// Where a browser is, fetching this program's own if the machine has none.
+fn ready() -> anyhow::Result<std::path::PathBuf> {
+    if let Some(p) = found() {
+        return Ok(p);
+    }
+    // Said before it starts, because it is a few hundred megabytes of
+    // somebody's connection and they are entitled to know where it went
+    crate::append_hook_log(&format!(
+        "chrome: no browser on this machine, fetching {PINNED} from Google (install one with your package manager to use that instead)"
+    ));
+    // Both halves of it, when this fails: there is none here, and the one
+    // that would have been fetched did not arrive. Either can be answered by
+    // the person, and only if they are told which
+    fetch().map_err(|e| {
+        anyhow::anyhow!(crate::i18n::tp("err.chrome.no_fetch", &[("e", &e.to_string())]))
+    })
+}
+
 /// A browser this process started, and the connection to it.
 pub struct Chrome {
     child: std::process::Child,
@@ -106,7 +290,7 @@ impl Chrome {
     /// browser wearing the same name, and the things it does differently are
     /// exactly the things a page notices.
     pub fn start_in(profile: std::path::PathBuf, temporary: bool) -> anyhow::Result<Self> {
-        let exe = found().ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.chrome.none")))?;
+        let exe = ready()?;
         std::fs::create_dir_all(&profile)?;
 
         let mut cmd = std::process::Command::new(&exe);
@@ -1546,6 +1730,42 @@ mod tests {
         let png = shot.get("data").and_then(|v| v.as_str()).unwrap_or("");
         assert!(png.len() > 1000, "絵が小さすぎる: {} 文字", png.len());
         println!("screenshot: {} 文字の PNG", png.len());
+    }
+
+    /// The browser this program fetches for itself, on a machine with none.
+    ///
+    /// Slow the first time -- it is a few hundred megabytes -- and instant
+    /// afterwards, which is the part a runtime depends on: the fetch is what
+    /// gets called, and it has to cost nothing once the browser is there.
+    ///
+    ///     cargo test -p shikisha-core --lib gets_one -- --ignored --nocapture
+    #[test]
+    #[ignore = "fetches a browser (a few hundred megabytes, once)"]
+    fn a_machine_with_no_browser_gets_one() {
+        let started = std::time::Instant::now();
+        let exe = fetch().expect("ブラウザを取得できない");
+        println!("browser: {} ({:?})", exe.display(), started.elapsed());
+        assert!(exe.is_file(), "取得したはずの場所に無い");
+
+        // Asked again, it hands back the same one without fetching anything
+        let again = std::time::Instant::now();
+        assert_eq!(fetch().expect("2度目"), exe);
+        assert!(
+            again.elapsed() < std::time::Duration::from_secs(2),
+            "2度目も落としに行っている: {:?}",
+            again.elapsed()
+        );
+
+        // The finder prefers it over whatever else is on this machine --
+        // a known version being the whole reason it was fetched
+        assert_eq!(found().as_deref(), Some(exe.as_path()), "自前のものを選んでいない");
+
+        // And it is a browser: it starts, and it is the version that was asked for
+        let chrome = Chrome::start().expect("取得したブラウザが起動しない");
+        let said = chrome.call("Browser.getVersion", serde_json::json!({})).expect("版を答えない");
+        let product = said.get("product").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(product.contains(PINNED), "固定した版ではない: {product}");
+        println!("version: {product}");
     }
 
     /// A profile name cannot become a different folder.
