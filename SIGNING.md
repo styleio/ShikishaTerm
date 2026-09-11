@@ -6,6 +6,7 @@ There are two ways to get SHIKISHA-TERM, and they are signed differently.
 | --- | --- | --- |
 | **Microsoft Store** | Microsoft, with their own certificate | No warning |
 | **The zip on [Releases](https://github.com/styleio/ShikishaTerm/releases)** | Nobody — it is unsigned | SmartScreen warns; see [the README](README.md#about-the-windows-warning) |
+| **The Linux build** (tarball, `.deb`, `.rpm`) | This project's own Ed25519 key | Checked by `install.sh` before anything is placed |
 
 A package submitted to the Microsoft Store is signed by Microsoft as part of
 publishing it, so the Store copy carries a real, verifiable signature that this
@@ -22,10 +23,19 @@ than trusting the absence of a warning.
 It does carry one signature of its own. `SHIKISHA-TERM.zip.sig` is an Ed25519
 signature over the zip, made in the release workflow with a key that exists only
 in the repository's secrets; the public half is compiled into the program
-(`src/update.rs`). It is what the program's own updater checks before it puts a
-downloaded version in place — a zip whose signature the key does not accept is
-refused, whatever its SHA256 says. Windows does not read it, and it is not a
-substitute for a certificate.
+(`crates/core/src/update.rs`). It is what the program's own updater checks before
+it puts a downloaded version in place — a zip whose signature the key does not
+accept is refused, whatever its SHA256 says. Windows does not read it, and it is
+not a substitute for a certificate.
+
+On Linux that same signature is the whole of it. There is no SmartScreen to
+warn anybody and no certificate to buy, so every Linux artifact — the tarball,
+the `.deb` and the `.rpm` — carries a `.sig` made with the same key, and
+`packaging/linux/install.sh` checks both the SHA256 and that signature before it
+puts anything in place. Either check failing means nothing is installed. The key
+it checks against is written into the installer as a PEM, and a test in the
+repository compares it with the one compiled into the program, so the two cannot
+drift apart.
 
 ## Roles
 

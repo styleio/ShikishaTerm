@@ -9,6 +9,15 @@
 #  along with its checksum and its signature, check both, and only then unpack
 #  it. Nothing is run, and nothing is put in place, before it has been checked.
 #
+#  It asks for nothing and needs no privileges. Everything lands under the home
+#  folder of whoever runs it: the binary in ~/.local/bin, the service in
+#  ~/.config/systemd/user, and what the program is given in
+#  ~/.local/share/shikisha. That is not modesty -- the machine this is mostly
+#  aimed at has nobody sitting at it, and is set up by a recipe with no
+#  terminal to type a password into. An installer that reached for sudo would
+#  simply stop there. Somewhere else is a --prefix away, and that folder is
+#  yours to have made writable.
+#
 #  The public key below is the one compiled into the program itself
 #  (crates/core/src/update.rs), so an installed copy and a self-updating copy
 #  trust exactly the same key. A test in the repository keeps the two equal —
@@ -16,7 +25,7 @@
 #
 #  Options:
 #      --version vX.Y.Z   a particular release, rather than the newest
-#      --prefix DIR       where the binary goes (default /usr/local/bin)
+#      --prefix DIR       where the binary goes (default ~/.local/bin)
 #      --service          enable and start the user service once installed
 #      --no-service       do not write the service file at all
 #
@@ -33,11 +42,38 @@ MCowBQYDK2VwAyEAk16isr1sZUfCE4TQGzWqV6nlAnNJoiDCFe73D+pHO7Q=
 -----END PUBLIC KEY-----'
 
 VERSION=latest
-PREFIX=/usr/local/bin
+PREFIX=${HOME:?no home folder to install into}/.local/bin
 SERVICE=ask
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'shikisha: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'USAGE'
+install.sh -- puts SHIKISHA on a Linux machine
+
+  curl -fsSL https://raw.githubusercontent.com/styleio/ShikishaTerm/main/packaging/linux/install.sh | sh
+
+Downloads the build this machine wants, checks its checksum and its Ed25519
+signature, and only then puts anything in place. If either check fails,
+nothing is installed.
+
+It asks for nothing and needs no privileges. The binary goes to ~/.local/bin,
+the service file to ~/.config/systemd/user, and what the program is given to
+~/.local/share/shikisha.
+
+  --version vX.Y.Z   a particular release, rather than the newest
+  --prefix DIR       where the binary goes (default ~/.local/bin)
+  --service          enable and start the user service once installed
+  --no-service       do not write the service file at all
+  -h, --help         this
+
+SHIKISHA_INSTALL_BASE points the download somewhere other than GitHub -- a
+mirror, or a folder served on a machine with no way out. The signature is
+checked just the same: where it came from decides nothing, who signed it
+decides everything.
+USAGE
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -45,7 +81,7 @@ while [ $# -gt 0 ]; do
         --prefix)  [ $# -ge 2 ] || die "--prefix wants a folder"; PREFIX=$2;  shift 2 ;;
         --service)    SERVICE=yes ; shift ;;
         --no-service) SERVICE=no  ; shift ;;
-        -h|--help) sed -n '3,27p' "$0" | sed 's/^#  \{0,1\}//'; exit 0 ;;
+        -h|--help) usage; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
 done
@@ -138,21 +174,16 @@ BIN="$TMP/unpacked/shikisha-serve"
 [ -f "$BIN" ] || die "the archive does not hold shikisha-serve"
 chmod 755 "$BIN"
 
-if [ -w "$PREFIX" ]; then
-    install -m 755 "$BIN" "$PREFIX/shikisha-serve"
-elif command -v sudo >/dev/null 2>&1 && [ -d "$PREFIX" ]; then
-    say "  $PREFIX is not yours to write to; asking sudo"
-    sudo install -m 755 "$BIN" "$PREFIX/shikisha-serve"
-else
-    PREFIX="$HOME/.local/bin"
-    mkdir -p "$PREFIX"
-    install -m 755 "$BIN" "$PREFIX/shikisha-serve"
-    case ":$PATH:" in
-        *":$PREFIX:"*) ;;
-        *) say "  put $PREFIX on your PATH to run it by name" ;;
-    esac
-fi
+mkdir -p "$PREFIX" 2>/dev/null || true
+[ -w "$PREFIX" ] ||
+    die "$PREFIX is not yours to write to. Make it so, or pass --prefix somewhere that is"
+install -m 755 "$BIN" "$PREFIX/shikisha-serve"
 say "  installed $PREFIX/shikisha-serve"
+
+case ":$PATH:" in
+    *":$PREFIX:"*) ;;
+    *) say "  $PREFIX is not on your PATH; add it to run it by name" ;;
+esac
 
 # ── the service ───────────────────────────────────────────────────────────
 # Written from the copy inside the archive, which the signature covered. Not
@@ -174,7 +205,7 @@ fi
 
 say ""
 say "Next:"
-say "  $PREFIX/shikisha-serve            run it here, and see the board's address"
+say "  $PREFIX/shikisha-serve                     run it here, and see the board's address"
 if [ "$SERVICE" = ask ]; then
     say "  systemctl --user enable --now shikisha    keep it running"
     say "  loginctl enable-linger \"\$USER\"            and keep it running after you log out"
