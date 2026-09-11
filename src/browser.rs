@@ -2794,6 +2794,90 @@ mod tests {
     }
 
 
+    /// A placed page reaches the network through the proxy it was given.
+    ///
+    /// This is the one link in "draw the page here, fetch through the server"
+    /// that nothing else can prove: whether WebView2 honours the proxy it is
+    /// handed when the page is placed. The address asked for cannot be
+    /// resolved by anybody -- so if the proxy is not used, nothing arrives and
+    /// no page loads.
+    ///
+    ///   cargo test --bin SHIKISHA-TERM through_the_proxy -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn a_placed_page_reaches_the_network_through_the_proxy() {
+        use std::io::{Read, Write};
+
+        // Something standing where the tunnel's proxy stands
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let asked: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let heard = std::sync::Arc::clone(&asked);
+        std::thread::spawn(move || {
+            for sock in listener.incoming().flatten() {
+                let heard = std::sync::Arc::clone(&heard);
+                std::thread::spawn(move || {
+                    let mut sock = sock;
+                    let mut head = Vec::new();
+                    let mut one = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if sock.read(&mut one).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        head.push(one[0]);
+                    }
+                    let said = String::from_utf8_lossy(&head).to_string();
+                    heard.lock().unwrap().push(said.lines().next().unwrap_or("").to_string());
+                    let body = "<!doctype html><meta charset=utf-8><div id=via>プロキシ経由</div>";
+                    let _ = sock.write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    );
+                });
+            }
+        });
+
+        let b = Browser::spawn(&serve("<!doctype html><meta charset=utf-8><body>盤面"), "proxy test")
+            .unwrap();
+        // `spawn` has already waited for the board to be ready
+        b.browse_through(port);
+        // A name no resolver on earth answers. Only the proxy can reach it
+        b.open_child(
+            "p",
+            "http://nowhere.invalid/page",
+            (0, 0, 600, 400),
+            BrowserProfile::new("through-test", true),
+        )
+        .unwrap();
+
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut text = String::new();
+        while std::time::Instant::now() < until {
+            if let Ok(html) = b.html(Some("p"), 3_000) {
+                if html.contains("プロキシ経由") {
+                    text = html;
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let asked = asked.lock().unwrap().clone();
+        assert!(
+            asked.iter().any(|line| line.contains("nowhere.invalid")),
+            "プロキシに届いていない: {asked:?}"
+        );
+        assert!(!text.is_empty(), "プロキシが返したページが表示されていない");
+        // Everything the browser does goes this way, not only what a page
+        // asked for: this run also caught WebView2 reaching for a Microsoft
+        // service of its own accord. A proxy is the whole browser environment
+        println!("proxy saw: {asked:?}");
+    }
+
     /// Serve a test page on 127.0.0.1.
     /// `file:///` crashes on wry's IPC, so use http, same as production
     fn serve(body: &'static str) -> String {
