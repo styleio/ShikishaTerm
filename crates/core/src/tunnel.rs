@@ -16,6 +16,12 @@
 //! type into any terminal on this machine, and a terminal can open any socket;
 //! this is narrower than what one line of shell would do.
 //!
+//! What it does carry is *everything* the browser over there does, not only
+//! what a page asked for -- a browser reaches for services of its own accord,
+//! and those come through here too (measured: WebView2 asking Microsoft about
+//! itself). The machine at this end sees that traffic, which is the price of
+//! the page seeing this machine's network.
+//!
 //! ## The shape of it
 //!
 //! Every connection a browser makes shares one pipe, because a socket per
