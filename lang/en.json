@@ -1879,5 +1879,17 @@
   "sftp.mkdir.here.doing": "Making {name}…",
   "err.connect.no_url": "--connect needs the board's address, like --connect http://host:8787/?t=…",
   "err.connect.bad_url": "{url} is not an address this can open. It takes http:// and https:// only.",
-  "msg.connected": ">> connected to {url}. Close the window to stop."
+  "msg.connected": ">> connected to {url}. Close the window to stop.",
+  "settings.phone.devices": "Devices that have this board's key",
+  "settings.phone.devices.none": "None yet. A device is added the first time it opens the link.",
+  "settings.phone.device.unnamed": "unnamed device",
+  "settings.phone.device.revoke": "Take the key away",
+  "settings.phone.device.confirm": "Take the key away from {name}? It stops seeing this board at once, and opening the link again is how it comes back.",
+  "settings.phone.device.never": "has not come back yet",
+  "settings.phone.device.now": "just now",
+  "settings.phone.device.minutes": "{n} minutes ago",
+  "settings.phone.device.hours": "{n} hours ago",
+  "settings.phone.device.days": "{n} days ago",
+  "settings.phone.device.last": "last here {when}",
+  "settings.phone.device.gone": "That device was not in the list any more — it may have been taken away already."
 }

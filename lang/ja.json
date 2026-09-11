@@ -1867,5 +1867,17 @@
   "sftp.mkdir.here.doing": "{name} を作っています…",
   "err.connect.no_url": "--connect には盤面の住所が要ります。例: --connect http://host:8787/?t=…",
   "err.connect.bad_url": "{url} は開ける住所ではありません。http:// と https:// だけです。",
-  "msg.connected": ">> {url} に繋ぎました。窓を閉じると終わります。"
+  "msg.connected": ">> {url} に繋ぎました。窓を閉じると終わります。",
+  "settings.phone.devices": "この盤面の鍵を持っている端末",
+  "settings.phone.devices.none": "まだありません。リンクを初めて開いた端末が並びます。",
+  "settings.phone.device.unnamed": "名前のない端末",
+  "settings.phone.device.revoke": "鍵を取り上げる",
+  "settings.phone.device.confirm": "{name} から鍵を取り上げます。すぐに盤面が見えなくなり、戻すにはもう一度リンクを開いてもらいます。",
+  "settings.phone.device.never": "まだ来ていません",
+  "settings.phone.device.now": "いま",
+  "settings.phone.device.minutes": "{n}分前",
+  "settings.phone.device.hours": "{n}時間前",
+  "settings.phone.device.days": "{n}日前",
+  "settings.phone.device.last": "最後に来たのは{when}",
+  "settings.phone.device.gone": "その端末はもう一覧にありませんでした。すでに取り上げられたのかもしれません。"
 }

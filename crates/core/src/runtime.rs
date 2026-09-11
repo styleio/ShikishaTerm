@@ -5356,6 +5356,10 @@ pub fn publish_remote(info: &Arc<Mutex<webui::RemoteInfo>>, ui: &Option<remote::
             i.running = true;
             i.url = r.url.clone();
             i.note = r.note.clone().unwrap_or_default();
+            // Handed over so that revoking a device from the settings page
+            // also ends what that device is looking at
+            let live = r.sessions();
+            i.cut = Some(Arc::new(move |id: &str| live.drop_client(id)));
         }
         None => *i = Default::default(),
     }
