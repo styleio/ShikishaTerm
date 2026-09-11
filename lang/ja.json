@@ -1880,5 +1880,12 @@
   "settings.phone.device.days": "{n}日前",
   "settings.phone.device.last": "最後に来たのは{when}",
   "settings.phone.device.gone": "その端末はもう一覧にありませんでした。すでに取り上げられたのかもしれません。",
-  "prompt.password.headless": "secrets が暗号化されていて、マスターパスワードを受け取る道がありませんでした。端末から起動すれば聞きます。サービスとして動かすなら、unit に LoadCredential=shikisha-master:/etc/shikisha/master を足してパスワードを渡してください。"
+  "prompt.password.headless": "secrets が暗号化されていて、マスターパスワードを受け取る道がありませんでした。端末から起動すれば聞きます。サービスとして動かすなら、unit に LoadCredential=shikisha-master:/etc/shikisha/master を足してパスワードを渡してください。",
+  "err.chrome.none": "この機械にブラウザがありません。入れれば（apt install chromium）ブラウザの命令が使えるようになります。他は何も変わりません。",
+  "err.chrome.silent": "ブラウザは起動しましたが何も言わないので、話しかける住所が分かりません。",
+  "err.chrome.refused": "ブラウザが起動しませんでした。曰く: {said}",
+  "err.chrome.slow": "ブラウザが20秒たっても住所を言いませんでした。",
+  "err.chrome.gone": "ブラウザがもう居ません。",
+  "err.chrome.said": "ブラウザに断られました: {said}",
+  "err.chrome.no_answer": "ブラウザが {method} に答えませんでした。"
 }
