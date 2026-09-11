@@ -8,6 +8,74 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-11
+
+SHIKISHA runs on a machine with no screen.
+
+The part that opens terminals, reads what the agents in them are doing, fires
+the automation and serves the board is now a runtime of its own, and a window is
+one of the things that can drive it. The other is nothing at all: on a server or
+a cloud VM, `shikisha-serve` runs the same loop with nothing to draw on and
+hands the board to a browser or a phone. It is one static file that needs
+nothing installed, it installs without asking for root, and `apt install
+shikisha` works. The Windows program is unchanged in every way you can see --
+this is the same code, told to run somewhere else as well.
+
+The board on a phone also stopped stuttering: the screen was being sent five
+times a second because the push sat inside a check that runs every 200ms.
+
+### Added
+- **A runtime with no window, for a machine nobody is sitting at.**
+  `shikisha-serve` opens the tabs in your settings, watches them, runs your
+  automation and serves the board over the network -- the same board, from the
+  same code, with nobody in front of it. It is one statically linked file that
+  depends on nothing, so the same binary runs on any distribution, and it keeps
+  what you give it under `~/.local/share/shikisha` (or `$SHIKISHA_HOME`, or
+  beside itself if you unpacked it somewhere and put settings there).
+- **Three ways to install it, and all three check who signed it.**
+  `apt install shikisha` and `dnf install shikisha` from
+  [pkg.shikisha-term.com](https://pkg.shikisha-term.com), or a one-line
+  installer that needs no root at all and puts everything under your own home
+  folder. The installer checks the SHA256 *and* an Ed25519 signature before it
+  places anything; the package repositories are signed with an OpenPGP key both
+  package managers are told to verify, and every `.rpm` is signed itself as
+  well as the index. Nothing installed starts anything: `systemctl --user
+  enable --now shikisha` is yours to type.
+- **A service file, a man page, and a program that can say what it is.**
+  `shikisha-serve --version` and `--help` answer instead of trying to run their
+  own arguments, `man shikisha-serve` says where the settings live, and the
+  systemd unit is a *user* unit -- this program opens your terminals and pushes
+  with your git credentials, so it runs as you rather than as a daemon under an
+  account that could do none of that.
+
+### Changed
+- **The runtime and the window are separate crates, and the compiler keeps them
+  that way.** Everything that is not drawing moved into `shikisha-core`, which
+  cannot refer to a window, a web view, a tray icon or a file dialog -- what it
+  needs from a shell is written down as traits, and a shell fills a mailbox with
+  what it saw. `main.rs` went from 12,137 lines to 1,934, and the two loops
+  became one: a window and a headless runtime run the same function, given
+  different shells. Nothing about the Windows program changed.
+- **Where an installed copy keeps your things, on Linux only.** A copy in
+  `/usr/bin` cannot write beside itself, so it uses the folder a person's things
+  go in on that system. Windows keeps the portable layout it always had: unzip
+  it anywhere, copy the folder whole, delete it and nothing is left behind.
+
+### Fixed
+- **The board on a phone was being sent five frames a second.** The push that
+  sends the screen sat inside a block that only runs every 200ms, so however
+  fast anything changed, that was the ceiling. Moved to where the drawing
+  happens: measured at 25.6 frames a second afterwards, against 4.8 before.
+- **Only the rows that moved are sent,** at the pace the connection can take,
+  and a whole grid patches the rows already on screen instead of replacing all
+  of them.
+- **Two subscriptions the browser held were never let go.** The arms for basic
+  auth and for automatic dialog handling said they released on drop and had no
+  `Drop` at all, which left request interception enabled with nothing answering.
+- **A tab's open ports could be read off the wrong column** of the system's
+  table of listeners, naming a port that was not this tab's. Found by rewriting
+  the test to open a port of its own rather than trust the same misreading.
+
 ## [0.9.0] - 2026-09-10
 
 The window reaches another machine: its terminal, and its files.
@@ -1656,7 +1724,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/styleio/ShikishaTerm/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/styleio/ShikishaTerm/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/styleio/ShikishaTerm/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/styleio/ShikishaTerm/compare/v0.6.0...v0.7.0
