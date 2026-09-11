@@ -1876,5 +1876,8 @@
   "sftp.idle": "✓ Nothing is being transferred",
   "sftp.mkdir.here": "New folder",
   "sftp.mkdir.here.say": "It is made on this machine, inside:",
-  "sftp.mkdir.here.doing": "Making {name}…"
+  "sftp.mkdir.here.doing": "Making {name}…",
+  "err.connect.no_url": "--connect needs the board's address, like --connect http://host:8787/?t=…",
+  "err.connect.bad_url": "{url} is not an address this can open. It takes http:// and https:// only.",
+  "msg.connected": ">> connected to {url}. Close the window to stop."
 }

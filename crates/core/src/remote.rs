@@ -1009,7 +1009,10 @@ fn handle(
     // has been cut cannot quietly let itself back in: a person has to open the
     // link again.
     if method == "GET" && (path == "/" || path == "/shell") {
-        let mut resp = Response::from_string(crate::shell::page_for(sticky))
+        let mut resp = Response::from_string(crate::shell::served_page(
+            sticky,
+            crate::shell::Served::Remote,
+        ))
             .with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             )

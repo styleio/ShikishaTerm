@@ -226,6 +226,16 @@ fn boot() -> Result<()> {
             std::path::PathBuf::from("."),
         ],
     );
+    // A window that is somebody else's client: the board is served by a runtime
+    // running somewhere else, and this window shows it and drives it.
+    //
+    // None of the runtime starts here -- no tabs, no automation, no local page
+    // server, and no single-instance lock. The lock in particular would be
+    // wrong: connecting to a server is not a second copy of this app fighting
+    // over this machine's files, and wanting both at once is the ordinary case.
+    if std::env::args().nth(1).as_deref() == Some("--connect") {
+        return connect_to(&std::env::args().nth(2).unwrap_or_default());
+    }
     // Settings-only mode (edit settings in a browser without launching the main app)
     if std::env::args().nth(1).as_deref() == Some("--settings") {
         // This is a text-conversation mode, so make sure there's somewhere to talk
@@ -1838,6 +1848,45 @@ impl shikisha_core::host::Shell for WinSurface {
     fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))> { WinSurface::host(self) }
     fn ask_password(&mut self, title: &str, note: &str) -> Result<Option<String>> { WinSurface::ask_password(self, title, note) }
     fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> Result<()> { WinSurface::draw(self, tabs, ui, flash) }
+}
+
+/// Show the board that a runtime somewhere else is serving.
+///
+/// The page is the one this window has always drawn. It lives in
+/// `core::shell` and both the window and the phone are served the very same
+/// thing; what differs is only how state reaches it. Served from here, this
+/// process pushes state in. Served by a remote, the page opens the socket
+/// itself and asks this process for nothing at all.
+///
+/// So the whole client is: a window, pointed somewhere, kept alive until it
+/// closes. What you get is the phone's capabilities in a native window -- the
+/// board, the terminals, the composer. Pages placed in panes come across as
+/// the phone sees them rather than as WebView2 windows of their own, because
+/// those belong to whichever machine the runtime is on.
+fn connect_to(url: &str) -> Result<()> {
+    use shikisha_shared::Ev;
+    open_console();
+    if url.trim().is_empty() {
+        anyhow::bail!(i18n::t("err.connect.no_url"));
+    }
+    let url = url.trim();
+    if !browser::is_openable(url) {
+        anyhow::bail!(i18n::tp("err.connect.bad_url", &[("url", url)]));
+    }
+    let win = browser::Browser::spawn(url, "SHIKISHA-TERM")?;
+    // Named without its query, because the query is the key to the board and
+    // this line goes to a console somebody may well be sharing a screen of
+    let host = url.split('?').next().unwrap_or(url);
+    println!("{}", i18n::tp("msg.connected", &[("url", host)]));
+
+    // The window runs its own event loop on its own thread. This only waits for
+    // it to be closed, because a `main` that returned would take it along
+    loop {
+        if win.drain().iter().any(|e| matches!(e, Ev::Closed)) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(120));
+    }
 }
 
 /// from the notification area with the window put away

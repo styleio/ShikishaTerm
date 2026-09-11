@@ -1661,9 +1661,18 @@ const TOKEN = (function () {
     return sessionStorage.getItem("shikisha_token") || "";
   } catch (e) { return ""; }
 })();
-// Inside the window, messages can be handed over directly. From a phone
-// they arrive over HTTP. Both use the same page (so the UI isn't written twice)
-const REMOTE = !window.ipc;
+// Whether this page is a client of a runtime somewhere else, or the face of
+// one running in this very process. It decides two things: where state comes
+// from (a socket, or the host pushing it in) and where intents go (HTTP, or
+// the window's own channel).
+//
+// Said by whoever served the page, because that is the only side that knows.
+// It used to be worked out here as `!window.ipc` -- "am I inside the window?"
+// -- which is a different question, and answers wrongly for the one case that
+// matters: a window pointed at a remote board. That window has an IPC channel
+// and no runtime behind it, so it decided it was local and waited forever for
+// state that nothing was going to push.
+const REMOTE = {{REMOTE}};
 // The PC ended this session (its "disconnect"). Nothing reconnects afterwards —
 // not the state socket, not the screen relay — until a person opens the link
 // again, which reloads this page and clears the flag with it.
@@ -7621,10 +7630,32 @@ pub fn page() -> String {
     page_for(false)
 }
 
+/// Whether the page being built is for a client or for the window that serves
+/// it. Kept as a word rather than a bare bool at the call sites, because
+/// `page_for(false, true)` says nothing to anybody reading it.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Served {
+    /// By the process that runs the tabs. State is pushed in; intents come
+    /// back over the window's own channel
+    Window,
+    /// By a runtime somewhere else. The page opens the socket itself, and asks
+    /// the process showing it for nothing
+    Remote,
+}
+
 /// The shell with the phone's pairing mode baked in (sticky: keep the
 /// token in the URL and persistent storage — see RemoteSpec::sticky_token).
 /// The window never pairs, so page() serves it the cautious default
 pub fn page_for(sticky: bool) -> String {
+    built(sticky, Served::Window)
+}
+
+/// The same page, told who is serving it.
+pub fn served_page(sticky: bool, by: Served) -> String {
+    built(sticky, by)
+}
+
+fn built(sticky: bool, by: Served) -> String {
     // Read here rather than threaded in: the page is built in several places
     // (window, phone, tests) and every one of them wants the same look
     let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
@@ -7666,6 +7697,10 @@ pub fn page_for(sticky: bool) -> String {
         )
         .replace("{{ACTIONS}}", &actions_json())
         .replace("{{STICKY}}", if sticky { "true" } else { "false" })
+        .replace("{{REMOTE}}", match by {
+            Served::Remote => "true",
+            Served::Window => "false",
+        })
         .replace("{{PWA}}", &crate::pwa::head(sticky))
         .replace(
         "{{BUILD}}",
