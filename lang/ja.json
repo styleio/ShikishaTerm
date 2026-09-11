@@ -1879,5 +1879,6 @@
   "settings.phone.device.hours": "{n}時間前",
   "settings.phone.device.days": "{n}日前",
   "settings.phone.device.last": "最後に来たのは{when}",
-  "settings.phone.device.gone": "その端末はもう一覧にありませんでした。すでに取り上げられたのかもしれません。"
+  "settings.phone.device.gone": "その端末はもう一覧にありませんでした。すでに取り上げられたのかもしれません。",
+  "prompt.password.headless": "secrets が暗号化されていて、マスターパスワードを受け取る道がありませんでした。端末から起動すれば聞きます。サービスとして動かすなら、unit に LoadCredential=shikisha-master:/etc/shikisha/master を足してパスワードを渡してください。"
 }

@@ -127,7 +127,13 @@ impl Shell for Headless {
     fn size(&self) -> anyhow::Result<Size> { Ok(Size { width: self.cols.saturating_mul(8), height: self.rows.saturating_mul(16) }) }
     fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> anyhow::Result<Option<Event>> { let _ = (timeout, active_tab); std::thread::sleep(timeout); Ok(None) }
     fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))> { None }
-    fn ask_password(&mut self, title: &str, note: &str) -> anyhow::Result<Option<String>> { let _ = (title, note); Ok(None) }
+    /// A runtime with no window still needs the key to its own secrets, and a
+    /// server is where the secrets live -- a login on somebody's laptop does
+    /// not carry to it. See `askpass`: a credential the service manager handed
+    /// over, or a person at the terminal, and nothing invented in between
+    fn ask_password(&mut self, title: &str, note: &str) -> anyhow::Result<Option<String>> {
+        Ok(crate::askpass::master(title, note))
+    }
     fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> anyhow::Result<()> {
         // Nothing draws here, but the picture is still built: it is what a
         // viewer on the network is handed, and what a shell would have drawn
