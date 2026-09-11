@@ -1882,6 +1882,8 @@
   "settings.phone.device.gone": "その端末はもう一覧にありませんでした。すでに取り上げられたのかもしれません。",
   "prompt.password.headless": "secrets が暗号化されていて、マスターパスワードを受け取る道がありませんでした。端末から起動すれば聞きます。サービスとして動かすなら、unit に LoadCredential=shikisha-master:/etc/shikisha/master を足してパスワードを渡してください。",
   "err.chrome.none": "この機械にブラウザがありません。入れれば（apt install chromium）ブラウザの命令が使えるようになります。他は何も変わりません。",
+  "err.chrome.no_fetch": "この機械にブラウザが無く、取得もできませんでした: {e}。パッケージマネージャで入れてください（apt install chromium）。入れればブラウザの命令が使えるようになります。",
+  "err.chrome.download_empty": "取得したブラウザが、展開した後に見当たりません。",
   "err.chrome.no_page": "ブラウザがページを開きませんでした。",
   "err.chrome.no_front": "ここには手前のページというものがありません。どのページへの操作か指定してください。",
   "err.chrome.no_such_page": "{name} という名前のページはブラウザに開いていません。",

@@ -1894,6 +1894,8 @@
   "settings.phone.device.gone": "That device was not in the list any more — it may have been taken away already.",
   "prompt.password.headless": "The secrets are encrypted and nothing here could supply the master password. Either start it from a terminal, where it will ask, or give the service the password as a credential: LoadCredential=shikisha-master:/etc/shikisha/master in the unit file.",
   "err.chrome.none": "No browser on this machine. Install one (apt install chromium) and the browser commands start working; nothing else changes.",
+  "err.chrome.no_fetch": "There is no browser on this machine, and one could not be fetched: {e}. Install one with your package manager (apt install chromium) and the browser commands start working.",
+  "err.chrome.download_empty": "The browser that was fetched is not there after unpacking.",
   "err.chrome.no_page": "The browser did not open the page.",
   "err.chrome.no_front": "There is no page in front of anyone here. Say which page to act on.",
   "err.chrome.no_such_page": "No page called {name} is open in the browser.",
