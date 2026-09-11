@@ -1891,5 +1891,6 @@
   "settings.phone.device.hours": "{n} hours ago",
   "settings.phone.device.days": "{n} days ago",
   "settings.phone.device.last": "last here {when}",
-  "settings.phone.device.gone": "That device was not in the list any more — it may have been taken away already."
+  "settings.phone.device.gone": "That device was not in the list any more — it may have been taken away already.",
+  "prompt.password.headless": "The secrets are encrypted and nothing here could supply the master password. Either start it from a terminal, where it will ask, or give the service the password as a credential: LoadCredential=shikisha-master:/etc/shikisha/master in the unit file."
 }

@@ -26,6 +26,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+
+# The master password, when the secrets file is encrypted.
+#
+# Uncomment and point it at a file holding the password and nothing else
+# (chmod 600). systemd hands it to this service alone: not to another program
+# of the same user, not to the process list, not to anything reading the unit.
+# Without it, a service started at boot comes up with its secrets locked --
+# started by hand from a terminal, it asks instead.
+#
+#LoadCredential=shikisha-master:/etc/shikisha/master
 ExecStart=/usr/local/bin/shikisha-serve
 WorkingDirectory=%h
 

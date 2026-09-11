@@ -8,6 +8,7 @@
 
 pub mod agenthook;
 pub mod api;
+pub mod askpass;
 pub mod attach;
 pub mod ball;
 pub mod bridge;
