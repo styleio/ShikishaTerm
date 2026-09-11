@@ -231,6 +231,14 @@ pub fn local_path(win: &str) -> String {
     }
 }
 
+/// The commit this was built from, as the board's footer shows it.
+///
+/// Stamped by this crate's build script, so a runtime with no window anywhere
+/// near it can still say which source it is.
+pub fn build_rev() -> &'static str {
+    env!("BUILD_REV")
+}
+
 /// A path that is absolute, and nowhere near anything this app owns.
 ///
 /// Written once because it differs: `C:/windows/x` is an absolute path on

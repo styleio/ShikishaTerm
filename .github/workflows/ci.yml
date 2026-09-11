@@ -10,8 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    # ConPTY を使うので Windows でしか意味のあるテストにならない
+  # 窓のある本体。ConPTY と WebView2 を使うのでここでしか動かない
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,10 +21,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --locked --verbose
+        run: cargo build --workspace --locked --verbose
 
       - name: Test
-        run: cargo test --locked --verbose
+        run: cargo test --workspace --locked --verbose
 
       # A dependency added without rerunning tools/notices.ps1 leaves the
       # download crediting the wrong set of authors. Caught here, it is a line
@@ -32,3 +32,41 @@ jobs:
       - name: Third-party notices are current
         shell: pwsh
         run: ./tools/notices.ps1 -Check
+
+  # 窓のないランタイム。ここが通らなくなったら Linux 版は静かに腐る——
+  # 窓のあるクレートは Linux でビルドできないので、対象は core / shared / serve
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build -p shikisha-core -p shikisha-shared -p shikisha-serve --locked --verbose
+
+      - name: Test
+        run: cargo test -p shikisha-core -p shikisha-shared -p shikisha-serve --locked --verbose
+
+      # 配るのは musl の静的リンク。どの distro でも同じ1つのファイルが動く、
+      # という約束は、ここで組めることが前提になっている
+      - name: The static build still links
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          CC_x86_64_unknown_linux_musl=musl-gcc \
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+            cargo build --release -p shikisha-serve --locked \
+                        --target x86_64-unknown-linux-musl
+          file target/x86_64-unknown-linux-musl/release/shikisha-serve |
+            tee /dev/stderr | grep -qE "static-pie linked|statically linked"
+
+      # インストーラは POSIX sh で書いてある。bash しか無い機械で試すと、
+      # 通ったのに配った先で落ちる
+      - name: The installer is POSIX sh
+        run: |
+          sudo apt-get install -y dash shellcheck
+          dash -n packaging/linux/install.sh
+          shellcheck --shell=sh packaging/linux/install.sh

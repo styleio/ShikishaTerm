@@ -5,10 +5,21 @@
 //! window anywhere -- still has to be able to say what it is.
 
 fn main() {
-    let built = std::process::Command::new("cmd")
-        .args(["/C", "echo %DATE% %TIME%"])
+    // Every system can say what time it is; they are asked differently. Asked
+    // the Windows way alone, every build made anywhere else stamped an empty
+    // string, and the board's footer said "build ()" with nothing in it.
+    let mut when = match cfg!(windows) {
+        true => std::process::Command::new("cmd"),
+        false => std::process::Command::new("date"),
+    };
+    match cfg!(windows) {
+        true => when.args(["/C", "echo %DATE% %TIME%"]),
+        false => when.arg("+%Y/%m/%d %H:%M:%S"),
+    };
+    let built = when
         .output()
         .ok()
+        .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
     println!("cargo:rustc-env=BUILD_TIME={built}");

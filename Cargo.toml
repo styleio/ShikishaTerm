@@ -25,13 +25,6 @@ exclude = ["logs/", "target/", "docs/demo.gif"]
 name = "SHIKISHA-TERM"
 path = "src/main.rs"
 
-# Signs a release zip in CI with the key the program checks downloads against
-# (src/update.rs). Same crate so the two sides can never disagree about the
-# algorithm; it is not part of the download
-[[bin]]
-name = "sign"
-path = "src/bin/sign.rs"
-
 [profile.release]
 strip = true
 lto = true

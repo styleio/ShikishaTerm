@@ -6,6 +6,15 @@ description = "The runtime: tabs, detection, automation, git, ssh and the server
 license = "MIT"
 repository = "https://github.com/styleio/ShikishaTerm"
 
+# Signs a release in CI with the key the program checks downloads against
+# (src/update.rs). Here rather than in the shell crate because it has to build
+# wherever a release is built, and the Windows shell does not build on Linux;
+# the same crate as the key, so the two sides can never disagree about the
+# algorithm. Not part of any download.
+[[bin]]
+name = "sign"
+path = "src/bin/sign.rs"
+
 [dependencies]
 shikisha-shared = { path = "../shared" }
 aes-gcm = "0.11.0"

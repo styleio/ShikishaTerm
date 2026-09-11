@@ -1,0 +1,47 @@
+#  SHIKISHA, as a service that belongs to you.
+#
+#  A *user* unit, not a system one, and deliberately. This program opens your
+#  terminals, runs your AI CLIs, and pushes with your git credentials — it is
+#  you, working, and a daemon under its own locked-down account could do none
+#  of that. So it runs as you, reads your ~/.ssh and ~/.claude, and stops when
+#  you say so.
+#
+#  Installed by install.sh to ~/.config/systemd/user/shikisha.service.
+#
+#      systemctl --user enable --now shikisha
+#      journalctl --user -u shikisha -f
+#
+#  On a server you log out of, tell the machine to keep your services running
+#  when you are not signed in:
+#
+#      loginctl enable-linger "$USER"
+
+[Unit]
+Description=SHIKISHA — the board your agents work on
+Documentation=https://github.com/styleio/ShikishaTerm
+# The board is served over the network, so there is no point starting before
+# there is one
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/shikisha-serve
+WorkingDirectory=%h
+
+# A service is started with almost nothing in its environment, and the tools it
+# launches live where a person installs tools. Without this, a tab running
+# `claude` or `node` fails with "command not found" and nothing says why.
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# It holds long-running terminals. Restarting it kills them, so that is done
+# only when it actually fell over, and never in a tight loop.
+Restart=on-failure
+RestartSec=5
+
+# Let the tabs finish on their own before anything is killed outright
+KillMode=mixed
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

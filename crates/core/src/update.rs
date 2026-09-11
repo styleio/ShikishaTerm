@@ -1139,6 +1139,37 @@ mod tests {
         assert!(verify_signature(b"the zip", "zz", &pubhex).is_err());
     }
 
+    /// The installer turns away a download this key did not sign, and it is
+    /// this same key.
+    ///
+    /// It has to be written twice — as hex here, as a PEM in `install.sh` —
+    /// because a shell script cannot read a Rust constant. Two copies of a
+    /// key drift, and the way this one would drift is the worst kind: the
+    /// program would go on refusing forged updates while the installer put
+    /// anything at all on a fresh machine. So they are compared.
+    #[test]
+    fn the_installer_checks_against_this_key() {
+        use base64::Engine as _;
+        let script =
+            std::fs::read_to_string(crate::repo_root().join("packaging").join("linux").join("install.sh"))
+                .expect("packaging/linux/install.sh");
+        let body: String = script
+            .lines()
+            .skip_while(|l| !l.contains("BEGIN PUBLIC KEY"))
+            .skip(1)
+            .take_while(|l| !l.contains("END PUBLIC KEY"))
+            .collect();
+        assert!(!body.is_empty(), "install.sh に鍵が無い");
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(body.trim())
+            .expect("鍵が base64 ではない");
+        // An Ed25519 public key as OpenSSL reads one: twelve bytes saying what
+        // it is, then the thirty-two that are the key
+        assert_eq!(der.len(), 44, "鍵の形が違う");
+        let hex: String = der[12..].iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, PUBLIC_KEY_HEX, "install.sh の鍵が、この版の鍵ではない");
+    }
+
     /// A person's folders are placed only where nothing is; the rest is
     /// overwritten; a file in use is set aside and the old one kept
     #[test]

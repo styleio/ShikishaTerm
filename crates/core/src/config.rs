@@ -3003,6 +3003,9 @@ pub fn packaged() -> bool {
 /// install, with nowhere to write the log that would say why. So an installed
 /// copy keeps those things under LOCALAPPDATA instead. Nothing changes for the
 /// download: unpackaged, this is the exe's own folder exactly as before.
+///
+/// A copy installed on Linux is in the same position and answered the same
+/// way: see [`unpacked_root`].
 pub fn root_dir() -> std::path::PathBuf {
     use std::sync::OnceLock;
     static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
@@ -3012,9 +3015,49 @@ pub fn root_dir() -> std::path::PathBuf {
         {
             return std::path::PathBuf::from(local).join("SHIKISHA-TERM");
         }
+        #[cfg(unix)]
+        {
+            return unpacked_root(&exe_dir(), |k| std::env::var_os(k));
+        }
+        #[allow(unreachable_code)]
         exe_dir()
     })
     .clone()
+}
+
+/// The same question on Linux, where "beside the program" is often nowhere to
+/// write.
+///
+/// A folder someone unpacked and runs out of keeps the portable promise: its
+/// settings are the ones sitting beside it. A copy installed by `install.sh`
+/// is at `/usr/local/bin/shikisha-serve`, which belongs to root, so its things
+/// go where a person's things go on this system -- `XDG_DATA_HOME`, and
+/// `~/.local/share` when that is not set. `SHIKISHA_HOME` overrides both, for
+/// running several boxes on one machine.
+///
+/// Taking the environment as an argument so this can be asked what it would
+/// answer, rather than only what it answers here.
+#[cfg(unix)]
+fn unpacked_root(
+    beside: &std::path::Path,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    if let Some(told) = env("SHIKISHA_HOME").filter(|s| !s.is_empty()) {
+        return std::path::PathBuf::from(told);
+    }
+    if beside.join("config").is_dir() || beside.join("config.json").is_file() {
+        return beside.to_path_buf();
+    }
+    let data = env("XDG_DATA_HOME")
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| env("HOME").map(|h| std::path::PathBuf::from(h).join(".local").join("share")));
+    match data {
+        Some(d) => d.join("shikisha"),
+        // No home to speak of. Beside the program is where it has always been,
+        // and a failure to write there is at least a failure in one place
+        None => beside.to_path_buf(),
+    }
 }
 
 /// Search order for the config file. Prefers the new layout (config folder),
@@ -3545,10 +3588,59 @@ mod tests {
     #[test]
     fn the_portable_layout_keeps_everything_beside_the_exe() {
         assert!(!packaged(), "a test run should not be a packaged one");
+        #[cfg(windows)]
         assert_eq!(root_dir(), exe_dir(), "ポータブル配置が exe の隣から離れた");
         for p in [logs_dir(), state_path("x")] {
-            assert!(p.starts_with(exe_dir()), "{p:?} が exe の隣から外れた");
+            assert!(p.starts_with(root_dir()), "{p:?} が置き場の外に出た");
         }
+    }
+
+    /// Where a copy on Linux keeps things, in each of the four situations it
+    /// can be in. Asked of a made-up environment rather than this process's
+    /// own, so the answer can be checked without the machine deciding it.
+    #[test]
+    #[cfg(unix)]
+    fn an_installed_copy_writes_where_a_person_writes() {
+        let unpacked = std::env::temp_dir().join(format!("shikisha-root-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(unpacked.join("config")).unwrap();
+        let nothing = |_: &str| None;
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(name, _)| *name == k)
+                    .map(|(_, v)| std::ffi::OsString::from(*v))
+            }
+        };
+
+        // Unpacked and run from its own folder: the settings beside it are its
+        // own, which is the promise the download makes
+        assert_eq!(unpacked_root(&unpacked, nothing), unpacked);
+
+        // Installed: the program is root's and the person's things are not
+        let bin = std::path::Path::new("/usr/local/bin");
+        assert_eq!(
+            unpacked_root(bin, env(&[("HOME", "/home/dev")])),
+            std::path::PathBuf::from("/home/dev/.local/share/shikisha")
+        );
+        assert_eq!(
+            unpacked_root(bin, env(&[("HOME", "/home/dev"), ("XDG_DATA_HOME", "/srv/things")])),
+            std::path::PathBuf::from("/srv/things/shikisha"),
+            "この機の流儀を無視した"
+        );
+
+        // Told outright, which is how two boxes run on one machine
+        assert_eq!(
+            unpacked_root(bin, env(&[("HOME", "/home/dev"), ("SHIKISHA_HOME", "/srv/box-2")])),
+            std::path::PathBuf::from("/srv/box-2")
+        );
+        // And it wins even where a folder of settings is sitting right there
+        assert_eq!(
+            unpacked_root(&unpacked, env(&[("SHIKISHA_HOME", "/srv/box-2")])),
+            std::path::PathBuf::from("/srv/box-2")
+        );
+
+        let _ = std::fs::remove_dir_all(&unpacked);
     }
 
     #[test]

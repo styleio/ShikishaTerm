@@ -1,7 +1,7 @@
 //! Signs a release zip with the key the program checks downloads against.
 //!
 //! The program refuses to put a downloaded zip in place unless a signature
-//! made with the matching private key comes with it (src/update.rs). This
+//! made with the matching private key comes with it (../update.rs). This
 //! is the one thing that makes such a signature. It runs in CI, over the
 //! zip that was just built, with the key from the repository's secrets;
 //! it can also make a key pair, once, when the key is first set up.

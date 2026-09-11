@@ -1,9 +1,12 @@
 name: Release
 
-# タグを打つと配布用の zip を作って Releases に下書きで添付する。
+# タグを打つと配布物を作って Releases に下書きで添付する。
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# 手動実行 (workflow_dispatch) は空撃ち用。zip をアーティファクトに置くだけで
+# 出口は3つ: Windows の zip、Microsoft Store の msix、Linux の静的バイナリ。
+# 3つとも同じタグの同じソースから、この1本のワークフローで作る。
+#
+# 手動実行 (workflow_dispatch) は空撃ち用。成果物をアーティファクトに置くだけで
 # リリースは作らないので、発射前に梱包が通るかを安全に確認できる
 on:
   push:
@@ -17,7 +20,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +30,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --workspace --locked
 
       # Microsoft's newer ConPTY, verified against the hashes pinned in
       # packaging/conpty/redist.json. -Require because a release that quietly
@@ -85,8 +88,8 @@ jobs:
             "  SHIKISHA-TERM.zip" | Set-Content "SHIKISHA-TERM.zip.sha256"
 
       # The signature the program checks a fetched update against before it
-      # puts it in place (src/update.rs). The key exists only in the
-      # repository's secrets; the public half is in the source. A release
+      # puts it in place (crates/core/src/update.rs). The key exists only in
+      # the repository's secrets; the public half is in the source. A release
       # built without the key carries no .sig, and every copy that checks
       # signatures refuses to install it -- so its absence is said loudly
       - name: Sign
@@ -98,21 +101,19 @@ jobs:
             Write-Warning "UPDATE_SIGNING_KEY is not set: the zip goes out unsigned and self-update will refuse it"
             exit 0
           }
-          cargo run --release --locked --bin sign -- sign SHIKISHA-TERM.zip
-          $pub = (Select-String -Path src/update.rs -Pattern 'PUBLIC_KEY_HEX: &str = "([0-9a-f]{64})"').Matches[0].Groups[1].Value
-          cargo run --release --locked --bin sign -- verify SHIKISHA-TERM.zip $pub
+          cargo run --release --locked -p shikisha-core --bin sign -- sign SHIKISHA-TERM.zip
+          $pub = (Select-String -Path crates/core/src/update.rs -Pattern 'PUBLIC_KEY_HEX: &str = "([0-9a-f]{64})"').Matches[0].Groups[1].Value
+          cargo run --release --locked -p shikisha-core --bin sign -- verify SHIKISHA-TERM.zip $pub
 
-      # 空撃ち: リリースを作らず、中身を確認できる形で置いておく
-      - name: Upload as an artifact (dry run)
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: SHIKISHA-TERM-dryrun
+          name: windows
           path: |
             SHIKISHA-TERM.zip
             SHIKISHA-TERM.zip.sha256
             SHIKISHA-TERM.zip.sig
           retention-days: 7
+          if-no-files-found: error
 
       # The Store copy: the same binary, packaged. Built here rather than on a
       # laptop for the same reason the zip is -- what people install should come
@@ -141,16 +142,113 @@ jobs:
           path: target/msix/*-store.msix
           retention-days: 30
 
-      - name: Publish
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+  # 窓の無いランタイムを、どの distro でも動く1ファイルにする。
+  # musl の静的リンクなので glibc の版を問わない —— VPS に置いて動くこと、
+  # というのがここでの唯一の約束
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test -p shikisha-core -p shikisha-shared -p shikisha-serve --locked
+
+      - name: Build
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y musl-tools
+          rustup target add ${{ matrix.target }}
+          cargo build --release --locked -p shikisha-serve --target ${{ matrix.target }}
+        # Named per target rather than as a bare CC: a bare one is also handed
+        # to the build scripts, which are compiled for this machine and not for
+        # what is being built
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+
+      # 静的でなければ配る意味がない。file が静的リンクと言わなければ、
+      # どこかで動的リンクに落ちている
+      - name: It is one file that needs nothing
+        run: |
+          BIN=target/${{ matrix.target }}/release/shikisha-serve
+          file "$BIN"
+          file "$BIN" | grep -qE "static-pie linked|statically linked"
+          "$BIN" --version
+
+      # 同梱するのは本体と service ファイルだけ。service が署名の内側に入るので、
+      # インストーラは2つ目のダウンロードをしなくて済む
+      - name: Pack
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          case "$VERSION" in v*) ;; *) VERSION=v0.0.0-dryrun ;; esac
+          NAME="shikisha-serve-$VERSION-${{ matrix.arch }}-linux.tar.gz"
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/shikisha-serve dist/
+          cp packaging/linux/shikisha.service dist/
+          tar -czf "$NAME" -C dist shikisha-serve shikisha.service
+          sha256sum "$NAME" | tee "$NAME.sha256"
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+
+      - name: Sign
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "${UPDATE_SIGNING_KEY:-}" ]; then
+            echo "::warning::UPDATE_SIGNING_KEY is not set: install.sh will refuse this build"
+            exit 0
+          fi
+          cargo run --release --locked -p shikisha-core --bin sign -- sign "$NAME"
+          PUB=$(sed -n 's/.*PUBLIC_KEY_HEX: &str = "\([0-9a-f]\{64\}\)".*/\1/p' crates/core/src/update.rs)
+          cargo run --release --locked -p shikisha-core --bin sign -- verify "$NAME" "$PUB"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            shikisha-serve-*-linux.tar.gz
+            shikisha-serve-*-linux.tar.gz.sha256
+            shikisha-serve-*-linux.tar.gz.sig
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: out
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: linux-*
+          path: out
+          merge-multiple: true
+
+      - run: ls -la out
+
+      - uses: softprops/action-gh-release@v2
         with:
           draft: true
           generate_release_notes: true
-          files: |
-            SHIKISHA-TERM.zip
-            SHIKISHA-TERM.zip.sha256
-            SHIKISHA-TERM.zip.sig
+          files: out/*
           body: |
             ## Which copy do you want?
 
@@ -176,3 +274,16 @@ jobs:
             No installer, no admin rights, no API keys. Windows 10/11.
 
             Verify the download with `SHIKISHA-TERM.zip.sha256` if you like.
+
+            ## Linux
+
+            One static binary, no window, serving the board over the network — for a VPS
+            or a cloud VM you reach from a browser or a phone.
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/styleio/ShikishaTerm/main/packaging/linux/install.sh | sh
+            ```
+
+            It checks the checksum and the Ed25519 signature before it installs
+            anything, and refuses the download if either does not match. x86_64 and
+            aarch64; systemd service file included.
