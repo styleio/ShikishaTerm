@@ -2534,6 +2534,7 @@ mod tests {
 
     #[test]
     fn rotating_the_token_cuts_the_old_session() {
+        let _book = crate::clients::tests::OwnBook::new();
         let mut ui =
             RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "old-token-000000".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
@@ -2629,6 +2630,7 @@ mod tests {
 
     #[test]
     fn a_fixed_token_disconnect_locks_the_phone_out_too() {
+        let _book = crate::clients::tests::OwnBook::new();
         let ui = RemoteUi::start(
             "127.0.0.1".parse().unwrap(),
             0,
@@ -2747,6 +2749,7 @@ mod tests {
     /// walk round to the other
     #[test]
     fn guessing_the_password_is_turned_away_at_both_doors() {
+        let _book = crate::clients::tests::OwnBook::new();
         let ui = RemoteUi::start(
             "127.0.0.1".parse().unwrap(),
             0,
@@ -2813,6 +2816,7 @@ mod tests {
     /// Actually starts the server and confirms auth and command delivery
     #[test]
     fn password_gate_requires_the_second_factor() {
+        let _book = crate::clients::tests::OwnBook::new();
         // With remote.password set, the URL token alone opens nothing:
         // data routes say "password" until /auth trades it for a cookie
         let ui = RemoteUi::start(
@@ -2888,6 +2892,7 @@ mod tests {
     /// window and left reading it sideways -- the very thing the fitting is for.
     #[test]
     fn a_phone_that_can_only_poll_is_still_watching() {
+        let _book = crate::clients::tests::OwnBook::new();
         let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
         let mut phone = Phone::new(&base);
@@ -2906,6 +2911,7 @@ mod tests {
 
     #[test]
     fn serves_state_and_forwards_commands() {
+        let _book = crate::clients::tests::OwnBook::new();
         let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
         let mut phone = Phone::new(&base);
@@ -3022,6 +3028,7 @@ mod tests {
     /// no backend wired yet answers 503 (never falls through to the shell).
     #[test]
     fn settings_proxy_gates_and_hands_off_a_cookie() {
+        let _book = crate::clients::tests::OwnBook::new();
         let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
         // Phone does not follow redirects, so the 302 can be inspected.
@@ -3056,6 +3063,7 @@ mod tests {
     /// remote, so this is the piece the settings-side test can't see.
     #[test]
     fn the_phone_never_opens_a_picker_on_the_pc() {
+        let _book = crate::clients::tests::OwnBook::new();
         let dir = std::env::temp_dir().join(format!("shikitest_{}", crate::random_hex(8)));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = dir.join("config.json");
@@ -3136,6 +3144,7 @@ mod tests {
     /// connection and our own ws module (no phone or external tool needed)
     #[test]
     fn ws_upgrades_and_delivers_a_frame() {
+        let _book = crate::clients::tests::OwnBook::new();
         use std::io::{Read, Write};
         use std::net::TcpStream;
 
@@ -3203,6 +3212,7 @@ mod tests {
     /// Confirms /ws-in handshakes and that a sent input intent (finger trail) reaches the main loop
     #[test]
     fn ws_in_forwards_injected_input() {
+        let _book = crate::clients::tests::OwnBook::new();
         use std::io::{Read, Write};
         use std::net::TcpStream;
 
@@ -3281,6 +3291,7 @@ mod tests {
     /// has when it asks for the port an agent here just opened.
     #[test]
     fn the_tunnel_carries_a_connection_out_through_this_machine() {
+        let _book = crate::clients::tests::OwnBook::new();
         use std::io::{Read, Write};
         use std::net::TcpStream;
 
@@ -3377,6 +3388,114 @@ mod tests {
         let mut payload = vec![0u8; len];
         sock.read_exact(&mut payload).unwrap();
         payload
+    }
+
+    /// The whole way: a browser's proxy here, a line to the board, and a page
+    /// fetched by the machine the board is on.
+    ///
+    /// What makes this the point rather than a round trip: the address in the
+    /// request is resolved and reached at the board's end. `127.0.0.1` in a
+    /// request that leaves this proxy means the board's machine, which is
+    /// exactly what a person looking at `localhost:3000` from their desk
+    /// wants it to mean.
+    #[test]
+    fn a_page_is_fetched_by_the_machine_at_the_other_end() {
+        let _book = crate::clients::tests::OwnBook::new();
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        // A page that exists only where the board is
+        let far = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let far_port = far.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            for req in far.incoming_requests() {
+                let _ = req.respond(tiny_http::Response::from_string("こちら側のページ"));
+            }
+        });
+
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
+        let hostport = ui.url.trim_start_matches("http://").split("/?").next().unwrap().to_string();
+        let mut phone = Phone::new(&format!("http://{hostport}"));
+        phone.pair("tok123456789012");
+
+        let proxy = crate::tunnel::Proxy::start(
+            &format!("http://{hostport}"),
+            "tok123456789012",
+            &phone.cookie,
+        )
+        .expect("線が張れない");
+
+        // Exactly what a browser sends a proxy for an unencrypted page
+        let mut sock = TcpStream::connect(("127.0.0.1", proxy.port())).unwrap();
+        let asked = format!(
+            "GET http://127.0.0.1:{far_port}/ HTTP/1.1\r\n\
+             Host: 127.0.0.1:{far_port}\r\n\
+             Connection: close\r\n\r\n"
+        );
+        sock.write_all(asked.as_bytes()).unwrap();
+        sock.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        let mut answer = Vec::new();
+        let _ = sock.read_to_end(&mut answer);
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 200"), "返ってきていない: {answer}");
+        assert!(answer.contains("こちら側のページ"), "本文が違う: {answer}");
+        ui.shutdown();
+    }
+
+    /// What a browser sends for an encrypted page: a way through, and then
+    /// bytes this end never looks at.
+    ///
+    /// Tested without the encryption, which is the one part that is none of
+    /// this program's business: what is inside a tunnel is the browser's and
+    /// the site's, and the test asserts that by speaking plain HTTP through it
+    /// and being understood.
+    #[test]
+    fn a_way_through_is_opened_and_left_alone() {
+        let _book = crate::clients::tests::OwnBook::new();
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let far = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let far_port = far.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            for req in far.incoming_requests() {
+                let _ = req.respond(tiny_http::Response::from_string("トンネルの向こう"));
+            }
+        });
+
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
+        let hostport = ui.url.trim_start_matches("http://").split("/?").next().unwrap().to_string();
+        let mut phone = Phone::new(&format!("http://{hostport}"));
+        phone.pair("tok123456789012");
+        let proxy = crate::tunnel::Proxy::start(&format!("http://{hostport}"), "tok123456789012", &phone.cookie)
+            .expect("線が張れない");
+
+        let mut sock = TcpStream::connect(("127.0.0.1", proxy.port())).unwrap();
+        sock.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        sock.write_all(
+            format!(
+                "CONNECT 127.0.0.1:{far_port} HTTP/1.1\r\nHost: 127.0.0.1:{far_port}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        // The proxy says the way is open before anything goes through it
+        let mut head = Vec::new();
+        let mut one = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            sock.read_exact(&mut one).unwrap();
+            head.push(one[0]);
+        }
+        let head = String::from_utf8_lossy(&head).to_string();
+        assert!(head.starts_with("HTTP/1.1 200"), "通してくれない: {head}");
+
+        // And from here it is nobody's business but the two ends'
+        sock.write_all(b"GET / HTTP/1.1\r\nHost: far\r\nConnection: close\r\n\r\n").unwrap();
+        let mut answer = Vec::new();
+        let _ = sock.read_to_end(&mut answer);
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.contains("トンネルの向こう"), "中身が通っていない: {answer}");
+        ui.shutdown();
     }
 
     /// Test helper: build a text frame the way a client must (masked)

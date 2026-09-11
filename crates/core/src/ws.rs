@@ -192,8 +192,131 @@ impl<W: Write> WsWriter<W> {
     }
 }
 
+// ── the client half ─────────────────────────────────────────────────────────
+//
+// This program is a client as well as a server: it speaks the DevTools
+// protocol to a browser, and carries a tunnel out to one. The difference is
+// one rule turned around -- a client's frames must carry a mask, a server's
+// must not -- so it is the same code, not a second copy of it.
+
+/// Build a frame to send *as a client*: masked, as the protocol requires.
+///
+/// A fresh mask each time, which is what makes it worth having: not secrecy,
+/// which it does not provide, but bytes that cannot be predicted by anything
+/// in between which might otherwise mistake them for something to act on.
+pub fn client_encode(op: Op, payload: &[u8]) -> Vec<u8> {
+    let opcode: u8 = match op {
+        Op::Text => 0x1,
+        Op::Binary => 0x2,
+        Op::Close => 0x8,
+        Op::Ping => 0x9,
+        Op::Pong => 0xA,
+    };
+    let mut out = vec![0x80 | opcode]; // FIN + the kind
+    let mask: [u8; 4] = crate::random_bytes(4)
+        .and_then(|b| b.try_into().ok())
+        .unwrap_or([0xA1, 0xB2, 0xC3, 0xD4]);
+    let len = payload.len();
+    match len {
+        0..=125 => out.push(0x80 | len as u8),
+        126..=65535 => {
+            out.push(0x80 | 126);
+            out.extend_from_slice(&(len as u16).to_be_bytes());
+        }
+        _ => {
+            out.push(0x80 | 127);
+            out.extend_from_slice(&(len as u64).to_be_bytes());
+        }
+    }
+    out.extend_from_slice(&mask);
+    out.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
+    out
+}
+
+/// Read one frame from a server: whether it ends the message, what kind it is,
+/// and its bytes. `None` once there is nothing more to read.
+///
+/// Unlike [`read_frame`], this accepts an unmasked frame -- which is what a
+/// server sends -- and hands back the pieces of a message that arrived in
+/// several frames rather than refusing them.
+pub fn read_server_frame<R: Read>(s: &mut R) -> Option<(bool, u8, Vec<u8>)> {
+    let mut head = [0u8; 2];
+    s.read_exact(&mut head).ok()?;
+    let fin = head[0] & 0x80 != 0;
+    let opcode = head[0] & 0x0f;
+    let masked = head[1] & 0x80 != 0;
+    let len = match head[1] & 0x7f {
+        126 => {
+            let mut n = [0u8; 2];
+            s.read_exact(&mut n).ok()?;
+            u16::from_be_bytes(n) as usize
+        }
+        127 => {
+            let mut n = [0u8; 8];
+            s.read_exact(&mut n).ok()?;
+            u64::from_be_bytes(n) as usize
+        }
+        n => n as usize,
+    };
+    // A browser answering a screenshot sends megabytes; anything past this is
+    // not an answer anybody asked for
+    if len > 64 * 1024 * 1024 {
+        return None;
+    }
+    let mask = masked
+        .then(|| {
+            let mut m = [0u8; 4];
+            s.read_exact(&mut m).ok().map(|()| m)
+        })
+        .flatten();
+    let mut payload = vec![0u8; len];
+    s.read_exact(&mut payload).ok()?;
+    if let Some(m) = mask {
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b ^= m[i & 3];
+        }
+    }
+    Some((fin, opcode, payload))
+}
+
 #[cfg(test)]
 mod tests {
+    /// A frame this writes must be one the other side can read back. The two
+    /// halves are written here, so a mistake in the length forms would agree
+    /// with itself and prove nothing -- the lengths below are chosen to cross
+    /// both boundaries where the form changes
+    #[test]
+    fn a_frame_survives_being_written_and_read() {
+        // Lengths in bytes, so the body is made of one-byte characters. The
+        // three forms change at 125/126 and 65535/65536, and each is crossed
+        let mut bodies: Vec<String> = [0usize, 1, 125, 126, 127, 65535, 65536]
+            .into_iter()
+            .map(|n| "a".repeat(n))
+            .collect();
+        // ...and one that is not ASCII at all, because the length is counted
+        // in bytes and a character is not a byte
+        bodies.push("あいうえお かきくけこ".to_string());
+        for body in &bodies {
+            let framed = client_encode(Op::Text, body.as_bytes());
+            let mut cursor = std::io::Cursor::new(framed);
+            let (fin, opcode, payload) =
+                read_server_frame(&mut cursor).expect("書いた枠が読めない");
+            assert!(fin, "1枚で終わっていない");
+            assert_eq!(opcode, 0x1, "文字の枠ではない");
+            assert_eq!(&String::from_utf8(payload).unwrap(), body, "中身が変わった");
+        }
+    }
+
+    /// The mask is what makes a client's frame legal, and a fresh one each
+    /// time is what makes it worth having
+    #[test]
+    fn every_frame_is_masked_differently() {
+        let a = client_encode(Op::Text, b"hello");
+        let b = client_encode(Op::Text, b"hello");
+        assert_eq!(a[1] & 0x80, 0x80, "マスク無しの枠を送っている");
+        assert_ne!(a, b, "毎回同じマスクを使っている");
+    }
+
     use super::*;
 
     #[test]
