@@ -254,10 +254,20 @@ jobs:
           path: incoming
           merge-multiple: true
 
+      # `awscli` は 24.04 の apt に無い(候補すら出ない)。ランナーの像に
+      # AWS CLI v2 が最初から入っているので、入れるのではなく在ることを確かめる
       - name: Tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y apt-utils createrepo-c rpm awscli
+          sudo apt-get install -y apt-utils createrepo-c rpm
+          command -v aws >/dev/null || {
+            echo "::error::this runner image has no AWS CLI; nothing can be uploaded"
+            exit 1
+          }
+          aws --version
+          apt-ftparchive --version | head -1
+          createrepo_c --version | head -1
+          rpmsign --version | head -1
 
       # 鍵が無ければ署名の無いリポジトリができる。それは誰も受け付けないので、
       # 黙って進むのではなく、ここで止める
