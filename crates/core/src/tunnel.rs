@@ -610,7 +610,7 @@ fn read_head(sock: &mut std::net::TcpStream) -> Option<(String, Vec<u8>)> {
 /// The answer's key is not checked. What that check proves is that the far
 /// side speaks WebSocket rather than being a cache that echoed the request,
 /// and the far side here has already been let in through a lock
-fn handshake(base: &str, path: &str, cookie: &str) -> anyhow::Result<std::net::TcpStream> {
+pub(crate) fn handshake(base: &str, path: &str, cookie: &str) -> anyhow::Result<std::net::TcpStream> {
     let host = base
         .trim_end_matches('/')
         .strip_prefix("http://")

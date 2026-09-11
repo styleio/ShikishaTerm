@@ -169,6 +169,12 @@ pub struct Config {
     ///   anything else      ... used as an absolute path
     #[serde(default)]
     pub browser_data: Option<String>,
+    /// Where a page opened by automation is drawn, for a runtime that has a
+    /// device connected to it: `"here"` (this machine, the default -- watchable
+    /// from anywhere, and works with nobody connected) or `"there"` (the
+    /// connected device's own browser, which is immediate but needs somebody
+    /// present). Either way the page reaches the network through this machine
+    pub browser_draw: Option<String>,
     /// What the browser calls itself when it asks a site for a page.
     ///
     /// Empty means the engine's own, which is Edge's, word for word — this is

@@ -1873,20 +1873,94 @@ fn connect_to(url: &str) -> Result<()> {
     if !shikisha_shared::is_openable(url) {
         anyhow::bail!(i18n::tp("err.connect.bad_url", &[("url", url)]));
     }
-    let win = browser::Browser::spawn(url, "SHIKISHA-TERM")?;
+    let win = std::sync::Arc::new(browser::Browser::spawn(url, "SHIKISHA-TERM")?);
     // Named without its query, because the query is the key to the board and
     // this line goes to a console somebody may well be sharing a screen of
     let host = url.split('?').next().unwrap_or(url);
     println!("{}", i18n::tp("msg.connected", &[("url", host)]));
 
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // One place reads what the window says, because there is one queue and
+    // whoever reads it takes what they read. Reports about pages are passed
+    // on to the line that is drawing them
+    let (reports, arriving) = std::sync::mpsc::channel::<Ev>();
+    draw_for_server(url, &win, &stop, arriving);
+
     // The window runs its own event loop on its own thread. This only waits for
     // it to be closed, because a `main` that returned would take it along
     loop {
-        if win.drain().iter().any(|e| matches!(e, Ev::Closed)) {
-            return Ok(());
+        for ev in win.drain() {
+            if matches!(ev, Ev::Closed) {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Ok(());
+            }
+            if shikisha_shared::allowed_from_page(&ev) {
+                let _ = reports.send(ev);
+            }
         }
         std::thread::sleep(std::time::Duration::from_millis(120));
     }
+}
+
+/// Offer this window's browser to the board it is connected to.
+///
+/// A board can draw its pages on its own machine or on the device looking at
+/// it, and the person says which. Offering costs nothing when the answer is
+/// "its own": the board never asks, and this line sits idle.
+///
+/// Everything such a page fetches goes back out through the board's machine
+/// (`shikisha_core::tunnel`), which is the only reason drawing it here is
+/// worth anything -- `localhost` has to mean the same thing on both sides.
+fn draw_for_server(
+    url: &str,
+    win: &std::sync::Arc<browser::Browser>,
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    arriving: std::sync::mpsc::Receiver<shikisha_shared::Ev>,
+) {
+    let (base, token) = match url.split_once("?t=") {
+        Some((base, rest)) => (
+            base.trim_end_matches('/').to_string(),
+            rest.split('&').next().unwrap_or_default().to_string(),
+        ),
+        // No key in the address means this window was pointed at a board it
+        // has already paired with, and the key is in its cookie jar -- which
+        // this side cannot read. Nothing to offer
+        None => return,
+    };
+    let win = std::sync::Arc::clone(win);
+    let stop = std::sync::Arc::clone(stop);
+    std::thread::spawn(move || {
+        let joined = match shikisha_core::faraway::join(&base, &token) {
+            Ok(cookie) => cookie,
+            Err(e) => {
+                append_hook_log(&format!("pages: not let in by {base}: {e}"));
+                return;
+            }
+        };
+        // The way out to the board's network, before any page is drawn: a
+        // page opened first would reach the network from this desk, which is
+        // the wrong machine
+        let out = match shikisha_core::tunnel::Proxy::start(&base, &token, &joined) {
+            Ok(proxy) => proxy,
+            Err(e) => {
+                append_hook_log(&format!("pages: no way out through {base}: {e}"));
+                return;
+            }
+        };
+        win.browse_through(out.port());
+        let said = shikisha_core::faraway::draw_for(
+            &base,
+            &token,
+            &joined,
+            win.as_ref(),
+            move || arriving.try_iter().collect(),
+            std::sync::Arc::clone(&stop),
+        );
+        if let Err(e) = said {
+            append_hook_log(&format!("pages: the line to {base} ended: {e}"));
+        }
+        drop(out);
+    });
 }
 
 /// from the notification area with the window put away

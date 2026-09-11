@@ -215,11 +215,17 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
     }
 }
 
+/// The end of the line browser asks go out on, once the runtime has one.
+type PageLine = Arc<Mutex<Option<crate::faraway::Line>>>;
+
 /// The tunnels open right now, by the name their two lines agreed on.
 ///
 /// A tunnel is two sockets -- one each way, like the screen and the input that
 /// drives it -- so the second has to find what the first made
 type Pipes = Arc<Mutex<std::collections::HashMap<String, Arc<crate::tunnel::Pipe>>>>;
+
+/// The page lines whose first half is up, waiting for their second.
+type PagesOpen = Arc<Mutex<std::collections::HashMap<String, crate::faraway::Line>>>;
 
 /// Destinations for relay frames (one per connected WS client).
 /// A line that can no longer send is cleaned up on the next frame
@@ -262,6 +268,8 @@ pub struct RemoteUi {
     pub snapshot: Arc<Mutex<Snapshot>>,
     pub rx: Receiver<RemoteCmd>,
     stop: Arc<AtomicBool>,
+    /// Where browser asks go when a device is drawing the pages
+    page_line: PageLine,
     /// Destinations for relay frames. JPEGs arriving from the browser flow here
     frame_clients: FrameClients,
     /// Destinations for state pushes (screen HTML / UI JSON) over /ws-state
@@ -641,6 +649,8 @@ impl RemoteUi {
         let stop = Arc::new(AtomicBool::new(false));
         let frame_clients: FrameClients = Arc::new(Mutex::new(Vec::new()));
         let pipes: Pipes = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let page_line: PageLine = Arc::new(Mutex::new(None));
+        let pages_open: PagesOpen = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let state_clients: StateClients = Arc::new(Mutex::new(Vec::new()));
         let last_poll: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
@@ -695,6 +705,8 @@ impl RemoteUi {
             let stop = Arc::clone(&stop);
             let clients = Arc::clone(&frame_clients);
             let pipes = Arc::clone(&pipes);
+            let page_line = Arc::clone(&page_line);
+            let pages_open = Arc::clone(&pages_open);
             let states = Arc::clone(&state_clients);
             let polls = Arc::clone(&last_poll);
             let kf = Arc::clone(&keyframe_wanted);
@@ -709,8 +721,9 @@ impl RemoteUi {
                     }
                     if let Err(e) =
                         handle(
-                            req, &token, &snapshot, &tx, &clients, &pipes, &states, &polls,
-                            &kf, &settings, &gate, &book_for_thread, sticky,
+                            req, &token, &snapshot, &tx, &clients, &pipes, &page_line,
+                            &pages_open, &states, &polls, &kf, &settings, &gate,
+                            &book_for_thread, sticky,
                         )
                     {
                         crate::append_hook_log(&crate::i18n::tp(
@@ -728,6 +741,8 @@ impl RemoteUi {
             let stop = Arc::clone(&stop);
             let clients = Arc::clone(&frame_clients);
             let pipes = Arc::clone(&pipes);
+            let page_line = Arc::clone(&page_line);
+            let pages_open = Arc::clone(&pages_open);
             let states = Arc::clone(&state_clients);
             let polls = Arc::clone(&last_poll);
             let kf = Arc::clone(&keyframe_wanted);
@@ -741,8 +756,9 @@ impl RemoteUi {
                         break;
                     }
                     if let Err(e) = handle(
-                        req, &token, &snapshot, &tx, &clients, &pipes, &states, &polls,
-                        &kf, &settings, &gate, &book_for_thread, sticky,
+                        req, &token, &snapshot, &tx, &clients, &pipes, &page_line,
+                        &pages_open, &states, &polls, &kf, &settings, &gate,
+                        &book_for_thread, sticky,
                     ) {
                         crate::append_hook_log(&crate::i18n::tp(
                             "err.remote.hook_log",
@@ -762,6 +778,7 @@ impl RemoteUi {
             rx,
             stop,
             frame_clients,
+            page_line,
             state_clients,
             last_poll,
             keyframe_wanted,
@@ -773,6 +790,15 @@ impl RemoteUi {
             loopback: Mutex::new(loopback),
             loopback_thread: Mutex::new(loopback_thread),
         })
+    }
+
+    /// Hand over the line that browser asks go out on.
+    ///
+    /// Only a runtime whose pages can be drawn on a connected device has one;
+    /// until it does, a device offering to draw them is turned away rather
+    /// than left holding a line nothing will ever come down
+    pub fn set_page_line(&self, line: crate::faraway::Line) {
+        *self.page_line.lock().unwrap() = Some(line);
     }
 
     /// Point the settings reverse-proxy at the local (loopback) settings web
@@ -1072,6 +1098,8 @@ fn handle(
     tx: &Sender<RemoteCmd>,
     frame_clients: &FrameClients,
     pipes: &Pipes,
+    page_line: &PageLine,
+    pages_open: &PagesOpen,
     state_clients: &StateClients,
     last_poll: &Arc<Mutex<Option<Instant>>>,
     keyframe_wanted: &Arc<AtomicBool>,
@@ -1638,6 +1666,104 @@ fn handle(
                     }
                 }
                 let _ = w.send_close();
+            });
+        }
+        // ── Pages drawn on the device at the other end ──────────────────
+        //
+        // The other way round from everything else here: this machine asks,
+        // and the device answers. What goes down this line is a protocol call
+        // or a piece of JavaScript -- the two moves every page operation is
+        // built from -- so the finding and clicking and waiting all happen
+        // here, against a browser over there.
+        //
+        // Two lines again, and for the same reason as the tunnel: one socket
+        // cannot be read and written by two threads. This one carries the
+        // asks; `/ws-page-in` carries the answers and whatever the pages over
+        // there report.
+        ("GET", "/ws-page") => {
+            let key = websocket_key(&req);
+            let line = page_line.lock().unwrap().clone();
+            let Some(line) = line else {
+                // Nothing here will ever ask. Said plainly, so the device
+                // shows "this server draws its own pages" rather than waiting
+                return req
+                    .respond(Response::from_string("no pages to draw").with_status_code(404))
+                    .map_err(Into::into);
+            };
+            let name = query_value(req.url(), "p");
+            if name.len() < 8 || key.is_empty() {
+                return req
+                    .respond(Response::from_string("expected websocket").with_status_code(400))
+                    .map_err(Into::into);
+            }
+            let accept = crate::ws::accept_key(&key);
+            let resp = Response::empty(101).with_header(
+                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
+            );
+            let stream = req.upgrade("websocket", resp);
+            let (atx, arx) = channel::<String>();
+            let who = match &by {
+                Opener::Paired(client) => client.name.clone(),
+                Opener::Pairing => String::new(),
+            };
+            line.attach(atx, &who);
+            pages_open.lock().unwrap().insert(name.clone(), line.clone());
+            let pages_open = Arc::clone(pages_open);
+            let gate = Arc::clone(gate);
+            let session = session.clone();
+            std::thread::spawn(move || {
+                let mut w = crate::ws::WsWriter::new(stream);
+                while let Ok(ask) = arx.recv() {
+                    if !gate.granted(&session) || w.send_text(&ask).is_err() {
+                        break;
+                    }
+                }
+                // Nobody is drawing any more. Everything still waiting on an
+                // answer is told now, rather than waiting out its own deadline
+                line.detach();
+                pages_open.lock().unwrap().remove(&name);
+                let _ = w.send_close();
+            });
+        }
+        // The other half: answers, and what the pages over there report
+        ("GET", "/ws-page-in") => {
+            let name = query_value(req.url(), "p");
+            let key = websocket_key(&req);
+            let found = pages_open.lock().unwrap().get(&name).cloned();
+            let Some(line) = found else {
+                return req
+                    .respond(Response::from_string("no such line").with_status_code(404))
+                    .map_err(Into::into);
+            };
+            if key.is_empty() {
+                return req
+                    .respond(Response::from_string("expected websocket").with_status_code(400))
+                    .map_err(Into::into);
+            }
+            let accept = crate::ws::accept_key(&key);
+            let resp = Response::empty(101).with_header(
+                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
+            );
+            let mut stream = req.upgrade("websocket", resp);
+            let gate = Arc::clone(gate);
+            let session = session.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let frame = crate::ws::read_frame(&mut stream);
+                    if !gate.granted(&session) {
+                        break;
+                    }
+                    match frame {
+                        Ok((crate::ws::Op::Text, payload)) => {
+                            if let Ok(text) = String::from_utf8(payload) {
+                                line.heard(&text);
+                            }
+                        }
+                        Ok((crate::ws::Op::Close, _)) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+                line.detach();
             });
         }
         // ── A way out to the network, through this machine ──────────────

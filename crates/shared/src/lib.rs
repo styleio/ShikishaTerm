@@ -15,6 +15,7 @@
 /// pixels. This lets the same spot be pointed at even when the sender's
 /// screen size or DPR differs
 #[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Input {
     /// Mouse down/move/up. A drag is expressed as a chain of moves
     Mouse {
@@ -46,6 +47,7 @@ pub enum Input {
 /// button would show up looking pressable. The window itself knows
 /// whether it can go back, so we ask it
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Go {
     Back,
     Forward,
@@ -70,6 +72,7 @@ pub enum Go {
 /// can work these out — it owns the font metrics and the dividers — so they
 /// are reported, never guessed on this side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct PaneGeom {
     pub id: u32,
     pub rows: u16,
@@ -79,6 +82,7 @@ pub struct PaneGeom {
 
 /// A report from the browser to the conductor
 #[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Ev {
     /// A document finished loading (arrives on every navigation).
     /// `from` is the name of the page that loaded (`None` is the main view)
@@ -425,6 +429,7 @@ pub enum Ev {
 /// hands it a unique temp folder (matches wry's own docs: keep a separate
 /// context for normal tabs and one for private/incognito tabs).
 #[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BrowserProfile {
     /// The profile name ("default", etc). Ignored when `private` is true
     pub name: String,
