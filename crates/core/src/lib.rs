@@ -32,6 +32,7 @@ pub mod keys;
 pub mod lastsession;
 pub mod layout;
 pub mod limits;
+pub mod mailbox;
 pub mod migrate;
 pub mod netaddr;
 pub mod notify;

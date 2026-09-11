@@ -17,6 +17,7 @@
 #![windows_subsystem = "windows"]
 
 use shikisha_core::keymap::{key_to_bytes, key_to_bytes_with};
+use shikisha_core::tab::RecordedStep;
 use shikisha_core::workspace::{
     TabAuto, apply_ws_config, automation_by_pane, carried_conversation, resolve_launch,
     tab_options, build_engine, extract_env_block, open_declared_browsers, panel_places,
@@ -639,6 +640,9 @@ const FLASH_LIFE: Duration = Duration::from_secs(12);
 
 /// The set of things needed to draw into our own window
 struct WinSurface {
+    /// What a person did, waiting for the loop to act on it. The window only
+    /// ever posts into this; what the reports mean is the runtime's business
+    mail: shikisha_core::mailbox::Mailbox,
     win: std::rc::Rc<crate::browser::Browser>,
     /// What the window measured for itself, in character cells.
     rows: u16,
@@ -669,29 +673,6 @@ struct WinSurface {
     pane_geom: Vec<shikisha_shared::PaneGeom>,
     /// The whole content area. Where a screen that covers the window goes
     full: (i32, i32, i32, i32),
-    /// Panes clicked in the window. The loop moves focus to them
-    focus_panes: Vec<u32>,
-    /// Panes whose ✕ was pressed. The loop closes the view, not the tab
-    close_panes: Vec<u32>,
-    /// Dividers dragged in the window, as (pane, its split's new first share)
-    pane_ratios: Vec<(usize, f32)>,
-    /// Panes whose ⊞ / ⊟ caption button was pressed (pane, split downwards?)
-    pane_splits: Vec<(u32, bool)>,
-    /// ↻ / ⟲ pressed in a pane's caption: which pane, and whether to carry the
-    /// conversation over
-    restart_panes: Vec<(u32, bool)>,
-    /// The size the terminal is now drawn at, when it has just been changed
-    font_size: Option<u8>,
-    /// The width the tab bar is now drawn at, when its edge has just been
-    /// dragged. 0 = put away
-    tab_width: Option<u16>,
-    /// Pages placed in the window that have taken the keyboard since the last
-    /// drain, by the name automation addresses them with
-    touches: Vec<String>,
-    /// Whether a placed page should be drawing the pen (the composer is shut)
-    pen: Option<bool>,
-    /// The pane that asked for a tab, if one did. Where the new tab lands
-    add_tab_pane: Option<u32>,
     /// The pane tree as last sent to the page. Only send it again when it changes
     last_layout: String,
     /// The terminal contents last sent for each unfocused pane, and what they
@@ -701,22 +682,6 @@ struct WinSurface {
     /// Intents that arrived from the window, converted into the form the loop reads.
     /// The loop only understands terminal key input, so everything gets funneled there.
     pending: std::collections::VecDeque<Event>,
-    /// Names of pages whose bar button was pressed to signal "done" by a human
-    presses: Vec<String>,
-    /// Pages that finished loading (id, URL, whether refs are settled too)
-    loads: Vec<(String, String, bool)>,
-    /// Scroll-back requested via the wheel (positive = further into the past)
-    scrolls: Vec<(i32, u16, u16)>,
-    /// Navigation requested via the top bar
-    gos: Vec<shikisha_shared::Go>,
-    /// The answer to a location query we asked for (name inside the window, URL, can-go-back, can-go-forward)
-    wheres: Vec<(String, String, bool, bool)>,
-    /// Browser load start/end notifications (name inside the window, whether loading).
-    /// The name is in "{ws}/{id}" form; converting to the id happens on the loop side
-    /// (WinSurface doesn't know about caps). Same convention as `wheres`.
-    loading: Vec<(String, bool)>,
-    /// Relay-screen frames (JPEG byte buffers). The loop delivers these to phones.
-    frames: Vec<Vec<u8>>,
     /// The window was closed. With nowhere left to draw, the loop has no choice but to shut down.
     closed: bool,
     /// The window's ✕ was pressed. The loop decides between putting the
@@ -729,85 +694,16 @@ struct WinSurface {
     /// The window is put away. Drawing goes on regardless (the phone reads the
     /// same state), but a notification's click has to bring it back first
     hidden: bool,
-    /// The settings page's "close settings" button was pressed. The loop closes the settings tab.
-    close_settings: bool,
     /// The sidebar gear (or a deep-link shortcut) was pressed. The loop opens the
     /// settings page. Carries an optional section to land on and whether to return
     /// to the board once saved (Some = requested, None = not requested).
     open_settings: Option<(Option<String>, bool, Option<String>, Option<u32>)>,
-    /// The status bar's "remote connected" control was pressed. The loop cuts every
-    /// remote session (rotates the token, drops the connections).
-    remote_cut: bool,
-    /// The first-run pointer that was closed, by step
-    coach_done: Option<u8>,
-    /// The thanks card was pressed: open the page, or just put it away
-    thanks: Option<bool>,
-    /// The update card was pressed: open the settings' Update card, or just
-    /// put the card away
-    update_card: Option<bool>,
-    /// The `?` beside the gear was pressed
-    help_site: bool,
-    /// Tabs whose usage-limit notice was read, by screen number
-    limit_acks: Vec<usize>,
-    /// Lines a person finished in the composer, each with the tab it is for,
-    /// awaiting delivery. Filled from both surfaces: the window's ipc and the
-    /// phone's relay.
-    says: Vec<(usize, String)>,
-    /// Quick-action chips (Lua) fired from the bar, by index into config.actions.
-    /// The loop looks up the code and runs it against the active tab.
-    run_actions: Vec<usize>,
-    /// "Operate a target tab" requests from the 🎯 panel: (target tab index, goal).
-    /// target 0 = detach. The loop attaches the active AI as the target's operator.
-    operates: Vec<(usize, String)>,
-    /// 📼 record-mode toggles from the composer (true = arm the shown browser's
-    /// recorder, false = silence recording everywhere).
-    record_arms: Vec<bool>,
     /// The folder a tab was asked for from, when the ask named one. Read once
     /// by the door that opens the form
     add_tab_folder: Option<String>,
-    /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
-    /// shown browser.
-    run_luas: Vec<String>,
-    /// What the git panel has asked for since the last drain: (panel, act, args)
-    gits: Vec<(String, String, serde_json::Value)>,
-    /// The same, for the file panel
-    sftps: Vec<(String, String, serde_json::Value)>,
-    /// Recorded steps reported by pages. The loop turns each into one Lua
-    /// line for the composer.
-    recorded: Vec<RecordedStep>,
-    /// Text/keys typed into the composer while viewing a browser tab. The loop
-    /// injects them into the shown browser — the very same caps.browser_inject the
-    /// phone's relay uses, so the desktop composer and the phone share one path.
-    injects: Vec<shikisha_shared::Input>,
     /// The 🎯 panel's "save the replay" button. The loop copies the newest
     /// run's replay.lua into Downloads and answers with a flash message.
     replay_saves: bool,
-    /// ✨ natural-language requests awaiting a command suggestion from the
-    /// assistant AI, aimed at the active terminal tab.
-    suggests: Vec<String>,
-    /// 🔍 environment-survey button presses (the loop types the probe).
-    surveys: usize,
-    /// Vault searches awaiting an answer -- what to look for in past
-    /// conversations. The loop runs the search and puts the hits into state
-    vault_queries: Vec<String>,
-    /// Past conversations asked to be reopened as resuming tabs
-    vault_opens: Vec<shikisha_shared::Ev>,
-    /// Branches asked about, and asked for: (folder cut from, branch, what to
-    /// grow it from, make it, what to bring along)
-    branches: Vec<shikisha_shared::BranchAsk>,
-    /// Working folders asked about, and asked for: (the folder, the project
-    /// chosen when one had to be, the branch, go ahead)
-    repairs: Vec<(String, String, String, bool)>,
-    /// Colours chosen for a project: (a folder in it, the colour)
-    folder_colors: Vec<(String, String)>,
-    /// Folders being looked through, and the one finally chosen
-    browses: Vec<(String, bool)>,
-    /// Folders renamed in the list: (folder, the new name)
-    folder_names: Vec<(String, String)>,
-    /// Folders taken out of the list. The files stay where they are
-    folder_closes: Vec<String>,
-    /// Branch folders thrown away for good
-    folder_discards: Vec<String>,
 }
 
 impl WinSurface {
@@ -817,51 +713,15 @@ impl WinSurface {
         self.pending.push_back(ev);
     }
 
-    /// Takes ownership of the names of pages whose bar button was pressed.
-    /// The window only has a single report channel, so this is the only place that consumes it.
-    fn take_presses(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.presses)
-    }
 
-    /// True if "close settings" was pressed (and clears the flag if so)
-    fn take_focus_panes(&mut self) -> Vec<u32> {
-        std::mem::take(&mut self.focus_panes)
-    }
 
-    fn take_close_panes(&mut self) -> Vec<u32> {
-        std::mem::take(&mut self.close_panes)
-    }
 
-    fn take_pane_ratios(&mut self) -> Vec<(usize, f32)> {
-        std::mem::take(&mut self.pane_ratios)
-    }
 
-    fn take_pane_splits(&mut self) -> Vec<(u32, bool)> {
-        std::mem::take(&mut self.pane_splits)
-    }
-    fn take_restart_panes(&mut self) -> Vec<(u32, bool)> {
-        std::mem::take(&mut self.restart_panes)
-    }
 
-    fn take_font_size(&mut self) -> Option<u8> {
-        self.font_size.take()
-    }
 
-    fn take_tab_width(&mut self) -> Option<u16> {
-        self.tab_width.take()
-    }
 
-    fn take_touches(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.touches)
-    }
 
-    fn take_pen(&mut self) -> Option<bool> {
-        self.pen.take()
-    }
 
-    fn take_add_tab_pane(&mut self) -> Option<u32> {
-        self.add_tab_pane.take()
-    }
 
     /// Put the tab bar away, or bring it back out.
     ///
@@ -871,9 +731,6 @@ impl WinSurface {
         let _ = self.win.eval("window.__toggleTabBar && window.__toggleTabBar();");
     }
 
-    fn take_close_settings(&mut self) -> bool {
-        std::mem::take(&mut self.close_settings)
-    }
 
     /// The pending "open settings" request (section, return-on-save, the
     /// working folder to land on), if any, clearing it.
@@ -894,103 +751,33 @@ impl WinSurface {
         let _ = self.win.eval("window.__openPalette && window.__openPalette();");
     }
 
-    /// True if the "remote connected" control was pressed (and clears the flag if so)
-    fn take_remote_cut(&mut self) -> bool {
-        std::mem::take(&mut self.remote_cut)
-    }
 
-    fn take_coach_done(&mut self) -> Option<u8> {
-        self.coach_done.take()
-    }
 
-    fn take_thanks(&mut self) -> Option<bool> {
-        self.thanks.take()
-    }
 
-    fn take_update_card(&mut self) -> Option<bool> {
-        self.update_card.take()
-    }
 
-    fn take_help_site(&mut self) -> bool {
-        std::mem::take(&mut self.help_site)
-    }
 
-    fn take_limit_acks(&mut self) -> Vec<usize> {
-        std::mem::take(&mut self.limit_acks)
-    }
 
-    /// Takes ownership of pages that finished loading (id, URL, whether settled)
-    fn take_loads(&mut self) -> Vec<(String, String, bool)> {
-        std::mem::take(&mut self.loads)
-    }
 
-    /// Takes ownership of navigation requested via the top bar
-    fn take_gos(&mut self) -> Vec<shikisha_shared::Go> {
-        std::mem::take(&mut self.gos)
-    }
 
-    /// Takes ownership of wheel signals (tick count, row and column pointed at)
-    fn take_scrolls(&mut self) -> Vec<(i32, u16, u16)> {
-        std::mem::take(&mut self.scrolls)
-    }
 
-    /// Takes ownership of location answers
-    fn take_wheres(&mut self) -> Vec<(String, String, bool, bool)> {
-        std::mem::take(&mut self.wheres)
-    }
-    fn take_loading(&mut self) -> Vec<(String, bool)> {
-        std::mem::take(&mut self.loading)
-    }
 
-    /// Takes ownership of accumulated relay frames (the loop delivers them to phones)
-    fn take_frames(&mut self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.frames)
-    }
 
-    /// Takes ownership of chat lines typed into model tabs
-    fn take_says(&mut self) -> Vec<(usize, String)> {
-        std::mem::take(&mut self.says)
-    }
 
-    /// Takes the indices of Lua quick-actions fired since the last drain.
-    fn take_run_actions(&mut self) -> Vec<usize> {
-        std::mem::take(&mut self.run_actions)
-    }
 
-    /// Takes the 📼 record-mode toggles since the last drain.
-    fn take_record_arms(&mut self) -> Vec<bool> {
-        std::mem::take(&mut self.record_arms)
-    }
 
-    /// Takes the composer Lua awaiting a sandboxed run (▶) since the last drain.
-    fn take_run_luas(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.run_luas)
-    }
 
-    /// Takes what the git panel has asked for since the last drain
-    fn take_gits(&mut self) -> Vec<(String, String, serde_json::Value)> {
-        std::mem::take(&mut self.gits)
-    }
 
     /// Hand one answer back to the git panel (already JSON-encoded)
     fn push_git(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__git && window.__git({json});"));
     }
 
-    /// Takes what the file panel has asked for since the last drain
-    fn take_sftps(&mut self) -> Vec<(String, String, serde_json::Value)> {
-        std::mem::take(&mut self.sftps)
-    }
 
     /// Hand one answer back to the file panel (already JSON-encoded)
     fn push_sftp(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__sftp && window.__sftp({json});"));
     }
 
-    /// Takes the recorded steps reported by pages since the last drain.
-    fn take_recorded(&mut self) -> Vec<RecordedStep> {
-        std::mem::take(&mut self.recorded)
-    }
 
     /// Deliver one recorded Lua line (already JSON-encoded) to the composer.
     fn push_recorded(&self, line_json: &str) {
@@ -1002,61 +789,27 @@ impl WinSurface {
     /// window-origin one uses, so both are drained in one place
     fn queue_vault(&mut self, ev: shikisha_shared::Ev) {
         match ev {
-            shikisha_shared::Ev::VaultSearch { query } => self.vault_queries.push(query),
-            ev @ shikisha_shared::Ev::VaultOpen { .. } => self.vault_opens.push(ev),
+            shikisha_shared::Ev::VaultSearch { query } => self.mail.vault_queries.push(query),
+            ev @ shikisha_shared::Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
             _ => {}
         }
     }
 
-    fn take_vault_queries(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.vault_queries)
-    }
 
-    fn take_vault_opens(&mut self) -> Vec<shikisha_shared::Ev> {
-        std::mem::take(&mut self.vault_opens)
-    }
 
-    fn take_branches(&mut self) -> Vec<shikisha_shared::BranchAsk> {
-        std::mem::take(&mut self.branches)
-    }
 
-    fn take_repairs(&mut self) -> Vec<(String, String, String, bool)> {
-        std::mem::take(&mut self.repairs)
-    }
 
-    fn take_folder_colors(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.folder_colors)
-    }
 
-    fn take_browses(&mut self) -> Vec<(String, bool)> {
-        std::mem::take(&mut self.browses)
-    }
 
-    fn take_folder_names(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.folder_names)
-    }
 
-    fn take_folder_closes(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.folder_closes)
-    }
 
-    fn take_folder_discards(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.folder_discards)
-    }
 
-    fn take_suggests(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.suggests)
-    }
 
     /// Deliver a finished ✨ suggestion (JSON: {ok, cmd?/error?}) to the composer.
     fn push_suggested(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__suggested({json});"));
     }
 
-    /// Takes the pending 🔍 survey presses since the last drain.
-    fn take_surveys(&mut self) -> usize {
-        std::mem::take(&mut self.surveys)
-    }
 
     /// Deliver 🔍 survey progress (JSON: {stage} / {ok, error?}) to the board.
     fn push_surveyed(&self, json: &str) {
@@ -1068,15 +821,7 @@ impl WinSurface {
         let _ = self.win.eval(&format!("window.__luaDone({err_json});"));
     }
 
-    /// Takes the composer inputs bound for the shown browser since the last drain.
-    fn take_injects(&mut self) -> Vec<shikisha_shared::Input> {
-        std::mem::take(&mut self.injects)
-    }
 
-    /// Takes the pending operate-a-target requests (target index, goal).
-    fn take_operates(&mut self) -> Vec<(usize, String)> {
-        std::mem::take(&mut self.operates)
-    }
 
     /// Push the current quick actions into the shell page so a settings edit
     /// reflects live — the window isn't reloaded on a config change. (The phone
@@ -1146,13 +891,13 @@ impl WinSurface {
                     // the choice between the viewers is made (`terminal_size`).
                     self.pending.push_back(Event::Resize(cols, rows));
                 }
-                Ev::FocusPane { id } => self.focus_panes.push(id),
-                Ev::ClosePane { id } => self.close_panes.push(id),
-                Ev::PaneRatio { divider, ratio } => self.pane_ratios.push((divider, ratio)),
-                Ev::SplitPane { id, down } => self.pane_splits.push((id, down)),
-                Ev::RestartPane { id, keep } => self.restart_panes.push((id, keep)),
-                Ev::FontSize { px } => self.font_size = Some(px),
-                Ev::TabWidth { px } => self.tab_width = Some(px),
+                Ev::FocusPane { id } => self.mail.focus_panes.push(id),
+                Ev::ClosePane { id } => self.mail.close_panes.push(id),
+                Ev::PaneRatio { divider, ratio } => self.mail.pane_ratios.push((divider, ratio)),
+                Ev::SplitPane { id, down } => self.mail.pane_splits.push((id, down)),
+                Ev::RestartPane { id, keep } => self.mail.restart_panes.push((id, keep)),
+                Ev::FontSize { px } => self.mail.font_size = Some(px),
+                Ev::TabWidth { px } => self.mail.tab_width = Some(px),
                 Ev::JsError { msg } => {
                     shikisha_core::append_hook_log(&format!("Screen failure: {msg}"));
                 }
@@ -1164,47 +909,47 @@ impl WinSurface {
                 Ev::TrayQuit => self.tray_quit = true,
                 // The settings page's "close settings" button. Where the tab actually
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
-                Ev::CloseSettings => self.close_settings = true,
+                Ev::CloseSettings => self.mail.close_settings = true,
                 Ev::OpenSettings { section, ret, folder, tabpos } => {
                     self.open_settings = Some((section, ret, folder, tabpos))
                 }
-                Ev::VaultSearch { query } => self.vault_queries.push(query),
-                ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
+                Ev::VaultSearch { query } => self.mail.vault_queries.push(query),
+                ev @ Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
                 ev @ Ev::Branch { .. } => {
-                    self.branches.extend(shikisha_shared::BranchAsk::of(ev));
+                    self.mail.branches.extend(shikisha_shared::BranchAsk::of(ev));
                 }
                 Ev::Repair { folder, choose, branch, take } => {
-                    self.repairs.push((folder, choose, branch, take))
+                    self.mail.repairs.push((folder, choose, branch, take))
                 }
-                Ev::FolderColor { folder, color } => self.folder_colors.push((folder, color)),
-                Ev::Browse { path, open } => self.browses.push((path, open)),
-                Ev::FolderName { folder, name } => self.folder_names.push((folder, name)),
-                Ev::FolderClose { folder } => self.folder_closes.push(folder),
-                Ev::FolderDiscard { folder } => self.folder_discards.push(folder),
-                Ev::RemoteCut => self.remote_cut = true,
-                Ev::Coach { step } => self.coach_done = Some(step),
-                Ev::Thanks { open } => self.thanks = Some(open),
-                Ev::Update { open } => self.update_card = Some(open),
-                Ev::Help => self.help_site = true,
-                Ev::LimitAck { tab } => self.limit_acks.push(tab),
+                Ev::FolderColor { folder, color } => self.mail.folder_colors.push((folder, color)),
+                Ev::Browse { path, open } => self.mail.browses.push((path, open)),
+                Ev::FolderName { folder, name } => self.mail.folder_names.push((folder, name)),
+                Ev::FolderClose { folder } => self.mail.folder_closes.push(folder),
+                Ev::FolderDiscard { folder } => self.mail.folder_discards.push(folder),
+                Ev::RemoteCut => self.mail.remote_cut = true,
+                Ev::Coach { step } => self.mail.coach_done = Some(step),
+                Ev::Thanks { open } => self.mail.thanks = Some(open),
+                Ev::Update { open } => self.mail.update_card = Some(open),
+                Ev::Help => self.mail.help_site = true,
+                Ev::LimitAck { tab } => self.mail.limit_acks.push(tab),
                 // A Lua quick-action was tapped. Remember its index; the loop looks
                 // up the code and runs it (it has the hook engine and config).
-                Ev::RunAction { index } => self.run_actions.push(index),
+                Ev::RunAction { index } => self.mail.run_actions.push(index),
                 // Operate-a-target request; the loop has the engine to attach it.
-                Ev::Operate { target, goal } => self.operates.push((target, goal)),
+                Ev::Operate { target, goal } => self.mail.operates.push((target, goal)),
                 // Save the newest replay.lua to Downloads (the board can't
                 // download over HTTP; the loop owns the answer message).
                 Ev::ReplaySave => self.replay_saves = true,
                 // ✨ suggestion request; the loop owns the assistant AI call.
-                Ev::Suggest { text } => self.suggests.push(text),
+                Ev::Suggest { text } => self.mail.suggests.push(text),
                 // 🔍 survey request; the loop types the probe and captures it.
-                Ev::Survey => self.surveys += 1,
+                Ev::Survey => self.mail.surveys += 1,
                 // 📼 / ▶ from the composer, and recorded steps from pages. All
                 // resolved by the loop (it knows the shown browser and the engine).
-                Ev::Record { on } => self.record_arms.push(on),
-                Ev::RunLua { code } => self.run_luas.push(code),
-                Ev::Git { panel, act, args } => self.gits.push((panel, act, args)),
-                Ev::Sftp { panel, act, args } => self.sftps.push((panel, act, args)),
+                Ev::Record { on } => self.mail.record_arms.push(on),
+                Ev::RunLua { code } => self.mail.run_luas.push(code),
+                Ev::Git { panel, act, args } => self.mail.gits.push((panel, act, args)),
+                Ev::Sftp { panel, act, args } => self.mail.sftps.push((panel, act, args)),
                 Ev::Recorded {
                     from: Some(child),
                     act,
@@ -1212,11 +957,11 @@ impl WinSurface {
                     value,
                     xpath,
                     hint,
-                } => self.recorded.push(RecordedStep { child, act, sel, value, xpath, hint }),
+                } => self.mail.recorded.push(RecordedStep { child, act, sel, value, xpath, hint }),
                 // Composer input while viewing a browser tab. Stash it; the loop
                 // injects it into the shown browser via caps.browser_inject — the
                 // same call the phone's relay makes, not a desktop-only path.
-                Ev::Inject { input, .. } => self.injects.push(input),
+                Ev::Inject { input, .. } => self.mail.injects.push(input),
                 // A file attached in the desktop composer. Save it beside the
                 // active tab (the folder its AI runs in) and hand the path back to
                 // the page. Same saver the phone's /api/attach route uses.
@@ -1229,28 +974,28 @@ impl WinSurface {
                 }
                 // The top bar was pressed. The destination is "whatever page is currently
                 // showing", so the loop decides (only one bar is ever displayed).
-                Ev::Go { go } => self.gos.push(go),
-                Ev::Scroll { by, row, col } => self.scrolls.push((by, row, col)),
-                Ev::Say { tab, text } => self.says.push((tab, text)),
+                Ev::Go { go } => self.mail.gos.push(go),
+                Ev::Scroll { by, row, col } => self.mail.scrolls.push((by, row, col)),
+                Ev::Say { tab, text } => self.mail.says.push((tab, text)),
                 Ev::Where {
                     from: Some(name),
                     url,
                     can_back,
                     can_forward,
-                } => self.wheres.push((name, url, can_back, can_forward)),
+                } => self.mail.wheres.push((name, url, can_back, can_forward)),
                 // The bar on a placed page was pressed = a human finished their turn.
                 // Who pressed it can only be told from the name attached to the report.
-                Ev::Button { from: Some(name) } => self.presses.push(name),
+                Ev::Button { from: Some(name) } => self.mail.presses.push(name),
                 // A placed page took the keyboard. Only pages placed in the
                 // window report this; the shell's own presses already say
                 // which pane they landed on
-                Ev::Touched { from: Some(name) } => self.touches.push(name),
+                Ev::Touched { from: Some(name) } => self.mail.touches.push(name),
                 Ev::Touched { from: None } => {}
                 // A tab was asked for from a pane with nothing in it. Note
                 // which pane asked, then go on to open the form exactly as the
                 // tab bar's + does -- one door, so the two cannot drift
                 Ev::AddTab { pane, folder } => {
-                    self.add_tab_pane = pane.or(self.add_tab_pane);
+                    self.mail.add_tab_pane = pane.or(self.mail.add_tab_pane);
                     // A folder was named: the form has to be told, so remember
                     // it for the door below. Otherwise this is the tab bar's +,
                     // which goes through the same key the keyboard uses -- one
@@ -1270,7 +1015,7 @@ impl WinSurface {
                     let _ = self.win.eval("window.__composer && window.__composer();");
                 }
                 // The window's page says whether that pen should be showing
-                Ev::Pen { on } => self.pen = Some(on),
+                Ev::Pen { on } => self.mail.pen = Some(on),
                 // Our own page says it is up. It comes back blank — a reload
                 // after an update, a first paint — and everything we send is
                 // "what changed since last time", so unless the record of what
@@ -1289,14 +1034,14 @@ impl WinSurface {
                     from: Some(name),
                     url,
                     complete,
-                } => self.loads.push((name, url, complete)),
+                } => self.mail.loads.push((name, url, complete)),
                 // A browser started/finished loading. Conversion to the id happens on
                 // the loop side — doing it here as a display name would make WinSurface
                 // need to know about caps.
                 Ev::Loading {
                     from: Some(name),
                     busy,
-                } => self.loading.push((name, busy)),
+                } => self.mail.loading.push((name, busy)),
                 // Treat the clipboard the same way the terminal side does
                 Ev::Copy { text } => {
                     if let Ok(mut c) = arboard::Clipboard::new() {
@@ -1315,7 +1060,7 @@ impl WinSurface {
                     if let Ok(bytes) =
                         base64::engine::general_purpose::STANDARD.decode(data.as_bytes())
                     {
-                        self.frames.push(bytes);
+                        self.mail.frames.push(bytes);
                     }
                 }
                 // Everything else can be converted into keystrokes. `keys_for` is the
@@ -1330,17 +1075,6 @@ impl WinSurface {
     }
 }
 
-/// One recorded step as reported by a page: which pane it came from, what
-/// happened, and how the element was addressed (CSS, or a text-anchored
-/// XPath). `hint` is the element's visible text, kept as a repair aid.
-struct RecordedStep {
-    child: String,
-    act: String,
-    sel: String,
-    value: String,
-    xpath: bool,
-    hint: String,
-}
 
 /// One recorded step → one line of the dialect every Lua surface here speaks
 /// (the rally, quick actions, ▶ run mode). JSON escaping is used for the
@@ -1540,6 +1274,7 @@ fn run_in_window() -> Result<()> {
         "SHIKISHA-TERM",
     )?);
     run(WinSurface {
+        mail: Default::default(),
         win,
         rows: 40,
         cols: 120,
@@ -1551,61 +1286,17 @@ fn run_in_window() -> Result<()> {
         area: (0, 0, 0, 0),
         pane_geom: Vec::new(),
         full: (0, 0, 0, 0),
-        focus_panes: Vec::new(),
-        close_panes: Vec::new(),
-        pane_ratios: Vec::new(),
         last_layout: String::new(),
         last_pane_screens: std::collections::HashMap::new(),
         pending: std::collections::VecDeque::new(),
-        presses: Vec::new(),
         add_tab_folder: None,
-        gits: Vec::new(),
-        sftps: Vec::new(),
-        loads: Vec::new(),
-        scrolls: Vec::new(),
-        gos: Vec::new(),
-        wheres: Vec::new(),
-        loading: Vec::new(),
-        frames: Vec::new(),
         closed: false,
         close_requested: false,
         tray_open: false,
         tray_quit: false,
         hidden: false,
-        close_settings: false,
         open_settings: None,
-        remote_cut: false,
-        coach_done: None,
-        thanks: None,
-        update_card: None,
-        help_site: false,
-        limit_acks: Vec::new(),
-        says: Vec::new(),
-        run_actions: Vec::new(),
-        vault_queries: Vec::new(),
-        vault_opens: Vec::new(),
-        branches: Vec::new(),
-        repairs: Vec::new(),
-        folder_colors: Vec::new(),
-        browses: Vec::new(),
-        folder_names: Vec::new(),
-        folder_closes: Vec::new(),
-        folder_discards: Vec::new(),
-        record_arms: Vec::new(),
-        run_luas: Vec::new(),
-        pane_splits: Vec::new(),
-        restart_panes: Vec::new(),
-        font_size: None,
-        tab_width: None,
-        touches: Vec::new(),
-        pen: None,
-        add_tab_pane: None,
-        recorded: Vec::new(),
-        operates: Vec::new(),
         replay_saves: false,
-        suggests: Vec::new(),
-        surveys: 0,
-        injects: Vec::new(),
     })
 }
 
@@ -3852,7 +3543,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // shared handling below pass it to the browser. Routing it through
                     // `keys_for` used to silently drop `Go` as unmatched.
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Go { go }) => {
-                        surface.gos.push(go);
+                        surface.mail.gos.push(go);
                     }
                     // Scrolling back through history isn't a keystroke, so keys_for()
                     // can't carry it — it would be dropped, leaving the phone stuck on
@@ -3861,7 +3552,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // applied identically below (into a full-screen TUI's own scroll,
                     // or our kept scrollback for a plain shell).
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Scroll { by, row, col }) => {
-                        surface.scrolls.push((by, row, col));
+                        surface.mail.scrolls.push((by, row, col));
                     }
                     // The phone fits the terminal to its own screen. Its numbers are
                     // kept as the phone's own -- not written over the window's, which
@@ -3878,31 +3569,31 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // so route it straight to the same queue the window's ipc path
                     // fills (drained and run against the active tab below).
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::RunAction { index }) => {
-                        surface.run_actions.push(index);
+                        surface.mail.run_actions.push(index);
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Operate { target, goal }) => {
-                        surface.operates.push((target, goal));
+                        surface.mail.operates.push((target, goal));
                     }
                     // 📼 / ▶ from the phone's composer: same queues as the window's.
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Record { on }) => {
-                        surface.record_arms.push(on);
+                        surface.mail.record_arms.push(on);
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Git { panel, act, args }) => {
-                        surface.gits.push((panel, act, args));
+                        surface.mail.gits.push((panel, act, args));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Sftp { panel, act, args }) => {
-                        surface.sftps.push((panel, act, args));
+                        surface.mail.sftps.push((panel, act, args));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::RunLua { code }) => {
-                        surface.run_luas.push(code);
+                        surface.mail.run_luas.push(code);
                     }
                     // ✨ a suggestion request from the phone: same queue as the
                     // window's (keys_for would silently drop it, like Go once was)
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Suggest { text }) => {
-                        surface.suggests.push(text);
+                        surface.mail.suggests.push(text);
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Survey) => {
-                        surface.surveys += 1;
+                        surface.mail.surveys += 1;
                     }
                     // A line the phone finished in the composer. Not a
                     // keystroke -- the recipient may be a model bridge, which
@@ -3911,13 +3602,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // keys_for and was dropped, which the loop's own
                     // fall-through guard had been saying all along.
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Say { tab, text }) => {
-                        surface.says.push((tab, text));
+                        surface.mail.says.push((tab, text));
                     }
                     // The bar's button, pressed on the phone: the same queue the
                     // board's press fills. A person's answer from wherever they
                     // are looking
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Button { from: Some(name) }) => {
-                        surface.presses.push(name);
+                        surface.mail.presses.push(name);
                     }
                     remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultSearch { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultOpen { .. }) => {
@@ -3928,7 +3619,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                     // neither can be turned into one -- they go to the same
                     // queues the window's dialogs fill
                     remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::Branch { .. }) => {
-                        surface.branches.extend(shikisha_shared::BranchAsk::of(ev));
+                        surface.mail.branches.extend(shikisha_shared::BranchAsk::of(ev));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Repair {
                         folder,
@@ -3936,20 +3627,20 @@ fn run(mut surface: WinSurface) -> Result<()> {
                         branch,
                         take,
                     }) => {
-                        surface.repairs.push((folder, choose, branch, take));
+                        surface.mail.repairs.push((folder, choose, branch, take));
                     }
                     // Walking the folders to open another one: the list the
                     // phone has instead of a dialog. Same queue as the window's
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Browse { path, open }) => {
-                        surface.browses.push((path, open));
+                        surface.mail.browses.push((path, open));
                     }
                     // The update card and the first-run pointer, answered on
                     // the phone: the same fields the window's presses fill
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Update { open }) => {
-                        surface.update_card = Some(open);
+                        surface.mail.update_card = Some(open);
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Coach { step }) => {
-                        surface.coach_done = Some(step);
+                        surface.mail.coach_done = Some(step);
                     }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
@@ -3985,7 +3676,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             // Deliver only the newest of the accumulated relay frames (drop the older ones).
             // Keeps the connection and the phone from being flooded when the sender is fast;
             // always shows the latest picture.
-            if let Some(jpeg) = surface.take_frames().pop() {
+            if let Some(jpeg) = surface.mail.take_frames().pop() {
                 r.push_frame(jpeg);
             }
             // Relay if the browser being viewed has viewers, otherwise stop
@@ -4395,7 +4086,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         // Focus follows a click on a pane, the way it follows a click in the
         // tab bar. `active` moves with it so every existing path stays right.
-        for id in surface.take_focus_panes() {
+        for id in surface.mail.take_focus_panes() {
             if pane_layout.focus_pane(id) {
                 active = pane_layout.focused_surface();
                 view_touched_ms = start.elapsed().as_millis() as u64;
@@ -4406,7 +4097,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // the one in the focused pane, and only while the composer is shut --
         // so this names that page and turns the previous one off. Recomputed
         // rather than told, since focus moves for reasons the page never hears
-        if let Some(on) = surface.take_pen() {
+        if let Some(on) = surface.mail.take_pen() {
             composer_shut = on;
         }
         let wants_pen = composer_shut
@@ -4437,7 +4128,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 if key == SETTINGS_TAB)
         };
         let real_surfaces = (1..=surface_count).filter(|n| !is_form(*n)).count();
-        if let Some(id) = surface.take_add_tab_pane() {
+        if let Some(id) = surface.mail.take_add_tab_pane() {
             awaiting_tab = Some((id, real_surfaces));
         }
         // Nothing calls the wait off. Not the form closing -- saving CLOSES it,
@@ -4472,7 +4163,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // reaches the pane underneath -- the page is a window of its own -- so
         // the pane it sits in is focused from the page's own report instead.
         // Without this a browser pane could only be entered by its caption
-        for child in surface.take_touches() {
+        for child in surface.mail.take_touches() {
             let Some(key) = caps.name_of_child(&child) else {
                 continue;
             };
@@ -4487,14 +4178,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
         }
-        for (divider, ratio) in surface.take_pane_ratios() {
+        for (divider, ratio) in surface.mail.take_pane_ratios() {
             pane_layout.set_divider(divider, ratio);
         }
         // The terminal was zoomed. The page has already redrawn itself; this
         // is only so it opens that size next time. Written on a delay because
         // a wheel sends a notch at a time and a settings file is not a place
         // to write sixty times a second
-        if let Some(px) = surface.take_font_size() {
+        if let Some(px) = surface.mail.take_font_size() {
             font_size = Some(px);
             font_save_at = Some(std::time::Instant::now() + Duration::from_secs(2));
         }
@@ -4512,7 +4203,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // The tab bar was dragged to a new width, or put away. Held back the
         // same way and for the same reason: a drag is a stream of widths, and
         // a settings file is not a place to write one per frame
-        if let Some(px) = surface.take_tab_width() {
+        if let Some(px) = surface.mail.take_tab_width() {
             tab_width = Some(config::clamp_tab_bar(px));
             tab_save_at = Some(std::time::Instant::now() + Duration::from_secs(2));
         }
@@ -4531,7 +4222,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
         // ⊞ / ⊟ in a pane's caption. Divides that pane, not whichever one had
         // focus: the button is attached to a pane, so it must mean that one
-        for (id, down) in surface.take_pane_splits() {
+        for (id, down) in surface.mail.take_pane_splits() {
             if !pane_layout.focus_pane(id) {
                 continue;
             }
@@ -4544,7 +4235,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // "is anyone else running this CLI here" test are all written in terms
         // of the focused surface, and moving there is how the button means the
         // pane it is drawn on rather than the pane you happened to be in
-        for (id, keep) in surface.take_restart_panes() {
+        for (id, keep) in surface.mail.take_restart_panes() {
             if !pane_layout.focus_pane(id) {
                 continue;
             }
@@ -4563,7 +4254,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
                 flash = Some(msg);
             }
         }
-        for id in surface.take_close_panes() {
+        for id in surface.mail.take_close_panes() {
             if pane_layout.close(id) {
                 active = pane_layout.focused_surface();
                 view_touched_ms = start.elapsed().as_millis() as u64;
@@ -4620,7 +4311,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // names the page the bar stands under, by the name automation gives it;
         // the bar is only ever drawn for the workspace in view, so that name is
         // this workspace's
-        for name in surface.take_presses() {
+        for name in surface.mail.take_presses() {
             caps.note_press(&name);
             append_hook_log(&format!("Bar pressed {name}"));
             if !auto_enabled {
@@ -4643,7 +4334,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             eng.fire_page("on_press", &page);
         }
         // The wheel was scrolled. Only the visible tab moves.
-        for (by, row, col) in surface.take_scrolls() {
+        for (by, row, col) in surface.mail.take_scrolls() {
             if by == 0 {
                 continue;
             }
@@ -4656,7 +4347,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
         // Lines a person finished in the composer or the topic box, each for
         // the tab it names.
-        for (tab, line) in surface.take_says() {
+        for (tab, line) in surface.mail.take_says() {
             let now_ms = start.elapsed().as_millis() as u64;
             let to = if tab == 0 { active } else { tab };
             if !hand_line(&mut tabs, &surfaces, to, line, now_ms, &mut pending_send, &mut ball) {
@@ -4666,7 +4357,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
         // Lua quick-actions tapped in the bar: look up the code (kept server-side)
         // and run it against the active tab. Its commands drain with the hooks'.
-        for index in surface.take_run_actions() {
+        for index in surface.mail.take_run_actions() {
             let Some(code) = cfg
                 .as_ref()
                 .and_then(|c| c.actions.get(index))
@@ -4692,7 +4383,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
 
         // 📼 record-mode toggles: arm the shown browser's recorder (off silences
         // recording everywhere — caps keeps it to one recorder at a time).
-        for on in surface.take_record_arms() {
+        for on in surface.mail.take_record_arms() {
             if let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) {
                 let _ = caps.browser_record(key, on);
             } else if !on {
@@ -4710,7 +4401,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // exception and say so out loud -- they ask the same permission table
         // and then run on a thread, because the engine lives on the main loop
         // and a window cannot wait three minutes on somebody's network.
-        for (panel, act, args) in surface.take_gits() {
+        for (panel, act, args) in surface.mail.take_gits() {
             let paths: Vec<String> = args
                 .get("paths")
                 .and_then(|p| p.as_array())
@@ -4982,7 +4673,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // the spot; anything that touches the server goes to a thread, because
         // a folder listing over a network is a wait and this loop draws the
         // window
-        for (panel, act, args) in surface.take_sftps() {
+        for (panel, act, args) in surface.mail.take_sftps() {
             let js = sftp_answer(&panel, &act, &args, &surfaces, &caps, &sftp_tx);
             if let Some(js) = js {
                 surface.push_sftp(&js);
@@ -5002,7 +4693,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // ▶ run mode: composer Lua against the shown browser, in the rally's
         // sandbox (browser functions on that one tab, nothing else). The verdict
         // returns as a toast on both surfaces.
-        for code in surface.take_run_luas() {
+        for code in surface.mail.take_run_luas() {
             let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
                 continue;
             };
@@ -5025,7 +4716,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // composer — the person reviews and sends it themselves, exactly
         // like a ✨ suggestion. Nothing types itself into a terminal. The
         // watcher below waits for the marker-wrapped output to appear
-        if surface.take_surveys() > 0 {
+        if surface.mail.take_surveys() > 0 {
             match session_at(&surfaces, active).and_then(|i| tabs.get(i)) {
                 Some(t) if t.ai_kind().is_none() => {
                     let screen =
@@ -5093,7 +4784,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // the overlay is open. Reopening writes a tab into the active
         // workspace's settings; the change-watcher then launches it, resumed,
         // through the ordinary reload -- the one place a tab is safely made
-        for query in surface.take_vault_queries() {
+        for query in surface.mail.take_vault_queries() {
             // The present, then the past. What is on screen right now across
             // every open tab comes first -- a live match is more likely the
             // thing being looked for than an old conversation -- then the
@@ -5127,7 +4818,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         // A folder renamed in the list, or taken out of it. Both are changes
         // to the settings, so the reload that follows is what actually shows
-        for (folder, name) in surface.take_folder_names() {
+        for (folder, name) in surface.mail.take_folder_names() {
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
             if let Err(e) = config::rename_folder(&ws, std::path::Path::new(&folder), &name) {
                 flash = Some(format!("{e:#}"));
@@ -5138,7 +4829,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // Then the tabs are ended by taking the folder out of the settings --
         // git will not remove a folder something is still standing in -- and
         // the removal itself waits for them to actually be gone
-        for folder in surface.take_folder_discards() {
+        for folder in surface.mail.take_folder_discards() {
             let at = std::path::PathBuf::from(&folder);
             if let Err(e) = shikisha_core::worktree::ready_to_discard(&at) {
                 flash = Some(format!("{e:#}"));
@@ -5160,7 +4851,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // round until git can have it, and given up on out loud rather than
         // silently -- a folder that was asked to go and did not is a surprise
         // waiting in the settings
-        for folder in surface.take_folder_closes() {
+        for folder in surface.mail.take_folder_closes() {
             let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
             match config::remove_folder(&ws, std::path::Path::new(&folder)) {
                 // Said out loud, because the folder is still on disk and this
@@ -5171,7 +4862,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         // Somewhere new to work. Looking hands back what is inside; choosing
         // writes the folder into the settings, and the reload opens it
-        for (path, open) in surface.take_browses() {
+        for (path, open) in surface.mail.take_browses() {
             if !open {
                 browse_view = Some(shikisha_core::uistate::BrowseState::of(&path));
                 continue;
@@ -5188,7 +4879,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         // A colour chosen for a project. Written against the folder git shares
         // between its branches, so all of them change at once
-        for (folder, color) in surface.take_folder_colors() {
+        for (folder, color) in surface.mail.take_folder_colors() {
             let at = std::path::PathBuf::from(&folder);
             if let Some(family) = shikisha_core::repo::family_of(&at) {
                 if let Err(e) = config::set_folder_color(&family, &color) {
@@ -5199,7 +4890,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // A working folder that is not on this machine. The same call answers
         // "what would it take" and does it, so the lines shown before it
         // happens are the lines that happen
-        for (folder, choose, branch, take) in surface.take_repairs() {
+        for (folder, choose, branch, take) in surface.mail.take_repairs() {
             let at = std::path::PathBuf::from(&folder);
             let ws = workspaces.get(ws_index);
             let ws_name = ws.map(|w| w.name.clone()).unwrap_or_default();
@@ -5309,7 +5000,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // Another branch of a project already open. The same call answers "what
         // would this do" and does it, so the line shown before it happens is
         // the line that happens
-        for ask in surface.take_branches() {
+        for ask in surface.mail.take_branches() {
             let from = std::path::PathBuf::from(&ask.from);
             let name = ask.branch.clone();
             // What this project can offer -- the branches to grow from, and
@@ -5453,7 +5144,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
             branch_view = Some(view);
         }
-        for ev in surface.take_vault_opens() {
+        for ev in surface.mail.take_vault_opens() {
             if let shikisha_shared::Ev::VaultOpen { program, id, cwd, title } = ev {
                 // The command is the program alone; the resume id rides in its
                 // own field, where the launch path turns it into the CLI's
@@ -5476,7 +5167,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
             }
         }
 
-        for want in surface.take_suggests() {
+        for want in surface.mail.take_suggests() {
             let target = session_at(&surfaces, active).and_then(|i| tabs.get(i));
             let Some(t) = target else {
                 surface.push_suggested(
@@ -5523,7 +5214,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // Recorded steps → one Lua line each, appended to the composer on both
         // surfaces. Each line calls the same primitives the automation uses,
         // addressed by the browser's Lua name, so record → paste → run round-trips.
-        for step in surface.take_recorded() {
+        for step in surface.mail.take_recorded() {
             let Some(name) = caps.name_of_child(&step.child) else {
                 continue;
             };
@@ -5540,7 +5231,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // Composer text/keys typed while viewing a browser tab go straight into that
         // browser — the same caps.browser_inject the phone's relay drives, so the two
         // share one injection path rather than each growing its own.
-        let injects = surface.take_injects();
+        let injects = surface.mail.take_injects();
         if !injects.is_empty() {
             if let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) {
                 for input in injects {
@@ -5564,7 +5255,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // "Operate a target tab" (🎯): aim the active AI at another tab and, if a
         // goal was given, hand it over. Browser targets reuse the built-in
         // browser-operate loop; the AI then writes Lua to drive the target.
-        for (target, goal) in surface.take_operates() {
+        for (target, goal) in surface.mail.take_operates() {
             let src_pane = active;
             // The tab doing the driving, under the name it is written down by.
             // The aim is remembered against it, so picking one on screen is the
@@ -5726,7 +5417,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // and returns to the operating board (INDEX). Settings disappears from the
         // left-hand list because it drops out of `hosted`, and the layout gets
         // rebuilt on the next draw.
-        if surface.take_close_settings() {
+        if surface.mail.take_close_settings() {
             let _ = caps.browser_close(SETTINGS_TAB);
             settings_open = false;
         }
@@ -5771,13 +5462,13 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // person wrote into settings, so the cut only drops connections and
         // password sessions; revoking a phone means changing that string.
         let sticky = cfg.as_ref().is_some_and(|c| c.remote.sticky_token);
-        if let Some(step) = surface.take_coach_done() {
+        if let Some(step) = surface.mail.take_coach_done() {
             if step > coach_seen {
                 coach_seen = step;
                 let _ = shikisha_core::crypto::write_atomic(&config::state_path("coach"), &step.to_string());
             }
         }
-        if let Some(open) = surface.take_thanks() {
+        if let Some(open) = surface.mail.take_thanks() {
             if open {
                 shikisha_core::webui::open_external(match thanks_kind {
                     "store" => STORE_REVIEW_URL,
@@ -5789,27 +5480,27 @@ fn run(mut surface: WinSurface) -> Result<()> {
             thanks_asked = true;
             let _ = shikisha_core::crypto::write_atomic(&config::state_path("thanks-asked"), "1");
         }
-        if surface.take_help_site() {
+        if surface.mail.take_help_site() {
             shikisha_core::webui::open_external(&i18n::t("tui.help.url"));
         }
         // The update card was answered. Either answer puts it away for this
         // version; "open" leads to the settings' Update card, where the one
         // button that fetches and installs is -- the card itself installs
         // nothing, so a press by mistake costs nothing
-        if let Some(open) = surface.take_update_card() {
+        if let Some(open) = surface.mail.take_update_card() {
             update::card_answered();
             if open {
                 surface.open_settings = Some((Some("update".into()), false, None, None));
             }
         }
-        for idx in surface.take_limit_acks() {
+        for idx in surface.mail.take_limit_acks() {
             if let Some(i) = session_at(&surfaces, idx) {
                 if let Some(t) = tabs.get_mut(i) {
                     t.dismiss_limit_note();
                 }
             }
         }
-        if surface.take_remote_cut() && remote_ui.is_some() {
+        if surface.mail.take_remote_cut() && remote_ui.is_some() {
             if let Some(r) = remote_ui.as_mut() {
                 if sticky {
                     r.cut_sessions();
@@ -5847,7 +5538,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         // The top bar was pressed. The destination is whatever page is currently
         // viewed (only one bar is ever shown). Don't touch chain depth — that's
         // only counted when work is passed to another tab.
-        for go in surface.take_gos() {
+        for go in surface.mail.take_gos() {
             let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
                 continue;
             };
@@ -5887,14 +5578,14 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
         // The answer comes back using the name inside the window. Convert it back
         // to the human-facing id before caching it.
-        for (child, url, can_back, can_forward) in surface.take_wheres() {
+        for (child, url, can_back, can_forward) in surface.mail.take_wheres() {
             if let Some(name) = caps.name_of_child(&child) {
                 where_now = Some((name, url, can_back, can_forward));
             }
         }
         // Load start/end likewise gets converted to the id before caching.
         // Update the start time, used for the top bar's "in progress" indicator.
-        for (child, busy) in surface.take_loading() {
+        for (child, busy) in surface.mail.take_loading() {
             if let Some(name) = caps.name_of_child(&child) {
                 let now = std::time::Instant::now();
                 let e = loading_now.entry(name).or_insert((false, now));
@@ -5906,7 +5597,7 @@ fn run(mut surface: WinSurface) -> Result<()> {
         }
 
         // A page that finished loading. Fires on every navigation.
-        for (child, url, complete) in surface.take_loads() {
+        for (child, url, complete) in surface.mail.take_loads() {
             let Some(name) = caps.name_of_child(&child) else {
                 continue;
             };

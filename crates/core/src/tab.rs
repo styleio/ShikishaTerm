@@ -5102,3 +5102,15 @@ mod held_tests {
         assert!(fold("supercalifragilistic", 8).iter().all(|l| width_of(l) <= 8));
     }
 }
+
+/// One recorded step as reported by a page: which pane it came from, what
+/// happened, and how the element was addressed (CSS, or a text-anchored
+/// XPath). `hint` is the element's visible text, kept as a repair aid.
+pub struct RecordedStep {
+    pub child: String,
+    pub act: String,
+    pub sel: String,
+    pub value: String,
+    pub xpath: bool,
+    pub hint: String,
+}
