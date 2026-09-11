@@ -65,6 +65,7 @@ pub mod tab;
 pub mod tailscale;
 pub mod theme;
 pub mod toast;
+pub mod tunnel;
 pub mod uistate;
 pub mod update;
 pub mod usage;
