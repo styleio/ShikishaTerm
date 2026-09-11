@@ -6,3 +6,5 @@
 # says so in a way nobody can read. A systemd unit is read the same way.
 *.sh            text eol=lf
 *.service       text eol=lf
+*.preset        text eol=lf
+*.1             text eol=lf
