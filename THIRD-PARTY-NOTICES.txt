@@ -5987,6 +5987,9 @@ MIT License
 ================================================================================
 
 Applies to:
+  * shikisha-core 0.10.0
+    https://github.com/styleio/ShikishaTerm
+  * shikisha-shared 0.10.0
   * chrono 0.4.45
     https://github.com/chronotope/chrono
   * delegate 0.13.5
