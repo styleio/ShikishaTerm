@@ -234,6 +234,86 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # apt と dnf のリポジトリ。利用者の sources.list に書かれて残る URL なので、
+  # 置き場所は自分のドメイン (pkg.shikisha-term.com) で、裏の保管庫は
+  # いつでも替えられるようにしてある
+  repo:
+    needs: linux
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    env:
+      BUCKET: ${{ vars.R2_BUCKET || 'shikisha-pkg' }}
+      REPO_BASE_URL: https://pkg.shikisha-term.com
+      AWS_DEFAULT_REGION: auto
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: linux-*
+          path: incoming
+          merge-multiple: true
+
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y apt-utils createrepo-c rpm awscli
+
+      # 鍵が無ければ署名の無いリポジトリができる。それは誰も受け付けないので、
+      # 黙って進むのではなく、ここで止める
+      - name: The signing key
+        env:
+          REPO_SIGNING_KEY: ${{ secrets.REPO_SIGNING_KEY }}
+        run: |
+          if [ -z "${REPO_SIGNING_KEY:-}" ]; then
+            echo "::error::REPO_SIGNING_KEY is not set: an unsigned repository is no repository"
+            exit 1
+          fi
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME" && chmod 700 "$GNUPGHOME"
+          printf '%s\n' "$REPO_SIGNING_KEY" | gpg --batch --quiet --import
+          FPR=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
+          [ -n "$FPR" ] || { echo "::error::the secret does not hold a usable key"; exit 1; }
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          echo "KEY_FPR=$FPR" >> "$GITHUB_ENV"
+          echo "signing as $FPR"
+
+      # 既に公開してある版を全部持ってくる。索引を今回の分だけで組み直すと、
+      # 古い版が黙って消え、それを名指しで入れていた人の apt が壊れる
+      - name: Everything already published
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          mkdir -p packages
+          aws s3 sync "s3://$BUCKET/apt/pool" packages --endpoint-url "$R2" --no-progress
+          aws s3 sync "s3://$BUCKET/rpm" packages --endpoint-url "$R2" --no-progress \
+              --exclude "*" --include "*.rpm"
+          cp incoming/*.deb incoming/*.rpm packages/
+          ls -la packages
+
+      - name: Build the repositories
+        run: bash packaging/linux/mkrepo.sh packages out
+
+      # パッケージが先、索引が後。逆にすると、索引を読んだ人が「ある」と
+      # 言われたファイルを取りに行って 404 を踏む数秒が生まれる
+      - name: Publish
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          aws s3 sync out "s3://$BUCKET" --endpoint-url "$R2" --no-progress --size-only \
+              --exclude "*" --include "apt/pool/*" --include "rpm/*.rpm" \
+              --cache-control "public, max-age=31536000, immutable"
+          # 索引は絶対に古いものを返させない。古い InRelease が返ると、
+          # apt はハッシュ不一致で止まり、利用者には直しようがない
+          aws s3 sync out "s3://$BUCKET" --endpoint-url "$R2" --no-progress --delete \
+              --exclude "apt/pool/*" --exclude "rpm/*.rpm" \
+              --cache-control "no-cache"
+          echo "published to $REPO_BASE_URL"
+
   publish:
     needs: [windows, linux]
     if: startsWith(github.ref, 'refs/tags/')
