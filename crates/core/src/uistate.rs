@@ -1099,7 +1099,7 @@ mod tests {
             group: named.map(str::to_string),
             ..Default::default()
         };
-        crate::tab::Tab::spawn("t".into(), &["cmd.exe".to_string()], None, 6, 40, opts).unwrap()
+        crate::tab::Tab::spawn("t".into(), &[crate::test_shell()], None, 6, 40, opts).unwrap()
     }
 
     #[test]

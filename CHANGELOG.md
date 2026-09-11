@@ -72,6 +72,9 @@ times a second because the push sat inside a check that runs every 200ms.
 - **Two subscriptions the browser held were never let go.** The arms for basic
   auth and for automatic dialog handling said they released on drop and had no
   `Drop` at all, which left request interception enabled with nothing answering.
+- **A model tab on Linux tried to start `cmd.exe`.** The idle process a model
+  tab holds its display with was written for Windows and named there only; on
+  every other system it is a shell waiting on a line that never comes.
 - **A tab's open ports could be read off the wrong column** of the system's
   table of listeners, naming a port that was not this tab's. Found by rewriting
   the test to open a port of its own rather than trust the same misreading.

@@ -596,7 +596,13 @@ pub fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
 /// It just sits alive quietly waiting for keystrokes (the screen content is
 /// injected by the main process)
 fn idle_argv() -> Vec<String> {
-    vec!["cmd.exe".into(), "/c".into(), "pause>nul".into()]
+    match cfg!(windows) {
+        true => vec!["cmd.exe".into(), "/c".into(), "pause>nul".into()],
+        // A shell reading a line that never comes. `sleep infinity` would hold
+        // just as still, but a shell waiting on its input is the nearer thing
+        // to what the Windows side does, and it goes when the terminal goes
+        false => vec!["sh".into(), "-c".into(), "read _line".into()],
+    }
 }
 
 /// Truncate to at most `max` characters, appending "…" when it had to cut.
@@ -1684,7 +1690,7 @@ mod tests {
         // A model bridge writes replies in-process — no flag, always autonomous.
         assert!(super::argv_auto_runs(&argv("anything"), true));
         // Shells and CLIs without a known bypass flag never auto-run.
-        assert!(!super::argv_auto_runs(&argv("cmd.exe"), false));
+        assert!(!super::argv_auto_runs(&argv(&crate::test_shell()), false));
         assert!(!super::argv_auto_runs(&argv("aider --yes"), false));
         assert!(!super::argv_auto_runs(&[], false));
     }
@@ -1710,8 +1716,9 @@ mod tests {
     #[test]
     fn a_missing_folder_wins_over_an_installed_command() {
         let missing = std::path::Path::new("Z:/shikisha/no/such/folder");
-        // cmd.exe is present, so only the missing folder can produce this message
-        let msg = super::launch_problem("SHELL", "cmd.exe", Some(missing), "os error 2");
+        // The command is installed here, so only the missing folder can
+        // produce this message
+        let msg = super::launch_problem("SHELL", &crate::test_shell(), Some(missing), "os error 2");
         assert!(msg.contains("SHELL"), "names the tab: {msg}");
         assert!(msg.contains("Z:") && msg.contains("folder"), "explains the folder: {msg}");
         assert!(!msg.contains("os error"), "no raw error leaks: {msg}");
@@ -1745,23 +1752,35 @@ mod tests {
     /// output and moves the screen. If that's treated as the signal for a
     /// response, the ball gets passed even though the submit never landed.
     /// Judge it by whether the "AI started working" display appeared
+    /// A tab running the stand-in shell, judged as though it were an AI that
+    /// shows a working indicator.
+    ///
+    /// The profile is put on afterwards rather than handed to `spawn`, because
+    /// a profile says two things and only one of them is wanted here. It picks
+    /// the detector -- which is the point -- and it also says how to resume a
+    /// conversation, which puts `--session-id <uuid>` on the command line. A
+    /// shell standing in for an AI has never heard of that and exits saying so,
+    /// leaving a test waiting on output from a process that is already gone.
+    fn shell_judged_as(profile: &str, rows: u16, cols: u16) -> super::Tab {
+        let mut t = super::Tab::spawn(
+            "shell".into(),
+            &[crate::test_shell()],
+            None,
+            rows,
+            cols,
+            super::TabOptions::default(),
+        )
+        .unwrap();
+        t.detector = super::Detector::new(crate::profile::load_by_name(profile));
+        t
+    }
+
     #[test]
     fn an_answer_requires_the_ai_to_have_started_working() {
-        use super::{Tab, TabOptions};
         use std::sync::atomic::Ordering;
         use std::time::{Duration, Instant};
 
-        // Pick a profile that has a "working" indicator
-        let argv = vec!["cmd.exe".to_string()];
-        let mut t = Tab::spawn(
-            "shell".into(),
-            &argv,
-            Some("claude".into()),
-            12,
-            60,
-            TabOptions::default(),
-        )
-        .unwrap();
+        let mut t = shell_judged_as("claude", 12, 60);
         let start = Instant::now();
         for _ in 0..40 {
             std::thread::sleep(Duration::from_millis(50));
@@ -1804,19 +1823,10 @@ mod tests {
     /// (the submit's own echo can't fake it: that burst ends immediately).
     #[test]
     fn sustained_output_after_submit_counts_as_answered() {
-        use super::{Tab, TabOptions};
+        use std::sync::atomic::Ordering;
         use std::time::{Duration, Instant};
 
-        let argv = vec!["cmd.exe".to_string()];
-        let mut t = Tab::spawn(
-            "shell".into(),
-            &argv,
-            Some("claude".into()),
-            12,
-            60,
-            TabOptions::default(),
-        )
-        .unwrap();
+        let mut t = shell_judged_as("claude", 12, 60);
         let start = Instant::now();
         for _ in 0..40 {
             std::thread::sleep(Duration::from_millis(50));
@@ -1845,7 +1855,14 @@ mod tests {
         }
         assert!(
             t.answered_since_submit(),
-            "働き表示を見逃しても、submitのずっと後に動いた出力で応答と分かる"
+            "働き表示を見逃しても、submitのずっと後に動いた出力で応答と分かる\n\
+             submit={} last_change={} now_fp={} submitted_fp={} ignore_bottom={}\n{}",
+            t.submit_tick_ms.load(Ordering::Relaxed),
+            t.last_change_ms,
+            t.screen_fingerprint(),
+            t.submitted_screen.load(Ordering::Relaxed),
+            t.detector.ignore_bottom_rows(),
+            t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents(),
         );
 
         t.kill();
@@ -1863,7 +1880,7 @@ mod tests {
         use std::sync::atomic::Ordering;
         use std::time::{Duration, Instant};
 
-        let argv = vec!["cmd.exe".to_string()];
+        let argv = vec![crate::test_shell()];
         let mut t = Tab::spawn("shell".into(), &argv, None, 10, 60, TabOptions::default()).unwrap();
         let start = Instant::now();
         let marker = |t: &Tab| t.response_marker.load(Ordering::Relaxed);
@@ -1937,7 +1954,7 @@ mod tests {
         use crate::detect::TabState;
         use std::time::{Duration, Instant};
 
-        let argv = vec!["cmd.exe".to_string()];
+        let argv = vec![crate::test_shell()];
         let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
         let start = Instant::now();
 
@@ -1984,7 +2001,7 @@ mod tests {
         use crate::detect::TabState;
         use std::time::{Duration, Instant};
 
-        let argv = vec!["cmd.exe".to_string()];
+        let argv = vec![crate::test_shell()];
         let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
 
         // Confirm that startup output alone reaches DONE (checking the premise)
@@ -2022,7 +2039,7 @@ mod tests {
         use super::{Tab, TabOptions};
         use std::time::{Duration, Instant};
 
-        let argv = vec!["cmd.exe".to_string()];
+        let argv = vec![crate::test_shell()];
         let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
 
         // Nothing has been output yet = still starting up, so don't send input
@@ -4433,9 +4450,17 @@ mod turns_probe {
     /// single-shot test won't catch it
     #[test]
     fn the_instruction_is_not_sent_back_as_part_of_the_answer() {
+        // Not `crate::test_shell()`: what is pasted below is wrapped in the
+        // bracketed-paste markers, and dash has never heard of them -- it
+        // would try to run `ESC[200~echo` as a command. cmd.exe and bash both
+        // take a paste, which is the behaviour under test
+        let shell = match cfg!(windows) {
+            true => "cmd.exe",
+            false => "bash",
+        };
         let mut tab = Tab::spawn(
             "cmd".into(),
-            &["cmd.exe".to_string()],
+            &[shell.to_string()],
             None,
             24,
             100,
@@ -4596,7 +4621,7 @@ mod draft_target_tests {
     /// convention, a supporting app declares ESC[?2004h itself — read that instead
     #[test]
     fn a_shell_is_never_given_a_draft() {
-        let tab = spawn("cmd.exe");
+        let tab = spawn(&crate::test_shell());
         settle(&tab, 700, 15);
         assert!(
             !tab.accepts_bracketed_paste(),
@@ -4699,7 +4724,7 @@ mod resize_survival_tests {
     fn narrowing_the_window_does_not_kill_the_screen() {
         let tab = Tab::spawn(
             "cmd".into(),
-            &["cmd.exe".to_string()],
+            &[crate::test_shell()],
             None,
             8,
             40,
@@ -4976,13 +5001,14 @@ mod held_tests {
     #[test]
     fn a_missing_folder_is_never_swapped_for_another_one() {
         let opts = TabOptions { cwd: Some(nowhere()), ..Default::default() };
-        let out = Tab::spawn("t".into(), &["cmd.exe".to_string()], None, 20, 60, opts);
+        let out = Tab::spawn("t".into(), &[crate::test_shell()], None, 20, 60, opts);
         let Err(e) = out else {
             panic!("a tab launched into a folder that does not exist");
         };
         // And it is said in words a person can act on, rather than as an
         // operating system error code
-        let said = crate::tab::launch_problem("t", "cmd.exe", Some(&nowhere()), &e.to_string());
+        let said =
+            crate::tab::launch_problem("t", &crate::test_shell(), Some(&nowhere()), &e.to_string());
         assert!(said.contains(&nowhere().display().to_string()), "{said}");
     }
 
@@ -4996,8 +5022,11 @@ mod held_tests {
             held: Some(held),
             ..Default::default()
         };
-        // `cmd.exe /c exit 3` would be gone in a moment if it ever ran
-        let argv = vec!["cmd.exe".to_string(), "/c".into(), "exit".into(), "3".into()];
+        // Whichever it is, it would be gone in a moment if it ever ran
+        let argv = match cfg!(windows) {
+            true => vec!["cmd.exe".to_string(), "/c".into(), "exit".into(), "3".into()],
+            false => vec!["sh".to_string(), "-c".into(), "exit 3".into()],
+        };
         let mut tab = Tab::spawn("t".into(), &argv, None, 24, 80, opts).expect("held tab starts");
         let until = Instant::now() + Duration::from_secs(5);
         let mut screen = String::new();
@@ -5035,7 +5064,7 @@ mod held_tests {
     /// plugged in after startup would leave every tab held for ever.
     #[test]
     fn a_folder_turning_up_is_a_different_tab() {
-        let argv = vec!["cmd.exe".to_string()];
+        let argv = vec![crate::test_shell()];
         let held = TabOptions {
             cwd: Some(nowhere()),
             held: Some(Held::Missing { cwd: nowhere() }),
@@ -5079,7 +5108,7 @@ mod held_tests {
             ..Default::default()
         };
         let mut tab =
-            Tab::spawn("t".into(), &["cmd.exe".to_string()], None, 10, 60, opts).expect("held");
+            Tab::spawn("t".into(), &[crate::test_shell()], None, 10, 60, opts).expect("held");
         assert!(tab.held().is_some());
         tab.release();
         assert!(tab.held().is_none(), "it is still holding a reason that has stopped being true");

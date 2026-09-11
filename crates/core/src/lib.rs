@@ -239,6 +239,25 @@ pub fn build_rev() -> &'static str {
     env!("BUILD_REV")
 }
 
+/// A program a test can put in a tab: one that starts, holds the terminal and
+/// waits.
+///
+/// The tests name `cmd.exe` because that is the machine they were written on.
+/// None of them is testing a shell -- what they want is a process with a
+/// pseudo terminal attached that does not exit on its own -- so everywhere
+/// else it is `sh`.
+///
+/// That this was wrong went unnoticed for a while, because the only Linux it
+/// had been run on was WSL: Windows' own PATH is inherited there, `cmd.exe` is
+/// found, and twenty-two tests passed on a machine no user has.
+#[cfg(test)]
+pub fn test_shell() -> String {
+    match cfg!(windows) {
+        true => "cmd.exe".to_string(),
+        false => "sh".to_string(),
+    }
+}
+
 /// A path that is absolute, and nowhere near anything this app owns.
 ///
 /// Written once because it differs: `C:/windows/x` is an absolute path on
