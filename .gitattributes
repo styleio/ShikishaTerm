@@ -1,0 +1,8 @@
+# What has to keep its line endings, whatever machine checks it out.
+#
+# This repository is written on Windows, where git hands files over with CRLF.
+# A shell script with CRLF is a script whose every line ends in an invisible
+# character: `#!/bin/sh\r` names a program that does not exist, and the error
+# says so in a way nobody can read. A systemd unit is read the same way.
+*.sh            text eol=lf
+*.service       text eol=lf
