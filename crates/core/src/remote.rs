@@ -296,11 +296,31 @@ pub struct RemoteUi {
 const MAX_SESSIONS: usize = 64;
 
 /// A bounded set of session ids.
-struct Ids(Mutex<std::collections::VecDeque<String>>);
+struct Ids(Mutex<std::collections::VecDeque<Held>>);
+
+/// One live session, and the device it was handed to.
+///
+/// The owner is what makes "disconnect this phone" different from "disconnect
+/// everything". A session with no owner is one that came in on the pairing key
+/// before a row existed for it -- the password door mints those too
+#[derive(Clone)]
+struct Held {
+    id: String,
+    owner: Option<String>,
+}
 
 impl Ids {
     fn new() -> Self {
         Self(Mutex::new(std::collections::VecDeque::new()))
+    }
+
+    /// Forget every session this device holds. Its key is gone by now; this is
+    /// what makes the screen it is looking at stop being true as well
+    fn drop_owner(&self, owner: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .retain(|h| h.owner.as_deref() != Some(owner));
     }
 
     /// Whether this id is one we handed out and have not since cut
@@ -311,13 +331,18 @@ impl Ids {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|k| crate::crypto::token_eq(k, id))
+                .any(|h| crate::crypto::token_eq(&h.id, id))
     }
 
     /// The id the caller should hold from here on: the one it presented if that
     /// is still valid (so a reload keeps its place in the list), a fresh one
     /// otherwise.
     fn keep(&self, presented: &str) -> String {
+        self.keep_for(presented, None)
+    }
+
+    /// The same, saying which device this session belongs to.
+    fn keep_for(&self, presented: &str, owner: Option<String>) -> String {
         if self.has(presented) {
             return presented.to_string();
         }
@@ -326,7 +351,7 @@ impl Ids {
         while q.len() >= MAX_SESSIONS {
             q.pop_front();
         }
-        q.push_back(id.clone());
+        q.push_back(Held { id: id.clone(), owner });
         id
     }
 
@@ -472,12 +497,57 @@ impl Gate {
         self.grants.clear();
         self.pw.clear();
     }
+
+    /// Forget only what this device holds.
+    fn drop_client(&self, owner: &str) {
+        self.grants.drop_owner(owner);
+        self.pw.drop_owner(owner);
+    }
+}
+
+/// Who this key lets in, if anyone.
+///
+/// Two kinds are accepted and they mean different things.
+///
+/// A **paired device** presents its own key, which is the shape a shared
+/// runtime needs: it names one device, and taking it away takes away that one
+/// device. A server holds the credentials its agents run with, so "who is
+/// this" has to have an answer better than "somebody with the key".
+///
+/// The **runtime's own token** -- the one the QR shows -- still opens the
+/// door, because a device that has never been here has nothing else to
+/// present. It is the pairing key. What it buys is one row in the book and a
+/// key of the device's own; from the next request on, that is what is used.
+fn opened_by(key: &str, token: &str) -> Option<Opener> {
+    if !key.is_empty() && crate::crypto::token_eq(key, token) {
+        return Some(Opener::Pairing);
+    }
+    crate::clients::who(key).map(Opener::Paired)
+}
+
+/// What was presented at the door.
+enum Opener {
+    /// The runtime's own token. Good for exactly one thing: being written into
+    /// the book as a device of its own
+    Pairing,
+    /// A device already in the book
+    Paired(crate::clients::Client),
 }
 
 /// The pairing session cookie (see Gate). HttpOnly so the page it admits can
 /// never read it out, SameSite=Strict so nothing but this origin can send it.
 fn session_cookie(id: &str) -> String {
     format!("rs={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
+}
+
+/// The device's own key, which outlives a session.
+///
+/// HttpOnly for the same reason the session is: the page never needs to read
+/// it, and a page that cannot read it cannot leak it. It is what the device
+/// presents from its second visit on, so the pairing key is not what is kept
+/// on thirty devices
+fn device_cookie(key: &str) -> String {
+    format!("rk={key}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
 }
 
 /// The cookie that says this device has already given the password for a reply
@@ -768,6 +838,29 @@ impl RemoteUi {
     /// there was nothing to refuse it with — so a phone that had been told it
     /// was disconnected went on watching and driving a browser for as long as it
     /// liked. Admission has to be revocable on its own, which is what Gate is.
+    /// Take one device's key away, and with it whatever it is looking at.
+    ///
+    /// The point of the book. "Disconnect" used to mean everybody, so losing a
+    /// phone cost every other device its access and cost the person pairing
+    /// them all again. Now the phone goes and nothing else moves.
+    ///
+    /// Both halves are needed. Revoking the key stops the next request;
+    /// dropping its sessions stops the page it already has, which would
+    /// otherwise go on drawing until it happened to ask for something.
+    pub fn cut_client(&self, id: &str) -> bool {
+        let gone = crate::clients::revoke(id).unwrap_or(false);
+        if gone {
+            self.gate.drop_client(id);
+        }
+        gone
+    }
+
+    /// Everyone allowed in, and what they are called. The keys are not here
+    /// and cannot be -- the book holds hashes
+    pub fn clients(&self) -> Vec<crate::clients::Client> {
+        crate::clients::load().clients
+    }
+
     pub fn cut_sessions(&self) {
         self.gate.cut();
         // The links sitting in a chat are somebody holding this terminal too
@@ -1020,11 +1113,32 @@ fn handle(
             .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
             // Keep any URL token out of the Referer header
             .with_header(Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap());
-        if crate::crypto::token_eq(&query_value(req.url(), "t"), &token) {
-            let id = gate.grants.keep(&session);
-            resp = resp.with_header(
-                Header::from_bytes(&b"Set-Cookie"[..], session_cookie(&id).as_bytes()).unwrap(),
-            );
+        // A device arriving on the pairing key is written into the book here
+        // and given a key of its own, so that from now on it can be named, and
+        // shut out, without touching anybody else
+        match opened_by(&query_value(req.url(), "t"), &token) {
+            Some(Opener::Pairing) => {
+                let paired = crate::clients::pair("").ok();
+                let owner = paired.as_ref().map(|(row, _)| row.id.clone());
+                let id = gate.grants.keep_for(&session, owner);
+                resp = resp.with_header(
+                    Header::from_bytes(&b"Set-Cookie"[..], session_cookie(&id).as_bytes()).unwrap(),
+                );
+                if let Some((_, key)) = paired {
+                    resp = resp.with_header(
+                        Header::from_bytes(&b"Set-Cookie"[..], device_cookie(&key).as_bytes())
+                            .unwrap(),
+                    );
+                }
+            }
+            Some(Opener::Paired(who)) => {
+                crate::clients::touch(&who.id);
+                let id = gate.grants.keep_for(&session, Some(who.id));
+                resp = resp.with_header(
+                    Header::from_bytes(&b"Set-Cookie"[..], session_cookie(&id).as_bytes()).unwrap(),
+                );
+            }
+            None => {}
         }
         return req.respond(resp).map_err(Into::into);
     }
@@ -1225,11 +1339,18 @@ fn handle(
         }
     }
 
-    // Everything past here is data or control — the token first.
-    if !crate::crypto::token_eq(&supplied, &token) {
+    // Everything past here is data or control — the key first. A paired device
+    // presents its own (the cookie it was given at pairing); anything else has
+    // to be the runtime's token, which is what a device presents exactly once
+    let device_key = cookie_value(&req, "rk");
+    let by = opened_by(&device_key, &token).or_else(|| opened_by(&supplied, &token));
+    let Some(by) = by else {
         return req
             .respond(Response::from_string("forbidden").with_status_code(403))
             .map_err(Into::into);
+    };
+    if let Opener::Paired(who) = &by {
+        crate::clients::touch(&who.id);
     }
 
     // Then the session, which is what the window's "disconnect" takes away. A
@@ -2317,6 +2438,74 @@ mod tests {
     /// the page reconnected by itself a second later and went on watching and
     /// driving. What is revoked is the session, and only opening the link again
     /// brings one back.
+    /// The point of the book: one device goes, and nothing else moves.
+    ///
+    /// Before this, "disconnect" was everybody. Losing a phone cost every other
+    /// device its access, and getting back in meant handing the same key out
+    /// again to each of them -- on a runtime that holds the credentials the
+    /// agents run with. That is the wrong price for a lost phone.
+    #[test]
+    fn one_device_is_shut_out_without_touching_the_others() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let ui = RemoteUi::start(
+            "127.0.0.1".parse().unwrap(),
+            0,
+            "pairing-key-44444".into(),
+            String::new(),
+        )
+        .unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+
+        // Named by the row each pairing adds, not by counting the book. The
+        // book is one file for the whole test run, so anything that counts it
+        // is counting other tests' devices too
+        let newest = |before: &[crate::clients::Client]| {
+            let seen: std::collections::HashSet<_> =
+                before.iter().map(|c| c.id.clone()).collect();
+            ui.clients()
+                .into_iter()
+                .find(|c| !seen.contains(&c.id))
+                .expect("pairing wrote no row")
+        };
+
+        let mut phone = Phone::new(&base);
+        let mut laptop = Phone::new(&base);
+        let before = ui.clients();
+        phone.pair("pairing-key-44444");
+        let phone_row = newest(&before);
+        let before = ui.clients();
+        laptop.pair("pairing-key-44444");
+        let laptop_row = newest(&before);
+
+        assert_ne!(phone_row.id, laptop_row.id, "2台が1行にまとめられている");
+        assert_eq!(phone.state("pairing-key-44444"), 200);
+        assert_eq!(laptop.state("pairing-key-44444"), 200);
+
+        assert!(ui.cut_client(&phone_row.id), "消したと言わない");
+        assert!(
+            !ui.clients().iter().any(|c| c.id == phone_row.id),
+            "名簿から消えていない"
+        );
+        assert!(
+            ui.clients().iter().any(|c| c.id == laptop_row.id),
+            "巻き添えで名簿から消えた"
+        );
+
+        // The phone's own key is gone and so is what it was looking at. It
+        // still holds the pairing key, which is deliberate -- that one is the
+        // way back in, not the thing being revoked
+        assert_eq!(
+            phone.said("/api/state"),
+            (403, "forbidden".to_string()),
+            "取り上げた鍵でまだ入れる"
+        );
+
+        // And the laptop never noticed
+        assert_eq!(laptop.state("pairing-key-44444"), 200, "巻き添えで閉め出された");
+
+        assert!(!ui.cut_client(&phone_row.id), "二度目も消したと言っている");
+    }
+
     #[test]
     fn a_fixed_token_disconnect_locks_the_phone_out_too() {
         let ui = RemoteUi::start(

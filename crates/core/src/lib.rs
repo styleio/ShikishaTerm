@@ -13,6 +13,7 @@ pub mod ball;
 pub mod bridge;
 pub mod browserstate;
 pub mod caps;
+pub mod clients;
 pub mod config;
 /// Windows's own pseudo console, and the copy of it we ship beside the exe.
 /// A unix pty needs no such thing, so the module is not built there
