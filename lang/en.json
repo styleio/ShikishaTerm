@@ -1892,5 +1892,12 @@
   "settings.phone.device.days": "{n} days ago",
   "settings.phone.device.last": "last here {when}",
   "settings.phone.device.gone": "That device was not in the list any more — it may have been taken away already.",
-  "prompt.password.headless": "The secrets are encrypted and nothing here could supply the master password. Either start it from a terminal, where it will ask, or give the service the password as a credential: LoadCredential=shikisha-master:/etc/shikisha/master in the unit file."
+  "prompt.password.headless": "The secrets are encrypted and nothing here could supply the master password. Either start it from a terminal, where it will ask, or give the service the password as a credential: LoadCredential=shikisha-master:/etc/shikisha/master in the unit file.",
+  "err.chrome.none": "No browser on this machine. Install one (apt install chromium) and the browser commands start working; nothing else changes.",
+  "err.chrome.silent": "The browser started and said nothing, so there is no address to talk to it on.",
+  "err.chrome.refused": "The browser would not start. It said: {said}",
+  "err.chrome.slow": "The browser did not say where to reach it within twenty seconds.",
+  "err.chrome.gone": "The browser is no longer there.",
+  "err.chrome.said": "The browser refused: {said}",
+  "err.chrome.no_answer": "The browser did not answer {method}."
 }
