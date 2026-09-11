@@ -211,13 +211,13 @@ impl Pipe {
                 };
                 if !waited.is_empty() {
                     let mut held = pipe.open.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(Conn::Open(sock)) = held.get_mut(&id) {
-                        if sock.write_all(&waited).and_then(|()| sock.flush()).is_err() {
-                            held.remove(&id);
-                            drop(held);
-                            pipe.tell(id, Kind::Close, &[]);
-                            return;
-                        }
+                    if let Some(Conn::Open(sock)) = held.get_mut(&id)
+                        && sock.write_all(&waited).and_then(|()| sock.flush()).is_err()
+                    {
+                        held.remove(&id);
+                        drop(held);
+                        pipe.tell(id, Kind::Close, &[]);
+                        return;
                     }
                 }
                 pipe.carry(id, reading);
