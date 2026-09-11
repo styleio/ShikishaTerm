@@ -12,7 +12,7 @@
 //! take down the whole app.
 
 use shikisha_core::pageops::{self, Speaks};
-use shikisha_shared::{BrowserHost, BrowserProfile, Ev, Found, Go, Input, OpReport, Sel, parse_intent};
+use shikisha_shared::{BrowserHost, BrowserProfile, allowed_from_page, is_openable, Ev, Found, Go, Input, OpReport, Sel, parse_intent};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -255,35 +255,6 @@ pub enum Cmd {
 
 
 
-/// any web page went into the terminal as if the person had typed it.
-///
-/// Not on the list: the press of the bar that asks the person something
-/// (`Button`). A page cannot be believed about that -- the whole point of the
-/// bar is that a person, not the page, said "done" -- which is why the bar is
-/// drawn by the board, outside the page, and only the board reports the press
-///
-/// Written from the side that enumerates what gets through, like
-/// `remote::allowed_from_afar` is for the phone. Add to it only after writing
-/// down why a stranger's page needs it
-/// Whether a page placed in the window — somebody else's page — may say this.
-///
-/// A placed page runs whatever script its site serves, and that script can
-/// call `window.ipc.postMessage` exactly as ours do. So a page is let to
-/// *report* — a step it recorded, that it is loading or has loaded, that it
-/// took the focus or its pen was pressed, the answer to a question we put to
-/// it — and never to *ask*: nothing here types into a tab, runs Lua, touches
-/// git, or opens the settings. Before this list existed, `{kind:"say"}` from
-pub fn allowed_from_page(ev: &Ev) -> bool {
-    matches!(
-        ev,
-        Ev::Ready { .. }
-            | Ev::Loading { .. }
-            | Ev::Touched { .. }
-            | Ev::Compose { .. }
-            | Ev::Recorded { .. }
-            | Ev::Result { .. }
-    )
-}
 
 /// The part of an address that says which site a page belongs to: scheme,
 /// host and port (the scheme's usual port when none is written). `None` for
@@ -451,26 +422,6 @@ pub struct Browser {
     digests: std::sync::Mutex<std::collections::HashMap<Option<String>, Vec<i64>>>,
 }
 
-/// Is this a URL we're allowed to open? Only http/https pass.
-///
-/// When wry receives IPC from a page, it builds that page's URL as an
-/// `http::Uri` and `unwrap`s it (webview2/mod.rs). Both `file:///` and
-/// `data:` fail to parse there and **take down the whole process**
-/// (confirmed by testing). Since the initialization script we inject
-/// always sends IPC, opening one of these guarantees a crash. So we
-/// stop it at the door.
-///
-/// To show a local file, serve it over this app's own local HTTP server
-/// instead — it achieves the same thing
-pub fn is_openable(url: &str) -> bool {
-    let u = url.trim();
-    let scheme_ok = u.starts_with("https://") || u.starts_with("http://");
-    let has_host = u.split("//").nth(1).is_some_and(|rest| {
-        let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-        !host.is_empty()
-    });
-    scheme_ok && has_host && !u.contains(['\n', '\r', ' '])
-}
 
 
 

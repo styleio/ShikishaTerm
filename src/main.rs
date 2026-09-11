@@ -1870,7 +1870,7 @@ fn connect_to(url: &str) -> Result<()> {
         anyhow::bail!(i18n::t("err.connect.no_url"));
     }
     let url = url.trim();
-    if !browser::is_openable(url) {
+    if !shikisha_shared::is_openable(url) {
         anyhow::bail!(i18n::tp("err.connect.bad_url", &[("url", url)]));
     }
     let win = browser::Browser::spawn(url, "SHIKISHA-TERM")?;

@@ -10,6 +10,7 @@
 //! there and leaves the box empty, so nothing is acted on twice.
 
 use crate::tab::RecordedStep;
+use shikisha_shared::Ev;
 
 /// Reports from a shell, sorted and waiting.
 #[derive(Default)]
@@ -145,6 +146,39 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
+    /// Post one report from a page into the queue that answers it.
+    ///
+    /// Only what a page is allowed to report (see
+    /// [`shikisha_shared::allowed_from_page`]) reaches here, and every one of
+    /// them names the page it came from. A shell that shows pages some other
+    /// way -- the window does, with a good deal else to do per report -- sorts
+    /// them itself; this is for the shell that has nothing else to do with
+    /// them.
+    pub fn page_report(&mut self, ev: Ev) {
+        match ev {
+            Ev::Ready { from: Some(name), url, complete } => self.loads.push((name, url, complete)),
+            Ev::Loading { from: Some(name), busy } => self.loading.push((name, busy)),
+            Ev::Touched { from: Some(name) } => self.touches.push(name),
+            Ev::Button { from: Some(name) } => self.presses.push(name),
+            Ev::Where { from: Some(name), url, can_back, can_forward } => {
+                self.wheres.push((name, url, can_back, can_forward));
+            }
+            Ev::Recorded { from: Some(child), act, sel, value, xpath, hint } => {
+                self.recorded.push(RecordedStep { child, act, sel, value, xpath, hint });
+            }
+            // A frame of a page being watched from somewhere else. Decoded
+            // here because what goes out to a phone is bytes
+            Ev::Frame { data, .. } => {
+                use base64::Engine as _;
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data.as_bytes())
+                {
+                    self.frames.push(bytes);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Takes ownership of the names of pages whose bar button was pressed.
     /// The window only has a single report channel, so this is the only place that consumes it.
     pub fn take_presses(&mut self) -> Vec<String> {

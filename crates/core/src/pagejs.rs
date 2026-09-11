@@ -421,5 +421,14 @@ pub const AUTOMATION: &str = r##"
       armFallback();
     }
   }
+  // Going back can hand the old document back whole (the back/forward cache)
+  // instead of building a new one. Nothing above fires then -- this script is
+  // not run again either, since it never stopped running -- and without this
+  // the page would arrive somewhere new with nobody told about it
+  addEventListener("pageshow", (e) => {
+    if (!e.persisted) return;
+    told = false;
+    announce(true);
+  });
 })();
 "##;
