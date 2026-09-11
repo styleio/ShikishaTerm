@@ -24,6 +24,7 @@ pub mod folders;
 pub mod git;
 pub mod grants;
 pub mod hooks;
+pub mod host;
 pub mod i18n;
 pub mod instance;
 pub mod job;

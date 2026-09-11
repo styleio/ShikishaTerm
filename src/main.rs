@@ -24,6 +24,7 @@ use shikisha_core::workspace::{
     spawn_workspace, surface_of_id, switch_workspace,
 };
 use shikisha_core::view::{
+    Size, pty_dims, terminal_size,
     RESULT_TAB, ScreenPush, Surface, Ui, panes_json, remote_floor, screen_push, server_spec,
     surfaces_of, title_of, ui_state_of,
 };
@@ -435,12 +436,6 @@ fn cast_test(url: &str) -> Result<()> {
     Ok(())
 }
 
-/// Screen size. Only width and height are needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Size {
-    pub width: u16,
-    pub height: u16,
-}
 
 /// A rectangle on screen
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -451,29 +446,6 @@ pub struct Rect {
     pub height: u16,
 }
 
-/// The terminal size (rows, cols) passed to the PTY.
-///
-/// `size` already IS the content area: the page measures `#main` — the region
-/// to the right of the tab bar and above the status bar — and reports the
-/// rows/columns that fit there directly (see the shell's `report()`), which is
-/// what `surface.size()` and the resize event carry. So this only guards the
-/// floor; it must NOT subtract the tab bar or status bar again.
-///
-/// It used to. Back when `size` was the whole window in character cells, the
-/// app drew its own tab bar and status bar, so it carved them out here. Once the
-/// WebView took over that chrome and started measuring the content area itself,
-/// the subtraction became a *second* one: every AI was handed the tab bar's
-/// width in columns fewer than it had, rendering into only part of the width
-/// with a wide blank margin on the right — and on a phone-narrow screen, where
-/// the total column count is barely above it, it collapsed almost to nothing.
-///
-/// The tab bar's width was still being carried in here long after that, unread
-/// behind an underscore, and a whole config field was computed for the sole
-/// purpose of feeding it. Both are gone: the width is the window's business,
-/// measured in pixels, and it is measured where it is drawn.
-fn pty_dims(size: Size) -> (u16, u16) {
-    (size.height.max(3), size.width.max(10))
-}
 
 
 
@@ -6846,31 +6818,6 @@ fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
     }
 }
 
-/// The shape every terminal is cut to: **a phone that is watching decides it,
-/// and the window decides it when none is.**
-///
-/// The two viewers see the same terminals at wildly different widths, and only
-/// one number can be handed to a program. Both of them re-measure and re-report
-/// freely -- the pane tree is redrawn on a tab switch and re-reports as part of
-/// that -- so "whoever spoke last wins" was never a rule at all: the window
-/// spoke on every repaint and took the size back within a frame of the phone
-/// getting it. A phone opened onto a tab fitted its screen, then jumped to the
-/// window's width the first time a tab was switched, and Claude Code -- which
-/// rules a line clean across the terminal -- hung two thirds of itself off the
-/// right edge with only a sideways scroll to read it by.
-///
-/// So the choice is made in one place, from who is looking rather than from who
-/// spoke most recently, and the reports themselves become harmless. Watching
-/// means a live state socket or a viewer still polling for the state; the
-/// heartbeat sent along that socket is what makes a phone that walks away
-/// noticed within a few seconds, and the window then has its own shape back
-/// without anybody having to ask for it.
-fn terminal_size(window: (u16, u16), phone: Option<(u16, u16)>, watched: bool) -> Size {
-    match phone {
-        Some((rows, cols)) if watched => Size { width: cols, height: rows },
-        _ => Size { width: window.1, height: window.0 },
-    }
-}
 
 /// What size each tab's terminal should be drawn at.
 ///
@@ -10108,4 +10055,46 @@ mod shutdown_tests {
     }
 }
 
+/// The window, seen as "a shell the runtime can be driven by".
+///
+/// Every one of these already existed; the trait is what lets the loop be
+/// written once, for this window and for no window at all.
+impl shikisha_core::host::Shell for WinSurface {
+    fn mail(&mut self) -> &mut shikisha_core::mailbox::Mailbox {
+        &mut self.mail
+    }
 
+    fn take_keyboard_back(&self) { WinSurface::take_keyboard_back(self) }
+    fn geom_area(&self) -> (i32, i32, i32, i32) { WinSurface::geom_area(self) }
+    fn geom_full(&self) -> (i32, i32, i32, i32) { WinSurface::geom_full(self) }
+    fn geom_rows(&self) -> u16 { WinSurface::geom_rows(self) }
+    fn geom_cols(&self) -> u16 { WinSurface::geom_cols(self) }
+    fn geom_panes(&self) -> &[shikisha_shared::PaneGeom] { WinSurface::geom_panes(self) }
+    fn phone_size(&self) -> Option<(u16, u16)> { WinSurface::phone_size(self) }
+    fn set_phone_size(&mut self, size: Option<(u16, u16)>) { WinSurface::set_phone_size(self, size) }
+    fn is_hidden(&self) -> bool { WinSurface::is_hidden(self) }
+    fn last_drawn(&self) -> Option<&shikisha_core::uistate::UiState> { WinSurface::last_drawn(self) }
+    fn queue_input(&mut self, ev: Event) { WinSurface::queue_input(self, ev) }
+    fn inject(&mut self, ev: Event) { WinSurface::inject(self, ev) }
+    fn toggle_tab_bar(&self) { WinSurface::toggle_tab_bar(self) }
+    fn take_open_settings( &mut self, ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)> { WinSurface::take_open_settings(self) }
+    fn open_vault(&self) { WinSurface::open_vault(self) }
+    fn open_palette(&self) { WinSurface::open_palette(self) }
+    fn push_git(&self, json: &str) { WinSurface::push_git(self, json) }
+    fn push_sftp(&self, json: &str) { WinSurface::push_sftp(self, json) }
+    fn push_recorded(&self, line_json: &str) { WinSurface::push_recorded(self, line_json) }
+    fn queue_vault(&mut self, ev: shikisha_shared::Ev) { WinSurface::queue_vault(self, ev) }
+    fn push_suggested(&self, json: &str) { WinSurface::push_suggested(self, json) }
+    fn push_surveyed(&self, json: &str) { WinSurface::push_surveyed(self, json) }
+    fn push_lua_done(&self, err_json: &str) { WinSurface::push_lua_done(self, err_json) }
+    fn push_actions(&self, actions_json: &str) { WinSurface::push_actions(self, actions_json) }
+    fn push_theme(&self) { WinSurface::push_theme(self) }
+    fn hide(&mut self) { WinSurface::hide(self) }
+    fn show(&mut self) { WinSurface::show(self) }
+    fn say_where_it_went(&self) { WinSurface::say_where_it_went(self) }
+    fn size(&self) -> Result<Size> { WinSurface::size(self) }
+    fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> Result<Option<Event>> { WinSurface::poll(self, timeout, active_tab) }
+    fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))> { WinSurface::host(self) }
+    fn ask_password(&mut self, title: &str, note: &str) -> Result<Option<String>> { WinSurface::ask_password(self, title, note) }
+    fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> Result<()> { WinSurface::draw(self, tabs, ui, flash) }
+}

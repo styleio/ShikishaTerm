@@ -698,3 +698,60 @@ pub fn server_spec(
         file_command: server.and_then(|s| key(&s.file_command)),
     }
 }
+
+/// Screen size. Only width and height are needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Size {
+    pub width: u16,
+    pub height: u16,
+}
+
+/// The terminal size (rows, cols) passed to the PTY.
+///
+/// `size` already IS the content area: the page measures `#main` — the region
+/// to the right of the tab bar and above the status bar — and reports the
+/// rows/columns that fit there directly (see the shell's `report()`), which is
+/// what `surface.size()` and the resize event carry. So this only guards the
+/// floor; it must NOT subtract the tab bar or status bar again.
+///
+/// It used to. Back when `size` was the whole window in character cells, the
+/// app drew its own tab bar and status bar, so it carved them out here. Once the
+/// WebView took over that chrome and started measuring the content area itself,
+/// the subtraction became a *second* one: every AI was handed the tab bar's
+/// width in columns fewer than it had, rendering into only part of the width
+/// with a wide blank margin on the right — and on a phone-narrow screen, where
+/// the total column count is barely above it, it collapsed almost to nothing.
+///
+/// The tab bar's width was still being carried in here long after that, unread
+/// behind an underscore, and a whole config field was computed for the sole
+/// purpose of feeding it. Both are gone: the width is the window's business,
+/// measured in pixels, and it is measured where it is drawn.
+pub fn pty_dims(size: Size) -> (u16, u16) {
+    (size.height.max(3), size.width.max(10))
+}
+
+/// The shape every terminal is cut to: **a phone that is watching decides it,
+/// and the window decides it when none is.**
+///
+/// The two viewers see the same terminals at wildly different widths, and only
+/// one number can be handed to a program. Both of them re-measure and re-report
+/// freely -- the pane tree is redrawn on a tab switch and re-reports as part of
+/// that -- so "whoever spoke last wins" was never a rule at all: the window
+/// spoke on every repaint and took the size back within a frame of the phone
+/// getting it. A phone opened onto a tab fitted its screen, then jumped to the
+/// window's width the first time a tab was switched, and Claude Code -- which
+/// rules a line clean across the terminal -- hung two thirds of itself off the
+/// right edge with only a sideways scroll to read it by.
+///
+/// So the choice is made in one place, from who is looking rather than from who
+/// spoke most recently, and the reports themselves become harmless. Watching
+/// means a live state socket or a viewer still polling for the state; the
+/// heartbeat sent along that socket is what makes a phone that walks away
+/// noticed within a few seconds, and the window then has its own shape back
+/// without anybody having to ask for it.
+pub fn terminal_size(window: (u16, u16), phone: Option<(u16, u16)>, watched: bool) -> Size {
+    match phone {
+        Some((rows, cols)) if watched => Size { width: cols, height: rows },
+        _ => Size { width: window.1, height: window.0 },
+    }
+}
