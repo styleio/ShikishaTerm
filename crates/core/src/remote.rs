@@ -375,7 +375,7 @@ impl Ids {
 /// travels through notification channels in plain text; a password — entered
 /// once per app run on the phone itself — never does. Empty password = the gate
 /// is off (the user's own risk to accept).
-struct Gate {
+pub struct Gate {
     password: String,
     /// Sessions handed to phones that presented the password
     pw: Ids,
@@ -499,7 +499,7 @@ impl Gate {
     }
 
     /// Forget only what this device holds.
-    fn drop_client(&self, owner: &str) {
+    pub fn drop_client(&self, owner: &str) {
         self.grants.drop_owner(owner);
         self.pw.drop_owner(owner);
     }
@@ -859,6 +859,15 @@ impl RemoteUi {
     /// and cannot be -- the book holds hashes
     pub fn clients(&self) -> Vec<crate::clients::Client> {
         crate::clients::load().clients
+    }
+
+    /// The live sessions, for whoever else may need to end one.
+    ///
+    /// Handed out rather than reached for: the settings page can revoke a key
+    /// on its own (the book is a file), but the sockets already carrying a
+    /// screen belong here
+    pub fn sessions(&self) -> Arc<Gate> {
+        Arc::clone(&self.gate)
     }
 
     pub fn cut_sessions(&self) {

@@ -23,6 +23,16 @@ pub struct RemoteInfo {
     pub url: String,
     /// Explanation for when it can't be enabled, or a note that needs attention
     pub note: String,
+    /// End what a device is holding, by its row in the book.
+    ///
+    /// Taking a key away is this page's own business -- the book is a file and
+    /// this page can write it. What it cannot do is drop the sockets already
+    /// carrying a screen to that device, because those belong to the running
+    /// remote. Without this, a revoked phone keeps watching until it next asks
+    /// for something, which on a pushed screen may be never.
+    ///
+    /// Absent in the settings-only mode, where nothing is live to end.
+    pub cut: Option<Arc<dyn Fn(&str) + Send + Sync>>,
 }
 
 pub struct WebUi {
@@ -388,11 +398,13 @@ fn effective_remote(shared: &Arc<std::sync::Mutex<RemoteInfo>>) -> RemoteInfo {
                 crate::remote_token(&c, None)
             ),
             note: crate::i18n::t("settings.phone.only_while_running"),
+            ..Default::default()
         },
         Err(e) => RemoteInfo {
             running: false,
             url: String::new(),
             note: e,
+            ..Default::default()
         },
     }
 }
@@ -408,6 +420,7 @@ fn remote_for_display(shared: &Arc<std::sync::Mutex<RemoteInfo>>) -> (RemoteInfo
                 running: true,
                 url,
                 note: String::new(),
+                ..Default::default()
             },
             true,
         ),
@@ -2184,6 +2197,60 @@ fn handle(
         // the moment the copy button is pressed and hands it straight to the
         // clipboard, never to the screen. Behind the same token gate as the
         // rest of this server, so this hands out nothing the QR did not already
+        // The devices allowed in. Never the keys -- the book holds hashes, and
+        // a screen that could show a key would be a screen worth stealing
+        ("GET", "/api/remote/clients") => {
+            let rows: Vec<_> = crate::clients::load()
+                .clients
+                .into_iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "id": c.id,
+                        "name": c.name,
+                        "added": c.added,
+                        "seen": c.seen,
+                    })
+                })
+                .collect();
+            req.respond(json_resp(serde_json::json!({ "clients": rows })))?;
+        }
+        // Naming a device. A list of six-character ids is a list nobody can act
+        // on; "台所のiPad" is what makes revoking a decision rather than a guess
+        ("POST", "/api/remote/clients/name") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let id = p.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+            let name = p.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+            let out = match crate::clients::rename(id, name) {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+            };
+            req.respond(json_resp(out))?;
+        }
+        // Taking one device's key away. Both halves: the key, so its next
+        // request is refused, and whatever it is holding now, so the screen it
+        // already has stops being drawn
+        ("POST", "/api/remote/clients/revoke") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let id = p.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let gone = crate::clients::revoke(&id).unwrap_or(false);
+            if gone {
+                let cut = remote.lock().unwrap().cut.clone();
+                if let Some(cut) = cut {
+                    cut(&id);
+                }
+            }
+            req.respond(json_resp(serde_json::json!({ "ok": gone })))?;
+        }
         ("GET", "/api/remote/url") => {
             let (info, _) = remote_for_display(remote);
             req.respond(json_resp(serde_json::json!({ "url": info.url })))?;
@@ -2537,6 +2604,11 @@ const PAGE: &str = r##"<!doctype html>
    color:var(--text); font-size:12px; font-weight:500; line-height:1.4; }
  /* ...and what a field means goes under it, not out to one side */
  .row > .hint { flex-basis:100%; margin-top:-2px; }
+ /* One thing in a list of things: everything about it stays on its line.
+    A `.row` cannot do this -- its hint takes the whole width by design, which
+    is right for a field and wrong for a list */
+ .listrow { display:flex; align-items:center; gap:var(--s3); padding:var(--s2) 0; }
+ .listrow .when { color:var(--muted); font-size:12px; flex:1; }
  /* A row of a table: the same question, asked many times over. The name keeps
     its own column so the eye can run down it, and nothing wraps */
  .row.pair { padding:var(--s1) 0; }
@@ -6144,7 +6216,68 @@ function remoteCard() {
   box.append(el("div", {class:"hint", style:"margin-top:var(--s2)"},
     T["settings.phone.note"]));
 
+  // Who holds a key right now. Each device that opened the link is a row of
+  // its own, and each row can be given a name and taken away on its own -- the
+  // reason the book exists. A phone lost on a train costs that phone.
+  const devices = el("div", {style:"margin-top:var(--s3)"});
+  box.append(devices);
+
   refreshRemote();
+  refreshDevices();
+
+  /// When a device was last heard from, said the way a person says it.
+  function whenSeen(secs) {
+    if (!secs) return T["settings.phone.device.never"] || "まだ来ていません";
+    const ago = Math.max(0, Math.floor(Date.now() / 1000) - secs);
+    if (ago < 90) return T["settings.phone.device.now"] || "いま";
+    if (ago < 3600) return fill(T["settings.phone.device.minutes"] || "{n}分前", {n: Math.floor(ago / 60)});
+    if (ago < 86400) return fill(T["settings.phone.device.hours"] || "{n}時間前", {n: Math.floor(ago / 3600)});
+    return fill(T["settings.phone.device.days"] || "{n}日前", {n: Math.floor(ago / 86400)});
+  }
+
+  async function refreshDevices() {
+    let j = {};
+    try { j = await (await fetch("/api/remote/clients", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    const rows = (j.clients || []);
+    devices.textContent = "";
+    // Titled like the rows above it (port, password, sticky token) rather than
+    // as a note. It is a thing you act on, not a remark about one
+    devices.append(el("div", {class:"row"}, el("label", {}, T["settings.phone.devices"])));
+    if (!rows.length) {
+      devices.append(el("div", {class:"hint"}, T["settings.phone.devices.none"]));
+      return;
+    }
+    for (const c of rows) {
+      const name = el("input", {type:"text", style:"width:180px",
+        placeholder: T["settings.phone.device.unnamed"], value: c.name || ""});
+      name.addEventListener("change", async () => {
+        await fetch("/api/remote/clients/name", {method:"POST",
+          headers:{"X-Token":TOKEN}, body:JSON.stringify({id:c.id, name:name.value})});
+        refreshDevices();
+      });
+      // Says what goes before it goes. A row of six-character ids with a ✕
+      // beside each is a screen where the safe move is to press nothing
+      const drop = el("button", {class:"danger", onclick: async () => {
+        const called = name.value.trim() || (T["settings.phone.device.unnamed"] || "");
+        if (!confirm(fill(T["settings.phone.device.confirm"], {name: called}))) return;
+        let ok = false;
+        try {
+          const r = await fetch("/api/remote/clients/revoke", {method:"POST",
+            headers:{"X-Token":TOKEN}, body:JSON.stringify({id:c.id})});
+          ok = ((await r.json()) || {}).ok === true;
+        } catch (e) {}
+        // Saying nothing after a press that did nothing is the worst of the
+        // three: the row stays, and whoever pressed it believes the key is gone
+        if (!ok) msg(T["settings.phone.device.gone"], true);
+        refreshDevices();
+      }}, T["settings.phone.device.revoke"]);
+      devices.append(el("div", {class:"listrow"}, name,
+        el("span", {class:"when"},
+          fill(T["settings.phone.device.last"], {when: whenSeen(c.seen)})),
+        drop));
+    }
+  }
   async function refreshRemote() {
     let j = {};
     try { j = await (await fetch("/api/remote", {headers:{"X-Token":TOKEN}})).json(); }
@@ -9037,6 +9170,90 @@ mod tests {
     /// appear on the PC. The page is served without the buttons, and the
     /// endpoints behind them answer with a refusal instead of a dialog that
     /// would hold the request open until someone walked over to the PC.
+    /// The screen that lists devices, exercised the way the page does it.
+    ///
+    /// The point of the whole book is that a device can be named and taken
+    /// away on its own, so that is what this walks: two devices in, one named,
+    /// one revoked, and the other still there afterwards.
+    #[test]
+    fn the_settings_page_can_name_and_revoke_one_device() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let dir = std::env::temp_dir().join(format!("shikitest_{}", crate::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.json");
+        std::fs::write(&cfg, "{}").unwrap();
+
+        // What the running remote would hand over: a way to end what a revoked
+        // device is holding. Recorded here rather than acted on, so the test
+        // can say whether it was called
+        let ended: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let heard = Arc::clone(&ended);
+        let info = RemoteInfo {
+            running: true,
+            cut: Some(Arc::new(move |id: &str| heard.lock().unwrap().push(id.to_string()))),
+            ..Default::default()
+        };
+        let ui = WebUi::start_with(
+            cfg,
+            Arc::new(std::sync::Mutex::new(info)),
+            Arc::new(std::sync::Mutex::new(None)),
+        )
+        .unwrap();
+        let (base, token) = ui.url.split_once("/?token=").unwrap();
+        let (base, token) = (base.to_string(), token.to_string());
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
+
+        let (phone, _) = crate::clients::pair("").unwrap();
+        let (laptop, laptop_key) = crate::clients::pair("laptop").unwrap();
+
+        let listed = |agent: &ureq::Agent| -> serde_json::Value {
+            let mut r = agent
+                .get(&format!("{base}/api/remote/clients"))
+                .header("X-Token", &token)
+                .call()
+                .unwrap();
+            serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap()
+        };
+
+        // Both are listed, and no key is
+        let seen = listed(&agent);
+        let text = seen.to_string();
+        assert!(text.contains(&phone.id) && text.contains(&laptop.id), "端末が並んでいない: {text}");
+        assert!(!text.contains(&laptop_key), "鍵そのものが画面に出ている");
+        assert!(!text.contains(&laptop.hash), "照合用のハッシュまで出ている");
+
+        // Naming one
+        agent
+            .post(&format!("{base}/api/remote/clients/name"))
+            .header("X-Token", &token)
+            .send(serde_json::json!({"id": phone.id, "name": "台所のiPad"}).to_string())
+            .unwrap();
+        assert!(listed(&agent).to_string().contains("台所のiPad"), "名前が残らない");
+
+        // Taking one away: the row goes, the running remote is told, and the
+        // other device is untouched
+        agent
+            .post(&format!("{base}/api/remote/clients/revoke"))
+            .header("X-Token", &token)
+            .send(serde_json::json!({"id": phone.id}).to_string())
+            .unwrap();
+        let after = listed(&agent).to_string();
+        assert!(!after.contains(&phone.id), "名簿から消えていない: {after}");
+        assert!(after.contains(&laptop.id), "巻き添えで消えた: {after}");
+        assert_eq!(
+            ended.lock().unwrap().as_slice(),
+            [phone.id.clone()],
+            "鍵は取り上げたが、その端末が見ている画面は止めていない"
+        );
+
+        ui.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_phone_gets_no_native_dialogs() {
         let dir = std::env::temp_dir().join(format!("shikitest_{}", crate::random_hex(8)));
