@@ -74,6 +74,15 @@ jobs:
             shellcheck --shell=sh "$f"
           done
 
+      # リポジトリに入っている公開鍵が、本当にあの鍵か。
+      # 差し替えられたら、指紋を書き換えない限りここで止まる——
+      # 書き換えれば、それは差分として人の目に映る
+      - name: The archive key is the one we published
+        run: |
+          gpg --show-keys --with-colons packaging/linux/shikisha-archive-key.asc > /tmp/key
+          grep -q "^fpr:::::::::A73AFDB4C9ADA2AB390C470AD960246DC636013B:" /tmp/key
+          gpg --show-keys packaging/linux/shikisha-archive-key.asc
+
       # 中身が正しい .deb と .rpm になるか。タグを打つ前に分かる場所で見る
       - name: The packages hold what they claim
         run: |
