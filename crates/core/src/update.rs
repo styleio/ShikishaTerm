@@ -886,6 +886,12 @@ fn sweep_aside(root: &Path) {
 /// The copy that was started to finish an update waits for the one that
 /// started it to leave, so the layout is free to claim. Called before the
 /// claim. The variable is dropped so children never inherit it
+/// Nothing hands the running copy over here: a Linux install is replaced by
+/// the package manager, with the old process already gone.
+#[cfg(not(windows))]
+pub fn wait_for_handoff() {}
+
+#[cfg(windows)]
 pub fn wait_for_handoff() {
     let Ok(pid) = std::env::var("SHIKISHA_HANDOFF") else { return };
     // SAFETY: nothing else reads the environment on another thread this early
@@ -931,6 +937,18 @@ pub fn finish_last() {
 // ── The Store copy ─────────────────────────────────────────────────
 
 /// The installed copy asks the Store, and lets the Store install
+/// There is no Store here to ask.
+#[cfg(not(windows))]
+pub mod store {
+    pub fn install(_hwnd: isize, _version: String) {}
+
+    /// Nothing to ask, so nothing waiting
+    pub fn available() -> Option<String> {
+        None
+    }
+}
+
+#[cfg(windows)]
 pub mod store {
     use super::*;
 

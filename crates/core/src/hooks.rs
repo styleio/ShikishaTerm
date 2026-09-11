@@ -36,10 +36,39 @@ use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib, Table, Thread, Valu
 ///
 /// Unknown directives are left as-is. Silently dropping them would make it
 /// impossible to notice that what was written has disappeared.
-pub fn local_stamp(fmt: &str) -> String {
+/// The local date and time, as year, month, day, hour, minute, second.
+#[cfg(windows)]
+fn local_now() -> (u16, u16, u16, u16, u16, u16) {
     use windows_sys::Win32::System::SystemInformation::GetLocalTime;
     let mut t = unsafe { std::mem::zeroed() };
     unsafe { GetLocalTime(&mut t) };
+    (t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
+}
+
+/// The same six numbers, from the machine's own idea of local time --
+/// `localtime_r` reads `/etc/localtime` and the `TZ` the process was given.
+#[cfg(not(windows))]
+fn local_now() -> (u16, u16, u16, u16, u16, u16) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `now` is a plain number and `tm` is ours to write into. The `_r`
+    // form writes only there, so nothing is shared between threads
+    unsafe { libc::localtime_r(&now as *const i64 as *const libc::time_t, &mut tm) };
+    (
+        (tm.tm_year + 1900) as u16,
+        (tm.tm_mon + 1) as u16,
+        tm.tm_mday as u16,
+        tm.tm_hour as u16,
+        tm.tm_min as u16,
+        tm.tm_sec as u16,
+    )
+}
+
+pub fn local_stamp(fmt: &str) -> String {
+    let (year, month, day, hour, minute, second) = local_now();
     let mut out = String::with_capacity(fmt.len() + 8);
     let mut it = fmt.chars();
     while let Some(c) = it.next() {
@@ -48,13 +77,13 @@ pub fn local_stamp(fmt: &str) -> String {
             continue;
         }
         match it.next() {
-            Some('Y') => out.push_str(&format!("{:04}", t.wYear)),
-            Some('y') => out.push_str(&format!("{:02}", t.wYear % 100)),
-            Some('m') => out.push_str(&format!("{:02}", t.wMonth)),
-            Some('d') => out.push_str(&format!("{:02}", t.wDay)),
-            Some('H') => out.push_str(&format!("{:02}", t.wHour)),
-            Some('M') => out.push_str(&format!("{:02}", t.wMinute)),
-            Some('S') => out.push_str(&format!("{:02}", t.wSecond)),
+            Some('Y') => out.push_str(&format!("{:04}", year)),
+            Some('y') => out.push_str(&format!("{:02}", year % 100)),
+            Some('m') => out.push_str(&format!("{:02}", month)),
+            Some('d') => out.push_str(&format!("{:02}", day)),
+            Some('H') => out.push_str(&format!("{:02}", hour)),
+            Some('M') => out.push_str(&format!("{:02}", minute)),
+            Some('S') => out.push_str(&format!("{:02}", second)),
             Some('%') => out.push('%'),
             // Unknown directives are kept. Dropping them would hide the fact that what was written disappeared
             Some(other) => {

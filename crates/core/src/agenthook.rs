@@ -136,6 +136,14 @@ fn me() -> PathBuf {
 /// `None` when the path still has a space afterwards — that happens where the
 /// short names have been turned off for a volume, and it is worth saying out
 /// loud rather than installing a hook that can never run.
+/// A path with no spaces in it, when the filesystem keeps a second, shorter
+/// name for the same file. Nothing here does, so there is nothing to offer.
+#[cfg(not(windows))]
+fn spaceless(_path: &PathBuf) -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
 fn spaceless(path: &PathBuf) -> Option<String> {
     let long = path.display().to_string();
     if !long.contains(' ') {

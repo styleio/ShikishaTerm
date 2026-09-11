@@ -34,7 +34,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
+#[cfg(windows)]
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
 /// Environment variable names handed to a tab's child process.
@@ -164,10 +166,7 @@ impl ApiServer {
             let _ = std::fs::remove_file(crate::config::state_path(TOKEN_FILE));
             return Ok(None);
         }
-        let server = Self::listen(
-            format!(r"\\.\pipe\shikisha-{}", std::process::id()),
-            Arc::clone(tokens()),
-        )?;
+        let server = Self::listen(door_path(), Arc::clone(tokens()))?;
 
         if access == Access::User {
             // Rotated every launch. The folder beside the exe may well sit
@@ -197,6 +196,7 @@ impl ApiServer {
     /// Open the pipe and start accepting. Split out from `start` so a test can
     /// run one under a name and a key set of its own — the production name is
     /// the process id, and two servers can no more share that than two apps could
+    #[cfg(windows)]
     fn listen(path: String, tokens: Tokens) -> anyhow::Result<Self> {
         // Refused rather than fallen back on: no API is a better outcome than
         // one with no access list
@@ -270,6 +270,67 @@ impl ApiServer {
     }
 }
 
+
+/// Where the door is.
+///
+/// A pipe on Windows lives in the system's own namespace; a socket here is a
+/// file, and is put beside the rest of this layout's state so that two copies
+/// on one machine cannot collide and neither leaves anything in /tmp.
+fn door_path() -> String {
+    #[cfg(windows)]
+    {
+        format!(r"\\.\pipe\shikisha-{}", std::process::id())
+    }
+    #[cfg(unix)]
+    {
+        crate::config::state_path(&format!("api-{}.sock", std::process::id()))
+            .display()
+            .to_string()
+    }
+}
+
+#[cfg(unix)]
+impl ApiServer {
+    /// Open the socket and start accepting.
+    ///
+    /// The access list is the file's own permissions: `0600` is this account
+    /// and nobody else, which is what the Windows descriptor spells out the
+    /// long way. Refused rather than fallen back on, for the same reason --
+    /// no API is a better outcome than one anybody can reach.
+    fn listen(path: String, tokens: Tokens) -> anyhow::Result<Self> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // A socket left by a copy that died: the path carries our own process
+        // id, so anything here is ours and stale
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+
+        let (tx, rx) = channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let accept = {
+            let (tokens, stop) = (Arc::clone(&tokens), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                // Announced once: a person should be able to tell from the log
+                // that something outside this window is driving it
+                let announced = Arc::new(AtomicBool::new(false));
+                for conn in listener.incoming() {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let Ok(conn) = conn else { continue };
+                    let Ok(out) = conn.try_clone() else { continue };
+                    let (tokens, tx, announced) =
+                        (Arc::clone(&tokens), tx.clone(), Arc::clone(&announced));
+                    std::thread::spawn(move || serve(conn, out, tokens, tx, announced));
+                }
+            })
+        };
+        Ok(ApiServer { path, rx, stop, tokens, accept: Some(accept) })
+    }
+}
+
+#[cfg(windows)]
 fn accept_loop(
     path: &str,
     sd: SecurityDescriptor,
@@ -302,18 +363,25 @@ fn accept_loop(
         if stop.load(Ordering::SeqCst) || !connected {
             continue;
         }
+        let Some(out) = pipe.try_clone() else { continue };
         let (tokens, tx, announced) = (Arc::clone(&tokens), tx.clone(), Arc::clone(&announced));
-        std::thread::spawn(move || serve(pipe, tokens, tx, announced));
+        std::thread::spawn(move || serve(pipe, out, tokens, tx, announced));
     }
 }
 
 /// One connection: a handshake line, then a call per line until it hangs up
-fn serve(pipe: PipeStream, tokens: Tokens, tx: Sender<ApiCall>, announced: Arc<AtomicBool>) {
-    let mut out = match pipe.try_clone() {
-        Some(w) => w,
-        None => return,
-    };
-    let mut lines = BufReader::new(pipe).lines();
+/// One connection: a handshake line, then a call per line until it hangs up.
+///
+/// Written once for both doors. What arrives is a reader and a writer; whether
+/// they are two ends of a pipe or of a socket is not this function's business.
+fn serve<R: Read + Send + 'static, W: Write>(
+    conn: R,
+    mut out: W,
+    tokens: Tokens,
+    tx: Sender<ApiCall>,
+    announced: Arc<AtomicBool>,
+) {
+    let mut lines = BufReader::new(conn).lines();
 
     let hello = match lines.next() {
         Some(Ok(l)) => l,
@@ -396,12 +464,15 @@ fn error_line(id: &serde_json::Value, msg: &str) -> String {
 ///
 /// Built from SDDL — `D:P` is a DACL that inherits nothing, `GA` is full
 /// access, and the only entry is the SID we are running under
+#[cfg(windows)]
 struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
 
 // The descriptor is a plain allocation handed to CreateNamedPipeW; moving it to
 // the accept thread is what it is for
+#[cfg(windows)]
 unsafe impl Send for SecurityDescriptor {}
 
+#[cfg(windows)]
 impl SecurityDescriptor {
     fn only_me() -> Option<Self> {
         use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
@@ -428,6 +499,7 @@ impl SecurityDescriptor {
     }
 }
 
+#[cfg(windows)]
 impl Drop for SecurityDescriptor {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -437,6 +509,7 @@ impl Drop for SecurityDescriptor {
 }
 
 /// The account this process is running as, as a SID string (`S-1-5-21-…`)
+#[cfg(windows)]
 fn current_user_sid() -> Option<String> {
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
@@ -471,11 +544,14 @@ fn current_user_sid() -> Option<String> {
 }
 
 /// One end of a connected pipe, as something `Read`/`Write` can be used on
+#[cfg(windows)]
 struct PipeStream(HANDLE);
 
 // A handle is just a number; the thread that serves the connection owns it
+#[cfg(windows)]
 unsafe impl Send for PipeStream {}
 
+#[cfg(windows)]
 impl PipeStream {
     fn create(path: &str, sd: &SecurityDescriptor, first: bool) -> Option<Self> {
         use windows_sys::Win32::Storage::FileSystem::{
@@ -512,6 +588,7 @@ impl PipeStream {
     }
 }
 
+#[cfg(windows)]
 impl Read for PipeStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, GetLastError};
@@ -538,6 +615,7 @@ impl Read for PipeStream {
     }
 }
 
+#[cfg(windows)]
 impl Drop for PipeStream {
     fn drop(&mut self) {
         use windows_sys::Win32::Storage::FileSystem::FlushFileBuffers;
@@ -551,10 +629,14 @@ impl Drop for PipeStream {
 }
 
 /// The writing half. Borrows the handle the reader owns and closes nothing
+#[cfg(windows)]
+#[cfg(windows)]
 struct PipeWriter(HANDLE);
 
+#[cfg(windows)]
 unsafe impl Send for PipeWriter {}
 
+#[cfg(windows)]
 impl Write for PipeWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         use windows_sys::Win32::Foundation::GetLastError;
@@ -585,15 +667,25 @@ impl Write for PipeWriter {
 ///
 /// The app is its own first caller: hook mode (`--hook session`) runs as a
 /// child of an AI CLI and reports back through this
+/// The caller's end of the door. A pipe opens like a file; a socket does not,
+/// so the way in is the one thing that differs between the two
+#[cfg(windows)]
+type Conn = std::fs::File;
+#[cfg(unix)]
+type Conn = std::os::unix::net::UnixStream;
+
 pub struct ApiClient {
-    file: std::fs::File,
-    reader: BufReader<std::fs::File>,
+    file: Conn,
+    reader: BufReader<Conn>,
     next: u64,
 }
 
 impl ApiClient {
     pub fn connect(path: &str, token: &str) -> std::io::Result<Self> {
+        #[cfg(windows)]
         let file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+        #[cfg(unix)]
+        let file = std::os::unix::net::UnixStream::connect(path)?;
         let reader = BufReader::new(file.try_clone()?);
         let mut c = Self {
             file,
@@ -638,7 +730,15 @@ mod tests {
     fn served(answer: impl Fn(ApiCall) + Send + 'static) -> ApiServer {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
+        #[cfg(windows)]
         let path = format!(r"\\.\pipe\shikisha-test-{}-{n}", std::process::id());
+        // Somewhere a socket can actually live: a working directory on a
+        // mounted Windows disk cannot hold one
+        #[cfg(unix)]
+        let path = std::env::temp_dir()
+            .join(format!("shikisha-test-{}-{n}.sock", std::process::id()))
+            .display()
+            .to_string();
         let mut server = ApiServer::listen(path, Tokens::default()).unwrap();
         let rx = std::mem::replace(&mut server.rx, channel().1);
         std::thread::spawn(move || {

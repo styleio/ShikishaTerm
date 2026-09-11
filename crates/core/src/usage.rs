@@ -136,6 +136,43 @@ impl Meter {
 /// A process we cannot open — one that ended between listing and asking, or
 /// one owned by another account — reads as nothing rather than as an error:
 /// the tree it belonged to still has an honest total from the rest
+/// The same two numbers, read where Linux keeps them.
+///
+/// `/proc/<pid>/stat` counts processor time in clock ticks and
+/// `/proc/<pid>/statm` counts resident memory in pages, so both are converted
+/// to the units the Windows call answers in: 100ns, and bytes. A process that
+/// ended between listing and asking leaves no file, and reads as nothing.
+#[cfg(not(windows))]
+fn read(pid: u32) -> (u64, u64) {
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64;
+
+    // `stat` is space-separated, but the second field is the program's own name
+    // in brackets and may contain spaces of its own -- so the fields are counted
+    // from the closing bracket, not from the start
+    let cpu = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|s| {
+            let rest = &s[s.rfind(')')? + 1..];
+            let f: Vec<&str> = rest.split_whitespace().collect();
+            // utime and stime are fields 14 and 15 of the whole line, which is
+            // 12 and 13 of what follows the name
+            let user: u64 = f.get(11)?.parse().ok()?;
+            let sys: u64 = f.get(12)?.parse().ok()?;
+            Some((user + sys) * 10_000_000 / hz)
+        })
+        .unwrap_or(0);
+
+    let mem = std::fs::read_to_string(format!("/proc/{pid}/statm"))
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .map(|pages| pages * page)
+        .unwrap_or(0);
+
+    (cpu, mem)
+}
+
+#[cfg(windows)]
 fn read(pid: u32) -> (u64, u64) {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
     use windows_sys::Win32::System::ProcessStatus::{
@@ -166,10 +203,12 @@ fn read(pid: u32) -> (u64, u64) {
     }
 }
 
+#[cfg(windows)]
 fn blank() -> windows_sys::Win32::Foundation::FILETIME {
     windows_sys::Win32::Foundation::FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 }
 }
 
+#[cfg(windows)]
 fn ticks(ft: &windows_sys::Win32::Foundation::FILETIME) -> u64 {
     ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64
 }

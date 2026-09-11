@@ -29,6 +29,22 @@ tiny_http = "0.12.0"
 unicode-width = "0.2.2"
 ureq = { version = "3.3.0", default-features = false, features = ["rustls", "json"] }
 vt100 = "0.16"
+
+
+zeroize = "1.9.0"
+zip = { version = "5", default-features = false, features = ["deflate"] }
+russh = { version = "0.63.2", default-features = false, features = ["ring"] }
+russh-sftp = "3.0.0"
+tokio = { version = "1.53.1", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+
+# What only exists away from Windows: the C library every unix has, for the
+# handful of questions std does not answer (the local clock, process groups).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# What only exists on Windows. Everything above this line builds anywhere,
+# which is the whole point of the runtime being its own crate.
+[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
 windows = { version = "0.61.3", features = [
   "Win32_Foundation",
@@ -46,8 +62,3 @@ windows = { version = "0.61.3", features = [
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_WindowsAndMessaging",
 ] }
-zeroize = "1.9.0"
-zip = { version = "5", default-features = false, features = ["deflate"] }
-russh = { version = "0.63.2", default-features = false, features = ["ring"] }
-russh-sftp = "3.0.0"
-tokio = { version = "1.53.1", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros"] }

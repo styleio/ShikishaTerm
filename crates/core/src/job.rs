@@ -16,16 +16,78 @@
 //! includes the tab being restarted, and includes this program crashing.
 //! Nothing has to remember to tidy up, which is the whole point.
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 
+// ── Where unix keeps the same promise ──────────────────────────────────────
+//
+// There is no job object here. What there is, and what does the same work, is
+// the process group: a child put in its own group can be ended as a group, and
+// the grandchildren it started are in that group unless one of them deliberately
+// leaves it. That last part is the honest difference -- a job object holds even
+// those -- and it is the same limit the Windows version falls back to when a
+// job cannot be made.
+
+#[cfg(unix)]
+pub struct Job {
+    /// The group everything this tab started belongs to. `None` until the
+    /// first process is taken
+    group: std::sync::Mutex<Option<i32>>,
+}
+
+#[cfg(unix)]
+impl Job {
+    /// A group to put a tab's processes in. Nothing can fail here yet: the
+    /// group is the first process's own id, learned when it is taken
+    pub fn new() -> Option<Job> {
+        Some(Job { group: std::sync::Mutex::new(None) })
+    }
+
+    /// Put a process, and everything it goes on to start, into this group.
+    ///
+    /// False when it could not be done -- most likely because the process had
+    /// already finished, which needs no answer from us.
+    pub fn take(&self, pid: u32) -> bool {
+        // SAFETY: both arguments are plain numbers; the call fails rather than
+        // misbehaving when the process is gone or already leads its own group
+        let made = unsafe { libc::setpgid(pid as i32, pid as i32) } == 0;
+        // A process that already leads a group (a pty child does) is exactly
+        // where we want it, so that counts as taken
+        let leads = unsafe { libc::getpgid(pid as i32) } == pid as i32;
+        if made || leads {
+            *self.group.lock().unwrap_or_else(|e| e.into_inner()) = Some(pid as i32);
+            return true;
+        }
+        false
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Job {
+    /// Ending the group is what ends the processes. As on Windows there is no
+    /// separate "kill" step to forget.
+    fn drop(&mut self) {
+        if let Some(g) = *self.group.lock().unwrap_or_else(|e| e.into_inner()) {
+            // SAFETY: a group id and a signal number. An already-gone group
+            // answers ESRCH, which is nothing to do
+            unsafe { libc::killpg(g, libc::SIGKILL) };
+        }
+    }
+}
+
+#[cfg(windows)]
 /// A job object with kill-on-close set, holding a tab's processes.
+#[cfg(windows)]
 pub struct Job(HANDLE);
 
 // The handle is only ever closed by Drop, and the type hands out no way to
 // duplicate it. Moving one between threads is moving one owner.
+#[cfg(windows)]
 unsafe impl Send for Job {}
+#[cfg(windows)]
 unsafe impl Sync for Job {}
 
+#[cfg(windows)]
 impl Job {
     /// A new job whose members die when the last handle to it goes.
     ///
@@ -80,6 +142,7 @@ impl Job {
     }
 }
 
+#[cfg(windows)]
 impl Drop for Job {
     /// Closing the last handle is what ends the processes. There is no separate
     /// "kill" step, and there must not be: a step somebody can forget is a step
@@ -89,7 +152,7 @@ impl Drop for Job {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

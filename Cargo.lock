@@ -3644,6 +3644,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "encoding_rs",
  "hkdf",
+ "libc",
  "mlua",
  "p256",
  "portable-pty",

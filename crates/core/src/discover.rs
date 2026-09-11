@@ -124,6 +124,14 @@ pub fn is_wsl_distro(name: &str) -> bool {
 /// bytes rather than going through the console API writes Shift_JIS. That is
 /// the one case where a terminal can say something more useful than "those
 /// characters are wrong": it can name the encoding to switch to.
+#[cfg(not(windows))]
+pub fn legacy_console_encoding() -> Option<(&'static str, u32)> {
+    // A terminal here speaks UTF-8, and when it does not, the machine's own
+    // locale says so -- there is no second answer for us to offer
+    None
+}
+
+#[cfg(windows)]
 pub fn legacy_console_encoding() -> Option<(&'static str, u32)> {
     let cp = unsafe { windows_sys::Win32::Globalization::GetOEMCP() };
     let ansi = unsafe { windows_sys::Win32::Globalization::GetACP() };

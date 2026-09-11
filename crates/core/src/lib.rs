@@ -14,6 +14,9 @@ pub mod bridge;
 pub mod browserstate;
 pub mod caps;
 pub mod config;
+/// Windows's own pseudo console, and the copy of it we ship beside the exe.
+/// A unix pty needs no such thing, so the module is not built there
+#[cfg(windows)]
 pub mod conpty;
 pub mod crypto;
 pub mod detect;
@@ -87,10 +90,18 @@ pub fn append_hook_log(msg: &str) {
 ///
 /// Console apps like cmd.exe show a black window if launched quietly.
 /// That would flash briefly every time a browser is opened, so it's suppressed from the start.
+#[cfg(windows)]
 pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
     use std::os::windows::process::CommandExt as _;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
+/// Nothing to suppress: a process started here has no console of its own to
+/// flash, which is the whole of what the Windows version is for.
+#[cfg(not(windows))]
+pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    cmd
 }
 
 pub fn random_hex(bytes: usize) -> String {

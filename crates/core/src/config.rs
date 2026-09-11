@@ -2971,6 +2971,13 @@ pub fn exe_dir() -> std::path::PathBuf {
 /// process has none. Asking only for the length -- with nowhere to put the name
 /// -- is the cheapest way to put the question, and the "buffer too small" answer
 /// that comes back is itself a yes.
+#[cfg(not(windows))]
+pub fn packaged() -> bool {
+    // There is no Store to be installed from here
+    false
+}
+
+#[cfg(windows)]
 pub fn packaged() -> bool {
     const APPMODEL_ERROR_NO_PACKAGE: u32 = 15700;
     let mut len: u32 = 0;

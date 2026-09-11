@@ -759,6 +759,29 @@ impl portable_pty::MasterPty for SshPty {
         }
         Ok(Box::new(ShellWriter { id: self.id }))
     }
+
+    /// Three questions a unix caller may ask of a local pty, none of which has
+    /// an answer for a terminal on another machine.
+    ///
+    /// There is no descriptor here -- the bytes arrive over a network
+    /// connection, not through a device -- and the far end's process group is
+    /// the far end's business. Saying so is the honest answer; inventing a
+    /// number would have something try to signal a process on this machine that
+    /// happens to share it.
+    #[cfg(unix)]
+    fn process_group_leader(&self) -> Option<i32> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn as_raw_fd(&self) -> Option<std::os::fd::RawFd> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn tty_name(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 impl std::fmt::Debug for ShellReader {

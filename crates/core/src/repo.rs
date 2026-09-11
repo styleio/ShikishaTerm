@@ -338,9 +338,115 @@ pub(crate) fn descendants(root: u32, children: &HashMap<u32, Vec<u32>>) -> Vec<u
 
 // ── The two things only the operating system knows ────────────────
 
-use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
+// Linux keeps both in /proc. The process tree is one line per process, and the
+// listening sockets are one table per family, tying a port to the inode of the
+// socket -- which is what turns up again in the file descriptors of whoever
+// holds it. So the port is found by matching inodes, which is the same walk
+// `ss -ltnp` does.
 
 /// Parent to children, for every process on the machine.
+#[cfg(unix)]
+pub(crate) fn child_map() -> HashMap<u32, Vec<u32>> {
+    let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
+    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
+    for e in rd.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        // `PPid:` in the status file, rather than `stat`, because a program's
+        // own name can contain anything at all -- including the spaces and
+        // brackets that make `stat` ambiguous
+        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+            continue;
+        };
+        let parent = status
+            .lines()
+            .find_map(|l| l.strip_prefix("PPid:"))
+            .and_then(|v| v.trim().parse::<u32>().ok());
+        if let Some(parent) = parent {
+            out.entry(parent).or_default().push(pid);
+        }
+    }
+    out
+}
+
+/// Which inode each process holds a socket for.
+#[cfg(unix)]
+fn socket_inodes() -> HashMap<u64, u32> {
+    let mut out = HashMap::new();
+    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
+    for e in rd.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        // A process owned by somebody else refuses this, which is the same
+        // answer Windows gives for a process it will not open: nothing
+        let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else { continue };
+        for fd in fds.flatten() {
+            let Ok(target) = std::fs::read_link(fd.path()) else { continue };
+            let Some(inode) = target
+                .to_str()
+                .and_then(|t| t.strip_prefix("socket:["))
+                .and_then(|t| t.strip_suffix(']'))
+                .and_then(|t| t.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            out.insert(inode, pid);
+        }
+    }
+    out
+}
+
+/// The listening sockets of one address family, as (process, port).
+///
+/// `family` is the same constant the Windows call takes, so the caller does not
+/// have to know which system it is on: 2 is IPv4 and 23 is IPv6.
+#[cfg(unix)]
+fn listening_on(family: u16) -> Vec<(u32, u16)> {
+    // 0A is TCP_LISTEN. Anything else in that column is a connection, not
+    // something waiting to be connected to
+    const LISTEN: &str = "0A";
+    let path = match family {
+        23 => "/proc/net/tcp6",
+        _ => "/proc/net/tcp",
+    };
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let owners = socket_inodes();
+    let mut out = Vec::new();
+    for line in text.lines().skip(1) {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        // The first column is the row's own number, not an address: the local
+        // address is the one after it
+        let (Some(local), Some(state), Some(inode)) = (f.get(1), f.get(3), f.get(9)) else {
+            continue;
+        };
+        if *state != LISTEN {
+            continue;
+        }
+        let Some(port) = local.rsplit(':').next().and_then(|h| u16::from_str_radix(h, 16).ok())
+        else {
+            continue;
+        };
+        let Some(pid) = inode.parse::<u64>().ok().and_then(|i| owners.get(&i)) else {
+            continue;
+        };
+        out.push((*pid, port));
+    }
+    out
+}
+
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
+
+/// The two families the ports are asked for, named the same on both systems.
+#[cfg(unix)]
+const AF_INET: u16 = 2;
+#[cfg(unix)]
+const AF_INET6: u16 = 23;
+
+/// Parent to children, for every process on the machine.
+#[cfg(windows)]
 pub(crate) fn child_map() -> HashMap<u32, Vec<u32>> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -371,6 +477,7 @@ pub(crate) fn child_map() -> HashMap<u32, Vec<u32>> {
 }
 
 /// The listening sockets of one address family, as (process, port).
+#[cfg(windows)]
 fn listening_on(family: u16) -> Vec<(u32, u16)> {
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
@@ -651,11 +758,19 @@ mod tests {
 
     #[test]
     fn this_machine_is_listening_on_something_and_we_can_see_it() {
-        // Not a fixed expectation about which ports: any Windows machine has
-        // listeners, and the point of the test is that the table reads at all
-        // rather than coming back empty because a field moved
+        // A listener of our own, so the test does not depend on what else the
+        // machine happens to be running -- and so it means the same thing on a
+        // system where other accounts' sockets are none of our business
+        let held = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let ours = held.local_addr().expect("addr").port();
+
         let all = listeners();
         assert!(!all.is_empty(), "LISTEN中のポートが1つも読めていない");
+        let mine = std::process::id();
+        assert!(
+            all.get(&mine).is_some_and(|ports| ports.contains(&ours)),
+            "自分で開いたポート {ours} が表に出てこない"
+        );
         for (pid, ports) in &all {
             assert!(*pid > 0 || !ports.is_empty());
             for p in ports {

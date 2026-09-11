@@ -18,18 +18,86 @@
 //! show is a message registered under the same name and posted to every
 //! top-level window; only the window of the copy on this layout knows it.
 
+
+// ── Where unix keeps the same promise ──────────────────────────────────────
+//
+// There is no named mutex here, and no window to post a message to. What there
+// is, and what the claim is made of, is an exclusive lock on a file: the kernel
+// drops it when the process ends however it ends, which is the one property
+// that made a mutex the right answer on Windows.
+
+#[cfg(unix)]
+mod imp {
+    use std::os::fd::AsRawFd;
+
+    /// Held for the life of the process: the open file *is* the claim, and
+    /// letting it go -- deliberately or by dying -- releases it.
+    ///
+    /// `None` is the claim made when the question could not be asked at all
+    pub struct Claim {
+        _file: Option<std::fs::File>,
+    }
+
+    pub enum Standing {
+        /// This is the copy that runs. Keep the claim until the end
+        First(Claim),
+        /// Another copy already runs on this layout
+        Second,
+    }
+
+    /// Says this copy runs on its layout, or learns that one already does.
+    pub fn claim() -> Standing {
+        let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(crate::config::state_path("running.lock"))
+        else {
+            // The filesystem would not say either way. Running is the safer of
+            // the two mistakes: a second copy beats one that will not start
+            return Standing::First(Claim { _file: None });
+        };
+        // SAFETY: the descriptor is ours and stays open for as long as the
+        // claim is meant to hold. `LOCK_NB` so a second copy is told at once
+        // rather than made to wait for the first to end
+        let held = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        match held {
+            true => Standing::First(Claim { _file: Some(file) }),
+            false => Standing::Second,
+        }
+    }
+
+    /// Nothing here has a window to raise, so there is nothing to ask for.
+    pub fn ask_to_show() {}
+
+    /// ...and therefore no message that means it.
+    pub fn is_show_id(_message: u32) -> bool {
+        false
+    }
+}
+
+#[cfg(unix)]
+pub use imp::{Claim, Standing, ask_to_show, claim, is_show_id};
+
+#[cfg(windows)]
 use std::sync::OnceLock;
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::CreateMutexW;
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_BROADCAST, PostMessageW, RegisterWindowMessageW};
 
 /// Held for the life of the process. Dropping it (or dying) lets the next
 /// start be the first again
+#[cfg(windows)]
 pub struct Claim {
     handle: HANDLE,
 }
 
+#[cfg(windows)]
 impl Drop for Claim {
     fn drop(&mut self) {
         unsafe {
@@ -38,6 +106,7 @@ impl Drop for Claim {
     }
 }
 
+#[cfg(windows)]
 pub enum Standing {
     /// This is the copy that runs. Keep the claim until the end
     First(Claim),
@@ -47,6 +116,7 @@ pub enum Standing {
 
 /// What this layout is called in the system's namespace: the root folder,
 /// folded so that `D:\A` and `d:\a\` are the same place
+#[cfg(windows)]
 fn key() -> String {
     let root = crate::config::root_dir()
         .display()
@@ -64,11 +134,13 @@ fn key() -> String {
     format!("{h:016x}")
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// Says this copy runs on its layout, or learns that one already does
+#[cfg(windows)]
 pub fn claim() -> Standing {
     let name = wide(&format!("Local\\SHIKISHA-TERM:{}", key()));
     unsafe {
@@ -87,6 +159,7 @@ pub fn claim() -> Standing {
 }
 
 /// The message that means "show your window", private to this layout
+#[cfg(windows)]
 fn show_message() -> u32 {
     static ID: OnceLock<u32> = OnceLock::new();
     *ID.get_or_init(|| {
@@ -98,6 +171,7 @@ fn show_message() -> u32 {
 /// Asks the copy that runs on this layout to show its window. Posted to
 /// every top-level window, since the other copy's window is not known here;
 /// only that window answers to the name
+#[cfg(windows)]
 pub fn ask_to_show() {
     unsafe {
         PostMessageW(HWND_BROADCAST, show_message(), 0, 0);
@@ -105,11 +179,12 @@ pub fn ask_to_show() {
 }
 
 /// Whether a message reaching the window's procedure is that request
+#[cfg(windows)]
 pub fn is_show_id(message: u32) -> bool {
     message == show_message()
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

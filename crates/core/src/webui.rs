@@ -161,6 +161,15 @@ fn pct(s: &str) -> String {
 /// Uses ShellExecuteW so the whole URL — query string, '&' and percent-escapes
 /// included — is handed to the shell verbatim (explorer.exe mis-parses those
 /// and falls back to opening a file window instead).
+#[cfg(not(windows))]
+pub fn open_external(url: &str) {
+    // `xdg-open` is the agreement on Linux desktops; on a server there is
+    // nothing to open with, and the failure is quiet on purpose -- nobody is
+    // sitting there to be told
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+#[cfg(windows)]
 pub fn open_external(url: &str) {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -1971,13 +1980,26 @@ fn handle(
         // and the download fixes. It is here at all because both ways of
         // falling back to Windows' older one are completely silent
         ("GET", "/api/conpty") => {
-            let r = crate::conpty::report();
-            req.respond(json_resp(serde_json::json!({
-                "bundled": r.bundled,
-                "version": r.version,
-                "path": r.path.display().to_string(),
-                "missing": r.missing.map(|m| m.id()),
-            })))?;
+            #[cfg(windows)]
+            let body = {
+                let r = crate::conpty::report();
+                serde_json::json!({
+                    "bundled": r.bundled,
+                    "version": r.version,
+                    "path": r.path.display().to_string(),
+                    "missing": r.missing.map(|m| m.id()),
+                })
+            };
+            // A unix pty is the system's own and needs nothing shipped beside
+            // the exe, so there is nothing here to report on or to fix
+            #[cfg(not(windows))]
+            let body = serde_json::json!({
+                "bundled": false,
+                "version": "",
+                "path": "",
+                "missing": serde_json::Value::Null,
+            });
+            req.respond(json_resp(body))?;
         }
         // Every action the window has, with the key it answers to right now.
         // The names are the app's own, so the settings screen never has its
