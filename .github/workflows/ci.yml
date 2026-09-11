@@ -64,14 +64,18 @@ jobs:
           cat /tmp/what
           grep -qE "static-pie linked|statically linked" /tmp/what
 
-      # インストーラは POSIX sh で書いてある。bash しか無い機械で試すと、
-      # 通ったのに配った先で落ちる
-      - name: The installer is POSIX sh
+      # 配る側のスクリプトを、それぞれが名乗っている shell で見る。
+      # install.sh は誰の機械の sh に流し込まれるか分からないので POSIX、
+      # mkpkg / mkrepo は CI と手元でしか走らないので bash でよい
+      - name: The scripts are the shell they say they are
         run: |
           sudo apt-get install -y dash shellcheck
           for f in packaging/linux/*.sh; do
-            dash -n "$f"
-            shellcheck --shell=sh "$f"
+            case $(head -1 "$f") in
+              *bash) shellcheck --shell=bash "$f"; bash -n "$f" ;;
+              *)     shellcheck --shell=sh   "$f"; dash -n "$f" ;;
+            esac
+            echo "ok $f"
           done
 
       # リポジトリに入っている公開鍵が、本当にあの鍵か。
@@ -94,3 +98,29 @@ jobs:
           grep -q usr/lib/systemd/user/shikisha.service /tmp/deb.list
           rpm -qpl /tmp/pkg/*.rpm > /tmp/rpm.list 2>/dev/null
           grep -q /usr/bin/shikisha-serve /tmp/rpm.list
+
+      # リポジトリの木。鍵はここには無いので署名は付かないが、
+      # 「どのファイルが、どこに、どの名前で出るか」はこれで分かる
+      - name: The repository tree comes out whole
+        run: |
+          sudo apt-get install -y apt-utils createrepo-c
+          bash packaging/linux/mkrepo.sh /tmp/pkg /tmp/repo
+          # binary-arm64/Packages is empty here and that is correct: CI builds
+          # one architecture. It still has to exist -- apt asks for every
+          # architecture the Release names, and a missing one is an error
+          for f in apt/dists/stable/Release \
+                   apt/dists/stable/main/binary-amd64/Packages \
+                   apt/dists/stable/main/binary-arm64/Packages \
+                   rpm/repodata/repomd.xml \
+                   shikisha-archive-key.asc \
+                   index.html; do
+            test -f "/tmp/repo/$f" || { echo "missing: $f"; exit 1; }
+          done
+          test -s /tmp/repo/apt/dists/stable/main/binary-amd64/Packages
+          # Packages が指すファイルが本当にそこにあるか。ここがずれると
+          # apt は「ある」と言われたものを取りに行って 404 を踏む
+          awk '/^Filename:/ {print $2}' /tmp/repo/apt/dists/stable/main/binary-amd64/Packages |
+            while read -r rel; do
+              test -s "/tmp/repo/apt/$rel" || { echo "Packages names a file that is not there: $rel"; exit 1; }
+              echo "  points at $rel"
+            done

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHIKISHA-TERM package repository</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --ink: #1a1a1a; --dim: #5c5c5c; --ground: #fbfaf8;
+    --panel: #f2efea; --edge: #e0dbd3; --accent: #d97757;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e8e6e3; --dim: #a09a92; --ground: #16150f;
+      --panel: #201f18; --edge: #33312a; --accent: #d97757;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 3rem 1.25rem 5rem;
+    background: var(--ground); color: var(--ink);
+    font: 16px/1.7 -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  .lede { color: var(--dim); margin: 0 0 2.5rem; }
+  h2 { font-size: 1rem; margin: 2.5rem 0 .75rem; letter-spacing: .02em; }
+  pre {
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 6px;
+    padding: .9rem 1rem; overflow-x: auto;
+    font: 13px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+  p code { background: var(--panel); padding: .1em .35em; border-radius: 3px; font-size: .9em; }
+  footer { margin-top: 3.5rem; color: var(--dim); font-size: .875rem; }
+  a { color: var(--accent); }
+  .fpr { font: 12px/1.6 ui-monospace, Consolas, monospace; color: var(--dim); word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>SHIKISHA-TERM</h1>
+  <p class="lede">The runtime with no window, for a machine you reach from a browser.</p>
+
+  <h2>Debian / Ubuntu</h2>
+<pre><code>curl -fsSL @BASE@/shikisha-archive-key.asc \
+  | sudo tee /etc/apt/keyrings/shikisha.asc &gt;/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/shikisha.asc] @BASE@/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/shikisha.list
+sudo apt update &amp;&amp; sudo apt install shikisha</code></pre>
+
+  <h2>Fedora / RHEL / openSUSE</h2>
+<pre><code>sudo rpm --import @BASE@/shikisha-archive-key.asc
+sudo tee /etc/yum.repos.d/shikisha.repo &lt;&lt;'REPO'
+[shikisha]
+name=SHIKISHA-TERM
+baseurl=@BASE@/rpm
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=@BASE@/shikisha-archive-key.asc
+REPO
+sudo dnf install shikisha</code></pre>
+
+  <h2>Anywhere else</h2>
+  <p>One static binary, installed into your own home folder. No root, nothing else on the machine touched.</p>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/styleio/ShikishaTerm/main/packaging/linux/install.sh | sh</code></pre>
+
+  <h2>Then</h2>
+  <p>Installing does not start anything. When you want it running:</p>
+<pre><code>systemctl --user enable --now shikisha
+loginctl enable-linger "$USER"   # keep it running after you log out</code></pre>
+  <p>It prints the address to open the board at, and writes it to the log beside its settings.</p>
+
+  <h2>The key</h2>
+  <p>Everything here is signed with <a href="@BASE@/shikisha-archive-key.asc">this key</a>, and both package managers are told to check it.</p>
+  <p class="fpr">A73A FDB4 C9AD A2AB 390C&nbsp; 470A D960 246D C636 013B</p>
+
+  <footer>
+    <a href="https://shikisha-term.com">shikisha-term.com</a> &middot;
+    <a href="https://github.com/styleio/ShikishaTerm">source</a> &middot;
+    <a href="https://github.com/styleio/ShikishaTerm/releases">releases</a>
+  </footer>
+</main>
+</body>
+</html>
