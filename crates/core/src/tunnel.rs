@@ -312,6 +312,355 @@ fn reach(addr: &str) -> Option<TcpStream> {
     None
 }
 
+// ── the other end ─────────────────────────────────────────────────────────
+//
+// A browser cannot be told "send everything through that program". It can be
+// told "send everything to that proxy", which every browser has understood
+// for thirty years, and which needs nothing of the browser at all. So this is
+// a proxy: a door on the loopback that a browser is pointed at, and which
+// carries what it hears to the machine at the other end of the line.
+
+/// A way on to the network of the machine at the other end of the line.
+///
+/// Pointed at by a browser (`--proxy-server=http://127.0.0.1:<port>`), and
+/// good for as long as it is held. Dropping it takes down the line and
+/// everything on it.
+pub struct Proxy {
+    port: u16,
+    stop: Arc<AtomicBool>,
+    /// The line out. Held so the frames of one connection cannot interleave
+    /// with another's halfway through
+    up: Arc<Mutex<std::net::TcpStream>>,
+    /// The browser's connections, by the number they were given
+    here: Arc<Mutex<HashMap<u32, std::net::TcpStream>>>,
+    next: Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl Proxy {
+    /// Open the line and start listening for a browser.
+    ///
+    /// `base` is where the board is served from, and the key and cookie are
+    /// the ones this client was let in with: the way out is a door in the same
+    /// house, behind the same lock.
+    pub fn start(base: &str, token: &str, cookie: &str) -> anyhow::Result<Self> {
+        let name = crate::random_hex(10);
+        // This one first: the line carrying what that machine says is the one
+        // the other half looks for
+        let down = handshake(base, &format!("/ws-tunnel?p={name}&t={token}"), cookie)?;
+        let up = handshake(base, &format!("/ws-tunnel-in?p={name}&t={token}"), cookie)?;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+
+        let proxy = Self {
+            port,
+            stop: Arc::new(AtomicBool::new(false)),
+            up: Arc::new(Mutex::new(up)),
+            here: Arc::new(Mutex::new(HashMap::new())),
+            next: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+        };
+        proxy.hear(down);
+        proxy.answer(listener);
+        Ok(proxy)
+    }
+
+    /// Where to tell a browser to send everything.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// What the far machine says, given back to whichever connection asked.
+    fn hear(&self, mut down: std::net::TcpStream) {
+        let here = Arc::clone(&self.here);
+        let stop = Arc::clone(&self.stop);
+        std::thread::Builder::new()
+            .name("shikisha-tunnel-down".into())
+            .spawn(move || {
+                let mut whole = Vec::new();
+                loop {
+                    let Some((fin, opcode, payload)) = crate::ws::read_server_frame(&mut down)
+                    else {
+                        break;
+                    };
+                    match opcode {
+                        // continuation, text, binary
+                        0x0 | 0x1 | 0x2 => {
+                            whole.extend_from_slice(&payload);
+                            if !fin {
+                                continue;
+                            }
+                            let message = std::mem::take(&mut whole);
+                            let Some((id, kind, bytes)) = unframe(&message) else { continue };
+                            let mut held = here.lock().unwrap_or_else(|e| e.into_inner());
+                            match kind {
+                                Kind::Data => {
+                                    let gone = held.get_mut(&id).is_some_and(|sock| {
+                                        sock.write_all(bytes).and_then(|()| sock.flush()).is_err()
+                                    });
+                                    if gone {
+                                        held.remove(&id);
+                                    }
+                                }
+                                // The far side hung up, or could not reach
+                                // anywhere. Both are the same news here
+                                Kind::Close | Kind::Open => {
+                                    if let Some(sock) = held.remove(&id) {
+                                        let _ = sock.shutdown(std::net::Shutdown::Both);
+                                    }
+                                }
+                            }
+                        }
+                        0x8 => break, // close
+                        _ => {}       // ping/pong
+                    }
+                }
+                stop.store(true, Ordering::Relaxed);
+                for (_, sock) in here.lock().unwrap_or_else(|e| e.into_inner()).drain() {
+                    let _ = sock.shutdown(std::net::Shutdown::Both);
+                }
+            })
+            .ok();
+    }
+
+    /// Take what the browser asks for, one connection at a time.
+    fn answer(&self, listener: std::net::TcpListener) {
+        let stop = Arc::clone(&self.stop);
+        let here = Arc::clone(&self.here);
+        let up = Arc::clone(&self.up);
+        let next = Arc::clone(&self.next);
+        std::thread::Builder::new()
+            .name("shikisha-proxy".into())
+            .spawn(move || {
+                for sock in listener.incoming() {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let Ok(sock) = sock else { continue };
+                    let (stop, here, up, next) = (
+                        Arc::clone(&stop),
+                        Arc::clone(&here),
+                        Arc::clone(&up),
+                        Arc::clone(&next),
+                    );
+                    std::thread::spawn(move || {
+                        carry_one(&sock, &stop, &here, &up, &next);
+                    });
+                }
+            })
+            .ok();
+    }
+}
+
+impl Drop for Proxy {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        // Waking the listener: it is inside `accept`, and the only thing that
+        // brings it back is somebody knocking
+        let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+        let _ = self.up.lock().map(|s| s.shutdown(std::net::Shutdown::Both));
+        for (_, sock) in self.here.lock().unwrap_or_else(|e| e.into_inner()).drain() {
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+/// One connection a browser made, from its first line to its last byte.
+fn carry_one(
+    sock: &std::net::TcpStream,
+    stop: &Arc<AtomicBool>,
+    here: &Arc<Mutex<HashMap<u32, std::net::TcpStream>>>,
+    up: &Arc<Mutex<std::net::TcpStream>>,
+    next: &Arc<std::sync::atomic::AtomicU32>,
+) {
+    let Ok(mut reading) = sock.try_clone() else { return };
+    let Some((head, rest)) = read_head(&mut reading) else { return };
+    let Some(asked) = Asked::read(&head) else {
+        let _ = (&*sock).write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
+        return;
+    };
+
+    let id = next.fetch_add(1, Ordering::Relaxed);
+    let Ok(mine) = sock.try_clone() else { return };
+    here.lock().unwrap_or_else(|e| e.into_inner()).insert(id, mine);
+
+    let say = |kind: Kind, payload: &[u8]| -> bool {
+        let framed = crate::ws::client_encode(crate::ws::Op::Binary, &frame(id, kind, payload));
+        let mut line = up.lock().unwrap_or_else(|e| e.into_inner());
+        line.write_all(&framed).and_then(|()| line.flush()).is_ok()
+    };
+
+    if !say(Kind::Open, asked.to.as_bytes()) {
+        return;
+    }
+    match asked.tunnelled {
+        // A browser waits to be told the way is open before it starts
+        true => {
+            if (&*sock)
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .is_err()
+            {
+                return;
+            }
+        }
+        // ...and for an ordinary http request, the request itself is the
+        // first thing to send, with the address put back the way a server
+        // expects to see it
+        false => {
+            if !say(Kind::Data, asked.head.as_bytes()) {
+                return;
+            }
+        }
+    }
+    // Anything the browser had already said past the head it was waiting on
+    if !rest.is_empty() && !say(Kind::Data, &rest) {
+        return;
+    }
+
+    // And from here it is bytes, until there are none
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        match reading.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if stop.load(Ordering::Relaxed) || !say(Kind::Data, &buf[..n]) {
+                    break;
+                }
+            }
+        }
+    }
+    here.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    say(Kind::Close, &[]);
+}
+
+/// What a browser asked this proxy for.
+struct Asked {
+    /// Where it wants to reach, as `host:port`
+    to: String,
+    /// Whether it asked for a way through rather than for a page. `CONNECT` is
+    /// what a browser sends for anything encrypted, which is nearly everything
+    tunnelled: bool,
+    /// The request to pass on, with the address written the way a server
+    /// expects it. Empty for a tunnel, which carries no request of its own
+    head: String,
+}
+
+impl Asked {
+    fn read(head: &str) -> Option<Self> {
+        let line = head.lines().next()?;
+        let mut parts = line.split(' ');
+        let method = parts.next()?;
+        let target = parts.next()?;
+        if method.eq_ignore_ascii_case("CONNECT") {
+            return with_port(target, 443).map(|to| Self { to, tunnelled: true, head: String::new() });
+        }
+        // Absolute form -- `GET http://host/path HTTP/1.1` -- which is what a
+        // browser sends to a proxy for anything not encrypted. A server will
+        // not answer that, so the address goes back to being a path
+        let rest = target.strip_prefix("http://")?;
+        let (host, path) = rest.split_once('/').map_or((rest, String::new()), |(h, p)| (h, format!("/{p}")));
+        let to = with_port(host, 80)?;
+        let path = if path.is_empty() { "/".to_string() } else { path };
+        let version = parts.next().unwrap_or("HTTP/1.1");
+        let after = head.split_once("\r\n").map_or("", |(_, r)| r);
+        Some(Self {
+            to,
+            tunnelled: false,
+            head: format!("{method} {path} {version}\r\n{after}"),
+        })
+    }
+}
+
+/// `host:port`, with the port filled in when the address left it out.
+///
+/// A bare name would leave the far side guessing, and a guess about which port
+/// is how a request for an encrypted page goes out in the clear.
+fn with_port(host: &str, fallback: u16) -> Option<String> {
+    if host.is_empty() {
+        return None;
+    }
+    // A bracketed address is IPv6, whose colons are its own
+    let has_port = match host.rfind(']') {
+        Some(at) => host[at..].contains(':'),
+        None => host.matches(':').count() == 1,
+    };
+    match has_port {
+        true => Some(host.to_string()),
+        false => Some(format!("{host}:{fallback}")),
+    }
+}
+
+/// Everything up to the blank line, and whatever came after it in the same
+/// breath.
+fn read_head(sock: &mut std::net::TcpStream) -> Option<(String, Vec<u8>)> {
+    let mut seen = Vec::new();
+    let mut one = [0u8; 1];
+    while seen.len() < 64 * 1024 {
+        match sock.read(&mut one) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => seen.push(one[0]),
+        }
+        if seen.ends_with(b"\r\n\r\n") {
+            return Some((String::from_utf8_lossy(&seen).to_string(), Vec::new()));
+        }
+    }
+    None
+}
+
+/// Open a WebSocket to the board, by hand.
+///
+/// The answer's key is not checked. What that check proves is that the far
+/// side speaks WebSocket rather than being a cache that echoed the request,
+/// and the far side here has already been let in through a lock
+fn handshake(base: &str, path: &str, cookie: &str) -> anyhow::Result<std::net::TcpStream> {
+    let host = base
+        .trim_end_matches('/')
+        .strip_prefix("http://")
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.tunnel.plain_only", &[("base", base)])))?;
+    let sock = std::net::TcpStream::connect(host)?;
+    sock.set_nodelay(true)?;
+    let key = {
+        use base64::Engine as _;
+        let bytes = crate::random_bytes(16).unwrap_or_else(|| vec![0; 16]);
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    };
+    let carried = match cookie.is_empty() {
+        true => String::new(),
+        false => format!("Cookie: {cookie}\r\n"),
+    };
+    let mut writing = sock.try_clone()?;
+    write!(
+        writing,
+        "GET {path} HTTP/1.1\r\n\
+         Host: {host}\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         {carried}\
+         Sec-WebSocket-Key: {key}\r\n\
+         Sec-WebSocket-Version: 13\r\n\r\n"
+    )?;
+    writing.flush()?;
+
+    let mut head = Vec::new();
+    let mut one = [0u8; 1];
+    let mut reading = sock.try_clone()?;
+    while head.len() < 8192 {
+        if reading.read(&mut one)? == 0 {
+            anyhow::bail!(crate::i18n::t("err.tunnel.refused"));
+        }
+        head.push(one[0]);
+        if head.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    let said = String::from_utf8_lossy(&head);
+    if !said.starts_with("HTTP/1.1 101") {
+        anyhow::bail!(crate::i18n::tp(
+            "err.tunnel.refused_with",
+            &[("said", said.lines().next().unwrap_or("?"))]
+        ));
+    }
+    Ok(sock)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
