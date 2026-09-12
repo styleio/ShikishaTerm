@@ -576,6 +576,10 @@ pub fn switch_workspace(
         workspaces[to].notify.clone(),
         workspaces[to].primary_notify.clone(),
     );
+    // ...and which model connections its tabs may use. Before the tabs are
+    // launched below, so a tab opening for the first time is held to the same
+    // answer as one that was already running
+    crate::bridge::scope_to(workspaces[to].providers.clone());
     config::save_last_workspace(&workspaces[to].name);
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {

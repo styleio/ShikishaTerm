@@ -239,11 +239,17 @@ pub fn extract_say(s: &str) -> Option<String> {
     })
 }
 
-/// Cache of resolved providers (name -> (base_url, headers)).
+/// Cache of resolved providers (name -> (base_url, headers)), and which of them
+/// the workspace on screen is allowed to use.
+///
 /// Filled in at startup / config reload, when the main binary holds the
-/// password (secret decryption happens only there).
+/// password (secret decryption happens only there). The reach is swapped on a
+/// workspace switch: the connections are registered once for the app, but the
+/// account one of them bills and hands text to belongs to whoever registered
+/// it, so which of them a workspace may use is that workspace's answer
 static PROVIDERS: Mutex<Option<HashMap<String, crate::config::ProviderConn>>> =
     Mutex::new(None);
+static REACH: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
 /// Resolve config's providers and cache them.
 pub fn set_providers(cfg: &crate::config::Config, password: Option<&str>) {
@@ -258,6 +264,43 @@ pub fn set_providers(cfg: &crate::config::Config, password: Option<&str>) {
     }
 }
 
+/// The connections the workspace now on screen may use, or `None` for all of
+/// them. Already the whole answer (see [`crate::config::Workspace::providers`])
+pub fn scope_to(only: Option<Vec<String>>) {
+    if let Ok(mut g) = REACH.lock() {
+        *g = only;
+    }
+}
+
+/// Whether a workspace that said this may use a connection by that name.
+///
+/// The decision itself, with nothing global in it, so that what it decides can
+/// be checked without a test having to reach into the cache every other test
+/// shares
+fn allowed(only: Option<&Vec<String>>, provider: &str) -> bool {
+    only.is_none_or(|list| list.iter().any(|n| n == provider))
+}
+
+/// Whether this workspace may use a connection by that name.
+pub fn reachable(provider: &str) -> bool {
+    let g = REACH.lock().ok();
+    allowed(g.as_ref().and_then(|g| g.as_ref()), provider)
+}
+
+/// The connections usable from the workspace on screen, in name order. What the
+/// screen offers and what a launch accepts are then the same list
+pub fn reaching() -> Vec<String> {
+    let Ok(g) = PROVIDERS.lock() else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = g
+        .as_ref()
+        .map(|m| m.keys().filter(|n| reachable(n)).cloned().collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
 /// If this is `model <provider>/<model>`, return the resolved connection
 /// (None if not found). The model name may itself contain "/" (Ollama
 /// tags), so split on the first "/" only.
@@ -266,6 +309,12 @@ pub fn launch_for(argv: &[String]) -> Option<ModelConn> {
         return None;
     }
     let (provider, model) = argv.get(1)?.trim().split_once('/')?;
+    // Registered for the app, but not for this workspace. Nothing is launched:
+    // the account behind that connection is the other side's, and a tab that
+    // quietly used it would be a bill and a copy of this code in the wrong place
+    if !reachable(provider) {
+        return None;
+    }
     let conn = {
         let g = PROVIDERS.lock().ok()?;
         g.as_ref()?.get(provider)?.clone()
@@ -284,6 +333,22 @@ pub fn launch_for(argv: &[String]) -> Option<ModelConn> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A connection registered for the app is not therefore usable everywhere.
+    ///
+    /// The account behind it is billed for the work and is handed the text, so
+    /// the workspace decides. Before anybody says otherwise, every registered
+    /// connection is usable, which is what a settings file that has never been
+    /// asked the question says
+    #[test]
+    fn a_workspace_uses_only_the_connections_it_was_given() {
+        assert!(allowed(None, "work"), "誰も線を引いていないのに使えない");
+        let only = vec!["work".to_string()];
+        assert!(allowed(Some(&only), "work"));
+        assert!(!allowed(Some(&only), "mine"), "他の環境の接続先が使えてしまう");
+        // A line drawn around nothing is a real answer, not "everything"
+        assert!(!allowed(Some(&Vec::new()), "work"));
+    }
 
     #[test]
     fn endpoint_appends_or_keeps() {
