@@ -516,6 +516,38 @@ pub fn spawn_workspace(
     }
 }
 
+/// Everything that belongs to the workspace now on screen, handed over at once.
+///
+/// Five things are settled per workspace -- where its notifications go, which
+/// model connections it may use, what doors its automation has, who may use
+/// them, and which GitHub account answers for it -- and every one of them has to
+/// change at the same moment as the screen does. In one place because the
+/// failure otherwise is silent and one-sided: the half nobody remembered to
+/// swap keeps answering for the workspace that was on screen a moment ago.
+///
+/// Each value is already the whole answer (see [`config::Config::resolve_workspaces`]);
+/// nothing here decides anything.
+pub fn hand_over(
+    ws: &config::Workspace,
+    caps: &hooks::Caps,
+    notifier: &crate::notify::Notifier,
+    prs: &crate::pr::Watch,
+) {
+    notifier.scope_to(ws.notify.clone(), ws.primary_notify.clone());
+    crate::bridge::scope_to(ws.providers.clone());
+    caps.set_capabilities(ws.capabilities.clone());
+    caps.set_grants(ws.automation_permissions.clone());
+    // A script's `token` means this workspace's, and no other's
+    caps.set_workspace_id(&ws.id);
+    // Which account the pull request numbers are read with: the token this
+    // workspace was given, or the machine's when it was given none. The program
+    // reaches for the value itself here -- a script never sees it
+    prs.use_token(
+        caps.secret_value(&config::workspace_secret_key(&ws.id, config::GITHUB_SECRET))
+            .ok(),
+    );
+}
+
 /// Switches workspaces (virtual-desktop model).
 /// Switching means hiding, not stopping — tabs that go into the background keep running.
 /// An unlaunched workspace gets its first launch right here.
@@ -538,6 +570,7 @@ pub fn switch_workspace(
     engines: &mut [Option<HookEngine>],
     caps: &hooks::Caps,
     notifier: &crate::notify::Notifier,
+    prs: &crate::pr::Watch,
     last: &crate::lastsession::Saved,
 ) {
     // Guard against every backing array, not just `workspaces`: the per-workspace
@@ -565,21 +598,10 @@ pub fn switch_workspace(
     // Ids only mean something within their own workspace.
     // Placed pages also only appear in the tab list for whichever one is currently viewed.
     caps.set_workspace(to);
-    caps.set_workspace_id(&workspaces[to].id);
-    // ...and so does where its notifications land. A message that says a task
-    // finished belongs to the workspace the task was in, not to whichever one
-    // happened to be open when the app started
-    notifier.scope_to(
-        workspaces[to].notify.clone(),
-        workspaces[to].primary_notify.clone(),
-    );
-    // ...and which model connections its tabs may use. Before the tabs are
-    // launched below, so a tab opening for the first time is held to the same
-    // answer as one that was already running
-    crate::bridge::scope_to(workspaces[to].providers.clone());
-    // ...and the doors its automation has outside the terminal, and who may use them
-    caps.set_capabilities(workspaces[to].capabilities.clone());
-    caps.set_grants(workspaces[to].automation_permissions.clone());
+    // Everything that is this workspace's rather than the app's, in one act and
+    // before its tabs are launched below: a tab opening for the first time is
+    // held to the same answers as one that was already running
+    hand_over(&workspaces[to], caps, notifier, prs);
     config::save_last_workspace(&workspaces[to].name);
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {
