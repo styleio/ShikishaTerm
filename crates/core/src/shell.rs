@@ -328,10 +328,25 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      state, the AI and the first of the name. Only past that floor does the
      row scroll -- so a tab going off the edge is the exception rather than
      what happens as soon as the window is not wide */
-  #strip .stab { display:flex; align-items:center; gap:var(--s2); flex:0 1 auto;
-    min-width:72px; max-width:220px; padding:0 var(--s3); cursor:pointer;
+  #strip .stab { display:flex; align-items:center; gap:var(--s1); flex:0 1 auto;
+    min-width:64px; max-width:220px; padding:0 var(--s3); cursor:pointer;
     color:var(--muted);
     border-right:1px solid var(--line); border-bottom:2px solid transparent; }
+  /* No status dot here, and the mark wears the state instead. The dot and the
+     mark were saying two things that belong to one phrase -- "this AI, in this
+     state" -- from two glyphs and a gap, which on a narrow window is 16px per
+     tab spent on a separator. The AI keeps a colour of its own: its name, the
+     way the sidebar has always said it (.tab.aitab .nm) */
+  #strip .stab .aim { color:inherit; }
+  #strip .stab.aitab .nm { color:var(--ai); font-weight:600; }
+  #strip .stab.st-BUSY .aim { color:var(--live); }
+  #strip .stab.st-BACKGROUND .aim { color:var(--live); opacity:.55; }
+  #strip .stab.st-DONE .aim { color:var(--brand); }
+  #strip .stab.st-QUESTION .aim { color:var(--warn); }
+  #strip .stab.st-LIMIT .aim { color:var(--warn); opacity:.55; }
+  #strip .stab.st-FAILED .aim { color:var(--stop); }
+  #strip .stab.st-EXIT .aim { color:var(--stop); opacity:.55; }
+  #strip .stab.st-WAIT .aim { color:var(--dim); }
   #strip .stab:hover { background:var(--hover); }
   #strip .stab.sel { color:var(--text); background:var(--bg);
     border-bottom-color:var(--brand); }
@@ -3286,10 +3301,14 @@ function drawStrip() {
   const tabs = el("div", {class:"stabs"});
   let sel = null;
   for (const t of mine) {
-    const one = el("div", {class:"stab" + (t.index === S.active ? " sel" : ""),
-        title:t.name || "", onclick:() => send({kind:"select", tab:t.index})},
-      el("span", {class:"dot " + t.state}),
-      t.ai ? aiMark(t.ai) : null,
+    // The mark carries the state; the name carries which AI. A tab that is
+    // not an AI has no mark to colour, so it keeps a dot
+    const st = " st-" + (t.state || "");
+    const one = el("div", {class:"stab" + (t.index === S.active ? " sel" : "")
+          + st + (t.ai ? " aitab ai-" + t.ai : ""),
+        title:(t.name || "") + (t.state_label ? " — " + t.state_label : ""),
+        onclick:() => send({kind:"select", tab:t.index})},
+      t.ai ? aiMark(t.ai) : el("span", {class:"dot " + t.state}),
       el("span", {class:"nm"}, t.name || ""));
     if (t.index === S.active) sel = one;
     tabs.append(one);
@@ -10236,8 +10255,8 @@ mod tests {
         );
         // They shrink before they vanish, down to a floor that still says
         // which state, which AI and the start of the name
-        assert!(PAGE.contains("#strip .stab { display:flex; align-items:center; gap:var(--s2); flex:0 1 auto;
-    min-width:72px;"),
+        assert!(PAGE.contains("#strip .stab { display:flex; align-items:center; gap:var(--s1); flex:0 1 auto;
+    min-width:64px;"),
                 "タブが縮まずに溢れる");
         // ...and switching to one that is out of sight brings it into sight
         assert!(PAGE.contains("if (sel && stripSel !== S.active) {"), "選んだタブが見えない場所のまま");
