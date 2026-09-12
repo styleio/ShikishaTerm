@@ -69,6 +69,16 @@ impl Plan {
 ///
 /// `base` is what a new branch grows from; leave it out for the sensible one.
 pub fn plan(main: &Path, branch: &str, base: Option<&str>) -> Result<Plan> {
+    plan_into(main, branch, base, None)
+}
+
+/// The same, put somewhere of somebody's choosing.
+///
+/// `at` empty means the place this app would pick. A person who says otherwise
+/// is taken at their word and not corrected -- the path is on screen, and the
+/// only thing that would be gained by overruling them is being wrong somewhere
+/// they cannot see.
+pub fn plan_into(main: &Path, branch: &str, base: Option<&str>, at: Option<&Path>) -> Result<Plan> {
     let branch = branch.trim().to_string();
     if branch.is_empty() {
         bail!(crate::i18n::t("err.worktree.no_branch"));
@@ -83,7 +93,10 @@ pub fn plan(main: &Path, branch: &str, base: Option<&str>) -> Result<Plan> {
         Some(b) => b.to_string(),
         None => default_base(&main),
     };
-    let folder = folder_for(&main, &branch);
+    let folder = match at.filter(|p| !p.as_os_str().is_empty()) {
+        Some(p) => p.to_path_buf(),
+        None => folder_for(&main, &branch),
+    };
     // Said now rather than when the button is pressed. Every branch of every
     // project shares one place, so the name that is free here can be a folder
     // somebody else's project is already standing in -- and a path that is on
@@ -890,6 +903,36 @@ mod tests {
         let at = folder_for(Path::new("Z:/nowhere/myproject"), "fix/crash");
         assert!(at.starts_with(branches_root()), "{at:?}");
         assert!(at.ends_with("fix/crash"));
+    }
+
+    /// Somebody who names a place gets that place, and is not corrected.
+    ///
+    /// The path is on screen before the button is pressed, so overruling it
+    /// would only be wrong somewhere they cannot see. What still holds is the
+    /// refusal: a folder already standing there is said while it is typed
+    #[test]
+    fn a_place_of_somebody_elses_choosing_is_the_place() {
+        let main = repo("elsewhere");
+        let mine = std::env::temp_dir().join("shikisha-chosen").join("right here");
+        let _ = std::fs::remove_dir_all(&mine);
+        let p = plan_into(&main, "polite-marmot", Some("main"), Some(&mine)).expect("計画できる");
+        assert_eq!(p.folder, mine, "指定した場所が使われていない");
+        assert_ne!(p.folder, folder_for(&main, "polite-marmot"), "既定に引き戻されている");
+        // And it is the place the command names, not just the one on screen
+        assert!(p.line().contains("\"") && p.line().contains("right here"), "{}", p.line());
+
+        // Nothing named: the app's own answer stands
+        let same = plan_into(&main, "polite-marmot", Some("main"), None).expect("計画できる");
+        assert_eq!(same.folder, folder_for(&main, "polite-marmot"));
+        // An empty name is the same as none
+        let blank = plan_into(&main, "polite-marmot", Some("main"), Some(Path::new("")))
+            .expect("計画できる");
+        assert_eq!(blank.folder, same.folder);
+
+        // A place already taken is refused here, not when the button is pressed
+        std::fs::create_dir_all(&mine).unwrap();
+        assert!(plan_into(&main, "polite-marmot", Some("main"), Some(&mine)).is_err());
+        let _ = std::fs::remove_dir_all(mine.parent().unwrap());
     }
 
     /// A folder deep enough to break things is sent where it is shortest.

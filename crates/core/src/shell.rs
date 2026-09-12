@@ -1233,6 +1233,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* One thing to fill in: its name above, the control, and the next one a step
      further away than the two halves of this one are from each other */
   #branch .bfield { display:flex; flex-direction:column; gap:var(--s2); }
+  /* Settled before the dialog opened -- which project, and where it runs. Said
+     rather than offered, because the row somebody pressed already chose the
+     one and this machine is still the only answer to the other. A picker with
+     one entry that cannot change is a control that lies about being one */
+  #branch .bproject, #branch .bdest { display:flex; align-items:baseline; gap:var(--s3);
+    font-size:13px; color:var(--text); min-height:22px; }
+  #branch .bproject .at { font-family:var(--mono); font-size:11px; color:var(--faint);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #branch .berr:empty, #branch .bsay:empty { display:none; }
   #branch .blabel { font-size:12px; font-weight:500; color:var(--text); }
   #sask .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
@@ -1268,10 +1276,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Section 5.1: 36px tall, 13px, the edge colour that means "you can type
      here" rather than the one that means "structure", and a ring as well as a
      border -- a border that only thickens moves the box every time focus lands */
-  #branch #bq { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
+  #branch #bq, #branch #bat { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
     border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 12px;
     height:36px; outline:none; }
-  #branch #bq:focus { border-color:var(--brand);
+  #branch #bat { font-family:var(--mono); font-size:11.5px; }
+  #branch #bq:focus, #branch #bat:focus { border-color:var(--brand);
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
   /* What is about to happen, said before it does. Where the folder will be
      stands on its own, because that is the answer somebody checks; the command
@@ -1752,12 +1761,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
       <div class="bsay"></div>
       <div class="bfield">
+        <span class="blabel"></span>
+        <div class="bproject"><span class="nm"></span><span class="at"></span></div>
+      </div>
+      <div class="bfield">
+        <span class="blabel"></span>
+        <div class="bdest"><span class="nm"></span></div>
+      </div>
+      <div class="bfield">
         <label class="blabel" for="bq"></label>
         <div class="brow2"><div id="bbase"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
       </div>
       <div class="bfield">
-        <span class="blabel"></span>
-        <div class="bwhere"></div>
+        <label class="blabel" for="bat"></label>
+        <input id="bat" type="text" autocomplete="off" spellcheck="false">
       </div>
       <button class="bmore" type="button" aria-expanded="false"><span class="caret">&#9656;</span><span class="nm"></span></button>
       <div class="bextra" hidden>
@@ -2649,13 +2666,19 @@ function openBranch(g) {
   b.querySelector(".bsay").textContent = T["tui.branch.hint"] || "";
   b.querySelector(".go").textContent = T["tui.branch.make"] || "Make it";
   // Every control says what it is, in the order they stand
-  const names = [T["tui.branch.name"] || "Branch name",
+  const names = [T["tui.branch.project"] || "Project",
+                 T["tui.branch.dest"] || "Where it runs",
+                 T["tui.branch.name"] || "Branch name",
                  T["tui.branch.where"] || "Where it goes",
                  T["tui.branch.cmd"] || "What actually runs"];
   b.querySelectorAll(".blabel").forEach((l, i) => { l.textContent = names[i] || ""; });
+  b.querySelector(".bdest .nm").textContent = T["tui.branch.dest.here"] || "This PC";
   const q = document.getElementById("bq");
   q.placeholder = T["tui.branch.placeholder"] || "branch name";
   q.value = "";
+  const at = document.getElementById("bat");
+  at.value = "";
+  at.placeholder = "";
   const box = b.querySelector(".bcarry");
   box.dataset.key = "";
   box.textContent = "";
@@ -2706,8 +2729,10 @@ function askBranch() {
   clearTimeout(branchTimer);
   branchTimer = setTimeout(() => {
     const q = document.getElementById("bq");
+    const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
-          make:false, carry:carrying(), start:starting(), ais:fanning()});
+          make:false, carry:carrying(), start:starting(), ais:fanning(),
+          at:(at ? at.value.trim() : "")});
   }, 180);
 }
 
@@ -2807,7 +2832,15 @@ function drawBranch() {
   // fills them whatever was typed when it was asked
   const here = p && p.from === branchFrom;
   if (mine && p.done) { closeBranch(); return; }
-  b.querySelector(".bwhere").textContent = mine && !p.error ? p.folder : "";
+  // Shown in the empty field rather than written into it, so the app's own
+  // answer is visible and typing over it needs no clearing first
+  const at = document.getElementById("bat");
+  if (at && mine && !p.error && !at.value.trim()) at.placeholder = p.folder || "";
+  // Which project this is cut from, and where that project itself lives
+  if (here) {
+    b.querySelector(".bproject .nm").textContent = p.project || "";
+    b.querySelector(".bproject .at").textContent = p.project_at || "";
+  }
   // Every line when several folders are being made, so what is shown is
   // the whole of what will run
   b.querySelector(".bcmd").textContent = mine && !p.error
@@ -2921,14 +2954,28 @@ function drawCarry(b, items) {
   b.addEventListener("mousedown", e => { if (e.target === b) closeBranch(); });
   b.querySelector(".go").onclick = () => {
     const q = document.getElementById("bq");
+    const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
-          make:true, carry:carrying(), start:starting(), ais:fanning()});
+          make:true, carry:carrying(), start:starting(), ais:fanning(),
+          at:(at ? at.value.trim() : "")});
   };
   const more = b.querySelector(".bmore");
   if (more) more.addEventListener("click", () =>
     showMore(b, b.querySelector(".bextra").hidden));
   const fan = document.getElementById("bfanon");
   if (fan) fan.addEventListener("change", () => { drawStart(b); askBranch(); });
+  const bat = document.getElementById("bat");
+  if (bat) {
+    bat.addEventListener("input", askBranch);
+    bat.addEventListener("keydown", e => {
+      if (e.key === "Escape") { e.preventDefault(); closeBranch(); }
+      if (typingIME(e)) return;
+      if (e.key === "Enter" && !b.querySelector(".go").disabled) {
+        e.preventDefault();
+        b.querySelector(".go").click();
+      }
+    });
+  }
   const q = document.getElementById("bq");
   q.addEventListener("input", askBranch);
   q.addEventListener("keydown", e => {
@@ -9466,8 +9513,12 @@ mod tests {
     /// answers, so what was shown is what happens.
     #[test]
     fn the_branch_dialog_says_what_runs_and_can_fan_out() {
-        assert!(PAGE.contains(r#"make:false, carry:carrying(), start:starting(), ais:fanning()});"#), "尋ねる道に起動先が乗らない");
-        assert!(PAGE.contains(r#"make:true, carry:carrying(), start:starting(), ais:fanning()});"#), "作る道に起動先が乗らない");
+        assert!(PAGE.contains(r#"make:false, carry:carrying(), start:starting(), ais:fanning(),"#), "尋ねる道に起動先が乗らない");
+        assert!(PAGE.contains(r#"make:true, carry:carrying(), start:starting(), ais:fanning(),"#), "作る道に起動先が乗らない");
+        // The place travels on both roads too. On one only, the line somebody
+        // read would be about a folder the button then did not use
+        assert_eq!(PAGE.matches(r#"at:(at ? at.value.trim() : "")});"#).count(), 2,
+                   "場所が両方の道に乗っていない");
         // With the fan-out ticked, the single choice is not sent as well
         assert!(PAGE.contains(r#"function starting() { return fanning().length ? "" : branchStart; }"#));
         // Nothing offered on a machine with no AI: the dialog is what it was

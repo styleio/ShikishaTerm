@@ -364,6 +364,14 @@ pub struct BranchPlan {
     /// per AI). Empty when it is one folder and `line` says it
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lines: Vec<String>,
+    /// The project this is cut from: what it is called, and where its own
+    /// folder is. Not a choice -- which project it is was settled by the row
+    /// the person pressed -- but the thing to check before pressing, and the
+    /// only way to tell two projects of the same name apart
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub project_at: String,
 }
 
 /// What Claude's subscription has left, as the status line draws it.

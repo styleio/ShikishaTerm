@@ -203,6 +203,9 @@ pub enum Ev {
         /// One folder per AI named here, each branch named for its AI,
         /// instead of one folder. Empty means one
         ais: Vec<String>,
+        /// Where to put it, when somebody would rather it went elsewhere.
+        /// Empty is the place this app would choose
+        at: String,
     },
     /// A colour was chosen for the project a folder belongs to. Empty means
     /// "go back to the one you work out yourselves"
@@ -572,14 +575,15 @@ pub struct BranchAsk {
     pub carry: Vec<String>,
     pub start: String,
     pub ais: Vec<String>,
+    pub at: String,
 }
 
 impl BranchAsk {
     /// The ask carried by a branch event, or nothing for any other event.
     pub fn of(ev: Ev) -> Option<Self> {
         match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais })
+            Ev::Branch { from, branch, base, make, carry, start, ais, at } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais, at })
             }
             _ => None,
         }
@@ -732,6 +736,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 })
                 .unwrap_or_default(),
             start: v.get("start").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            at: v.get("at").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             ais: v
                 .get("ais")
                 .and_then(|x| x.as_array())
