@@ -5069,15 +5069,25 @@ function report() {
     "|" + panes.map(p => p.id + ":" + p.rows + "x" + p.cols + ":" + p.rect.join(",")).join(";");
   if (key === lastRC) return;
   lastRC = key;
+  // (the key above already carries the window's size; the bar's height only
+  // changes with it, or with the page being a phone's, which changes it too)
   // The focused pane's share of the content area, and the whole window. A
   // screen that covers everything -- the settings -- is a page placed in the
   // window like any other and needs a rectangle; it is just not a pane's, and
   // not the content area's either. Settings that ask about the whole app while
-  // sitting beside the tab list read as one more tab's contents
+  // sitting beside the tab list read as one more tab's contents.
+  //
+  // "The whole window" now stops at the window's own bar. The frame is this
+  // page's to draw, so a page that covered the bar would take away closing,
+  // minimising and the panels' switches for as long as it was up -- and the
+  // settings screen is exactly where somebody presses close. Zero when there
+  // is no bar (a phone, or a board opened somewhere else)
+  const bar = document.getElementById("titlebar");
+  const barH = bar && !bar.hidden ? Math.round(bar.getBoundingClientRect().height) : 0;
   send({kind:"resize", rows:f.rows, cols:f.cols,
     area:[Math.round(area.left), Math.round(area.top),
           Math.round(area.width), Math.round(area.height)],
-    full:[0, 0, Math.round(window.innerWidth), Math.round(window.innerHeight)],
+    full:[0, barH, Math.round(window.innerWidth), Math.round(window.innerHeight) - barH],
     panes:panes});
 }
 let rt = 0;
@@ -9515,6 +9525,24 @@ mod tests {
         // One panel, wherever it is put: a second copy of the markup would be
         // a second thing to keep right
         assert_eq!(p.matches("id=\"gitpanel\"").count(), 1, "git の画面が2つある");
+    }
+
+    /// A page that covers the window stops at the window's own bar. The frame
+    /// is this page's to draw, and a screen that covered it would take closing
+    /// and minimising away for as long as it was up -- the settings screen
+    /// being exactly where somebody reaches for close.
+    #[test]
+    fn a_covering_page_leaves_the_bar_alone() {
+        let p = super::page();
+        assert!(
+            p.contains("full:[0, barH, Math.round(window.innerWidth), Math.round(window.innerHeight) - barH]"),
+            "覆うページが帯の上まで乗る"
+        );
+        // Zero where there is no bar to leave alone
+        assert!(
+            p.contains("bar && !bar.hidden ? Math.round(bar.getBoundingClientRect().height) : 0"),
+            "帯が無い面で余白を空けてしまう"
+        );
     }
 
     /// The editor's three promises, in the page itself: a draft is never
