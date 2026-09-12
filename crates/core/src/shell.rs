@@ -304,6 +304,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Output volume as a real bar chart, not characters */
   /* The heading a folder's tabs get when there are several, so the set can be
      put away as one and the count can be read without counting rows */
+  /* The grouping chooser, and the headings it produces */
+  .axis { display:flex; gap:var(--s1); padding:2px 10px 4px; }
+  .axis .ax { padding:1px 6px; border-radius:var(--r-chip); color:var(--dim);
+    font-size:11.5px; cursor:pointer; }
+  .axis .ax:hover { background:var(--hover); }
+  .axis .ax.on { background:var(--raise); color:var(--text); }
+  .gset { padding:6px 10px 2px; color:var(--muted); font-size:11.5px;
+    text-transform:uppercase; letter-spacing:.04em; }
   /* 29px, not a number of its own: a tab under a folder sits at 26px of
      padding behind a 3px border, and this heading stands where those rows do */
   .bundle { display:flex; align-items:center; gap:var(--s2); padding:1px 0 1px 29px;
@@ -2167,10 +2175,33 @@ function drawTabs() {
   const kinOf = g => g.family ? folders.filter(o => o.family === g.family) : [g];
   const heads = g => !!g.family && !g.linked && kinOf(g).some(o => o.linked);
   const housed = g => !!g.family && g.linked && kinOf(g).some(o => !o.linked);
-  let box = null, boxKey = null;
-  for (let gi = 0; gi < folders.length; gi++) {
-    const g = folders[gi];
-    const key = (heads(g) || housed(g)) ? g.family : null;
+  // The order the folders are read in, and the headings that break it up.
+  //
+  // The households above are themselves a grouping -- by the repository a
+  // folder belongs to -- so they are switched off whenever another axis is
+  // chosen. Two groupings at once would put a project's own folder in one
+  // group and its branches in another and still try to draw a box round all
+  // of them
+  const axis = groupBy !== "none" && folders.length > 1 ? groupBy : "none";
+  if (folders.length > 1) nav.append(axisRow());
+  const keyed = folders.map((g, gi) => ({ gi, g, ...groupOf(g, inside[gi], axis, folders) }));
+  if (axis !== "none") {
+    // Stable: folders keep the order the settings put them in, within their
+    // group. A list that reshuffles itself as states change is a list nobody
+    // can point at
+    const seen = [];
+    for (const r of keyed) if (!seen.includes(r.key)) seen.push(r.key);
+    seen.sort((a, b) => groupRank(a, axis) - groupRank(b, axis));
+    keyed.sort((a, b) => seen.indexOf(a.key) - seen.indexOf(b.key));
+  }
+  let box = null, boxKey = null, groupKey = null;
+  for (const row of keyed) {
+    const gi = row.gi, g = row.g;
+    if (axis !== "none" && row.key !== groupKey) {
+      groupKey = row.key;
+      nav.append(el("div", {class:"gset"}, el("span", {}, row.label)));
+    }
+    const key = axis === "none" && (heads(g) || housed(g)) ? g.family : null;
     if (key !== boxKey) {
       box = key ? el("div", {class:"family"}) : null;
       boxKey = key;
@@ -2178,9 +2209,10 @@ function drawTabs() {
     }
     const into = box || nav;
     // The household's branches put away together, from the pill on its head
-    if (housed(g) && folded.has("kin:" + g.family)) continue;
+    const kin = axis === "none" && housed(g), top = axis === "none" && heads(g);
+    if (kin && folded.has("kin:" + g.family)) continue;
     if (g.empty) { into.append(emptyRow(g)); continue; }
-    into.append(folderRow(g, kinOf(g), heads(g), inside[gi]));
+    into.append(folderRow(g, kinOf(g), top, inside[gi]));
     // Its tabs are hidden while it is folded, and the heading says so
     if (folded.has(g.folder)) continue;
     const mine = inside[gi];
@@ -2189,13 +2221,13 @@ function drawTabs() {
     // away together and counted without counting rows
     if (mine.length >= 2) {
       const away = folded.has("tabs:" + g.folder);
-      into.append(bundleRow(g, mine, away, housed(g)));
+      into.append(bundleRow(g, mine, away, kin));
       if (away) {
-        into.append(pillsRow(mine, housed(g)));
+        into.append(pillsRow(mine, kin));
         continue;
       }
     }
-    for (const t of mine) into.append(tabRow(t, g, housed(g), heads(g)));
+    for (const t of mine) into.append(tabRow(t, g, kin, top));
   }
   for (const t of loose) nav.append(tabRow(t, null, false, false));
   // A "+" at the end of the list. Opens the settings page already in the "add tab" state
@@ -3162,6 +3194,69 @@ function cutMark() {
     '<circle cx="3.5" cy="9.7" r="1.4" fill="currentColor" stroke="none"/>' +
     '<circle cx="8.5" cy="2.3" r="1.4" fill="currentColor" stroke="none"/></svg>';
   return s;
+}
+
+// How the folder list is broken up. One of "none", "state", "project".
+//
+// A view preference, so it is kept where the person looking is rather than in
+// the settings everybody shares -- the same place the sign-in token is kept,
+// and read the same careful way: a window with storage turned off simply gets
+// the ungrouped list rather than a broken one
+const GROUP_AXES = ["none", "state", "project"];
+let groupBy = (() => {
+  try {
+    const v = localStorage.getItem("shikisha_groupby");
+    return GROUP_AXES.includes(v) ? v : "none";
+  } catch (e) { return "none"; }
+})();
+function setGroupBy(v) {
+  groupBy = GROUP_AXES.includes(v) ? v : "none";
+  try { localStorage.setItem("shikisha_groupby", groupBy); } catch (e) {}
+  drawTabs();
+}
+
+// Which group a folder falls in, and what that group is called.
+//
+// By state, a folder is spoken for by whichever tab in it is waiting on
+// somebody first -- the same rule a shut folder's own dot follows, so the
+// heading and the row never disagree. By project, by the folder its
+// repository is checked out in, which is the household the list already
+// draws; a folder that is in no repository at all is its own answer rather
+// than being filed under a project it does not have
+function groupOf(g, mine, axis, folders) {
+  if (axis === "state") {
+    if (!(mine || []).length) return { key: "-", label: T["tui.group.idle"] || "Nothing running" };
+    const st = worstOf(mine);
+    const t = mine.find(x => x.state === st);
+    return { key: st, label: (t && t.state_label) || st };
+  }
+  if (axis === "project") {
+    if (!g.family) return { key: "-", label: T["tui.group.noproject"] || "No project" };
+    const head = folders.find(o => o.family === g.family && !o.linked);
+    return { key: g.family, label: (head && head.name) || g.name || "" };
+  }
+  return { key: "", label: "" };
+}
+
+// The order the groups themselves come in. By state, the order of who is
+// waiting, so the group somebody has to answer is at the top of the sidebar
+// and not wherever the settings happened to put its folder
+function groupRank(key, axis) {
+  if (axis === "state") return key === "-" ? STATE_RANK.length + 1 : rankOf(key);
+  return key === "-" ? 1 : 0;
+}
+
+// The chooser. Three words, the current one filled -- no menu, because with
+// three choices a menu is one more press for nothing
+function axisRow() {
+  const row = el("div", {class:"axis"});
+  for (const v of GROUP_AXES) {
+    const on = groupBy === v;
+    row.append(el("span", {class:"ax" + (on ? " on" : ""),
+        onclick:e => { e.stopPropagation(); setGroupBy(v); }},
+      T["tui.group." + v] || v));
+  }
+  return row;
 }
 
 // The mark each AI is drawn with.
@@ -10255,8 +10350,14 @@ mod tests {
             "元と枝が両方あるときだけ家族、の条件が消えている"
         );
         assert!(PAGE.contains(r#"fold("kin:" + g.family)"#), "枝をまとめて畳む札が無い");
+        // `kin` is `housed(g)` once the chosen grouping has had its say: the
+        // household is a grouping of its own and steps aside for another
         assert!(
-            PAGE.contains(r#"if (housed(g) && folded.has("kin:" + g.family)) continue;"#),
+            PAGE.contains(r#"const kin = axis === "none" && housed(g)"#),
+            "別の軸を選んでも家族の箱が残る"
+        );
+        assert!(
+            PAGE.contains(r#"if (kin && folded.has("kin:" + g.family)) continue;"#),
             "畳んだ枝の見出しが消えない"
         );
         assert!(PAGE.contains(r#"row.append(el("span", {class:"on""#), "元が乗っているブランチの札が無い");
