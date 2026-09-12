@@ -1145,11 +1145,23 @@ pub fn run(argv: &[String]) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// A folder this run of the tests can have to itself.
+    ///
+    /// Two runs at once is the ordinary case here -- the suite runs in the
+    /// worktree of one branch while another is still going -- and a name fixed
+    /// in the temp folder means one run deleting the repository the other is in
+    /// the middle of using. What comes back then is a git error about a missing
+    /// object, which sends whoever reads it looking at git. Same shape as
+    /// [`branches_root`] under test: the process gets its own
+    fn scratch(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("shikisha-wt-{name}-{}", std::process::id()))
+    }
+
     /// A project of this test's own. Named after the test, because where
     /// branches go is keyed by the project's name alone now -- two tests both
     /// calling their project "myproject" would be handed each other's folders
     fn repo(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("shikisha-wt-{name}")).join(format!("proj-{name}"));
+        let d = scratch(name).join(format!("proj-{name}"));
         let _ = std::fs::remove_dir_all(d.parent().unwrap());
         let _ = std::fs::remove_dir_all(branches_root().join(format!("proj-{name}")));
         std::fs::create_dir_all(d.join(".git")).unwrap();
@@ -1349,7 +1361,7 @@ tools/conpty.ps1"));
     #[test]
     fn a_place_of_somebody_elses_choosing_is_the_place() {
         let main = repo("elsewhere");
-        let mine = std::env::temp_dir().join("shikisha-chosen").join("right here");
+        let mine = scratch("chosen").join("right here");
         let _ = std::fs::remove_dir_all(&mine);
         let p = plan_into(&main, "polite-marmot", Some("main"), Some(&mine), None).expect("計画できる");
         assert_eq!(p.folder, mine, "指定した場所が使われていない");
@@ -1481,7 +1493,7 @@ tools/conpty.ps1"));
     /// A repository git itself made, or nothing. Skipped rather than failed
     /// where git is not installed: this is the only test here that needs it
     fn real_repo(name: &str) -> Option<PathBuf> {
-        let at = std::env::temp_dir().join(format!("shikisha-rn-{name}"));
+        let at = scratch(&format!("rn-{name}"));
         let _ = std::fs::remove_dir_all(&at);
         let main = at.join(format!("proj-{name}"));
         let _ = std::fs::remove_dir_all(branches_root().join(format!("proj-{name}")));
@@ -1544,7 +1556,7 @@ tools/conpty.ps1"));
 
     #[test]
     fn a_branch_really_gets_its_own_folder() {
-        let main = std::env::temp_dir().join("shikisha-wt-real").join("proj-real");
+        let main = scratch("real").join("proj-real");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
@@ -1602,7 +1614,7 @@ tools/conpty.ps1"));
     /// What a fresh folder is missing, and getting it there.
     #[test]
     fn what_git_does_not_carry_can_be_brought_along() {
-        let main = std::env::temp_dir().join("shikisha-wt-carry").join("proj-carry");
+        let main = scratch("carry").join("proj-carry");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
@@ -1662,7 +1674,7 @@ tools/conpty.ps1"));
     /// Throwing a branch's folder away, and refusing to.
     #[test]
     fn a_folder_with_work_in_it_is_not_thrown_away() {
-        let main = std::env::temp_dir().join("shikisha-wt-discard").join("proj-discard");
+        let main = scratch("discard").join("proj-discard");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
