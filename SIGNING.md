@@ -14,6 +14,15 @@ project does not have to buy or hold. Free certificates were applied for
 elsewhere first — [SignPath Foundation](https://signpath.org/) — and that
 application was not accepted.
 
+Paid certificates were not the answer either, and not because of the price
+itself. Code-signing subscriptions start at roughly ten dollars a month; this
+project is built to have no running cost at all — no server of ours, no account,
+nothing collected, nothing to keep paid for — because a monthly bill has to be
+met, and meeting it eventually means taking it from the people using the
+program. The Store route signs the build for nothing, which is what most people
+install. The zip is what is left over, and the free certificates for open source
+are given on reputation rather than on payment.
+
 The portable zip stays unsigned in Windows' sense: it carries no code-signing
 certificate, so SmartScreen has nothing to check. It is the same program, built
 by the same workflow from the same tagged commit; what it lacks is a certificate,
