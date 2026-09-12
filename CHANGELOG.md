@@ -12,6 +12,16 @@ The runtime with no window grew a browser, and the devices looking at it stopped
 being spectators.
 
 ### Added
+- **The window wears its own bar.** The system's title bar is gone and the
+  program draws that strip itself, because that is where the two panels are
+  opened from: the switch for the list of tabs at the left end, the switch for
+  the panel on the right at the right end, and the three buttons the system
+  used to draw beyond them. Taking hold of the bar moves the window, a
+  double-click maximises it, and ✕ does exactly what the system's ✕ did.
+  Resizing from the edges and the drop shadow are still the system's. One
+  thing is lost and worth saying: the Snap Layouts flyout that appears when
+  the pointer rests on a *system* maximise button, which ours is not. Dragging
+  to an edge, Win+arrow and the double-click all still snap.
 - **A column of your own on the right, with the changed files in it.** The
   window is three columns now: what is running on the left, the work in the
   middle, and a panel beside it. Two things stand in it, picked from the strip
