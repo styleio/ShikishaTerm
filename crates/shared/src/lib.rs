@@ -318,6 +318,16 @@ pub enum Ev {
     /// browser in the same sandbox as the rally's AI-authored code (browser
     /// functions on that one tab, nothing else).
     RunLua { code: String },
+    /// The file panel asking for a folder's contents, or for a search of the
+    /// folder it stands in. `panel` names the place the same way the git panel
+    /// does -- the tab whose working folder this is -- and `act` is one of a
+    /// short list, for the same reason: a screen may ask for the things it
+    /// draws, not reach the whole table through a message
+    Files {
+        panel: String,
+        act: String,
+        args: serde_json::Value,
+    },
     /// The git panel asking for something. `panel` is the surface's own name,
     /// which is how the folder it reports on is found; `act` is one of a short
     /// list the loop turns into a primitive call. The panel does not name
@@ -797,6 +807,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         // The file panel asking for a listing or a transfer (see `Ev::Sftp`).
         Some("sftp") => Ev::Sftp {
+            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        // The file panel asking for a listing or a search (see `Ev::Files`).
+        Some("files") => Ev::Files {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),

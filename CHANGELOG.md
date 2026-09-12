@@ -14,16 +14,28 @@ being spectators.
 ### Added
 - **A column of your own on the right, with the changed files in it.** The
   window is three columns now: what is running on the left, the work in the
-  middle, and a panel beside it. What stands in it today is the git panel ---
-  the same one, moved out of a tab it had to be switched to and put where it
-  can be read while an AI works. It follows the tab being looked at: the folder
-  that tab is in is the repository it reports on, named along the top. Drag its
+  middle, and a panel beside it. Two things stand in it, picked from the strip
+  along its top: the files in the folder, and what has changed in them. The
+  changes are the same git panel as before, moved out of a tab it had to be
+  switched to and put where it can be read while an AI works. Both follow the
+  tab being looked at --- the folder that tab is in is the one they are about,
+  named along the top. Drag its
   edge to resize, drag it shut or press `Ctrl+B g` to put it away, and it opens
   the way you left it next time. It starts put away, because the column costs
   the terminal its width. On a phone it covers the page instead of squeezing
   it, with the top bar left where it is. A git panel opened as a tab of its own
   still works and takes the panel back while it is the one being looked at ---
   there is one panel, and only where it stands changes.
+- **The files in the folder, beside the work.** The first thing in that column
+  is the working folder as a tree, opened a folder at a time. The search over
+  it goes by name or by what is inside, and a search by what is inside comes
+  back with the line it found and the number it is on. What counts as "the
+  files here" is git's own answer where there is one --- so a search does not
+  return ten thousand build artefacts --- while the tree shows everything that
+  is actually there, ignored or not. Pressing a file puts its path in the box
+  below, ready to hand to the AI: there is no editor here, and a path is the
+  useful thing to do with a file when the thing next to you can read it. It
+  works in any working folder, repository or not.
 - **A browser on the machine the agents are on.** A runtime with no window can
   open pages, click them, read them, take their picture and carry their logins
   --- everything `browser_*` has always done at the window, from the same code.

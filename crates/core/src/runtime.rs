@@ -2034,6 +2034,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Git { panel, act, args }) => {
                         shell.mail().gits.push((panel, act, args));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Files { panel, act, args }) => {
+                        shell.mail().files.push((panel, act, args));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Sftp { panel, act, args }) => {
                         shell.mail().sftps.push((panel, act, args));
                     }
@@ -3208,10 +3211,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
 
-        // What the file panel asked for. Reading this machine is answered on
-        // the spot; anything that touches the server goes to a thread, because
-        // a folder listing over a network is a wait and this loop draws the
-        // window
+        // The column's file list. Answered on the spot: it is one folder of
+        // this machine, or a search that stops itself
+        for (panel, act, args) in shell.mail().take_files() {
+            let js = files_answer(&panel, &act, &args, &surfaces, &tabs);
+            shell.push_files(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"files\":{js}}}"));
+            }
+        }
+        // What the transfer panel asked for. Reading this machine is answered
+        // on the spot; anything that touches the server goes to a thread,
+        // because a folder listing over a network is a wait and this loop
+        // draws the window
         for (panel, act, args) in shell.mail().take_sftps() {
             let js = sftp_answer(&panel, &act, &args, &surfaces, &caps, &sftp_tx);
             if let Some(js) = js {
@@ -5008,6 +5020,93 @@ pub const SFTP_WAIT_MS: u64 = 45_000;
 /// is a screen a person opened, so it reaches exactly what their own
 /// automation would, and not one thing more.
 #[allow(clippy::too_many_arguments)]
+/// What the column's file list asked for.
+///
+/// The folder is named the way the git panel names it -- by the tab standing
+/// in it -- so the column follows whatever is being looked at without anything
+/// being registered anywhere. A panel of its own is looked at first, so a
+/// transfer panel keeps answering for its own folder.
+///
+/// Nothing here reaches outside that folder: every path is put back through
+/// `local_under`, which is the same fence the transfer panel keeps.
+pub fn files_answer(
+    panel: &str,
+    act: &str,
+    args: &serde_json::Value,
+    surfaces: &[Surface],
+    tabs: &[Tab],
+) -> String {
+    let fail = |e: String| {
+        serde_json::json!({"act": act, "panel": panel, "ok": false, "error": e}).to_string()
+    };
+    let Some(root) = panel_places(surfaces)
+        .into_iter()
+        .chain(tab_places(tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
+        .find(|p| p.key.matches(panel))
+        .map(|p| p.dir)
+    else {
+        return fail(i18n::t("err.files.no_folder"));
+    };
+    let str_of = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+
+    match act {
+        // One folder, as its rows. The root itself when nothing is named
+        "ls" => {
+            let at = match str_of("at").trim() {
+                "" => root.clone(),
+                given => match local_under(&root, given) {
+                    Some(p) => p,
+                    None => return fail(i18n::t("err.sftp.outside")),
+                },
+            };
+            match local_rows(&at) {
+                // git's own folder is not content, and it is the one folder
+                // nobody opens on purpose. Everything else is shown, ignored
+                // or not: a file somebody put there is a file they may want
+                Ok(rows) => serde_json::json!({
+                    "act": "ls",
+                    "panel": panel,
+                    "ok": true,
+                    "at": rel_of(&root, &at),
+                    "rows": rows
+                        .into_iter()
+                        .filter(|r| r.get("name").and_then(|n| n.as_str()) != Some(".git"))
+                        .collect::<Vec<_>>(),
+                })
+                .to_string(),
+                Err(e) => fail(format!("{e:#}")),
+            }
+        }
+        // By name, or by what is inside. Both stop themselves and say so
+        "find" | "grep" => {
+            let q = str_of("q");
+            let found = if act == "find" {
+                crate::files::by_name(&root, &q, 300)
+            } else {
+                crate::files::by_text(&root, &q, 300)
+            };
+            serde_json::json!({
+                "act": act,
+                "panel": panel,
+                "ok": true,
+                "q": q,
+                "hits": found.hits,
+                "capped": found.capped,
+            })
+            .to_string()
+        }
+        _ => fail(format!("unknown act: {act}")),
+    }
+}
+
+/// A folder under the root, written the one way the page uses: relative,
+/// forward slashes, empty for the root itself.
+fn rel_of(root: &std::path::Path, at: &std::path::Path) -> String {
+    at.strip_prefix(root)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
 pub fn sftp_answer(
     panel: &str,
     act: &str,

@@ -28,6 +28,7 @@ pub mod digest;
 pub mod discover;
 pub mod exchange;
 pub mod faraway;
+pub mod files;
 pub mod folders;
 pub mod git;
 pub mod grants;
