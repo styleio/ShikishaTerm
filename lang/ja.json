@@ -1030,6 +1030,8 @@
   "err.worktree.no_branch": "ブランチ名を入力してください",
   "err.worktree.bad_branch": "{name} はブランチ名として使えません",
   "err.worktree.no_project": "{host} には、このプロジェクトがどこにあるかがまだ書かれていません",
+  "err.e2b.call": "サンドボックスのサービスに届きませんでした: {e}",
+  "err.e2b.said": "サンドボックスのサービスが予期しない返事をしました: {said}",
   "err.host.address": "{at} は住所として読めません。ssh://あなた@機械:22 の形で書いてください",
   "err.worktree.not_a_repo": "このフォルダは git リポジトリの中にありません",
   "err.worktree.no_workspace": "その名前のワークスペースがありません",
