@@ -1206,16 +1206,29 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #vault[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
   #repair[hidden], #sask[hidden] { display:none; }
   #vault .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
-  #sask .vbox { background:var(--panel); border:1px solid var(--brand);
+  #sask .vbox { background:var(--panel); border:1px solid var(--line);
     border-radius:var(--r-card); padding:var(--s4) var(--s5); width:min(720px,92vw);
     max-height:82vh; display:flex; flex-direction:column; gap:var(--s3); }
+  #branch .vbox { gap:var(--s5); }
   #vault .vhead, #palette .vhead, #branch .vhead, #browse .vhead,
   #sask .vhead { display:flex; align-items:center; }
   /* The title is one thing and what is under it is another */
   #browse .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
     margin-bottom:var(--s1); }
   #browse .vsay, #sask .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
-  #sask .vbox { width:min(560px,92vw); }
+  #sask .vbox, #branch .vbox { width:min(560px,92vw); }
+  /* The head is one thing and the foot is another, both divided by a rule --
+     the shape every dialog in section 5.2 has. #browse and #sask already had
+     it; this one was a single stack of boxes with nothing telling the title
+     from the answer from the button */
+  #branch .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
+    margin-bottom:var(--s1); }
+  #branch .brow { padding-top:var(--s3); border-top:1px solid var(--line); }
+  /* One thing to fill in: its name above, the control, and the next one a step
+     further away than the two halves of this one are from each other */
+  #branch .bfield { display:flex; flex-direction:column; gap:var(--s2); }
+  #branch .berr:empty, #branch .bsay:empty { display:none; }
+  #branch .blabel { font-size:12px; font-weight:500; color:var(--text); }
   #sask .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
     margin-bottom:var(--s1); }
   #sask .brow { padding-top:var(--s3); border-top:1px solid var(--line);
@@ -1236,19 +1249,29 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sask .go.stop { border-color:var(--stop); background:transparent; color:var(--stop); }
   #browse .brow { padding-top:var(--s3); border-top:1px solid var(--line); }
   #vault .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle,
-  #sask .vtitle { color:var(--brand);
-    font-size:13px; letter-spacing:1px; text-transform:uppercase; flex:1; }
+  #sask .vtitle { color:var(--text);
+    font-size:13.5px; font-weight:600; text-transform:uppercase; flex:1; }
   #vault .vclose, #palette .vclose, #branch .vclose, #browse .vclose,
   #sask .vclose { cursor:pointer;
     color:var(--dim); font-size:16px; padding:2px 6px; }
   #vault .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
   #browse .vclose:hover, #repair .vclose:hover, #sask .vclose:hover { color:var(--text); }
-  #vault #vq, #palette #pq, #branch #bq { font:inherit; font-size:14px; background:var(--bg);
+  #vault #vq, #palette #pq { font:inherit; font-size:14px; background:var(--bg);
     color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); padding:9px 12px; outline:none; }
-  #vault #vq:focus, #palette #pq:focus, #branch #bq:focus { border-color:var(--brand); }
-  /* What is about to happen, said before it does: where the folder will be, and
-     the command itself. Never typed into -- the branch name above is the only
-     thing anyone fills in */
+  #vault #vq:focus, #palette #pq:focus { border-color:var(--brand); }
+  /* Section 5.1: 36px tall, 13px, the edge colour that means "you can type
+     here" rather than the one that means "structure", and a ring as well as a
+     border -- a border that only thickens moves the box every time focus lands */
+  #branch #bq { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
+    border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 12px;
+    height:36px; outline:none; }
+  #branch #bq:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  /* What is about to happen, said before it does. Where the folder will be
+     stands on its own, because that is the answer somebody checks; the command
+     itself is the last thing under the fold, for the times somebody wants to
+     read what git is actually being asked. Never typed into -- the branch name
+     above is the only thing anyone fills in */
   #branch .bsay { color:var(--dim); font-size:11.5px; }
   /* The name to give it, and what it starts from. One is typed and the other
      is picked, because one of them is new and the other already exists */
@@ -1264,8 +1287,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bfan { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
   #branch .bais { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding-left:22px; }
   #branch .bais label { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
-  #branch #bbase, #branch #bstart { font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
-    border:1px solid var(--line); border-radius:var(--r-ctl); padding:0 10px; cursor:pointer;
+  #branch #bbase, #branch #bstart { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
+    border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 12px; cursor:pointer; height:36px;
     max-width:42%; flex:0 0 auto; display:flex; align-items:center; gap:var(--s2);
     white-space:nowrap; overflow:hidden; }
   #branch #bbase:hover, #branch #bstart:hover { border-color:var(--brand); }
@@ -1276,9 +1299,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #browse .vlist { overflow:auto; display:flex; flex-direction:column; gap:var(--s1); max-height:52vh; }
   #browse .vrow { padding:var(--s2) var(--s3); border-radius:var(--r-ctl); cursor:pointer; }
   #browse .vrow:hover { background:var(--raise); }
+  /* A well is read, never typed into, so it takes the sunken face rather than
+     the page's own -- section 2 */
   #branch .bwhere, #branch .bcmd, #browse .bwhere, #sask .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--text);
-    background:var(--bg); border:1px solid var(--line); border-radius:var(--r-ctl);
-    padding:7px var(--s2); overflow:auto; white-space:pre-wrap; word-break:break-all; }
+    background:var(--sunk); border:1px solid var(--line); border-radius:var(--r-ctl);
+    padding:var(--s2) var(--s3); overflow:auto; white-space:pre-wrap; word-break:break-all; }
   #branch .bcmd { color:var(--dim); }
   /* Everything that already has a sensible answer, behind one press. Somebody
      adding a worktree names it and presses the button; the rest is here for
@@ -1322,7 +1347,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:var(--r-ctl); padding:4px 6px; outline:none; }
   #repair .rerr { color:var(--stop); font-size:12px; white-space:pre-wrap; }
   #branch .brow, #browse .brow { display:flex; gap:var(--s2); justify-content:flex-end; }
-  #branch button, #browse button { font:inherit; font-size:13px; padding:7px var(--s4);
+  #branch button, #browse button { font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s4);
     border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--raise);
     color:var(--text); cursor:pointer; }
   #branch button:hover, #browse button:hover { border-color:var(--edge-hi); }
@@ -1720,15 +1745,24 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div class="vbox">
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
       <div class="bsay"></div>
-      <div class="brow2"><div id="bbase"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
-      <div class="bwhere"></div>
-      <div class="bcmd"></div>
+      <div class="bfield">
+        <label class="blabel" for="bq"></label>
+        <div class="brow2"><div id="bbase"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
+      </div>
+      <div class="bfield">
+        <span class="blabel"></span>
+        <div class="bwhere"></div>
+      </div>
       <button class="bmore" type="button" aria-expanded="false"><span class="caret">&#9656;</span><span class="nm"></span></button>
       <div class="bextra" hidden>
         <div class="bstartrow" hidden><span class="say"></span><div id="bstart"></div></div>
         <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
         <div class="bais" hidden></div>
         <div class="bcarry"></div>
+        <div class="bfield">
+          <span class="blabel"></span>
+          <div class="bcmd"></div>
+        </div>
       </div>
       <div class="berr"></div>
       <div class="brow"><button class="go"></button></div>
@@ -2608,6 +2642,11 @@ function openBranch(g) {
   showMore(b, false);
   b.querySelector(".bsay").textContent = T["tui.branch.hint"] || "";
   b.querySelector(".go").textContent = T["tui.branch.make"] || "Make it";
+  // Every control says what it is, in the order they stand
+  const names = [T["tui.branch.name"] || "Branch name",
+                 T["tui.branch.where"] || "Where it goes",
+                 T["tui.branch.cmd"] || "What actually runs"];
+  b.querySelectorAll(".blabel").forEach((l, i) => { l.textContent = names[i] || ""; });
   const q = document.getElementById("bq");
   q.placeholder = T["tui.branch.placeholder"] || "branch name";
   q.value = "";
