@@ -1519,6 +1519,26 @@ pub struct WorkspaceSpec {
     /// obeyed
     #[serde(default)]
     pub providers: Option<Vec<String>>,
+    /// What automation running here may reach outside the terminal: the named
+    /// file and HTTP gateways, and the folders and hosts raw paths are allowed
+    /// in. Absent means the app's own answer.
+    ///
+    /// A gateway is a door with a token already attached, and a folder in
+    /// `allow_dirs` is a folder a script here can read. One set of doors for
+    /// every workspace means the script in the private workspace has the
+    /// company's doors, which is the whole accident
+    #[serde(default)]
+    pub capabilities: Option<crate::caps::CapabilitySpec>,
+    /// Who may call which automation command here: this workspace's table, or
+    /// the app's when it has none.
+    ///
+    /// Its own table rather than its own rows on top of the app's, because a
+    /// table of who-may-do-what read from two places cannot be read at all: the
+    /// row somebody did not think to look in the other place for is exactly the
+    /// one that matters. Rows still absent from the table answer from the
+    /// defaults in `grants.rs`, the same as always
+    #[serde(default)]
+    pub automation_permissions: Option<crate::grants::GrantSpec>,
 }
 
 /// Contents of a workspace definition file (workspaces/*.json)
@@ -2113,6 +2133,13 @@ pub struct Workspace {
     /// The model connections usable from here. Already the whole answer: a list
     /// is this workspace's own, and `None` is "every registered one"
     pub providers: Option<Vec<String>>,
+    /// What automation running here may reach outside the terminal. Already the
+    /// whole answer -- this workspace's doors, or the app's for a workspace that
+    /// named none -- so nothing downstream asks twice
+    pub capabilities: crate::caps::CapabilitySpec,
+    /// Who may call which automation command here, settled the same way. Rows it
+    /// does not mention answer from the defaults in `grants.rs`
+    pub automation_permissions: crate::grants::GrantSpec,
 }
 
 impl Workspace {
@@ -3134,6 +3161,8 @@ impl Config {
                     notify: None,
                     primary_notify: self.primary_notify.clone(),
                     providers: None,
+                    capabilities: self.capabilities.clone(),
+                    automation_permissions: self.automation_permissions.clone(),
                 });
             }
             return (out, errors);
@@ -3206,6 +3235,14 @@ impl Config {
                 notify: notify_only,
                 primary_notify: notify_primary,
                 providers: named(ws.providers.as_ref()),
+                capabilities: ws
+                    .capabilities
+                    .clone()
+                    .unwrap_or_else(|| self.capabilities.clone()),
+                automation_permissions: ws
+                    .automation_permissions
+                    .clone()
+                    .unwrap_or_else(|| self.automation_permissions.clone()),
             });
         }
         errors.extend(settle_workspace_ids(&mut out));
@@ -4251,6 +4288,77 @@ mod tests {
         );
     }
 
+    /// The doors in front of a script are the workspace's, or the app's.
+    ///
+    /// Not both: a gateway carries a token already attached, so a workspace that
+    /// has written its own must not also keep the app's -- the door it was
+    /// trying not to have is exactly the one that would stay open.
+    #[test]
+    fn a_workspace_says_what_its_automation_can_reach() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "capabilities": {
+                  "files": {"shared": {"dir": "C:/shared", "read": true}},
+                  "allow_hosts": ["example.com"]
+                },
+                "workspaces": [
+                  {"name":"ふつう"},
+                  {"name":"会社", "capabilities": {"files": {"books": {"dir": "C:/books", "write": true}}}}
+                ]
+              }"#,
+        )
+        .unwrap();
+        let (spaces, errs) = cfg.resolve_workspaces();
+        assert!(errs.is_empty(), "{errs:?}");
+
+        // Said nothing: the app's doors, whole
+        let heard = &spaces[0].capabilities;
+        assert_eq!(heard.files.keys().collect::<Vec<_>>(), vec!["shared"]);
+        assert_eq!(heard.allow_hosts, vec!["example.com".to_string()]);
+
+        // Said its own: only its own
+        let own = &spaces[1].capabilities;
+        assert_eq!(own.files.keys().collect::<Vec<_>>(), vec!["books"]);
+        assert!(own.allow_hosts.is_empty(), "アプリ側の生URL許可が残っている");
+        assert!(!own.files.contains_key("shared"), "アプリ側の窓口が残っている");
+    }
+
+    /// Who may run what is the workspace's table, or the app's -- never halves
+    /// of both.
+    ///
+    /// A row read from two places is a row nobody can read: the one somebody did
+    /// not think to look in the other place for is the one that matters. Rows
+    /// neither table mentions still answer from the defaults in `grants.rs`,
+    /// which is what lets a command added next month arrive with the answer its
+    /// author chose.
+    #[test]
+    fn a_workspace_says_who_may_run_what() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "automation_permissions": {"lua": {"ai": true}},
+                "workspaces": [
+                  {"name":"ふつう"},
+                  {"name":"会社", "automation_permissions": {"write_path": {"ai": false}}},
+                  {"name":"素のまま", "automation_permissions": {}}
+                ]
+              }"#,
+        )
+        .unwrap();
+        let (spaces, errs) = cfg.resolve_workspaces();
+        assert!(errs.is_empty(), "{errs:?}");
+        let allows = |at: usize, name: &str| {
+            crate::grants::Grants::new(spaces[at].automation_permissions.clone())
+                .allows(name, crate::grants::Subject::Ai)
+        };
+        // Said nothing: the app's table, whole
+        assert!(allows(0, "lua"), "アプリ側の表が効いていない");
+        // Said its own: its own alone, with the app's loosening gone
+        assert!(!allows(1, "lua"), "アプリ側で開けた行が残っている");
+        // An empty table of its own is a real answer: the standard answers
+        assert!(!allows(2, "lua"));
+        assert!(spaces[2].automation_permissions.is_empty());
+    }
+
     /// A settings file written before any of this existed reads the same way.
     #[test]
     fn a_workspace_without_the_new_keys_still_reads() {
@@ -4259,6 +4367,8 @@ mod tests {
         assert!(cfg.workspaces[0].notify.is_none());
         assert!(cfg.workspaces[0].primary_notify.is_none());
         assert!(cfg.workspaces[0].providers.is_none());
+        assert!(cfg.workspaces[0].capabilities.is_none());
+        assert!(cfg.workspaces[0].automation_permissions.is_none());
     }
 
     /// A secrets file written before names meant anything is brought forward
