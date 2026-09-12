@@ -114,6 +114,13 @@ pub fn epoch_ms() -> u64 {
 /// appended here. Only the statement body is written, so it can be pasted
 /// straight into on_done.lua to replay
 fn rally_record_path() -> std::path::PathBuf {
+    // Under test this is a file of the run's own (see `tests::OwnRally`). The
+    // real one lives beside the program's other state, which every checkout on
+    // a machine shares -- so two test runs at once would be editing one file.
+    #[cfg(test)]
+    if let Some(p) = tests::rally_path_override() {
+        return p;
+    }
     crate::config::state_path("last-rally.lua")
 }
 
@@ -5156,8 +5163,51 @@ mod stamp_tests {
 mod tests {
     use super::*;
 
-    /// Tests touching data/last-rally.lua share the same file, so serialize them
+    /// Tests that record a rally share one file, so they take turns -- and take
+    /// a file of their own while they have the turn.
+    ///
+    /// Serialising alone was not enough. The path came from `config::state_path`,
+    /// which is the real folder beside the program: every worktree on a machine
+    /// resolves to the same file, and a lock inside one process says nothing to
+    /// another one. A second test run would delete the file between this one's
+    /// write and read, the `unwrap` on the read would panic, and the panic would
+    /// poison the lock -- which is how one failure became nine.
     static RALLY_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static RALLY_PATH: std::sync::Mutex<Option<std::path::PathBuf>> =
+        std::sync::Mutex::new(None);
+
+    pub(super) fn rally_path_override() -> Option<std::path::PathBuf> {
+        RALLY_PATH
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Holds the turn, and points the record at a file only this test can see.
+    pub(crate) struct OwnRally {
+        file: std::path::PathBuf,
+        /// Held, not read: what it does is keep the next test waiting
+        _held: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl OwnRally {
+        pub(crate) fn new() -> Self {
+            // Taken past a poisoning: a test that panicked while holding this
+            // says nothing about whether the next one can run
+            let held = RALLY_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let file = std::env::temp_dir()
+                .join(format!("shikisha-rally-{}.lua", crate::random_hex(8)));
+            *RALLY_PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(file.clone());
+            Self { file, _held: held }
+        }
+    }
+
+    impl Drop for OwnRally {
+        fn drop(&mut self) {
+            *RALLY_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            let _ = std::fs::remove_file(&self.file);
+        }
+    }
 
     /// The tab a hook receives must carry its automation name.
     ///
@@ -5469,7 +5519,7 @@ mod tests {
 
     #[test]
     fn rally_recording_is_appendable_replayable_lua() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         // When the orchestrator appends executed Lua, what's left behind must be pasteable to replay
         let mut e = HookEngine::from_source(
             r##"
@@ -5492,7 +5542,7 @@ mod tests {
 
     #[test]
     fn browser_agent_mode_is_built_in_and_needs_no_lua() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         // The built-in browser-operation mode must load, and on_start must send the "operation protocol".
         // Since the goal is given via the input field rather than config, the prompt needs to explain the input field
         let mut e = HookEngine::new().unwrap();
@@ -5605,7 +5655,7 @@ mod tests {
     /// "silently ignored" into something a person can see.
     #[test]
     fn a_move_written_for_a_turn_that_is_over_is_not_used_for_the_next_one() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         let mut e = HookEngine::new().unwrap();
         let id = e.load_browser_agent("br", "{}").expect("内蔵司令塔が読めない");
         e.set_tab(1, id);
@@ -5730,7 +5780,7 @@ mod tests {
     /// proof there is one source and not four copies drifting apart.
     #[test]
     fn every_opening_instruction_carries_the_same_promises() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         // A fragment of each promise, from the English base wording
         let promises = [
             "do not open a confirmation prompt",
@@ -5796,7 +5846,7 @@ mod tests {
 
     #[test]
     fn ad_hoc_operate_attaches_the_agent_and_detaches() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         let mut e = HookEngine::new().unwrap();
         // Start operating browser "br" from the tab in pane 1 (no config needed).
         e.start_operate(1, "br", "{}", &ctx(1, ""))
@@ -5820,7 +5870,7 @@ mod tests {
     /// nobody asked for, and nothing on screen would say why it stopped.
     #[test]
     fn letting_an_aim_go_gives_back_the_tabs_own_automation() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         let mut e = HookEngine::new().unwrap();
         let mine = e
             .load_source("<mine>", "function on_done(tab) shikisha.log('mine ran') end")
@@ -5843,7 +5893,7 @@ mod tests {
 
     #[test]
     fn ad_hoc_ai_operate_briefs_the_operator_about_the_target() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         let mut e = HookEngine::new().unwrap();
         // Drive the AI tab "helper" from pane 1.
         e.start_operate_ai(1, "helper", &ctx(1, "")).expect("ai operate should start");
@@ -5875,7 +5925,7 @@ mod tests {
 
     #[test]
     fn a_browser_brain_gets_no_file_protocol_at_start() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         // A model brain carries its rules in the system prompt and can't write
         // files, so on_start must NOT hand it the in.lua file-handoff protocol.
         let mut e = load_brain();
@@ -5891,7 +5941,7 @@ mod tests {
 
     #[test]
     fn a_browser_brain_move_is_pulled_from_its_reply() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         // The brain never writes in.lua; the orchestrator must EXTRACT the
         // fenced ```lua from its reply and run it through the same pipeline.
         // A block that isn't valid Lua proves extraction reached the linter
@@ -5914,7 +5964,7 @@ mod tests {
 
     #[test]
     fn a_browser_brain_finishes_on_a_bare_done() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         let mut e = load_brain();
         e.fire("on_start", &ctx_model(1, ""), None);
         let _ = e.drain_commands();
@@ -5929,7 +5979,7 @@ mod tests {
 
     #[test]
     fn a_browser_brain_is_reminded_when_it_only_chats() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         // A reply with neither a code block nor DONE gets nudged back toward
         // emitting Lua (so a chatty model doesn't silently stall).
         let mut e = load_brain();
@@ -5946,7 +5996,7 @@ mod tests {
 
     #[test]
     fn discuss_agent_is_built_in_and_first_waits_for_topic() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         // The built-in AI-vs-AI discussion orchestrator must load, and the opening
         // speaker (is_first) must prompt for the topic via the input field.
         // The user never writes Lua
@@ -6638,7 +6688,7 @@ mod tests {
 
     #[test]
     fn rally_example_orchestrator_parses_and_runs() {
-        let _g = RALLY_FILE_LOCK.lock().unwrap();
+        let _g = OwnRally::new();
         // The template (docs/rally-example) must parse, and the essentials of start and judging must work
         let dir = crate::repo_root().join("docs/rally-example");
         let mut e = HookEngine::new().unwrap();
