@@ -6783,6 +6783,7 @@ function wsPane(ws) {
   box.append(wsDiscussCard(ws));
   box.append(wsStopsCard(ws));
   box.append(wsNotifyCard(ws));
+  box.append(wsProvidersCard(ws));
   box.append(wsSecretsCard(ws));
 
   // Writing it out is about this workspace. Reading one in makes a different
@@ -6826,16 +6827,81 @@ function wsPane(ws) {
 // Both answers show what is in force and where it came from, because a line
 // drawn in one of two places is only worth having if a person can see which
 // place drew it.
+// The line a workspace draws around something the app registered once.
+//
+// The same question is asked of notification destinations and of model
+// connections, so it is asked with the same control: a tick for "only these",
+// and the list to tick. Unticked, this workspace has the app's whole list --
+// and ticking starts from exactly that list, so drawing the line changes
+// nothing at all until a box is actually unticked. Nobody finds out they have
+// drawn a line by having something stop working.
+function reachControl(ws, key, names, label, after) {
+  const own = el("input", {type:"checkbox"});
+  own.checked = Array.isArray(ws[key]);
+  const ownLabel = el("label", {class:"check"});
+  ownLabel.append(own, document.createTextNode(label));
+  const list = el("div", {class:"row"});
+  const drawList = () => {
+    list.textContent = "";
+    list.hidden = !own.checked;
+    for (const n of names()) {
+      const cb = el("input", {type:"checkbox"});
+      cb.checked = (ws[key] || []).includes(n);
+      cb.addEventListener("change", () => {
+        const kept = new Set(ws[key] || []);
+        if (cb.checked) kept.add(n); else kept.delete(n);
+        ws[key] = names().filter(x => kept.has(x));
+        after();
+        refreshSave();
+      });
+      const lab = el("label", {class:"check"});
+      lab.append(cb, document.createTextNode(n));
+      list.append(lab);
+    }
+  };
+  own.addEventListener("change", () => {
+    if (own.checked) ws[key] = names().slice();
+    else delete ws[key];
+    drawList();
+    after();
+    refreshSave();
+  });
+  drawList();
+  return [el("div", {class:"row"}, ownLabel), list];
+}
+
+// Which model connections a tab here may launch.
+//
+// A connection carries the account the inference is billed to and the account
+// the text is handed to. Sharing one between work and private work is the
+// accident rather than the convenience, and it is not something care when
+// writing the tab prevents: the name is all a tab says, and the name resolves
+// to whatever the app has.
+function wsProvidersCard(ws) {
+  current.providers = current.providers || {};
+  const all = () => Object.keys(current.providers);
+  const reaching = () => Array.isArray(ws.providers) ? all().filter(n => ws.providers.includes(n)) : all();
+  const inForce = el("div", {class:"hint"});
+  const draw = () => {
+    const only = reaching();
+    if (!only.length) inForce.textContent = T["settings.ws.providers.now_none"];
+    else inForce.textContent = fill(
+      Array.isArray(ws.providers) ? T["settings.ws.providers.now_own"] : T["settings.ws.providers.now_app"],
+      {names: only.join(", ")});
+  };
+  draw();
+  if (!all().length) return card(T["settings.ws.providers.title"],
+    el("div", {class:"hint"}, T["settings.ws.providers.none"]));
+  return card(T["settings.ws.providers.title"],
+    el("div", {class:"hint"}, T["settings.ws.providers.hint"]),
+    ...reachControl(ws, "providers", all, T["settings.ws.providers.own"], draw),
+    inForce);
+}
+
 function wsNotifyCard(ws) {
   current.notify = current.notify || {};
   const all = () => Object.keys(current.notify);
   const reaching = () => Array.isArray(ws.notify) ? all().filter(n => ws.notify.includes(n)) : all();
-
-  const own = el("input", {type:"checkbox"});
-  own.checked = Array.isArray(ws.notify);
-  const ownLabel = el("label", {class:"check"});
-  ownLabel.append(own, document.createTextNode(T["settings.ws.notify.own"]));
-  const list = el("div", {class:"row"});
   const prim = el("select");
   const inForce = el("div", {class:"hint"});
 
@@ -6869,45 +6935,21 @@ function wsNotifyCard(ws) {
     refreshSave();
   });
 
-  const drawList = () => {
-    list.textContent = "";
-    list.hidden = !own.checked;
-    for (const n of all()) {
-      const cb = el("input", {type:"checkbox"});
-      cb.checked = (ws.notify || []).includes(n);
-      cb.addEventListener("change", () => {
-        const set = new Set(ws.notify || []);
-        if (cb.checked) set.add(n); else set.delete(n);
-        ws.notify = all().filter(x => set.has(x));
-        // A default nothing can reach any more is not a default
-        if (!ws.notify.includes((ws.primary_notify || "").trim())) delete ws.primary_notify;
-        drawPrim();
-        refreshSave();
-      });
-      const lab = el("label", {class:"check"});
-      lab.append(cb, document.createTextNode(n));
-      list.append(lab);
+  // A default nothing can reach any more is not a default
+  const after = () => {
+    if (Array.isArray(ws.notify) && !ws.notify.includes((ws.primary_notify || "").trim())) {
+      delete ws.primary_notify;
     }
-  };
-  own.addEventListener("change", () => {
-    // Ticking the box starts from everything it can reach today, so the act of
-    // drawing the line changes nothing until a box is actually unticked
-    if (own.checked) ws.notify = all().slice();
-    else delete ws.notify;
-    drawList();
     drawPrim();
-    refreshSave();
-  });
+  };
 
-  drawList();
   drawPrim();
   if (!all().length) return card(T["settings.ws.notify.title"],
     el("div", {class:"hint"}, T["settings.ws.notify.none"]));
   return card(T["settings.ws.notify.title"],
     el("div", {class:"hint"}, T["settings.ws.notify.hint"]),
     row(T["settings.ws.notify.primary"], prim),
-    el("div", {class:"row"}, ownLabel),
-    list,
+    ...reachControl(ws, "notify", all, T["settings.ws.notify.own"], after),
     inForce);
 }
 
@@ -8804,6 +8846,7 @@ async function load() {
                  // one must not become an empty list on the way in
                  notify: Array.isArray(w.notify) ? w.notify : null,
                  primary_notify: w.primary_notify || "",
+                 providers: Array.isArray(w.providers) ? w.providers : null,
                  stops: Array.isArray(w.stops) ? w.stops : [],
                  discuss: w.discuss || null };
     if (ws.file) {
@@ -8972,6 +9015,9 @@ function payload() {
     // answer of its own: nothing written is how it says "whatever the app says"
     if (Array.isArray(w.notify)) o.notify = w.notify;
     if ((w.primary_notify || "").trim()) o.primary_notify = w.primary_notify.trim();
+    // Which model connections this workspace may use, written the same way:
+    // nothing written is "all of the app's"
+    if (Array.isArray(w.providers)) o.providers = w.providers;
     // Stop conditions (judge). Already written into the file for a file-referenced workspace, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
     // AI vs AI discussion

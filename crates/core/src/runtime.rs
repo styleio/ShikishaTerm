@@ -554,10 +554,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         None => notify::Notifier::new(Default::default(), None),
     };
-    // Where a message from the workspace being opened goes. Settled already, so
-    // this hands over one answer and the notifier never learns there were two
+    // Where a message from the workspace being opened goes, and which model
+    // connections it may use. Settled already, so this hands over one answer and
+    // neither side learns there were two places to ask
     if let Some(w) = workspaces.get(ws_index) {
         notifier.scope_to(w.notify.clone(), w.primary_notify.clone());
+        bridge::scope_to(w.providers.clone());
     }
     // Names inside the secrets file changed shape; a file written by an
     // earlier version is brought forward here rather than in the ordinary
@@ -1108,6 +1110,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // the workspace on screen says so again on the way out
                 if let Some(w) = workspaces.get(ws_index) {
                     notifier.scope_to(w.notify.clone(), w.primary_notify.clone());
+                    bridge::scope_to(w.providers.clone());
                 }
                 // Only swap out the parts that come from config. Rebuilding it
                 // entirely would leave nobody aware of pages already placed in the

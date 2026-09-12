@@ -1509,6 +1509,16 @@ pub struct WorkspaceSpec {
     /// workspace. Absent means the app's own answer
     #[serde(default)]
     pub primary_notify: Option<String>,
+    /// The model connections (`model <name>/<model>`) this workspace can use,
+    /// out of the ones registered app-wide. Absent means every one of them.
+    ///
+    /// The connection carries the account the inference is billed to and the
+    /// account the text is handed to, so sharing one between work and private
+    /// work is the accident rather than a convenience: a tab here naming the
+    /// other side's connection would send this repository's code to it and be
+    /// obeyed
+    #[serde(default)]
+    pub providers: Option<Vec<String>>,
 }
 
 /// Contents of a workspace definition file (workspaces/*.json)
@@ -2100,6 +2110,9 @@ pub struct Workspace {
     /// The destination an unnamed notify reaches from here, settled the same
     /// way -- this workspace's, or the app's when it can be reached from here
     pub primary_notify: Option<String>,
+    /// The model connections usable from here. Already the whole answer: a list
+    /// is this workspace's own, and `None` is "every registered one"
+    pub providers: Option<Vec<String>>,
 }
 
 impl Workspace {
@@ -2546,16 +2559,25 @@ fn settle_notify(
     own_primary: Option<&String>,
     app_primary: Option<&String>,
 ) -> (Option<Vec<String>>, Option<String>) {
-    let clean = |s: &String| {
-        let t = s.trim().to_string();
-        (!t.is_empty()).then_some(t)
-    };
-    let only: Option<Vec<String>> = own.map(|list| list.iter().filter_map(clean).collect());
+    let only = named(own);
     let reachable = |n: &String| only.as_ref().is_none_or(|l| l.contains(n));
     let primary = own_primary
-        .and_then(clean)
-        .or_else(|| app_primary.and_then(clean).filter(reachable));
+        .and_then(one_name)
+        .or_else(|| app_primary.and_then(one_name).filter(reachable));
     (only, primary)
+}
+
+/// A name with the spaces taken off, or nothing when that leaves nothing.
+fn one_name(s: &String) -> Option<String> {
+    let t = s.trim().to_string();
+    (!t.is_empty()).then_some(t)
+}
+
+/// A list of names a workspace drew around something, settled: blank entries
+/// dropped, and `None` kept as `None` -- an empty list is "nothing", which is a
+/// different answer from "whatever the app says"
+fn named(list: Option<&Vec<String>>) -> Option<Vec<String>> {
+    list.map(|l| l.iter().filter_map(one_name).collect())
 }
 
 /// A byte-order mark is not JSON.
@@ -3111,6 +3133,7 @@ impl Config {
                     // whole answer
                     notify: None,
                     primary_notify: self.primary_notify.clone(),
+                    providers: None,
                 });
             }
             return (out, errors);
@@ -3182,6 +3205,7 @@ impl Config {
                 discuss: ws.discuss.clone().or(file_discuss),
                 notify: notify_only,
                 primary_notify: notify_primary,
+                providers: named(ws.providers.as_ref()),
             });
         }
         errors.extend(settle_workspace_ids(&mut out));
@@ -4193,11 +4217,13 @@ mod tests {
                   "mine": {"type":"slack","webhook":"https://example.com/a"},
                   "work": {"type":"slack","webhook":"https://example.com/b"}
                 },
+                "providers": {"mine": {"base_url":"http://localhost:11434/v1"}},
                 "workspaces": [
                   {"name":"個人"},
                   {"name":"会社", "notify":["work"]},
                   {"name":"会社2", "notify":["work"], "primary_notify":"work"},
-                  {"name":"どちらも", "primary_notify":"work"}
+                  {"name":"どちらも", "primary_notify":"work",
+                   "providers":["mine", "  ", "work-azure"]}
                 ]
               }"#,
         )
@@ -4215,6 +4241,14 @@ mod tests {
         assert_eq!(at(2), (Some(vec!["work".into()]), Some("work".into())));
         // Named its own without drawing a line
         assert_eq!(at(3), (None, Some("work".into())));
+
+        // Model connections are settled the same way, and a blank entry is not
+        // a connection
+        assert_eq!(spaces[0].providers, None, "誰も線を引いていないのに絞られている");
+        assert_eq!(
+            spaces[3].providers,
+            Some(vec!["mine".to_string(), "work-azure".to_string()])
+        );
     }
 
     /// A settings file written before any of this existed reads the same way.
@@ -4224,6 +4258,7 @@ mod tests {
             serde_json::from_str(r#"{"workspaces":[{"name":"古い","tabs":[]}]}"#).unwrap();
         assert!(cfg.workspaces[0].notify.is_none());
         assert!(cfg.workspaces[0].primary_notify.is_none());
+        assert!(cfg.workspaces[0].providers.is_none());
     }
 
     /// A secrets file written before names meant anything is brought forward
