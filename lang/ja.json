@@ -784,6 +784,8 @@
   "settings.project.setup.hint": "このプロジェクトの新しいワークツリーごとに実行します。devcontainer を持てないプロジェクト（Windows 向け、スマホ向け、実機を繋ぐもの）のためのものです。1行に1つ書きます",
   "settings.project.setup.ph": "cargo fetch",
   "settings.group.env": "devcontainer",
+  "settings.group.env.owned": "devcontainer とセットアップコマンドは「{name}」の設定です。元のチェックアウトのページで変えられます。",
+  "settings.group.env.owned_unnamed": "devcontainer とセットアップコマンドはプロジェクトの設定です。元のチェックアウトのページで変えられます。",
   "settings.group.env.has": "このプロジェクトは {path} に持っています。新しいワークツリーごとにそのコマンドが実行されます",
   "settings.group.env.none": "このプロジェクトには devcontainer がないので、新しいワークツリーは何も入っていない状態で出来ます",
   "settings.group.env.offer": "これが書いてくれます:",

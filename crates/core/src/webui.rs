@@ -1047,12 +1047,24 @@ fn handle(
                 .map(|c| percent_decode(&c))
                 .unwrap_or_default();
             let at = std::path::Path::new(at.trim());
+            // The project too, because the screen has to be able to say whose
+            // setting it is looking at. A devcontainer belongs to a repository,
+            // so a branch folder's page must point at the project rather than
+            // offer to write one -- and the project's own page must offer it,
+            // which is the half that was missing
+            let named = crate::config::load()
+                .and_then(|c| c.project_of(at).map(|p| (p.name.clone(), p.at.clone())));
             let resp = match at.as_os_str().is_empty() {
-                true => serde_json::json!({ "family": null, "cut": false, "branch": null }),
+                true => serde_json::json!({
+                    "family": null, "cut": false, "branch": null,
+                    "project": null, "project_at": null,
+                }),
                 false => serde_json::json!({
                     "family": crate::repo::family_of(at).map(|f| f.display().to_string()),
                     "cut": crate::repo::is_linked(at),
                     "branch": crate::repo::branch_of(at),
+                    "project": named.as_ref().map(|(n, _)| n.clone()),
+                    "project_at": named.and_then(|(_, a)| a),
                 }),
             };
             req.respond(json_resp(resp))?;
@@ -6902,12 +6914,20 @@ function folderPane(ws, g, gi) {
     el("span", {class:"hint"}, T["settings.group.delete.hint"]));
   box.append(buttons);
 
-  // Only for a branch's own folder: the project's own is never on the table
   familyOf(g.cwd).then(where => {
     paint(where && where.family);
-    if (!where || !where.cut) return;
+    if (!where) return;
+    // A devcontainer is written into the repository, so it is offered in one
+    // place: the project's own checkout. It used to be offered on every
+    // branch's page instead -- three folders of one project meant three places
+    // to change one fact about that project, and the project's own page, where
+    // somebody would look first, did not mention it at all
+    if (where.family && !where.cut) box.insertBefore(envCard(g), buttons);
+    // Throwing a folder away is only for a branch: the project's own is never
+    // on the table
+    if (!where.cut) return;
     if (where.branch) box.insertBefore(renameCard(g, where.branch), buttons);
-    box.insertBefore(envCard(g), buttons);
+    box.insertBefore(elsewhereCard(where), buttons);
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
       if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
@@ -6930,6 +6950,20 @@ function folderPane(ws, g, gi) {
 // dialog that makes folders. It writes into this repository, so it belongs
 // where this repository's own settings are -- a machine is used by many
 // projects, and somebody making a folder came to make a folder.
+// Where a branch's page sends somebody looking for the project's settings.
+//
+// Not silence: a person who came here to set up the environment would search
+// the page, find nothing, and conclude the app cannot do it. One line naming
+// the folder that can is the difference between "not here" and "not possible"
+function elsewhereCard(where) {
+  const at = where.project_at || "";
+  return card(T["settings.group.env"],
+    el("div", {class:"hint"}, where.project
+      ? fill(T["settings.group.env.owned"], {name: where.project})
+      : T["settings.group.env.owned_unnamed"]),
+    at ? el("div", {class:"realcmd"}, el("code", {class:"mono"}, at)) : null);
+}
+
 function envCard(g) {
   const box = el("div");
   box.hidden = true;
@@ -9481,6 +9515,36 @@ if (/^[a-z0-9_]+$/.test(asked)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A repository's own settings are offered in exactly one place.
+    ///
+    /// The devcontainer is written into the repository, so three folders of
+    /// one project must not each offer to write it -- that is three places to
+    /// change one fact, and the last one pressed wins. It used to be offered
+    /// only on a branch's page, which had both halves of the mistake: the
+    /// project's own page, where a person looks first, said nothing at all.
+    #[test]
+    fn the_repositorys_own_settings_are_offered_where_the_repository_is() {
+        // Offered on the project's own checkout: in a repository, not cut
+        assert!(
+            PAGE.contains("if (where.family && !where.cut) box.insertBefore(envCard(g), buttons);"),
+            "devcontainer が元のチェックアウトのページに出ていない"
+        );
+        // A branch's page points at it instead of offering a second copy
+        assert!(
+            PAGE.contains("box.insertBefore(elsewhereCard(where), buttons);"),
+            "枝のページが、どこで設定するのかを言っていない"
+        );
+        assert!(
+            !PAGE.contains("if (!where || !where.cut) return;"),
+            "枝だけの門が残っていて、元のチェックアウトが弾かれる"
+        );
+        // And the screen is told whose it is, which it cannot work out itself
+        assert!(
+            PAGE.contains("where.project"),
+            "画面がプロジェクトの名前を受け取っていない"
+        );
+    }
 
     /// Every trigger this screen offers is a trigger that actually fires.
     ///
