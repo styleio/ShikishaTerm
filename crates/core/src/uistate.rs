@@ -388,6 +388,12 @@ pub struct BranchPlan {
     /// Which of them is chosen. Empty is this machine
     #[serde(default)]
     pub host: String,
+    /// The file this project's own preparation came from, when it has one
+    #[serde(default)]
+    pub setup_from: String,
+    /// The parts of it that need another tool, named rather than dropped
+    #[serde(default)]
+    pub setup_unresolved: Vec<String>,
 }
 
 /// What Claude's subscription has left, as the status line draws it.

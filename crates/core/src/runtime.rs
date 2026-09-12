@@ -3711,6 +3711,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // about what has been typed so far. Answered even when the name is
             // still empty, so the pickers are filled the moment the dialog opens
             let repo = crate::repo::main_checkout(&from);
+            // What this project says about itself, read once whatever is done
+            // with it
+            let told = repo.as_deref().and_then(crate::devcontainer::of);
             let offers = repo.as_deref().map(|main| {
                 (crate::worktree::bases(main), crate::worktree::carryables(main))
             });
@@ -3759,10 +3762,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .unwrap_or_default(),
                 hosts: machines.iter().map(|h| h.name.clone()).collect(),
                 host: on.map(|h| h.name.clone()).unwrap_or_default(),
+                // Said whether or not it is switched on, so the switch is not
+                // one nobody can tell the meaning of
+                setup_from: told.as_ref().map(|e| e.from.clone()).unwrap_or_default(),
+                setup_unresolved: told.as_ref().map(|e| e.unresolved.clone()).unwrap_or_default(),
                 ..Default::default()
             };
             if ask.ais.is_empty() {
                 let at = std::path::PathBuf::from(ask.at.trim());
+                // What the project says it needs, unless somebody said not to.
+                // Read from the checkout here: it is the same repository
+                // wherever the folder ends up
+                let env = ask.setup.then(|| told.clone()).flatten();
                 // On this machine or another. Two planners rather than one
                 // with a switch inside it: almost nothing the local one does
                 // can be done about a machine we would have to ask
@@ -3776,16 +3787,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // fetch it from. The project's own remote, because that
                         // is the one address both ends already agree on
                         &crate::repo::remote_url_of(&from).unwrap_or_default(),
-                        // What the project itself says its environment needs.
-                        // Read from the checkout here, because it is the same
-                        // repository that is about to be fetched over there
-                        repo.as_deref().and_then(crate::devcontainer::of),
+                        env.clone(),
                     ),
                     None => crate::worktree::plan_into(
                         &from,
                         &wanted,
                         Some(&ask.base),
                         (!ask.at.trim().is_empty()).then_some(at.as_path()),
+                        env,
                     ),
                 };
                 match planned {
