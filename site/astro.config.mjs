@@ -32,6 +32,10 @@ export default defineConfig({
         { tag: "meta", attrs: { name: "twitter:card", content: "summary_large_image" } },
         { tag: "meta", attrs: { name: "twitter:image", content: "https://shikisha-term.com/og.png" } },
         { tag: "link", attrs: { rel: "apple-touch-icon", href: "/apple-touch-icon.png" } },
+        // Store のリンクを押したとき、Store は新しいタブで開き、こちらのタブは
+        // /store/ へ移る。MDX の中には書けない (CSS/JS の { が JSX 式として
+        // 読まれる) ので、全ページ共通の小さな外部ファイルにしてある
+        { tag: "script", attrs: { src: "/store-tab.js", defer: true } },
       ],
       social: [
         { icon: "github", label: "GitHub", href: REPO },

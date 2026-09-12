@@ -1,0 +1,64 @@
+---
+title: The Store is opening
+description: Install from the Microsoft Store, then star the repo and follow the releases.
+template: splash
+prev: false
+next: false
+editUrl: false
+head:
+  - tag: meta
+    attrs:
+      name: robots
+      content: noindex
+---
+
+<div style="text-align:center;margin:0 0 1.8em">
+  <p style="font-size:1.15em;margin:0 0 .4em"><strong>Thanks — the Microsoft Store should be opening in another tab.</strong></p>
+  <p style="opacity:.72;font-size:.92em;margin:0">
+    Nothing opened?
+    <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0" target="_blank" rel="noopener">Open the Store page yourself</a>.
+  </p>
+</div>
+
+{/* Same shape as /get/, and for the same reason: the asks belong in the seconds
+    while the install runs. What is different is that nothing here may mention
+    the SmartScreen warning — the Store copy is signed and never shows it, so
+    saying otherwise would simply be untrue. The star has a different reason
+    for this reader, and it is a better one. */}
+<div class="asks">
+  <a class="ask" href="https://github.com/styleio/ShikishaTerm">
+    <strong>Star it on GitHub →</strong>
+    <span>
+      Your copy is signed by Microsoft, so you will never see a warning. The portable zip
+      other people download is not signed, and the free code-signing certificates for open
+      source are handed out on reputation — which, on GitHub, is counted in stars. One
+      second from you takes that warning away from them.
+    </span>
+  </a>
+  <a class="ask" href="https://x.com/SHIKISHATERM">
+    <strong>Follow @SHIKISHATERM →</strong>
+    <span>
+      Where new versions are announced, and where they are explained: what was measured,
+      what was decided, and what turned out not to work. A release every other day for the
+      past month, posted as it happens.
+    </span>
+  </a>
+</div>
+
+---
+
+## Two steps to a running tab
+
+1. **Press Get in the Store, then open it.** Nothing else to set up — the Store installs it
+   and keeps it up to date on its own.
+2. **Press `[e]`.** A terminal tab is already there; the settings screen opens inside the
+   window, and you pick which AI runs in which folder. There is no JSON to edit.
+
+From there, [the manual](/manual/) is four pages, and [automation](/automation/) is where
+agents start handing work to each other.
+
+<p style="opacity:.72;font-size:.9em;margin-top:2em">
+  Something broke, or something was confusing?
+  <a href="https://github.com/styleio/ShikishaTerm/issues">Tell me on GitHub</a> — reports
+  from the first ten minutes are the most useful ones there are.
+</p>
