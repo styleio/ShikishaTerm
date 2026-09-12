@@ -29,6 +29,15 @@ pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
                 remote: None,
                 protect: protect.clone(),
             }),
+            // The editor works in a folder too, and is named the same way, so
+            // reading and writing the file it is showing goes through the same
+            // fence as everything else
+            Surface::Editor { key, dir: Some(d), .. } => Some(hooks::TabPlace {
+                key: hooks::TabKey { id: Some(key.clone()) },
+                dir: d.clone(),
+                remote: None,
+                protect: Vec::new(),
+            }),
             // A file panel is. `sftp_put("その呼び名", …)` reaches the same
             // server the screen is showing, which is the whole point of the
             // panel being a tab rather than a window of its own

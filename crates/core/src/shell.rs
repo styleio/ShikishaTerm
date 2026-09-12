@@ -509,6 +509,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     display:flex; align-items:center; justify-content:center; padding:var(--s6);
     background:var(--sunk); color:var(--dim); font-size:13px; line-height:1.6;
     text-align:center; }
+  /* `hidden` loses to a display written here, so it is said again. Without
+     this the line is painted while nothing is being said -- an opaque panel
+     over whatever stands in that pane, which is how the editor came to show
+     its line numbers and no text */
+  #nocast[hidden] { display:none; }
   #nocast span { max-width:46ch; }
   /* Trackpad-style synthetic cursor: a Windows-like arrow whose tip is the
      click point. The negative margin aligns the arrow tip (SVG coords 2,1)
@@ -774,6 +779,41 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      are what people look for, and the size is on the row's own menu */
   #sftppanel.narrow .sz { display:none; }
   #sftppanel.narrow .pick { max-width:100%; }
+
+  /* ── The editor ──────────────────────────────────
+     One file of this tab's folder. Stands where a terminal stands, like the
+     panels beside it: a line saying which file and how it stands, then the
+     text, which is a library's business and not ours */
+  #editpanel[hidden] { display:none; }
+  #editpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+    bottom:var(--fb); display:flex; flex-direction:column; overflow:hidden;
+    font-size:13px;
+    /* In the panes' own band (§4 of the style guide). The library inside
+       gives its own parts z-indexes, and without one here they would be
+       measured against the whole window rather than against this panel */
+    z-index:4; }
+  #editpanel .ebar { flex:0 0 auto; display:flex; align-items:center; gap:var(--s2);
+    padding:6px 10px; border-bottom:1px solid var(--line); }
+  #editpanel .ewhere { min-width:0; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; color:var(--dim); font-size:12px; }
+  #editpanel .ewhere b { color:var(--text); font-weight:600; }
+  #editpanel .grow { flex:1 1 auto; }
+  #editpanel .ebar button { flex:0 0 auto; padding:4px 12px; font-size:12.5px;
+    border-radius:var(--r-ctl); border:1px solid var(--line); background:var(--panel);
+    color:var(--text); cursor:pointer; }
+  #editpanel .ebar button:hover { background:var(--panel2); }
+  #editpanel .ebar button.go { border-color:var(--brand); color:var(--brand); }
+  #editpanel .ebar button.quiet { border-color:transparent; background:none; color:var(--dim); }
+  #editpanel .ebar button.quiet:hover { color:var(--text); background:var(--hover); }
+  /* Not saved yet, and changed underneath us: the two things the person has
+     to know before they press anything */
+  #editpanel .emark { flex:0 0 auto; font-size:11px; color:var(--warn); }
+  #editpanel .esay { flex:0 0 auto; padding:6px 10px; font-size:11.5px; color:var(--faint);
+    border-top:1px solid var(--line); display:flex; align-items:center; gap:var(--s3); }
+  #editpanel .esay.bad { color:var(--stop); }
+  #editpanel .ehost { flex:1 1 auto; min-height:0; position:relative; }
+  #editpanel .eempty { flex:1 1 auto; padding:var(--s4) var(--s3); color:var(--faint);
+    font-size:11.5px; line-height:1.6; }
 
   /* ── The git panel ───────────────────────────────
      A toolbar, then three columns: the branches, what is staged over what is
@@ -1644,8 +1684,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
        STOP is the one control that must never be behind something */
     #side { position:fixed; top:calc(42px + env(safe-area-inset-top));
       right:0; bottom:0; left:0; z-index:29; width:auto; border-left:none; }
-    /* Its edge is a window gesture: a finger drags the page, not the divider */
-    #sidegrip { display:none; }
+    /* Its edge is the way back to it once a file has taken the screen. Wider
+       than the window's, because a finger is not a pointer, and it wears a
+       mark so it is not an invisible control */
+    #sidegrip { right:0; width:18px; cursor:default; }
+    #sidegrip::after { content:""; position:absolute; top:50%; right:5px;
+      width:4px; height:40px; margin-top:-20px; border-radius:999px;
+      background:var(--line); }
 
     /* Body content sits below the top bar now, so it no longer needs margin for ☰ */
     #board { padding:16px 12px; }
@@ -1683,6 +1728,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <!-- The git panel sits exactly where a terminal would. It has no process
          and no page of its own: the board draws it, and every button on it is
          one call to an automation command -->
+    <!-- The editor stands where a terminal would, the same as the panels -->
+    <div id="editpanel" hidden></div>
     <div id="gitpanel" hidden></div>
     <div id="sftppanel" hidden></div>
     <!-- One question about one file: replace what is there, throw it away,
@@ -3641,6 +3688,8 @@ window.__state = function (json) {
   const web = S.tabs.some(t => t.index === S.active && t.kind === "browser");
   // The git panel stands where a terminal would, so the two take turns
   const git = S.tabs.some(t => t.index === S.active && t.kind === "git");
+  // And so does the editor
+  const edit = S.tabs.some(t => t.index === S.active && t.kind === "editor");
   // And so does the file panel
   const files = S.tabs.some(t => t.index === S.active && t.kind === "sftp");
   // INDEX covers the window; the panes are still there underneath and come
@@ -3653,7 +3702,46 @@ window.__state = function (json) {
   board.hidden = !S.board;
   document.getElementById("panes").hidden = cover;
   // Nothing to draw for a pane with nothing in it -- it says so itself
-  screen.hidden = cover || S.active === 0 || web || git || files;
+  screen.hidden = cover || S.active === 0 || web || git || files || edit;
+  // The editor, whenever that is what the pane is showing. Which file it is
+  // on comes from the state, so a page that has just been opened -- a phone
+  // picking up the board -- finds it already open rather than empty
+  const epanel = document.getElementById("editpanel");
+  if (epanel) {
+    const wasEdit = !epanel.hidden;
+    epanel.hidden = cover || !edit;
+    if (!epanel.hidden) {
+      const t = editorTab();
+      const key = t ? (t.id || t.name) : null;
+      const want = (t && t.file) || null;
+      // Somebody else wrote this file while we had it open. A clean editor
+      // follows it -- that is exactly what you want when the AI next door is
+      // the one writing. A dirty one is NOT reloaded: that would throw away
+      // what is being typed, so it says so and the person picks
+      const stamp = (t && t.file_stamp) || null;
+      if (ED.path && want === ED.path && stamp && ED.stamp && stamp !== ED.stamp) {
+        if (ED.dirty) {
+          ED.outside = true;
+        } else {
+          ED.stamp = stamp;
+          ED.loading = true;
+          editAsk("read", {path: ED.path});
+        }
+      }
+      if (ED.key !== key || (want && want !== ED.path)) {
+        ED.key = key;
+        if (want) {
+          ED.path = want; ED.loading = true; ED.said = ""; ED.bad = false;
+          editAsk("read", {path: want});
+        } else {
+          ED.path = null; ED.text = ""; ED.mark = null; ED.dirty = false;
+        }
+      } else if (!want && ED.path) {
+        ED.path = null; ED.text = ""; ED.mark = null; ED.dirty = false;
+      }
+      if (!wasEdit || true) drawEdit();
+    }
+  }
   const panel = document.getElementById("gitpanel");
   const main = document.getElementById("main");
   const wasGit = panel && !panel.hidden && panel.parentNode === main;
@@ -4157,6 +4245,14 @@ function drawTitle() {
 // which one it meant.
 const SIDEW_MIN = {{SIDE_W_MIN}}, SIDEW_MAX = {{SIDE_W_MAX}}, SIDEW_DEF = {{SIDE_W_DEF}};
 let lastSideW = SIDEW_DEF;
+// At a phone's width the column is the whole page rather than a column, so
+// opening a file has to hand the screen over to it. Held here rather than in
+// the width, because the width is a setting and this is where somebody is
+// looking right now
+let sideStoodAside = false;
+function phoneWidth() {
+  return window.matchMedia("(max-width:700px), (max-aspect-ratio:1/1)").matches;
+}
 // Which panel stands in the column. One today; the strip is drawn from this
 // list, so the next one is a row here rather than a shape change
 const SIDE_PANELS = [
@@ -4187,6 +4283,7 @@ function settleSideWidth() {
 }
 // Put the column away, or bring it back the width it was
 window.__toggleSideBar = function () {
+  if (sideStoodAside) { sideStoodAside = false; drawSide(); return; }
   if (sideWidth() > 0) { settleSideWidth(); setSideWidth(0); }
   else setSideWidth(lastSideW);
 };
@@ -4218,6 +4315,9 @@ window.__toggleSideBar = function () {
     window.addEventListener("mouseup", up);
   };
   grip.ondblclick = (e) => { e.preventDefault(); setSideWidth(SIDEW_DEF); settleSideWidth(); };
+  // A finger taps rather than drags: on a phone the edge is how the column
+  // comes back after a file took the screen
+  grip.onclick = () => { if (phoneWidth()) window.__toggleSideBar(); };
   settleSideWidth();
 })();
 
@@ -4227,6 +4327,259 @@ window.__toggleSideBar = function () {
 function gitSurfaceUp() {
   return !!(S && S.tabs || []).some(t => t.index === S.active && t.kind === "git");
 }
+// The editor's own stylesheet, written in this page's colours so the text
+// belongs to the window it is in. The library asks for one string; these are
+// the class names it uses
+const ED_THEME_CSS = `
+.ace-shikisha { background:var(--bg); color:var(--text); }
+.ace-shikisha .ace_gutter { background:var(--panel); color:var(--faint); }
+.ace-shikisha .ace_gutter-active-line { background:var(--raise); color:var(--dim); }
+.ace-shikisha .ace_active-line { background:var(--raise); }
+.ace-shikisha .ace_cursor { color:var(--cursor, var(--brand)); }
+.ace-shikisha .ace_selection { background:var(--sel, var(--raise)); }
+.ace-shikisha .ace_marker-layer .ace_selected-word { border:1px solid var(--line); }
+.ace-shikisha .ace_indent-guide { border-right:1px dotted var(--line); }
+.ace-shikisha .ace_print-margin { background:var(--line); }
+.ace-shikisha .ace_comment { color:var(--faint); font-style:italic; }
+.ace-shikisha .ace_keyword, .ace-shikisha .ace_meta { color:var(--brand); }
+.ace-shikisha .ace_string { color:var(--live); }
+.ace-shikisha .ace_constant, .ace-shikisha .ace_constant.ace_numeric { color:var(--warn); }
+.ace-shikisha .ace_entity.ace_name.ace_function, .ace-shikisha .ace_support.ace_function { color:var(--text); }
+.ace-shikisha .ace_variable, .ace-shikisha .ace_identifier { color:var(--text); }
+.ace-shikisha .ace_storage, .ace-shikisha .ace_support.ace_type { color:var(--brand); }
+.ace-shikisha .ace_invalid { color:var(--stop); }
+.ace-shikisha .ace_fold { background:var(--brand); }
+`;
+
+// ── The editor ──────────────────────────────────────────
+// One file of a folder, read here, changed here, written back here. What draws
+// the text is a library carried inside the program (see ace.rs); everything
+// below is about the one thing a library cannot know: that an AI is editing
+// the same file at the same time.
+//
+// Three rules, and they are the whole design:
+//
+//   1. A file changed underneath an unsaved draft is NOT reloaded. Say so and
+//      let the person choose. Reloading would throw their typing away.
+//   2. A save that would land on somebody else's newer bytes is refused, not
+//      won. The app checks the mark it was given when it read.
+//   3. Nothing saves itself. The person presses save, or Ctrl+S.
+const ED = {
+  key: null,        // which editor tab this is
+  path: null,       // the file it is showing, relative to the folder
+  mark: null,       // what the file was when we read it
+  stamp: null,      // what the disk said about it then
+  text: "",         // what was read, to tell "changed" from "the same"
+  dirty: false,
+  outside: false,   // it changed on disk while we had it open
+  said: "", bad: false,
+  loading: false,
+};
+let edUi = null, edAce = null, edAceAsked = false;
+
+// Which tab is the editor being looked at, if that is what is being looked at
+function editorTab() {
+  return (S && S.tabs || []).find(t => t.index === S.active && t.kind === "editor");
+}
+function editAsk(act, args) {
+  const t = editorTab();
+  if (!t) return;
+  send({kind: "files", panel: t.id || t.name || "", act, args: args || {}});
+}
+// The library, fetched the first time somebody opens a file and not before:
+// it is the largest thing this page can ask for, and most sessions never edit
+function editLoadAce(then) {
+  if (window.ace) { then(); return; }
+  if (edAceAsked) { setTimeout(() => editLoadAce(then), 120); return; }
+  edAceAsked = true;
+  const tag = document.createElement("script");
+  tag.src = "vendor/ace/ace.js";
+  tag.onload = () => {
+    window.ace.config.set("basePath", "vendor/ace");
+    // The colours are this page's, so the editor belongs to the window it is
+    // in rather than bringing a palette of its own
+    window.ace.define("ace/theme/shikisha", ["require", "exports", "module",
+      "ace/lib/dom"], function (require, exports, module) {
+      // Asked of the page rather than assumed: the library turns a few of its
+      // own decisions on this, and the person chooses the colours
+      exports.isDark = edDarkNow();
+      exports.cssClass = "ace-shikisha";
+      exports.cssText = ED_THEME_CSS;
+      require("ace/lib/dom").importCssString(exports.cssText, exports.cssClass, false);
+    });
+    then();
+  };
+  tag.onerror = () => { ED.said = "ace"; ED.bad = true; edAceAsked = false; drawEdit(); };
+  document.head.append(tag);
+}
+// Whether the colours in force are a dark set. Read off the page's own
+// background, so it is the same answer the rest of the window is using
+function edDarkNow() {
+  const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(bg);
+  if (!m) return true;
+  const h = m[1].length === 3 ? m[1].split("").map(c => c + c).join("") : m[1];
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
+  // The usual weighting: the eye is not equally sensitive to the three
+  return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+}
+
+// Which language file to ask for. Unknown endings get no colours rather than
+// the wrong ones
+const ED_MODES = {rs:"rust", js:"javascript", mjs:"javascript", cjs:"javascript",
+  ts:"typescript", tsx:"typescript", jsx:"javascript", json:"json", md:"markdown",
+  html:"html", htm:"html", css:"css", py:"python", sh:"sh", bash:"sh", toml:"toml",
+  yml:"yaml", yaml:"yaml", xml:"xml", sql:"sql", go:"golang", c:"c_cpp", h:"c_cpp",
+  cc:"c_cpp", cpp:"c_cpp", hpp:"c_cpp", java:"java", lua:"lua", ps1:"powershell",
+  ini:"ini", cfg:"ini", conf:"ini"};
+function edModeFor(path) {
+  const dot = (path || "").lastIndexOf(".");
+  const ext = dot < 0 ? "" : path.slice(dot + 1).toLowerCase();
+  return ED_MODES[ext] || null;
+}
+// Everything the editor learns comes back through the file list's own door
+function editHeard(d) {
+  if (d.act === "read") {
+    ED.loading = false;
+    if (!d.ok) { ED.said = d.error || ""; ED.bad = true; drawEdit(); return; }
+    ED.path = d.path; ED.mark = d.mark; ED.stamp = d.stamp || null; ED.text = d.text || "";
+    ED.dirty = false; ED.outside = false; ED.said = ""; ED.bad = false;
+    drawEdit();
+    if (edAce) {
+      // Setting the text is not the person typing, so it must not look like it
+      edAce.session.doc.setValue(ED.text);
+      edAce.session.getUndoManager().reset();
+      edAce.clearSelection();
+      ED.dirty = false;
+      drawEdit();
+    }
+    return;
+  }
+  if (d.act === "write") {
+    if (!d.ok) { ED.said = d.error || ""; ED.bad = true; drawEdit(); return; }
+    ED.mark = d.mark; ED.stamp = d.stamp || null;
+    ED.text = edAce ? edAce.getValue() : ED.text;
+    ED.dirty = false; ED.outside = false;
+    ED.said = T["tui.edit.saved"] || ""; ED.bad = false;
+    drawEdit();
+  }
+}
+function editSave() {
+  if (!ED.path || ED.loading) return;
+  // Rule 2: the mark says what we were given. The app refuses the write if the
+  // file has moved on since, and says so -- it does not win the race
+  editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text, mark: ED.mark});
+}
+function editReload() {
+  if (!ED.path) return;
+  ED.loading = true; ED.said = ""; ED.bad = false;
+  editAsk("read", {path: ED.path});
+}
+// The place being read, handed to the AI in the box below: `path:line`, or
+// `path:from-to` when something is selected. The one form every one of them
+// understands, and the form a person can read back
+function editTell() {
+  if (!ED.path || !edAce) return;
+  const r = edAce.getSelectionRange();
+  const one = r.start.row === r.end.row && r.start.column === r.end.column;
+  const from = r.start.row + 1, to = r.end.row + 1;
+  const where = one || from === to ? ED.path + ":" + from : ED.path + ":" + from + "-" + to;
+  insertIntoComposer(where);
+  ED.said = T["tui.edit.told"] || ""; ED.bad = false;
+  drawEdit();
+}
+function editBuild(box) {
+  box.textContent = "";
+  const bar = el("div", {class: "ebar"});
+  const where = el("div", {class: "ewhere"});
+  const mark = el("span", {class: "emark"});
+  const tell = el("button", {class: "quiet", onclick: editTell}, T["tui.edit.tell"] || "");
+  const save = el("button", {class: "go", onclick: editSave}, T["tui.edit.save"] || "");
+  const shut = el("button", {class: "quiet", title: T["tui.edit.close"] || "",
+    onclick: () => {
+      const t = editorTab();
+      if (t) send({kind: "editopen", panel: t.id || t.name || "", path: ""});
+    }}, "\u2715");
+  bar.append(where, el("span", {class: "emark"}), el("span", {class: "grow"}), tell, save, shut);
+  bar.replaceChild(mark, bar.children[1]);
+  const host = el("div", {class: "ehost"});
+  const say = el("div", {class: "esay"});
+  box.append(bar, host, say);
+  edUi = {where, mark, save, tell, host, say};
+}
+function drawEdit() {
+  const box = document.getElementById("editpanel");
+  if (!box || box.hidden) return;
+  if (!edUi || !box.firstChild) editBuild(box);
+  const u = edUi;
+  const name = ED.path ? ED.path.split("/").pop() : "";
+  u.where.textContent = "";
+  if (ED.path) {
+    const cut = ED.path.lastIndexOf("/");
+    if (cut >= 0) u.where.append(document.createTextNode(ED.path.slice(0, cut + 1)));
+    u.where.append(el("b", {}, name));
+  }
+  u.mark.textContent = ED.outside ? "" : (ED.dirty ? (T["tui.edit.dirty"] || "") : "");
+  const shown = !!ED.path;
+  u.save.style.display = shown ? "" : "none";
+  u.tell.style.display = shown ? "" : "none";
+  // The line under it says the one thing that matters right now, in order of
+  // how much it matters
+  u.say.textContent = "";
+  u.say.className = "esay" + (ED.bad ? " bad" : "");
+  if (!shown) {
+    u.say.append(document.createTextNode(T["tui.edit.none"] || ""));
+  } else if (ED.outside) {
+    // Rule 1: it changed underneath a draft. Nothing was reloaded and nothing
+    // was thrown away; the person picks. A save attempted in this state was
+    // refused, and that answer is said here rather than behind the banner --
+    // pressing save and being told nothing is how work goes missing
+    u.say.className = "esay" + (ED.bad ? " bad" : "");
+    u.say.style.color = ED.bad ? "" : "var(--warn)";
+    u.say.append(document.createTextNode((ED.bad && ED.said) || T["tui.edit.outside"] || ""),
+      el("button", {class: "quiet", onclick: editReload}, T["tui.edit.reload"] || ""));
+  } else {
+    u.say.style.color = "";
+    u.say.append(document.createTextNode(ED.said || ""));
+  }
+  // The text itself, once the library is here
+  if (!shown) { u.host.style.display = "none"; return; }
+  u.host.style.display = "";
+  editLoadAce(() => {
+    if (!edAce) {
+      edAce = window.ace.edit(u.host, {
+        theme: "ace/theme/shikisha",
+        fontSize: getComputedStyle(document.documentElement).getPropertyValue("--fs").trim(),
+        fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--mono").trim(),
+        showPrintMargin: false,
+        // No type checking here: this is a place to read and fix a line, and
+        // the real tools are in the terminal next to it
+        useWorker: false,
+        tabSize: 2,
+        useSoftTabs: true,
+        navigateWithinSoftTabs: true,
+        wrap: false,
+      });
+      edAce.commands.addCommand({
+        name: "save", bindKey: {win: "Ctrl-S", mac: "Cmd-S"}, exec: editSave
+      });
+      edAce.on("change", () => {
+        const now = edAce.getValue();
+        const was = ED.dirty;
+        ED.dirty = now !== ED.text;
+        if (was !== ED.dirty) drawEdit();
+      });
+      edAce.session.doc.setValue(ED.text);
+      edAce.session.getUndoManager().reset();
+      edAce.clearSelection();
+    }
+    const mode = edModeFor(ED.path);
+    const want = mode ? "ace/mode/" + mode : "ace/mode/text";
+    if (edAce.session.getMode().$id !== want) edAce.session.setMode(want);
+    edAce.resize();
+  });
+}
+
 // ── The file list ───────────────────────────────────────
 // What is in the working folder, as a tree that opens a folder at a time, and
 // a search over the same folder by name or by what is inside.
@@ -4261,6 +4614,8 @@ function filesAsk(act, args) {
 // Everything the panel learns comes back through here
 window.__files = function (d) {
   if (!d || !d.act) return;
+  // The editor asks through the same door as the list, and reads its own post
+  if (d.act === "read" || d.act === "write") { editHeard(d); return; }
   if (!d.ok) { FS.said = d.error || ""; FS.bad = true; drawFiles(); return; }
   FS.said = ""; FS.bad = false;
   FS.rev++;
@@ -4335,9 +4690,12 @@ function filesRow(name, path, dir, depth, hit) {
         drawFiles();
         return;
       }
-      // A file is handed over rather than opened: there is no editor here, and
-      // the useful thing to do with a path is give it to the AI in the box
-      insertIntoComposer(path);
+      // A file is opened where there is room to read it. The path still goes
+      // into the box on a long press -- see the row's own menu
+      const t = folderTab();
+      if (t) send({kind: "editopen", panel: t.id || t.name || "", path});
+      // On a phone the list is covering the very thing it just opened
+      if (phoneWidth()) { sideStoodAside = true; drawSide(); }
     }});
   row.append(el("span", {class: "car"}, dir ? (FS.open[path] ? "\u25be" : "\u25b8") : ""));
   // A result is a file from anywhere under here, so it says where. The tree
@@ -4401,7 +4759,7 @@ function drawSide() {
   const grip = document.getElementById("sidegrip");
   if (!side || !grip) return;
   const held = gitSurfaceUp();
-  const out = sideWidth() > 0 && !held;
+  const out = sideWidth() > 0 && !held && !(sideStoodAside && phoneWidth());
   side.hidden = !out;
   grip.hidden = held;
   if (!out) return;
@@ -9144,6 +9502,36 @@ mod tests {
         assert_eq!(p.matches("id=\"gitpanel\"").count(), 1, "git の画面が2つある");
     }
 
+    /// The editor's three promises, in the page itself: a draft is never
+    /// thrown away by a reload, a save that would land on newer bytes is
+    /// refused, and nothing writes on its own.
+    #[test]
+    fn the_editor_keeps_a_draft() {
+        let p = super::page();
+        assert_eq!(p.matches("id=\"editpanel\"").count(), 1, "エディタの画面が2つある");
+        // A file changed outside: reloaded only when there is nothing to lose
+        assert!(
+            p.contains("if (ED.dirty) {\n          ED.outside = true;"),
+            "書きかけのまま読み直してしまう"
+        );
+        // The save carries the mark it was given, so the app can refuse
+        assert!(
+            p.contains(r#"editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text, mark: ED.mark});"#),
+            "保存が印を持って行かない"
+        );
+        // Nothing writes on its own: the only ways in are the button and the key
+        assert!(!p.contains("autosave") && !p.contains("setInterval(editSave"), "勝手に保存している");
+        assert!(p.contains(r#"bindKey: {win: "Ctrl-S", mac: "Cmd-S"}"#), "Ctrl+S が無い");
+        // The place handed to the AI is the one form every one of them reads
+        assert!(
+            p.contains(r#"ED.path + ":" + from + "-" + to"#),
+            "選択範囲が path:from-to にならない"
+        );
+        // The library is asked for from this program, not from the internet
+        assert!(p.contains(r#"tag.src = "vendor/ace/ace.js";"#), "ライブラリを外から取ろうとしている");
+        assert!(!p.contains("cdn."), "外部 CDN を引いている");
+    }
+
     /// The window's frame is the page's: the bar is there, it can be taken
     /// hold of, and the three the system used to draw are all present. A bar
     /// missing one of these is a window that cannot be moved, or closed.
@@ -9193,9 +9581,11 @@ mod tests {
             p.contains("if (d.files) window.__files(d.files);"),
             "スマホにファイル一覧の答えが届かない"
         );
-        // A file is handed to the composer rather than opened: there is no
-        // editor, and saying otherwise would be a promise with nothing behind it
-        assert!(p.contains("insertIntoComposer(path);"), "押しても入力欄に入らない");
+        // A file is opened where there is room to read it
+        assert!(
+            p.contains(r#"send({kind: "editopen", panel: t.id || t.name || "", path});"#),
+            "押してもファイルが開かない"
+        );
     }
 
     /// Elements marked hidden must actually be hidden.

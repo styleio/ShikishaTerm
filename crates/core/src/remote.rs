@@ -163,6 +163,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // is working in, and searching them. The same folder the git panel
         // already shows the contents of, listed instead of diffed
         Ev::Files { .. } => true,
+        // Pressing a file in that list. It opens a reader on this machine's
+        // own folder -- the same folder the list is already showing
+        Ev::EditOpen { .. } => true,
         // The window's own bar is not a thing a phone has. Refused rather than
         // ignored: a page somewhere else must not be able to close this window
         Ev::Window { .. } => false,
@@ -1269,6 +1272,30 @@ fn handle(
             .map_err(Into::into);
     }
     if method == "GET" {
+        // The editor's library. No token: it is a library, the same one anyone
+        // can download, and holding it back would only mean the editor cannot
+        // draw until after a token check that the page has already passed
+        if let Some(bytes) = crate::ace::asset(&path) {
+            return req
+                .respond(
+                    Response::from_data(bytes)
+                        .with_header(
+                            Header::from_bytes(
+                                &b"Content-Type"[..],
+                                &b"application/javascript; charset=utf-8"[..],
+                            )
+                            .unwrap(),
+                        )
+                        .with_header(
+                            Header::from_bytes(
+                                &b"Cache-Control"[..],
+                                &b"public, max-age=86400"[..],
+                            )
+                            .unwrap(),
+                        ),
+                )
+                .map_err(Into::into);
+        }
         if let Some(bytes) = crate::pwa::icon(&path) {
             return req
                 .respond(
