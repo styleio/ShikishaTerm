@@ -238,8 +238,18 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     // the one place the list is built, and answered from a table kept up to
     // date on its own threads -- a drive that has stopped answering must not
     // stop the drawing
+    // Only the ones that are meant to be here. Asking this machine about a
+    // folder on a server answers "missing", which is true and is not a fault:
+    // it was never supposed to be here, and saying so on every one of them
+    // buries the folders that really are missing
+    let elsewhere: std::collections::HashSet<&std::path::PathBuf> =
+        ui.folders_elsewhere.iter().collect();
     let health = folders::watch().look(
-        &groups.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+        &groups
+            .iter()
+            .map(|(k, _)| k.clone())
+            .filter(|k| !elsewhere.contains(k))
+            .collect::<Vec<_>>(),
     );
     // And how far each has drifted from the remote. Read off the same disk,
     // never over the network -- what is on it says "three behind what you last
@@ -711,6 +721,10 @@ pub struct Ui {
     /// The current workspace's folders as the settings have them, so one with
     /// no tab in it is still on the list (uistate::GroupState::all)
     pub folders: Vec<(std::path::PathBuf, String)>,
+    /// Of those, the ones that live on another machine. This machine has no
+    /// opinion worth having about them: it is asked whether every folder is
+    /// here, and for these the answer is "no" and is not a fault
+    pub folders_elsewhere: Vec<std::path::PathBuf>,
     /// The controls shown over the browser being viewed (None = don't show)
     pub nav: Option<crate::uistate::NavState>,
     /// What each page of this workspace is asking the person, by the name

@@ -314,7 +314,9 @@ pub fn apply_ws_config(
         let title = ft.cfg.name.clone().unwrap_or_else(|| title_of(&argv));
         let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
         let argv = resolve_launch(argv, &mut opts, Some(ws), &ft.cfg);
-        let cwd = opts.cwd.clone();
+        // Kept for the message, because the options themselves are moved into
+        // the tab and the message is only wanted when that did not happen
+        let said = opts.clone();
         match tabs.iter().position(|t| t.title == title) {
             Some(i) => {
                 let mut t = tabs.remove(i);
@@ -352,10 +354,10 @@ pub fn apply_ws_config(
                     ordered.push(t);
                     added += 1;
                 }
-                Err(e) => errors.push(tab::launch_problem(
+                Err(e) => errors.push(tab::launch_problem_for(
                     &title,
                     argv.first().map(String::as_str).unwrap_or(""),
-                    cwd.as_deref(),
+                    &said,
                     &e.to_string(),
                 )),
             },
@@ -480,6 +482,9 @@ pub fn spawn_workspace(
         let mut opts = tab_options(&ft.cfg, ws.folder_of(ft));
         let argv = resolve_launch(argv, &mut opts, Some(ws), &ft.cfg);
         let cwd = opts.cwd.clone();
+        // Kept for the message, because the options are moved into the tab and
+        // the message is only wanted when that did not happen
+        let said = opts.clone();
         let plan = match resume_plan_of(ft.cfg.resume.as_deref()) {
             named @ tab::Resume::Id(_) => named,
             _ => carried_conversation(carry, ws, &argv, &ft.cfg, &cwd, &title),
@@ -505,10 +510,10 @@ pub fn spawn_workspace(
                 tab.notify_reply = ft.cfg.notify_reply;
                 tabs.push(tab);
             }
-            Err(e) => errors.push(tab::launch_problem(
+            Err(e) => errors.push(tab::launch_problem_for(
                 &title,
                 argv.first().map(String::as_str).unwrap_or(""),
-                cwd.as_deref(),
+                &said,
                 &e.to_string(),
             )),
         }
@@ -711,7 +716,14 @@ pub fn resolve_launch(
 /// from. One answer, so the two cannot disagree.
 pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> tab::TabOptions {
     let cwd = folder.and_then(|f| f.cwd.clone());
-    let held = tab::Held::of(cwd.as_deref());
+    // A folder on another machine is not missing from this one: it was never
+    // meant to be here. Asking this machine whether that path exists would
+    // hold every one of those tabs back for a reason that is not true
+    let elsewhere = folder.and_then(|f| f.host.as_ref());
+    let held = match elsewhere {
+        Some(_) => None,
+        None => tab::Held::of(cwd.as_deref()),
+    };
     tab::TabOptions {
         cwd,
         group: folder.and_then(|f| f.name.clone()),
@@ -721,10 +733,94 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         log: cfg.log,
         model: None,
         held,
-        // Settled by resolve_launch, which is where a command line becomes a
-        // decision about what to start
-        remote: None,
+        // A folder that lives on another machine makes every tab in it a
+        // terminal on that machine, whatever the command says. Settled here
+        // rather than at each launch site, the same as the hold above.
+        // A tab whose own command is an ssh address still wins: that is
+        // somebody naming a machine for that tab, and the folder does not
+        // overrule it (resolve_launch fills this in after)
+        remote: elsewhere.and_then(|h| crate::config::host_spec(h).ok()),
+        // Where on that machine. Sent once the shell is up, because a shell
+        // over there starts where the far end puts it and there is nowhere to
+        // pass a folder in the asking
+        remote_cwd: elsewhere.and(cwd_string(folder)),
     }
+}
+
+#[cfg(test)]
+mod remote_folder_tests {
+    use super::*;
+
+    /// The settings a person writes reach the tab as a terminal on that
+    /// machine. Every step, from the file down: the folder's `host` is read,
+    /// the name finds the machine, and the tab ends up pointed at it
+    #[test]
+    fn a_written_down_machine_reaches_the_tab() {
+        let json = r#"{
+          "hosts": [ {"name":"bench","at":"ssh://tester@127.0.0.1:2225","project":"/srv/p"} ],
+          "workspaces": [ { "name":"w",
+            "folders": [ {"name":"over there","cwd":"/srv/p/work","host":"bench"} ],
+            "tabs": [ {"name":"there","command":"sh","group":0} ] } ]
+        }"#;
+        let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
+        let (wss, errs) = cfg.resolve_workspaces();
+        assert!(errs.is_empty(), "{errs:?}");
+        let ws = wss.first().expect("ワークスペースが無い");
+        let folder = ws.folders.first().expect("フォルダが無い");
+        assert!(folder.host.is_some(), "フォルダが機械を見つけていない");
+        // The path is that machine's, so it is not joined to anything here
+        assert_eq!(folder.cwd.as_deref(), Some(std::path::Path::new("/srv/p/work")));
+        let ft = ws.tabs.first().expect("タブが無い");
+        let opts = tab_options(&ft.cfg, ws.folder_of(ft));
+        assert!(opts.remote.is_some(), "タブがその機械の端末になっていない");
+        assert_eq!(opts.remote_cwd.as_deref(), Some("/srv/p/work"));
+        assert!(opts.held.is_none());
+    }
+
+    /// A folder on another machine makes its tabs terminals on that machine,
+    /// and is not held back for not being here.
+    ///
+    /// Both halves matter. Without the first the tab starts a shell on this
+    /// machine in a path that means nothing here; without the second every one
+    /// of them is held back saying "that folder is missing", which is true of
+    /// this machine and beside the point
+    #[test]
+    fn a_folder_somewhere_else_opens_its_tabs_there() {
+        let host = config::HostSpec {
+            name: "bench".into(),
+            at: "ssh://me@example.test:22".into(),
+            ..Default::default()
+        };
+        let there = config::Folder {
+            name: Some("api".into()),
+            id: None,
+            host: Some(host),
+            cwd: Some(std::path::PathBuf::from("/srv/api/work")),
+            source: Default::default(),
+            protect: Vec::new(),
+            ..Default::default()
+        };
+        let cfg = config::TabConfig::default();
+        let opts = tab_options(&cfg, Some(&there));
+        let spec = opts.remote.as_ref().expect("その機械の端末になっていない");
+        assert_eq!(spec.host, "example.test");
+        assert_eq!(spec.user, "me");
+        assert_eq!(opts.remote_cwd.as_deref(), Some("/srv/api/work"), "どこに立つか言えていない");
+        assert!(opts.held.is_none(), "ここに無いからと止めている");
+
+        // A folder on this machine is what it always was
+        let here = config::Folder { host: None, ..there.clone() };
+        let mine = tab_options(&cfg, Some(&here));
+        assert!(mine.remote.is_none());
+        assert!(mine.remote_cwd.is_none());
+    }
+}
+
+/// The folder, as the far end spells a path. Kept as written rather than as a
+/// local path, because a server's paths are not this machine's
+fn cwd_string(folder: Option<&config::Folder>) -> Option<String> {
+    let at = folder?.cwd.as_ref()?.display().to_string();
+    (!at.trim().is_empty()).then_some(at)
 }
 
 /// Launches the tabs for a workspace (called on first activation)
