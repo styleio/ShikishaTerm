@@ -165,6 +165,7 @@ Use the part that exists. Adding a new kind of part is a change to this page.
 | Part | What it is for | Anatomy |
 |---|---|---|
 | **Tab row** | One thing running | dot (state) · number · name · lock · activity bars; under it, where it is, then what it last said |
+| **State dot** | What the tab is doing now | 8px circle. **Colour says what kind of news, fill says whether it wants you.** Filled = somebody's turn right now (`BUSY` `QUESTION` `DONE` `FAILED`); ring only = the same news with nothing for you to do this minute (`BACKGROUND` `LIMIT` `EXIT`). Ring is `inset 0 0 0 2px`. `BUSY` is the only one that blinks |
 | **Folder heading** | Where tabs run | mark (square = project, branch line = branch) · caret · name · [branch pill] · [branch count] · drift · `+` |
 | **Household** | A project and its branches | `.family` box on `--raise`; head at 12px/600; branches a step in |
 | **Pill** (status line) | One fact about now | text or a bar with words; pressable when pressing does something (limit notice), otherwise plain |

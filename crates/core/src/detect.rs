@@ -7,14 +7,40 @@ use crate::profile::Profile;
 /// If there was output within this many ms, treat it as "active"
 const ACTIVITY_MS: u64 = 500;
 
+/// What a tab is doing, said in the terms a person waiting on it cares about.
+///
+/// Every one of these answers a different "so what do I do now", and that is
+/// the whole test for whether a state deserves to exist. Two states a person
+/// would treat identically are one state wearing two hats.
+///
+///   - `Wait` -- say something to it
+///   - `Busy` -- wait
+///   - `Background` -- wait, but it can be spoken to
+///   - `Question` -- answer it now; nothing moves until you do
+///   - `Done` -- read it, say the next thing
+///   - `Limit` -- wait for the clock, or change plan. Saying more won't help
+///   - `Failed` -- say it again
+///   - `Exited` -- open it again
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabState {
     /// Yellow: processing (output is flowing / matched a BUSY pattern)
     Busy,
+    /// Yellow, not pulsing: the turn is over, but something the turn started
+    /// is still alive in the tab's job. Derived from the job's population
+    /// rather than from anything on screen -- see `Tab::background_now`
+    Background,
     /// Green: response complete (silence or bell after activity)
     Done,
+    /// Amber: the turn ended against the CLI's usage limit. Distinct from
+    /// `Done` because the turn produced no answer and saying more won't get
+    /// one -- the thing to wait for is a clock, not the tab
+    Limit,
     /// Blue: waiting on a choice/confirmation (matched a QUESTION pattern)
     Question,
+    /// Red: the turn ended in an error rather than an answer. Distinct from
+    /// `Done` for the same reason `Limit` is: a green dot on a turn that threw
+    /// sends a person away from the one tab that needs them back
+    Failed,
     /// Blue: idle (no activity)
     Wait,
     /// Red: child process exited (set by Tab, not by Detector)
@@ -26,8 +52,11 @@ impl TabState {
     pub fn label(&self) -> &'static str {
         match self {
             TabState::Busy => "BUSY",
+            TabState::Background => "BACKGROUND",
             TabState::Done => "DONE",
+            TabState::Limit => "LIMIT",
             TabState::Question => "QUESTION",
+            TabState::Failed => "FAILED",
             TabState::Wait => "WAIT",
             TabState::Exited => "EXIT",
         }
@@ -35,30 +64,92 @@ impl TabState {
 
     /// A state named from outside this process, read back.
     ///
-    /// `EXIT` is deliberately not here. A program is dead when its process is
-    /// dead, and nothing else -- an announcement to the contrary, from a hook
-    /// or a script, would paint a tab red while the thing in it is still
-    /// running
+    /// Three of the eight are deliberately not here, and for the same reason:
+    /// they are facts about the machine, not claims a program is entitled to
+    /// make about itself.
+    ///
+    ///   - `EXIT` -- a program is dead when its process is dead, and nothing
+    ///     else. An announcement to the contrary would paint a tab red while
+    ///     the thing in it is still running
+    ///   - `BACKGROUND` -- read from the tab's job object. A CLI saying it has
+    ///     work in the background while its job is empty is simply wrong
+    ///   - `LIMIT` -- read from the CLI's own notice on screen, which carries
+    ///     the reset time a person actually wants. A bare "I am limited" with
+    ///     no line to show would be a dot nobody can act on
     pub fn from_label(name: &str) -> Option<TabState> {
         Some(match name.trim().to_ascii_uppercase().as_str() {
             "BUSY" => TabState::Busy,
             "DONE" => TabState::Done,
             "QUESTION" => TabState::Question,
+            "FAILED" => TabState::Failed,
             "WAIT" => TabState::Wait,
             _ => return None,
         })
+    }
+
+    /// Whether a turn just ended here, however it ended.
+    ///
+    /// Four of the eight mean "the AI has stopped and it is a person's move
+    /// again", and everything that acts on the end of a turn -- the response
+    /// handed to automation, the notification to a phone, the once-only thank
+    /// you -- has to fire for all four or for none. Testing `== Done` was
+    /// right while `Done` was the only way a turn could end; the moment a turn
+    /// could end against a usage limit, or in an error, or with a shell still
+    /// running behind it, that test started meaning "ended well" while every
+    /// caller wanted "ended". The four that answer yes are the ones a person
+    /// can reply to; `Busy` is still going, `Question` has not finished the
+    /// turn it is in the middle of, `Wait` never started one, and `Exited` has
+    /// nothing left to reply to
+    pub fn turn_ended(&self) -> bool {
+        matches!(
+            self,
+            TabState::Done | TabState::Background | TabState::Limit | TabState::Failed
+        )
     }
 
     /// Name shown on screen (translated)
     pub fn display(&self) -> String {
         crate::i18n::t(match self {
             TabState::Busy => "state.busy",
+            TabState::Background => "state.background",
             TabState::Done => "state.done",
+            TabState::Limit => "state.limit",
             TabState::Question => "state.question",
+            TabState::Failed => "state.failed",
             TabState::Wait => "state.wait",
             TabState::Exited => "state.exit",
         })
     }
+}
+
+/// Whether a tab is running something of its own beyond the CLI, and the
+/// resting size to carry forward.
+///
+/// A tab's job holds the CLI and everything it starts, so "is there background
+/// work" is "are there more processes in there than when nothing is going on".
+/// The resting size cannot be a constant: `claude` resolved to an `.exe` rests
+/// at one process, the same CLI installed as a `.cmd` shim rests at a `cmd.exe`
+/// holding a `node`, and a job that could not be made rests at nothing at all.
+/// So it is learned instead, as the smallest population ever seen while the
+/// tab was not working.
+///
+/// Learning only from quiet moments is the point. While a turn runs, every
+/// tool call is a process in the job, and calibrating against that would set
+/// the resting size so high that real background work never showed. The one
+/// way this can be wrong is to be slow: if the very first quiet moment already
+/// had a background shell in it, the size starts too high and comes down at
+/// the next quiet moment that doesn't. Late is the right direction to be wrong
+/// -- a dot that appears one turn later is a nuisance, a dot that says "still
+/// working" about an idle tab is a person not going to look at it.
+pub fn background_now(now: Option<u32>, busy: bool, rest: Option<u32>) -> (bool, Option<u32>) {
+    // No job, no count, no claim. Unix always lands here
+    let Some(now) = now else { return (false, rest) };
+    // A dead job reports nothing alive; that is Exited's business, not ours
+    if now == 0 || busy {
+        return (false, rest);
+    }
+    let rest = Some(rest.map_or(now, |r| r.min(now)));
+    (Some(now) > rest, rest)
 }
 
 /// The end of a turn can go missing: pressing Ctrl+C or Esc is something a
@@ -739,3 +830,130 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod state_set_tests {
+    use super::*;
+
+    /// Every state, named once, so that adding a ninth has to come here and
+    /// say which half of the board it belongs to. The split is not decoration:
+    /// `turn_ended` is what fires the response handed to automation and the
+    /// notification sent to a phone, and a state that quietly lands on the
+    /// wrong side of it is a turn nobody is ever told about
+    const ALL: [TabState; 8] = [
+        TabState::Wait,
+        TabState::Busy,
+        TabState::Background,
+        TabState::Question,
+        TabState::Done,
+        TabState::Limit,
+        TabState::Failed,
+        TabState::Exited,
+    ];
+
+    #[test]
+    fn every_state_has_its_own_name_and_its_own_words() {
+        let mut labels: Vec<&str> = ALL.iter().map(|s| s.label()).collect();
+        labels.sort_unstable();
+        let mut unique = labels.clone();
+        unique.dedup();
+        assert_eq!(labels, unique, "2つの状態が同じ名前を名乗っている");
+        // The words a person reads are looked up, not built, so a missing key
+        // shows up as the key itself rather than as a blank
+        for s in ALL {
+            let shown = s.display();
+            assert!(!shown.is_empty(), "{} に表示する言葉が無い", s.label());
+            assert!(!shown.starts_with("state."), "{} の訳語が引けていない", s.label());
+        }
+    }
+
+    /// Four states mean "a turn just ended", and everything that acts on the
+    /// end of a turn has to fire for all four. This is the list
+    #[test]
+    fn a_turn_ends_four_ways_and_only_four() {
+        let ended: Vec<&str> =
+            ALL.iter().filter(|s| s.turn_ended()).map(|s| s.label()).collect();
+        assert_eq!(ended, ["BACKGROUND", "DONE", "LIMIT", "FAILED"]);
+        for s in [TabState::Wait, TabState::Busy, TabState::Question, TabState::Exited] {
+            assert!(!s.turn_ended(), "{} は手番の終わりではない", s.label());
+        }
+    }
+
+    /// Three of the eight are facts about the machine, and a program saying
+    /// one about itself would be saying something it cannot know
+    #[test]
+    fn only_the_states_a_program_can_claim_are_readable_back() {
+        for s in ALL {
+            let round = TabState::from_label(s.label());
+            let claimable =
+                !matches!(s, TabState::Exited | TabState::Background | TabState::Limit);
+            assert_eq!(
+                round.is_some(),
+                claimable,
+                "{} の受け入れ可否が決めごとと違う",
+                s.label()
+            );
+            if claimable {
+                assert_eq!(round, Some(s));
+            }
+        }
+        assert_eq!(TabState::from_label("failed"), Some(TabState::Failed));
+        assert_eq!(TabState::from_label("BACKGROUND"), None);
+        assert_eq!(TabState::from_label("LIMIT"), None);
+    }
+
+    /// The resting size is learned from quiet moments only. While a turn runs
+    /// every tool call is a process in the job, and calibrating against that
+    /// would set the bar so high that real background work never showed
+    #[test]
+    fn the_resting_size_is_learned_while_nothing_is_going_on() {
+        // First quiet look: whatever is there is what resting looks like
+        let (bg, rest) = background_now(Some(1), false, None);
+        assert!(!bg, "初回の静かな観測は必ず平常");
+        assert_eq!(rest, Some(1));
+        // A shell left running afterwards is one more than resting
+        let (bg, rest) = background_now(Some(2), false, rest);
+        assert!(bg, "平常より多い＝裏で何か動いている");
+        assert_eq!(rest, Some(1), "多いほうを平常にしてはいけない");
+        // It ends; back to resting
+        let (bg, _) = background_now(Some(1), false, rest);
+        assert!(!bg);
+    }
+
+    #[test]
+    fn a_busy_turn_neither_reports_nor_teaches() {
+        // Tool calls are processes too. Nothing is claimed from them...
+        let (bg, rest) = background_now(Some(7), true, Some(1));
+        assert!(!bg, "作業中の子プロセスは裏の仕事ではない");
+        assert_eq!(rest, Some(1), "作業中に平常値を学ばない");
+        // ...and a CLI installed as a .cmd shim simply rests higher
+        let (bg, rest) = background_now(Some(2), false, None);
+        assert!(!bg, "shim は 2 個が平常");
+        assert_eq!(rest, Some(2));
+        let (bg, _) = background_now(Some(3), false, rest);
+        assert!(bg);
+    }
+
+    /// Being late is the one way this is allowed to be wrong: a tab whose very
+    /// first quiet moment already had a background shell in it starts with the
+    /// bar too high, and lowers it at the next quiet moment that doesn't
+    #[test]
+    fn a_bar_set_too_high_comes_back_down() {
+        let (bg, rest) = background_now(Some(2), false, None);
+        assert!(!bg, "気づけないのは許す");
+        let (bg, rest) = background_now(Some(1), false, rest);
+        assert!(!bg);
+        assert_eq!(rest, Some(1), "静かなときに見た小さいほうへ下がる");
+        let (bg, _) = background_now(Some(2), false, rest);
+        assert!(bg, "下がったあとは同じ状況に気づく");
+    }
+
+    /// No job, no count, no claim -- and a job with nobody in it is a tab that
+    /// has ended, which is a different state's business
+    #[test]
+    fn no_answer_is_never_turned_into_a_claim() {
+        assert_eq!(background_now(None, false, Some(1)), (false, Some(1)));
+        assert_eq!(background_now(None, false, None), (false, None));
+        assert_eq!(background_now(Some(0), false, Some(1)), (false, Some(1)));
+    }
+}
