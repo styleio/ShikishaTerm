@@ -57,6 +57,23 @@ pub struct TabOptions {
     /// address to connect to until one exists: what is held here is the
     /// settings entry, and the sandbox is asked for at the moment of starting
     pub cloud: Option<crate::config::HostSpec>,
+    /// What automation calls this tab, when somebody gave it a name of its
+    /// own. The API key is minted under it, because that is the name every
+    /// call is looked up by -- see [`TabOptions::called`]
+    pub id: Option<String>,
+}
+
+impl TabOptions {
+    /// The name this tab answers to over the API.
+    ///
+    /// Its own name when it has one, and its title when it does not. Both
+    /// halves of the conversation have to agree: a key minted under one name
+    /// and looked up under another is a call from nobody, and a call from
+    /// nobody is thrown away -- which is how a CLI's hooks came to be read,
+    /// run, delivered, and then dropped on the doorstep
+    pub fn called<'a>(&'a self, title: &'a str) -> &'a str {
+        self.id.as_deref().filter(|s| !s.is_empty()).unwrap_or(title)
+    }
 }
 
 /// Why a tab is being held rather than started.
@@ -121,6 +138,7 @@ impl Default for TabOptions {
             remote: None,
             remote_cwd: None,
             cloud: None,
+            id: None,
             // The guarded ones, for anything built without an answer: a tab
             // that lost the setting on the way here must refuse a commit to
             // main, not wave it through
@@ -2789,7 +2807,7 @@ impl Tab {
         // Where the external API is, the key to it, and which tab this is.
         // Done here because this is the one place a tab's process is born —
         // a CLI started anywhere else would silently have no way to call home
-        for (k, v) in crate::api::child_env(&title) {
+        for (k, v) in crate::api::child_env(opts.called(&title)) {
             cmd.env(k, v);
         }
         // Where it runs. A folder that is not there is NOT quietly swapped for
@@ -3038,7 +3056,7 @@ impl Tab {
             session,
             resume: resume_spec,
             title,
-            id: None,
+            id: opts.id.clone(),
             model: opts.model.clone(),
             parser,
             writer,
@@ -3507,6 +3525,15 @@ impl Tab {
     /// How automation identifies this tab
     pub fn key(&self) -> crate::hooks::TabKey {
         crate::hooks::TabKey { id: self.id.clone() }
+    }
+
+    /// What this tab answers to over the API.
+    ///
+    /// The one name three separate places have to agree on: the key is minted
+    /// under it, every call that arrives is looked up by it, and the sweep
+    /// that drops keys of closed tabs keeps the ones named by it
+    pub fn called(&self) -> &str {
+        self.opts.called(&self.title)
     }
 
     /// Swap in settings that can take effect without a restart

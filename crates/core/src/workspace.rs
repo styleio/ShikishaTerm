@@ -505,7 +505,6 @@ pub fn spawn_workspace(
                 tab.locked = ft.cfg.locked;
                 tab.auto_restart = ft.cfg.auto_restart;
                 tab.depth = ft.depth;
-                tab.id = ft.cfg.id.clone();
                 tab.notify_on_done = ft.cfg.notify_on_done.clone();
                 tab.notify_reply = ft.cfg.notify_reply;
                 tabs.push(tab);
@@ -728,6 +727,9 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         cwd,
         group: folder.and_then(|f| f.name.clone()),
         protect: folder.map(|f| f.protect.clone()).unwrap_or_default(),
+        // Known before the process starts, because the key it calls home
+        // with is minted under this very name
+        id: cfg.id.clone(),
         scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
@@ -749,6 +751,53 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         // over there starts where the far end puts it and there is nowhere to
         // pass a folder in the asking
         remote_cwd: elsewhere.and(cwd_string(folder)),
+    }
+}
+
+#[cfg(test)]
+mod calling_home_tests {
+    use super::*;
+
+    /// A tab answers to one name, and both halves have to use it.
+    ///
+    /// The key a tab's process calls home with is minted under one name, and
+    /// every call that arrives is looked up by another. They were not the same
+    /// name: the key was minted from the title on screen, and the lookup is by
+    /// the tab's own id. So a tab called one thing and named another had its
+    /// hooks read, run, delivered -- and then thrown away as "no such tab",
+    /// with the state falling back to reading the screen and the conversation
+    /// id lost entirely. Nothing said so; the dot simply moved a little later
+    /// and a restart came back to nothing
+    #[test]
+    fn a_tab_calls_home_under_the_name_it_is_looked_up_by() {
+        let json = r#"{
+          "workspaces": [ { "name":"w", "id":"w",
+            "folders": [ {"name":"here","cwd":".",
+              "tabs": [ {"id":"gem","name":"Gemini","command":"sh"} ]} ] } ]
+        }"#;
+        let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
+        let (wss, errs) = cfg.resolve_workspaces();
+        assert!(errs.is_empty(), "{errs:?}");
+        let ws = wss.first().expect("ワークスペースが無い");
+        let ft = ws.tabs.first().expect("タブが無い");
+        let opts = tab_options(&ft.cfg, ws.folder_of(ft));
+
+        // The name the key is minted under
+        assert_eq!(opts.called("Gemini"), "gem", "画面の名前で鍵を作っている");
+        // ...is the one a call is looked up by
+        let key = hooks::TabKey { id: opts.id.clone() };
+        assert!(key.matches(opts.called("Gemini")), "作った名前で引けない");
+    }
+
+    /// A tab nobody named is known by what it says on it, and that still has
+    /// to be one name rather than two
+    #[test]
+    fn a_tab_with_no_name_of_its_own_answers_to_its_title() {
+        let plain = tab::TabOptions::default();
+        assert_eq!(plain.called("SHELL"), "SHELL");
+        // An empty one in the settings is nobody's name, not a name of ""
+        let blank = tab::TabOptions { id: Some(String::new()), ..Default::default() };
+        assert_eq!(blank.called("SHELL"), "SHELL");
     }
 }
 

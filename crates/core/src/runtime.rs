@@ -1571,7 +1571,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // rather than each closure: tabs leave in several ways, and a key
             // that outlives its tab is a working key nobody is watching
             if let Some(a) = api_server.as_ref() {
-                a.retain_tabs(&tabs.iter().map(|t| t.title.clone()).collect::<Vec<_>>());
+                a.retain_tabs(
+                    &tabs.iter().map(|t| t.called().to_string()).collect::<Vec<_>>(),
+                );
             }
 
             // Fire hooks -> resume waiting coroutines -> run the queued operations
