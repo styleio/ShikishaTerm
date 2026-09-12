@@ -242,7 +242,13 @@ impl ApiServer {
     /// Called with the live set rather than told about each closure: tabs go
     /// away in several places (closed, rebuilt by a config change, swapped out
     /// with the workspace), and a key that outlived its tab is a working key
-    /// nobody is watching
+    /// nobody is watching.
+    ///
+    /// `live` must be the names the keys were minted under -- `Tab::called`,
+    /// not the titles on screen. Given the wrong ones this throws away every
+    /// key of every tab that is still open, and nothing says so: the tab goes
+    /// on running and its hooks are refused at the door for the rest of the
+    /// session
     pub fn retain_tabs(&self, live: &[String]) {
         if let Ok(mut t) = self.tokens.lock() {
             t.retain(|_, owner| match owner {
