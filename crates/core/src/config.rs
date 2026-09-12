@@ -1519,6 +1519,16 @@ pub struct WorkspaceSpec {
     /// obeyed
     #[serde(default)]
     pub providers: Option<Vec<String>>,
+    /// What automation running here may reach outside the terminal: the named
+    /// file and HTTP gateways, and the folders and hosts raw paths are allowed
+    /// in. Absent means the app's own answer.
+    ///
+    /// A gateway is a door with a token already attached, and a folder in
+    /// `allow_dirs` is a folder a script here can read. One set of doors for
+    /// every workspace means the script in the private workspace has the
+    /// company's doors, which is the whole accident
+    #[serde(default)]
+    pub capabilities: Option<crate::caps::CapabilitySpec>,
 }
 
 /// Contents of a workspace definition file (workspaces/*.json)
@@ -2113,6 +2123,10 @@ pub struct Workspace {
     /// The model connections usable from here. Already the whole answer: a list
     /// is this workspace's own, and `None` is "every registered one"
     pub providers: Option<Vec<String>>,
+    /// What automation running here may reach outside the terminal. Already the
+    /// whole answer -- this workspace's doors, or the app's for a workspace that
+    /// named none -- so nothing downstream asks twice
+    pub capabilities: crate::caps::CapabilitySpec,
 }
 
 impl Workspace {
@@ -3134,6 +3148,7 @@ impl Config {
                     notify: None,
                     primary_notify: self.primary_notify.clone(),
                     providers: None,
+                    capabilities: self.capabilities.clone(),
                 });
             }
             return (out, errors);
@@ -3206,6 +3221,10 @@ impl Config {
                 notify: notify_only,
                 primary_notify: notify_primary,
                 providers: named(ws.providers.as_ref()),
+                capabilities: ws
+                    .capabilities
+                    .clone()
+                    .unwrap_or_else(|| self.capabilities.clone()),
             });
         }
         errors.extend(settle_workspace_ids(&mut out));
@@ -4251,6 +4270,41 @@ mod tests {
         );
     }
 
+    /// The doors in front of a script are the workspace's, or the app's.
+    ///
+    /// Not both: a gateway carries a token already attached, so a workspace that
+    /// has written its own must not also keep the app's -- the door it was
+    /// trying not to have is exactly the one that would stay open.
+    #[test]
+    fn a_workspace_says_what_its_automation_can_reach() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "capabilities": {
+                  "files": {"shared": {"dir": "C:/shared", "read": true}},
+                  "allow_hosts": ["example.com"]
+                },
+                "workspaces": [
+                  {"name":"ふつう"},
+                  {"name":"会社", "capabilities": {"files": {"books": {"dir": "C:/books", "write": true}}}}
+                ]
+              }"#,
+        )
+        .unwrap();
+        let (spaces, errs) = cfg.resolve_workspaces();
+        assert!(errs.is_empty(), "{errs:?}");
+
+        // Said nothing: the app's doors, whole
+        let heard = &spaces[0].capabilities;
+        assert_eq!(heard.files.keys().collect::<Vec<_>>(), vec!["shared"]);
+        assert_eq!(heard.allow_hosts, vec!["example.com".to_string()]);
+
+        // Said its own: only its own
+        let own = &spaces[1].capabilities;
+        assert_eq!(own.files.keys().collect::<Vec<_>>(), vec!["books"]);
+        assert!(own.allow_hosts.is_empty(), "アプリ側の生URL許可が残っている");
+        assert!(!own.files.contains_key("shared"), "アプリ側の窓口が残っている");
+    }
+
     /// A settings file written before any of this existed reads the same way.
     #[test]
     fn a_workspace_without_the_new_keys_still_reads() {
@@ -4259,6 +4313,7 @@ mod tests {
         assert!(cfg.workspaces[0].notify.is_none());
         assert!(cfg.workspaces[0].primary_notify.is_none());
         assert!(cfg.workspaces[0].providers.is_none());
+        assert!(cfg.workspaces[0].capabilities.is_none());
     }
 
     /// A secrets file written before names meant anything is brought forward
