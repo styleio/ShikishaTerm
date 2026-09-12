@@ -121,11 +121,10 @@ fn parse_doc(doc: &Value, strings: &[&str]) -> SnapDoc {
     let n = parent.len();
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (i, &p) in parent.iter().enumerate() {
-        if let Ok(p) = usize::try_from(p) {
-            if p < n {
+        if let Ok(p) = usize::try_from(p)
+            && p < n {
                 children[p].push(i);
             }
-        }
     }
 
     // Layout: which nodes have a box, where it is, and their computed cursor
@@ -400,16 +399,14 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
             }
             checked = checked || d.input_checked.contains(&ni);
             if let Some(a) = d.attrs.get(ni) {
-                if role == "link" {
-                    if let Some(h) = a.get("href") {
+                if role == "link"
+                    && let Some(h) = a.get("href") {
                         extras.push(tidy(h, HREF_MAX));
                     }
-                }
-                if role == "textbox" || role == "combobox" {
-                    if let Some(p) = a.get("placeholder") {
+                if (role == "textbox" || role == "combobox")
+                    && let Some(p) = a.get("placeholder") {
                         extras.push(format!("placeholder=\"{}\"", tidy(p, VALUE_MAX)));
                     }
-                }
             }
         }
         if (role == "textbox" || role == "combobox") && !value.is_empty() {
@@ -453,16 +450,14 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
         let mut contains = vec![false; n];
         for i in (0..n).rev() {
             let mine = d.backend.get(i).map(|b| included.contains(b)).unwrap_or(false);
-            if mine || contains[i] {
-                if let Some(Ok(p)) = d.parent.get(i).map(|&p| usize::try_from(p)) {
-                    if p < n {
+            if (mine || contains[i])
+                && let Some(Ok(p)) = d.parent.get(i).map(|&p| usize::try_from(p))
+                    && p < n {
                         contains[p] = true;
                     }
-                }
-            }
         }
         let mut accepted: HashSet<usize> = HashSet::new();
-        for i in 0..n {
+        for (i, &holds_one) in contains.iter().enumerate() {
             if d.node_type.get(i) != Some(&1) || !d.bounds.contains_key(&i) {
                 continue;
             }
@@ -474,7 +469,7 @@ pub fn build(ax: &Value, snap: &Value, metrics: &Value) -> Digest {
                 continue;
             }
             let backend = *d.backend.get(i).unwrap_or(&-1);
-            if backend < 0 || included.contains(&backend) || contains[i] {
+            if backend < 0 || included.contains(&backend) || holds_one {
                 continue;
             }
             // inside something already listed?
@@ -596,10 +591,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// One node as the browser describes it: whose child it is, what kind of
+    /// node, its tag, its text, the id the browser knows it by, and its
+    /// attributes in pairs
+    type SnapNode<'a> = (i64, i64, &'a str, &'a str, i64, &'a [(&'a str, &'a str)]);
+
     /// Compact builder for one snapshot document.
-    /// nodes: (parentIndex, nodeType, tag, nodeValue, backendId, [attr pairs])
     fn snap_doc(
-        nodes: &[(i64, i64, &str, &str, i64, &[(&str, &str)])],
+        nodes: &[SnapNode<'_>],
         layout: &[(usize, [f64; 4], &str)],
         clickable: &[usize],
     ) -> (Value, Vec<String>) {

@@ -62,9 +62,6 @@ pub enum Go {
     To(String),
 }
 
-/// The questions the app has put to pages, by id, and whom each was asked.
-///
-
 /// One pane as the page measured it.
 ///
 /// Rows and columns are what the terminal in that pane must be resized to;
@@ -624,6 +621,19 @@ impl BranchAsk {
 /// on them fails honestly instead of pretending.
 ///
 /// `to` names the page: `None` is the one in front.
+/// Where a page sits in the window: left, top, width, height, in pixels.
+///
+/// Four numbers with no names is exactly as much as this has ever needed to
+/// be, and every side of the app passes the same four -- so they are passed
+/// under one name rather than spelled out at each end
+pub type Rect = (i32, i32, i32, i32);
+
+/// Somewhere to put a page, and the space it gets.
+///
+/// `None` where there is nowhere: a build with no window has no seat to offer,
+/// and saying so is better than offering one that paints nothing
+pub type Seat = (std::rc::Rc<dyn BrowserHost>, Rect);
+
 pub trait BrowserHost {
     fn go(&self, to: Option<&str>, go: Go) -> anyhow::Result<()>;
     fn focus(&self, to: Option<&str>) -> anyhow::Result<()>;

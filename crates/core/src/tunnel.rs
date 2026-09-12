@@ -382,14 +382,12 @@ impl Proxy {
             .name("shikisha-tunnel-down".into())
             .spawn(move || {
                 let mut whole = Vec::new();
-                loop {
-                    let Some((fin, opcode, payload)) = crate::ws::read_server_frame(&mut down)
-                    else {
-                        break;
-                    };
+                while let Some((fin, opcode, payload)) =
+                    crate::ws::read_server_frame(&mut down)
+                {
                     match opcode {
                         // continuation, text, binary
-                        0x0 | 0x1 | 0x2 => {
+                        0x0..=0x2 => {
                             whole.extend_from_slice(&payload);
                             if !fin {
                                 continue;
@@ -810,7 +808,7 @@ mod tests {
         for bad in ["", "ws://board", "board:8787", "ftp://board/"] {
             let said = dial(bad).map(|_| String::new()).unwrap_or_else(|e| e.to_string());
             assert!(
-                said.contains(bad) || said.is_empty() == false,
+                said.contains(bad) || !said.is_empty(),
                 "住所として断っていない: {bad}"
             );
             assert!(dial(bad).is_err(), "話せない住所を受けている: {bad}");

@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 #[cfg(windows)]
 fn raise_own_dialog() {
     use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    // Spelled the way the operating system's own headers spell it, so the
+    // signatures below can be read against the documentation
+    #[allow(clippy::upper_case_acronyms)]
     type BOOL = i32;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible,

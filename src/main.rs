@@ -56,8 +56,6 @@ use crossterm::event::Event;
 
 use tab::Tab;
 
-
-
 /// Records the reason for an abnormal exit. The TUI occupies the whole screen,
 /// so this keeps a panic message from disappearing unseen.
 fn install_crash_log() {
@@ -352,22 +350,6 @@ fn cast_test(url: &str) -> Result<()> {
     Ok(())
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /// The set of things needed to draw into our own window
 struct WinSurface {
     /// What a person did, waiting for the loop to act on it. The window only
@@ -442,16 +424,6 @@ impl WinSurface {
         self.pending.push_back(ev);
     }
 
-
-
-
-
-
-
-
-
-
-
     /// Put the tab bar away, or bring it back out.
     ///
     /// The page owns the width and answers with the new one, so this asks
@@ -469,9 +441,7 @@ impl WinSurface {
 
     /// The pending "open settings" request (section, return-on-save, the
     /// working folder to land on), if any, clearing it.
-    fn take_open_settings(
-        &mut self,
-    ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)> {
+    fn take_open_settings(&mut self) -> Option<shikisha_core::mailbox::SettingsWanted> {
         self.mail.open_settings.take()
     }
 
@@ -485,22 +455,6 @@ impl WinSurface {
     fn open_palette(&self) {
         let _ = self.win.eval("window.__openPalette && window.__openPalette();");
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     /// Hand one answer back to the git panel (already JSON-encoded)
     fn push_git(&self, json: &str) {
@@ -535,16 +489,6 @@ impl WinSurface {
         }
     }
 
-
-
-
-
-
-
-
-
-
-
     /// Deliver a finished ✨ suggestion (JSON: {ok, cmd?/error?}) to the composer.
     fn push_suggested(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__suggested({json});"));
@@ -560,8 +504,6 @@ impl WinSurface {
     fn push_lua_done(&self, err_json: &str) {
         let _ = self.win.eval(&format!("window.__luaDone({err_json});"));
     }
-
-
 
     /// Push the current quick actions into the shell page so a settings edit
     /// reflects live — the window isn't reloaded on a config change. (The phone
@@ -819,10 +761,6 @@ impl WinSurface {
     }
 }
 
-
-
-
-
 /// Opens our own window and runs the same loop on top of it
 fn run_in_window() -> Result<()> {
     // Serve the shell page. file:// breaks wry's IPC, so serve it over local HTTP instead.
@@ -977,11 +915,6 @@ fn hook_report(kind: &str, v: &serde_json::Value) -> Report {
     Report { id: None, state: keep.then(|| state.to_string()) }
 }
 
-
-
-
-
-
 /// Carry one hook event from an AI CLI back to the app.
 ///
 /// Runs as a short-lived child of the agent. Reads the agent's JSON from stdin,
@@ -1105,14 +1038,6 @@ mod hook_report_tests {
     }
 }
 
-
-
-
-
-
-
-
-
 /// What decides whether a tab's picture differs from the one already on screen.
 ///
 /// Every way the contents can move shows up in one of these: bytes arriving
@@ -1129,11 +1054,6 @@ struct ScreenKey {
     cols: u16,
     scrollback: usize,
 }
-
-
-
-
-
 
 fn screen_key(session: usize, t: &Tab) -> ScreenKey {
     let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
@@ -1164,7 +1084,7 @@ impl WinSurface {
 
     /// Where browsers get placed. Placing them inside the window lets the OS handle
     /// position and stacking order for us.
-    fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))> {
+    fn host(&self) -> Option<shikisha_shared::Seat> {
         Some((std::rc::Rc::clone(&self.win) as std::rc::Rc<dyn shikisha_shared::BrowserHost>, self.area))
     }
 
@@ -1319,27 +1239,6 @@ impl WinSurface {
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn open_browser(url: &str) {
     // cmd's `start` splits on `&` inside the URL, so pass it after an empty title argument
     let mut cmd = std::process::Command::new("cmd");
@@ -1365,109 +1264,6 @@ fn open_console() {
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/// Decides the remote UI's token.
-/// Uses the one in secrets if present; otherwise saves one to data\remote-token
-/// and reuses it (a token that changes every time would force reconnecting
-/// phones each time and make it impossible to show the QR from settings).
-/// Shortest fixed token accepted (hex chars of a 64-bit secret; anything
-/// shorter is guessable from the open internet a Tailscale-less LAN may be)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/// Mouse handling: click a tab bar entry to switch / wheel scroll / select-to-copy instantly / right-click to paste
-#[allow(clippy::too_many_arguments)]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /// How to show the name. Shrink it if it doesn't fit the screen; if even that
 /// doesn't fit, don't show it at all.
@@ -1511,8 +1307,6 @@ fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
         Err(e) => Ok(Some(i18n::tp("msg.paste_failed", &[("error", &e.to_string())]))),
     }
 }
-
-
 
 /// How long a burst of output takes to reach the rows the window is handed.
 ///
@@ -1867,7 +1661,9 @@ impl shikisha_core::host::Shell for WinSurface {
     fn inject(&mut self, ev: Event) { WinSurface::inject(self, ev) }
     fn toggle_tab_bar(&self) { WinSurface::toggle_tab_bar(self) }
     fn toggle_side_bar(&self) { WinSurface::toggle_side_bar(self) }
-    fn take_open_settings( &mut self, ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)> { WinSurface::take_open_settings(self) }
+    fn take_open_settings(&mut self) -> Option<shikisha_core::mailbox::SettingsWanted> {
+        WinSurface::take_open_settings(self)
+    }
     fn open_vault(&self) { WinSurface::open_vault(self) }
     fn open_palette(&self) { WinSurface::open_palette(self) }
     fn push_git(&self, json: &str) { WinSurface::push_git(self, json) }
@@ -1885,7 +1681,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn say_where_it_went(&self) { WinSurface::say_where_it_went(self) }
     fn size(&self) -> Result<Size> { WinSurface::size(self) }
     fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> Result<Option<Event>> { WinSurface::poll(self, timeout, active_tab) }
-    fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))> { WinSurface::host(self) }
+    fn host(&self) -> Option<shikisha_shared::Seat> { WinSurface::host(self) }
     fn ask_password(&mut self, title: &str, note: &str) -> Result<Option<String>> { WinSurface::ask_password(self, title, note) }
     fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> Result<()> { WinSurface::draw(self, tabs, ui, flash) }
 }

@@ -5,12 +5,19 @@
 //! merged yet" is a question about every row at once, and answering it means
 //! leaving the terminal entirely.
 //!
-//! **Nothing is set up for this.** The token is the one the person already
-//! has: what `gh` stored when they logged in, or `GITHUB_TOKEN` if they keep
-//! one in their environment. Asking someone to paste a token into a second
-//! place, so a terminal can show them a number they can already see on a
-//! website, is not a trade worth offering. Where there is no token there is no
-//! PR line, and the settings say so rather than leaving it a mystery.
+//! **Nothing has to be set up for this.** Where a workspace has been given a
+//! token of its own it uses that one; otherwise it uses what the person already
+//! has -- `GITHUB_TOKEN` in their environment, or whatever their own `gh` is
+//! signed in as. Asking someone to paste a token in so a terminal can show them
+//! a number they can already see on a website is not a trade worth offering.
+//!
+//! A workspace's own token is worth offering, though, and it is the reason this
+//! is not one machine-wide answer any more: the repositories somebody works on
+//! for a company and the ones they work on for themselves are reached with
+//! different accounts, and whichever account answered first was the one every
+//! row used. Where there is no token there is no PR line, and the settings say
+//! so -- which token, whose it is, and how long it has left -- rather than
+//! leaving it a mystery.
 //!
 //! The asking happens on a thread of its own and the answers are left where
 //! the window can pick them up. A window that stops drawing because GitHub is
@@ -68,21 +75,46 @@ struct Slot {
 pub struct Watch {
     ask: Sender<Key>,
     known: Arc<Mutex<HashMap<Key, Slot>>>,
-    /// Whether a token was found at all. Not the token -- nothing here hands
-    /// that back out
-    pub can_ask: bool,
+    /// The token in use, which changes when the workspace does. Held here
+    /// rather than handed to the thread once, because the thread outlives any
+    /// one workspace. Never handed back out
+    token: Arc<Mutex<Option<String>>>,
 }
 
 impl Watch {
     pub fn start() -> Watch {
-        let token = token();
         let known: Arc<Mutex<HashMap<Key, Slot>>> = Arc::new(Mutex::new(HashMap::new()));
+        let token: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let (ask, inbox) = channel::<Key>();
-        let watch = Watch { ask, known: Arc::clone(&known), can_ask: token.is_some() };
-        if let Some(token) = token {
-            std::thread::spawn(move || serve(inbox, known, token));
+        std::thread::spawn({
+            let (known, token) = (Arc::clone(&known), Arc::clone(&token));
+            move || serve(inbox, known, token)
+        });
+        Watch { ask, known, token }
+    }
+
+    /// The token the workspace now on screen asks with.
+    ///
+    /// What is already known is thrown away, because it was learned with
+    /// somebody else's account: a repository one token can see is a repository
+    /// the other may not, and "no pull request" and "not allowed to look" would
+    /// then be the same empty line
+    pub fn use_token(&self, token: Option<String>) {
+        if let Ok(mut held) = self.token.lock() {
+            if *held == token {
+                return;
+            }
+            *held = token;
         }
-        watch
+        if let Ok(mut known) = self.known.lock() {
+            known.clear();
+        }
+    }
+
+    /// Whether there is a token at all. Not the token -- nothing here hands
+    /// that back out
+    pub fn can_ask(&self) -> bool {
+        self.token.lock().is_ok_and(|t| t.is_some())
     }
 
     /// What is known about this branch, and a nudge to find out if it is time.
@@ -107,13 +139,22 @@ impl Watch {
     }
 }
 
-fn serve(inbox: Receiver<Key>, known: Arc<Mutex<HashMap<Key, Slot>>>, token: String) {
+fn serve(
+    inbox: Receiver<Key>,
+    known: Arc<Mutex<HashMap<Key, Slot>>>,
+    token: Arc<Mutex<Option<String>>>,
+) {
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .build()
         .new_agent();
     while let Ok((repo, branch)) = inbox.recv() {
-        let pr = look_up(&agent, &token, &repo, &branch);
+        // Read for each question rather than once: the workspace, and with it
+        // the account, can have changed since the last one
+        let Some(now) = token.lock().ok().and_then(|t| t.clone()) else {
+            continue;
+        };
+        let pr = look_up(&agent, &now, &repo, &branch);
         if let Ok(mut k) = known.lock() {
             k.insert((repo, branch), Slot { asked: Instant::now(), pr });
         }
@@ -162,82 +203,201 @@ fn read_one(v: &serde_json::Value) -> Option<Pr> {
     })
 }
 
-/// Whether this machine has a GitHub sign-in at all.
+/// Whose token is being used.
 ///
-/// Asked by the settings screen so that "why are there no pull request
-/// numbers" has an answer inside the app, rather than being a silence someone
-/// has to guess at. Says whether, never what
-pub fn signed_in() -> bool {
-    token().is_some()
+/// Said on screen, because the three are different promises: one this workspace
+/// was given, one sitting in the environment of whoever started the app, and
+/// whatever the person's own `gh` happens to be signed in as
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The secret `<workspace>.github`
+    Workspace,
+    /// `GITHUB_TOKEN` or `GH_TOKEN`
+    Env,
+    /// `gh auth token`
+    Gh,
 }
 
-/// The token this person already has.
+impl Source {
+    /// The word the screen looks its sentence up by.
+    pub fn id(self) -> &'static str {
+        match self {
+            Source::Workspace => "workspace",
+            Source::Env => "env",
+            Source::Gh => "gh",
+        }
+    }
+}
+
+/// The token to ask with, and where it came from.
 ///
 /// Never written anywhere, never logged, and sent to nowhere but GitHub's own
-/// API. Read in the order of how deliberate each one is: something they put in
-/// their environment on purpose, then what their own GitHub tool stored when
-/// they logged in
-fn token() -> Option<String> {
+/// API. Read in the order of how particular each one is: the token this
+/// workspace was given, then something the person put in their environment on
+/// purpose, then whatever their own GitHub tool is signed in as.
+///
+/// `own` is the workspace's own token, already looked up by whoever knows which
+/// workspace is being asked about -- this module never reaches into the secrets
+pub fn find(own: Option<String>) -> Option<(String, Source)> {
+    if let Some(t) = own.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+        return Some((t, Source::Workspace));
+    }
     for name in ["GITHUB_TOKEN", "GH_TOKEN"] {
         if let Ok(v) = std::env::var(name) {
             let v = v.trim().to_string();
             if !v.is_empty() {
-                return Some(v);
+                return Some((v, Source::Env));
             }
         }
     }
-    from_gh()
+    from_gh().map(|t| (t, Source::Gh))
 }
 
-/// What `gh` wrote down when the person logged in.
+/// What the person's own GitHub tool will hand over, asked rather than read.
 ///
-/// Its own file, read and never touched. Only github.com: the rest of that
-/// file may describe an enterprise server this app knows nothing about, and
-/// sending a token to the wrong host is not a small mistake
+/// `gh auth token --hostname github.com`. Reading gh's own file is what this
+/// used to do, and it was wrong twice over: a current `gh` on Windows keeps the
+/// token in the credential manager, so the file has no `oauth_token:` line to
+/// find at all, and a file that does have one can describe several accounts --
+/// the first one under `github.com` being somebody else's is an ordinary state,
+/// not a corrupt file. Only github.com is asked for: the rest of what gh knows
+/// may be an enterprise server this app knows nothing about, and sending a token
+/// to the wrong host is not a small mistake
 fn from_gh() -> Option<String> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()?;
-    for tail in ["AppData/Roaming/GitHub CLI/hosts.yml", ".config/gh/hosts.yml"] {
-        let p = std::path::PathBuf::from(&home).join(tail.replace('/', "\\"));
-        let Ok(text) = std::fs::read_to_string(&p) else {
-            continue;
-        };
-        if let Some(t) = oauth_token_for_github(&text) {
-            return Some(t);
-        }
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args(["auth", "token", "--hostname", "github.com"])
+        // It must answer or fail, never wait for somebody to read a question:
+        // there is no console in front of this process to read one in
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let out = crate::detach_console(&mut cmd).output().ok()?;
+    if !out.status.success() {
+        return None;
     }
-    None
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!token.is_empty()).then_some(token)
 }
 
-/// The `oauth_token:` under `github.com:` in gh's hosts file.
+/// What GitHub says about a token: whether it still works, whose it is, and
+/// when it stops working.
 ///
-/// Read by hand rather than with a YAML parser: this is two levels of a file
-/// with a known shape, and a whole dependency to find one line is a poor
-/// trade. Indentation is what says which host a line belongs to
-fn oauth_token_for_github(text: &str) -> Option<String> {
-    let mut inside = false;
-    for line in text.lines() {
-        let trimmed = line.trim_end();
-        if trimmed.trim().is_empty() || trimmed.trim_start().starts_with('#') {
-            continue;
+/// The state and the date, never the value. A token that has run out is said
+/// out loud -- a row that quietly stops showing pull request numbers looks
+/// exactly like a branch that has none
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Probe {
+    /// Where the token came from, or `None` when there is no token at all
+    pub source: Option<&'static str>,
+    /// Whether GitHub answered the way it answers a token it accepts
+    pub ok: bool,
+    /// The account the token speaks as
+    pub login: Option<String>,
+    /// When it stops working, as GitHub wrote it, and in days from today.
+    /// Both absent means a token that does not expire
+    pub expires_at: Option<String>,
+    pub expires_in_days: Option<i64>,
+    /// What GitHub answered with, for the one case worth telling apart: 401 is
+    /// a token that has run out or been taken away
+    pub status: u16,
+}
+
+/// Ask GitHub about the token this workspace would use.
+///
+/// Its own call rather than a side effect of asking about a branch: the
+/// settings screen has to be able to say "this one works and has eleven days
+/// left" before anybody is looking at a branch at all
+pub fn probe(own: Option<String>) -> Probe {
+    let Some((token, source)) = find(own) else {
+        return Probe::default();
+    };
+    let mut said = Probe {
+        source: Some(source.id()),
+        ..Default::default()
+    };
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(8)))
+        .build()
+        .new_agent();
+    let answer = agent
+        .get("https://api.github.com/user")
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Accept", "application/vnd.github+json")
+        .header(
+            "User-Agent",
+            concat!("shikisha-term/", env!("CARGO_PKG_VERSION")),
+        )
+        .call();
+    let mut resp = match answer {
+        Ok(r) => r,
+        // A refusal comes back as an error in this client, and the status is
+        // the whole point of asking
+        Err(ureq::Error::StatusCode(code)) => {
+            said.status = code;
+            return said;
         }
-        let indent = trimmed.len() - trimmed.trim_start().len();
-        if indent == 0 {
-            inside = trimmed.trim_end_matches(':').trim() == "github.com";
-            continue;
-        }
-        if !inside {
-            continue;
-        }
-        if let Some(v) = trimmed.trim_start().strip_prefix("oauth_token:") {
-            let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
-            if !v.is_empty() {
-                return Some(v);
-            }
-        }
+        Err(_) => return said,
+    };
+    said.status = resp.status().as_u16();
+    said.ok = said.status == 200;
+    // GitHub puts the end date of a fine-grained token in a header of its own,
+    // on every answer. Absent means one that does not expire
+    if let Some(when) = resp
+        .headers()
+        .get("github-authentication-token-expiration")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        said.expires_in_days = days_until(when);
+        said.expires_at = Some(when.to_string());
     }
-    None
+    if let Ok(v) = resp.body_mut().read_json::<serde_json::Value>() {
+        said.login = v
+            .get("login")
+            .and_then(|l| l.as_str())
+            .map(str::to_string);
+    }
+    said
+}
+
+/// How many days from today until a date GitHub wrote down.
+///
+/// Its header reads `2026-10-04 12:00:00 UTC`, and only the day matters: "8
+/// days left" is what a person acts on. Worked out here rather than with a date
+/// library, because the whole of the arithmetic is turning two calendar days
+/// into two numbers
+fn days_until(stamp: &str) -> Option<i64> {
+    // Its header reads `2026-10-04 12:00:00 UTC` today. The date is taken off
+    // the front either way a time can be joined to it, because a header's
+    // spelling is GitHub's to change and the day is all of it that is read
+    let day = stamp.split([' ', 'T']).next()?;
+    let mut part = day.split('-');
+    let y: i64 = part.next()?.parse().ok()?;
+    let m: i64 = part.next()?.parse().ok()?;
+    let d: i64 = part.next()?.parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64
+        / 86_400;
+    Some(days_from_epoch(y, m, d) - now)
+}
+
+/// Days from 1970-01-01 to a calendar day (Howard Hinnant's algorithm).
+fn days_from_epoch(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 #[cfg(test)]
@@ -280,44 +440,153 @@ mod tests {
         assert!(read_one(&serde_json::json!({"state": "open"})).is_none());
     }
 
+    /// The workspace's own token comes first, and nothing about the machine
+    /// changes that.
+    ///
+    /// This is the whole point of the change: one machine, two accounts, and
+    /// until now whichever one answered first was the one every row used. The
+    /// environment is still read for a workspace that has been given nothing,
+    /// because that is what every setup so far relies on
     #[test]
-    fn the_token_is_taken_only_from_the_host_it_belongs_to() {
-        // That file can describe an enterprise server this app knows nothing
-        // about. Sending a token to the wrong host is not a small mistake
-        let text = "\
-github.com:
-    user: someone
-    oauth_token: gho_theRightOne
-    git_protocol: https
-git.internal.example:
-    user: someone
-    oauth_token: gho_theWrongOne
-";
-        assert_eq!(oauth_token_for_github(text).as_deref(), Some("gho_theRightOne"));
+    fn the_workspace_is_asked_before_the_machine() {
+        // SAFETY: this process's own environment, in a test that puts it back
+        unsafe {
+            std::env::set_var("GITHUB_TOKEN", "from_the_environment");
+        }
+        let (token, source) = find(Some("  ours  ".into())).expect("自分のトークンがある");
+        assert_eq!(token, "ours", "前後の空白が値に入っている");
+        assert_eq!(source, Source::Workspace);
 
-        let other_only = "\
-git.internal.example:
-    oauth_token: gho_theWrongOne
-";
-        assert_eq!(oauth_token_for_github(other_only), None);
-        assert_eq!(oauth_token_for_github(""), None);
+        let (token, source) = find(None).expect("環境変数が読まれていない");
+        assert_eq!(token, "from_the_environment");
+        assert_eq!(source, Source::Env);
+
+        // A workspace that was given an empty one has been given nothing
+        assert_eq!(find(Some("   ".into())).unwrap().1, Source::Env);
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+        }
     }
 
+    /// "Eleven days left" is what a person acts on, so the date has to become a
+    /// number of days -- in GitHub's own spelling of a date, including the
+    /// shapes that are not a date at all
     #[test]
-    fn a_quoted_token_is_the_token_without_its_quotes() {
-        let text = "github.com:\n    oauth_token: \"gho_quoted\"\n";
-        assert_eq!(oauth_token_for_github(text).as_deref(), Some("gho_quoted"));
+    fn a_date_becomes_the_days_that_are_left() {
+        // The day count itself, independent of today
+        assert_eq!(days_from_epoch(1970, 1, 1), 0);
+        assert_eq!(days_from_epoch(1970, 1, 2), 1);
+        assert_eq!(days_from_epoch(2000, 3, 1), 11017);
+        // A leap day is a day
+        assert_eq!(days_from_epoch(2024, 3, 1) - days_from_epoch(2024, 2, 28), 2);
+        assert_eq!(days_from_epoch(2023, 3, 1) - days_from_epoch(2023, 2, 28), 1);
+
+        // Today, through the same door the header comes in by
+        let today = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            / 86_400;
+        let stamp = |days: i64| {
+            let d = today + days;
+            // Turned back into a date the long way round, so the test is not
+            // checking the arithmetic against itself
+            let (mut y, mut rest) = (1970, d);
+            loop {
+                let len = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
+                if rest < len {
+                    break;
+                }
+                rest -= len;
+                y += 1;
+            }
+            let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+            let lens = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+            let mut m = 1;
+            for len in lens {
+                if rest < len {
+                    break;
+                }
+                rest -= len;
+                m += 1;
+            }
+            format!("{y:04}-{m:02}-{:02} 12:00:00 UTC", rest + 1)
+        };
+        assert_eq!(days_until(&stamp(11)), Some(11));
+        assert_eq!(days_until(&stamp(0)), Some(0));
+        assert_eq!(days_until(&stamp(-3)), Some(-3), "切れたものは負の日数で出る");
+
+        // Not a date: nothing, rather than a number somebody would believe
+        // The same day, with the time joined on the other way round
+        assert_eq!(days_until(&stamp(11).replace(' ', "T")), Some(11));
+        assert_eq!(days_until(""), None);
+        assert_eq!(days_until("never"), None);
+        assert_eq!(days_until("2026-13-01 00:00:00 UTC"), None);
     }
 
     #[test]
     fn with_no_token_nothing_is_asked_and_nothing_pretends_to_know() {
-        // Constructed without a token: no thread, no requests, and every
-        // answer is "nothing known" rather than a made-up one
-        let w = Watch { ask: channel().0, known: Arc::new(Mutex::new(HashMap::new())), can_ask: false };
+        // No token: every answer is "nothing known" rather than a made-up one
+        let w = Watch::start();
+        assert!(!w.can_ask());
         assert_eq!(w.of("owner/name", "main"), None);
         // Asking twice must not queue twice; the slot is marked before the
         // answer arrives so a slow reply is not one request per frame
         assert_eq!(w.of("owner/name", "main"), None);
+        assert_eq!(w.known.lock().unwrap().len(), 1);
+    }
+
+    /// The real thing, against the real GitHub, with a real token.
+    ///
+    /// Ignored by default: it needs the network and a token, and neither belongs
+    /// in an ordinary run. Run it by hand when the shape of GitHub's answer is
+    /// what is in doubt -- the expiry header especially, which is the one thing
+    /// here that no fixture can vouch for:
+    ///
+    /// ```text
+    /// SHIKISHA_GITHUB_PROBE=<a fine-grained token> cargo test -p shikisha-core \
+    ///     -- --ignored --nocapture the_real_github
+    /// ```
+    ///
+    /// It prints the state, the account and the days left. Never the token
+    #[test]
+    #[ignore = "needs the network and a token of your own"]
+    fn the_real_github_answers_the_way_this_reads_it() {
+        let Ok(token) = std::env::var("SHIKISHA_GITHUB_PROBE") else {
+            panic!("SHIKISHA_GITHUB_PROBE にトークンを入れて実行してください");
+        };
+        let said = probe(Some(token));
+        println!(
+            "source={:?} ok={} status={} login={:?} expires_at={:?} days={:?}",
+            said.source, said.ok, said.status, said.login, said.expires_at, said.expires_in_days
+        );
+        assert_eq!(said.source, Some("workspace"));
+        assert!(said.ok, "GitHub が受け付けませんでした: status={}", said.status);
+        assert!(said.login.is_some(), "アカウント名が読めていない");
+        // An expiry is not guaranteed -- a token can be made without one -- but
+        // when the header is there it has to become a number of days
+        if said.expires_at.is_some() {
+            assert!(said.expires_in_days.is_some(), "期限の日付が日数にならない");
+        }
+    }
+
+    /// A new token means the old answers are somebody else's.
+    ///
+    /// A repository one account can see is one the other may not, so keeping
+    /// what was learned would make "there is no pull request" and "you are not
+    /// allowed to look" the same empty line
+    #[test]
+    fn changing_the_token_forgets_what_the_other_one_saw() {
+        let w = Watch::start();
+        assert_eq!(w.of("owner/name", "main"), None);
+        assert_eq!(w.known.lock().unwrap().len(), 1);
+        w.use_token(Some("ours".into()));
+        assert!(w.can_ask());
+        assert!(w.known.lock().unwrap().is_empty(), "前のアカウントの答えが残っている");
+        // Saying the same thing twice is not a change, and must not throw away
+        // answers that are still this token's
+        assert_eq!(w.of("owner/name", "main"), None);
+        w.use_token(Some("ours".into()));
         assert_eq!(w.known.lock().unwrap().len(), 1);
     }
 }

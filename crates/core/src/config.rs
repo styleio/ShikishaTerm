@@ -1212,6 +1212,27 @@ pub fn workspace_secret_key(ws_id: &str, name: &str) -> String {
     format!("{ws_id}.{name}")
 }
 
+/// One secret's value, for the program itself.
+///
+/// The program's own door, the same one [`crate::caps::Capabilities::secret_value`]
+/// opens -- used where there is no running app to ask, such as the settings
+/// server working out whether this workspace's GitHub token still works. A
+/// script never arrives here, and nothing that answers a page returns what this
+/// hands back
+pub fn secret_value(
+    path: &std::path::Path,
+    password: Option<&str>,
+    key: &str,
+) -> Option<String> {
+    read_secrets_value(path, password)
+        .ok()?
+        .get("tokens")?
+        .get(key)?
+        .as_str()
+        .map(str::to_string)
+        .filter(|v| !v.trim().is_empty())
+}
+
 /// List of secrets (names and what they are for). **Values are never returned**
 pub fn list_secrets(
     path: &std::path::Path,
@@ -1539,7 +1560,27 @@ pub struct WorkspaceSpec {
     /// defaults in `grants.rs`, the same as always
     #[serde(default)]
     pub automation_permissions: Option<crate::grants::GrantSpec>,
+    /// What git does here: the branches a commit refuses to land on for the
+    /// folders that have not said otherwise, and how the commit message is
+    /// written. Absent means the app's own answer.
+    ///
+    /// The token is not here. Which account reaches GitHub from this workspace
+    /// is the secret `<workspace>.github` (see [`GITHUB_SECRET`]) -- a value
+    /// belongs in the secret store, and the store already files one per
+    /// workspace
+    #[serde(default)]
+    pub git: Option<GitSpec>,
 }
+
+/// The name this workspace's GitHub token is filed under, inside the workspace's
+/// own secrets.
+///
+/// One name, decided here, because three places have to agree about it: the
+/// screen that offers to set it, the settings server that reports whether it
+/// works, and the pull request watch that asks with it. A fine-grained token
+/// belongs to the account and the repositories somebody chose, which is why it
+/// is worth having one per workspace at all
+pub const GITHUB_SECRET: &str = "github";
 
 /// Contents of a workspace definition file (workspaces/*.json)
 #[derive(Debug, Deserialize)]
@@ -2140,6 +2181,9 @@ pub struct Workspace {
     /// Who may call which automation command here, settled the same way. Rows it
     /// does not mention answer from the defaults in `grants.rs`
     pub automation_permissions: crate::grants::GrantSpec,
+    /// What git does here, settled the same way. Its `protect` has already been
+    /// handed to the folders, which is where anything asks about it
+    pub git: GitSpec,
 }
 
 impl Workspace {
@@ -2438,8 +2482,8 @@ fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
         .collect();
     let mut seen: std::collections::HashSet<String> = Default::default();
     let mut moved = Vec::new();
-    for i in 0..tabs.len() {
-        let written = tabs[i].cfg.id.as_deref().map(str::trim).unwrap_or("").to_string();
+    for t in tabs.iter_mut() {
+        let written = t.cfg.id.as_deref().map(str::trim).unwrap_or("").to_string();
         if !written.is_empty() && seen.insert(written.clone()) {
             continue;
         }
@@ -2447,12 +2491,12 @@ fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
         let base = match written.is_empty() {
             false => written.clone(),
             true => {
-                let name = tabs[i].cfg.name.clone().unwrap_or_default();
+                let name = t.cfg.name.clone().unwrap_or_default();
                 let from = match name.trim().is_empty() {
                     false => name,
                     // No name on screen either: the command is what the tab
                     // will be called, so it is what the id comes from
-                    true => tabs[i].cfg.command.argv().first().cloned().unwrap_or_default(),
+                    true => t.cfg.command.argv().first().cloned().unwrap_or_default(),
                 };
                 match slug_id(&from).is_empty() {
                     false => slug_id(&from),
@@ -2466,7 +2510,7 @@ fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
         }
         used.insert(id.clone());
         seen.insert(id.clone());
-        tabs[i].cfg.id = Some(id);
+        t.cfg.id = Some(id);
     }
     moved.sort();
     moved.dedup();
@@ -2589,13 +2633,13 @@ fn settle_notify(
     let only = named(own);
     let reachable = |n: &String| only.as_ref().is_none_or(|l| l.contains(n));
     let primary = own_primary
-        .and_then(one_name)
-        .or_else(|| app_primary.and_then(one_name).filter(reachable));
+        .and_then(|s| one_name(s))
+        .or_else(|| app_primary.and_then(|s| one_name(s)).filter(reachable));
     (only, primary)
 }
 
 /// A name with the spaces taken off, or nothing when that leaves nothing.
-fn one_name(s: &String) -> Option<String> {
+fn one_name(s: &str) -> Option<String> {
     let t = s.trim().to_string();
     (!t.is_empty()).then_some(t)
 }
@@ -2604,7 +2648,7 @@ fn one_name(s: &String) -> Option<String> {
 /// dropped, and `None` kept as `None` -- an empty list is "nothing", which is a
 /// different answer from "whatever the app says"
 fn named(list: Option<&Vec<String>>) -> Option<Vec<String>> {
-    list.map(|l| l.iter().filter_map(one_name).collect())
+    list.map(|l| l.iter().filter_map(|s| one_name(s)).collect())
 }
 
 /// A byte-order mark is not JSON.
@@ -2808,15 +2852,14 @@ pub fn append_folder_at(
         // asked for later. Nobody remembers which branch a folder held six
         // weeks ago, and the label above cannot be turned back into one -- it
         // flattens `work/2` and `work-2` to the same word
-        if let (Some(branch), Some(from)) = (name, like) {
-            if let Some(url) = crate::repo::remote_url_of(from) {
+        if let (Some(branch), Some(from)) = (name, like)
+            && let Some(url) = crate::repo::remote_url_of(from) {
                 folder["source"] = serde_json::to_value(SourceSpec::worktree(
                     &crate::folders::scrub(&url),
                     branch,
                     &crate::worktree::default_base(from),
                 ))?;
             }
-        }
         // Beside the folders it belongs with. A branch of one project written
         // after an unrelated one reads as unrelated: the list is drawn in the
         // order this is written in, and a family that is not next to itself is
@@ -3163,6 +3206,7 @@ impl Config {
                     providers: None,
                     capabilities: self.capabilities.clone(),
                     automation_permissions: self.automation_permissions.clone(),
+                    git: self.git.clone(),
                 });
             }
             return (out, errors);
@@ -3201,7 +3245,11 @@ impl Config {
                     None,
                 ),
             };
-            let (folders, tabs, moved) = resolve_folders(&folder_defs, &self.git.protected(), &self.hosts);
+            // This workspace's git settings, or the app's. Its protected branches
+            // go to the folders here, so a folder still has the one answer it
+            // has always had -- its own, or the one handed down to it
+            let git = ws.git.clone().unwrap_or_else(|| self.git.clone());
+            let (folders, tabs, moved) = resolve_folders(&folder_defs, &git.protected(), &self.hosts);
             // Prefer the display name from config; fall back to the definition file's name if empty
             let name = if ws.name.is_empty() {
                 file_name.unwrap_or_else(|| "UNNAMED".into())
@@ -3243,6 +3291,7 @@ impl Config {
                     .automation_permissions
                     .clone()
                     .unwrap_or_else(|| self.automation_permissions.clone()),
+                git,
             });
         }
         errors.extend(settle_workspace_ids(&mut out));
@@ -3441,11 +3490,10 @@ pub fn migrate_legacy_config() {
     }
     // Move secrets.json alongside it too, if present
     let (old_s, new_s) = (root.join("secrets.json"), root.join("config").join("secrets.json"));
-    if old_s.exists() && !new_s.exists() {
-        if std::fs::rename(&old_s, &new_s).is_err() && std::fs::copy(&old_s, &new_s).is_ok() {
+    if old_s.exists() && !new_s.exists()
+        && std::fs::rename(&old_s, &new_s).is_err() && std::fs::copy(&old_s, &new_s).is_ok() {
             let _ = std::fs::remove_file(&old_s);
         }
-    }
 }
 
 /// Path to the config file the web GUI edits.
@@ -4359,6 +4407,45 @@ mod tests {
         assert!(spaces[2].automation_permissions.is_empty());
     }
 
+    /// What git does here is the workspace's, and its folders hear about it.
+    ///
+    /// The protected branches are the part with a third level under it: a folder
+    /// may have its own, and the ones that do not take the workspace's. Checked
+    /// through the folders rather than through the spec, because the folder is
+    /// where everything downstream asks
+    #[test]
+    fn a_workspace_says_what_git_does_here() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "git": {"protect": ["main"], "message_hint": "アプリの言い分"},
+                "workspaces": [
+                  {"name":"ふつう", "folders":[{"cwd":"."}]},
+                  {"name":"会社", "git": {"protect": ["main", "release/*"]},
+                   "folders":[{"cwd":"."}, {"cwd":".", "protect":["nothing-else"]}]}
+                ]
+              }"#,
+        )
+        .unwrap();
+        let (spaces, errs) = cfg.resolve_workspaces();
+        assert!(errs.is_empty(), "{errs:?}");
+
+        // Said nothing: the app's, and its folder was handed the same
+        assert_eq!(spaces[0].git.protected(), vec!["main".to_string()]);
+        assert_eq!(spaces[0].folders[0].protect, vec!["main".to_string()]);
+        assert_eq!(spaces[0].git.message_hint.as_deref(), Some("アプリの言い分"));
+
+        // Said its own: its folders take that, and the app's extra instruction
+        // does not come along with it
+        assert_eq!(
+            spaces[1].folders[0].protect,
+            vec!["main".to_string(), "release/*".to_string()],
+            "ワークスペースの答えがフォルダに届いていない"
+        );
+        assert_eq!(spaces[1].git.message_hint, None, "アプリ側の指示が残っている");
+        // ...and a folder with its own answer still has the last word
+        assert_eq!(spaces[1].folders[1].protect, vec!["nothing-else".to_string()]);
+    }
+
     /// A settings file written before any of this existed reads the same way.
     #[test]
     fn a_workspace_without_the_new_keys_still_reads() {
@@ -4369,6 +4456,7 @@ mod tests {
         assert!(cfg.workspaces[0].providers.is_none());
         assert!(cfg.workspaces[0].capabilities.is_none());
         assert!(cfg.workspaces[0].automation_permissions.is_none());
+        assert!(cfg.workspaces[0].git.is_none());
     }
 
     /// A secrets file written before names meant anything is brought forward

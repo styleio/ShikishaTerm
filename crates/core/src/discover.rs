@@ -290,7 +290,7 @@ pub(crate) fn run_briefly(exe: &str, args: &[&str], limit: Duration) -> Option<V
 /// UTF-8, so this stays usable for a program that answers plainly.
 fn decode_utf16_or_utf8(raw: &[u8]) -> String {
     let looks_utf16 = raw.len() >= 2
-        && raw.len() % 2 == 0
+        && raw.len().is_multiple_of(2)
         && (raw[..2] == [0xFF, 0xFE] || raw.iter().skip(1).step_by(2).take(8).any(|b| *b == 0));
     if !looks_utf16 {
         return String::from_utf8_lossy(raw).into_owned();

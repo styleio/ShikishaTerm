@@ -69,7 +69,7 @@ pub fn folders_seen(spec: &RecordSpec, since: SystemTime, most: usize) -> Vec<St
             (made >= since).then_some((made, f))
         })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|(made, _)| std::cmp::Reverse(*made));
     let mut out: Vec<String> = Vec::new();
     for (_, f) in files {
         if out.len() >= most {

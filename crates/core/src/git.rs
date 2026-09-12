@@ -510,7 +510,7 @@ pub fn split_hunks(diff: &str) -> Vec<Hunk> {
                 file: file.clone(),
                 header: line.to_string(),
                 start,
-                end: start + count.saturating_sub(1).max(0),
+                end: start + count.saturating_sub(1),
                 patch: format!("{head}{line}\n"),
             });
             continue;
@@ -667,13 +667,11 @@ pub fn commit(
     if message.trim().is_empty() {
         bail!(crate::i18n::t("err.git.empty_message"));
     }
-    if !allow_protected {
-        if let Some(b) = branch(dir)? {
-            if is_protected(&b, protect) {
+    if !allow_protected
+        && let Some(b) = branch(dir)?
+            && is_protected(&b, protect) {
                 bail!(crate::i18n::tp("err.git.protected", &[("branch", &b)]));
             }
-        }
-    }
     // Amend rewrites the commit that is already there. On a branch nobody else
     // has, that is tidying; on a shared one it is rewriting what other people
     // have -- which is why it goes through the same refusal as a plain commit

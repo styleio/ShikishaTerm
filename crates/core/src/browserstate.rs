@@ -129,7 +129,7 @@ pub fn snapshots() -> Vec<(String, String)> {
         let when = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
         out.push((when, label, p.display().to_string()));
     }
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|(when, ..)| std::cmp::Reverse(*when));
     out.into_iter().map(|(_, l, p)| (l, p)).collect()
 }
 
@@ -176,7 +176,7 @@ pub fn list() -> Vec<Entry> {
         let when = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
         out.push((when, Entry { label, count }));
     }
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|(when, ..)| std::cmp::Reverse(*when));
     out.into_iter().map(|(_, e)| e).collect()
 }
 

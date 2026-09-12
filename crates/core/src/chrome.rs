@@ -740,7 +740,7 @@ fn read_frames(
         };
         match opcode {
             // continuation, text, binary
-            0x0 | 0x1 | 0x2 => {
+            0x0..=0x2 => {
                 whole.extend_from_slice(&payload);
                 if !fin {
                     continue;

@@ -42,7 +42,7 @@ pub trait Shell {
     fn inject(&mut self, ev: Event);
     fn toggle_tab_bar(&self);
     fn toggle_side_bar(&self);
-    fn take_open_settings( &mut self, ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)>;
+    fn take_open_settings(&mut self) -> Option<crate::mailbox::SettingsWanted>;
     fn open_vault(&self);
     fn open_palette(&self);
     fn push_git(&self, json: &str);
@@ -60,7 +60,7 @@ pub trait Shell {
     fn say_where_it_went(&self);
     fn size(&self) -> anyhow::Result<Size>;
     fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> anyhow::Result<Option<Event>>;
-    fn host(&self) -> Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))>;
+    fn host(&self) -> Option<shikisha_shared::Seat>;
 
     /// The end of the line a connected client answers browser asks on.
     ///

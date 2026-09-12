@@ -532,11 +532,10 @@ impl vt100::Callbacks for QueryResponder {
             return;
         }
         let Some(note) = note_of(params) else { return };
-        if let Ok(mut n) = self.notes.lock() {
-            if n.len() < 32 {
+        if let Ok(mut n) = self.notes.lock()
+            && n.len() < 32 {
                 n.push(note);
             }
-        }
     }
 
     fn unhandled_csi(
@@ -569,11 +568,10 @@ impl vt100::Callbacks for QueryResponder {
             // leaves its ask behind, which is why a restart begins with an
             // empty stack
             (Some(b'>'), 'u', _) => {
-                if let Ok(mut m) = self.keyboard.lock() {
-                    if m.len() < KEYBOARD_STACK_MAX {
+                if let Ok(mut m) = self.keyboard.lock()
+                    && m.len() < KEYBOARD_STACK_MAX {
                         m.push(supported_keyboard_flags(p0.unwrap_or(0)));
                     }
-                }
             }
             (Some(b'<'), 'u', _) => {
                 if let Ok(mut m) = self.keyboard.lock() {
@@ -912,14 +910,13 @@ pub fn launch_problem(
     // A missing working folder and a missing program both surface as
     // "file not found", so check the folder directly rather than guess from the
     // OS error code.
-    if let Some(dir) = cwd {
-        if !dir.as_os_str().is_empty() && !dir.exists() {
+    if let Some(dir) = cwd
+        && !dir.as_os_str().is_empty() && !dir.exists() {
             return crate::i18n::tp(
                 "msg.start.no_folder",
                 &[("name", name), ("path", &dir.display().to_string())],
             );
         }
-    }
     // A remote tab's command line is an address, not a program, so "install it"
     // would be the wrong advice: what went wrong is on the wire, and the error
     // itself already says so
@@ -2880,11 +2877,10 @@ impl Tab {
         // closing it (which happens when this tab is dropped, restarted, or
         // this program dies) ends them together.
         let job = crate::job::Job::new();
-        if let (Some(j), Some(p)) = (job.as_ref(), pid) {
-            if !j.take(p) {
+        if let (Some(j), Some(p)) = (job.as_ref(), pid)
+            && !j.take(p) {
                 crate::append_hook_log(&format!("could not put \"{title}\" in a job object"));
             }
-        }
 
         let writer: PtyWriter = Arc::new(Mutex::new(master.take_writer()?));
         let bell_count = Arc::new(AtomicU64::new(0));
@@ -2918,18 +2914,16 @@ impl Tab {
         // would otherwise be blank. Paint a small title card (like the CLIs show
         // on startup) so it reads as a real, identified endpoint. Done straight
         // on the parser, not counted as output, so it doesn't look like activity.
-        if let Some(conn) = opts.model.as_ref() {
-            if let Ok(mut p) = parser.lock() {
+        if let Some(conn) = opts.model.as_ref()
+            && let Ok(mut p) = parser.lock() {
                 p.process(model_title_box(conn, cols).as_bytes());
             }
-        }
         // A held tab has an idle placeholder too, so without this it would be
         // a blank screen that says nothing about why nothing happened
-        if let Some(held) = opts.held.as_ref() {
-            if let Ok(mut p) = parser.lock() {
+        if let Some(held) = opts.held.as_ref()
+            && let Ok(mut p) = parser.lock() {
                 p.process(held_card(held, cols).as_bytes());
             }
-        }
         let child_exited = Arc::new(AtomicBool::new(false));
 
         // PTY output → (encoding conversion if needed) → vt100 parser / session log
@@ -2958,12 +2952,11 @@ impl Tab {
                             counter.fetch_add(n as u64, Ordering::Relaxed);
                             // Asked once, and never again after the answer is
                             // yes: this sits on the path every byte takes
-                            if let Some(w) = watch.as_mut() {
-                                if w.broken(&buf[..n]) {
+                            if let Some(w) = watch.as_mut()
+                                && w.broken(&buf[..n]) {
                                     mojibake.store(true, Ordering::Relaxed);
                                     watch = None;
                                 }
-                            }
                             let chunk: &[u8] = match decoder.as_mut() {
                                 // Convert Shift_JIS etc to UTF-8 before passing to the parser
                                 Some(d) => {
@@ -3226,12 +3219,11 @@ impl Tab {
         }
         // If the peer isn't UTF-8, convert the characters we send too
         // (control sequences are ASCII, so they pass through unchanged)
-        if let Some(enc) = self.opts.encoding {
-            if let Ok(s) = std::str::from_utf8(bytes) {
+        if let Some(enc) = self.opts.encoding
+            && let Ok(s) = std::str::from_utf8(bytes) {
                 let (encoded, _, _) = enc.encode(s);
                 return pty_write(&self.writer, &encoded);
             }
-        }
         pty_write(&self.writer, bytes)
     }
 
@@ -3646,8 +3638,8 @@ impl Tab {
         if self.state == TabState::Busy {
             self.spinner_idx = self.spinner_idx.wrapping_add(1);
         }
-        if self.detector.working_shown() {
-            if !self.saw_working.swap(true, Ordering::Relaxed) {
+        if self.detector.working_shown()
+            && !self.saw_working.swap(true, Ordering::Relaxed) {
                 // Record what evidence led us to see "started working."
                 // If it picked up screen decoration by mistake, it shows up here
                 crate::append_hook_log(&format!(
@@ -3656,7 +3648,6 @@ impl Tab {
                     self.detector.working_matched()
                 ));
             }
-        }
         self.sample_activity();
 
         // Response capture (submit-boundary marker scheme):
