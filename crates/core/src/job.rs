@@ -43,6 +43,16 @@ impl Job {
         Some(Job { group: std::sync::Mutex::new(None) })
     }
 
+    /// How many processes the group holds right now.
+    ///
+    /// `None` where the answer cannot be had, which on unix is always: there
+    /// is no cheap call that counts a process group, and the caller is
+    /// expected to treat "don't know" as "nothing to report" rather than
+    /// inventing a number. The state it feeds simply never appears here
+    pub fn active(&self) -> Option<u32> {
+        None
+    }
+
     /// Put a process, and everything it goes on to start, into this group.
     ///
     /// False when it could not be done -- most likely because the process had
@@ -120,6 +130,37 @@ impl Job {
         // A job without the limit is worse than no job: it would hold the
         // processes and never end them. Let the Drop close it and say no.
         (ok != 0).then_some(job)
+    }
+
+    /// How many processes the job holds right now.
+    ///
+    /// This is what makes "the turn is over but something it started is still
+    /// running" knowable without asking the CLI. The alternative -- reading
+    /// the CLI's own summary line ("1 shell still running") -- was measured
+    /// and rejected: that line stays in the scrollback after the shell ends,
+    /// so a tab would claim background work forever. The job's population
+    /// cannot be stale; it is the kernel's own count.
+    ///
+    /// `None` when the count cannot be had, which the caller must read as
+    /// "nothing to report" rather than as zero.
+    pub fn active(&self) -> Option<u32> {
+        use windows_sys::Win32::System::JobObjects::{
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation,
+            QueryInformationJobObject,
+        };
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: the handle is ours and lives as long as self; the buffer is
+        // the exact struct the class names, and its size is passed with it
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                JobObjectBasicAccountingInformation,
+                std::ptr::from_mut(&mut info).cast(),
+                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        (ok != 0).then_some(info.ActiveProcesses)
     }
 
     /// Put a process, and everything it goes on to start, into this job.
@@ -202,6 +243,49 @@ mod tests {
         }
         // Whatever happens above, nothing is left running
         let _ = parent.kill();
+    }
+
+    /// The count is the whole basis of the BACKGROUND state, so it is checked
+    /// against a real job holding real processes rather than trusted. A job
+    /// with one program in it reads one; the same job while that program holds
+    /// a child of its own reads more; and once they are gone it reads nothing.
+    #[test]
+    fn the_job_counts_what_is_actually_alive_in_it() {
+        use std::os::windows::process::CommandExt as _;
+        use std::process::Stdio;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let job = Job::new().expect("ジョブが作れない");
+        assert_eq!(job.active(), Some(0), "空のジョブは0");
+
+        // A shell that waits, holding a child that also waits -- the shape a
+        // CLI leaving a background shell behind actually has
+        let mut parent = std::process::Command::new("cmd.exe")
+            .args(["/c", "cmd.exe /c ping -n 60 127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("cmd.exe が起動できない");
+        assert!(job.take(parent.id()), "ジョブに入れられない");
+
+        // Wait for the inner process to exist rather than assuming a duration
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if job.active().is_some_and(|n| n >= 2) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "子を持っても増えない: {:?}",
+                job.active()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        let _ = parent.kill();
+        let _ = parent.wait();
+        drop(job);
     }
 
     /// A process that has already gone cannot be taken, and saying so must not

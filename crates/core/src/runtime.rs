@@ -1168,7 +1168,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if !thanks_asked && !thanks_show {
                 thanks_show = transitions.iter().any(|&(idx, old, new)| {
                     old == TabState::Busy
-                        && new == TabState::Done
+                        && new.turn_ended()
                         && tabs.get(idx - 1).is_some_and(|t| t.is_ai())
                 });
             }
@@ -1629,7 +1629,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     busy_again.insert(idx, now_ms + every);
                                 }
                             }
-                            TabState::Done if old == TabState::Busy && !answering => {
+                            _ if new.turn_ended() && old == TabState::Busy && !answering => {
                                 append_hook_log(&format!(
                                     "Ignoring done tab{idx} [{}] prompted={} submitting={} answered={}",
                                     tabs[idx - 1].profile_name(),
@@ -1638,7 +1638,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     tabs[idx - 1].answered_since_submit()
                                 ));
                             }
-                            TabState::Done if answering && old == TabState::Busy => {
+                            _ if new.turn_ended() && answering && old == TabState::Busy => {
                                 append_hook_log(&format!(
                                     "Awaiting done confirmation tab{idx} [{}]",
                                     tabs[idx - 1].profile_name()
@@ -1666,7 +1666,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     pending_done = waiting;
                     for (idx, _) in ready {
                         if let Some(t) = tabs.get_mut(idx.wrapping_sub(1)) {
-                            if t.state != TabState::Done {
+                            if !t.state.turn_ended() {
                                 continue;
                             }
                             // One response per submit. Waiting for the next one requires another submit.
