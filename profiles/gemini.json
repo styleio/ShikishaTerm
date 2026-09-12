@@ -14,9 +14,13 @@
     "●\\s*1\\.",
     "❯\\s*1\\."
   ],
-  "title_busy": ["✦"],
+  "title_busy": [
+    "✦"
+  ],
   "silence_ms": 2000,
-  "interrupt": ["esc"],
+  "interrupt": [
+    "esc"
+  ],
   "resume": {
     "new_id": [
       "--session-id",
@@ -25,6 +29,18 @@
     "newest_here": [
       "--resume",
       "latest"
-    ]
+    ],
+    "hook": {
+      "file": "{home}/.gemini/settings.json",
+      "format": "bare",
+      "timeout_unit": "milliseconds",
+      "events": [
+        "BeforeAgent"
+      ],
+      "states": {
+        "BeforeAgent": "BUSY",
+        "AfterAgent": "DONE"
+      }
+    }
   }
 }
