@@ -302,6 +302,35 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .wslink { cursor:pointer; }
   .wslink:hover { color:var(--text); text-decoration:underline; }
   /* Output volume as a real bar chart, not characters */
+  /* The heading a folder's tabs get when there are several, so the set can be
+     put away as one and the count can be read without counting rows */
+  /* The grouping chooser, and the headings it produces */
+  .axis { display:flex; gap:var(--s1); padding:2px 10px 4px; }
+  .axis .ax { padding:1px 6px; border-radius:var(--r-chip); color:var(--dim);
+    font-size:11.5px; cursor:pointer; }
+  .axis .ax:hover { background:var(--hover); }
+  .axis .ax.on { background:var(--raise); color:var(--text); }
+  .gset { padding:6px 10px 2px; color:var(--muted); font-size:11.5px;
+    text-transform:uppercase; letter-spacing:.04em; }
+  /* 29px, not a number of its own: a tab under a folder sits at 26px of
+     padding behind a 3px border, and this heading stands where those rows do */
+  .bundle { display:flex; align-items:center; gap:var(--s2); padding:1px 0 1px 29px;
+    color:var(--dim); font-size:12px; cursor:pointer; }
+  .bundle .caret { flex:none; }
+  .bundle .worst { color:var(--muted); }
+  /* What a folded set says instead of its rows. One pill per state, each
+     wearing that state's dot and a chip for every tab in it -- so the row
+     grows with the number of states, not the number of tabs.
+     Indented 23px so that the first dot, once the pill's own 6px is added,
+     lands in the same column as every status dot above it */
+  .pills { display:flex; flex-wrap:wrap; gap:var(--s2); padding:1px 0 3px 23px; }
+  .pill { display:flex; align-items:center; gap:var(--s1); padding:2px 6px;
+    border-radius:var(--r-ctl); background:var(--raise); cursor:pointer; }
+  /* Smaller than the status dot beside it, on purpose. An 8px box with this
+     radius is a circle, and two circles of one size read as two of the same
+     thing -- these are not: the dot is the state, the chips are what is in it */
+  .pill .chip { width:6px; height:6px; border-radius:var(--r-chip);
+    background:var(--ai,var(--dim)); }
   .spark { display:flex; align-items:flex-end; gap:1px; height:14px; flex:none; }
   .spark i { width:2px; background:var(--brand); opacity:.75; }
 
@@ -315,13 +344,26 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.aitab { border-left-color:var(--ai); }
   .tab.aitab.sel { border-left-color:var(--ai); }
   .tab.aitab .nm { color:var(--ai); font-weight:600; }
-  .ai-claude   { --ai:#d97757; }
-  .ai-codex    { --ai:#19c37d; }
-  .ai-gemini   { --ai:#4285f4; }
-  .ai-deepseek { --ai:#5b7cff; }
-  .ai-qwen     { --ai:#a06bff; }
-  .ai-aider    { --ai:#e5644d; }
-  .ai-kimi     { --ai:#12b3a8; }
+  /* Each AI in the colour it uses for itself, so a person who knows the tool
+     knows the tab. A CLI is named by its own command (claude, codex...); a
+     model bridge by the provider it was pointed at, which is why both spellings
+     land on one colour */
+  .ai-claude, .ai-anthropic   { --ai:#d97706; }
+  .ai-codex, .ai-openai       { --ai:#10a37f; }
+  .ai-gemini, .ai-google      { --ai:#4880ed; }
+  .ai-copilot                 { --ai:#0078d4; }
+  .ai-perplexity              { --ai:#20b2aa; }
+  .ai-meta                    { --ai:#0866ff; }
+  .ai-deepseek                { --ai:#4d6bfe; }
+  .ai-qwen                    { --ai:#615ced; }
+  .ai-aider                   { --ai:#10b981; }
+  .ai-kimi                    { --ai:#12b3a8; }
+  /* The mark itself. A plain character rather than a logo: nothing is copied,
+     nothing needs anybody's permission, and it still says which AI at a glance.
+     Held to the text size of the row it sits in, and never allowed to grow into
+     an emoji -- see aiMark() for why that matters */
+  .aim { flex:none; color:var(--ai,var(--dim)); font-size:12px; line-height:1;
+    width:12px; text-align:center; }
 
   /* A folder, as a heading over the tabs working in it. Drawn only when there
      is more than one, so nobody meets the idea before they need it.
@@ -2133,10 +2175,33 @@ function drawTabs() {
   const kinOf = g => g.family ? folders.filter(o => o.family === g.family) : [g];
   const heads = g => !!g.family && !g.linked && kinOf(g).some(o => o.linked);
   const housed = g => !!g.family && g.linked && kinOf(g).some(o => !o.linked);
-  let box = null, boxKey = null;
-  for (let gi = 0; gi < folders.length; gi++) {
-    const g = folders[gi];
-    const key = (heads(g) || housed(g)) ? g.family : null;
+  // The order the folders are read in, and the headings that break it up.
+  //
+  // The households above are themselves a grouping -- by the repository a
+  // folder belongs to -- so they are switched off whenever another axis is
+  // chosen. Two groupings at once would put a project's own folder in one
+  // group and its branches in another and still try to draw a box round all
+  // of them
+  const axis = groupBy !== "none" && folders.length > 1 ? groupBy : "none";
+  if (folders.length > 1) nav.append(axisRow());
+  const keyed = folders.map((g, gi) => ({ gi, g, ...groupOf(g, inside[gi], axis, folders) }));
+  if (axis !== "none") {
+    // Stable: folders keep the order the settings put them in, within their
+    // group. A list that reshuffles itself as states change is a list nobody
+    // can point at
+    const seen = [];
+    for (const r of keyed) if (!seen.includes(r.key)) seen.push(r.key);
+    seen.sort((a, b) => groupRank(a, axis) - groupRank(b, axis));
+    keyed.sort((a, b) => seen.indexOf(a.key) - seen.indexOf(b.key));
+  }
+  let box = null, boxKey = null, groupKey = null;
+  for (const row of keyed) {
+    const gi = row.gi, g = row.g;
+    if (axis !== "none" && row.key !== groupKey) {
+      groupKey = row.key;
+      nav.append(el("div", {class:"gset"}, el("span", {}, row.label)));
+    }
+    const key = axis === "none" && (heads(g) || housed(g)) ? g.family : null;
     if (key !== boxKey) {
       box = key ? el("div", {class:"family"}) : null;
       boxKey = key;
@@ -2144,12 +2209,25 @@ function drawTabs() {
     }
     const into = box || nav;
     // The household's branches put away together, from the pill on its head
-    if (housed(g) && folded.has("kin:" + g.family)) continue;
+    const kin = axis === "none" && housed(g), top = axis === "none" && heads(g);
+    if (kin && folded.has("kin:" + g.family)) continue;
     if (g.empty) { into.append(emptyRow(g)); continue; }
-    into.append(folderRow(g, kinOf(g), heads(g)));
+    into.append(folderRow(g, kinOf(g), top, inside[gi]));
     // Its tabs are hidden while it is folded, and the heading says so
     if (folded.has(g.folder)) continue;
-    for (const t of inside[gi]) into.append(tabRow(t, g, housed(g), heads(g)));
+    const mine = inside[gi];
+    // A folder running one thing needs no heading over it -- the row above
+    // already is that heading. Two or more get one, so the set can be put
+    // away together and counted without counting rows
+    if (mine.length >= 2) {
+      const away = folded.has("tabs:" + g.folder);
+      into.append(bundleRow(g, mine, away, kin));
+      if (away) {
+        into.append(pillsRow(mine, kin));
+        continue;
+      }
+    }
+    for (const t of mine) into.append(tabRow(t, g, kin, top));
   }
   for (const t of loose) nav.append(tabRow(t, null, false, false));
   // A "+" at the end of the list. Opens the settings page already in the "add tab" state
@@ -2279,7 +2357,7 @@ function drawCoach() {
 // which project, the shape is whether this is the project's own folder or a
 // branch of it. The head of a household also says which branch the project
 // itself is standing on, and how many branches hang under it
-function folderRow(g, kin, head) {
+function folderRow(g, kin, head, mine) {
   const shut = folded.has(g.folder);
   const chip = g.linked ? cutMark() : el("span", {class:"chip"});
   if (g.color) {
@@ -2294,6 +2372,19 @@ function folderRow(g, kin, head) {
     // still shows which folder is the one with the problem
     ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
     el("span", {class:"nm"}, g.name || ""));
+  // Shut, the row has to speak for what it is hiding: the state of whichever
+  // tab inside is waiting on somebody first, and the shape of the work going
+  // on in there. Open, it says neither -- the rows below are already saying
+  // both, and a second copy on the heading is the sidebar repeating itself
+  if (shut && (mine || []).length) {
+    const worst = worstOf(mine);
+    row.append(el("span", {class:"dot " + worst,
+      title:(mine.find(t => t.state === worst) || {}).state_label || worst}));
+    // Every tab's bars laid over each other, so one busy tab still shows
+    row.append(spark(mine.map(t => t.activity || [])
+      .reduce((a, b) => a.map((v, i) => Math.max(v, b[i] || 0)),
+              new Array(10).fill(0))));
+  }
   if (head && g.branch) {
     row.append(el("span", {class:"on", title:T["tui.folder.on.title"] || ""}, g.branch));
   }
@@ -2343,6 +2434,9 @@ function tabRow(t, g, deep, head) {
       onclick:() => send({kind:"select", tab:t.index})},
     el("span", {class:"dot " + t.state}),
     el("span", {class:"num"}, String(t.index)),
+    // After the dot, never before it: the dot's column is what makes the
+    // sidebar read as one line down the side
+    t.ai ? aiMark(t.ai) : null,
     el("span", {class:"nm", title:t.profile}, t.name),
     t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
     spark(t.activity));
@@ -3100,6 +3194,170 @@ function cutMark() {
     '<circle cx="3.5" cy="9.7" r="1.4" fill="currentColor" stroke="none"/>' +
     '<circle cx="8.5" cy="2.3" r="1.4" fill="currentColor" stroke="none"/></svg>';
   return s;
+}
+
+// How the folder list is broken up. One of "none", "state", "project".
+//
+// A view preference, so it is kept where the person looking is rather than in
+// the settings everybody shares -- the same place the sign-in token is kept,
+// and read the same careful way: a window with storage turned off simply gets
+// the ungrouped list rather than a broken one
+const GROUP_AXES = ["none", "state", "project"];
+let groupBy = (() => {
+  try {
+    const v = localStorage.getItem("shikisha_groupby");
+    return GROUP_AXES.includes(v) ? v : "none";
+  } catch (e) { return "none"; }
+})();
+function setGroupBy(v) {
+  groupBy = GROUP_AXES.includes(v) ? v : "none";
+  try { localStorage.setItem("shikisha_groupby", groupBy); } catch (e) {}
+  drawTabs();
+}
+
+// Which group a folder falls in, and what that group is called.
+//
+// By state, a folder is spoken for by whichever tab in it is waiting on
+// somebody first -- the same rule a shut folder's own dot follows, so the
+// heading and the row never disagree. By project, by the folder its
+// repository is checked out in, which is the household the list already
+// draws; a folder that is in no repository at all is its own answer rather
+// than being filed under a project it does not have
+function groupOf(g, mine, axis, folders) {
+  if (axis === "state") {
+    if (!(mine || []).length) return { key: "-", label: T["tui.group.idle"] || "Nothing running" };
+    const st = worstOf(mine);
+    const t = mine.find(x => x.state === st);
+    return { key: st, label: (t && t.state_label) || st };
+  }
+  if (axis === "project") {
+    if (!g.family) return { key: "-", label: T["tui.group.noproject"] || "No project" };
+    const head = folders.find(o => o.family === g.family && !o.linked);
+    return { key: g.family, label: (head && head.name) || g.name || "" };
+  }
+  return { key: "", label: "" };
+}
+
+// The order the groups themselves come in. By state, the order of who is
+// waiting, so the group somebody has to answer is at the top of the sidebar
+// and not wherever the settings happened to put its folder
+function groupRank(key, axis) {
+  if (axis === "state") return key === "-" ? STATE_RANK.length + 1 : rankOf(key);
+  return key === "-" ? 1 : 0;
+}
+
+// The chooser. Three words, the current one filled -- no menu, because with
+// three choices a menu is one more press for nothing
+function axisRow() {
+  const row = el("div", {class:"axis"});
+  for (const v of GROUP_AXES) {
+    const on = groupBy === v;
+    row.append(el("span", {class:"ax" + (on ? " on" : ""),
+        onclick:e => { e.stopPropagation(); setGroupBy(v); }},
+      T["tui.group." + v] || v));
+  }
+  return row;
+}
+
+// The mark each AI is drawn with.
+//
+// Plain characters, not the vendors' logos. A logo is a trademark and every
+// one of these vendors requires written permission for it -- the names may be
+// used in plain text and the artwork may not -- so nothing is copied here and
+// nothing has to be asked for. The character is a stand-in that still says
+// which AI at a glance, worn in the colour that AI uses for itself.
+//
+// Grok is deliberately absent. Its mark is a stylised X, and the character
+// that would stand in for it IS that mark rather than something resembling it.
+//
+// A key not on this list gets the last entry: a tab whose AI we have no mark
+// for still has to be told apart from a shell.
+const AI_MARK = {
+  claude: "✳", anthropic: "✳",
+  codex: "⚛", openai: "⚛",
+  gemini: "✦", google: "✦",
+  copilot: "∞",
+  perplexity: "✣",
+  meta: "◯",
+  deepseek: "⋚",
+  qwen: "⬡",
+  aider: "❯",
+  "": "◆",
+};
+
+// One AI's mark, in its own colour.
+//
+// The variation selector on the end is not decoration. Several of these
+// characters have an emoji form as well as a text form, and a system that
+// picks the emoji form draws it from a colour font -- which ignores the colour
+// this app asked for, and comes out the wrong size. U+FE0E is the request for
+// the text form, and it is what keeps the mark a mark
+function aiMark(key) {
+  const k = (key || "").toLowerCase();
+  const glyph = (Object.prototype.hasOwnProperty.call(AI_MARK, k) ? AI_MARK[k] : AI_MARK[""]);
+  return el("span", {class:"aim" + (k ? " ai-" + k : ""), title:key || ""},
+    glyph + "︎");
+}
+
+// Which state a person has to hear about first.
+//
+// Not the order the states were declared in: this is the order of who is
+// waiting. A folder holding one tab that wants an answer and five that are
+// finished has to say the first thing, and a folded set has to lead with it
+// too. Kept in step with the app's own list by a test
+const STATE_RANK = ["QUESTION", "FAILED", "LIMIT", "BUSY", "BACKGROUND", "DONE", "WAIT", "EXIT"];
+const rankOf = st => { const i = STATE_RANK.indexOf(st); return i < 0 ? STATE_RANK.length : i; };
+// The one state that speaks for a set of tabs
+const worstOf = ts => (ts || []).map(t => t.state)
+    .sort((a, b) => rankOf(a) - rankOf(b))[0] || "";
+
+// The heading over a folder's tabs, when it has more than one.
+//
+// Pressing it puts the whole set away. The count is on it because "how many
+// are in here" is the question a put-away set otherwise makes somebody open it
+// to answer
+function bundleRow(g, mine, away, deep) {
+  const word = mine.length === 1
+      ? (T["tui.folder.tabs.one"] || "1 tab")
+      : (T["tui.folder.tabs"] || "{n} tabs").replace("{n}", mine.length);
+  // Put away, the heading has to say the one thing the pills below it can
+  // only show in colour. A set folded on a tab that wants an answer, read by
+  // somebody who has never seen this app, is otherwise a row of dots
+  const worst = away ? (mine.find(t => t.state === worstOf(mine)) || {}).state_label : null;
+  return el("div", {class:"bundle" + (deep ? " deep" : ""),
+      title:T["tui.folder.tabs.title"] || "",
+      onclick:e => { e.stopPropagation(); fold("tabs:" + g.folder); }},
+    el("span", {}, word),
+    worst ? el("span", {class:"worst"}, worst) : null,
+    // Last, the way the branch count above it wears its own
+    el("span", {class:"caret"}, away ? "▸" : "▾"));
+}
+
+// What a folded set of tabs shows instead of its rows: one pill per state.
+//
+// Tabs in the same state share a dot, so five finished tabs are one pill and
+// not five rows -- and the moment one of them starts working the set splits in
+// two and says so without being opened. Pressing a pill goes to the first tab
+// in it, which is the one somebody folding a set and then looking at it wants
+function pillsRow(mine, deep) {
+  const box = el("div", {class:"pills" + (deep ? " deep" : "")});
+  const seen = [];
+  for (const t of mine) if (!seen.includes(t.state)) seen.push(t.state);
+  seen.sort((a, b) => rankOf(a) - rankOf(b));
+  for (const st of seen) {
+    const ts = mine.filter(t => t.state === st);
+    const pill = el("div", {class:"pill", title:(ts[0] && ts[0].state_label) || st,
+        onclick:() => send({kind:"select", tab:ts[0].index})},
+      el("span", {class:"dot " + st}));
+    // One mark per tab. A tab that is not an AI at all (a shell, a page) gets
+    // the plain chip instead -- it still has to be counted, and giving it an
+    // AI's mark would say it is one
+    for (const t of ts) {
+      pill.append(t.ai ? aiMark(t.ai) : el("span", {class:"chip"}));
+    }
+    box.append(pill);
+  }
+  return box;
 }
 
 // Draw output volume as a real bar chart, not ▁▄█ characters
@@ -9819,6 +10077,87 @@ mod tests {
         );
     }
 
+    /// Every AI this app can name has a mark, and none of them is a logo.
+    ///
+    /// The marks are plain characters on purpose: the vendors' artwork is
+    /// trademarked and every one of them requires written permission for it,
+    /// while the names may be used in plain text. So a mark that ever became
+    /// an image file, or a key that fell through to nothing, would both be
+    /// regressions -- one legal, one a tab nobody can tell apart from a shell.
+    #[test]
+    fn every_ai_the_app_can_name_has_a_mark_and_none_of_them_is_a_logo() {
+        let table = PAGE
+            .split("const AI_MARK = {")
+            .nth(1)
+            .and_then(|r| r.split("};").next())
+            .expect("AI の記号表が画面から消えている");
+        // The CLIs `Tab::ai_kind` answers with, spelled there and here
+        for key in ["claude", "codex", "gemini", "aider"] {
+            assert!(table.contains(&format!("{key}:")), "{key} の記号が無い");
+        }
+        // A key with no entry still gets one
+        assert!(table.contains(r#""": "#), "知らないAIの受け皿が無い");
+        // The one that is the mark rather than a stand-in for it stays out
+        assert!(!table.contains("grok"), "商標そのものの字が入っている");
+        assert!(!PAGE.contains("\u{1D54F}"), "X の字が入っている");
+        // Drawn as text, not as an emoji: a colour font ignores --ai
+        assert!(PAGE.contains(r#"glyph + "︎""#), "字形の指定が無く、色が効かない");
+        // And worn after the status dot, so its column survives
+        let row = PAGE.split("function tabRow(").nth(1).unwrap_or_default();
+        let dot = row.find(r#"el("span", {class:"dot " + t.state})"#);
+        let mark = row.find("t.ai ? aiMark(t.ai) : null");
+        assert!(dot.is_some() && mark.is_some() && dot < mark, "記号が点より前に出ている");
+    }
+
+    /// The order the sidebar reads states in covers every state there is.
+    ///
+    /// `STATE_RANK` decides which state a shut folder wears and which pill
+    /// leads a folded set. A state missing from it sorts last by accident --
+    /// so a tab that wants an answer could sit behind five finished ones,
+    /// which is the one arrangement this whole ordering exists to prevent.
+    #[test]
+    fn the_order_the_sidebar_reads_states_in_covers_all_of_them() {
+        use crate::detect::TabState;
+        const EVERY: [TabState; 8] = [
+            TabState::Wait,
+            TabState::Busy,
+            TabState::Background,
+            TabState::Question,
+            TabState::Done,
+            TabState::Limit,
+            TabState::Failed,
+            TabState::Exited,
+        ];
+        let list = PAGE
+            .split("const STATE_RANK = [")
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .expect("STATE_RANK が画面から消えている");
+        let ranked: Vec<&str> =
+            list.split(',').map(|s| s.trim().trim_matches('"')).filter(|s| !s.is_empty()).collect();
+        for s in EVERY {
+            assert!(ranked.contains(&s.label()), "{} が並び順に入っていない", s.label());
+        }
+        assert_eq!(ranked.len(), EVERY.len(), "並び順に余計なものが混ざっている: {ranked:?}");
+        // And the one that must come first does
+        assert_eq!(ranked[0], TabState::Question.label(), "人を待たせる状態が先頭ではない");
+    }
+
+    /// Several tabs in one folder get a heading, and a folded folder speaks
+    /// for them. Both are what stop a sidebar of six agents from being six
+    /// rows that have to be read one at a time.
+    #[test]
+    fn a_folder_with_several_tabs_can_be_put_away_as_one() {
+        assert!(PAGE.contains("if (mine.length >= 2) {"), "束の見出しが1つのタブにも出る/出ない");
+        assert!(PAGE.contains(r#"fold("tabs:" + g.folder)"#), "束を畳む札が無い");
+        assert!(PAGE.contains("function pillsRow(mine, deep)"), "畳んだときの表示が無い");
+        // Shut, the heading wears the state of whatever is waiting inside
+        assert!(
+            PAGE.contains("if (shut && (mine || []).length) {"),
+            "畳んだ作業フォルダが中の状態を言っていない"
+        );
+    }
+
     /// The dot's class is the state's own label, so a state whose label the
     /// stylesheet has never heard of is drawn in the resting grey -- silently,
     /// and on the one tab that wanted to be noticed. That has happened once
@@ -10011,8 +10350,14 @@ mod tests {
             "元と枝が両方あるときだけ家族、の条件が消えている"
         );
         assert!(PAGE.contains(r#"fold("kin:" + g.family)"#), "枝をまとめて畳む札が無い");
+        // `kin` is `housed(g)` once the chosen grouping has had its say: the
+        // household is a grouping of its own and steps aside for another
         assert!(
-            PAGE.contains(r#"if (housed(g) && folded.has("kin:" + g.family)) continue;"#),
+            PAGE.contains(r#"const kin = axis === "none" && housed(g)"#),
+            "別の軸を選んでも家族の箱が残る"
+        );
+        assert!(
+            PAGE.contains(r#"if (kin && folded.has("kin:" + g.family)) continue;"#),
             "畳んだ枝の見出しが消えない"
         );
         assert!(PAGE.contains(r#"row.append(el("span", {class:"on""#), "元が乗っているブランチの札が無い");
