@@ -535,16 +535,33 @@ pub fn surfaces_of(
                     let t = ft.cfg.id.as_deref()?;
                     Some(format!("ssh/{}/{}/{}", ws.id, t, what))
                 };
-                let spec = config::sftp_endpoint(&argv).map(|(host, port, user)| {
-                    server_spec(&host, port, &user, ft.cfg.server.as_ref(), &under)
-                });
+                // The tab's own address wins: somebody wrote it on this
+                // tab, and the folder it happens to sit in does not overrule
+                // that. The folder's machine is what answers when nothing was
+                // written -- which is the only thing a cloud sandbox can be,
+                // having no address to write
+                let at = config::sftp_endpoint(&argv)
+                    .map(|(host, port, user)| {
+                        crate::elsewhere::Elsewhere::Ssh(server_spec(
+                            &host,
+                            port,
+                            &user,
+                            ft.cfg.server.as_ref(),
+                            &under,
+                        ))
+                    })
+                    .or_else(|| {
+                        ws.folder_of(ft)
+                            .and_then(|f| f.host.as_ref())
+                            .and_then(|h| crate::elsewhere::Elsewhere::of(h).ok())
+                    });
                 let remote_dir = ft
                     .cfg
                     .server
                     .as_ref()
                     .and_then(|sp| sp.remote_dir.clone())
                     .unwrap_or_default();
-                out.push(Surface::Sftp { key, name, dir: ws.cwd_of(ft), spec, remote_dir });
+                out.push(Surface::Sftp { key, name, dir: ws.cwd_of(ft), at, remote_dir });
                 continue;
             }
             if config::is_git_panel(&argv) {
@@ -798,16 +815,20 @@ pub enum Surface {
     /// The file panel: two lists of files, one on this machine and one on a
     /// server, drawn by the board.
     ///
-    /// It carries its own connection, written on its own command line, because
-    /// the settings for a tab belong on that tab. `spec` is absent while the
-    /// address is still half-written -- a state the panel has to have, and says
-    /// so on screen. `dir` is its folder on this machine, which is the folder
-    /// its group is in
+    /// It usually carries its own connection, written on its own command
+    /// line, because the settings for a tab belong on that tab. `at` is absent
+    /// while the address is still half-written -- a state the panel has to
+    /// have, and says so on screen. `dir` is its folder on this machine, which
+    /// is the folder its group is in.
+    ///
+    /// A folder that lives on another machine gives its panel that machine
+    /// instead, since there is no address for somebody to have written: a
+    /// sandbox in the cloud has a name in the settings and nothing else
     Sftp {
         key: String,
         name: String,
         dir: Option<std::path::PathBuf>,
-        spec: Option<crate::ssh::Spec>,
+        at: Option<crate::elsewhere::Elsewhere>,
         /// Where the far side's list opens. Empty starts wherever signing in
         /// puts you
         remote_dir: String,

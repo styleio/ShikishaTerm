@@ -66,6 +66,7 @@ pub mod sessionfind;
 pub mod shell;
 pub mod devcontainer;
 pub mod e2b;
+pub mod elsewhere;
 pub mod ssh;
 pub mod tab;
 pub mod tailscale;

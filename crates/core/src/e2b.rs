@@ -7,12 +7,16 @@
 //! and hear how it went -- so the rest of the app does not have to know which
 //! kind of machine it is talking to.
 //!
-//! Two jobs live here, because they are the same two a machine is wanted for.
-//! [`exec`] runs one command and says how it went -- an ending and an exit
-//! code, which is what a program asking whether git worked needs. [`shell`]
-//! opens a terminal and never ends, which is what a person needs. The second
-//! wears [`portable_pty::MasterPty`] so that a tab cannot tell it from a
-//! program running on this machine, exactly as [`crate::ssh`] does.
+//! Three jobs live here, the same three a machine is wanted for. [`exec`] runs
+//! one command and says how it went -- an ending and an exit code, which is
+//! what a program asking whether git worked needs. [`shell`] opens a terminal
+//! and never ends, which is what a person needs. [`files`] moves and lists
+//! things, which is what the file panel needs.
+//!
+//! All three answer in [`crate::ssh`]'s shapes rather than their own. That is
+//! the point: a terminal here wears [`portable_pty::MasterPty`] and a listing
+//! here is an [`crate::ssh::Entry`], so nothing above has to learn a second
+//! vocabulary for the second kind of machine.
 
 use anyhow::{Result, anyhow, bail};
 use std::time::Duration;
@@ -655,6 +659,274 @@ fn signal(sandbox: &Sandbox, tag: &str, which: &str) -> Result<()> {
     )
 }
 
+// -- Files on a machine in the cloud ----------------------------------------
+
+/// The account a sandbox hands out by default. Everything is done as this
+/// person, the same one a terminal in there comes up as
+const AS_WHOM: &str = "user";
+
+/// Do something with files on a sandbox.
+///
+/// The same jobs and the same answers as [`crate::ssh::files`], over an
+/// entirely different wire: a Connect service for the questions that are about
+/// names, and plain HTTP for the two that are about contents. Blocks, like
+/// every other file call in this program; whoever asks decides how long they
+/// are willing to wait
+pub fn files(
+    sandbox: &Sandbox,
+    job: crate::ssh::FileJob,
+    wait_ms: u64,
+) -> Result<crate::ssh::FileAnswer> {
+    use crate::ssh::{FileAnswer, FileJob};
+    match job {
+        FileJob::List { path } => {
+            // One level. A listing is a folder being looked at, not a search:
+            // asking for everything underneath would pull a whole source tree
+            // across to draw one panel
+            let said = ask(
+                sandbox,
+                "filesystem.Filesystem/ListDir",
+                &serde_json::json!({ "path": path, "depth": 1 }),
+                wait_ms,
+            )?;
+            let rows = said
+                .get("entries")
+                .and_then(|e| e.as_array())
+                .map(|a| a.iter().filter_map(entry_of).collect())
+                .unwrap_or_default();
+            Ok(FileAnswer::Listing(rows))
+        }
+        FileJob::Stat { path } => {
+            let said = ask(
+                sandbox,
+                "filesystem.Filesystem/Stat",
+                &serde_json::json!({ "path": path }),
+                wait_ms,
+            )?;
+            said.get("entry")
+                .and_then(entry_of)
+                .map(FileAnswer::One)
+                .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &path)])))
+        }
+        FileJob::MakeDir { path } => {
+            ask(
+                sandbox,
+                "filesystem.Filesystem/MakeDir",
+                &serde_json::json!({ "path": path }),
+                wait_ms,
+            )?;
+            Ok(FileAnswer::Nothing)
+        }
+        FileJob::Rename { from, to } => {
+            ask(
+                sandbox,
+                "filesystem.Filesystem/Move",
+                &serde_json::json!({ "source": from, "destination": to }),
+                wait_ms,
+            )?;
+            Ok(FileAnswer::Nothing)
+        }
+        FileJob::Remove { path } => {
+            ask(
+                sandbox,
+                "filesystem.Filesystem/Remove",
+                &serde_json::json!({ "path": path }),
+                wait_ms,
+            )?;
+            Ok(FileAnswer::Nothing)
+        }
+        FileJob::Get { from, to } => {
+            let bytes = download(sandbox, &from, wait_ms)?;
+            if let Some(d) = to.parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            std::fs::write(&to, bytes)?;
+            Ok(FileAnswer::Nothing)
+        }
+        FileJob::Put { from, to, overwrite } => {
+            // The far end overwrites without being asked, so the refusing is
+            // done here. Asked first rather than after, because after is too
+            // late: the file it would have reported on is already gone
+            if !overwrite
+                && let Ok(FileAnswer::One(_)) =
+                    files(sandbox, FileJob::Stat { path: to.clone() }, wait_ms)
+            {
+                // The same sentence a server gives for the same refusal. One
+                // situation reads one way whichever kind of machine it is, and
+                // this one is not about a sandbox at all -- the file is there
+                bail!(crate::i18n::tp("err.ssh.file_exists", &[("path", &to)]));
+            }
+            upload(sandbox, &std::fs::read(&from)?, &to, wait_ms)?;
+            Ok(FileAnswer::Nothing)
+        }
+    }
+}
+
+/// One call that answers with something. Unary on this protocol is plain JSON
+/// with no envelope, unlike the streams
+fn ask(
+    sandbox: &Sandbox,
+    method: &str,
+    body: &serde_json::Value,
+    wait_ms: u64,
+) -> Result<serde_json::Value> {
+    let mut resp = headed(
+        waiting(wait_ms).post(&format!("{SANDBOX}/{method}")),
+        sandbox,
+    )
+    .header("Content-Type", "application/json")
+    .send(serde_json::to_vec(body)?)
+    .map_err(|e| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])))?;
+    let said = resp
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])))?;
+    Ok(serde_json::from_str(&said).unwrap_or_default())
+}
+
+/// Bring a file here, whole. Contents do not go through the Connect service:
+/// there is an HTTP door for them, and it is the one that was measured to
+/// carry bytes unchanged
+fn download(sandbox: &Sandbox, from: &str, wait_ms: u64) -> Result<Vec<u8>> {
+    let mut resp = headed_get(
+        waiting(wait_ms).get(&format!("{SANDBOX}/files?path={}&username={AS_WHOM}", escaped(from))),
+        sandbox,
+    )
+    .call()
+    .map_err(|e| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])))?;
+    let mut out = Vec::new();
+    std::io::Read::read_to_end(&mut resp.body_mut().as_reader(), &mut out)?;
+    Ok(out)
+}
+
+/// Send a file there, whole. Raw rather than a form: the door takes both, and
+/// a form would put a boundary in the middle of somebody's binary
+fn upload(sandbox: &Sandbox, what: &[u8], to: &str, wait_ms: u64) -> Result<()> {
+    headed(
+        waiting(wait_ms)
+            .post(&format!("{SANDBOX}/files?path={}&username={AS_WHOM}", escaped(to))),
+        sandbox,
+    )
+    .header("Content-Type", "application/octet-stream")
+    .send(what)
+    .map_err(|e| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", &format!("{e}"))])))?;
+    Ok(())
+}
+
+/// An agent that gives up after the caller's own deadline.
+fn waiting(wait_ms: u64) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_millis(wait_ms.max(1))))
+        .build()
+        .new_agent()
+}
+
+/// The same three headers as a POST, for a call that carries no body.
+fn headed_get(
+    req: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
+    sandbox: &Sandbox,
+) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+    let req = req
+        .header("Connect-Protocol-Version", "1")
+        .header("E2b-Sandbox-Id", &sandbox.id)
+        .header("E2b-Sandbox-Port", &AGENT_PORT.to_string());
+    match sandbox.token.as_deref() {
+        Some(t) => req.header("X-Access-Token", t),
+        None => req,
+    }
+}
+
+/// A path as it may be written into a query.
+///
+/// Only what has to be: a path full of `%2F` is unreadable in a log and in an
+/// error message, and the far end takes a plain slash. What cannot be left
+/// alone is what would end the value or start another one
+fn escaped(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for b in path.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// One thing in a folder over there, in the shape the rest of the app knows.
+fn entry_of(v: &serde_json::Value) -> Option<crate::ssh::Entry> {
+    let name = v.get("name")?.as_str()?.to_string();
+    Some(crate::ssh::Entry {
+        name,
+        dir: v.get("type").and_then(|t| t.as_str()) == Some("FILE_TYPE_DIRECTORY"),
+        // A 64-bit number travels as a string on this protocol, which is what
+        // the JSON mapping says to do with one. It arrives as a number often
+        // enough that both are taken
+        size: v
+            .get("size")
+            .and_then(|s| s.as_u64().or_else(|| s.as_str().and_then(|t| t.parse().ok())))
+            .unwrap_or(0),
+        modified: v.get("modifiedTime").and_then(|t| t.as_str()).map(epoch_of).unwrap_or(0),
+    })
+}
+
+/// A time written the way this protocol writes one, as the number of seconds
+/// everything else here counts in.
+///
+/// `2026-09-12T14:22:01.5Z`, or the same with an offset on the end. Done by
+/// hand because the answer is arithmetic, not a calendar: no library is worth
+/// carrying to turn one fixed shape into one number
+fn epoch_of(said: &str) -> u64 {
+    let num = |s: &str| s.parse::<i64>().unwrap_or(0);
+    let (date, rest) = match said.split_once(['T', 't', ' ']) {
+        Some(pair) => pair,
+        None => return 0,
+    };
+    let d: Vec<&str> = date.split('-').collect();
+    if d.len() != 3 {
+        return 0;
+    }
+    // Whatever ends the clock: Z, or an offset to be taken off again
+    let (clock, offset) = match rest.find(['Z', 'z', '+']) {
+        Some(at) => (&rest[..at], &rest[at..]),
+        // A minus can only be an offset here; the clock itself has none
+        None => match rest.rfind('-') {
+            Some(at) => (&rest[..at], &rest[at..]),
+            None => (rest, ""),
+        },
+    };
+    let c: Vec<&str> = clock.split(':').collect();
+    if c.len() < 2 {
+        return 0;
+    }
+    let secs = c.get(2).map(|s| num(s.split('.').next().unwrap_or("0"))).unwrap_or(0);
+    let day = days_from_civil(num(d[0]), num(d[1]), num(d[2]));
+    let mut total = day * 86_400 + num(c[0]) * 3_600 + num(c[1]) * 60 + secs;
+    // An offset says what was added to get that clock, so it comes back off
+    if let Some(sign) = offset.chars().next()
+        && (sign == '+' || sign == '-')
+    {
+        let o: Vec<&str> = offset[1..].split(':').collect();
+        let away = num(o[0]) * 3_600 + o.get(1).map(|m| num(m) * 60).unwrap_or(0);
+        total += if sign == '+' { -away } else { away };
+    }
+    total.max(0) as u64
+}
+
+/// Days between a date and 1970-01-01, by Howard Hinnant's method: the leap
+/// year rule repeats every 400 years, so counting whole eras and the days
+/// inside one needs no table and no loop
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,6 +984,80 @@ mod tests {
         let plain = serde_json::Value::String("~~~~".into());
         assert_eq!(unwrap_bytes(&plain).unwrap(), b"~~~~");
         assert!(unwrap_bytes(&serde_json::Value::Null).is_none());
+    }
+
+    /// A date arrives as words and has to come out as the number every other
+    /// file in this program counts in. Wrong by an hour is a file panel that
+    /// sorts by time and gets it backwards; wrong by a day happens at every
+    /// leap year if the arithmetic is guessed at
+    #[test]
+    fn a_written_date_becomes_the_number_we_count_in() {
+        // Known good pairs. The epoch itself, a leap day, the century that is
+        // not a leap year in 2000's rule, and a plain afternoon
+        for (said, want) in [
+            ("1970-01-01T00:00:00Z", 0u64),
+            ("2000-02-29T00:00:00Z", 951_782_400),
+            ("2024-02-29T12:00:00Z", 1_709_208_000),
+            ("2026-09-12T14:22:01Z", 1_789_222_921),
+        ] {
+            assert_eq!(epoch_of(said), want, "{said}");
+        }
+
+        // Fractional seconds are dropped, not misread as seconds
+        assert_eq!(epoch_of("2026-09-12T14:22:01.5Z"), epoch_of("2026-09-12T14:22:01Z"));
+
+        // An offset is what was added to get that clock, so it comes back off:
+        // the same moment written three ways is one number
+        let z = epoch_of("2026-09-12T14:22:01Z");
+        assert_eq!(epoch_of("2026-09-12T23:22:01+09:00"), z, "東の時差");
+        assert_eq!(epoch_of("2026-09-12T09:22:01-05:00"), z, "西の時差");
+
+        // Nothing recognisable is zero, not a panic and not a guess
+        assert_eq!(epoch_of(""), 0);
+        assert_eq!(epoch_of("sometime last week"), 0);
+        assert_eq!(epoch_of("2026-09-12"), 0);
+    }
+
+    /// A path goes into a query, where some characters mean something. A slash
+    /// does not -- and leaving it alone is what keeps a path readable in a log
+    /// and in an error message
+    #[test]
+    fn a_path_in_a_query_keeps_its_slashes() {
+        assert_eq!(escaped("/home/user/thing.bin"), "/home/user/thing.bin");
+        assert_eq!(escaped("/home/user/a b"), "/home/user/a%20b");
+        // The ones that would end this value or begin another
+        assert_eq!(escaped("a&b=c#d?e"), "a%26b%3Dc%23d%3Fe");
+        // Not ours to guess at: anything outside ASCII goes as its bytes
+        assert_eq!(escaped("\u{3042}"), "%E3%81%82");
+    }
+
+    /// What comes back is turned into the one shape the file panel knows. A
+    /// 64-bit number travels as a string on this protocol, which is what the
+    /// JSON mapping says to do with one -- and it arrives as a number often
+    /// enough that both have to be taken
+    #[test]
+    fn a_thing_in_a_folder_arrives_in_our_own_shape() {
+        let said = serde_json::json!({
+            "name": "thing.bin",
+            "type": "FILE_TYPE_FILE",
+            "size": "4096",
+            "modifiedTime": "2026-09-12T14:22:01Z",
+        });
+        let e = entry_of(&said).expect("読めない");
+        assert_eq!(e.name, "thing.bin");
+        assert!(!e.dir);
+        assert_eq!(e.size, 4096);
+        assert_eq!(e.modified, 1_789_222_921);
+
+        let as_number = serde_json::json!({ "name": "x", "type": "FILE_TYPE_DIRECTORY", "size": 12 });
+        let d = entry_of(&as_number).expect("読めない");
+        assert!(d.dir, "フォルダをファイルとして読んだ");
+        assert_eq!(d.size, 12);
+        // Nothing said about a time is zero, not today
+        assert_eq!(d.modified, 0);
+
+        // A row with no name is not a row
+        assert!(entry_of(&serde_json::json!({ "size": 1 })).is_none());
     }
 
     /// Every terminal in this program gets a name of its own, decided before

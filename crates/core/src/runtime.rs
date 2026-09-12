@@ -198,7 +198,13 @@ pub fn tab_places(tabs: &[Tab]) -> Vec<hooks::TabPlace> {
             hooks::TabPlace {
                 key: t.key(),
                 dir,
-                remote: t.remote().cloned(),
+                remote: match (t.remote(), t.cloud()) {
+                    (Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
+                    (None, Some(host)) => {
+                        Some(crate::elsewhere::Elsewhere::Cloud(host.clone()))
+                    }
+                    (None, None) => None,
+                },
                 protect: t.protect().to_vec(),
             }
         })
@@ -5431,9 +5437,9 @@ pub fn sftp_answer(
                 .to_string(),
         )
     };
-    let Some((local_root, spec, remote_root)) = surfaces.iter().find_map(|s| match s {
-        Surface::Sftp { key, dir, spec, remote_dir, .. } if key == panel => {
-            Some((dir.clone(), spec.clone(), remote_dir.clone()))
+    let Some((local_root, machine, remote_root)) = surfaces.iter().find_map(|s| match s {
+        Surface::Sftp { key, dir, at, remote_dir, .. } if key == panel => {
+            Some((dir.clone(), at.clone(), remote_dir.clone()))
         }
         _ => None,
     }) else {
@@ -5452,7 +5458,12 @@ pub fn sftp_answer(
                 "panel": panel,
                 "ok": true,
                 "data": {
-                    "server": spec.as_ref().map(|s| format!("{}@{}", s.user, s.address())),
+                    // Who, where -- or just where, for a machine that
+                    // hands out one account nobody chose
+                    "server": machine.as_ref().map(|m| match m.user() {
+                        Some(who) => format!("{who}@{}", m.address()),
+                        None => m.address(),
+                    }),
                     "local_root": local_root.as_ref().map(|p| display_path_of(p)),
                     "remote_root": remote_root,
                 },
@@ -5508,8 +5519,8 @@ pub fn sftp_answer(
         };
     }
 
-    // Everything left goes to the far end, which needs an address
-    let Some(spec) = spec else {
+    // Everything left goes to the far end, which has to be known by now
+    let Some(machine) = machine else {
         return fail(i18n::t("err.sftp.no_address"));
     };
 
@@ -5573,7 +5584,7 @@ pub fn sftp_answer(
     let (act, panel) = (act.to_string(), panel.to_string());
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let said = crate::ssh::files(&spec, job, SFTP_WAIT_MS);
+        let said = crate::elsewhere::files(&machine, job, SFTP_WAIT_MS);
         let payload = match said {
             Ok(ssh::FileAnswer::Listing(rows)) => serde_json::json!({
                 "act": act,
