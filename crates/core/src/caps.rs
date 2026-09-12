@@ -312,32 +312,31 @@ impl Capabilities {
             base,
             ..Self::disabled()
         };
-        me.set_config(spec, tokens, terms, grants);
+        me.set_secrets(tokens, terms);
+        me.set_capabilities(spec);
+        me.set_grants(grants);
         me
     }
 
-    /// Swap out only the config-sourced parts.
+    /// Swap out the secrets, which belong to the whole app.
     ///
-    /// Placed pages, banners, and bars carry over. Merely reloading config
-    /// must not make things vanish from the screen, or stick around when they shouldn't
-    pub fn set_config(
+    /// The doors and the permission table used to come through here too, and
+    /// that was a trap: they are the workspace's, and a reload that set the
+    /// app's answers after the workspace's had been handed over put the app's
+    /// back without a word. They now arrive only through [`Self::set_capabilities`]
+    /// and [`Self::set_grants`], so there is nowhere left for the two to race.
+    ///
+    /// Placed pages, banners, and bars carry over. Merely reloading config must
+    /// not make things vanish from the screen, or stick around when they shouldn't
+    pub fn set_secrets(
         &self,
-        spec: CapabilitySpec,
         tokens: HashMap<String, String>,
         terms: HashMap<String, crate::config::SecretMeta>,
-        grants: crate::grants::GrantSpec,
     ) {
-        let wants_http = !spec.http.is_empty() || !spec.allow_hosts.is_empty();
-        *self.spec.borrow_mut() = spec;
         *self.tokens.borrow_mut() = tokens;
         // Read from the same file at the same moment: a value and what it is
         // for must never come from two different reads of the secrets
         *self.secret_terms.borrow_mut() = terms;
-        *self.grants.borrow_mut() = crate::grants::Grants::new(grants);
-        if !wants_http || self.tx.borrow().is_some() {
-            return;
-        }
-        *self.tx.borrow_mut() = Some(Self::start_sender());
     }
 
     /// The doors the workspace on screen has.
@@ -1179,7 +1178,7 @@ mod reload_tests {
             .borrow_mut()
             .insert("0/html".into(), ("ログインしてください".into(), "できました".into()));
 
-        c.set_config(CapabilitySpec::default(), HashMap::new(), HashMap::new(), Default::default());
+        c.set_capabilities(CapabilitySpec::default());
 
         assert_eq!(c.hosted_names(), vec!["settings".to_string()], "置いたページを忘れた");
         assert!(c.nav_of("html").is_some(), "上のバーを忘れた");
@@ -1232,12 +1231,7 @@ mod reload_tests {
             "tmp".to_string(),
             FileCap { dir: ".".into(), read: true, write: false },
         );
-        c.set_config(
-            CapabilitySpec { files, ..Default::default() },
-            HashMap::new(),
-            HashMap::new(),
-            Default::default(),
-        );
+        c.set_capabilities(CapabilitySpec { files, ..Default::default() });
         // The gateway is registered (the read itself still fails since the file doesn't exist)
         let err = c.read("tmp", "居ないファイル.txt").unwrap_err().to_string();
         assert!(!err.contains("未登録"), "窓口が入れ替わっていない: {err}");
