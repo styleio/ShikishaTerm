@@ -116,8 +116,14 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // the buttons on the top bar need to work too, or it's only half done.
         // It only changes the destination; it doesn't stop the window
         Ev::Go { .. } => true,
-        // Copy the selected text. Keep the same manners as the window (same as PuTTY)
-        Ev::Copy { .. } => true,
+        // Copying is not asked of this machine at all. A person reading a
+        // screen from somewhere else wants what they selected in *their*
+        // clipboard, not in the clipboard of a machine they are not sitting
+        // at -- so the board does it where the selection is (see the mouseup
+        // handler in `shell.rs`) and nothing is sent. Letting it through would
+        // be promising something this end cannot deliver: a server has no
+        // clipboard to put it in
+        Ev::Copy { .. } => false,
         // Entries only the window can carry out. The board keeps the same list
         // (crate::shell::WINDOW_ONLY_MENU), so what it offers from afar and what
         // this lets through can't drift apart. Settings is on that list yet still
@@ -210,6 +216,33 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // writes one folder into the settings, which is what adding a tab from
         // the phone already does.
         Ev::Browse { .. } => true,
+        // ── What a person does with a screen the size of a desk ──────────
+        //
+        // These were refused for no reason anybody wrote down: the board draws
+        // panes and a tab bar for whoever is looking, and on a phone there is
+        // no room to arrange them, so nothing ever sent these. A laptop or a
+        // Chromebook looking at the same board has the room, and refusing them
+        // there means a board that can be watched and not arranged.
+        //
+        // None of them reaches further than what is already allowed. Splitting
+        // a pane, closing one, or adding a tab is what `Ctrl+B` and a letter
+        // do, and every one of those letters is already allowed as a keystroke
+        Ev::FocusPane { .. }
+        | Ev::ClosePane { .. }
+        | Ev::SplitPane { .. }
+        | Ev::PaneRatio { .. }
+        | Ev::AddTab { .. } => true,
+        // Naming, closing, discarding and colouring a working folder. The
+        // phone already opens folders (`Ev::Browse`) and hands agents whole
+        // tasks inside them; what was missing was tidying up afterwards
+        Ev::FolderName { .. }
+        | Ev::FolderClose { .. }
+        | Ev::FolderDiscard { .. }
+        | Ev::FolderColor { .. } => true,
+        // How big the text is, and how wide the tab bar is. Both are the
+        // looking person's own comfort, and both are already whatever the last
+        // side to change them said
+        Ev::FontSize { .. } | Ev::TabWidth { .. } => true,
         // Paste stays local — one long-press would flow straight into the AI's input box
         _ => false,
     }
@@ -2243,6 +2276,111 @@ mod tests {
             !super::allowed_from_afar(&Ev::Paste),
             "長押しひとつでAIの入力欄に流れ込む"
         );
+
+        // Arranging the screen, which a laptop or a Chromebook looking at the
+        // same board has the room to do. Each of these is what a letter after
+        // the prefix key already does, and those letters are already allowed
+        for arranging in [
+            Ev::FocusPane { id: 1 },
+            Ev::ClosePane { id: 1 },
+            Ev::SplitPane { id: 1, down: true },
+            Ev::PaneRatio { divider: 0, ratio: 0.5 },
+            Ev::AddTab { pane: Some(1), folder: None },
+            Ev::FolderName { folder: "a".into(), name: "b".into() },
+            Ev::FolderClose { folder: "a".into() },
+            Ev::FolderDiscard { folder: "a".into() },
+            Ev::FolderColor { folder: "a".into(), color: "blue".into() },
+            Ev::FontSize { px: 14 },
+            Ev::TabWidth { px: 200 },
+        ] {
+            assert!(
+                super::allowed_from_afar(&arranging),
+                "机の大きさの画面から画面を整えられない: {arranging:?}"
+            );
+        }
+        // ...and what stays at the window, each for a reason written down
+        assert!(
+            !super::allowed_from_afar(&Ev::RemoteCut),
+            "遠くから全員を切ると自分も切れる"
+        );
+    }
+
+    /// Every intent the gate lets through has somewhere to go.
+    ///
+    /// These are two edits in two files, and doing one without the other is a
+    /// person pressing a button and nothing happening -- with the reason only
+    /// in a log line nobody is reading. The runtime says so when it happens
+    /// ("fell through unrouted"), which is a good deal better than silence and
+    /// a good deal worse than this.
+    ///
+    /// Read out of the source rather than exercised, because the routing is a
+    /// `match` arm and a match arm cannot be counted from outside. Same trick
+    /// the board's own tests use on the page it serves.
+    #[test]
+    fn every_intent_let_through_has_somewhere_to_go() {
+        const GATE: &str = include_str!("remote.rs");
+        const LOOP: &str = include_str!("runtime.rs");
+
+        let between = |text: &str, from: &str, to: &str| -> String {
+            let a = text.find(from).unwrap_or_else(|| panic!("{from} が無い"));
+            let b = text[a..].find(to).map(|i| a + i).unwrap_or(text.len());
+            text[a..b].to_string()
+        };
+        // What the gate answers `true` to
+        let gate = between(GATE, "fn allowed_from_afar", "\n}\n");
+        // An arm is its patterns, then `=>`, then what it answers. Only the
+        // ones that do not answer `false` are being let through
+        let mut allowed: Vec<String> = Vec::new();
+        let mut patterns = gate.as_str();
+        while let Some(at) = patterns.find("=>") {
+            let (before, after) = (&patterns[..at], patterns[at + 2..].trim_start());
+            if !after.starts_with("false") {
+                let names = before.rsplit("=>").next().unwrap_or(before);
+                allowed.extend(names.match_indices("Ev::").map(|(i, _)| {
+                    names[i + 4..]
+                        .chars()
+                        .take_while(char::is_ascii_alphanumeric)
+                        .collect::<String>()
+                }));
+            }
+            patterns = &patterns[at + 2..];
+        }
+        allowed.retain(|name| !name.is_empty());
+        assert!(allowed.len() > 20, "許可リストが読めていない");
+
+        // ...and the two places an intent can be answered: a queue of its own,
+        // or the keystroke a person at a window would have pressed
+        let routed = LOOP
+            .match_indices("RemoteCmd::Ui(")
+            .map(|(at, _)| LOOP[at..].chars().take(200).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let keys = between(LOOP, "pub fn keys_for", "\n}\n");
+
+        let mut lost = Vec::new();
+        for name in &allowed {
+            let asked = format!("Ev::{name}");
+            // A report is not an ask: these arrive from a page, and the gate
+            // names them for the same reason it names everything else
+            if matches!(name.as_str(), "Button") {
+                continue;
+            }
+            if !routed.contains(&asked) && !keys.contains(&asked) {
+                lost.push(name.clone());
+            }
+        }
+        assert!(
+            lost.is_empty(),
+            "通したのに行き先が無い（押しても何も起きない）: {lost:?}"
+        );
+
+        // And that this would notice: a name the gate allows and nothing
+        // answers is exactly what it is for
+        assert!(
+            !routed.contains("Ev::Paste") && !keys.contains("Ev::Paste"),
+            "貼り付けに行き先が出来ている（門は閉じたままのはず）"
+        );
+        assert!(allowed.iter().all(|n| n != "Paste"), "貼り付けが通っている");
     }
 
     #[test]

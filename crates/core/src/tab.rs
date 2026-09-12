@@ -2042,13 +2042,20 @@ mod tests {
         let argv = vec![crate::test_shell()];
         let mut t = Tab::spawn("shell".into(), &argv, None, 20, 60, TabOptions::default()).unwrap();
 
-        // Nothing has been output yet = still starting up, so don't send input
+        // Nothing said yet = still starting up, so don't send input.
+        //
+        // Whether it has said anything by this line is a race with the shell,
+        // and on a fast machine the shell wins -- so what is asserted is the
+        // rule ("while it has said nothing, wait"), not the state. Asserting
+        // the state made this fail on a loaded machine and pass everywhere
+        // else, which is the worst way for a test to behave
         let start = Instant::now();
-        assert!(!t.had_output(), "起動直後は無出力");
-        assert!(
-            !t.ready_for_startup_hook(start.elapsed().as_millis() as u64),
-            "無出力のうちは待つ"
-        );
+        if !t.had_output() {
+            assert!(
+                !t.ready_for_startup_hook(start.elapsed().as_millis() as u64),
+                "無出力のうちは待つ"
+            );
+        }
 
         // Once output appears and the screen settles, it's ready
         let mut became_ready = false;
