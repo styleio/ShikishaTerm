@@ -580,8 +580,9 @@ pub fn switch_workspace(
     // launched below, so a tab opening for the first time is held to the same
     // answer as one that was already running
     crate::bridge::scope_to(workspaces[to].providers.clone());
-    // ...and the doors its automation has outside the terminal
+    // ...and the doors its automation has outside the terminal, and who may use them
     caps.set_capabilities(workspaces[to].capabilities.clone());
+    caps.set_grants(workspaces[to].automation_permissions.clone());
     config::save_last_workspace(&workspaces[to].name);
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {

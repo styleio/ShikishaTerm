@@ -5560,23 +5560,31 @@ const grantFolded = {};
 const manualHref = name => "/help?token=" + encodeURIComponent(TOKEN)
   + (name ? "#cmd-" + name : "");
 
-function permissionsCard() {
+// The table, for whoever owns it: the app, or one workspace.
+//
+// Both pages hold the same component, because the question is the same one and a
+// second copy of sixty rows would be a second place for the list to drift from
+// what the app enforces. `owner` is the object the rows are written into --
+// `current` for the app, a workspace for a workspace.
+function permissionsTable(owner) {
   // Read without writing: merely opening this card must not make the settings
   // look edited. The key appears in the file the first time a box disagrees
   // with the standard answer, and leaves again when it agrees once more
-  const saved = () => current.automation_permissions || {};
+  const saved = () => owner.automation_permissions || {};
   const answerOf = (cmd, col) => {
     const rule = saved()[cmd.name] || {};
     return rule[col] === undefined ? cmd[col] : rule[col];
   };
   const changed = cmd => answerOf(cmd, "human") !== cmd.human || answerOf(cmd, "ai") !== cmd.ai;
   const decide = (cmd, col, on) => {
-    const all = current.automation_permissions || {};
+    const all = owner.automation_permissions || {};
     const rule = all[cmd.name] || {};
     if (on === cmd[col]) delete rule[col]; else rule[col] = on;
     if (Object.keys(rule).length) all[cmd.name] = rule; else delete all[cmd.name];
-    if (Object.keys(all).length) current.automation_permissions = all;
-    else delete current.automation_permissions;
+    // An empty table still means "this is mine" for a workspace, and means
+    // nothing at all for the app, which is the one difference between the two
+    if (Object.keys(all).length || owner !== current) owner.automation_permissions = all;
+    else delete owner.automation_permissions;
     refreshSave();
   };
 
@@ -5633,10 +5641,18 @@ function permissionsCard() {
   };
   draw();
   const reset = el("button", {onclick:() => {
-    delete current.automation_permissions;
+    // Back to the answers the commands' authors chose. For a workspace that is
+    // an empty table of its own, not the app's table: the line it drew stays
+    if (owner === current) delete owner.automation_permissions;
+    else owner.automation_permissions = {};
     refreshSave();
     draw();
   }}, T["settings.permissions.reset"]);
+  return {body, reset};
+}
+
+function permissionsCard() {
+  const {body, reset} = permissionsTable(current);
   // What counts as an AI is the first thing on the card, spelled out rather
   // than left to be assumed. The mistake this prevents is a person unticking
   // the AI column, walking away, and the AI they started by hand in a terminal
@@ -6788,6 +6804,7 @@ function wsPane(ws) {
   // the word "null" onto the page if handed one
   const gates = wsCapsCard(ws);
   if (gates) box.append(gates);
+  box.append(wsPermissionsCard(ws));
   box.append(wsSecretsCard(ws));
 
   // Writing it out is about this workspace. Reading one in makes a different
@@ -6900,6 +6917,49 @@ function wsProvidersCard(ws) {
     el("div", {class:"hint"}, T["settings.ws.providers.hint"]),
     ...reachControl(ws, "providers", all, T["settings.ws.providers.own"], draw),
     inForce);
+}
+
+// Who may run which command here.
+//
+// The table is the app's until this workspace takes one of its own, and then it
+// is entirely its own -- rows it does not mention answer from the standard
+// answers, not from the app's table. Two places to read one row is the thing
+// this avoids: the row nobody thought to look in the other place for is the one
+// that matters.
+//
+// Taking a table copies the app's, so the act of drawing the line changes
+// nothing until a box does.
+function wsPermissionsCard(ws) {
+  const own = el("input", {type:"checkbox"});
+  own.checked = !!ws.automation_permissions;
+  const ownLabel = el("label", {class:"check"});
+  ownLabel.append(own, document.createTextNode(T["settings.ws.grants.own"]));
+  const holder = el("div", {});
+  const inForce = el("div", {class:"hint"});
+  const draw = () => {
+    holder.textContent = "";
+    const rows = Object.keys(ws.automation_permissions || current.automation_permissions || {}).length;
+    inForce.textContent = fill(
+      ws.automation_permissions ? T["settings.ws.grants.now_own"] : T["settings.ws.grants.now_app"],
+      {n: rows});
+    if (!ws.automation_permissions) return;
+    const {body, reset} = permissionsTable(ws);
+    holder.append(el("div", {class:"row"}, reset,
+      el("a", {href:manualHref(""), target:"_blank"}, T["settings.permissions.manual"])), body);
+  };
+  own.addEventListener("change", () => {
+    // A copy of the app's, so nothing changes the moment the line is drawn
+    if (own.checked) ws.automation_permissions = JSON.parse(JSON.stringify(current.automation_permissions || {}));
+    else delete ws.automation_permissions;
+    draw();
+    refreshSave();
+  });
+  draw();
+  return card(T["settings.ws.grants.title"],
+    el("div", {class:"hint"}, T["settings.ws.grants.hint"]),
+    el("div", {class:"row"}, ownLabel),
+    inForce,
+    holder);
 }
 
 // What automation running here may reach outside the terminal.
@@ -8885,6 +8945,9 @@ async function load() {
                  // Written by hand in the file, shown but not edited here, and
                  // carried through a save rather than dropped by one
                  capabilities: w.capabilities || null,
+                 // An empty table is its own answer, so the test is for the key
+                 // being there at all rather than for it holding anything
+                 automation_permissions: w.automation_permissions || null,
                  stops: Array.isArray(w.stops) ? w.stops : [],
                  discuss: w.discuss || null };
     if (ws.file) {
@@ -9057,6 +9120,7 @@ function payload() {
     // nothing written is "all of the app's"
     if (Array.isArray(w.providers)) o.providers = w.providers;
     if (w.capabilities) o.capabilities = w.capabilities;
+    if (w.automation_permissions) o.automation_permissions = w.automation_permissions;
     // Stop conditions (judge). Already written into the file for a file-referenced workspace, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
     // AI vs AI discussion
