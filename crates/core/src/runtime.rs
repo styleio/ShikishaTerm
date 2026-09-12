@@ -551,13 +551,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         None => notify::Notifier::new(Default::default(), None),
     };
-    // Where a message from the workspace being opened goes, and which model
-    // connections it may use. Settled already, so this hands over one answer and
-    // neither side learns there were two places to ask
-    if let Some(w) = workspaces.get(ws_index) {
-        notifier.scope_to(w.notify.clone(), w.primary_notify.clone());
-        bridge::scope_to(w.providers.clone());
-    }
     // Names inside the secrets file changed shape; a file written by an
     // earlier version is brought forward here rather than in the ordinary
     // migration steps, because those run before anyone has said the master
@@ -592,11 +585,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     ));
     caps.set_workspace(ws_index);
     if let Some(w) = workspaces.get(ws_index) {
-        // A script's `token` means this workspace's, and no other's
-        caps.set_workspace_id(&w.id);
-        // ...and so do the doors it has outside the terminal, and who may use them
-        caps.set_capabilities(w.capabilities.clone());
-        caps.set_grants(w.automation_permissions.clone());
         engines[ws_index] = build_engine(cfg.as_ref(), Some(w), &mut startup_errors, &caps);
         // Declared browsers are NOT opened here: placing a page occupies the
         // window thread, and at startup the person is often already clicking.
@@ -797,6 +785,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // harmless when the person has no GitHub token: it simply never knows
     // anything, and no row grows a line
     let prs = crate::pr::Watch::start();
+    // Everything the workspace being opened answers for, handed over in one act
+    // -- the same one a switch uses, so the first workspace is not a special case
+    if let Some(w) = workspaces.get(ws_index) {
+        crate::workspace::hand_over(w, &caps, &notifier, &prs);
+    }
     let (mut keymap, key_errs) = crate::keys::Keys::load(cfg.as_ref());
     startup_errors.extend(key_errs);
     let mut prefix_active = false;
@@ -1100,17 +1093,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     startup_errors.push(e);
                 }
                 notifier = notify::Notifier::new(dests, newcfg.primary_notify.clone());
-                // Saving the settings can change where this workspace sends, so
-                // the workspace on screen says so again on the way out
+                // set_config above put the app's halves in. The workspace on
+                // screen has the last word on every one of them, and says it
+                // here -- saving the settings is one of the two moments the
+                // answers can change, the other being a switch
                 if let Some(w) = workspaces.get(ws_index) {
-                    notifier.scope_to(w.notify.clone(), w.primary_notify.clone());
-                    bridge::scope_to(w.providers.clone());
-                }
-                // set_config above put the app's doors in; the workspace on
-                // screen has the last word, and says it after the reload
-                if let Some(w) = workspaces.get(ws_index) {
-                    caps.set_capabilities(w.capabilities.clone());
-                    caps.set_grants(w.automation_permissions.clone());
+                    crate::workspace::hand_over(w, &caps, &notifier, &prs);
                 }
                 // Only swap out the parts that come from config. Rebuilding it
                 // entirely would leave nobody aware of pages already placed in the
@@ -3066,7 +3054,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 folders.extend(panel_places(&surfaces));
                 eng.set_states(tab_states(&tabs));
                 eng.set_places(folders);
-                let spec = cfg.as_ref().map(|c| c.git.clone()).unwrap_or_default();
+                // This workspace's, which is already either its own or the
+                // app's handed down (see Config::resolve_workspaces)
+                let spec = workspaces
+                    .get(ws_index)
+                    .map(|w| w.git.clone())
+                    .or_else(|| cfg.as_ref().map(|c| c.git.clone()))
+                    .unwrap_or_default();
                 let code = spec
                     .message_lua
                     .filter(|l| !l.trim().is_empty())
@@ -4501,6 +4495,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     &mut engines,
                                     &caps,
                                     &notifier,
+                                    &prs,
                                     &last_session,
                                 );
                             }
@@ -4643,6 +4638,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     &mut engines,
                                     &caps,
                                     &notifier,
+                                    &prs,
                                     &last_session,
                                 );
                                 settings_open = false;
