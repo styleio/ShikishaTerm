@@ -6784,6 +6784,10 @@ function wsPane(ws) {
   box.append(wsStopsCard(ws));
   box.append(wsNotifyCard(ws));
   box.append(wsProvidersCard(ws));
+  // Nothing to be sure about means no card at all, and append() would write
+  // the word "null" onto the page if handed one
+  const gates = wsCapsCard(ws);
+  if (gates) box.append(gates);
   box.append(wsSecretsCard(ws));
 
   // Writing it out is about this workspace. Reading one in makes a different
@@ -6896,6 +6900,37 @@ function wsProvidersCard(ws) {
     el("div", {class:"hint"}, T["settings.ws.providers.hint"]),
     ...reachControl(ws, "providers", all, T["settings.ws.providers.own"], draw),
     inForce);
+}
+
+// What automation running here may reach outside the terminal.
+//
+// This is the one advanced setting with no editor: the gateways, and the folders
+// and hosts raw paths are allowed in, are written by hand into the settings
+// file. So what this card does is say which of the two places is being obeyed
+// and what it says -- without that, a person reading their script's error had no
+// way to tell whether the doors in front of it were this workspace's or the
+// app's. A gateway carries a token already attached, which is why it is worth
+// being sure.
+function wsCapsCard(ws) {
+  const own = !!ws.capabilities;
+  const spec = ws.capabilities || current.capabilities || {};
+  const app = current.capabilities || {};
+  const some = o => Object.keys(o.files || {}).length || Object.keys(o.http || {}).length
+    || (o.allow_dirs || []).length || (o.allow_hosts || []).length;
+  // Nothing anywhere is the ordinary state, and a card saying so on every page
+  // is noise. Said only where there is something to be sure about
+  if (!some(spec) && !some(app)) return null;
+  const body = [el("div", {class:"hint"}, own ? T["settings.ws.caps.own"] : T["settings.ws.caps.app"])];
+  const put = (label, list) => {
+    if (list.length) body.push(el("div", {class:"hint mono"}, label + ": " + list.join(", ")));
+  };
+  put(T["settings.ws.caps.files"], Object.keys(spec.files || {}));
+  put(T["settings.ws.caps.http"], Object.keys(spec.http || {}));
+  put(T["settings.ws.caps.dirs"], spec.allow_dirs || []);
+  put(T["settings.ws.caps.hosts"], spec.allow_hosts || []);
+  if (!some(spec)) body.push(el("div", {class:"hint"}, T["settings.ws.caps.nothing"]));
+  body.push(el("div", {class:"hint"}, T["settings.ws.caps.where"]));
+  return card(T["settings.ws.caps.title"], ...body);
 }
 
 function wsNotifyCard(ws) {
@@ -8847,6 +8882,9 @@ async function load() {
                  notify: Array.isArray(w.notify) ? w.notify : null,
                  primary_notify: w.primary_notify || "",
                  providers: Array.isArray(w.providers) ? w.providers : null,
+                 // Written by hand in the file, shown but not edited here, and
+                 // carried through a save rather than dropped by one
+                 capabilities: w.capabilities || null,
                  stops: Array.isArray(w.stops) ? w.stops : [],
                  discuss: w.discuss || null };
     if (ws.file) {
@@ -9018,6 +9056,7 @@ function payload() {
     // Which model connections this workspace may use, written the same way:
     // nothing written is "all of the app's"
     if (Array.isArray(w.providers)) o.providers = w.providers;
+    if (w.capabilities) o.capabilities = w.capabilities;
     // Stop conditions (judge). Already written into the file for a file-referenced workspace, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
     // AI vs AI discussion

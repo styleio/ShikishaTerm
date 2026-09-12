@@ -598,6 +598,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     if let Some(w) = workspaces.get(ws_index) {
         // A script's `token` means this workspace's, and no other's
         caps.set_workspace_id(&w.id);
+        // ...and so do the doors it has outside the terminal
+        caps.set_capabilities(w.capabilities.clone());
         engines[ws_index] = build_engine(cfg.as_ref(), Some(w), &mut startup_errors, &caps);
         // Declared browsers are NOT opened here: placing a page occupies the
         // window thread, and at startup the person is often already clicking.
@@ -1111,6 +1113,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some(w) = workspaces.get(ws_index) {
                     notifier.scope_to(w.notify.clone(), w.primary_notify.clone());
                     bridge::scope_to(w.providers.clone());
+                }
+                // set_config above put the app's doors in; the workspace on
+                // screen has the last word, and says it after the reload
+                if let Some(w) = workspaces.get(ws_index) {
+                    caps.set_capabilities(w.capabilities.clone());
                 }
                 // Only swap out the parts that come from config. Rebuilding it
                 // entirely would leave nobody aware of pages already placed in the

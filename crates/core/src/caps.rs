@@ -337,6 +337,20 @@ impl Capabilities {
         *self.tx.borrow_mut() = Some(Self::start_sender());
     }
 
+    /// The doors the workspace on screen has.
+    ///
+    /// Swapped on a switch, not only on a reload: a gateway carries a token
+    /// already attached and `allow_dirs` names folders a script may read, so
+    /// which doors exist at all is this workspace's answer rather than the
+    /// app's. Already settled (see [`crate::config::Workspace::capabilities`])
+    pub fn set_capabilities(&self, spec: CapabilitySpec) {
+        let wants_http = !spec.http.is_empty() || !spec.allow_hosts.is_empty();
+        *self.spec.borrow_mut() = spec;
+        if wants_http && self.tx.borrow().is_none() {
+            *self.tx.borrow_mut() = Some(Self::start_sender());
+        }
+    }
+
     /// Communication runs on a dedicated thread so it doesn't block the UI
     fn start_sender() -> mpsc::Sender<HttpJob> {
         {
