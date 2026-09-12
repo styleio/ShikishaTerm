@@ -12,6 +12,18 @@ The runtime with no window grew a browser, and the devices looking at it stopped
 being spectators.
 
 ### Added
+- **A column of your own on the right, with the changed files in it.** The
+  window is three columns now: what is running on the left, the work in the
+  middle, and a panel beside it. What stands in it today is the git panel ---
+  the same one, moved out of a tab it had to be switched to and put where it
+  can be read while an AI works. It follows the tab being looked at: the folder
+  that tab is in is the repository it reports on, named along the top. Drag its
+  edge to resize, drag it shut or press `Ctrl+B g` to put it away, and it opens
+  the way you left it next time. It starts put away, because the column costs
+  the terminal its width. On a phone it covers the page instead of squeezing
+  it, with the top bar left where it is. A git panel opened as a tab of its own
+  still works and takes the panel back while it is the one being looked at ---
+  there is one panel, and only where it stands changes.
 - **A browser on the machine the agents are on.** A runtime with no window can
   open pages, click them, read them, take their picture and carry their logins
   --- everything `browser_*` has always done at the window, from the same code.
