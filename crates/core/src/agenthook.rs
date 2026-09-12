@@ -60,6 +60,8 @@ pub struct Target {
     pub name: String,
     pub file: PathBuf,
     pub format: HookFormat,
+    /// How long the CLI may wait, already in the unit that CLI counts in
+    pub timeout: u32,
     pub entries: Vec<Entry>,
 }
 
@@ -108,6 +110,7 @@ pub fn targets() -> Vec<Target> {
                 name: p.name.clone(),
                 file: expand(&hook.file),
                 format: hook.format,
+                timeout: hook.timeout_unit.from_seconds(TIMEOUT_S),
                 entries,
             })
         })
@@ -174,21 +177,21 @@ fn spaceless(path: &PathBuf) -> Option<String> {
 /// second of process startup, charged to the person's turn, for a report
 /// nobody is waiting on. Nothing here answers back, so nothing here should be
 /// waited for. The timeout stays for the CLIs that still honour one.
-fn handler(format: HookFormat, arg: &str) -> serde_json::Value {
+fn handler(format: HookFormat, timeout: u32, arg: &str) -> serde_json::Value {
     let exe = me().display().to_string();
     match format {
         // Nothing quoted, and a path chosen so that nothing needs to be
         HookFormat::Bare => serde_json::json!({
             "type": "command",
             "command": format!("{} --hook {arg}", spaceless(&me()).unwrap_or(exe)),
-            "timeout": TIMEOUT_S,
+            "timeout": timeout,
             "async": true,
         }),
         HookFormat::Args => serde_json::json!({
             "type": "command",
             "command": exe,
             "args": ["--hook", arg],
-            "timeout": TIMEOUT_S,
+            "timeout": timeout,
             "async": true,
         }),
         // One command line, so the path is quoted: on Windows it usually has a
@@ -196,7 +199,7 @@ fn handler(format: HookFormat, arg: &str) -> serde_json::Value {
         HookFormat::Shell => serde_json::json!({
             "type": "command",
             "command": format!("\"{exe}\" --hook {arg}"),
-            "timeout": TIMEOUT_S,
+            "timeout": timeout,
             "async": true,
         }),
     }
@@ -219,13 +222,16 @@ fn is_ours(h: &serde_json::Value) -> bool {
     both.contains(MARK) && both.to_ascii_lowercase().contains("shikisha")
 }
 
-/// Whether this handler is ours AND is exactly what we would write today --
-/// same place, same argument, same way of running it.
-fn is_current(h: &serde_json::Value, arg: &str) -> bool {
-    is_ours(h)
-        && [HookFormat::Args, HookFormat::Shell, HookFormat::Bare]
-            .into_iter()
-            .any(|f| *h == handler(f, arg))
+/// Whether a handler of ours is exactly one of the ones we would write today
+/// -- same place, same argument, same way of running it, same patience.
+///
+/// Asked against this target's whole wish for that event rather than against
+/// one argument, because one event can be asked for more than one thing.
+/// Asked against this target rather than against any spelling we know, so that
+/// an entry written for a CLI that has since changed its mind reads as out of
+/// date and gets rewritten
+fn is_current(wanted: &[serde_json::Value], h: &serde_json::Value) -> bool {
+    wanted.contains(h)
 }
 
 /// What the file says about us, without changing anything.
@@ -239,9 +245,12 @@ pub fn status(t: &Target) -> Status {
     };
     let mut seen = 0;
     let mut current = 0;
-    for entry in &t.entries {
+    // Once per event, not once per thing wanted from it: an event asked for
+    // two things was being read twice, and counted both of its handlers each
+    // time -- so a correctly installed entry never added up
+    for (event, hs) in wanted(t) {
         for group in doc
-            .pointer(&format!("/hooks/{}", entry.event))
+            .pointer(&format!("/hooks/{event}"))
             .and_then(|g| g.as_array())
             .into_iter()
             .flatten()
@@ -249,7 +258,7 @@ pub fn status(t: &Target) -> Status {
             for h in group.pointer("/hooks").and_then(|h| h.as_array()).into_iter().flatten() {
                 if is_ours(h) {
                     seen += 1;
-                    if is_current(h, &entry.arg) {
+                    if is_current(&hs, h) {
                         current += 1;
                     }
                 }
@@ -263,17 +272,32 @@ pub fn status(t: &Target) -> Status {
     }
 }
 
+/// Everything we want from one event, gathered.
+///
+/// One event can be asked for more than one thing -- Gemini CLI has four
+/// events in total, so the start of a turn has to carry both "this is the
+/// conversation" and "it is working" -- and writing them one at a time meant
+/// each one removed the last. Gathering first is what makes that impossible
+fn wanted(t: &Target) -> Vec<(String, Vec<serde_json::Value>)> {
+    let mut out: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
+    for entry in &t.entries {
+        let h = handler(t.format, t.timeout, &entry.arg);
+        match out.iter_mut().find(|(event, _)| *event == entry.event) {
+            Some((_, list)) => list.push(h),
+            None => out.push((entry.event.clone(), vec![h])),
+        }
+    }
+    out
+}
+
 /// Exactly what would be added, for a person to read before agreeing to it.
 ///
 /// Shown rather than described: this writes into someone else's config, and
 /// "trust me" is not an acceptable substitute for the four lines involved
 pub fn preview(t: &Target) -> String {
     let mut hooks = serde_json::Map::new();
-    for entry in &t.entries {
-        hooks.insert(
-            entry.event.clone(),
-            serde_json::json!([{ "hooks": [handler(t.format, &entry.arg)] }]),
-        );
+    for (event, hs) in wanted(t) {
+        hooks.insert(event, serde_json::json!([{ "hooks": hs }]));
     }
     serde_json::to_string_pretty(&serde_json::json!({ "hooks": hooks }))
         .unwrap_or_default()
@@ -319,11 +343,11 @@ fn edit(t: &Target, want: bool) -> Result<()> {
         ));
     }
 
-    for entry in &t.entries {
+    for (event, hs) in wanted(t) {
         let list = doc
             .as_object_mut()
             .and_then(|o| o.entry("hooks").or_insert_with(|| serde_json::json!({})).as_object_mut())
-            .map(|h| h.entry(entry.event.clone()).or_insert_with(|| serde_json::json!([])));
+            .map(|h| h.entry(event).or_insert_with(|| serde_json::json!([])));
         let Some(slot) = list else { continue };
         if !slot.is_array() {
             *slot = serde_json::json!([]);
@@ -343,7 +367,7 @@ fn edit(t: &Target, want: bool) -> Result<()> {
                 .unwrap_or(true)
         });
         if want {
-            groups.push(serde_json::json!({ "hooks": [handler(t.format, &entry.arg)] }));
+            groups.push(serde_json::json!({ "hooks": hs }));
         }
     }
     // Leave no empty scaffolding behind after a removal — including the map
@@ -385,6 +409,7 @@ mod tests {
             name: "Test CLI".into(),
             file: dir.join("hooks.json"),
             format,
+            timeout: TIMEOUT_S,
             entries: vec![Entry { event: "SessionStart".into(), arg: "session".into() }],
         }
     }
@@ -438,6 +463,57 @@ mod tests {
         assert_eq!(status(&t), Status::Absent);
     }
 
+    /// One event can be asked for more than one thing, and all of it has to
+    /// survive.
+    ///
+    /// Gemini CLI has four events in total, so the start of a turn is the only
+    /// place to say both "this is the conversation" and "it is working".
+    /// Written one at a time, each removed the one before it: only the last
+    /// was installed, the session was never reported, and the entry could
+    /// never read as up to date because one of the three was always missing
+    #[test]
+    fn an_event_asked_for_two_things_keeps_both() {
+        let dir = tmp("twice");
+        let t = Target {
+            name: "Test CLI".into(),
+            file: dir.join("hooks.json"),
+            format: HookFormat::Bare,
+            timeout: 3_000,
+            entries: vec![
+                Entry { event: "BeforeAgent".into(), arg: "session".into() },
+                Entry { event: "BeforeAgent".into(), arg: "state:BUSY".into() },
+                Entry { event: "AfterAgent".into(), arg: "state:DONE".into() },
+            ],
+        };
+        install(&t).unwrap();
+        assert_eq!(status(&t), Status::Installed, "3つ書いたなら3つ揃っている");
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
+        let said = |event: &str| {
+            after["hooks"][event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|g| g["hooks"].as_array().unwrap().clone())
+                .map(|h| h["command"].as_str().unwrap_or_default().to_string())
+                .collect::<Vec<_>>()
+        };
+        let first = said("BeforeAgent");
+        assert_eq!(first.len(), 2, "{first:?}");
+        assert!(first.iter().any(|c| c.ends_with("--hook session")), "{first:?}");
+        assert!(first.iter().any(|c| c.ends_with("--hook state:BUSY")), "{first:?}");
+        assert_eq!(said("AfterAgent").len(), 1);
+
+        // What the person was shown is what was written
+        let shown: serde_json::Value = serde_json::from_str(&preview(&t)).unwrap();
+        assert_eq!(shown["hooks"]["BeforeAgent"][0]["hooks"].as_array().unwrap().len(), 2);
+
+        // And taking it out takes out both
+        uninstall(&t).unwrap();
+        assert_eq!(status(&t), Status::Absent);
+    }
+
     /// Each event carries what this app will make of it, in the entry itself.
     /// A person reading their own settings file should not have to be told
     /// which of their CLI's events this app treats as "waiting for you"
@@ -448,6 +524,7 @@ mod tests {
             name: "Test CLI".into(),
             file: dir.join("hooks.json"),
             format: HookFormat::Args,
+            timeout: TIMEOUT_S,
             entries: vec![
                 Entry { event: "SessionStart".into(), arg: "session".into() },
                 Entry { event: "UserPromptSubmit".into(), arg: "state:BUSY".into() },
@@ -520,7 +597,7 @@ mod tests {
     /// be written in Windows' second, space-free spelling.
     #[test]
     fn the_bare_form_carries_no_quotes() {
-        let h = handler(HookFormat::Bare, "state:DONE");
+        let h = handler(HookFormat::Bare, TIMEOUT_S, "state:DONE");
         let line = h["command"].as_str().unwrap();
         assert!(!line.contains('"'), "引用符があると起動しない: {line}");
         assert!(line.ends_with(" --hook state:DONE"), "{line}");

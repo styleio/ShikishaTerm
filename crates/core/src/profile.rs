@@ -198,15 +198,42 @@ pub struct HookSpec {
     /// in the app
     #[serde(default)]
     pub states: std::collections::BTreeMap<String, String>,
+    /// What this CLI counts a hook's patience in. Absent is seconds, which is
+    /// what most of them use -- and getting it wrong is not a rounding error:
+    /// three seconds written where three milliseconds was meant kills every
+    /// hook before it can run
+    #[serde(default)]
+    pub timeout_unit: TimeoutUnit,
+}
+
+/// What a CLI counts a hook's patience in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimeoutUnit {
+    #[default]
+    Seconds,
+    /// Measured against Gemini CLI 0.58 on Windows, which answered a timeout
+    /// of `3` with "Hook timed out after 3ms"
+    Milliseconds,
+}
+
+impl TimeoutUnit {
+    /// A number of seconds, written the way this CLI reads one.
+    pub fn from_seconds(self, seconds: u32) -> u32 {
+        match self {
+            Self::Seconds => seconds,
+            Self::Milliseconds => seconds * 1_000,
+        }
+    }
 }
 
 /// How a CLI spells one hook handler.
 ///
-/// Both known formats group the same way — `hooks.<Event>` is a list of groups,
-/// each with a `hooks` list of handlers — and differ only in how the command is
-/// written. That difference matters: a handler that takes a single command line
-/// has to have the path quoted, and a path with a space in it is the normal case
-/// on Windows.
+/// Every known format groups the same way — `hooks.<Event>` is a list of
+/// groups, each with a `hooks` list of handlers — and they differ only in how
+/// the command is written. That difference matters: a handler that takes a
+/// single command line has to have the path quoted, and a path with a space in
+/// it is the normal case on Windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HookFormat {
@@ -216,13 +243,19 @@ pub enum HookFormat {
     Shell,
     /// The same one command line, with **nothing quoted**.
     ///
-    /// For a CLI that splits the line itself rather than handing it to a
-    /// shell. Quoting a path there does not protect a space in it — it stops
-    /// the program being found at all, silently. Measured against Codex CLI
-    /// 0.150/0.151 on Windows: a quoted path never ran; the same path bare
-    /// ran; a bare path *containing a space* never ran. So the path has to be
-    /// written in a form that has no space in it to begin with (see
-    /// `agenthook::spaceless`)
+    /// Two CLIs need this, for two different reasons that come to the same
+    /// answer. Codex CLI splits the line itself, so a quote is part of the
+    /// path it looks for and the program is never found. Gemini CLI hands the
+    /// line to a shell, which strips the outer quotes and is left with a
+    /// broken one. Either way the path has to be written in a form that has no
+    /// space in it to begin with (see `agenthook::spaceless`).
+    ///
+    /// Measured on Windows — Codex CLI 0.150/0.151: a quoted path never ran,
+    /// the same path bare ran, a bare path containing a space never ran.
+    /// Gemini CLI 0.58: a quoted path was reported as failed, a bare path with
+    /// a space **was reported as succeeded and did nothing at all**, and only
+    /// the space-free spelling ran. The silent one is why this is not left to
+    /// chance
     Bare,
 }
 
@@ -498,6 +531,52 @@ mod tests {
             let text = std::fs::read_to_string(crate::repo_root().join(format!("profiles/{file}.json"))).unwrap();
             let f: ProfileFile = serde_json::from_str(&text).unwrap();
             assert_eq!(Profile::compile(f).unwrap().interrupt, want, "{file}");
+        }
+    }
+
+    /// What was measured about each CLI's hooks, kept where changing the
+    /// profile will trip over it.
+    ///
+    /// A hook written in the wrong dialect does not fail loudly -- it is
+    /// accepted and never runs -- so nothing here can be left to be noticed
+    /// later by somebody wondering why a dot stopped moving
+    #[test]
+    fn each_profile_asks_for_hooks_the_way_that_cli_reads_them() {
+        let hook_of = |file: &str| {
+            let text =
+                std::fs::read_to_string(crate::repo_root().join(format!("profiles/{file}.json")))
+                    .unwrap();
+            let f: ProfileFile = serde_json::from_str(&text).unwrap();
+            Profile::compile(f).unwrap().resume.unwrap().hook.unwrap()
+        };
+
+        // Seconds, and a program named separately from its arguments
+        let claude = hook_of("claude");
+        assert_eq!(claude.format, HookFormat::Args);
+        assert_eq!(claude.timeout_unit, TimeoutUnit::Seconds);
+
+        // Seconds, and one command line it splits itself
+        let codex = hook_of("codex");
+        assert_eq!(codex.format, HookFormat::Bare);
+        assert_eq!(codex.timeout_unit, TimeoutUnit::Seconds);
+
+        // Measured against Gemini CLI 0.58 on Windows: one command line handed
+        // to a shell, which cannot be quoted, and a patience counted in
+        // milliseconds -- a `3` there came back as "Hook timed out after 3ms"
+        let gemini = hook_of("gemini");
+        assert_eq!(gemini.format, HookFormat::Bare);
+        assert_eq!(gemini.timeout_unit, TimeoutUnit::Milliseconds);
+        assert_eq!(gemini.timeout_unit.from_seconds(3), 3_000);
+        // The four events it has are the four it has: no permission event and
+        // no failure event, so those two states stay with the screen reading
+        assert_eq!(gemini.events, ["BeforeAgent"], "session id は最初の合図で報告する");
+        assert_eq!(gemini.states.get("BeforeAgent").map(String::as_str), Some("BUSY"));
+        assert_eq!(gemini.states.get("AfterAgent").map(String::as_str), Some("DONE"));
+        for named in gemini.states.keys() {
+            assert!(
+                ["BeforeAgent", "AfterAgent", "BeforeTool", "AfterTool"].contains(&named.as_str()),
+                "そのイベントは存在しない: {named}"
+            );
         }
     }
 }
