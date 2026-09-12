@@ -245,6 +245,25 @@ fn plain(text: &str) -> String {
     cleaned
 }
 
+/// What a project says it needs, from wherever it says it.
+///
+/// The file first, because it is the format the world reads and a project that
+/// has one has said so where every other tool can see it. A plain command in
+/// the settings stands in for projects that cannot have the file at all --
+/// ones built for Windows, for a phone, against hardware -- where writing a
+/// devcontainer would be putting a lie in the repository.
+pub fn told(root: &Path, plain_setup: Option<&str>) -> Option<Env> {
+    if let Some(env) = of(root) {
+        return Some(env);
+    }
+    let line = plain_setup.map(str::trim).filter(|l| !l.is_empty())?;
+    Some(Env {
+        from: crate::i18n::t("settings.project.setup.from"),
+        setup: line.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
+        ..Default::default()
+    })
+}
+
 /// A file this project could have, worked out from what it is already carrying.
 ///
 /// Not written anywhere. This is a proposal, and the proposal is shown whole

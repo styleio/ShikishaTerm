@@ -189,6 +189,18 @@ pub fn plan_into(
     at: Option<&Path>,
     env: Option<crate::devcontainer::Env>,
 ) -> Result<Plan> {
+    plan_for(main, None, branch, base, at, env)
+}
+
+/// The same, for a project that has been written down.
+pub fn plan_for(
+    main: &Path,
+    project: Option<&str>,
+    branch: &str,
+    base: Option<&str>,
+    at: Option<&Path>,
+    env: Option<crate::devcontainer::Env>,
+) -> Result<Plan> {
     let branch = branch.trim().to_string();
     if branch.is_empty() {
         bail!(crate::i18n::t("err.worktree.no_branch"));
@@ -205,7 +217,7 @@ pub fn plan_into(
     };
     let folder = match at.filter(|p| !p.as_os_str().is_empty()) {
         Some(p) => p.to_path_buf(),
-        None => folder_for(&main, &branch),
+        None => folder_for_project(&main, project, &branch),
     };
     // Said now rather than when the button is pressed. Every branch of every
     // project shares one place, so the name that is free here can be a folder
@@ -749,10 +761,26 @@ pub fn ready_to_discard(folder: &Path) -> Result<()> {
 /// be uploaded in full, and one long enough that what lands inside the folder
 /// would not fit.
 pub fn folder_for(main: &Path, branch: &str) -> PathBuf {
-    let name = main
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "repo".into());
+    folder_for_project(main, None, branch)
+}
+
+/// The same, for a project that has a name of its own.
+///
+/// The name is what keeps two projects apart. Without one there is only the
+/// checkout's folder name, and two clones both sitting in a folder called
+/// `api` are handed the same place -- refused rather than overwritten, but
+/// refused is still a person stuck. A project that has been written down is
+/// told apart by what it is called, which is unique because names are.
+pub fn folder_for_project(main: &Path, project: Option<&str>, branch: &str) -> PathBuf {
+    let name = project
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            main.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "repo".into())
+        });
     // The branch's own shape is kept: `feature/login` is two folders, which is
     // what makes it impossible for two branches to want one folder
     let leaf: PathBuf = branch.split('/').filter(|s| !s.is_empty()).collect();
@@ -774,6 +802,7 @@ pub fn folder_for(main: &Path, branch: &str) -> PathBuf {
 /// Measured, not guessed at: a home folder 186 characters long put this folder
 /// at 225 and git could not make it, while the same branch under a short home
 /// was fine. The limit below is the one this app has always used
+/// The same guard, applied to whichever name was used
 fn short_enough(at: &Path) -> bool {
     at.display().to_string().chars().count() < 180
 }
@@ -1250,6 +1279,55 @@ mod tests {
         let q = plan_on(&there, "polite-marmot", Some("main"), None, "", None).expect("計画できる");
         assert_eq!(q.argvs().len(), 1);
         assert!(q.line().contains("worktree add"), "{}", q.line());
+    }
+
+    /// A project with a name of its own keeps its branches apart from another
+    /// project whose folder happens to be called the same thing.
+    ///
+    /// Without a name there is only the folder's, and two clones both sitting
+    /// in a folder called `api` are handed one place. It is refused rather
+    /// than written into, but refused is still somebody stuck for a reason
+    /// they did not cause
+    #[test]
+    fn two_projects_of_one_name_are_two_places_once_they_are_named() {
+        let a = repo("named-a");
+        let b = PathBuf::from("Z:/elsewhere/proj-named-a");
+        // The same folder name, so the same place -- this is the collision
+        assert_eq!(folder_for(&a, "work"), folder_for(&b, "work"));
+        // Written down, they are two
+        assert_ne!(
+            folder_for_project(&a, Some("ours"), "work"),
+            folder_for_project(&b, Some("theirs"), "work")
+        );
+        assert!(folder_for_project(&a, Some("ours"), "work").ends_with("ours/work"));
+        // An empty name is the same as none: nothing was written down
+        assert_eq!(folder_for_project(&a, Some("  "), "work"), folder_for(&a, "work"));
+    }
+
+    /// A project that cannot have a devcontainer says it in the settings, and
+    /// it runs the same way.
+    ///
+    /// This repository is the example: a Windows executable with Win32 and
+    /// WebView2 in it, which no Linux container builds. Writing a devcontainer
+    /// for it would be putting a lie in the repository
+    #[test]
+    fn a_project_that_cannot_have_the_file_still_gets_its_setup() {
+        let main = repo("plainsetup");
+        let told = crate::devcontainer::told(&main, Some("cargo fetch
+tools/conpty.ps1"));
+        let env = told.expect("設定から拾えていない");
+        assert_eq!(env.setup, ["cargo fetch", "tools/conpty.ps1"], "1行に1つ");
+        assert!(!env.from.is_empty(), "どこから来たのか言えていない");
+
+        let p = plan_for(&main, Some("ours"), "work", Some("main"), None, Some(env))
+            .expect("計画できる");
+        assert_eq!(p.argvs().len(), 3, "枝と2行: {:?}", p.argvs());
+        assert!(p.argvs()[1].last().is_some_and(|l| l.contains("cargo fetch")));
+        assert!(p.argvs()[2].last().is_some_and(|l| l.contains("conpty")));
+
+        // Nothing said either way is nothing to run
+        assert!(crate::devcontainer::told(&main, None).is_none());
+        assert!(crate::devcontainer::told(&main, Some("   ")).is_none());
     }
 
     /// A project that says what its environment needs gets it, after the

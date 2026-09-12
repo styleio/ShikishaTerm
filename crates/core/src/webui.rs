@@ -1126,7 +1126,16 @@ fn handle(
                 .is_none()
                 .then(|| root.as_deref().and_then(crate::devcontainer::propose))
                 .flatten();
-            req.respond(json_resp(serde_json::json!({ "has": has, "offer": offer })))?;
+            // What this project has been told to run where it cannot have the
+            // file. Read from the settings on disk rather than from the page,
+            // which is editing a copy it has not saved yet
+            let plain = crate::config::load()
+                .as_ref()
+                .and_then(|c| c.project_of(at).and_then(|p| p.setup.clone()))
+                .unwrap_or_default();
+            req.respond(json_resp(
+                serde_json::json!({ "has": has, "offer": offer, "plain": plain }),
+            ))?;
         }
         // Put the offered file in the project. Worked out again on this side,
         // so what lands is what this side proposed whatever a page said
@@ -6936,6 +6945,8 @@ function envCard(g) {
           missing.length
             ? el("div", {class:"hint"}, fill(T["settings.group.env.unresolved"], {names: missing.join(", ")}))
             : null));
+        // Not offered where the file already answers: two places saying what to
+        // run is two places to look when it runs the wrong thing
         return;
       }
       // Nothing to propose is said plainly rather than left blank: "there is
@@ -6944,6 +6955,7 @@ function envCard(g) {
         box.append(card(T["settings.group.env"],
           el("div", {class:"hint"}, T["settings.group.env.none"]),
           el("div", {class:"hint"}, T["settings.group.env.nothing"])));
+        box.append(plainSetupCard(g, (said && said.plain) || ""));
         return;
       }
       const keep = el("button", {}, T["settings.group.env.keep"]);
@@ -6965,9 +6977,59 @@ function envCard(g) {
         el("div", {class:"realcmd"}, el("code", {class:"mono"}, said.offer.json)),
         el("div", {class:"hint"}, fill(T["settings.group.env.why"], {why: (said.offer.why || []).join(", ")})),
         el("div", {class:"row"}, keep)));
+      box.append(plainSetupCard(g, said.plain || ""));
     })
     .catch(() => {});
   return box;
+}
+
+// The way out for a project that cannot have a devcontainer.
+//
+// Not an alternative anybody should reach for first -- a devcontainer is read
+// by every other tool and this is read by nothing else -- which is why it sits
+// under the offer rather than beside it. But the category is real and this
+// repository is in it: a Windows executable with Win32 and WebView2 in it,
+// which no Linux container builds. Writing a devcontainer for that would be
+// putting a lie in the repository.
+//
+// Several lines, because a setup is usually several commands and a single
+// field would have people joining them with && to fit.
+function plainSetupCard(g, current_setup) {
+  const name = projectNameOf(g);
+  const box = el("textarea", {rows:"3", class:"mono",
+    placeholder:T["settings.project.setup.ph"], style:"width:100%"});
+  box.value = current_setup || "";
+  box.addEventListener("input", () => {
+    const p = projectEntry(name, g);
+    const v = box.value.trim();
+    if (v) p.setup = box.value; else delete p.setup;
+    refreshSave();
+  });
+  return card(T["settings.project.setup"],
+    el("div", {class:"hint"}, T["settings.project.setup.hint"]),
+    box);
+}
+
+// What this project is called in the settings, making the entry if this is the
+// first thing anybody has said about it. A project is named after the folder
+// its own checkout sits in, which is the name a person would use anyway
+function projectNameOf(g) {
+  const said = (g.project || "").trim();
+  if (said) return said;
+  const at = (g.cwd || "").replace(/[\\/]+$/, "");
+  return at.split(/[\\/]/).pop() || "project";
+}
+function projectEntry(name, g) {
+  current.projects = current.projects || [];
+  let p = current.projects.find(x => (x.name || "").trim() === name);
+  if (!p) {
+    p = {name};
+    current.projects.push(p);
+  }
+  // The folder says which project it is, so the tie survives a rename of the
+  // folder and a second clone somewhere else
+  if (!(g.project || "").trim()) g.project = name;
+  return p;
 }
 
 // Calling this folder's branch something else.
