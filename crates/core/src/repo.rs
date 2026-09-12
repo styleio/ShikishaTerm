@@ -99,11 +99,10 @@ pub fn remote_url_of(cwd: &Path) -> Option<String> {
         if !inside {
             continue;
         }
-        if let Some(url) = t.strip_prefix("url") {
-            if let Some(v) = url.split_once('=') {
+        if let Some(url) = t.strip_prefix("url")
+            && let Some(v) = url.split_once('=') {
                 return Some(v.1.trim().to_string());
             }
-        }
     }
     None
 }

@@ -116,6 +116,9 @@ fn resolve_within(target: &Path, roots: &[PathBuf], label: &str) -> Result<PathB
     Ok(real)
 }
 
+/// One page, and the space it has been given.
+pub type PageAt = (String, shikisha_shared::Rect);
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct CapabilitySpec {
     /// Named file gateways
@@ -206,7 +209,7 @@ pub struct Capabilities {
     ws: std::cell::Cell<usize>,
     /// Which pages are currently shown, and where. Skipped if unchanged.
     /// More than one at a time once the content area is split into panes
-    shown: std::cell::RefCell<Vec<(String, (i32, i32, i32, i32))>>,
+    shown: std::cell::RefCell<Vec<PageAt>>,
     /// Controls shown above a page (per name).
     ///
     /// Unlike the banner, these aren't drawn inside the page. The page is pushed
@@ -550,10 +553,7 @@ impl Capabilities {
     }
 
     /// Tell it where to place things inside the window. Reset every time config reloads
-    pub fn set_host(
-        &self,
-        host: Option<(std::rc::Rc<dyn shikisha_shared::BrowserHost>, (i32, i32, i32, i32))>,
-    ) {
+    pub fn set_host(&self, host: Option<shikisha_shared::Seat>) {
         match host {
             Some((h, area)) => {
                 *self.host.borrow_mut() = Some(h);
@@ -655,7 +655,7 @@ impl Capabilities {
     /// you glance at another tab is not a tab at all.
     ///
     /// Redraws happen many times a second. Sends nothing if nothing changed.
-    pub fn show_at(&self, want: &[(String, (i32, i32, i32, i32))]) {
+    pub fn show_at(&self, want: &[PageAt]) {
         if self.shown.borrow().as_slice() == want {
             return;
         }
@@ -1044,11 +1044,10 @@ impl Capabilities {
         let mut closed = Vec::new();
         for key in stale {
             self.declared.borrow_mut().remove(&key);
-            if let Some(name) = self.name_of_child(&key) {
-                if self.browser_close(&name).is_ok() {
+            if let Some(name) = self.name_of_child(&key)
+                && self.browser_close(&name).is_ok() {
                     closed.push(name);
                 }
-            }
         }
         closed
     }

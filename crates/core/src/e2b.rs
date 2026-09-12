@@ -218,7 +218,7 @@ fn collect(bytes: &[u8]) -> crate::ssh::Ran {
                 Some(n) => n,
                 // A signal, or words nobody planned for. Not zero, because it
                 // did not end cleanly
-                None => said.is_empty().then_some(-1).unwrap_or(1),
+                None => if said.is_empty() { -1 } else { 1 },
             });
         }
     }

@@ -94,15 +94,14 @@ impl Meter {
     /// Whether anybody could be looking. Turning it off also forgets the
     /// last reading, so turning it back on starts clean
     pub fn want(&self, on: bool) {
-        if let Ok(mut s) = self.shared.lock() {
-            if s.want != on {
+        if let Ok(mut s) = self.shared.lock()
+            && s.want != on {
                 s.want = on;
                 s.asked = None;
                 if !on {
                     s.last = None;
                 }
             }
-        }
     }
 
     /// The last reading, while it is still worth showing.

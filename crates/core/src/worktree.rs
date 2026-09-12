@@ -857,11 +857,10 @@ fn away_from_home() -> PathBuf {
 fn synced(dir: &Path) -> bool {
     let here = dir.display().to_string().to_lowercase();
     for key in ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
-        if let Ok(root) = std::env::var(key) {
-            if !root.is_empty() && here.starts_with(&root.to_lowercase()) {
+        if let Ok(root) = std::env::var(key)
+            && !root.is_empty() && here.starts_with(&root.to_lowercase()) {
                 return true;
             }
-        }
     }
     // Dropbox leaves this beside the folder it syncs
     let mut at = Some(dir);
@@ -898,13 +897,11 @@ pub fn default_base(main: &Path) -> String {
         return "HEAD".into();
     };
     // What `origin` calls its default, when it has been asked and written down
-    if let Ok(text) = std::fs::read_to_string(git.join("refs/remotes/origin/HEAD")) {
-        if let Some(r) = text.trim().strip_prefix("ref: refs/remotes/") {
-            if !r.is_empty() {
+    if let Ok(text) = std::fs::read_to_string(git.join("refs/remotes/origin/HEAD"))
+        && let Some(r) = text.trim().strip_prefix("ref: refs/remotes/")
+            && !r.is_empty() {
                 return r.to_string();
             }
-        }
-    }
     for name in ["origin/main", "origin/master"] {
         if ref_exists(&git, &format!("refs/remotes/{name}")) {
             return name.to_string();
@@ -959,11 +956,10 @@ pub fn bases(main: &Path) -> Vec<String> {
             let Some((_, r)) = line.split_once(' ') else { continue };
             let r = r.trim();
             for under in ["refs/remotes/", "refs/heads/"] {
-                if let Some(name) = r.strip_prefix(under) {
-                    if !name.ends_with("HEAD") {
+                if let Some(name) = r.strip_prefix(under)
+                    && !name.ends_with("HEAD") {
                         add(name.to_string());
                     }
-                }
             }
         }
     }

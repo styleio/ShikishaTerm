@@ -2411,8 +2411,8 @@ fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
         .collect();
     let mut seen: std::collections::HashSet<String> = Default::default();
     let mut moved = Vec::new();
-    for i in 0..tabs.len() {
-        let written = tabs[i].cfg.id.as_deref().map(str::trim).unwrap_or("").to_string();
+    for t in tabs.iter_mut() {
+        let written = t.cfg.id.as_deref().map(str::trim).unwrap_or("").to_string();
         if !written.is_empty() && seen.insert(written.clone()) {
             continue;
         }
@@ -2420,12 +2420,12 @@ fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
         let base = match written.is_empty() {
             false => written.clone(),
             true => {
-                let name = tabs[i].cfg.name.clone().unwrap_or_default();
+                let name = t.cfg.name.clone().unwrap_or_default();
                 let from = match name.trim().is_empty() {
                     false => name,
                     // No name on screen either: the command is what the tab
                     // will be called, so it is what the id comes from
-                    true => tabs[i].cfg.command.argv().first().cloned().unwrap_or_default(),
+                    true => t.cfg.command.argv().first().cloned().unwrap_or_default(),
                 };
                 match slug_id(&from).is_empty() {
                     false => slug_id(&from),
@@ -2439,7 +2439,7 @@ fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
         }
         used.insert(id.clone());
         seen.insert(id.clone());
-        tabs[i].cfg.id = Some(id);
+        t.cfg.id = Some(id);
     }
     moved.sort();
     moved.dedup();
@@ -2562,13 +2562,13 @@ fn settle_notify(
     let only = named(own);
     let reachable = |n: &String| only.as_ref().is_none_or(|l| l.contains(n));
     let primary = own_primary
-        .and_then(one_name)
-        .or_else(|| app_primary.and_then(one_name).filter(reachable));
+        .and_then(|s| one_name(s))
+        .or_else(|| app_primary.and_then(|s| one_name(s)).filter(reachable));
     (only, primary)
 }
 
 /// A name with the spaces taken off, or nothing when that leaves nothing.
-fn one_name(s: &String) -> Option<String> {
+fn one_name(s: &str) -> Option<String> {
     let t = s.trim().to_string();
     (!t.is_empty()).then_some(t)
 }
@@ -2577,7 +2577,7 @@ fn one_name(s: &String) -> Option<String> {
 /// dropped, and `None` kept as `None` -- an empty list is "nothing", which is a
 /// different answer from "whatever the app says"
 fn named(list: Option<&Vec<String>>) -> Option<Vec<String>> {
-    list.map(|l| l.iter().filter_map(one_name).collect())
+    list.map(|l| l.iter().filter_map(|s| one_name(s)).collect())
 }
 
 /// A byte-order mark is not JSON.
@@ -2781,15 +2781,14 @@ pub fn append_folder_at(
         // asked for later. Nobody remembers which branch a folder held six
         // weeks ago, and the label above cannot be turned back into one -- it
         // flattens `work/2` and `work-2` to the same word
-        if let (Some(branch), Some(from)) = (name, like) {
-            if let Some(url) = crate::repo::remote_url_of(from) {
+        if let (Some(branch), Some(from)) = (name, like)
+            && let Some(url) = crate::repo::remote_url_of(from) {
                 folder["source"] = serde_json::to_value(SourceSpec::worktree(
                     &crate::folders::scrub(&url),
                     branch,
                     &crate::worktree::default_base(from),
                 ))?;
             }
-        }
         // Beside the folders it belongs with. A branch of one project written
         // after an unrelated one reads as unrelated: the list is drawn in the
         // order this is written in, and a family that is not next to itself is
@@ -3404,11 +3403,10 @@ pub fn migrate_legacy_config() {
     }
     // Move secrets.json alongside it too, if present
     let (old_s, new_s) = (root.join("secrets.json"), root.join("config").join("secrets.json"));
-    if old_s.exists() && !new_s.exists() {
-        if std::fs::rename(&old_s, &new_s).is_err() && std::fs::copy(&old_s, &new_s).is_ok() {
+    if old_s.exists() && !new_s.exists()
+        && std::fs::rename(&old_s, &new_s).is_err() && std::fs::copy(&old_s, &new_s).is_ok() {
             let _ = std::fs::remove_file(&old_s);
         }
-    }
 }
 
 /// Path to the config file the web GUI edits.

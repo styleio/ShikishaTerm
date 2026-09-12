@@ -521,7 +521,7 @@ impl SecurityDescriptor {
 impl Drop for SecurityDescriptor {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            unsafe { LocalFree(self.0 as *mut c_void) };
+            unsafe { LocalFree(self.0) };
         }
     }
 }

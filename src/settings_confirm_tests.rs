@@ -206,8 +206,8 @@ fn settings_confirmations_require_a_person() {
             assert_eq!(eval(&b, "return probeState();"), before);
             press(&b, &key, "button");
         }
-        if kind == "workspace" {
-            if let Ok(script) = std::env::var("SHIKISHA_CONFIRM_SHOT_SCRIPT") {
+        if kind == "workspace"
+            && let Ok(script) = std::env::var("SHIKISHA_CONFIRM_SHOT_SCRIPT") {
                 let output = std::env::var("SHIKISHA_CONFIRM_SHOT_OUTPUT").unwrap();
                 assert!(
                     std::process::Command::new("powershell.exe")
@@ -225,7 +225,6 @@ fn settings_confirmations_require_a_person() {
                         .success()
                 );
             }
-        }
         press(&b, "common.cancel", "dialog button");
         assert_eq!(
             eval(&b, "return probeState();"),

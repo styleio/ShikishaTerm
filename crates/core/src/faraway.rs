@@ -417,7 +417,7 @@ pub fn perform<B: BrowserHost + Speaks>(ask: &Ask, browser: &B) -> (bool, serde_
             .map(serde_json::Value::String),
         Ask::Run { to, js } => browser
             .eval_in(to.as_deref(), js)
-            .map(|id| serde_json::Value::from(id)),
+            .map(serde_json::Value::from),
         Ask::Open { name, url, rect, profile } => {
             done(browser.open_child(name, url, *rect, profile.clone()))
         }
@@ -545,11 +545,10 @@ pub fn draw_for<B: BrowserHost + Speaks>(
                 while !stop.load(Ordering::Relaxed) {
                     for ev in reports() {
                         let said = Said::Report { ev };
-                        if let Ok(text) = serde_json::to_string(&said) {
-                            if telling.send(text).is_err() {
+                        if let Ok(text) = serde_json::to_string(&said)
+                            && telling.send(text).is_err() {
                                 return;
                             }
-                        }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(80));
                 }
@@ -558,10 +557,9 @@ pub fn draw_for<B: BrowserHost + Speaks>(
 
     let mut asks = asks;
     let mut whole = Vec::new();
-    loop {
-        let Some((fin, opcode, payload)) = crate::ws::read_server_frame(&mut asks) else { break };
+    while let Some((fin, opcode, payload)) = crate::ws::read_server_frame(&mut asks) {
         match opcode {
-            0x0 | 0x1 | 0x2 => {
+            0x0..=0x2 => {
                 whole.extend_from_slice(&payload);
                 if !fin {
                     continue;
@@ -574,11 +572,10 @@ pub fn draw_for<B: BrowserHost + Speaks>(
                 };
                 let (ok, value) = perform(&ask, browser);
                 let said = Said::Answer { id, ok, value };
-                if let Ok(text) = serde_json::to_string(&said) {
-                    if tx.send(text).is_err() {
+                if let Ok(text) = serde_json::to_string(&said)
+                    && tx.send(text).is_err() {
                         break;
                     }
-                }
             }
             0x8 => break,
             _ => {}

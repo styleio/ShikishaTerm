@@ -760,7 +760,7 @@ impl Browser {
             url: url.to_string(),
             rect,
             profile,
-            through: self.through.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            through: *self.through.lock().unwrap_or_else(|e| e.into_inner()),
         })
     }
 
@@ -902,11 +902,9 @@ impl Browser {
             if let Some(at) = spare
                 .iter()
                 .position(|e| matches!(e, Ev::Result { id: got, .. } if *got == id))
-            {
-                if let Ev::Result { ok, value, .. } = spare.remove(at) {
+                && let Ev::Result { ok, value, .. } = spare.remove(at) {
                     return Ok((ok, value));
                 }
-            }
         }
         loop {
             let left = until
@@ -1153,7 +1151,7 @@ fn adopt_windows(
         let built = b
             .with_environment(features.opener.environment.clone())
             .with_bounds(to_rect(seat.get()))
-            .with_initialization_script(&format!("{}{PLACED_JS}{POPUP_JS}", &*INIT_JS))
+            .with_initialization_script(format!("{}{PLACED_JS}{POPUP_JS}", *INIT_JS))
             // Reported as the pane, not as itself: what the bar above the pane
             // should say is loading is whatever the pane is showing
             .with_navigation_handler(move |_url| {
@@ -1252,7 +1250,7 @@ fn wear_our_own_icon(hwnd: isize) {
         GetSystemMetrics, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW,
         SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW, WM_SETICON,
     };
-    const OUR_ICON: *const u16 = 1 as *const u16; // MAKEINTRESOURCE(1)
+    const OUR_ICON: *const u16 = std::ptr::dangling::<u16>(); // MAKEINTRESOURCE(1)
     unsafe {
         let module = GetModuleHandleW(std::ptr::null());
         let hwnd = hwnd as *mut std::ffi::c_void;
@@ -1471,7 +1469,7 @@ fn run_window(
     // window that is standing in the seat as well
     let mut child_sizes: std::collections::HashMap<
         String,
-        std::rc::Rc<std::cell::Cell<(i32, i32, i32, i32)>>,
+        std::rc::Rc<std::cell::Cell<shikisha_shared::Rect>>,
     > = std::collections::HashMap::new();
     // Each cast target's own (pre-override) viewport in CSS px. Held for the
     // life of the cast so a phone rotating back and forth always re-shapes
@@ -1531,8 +1529,8 @@ fn run_window(
                         // running; arming a second screencast would replace
                         // its parameters and stopping it later would kill
                         // the relay's frames. So wake only when nothing casts
-                        if !wakes.contains_key(&to) && !casts.contains_key(&to) {
-                            if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
+                        if !wakes.contains_key(&to) && !casts.contains_key(&to)
+                            && let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                                 let wv = cdp::webview_of(v);
                                 // Hidden = this child is currently sized 0.
                                 // Borrow it a real surface, parked outside
@@ -1550,17 +1548,15 @@ fn run_window(
                                     cdp::start_with(&wv, cdp::WAKE_PARAMS, |_, _, _| {})
                                 {
                                     wakes.insert(to.clone(), (cast, hidden));
-                                } else if hidden {
-                                    if let Some(r) = to
+                                } else if hidden
+                                    && let Some(r) = to
                                         .as_ref()
                                         .and_then(|n| child_sizes.get(n))
                                         .map(|seat| seat.get())
                                     {
                                         let _ = v.set_bounds(to_rect(r));
                                     }
-                                }
                             }
-                        }
                     } else if let Some((cast, borrowed)) = wakes.remove(&to) {
                         cdp::stop(cast);
                         if borrowed {
@@ -1701,7 +1697,7 @@ fn run_window(
                     match b
                         .with_url(&url)
                         .with_bounds(bounds)
-                        .with_initialization_script(&format!("{}{PLACED_JS}", &*INIT_JS))
+                        .with_initialization_script(format!("{}{PLACED_JS}", *INIT_JS))
                         .with_navigation_handler(move |_url| {
                             let _ = nav_tx.send(Ev::Loading { from: Some(nav_who.clone()), busy: true });
                             true // Don't block the navigation. This is only here to emit a signal
@@ -1825,14 +1821,13 @@ fn run_window(
                     }
                 }
                 Cmd::Focus { to } => {
-                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
-                        if let Err(e) = v.focus() {
+                    if let Some(v) = target(main_view(&shell), &children, &overlays, &to)
+                        && let Err(e) = v.focus() {
                             shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
                                 "err.browser.log_focus_failed",
                                 &[("to", &format!("{to:?}")), ("e", &format!("{e}"))],
                             ));
                         }
-                    }
                 }
                 Cmd::Move { to, go } => match target(main_view(&shell), &children, &overlays, &to) {
                     Some(v) => {
@@ -1909,15 +1904,14 @@ fn run_window(
                         }
                     } else if let Some(cast) = casts.remove(&to) {
                         // Give the page its own shape back before the stream goes away
-                        if naturals.remove(&to).is_some() {
-                            if let Some(view) = target(main_view(&shell), &children, &overlays, &to) {
+                        if naturals.remove(&to).is_some()
+                            && let Some(view) = target(main_view(&shell), &children, &overlays, &to) {
                                 cdp::call(
                                     &cdp::webview_of(view),
                                     "Emulation.clearDeviceMetricsOverride",
                                     "{}",
                                 );
                             }
-                        }
                         cdp::stop(cast);
                     }
                 }
@@ -2087,14 +2081,13 @@ fn run_window(
                         window.is_maximized()
                     ));
                 }
-                if size.width > 0 && size.height > 0 {
-                    if let Some(v) = main_view(&shell) {
+                if size.width > 0 && size.height > 0
+                    && let Some(v) = main_view(&shell) {
                         let _ = v.set_bounds(wry::Rect {
                             position: wry::dpi::PhysicalPosition::new(0, 0).into(),
                             size: wry::dpi::PhysicalSize::new(size.width, size.height).into(),
                         });
                     }
-                }
             }
             // The move notice the same hook gave, for the same reason:
             // Chromium places its popups (select lists, tooltips) by where
@@ -2185,7 +2178,7 @@ mod cdp {
         let params = HSTRING::from(params_json);
         let done = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
         let in_handler = std::rc::Rc::clone(&done);
-        let context = format!("{method}");
+        let context = method.to_string();
         let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
             move |hr: windows::core::Result<()>, json: String| {
                 if let Some(f) = in_handler.borrow_mut().take() {
@@ -2204,11 +2197,10 @@ mod cdp {
                 &handler,
             )
         };
-        if let Err(e) = issued {
-            if let Some(f) = done.borrow_mut().take() {
+        if let Err(e) = issued
+            && let Some(f) = done.borrow_mut().take() {
                 f(false, format!("{method}: {e:?}"));
             }
-        }
     }
 
     /// Pull the underlying `ICoreWebView2` out of a wry `WebView`
@@ -2954,12 +2946,11 @@ mod tests {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut text = String::new();
         while std::time::Instant::now() < until {
-            if let Ok(html) = b.html(Some("p"), 3_000) {
-                if html.contains("プロキシ経由") {
+            if let Ok(html) = b.html(Some("p"), 3_000)
+                && html.contains("プロキシ経由") {
                     text = html;
                     break;
                 }
-            }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         let asked = asked.lock().unwrap().clone();

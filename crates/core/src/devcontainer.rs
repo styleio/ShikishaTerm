@@ -78,8 +78,7 @@ pub fn of(root: &Path) -> Option<Env> {
 /// The same, from the text itself.
 pub fn read(text: &str) -> Option<Env> {
     let v: serde_json::Value = serde_json::from_str(&plain(text)).ok()?;
-    let mut env = Env::default();
-    env.image = v
+    let image = v
         .get("image")
         .and_then(|x| x.as_str())
         .map(str::to_string)
@@ -89,6 +88,9 @@ pub fn read(text: &str) -> Option<Env> {
                 .and_then(|x| x.as_str())
                 .map(str::to_string)
         });
+    // The rest is gathered by the loops below, so this one starts the struct
+    // rather than being written into it afterwards
+    let mut env = Env { image, ..Default::default() };
     // The spec's own order. A setup run out of order is a setup that fails on
     // the machines where the order mattered, which is not every machine
     for key in ["onCreateCommand", "updateContentCommand", "postCreateCommand", "postStartCommand"] {
@@ -108,11 +110,10 @@ pub fn read(text: &str) -> Option<Env> {
             // A port may be written as a number or as "host:port"
             if let Some(n) = p.as_u64() {
                 env.ports.push(n as u16);
-            } else if let Some(s) = p.as_str() {
-                if let Ok(n) = s.rsplit(':').next().unwrap_or(s).parse::<u16>() {
+            } else if let Some(s) = p.as_str()
+                && let Ok(n) = s.rsplit(':').next().unwrap_or(s).parse::<u16>() {
                     env.ports.push(n);
                 }
-            }
         }
     }
     env.folder = v.get("workspaceFolder").and_then(|x| x.as_str()).map(str::to_string);
