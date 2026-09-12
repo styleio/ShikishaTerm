@@ -131,6 +131,21 @@ impl Spec {
 /// from "somebody is standing in the middle", and the second one is the one
 /// that costs a password.
 fn known_hosts_path() -> std::path::PathBuf {
+    // A test run never writes into the real one. The probe server makes a new
+    // key every time and listens on whatever port the machine hands out, so a
+    // kept file fills up with dead ports -- and the day the machine hands out
+    // one of them again, a test fails saying the key changed. What the real
+    // answer would be is checked by a test of its own
+    if cfg!(test) {
+        return std::env::temp_dir()
+            .join(format!("shikisha-known-hosts-{}", std::process::id()))
+            .join("known-hosts.json");
+    }
+    real_known_hosts_path()
+}
+
+/// Beside everything else this program keeps.
+fn real_known_hosts_path() -> std::path::PathBuf {
     crate::config::root_dir().join("data").join("known-hosts.json")
 }
 
@@ -964,6 +979,16 @@ pub fn exec(spec: &Spec, command: &str, wait_ms: u64) -> Result<Ran> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The isolation a test run gets must not be the answer a person gets. The
+    /// servers somebody has met are kept beside everything else this program
+    /// keeps, so they are still known tomorrow
+    #[test]
+    fn the_servers_we_have_met_are_kept_with_our_other_things() {
+        let real = real_known_hosts_path();
+        assert_eq!(real, crate::config::root_dir().join("data").join("known-hosts.json"));
+        assert_ne!(real, known_hosts_path(), "a test run writes somewhere of its own");
+    }
 
     /// A host key belongs to a machine; a connection belongs to a person and a
     /// route. Filing both under the same name would hand one person's session
