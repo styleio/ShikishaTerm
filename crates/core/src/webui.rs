@@ -2705,11 +2705,6 @@ const PAGE: &str = r##"<!doctype html>
  /* For entries whose fields are taller than their buttons (a quick action's
     body box), so the buttons sit at the top rather than floating mid-height. */
  .listrow.tall { align-items:flex-start; gap:var(--s2); padding:8px 0; }
- /* One machine: its fields stacked, and the one destructive button at the far
-    end of the row where section 5.3 puts it */
- .listrow .hostfield { display:flex; flex-direction:column; gap:var(--s2); margin-bottom:var(--s5); }
- .listrow .hostfield:last-child { margin-bottom:0; }
- .listrow .hostfield label { font-size:12px; font-weight:500; color:var(--text); }
  /* A list of things, boxed. The border round the whole makes it one object
     instead of a stack of loose lines */
  .rows { border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
@@ -5600,110 +5595,199 @@ function permissionsCard() {
 // rule with nobody on the other side of it. So the names are a question, asked
 // here for every folder and again on the folder itself for the one project that
 // wants something else.
-// Other computers a branch can be opened on.
+// Where a branch can be opened, other than here.
 //
-// Two kinds, which differ in one way that shapes everything: an SSH machine is
-// already there and has the project on it, while a sandbox is made when it is
-// wanted and has nothing, so one is asked where the project is and the other
-// is asked what to build the machine from. They are one list because to the
-// person they are one question -- where does this run -- and the picker in the
-// worktree dialog reads that one list.
+// The shape every list on this page has (section 5.5): a row is a summary and
+// a way in, never a form. The form is the dialog the row opens, which is where
+// section 5.2 says a form with a save button belongs. The first attempt put
+// every field in the row and it read as a pile.
 //
-// No password or key is here. Those live in the secrets file under a name
-// worked out from the machine's name, so that nobody writes a credential into
-// a settings screen that is also a file.
+// Two kinds in one list, because to the person they are one question -- where
+// does this run -- even though they differ in the way that shapes everything:
+// a machine reached over ssh is already there and is asked where the project
+// is on it, while a sandbox is made when it is wanted and is asked what to
+// build it from.
+//
+// No credential is on this page. A password and a key live in the secrets file
+// under names worked out from the name here, so that nobody is invited to type
+// a credential into a settings form that is also a file on disk.
 function hostsCard() {
-  const box = el("div");
+  const listBox = el("div");
   const draw = () => {
-    box.textContent = "";
+    listBox.textContent = "";
     const hosts = current.hosts = current.hosts || [];
+    if (!hosts.length) {
+      listBox.append(el("div", {class:"hint"}, T["settings.hosts.none"]));
+      return;
+    }
     const rows = el("div", {class:"rows"});
-    hosts.forEach((h, i) => rows.append(hostRow(h, i, draw)));
-    if (!hosts.length) rows.append(el("div", {class:"hint", style:"padding:10px 12px"},
-      T["settings.hosts.none"]));
-    box.append(card(T["settings.sec.hosts"],
-      el("div", {class:"hint"}, T["settings.hosts.hint"]),
-      rows,
-      el("div", {class:"row"},
-        el("button", {onclick:() => {
-          hosts.push({name:freeHostName(hosts, "machine"), at:"", project:""});
-          refreshSave(); draw();
-        }}, T["settings.hosts.add.ssh"]),
-        el("button", {onclick:() => {
-          hosts.push({name:freeHostName(hosts, "sandbox"), kind:"e2b", template:"base", minutes:30});
-          refreshSave(); draw();
-        }}, T["settings.hosts.add.e2b"]))));
+    hosts.forEach((h, i) => {
+      const made = (h.kind || "").trim().toLowerCase() === "e2b";
+      rows.append(el("div", {class:"listrow secretrow", onclick: () => hostDialog(i, draw)},
+        el("span", {class:"mono secretname"}, h.name || ""),
+        el("span", {class:"hint mono secretdesc"},
+          made ? (h.template || "base") : (h.at || T["settings.hosts.at.ph"])),
+        el("span", {class:"hint"}, made ? T["settings.hosts.kind.e2b"] : T["settings.hosts.kind.ssh"]),
+        el("span", {class:"go"}, "\u203a")));
+    });
+    listBox.append(rows);
   };
-  draw();
-  return box;
+  const c = card(T["settings.sec.hosts"],
+    el("div", {class:"hint"}, T["settings.hosts.hint"]),
+    listBox,
+    el("div", {class:"row"},
+      el("button", {onclick: () => hostDialog(null, draw, "ssh")}, T["settings.hosts.add.ssh"]),
+      el("button", {onclick: () => hostDialog(null, draw, "e2b")}, T["settings.hosts.add.e2b"])));
+  setTimeout(draw, 0);
+  return c;
 }
 
-// A name nothing else is using. Two machines with one name would be one
-// machine to everything that looks them up, which is by name
-function freeHostName(hosts, base) {
-  const taken = new Set(hosts.map(h => (h.name || "").trim()));
+// A name nothing else is using. Two with one name would be one machine to
+// everything that looks them up, which is by name
+function freeHostName(base) {
+  const taken = new Set((current.hosts || []).map(h => (h.name || "").trim()));
   if (!taken.has(base)) return base;
   for (let n = 2; ; n++) if (!taken.has(base + "-" + n)) return base + "-" + n;
 }
 
-function hostRow(h, i, draw) {
-  const made = (h.kind || "").trim().toLowerCase() === "e2b";
-  const row = el("div", {class:"listrow tall"});
-  const drop = el("button", {class:"danger", onclick:() => {
-    (current.hosts || []).splice(i, 1); refreshSave(); draw();
-  }}, T["settings.hosts.drop"]);
-  const fields = el("div", {class:"grow"},
-    labelled(T["settings.hosts.name"], field(h, "name", "", {grow:false, width:220,
-      onInput:() => refreshSave()}), T["settings.hosts.name.hint"]));
-  if (made) {
-    // One service today. A picker with one entry rather than no picker,
-    // because the next one is a row in this list and not a new screen
-    const which = el("select", {onchange:() => refreshSave()});
-    which.append(el("option", {value:"e2b"}, "E2B"));
-    which.value = "e2b";
-    fields.append(
-      labelled(T["settings.hosts.provider"], which, ""),
-      labelled(T["settings.hosts.template"],
-        field(h, "template", T["settings.hosts.template.ph"], {grow:false, width:220,
-          onInput:() => refreshSave()}), T["settings.hosts.template.hint"]),
-      labelled(T["settings.hosts.minutes"],
-        numField(h, "minutes", 30), T["settings.hosts.minutes.hint"]));
-  } else {
-    fields.append(
-      labelled(T["settings.hosts.at"],
-        field(h, "at", T["settings.hosts.at.ph"], {mono:true, onInput:() => refreshSave()}),
-        T["settings.hosts.at.hint"]),
-      labelled(T["settings.hosts.project"],
-        field(h, "project", T["settings.hosts.project.ph"], {mono:true, onInput:() => refreshSave()}),
-        T["settings.hosts.project.hint"]),
-      labelled(T["settings.hosts.branches"],
-        field(h, "branches", T["settings.hosts.branches.ph"], {mono:true, onInput:() => refreshSave()}), ""));
+// Adding one, or changing one. `at` is null for a new one, and `kind` says
+// which of the two it will be
+function hostDialog(at, redraw, kind) {
+  const editing = at !== null && at !== undefined;
+  const h = editing ? (current.hosts[at] || {}) : {};
+  const made = editing ? (h.kind || "").trim().toLowerCase() === "e2b" : kind === "e2b";
+
+  const nameIn = el("input", {type:"text", class:"mono"});
+  nameIn.value = h.name || freeHostName(made ? "sandbox" : "machine");
+  const atIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.at.ph"]});
+  atIn.value = h.at || "";
+  const projectIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.project.ph"]});
+  projectIn.value = h.project || "";
+  const branchesIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.branches.ph"]});
+  branchesIn.value = h.branches || "";
+  const templateIn = el("input", {type:"text", class:"mono", placeholder:T["settings.hosts.template.ph"]});
+  templateIn.value = h.template || "base";
+  const minutesIn = el("input", {type:"number", min:"1", class:"mono narrow", placeholder:"30"});
+  minutesIn.value = h.minutes != null ? String(h.minutes) : "";
+  // One service today. A picker with one entry rather than none, because the
+  // next one is a row in this list and not a new screen
+  const serviceIn = el("select");
+  serviceIn.append(el("option", {value:"e2b"}, "E2B"));
+  serviceIn.value = "e2b";
+
+  const save = el("button", {class:"primary"}, T["common.save"]);
+  const why = el("span", {class:"why"});
+  why.hidden = true;
+  let held = null;
+  let asked = false;
+
+  function fieldFault(input, reason) {
+    const wrap = input.parentElement;
+    const had = wrap.querySelector(".site-warn");
+    const show = reason && (asked || input.value.trim() !== "");
+    if (had) had.remove();
+    input.classList.toggle("bad", !!show);
+    if (show) wrap.append(el("div", {class:"site-warn"},
+      el("span", {}, "\u26a0"), el("span", {}, reason)));
   }
-  row.append(fields, drop);
-  return row;
-}
+  function recheck() {
+    const n = nameIn.value.trim();
+    let first = null;
+    const dup = (current.hosts || []).some((o, i) => i !== at && (o.name || "").trim() === n);
+    const nameWhy = !n ? T["settings.hosts.name_required"]
+      : (dup ? T["settings.hosts.name_dup"] : null);
+    fieldFault(nameIn, nameWhy);
+    if (nameWhy) first = {at: nameIn, why: nameWhy};
+    if (!made) {
+      const a = atIn.value.trim();
+      const atWhy = !a ? T["settings.hosts.at_required"]
+        : (!/^ssh:\/\/[^@\s]+@[^\s:]+(:\d+)?$/.test(a) ? T["settings.hosts.at_bad"] : null);
+      fieldFault(atIn, atWhy);
+      if (atWhy && !first) first = {at: atIn, why: atWhy};
+      const pr = projectIn.value.trim();
+      const prWhy = !pr ? T["settings.hosts.project_required"] : null;
+      fieldFault(projectIn, prWhy);
+      if (prWhy && !first) first = {at: projectIn, why: prWhy};
+    }
+    held = first;
+    save.classList.toggle("held", !!held);
+    if (!held) why.hidden = true;
+    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+  }
+  function sayWhy() {
+    asked = true;
+    recheck();
+    why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    why.hidden = false;
+    held.at.classList.remove("lookhere");
+    void held.at.offsetWidth;
+    held.at.classList.add("lookhere");
+    held.at.focus();
+  }
+  for (const i of [nameIn, atIn, projectIn, templateIn, minutesIn]) i.addEventListener("input", recheck);
 
-// One thing to fill in: its name above, the control, the hint below. The shape
-// section 5.1 of the styleguide gives every field on every screen
-function labelled(name, control, hint) {
-  const box = el("div", {class:"hostfield"},
-    el("label", {}, name), control);
-  if (hint) box.append(el("span", {class:"hint"}, hint));
-  return box;
-}
+  const field = (label, control, hint) => el("div", {class:"field"},
+    el("label", {}, label), el("div", {class:"fieldctl"}, control),
+    hint ? el("div", {class:"hint"}, hint) : null);
 
-// Whole minutes, kept as a number so the settings file does not grow a string
-// where a number belongs
-function numField(obj, key, fallback) {
-  const i = el("input", {type:"number", class:"grow", min:"1"});
-  i.style.width = "120px";
-  i.value = obj[key] != null ? obj[key] : fallback;
-  i.addEventListener("input", () => {
-    const n = parseInt(i.value, 10);
-    if (Number.isFinite(n) && n > 0) obj[key] = n;
-    refreshSave();
+  const shut = () => back.remove();
+  const back = openModal(
+    el("div", {class:"mhead"},
+      el("h2", {}, made ? T["settings.hosts.title.e2b"] : T["settings.hosts.title.ssh"]),
+      el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "\u2715")),
+    el("div", {class:"mbody"},
+      field(T["settings.hosts.name"], nameIn, T["settings.hosts.name.hint"]),
+      ...(made
+        ? [field(T["settings.hosts.provider"], serviceIn, ""),
+           field(T["settings.hosts.template"], templateIn, T["settings.hosts.template.hint"]),
+           field(T["settings.hosts.minutes"], minutesIn, T["settings.hosts.minutes.hint"])]
+        : [field(T["settings.hosts.at"], atIn, T["settings.hosts.at.hint"]),
+           field(T["settings.hosts.project"], projectIn, T["settings.hosts.project.hint"]),
+           field(T["settings.hosts.branches"], branchesIn, "")])),
+    el("div", {class:"mfoot"},
+      editing
+        ? el("button", {class:"danger", onclick: async () => {
+            if (!await confirmAction(fill(T["settings.hosts.drop.sure"], {name: h.name || ""}),
+                                     T["settings.hosts.drop"])) return;
+            current.hosts.splice(at, 1);
+            refreshSave(); shut(); redraw();
+          }}, T["settings.hosts.drop"])
+        : null,
+      why,
+      el("span", {class:"grow"}),
+      el("button", {class:"quiet", onclick: () => shut()}, T["common.cancel"]),
+      save));
+  back.firstChild.classList.add("framed");
+
+  back.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); shut(); return; }
+    if (e.key !== "Enter" || e.target.tagName !== "INPUT") return;
+    e.preventDefault();
+    save.click();
   });
-  return i;
+
+  save.addEventListener("click", () => {
+    if (held) { sayWhy(); return; }
+    const it = editing ? current.hosts[at] : {};
+    it.name = nameIn.value.trim();
+    if (made) {
+      it.kind = "e2b";
+      it.template = templateIn.value.trim() || "base";
+      const m = parseInt(minutesIn.value, 10);
+      if (Number.isFinite(m) && m > 0) it.minutes = m; else delete it.minutes;
+      // The leftovers of the other kind go, so a machine is only ever one kind
+      delete it.at; delete it.project; delete it.branches;
+    } else {
+      delete it.kind; delete it.template; delete it.minutes;
+      it.at = atIn.value.trim();
+      it.project = projectIn.value.trim();
+      const b = branchesIn.value.trim();
+      if (b) it.branches = b; else delete it.branches;
+    }
+    if (!editing) (current.hosts = current.hosts || []).push(it);
+    refreshSave(); shut(); redraw();
+  });
+  setTimeout(recheck, 0);
 }
 
 function protectCard() {
