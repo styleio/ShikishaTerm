@@ -6318,6 +6318,18 @@ function remoteCard() {
           el("code", {style:"display:block;margin-top:var(--s1);user-select:all;word-break:break-all"},
              "tailscale serve --bg " + (r.port || 8787)));
       }
+      // Keeping it as an app needs two things, and the one above is only the
+      // first. The second is a key that is still the same key tomorrow: an
+      // icon installed while the key rotates opens a board it cannot pair
+      // with, because pairing means scanning a code, which opens the browser
+      // rather than the installed app. Said one step at a time -- while the
+      // link is not HTTPS the line above is the step, and this would be a
+      // second thing to fix at once
+      if (j.https) {
+        qrbox.append(el("div", {class: "hint" + (r.sticky_token ? " ok" : ""),
+                                style:"margin-top:var(--s2)"},
+          r.sticky_token ? T["settings.phone.install.on"] : T["settings.phone.install.need"]));
+      }
       // Where the whole thing is written out: what works on the same Wi-Fi
       // with nothing installed, what reaching it from a cafe costs, and what
       // the line above is for. The address is the link's own text, so it is
