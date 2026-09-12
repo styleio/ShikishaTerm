@@ -8,6 +8,7 @@
 //! - which tab currently has the work
 //! - how close the chain is to its limit (runaway protection visibly working)
 //! - the chain breaking the instant a human types
+//!
 //! are exactly the state of the safety mechanism.
 
 /// Apparent flight time from throw to landing

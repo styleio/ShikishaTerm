@@ -361,20 +361,17 @@ async fn handle(live: &mut Live, job: Job) {
             // Typed, so it is on screen like anything else typed, and so that
             // nothing else has to know it happened
             if let (Ok(id), Some(at)) = (&r, cwd.as_deref().map(str::trim).filter(|a| !a.is_empty()))
-            {
-                if let Some(ch) = live.shells.get(id) {
+                && let Some(ch) = live.shells.get(id) {
                     let line = format!("cd '{}'\n", at.replace('\'', "'\\''"));
                     let _ = ch.data(line.as_bytes()).await;
                 }
-            }
             let _ = reply.send(r);
         }
         Job::Write { id, data } => {
-            if let Some(ch) = live.shells.get(&id) {
-                if let Err(e) = ch.data(&data[..]).await {
+            if let Some(ch) = live.shells.get(&id)
+                && let Err(e) = ch.data(&data[..]).await {
                     crate::append_hook_log(&format!("ssh: could not send: {e}"));
                 }
-            }
         }
         Job::Resize { id, rows, cols } => {
             if let Some(ch) = live.shells.get(&id) {
@@ -395,7 +392,7 @@ async fn handle(live: &mut Live, job: Job) {
                 let _ = ch.close().await;
             }
             // A connection with nothing left on it starts its clock
-            for (addr, _) in live.sessions.iter() {
+            for addr in live.sessions.keys() {
                 live.idle_since.insert(addr.clone(), std::time::Instant::now());
             }
         }
@@ -491,14 +488,13 @@ async fn open_session(live: &mut Live, spec: &Spec) -> Result<String> {
             // before, and what answered is not it. Everything else is "could
             // not reach it", which is what the message says
             let now = met.lock().ok().and_then(|m| m.clone());
-            if let (Some(before), Some(now)) = (&seen, &now) {
-                if before != now {
+            if let (Some(before), Some(now)) = (&seen, &now)
+                && before != now {
                     crate::append_hook_log(&format!(
                         "ssh: the key at {addr} changed: {before} -> {now}"
                     ));
                     bail!(crate::i18n::tp("err.ssh.host_changed", &[("host", &addr)]));
                 }
-            }
             bail!(crate::i18n::tp(
                 "err.ssh.connect",
                 &[("host", &addr), ("e", &e.to_string())]
@@ -508,12 +504,11 @@ async fn open_session(live: &mut Live, spec: &Spec) -> Result<String> {
     };
     // A server we had not met is remembered now, with its fingerprint, so that
     // the next time it changes we are able to say so
-    if seen.is_none() {
-        if let Some(fp) = met.lock().ok().and_then(|m| m.clone()) {
+    if seen.is_none()
+        && let Some(fp) = met.lock().ok().and_then(|m| m.clone()) {
             let _ = remember_host(&addr, &fp);
             crate::append_hook_log(&format!("ssh: first time at {addr}, key {fp}"));
         }
-    }
 
     // A key if one is named, and the stored password otherwise. Asked for now
     // rather than kept: this is the only moment it is needed

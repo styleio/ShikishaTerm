@@ -224,8 +224,8 @@ pub fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'s
         (false, Some(before)) => Some(before),
         _ => t.session.clone(),
     };
-    if let Some(s) = want {
-        if !spec.with_id.is_empty() {
+    if let Some(s) = want
+        && !spec.with_id.is_empty() {
             // A conversation can be deleted between one run and the next. Ask
             // before handing the CLI an id it has never heard of: it would say
             // so in its own words, in red, in a place the person has no reason
@@ -240,7 +240,6 @@ pub fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'s
             }
             return (tab::Resume::Id(s), None);
         }
-    }
     if !spec.newest_here.is_empty() {
         if alone {
             return (tab::Resume::NewestHere, None);
@@ -491,8 +490,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         .unwrap_or(profile::DEFAULT_DONE_CONFIRM_MS);
     // If secrets are encrypted, ask for the master password at startup
     let mut password: Option<String> = None;
-    if let Some(path) = cfg.as_ref().and_then(|c| c.secrets_path()) {
-        if std::fs::read_to_string(&path)
+    if let Some(path) = cfg.as_ref().and_then(|c| c.secrets_path())
+        && std::fs::read_to_string(&path)
             .map(|t| crypto::is_encrypted(&t))
             .unwrap_or(false)
         {
@@ -523,7 +522,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
         }
-    }
 
     // ...and the connections, for the same reason and at the same moment: what
     // was handed over before the prompt came from a store that could not be
@@ -536,11 +534,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // (encrypted-secret keys get unlocked here too). Tabs spawned before the
     // prompt hold keys that could not be decrypted yet, so they are handed the
     // real ones here — otherwise they go on sending an empty bearer token (→ 401).
-    if let Some(c) = &cfg {
-        if password.is_some() {
+    if let Some(c) = &cfg
+        && password.is_some() {
             reload_providers(c, password.as_deref(), tabs.iter_mut());
         }
-    }
 
     // Notification destinations (Slack / Telegram). Lua can only send to destinations
     // registered here.
@@ -565,15 +562,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // earlier version is brought forward here rather than in the ordinary
     // migration steps, because those run before anyone has said the master
     // password and this one may have to open an encrypted store
-    if let Some(c) = cfg.as_ref() {
-        if let Some(path) = c.secrets_path() {
+    if let Some(c) = cfg.as_ref()
+        && let Some(path) = c.secrets_path() {
             match config::migrate_secrets(&path, password.as_deref(), &workspaces) {
                 Ok(true) => append_hook_log("secrets: names brought forward to the new shape"),
                 Ok(false) => {}
                 Err(e) => startup_errors.push(format!("secrets: {e:#}")),
             }
         }
-    }
     // Capabilities granted to automation (empty by default). An advanced feature that
     // can only be enabled by writing it into the config file.
     let caps: hooks::Caps = std::rc::Rc::new(match cfg.as_ref() {
@@ -881,8 +877,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     loop {
         // Install the remote server the moment its background bind lands.
         // Errors and notes surface exactly as the old synchronous path did.
-        if let Some(rx) = &remote_rx {
-            if let Ok((ui, mut errs)) = rx.try_recv() {
+        if let Some(rx) = &remote_rx
+            && let Ok((ui, mut errs)) = rx.try_recv() {
                 remote_ui = ui;
                 remote_rx = None;
                 // Pages drawn on a connected device are driven through this
@@ -898,7 +894,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 startup_errors.append(&mut errs);
             }
-        }
 
         // Open the workspace's declared browsers on the iteration AFTER the
         // first full draw: the board answers clicks first, then the window
@@ -914,18 +909,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Point the remote settings proxy at the (loopback) config server. Starting
         // it here, lazily but eagerly-once, means the phone can open settings even
         // before anyone has opened it on the PC. The config UI stays on loopback.
-        if !settings_linked {
-            if let Some(r) = remote_ui.as_ref() {
-                if let Ok(u) = ensure_web_url(&mut web, &config_file, &remote_info, &web_password, &caps) {
-                    if let (Some(origin), Some(tok)) =
+        if !settings_linked
+            && let Some(r) = remote_ui.as_ref()
+                && let Ok(u) = ensure_web_url(&mut web, &config_file, &remote_info, &web_password, &caps)
+                    && let (Some(origin), Some(tok)) =
                         (u.split("/?").next(), u.split("token=").nth(1))
                     {
                         r.set_settings_backend(origin.to_string(), tok.to_string());
                         settings_linked = true;
                     }
-                }
-            }
-        }
 
         // What's laid out on screen, in the order written in config.
         // The upper bound of pressable numbers needs more than just the session count.
@@ -942,8 +934,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // otherwise divide the pane in front and put it beside -- the file and
         // what is running stay on screen together, which is the whole point of
         // reading it here rather than in another program
-        if let Some(key) = open_editor.take() {
-            if let Some(n) = surfaces
+        if let Some(key) = open_editor.take()
+            && let Some(n) = surfaces
                 .iter()
                 .position(|s| matches!(s, Surface::Editor { key: k, .. } if *k == key))
                 .map(|i| i + 1)
@@ -981,7 +973,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 active = pane_layout.focused_surface();
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
-        }
         if pane_layout.focused_surface() != active {
             pane_layout.show(active);
         }
@@ -1003,7 +994,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 tabs.len(),
                 &pane_layout,
                 &surfaces,
-                &shell.geom_panes(),
+                shell.geom_panes(),
                 (rows, cols),
             );
             for (t, (r, c)) in tabs.iter().zip(want) {
@@ -1017,8 +1008,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
         // Reload and apply once the config is saved (no app restart needed)
-        if watcher.changed() {
-            if let Some(newcfg) = config::load() {
+        if watcher.changed()
+            && let Some(newcfg) = config::load() {
                 let (new_ws, errs) = newcfg.resolve_workspaces();
                 startup_errors.extend(errs);
                 // Which workspace was active before this reload. Its live tabs are
@@ -1211,15 +1202,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 keymap = next;
                 startup_errors.extend(errs);
             }
-        }
 
         // Settings that could not be carried into this version, said once.
         // Shown once the screen is free, so it doesn't overwrite other output.
-        if flash.is_none() {
-            if let Some((from, path)) = update::take_carry_failure() {
+        if flash.is_none()
+            && let Some((from, path)) = update::take_carry_failure() {
                 flash = Some(i18n::tp("msg.update.carry_failed", &[("version", &from), ("path", &path)]));
             }
-        }
         // A notification that could not be sent, said here too. It used to go
         // only to hooks.log, and a person whose phone stayed quiet had nothing
         // on screen to say why.
@@ -1283,11 +1272,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     continue;
                 }
                 let (plan, _) = resume_plan(t, alone.get(i).copied().unwrap_or(false), true);
-                if t.restart_as(rows, cols, plan).is_ok() {
-                    if let Some(f) = started_fired.get_mut(i) {
+                if t.restart_as(rows, cols, plan).is_ok()
+                    && let Some(f) = started_fired.get_mut(i) {
                         *f = false;
                     }
-                }
             }
 
             // What a program asked us to notice, in the escapes every terminal
@@ -1373,8 +1361,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // do what the toast cannot: forward it to a phone, route it, log it.
             // The toast still shows; this is additive. Without a hook it is a
             // no-op, and firing it costs nothing
-            if !fired_notes.is_empty() {
-                if let Some(eng) = engine.as_mut() {
+            if !fired_notes.is_empty()
+                && let Some(eng) = engine.as_mut() {
                     for (i, said) in fired_notes {
                         let ctx = tab_ctx(&tabs[i], surface_at(&surfaces, i + 1));
                         eng.fire("on_notify", &ctx, Some(&said));
@@ -1406,7 +1394,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         );
                     }
                 }
-            }
 
             // Where each tab is: the branch it sits on, the ports it opened.
             //
@@ -1684,11 +1671,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             continue;
                         }
                         // If it restarted, redo on_start (resume automation after an SSH reconnect)
-                        if new != TabState::Exited && old == TabState::Exited {
-                            if let Some(f) = started_fired.get_mut(idx - 1) {
+                        if new != TabState::Exited && old == TabState::Exited
+                            && let Some(f) = started_fired.get_mut(idx - 1) {
                                 *f = false;
                             }
-                        }
                         let ctx = tab_ctx(&tabs[idx - 1], surface_at(&surfaces, idx));
                         // Even just the startup banner's output makes the screen move
                         // then settle, so every tab is guaranteed to pass through DONE
@@ -2267,11 +2253,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     remote::RemoteCmd::SetAuto(on) => {
                         auto_enabled = on;
-                        if !on {
-                            if let Some(eng) = engine.as_mut() {
+                        if !on
+                            && let Some(eng) = engine.as_mut() {
                                 eng.cancel_all();
                             }
-                        }
                         flash = Some(i18n::t(if on {
                             "msg.remote_auto_on"
                         } else {
@@ -2654,8 +2639,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // screen at five frames a second however generous the rate limit was --
         // and five frames is what scrolling from a phone looked like. Detection
         // is cheap to do slowly; a screen is not.
-        if let Some(r) = remote_ui.as_ref() {
-            if r.has_state_clients() && last_remote_push.elapsed() >= remote_floor(r.max_pending()) {
+        if let Some(r) = remote_ui.as_ref()
+            && r.has_state_clients() && last_remote_push.elapsed() >= remote_floor(r.max_pending()) {
                 let now: Vec<String> = tabs
                     .get(session_at(&surfaces, active).unwrap_or(usize::MAX))
                     .map(|t| {
@@ -2687,7 +2672,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
             }
-        }
         // The window's size can change. If we don't hand it back over, a placed
         // page stays at its previous size.
         caps.set_area(shell.geom_area());
@@ -3284,7 +3268,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 None,
                                 grants::Subject::Human,
                                 "git_branch",
-                                &[who.clone()],
+                                std::slice::from_ref(&who),
                             )
                             .ok()
                             .and_then(|b| b.get("protected").and_then(|p| p.as_bool()))
@@ -3610,11 +3594,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // between its branches, so all of them change at once
         for (folder, color) in shell.mail().take_folder_colors() {
             let at = std::path::PathBuf::from(&folder);
-            if let Some(family) = crate::repo::family_of(&at) {
-                if let Err(e) = config::set_folder_color(&family, &color) {
+            if let Some(family) = crate::repo::family_of(&at)
+                && let Err(e) = config::set_folder_color(&family, &color) {
                     flash = Some(format!("{e:#}"));
                 }
-            }
         }
         // A working folder that is not on this machine. The same call answers
         // "what would it take" and does it, so the lines shown before it
@@ -3642,11 +3625,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     "origin/main",
                 )),
             };
-            if let Some(spec) = chosen.as_ref() {
-                if let Err(e) = config::set_folder_source(&ws_name, &at, spec) {
+            if let Some(spec) = chosen.as_ref()
+                && let Err(e) = config::set_folder_source(&ws_name, &at, spec) {
                     flash = Some(format!("{e:#}"));
                 }
-            }
             // What the settings say now: the answer just given, or what was
             // written down when the folder was made
             let source = match chosen.as_ref() {
@@ -4047,13 +4029,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // browser — the same caps.browser_inject the phone's relay drives, so the two
         // share one injection path rather than each growing its own.
         let injects = shell.mail().take_injects();
-        if !injects.is_empty() {
-            if let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) {
+        if !injects.is_empty()
+            && let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) {
                 for input in injects {
                     let _ = caps.browser_inject(key, input);
                 }
             }
-        }
 
         // The 🎯 panel's replay button: put the newest run's durable script
         // where the user can grab it (the board itself can't download files)
@@ -4221,11 +4202,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             // Deliver the goal to the operator. Queued as a command (like the
             // on_start brief) so it lands after the protocol, not before it.
-            if !goal.is_empty() {
-                if let Some(eng) = engine.as_mut() {
+            if !goal.is_empty()
+                && let Some(eng) = engine.as_mut() {
                     eng.deliver_goal(active, &goal);
                 }
-            }
         }
 
         // The settings page's "close settings" button. Collapses the settings tab
@@ -4277,12 +4257,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // person wrote into settings, so the cut only drops connections and
         // password sessions; revoking a phone means changing that string.
         let sticky = cfg.as_ref().is_some_and(|c| c.remote.sticky_token);
-        if let Some(step) = shell.mail().take_coach_done() {
-            if step > coach_seen {
+        if let Some(step) = shell.mail().take_coach_done()
+            && step > coach_seen {
                 coach_seen = step;
                 let _ = crate::crypto::write_atomic(&config::state_path("coach"), &step.to_string());
             }
-        }
         if let Some(open) = shell.mail().take_thanks() {
             if open {
                 crate::webui::open_external(match thanks_kind {
@@ -4309,11 +4288,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
         for idx in shell.mail().take_limit_acks() {
-            if let Some(i) = session_at(&surfaces, idx) {
-                if let Some(t) = tabs.get_mut(i) {
+            if let Some(i) = session_at(&surfaces, idx)
+                && let Some(t) = tabs.get_mut(i) {
                     t.dismiss_limit_note();
                 }
-            }
         }
         if shell.mail().take_remote_cut() && remote_ui.is_some() {
             if let Some(r) = remote_ui.as_mut() {
@@ -4420,13 +4398,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 "Loaded {name}: {url} ({})",
                 if complete { "fully" } else { "DOM only" }
             ));
-            if auto_enabled {
-                if let (Some(eng), Some(page)) =
+            if auto_enabled
+                && let (Some(eng), Some(page)) =
                     (engine.as_mut(), page_ctx(&surfaces, &name, url, complete))
                 {
                     eng.fire_page("on_load", &page);
                 }
-            }
         }
 
         let polled = shell.poll(
@@ -4940,11 +4917,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // phone reaches the same overlay by tapping the entry
                         KeyCode::Char('f') => shell.open_vault(),
                         KeyCode::Char('p') => shell.open_palette(),
-                        KeyCode::Char('q') => {
-                            if shell.confirm_quit(quit_busy(&tabs, &ws_tabs)) {
+                        KeyCode::Char('q')
+                            if shell.confirm_quit(quit_busy(&tabs, &ws_tabs)) => {
                                 break;
                             }
-                        }
                         _ => {}
                     }
                     // INDEX-END (a test checks whether keys the board offers are received here)
@@ -4987,15 +4963,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             Event::Paste(text) => {
                 let now_ms = start.elapsed().as_millis() as u64;
-                if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
-                    if !t.locked {
+                if let Some(t) = session_mut(&mut tabs, &surfaces, active)
+                    && !t.locked {
                         t.chain_depth = 0;
                         t.last_manual_ms = Some(now_ms);
                         to_live(t);
                         finish_paste(&mut pending_send, t, active, now_ms);
                         t.write_bytes(text.as_bytes())?;
                     }
-                }
             }
             // A viewer remeasured itself. Nothing to carry out here: it has
             // already written its numbers down on the surface, and the top of
@@ -5575,16 +5550,14 @@ pub fn sftp_answer(
     };
     // A transfer names a file on this machine, and that file has to be inside
     // the panel's own folder -- the same promise the far side gets
-    if let (Some(root), ssh::FileJob::Put { from, .. }) = (&local_root, &job) {
-        if local_under(root, &from.display().to_string()).is_none() {
+    if let (Some(root), ssh::FileJob::Put { from, .. }) = (&local_root, &job)
+        && local_under(root, &from.display().to_string()).is_none() {
             return fail(i18n::t("err.sftp.outside"));
         }
-    }
-    if let (Some(root), ssh::FileJob::Get { to, .. }) = (&local_root, &job) {
-        if local_under(root, &to.display().to_string()).is_none() {
+    if let (Some(root), ssh::FileJob::Get { to, .. }) = (&local_root, &job)
+        && local_under(root, &to.display().to_string()).is_none() {
             return fail(i18n::t("err.sftp.outside"));
         }
-    }
     if !caps.allows(name, grants::Subject::Human) {
         return fail(i18n::tp(
             "err.hooks.not_permitted",
@@ -8396,11 +8369,9 @@ mod tests {
     /// text I meant to send never went".
     #[test]
     fn a_second_message_waits_for_the_first_ones_enter() {
-        let mut queue = vec![
-            PendingSend::new(1, vec![vec![b'A']], true, 0, 0),
+        let mut queue = [PendingSend::new(1, vec![vec![b'A']], true, 0, 0),
             PendingSend::new(1, vec![vec![b'B']], true, 0, 0),
-            PendingSend::new(2, vec![vec![b'C']], true, 0, 0),
-        ];
+            PendingSend::new(2, vec![vec![b'C']], true, 0, 0)];
         // One pass: the front one for tab1 acts, the one behind it waits, and
         // another tab is nobody's business
         let mut holding: Vec<usize> = Vec::new();
@@ -8461,7 +8432,7 @@ mod tests {
         bridge::set_providers(&settings(180), None);
         let conn = bridge::launch_for(&argv).expect("接続が引ける");
         assert_eq!(conn.timeout, Some(Duration::from_secs(180)));
-        let mut tabs = vec![Tab::spawn(
+        let mut tabs = [Tab::spawn(
             "model".into(),
             &argv,
             None,

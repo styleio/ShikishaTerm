@@ -98,7 +98,7 @@ impl Node {
     }
 
     /// Walks every pane in on-screen order (first child first).
-    fn walk<'a>(&'a self, out: &mut Vec<(PaneId, usize)>) {
+    fn walk(&self, out: &mut Vec<(PaneId, usize)>) {
         match self {
             Node::Leaf { id, surface } => out.push((*id, *surface)),
             Node::Split { a, b, .. } => {
@@ -226,6 +226,13 @@ impl Layout {
     /// How many panes are on screen.
     pub fn len(&self) -> usize {
         self.root.count()
+    }
+
+    /// Never true: a layout is at least one pane, and there is no state of
+    /// this app with none. Here because anything that says how many it has
+    /// should be able to answer the shorter question
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// True while the content area is undivided — the shape the app had before
@@ -364,11 +371,10 @@ impl Layout {
         self.next_id += 1;
         let focus = self.focus;
         // A surface may only be in one pane, so take it away from wherever it is
-        if let Some(other) = self.pane_of(surface) {
-            if other != focus {
+        if let Some(other) = self.pane_of(surface)
+            && other != focus {
                 self.set_surface(other, 0);
             }
-        }
         if let Some(node) = self.root.find_mut(focus) {
             let kept = node.clone();
             *node = Node::Split {

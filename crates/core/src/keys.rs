@@ -148,11 +148,10 @@ impl Trigger {
         // Ctrl+B and Ctrl+b are one key, and people write it both ways. Case
         // is only kept for a bare character, where it really does distinguish
         // two things -- `r` restarts and `R` restarts from nothing
-        if let KeyCode::Char(c) = code {
-            if mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        if let KeyCode::Char(c) = code
+            && mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
                 code = KeyCode::Char(c.to_ascii_lowercase());
             }
-        }
         Some(Trigger { code, mods })
     }
 

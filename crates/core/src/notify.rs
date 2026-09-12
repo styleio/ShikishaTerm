@@ -319,6 +319,33 @@ pub fn send_blocking_about(
     }
 }
 
+/// The shell that can show a banner here, if one is running.
+///
+/// Set once, by whatever owns the desktop, before notifications start flowing.
+/// The runtime never constructs one: it only asks whether there is one.
+static LOCAL_BANNERS: std::sync::OnceLock<Box<dyn shikisha_shared::Toasts>> =
+    std::sync::OnceLock::new();
+
+pub fn use_local_banners(t: Box<dyn shikisha_shared::Toasts>) {
+    let _ = LOCAL_BANNERS.set(t);
+}
+
+fn local_banners() -> Option<&'static dyn shikisha_shared::Toasts> {
+    LOCAL_BANNERS.get().map(|b| b.as_ref())
+}
+
+/// The tab a person pressed a banner for, if a shell is showing banners at all.
+pub fn banner_clicked_tab() -> Option<usize> {
+    local_banners().and_then(|t| t.clicked_tab())
+}
+
+/// Bring whatever is showing this to the front. Nothing to bring, nothing done.
+pub fn banner_raise() {
+    if let Some(t) = local_banners() {
+        t.raise();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,33 +525,6 @@ mod tests {
             Destination::Telegram { token: String::new(), chat_id: String::new() }.name(),
             "telegram"
         );
-    }
-}
-
-/// The shell that can show a banner here, if one is running.
-///
-/// Set once, by whatever owns the desktop, before notifications start flowing.
-/// The runtime never constructs one: it only asks whether there is one.
-static LOCAL_BANNERS: std::sync::OnceLock<Box<dyn shikisha_shared::Toasts>> =
-    std::sync::OnceLock::new();
-
-pub fn use_local_banners(t: Box<dyn shikisha_shared::Toasts>) {
-    let _ = LOCAL_BANNERS.set(t);
-}
-
-fn local_banners() -> Option<&'static dyn shikisha_shared::Toasts> {
-    LOCAL_BANNERS.get().map(|b| b.as_ref())
-}
-
-/// The tab a person pressed a banner for, if a shell is showing banners at all.
-pub fn banner_clicked_tab() -> Option<usize> {
-    local_banners().and_then(|t| t.clicked_tab())
-}
-
-/// Bring whatever is showing this to the front. Nothing to bring, nothing done.
-pub fn banner_raise() {
-    if let Some(t) = local_banners() {
-        t.raise();
     }
 }
 

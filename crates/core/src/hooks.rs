@@ -1400,7 +1400,7 @@ pub struct HookEngine {
     remote_url: Rc<RefCell<Option<String>>>,
     /// Where reply pages live, and the table their tickets are written in.
     /// `None` while the remote is off -- there is nowhere for a link to point
-    replies: Rc<RefCell<Option<(String, std::sync::Arc<crate::reply::Book>)>>>,
+    replies: Rc<RefCell<Option<crate::reply::Where>>>,
     /// Which assistant AI to ask (Settings > Basic). None means "whichever is
     /// installed", which is what the rest of the app does with it
     ai_engine: Rc<RefCell<Option<String>>>,
@@ -1511,8 +1511,7 @@ impl HookEngine {
         // script assembled (see docs/design/git-access.ja.md §1)
         let places: Rc<RefCell<Vec<TabPlace>>> = Rc::new(RefCell::new(Vec::new()));
         let remote_url: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-        let replies: Rc<RefCell<Option<(String, std::sync::Arc<crate::reply::Book>)>>> =
-            Rc::new(RefCell::new(None));
+        let replies: Rc<RefCell<Option<crate::reply::Where>>> = Rc::new(RefCell::new(None));
         let ai_engine: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
         let shikisha = lua.create_table().map_err(lerr)?;
@@ -5080,16 +5079,14 @@ end
             self.snippets.push((tag.to_string(), said));
             return;
         }
-        if hook == "on_question" {
-            if let Some(Value::String(s)) = vals.into_iter().next() {
-                if let Ok(keys) = s.to_str() {
+        if hook == "on_question"
+            && let Some(Value::String(s)) = vals.into_iter().next()
+                && let Ok(keys) = s.to_str() {
                     self.commands.borrow_mut().push(Command::SendKeys {
                         target: TabRef::Index(origin),
                         keys: keys.to_string(),
                     });
                 }
-            }
-        }
     }
 
     fn parse_yield(&self, vals: &MultiValue) -> Result<WaitKind> {

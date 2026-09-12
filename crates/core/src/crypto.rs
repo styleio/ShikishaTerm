@@ -41,14 +41,16 @@ pub struct Envelope {
 /// than the master password we already hold resident in memory for the session.
 fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
     use std::sync::Mutex;
-    static CACHE: Mutex<Option<(String, Vec<u8>, [u8; 32])>> = Mutex::new(None);
-    if let Ok(g) = CACHE.lock() {
-        if let Some((p, s, k)) = g.as_ref() {
-            if p == password && s.as_slice() == salt {
+    /// The last password and salt this was asked about, and what came out.
+    /// Deriving is slow on purpose, and the same pair is asked about again and
+    /// again while a vault is open
+    type Derived = (String, Vec<u8>, [u8; 32]);
+    static CACHE: Mutex<Option<Derived>> = Mutex::new(None);
+    if let Ok(g) = CACHE.lock()
+        && let Some((p, s, k)) = g.as_ref()
+            && p == password && s.as_slice() == salt {
                 return Ok(*k);
             }
-        }
-    }
 
     use argon2::{Algorithm, Argon2, Params, Version};
     let mut key = [0u8; 32];
@@ -201,8 +203,8 @@ pub fn write_atomic(path: &std::path::Path, content: &str) -> Result<()> {
     // Create the destination folder (e.g. config/) if it doesn't exist.
     // Without this, writing the temp file fails and the save silently
     // drops out as an "empty response".
-    if let Some(dir) = path.parent() {
-        if !dir.as_os_str().is_empty() {
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty() {
             std::fs::create_dir_all(dir).with_context(|| {
                 crate::i18n::tp(
                     "err.crypto.mkdir_failed",
@@ -210,7 +212,6 @@ pub fn write_atomic(path: &std::path::Path, content: &str) -> Result<()> {
                 )
             })?;
         }
-    }
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, content).with_context(|| {
         crate::i18n::tp(

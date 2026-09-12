@@ -105,16 +105,14 @@ pub fn build_engine(
             }
         }
     };
-    if let Some(p) = &base {
-        if let Some(id) = load(&mut engine, p, errors) {
+    if let Some(p) = &base
+        && let Some(id) = load(&mut engine, p, errors) {
             engine.set_base(id);
         }
-    }
-    if let Some(p) = &ws_lua {
-        if let Some(id) = load(&mut engine, p, errors) {
+    if let Some(p) = &ws_lua
+        && let Some(id) = load(&mut engine, p, errors) {
             engine.set_workspace(id);
         }
-    }
     // The referee (stop conditions) is per-workspace. Passed to the built-in commander as a Lua table.
     let stops_lua = ws
         .map(|w| config::stops_to_lua(&w.stops))
@@ -128,8 +126,8 @@ pub fn build_engine(
         }
     }
     // AI-vs-AI discussion: if the workspace has `discuss`, load the built-in discussion commander into each participant tab
-    if let Some(w) = ws {
-        if let Some(d) = &w.discuss {
+    if let Some(w) = ws
+        && let Some(d) = &w.discuss {
             let agents: Vec<String> = d
                 .agents
                 .iter()
@@ -253,7 +251,6 @@ pub fn build_engine(
                 errors.push(crate::i18n::t("err.ws.discuss_needs_two"));
             }
         }
-    }
     // Keep the engine even with no Lua hooks when a tab wants a completion
     // notification (the on_done detection loop lives behind `Some(engine)`), or
     // when there are Lua quick-actions to run in it.
@@ -889,7 +886,6 @@ mod remote_folder_tests {
             cwd: Some(std::path::PathBuf::from("/srv/api/work")),
             source: Default::default(),
             protect: Vec::new(),
-            ..Default::default()
         };
         let cfg = config::TabConfig::default();
         let opts = tab_options(&cfg, Some(&there));

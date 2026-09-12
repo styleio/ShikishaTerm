@@ -260,11 +260,10 @@ struct Vapid {
 fn vapid() -> Result<(p256::SecretKey, String), String> {
     let path = vapid_path();
     if let Ok(text) = std::fs::read_to_string(&path) {
-        if let Ok(v) = serde_json::from_str::<Vapid>(&text) {
-            if let Some(key) = unb64(&v.secret).and_then(|b| p256::SecretKey::from_slice(&b).ok()) {
+        if let Ok(v) = serde_json::from_str::<Vapid>(&text)
+            && let Some(key) = unb64(&v.secret).and_then(|b| p256::SecretKey::from_slice(&b).ok()) {
                 return Ok((key, v.public));
             }
-        }
         // A file that cannot be read is not quietly replaced: replacing it
         // breaks every phone, and the person deserves to be told which file to
         // look at rather than to wonder why notifications stopped.

@@ -49,11 +49,10 @@ pub fn disambiguated_key(key: &KeyEvent) -> Option<Vec<u8>> {
 /// the keyboard every terminal has always had, and what everything not asking
 /// for anything gets.
 pub fn key_to_bytes_with(key: &KeyEvent, flags: u8) -> Option<Vec<u8>> {
-    if flags & 1 != 0 {
-        if let Some(bytes) = disambiguated_key(key) {
+    if flags & 1 != 0
+        && let Some(bytes) = disambiguated_key(key) {
             return Some(bytes);
         }
-    }
     key_to_bytes(key)
 }
 

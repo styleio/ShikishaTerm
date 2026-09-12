@@ -268,11 +268,10 @@ fn inline(base: &Path, entry: &Value) -> Result<Value> {
         ws["name"] = Value::String("UNNAMED".into());
     }
     // One spelling on the way out. The old one is still read on the way in
-    if let Some(lua) = ws.as_object_mut().and_then(|o| o.remove("lua")) {
-        if ws.get("automation").map_or(true, is_blank) {
+    if let Some(lua) = ws.as_object_mut().and_then(|o| o.remove("lua"))
+        && ws.get("automation").is_none_or(is_blank) {
             ws["automation"] = lua;
         }
-    }
     crate::config::ensure_folders(&mut ws);
     Ok(ws)
 }
