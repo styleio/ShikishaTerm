@@ -1338,7 +1338,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bstartrow { display:flex; gap:var(--s2); align-items:center; }
   /* A display rule of their own would otherwise beat the hidden attribute */
   #branch .bstartrow[hidden], #branch .bfan[hidden], #branch .bais[hidden],
-  #branch .bsetup[hidden], #branch .bsetupsay[hidden] { display:none; }
+  #branch .bsetup[hidden], #branch .bsetupsay[hidden], #branch .boffer[hidden] { display:none; }
+  /* A file this project could have. Shown whole, because what is being agreed
+     to is the file, not the idea of a file */
+  #branch .boffer { display:flex; flex-direction:column; gap:var(--s2); }
+  #branch .boffer .file { color:var(--text); }
   #branch .bsetup { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
   #branch .bsetupsay { padding-left:22px; }
   #branch .bstartrow .say { color:var(--dim); font-size:11.5px; flex:0 0 auto; }
@@ -1832,6 +1836,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="bstartrow" hidden><span class="say"></span><div id="bstart"></div></div>
         <label class="bsetup" hidden><input type="checkbox" id="bsetupon" checked><span></span></label>
         <div class="bsetupsay hint" hidden></div>
+        <div class="boffer" hidden>
+          <div class="hint say"></div>
+          <div class="bcmd file"></div>
+          <div class="hint why"></div>
+          <div class="row"><button class="keep" type="button"></button></div>
+        </div>
         <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
         <div class="bais" hidden></div>
         <div class="bcarry"></div>
@@ -2933,6 +2943,7 @@ function drawSetup(b, p) {
   const row = b.querySelector(".bsetup");
   const say = b.querySelector(".bsetupsay");
   if (!row || !say) return;
+  drawOffer(b, p);
   const from = (p && p.setup_from) || "";
   row.hidden = !from;
   say.hidden = !from;
@@ -2945,6 +2956,29 @@ function drawSetup(b, p) {
   if (missing.length) lines.push((T["tui.branch.setup.unresolved"] || "{names}")
     .replace("{names}", missing.join(", ")));
   say.textContent = lines.join("  ");
+}
+// What this project could be given, when it says nothing and something can be
+// worked out. The file is shown whole and written only when it is pressed:
+// these are commands that will run on somebody's machine, and a file that
+// appeared in a repository without being read is a file nobody asked for
+function drawOffer(b, p) {
+  const box = b.querySelector(".boffer");
+  if (!box) return;
+  const offer = (p && p.offer) || null;
+  box.hidden = !offer;
+  if (!offer) return;
+  box.querySelector(".say").textContent = T["tui.branch.offer"] || "";
+  box.querySelector(".file").textContent = offer.json || "";
+  box.querySelector(".why").textContent = (T["tui.branch.offer.why"] || "{why}")
+    .replace("{why}", (offer.why || []).join(", "));
+  const keep = box.querySelector(".keep");
+  keep.textContent = T["tui.branch.offer.keep"] || "";
+  keep.onclick = () => {
+    send({kind:"keepenv", from:branchFrom});
+    // Gone the moment it is pressed: pressing twice would be asking for a file
+    // that is already there, and the answer to that is a refusal nobody needs
+    box.hidden = true;
+  };
 }
 function drawDest(b, p) {
   const box = document.getElementById("bdest");

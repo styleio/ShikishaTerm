@@ -394,6 +394,10 @@ pub struct BranchPlan {
     /// The parts of it that need another tool, named rather than dropped
     #[serde(default)]
     pub setup_unresolved: Vec<String>,
+    /// A file this project could have, when it has none and one can be worked
+    /// out. Shown whole and written only when somebody says so
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<crate::devcontainer::Draft>,
 }
 
 /// What Claude's subscription has left, as the status line draws it.

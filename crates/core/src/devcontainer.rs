@@ -245,6 +245,108 @@ fn plain(text: &str) -> String {
     cleaned
 }
 
+/// A file this project could have, worked out from what it is already carrying.
+///
+/// Not written anywhere. This is a proposal, and the proposal is shown whole
+/// before anything is saved -- these are commands that will run on somebody's
+/// machine, and a file that appeared in a repository without being read is a
+/// file nobody asked for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Draft {
+    /// Where it would go
+    pub at: String,
+    /// What would be in it, exactly
+    pub json: String,
+    /// What in the project led to each part of it, so the guess can be judged
+    pub why: Vec<String>,
+}
+
+/// What a project is built with, read off the files it already has.
+///
+/// Lock files rather than source: a lock file is the project saying "these are
+/// the dependencies and this is the tool that installs them", which is the
+/// whole of the question. Source files would need a guess about which of
+/// several tools somebody uses.
+struct Sign {
+    /// The file that gives it away
+    file: &'static str,
+    /// The image the world uses for this
+    image: &'static str,
+    /// How its dependencies are fetched
+    install: &'static str,
+}
+
+/// Ordered: the first one found decides the image, and every one found
+/// contributes its install. A repository with a lock file for two languages
+/// needs both installs and can only have one image
+const SIGNS: &[Sign] = &[
+    Sign { file: "Cargo.lock", image: "mcr.microsoft.com/devcontainers/rust:1", install: "cargo fetch" },
+    Sign { file: "Cargo.toml", image: "mcr.microsoft.com/devcontainers/rust:1", install: "cargo fetch" },
+    Sign { file: "pnpm-lock.yaml", image: "mcr.microsoft.com/devcontainers/typescript-node:1", install: "corepack enable && pnpm install --frozen-lockfile" },
+    Sign { file: "yarn.lock", image: "mcr.microsoft.com/devcontainers/typescript-node:1", install: "corepack enable && yarn install --immutable" },
+    Sign { file: "package-lock.json", image: "mcr.microsoft.com/devcontainers/typescript-node:1", install: "npm ci" },
+    Sign { file: "bun.lockb", image: "oven/bun:1", install: "bun install --frozen-lockfile" },
+    Sign { file: "uv.lock", image: "mcr.microsoft.com/devcontainers/python:1", install: "uv sync --frozen" },
+    Sign { file: "poetry.lock", image: "mcr.microsoft.com/devcontainers/python:1", install: "poetry install" },
+    Sign { file: "requirements.txt", image: "mcr.microsoft.com/devcontainers/python:1", install: "pip install -r requirements.txt" },
+    Sign { file: "go.sum", image: "mcr.microsoft.com/devcontainers/go:1", install: "go mod download" },
+    Sign { file: "Gemfile.lock", image: "mcr.microsoft.com/devcontainers/ruby:1", install: "bundle install" },
+    Sign { file: "composer.lock", image: "mcr.microsoft.com/devcontainers/php:1", install: "composer install" },
+    Sign { file: "mix.lock", image: "hexpm/elixir:1.17.3-erlang-27-debian-bookworm-20241016", install: "mix deps.get" },
+];
+
+/// What this project could be given, or nothing when nothing can be guessed.
+///
+/// Nothing is the right answer more often than people expect, and a guess
+/// offered where there is no ground for one is worse than no offer: somebody
+/// accepts it, it is wrong, and now the repository carries a wrong file with
+/// this app's fingerprints on it.
+pub fn propose(root: &std::path::Path) -> Option<Draft> {
+    if of(root).is_some() {
+        // It already says. Nothing to propose
+        return None;
+    }
+    let found: Vec<&Sign> = SIGNS.iter().filter(|s| root.join(s.file).is_file()).collect();
+    let first = found.first()?;
+    // The same language found twice (a lock file and its manifest) is one
+    // install, not two
+    let mut installs: Vec<&str> = Vec::new();
+    let mut why: Vec<String> = Vec::new();
+    for s in &found {
+        if !installs.contains(&s.install) {
+            installs.push(s.install);
+            why.push(format!("{} -> {}", s.file, s.install));
+        }
+    }
+    let json = format!(
+        "{{\n  \"image\": \"{}\",\n  \"postCreateCommand\": \"{}\"\n}}\n",
+        first.image,
+        installs.join(" && ").replace('"', "\\\"")
+    );
+    Some(Draft {
+        at: root.join(".devcontainer").join("devcontainer.json").display().to_string(),
+        json,
+        why,
+    })
+}
+
+/// Put a proposal in the project, once somebody has read it and said so.
+///
+/// Refuses to write over one that is already there. A person who accepted a
+/// proposal accepted the one they were shown, and a file that arrived since is
+/// not it
+pub fn save(draft: &Draft) -> anyhow::Result<()> {
+    let at = std::path::PathBuf::from(&draft.at);
+    if at.exists() {
+        anyhow::bail!(crate::i18n::tp("err.devcontainer.exists", &[("path", &draft.at)]));
+    }
+    if let Some(parent) = at.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&at, &draft.json)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +428,57 @@ mod tests {
     fn a_dockerfile_is_what_it_is_built_from() {
         let e = read(r#"{"build":{"dockerfile":"Dockerfile","context":".."}}"#).expect("読めない");
         assert_eq!(e.image.as_deref(), Some("Dockerfile"));
+    }
+
+    /// A project already saying what it needs is not offered a guess.
+    #[test]
+    fn a_project_that_already_says_is_left_alone() {
+        let at = std::env::temp_dir().join("shikisha-dc-has");
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(at.join(".devcontainer")).unwrap();
+        std::fs::write(at.join(".devcontainer").join("devcontainer.json"), r#"{"image":"x"}"#).unwrap();
+        std::fs::write(at.join("Cargo.lock"), "").unwrap();
+        assert!(propose(&at).is_none(), "既に言っているのに提案している");
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// Nothing to go on is answered with nothing. A guess with no ground under
+    /// it would put a wrong file in somebody's repository.
+    #[test]
+    fn a_project_with_nothing_to_go_on_is_offered_nothing() {
+        let at = std::env::temp_dir().join("shikisha-dc-bare");
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        std::fs::write(at.join("README.md"), "hi").unwrap();
+        assert!(propose(&at).is_none());
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// Two languages need both installs and can only have one image.
+    #[test]
+    fn a_project_in_two_languages_gets_both_of_its_installs() {
+        let at = std::env::temp_dir().join("shikisha-dc-two");
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        std::fs::write(at.join("Cargo.lock"), "").unwrap();
+        std::fs::write(at.join("Cargo.toml"), "").unwrap();
+        std::fs::write(at.join("package-lock.json"), "").unwrap();
+        let d = propose(&at).expect("提案できる");
+        // The manifest beside its own lock file is the same install, once
+        assert_eq!(d.why.len(), 2, "{:?}", d.why);
+        assert!(d.json.contains("cargo fetch && npm ci"), "{}", d.json);
+        assert!(d.json.contains("devcontainers/rust"), "最初に見つけたものが像になる");
+        // What is proposed is what the reader reads back
+        let back = read(&d.json).expect("自分が書いたものを読めない");
+        assert_eq!(back.setup, ["cargo fetch && npm ci"]);
+        assert!(back.image.is_some());
+
+        // Saved only where nothing is standing, and only once
+        assert!(save(&d).is_ok());
+        assert!(std::path::Path::new(&d.at).is_file());
+        assert!(save(&d).is_err(), "既にあるものに書き込んでいる");
+        // And once it is there, nothing is proposed any more
+        assert!(propose(&at).is_none());
+        let _ = std::fs::remove_dir_all(&at);
     }
 }

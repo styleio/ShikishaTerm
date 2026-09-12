@@ -3698,6 +3698,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Another branch of a project already open. The same call answers "what
         // would this do" and does it, so the line shown before it happens is
         // the line that happens
+        // An environment file the project was offered, and somebody said yes
+        // to. Worked out again here rather than trusted from the page: what is
+        // written is what this side would have proposed, whatever a page said
+        for from in shell.mail().take_keep_envs() {
+            let said = crate::repo::main_checkout(std::path::Path::new(&from))
+                .as_deref()
+                .and_then(crate::devcontainer::propose)
+                .ok_or_else(|| crate::i18n::t("err.devcontainer.nothing"))
+                .and_then(|d| {
+                    crate::devcontainer::save(&d)
+                        .map(|()| crate::i18n::tp("msg.devcontainer.kept", &[("path", &d.at)]))
+                        .map_err(|e| format!("{e:#}"))
+                });
+            flash = Some(match said {
+                Ok(m) => m,
+                Err(e) => e,
+            });
+        }
         for ask in shell.mail().take_branches() {
             let from = std::path::PathBuf::from(&ask.from);
             let name = ask.branch.clone();
@@ -3766,6 +3784,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // one nobody can tell the meaning of
                 setup_from: told.as_ref().map(|e| e.from.clone()).unwrap_or_default(),
                 setup_unresolved: told.as_ref().map(|e| e.unresolved.clone()).unwrap_or_default(),
+                // Only where it says nothing. A project that says something has
+                // already answered, and being offered a guess beside its own
+                // answer would be this app talking over it
+                offer: told
+                    .is_none()
+                    .then(|| repo.as_deref().and_then(crate::devcontainer::propose))
+                    .flatten(),
                 ..Default::default()
             };
             if ask.ais.is_empty() {
