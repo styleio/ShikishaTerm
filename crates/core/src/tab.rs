@@ -2517,9 +2517,14 @@ pub struct Tab {
     bell_count: Arc<AtomicU64>,
     /// Cumulative bytes read from the PTY (incremented by the reader thread)
     bytes_out: Arc<AtomicU64>,
-    /// Holds this tab's processes. Never read: what it is for is being
-    /// dropped, which is what ends them. See [`crate::job`]
-    _job: Option<crate::job::Job>,
+    /// Holds this tab's processes. Its first purpose is being dropped, which
+    /// is what ends them; its second is being counted, which is how a tab
+    /// knows it still has work running after the turn is over. See
+    /// [`crate::job`]
+    job: Option<crate::job::Job>,
+    /// How many processes this tab's job holds when nothing is going on.
+    /// Learned rather than assumed -- see [`crate::detect::background_now`]
+    job_rest: Option<u32>,
     /// Where the program in this tab last said it is working. Empty unless the
     /// shell announces it, which takes shell integration most people do not
     /// have -- so this is a bonus, never something relied on
@@ -3009,7 +3014,8 @@ impl Tab {
             child_exited,
             bell_count,
             bytes_out,
-            _job: job,
+            job,
+            job_rest: None,
             reported_cwd,
             not_utf8,
             created: Instant::now(),
@@ -3530,6 +3536,7 @@ impl Tab {
             limit_now,
             now,
             old_state == TabState::Busy && self.state == TabState::Done,
+            // read before the refinements below can rename this state
         );
         self.last_screen = screen_text;
         // A model bridge is working with nothing on screen to show for it: the
@@ -3541,6 +3548,26 @@ impl Tab {
         // detector is told rather than left to guess.
         if self.is_generating() {
             self.state = TabState::Busy;
+        }
+        // Two things the screen cannot say, applied once the screen has had
+        // its say. Both only ever refine a resting state: a tab that is
+        // working, or that has a person to answer, is already saying the more
+        // urgent thing and must not be talked over
+        let (background, rest) = crate::detect::background_now(
+            self.job.as_ref().and_then(crate::job::Job::active),
+            self.state == TabState::Busy,
+            self.job_rest,
+        );
+        self.job_rest = rest;
+        if matches!(self.state, TabState::Done | TabState::Wait) {
+            // Order is which one a person needs to hear. A turn that ended
+            // against the limit produced no answer and no amount of waiting on
+            // this tab will change that, so it outranks work still running
+            if self.limit_note.is_some() {
+                self.state = TabState::Limit;
+            } else if background {
+                self.state = TabState::Background;
+            }
         }
         if self.state == TabState::Busy {
             self.spinner_idx = self.spinner_idx.wrapping_add(1);
@@ -3562,7 +3589,7 @@ impl Tab {
         // record the scrollback accumulation amount at the moment BUSY
         // starts as the boundary, and on DONE extract only what's after
         // that boundary (past responses never get mixed in)
-        if old_state == TabState::Busy && self.state == TabState::Done {
+        if old_state == TabState::Busy && self.state.turn_ended() {
             self.last_response = Some(self.capture_since_marker());
         }
         (old_state, self.state)
