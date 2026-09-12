@@ -156,6 +156,45 @@ impl russh::server::Handler for Probe {
         Ok(())
     }
 
+    /// One command, run for real, in the folder this probe serves.
+    ///
+    /// Real because the thing being checked is git on the far side, and a
+    /// canned answer would prove the protocol while proving nothing about the
+    /// feature. This binary listens on the loopback only and is not part of
+    /// any download; it is a bench tool and belongs on no network.
+    async fn exec_request(
+        &mut self,
+        channel: russh::ChannelId,
+        command: &[u8],
+        session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        self.channels.lock().await.remove(&channel);
+        session.channel_success(channel)?;
+        let line = String::from_utf8_lossy(command).to_string();
+        let shell = if cfg!(windows) { "cmd" } else { "sh" };
+        let flag = if cfg!(windows) { "/c" } else { "-c" };
+        let out = std::process::Command::new(shell)
+            .arg(flag)
+            .arg(&line)
+            .current_dir(&self.root)
+            .output();
+        let (code, stdout, stderr) = match out {
+            Ok(o) => (o.status.code().unwrap_or(-1), o.stdout, o.stderr),
+            Err(e) => (-1, Vec::new(), format!("{e}").into_bytes()),
+        };
+        if !stdout.is_empty() {
+            session.data(channel, Bytes::from(stdout))?;
+        }
+        if !stderr.is_empty() {
+            // Stream 1 is what ssh calls the error half
+            session.extended_data(channel, 1, Bytes::from(stderr))?;
+        }
+        session.exit_status_request(channel, code as u32)?;
+        session.eof(channel)?;
+        session.close(channel)?;
+        Ok(())
+    }
+
     async fn data(
         &mut self,
         channel: russh::ChannelId,

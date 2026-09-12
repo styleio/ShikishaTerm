@@ -213,6 +213,39 @@ enum Job {
         job: FileJob,
         reply: Sender<Result<FileAnswer>>,
     },
+    /// One command, run to the end, on the same connection everything else uses
+    Exec {
+        spec: Spec,
+        command: String,
+        reply: Sender<Result<Ran>>,
+    },
+}
+
+/// What a command on the far end did.
+///
+/// Kept apart from a terminal on purpose: a terminal is for a person to read
+/// and has no ending, while this is for the program to act on and has one. Git
+/// run over there is the first caller, and the exit code is the whole point --
+/// a worktree that could not be made has to fail here, not look like output
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ran {
+    pub code: i32,
+    pub out: String,
+    pub err: String,
+}
+
+impl Ran {
+    pub fn ok(&self) -> bool {
+        self.code == 0
+    }
+    /// What went wrong, in whatever the far end was willing to say
+    pub fn said(&self) -> String {
+        let said = self.err.trim();
+        match said.is_empty() {
+            false => said.to_string(),
+            true => self.out.trim().to_string(),
+        }
+    }
 }
 
 /// The way in. One thread, one runtime, started the first time anything here
@@ -320,6 +353,10 @@ async fn handle(live: &mut Live, job: Job) {
         }
         Job::Files { spec, job, reply } => {
             let r = do_file_job(live, &spec, job).await;
+            let _ = reply.send(r);
+        }
+        Job::Exec { spec, command, reply } => {
+            let r = do_exec(live, &spec, &command).await;
             let _ = reply.send(r);
         }
         Job::Close { id } => {
@@ -535,6 +572,44 @@ async fn open_shell(
 /// would be faster and would also mean a tab that transfers nothing keeps a
 /// channel open on the far end for as long as the app runs; a transfer is not
 /// something that happens hundreds of times a second
+/// Run one command over there and wait for it to finish.
+///
+/// Its own channel, closed when the command ends, so nothing of it is left on
+/// the connection a terminal is using. What is collected is both streams and
+/// the exit code, because the caller is a program: "it printed something" is
+/// not the same answer as "it worked"
+async fn do_exec(live: &mut Live, spec: &Spec, command: &str) -> Result<Ran> {
+    use russh::ChannelMsg;
+    let route = session(live, spec).await?;
+    let handle = live
+        .sessions
+        .get(&route)
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.ssh.connect", &[("host", &route), ("e", "gone")])))?;
+    let mut channel = handle.channel_open_session().await?;
+    channel.exec(true, command).await?;
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    // A server may send the code and keep talking, so the streams are drained
+    // to the end rather than stopping at the first word about the ending
+    let mut code: Option<i32> = None;
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            ChannelMsg::Data { ref data } => out.extend_from_slice(data),
+            ChannelMsg::ExtendedData { ref data, .. } => err.extend_from_slice(data),
+            ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status as i32),
+            ChannelMsg::Eof | ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+    let _ = channel.close().await;
+    Ok(Ran {
+        // No word about the ending is not the same as a clean one: a server
+        // that closed on us has not told us the command worked
+        code: code.unwrap_or(-1),
+        out: String::from_utf8_lossy(&out).to_string(),
+        err: String::from_utf8_lossy(&err).to_string(),
+    })
+}
+
 async fn do_file_job(live: &mut Live, spec: &Spec, job: FileJob) -> Result<FileAnswer> {
     let route = session(live, spec).await?;
     let handle = live
@@ -854,6 +929,21 @@ pub fn files(spec: &Spec, job: FileJob, wait_ms: u64) -> Result<FileAnswer> {
         .map_err(|_| anyhow!(crate::i18n::tp("err.ssh.timeout", &[("host", &spec.address())])))?
 }
 
+/// Run one command on another machine, and wait for the answer.
+///
+/// The primitive everything remote is built from: git on the far side, asking
+/// whether a folder is there, finding out what is installed. Blocks, like every
+/// other call here; the caller decides how long it is willing to wait
+pub fn exec(spec: &Spec, command: &str, wait_ms: u64) -> Result<Ran> {
+    let (reply_tx, reply_rx) = channel::<Result<Ran>>();
+    hub()
+        .send(Job::Exec { spec: spec.clone(), command: command.to_string(), reply: reply_tx })
+        .map_err(|_| anyhow!(crate::i18n::t("err.ssh.no_thread")))?;
+    reply_rx
+        .recv_timeout(std::time::Duration::from_millis(wait_ms))
+        .map_err(|_| anyhow!(crate::i18n::tp("err.ssh.timeout", &[("host", &spec.address())])))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,6 +1105,80 @@ mod tests {
         killer.kill().expect("kill");
     }
 
+    /// A command on the far side comes back whole: what it printed, what it
+    /// complained about, and whether it worked.
+    ///
+    /// All three matter separately. Git writes "Preparing worktree" to the
+    /// error half on a run that succeeded, so reading the error half as failure
+    /// would call every success a failure; and a git that could not make the
+    /// folder still prints nothing on the other half, so reading "it printed
+    /// something" as success would call every failure a success. The exit code
+    /// is the only one of the three that answers the question, which is why it
+    /// is carried rather than thrown away.
+    ///
+    /// Proven against a real server on a real socket, the same one the terminal
+    /// test uses -- and end to end against `sshd_probe`, where this made a git
+    /// worktree on the far side and the folder was really there afterwards.
+    #[test]
+    fn a_command_on_another_machine_comes_back_whole() {
+        let (port_tx, port_rx) = channel::<u16>();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            rt.block_on(async move {
+                let config = Arc::new(russh::server::Config {
+                    inactivity_timeout: Some(std::time::Duration::from_secs(30)),
+                    auth_rejection_time: std::time::Duration::from_millis(1),
+                    keys: vec![
+                        russh::keys::PrivateKey::random(
+                            &mut rand::rng(),
+                            russh::keys::Algorithm::Ed25519,
+                        )
+                        .expect("host key"),
+                    ],
+                    ..Default::default()
+                });
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .expect("listen");
+                let _ = port_tx.send(listener.local_addr().expect("addr").port());
+                let mut server = Fake;
+                use russh::server::Server as _;
+                let _ = server.run_on_socket(config, &listener).await;
+            });
+        });
+        let port = port_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the test server did not start");
+        use_secrets(HashMap::from([(
+            "ssh/ws/prod/password".to_string(),
+            "hunter2".to_string(),
+        )]));
+        let spec = Spec {
+            host: "127.0.0.1".into(),
+            port,
+            user: "tester".into(),
+            password_key: Some("ssh/ws/prod/password".into()),
+            key: None,
+            passphrase_key: None,
+            ..Default::default()
+        };
+
+        let good = exec(&spec, "git --version", 15_000).expect("the command did not run");
+        assert!(good.ok(), "動いたのに失敗になっている: {good:?}");
+        assert_eq!(good.code, 0);
+        assert!(good.out.contains("ran:git --version"), "{good:?}");
+
+        let bad = exec(&spec, "please fail", 15_000).expect("the command did not run");
+        assert!(!bad.ok(), "失敗したのに成功になっている: {bad:?}");
+        assert_eq!(bad.code, 3, "終了コードが届いていない");
+        assert_eq!(bad.said(), "it went wrong", "言い分が拾えていない");
+        // The two halves do not run into each other
+        assert!(bad.out.is_empty(), "{bad:?}");
+    }
+
     /// The far side of that conversation. It asks for a password, insists on
     /// the one it was told, and gives out a terminal that echoes
     #[derive(Clone)]
@@ -1063,6 +1227,28 @@ mod tests {
             session: &mut russh::server::Session,
         ) -> Result<(), Self::Error> {
             session.channel_success(channel)?;
+            Ok(())
+        }
+
+        /// One command: both streams and an ending, which is the whole of what
+        /// a program needs and none of what a terminal needs
+        async fn exec_request(
+            &mut self,
+            channel: russh::ChannelId,
+            command: &[u8],
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            let line = String::from_utf8_lossy(command).to_string();
+            session.channel_success(channel)?;
+            if line.contains("fail") {
+                session.extended_data(channel, 1, russh::keys::ssh_encoding::bytes::Bytes::from_static(b"it went wrong"))?;
+                session.exit_status_request(channel, 3)?;
+            } else {
+                session.data(channel, russh::keys::ssh_encoding::bytes::Bytes::from(format!("ran:{line}").into_bytes()))?;
+                session.exit_status_request(channel, 0)?;
+            }
+            session.eof(channel)?;
+            session.close(channel)?;
             Ok(())
         }
 
