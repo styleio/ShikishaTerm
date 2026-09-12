@@ -398,6 +398,10 @@ pub struct BranchPlan {
     /// out. Shown whole and written only when somebody says so
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offer: Option<crate::devcontainer::Draft>,
+    /// What the settings call this project, when they have been told. Empty
+    /// means nobody has written it down and it is still being worked out
+    #[serde(default)]
+    pub project_name: String,
 }
 
 /// What Claude's subscription has left, as the status line draws it.

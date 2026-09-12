@@ -2878,7 +2878,9 @@ function drawBranch() {
   if (at && mine && !p.error && !at.value.trim()) at.placeholder = p.folder || "";
   // Which project this is cut from, and where that project itself lives
   if (here) {
-    b.querySelector(".bproject .nm").textContent = p.project || "";
+    // What it is called in the settings, when somebody has written it down.
+    // Otherwise the folder's own name, which is what it was always
+    b.querySelector(".bproject .nm").textContent = p.project_name || p.project || "";
     b.querySelector(".bproject .at").textContent = p.project_at || "";
   }
   // Every line when several folders are being made, so what is shown is

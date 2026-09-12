@@ -15,6 +15,66 @@ use anyhow::{Context as _, Result};
 use serde::Deserialize;
 use std::path::Path;
 
+/// A repository somebody works on, named once.
+///
+/// It was never written down before: a project was worked out every time it
+/// was wanted, by asking git what folder a folder belonged to. That inference
+/// answered most questions and none of the hard ones -- where the checkout is
+/// on *this* machine, which of two projects with the same folder name this is,
+/// what this project needs before it can be built -- and each of those had to
+/// be guessed separately, in a different place, with a different way of being
+/// wrong. Writing it down once is what stops the guessing.
+///
+/// Everything here is absent-able. A settings file that has never heard of
+/// projects keeps working exactly as it did, on the same inference; this is
+/// what a folder can say instead of leaving it to be guessed.
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
+pub struct ProjectSpec {
+    /// What it is called. The name folders refer to it by, so two projects
+    /// whose folders happen to share a name are still two projects
+    pub name: String,
+    /// Where its own checkout is on this machine
+    #[serde(default)]
+    pub at: Option<String>,
+    /// What to run in a new worktree of it, for a project that cannot carry a
+    /// devcontainer -- one that is built for Windows, or for a phone, or
+    /// against hardware. Where there is a devcontainer, that is read instead
+    /// and this is not asked for
+    #[serde(default)]
+    pub setup: Option<String>,
+}
+
+impl Config {
+    /// The project a folder belongs to, when the settings say.
+    ///
+    /// By what the folder wrote down, and failing that by which project's own
+    /// checkout this folder shares a repository with -- the inference that was
+    /// the only answer before, kept so that a settings file which has never
+    /// heard of projects behaves exactly as it did.
+    pub fn project_of(&self, cwd: &std::path::Path) -> Option<&ProjectSpec> {
+        let named = self
+            .workspaces
+            .iter()
+            .flat_map(|w| w.folders.iter())
+            .chain(self.folders.iter())
+            .find(|f| f.cwd.as_deref().map(std::path::Path::new) == Some(cwd))
+            .and_then(|f| f.project.as_deref())
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        if let Some(name) = named {
+            return self.projects.iter().find(|p| p.name == name);
+        }
+        let family = crate::repo::family_of(cwd)?;
+        self.projects.iter().find(|p| {
+            p.at
+                .as_deref()
+                .map(std::path::Path::new)
+                .and_then(crate::repo::family_of)
+                .is_some_and(|f| f == family)
+        })
+    }
+}
+
 /// A machine that is not this one, and can hold work of its own.
 ///
 /// Named once and referred to by that name everywhere else, because the same
@@ -62,6 +122,10 @@ impl HostSpec {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
+    /// The repositories worked on here. Empty until something is written down,
+    /// and everything keeps working on inference while it is
+    #[serde(default)]
+    pub projects: Vec<ProjectSpec>,
     /// Machines that are not this one. Empty on every install until somebody
     /// adds one, and the picker says "this PC" and nothing else until then
     #[serde(default)]
@@ -1844,6 +1908,11 @@ pub struct FolderConfig {
     /// it. Written when it is made; asked of a person only when it is absent
     #[serde(default)]
     pub source: Option<SourceSpec>,
+    /// The project this folder is a piece of, by name. Absent is the old
+    /// answer: work it out by asking git which checkout this folder shares a
+    /// repository with
+    #[serde(default)]
+    pub project: Option<String>,
     /// The branches this folder will not commit straight onto, when it wants
     /// something other than the app-wide answer. Absent means it follows that
     /// one; an empty list means this folder guards nothing

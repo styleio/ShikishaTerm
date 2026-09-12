@@ -3729,9 +3729,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // about what has been typed so far. Answered even when the name is
             // still empty, so the pickers are filled the moment the dialog opens
             let repo = crate::repo::main_checkout(&from);
-            // What this project says about itself, read once whatever is done
-            // with it
-            let told = repo.as_deref().and_then(crate::devcontainer::of);
+            // Which project this folder is a piece of, and what it says about
+            // itself. One lookup, used for the place the folder goes, for what
+            // is run in it, and for whether anything is offered
+            let project = cfg.as_ref().and_then(|c| c.project_of(&from));
+            let told = repo.as_deref().and_then(|r| {
+                crate::devcontainer::told(r, project.and_then(|p| p.setup.as_deref()))
+            });
             let offers = repo.as_deref().map(|main| {
                 (crate::worktree::bases(main), crate::worktree::carryables(main))
             });
@@ -3791,6 +3795,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .is_none()
                     .then(|| repo.as_deref().and_then(crate::devcontainer::propose))
                     .flatten(),
+                project_name: project.map(|p| p.name.clone()).unwrap_or_default(),
                 ..Default::default()
             };
             if ask.ais.is_empty() {
@@ -3814,8 +3819,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         &crate::repo::remote_url_of(&from).unwrap_or_default(),
                         env.clone(),
                     ),
-                    None => crate::worktree::plan_into(
+                    None => crate::worktree::plan_for(
                         &from,
+                        project.map(|p| p.name.as_str()),
                         &wanted,
                         Some(&ask.base),
                         (!ask.at.trim().is_empty()).then_some(at.as_path()),
