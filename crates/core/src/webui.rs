@@ -3719,6 +3719,7 @@ const DEFAULT_MODEL = {deepseek: "deepseek-chat"};
 // The git panel is the word on its own -- `git status` in a tab is somebody
 // who wants a terminal that runs git, and it stays one
 const isGitPanel = c => cmdToText(c).trim().toLowerCase() === "git";
+const isEditorPanel = c => cmdToText(c).trim().toLowerCase() === "editor";
 // The file panel, addressed the way a terminal on another machine is. Told
 // apart from that one only by the scheme, so the two read as what they are:
 // the same connection, asked for different things. A half-written address is
@@ -3740,7 +3741,8 @@ function parseRemote(cmd) {
 }
 const buildRemote = o =>
   "ssh://" + (o.user || "") + "@" + (o.host || "") + (o.port ? ":" + o.port : "");
-const kindOf = c => isGitPanel(c) ? "git" : parseSftpUrl(c) ? "sftp"
+const kindOf = c => isGitPanel(c) ? "git" : isEditorPanel(c) ? "editor"
+  : parseSftpUrl(c) ? "sftp"
   : parseBrowser(c) ? "browser" : parseModel(c) ? "model"
   : parseRemote(c) ? "remote" : parseSsh(c) ? "ssh" : parseDocker(c) ? "docker" : parseWsl(c) ? "wsl" : "cmd";
 // CLI-type AIs (external programs the user installs). check = engine id to
@@ -3791,7 +3793,7 @@ const defaultAiCommand = () =>
 // because its answer depends on which CLI this machine has.
 const CAT_START = {ai:defaultAiCommand, cmd:"", remote:"ssh://user@example.com:22", ssh:"ssh ",
   docker:"docker exec -it ", wsl:"wsl ", browser:"browser https://", git:"git",
-  sftp:"sftp://user@example.com:22"};
+  editor:"editor", sftp:"sftp://user@example.com:22"};
 const catStart = v => { const s = CAT_START[v]; return (typeof s === "function" ? s() : s) || ""; };
 const CAT_LIST = [
   ["ai",      T["settings.tab.cat.ai"]],
@@ -3802,6 +3804,7 @@ const CAT_LIST = [
   ["wsl",     "WSL"],
   ["browser", T["settings.tab.kind.browser"]],
   ["git",     T["settings.tab.kind.git"]],
+  ["editor",  T["settings.tab.kind.editor"]],
   ["sftp",    T["settings.template.sftp"]],
 ];
 
@@ -8101,6 +8104,8 @@ function kindPanel(t, cmdInput, rebuild, real) {
     // A git panel has nothing to launch: no command to pick, no arguments to
     // get right. What it needs is the folder, and that is the row below
     return el("div", {class:"hint"}, T["settings.tab.kind.git.hint"]);
+  } else if (isEditorPanel(t.command)) {
+    return el("div", {class:"hint"}, T["settings.tab.kind.editor.hint"]);
   } else {
     const s = el("select");
     s.append(el("option", {value:""}, T["settings.tab.common.pick"]));

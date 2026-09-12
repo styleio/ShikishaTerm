@@ -112,6 +112,15 @@ pub struct TabState {
     /// this; the page itself never sees it, so it cannot press it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask: Option<AskState>,
+    /// The file an editor is showing, relative to its folder. Absent for
+    /// every other kind of tab, and for an editor with nothing open in it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// What the disk says about that file as of this frame. The editor watches
+    /// it: unchanged means nobody else has written, and a change means somebody
+    /// did -- which is the whole reason this travels
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_stamp: Option<String>,
     /// The device this page is drawn on, when that is not this machine at all
     /// (the `browser_draw` setting). Such a page is already in front of the
     /// person whose machine it is and there is no picture of it to send
@@ -992,6 +1001,9 @@ impl TabState {
             readable: readable(t),
             // A session is not a page; nothing asks the person about it here
             ask: None,
+            // ...and a session is not showing a file
+            file: None,
+            file_stamp: None,
             // ...and a session is drawn wherever its terminal is, which is here
             away: None,
         }
@@ -1009,6 +1021,19 @@ impl TabState {
             kind: "sftp".into(),
             state: "SFTP".into(),
             state_label: crate::i18n::t("tui.state.sftp"),
+            group,
+            restartable: false,
+            ..Self::browser(index, key, name)
+        }
+    }
+
+    /// The editor. No process and no page either -- the board draws it, and
+    /// what it is showing is picked while the program runs
+    pub fn editor(index: usize, key: &str, name: &str, group: Option<usize>) -> Self {
+        Self {
+            kind: "editor".into(),
+            state: "EDIT".into(),
+            state_label: crate::i18n::t("tui.state.editor"),
             group,
             restartable: false,
             ..Self::browser(index, key, name)
@@ -1059,6 +1084,8 @@ impl TabState {
             // Nothing was said here to read back
             readable: false,
             ask: None,
+            file: None,
+            file_stamp: None,
             // Where it is drawn is known to the runtime, not to this; filled
             // in by `view::ui_state_of` along with everything else
             away: None,
@@ -1366,6 +1393,8 @@ mod tests {
             readable: false,
             ask: None,
             away: None,
+            file: None,
+            file_stamp: None,
         }
     }
 

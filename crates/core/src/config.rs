@@ -2169,6 +2169,15 @@ pub fn is_git_panel(argv: &[String]) -> bool {
     matches!(argv, [head] if head.eq_ignore_ascii_case("git"))
 }
 
+/// Whether this tab is the editor.
+///
+/// Told apart the same way the git panel is: the word on its own. `editor
+/// notes.txt` in a tab is somebody wanting to run a program called editor, and
+/// taking that away would be rude.
+pub fn is_editor_panel(argv: &[String]) -> bool {
+    matches!(argv, [head] if head.eq_ignore_ascii_case("editor"))
+}
+
 
 
 impl TabConfig {

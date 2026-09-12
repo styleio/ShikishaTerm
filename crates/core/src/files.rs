@@ -31,6 +31,42 @@ const READ_CAP: usize = 512 * 1024;
 const TIME_CAP: Duration = Duration::from_millis(2500);
 /// How deep a plain walk goes when git is not there to ask
 const WALK_DEPTH: usize = 12;
+/// The most an editor will open in one piece. Past this it is a log or a
+/// bundle, not something being read here, and the honest answer is to say so
+pub const READ_LIMIT: u64 = 4 * 1024 * 1024;
+
+/// What the disk says about a file without reading it: when it was last
+/// written, and how long it is.
+///
+/// Asked every pass while an editor is open, so it must cost nothing -- which
+/// rules out reading the file to hash it. Two writes inside the same second
+/// that keep the length are the one thing this misses, and the save still
+/// catches that (it compares the contents' own mark).
+pub fn stamp_of(path: &Path) -> String {
+    let Ok(m) = std::fs::metadata(path) else { return String::new() };
+    let when = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{when}-{}", m.len())
+}
+
+/// What a file was when it was read, short enough to travel in the state.
+///
+/// Not a security hash and not trying to be: it answers one question -- "is
+/// this still the same bytes I handed out?" -- so that a save can refuse to
+/// overwrite somebody else's work. FNV-1a over the contents, with the length,
+/// because two files that differ only in length are not the same file.
+pub fn mark_of(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    format!("{h:x}-{}", bytes.len())
+}
 
 /// One thing a search found.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -228,8 +264,13 @@ fn read_head(path: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A folder of this test's own. The process id is in the path because two
+    /// test runs on one machine (another window, a watch loop) otherwise share
+    /// it and delete each other's files mid-assertion.
     fn scratch(name: &str) -> PathBuf {
-        let at = std::env::temp_dir().join("shikisha-files-test").join(name);
+        let at = std::env::temp_dir()
+            .join(format!("shikisha-files-test-{}", std::process::id()))
+            .join(name);
         let _ = std::fs::remove_dir_all(&at);
         std::fs::create_dir_all(at.join("sub")).unwrap();
         at
@@ -284,6 +325,25 @@ mod tests {
         assert!(shown.chars().count() < 200, "長い行はそのまま出さない");
         assert!(shown.contains("NEEDLE"), "切っても当たりは残る");
         assert!(shown.starts_with('…') && shown.ends_with('…'), "切った側に印が付く");
+    }
+
+    #[test]
+    fn the_mark_answers_one_question() {
+        assert_eq!(mark_of(b"hello"), mark_of(b"hello"), "同じ中身は同じ印");
+        assert_ne!(mark_of(b"hello"), mark_of(b"hellp"), "1文字違えば別");
+        assert_ne!(mark_of(b"hello"), mark_of(b"hello "), "長さが違えば別");
+        assert_ne!(mark_of(b""), mark_of(b"x"));
+    }
+
+    #[test]
+    fn a_stamp_moves_when_the_file_does() {
+        let at = scratch("stamp").join("a.txt");
+        std::fs::write(&at, "one").unwrap();
+        let first = stamp_of(&at);
+        assert!(!first.is_empty(), "そこにあるファイルには印が付く");
+        std::fs::write(&at, "one and a half").unwrap();
+        assert_ne!(stamp_of(&at), first, "長さが変われば印も変わる");
+        assert!(stamp_of(&at.with_file_name("nothing")).is_empty(), "無いものには印が無い");
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! (`shikisha_shared::BrowserHost`, `Toasts`, `FilePicker`), so this builds and
 //! runs with no shell at all.
 
+pub mod ace;
 pub mod agenthook;
 pub mod api;
 pub mod askpass;
