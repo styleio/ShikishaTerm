@@ -184,14 +184,22 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      at work -- which is measurably a fifth of a processor core spent on one
      8-pixel dot, and it is spent precisely while its owner is trying to type.
      Two values a second read as "alive" just as well and cost two redraws */
+  /* Eight states, two shapes. Filled means the tab is somebody's turn right
+     now — yours to answer, or the AI's to finish. A ring means the same colour
+     of news with nothing for you to do about it this minute: work you are only
+     waiting on, a clock to wait for, a tab that has already ended. Read the
+     colour for what kind of news it is and the shape for whether it wants you */
   .dot.BUSY, .dot.Working { background:var(--live); animation:pulse 1.2s step-end infinite; }
+  .dot.BACKGROUND { background:transparent; box-shadow:inset 0 0 0 2px var(--live); }
   .dot.DONE { background:var(--brand); }
+  .dot.LIMIT { background:transparent; box-shadow:inset 0 0 0 2px var(--warn); }
   /* The state a person has to answer. Named for the state itself: the class
      is the label the app sends (`QUESTION`), and while this rule said `ASK`
      it matched nothing at all — the one dot that exists to be noticed was
      drawn in the same grey as a tab sitting idle */
   .dot.QUESTION { background:var(--warn); }
-  .dot.EXIT { background:var(--stop); }
+  .dot.FAILED { background:var(--stop); }
+  .dot.EXIT { background:transparent; box-shadow:inset 0 0 0 2px var(--stop); }
   @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.35 } }
   .num { color:var(--dim); font-size:12px; min-width:14px; }
   .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -8867,6 +8875,73 @@ mod tests {
             PAGE.contains(r#"if (armedPane === cls + p.id || (t && t.state === "EXIT"))"#),
             "動いているペインを一押しで落とせてしまう"
         );
+    }
+
+    /// The dot's class is the state's own label, so a state whose label the
+    /// stylesheet has never heard of is drawn in the resting grey -- silently,
+    /// and on the one tab that wanted to be noticed. That has happened once
+    /// already: the rule said `.dot.ASK` while the app sent `QUESTION`, and
+    /// the dot a person is meant to answer looked exactly like an idle one.
+    ///
+    /// So every state is checked against the sheet rather than trusted. `WAIT`
+    /// is the deliberate exception: resting grey is what `.dot` already is,
+    /// and a rule repeating it would be a second place to keep in step
+    #[test]
+    fn every_state_the_app_sends_has_a_dot_the_sheet_knows() {
+        use crate::detect::TabState;
+        const EVERY: [TabState; 8] = [
+            TabState::Wait,
+            TabState::Busy,
+            TabState::Background,
+            TabState::Question,
+            TabState::Done,
+            TabState::Limit,
+            TabState::Failed,
+            TabState::Exited,
+        ];
+        // A selector ends where the name ends. Matching the bare text would
+        // let `.dot.DONE` be answered by a rule for some future `.dot.DONEISH`
+        let styled = |label: &str| {
+            PAGE.split(&format!(".dot.{label}")).skip(1).any(|rest| {
+                rest.chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_')
+            })
+        };
+        for s in EVERY {
+            let label = s.label();
+            if matches!(s, TabState::Wait) {
+                assert!(!styled(label), "{label} は既定の灰色のままでよい");
+                continue;
+            }
+            assert!(styled(label), "{label} の点に規則が無く、待機と同じ灰色で描かれる");
+        }
+        // Filled or ringed, never nothing: the ring is how a state says "this
+        // is news you cannot act on yet", and a missing one reads as filled
+        for ringed in ["BACKGROUND", "LIMIT", "EXIT"] {
+            let rule = PAGE
+                .split(&format!(".dot.{ringed} "))
+                .nth(1)
+                .and_then(|r| r.split('}').next())
+                .unwrap_or_default()
+                .to_string();
+            assert!(
+                rule.contains("inset 0 0 0 2px"),
+                "{ringed} は輪郭で描く決めごとなのに塗られている: {rule}"
+            );
+        }
+        // And exactly one state blinks. Anything more is a processor core
+        // spent on decoration while its owner is trying to type, and a board
+        // where several things flash is a board where none of them is noticed
+        let blinking: Vec<&str> = EVERY
+            .iter()
+            .map(TabState::label)
+            .filter(|label| {
+                PAGE.split(&format!(".dot.{label}"))
+                    .skip(1)
+                    .filter_map(|rest| rest.split('}').next())
+                    .any(|rule| rule.contains("animation:"))
+            })
+            .collect();
+        assert_eq!(blinking, ["BUSY"], "点滅してよい状態は処理中だけ");
     }
 
     /// Every Enter that does something has to let a conversion through.

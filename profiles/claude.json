@@ -47,7 +47,9 @@
       "states": {
         "UserPromptSubmit": "BUSY",
         "PermissionRequest": "QUESTION",
-        "Stop": "DONE"
+        "Elicitation": "QUESTION",
+        "Stop": "DONE",
+        "StopFailure": "FAILED"
       }
     },
     "verify": "{home}/.claude/projects/*/{id}.jsonl"
