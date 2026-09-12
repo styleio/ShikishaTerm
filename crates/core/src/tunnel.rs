@@ -915,9 +915,11 @@ mod tests {
         assert_eq!(next_of(&rx, &mut Vec::new(), 1).unwrap().1, b"X");
         pipe.shut();
         assert_eq!(pipe.count(), 0, "握ったままになっている");
-        // And nothing further is opened
+        // And nothing further is opened. Asked straight away, with nothing
+        // waited for: a shut pipe refuses on the calling thread, and one that
+        // did not would have written the connection down before reaching for
+        // it -- so the fault, if there were one, is already visible here
         pipe.accept(&frame(2, Kind::Open, far.as_bytes()));
-        std::thread::sleep(std::time::Duration::from_millis(200));
         assert_eq!(pipe.count(), 0, "閉じた後に繋いでいる");
     }
 }

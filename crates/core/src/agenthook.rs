@@ -17,7 +17,7 @@
 //!     change. It costs nothing and it is the difference between "undo it" and
 //!     "what did it just do to my settings"
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 
@@ -133,21 +133,28 @@ fn me() -> PathBuf {
 
 /// The same path with no space in it, for a CLI that will not take quotes.
 ///
+/// A path that has none already is its own answer, on every system. `None`
+/// means there is no way to name this program without a space, and saying so
+/// is the point: the alternative is installing a hook that can never run and
+/// finding out from a dot that never moves.
+///
+/// Nothing but Windows keeps a second name for a file, so on everything else
+/// a path with a space in it has no answer at all. In practice that is rare
+/// there, and a person can move the program; on Windows a space is the normal
+/// case, which is why the other half of this exists.
+#[cfg(not(windows))]
+fn spaceless(path: &Path) -> Option<String> {
+    let long = path.display().to_string();
+    (!long.contains(' ')).then_some(long)
+}
+
 /// Windows has kept a second, space-free name for every file since the days
 /// when eight characters was the whole allowance (`C:\PROGRA~1\...`), and it
 /// is the only way to name a program in a command line that cannot be quoted.
 /// `None` when the path still has a space afterwards — that happens where the
-/// short names have been turned off for a volume, and it is worth saying out
-/// loud rather than installing a hook that can never run.
-/// A path with no spaces in it, when the filesystem keeps a second, shorter
-/// name for the same file. Nothing here does, so there is nothing to offer.
-#[cfg(not(windows))]
-fn spaceless(_path: &PathBuf) -> Option<String> {
-    None
-}
-
+/// short names have been turned off for a volume.
 #[cfg(windows)]
-fn spaceless(path: &PathBuf) -> Option<String> {
+fn spaceless(path: &Path) -> Option<String> {
     let long = path.display().to_string();
     if !long.contains(' ') {
         return Some(long);
@@ -373,13 +380,13 @@ fn edit(t: &Target, want: bool) -> Result<()> {
     // Leave no empty scaffolding behind after a removal — including the map
     // itself when we were the only thing in it, which is the whole file for a
     // CLI whose hook config exists because we made it
-    if !want {
-        if let Some(hooks) = doc.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-            hooks.retain(|_, v| !v.as_array().map(|a| a.is_empty()).unwrap_or(false));
-            let empty = hooks.is_empty();
-            if let Some(o) = doc.as_object_mut().filter(|_| empty) {
-                o.remove("hooks");
-            }
+    if !want
+        && let Some(hooks) = doc.get_mut("hooks").and_then(|h| h.as_object_mut())
+    {
+        hooks.retain(|_, v| !v.as_array().map(|a| a.is_empty()).unwrap_or(false));
+        let empty = hooks.is_empty();
+        if let Some(o) = doc.as_object_mut().filter(|_| empty) {
+            o.remove("hooks");
         }
     }
 
@@ -461,6 +468,25 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
         assert_eq!(back, theirs, "自分の分だけを取り去る");
         assert_eq!(status(&t), Status::Absent);
+    }
+
+    /// A path with no space in it is its own space-free spelling, wherever
+    /// this is running.
+    ///
+    /// Only Windows keeps a second name for a file, and the half that said so
+    /// answered `None` to everything -- so on every other system a hook that
+    /// cannot be quoted refused to install, whatever it was being pointed at,
+    /// and told the person their path had a space in it when it did not.
+    /// Nothing caught it because no test had installed that spelling before
+    #[test]
+    fn a_path_already_free_of_spaces_needs_no_second_name() {
+        let plain = std::env::temp_dir().join("shikisha-plain").join("app");
+        assert!(!plain.display().to_string().contains(' '), "前提: {plain:?}");
+        assert_eq!(spaceless(&plain), Some(plain.display().to_string()));
+
+        // And this program's own path answers, or nothing that needs the
+        // unquoted spelling could ever be installed from here
+        assert!(spaceless(&me()).is_some(), "自分自身を名指せない: {:?}", me());
     }
 
     /// One event can be asked for more than one thing, and all of it has to
