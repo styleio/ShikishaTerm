@@ -304,6 +304,36 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Output volume as a real bar chart, not characters */
   /* The heading a folder's tabs get when there are several, so the set can be
      put away as one and the count can be read without counting rows */
+  /* The tabs of the folder being looked at, along the top of what it is
+     showing. The sidebar answers "is anything, anywhere, waiting for me"; this
+     answers "let me switch to another one of these" without leaving the thing
+     in front of you. The two say the same names on purpose */
+  #strip[hidden] { display:none; }
+  /* Above the panes, and the panes start below it -- not beside it. The rows
+     and columns a terminal is told about are measured off its own pane's body,
+     so moving the panes down is the whole of making room: every pane shrinks
+     by exactly the bar's height, on the window and the phone alike, and
+     nothing has to be told the number twice */
+  #strip { position:absolute; left:0; right:0; top:0; height:32px; z-index:2;
+    display:flex; align-items:stretch; gap:0;
+    background:var(--panel); border-bottom:1px solid var(--line); overflow-x:auto;
+    scrollbar-width:none; }
+  #strip::-webkit-scrollbar { display:none; }
+  #strip .stab { display:flex; align-items:center; gap:var(--s2); flex:0 0 auto;
+    max-width:220px; padding:0 var(--s3); cursor:pointer; color:var(--muted);
+    border-right:1px solid var(--line); border-bottom:2px solid transparent; }
+  #strip .stab:hover { background:var(--hover); }
+  #strip .stab.sel { color:var(--text); background:var(--bg);
+    border-bottom-color:var(--brand); }
+  #strip .stab .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #strip .snew { flex:0 0 auto; padding:0 var(--s3); display:flex; align-items:center;
+    color:var(--dim); cursor:pointer; }
+  #strip .snew:hover { color:var(--text); background:var(--hover); }
+  /* Which repository a folder belongs to. A label, not a state, so it is worn
+     the way the branch beside it is: quiet, and never in a state's colour */
+  .tab.folder .proj { flex:none; padding:0 5px; border-radius:var(--r-chip);
+    background:var(--panel2); color:var(--muted); font-size:11px;
+    max-width:96px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* The grouping chooser, and the headings it produces */
   .axis { display:flex; gap:var(--s1); padding:2px 10px 4px; }
   .axis .ax { padding:1px 6px; border-radius:var(--r-chip); color:var(--dim);
@@ -436,10 +466,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      top) and would otherwise need its own arithmetic. Undivided they are all
      zero, which is exactly what these rules hard-coded before panes existed. */
   #main { position:relative; overflow:hidden;
-    --fx:0px; --fy:0px; --fr:0px; --fb:0px; --navh:0px; --askh:0px; }
+    --fx:0px; --fy:0px; --fr:0px; --fb:0px; --navh:0px; --askh:0px; --striph:0px; }
   /* The panes themselves. Only the ones that aren't focused draw anything here
      — the focused pane's rectangle is filled by the full renderer above. */
-  #panes { position:absolute; inset:0; }
+  #panes { position:absolute; inset:0; top:var(--striph, 0px); }
   .pane { position:absolute; overflow:hidden; background:var(--bg); }
   .pane.focused { pointer-events:none; }
   .pane .phead { pointer-events:auto; display:none; align-items:center; gap:var(--s2);
@@ -1738,6 +1768,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <!-- The tab bar's edge, as something you can take hold of -->
   <div id="tabgrip"></div>
   <div id="main">
+    <div id="strip" hidden></div>
     <div id="panes"></div>
     <div id="pushbar" hidden></div>
     <div id="nav" hidden></div>
@@ -2212,7 +2243,7 @@ function drawTabs() {
     const kin = axis === "none" && housed(g), top = axis === "none" && heads(g);
     if (kin && folded.has("kin:" + g.family)) continue;
     if (g.empty) { into.append(emptyRow(g)); continue; }
-    into.append(folderRow(g, kinOf(g), top, inside[gi]));
+    into.append(folderRow(g, kinOf(g), top, inside[gi], folders));
     // Its tabs are hidden while it is folded, and the heading says so
     if (folded.has(g.folder)) continue;
     const mine = inside[gi];
@@ -2357,7 +2388,18 @@ function drawCoach() {
 // which project, the shape is whether this is the project's own folder or a
 // branch of it. The head of a household also says which branch the project
 // itself is standing on, and how many branches hang under it
-function folderRow(g, kin, head, mine) {
+// Which project a folder belongs to, said the way the list can work it out:
+// the folder of the checkout it shares a repository with. The settings can
+// name a project outright, and once that name reaches this page it belongs
+// here -- until then this is the answer the household box is already drawn
+// from, so the pill and the box can never disagree
+function projectOf(g, folders) {
+  if (!g.family) return null;
+  const head = (folders || []).find(o => o.family === g.family && !o.linked);
+  return head && head !== g ? (head.name || null) : null;
+}
+
+function folderRow(g, kin, head, mine, folders) {
   const shut = folded.has(g.folder);
   const chip = g.linked ? cutMark() : el("span", {class:"chip"});
   if (g.color) {
@@ -2385,7 +2427,14 @@ function folderRow(g, kin, head, mine) {
       .reduce((a, b) => a.map((v, i) => Math.max(v, b[i] || 0)),
               new Array(10).fill(0))));
   }
-  if (head && g.branch) {
+  // Which repository, and where in it. Each half only when it is not already
+  // on the row: a worktree folder is named after its branch unless somebody
+  // renamed it, and a project's own folder is usually named after the project
+  const proj = projectOf(g, folders);
+  if (proj && proj !== g.name) {
+    row.append(el("span", {class:"proj", title:T["tui.folder.project.title"] || ""}, proj));
+  }
+  if (g.branch && g.branch !== g.name) {
     row.append(el("span", {class:"on", title:T["tui.folder.on.title"] || ""}, g.branch));
   }
   if (head) {
@@ -3196,6 +3245,51 @@ function cutMark() {
   return s;
 }
 
+// The tabs of the folder being looked at, drawn along the top of it.
+//
+// Only the folder's own: a strip listing every tab on the board would be the
+// sidebar again, laid sideways and without room for the names. A tab that is
+// in no folder (a browser) stands alone, which is what it is.
+//
+// There is no close control here. Closing is a thing the app has one way of
+// doing -- the pane's own -- and a second way that looks the same but goes
+// somewhere else is how a person ends up shutting the wrong thing
+function drawStrip() {
+  const strip = document.getElementById("strip");
+  if (!strip) return;
+  const was = strip.hidden;
+  const active = (S.tabs || []).find(t => t.index === S.active && !t.settings);
+  const mine = !active ? []
+    : (active.group != null
+        ? (S.tabs || []).filter(t => !t.settings && t.group === active.group)
+        : [active]);
+  // Nothing to switch between and nothing to add to: a bar that says only
+  // what the pane below it already says is a row of pixels spent on nothing
+  strip.hidden = !active || S.board;
+  strip.textContent = "";
+  if (strip.hidden) {
+    if (was !== strip.hidden) layout();
+    return;
+  }
+  for (const t of mine) {
+    strip.append(el("div", {class:"stab" + (t.index === S.active ? " sel" : ""),
+        title:t.profile || "", onclick:() => send({kind:"select", tab:t.index})},
+      el("span", {class:"dot " + t.state}),
+      t.ai ? aiMark(t.ai) : null,
+      el("span", {class:"nm"}, t.name || "")));
+  }
+  // The same road the sidebar's + takes: from a phone it walks to the settings
+  // page, because the window's own way of opening them is refused from afar
+  // and would do nothing at all. And it carries which folder it was asked
+  // from, or the form adds the tab to the first one instead of this one
+  const g = active.group != null ? (S.groups || [])[active.group] : null;
+  strip.append(el("div", {class:"snew", title:T["tui.pane.add"] || "",
+      onclick:() => addTabHere(g)}, "+"));
+  // Appearing and disappearing changes how tall every pane is, and a terminal
+  // told the wrong height reflows somebody's whole interface
+  if (was !== strip.hidden) layout();
+}
+
 // How the folder list is broken up. One of "none", "state", "project".
 //
 // A view preference, so it is kept where the person looking is rather than in
@@ -3913,6 +4007,11 @@ function layout() {
   // layer by hand: with panes, "the top of the screen" is no longer the top of
   // the window, and two layers being told different tops is how they drift
   const main = document.getElementById("main");
+  // The tabs of the folder in front, out of the top of the whole content area
+  // rather than of one pane: they belong to the folder, and the folder is what
+  // every pane in it is showing a piece of
+  const strip = document.getElementById("strip");
+  main.style.setProperty("--striph", (!strip || strip.hidden) ? "0px" : "32px");
   main.style.setProperty("--navh", n.hidden ? "0px" : "36px");
   // ...and the bar asking the person something, out of the bottom
   main.style.setProperty("--askh", a.hidden ? "0px" : "44px");
@@ -3952,6 +4051,7 @@ window.__state = function (json) {
   syncPen();
   drawTitle();
   drawTabs();
+  drawStrip();
   drawStatus();
   drawNav();
   drawAsks();
@@ -10075,6 +10175,32 @@ mod tests {
             PAGE.contains(r#"if (armedPane === cls + p.id || (t && t.state === "EXIT"))"#),
             "動いているペインを一押しで落とせてしまう"
         );
+    }
+
+    /// The bar of tabs takes its height out of the panes, not out of nothing.
+    ///
+    /// A terminal is told how many rows it has by measuring its own pane's
+    /// body, so a bar drawn over the panes rather than above them would leave
+    /// every one of them claiming a height it no longer has -- the bottom rows
+    /// of somebody's conversation under an opaque strip, on every surface at
+    /// once. Reserving it from `#panes` is what makes the arithmetic happen
+    /// once, in the one place that already does it.
+    #[test]
+    fn the_bar_of_tabs_makes_room_for_itself() {
+        assert!(
+            PAGE.contains("#panes { position:absolute; inset:0; top:var(--striph, 0px); }"),
+            "帯のぶんペインが下がっていない"
+        );
+        assert!(
+            PAGE.contains(r#"main.style.setProperty("--striph", (!strip || strip.hidden) ? "0px" : "32px");"#),
+            "帯の高さが場所を取っていない"
+        );
+        // Appearing or disappearing changes every pane's height, so the
+        // measurement has to follow it rather than wait for a window resize
+        assert!(PAGE.contains("if (was !== strip.hidden) layout();"), "出入りで測り直していない");
+        // And it obeys the two heights a pressable thing is allowed
+        assert!(PAGE.contains("#strip { position:absolute; left:0; right:0; top:0; height:32px;"),
+                "帯の高さが規約の2つ (36px / 32px) のどちらでもない");
     }
 
     /// Every AI this app can name has a mark, and none of them is a logo.
