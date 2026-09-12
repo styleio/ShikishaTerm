@@ -78,12 +78,27 @@ fn clip(text: &str, max: usize) -> String {
     text.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
 }
 
+/// Where the workspace on screen is allowed to send, and where it sends when
+/// nobody named a destination.
+///
+/// One answer, settled at launch by [`crate::config::Config::resolve_workspaces`]
+/// and swapped when the workspace changes. Nothing here knows whether the
+/// workspace said it or the app did
+#[derive(Default)]
+struct Reach {
+    /// The names that can be reached, or `None` for every registered one
+    only: Option<Vec<String>>,
+    /// The destination an unnamed `notify(text)` reaches. With exactly one
+    /// destination reachable, that one stands in when none was chosen
+    primary: Option<String>,
+}
+
 pub struct Notifier {
     dests: HashMap<String, Destination>,
-    /// The destination an unnamed `notify(text)` reaches (config's
-    /// primary_notify). With exactly one destination configured, that one
-    /// stands in when no primary was chosen
-    primary: Option<String>,
+    /// Swapped on a workspace switch, so it sits behind a cell: everything
+    /// holds the notifier by reference, and a send and a switch never happen
+    /// at the same moment
+    reach: std::cell::RefCell<Reach>,
     /// Sending happens on a separate thread, so it doesn't block the UI.
     /// The name travels with it: a failure that cannot say which destination
     /// failed is a failure nobody can act on.
@@ -100,7 +115,41 @@ impl Notifier {
                 }
             }
         });
-        Self { dests, primary, tx }
+        Self {
+            dests,
+            reach: std::cell::RefCell::new(Reach { only: None, primary }),
+            tx,
+        }
+    }
+
+    /// Point it at the workspace now on screen.
+    ///
+    /// Called on every switch, with that workspace's settled answer. Until this
+    /// existed there was one destination list for the whole app, so the AI in
+    /// the work workspace and the AI in the personal one finished their tasks
+    /// into the same chat -- and which chat it was depended on nothing a person
+    /// could see from where they were working
+    pub fn scope_to(&self, only: Option<Vec<String>>, primary: Option<String>) {
+        *self.reach.borrow_mut() = Reach { only, primary };
+    }
+
+    /// Whether this workspace can reach a destination at all. A name nobody
+    /// registered is not reachable either, and is reported as unknown
+    fn reachable(&self, name: &str) -> bool {
+        self.dests.contains_key(name)
+            && self
+                .reach
+                .borrow()
+                .only
+                .as_ref()
+                .is_none_or(|l| l.iter().any(|n| n == name))
+    }
+
+    /// The destinations this workspace can reach, in name order
+    fn reaching(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.dests.keys().filter(|n| self.reachable(n)).cloned().collect();
+        names.sort();
+        names
     }
 
     /// Send to a named destination, or — with `None` — to the primary.
@@ -108,10 +157,11 @@ impl Notifier {
     pub fn send_opt(&self, name: Option<&str>, text: &str) -> String {
         let resolved = name
             .map(str::to_string)
-            .or_else(|| self.primary.clone())
+            .or_else(|| self.reach.borrow().primary.clone())
             .or_else(|| {
-                // A single configured destination is unambiguous
-                (self.dests.len() == 1).then(|| self.dests.keys().next().unwrap().clone())
+                // A single reachable destination is unambiguous
+                let mut reaching = self.reaching();
+                (reaching.len() == 1).then(|| reaching.remove(0))
             });
         match resolved {
             Some(n) => self.send(&n, text),
@@ -119,18 +169,21 @@ impl Notifier {
         }
     }
 
+    /// Whether this workspace has anywhere to send at all
     pub fn is_empty(&self) -> bool {
-        self.dests.is_empty()
+        self.reaching().is_empty()
     }
 
-    /// Send to every registered destination (for connectivity testing).
+    /// Send to every destination this workspace can reach (for connectivity
+    /// testing). The test button is answering "does a message from here
+    /// arrive", so it sends exactly where work from here would
     pub fn send_all(&self, text: &str) -> String {
-        let mut names: Vec<&str> = Vec::new();
-        for (name, dest) in &self.dests {
-            let _ = self.tx.send((name.clone(), dest.clone(), text.to_string(), None));
-            names.push(name);
+        let names = self.reaching();
+        for name in &names {
+            if let Some(dest) = self.dests.get(name) {
+                let _ = self.tx.send((name.clone(), dest.clone(), text.to_string(), None));
+            }
         }
-        names.sort_unstable();
         crate::i18n::tp("err.notify.test_sent", &[("names", &names.join(", "))])
     }
 
@@ -147,6 +200,13 @@ impl Notifier {
     /// saves the search that the notification was supposed to spare. A chat
     /// app gets a link or nothing, and neither of those is a tab number.
     pub fn send_about(&self, name: &str, text: &str, tab: Option<usize>) -> String {
+        // Registered, but not from here. Said as its own sentence rather than
+        // as "no such destination": the name is spelled right and the
+        // destination does exist, and a person told otherwise would go looking
+        // for a typo that is not there
+        if self.dests.contains_key(name) && !self.reachable(name) {
+            return crate::i18n::tp("err.notify.not_reachable", &[("name", name)]);
+        }
         match self.dests.get(name) {
             Some(dest) => {
                 let _ = self.tx.send((name.to_string(), dest.clone(), text.to_string(), tab));
@@ -307,6 +367,48 @@ mod tests {
         .unwrap();
         let n = Notifier::new(one, None);
         assert!(n.send_opt(None, "hi").contains("NOTIFY[solo]"), "1件ならそれがプライマリ");
+    }
+
+    /// A workspace can only send where that workspace is allowed to send.
+    ///
+    /// The accident this prevents is not a mistake in the script: the
+    /// destinations are registered once for the whole app, so automation
+    /// written for work, running in the work workspace, could name the personal
+    /// chat and be obeyed. With a line drawn, it is refused -- and told that it
+    /// was refused from here, rather than that the name does not exist
+    #[test]
+    fn a_workspace_only_reaches_its_own_destinations() {
+        let two: HashMap<String, Destination> = serde_json::from_str(
+            r#"{"work":{"type":"slack","webhook":"https://example.com/a"},
+                "mine":{"type":"slack","webhook":"https://example.com/b"}}"#,
+        )
+        .unwrap();
+        let n = Notifier::new(two, Some("mine".into()));
+        // Before anybody draws a line, the app's answer is the answer
+        assert!(n.send_opt(None, "hi").contains("NOTIFY[mine]"));
+        assert!(n.send("work", "hi").contains("NOTIFY[work]"));
+
+        // The work workspace: its own default, and the personal chat out of reach
+        n.scope_to(Some(vec!["work".into()]), Some("work".into()));
+        assert!(n.send_opt(None, "hi").contains("NOTIFY[work]"), "この環境の既定に行かない");
+        let said = n.send("mine", "hi");
+        assert!(!said.contains("NOTIFY["), "他の環境の宛先に送れてしまう");
+        assert!(said.contains("mine"), "どの宛先のことか言っていない: {said}");
+        assert!(!said.contains("not registered"), "存在しないと言ってはいけない: {said}");
+        // What the test button sends, and whether there is anywhere to send
+        assert!(!n.is_empty());
+        let sent = n.send_all("test");
+        assert!(sent.contains("work") && !sent.contains("mine"), "テスト送信が外へ漏れる: {sent}");
+
+        // A workspace with nothing it can reach says so, rather than falling
+        // back to the app's destination
+        n.scope_to(Some(Vec::new()), None);
+        assert!(n.is_empty(), "送れないのに送れると言っている");
+        assert!(!n.send_opt(None, "hi").contains("NOTIFY["));
+
+        // One reachable destination and no default named is unambiguous
+        n.scope_to(Some(vec!["work".into()]), None);
+        assert!(n.send_opt(None, "hi").contains("NOTIFY[work]"));
     }
 
     #[test]

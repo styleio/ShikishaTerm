@@ -554,6 +554,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         None => notify::Notifier::new(Default::default(), None),
     };
+    // Where a message from the workspace being opened goes. Settled already, so
+    // this hands over one answer and the notifier never learns there were two
+    if let Some(w) = workspaces.get(ws_index) {
+        notifier.scope_to(w.notify.clone(), w.primary_notify.clone());
+    }
     // Names inside the secrets file changed shape; a file written by an
     // earlier version is brought forward here rather than in the ordinary
     // migration steps, because those run before anyone has said the master
@@ -1099,6 +1104,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     startup_errors.push(e);
                 }
                 notifier = notify::Notifier::new(dests, newcfg.primary_notify.clone());
+                // Saving the settings can change where this workspace sends, so
+                // the workspace on screen says so again on the way out
+                if let Some(w) = workspaces.get(ws_index) {
+                    notifier.scope_to(w.notify.clone(), w.primary_notify.clone());
+                }
                 // Only swap out the parts that come from config. Rebuilding it
                 // entirely would leave nobody aware of pages already placed in the
                 // window, so they'd stay stuck on screen with no way to remove them
@@ -4501,6 +4511,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     &mut engine,
                                     &mut engines,
                                     &caps,
+                                    &notifier,
                                     &last_session,
                                 );
                             }
@@ -4642,6 +4653,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     &mut engine,
                                     &mut engines,
                                     &caps,
+                                    &notifier,
                                     &last_session,
                                 );
                                 settings_open = false;
@@ -8096,6 +8108,7 @@ mod tests {
             secrets_allow_all: false,
             stops: Vec::new(),
             discuss: None,
+            ..Default::default()
         }
     }
 
