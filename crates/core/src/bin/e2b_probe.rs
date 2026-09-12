@@ -1,11 +1,11 @@
-//! Does a terminal in a sandbox actually work?
+//! Do a terminal and files in a sandbox actually work?
 //!
 //! Run by hand, against the real service, because that is the only thing that
-//! can answer it: the unit tests prove the frames are read correctly, and
-//! nothing in a unit test can prove the far end answers the way the schema
-//! says it does.
+//! can answer it: the unit tests prove the frames are read correctly and the
+//! dates are read correctly, and nothing in a unit test can prove the far end
+//! answers the way the schema says it does.
 //!
-//! One sandbox, one terminal, and it is killed on the way out -- a sandbox
+//! One sandbox for both halves, and it is killed on the way out -- a sandbox
 //! costs money for as long as it is alive, so this is written to be run
 //! sparingly and to clean up after itself even when it fails.
 //!
@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 
 fn main() {
     match probe() {
-        Ok(()) => println!("\n-- the terminal in the sandbox works --"),
+        Ok(()) => println!("\n-- the terminal and the files in the sandbox both work --"),
         Err(e) => {
             eprintln!("\n-- it does not: {e} --");
             std::process::exit(1);
@@ -32,11 +32,109 @@ fn probe() -> anyhow::Result<()> {
     println!("  got {}", sandbox.id);
 
     // Whatever happens from here, the machine is killed before this returns
-    let out = run_on(&sandbox);
+    let out = run_on(&sandbox).and_then(|()| files_on(&sandbox));
     println!("killing it...");
     let killed = shikisha_core::e2b::kill(&key, &sandbox.id);
     out?;
     killed?;
+    Ok(())
+}
+
+/// The other half: the file panel's jobs, every one of them, in the one
+/// sandbox that is already running.
+fn files_on(sandbox: &shikisha_core::e2b::Sandbox) -> anyhow::Result<()> {
+    use shikisha_core::ssh::{FileAnswer, FileJob};
+    const WAIT: u64 = 30_000;
+    let go = |job: FileJob| shikisha_core::e2b::files(sandbox, job, WAIT);
+
+    println!("\nmaking a folder...");
+    go(FileJob::MakeDir { path: "/home/user/probe".into() })?;
+
+    // Bytes that are not text, because text would pass through a wire that
+    // mangles bytes and tell us nothing
+    let payload: Vec<u8> = (0u32..4096).map(|i| (i.wrapping_mul(31) % 256) as u8).collect();
+    let here = std::env::temp_dir().join("shikisha-e2b-probe.bin");
+    std::fs::write(&here, &payload)?;
+
+    println!("sending a file...");
+    go(FileJob::Put {
+        from: here.clone(),
+        to: "/home/user/probe/thing.bin".into(),
+        overwrite: true,
+    })?;
+
+    println!("asking about it...");
+    match go(FileJob::Stat { path: "/home/user/probe/thing.bin".into() })? {
+        FileAnswer::One(e) => {
+            println!("  {} {} bytes, dir={}, modified={}", e.name, e.size, e.dir, e.modified);
+            if e.size != payload.len() as u64 {
+                anyhow::bail!("the size came back wrong: {} not {}", e.size, payload.len());
+            }
+            if e.dir {
+                anyhow::bail!("a file came back as a folder");
+            }
+            // A time of zero means the date never parsed. Anything after 2020
+            // proves it did
+            if e.modified < 1_577_836_800 {
+                anyhow::bail!("the time did not parse: {}", e.modified);
+            }
+        }
+        other => anyhow::bail!("stat answered with {other:?}"),
+    }
+
+    println!("listing the folder...");
+    match go(FileJob::List { path: "/home/user/probe".into() })? {
+        FileAnswer::Listing(rows) => {
+            for e in &rows {
+                println!("  {}{}  {} bytes", e.name, if e.dir { "/" } else { "" }, e.size);
+            }
+            if !rows.iter().any(|e| e.name == "thing.bin") {
+                anyhow::bail!("the file we just sent is not in the listing");
+            }
+        }
+        other => anyhow::bail!("list answered with {other:?}"),
+    }
+
+    println!("bringing it back...");
+    let back = std::env::temp_dir().join("shikisha-e2b-probe-back.bin");
+    let _ = std::fs::remove_file(&back);
+    go(FileJob::Get { from: "/home/user/probe/thing.bin".into(), to: back.clone() })?;
+    let returned = std::fs::read(&back)?;
+    if returned != payload {
+        anyhow::bail!("what came back is not what went out: {} bytes vs {}", returned.len(), payload.len());
+    }
+    println!("  byte for byte the same");
+
+    println!("refusing to overwrite...");
+    match go(FileJob::Put {
+        from: here.clone(),
+        to: "/home/user/probe/thing.bin".into(),
+        overwrite: false,
+    }) {
+        Err(e) => println!("  refused, as it should: {e}"),
+        Ok(_) => anyhow::bail!("it overwrote a file it was told not to"),
+    }
+
+    println!("renaming...");
+    go(FileJob::Rename {
+        from: "/home/user/probe/thing.bin".into(),
+        to: "/home/user/probe/other.bin".into(),
+    })?;
+    if go(FileJob::Stat { path: "/home/user/probe/thing.bin".into() }).is_ok() {
+        anyhow::bail!("the old name still answers");
+    }
+
+    println!("removing...");
+    go(FileJob::Remove { path: "/home/user/probe/other.bin".into() })?;
+    go(FileJob::Remove { path: "/home/user/probe".into() })?;
+    match go(FileJob::List { path: "/home/user/probe".into() }) {
+        Err(_) => println!("  the folder is gone"),
+        Ok(FileAnswer::Listing(rows)) if rows.is_empty() => println!("  the folder is empty"),
+        Ok(other) => anyhow::bail!("it is still there: {other:?}"),
+    }
+
+    let _ = std::fs::remove_file(&here);
+    let _ = std::fs::remove_file(&back);
     Ok(())
 }
 

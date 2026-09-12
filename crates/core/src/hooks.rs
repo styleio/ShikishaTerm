@@ -459,7 +459,7 @@ fn remote_of(
     places: &RefCell<Vec<TabPlace>>,
     origin: &Cell<usize>,
     tab: &Value,
-) -> mlua::Result<crate::ssh::Spec> {
+) -> mlua::Result<crate::elsewhere::Elsewhere> {
     let list = places.borrow();
     let index = match tab {
         Value::Nil => origin.get(),
@@ -972,7 +972,7 @@ pub struct TabPlace {
     pub dir: std::path::PathBuf,
     /// The machine it is on, for a tab whose terminal is not on this one. The
     /// file commands are told a tab and reach this
-    pub remote: Option<crate::ssh::Spec>,
+    pub remote: Option<crate::elsewhere::Elsewhere>,
     /// The branches this folder guards, already settled by the settings
     pub protect: Vec<String>,
 }
@@ -2777,8 +2777,8 @@ impl HookEngine {
                 Ok(row)
             };
             let job = move |tab: &Value, job: crate::ssh::FileJob| {
-                let spec = remote_of(&places, &origin, tab)?;
-                crate::ssh::files(&spec, job, FILE_WAIT_MS)
+                let at = remote_of(&places, &origin, tab)?;
+                crate::elsewhere::files(&at, job, FILE_WAIT_MS)
                     .map_err(|e| mlua::Error::runtime(e.to_string()))
             };
             let job = Rc::new(job);

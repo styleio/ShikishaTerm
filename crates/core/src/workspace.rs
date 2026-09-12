@@ -41,10 +41,10 @@ pub fn panel_places(surfaces: &[Surface]) -> Vec<hooks::TabPlace> {
             // A file panel is. `sftp_put("その呼び名", …)` reaches the same
             // server the screen is showing, which is the whole point of the
             // panel being a tab rather than a window of its own
-            Surface::Sftp { key, dir, spec, .. } => Some(hooks::TabPlace {
+            Surface::Sftp { key, dir, at, .. } => Some(hooks::TabPlace {
                 key: hooks::TabKey { id: Some(key.clone()) },
                 dir: dir.clone().unwrap_or_default(),
-                remote: spec.clone(),
+                remote: at.clone(),
                 protect: Vec::new(),
             }),
             _ => None,
