@@ -83,7 +83,28 @@ pub fn plan(main: &Path, branch: &str, base: Option<&str>) -> Result<Plan> {
         Some(b) => b.to_string(),
         None => default_base(&main),
     };
-    Ok(Plan { folder: folder_for(&main, &branch), main, branch, base, fresh })
+    let folder = folder_for(&main, &branch);
+    // Said now rather than when the button is pressed. Every branch of every
+    // project shares one place, so the name that is free here can be a folder
+    // somebody else's project is already standing in -- and a path that is on
+    // screen looking fine until you press it is the worst way to find out
+    free_to_make(&folder)?;
+    Ok(Plan { folder, main, branch, base, fresh })
+}
+
+/// Whether a folder can be made here, in the words the person will read.
+///
+/// Asked twice on purpose: once while the name is being typed, and again by
+/// the one that actually makes it -- between those two a folder can appear,
+/// and the second asking is the one that is true
+fn free_to_make(folder: &Path) -> Result<()> {
+    match folder.exists() {
+        true => bail!(crate::i18n::tp(
+            "err.worktree.exists",
+            &[("path", &folder.display().to_string())]
+        )),
+        false => Ok(()),
+    }
 }
 
 /// Makes the folder, and remembers what it was cut from.
@@ -92,12 +113,7 @@ pub fn plan(main: &Path, branch: &str, base: Option<&str>) -> Result<Plan> {
 /// branch grew from is a fact about the branch, and one that outlives this app
 /// being installed
 pub fn create(plan: &Plan) -> Result<()> {
-    if plan.folder.exists() {
-        bail!(crate::i18n::tp(
-            "err.worktree.exists",
-            &[("path", &plan.folder.display().to_string())]
-        ));
-    }
+    free_to_make(&plan.folder)?;
     if let Some(parent) = plan.folder.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -503,9 +519,10 @@ pub fn ready_to_discard(folder: &Path) -> Result<()> {
 /// editor's file tree, in backups, and in whatever the person had pointed at
 /// the folder that project lives in.
 ///
-/// Two things send it somewhere else instead: a home folder that cannot be
-/// written to, and one that is being synced to the cloud, where every branch
-/// would be uploaded in full.
+/// Three things send it somewhere else instead: a home folder that cannot be
+/// written to, one that is being synced to the cloud, where every branch would
+/// be uploaded in full, and one long enough that what lands inside the folder
+/// would not fit.
 pub fn folder_for(main: &Path, branch: &str) -> PathBuf {
     let name = main
         .file_name()
@@ -514,7 +531,26 @@ pub fn folder_for(main: &Path, branch: &str) -> PathBuf {
     // The branch's own shape is kept: `feature/login` is two folders, which is
     // what makes it impossible for two branches to want one folder
     let leaf: PathBuf = branch.split('/').filter(|s| !s.is_empty()).collect();
-    branches_root().join(&name).join(&leaf)
+    let at = branches_root().join(&name).join(&leaf);
+    match short_enough(&at) {
+        true => at,
+        // Ours, per machine, which is as short as this program can offer
+        false => away_from_home().join(&name).join(&leaf),
+    }
+}
+
+/// Whether a whole source tree will fit under this folder.
+///
+/// Windows stops most programs at 260 characters, and the number that matters
+/// is not this folder's -- it is this folder plus the longest path inside it,
+/// which nobody can know. So the folder is held well short, and what is left
+/// is for the project's own files.
+///
+/// Measured, not guessed at: a home folder 186 characters long put this folder
+/// at 225 and git could not make it, while the same branch under a short home
+/// was fine. The limit below is the one this app has always used
+fn short_enough(at: &Path) -> bool {
+    at.display().to_string().chars().count() < 180
 }
 
 /// The one place branches live, worked out once.
@@ -708,14 +744,17 @@ pub fn suggest(main: &Path) -> String {
     // across a room. An adjective and a noun -- never a real person's surname,
     // which a random adjective in front of it is one draw away from insulting
     //
-    // Only the branch names are consulted: working out where each folder would
-    // go asks the disk whether it can be written to, and asking that a hundred
-    // times to think of a name would be a folder full of probes and a slow
-    // dialog. A name whose folder is somehow already there is refused later,
-    // by the one that actually makes it
+    // A name has to clear two things, not one. The branch is this
+    // repository's own business, but the folder is shared with every other
+    // project -- two projects whose folders are both called `api` are handed
+    // the same place, and a name free in one of them can be taken in the
+    // other. Asking costs a look at the disk per draw, which is affordable
+    // now that working out where a folder goes is arithmetic on a path and
+    // no longer a probe
+    let free = |name: &str| !branch_exists(main, name) && !folder_for(main, name).exists();
     for _ in 0..20 {
         match petname::petname(2, "-") {
-            Some(name) if !branch_exists(main, &name) => return name,
+            Some(name) if free(&name) => return name,
             // Drawn again: two draws can land on one name, and the list is
             // large enough that they rarely do twice
             Some(_) => continue,
@@ -726,7 +765,7 @@ pub fn suggest(main: &Path) -> String {
     // From two, because the checkout itself is the first piece of work
     for n in 2..200 {
         let name = format!("work-{n}");
-        if !branch_exists(main, &name) {
+        if free(&name) {
             return name;
         }
     }
@@ -851,6 +890,21 @@ mod tests {
         let at = folder_for(Path::new("Z:/nowhere/myproject"), "fix/crash");
         assert!(at.starts_with(branches_root()), "{at:?}");
         assert!(at.ends_with("fix/crash"));
+    }
+
+    /// A folder deep enough to break things is sent where it is shortest.
+    ///
+    /// Windows stops at 260 and what lands inside this folder counts too, so
+    /// the failure is not ours to report: git simply cannot make it. Measured
+    /// on this machine, a folder 225 characters long already could not be made
+    #[test]
+    fn a_path_too_long_to_hold_a_project_goes_somewhere_shorter() {
+        let main = repo("long");
+        let deep = "feature/".repeat(24) + "end";
+        let at = folder_for(&main, &deep);
+        assert!(at.starts_with(away_from_home()), "長すぎるのに逃がしていない: {at:?}");
+        // The short one is left where branches belong
+        assert!(folder_for(&main, "polite-marmot").starts_with(branches_root()));
     }
 
     /// The place itself is the person's own folder, unless it cannot be.
@@ -1050,7 +1104,12 @@ mod tests {
 
         // Asking for the same branch twice does not quietly make a second one
         assert!(create(&cut).is_err(), "同じ場所に二度作らない");
-        // And a branch that now exists is checked out rather than created
+        // Nor does it get as far as the button: a folder already standing there
+        // is said while the name is still being typed
+        assert!(plan(&main, "feature/login", None).is_err(), "押すまで分からない");
+        // With the folder gone, the branch that now exists is checked out
+        // rather than made again
+        crate::worktree::discard(made).expect("片付く");
         let again = plan(&main, "feature/login", None).unwrap();
         assert!(!again.fresh, "既にある枝は作り直さない");
 
