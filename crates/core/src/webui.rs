@@ -2873,6 +2873,11 @@ const PAGE: &str = r##"<!doctype html>
  /* A dialog built as header / body / footer keeps its title and its way out
     in the same place whatever is between them */
  .modal-inner.framed { padding:0; }
+ dialog.confirm-box { color:var(--text); margin:56px auto;
+   width:min(560px, calc(100% - 2 * var(--s4))); max-height:calc(100% - 2 * var(--s7)); overflow:auto; }
+ dialog.confirm-box::backdrop { background:rgba(0,0,0,.6); }
+ .confirm-box .mbody { white-space:pre-wrap; overflow-wrap:anywhere; }
+ .confirm-box > .mfoot { justify-content:flex-end; }
  .framed > .mhead { display:flex; align-items:center; gap:var(--s3);
    padding:var(--s4) var(--s5); border-bottom:1px solid var(--line); }
  .framed > .mhead h2 { flex:1; margin:0; font-size:13.5px; font-weight:600; }
@@ -4024,6 +4029,48 @@ function openModal(...kids) {
   return back;
 }
 
+// Child pages automatically answer native JavaScript dialogs for browser
+// automation. Settings decisions must remain on the page until a person acts.
+// A modal dialog also makes an editor underneath inert and traps keyboard focus.
+let confirming = false;
+function confirmAction(message, action) {
+  if (confirming) return Promise.resolve(false);
+  confirming = true;
+  const previous = document.activeElement;
+  return new Promise(resolve => {
+    const finish = answer => {
+      dialog.close(); dialog.remove(); confirming = false;
+      if (previous && previous.isConnected) previous.focus();
+      resolve(answer);
+    };
+    const accept = el("button", {class:"primary", onclick:() => finish(true)}, action);
+    const dialog = el("dialog", {class:"modal-inner framed confirm-box",
+      "aria-labelledby":"confirm-title", "aria-describedby":"confirm-message"},
+      el("div", {class:"mhead"},
+        el("h2", {id:"confirm-title"}, T["settings.confirm.title"]),
+        el("button", {class:"quiet icon", title:T["common.close"],
+          "aria-label":T["common.close"], onclick:() => finish(false)}, "✕")),
+      el("div", {class:"mbody", id:"confirm-message"}, message),
+      el("div", {class:"mfoot"},
+        el("button", {class:"quiet", onclick:() => finish(false)}, T["common.cancel"]), accept));
+    dialog.addEventListener("cancel", e => { e.preventDefault(); finish(false); });
+    dialog.addEventListener("keydown", e => {
+      if (e.key !== "Tab") return;
+      e.preventDefault();
+      const buttons = [...dialog.querySelectorAll("button")];
+      const at = buttons.indexOf(document.activeElement);
+      buttons[(at + (e.shiftKey ? -1 : 1) + buttons.length) % buttons.length].focus();
+    });
+    dialog.addEventListener("mousedown", e => {
+      const r = dialog.getBoundingClientRect();
+      if (e.target === dialog && (e.clientX < r.left || e.clientX > r.right ||
+          e.clientY < r.top || e.clientY > r.bottom)) finish(false);
+    });
+    document.body.append(dialog);
+    dialog.showModal(); accept.focus();
+  });
+}
+
 // AIs selectable as a participant = interactive AI CLIs + registered model connections
 function aiChoices() {
   const cli = [
@@ -4794,7 +4841,7 @@ function filesCard() {
       el("span", {class:"hint warn"}, fill(T["settings.secrets.orphans"], {n: list.length})),
       el("button", {onclick: async () => {
         const lines = list.join(String.fromCharCode(10));
-        if (!confirm(fill(T["settings.secrets.orphans_confirm"], {list: lines}))) return;
+        if (!await confirmAction(fill(T["settings.secrets.orphans_confirm"], {list: lines}), T["settings.secrets.orphans_clean"])) return;
         await dropSecrets(list);
         toast(fill(T["settings.secrets.orphans_done"], {n: list.length}));
         lookForOrphans();
@@ -5199,7 +5246,7 @@ function providerDialog(name, redraw) {
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {
-            if (!confirm(fill(T["settings.providers.delete_confirm"], {name}))) return;
+            if (!await confirmAction(fill(T["settings.providers.delete_confirm"], {name}), T["settings.providers.delete"])) return;
             // Its key goes with it. Nothing else names that secret, and there
             // is no screen of leftovers to tidy it away from later
             if ((p.api_key || "").startsWith("@")) await deleteSecret(p.api_key.slice(1));
@@ -5752,7 +5799,7 @@ function chatDialog(name, redraw) {
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {
-            if (!confirm(fill(T["settings.notify.delete_confirm"], {name}))) return;
+            if (!await confirmAction(fill(T["settings.notify.delete_confirm"], {name}), T["settings.notify.delete"])) return;
             await dropSecretRef(d.token);
             await dropSecretRef(d.webhook);
             delete current.notify[name];
@@ -6266,7 +6313,7 @@ function remoteCard() {
       // beside each is a screen where the safe move is to press nothing
       const drop = el("button", {class:"danger", onclick: async () => {
         const called = name.value.trim() || (T["settings.phone.device.unnamed"] || "");
-        if (!confirm(fill(T["settings.phone.device.confirm"], {name: called}))) return;
+        if (!await confirmAction(fill(T["settings.phone.device.confirm"], {name: called}), T["settings.phone.device.revoke"])) return;
         let ok = false;
         try {
           const r = await fetch("/api/remote/clients/revoke", {method:"POST",
@@ -6452,7 +6499,7 @@ function wsPane(ws) {
 
   box.append(el("div", {class:"row"},
     el("button", {class:"danger", onclick: async () => {
-      if (!confirm(fill(T["settings.workspace.delete_confirm"], {name: ws.name}))) return;
+      if (!await confirmAction(fill(T["settings.workspace.delete_confirm"], {name: ws.name}), T["settings.workspace.delete"])) return;
       // Everything filed under this workspace's name goes with it: what its
       // automation used, and what its server tabs signed in with. Said out
       // loud first, because a password cannot be got back
@@ -6463,7 +6510,7 @@ function wsPane(ws) {
           .map(s => s.key)
           .filter(k => k.startsWith(id + ".") || k.startsWith("ssh/" + id + "/"));
         if (mine.length &&
-            !confirm(fill(T["settings.workspace.delete_secrets"], {n: mine.length}))) return;
+            !await confirmAction(fill(T["settings.workspace.delete_secrets"], {n: mine.length}), T["settings.workspace.delete"])) return;
         await dropSecrets(mine);
       }
       wss.splice(sel.ws, 1); sel = {ws:0, tab:null, global:true}; render();
@@ -6577,7 +6624,7 @@ function folderPane(ws, g, gi) {
     if (!where || !where.cut) return;
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
-      if (!confirm(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}))) return;
+      if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
       const r = await fetch("/api/folder/discard",
         {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd})})
         .then(r => r.json()).catch(() => ({ok:false, error:""}));
@@ -6985,7 +7032,7 @@ function secretDialog(ws, have) {
     el("div", {class:"mfoot"},
       editing
         ? el("button", {class:"danger", onclick: async () => {
-            if (!confirm(fill(T["settings.secrets.delete_confirm"], {key: have.short}))) return;
+            if (!await confirmAction(fill(T["settings.secrets.delete_confirm"], {key: have.short}), T["common.delete"])) return;
             const r = await deleteSecret(have.key);
             if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: have.short})); shut(); loadWsSecrets(ws); }
             else toast(r.error || T["settings.secrets.delete_failed"], true);
@@ -7267,7 +7314,7 @@ function tabPane(ws, t) {
 
   box.append(el("div", {class:"row"},
     el("button", {class:"danger", onclick: async () => {
-      if (!confirm(fill(T["settings.tab.delete_confirm"], {name: t.name || T["settings.tab.unnamed"]}))) return;
+      if (!await confirmAction(fill(T["settings.tab.delete_confirm"], {name: t.name || T["settings.tab.unnamed"]}), T["settings.tab.delete"])) return;
       // The password this tab signs in with is this tab's, and nothing else
       // can name it once the tab is gone
       const w = (ws.id || "").trim(), tid = (t.id || "").trim();
@@ -8369,9 +8416,10 @@ function goIndex() {
 
 // Closes settings. Returns to the operating board (INDEX), folding the settings tab away and removing it from the list on the left too.
 // If there are unsaved changes, warns first that they'll be lost
-function closeSettings() {
+async function closeSettings() {
   // Nothing was loaded, so there is nothing to lose — don't ask.
-  if (!loadFailure && snapshot() !== savedSnapshot && !confirm(T["settings.back.confirm"])) return;
+  if (!loadFailure && snapshot() !== savedSnapshot &&
+      !await confirmAction(T["settings.back.confirm"], T["settings.back.discard"])) return;
   // In the window this rides the ipc bridge back to the board. On a phone (served
   // over the remote proxy) there is no bridge, so navigate to "/" — the shell,
   // which re-authenticates from its stored token. The unsaved-changes guard above

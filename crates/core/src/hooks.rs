@@ -6801,6 +6801,60 @@ mod tests {
     }
 
     #[test]
+    fn simultaneous_page_loads_keep_their_page_across_yields() {
+        let mut e = HookEngine::new().unwrap();
+        let script = e.load_source("pages", r#"
+function on_load(page)
+  shikisha.send_to_tab(page.id, "start:" .. page.url)
+  shikisha.sleep(0)
+  shikisha.send_to_tab(page.id, "awake:" .. page.url)
+  local ready = shikisha.wait(page, "ready", 10000)
+  assert(ready)
+  shikisha.send_to_tab(page.id, "done:" .. page.url)
+end
+"#).unwrap();
+        e.set_base(script);
+        let mut mail = crate::mailbox::Mailbox::default();
+        let mut surfaces = Vec::new();
+        for index in 1..=3 {
+            surfaces.push(crate::view::Surface::Browser {
+                key: format!("page{index}"), name: format!("Page {index}"),
+            });
+            // Both the local browser and the connected browser enter this
+            // queue. Draining a batch must preserve every page report.
+            mail.page_report(shikisha_shared::Ev::Ready {
+                from: Some(format!("page{index}")),
+                url: format!("https://example.com/{index}"),
+                complete: index != 2,
+            });
+        }
+        for (key, url, complete) in mail.take_loads() {
+            e.fire_page("on_load", &crate::runtime::page_ctx(&surfaces, &key, url, complete).unwrap());
+        }
+        assert!(mail.take_loads().is_empty());
+        assert_eq!(e.pending.len(), 3);
+        e.tick_pending(&|_| None);
+        assert_eq!(e.pending.len(), 3);
+        // Finish out of order, with an unrelated hook between resumes.
+        for index in [2, 1, 3] {
+            e.fire_action("shikisha.log('other')", &ctx(9, ""));
+            e.tick_pending(&|tab| (tab == index).then(|| "ready".to_string()));
+        }
+        assert!(e.pending.is_empty());
+        let commands = e.drain_commands();
+        let sent: Vec<_> = commands.iter().filter_map(|c| match c {
+            Command::SendPrompt { target, text, origin } => Some((target, text, *origin)),
+            Command::Log(m) if m == "other" => None,
+            other => panic!("unexpected command: {other:?}"),
+        }).collect();
+        assert_eq!(sent.len(), 9, "{commands:?}");
+        for (target, text, origin) in sent {
+            assert!(matches!(target, TabRef::Name(name) if name == &format!("page{origin}")));
+            assert!(text.ends_with(&format!("https://example.com/{origin}")), "{commands:?}");
+        }
+    }
+
+    #[test]
     fn scripts_share_vars_but_not_hook_names() {
         let mut e = HookEngine::new().unwrap();
         let a = e

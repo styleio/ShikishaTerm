@@ -5,6 +5,8 @@
   "common.save": "保存",
   "common.reload": "再読込",
   "common.cancel": "キャンセル",
+  "settings.confirm.title": "操作の確認",
+  "settings.back.discard": "変更を破棄して戻る",
   "common.close": "閉じる",
   "common.delete": "削除",
   "common.done": "完了",
