@@ -460,6 +460,12 @@ impl WinSurface {
         let _ = self.win.eval("window.__toggleTabBar && window.__toggleTabBar();");
     }
 
+    /// Bring the right-hand column out, or put it away. Same contract as the
+    /// tab bar: the page owns the width and answers with the new one
+    fn toggle_side_bar(&self) {
+        let _ = self.win.eval("window.__toggleSideBar && window.__toggleSideBar();");
+    }
+
 
     /// The pending "open settings" request (section, return-on-save, the
     /// working folder to land on), if any, clearing it.
@@ -627,6 +633,7 @@ impl WinSurface {
                 Ev::RestartPane { id, keep } => self.mail.restart_panes.push((id, keep)),
                 Ev::FontSize { px } => self.mail.font_size = Some(px),
                 Ev::TabWidth { px } => self.mail.tab_width = Some(px),
+                Ev::SideWidth { px } => self.mail.side_width = Some(px),
                 Ev::JsError { msg } => {
                     shikisha_core::append_hook_log(&format!("Screen failure: {msg}"));
                 }
@@ -1828,6 +1835,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn queue_input(&mut self, ev: Event) { WinSurface::queue_input(self, ev) }
     fn inject(&mut self, ev: Event) { WinSurface::inject(self, ev) }
     fn toggle_tab_bar(&self) { WinSurface::toggle_tab_bar(self) }
+    fn toggle_side_bar(&self) { WinSurface::toggle_side_bar(self) }
     fn take_open_settings( &mut self, ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)> { WinSurface::take_open_settings(self) }
     fn open_vault(&self) { WinSurface::open_vault(self) }
     fn open_palette(&self) { WinSurface::open_palette(self) }

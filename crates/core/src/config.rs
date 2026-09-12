@@ -108,6 +108,12 @@ pub struct Config {
     /// all -- the bar was a fixed width in the stylesheet and never asked.
     #[serde(default)]
     pub tab_bar_width: Option<u16>,
+    /// Width of the right-hand panel column, in pixels, or 0 when it is put
+    /// away. Omitted means put away: a column nobody has opened yet takes
+    /// nothing from the terminal, which is the part of the window the work is
+    /// actually in.
+    #[serde(default)]
+    pub side_bar_width: Option<u16>,
     /// Registered notification destinations (Lua can only send to destinations registered here).
     /// Recommended to keep tokens separated out in secrets.json (gitignored)
     #[serde(default)]
@@ -271,6 +277,30 @@ pub fn tab_bar_px() -> u16 {
         .and_then(|c| c.tab_bar_width)
         .map(clamp_tab_bar)
         .unwrap_or(TAB_BAR_DEFAULT_PX)
+}
+
+/// The width the right-hand column comes out at when it is asked for.
+///
+/// Wider than the left bar because what stands in it is a list of changed
+/// files and a diff beside it, not a column of names.
+pub const SIDE_BAR_DEFAULT_PX: u16 = 380;
+/// Below this the diff under the file list is a keyhole rather than a diff.
+pub const SIDE_BAR_MIN_PX: u16 = 280;
+pub const SIDE_BAR_MAX_PX: u16 = 900;
+
+/// A width as it may actually be used: put away (0), or inside the bounds.
+pub fn clamp_side_bar(px: u16) -> u16 {
+    if px == 0 {
+        0
+    } else {
+        px.clamp(SIDE_BAR_MIN_PX, SIDE_BAR_MAX_PX)
+    }
+}
+
+/// How wide the column opens. Nothing written down means nothing shown: the
+/// column costs the terminal its width, so it waits to be asked for.
+pub fn side_bar_px() -> u16 {
+    load().and_then(|c| c.side_bar_width).map(clamp_side_bar).unwrap_or(0)
 }
 
 /// Default order of the auxiliary key row. Frequently used Enter/Space/Backspace and the
