@@ -1,0 +1,63 @@
+---
+title: Microsoft Store を開いています
+description: Microsoft Store からインストールしたあとに。スター・フォローのお願いと、起動までの2手順。
+template: splash
+prev: false
+next: false
+editUrl: false
+head:
+  - tag: meta
+    attrs:
+      name: robots
+      content: noindex
+---
+
+<div style="text-align:center;margin:0 0 1.8em">
+  <p style="font-size:1.15em;margin:0 0 .4em"><strong>ありがとうございます。別のタブで Microsoft Store が開いているはずです。</strong></p>
+  <p style="opacity:.72;font-size:.92em;margin:0">
+    開かないときは
+    <a href="https://apps.microsoft.com/detail/9PB8XQVM87Z0" target="_blank" rel="noopener">こちらから直接どうぞ</a>。
+  </p>
+</div>
+
+{/* /get/ と同じ形で、理由も同じ。頼みごとはインストールを待つ数秒に置く。
+    違うのは、ここでは SmartScreen の警告に触れてはいけないこと —— Store 版は
+    署名済みで警告が出ないので、書けば嘘になる。スターの理由はこの読者向けに
+    差し替える。そちらのほうが良い理由になる。 */}
+<div class="asks">
+  <a class="ask" href="https://github.com/styleio/ShikishaTerm">
+    <strong>GitHub でスターを付ける →</strong>
+    <span>
+      あなたが入れたものは Microsoft の署名付きなので、警告は出ません。けれど
+      ポータブル版の zip を落とす人には出ます。オープンソース向けの無償の証明書は
+      「評判」を見て出されるもので、GitHub でのその形がスターです。1秒で終わる
+      この操作が、その人たちの警告を消します。
+    </span>
+  </a>
+  <a class="ask" href="https://x.com/SHIKISHATERM">
+    <strong>@SHIKISHATERM をフォローする →</strong>
+    <span>
+      新しい版のお知らせはここに出ます。何を測って、何をどう決めて、何が駄目だったかも
+      そのまま書いています。この1か月は2日に1本のペースで出しています。
+    </span>
+  </a>
+</div>
+
+---
+
+## 起動までの2手順
+
+1. **Store で「入手」を押して、開きます。** ほかに準備は要りません。
+   インストールも更新も Store がやります。
+2. **`[e]` を押します。** ターミナルのタブが1つ開いた状態で始まります。設定画面が
+   ウィンドウの中で開き、どのフォルダーでどのAIを動かすかをそこで選べます。
+   JSON を書く必要はありません。
+
+続きは[手引き](/ja/manual/)（4ページ）と、[自動化](/ja/automation/)。
+AI同士に仕事を渡し合わせるのは自動化のほうです。
+
+<p style="opacity:.72;font-size:.9em;margin-top:2em">
+  動かない、または分かりにくいところがありましたか？
+  <a href="https://github.com/styleio/ShikishaTerm/issues">GitHub で教えてください</a>。
+  使い始めて10分のあいだに出てくる報告がいちばん役に立ちます。
+</p>

@@ -1,15 +1,16 @@
 // Take the download pages back out of the sitemap.
 //
-// /get/ and /ja/get/ start a file transfer the moment they are opened, so they
-// carry <meta name="robots" content="noindex">. Starlight adds @astrojs/sitemap
-// itself and gives us no filter, so a URL that says "do not index me" would
-// still be submitted for indexing — which Search Console reports as an error.
-// Cheaper to strike the two lines out afterwards than to fight the integration.
+// /get/ starts a file transfer the moment it is opened, and /store/ is where a
+// Store click lands, so both carry <meta name="robots" content="noindex">.
+// Starlight adds @astrojs/sitemap itself and gives us no filter, so a URL that
+// says "do not index me" would still be submitted for indexing — which Search
+// Console reports as an error. Cheaper to strike those entries out afterwards
+// than to fight the integration.
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
 const FILE = new URL("../dist/sitemap-0.xml", import.meta.url);
-const NOINDEX = ["/get/", "/ja/get/"];
+const NOINDEX = ["/get/", "/ja/get/", "/store/", "/ja/store/"];
 
 if (!existsSync(FILE)) {
   console.warn("prune-sitemap: dist/sitemap-0.xml is not there, nothing to do");
