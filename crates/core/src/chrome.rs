@@ -111,15 +111,20 @@ fn on_path(name: &str) -> Option<std::path::PathBuf> {
 /// differently on every machine it is run on.
 const PINNED: &str = "153.0.8010.36";
 
+// The sums below were taken by streaming each published zip through sha256 on
+// 2026-09-12. They belong to the version above and to no other, which is why
+// they sit beside it: changing one without the other is how a check becomes a
+// refusal to start.
+
 /// A build of that version, for one shape of machine.
 struct Build {
     /// What the download calls this machine
     platform: &'static str,
     /// Where the browser is inside the zip
     exe: &'static str,
-    /// What the zip weighed when it was measured here, as a check that it
-    /// arrived whole. `None` for a platform nobody has measured yet, where
-    /// the transport is all the assurance there is
+    /// What the zip came to when it was measured here, as a check that what
+    /// arrives is what was measured. `None` for a platform nobody has
+    /// measured, where the transport is all the assurance there is
     sha256: Option<&'static str>,
 }
 
@@ -129,19 +134,19 @@ fn build_for_this_machine() -> Option<Build> {
     return Some(Build {
         platform: "linux64",
         exe: "chrome-linux64/chrome",
-        sha256: None,
+        sha256: Some("167a098c4fdec156b58a9f678c90a84f9072d789f9c6e7b35496a6987b8b7ef8"),
     });
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     return Some(Build {
         platform: "linux-arm64",
         exe: "chrome-linux-arm64/chrome",
-        sha256: None,
+        sha256: Some("dfc4955719c5d494c8507990506d2d5bed174c31bf89266aa2dc5593c6607e8b"),
     });
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return Some(Build {
         platform: "win64",
         exe: "chrome-win64/chrome.exe",
-        sha256: None,
+        sha256: Some("8edfaa0923c11a30a9315a5e7e5794c5efb60146edea7e3f749f7fdc2aa026cb"),
     });
     #[cfg(not(any(
         all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),

@@ -8,6 +8,66 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+The runtime with no window grew a browser, and the devices looking at it stopped
+being spectators.
+
+### Added
+- **A browser on the machine the agents are on.** A runtime with no window can
+  open pages, click them, read them, take their picture and carry their logins
+  --- everything `browser_*` has always done at the window, from the same code.
+  It drives whatever browser that machine has (`apt install chromium` and it
+  uses that one), and if it has none it fetches one at the moment a page is
+  first asked for: a version this program names, from Google's own build
+  service, checked against a measured SHA256. Nothing is bundled, so anybody
+  who never opens a page pays nothing for it.
+- **A page can be drawn on the device that is looking, instead.** Settings,
+  "where pages are drawn". Drawn here it can be watched from a phone, works
+  with nobody connected, and is one signed-in session for every device; drawn
+  on the connected device it is native and immediate, but that device has to be
+  there and only it can see the page. Either way the page reaches the network
+  from the machine the agents are on, so `localhost:3000` means that machine's
+  port 3000 from both sides --- names are resolved there too, so a page can
+  reach a private network only that machine can see.
+- **Every device gets its own key.** Pairing writes a device into a book and
+  hands it a key of its own, so one phone can be shut out without touching the
+  others. The settings page lists them, with what each is called and when it
+  was last seen.
+- **The master password can be given to a runtime with no window.** From the
+  service manager's credential store, or typed at the terminal with the echo
+  off. Nothing is invented in between, and it is never read from an environment
+  variable.
+- **A window can be the screen of a runtime somewhere else.** `--connect <url>`
+  opens the board of a server in a window on this desk.
+- **A board served over HTTPS can carry all of this.** The line a device holds
+  is plain or encrypted as the board's address says, which is what
+  `tailscale serve` puts in front of one.
+
+### Fixed
+- **A runtime with no window threw away every keystroke.** Everything done from
+  afar that is not a queue of its own --- typing, picking a tab, the board's
+  menu, stopping a run, restarting a tab --- arrives as the keystroke it stands
+  for, and that is where it was dropped. A server could be watched and not
+  driven, and nothing said so.
+- **A board in a browser could not arrange the screen.** Splitting a pane,
+  closing one, dragging a divider, adding a tab, naming or closing a working
+  folder, the text size and the tab bar's width were all drawn, all sent, and
+  all refused on arrival. A phone has no room to arrange panes, which is why
+  nobody noticed; a laptop or a Chromebook has.
+- **Three things were let through and had nowhere to go**: a pane's own restart
+  pressed from a phone, putting away a usage-limit notice, and copying a
+  selection. The last of those should never have been sent to the server at all
+  --- somebody reading a screen from elsewhere wants what they selected in
+  *their* clipboard --- and it is now done where the selection is.
+- **A page's HTML was too big to be an answer.** The line carrying answers from
+  a device reused the phone's frame limit, which is right for a tap and wrong
+  for a page.
+- **An evaluation's answer could be taken by whoever read the queue first**,
+  leaving the asker to time out for no visible reason.
+- **Running the tests wrote rows into a real device book**, because only one of
+  them took a book of its own.
+- **A page restored from the back/forward cache announced nothing**, so the
+  runtime never learned it had arrived somewhere new.
+
 ## [0.10.0] - 2026-09-11
 
 SHIKISHA runs on a machine with no screen.
