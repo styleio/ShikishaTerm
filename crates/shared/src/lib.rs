@@ -214,6 +214,13 @@ pub enum Ev {
         /// folder the first thing anybody does in is fail to build
         setup: bool,
     },
+    /// Put the offered environment file in the project.
+    ///
+    /// Its own event and not a flag on the one above, because it is its own
+    /// act: it changes the repository, it happens once, and it happens because
+    /// somebody read what was offered and said yes. `from` is the folder whose
+    /// project it is
+    KeepEnv { from: String },
     /// A colour was chosen for the project a folder belongs to. Empty means
     /// "go back to the one you work out yourselves"
     FolderColor { folder: String, color: String },
@@ -738,6 +745,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             choose: v.get("choose").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             branch: v.get("branch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             take: v.get("take").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("keepenv") => Ev::KeepEnv {
+            from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("branch") => Ev::Branch {
             from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

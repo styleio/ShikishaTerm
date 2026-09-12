@@ -138,6 +138,9 @@ pub struct Mailbox {
     /// Branches asked about, and asked for: (folder cut from, branch, what to
     /// grow it from, make it, what to bring along)
     pub branches: Vec<shikisha_shared::BranchAsk>,
+    /// Folders whose project was offered an environment file and told to keep
+    /// it. One act, once, because somebody read it and said yes
+    pub keep_envs: Vec<String>,
     /// Working folders asked about, and asked for: (the folder, the project
     /// chosen when one had to be, the branch, go ahead)
     pub repairs: Vec<(String, String, String, bool)>,
@@ -313,6 +316,9 @@ impl Mailbox {
     }
     pub fn take_branches(&mut self) -> Vec<shikisha_shared::BranchAsk> {
         std::mem::take(&mut self.branches)
+    }
+    pub fn take_keep_envs(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.keep_envs)
     }
     pub fn take_repairs(&mut self) -> Vec<(String, String, String, bool)> {
         std::mem::take(&mut self.repairs)
