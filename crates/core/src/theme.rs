@@ -392,11 +392,10 @@ fn from_windows_terminal() -> Vec<Scheme> {
         // That file is allowed comments, and has them by default. Stripping
         // them is cheaper than refusing to read the one place worth reading
         let text = strip_comments(text.trim_start_matches('\u{feff}'));
-        if let Ok(s) = serde_json::from_str::<WtSettings>(&text) {
-            if !s.schemes.is_empty() {
+        if let Ok(s) = serde_json::from_str::<WtSettings>(&text)
+            && !s.schemes.is_empty() {
                 return s.schemes;
             }
-        }
     }
     Vec::new()
 }

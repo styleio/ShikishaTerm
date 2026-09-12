@@ -1981,11 +1981,10 @@ fn handle(
                             let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
                                 continue;
                             };
-                            if let Some(ev) = shikisha_shared::parse_intent(&v) {
-                                if allowed_from_afar(&ev) {
+                            if let Some(ev) = shikisha_shared::parse_intent(&v)
+                                && allowed_from_afar(&ev) {
                                     let _ = tx.send(RemoteCmd::Ui(ev));
                                 }
-                            }
                         }
                         Ok((crate::ws::Op::Close, _)) | Err(_) => break,
                         Ok(_) => {} // ping/pong/binary are ignored
@@ -2024,12 +2023,11 @@ fn handle(
             };
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let mut took = false;
-            if let Some(ev) = shikisha_shared::parse_intent(&v) {
-                if allowed_from_afar(&ev) {
+            if let Some(ev) = shikisha_shared::parse_intent(&v)
+                && allowed_from_afar(&ev) {
                     let _ = tx.send(RemoteCmd::Ui(ev));
                     took = true;
                 }
-            }
             req.respond(json_response(serde_json::json!({"ok": took})))?;
         }
         ("POST", "/api/auto") => {

@@ -986,6 +986,10 @@ fn handle(
                     &serde_json::to_string(&crate::git::DEFAULT_PROTECTED)
                         .unwrap_or_else(|_| "[]".into()),
                 )
+                .replace(
+                    "__GHSECRET__",
+                    &serde_json::to_string(crate::config::GITHUB_SECRET).unwrap_or_default(),
+                )
                 .replace("__DICT__", &crate::i18n::dict_json());
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
@@ -2044,12 +2048,41 @@ fn handle(
             let ok = crate::browserstate::delete_snapshot(label).is_ok();
             req.respond(json_resp(serde_json::json!({ "ok": ok })))?;
         }
-        // Whether this machine has a GitHub sign-in, so the settings can say
-        // why a tab shows a branch but no pull request number. Whether, never
-        // what: nothing here hands a token back out
+        // Which GitHub account answers for one workspace, and for how much
+        // longer. Asked per workspace, because the token is now the workspace's
+        // first: the answer for the company's repositories is not the answer for
+        // somebody's own.
+        //
+        // The state and the date, never the value -- and a token that has run
+        // out is said out loud rather than quietly becoming "no token", because
+        // a row that stops showing pull request numbers looks exactly like a
+        // branch that has none
         ("GET", "/api/github") => {
+            let ws = query_param(req.url(), "ws")
+                .map(|c| percent_decode(&c))
+                .unwrap_or_default();
+            let own = match ws.trim().is_empty() {
+                true => None,
+                false => {
+                    let pw = password.lock().unwrap().clone();
+                    crate::config::secret_value(
+                        &secrets_file(config_path),
+                        pw.as_deref(),
+                        &crate::config::workspace_secret_key(
+                            ws.trim(),
+                            crate::config::GITHUB_SECRET,
+                        ),
+                    )
+                }
+            };
+            let said = crate::pr::probe(own);
             req.respond(json_resp(serde_json::json!({
-                "signed_in": crate::pr::signed_in(),
+                "signed_in": said.ok,
+                "source": said.source,
+                "login": said.login,
+                "expires_at": said.expires_at,
+                "expires_days": said.expires_in_days,
+                "status": said.status,
             })))?;
         }
         // The secrets nothing in the settings claims any more. Answered here
@@ -3192,15 +3225,24 @@ const GIT_MESSAGE_LUA = __GITLUA__;
 // The branches guarded until somebody says otherwise. Poured in from the app
 // so the box shows what is really running, not a copy of it kept here
 const PROTECT_DEFAULT = __PROTECT__;
+// The name this workspace's GitHub token is filed under. Poured in from the one
+// place that decides it, so the card that offers to set it and the program that
+// reaches for it cannot drift apart
+const GITHUB_SECRET = __GHSECRET__;
 // A list of branch names as it is typed and as it is stored. Space or comma
 // between them, because both are what people reach for
 const protectList = text => (text || "").split(/[\s,]+/).filter(Boolean);
 const protectText = list => (list || []).join(" ");
 // What the app guards where a folder has not said anything of its own
-const protectApp = () => {
-  const g = current.git || {};
+// The list a folder inherits when it has said nothing of its own: its
+// workspace's, or the app's for a workspace that has said nothing either. The
+// same order the program settles at launch, so the greyed-out box on a folder's
+// page shows the names that will actually guard it
+const protectOf = ws => {
+  const g = (ws && ws.git) || current.git || {};
   return Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT;
 };
+const protectApp = () => protectOf(null);
 // {name} substitution (same rule as tp on the Rust side)
 const fill = (s, args) => Object.entries(args)
   .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
@@ -4703,8 +4745,6 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.font.hint"])),
     row(T["settings.theme"], themePicker(),
         el("span", {class:"hint"}, T["settings.theme.hint"])),
-    row(T["settings.pr"], githubState(),
-        el("span", {class:"hint"}, T["settings.pr.hint"])),
     row(T["settings.language"],
         choose(current, "language", [
           ["", T["settings.language.auto"]],
@@ -4733,22 +4773,6 @@ function conptyState() {
     }
     out.textContent = T["settings.conpty.off." + j.missing] || T["settings.conpty.off"];
     out.classList.add("warn");
-  })();
-  return out;
-}
-// Whether pull request numbers can be shown, and why not when they cannot.
-//
-// Read-only on purpose. There is nothing to set here: the sign-in belongs to
-// the person's own GitHub tool, and offering a second place to paste a token
-// would be offering them a second place to have one go stale
-function githubState() {
-  const out = el("span", {class:"hint"}, "…");
-  (async () => {
-    let j;
-    try { j = await (await fetch("/api/github", {headers:{"X-Token":TOKEN}})).json(); }
-    catch (e) { return; }
-    out.textContent = j.signed_in ? T["settings.pr.on"] : T["settings.pr.off"];
-    out.classList.toggle("warn", !j.signed_in);
   })();
   return out;
 }
@@ -5870,19 +5894,27 @@ function hostDialog(at, redraw, kind) {
   setTimeout(recheck, 0);
 }
 
-function protectCard() {
+// The branch names, for whoever owns them: the app, or one workspace. Both
+// pages hold the same field, because it is the same question asked one level
+// further in
+function protectField(owner) {
   const box = el("input", {class:"mono grow", placeholder:T["settings.protect.ph"]});
-  box.value = protectText(protectApp());
+  const g = owner.git || {};
+  box.value = protectText(Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT);
   // The settings are touched when somebody types, never by looking: a card
   // that wrote itself into the config on the way in would light the save
   // button for a change nobody made
   box.addEventListener("input", () => {
-    (current.git = current.git || {}).protect = protectList(box.value);
+    (owner.git = owner.git || {}).protect = protectList(box.value);
     refreshSave();
   });
+  return box;
+}
+
+function protectCard() {
   return card(T["settings.sec.protect"],
     el("div", {class:"hint"}, T["settings.protect.hint"]),
-    el("div", {class:"row"}, box),
+    el("div", {class:"row"}, protectField(current)),
     el("div", {class:"hint"}, T["settings.protect.wild"]));
 }
 
@@ -5890,8 +5922,8 @@ function protectCard() {
 // built-in prompt -- the rules and the diff still go, and this is the extra
 // thing to obey. Replacing the prompt outright would leave the AI describing a
 // change nobody showed it, so the field that replaces things is the Lua one.
-function gitCard() {
-  const g = current.git = current.git || {};
+function gitFields(owner) {
+  const g = owner.git = owner.git || {};
   const hint = el("textarea", {rows:"3", class:"mono", style:"width:100%",
     placeholder:T["settings.git.hint.ph"]});
   hint.value = g.message_hint || "";
@@ -5930,12 +5962,17 @@ function gitCard() {
   });
   drawLua();
 
-  return card(T["settings.sec.git"],
+  return [
     el("div", {class:"hint"}, T["settings.git.hint.about"]),
     el("div", {style:"margin:var(--s2) 0 var(--s4)"}, hint),
     el("label", {class:"row", style:"cursor:pointer;gap:var(--s2)"}, useLua,
       el("span", {}, T["settings.git.lua.label"])),
-    luaBox);
+    luaBox,
+  ];
+}
+
+function gitCard() {
+  return card(T["settings.sec.git"], ...gitFields(current));
 }
 
 // Where the program says something when a tab has finished, or when a script
@@ -6798,6 +6835,8 @@ function wsPane(ws) {
   }
   box.append(wsDiscussCard(ws));
   box.append(wsStopsCard(ws));
+  box.append(wsGitCard(ws));
+  box.append(wsGithubCard(ws));
   box.append(wsNotifyCard(ws));
   box.append(wsProvidersCard(ws));
   // Nothing to be sure about means no card at all, and append() would write
@@ -6917,6 +6956,116 @@ function wsProvidersCard(ws) {
     el("div", {class:"hint"}, T["settings.ws.providers.hint"]),
     ...reachControl(ws, "providers", all, T["settings.ws.providers.own"], draw),
     inForce);
+}
+
+// What git does in this workspace: which branches refuse a commit, and how the
+// message gets written.
+//
+// A workspace is usually one person's work for one party, and both of these
+// belong to that: the company's repositories guard release branches the private
+// ones have never heard of, and the sentence a commit message has to obey is the
+// reviewer's, not the app's.
+function wsGitCard(ws) {
+  const own = el("input", {type:"checkbox"});
+  own.checked = !!ws.git;
+  const ownLabel = el("label", {class:"check"});
+  ownLabel.append(own, document.createTextNode(T["settings.ws.git.own"]));
+  const holder = el("div", {});
+  const inForce = el("div", {class:"hint"});
+  const draw = () => {
+    holder.textContent = "";
+    const g = ws.git || current.git || {};
+    const names = protectText(Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT);
+    inForce.textContent = fill(ws.git ? T["settings.ws.git.now_own"] : T["settings.ws.git.now_app"],
+      {names: names || T["settings.ws.git.none"],
+       how: g.message_lua !== undefined ? T["settings.ws.git.by_lua"]
+          : ((g.message_hint || "").trim() ? T["settings.ws.git.by_hint"] : T["settings.ws.git.by_builtin"])});
+    if (!ws.git) return;
+    holder.append(
+      el("div", {class:"hint"}, T["settings.protect.hint"]),
+      el("div", {class:"row"}, protectField(ws)),
+      el("div", {class:"hint"}, T["settings.protect.wild"]),
+      ...gitFields(ws));
+  };
+  own.addEventListener("change", () => {
+    // A copy of the app's, so drawing the line changes nothing by itself
+    if (own.checked) ws.git = JSON.parse(JSON.stringify(current.git || {}));
+    else delete ws.git;
+    draw();
+    refreshSave();
+  });
+  draw();
+  return card(T["settings.ws.git.title"],
+    el("div", {class:"hint"}, T["settings.ws.git.hint"]),
+    el("div", {class:"row"}, ownLabel),
+    inForce,
+    holder);
+}
+
+// Which GitHub account answers for this workspace.
+//
+// The pull request number on a branch's row is read with a token, and for a long
+// time that was one token for the whole machine -- so a company repository and a
+// private one were both asked about with whichever account happened to answer
+// first. A workspace can now be given its own, as the secret named "github"
+// beside its other secrets.
+//
+// The state and the date, never the value. And a token that has run out is said
+// out loud: a row that quietly stops showing numbers looks exactly like a branch
+// that has no pull request, and somebody would spend the afternoon looking at
+// the wrong thing.
+function wsGithubCard(ws) {
+  const dot = el("span", {class:"dot"});
+  const state = el("span", {class:"hint"}, T["settings.ws.github.checking"]);
+  const where = el("div", {class:"hint"});
+  const life = el("div", {class:"hint"});
+  const set = el("button", {onclick: () => {
+    if (!(ws.id || "").trim()) { toast(T["settings.secrets.ws_needs_id"], true); return; }
+    secretDialog(ws, null, GITHUB_SECRET);
+  }}, T["settings.ws.github.set"]);
+  (async () => {
+    let j;
+    try {
+      j = await (await fetch("/api/github?ws=" + encodeURIComponent(ws.id || ""),
+        {headers:{"X-Token":TOKEN}})).json();
+    } catch (e) { state.textContent = T["settings.ws.github.unknown"]; return; }
+    const source = j.source ? T["settings.ws.github.from." + j.source] : null;
+    dot.classList.add(j.signed_in ? "on" : "off");
+    if (!j.source) {
+      state.textContent = T["settings.ws.github.none"];
+      state.classList.add("warn");
+    } else if (j.signed_in) {
+      state.textContent = j.login
+        ? fill(T["settings.ws.github.on_as"], {login: j.login})
+        : T["settings.ws.github.on"];
+    } else {
+      // 401 is the one worth telling apart: the token exists and GitHub will
+      // not take it. Said as "it has run out or been taken away" rather than as
+      // "not signed in", which would send somebody looking for a missing token
+      state.textContent = j.status === 401
+        ? T["settings.ws.github.expired"]
+        : fill(T["settings.ws.github.unreachable"], {status: j.status || 0});
+      state.classList.add("warn");
+    }
+    if (source) where.textContent = fill(T["settings.ws.github.where"], {source});
+    if (j.expires_days === null || j.expires_days === undefined) {
+      if (j.signed_in) life.textContent = T["settings.ws.github.forever"];
+    } else if (j.expires_days < 0) {
+      life.textContent = T["settings.ws.github.ran_out"];
+      life.classList.add("warn");
+    } else {
+      life.textContent = fill(T["settings.ws.github.days"], {n: j.expires_days});
+      life.classList.toggle("warn", j.expires_days <= 7);
+    }
+  })();
+  return card(T["settings.ws.github.title"],
+    el("div", {class:"hint"}, T["settings.ws.github.hint"]),
+    el("div", {class:"row"}, dot, state),
+    where,
+    life,
+    el("div", {class:"row"}, set),
+    el("div", {class:"hint"}, T["settings.ws.github.kind"]),
+    el("div", {class:"hint"}, T["settings.ws.github.org"]));
 }
 
 // Who may run which command here.
@@ -7068,11 +7217,11 @@ function folderPane(ws, g, gi) {
     protectBox.disabled = !ownProtect.checked;
     protectBox.placeholder = ownProtect.checked
       ? T["settings.protect.ph"]
-      : protectText(protectApp());
+      : protectText(protectOf(ws));
     protectBox.value = Array.isArray(g.protect) ? protectText(g.protect) : "";
   };
   ownProtect.addEventListener("change", () => {
-    if (ownProtect.checked) g.protect = protectApp().slice();
+    if (ownProtect.checked) g.protect = protectOf(ws).slice();
     else delete g.protect;
     drawProtect();
     refreshSave();
@@ -7623,10 +7772,13 @@ async function loadWsSecrets(ws) {
 // what it is, who may use it, and where it may go. The value is write-only --
 // there is nothing to show, because nothing here can read it back -- so an
 // existing secret asks for one only if you want to replace it.
-function secretDialog(ws, have) {
+// `called` fills the name in for a secret the app itself looks for by name --
+// today that is the GitHub token, which is only useful under the one name the
+// program asks for. Typing it correctly is not a thing to leave to a person
+function secretDialog(ws, have, called) {
   const editing = !!have;
   const name = el("input", {type:"text", class:"mono", placeholder:T["settings.secrets.key_ph"]});
-  name.value = editing ? have.short : "";
+  name.value = editing ? have.short : (called || "");
   name.disabled = editing;
   const value = el("input", {type:"password",
     placeholder: editing ? T["settings.secrets.value_set_ph"] : T["settings.secrets.value_ph"]});
@@ -8948,6 +9100,7 @@ async function load() {
                  // An empty table is its own answer, so the test is for the key
                  // being there at all rather than for it holding anything
                  automation_permissions: w.automation_permissions || null,
+                 git: w.git || null,
                  stops: Array.isArray(w.stops) ? w.stops : [],
                  discuss: w.discuss || null };
     if (ws.file) {
@@ -9121,6 +9274,7 @@ function payload() {
     if (Array.isArray(w.providers)) o.providers = w.providers;
     if (w.capabilities) o.capabilities = w.capabilities;
     if (w.automation_permissions) o.automation_permissions = w.automation_permissions;
+    if (w.git) o.git = w.git;
     // Stop conditions (judge). Already written into the file for a file-referenced workspace, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
     // AI vs AI discussion
@@ -10058,6 +10212,7 @@ mod tests {
                 .replace("__GRANTS__", "[]")
                 .replace("__GITLUA__", "\"\"")
                 .replace("__PROTECT__", "[]")
+                .replace("__GHSECRET__", "\"github\"")
                 .replace("__MD__", "\"\"");
             // Checked on the finished page, not the template: the shared toast
             // is poured in on the way, and a page that kept a copy of one of

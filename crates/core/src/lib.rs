@@ -154,6 +154,12 @@ pub fn random_uuid() -> String {
     format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
 }
 
+/// Decides the remote UI's token.
+/// Uses the one in secrets if present; otherwise saves one to data\remote-token
+/// and reuses it (a token that changes every time would force reconnecting
+/// phones each time and make it impossible to show the QR from settings).
+/// Shortest fixed token accepted (hex chars of a 64-bit secret; anything
+/// shorter is guessable from the open internet a Tailscale-less LAN may be)
 pub fn remote_token(cfg: &config::Config, password: Option<&str>) -> String {
     // A sticky pairing with a written token: the person's own string wins.
     // (A shorter string never reaches here — start_remote_bg refuses to start)

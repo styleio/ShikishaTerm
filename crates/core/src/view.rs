@@ -731,13 +731,12 @@ pub fn surfaces_of(
     // called -- that is the one thing about it worth reading from across the
     // window. Done here so a configured editor and a throwaway one read alike
     for s in out.iter_mut() {
-        if let Surface::Editor { key, name, .. } = s {
-            if let Some(showing) =
+        if let Surface::Editor { key, name, .. } = s
+            && let Some(showing) =
                 editors.iter().find(|e| &e.key == key).and_then(|e| e.showing.as_deref())
             {
                 *name = leaf_of(showing);
             }
-        }
     }
     out
 }

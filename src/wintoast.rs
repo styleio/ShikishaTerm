@@ -368,6 +368,23 @@ mod win {
     }
 }
 
+/// This desktop, seen as somewhere a banner can appear.
+pub struct WindowsBanners;
+
+impl shikisha_shared::Toasts for WindowsBanners {
+    fn show(&self, title: &str, body: &str, tab: Option<usize>) -> Result<(), String> {
+        show(title, body, tab)
+    }
+
+    fn clicked_tab(&self) -> Option<usize> {
+        clicked_tab()
+    }
+
+    fn raise(&self) {
+        raise()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// The two lines a notification carries are whatever a program printed.
@@ -397,23 +414,6 @@ mod tests {
         // Long enough to see it, and to click it.
         std::thread::sleep(std::time::Duration::from_secs(12));
         println!("clicked tab: {:?}", super::clicked_tab());
-    }
-}
-
-/// This desktop, seen as somewhere a banner can appear.
-pub struct WindowsBanners;
-
-impl shikisha_shared::Toasts for WindowsBanners {
-    fn show(&self, title: &str, body: &str, tab: Option<usize>) -> Result<(), String> {
-        show(title, body, tab)
-    }
-
-    fn clicked_tab(&self) -> Option<usize> {
-        clicked_tab()
-    }
-
-    fn raise(&self) {
-        raise()
     }
 }
 

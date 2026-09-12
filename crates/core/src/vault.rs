@@ -103,7 +103,7 @@ pub fn search(query: &str, limit: usize) -> Found {
             files.push((when, src, path));
         }
     }
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|(when, ..)| std::cmp::Reverse(*when));
     let capped = files.len() > SCAN_CAP;
     files.truncate(SCAN_CAP);
 
@@ -198,11 +198,10 @@ fn title_of(cwd: Option<&str>, program: &str) -> String {
 /// keeps the id in the file name, which is the case for the tools that name
 /// each record after the conversation
 fn id_of(path: &Path, text: &str, src: &Source) -> Option<String> {
-    if let Some(p) = &src.id_path {
-        if let Some(id) = first_line_field(text, p) {
+    if let Some(p) = &src.id_path
+        && let Some(id) = first_line_field(text, p) {
             return Some(id);
         }
-    }
     let stem = path.file_stem()?.to_string_lossy().to_string();
     (!stem.is_empty()).then_some(stem)
 }
@@ -210,11 +209,10 @@ fn id_of(path: &Path, text: &str, src: &Source) -> Option<String> {
 /// The folder a record belongs to: where the CLI records it, or the first
 /// `"cwd"` the file mentions.
 fn cwd_of(text: &str, src: &Source) -> Option<String> {
-    if let Some(p) = &src.cwd_path {
-        if let Some(c) = first_line_field(text, p) {
+    if let Some(p) = &src.cwd_path
+        && let Some(c) = first_line_field(text, p) {
             return Some(c);
         }
-    }
     // Format-blind fallback: the first cwd anywhere in the head. Every one of
     // these tools writes the folder into its records; they just disagree on
     // where, so this finds it without being told
@@ -370,7 +368,7 @@ mod tests {
 
     /// A pattern written with this system's own separator
     fn with_seps(p: &str) -> String {
-        p.replace('/', &std::path::MAIN_SEPARATOR.to_string())
+        p.replace('/', std::path::MAIN_SEPARATOR_STR)
     }
 
     fn tmp(name: &str) -> PathBuf {

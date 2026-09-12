@@ -241,7 +241,7 @@ fn find_prev() -> Option<String> {
         .filter(|e| e.path().join(EXE).is_file())
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
-    found.sort_by(|a, b| parse(b).cmp(&parse(a)));
+    found.sort_by_key(|v| std::cmp::Reverse(parse(v)));
     found.into_iter().next()
 }
 
@@ -631,7 +631,7 @@ pub fn verify_sha256(bytes: &[u8], published: &str) -> Result<()> {
 
 fn from_hex(s: &str) -> Result<Vec<u8>> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         bail!("odd hex");
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| anyhow!("{e}"))).collect()
@@ -804,7 +804,7 @@ fn same_bytes(a: &Path, b: &Path) -> bool {
 /// Moves what was set aside into `prev/<from>`, so it can be put back
 fn keep_previous(root: &Path, from: &str) {
     let dir = prev_root().join(from);
-    let _ = std::fs::remove_dir_all(&prev_root());
+    let _ = std::fs::remove_dir_all(prev_root());
     let _ = std::fs::create_dir_all(&dir);
     let exe = std::env::current_exe().unwrap_or_else(|_| root.join(EXE));
     for held in HELD_OPEN {

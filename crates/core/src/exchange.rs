@@ -24,7 +24,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// The exchange root. %LOCALAPPDATA%\ShikishaTerm\exchange (falls back to the
 /// temp folder if unavailable). Never placed under Drive sync (beside the
 /// app binary).
+///
+/// A test run gets one of its own. Runs are told apart by which folder was
+/// written to last, and the real one is shared with every other test binary in
+/// the same `cargo test` -- and with the app, if somebody happens to be using
+/// it. A test that picked up somebody else's run failed for a reason that had
+/// nothing to do with it, rarely enough to look like weather. What the real
+/// answer would be is checked by a test of its own
 pub fn root() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("shikisha-exchange-{}", std::process::id()));
+    }
+    real_root()
+}
+
+/// Beside everything else this program keeps for itself.
+fn real_root() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
@@ -142,7 +157,7 @@ pub fn recent_runs(limit: usize) -> Vec<PathBuf> {
             Some((m, e.path()))
         })
         .collect();
-    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    runs.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
     runs.into_iter().take(limit).map(|(_, p)| p).collect()
 }
 
@@ -200,6 +215,21 @@ pub fn sweep_old(days: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The isolation a test run gets must not be the answer a person gets.
+    /// What is handed between an AI and the app lives beside everything else
+    /// this program keeps, not in a folder that disappears
+    #[test]
+    fn what_is_handed_over_is_kept_with_our_other_things() {
+        let real = real_root();
+        assert!(real.ends_with("ShikishaTerm/exchange"), "{real:?}");
+        assert_ne!(real, root(), "テスト実行は自分の場所を使う");
+        assert!(
+            root().to_string_lossy().contains(&std::process::id().to_string()),
+            "同時に走る別の実行と混ざる: {:?}",
+            root()
+        );
+    }
 
     #[test]
     fn new_run_makes_unique_dirs_under_root() {

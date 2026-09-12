@@ -109,7 +109,7 @@ impl Tray {
     /// stands in front of the window's procedure to read what the shell says
     /// about it. `on` is told of every press; `open` and `quit` are the menu
     pub fn add(hwnd: isize, tip: &str, on: impl Fn(Pressed) + Send + 'static, open: &str, quit: &str) -> Self {
-        const OUR_ICON: *const u16 = 1 as *const u16; // MAKEINTRESOURCE(1)
+        const OUR_ICON: *const u16 = std::ptr::dangling::<u16>(); // MAKEINTRESOURCE(1)
         *SINK.lock().unwrap() = Some(Sink { on: Box::new(on), open: open.into(), quit: quit.into() });
         unsafe {
             let previous = SetWindowLongPtrW(hwnd as *mut c_void, GWLP_WNDPROC, procedure as *const () as isize);

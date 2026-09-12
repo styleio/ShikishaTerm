@@ -206,14 +206,12 @@ fn on_start_at(root: &Path, current: &str, steps: &[Step]) -> Outcome {
         let Some(mut doc) = read_doc(&f) else { continue };
         let before = doc.clone();
         let (at, err) = run_steps(&mut doc, &from, steps);
-        if doc != before {
-            if let Ok(text) = serde_json::to_string_pretty(&doc) {
-                if let Err(e) = crate::crypto::write_atomic(&f, &text) {
+        if doc != before
+            && let Ok(text) = serde_json::to_string_pretty(&doc)
+                && let Err(e) = crate::crypto::write_atomic(&f, &text) {
                     out.failed = Some(format!("write {}: {e}", f.display()));
                     break;
                 }
-            }
-        }
         if let Some(e) = err {
             out.failed = Some(e);
             if crate::update::is_newer(&reached, &at) {

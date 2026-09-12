@@ -199,8 +199,8 @@ impl Watch {
                 });
                 // Out for long enough to be worth mentioning, and only then:
                 // a local folder answers before this ever shows
-                if let Some(at) = e.started {
-                    if now.duration_since(at) >= SLOW {
+                if let Some(at) = e.started
+                    && now.duration_since(at) >= SLOW {
                         out.insert(
                             p.clone(),
                             Health::Looking {
@@ -210,7 +210,6 @@ impl Watch {
                         );
                         continue;
                     }
-                }
                 // Nothing has come back yet and it has not been long enough to
                 // say so. Say what was true last time, which on the very first
                 // frame is "fine" — a folder is innocent until looked at, so a
@@ -263,11 +262,10 @@ fn health_of(p: &Path) -> Health {
     if p.is_dir() {
         return Health::Fine;
     }
-    if let Some(drive) = drive_of(p) {
-        if !Path::new(&format!("{drive}\\")).is_dir() {
+    if let Some(drive) = drive_of(p)
+        && !Path::new(&format!("{drive}\\")).is_dir() {
             return Health::NoDrive { drive };
         }
-    }
     Health::Missing
 }
 
@@ -340,11 +338,10 @@ pub fn plan(
     checkout: Option<&Path>,
 ) -> Result<Vec<Step>, Blocked> {
     use crate::config::Source;
-    if let Some(drive) = drive_of(cwd) {
-        if !Path::new(&drive_root(&drive)).is_dir() {
+    if let Some(drive) = drive_of(cwd)
+        && !Path::new(&drive_root(&drive)).is_dir() {
             return Err(Blocked::NoDrive { drive });
         }
-    }
     if cwd.is_dir() {
         return Ok(Vec::new());
     }
@@ -384,14 +381,13 @@ pub fn plan(
     }
     // 5: the branch. Only askable of a clone that is already here — one that is
     // about to be made holds nothing yet, so nothing can be in the way
-    if steps.is_empty() {
-        if let Some(open) = branch_open_at(&at, branch) {
+    if steps.is_empty()
+        && let Some(open) = branch_open_at(&at, branch) {
             return Err(Blocked::BranchTaken {
                 branch: branch.clone(),
                 at: open.display().to_string(),
             });
         }
-    }
     let argv = expand_argv(&at, branch, base, cwd);
     steps.push(Step::Expand {
         branch: branch.clone(),
@@ -690,8 +686,8 @@ impl Drifts {
             let known = Arc::clone(&self.known);
             std::thread::spawn(move || {
                 let drift = count_between(&p, &mine, &theirs);
-                if let Ok(mut map) = known.lock() {
-                    if let Some(e) = map.get_mut(&p) {
+                if let Ok(mut map) = known.lock()
+                    && let Some(e) = map.get_mut(&p) {
                         // Only if it is still an answer to the question that
                         // was asked: a fetch during the walk moves the ends
                         if e.of == (mine, theirs) {
@@ -699,7 +695,6 @@ impl Drifts {
                             e.settled = true;
                         }
                     }
-                }
             });
         }
         out
@@ -821,7 +816,7 @@ mod tests {
         let a = std::env::temp_dir();
         let b = std::env::temp_dir().join("shikisha-gone-4d1");
         w.look(&[a.clone(), b.clone()]);
-        w.look(&[a.clone()]);
+        w.look(std::slice::from_ref(&a));
         let held = w.known.lock().unwrap();
         assert!(held.contains_key(&a));
         assert!(!held.contains_key(&b));

@@ -12,6 +12,12 @@
 use crate::tab::RecordedStep;
 use shikisha_shared::Ev;
 
+/// What "open the settings" is asking for: which section to land on,
+/// whether to come back to the board once saved, which item to look at,
+/// and which tab of it. Four maybes with no names between them was one
+/// too many
+pub type SettingsWanted = (Option<String>, bool, Option<String>, Option<u32>);
+
 /// Reports from a shell, sorted and waiting.
 #[derive(Default)]
 pub struct Mailbox {
@@ -30,7 +36,7 @@ pub struct Mailbox {
     /// The sidebar gear (or a deep-link shortcut) was pressed. The loop opens the
     /// settings page. Carries an optional section to land on and whether to return
     /// to the board once saved (Some = requested, None = not requested).
-    pub open_settings: Option<(Option<String>, bool, Option<String>, Option<u32>)>,
+    pub open_settings: Option<SettingsWanted>,
     /// The 🎯 panel's "save the replay" button. The loop copies the newest
     /// run's replay.lua into Downloads and answers with a flash message.
     pub replay_saves: bool,
