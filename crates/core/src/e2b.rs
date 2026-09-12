@@ -250,16 +250,28 @@ pub fn sandbox_for(host: &crate::config::HostSpec, image: Option<&str>) -> Resul
         return Ok(s);
     }
     let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
-    let template = image
-        .map(str::trim)
-        .filter(|i| !i.is_empty())
-        .or_else(|| host.template.as_deref().map(str::trim).filter(|t| !t.is_empty()))
-        .unwrap_or("base");
-    let made = create(&key, template, host.minutes.unwrap_or(30))?;
+    let made = create(&key, template_for(host, image), host.minutes.unwrap_or(30))?;
     if let Ok(mut m) = live.lock() {
         m.insert(host.name.clone(), made.clone());
     }
     Ok(made)
+}
+
+/// What a machine is built from.
+///
+/// The project's own word first: a repository that says which image it wants
+/// has said the thing that matters most about its environment, and overruling
+/// it with a setting would make that file decoration. The machine's own
+/// setting is what stands when the project says nothing
+pub(crate) fn template_for<'a>(
+    host: &'a crate::config::HostSpec,
+    image: Option<&'a str>,
+) -> &'a str {
+    image
+        .map(str::trim)
+        .filter(|i| !i.is_empty())
+        .or_else(|| host.template.as_deref().map(str::trim).filter(|t| !t.is_empty()))
+        .unwrap_or("base")
 }
 
 /// What the writing thread is asked to do. Typing and resizing go down the
