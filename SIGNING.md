@@ -15,13 +15,16 @@ elsewhere first — [SignPath Foundation](https://signpath.org/) — and that
 application was not accepted.
 
 Paid certificates were not the answer either, and not because of the price
-itself. Code-signing subscriptions start at roughly ten dollars a month; this
-project is built to have no running cost at all — no server of ours, no account,
-nothing collected, nothing to keep paid for — because a monthly bill has to be
-met, and meeting it eventually means taking it from the people using the
-program. The Store route signs the build for nothing, which is what most people
-install. The zip is what is left over, and the free certificates for open source
-are given on reputation rather than on payment.
+itself. Nothing this project runs on is paid for, apart from its domain name:
+the Store developer account is free, the builds run on a public repository's
+GitHub Actions, the site is hosted for nothing, and there is no server of ours
+to keep alive because there is no server of ours at all. A code-signing
+subscription — roughly ten dollars a month — would be the first recurring bill
+of any size, and a bill has to be met. Meeting it eventually means taking it
+from the people using the program, which is the one thing this is built not to
+do. So the Store route signs the build for nothing, which covers most people who
+install it, and the zip is what is left over: the free certificates for open
+source are given on reputation rather than on payment.
 
 The portable zip stays unsigned in Windows' sense: it carries no code-signing
 certificate, so SmartScreen has nothing to check. It is the same program, built
