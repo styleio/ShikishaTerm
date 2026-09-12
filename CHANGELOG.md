@@ -38,7 +38,9 @@ being spectators.
   Resizing from the edges and the drop shadow are still the system's. One
   thing is lost and worth saying: the Snap Layouts flyout that appears when
   the pointer rests on a *system* maximise button, which ours is not. Dragging
-  to an edge, Win+arrow and the double-click all still snap.
+  to an edge, Win+arrow and the double-click all still snap. A screen that
+  covers the window --- the settings --- stops at the bar, so closing and
+  minimising are there on every page.
 - **A column of your own on the right, with the changed files in it.** The
   window is three columns now: what is running on the left, the work in the
   middle, and a panel beside it. Two things stand in it, picked from the strip
