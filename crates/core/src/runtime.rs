@@ -3588,6 +3588,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .unwrap_or_default();
             // What the new folder runs, chosen from what this machine has
             let start = start_of(&ask.start, &ai_choices);
+            // Which project this is cut from. Worked out the same way the
+            // making itself works it out, so the row cannot say one thing while
+            // git is handed another
+            let checkout = crate::repo::main_checkout(&from);
             let mut view = crate::uistate::BranchPlan {
                 from: from.display().to_string(),
                 branch: name.clone(),
@@ -3595,10 +3599,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 base: chosen.clone(),
                 bases,
                 carry: carryable,
+                project: checkout
+                    .as_deref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                project_at: checkout
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
                 ..Default::default()
             };
             if ask.ais.is_empty() {
-                match crate::worktree::plan(&from, &wanted, Some(&ask.base)) {
+                let at = std::path::PathBuf::from(ask.at.trim());
+                match crate::worktree::plan_into(
+                    &from,
+                    &wanted,
+                    Some(&ask.base),
+                    (!ask.at.trim().is_empty()).then_some(at.as_path()),
+                ) {
                     Err(e) => view.error = Some(format!("{e:#}")),
                     Ok(plan) => {
                         view.branch = plan.branch.clone();
