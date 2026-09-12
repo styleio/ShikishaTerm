@@ -41,6 +41,7 @@ pub trait Shell {
     fn queue_input(&mut self, ev: Event);
     fn inject(&mut self, ev: Event);
     fn toggle_tab_bar(&self);
+    fn toggle_side_bar(&self);
     fn take_open_settings( &mut self, ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)>;
     fn open_vault(&self);
     fn open_palette(&self);
@@ -171,6 +172,7 @@ impl Shell for Headless {
     fn queue_input(&mut self, ev: Event) { self.typed.push_back(ev); }
     fn inject(&mut self, ev: Event) { self.typed.push_back(ev); }
     fn toggle_tab_bar(&self) {}
+    fn toggle_side_bar(&self) {}
     fn take_open_settings( &mut self, ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)> { None }
     fn open_vault(&self) {}
     fn open_palette(&self) {}

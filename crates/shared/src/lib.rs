@@ -155,6 +155,10 @@ pub enum Ev {
     /// already drawn that way, and this is so it opens that way next time.
     /// 0 means the bar has been put away
     TabWidth { px: u16 },
+    /// The right-hand column's edge was dragged, or the column was put away or
+    /// brought back. Same story as the tab bar: the page is already drawn that
+    /// way, and this is so it opens that way next time. 0 means put away
+    SideWidth { px: u16 },
     /// Wants to view this tab (0 = the operating board)
     Select { tab: usize },
     /// A tab has been asked for: the + on the tab bar, or the invitation in a
@@ -948,6 +952,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             px: v.get("px").and_then(|x| x.as_u64()).unwrap_or(14).clamp(8, 32) as u8,
         },
         Some("tabwidth") => Ev::TabWidth {
+            px: v.get("px").and_then(|x| x.as_u64()).unwrap_or(0).min(u16::MAX as u64) as u16,
+        },
+        Some("sidewidth") => Ev::SideWidth {
             px: v.get("px").and_then(|x| x.as_u64()).unwrap_or(0).min(u16::MAX as u64) as u16,
         },
         Some("splitpane") => Ev::SplitPane {

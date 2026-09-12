@@ -196,7 +196,13 @@ is the last confirmation.**
 
 ## 9. Still open
 
-- Where the screen lives — a pane on the board, a fold in the sidebar, or the settings page
+- ~~Where the screen lives~~ — **settled (2026-09-12): the third column, on the right.**
+  The window is three columns now (what is running / the work / what is beside it), and the
+  git screen stands in the third. Opening it as a tab still works, because automation names
+  that place; while such a tab is the one being looked at the column steps aside, so there is
+  one screen and only where it stands changes. The column **starts put away** — it costs the
+  terminal its width, so it waits to be asked for. The strip along its top is there with one
+  panel in it because the file list goes in beside it later
 - How diffs are shown — whether staging by line is worth it (needs `git apply --cached`)
 - Whether the protected-branch list should be a setting
 - The way in to creating a worktree (a separate matter, not covered here)
