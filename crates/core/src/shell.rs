@@ -4368,7 +4368,11 @@ window.__panes = function (json) {
       el.querySelector(".pnew").textContent = T["tui.pane.add"] || "+ Add tab";
       el.querySelector(".pnew").onclick = (e) => {
         e.stopPropagation();
-        send({kind:"addtab", pane:p.id});
+        // The same road the tab bar's + takes, and carrying a folder as well
+        // as the pane. Without the folder the form fell back to the first
+        // folder in the settings, so splitting while working in the third one
+        // and pressing its invitation added a tab to the first
+        addTabHere(activeFolder(), p.id);
       };
       // Same two divisions the keyboard makes, on the pane you pressed them on
       for (const [cls, down] of [[".sr", false], [".sd", true]]) {
@@ -6836,15 +6840,25 @@ function walkToSettings(params) {
 // `g` is the folder it was asked for from, when it was asked for from one.
 // Carrying it is the difference between "add a tab here" and "add a tab
 // somewhere, and let the form pick" -- which picked the first folder
-function addTabHere(g) {
+// `pane` is the empty pane that asked, when one did: the new tab goes there
+// rather than wherever focus has wandered to by the time the form is done
+function addTabHere(g, pane) {
   const at = g && g.folder ? g.folder : "";
   if (typeof REMOTE !== "undefined" && REMOTE) {
     const p = {addtab: (S && S.ws_index) || 0};
     if (at) p.folder = at;
     walkToSettings(p);
   } else {
-    send({kind:"addtab", folder: at});
+    send({kind:"addtab", folder: at, pane: pane == null ? null : pane});
   }
+}
+
+// The folder the person is working in, for a control that has no folder of its
+// own to name. A pane with nothing in it is the case: it has no tab, so it has
+// no folder, and the only honest answer is the one they were last looking at
+function activeFolder() {
+  const t = (S.tabs || []).find(x => x.index === S.active && !x.settings);
+  return t && t.group != null ? (S.groups || [])[t.group] : null;
 }
 // Fetch the newest run's portable replay (durable anchors, no digest refs).
 // The phone downloads it over HTTP; the window board has no HTTP downloads,
@@ -10610,10 +10624,23 @@ mod tests {
                 && PAGE.contains("walkToSettings(p);"),
             "スマホの + が設定ページへ歩いて行かない"
         );
-        // The window still takes the keystroke path (the WebView is its to open)
+        // The window still takes the keystroke path (the WebView is its to open),
+        // and carries the pane as well -- an empty pane's invitation names both
+        // the folder it was asked from and the pane the tab is to land in
         assert!(
-            PAGE.contains(r#"send({kind:"addtab", folder: at});"#),
+            PAGE.contains(r#"send({kind:"addtab", folder: at, pane: pane == null ? null : pane});"#),
             "窓側の道が消えている"
+        );
+        // The invitation inside an empty pane goes down the same road. It used
+        // to send the pane and no folder, so splitting while working in the
+        // third folder and pressing it added a tab to the first
+        assert!(
+            PAGE.contains("addTabHere(activeFolder(), p.id);"),
+            "空のペインの誘いが、どのフォルダかを言わずに送っている"
+        );
+        assert!(
+            !PAGE.contains(r#"send({kind:"addtab", pane:p.id});"#),
+            "ペインの + がフォルダを落とす古い配線に戻っている"
         );
         assert!(
             !PAGE.contains(r#"onclick:() => send({kind:"addtab"})"#),
