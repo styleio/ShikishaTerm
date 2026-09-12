@@ -2705,6 +2705,11 @@ const PAGE: &str = r##"<!doctype html>
  /* For entries whose fields are taller than their buttons (a quick action's
     body box), so the buttons sit at the top rather than floating mid-height. */
  .listrow.tall { align-items:flex-start; gap:var(--s2); padding:8px 0; }
+ /* One machine: its fields stacked, and the one destructive button at the far
+    end of the row where section 5.3 puts it */
+ .listrow .hostfield { display:flex; flex-direction:column; gap:var(--s2); margin-bottom:var(--s5); }
+ .listrow .hostfield:last-child { margin-bottom:0; }
+ .listrow .hostfield label { font-size:12px; font-weight:500; color:var(--text); }
  /* A list of things, boxed. The border round the whole makes it one object
     instead of a stack of loose lines */
  .rows { border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
@@ -4903,6 +4908,7 @@ function globalSections() {
     {id:"permissions", label:T["settings.sec.permissions"], sub:T["settings.sec.permissions.sub"], build:permissionsCard},
     {id:"git",       label:T["settings.sec.git"],       sub:T["settings.sec.git.sub"],       build:gitCard},
     {id:"protect",   label:T["settings.sec.protect"],   sub:T["settings.sec.protect.sub"],   build:protectCard},
+    {id:"hosts",     label:T["settings.sec.hosts"],     sub:T["settings.sec.hosts.sub"],     build:hostsCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
     {id:"providers", label:T["settings.sec.providers"], sub:T["settings.sec.providers.sub"], build:providersCard},
     {id:"claudeusage", label:T["settings.sec.claudeusage"], sub:T["settings.sec.claudeusage.sub"], build:claudeUsageCard},
@@ -5591,6 +5597,112 @@ function permissionsCard() {
 // rule with nobody on the other side of it. So the names are a question, asked
 // here for every folder and again on the folder itself for the one project that
 // wants something else.
+// Other computers a branch can be opened on.
+//
+// Two kinds, which differ in one way that shapes everything: an SSH machine is
+// already there and has the project on it, while a sandbox is made when it is
+// wanted and has nothing, so one is asked where the project is and the other
+// is asked what to build the machine from. They are one list because to the
+// person they are one question -- where does this run -- and the picker in the
+// worktree dialog reads that one list.
+//
+// No password or key is here. Those live in the secrets file under a name
+// worked out from the machine's name, so that nobody writes a credential into
+// a settings screen that is also a file.
+function hostsCard() {
+  const box = el("div");
+  const draw = () => {
+    box.textContent = "";
+    const hosts = current.hosts = current.hosts || [];
+    const rows = el("div", {class:"rows"});
+    hosts.forEach((h, i) => rows.append(hostRow(h, i, draw)));
+    if (!hosts.length) rows.append(el("div", {class:"hint", style:"padding:10px 12px"},
+      T["settings.hosts.none"]));
+    box.append(card(T["settings.sec.hosts"],
+      el("div", {class:"hint"}, T["settings.hosts.hint"]),
+      rows,
+      el("div", {class:"row"},
+        el("button", {onclick:() => {
+          hosts.push({name:freeHostName(hosts, "machine"), at:"", project:""});
+          refreshSave(); draw();
+        }}, T["settings.hosts.add.ssh"]),
+        el("button", {onclick:() => {
+          hosts.push({name:freeHostName(hosts, "sandbox"), kind:"e2b", template:"base", minutes:30});
+          refreshSave(); draw();
+        }}, T["settings.hosts.add.e2b"]))));
+  };
+  draw();
+  return box;
+}
+
+// A name nothing else is using. Two machines with one name would be one
+// machine to everything that looks them up, which is by name
+function freeHostName(hosts, base) {
+  const taken = new Set(hosts.map(h => (h.name || "").trim()));
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) if (!taken.has(base + "-" + n)) return base + "-" + n;
+}
+
+function hostRow(h, i, draw) {
+  const made = (h.kind || "").trim().toLowerCase() === "e2b";
+  const row = el("div", {class:"listrow tall"});
+  const drop = el("button", {class:"danger", onclick:() => {
+    (current.hosts || []).splice(i, 1); refreshSave(); draw();
+  }}, T["settings.hosts.drop"]);
+  const fields = el("div", {class:"grow"},
+    labelled(T["settings.hosts.name"], field(h, "name", "", {grow:false, width:220,
+      onInput:() => refreshSave()}), T["settings.hosts.name.hint"]));
+  if (made) {
+    // One service today. A picker with one entry rather than no picker,
+    // because the next one is a row in this list and not a new screen
+    const which = el("select", {onchange:() => refreshSave()});
+    which.append(el("option", {value:"e2b"}, "E2B"));
+    which.value = "e2b";
+    fields.append(
+      labelled(T["settings.hosts.provider"], which, ""),
+      labelled(T["settings.hosts.template"],
+        field(h, "template", T["settings.hosts.template.ph"], {grow:false, width:220,
+          onInput:() => refreshSave()}), T["settings.hosts.template.hint"]),
+      labelled(T["settings.hosts.minutes"],
+        numField(h, "minutes", 30), T["settings.hosts.minutes.hint"]));
+  } else {
+    fields.append(
+      labelled(T["settings.hosts.at"],
+        field(h, "at", T["settings.hosts.at.ph"], {mono:true, onInput:() => refreshSave()}),
+        T["settings.hosts.at.hint"]),
+      labelled(T["settings.hosts.project"],
+        field(h, "project", T["settings.hosts.project.ph"], {mono:true, onInput:() => refreshSave()}),
+        T["settings.hosts.project.hint"]),
+      labelled(T["settings.hosts.branches"],
+        field(h, "branches", T["settings.hosts.branches.ph"], {mono:true, onInput:() => refreshSave()}), ""));
+  }
+  row.append(fields, drop);
+  return row;
+}
+
+// One thing to fill in: its name above, the control, the hint below. The shape
+// section 5.1 of the styleguide gives every field on every screen
+function labelled(name, control, hint) {
+  const box = el("div", {class:"hostfield"},
+    el("label", {}, name), control);
+  if (hint) box.append(el("span", {class:"hint"}, hint));
+  return box;
+}
+
+// Whole minutes, kept as a number so the settings file does not grow a string
+// where a number belongs
+function numField(obj, key, fallback) {
+  const i = el("input", {type:"number", class:"grow", min:"1"});
+  i.style.width = "120px";
+  i.value = obj[key] != null ? obj[key] : fallback;
+  i.addEventListener("input", () => {
+    const n = parseInt(i.value, 10);
+    if (Number.isFinite(n) && n > 0) obj[key] = n;
+    refreshSave();
+  });
+  return i;
+}
+
 function protectCard() {
   const box = el("input", {class:"mono grow", placeholder:T["settings.protect.ph"]});
   box.value = protectText(protectApp());
