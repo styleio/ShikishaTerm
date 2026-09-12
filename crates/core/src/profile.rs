@@ -378,10 +378,10 @@ where
             let Ok(pf) = serde_json::from_str::<ProfileFile>(&text) else {
                 continue;
             };
-            if pred(&path, &pf) {
-                if let Ok(p) = Profile::compile(pf) {
-                    return Some(p);
-                }
+            if pred(&path, &pf)
+                && let Ok(p) = Profile::compile(pf)
+            {
+                return Some(p);
             }
         }
     }
