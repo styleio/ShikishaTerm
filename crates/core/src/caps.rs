@@ -351,6 +351,15 @@ impl Capabilities {
         }
     }
 
+    /// Who may call what, in the workspace on screen.
+    ///
+    /// Swapped on a switch for the same reason as the doors: an AI allowed to
+    /// write files in a workspace somebody keeps their own notes in is not
+    /// therefore allowed to in the one with the company's repository in it
+    pub fn set_grants(&self, spec: crate::grants::GrantSpec) {
+        *self.grants.borrow_mut() = crate::grants::Grants::new(spec);
+    }
+
     /// Communication runs on a dedicated thread so it doesn't block the UI
     fn start_sender() -> mpsc::Sender<HttpJob> {
         {
