@@ -352,8 +352,13 @@ person cannot read what they are about to send.
 
 ### Driving a browser
 
-A browser can join the orchestra. Windows already carries the engine, so nothing is
-downloaded and nothing is installed.
+A browser can join the orchestra. Driven from the window, Windows already carries the
+engine, so nothing is downloaded and nothing is installed.
+
+With no window -- on a server -- it uses whatever browser that machine has. Install one
+first (`apt install chromium`) and that is the one it uses. With none, it fetches a
+version it names, and only at the moment one is first asked for. Nothing is bundled, so
+anybody who never opens a page pays nothing for this.
 
 Declare one alongside the tabs of a workspace. A browser you declare becomes a tab,
 numbered after the sessions — `Ctrl+B` and its number switches to it like any other.
@@ -365,6 +370,26 @@ numbered after the sessions — `Ctrl+B` and its number switches to it like any 
   "tabs": [{ "name": "Claude", "id": "ai", "command": "claude" }]
 }
 ```
+
+### Where a page is drawn
+
+While a device -- the window, or a phone -- is connected to a server, you choose **which
+machine draws** the pages automation opens (Settings, "where pages are drawn").
+
+- **On this machine (the default)** -- watchable from a phone, still working with nobody
+  connected, and one signed-in session for every device. The screen is relayed as a
+  picture.
+- **On the connected device** -- faster and sharper, but it needs that device to be there,
+  and only it can see the page (a page that has to be watched from elsewhere belongs on
+  this machine).
+
+**Either way, the page reaches the network from the machine the agents are on.** So
+`browser_open("x", "http://localhost:3000/")` is always that machine's port 3000. Names
+are resolved there too, which is how a page reaches a private network only that machine
+can see.
+
+A page already open does not move. Changing the setting changes where the **next** page
+is drawn.
 
 ### Hooks on a browser
 

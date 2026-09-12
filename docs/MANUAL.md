@@ -118,6 +118,12 @@ Turn on phone access in the settings and scan the QR code. Every tab, its state,
 and a box to reply are on the phone; what the PC can do, the phone can do too.
 See [From your phone](https://shikisha-term.com/phone/) for the three levels of setup.
 
+**Which machine draws a page.** When automation opens a browser page, it can be drawn on
+this machine or on the device looking at it (Settings, "where pages are drawn"). This
+machine is the default: watchable from a phone, still working with nobody connected, and
+one signed-in session for every device. Either way **the page reaches the network from
+this machine**, so a `localhost:3000` started here is the same thing seen from both sides.
+
 ## 5. Connecting to a server
 
 Choose **Server (this program connects)** as a tab's kind, give it the address,
