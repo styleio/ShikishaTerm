@@ -796,6 +796,8 @@
   "settings.project.setup.hint": "Run in every new worktree of this project. For projects that cannot have a devcontainer -- ones built for Windows, for a phone, or against hardware. One command per line.",
   "settings.project.setup.ph": "cargo fetch",
   "settings.group.env": "devcontainer",
+  "settings.group.env.owned": "The devcontainer and the setup command belong to \"{name}\". Change them on its own checkout's page.",
+  "settings.group.env.owned_unnamed": "The devcontainer and the setup command belong to the project. Change them on its own checkout's page.",
   "settings.group.env.has": "This project has one, at {path}. Its commands run in every new worktree.",
   "settings.group.env.none": "This project has no devcontainer, so a new worktree arrives with nothing installed in it.",
   "settings.group.env.offer": "This would say it:",
