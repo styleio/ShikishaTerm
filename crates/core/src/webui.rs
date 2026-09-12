@@ -1048,10 +1048,11 @@ fn handle(
                 .unwrap_or_default();
             let at = std::path::Path::new(at.trim());
             let resp = match at.as_os_str().is_empty() {
-                true => serde_json::json!({ "family": null, "cut": false }),
+                true => serde_json::json!({ "family": null, "cut": false, "branch": null }),
                 false => serde_json::json!({
                     "family": crate::repo::family_of(at).map(|f| f.display().to_string()),
                     "cut": crate::repo::is_linked(at),
+                    "branch": crate::repo::branch_of(at),
                 }),
             };
             req.respond(json_resp(resp))?;
@@ -1075,6 +1076,38 @@ fn handle(
                     serde_json::json!({ "ok": true })
                 }
                 Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // Call a branch's folder's branch something else. Asked twice: once
+        // with `go` unset, to put the line that would run in front of the
+        // person, and once to run it
+        ("POST", "/api/folder/rename") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let at = std::path::PathBuf::from(
+                p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim(),
+            );
+            let to = p.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+            let go = p.get("go").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let resp = match crate::worktree::rename_plan(&at, to) {
+                Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                Ok(plan) => match go {
+                    false => serde_json::json!({
+                        "ok": true, "line": plan.line(), "sent": plan.sent_as,
+                    }),
+                    true => match crate::worktree::rename(&plan) {
+                        Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                        Ok(()) => serde_json::json!({
+                            "ok": true, "done": true, "from": plan.from, "to": plan.to,
+                            "sent": plan.sent_as,
+                        }),
+                    },
+                },
             };
             req.respond(json_resp(resp))?;
         }
@@ -6622,6 +6655,7 @@ function folderPane(ws, g, gi) {
   familyOf(g.cwd).then(where => {
     paint(where && where.family);
     if (!where || !where.cut) return;
+    if (where.branch) box.insertBefore(renameCard(g, where.branch), buttons);
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
       if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
@@ -6635,6 +6669,64 @@ function folderPane(ws, g, gi) {
     buttons.append(el("span", {class:"hint"}, T["settings.group.discard.hint"]));
   });
   return box;
+}
+
+// Calling this folder's branch something else.
+//
+// Here rather than in the dialog that makes folders, because the name worth
+// having is the one nobody could think of on the first day: work gets its name
+// once it is under way. The line that will run is under the box and follows
+// what is typed, so nothing happens that was not read first
+function renameCard(g, branch) {
+  const box = el("input", {type:"text", class:"grow", value: branch});
+  // The same box a tab's real command line gets: one look for "this is what
+  // will run", wherever in these settings it is being said
+  const line = el("code", {class:"mono"});
+  const note = el("div", {class:"hint"});
+  const said = el("div", {class:"realcmd"}, line, note);
+  const go = el("button", {}, T["settings.group.rename.do"]);
+  let asked = "";
+  const look = async () => {
+    const want = box.value.trim();
+    asked = want;
+    // Nothing typed over the name it already has: nothing to show and nothing
+    // to press, and an empty box would be a box with nothing in it
+    if (!want || want === branch) { said.hidden = true; line.textContent = ""; note.textContent = ""; go.disabled = true; return; }
+    const r = await fetch("/api/folder/rename",
+      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd, name: want})})
+      .then(r => r.json()).catch(() => ({ok:false, error:""}));
+    // An answer about a name that has since been typed over says nothing
+    // about the one in the box now
+    if (asked !== want) return;
+    line.textContent = r.ok ? r.line : "";
+    note.textContent = r.ok
+      ? (r.sent ? fill(T["settings.group.rename.sent"], {name: r.sent}) : "")
+      : (r.error || "");
+    said.hidden = false;
+    go.disabled = !r.ok;
+  };
+  box.addEventListener("input", look);
+  said.hidden = true;
+  go.disabled = true;
+  go.addEventListener("click", async () => {
+    const want = box.value.trim();
+    const r = await fetch("/api/folder/rename",
+      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd, name: want, go: true})})
+      .then(r => r.json()).catch(() => ({ok:false, error:""}));
+    if (!r.ok) { toast(r.error || T["settings.group.rename.failed"], true); return; }
+    toast(fill(T["msg.branch.renamed"], {from: r.from, to: r.to}));
+    branch = r.to;
+    box.value = r.to;
+    go.disabled = true;
+    line.textContent = "";
+    note.textContent = r.sent ? fill(T["settings.group.rename.after"], {name: r.sent}) : "";
+    said.hidden = !note.textContent;
+    renderNav();
+  });
+  return card(T["settings.group.rename"],
+    el("div", {class:"row"}, box, go),
+    el("div", {class:"hint"}, T["settings.group.rename.hint"]),
+    said);
 }
 
 // Which project a folder belongs to, as the app sees it. Answered by the app
