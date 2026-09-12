@@ -651,6 +651,37 @@ shikisha.http_raw("https://api.example.com/hook", '{"x":1}')
 （`api.example.com.evil.com` のようなすり抜けは弾かれます）。
 ファイル・通信は必ず `logs/hooks.log` に記録されます。
 
+### ワークスペースごとに決める
+
+ここまでの設定は、どのワークスペースにも効くアプリ共通の答えです。会社の
+リポジトリと自分のものを1台で扱うような場合は、`workspaces` の中に書けば、
+そのワークスペースだけの答えになります。
+
+```jsonc
+"workspaces": [
+  {
+    "name": "会社",
+    "id": "kaisha",
+    "capabilities": { "http": { "deploy": { "url": "https://example.com/deploy" } } },
+    "automation_permissions": { "write_path": { "ai": false } },
+    "notify": ["work-slack"],          // 登録済みの通知先のうち、ここから使えるもの
+    "primary_notify": "work-slack",    // 宛先を書かない notify(text) の届き先
+    "providers": ["work-azure"],       // ここのタブが使えるモデル接続先
+    "git": { "protect": ["main", "release/*"] }
+  }
+]
+```
+
+いずれもアプリ共通の答えに足すのではなく、置き換えます。書かなければ
+「アプリ共通に従う」という意味です。いま何が効いていて、それがどちらの設定
+なのかは、そのワークスペースの設定ページに出ます。
+
+GitHub のトークンはここには書きません。そのワークスペースの秘密情報に
+`github` という名前で入れます（設定ページにボタンがあります）。細かい権限を
+選べる方（fine-grained personal access token）で、そのワークスペースが扱う
+リポジトリだけを選んでください。渡していないワークスペースは、これまで通り
+環境変数 `GITHUB_TOKEN`、次に自分の `gh` のサインインを使います。
+
 ---
 
 ## 7. 外から操る（外部API）

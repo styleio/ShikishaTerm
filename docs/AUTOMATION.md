@@ -619,6 +619,37 @@ Hosts are matched **exactly** and only `https` is allowed
 (tricks like `api.example.com.evil.com` are rejected).
 Every file and network operation is recorded in `logs/hooks.log`.
 
+### A workspace can answer for itself
+
+Everything in this section is the app's answer for every workspace. A workspace
+that works for somebody else -- a company's repositories beside your own -- can
+write its own instead, inside its entry in `workspaces`:
+
+```jsonc
+"workspaces": [
+  {
+    "name": "work",
+    "id": "work",
+    "capabilities": { "http": { "deploy": { "url": "https://example.com/deploy" } } },
+    "automation_permissions": { "write_path": { "ai": false } },
+    "notify": ["work-slack"],          // of the registered destinations, only this one
+    "primary_notify": "work-slack",    // where notify(text) with no name lands
+    "providers": ["work-azure"],       // the model connections its tabs may use
+    "git": { "protect": ["main", "release/*"] }
+  }
+]
+```
+
+Each of these replaces the app's answer rather than adding to it, and each may
+be left out, which means "whatever the app says". The workspace's settings page
+shows what is in force and which of the two places said it.
+
+Its GitHub token is not written here: it is the secret named `github` beside
+that workspace's other secrets, and the workspace page offers to set it. Use a
+fine-grained token covering only the repositories that workspace works on. A
+workspace given none falls back to `GITHUB_TOKEN` in the environment, then to
+whatever your own `gh` is signed in as.
+
 ---
 
 ## 7. Driving it from outside (the external API)
