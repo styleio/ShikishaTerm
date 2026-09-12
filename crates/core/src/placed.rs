@@ -144,6 +144,16 @@ impl BrowserHost for Placed {
             Draw::Here => self.here.open_child(name, url, rect, profile)?,
             Draw::There => self.there.open_child(name, url, rect, profile)?,
         }
+        // Which side a page landed on is the first thing anybody asks when it
+        // does not look the way they expected, and the one thing that cannot
+        // be seen from either end afterwards
+        crate::append_hook_log(&format!(
+            "page {name}: drawn {} ({url})",
+            match side {
+                Draw::Here => "on this machine",
+                Draw::There => "on the connected device",
+            }
+        ));
         self.owner.borrow_mut().insert(name.to_string(), side);
         Ok(())
     }

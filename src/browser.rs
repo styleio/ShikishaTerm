@@ -798,6 +798,16 @@ impl Browser {
         // Return anything that arrived while we were waiting first (preserves arrival order)
         let mut evs: Vec<Ev> = std::mem::take(&mut *self.spare.lock().unwrap());
         evs.extend(self.events.lock().unwrap_or_else(|e| e.into_inner()).try_iter());
+        // An answer belongs to whoever asked for it, not to whoever reads the
+        // queue first. Put those back rather than hand them out: the asker is
+        // blocked waiting, and a stolen answer is an operation that times out
+        // for no reason anybody can see
+        let (answers, rest): (Vec<Ev>, Vec<Ev>) =
+            evs.into_iter().partition(|e| matches!(e, Ev::Result { .. }));
+        if !answers.is_empty() {
+            self.spare.lock().unwrap().extend(answers);
+        }
+        let evs = rest;
         for e in &evs {
             if let Ev::Ready { from, .. } = e {
                 self.reask(from.as_deref());
@@ -885,6 +895,19 @@ impl Browser {
     /// one id, so each caller can word its own failure
     fn wait_ev(&self, id: u64, timeout: std::time::Duration) -> Result<(bool, String)> {
         let until = std::time::Instant::now() + timeout;
+        // It may already have arrived and been set aside -- by another wait, or
+        // by a drain that knew it was not its to take
+        {
+            let mut spare = self.spare.lock().unwrap();
+            if let Some(at) = spare
+                .iter()
+                .position(|e| matches!(e, Ev::Result { id: got, .. } if *got == id))
+            {
+                if let Ev::Result { ok, value, .. } = spare.remove(at) {
+                    return Ok((ok, value));
+                }
+            }
+        }
         loop {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
@@ -1610,10 +1633,26 @@ fn run_window(
                     let fin_who = name.clone();
                     let mut b = WebViewBuilder::new_with_web_context(ctx);
                     if let Some(port) = through {
-                        b = b.with_proxy_config(wry::ProxyConfig::Http(wry::ProxyEndpoint {
-                            host: "127.0.0.1".into(),
-                            port: port.to_string(),
-                        }));
+                        shikisha_core::append_hook_log(&format!(
+                            "[browser] '{name}' reaches the network through 127.0.0.1:{port}"
+                        ));
+                    }
+                    if let Some(port) = through {
+                        use wry::WebViewBuilderExtWindows as _;
+                        // `<-loopback>` is the whole point, and it has to be
+                        // said out loud: a browser leaves loopback addresses
+                        // out of its proxy by default, so `localhost:3000`
+                        // would go to *this* machine -- which is the one
+                        // mistake this feature exists to prevent. Written as
+                        // plain arguments rather than through wry's proxy
+                        // setting, which offers no way to say it.
+                        //
+                        // wry's own defaults are repeated here because naming
+                        // arguments replaces them: without them a placed page
+                        // gets the mini menu and the smart screen back
+                        b = b.with_additional_browser_args(format!(
+                            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection                              --proxy-server=http://127.0.0.1:{port}                              --proxy-bypass-list=<-loopback>"
+                        ));
                     }
                     if let Some(ua) = ua.as_deref() {
                         b = b.with_user_agent(ua);
@@ -2846,10 +2885,16 @@ mod tests {
             .unwrap();
         // `spawn` has already waited for the board to be ready
         b.browse_through(port);
-        // A name no resolver on earth answers. Only the proxy can reach it
+        // A loopback address, which is the case this exists for and the one a
+        // browser gets wrong by default: `--proxy-server` alone leaves
+        // loopback out, so this would be fetched from *this* machine -- where
+        // nothing is listening on that port -- instead of from the far one.
+        // A high port on purpose: a browser refuses a list of low ones
+        // (tcpmux, discard, and their neighbours) before a proxy is even
+        // consulted, which looks exactly like the bug this guards
         b.open_child(
             "p",
-            "http://nowhere.invalid/page",
+            "http://127.0.0.1:39997/page",
             (0, 0, 600, 400),
             BrowserProfile::new("through-test", true),
         )
@@ -2868,8 +2913,8 @@ mod tests {
         }
         let asked = asked.lock().unwrap().clone();
         assert!(
-            asked.iter().any(|line| line.contains("nowhere.invalid")),
-            "プロキシに届いていない: {asked:?}"
+            asked.iter().any(|line| line.contains("127.0.0.1:39997")),
+            "ループバックがプロキシを迂回している（この機能の要): {asked:?}"
         );
         assert!(!text.is_empty(), "プロキシが返したページが表示されていない");
         // Everything the browser does goes this way, not only what a page

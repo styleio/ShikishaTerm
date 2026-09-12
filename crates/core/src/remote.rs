@@ -1746,13 +1746,18 @@ fn handle(
             let session = session.clone();
             std::thread::spawn(move || {
                 let mut w = crate::ws::WsWriter::new(stream);
-                while let Ok(ask) = arx.recv() {
-                    if !gate.granted(&session) || w.send_text(&ask).is_err() {
-                        break;
+                let why = loop {
+                    let Ok(ask) = arx.recv() else { break "nothing left to ask with" };
+                    if !gate.granted(&session) {
+                        break "the session was cut";
                     }
-                }
+                    if w.send_text(&ask).is_err() {
+                        break "the line would not carry it";
+                    }
+                };
                 // Nobody is drawing any more. Everything still waiting on an
                 // answer is told now, rather than waiting out its own deadline
+                crate::append_hook_log(&format!("pages: the asks line ended -- {why}"));
                 line.detach();
                 pages_open.lock().unwrap().remove(&name);
                 let _ = w.send_close();
@@ -1781,10 +1786,13 @@ fn handle(
             let gate = Arc::clone(gate);
             let session = session.clone();
             std::thread::spawn(move || {
-                loop {
-                    let frame = crate::ws::read_frame(&mut stream);
+                let why = loop {
+                    // Answers, not intents: a page's HTML is bigger than
+                    // anything a phone ever says, and a picture of one is
+                    // bigger still
+                    let frame = crate::ws::read_frame_upto(&mut stream, crate::ws::ONE_ANSWER);
                     if !gate.granted(&session) {
-                        break;
+                        break "the session was cut".to_string();
                     }
                     match frame {
                         Ok((crate::ws::Op::Text, payload)) => {
@@ -1792,10 +1800,12 @@ fn handle(
                                 line.heard(&text);
                             }
                         }
-                        Ok((crate::ws::Op::Close, _)) | Err(_) => break,
+                        Ok((crate::ws::Op::Close, _)) => break "the device hung up".to_string(),
+                        Err(e) => break format!("the line broke: {e}"),
                         Ok(_) => {}
                     }
-                }
+                };
+                crate::append_hook_log(&format!("pages: the answers line ended -- {why}"));
                 line.detach();
             });
         }
