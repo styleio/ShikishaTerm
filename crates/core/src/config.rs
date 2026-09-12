@@ -38,6 +38,26 @@ pub struct HostSpec {
     /// this program has never seen
     #[serde(default)]
     pub branches: Option<String>,
+    /// What kind of machine it is: `ssh` for one that is already there, `e2b`
+    /// for one that is made when it is wanted. Absent is `ssh`, because that
+    /// is what a machine with an address written down is
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// For a machine that is made: the image it is made from
+    #[serde(default)]
+    pub template: Option<String>,
+    /// For a machine that is made: how many minutes it lives untouched. One
+    /// that nobody stops still stops on its own, which is the only reason a
+    /// program may ask for one
+    #[serde(default)]
+    pub minutes: Option<u32>,
+}
+
+impl HostSpec {
+    /// Whether this machine has to be asked for before anything can run on it.
+    pub fn is_made(&self) -> bool {
+        self.kind.as_deref().map(str::trim).unwrap_or("ssh").eq_ignore_ascii_case("e2b")
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]

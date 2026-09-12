@@ -32,6 +32,28 @@ pub struct Sandbox {
     pub token: Option<String>,
 }
 
+/// The key this program is using right now.
+///
+/// Handed over when the settings are read, the same way ssh's passwords are,
+/// so that a key taken out of the settings stops working rather than living on
+/// in a thread's memory. The environment is a fallback for a machine that is
+/// running this without settings at all -- a check, a server, a build
+static KEY: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
+
+pub fn use_key(key: Option<String>) {
+    let cell = KEY.get_or_init(Default::default);
+    if let Ok(mut k) = cell.lock() {
+        *k = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+    }
+}
+
+pub fn key() -> Option<String> {
+    if let Some(k) = KEY.get().and_then(|c| c.lock().ok()).and_then(|k| k.clone()) {
+        return Some(k);
+    }
+    std::env::var("E2B_API_TOKEN").ok().map(|k| k.trim().to_string()).filter(|k| !k.is_empty())
+}
+
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         // Making one takes a few seconds; the sandbox is being built
