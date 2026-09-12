@@ -12,6 +12,22 @@ The runtime with no window grew a browser, and the devices looking at it stopped
 being spectators.
 
 ### Added
+- **A file opens where you can read it, and you can change it there.** Pressing
+  a file in that list divides the screen and opens it beside what is running.
+  It is a place to read and to fix a line --- colour, brackets and indentation,
+  and no type checking, because the real tools are in the terminal next to it.
+  Nothing has to be set up first: with no editor open, a throwaway one appears
+  and every file after that replaces its contents, so pressing ten files leaves
+  one editor rather than ten. Somebody who wants one pinned to a folder can add
+  it in the settings ("What to run: kind → Editor"), and that one keeps its
+  place. **Ctrl+S saves; nothing saves itself.**
+- **What the editor is really for: an AI is editing the same file.** A file
+  changed on disk while nothing is unsaved is simply followed --- when the
+  agent next door is the one writing, that is what you want to see. A file
+  changed under an unsaved draft is **not** reloaded: it says so, and you pick.
+  A save that would land on top of somebody else's newer bytes is refused
+  rather than won, and says which. Pressing "Tell the AI" puts
+  `path:line` --- or `path:from-to` for a selection --- in the box below.
 - **The window wears its own bar.** The system's title bar is gone and the
   program draws that strip itself, because that is where the two panels are
   opened from. It reads left to right the way a window's bar does: whose
@@ -43,10 +59,8 @@ being spectators.
   back with the line it found and the number it is on. What counts as "the
   files here" is git's own answer where there is one --- so a search does not
   return ten thousand build artefacts --- while the tree shows everything that
-  is actually there, ignored or not. Pressing a file puts its path in the box
-  below, ready to hand to the AI: there is no editor here, and a path is the
-  useful thing to do with a file when the thing next to you can read it. It
-  works in any working folder, repository or not.
+  is actually there, ignored or not. It works in any working folder, repository
+  or not.
 - **A browser on the machine the agents are on.** A runtime with no window can
   open pages, click them, read them, take their picture and carry their logins
   --- everything `browser_*` has always done at the window, from the same code.

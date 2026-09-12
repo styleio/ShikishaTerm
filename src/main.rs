@@ -691,6 +691,7 @@ impl WinSurface {
                 Ev::RunLua { code } => self.mail.run_luas.push(code),
                 Ev::Git { panel, act, args } => self.mail.gits.push((panel, act, args)),
                 Ev::Files { panel, act, args } => self.mail.files.push((panel, act, args)),
+                Ev::EditOpen { panel, path } => self.mail.edits.push((panel, path)),
                 Ev::Sftp { panel, act, args } => self.mail.sftps.push((panel, act, args)),
                 Ev::Recorded {
                     from: Some(child),
@@ -847,6 +848,29 @@ fn run_in_window() -> Result<()> {
             // is served, and a page whose <link> answers with HTML is a page
             // that lies about itself. It is the same drawing the phone gets.
             let path = req.url().split('?').next().unwrap_or("/").to_string();
+            // The editor's library, carried inside this program. Asked for only
+            // when somebody opens a file, and answered from the same bytes the
+            // phone is answered from
+            if let Some(bytes) = shikisha_core::ace::asset(&path) {
+                let r = tiny_http::Response::from_data(bytes)
+                    .with_header(
+                        tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"application/javascript; charset=utf-8"[..],
+                        )
+                        .expect("header"),
+                    )
+                    // It only changes when this program does
+                    .with_header(
+                        tiny_http::Header::from_bytes(
+                            &b"Cache-Control"[..],
+                            &b"public, max-age=86400"[..],
+                        )
+                        .expect("header"),
+                    );
+                let _ = req.respond(r);
+                continue;
+            }
             if let Some(bytes) = pwa::icon(&path) {
                 let r = tiny_http::Response::from_data(bytes).with_header(
                     tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"image/png"[..])
