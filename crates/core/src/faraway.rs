@@ -575,8 +575,9 @@ pub fn draw_for<B: BrowserHost + Speaks>(
     Ok(())
 }
 
-/// Open a WebSocket to a board, by hand.
-fn handshake(base: &str, path: &str, cookie: &str) -> anyhow::Result<std::net::TcpStream> {
+/// Open a WebSocket to a board, by hand. Plain or encrypted, as its address
+/// says -- see [`crate::tunnel::dial`]
+fn handshake(base: &str, path: &str, cookie: &str) -> anyhow::Result<crate::tunnel::Wire> {
     crate::tunnel::handshake(base, path, cookie)
 }
 

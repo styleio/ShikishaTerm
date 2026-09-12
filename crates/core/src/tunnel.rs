@@ -336,7 +336,7 @@ pub struct Proxy {
     stop: Arc<AtomicBool>,
     /// The line out. Held so the frames of one connection cannot interleave
     /// with another's halfway through
-    up: Arc<Mutex<std::net::TcpStream>>,
+    up: Arc<Mutex<Wire>>,
     /// The browser's connections, by the number they were given
     here: Arc<Mutex<HashMap<u32, std::net::TcpStream>>>,
     next: Arc<std::sync::atomic::AtomicU32>,
@@ -375,7 +375,7 @@ impl Proxy {
     }
 
     /// What the far machine says, given back to whichever connection asked.
-    fn hear(&self, mut down: std::net::TcpStream) {
+    fn hear(&self, mut down: Wire) {
         let here = Arc::clone(&self.here);
         let stop = Arc::clone(&self.stop);
         std::thread::Builder::new()
@@ -462,7 +462,7 @@ impl Drop for Proxy {
         // Waking the listener: it is inside `accept`, and the only thing that
         // brings it back is somebody knocking
         let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
-        let _ = self.up.lock().map(|s| s.shutdown(std::net::Shutdown::Both));
+        let _ = self.up.lock().map(|s| s.close());
         for (_, sock) in self.here.lock().unwrap_or_else(|e| e.into_inner()).drain() {
             let _ = sock.shutdown(std::net::Shutdown::Both);
         }
@@ -474,11 +474,11 @@ fn carry_one(
     sock: &std::net::TcpStream,
     stop: &Arc<AtomicBool>,
     here: &Arc<Mutex<HashMap<u32, std::net::TcpStream>>>,
-    up: &Arc<Mutex<std::net::TcpStream>>,
+    up: &Arc<Mutex<Wire>>,
     next: &Arc<std::sync::atomic::AtomicU32>,
 ) {
     let Ok(mut reading) = sock.try_clone() else { return };
-    let Some((head, rest)) = read_head(&mut reading) else { return };
+    let Some(head) = read_head(&mut reading) else { return };
     let Some(asked) = Asked::read(&head) else {
         let _ = (&*sock).write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
         return;
@@ -516,11 +516,6 @@ fn carry_one(
             }
         }
     }
-    // Anything the browser had already said past the head it was waiting on
-    if !rest.is_empty() && !say(Kind::Data, &rest) {
-        return;
-    }
-
     // And from here it is bytes, until there are none
     let mut buf = vec![0u8; CHUNK];
     loop {
@@ -594,35 +589,122 @@ fn with_port(host: &str, fallback: u16) -> Option<String> {
     }
 }
 
-/// Everything up to the blank line, and whatever came after it in the same
-/// breath.
-fn read_head(sock: &mut std::net::TcpStream) -> Option<(String, Vec<u8>)> {
+/// Everything up to the blank line.
+///
+/// A byte at a time, so nothing past the blank line is swallowed: what
+/// follows it belongs to whoever asked, and on a proxy's line that is the
+/// first thing a browser sends.
+fn read_head(from: &mut impl std::io::Read) -> Option<String> {
     let mut seen = Vec::new();
     let mut one = [0u8; 1];
     while seen.len() < 64 * 1024 {
-        match sock.read(&mut one) {
+        match from.read(&mut one) {
             Ok(0) | Err(_) => return None,
             Ok(_) => seen.push(one[0]),
         }
         if seen.ends_with(b"\r\n\r\n") {
-            return Some((String::from_utf8_lossy(&seen).to_string(), Vec::new()));
+            return Some(String::from_utf8_lossy(&seen).to_string());
         }
     }
     None
 }
 
-/// Open a WebSocket to the board, by hand.
+// ── reaching a board ──────────────────────────────────────────────────────
+
+/// A line to a board: plain bytes, or the same bytes inside TLS.
+///
+/// Which one it is depends on how the board is addressed, and nothing above
+/// this has to know: a WebSocket frame is a WebSocket frame either way. The
+/// encrypted kind cannot be cloned the way a socket can -- the session has
+/// state, and two halves of it would be two different conversations -- so the
+/// socket underneath is kept alongside, purely to be able to shut the whole
+/// thing at once.
+pub struct Wire {
+    line: Box<dyn ReadWrite + Send>,
+    raw: TcpStream,
+}
+
+pub trait ReadWrite: std::io::Read + std::io::Write {}
+impl<T: std::io::Read + std::io::Write> ReadWrite for T {}
+
+impl std::io::Read for Wire {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.line.read(buf)
+    }
+}
+
+impl std::io::Write for Wire {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.line.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.line.flush()
+    }
+}
+
+impl Wire {
+    /// End it, from wherever. What is blocked reading finds out by the read
+    /// ending, which is the only thing that wakes a blocked read
+    pub fn close(&self) {
+        let _ = self.raw.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Open a line to a board, encrypted if its address says so.
+///
+/// The roots are the ones this program carries rather than the machine's. On
+/// a server that is often the only set there is, and on a desktop it is the
+/// same set the browser would use -- a board behind `tailscale serve` has an
+/// ordinary certificate from an ordinary authority, and this is what checks it
+pub(crate) fn dial(base: &str) -> anyhow::Result<Wire> {
+    let (encrypted, rest) = match base.trim_end_matches('/') {
+        b if b.starts_with("https://") => (true, &b[8..]),
+        b if b.starts_with("http://") => (false, &b[7..]),
+        _ => anyhow::bail!(crate::i18n::tp("err.tunnel.bad_address", &[("base", base)])),
+    };
+    let host = rest.split('/').next().unwrap_or(rest);
+    let (name, _) = host.rsplit_once(':').unwrap_or((host, ""));
+    let with_port = match host.contains(':') {
+        true => host.to_string(),
+        false => format!("{host}:{}", if encrypted { 443 } else { 80 }),
+    };
+    let raw = TcpStream::connect(&with_port)?;
+    raw.set_nodelay(true)?;
+    if !encrypted {
+        let line = Box::new(raw.try_clone()?);
+        return Ok(Wire { line, raw });
+    }
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let server = rustls::pki_types::ServerName::try_from(name.to_string())
+        .map_err(|_| anyhow::anyhow!(crate::i18n::tp("err.tunnel.bad_address", &[("base", base)])))?;
+    let session = rustls::ClientConnection::new(std::sync::Arc::new(config), server)?;
+    let line = Box::new(rustls::StreamOwned::new(session, raw.try_clone()?));
+    Ok(Wire { line, raw })
+}
+
+/// Open a WebSocket to a board, by hand.
 ///
 /// The answer's key is not checked. What that check proves is that the far
 /// side speaks WebSocket rather than being a cache that echoed the request,
 /// and the far side here has already been let in through a lock
-pub(crate) fn handshake(base: &str, path: &str, cookie: &str) -> anyhow::Result<std::net::TcpStream> {
+pub(crate) fn handshake(base: &str, path: &str, cookie: &str) -> anyhow::Result<Wire> {
+    let mut wire = dial(base)?;
     let host = base
         .trim_end_matches('/')
-        .strip_prefix("http://")
-        .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.tunnel.plain_only", &[("base", base)])))?;
-    let sock = std::net::TcpStream::connect(host)?;
-    sock.set_nodelay(true)?;
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_string();
     let key = {
         use base64::Engine as _;
         let bytes = crate::random_bytes(16).unwrap_or_else(|| vec![0; 16]);
@@ -632,9 +714,8 @@ pub(crate) fn handshake(base: &str, path: &str, cookie: &str) -> anyhow::Result<
         true => String::new(),
         false => format!("Cookie: {cookie}\r\n"),
     };
-    let mut writing = sock.try_clone()?;
     write!(
-        writing,
+        wire,
         "GET {path} HTTP/1.1\r\n\
          Host: {host}\r\n\
          Upgrade: websocket\r\n\
@@ -643,29 +724,18 @@ pub(crate) fn handshake(base: &str, path: &str, cookie: &str) -> anyhow::Result<
          Sec-WebSocket-Key: {key}\r\n\
          Sec-WebSocket-Version: 13\r\n\r\n"
     )?;
-    writing.flush()?;
+    wire.flush()?;
 
-    let mut head = Vec::new();
-    let mut one = [0u8; 1];
-    let mut reading = sock.try_clone()?;
-    while head.len() < 8192 {
-        if reading.read(&mut one)? == 0 {
-            anyhow::bail!(crate::i18n::t("err.tunnel.refused"));
-        }
-        head.push(one[0]);
-        if head.ends_with(b"\r\n\r\n") {
-            break;
-        }
-    }
-    let said = String::from_utf8_lossy(&head);
+    let said = read_head(&mut wire).ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.tunnel.refused")))?;
     if !said.starts_with("HTTP/1.1 101") {
         anyhow::bail!(crate::i18n::tp(
             "err.tunnel.refused_with",
             &[("said", said.lines().next().unwrap_or("?"))]
         ));
     }
-    Ok(sock)
+    Ok(wire)
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -726,6 +796,51 @@ mod tests {
             }
         });
         addr
+    }
+
+    /// An address says which kind of line to open, and a bad one says so.
+    #[test]
+    fn an_address_says_whether_the_line_is_encrypted() {
+        // Nothing is reached here -- only the reading of the address, which is
+        // what decides between a plain socket and a TLS session
+        for bad in ["", "ws://board", "board:8787", "ftp://board/"] {
+            let said = dial(bad).map(|_| String::new()).unwrap_or_else(|e| e.to_string());
+            assert!(
+                said.contains(bad) || said.is_empty() == false,
+                "住所として断っていない: {bad}"
+            );
+            assert!(dial(bad).is_err(), "話せない住所を受けている: {bad}");
+        }
+    }
+
+    /// The encrypted line, against a server that really is one.
+    ///
+    /// Ignored by default because it needs the internet, and a test that fails
+    /// on a train is a test people learn to ignore. What it proves is the part
+    /// no local test can: a real certificate, checked against the roots this
+    /// program carries, with bytes going both ways afterwards.
+    ///
+    ///     cargo test -p shikisha-core --lib really_encrypted -- --ignored --nocapture
+    #[test]
+    #[ignore = "needs the internet"]
+    fn an_https_board_is_reached_and_really_encrypted() {
+        use std::io::Write as _;
+        let site = "https://shikisha-term.com";
+        let mut wire = dial(site).expect("繋がらない");
+        write!(
+            wire,
+            "GET / HTTP/1.1\r\nHost: shikisha-term.com\r\nConnection: close\r\n\r\n"
+        )
+        .expect("書けない");
+        wire.flush().unwrap();
+        let said = read_head(&mut wire).expect("何も返ってこない");
+        let first = said.lines().next().unwrap_or_default().to_string();
+        assert!(first.starts_with("HTTP/"), "HTTP が返っていない: {first}");
+        println!("{site} -> {first}");
+
+        // And the same address spelled without its scheme is refused rather
+        // than guessed at: a guess would be plain text to a port expecting TLS
+        assert!(dial("shikisha-term.com").is_err());
     }
 
     /// A frame survives being written and read
