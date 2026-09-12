@@ -81,10 +81,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #titlebar { grid-column:1/4; grid-row:1; display:flex; align-items:stretch;
     background:var(--panel); border-bottom:1px solid var(--line);
     user-select:none; -webkit-user-select:none; }
-  #titlebar .drag { flex:1 1 auto; min-width:0; display:flex; align-items:center;
-    gap:var(--s2); padding:0 var(--s3); overflow:hidden; }
-  #titlebar .mark { flex:0 0 auto; font-size:11px; letter-spacing:.02em;
-    color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* The empty middle. Nothing in it: it is somewhere to take hold of */
+  #titlebar .drag { flex:1 1 auto; min-width:0; }
+  #titlebar .ico { flex:0 0 auto; width:16px; height:16px; margin:0 var(--s2) 0 10px; }
+  #titlebar .mark { flex:0 1 auto; font-size:11px; letter-spacing:.02em;
+    color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    margin-right:var(--s2); }
   /* The two switches. Quiet until the pointer is on them, and lit while the
      panel they open is out -- the same "this is on" the tab strip uses */
   #titlebar button { flex:0 0 auto; width:38px; border:none; background:none;
@@ -3998,19 +4000,21 @@ function drawTitle() {
   if (bar.dataset.key === key) return;
   bar.dataset.key = key;
   bar.textContent = "";
-  // The switch for a panel sits at the end that panel is on
+  // Taking hold of the bar: anywhere on it that is not a button. The window
+  // does the dragging, so the pointer keeps every snap the system has, and
+  // double-click is the other half of the same gesture everywhere else
+  bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) winAct("drag"); };
+  bar.ondblclick = e => { if (!e.target.closest("button")) winAct("maximize"); };
+  // Whose window this is, and what it is called -- what the system bar said,
+  // where it said it. Which workspace it is showing is the footer's to say.
+  // The picture is the one the phone already fetches, from the same route
+  bar.append(el("img", {class: "ico", src: "/pwa/icon-192.png", alt: ""}));
+  bar.append(el("span", {class: "mark"}, "SHIKISHA-TERM"));
+  // Then the switch for the panel on this side. The other one is at the other
+  // end, for the same reason
   bar.append(el("button", {class: tabWidth() > 0 ? "on" : "",
     title: T["tui.title.tabs"] || "", onclick: () => window.__toggleTabBar()}, "\u25e7"));
-  const drag = el("div", {class: "drag"});
-  // Taking hold of the bar. The window does the dragging, so the pointer keeps
-  // every snap the system has; double-click is the other half of the same
-  // gesture everywhere else
-  drag.onmousedown = e => { if (e.button === 0 && e.target === drag) winAct("drag"); };
-  drag.ondblclick = e => { if (e.target === drag) winAct("maximize"); };
-  // What the system bar used to say, in the place it used to say it: which
-  // program this window is. Which workspace it is showing is the footer's
-  drag.append(el("span", {class: "mark"}, "SHIKISHA-TERM"));
-  bar.append(drag);
+  bar.append(el("div", {class: "drag"}));
   bar.append(el("button", {class: sideWidth() > 0 ? "on" : "",
     title: T["tui.title.side"] || "", onclick: () => window.__toggleSideBar()}, "\u25e8"));
   bar.append(el("button", {class: "wbtn", title: T["tui.title.min"] || "",
@@ -9030,9 +9034,13 @@ mod tests {
         }
         // Taken hold of by the bar itself, never by a button sitting on it
         assert!(
-            p.contains(r#"drag.onmousedown = e => { if (e.button === 0 && e.target === drag) winAct("drag"); };"#),
+            p.contains(
+                r#"bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) winAct("drag"); };"#
+            ),
             "帯を掴む所が無いか、ボタンの上でも掴んでしまう"
         );
+        // Whose window this is, at the end a window says it
+        assert!(p.contains(r#"src: "/pwa/icon-192.png""#), "窓の絵が帯に無い");
         // A page that is not in this window draws no frame for it
         assert!(
             p.contains(r#"if (REMOTE) document.getElementById("app").classList.add("noframe");"#),

@@ -14,9 +14,10 @@ being spectators.
 ### Added
 - **The window wears its own bar.** The system's title bar is gone and the
   program draws that strip itself, because that is where the two panels are
-  opened from: the switch for the list of tabs at the left end, the switch for
-  the panel on the right at the right end, and the three buttons the system
-  used to draw beyond them. Taking hold of the bar moves the window, a
+  opened from. It reads left to right the way a window's bar does: whose
+  window this is, what it is called, the switch for the list of tabs; then
+  empty room to take hold of; then the switch for the panel on the right, and
+  the three buttons the system used to draw. Taking hold of the bar moves the window, a
   double-click maximises it, and ✕ does exactly what the system's ✕ did.
   Resizing from the edges and the drop shadow are still the system's. One
   thing is lost and worth saying: the Snap Layouts flyout that appears when
