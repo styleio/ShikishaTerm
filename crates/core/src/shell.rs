@@ -1194,6 +1194,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:var(--bg); border:1px solid var(--line); border-radius:var(--r-ctl);
     padding:7px var(--s2); overflow:auto; white-space:pre-wrap; word-break:break-all; }
   #branch .bcmd { color:var(--dim); }
+  /* Everything that already has a sensible answer, behind one press. Somebody
+     adding a worktree names it and presses the button; the rest is here for
+     the times they want to disagree with an answer, and the row saying how
+     many things come along is why this is folded rather than hidden */
+  #branch .bmore { display:flex; align-items:center; gap:var(--s2); background:none; border:0;
+    color:var(--dim); font:inherit; font-size:11.5px; padding:var(--s1) 0; cursor:pointer; align-self:flex-start; }
+  #branch .bmore:hover { color:var(--text); }
+  #branch .bmore .caret { font-size:9px; display:inline-block; }
+  #branch .bmore[aria-expanded="true"] .caret { transform:rotate(90deg); }
+  #branch .bextra { display:flex; flex-direction:column; gap:var(--s2); }
+  #branch .bextra[hidden] { display:none; }
   /* What the new folder cannot get from git. Ticked as it will happen, so
      nobody has to read it unless they disagree */
   #branch .bcarry { display:flex; flex-wrap:wrap; gap:var(--s2) var(--s4); align-items:center; }
@@ -1229,7 +1240,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--raise);
     color:var(--text); cursor:pointer; }
   #branch button:hover, #browse button:hover { border-color:var(--edge-hi); }
-  #branch button.go, #browse button.go { border-color:var(--brand); color:var(--brand); }
+  /* Filled, not outlined. These two dialogs each ask for one thing and then
+     have one button to press, and an outline put it at the same weight as the
+     ✕ beside it -- the same recipe the sftp panel's own button already uses */
+  #branch button.go, #browse button.go { border-color:var(--brand); background:var(--brand);
+    color:var(--bg); font-weight:600; }
+  #branch button.go:hover, #browse button.go:hover { filter:brightness(1.1); }
   /* Off is grey, not a faded version of the live colour: a pale brand outline
      still reads as the brand outline */
   #branch button[disabled], #browse button[disabled] { background:var(--panel2);
@@ -1610,12 +1626,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">✕</span></div>
       <div class="bsay"></div>
       <div class="brow2"><div id="bbase"></div><input id="bq" type="text" autocomplete="off" spellcheck="false"></div>
-      <div class="bstartrow" hidden><span class="say"></span><div id="bstart"></div></div>
-      <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
-      <div class="bais" hidden></div>
       <div class="bwhere"></div>
       <div class="bcmd"></div>
-      <div class="bcarry"></div>
+      <button class="bmore" type="button" aria-expanded="false"><span class="caret">&#9656;</span><span class="nm"></span></button>
+      <div class="bextra" hidden>
+        <div class="bstartrow" hidden><span class="say"></span><div id="bstart"></div></div>
+        <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
+        <div class="bais" hidden></div>
+        <div class="bcarry"></div>
+      </div>
       <div class="berr"></div>
       <div class="brow"><button class="go"></button></div>
     </div>
@@ -2488,7 +2507,8 @@ function openBranch(g) {
   if (!b) return;
   branchFrom = g.folder || "";
   b.hidden = false;
-  b.querySelector(".vtitle").textContent = T["tui.branch.title"] || "PARALLEL WORK";
+  b.querySelector(".vtitle").textContent = T["tui.branch.title"] || "WORKTREE";
+  showMore(b, false);
   b.querySelector(".bsay").textContent = T["tui.branch.hint"] || "";
   b.querySelector(".go").textContent = T["tui.branch.make"] || "Make it";
   const q = document.getElementById("bq");
@@ -2516,6 +2536,22 @@ function openBranch(g) {
   // type is a picker nobody finds anything in
   send({kind:"branch", from:branchFrom, branch:"", base:"", make:false, carry:[]});
   setTimeout(() => q.focus(), 30);
+}
+// Folded or not, and what the row says while it is folded.
+//
+// The count is on the row because these are the person's own files -- what git
+// would not carry -- and quietly bringing thirteen things along without saying
+// so is not the same as folding a list somebody can open
+function showMore(b, open) {
+  const more = b.querySelector(".bmore");
+  const extra = b.querySelector(".bextra");
+  if (!more || !extra) return;
+  extra.hidden = !open;
+  more.setAttribute("aria-expanded", open ? "true" : "false");
+  const n = extra.querySelectorAll(".bcarry input").length;
+  more.querySelector(".nm").textContent = (!open && n)
+    ? (T["tui.branch.more.n"] || "More ({n} come along)").replace("{n}", n)
+    : (T["tui.branch.more"] || "More");
 }
 function closeBranch() {
   const b = document.getElementById("branch");
@@ -2636,6 +2672,7 @@ function drawBranch() {
     ? ((p.lines && p.lines.length) ? p.lines.join("\n") : p.line) : "";
   drawStart(b);
   drawCarry(b, here ? (p.carry || []) : []);
+  showMore(b, !b.querySelector(".bextra").hidden);
   drawBases(b, here ? p : null);
   b.querySelector(".berr").textContent = mine && p.error ? p.error : "";
   b.querySelector(".go").disabled = !(mine && !p.error);
@@ -2745,6 +2782,9 @@ function drawCarry(b, items) {
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:true, carry:carrying(), start:starting(), ais:fanning()});
   };
+  const more = b.querySelector(".bmore");
+  if (more) more.addEventListener("click", () =>
+    showMore(b, b.querySelector(".bextra").hidden));
   const fan = document.getElementById("bfanon");
   if (fan) fan.addEventListener("change", () => { drawStart(b); askBranch(); });
   const q = document.getElementById("bq");
