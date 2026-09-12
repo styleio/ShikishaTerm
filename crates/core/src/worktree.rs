@@ -59,7 +59,9 @@ impl Plan {
     pub fn argvs(&self) -> Vec<Vec<String>> {
         let fresh_machine = self.host.as_ref().is_some_and(|h| h.is_made());
         if !fresh_machine {
-            return vec![self.argv()];
+            let mut steps = vec![self.argv()];
+            steps.extend(self.getting_ready());
+            return steps;
         }
         let at = self.folder.display().to_string();
         let mut steps = vec![
@@ -82,18 +84,34 @@ impl Plan {
                 self.branch.clone(),
             ],
         ];
-        // What the project says it needs, after it is there to need it. Each
-        // is a line for a shell rather than a program and its arguments,
-        // because that is how the file it came from writes them -- and the
-        // whole line is one argument, so nothing in it is split again
-        for line in self.env.iter().flat_map(|e| e.setup.iter()) {
-            steps.push(vec![
-                "sh".into(),
-                "-lc".into(),
-                format!("cd {at} && {line}"),
-            ]);
-        }
+        steps.extend(self.getting_ready());
         steps
+    }
+
+    /// What the project says it needs, after it is there to need it.
+    ///
+    /// The same wherever the folder was cut. A worktree on this machine is as
+    /// bare as one in a sandbox -- the source and nothing installed -- so the
+    /// project's own words about what to run apply to both. They come from the
+    /// file the world already uses to hold them, which is why there is no
+    /// second place to write them.
+    ///
+    /// Each is a line for a shell rather than a program and its arguments,
+    /// because that is how that file writes them, and the whole line goes in
+    /// as one argument so nothing in it is split a second time.
+    fn getting_ready(&self) -> Vec<Vec<String>> {
+        let at = self.folder.display().to_string();
+        self.env
+            .iter()
+            .flat_map(|e| e.setup.iter())
+            .map(|line| match self.host.is_none() && cfg!(windows) {
+                // This machine, and this machine is Windows. A line written
+                // for a container will not always survive that; it is on
+                // screen before it runs, and git's own refusal follows if not
+                true => vec!["cmd".into(), "/c".into(), format!("cd /d {at} && {line}")],
+                false => vec!["sh".into(), "-lc".into(), format!("cd {at} && {line}")],
+            })
+            .collect()
     }
 
     /// Exactly what will run, in the words git will get. Shown to the person
@@ -155,7 +173,7 @@ impl Plan {
 ///
 /// `base` is what a new branch grows from; leave it out for the sensible one.
 pub fn plan(main: &Path, branch: &str, base: Option<&str>) -> Result<Plan> {
-    plan_into(main, branch, base, None)
+    plan_into(main, branch, base, None, None)
 }
 
 /// The same, put somewhere of somebody's choosing.
@@ -164,7 +182,13 @@ pub fn plan(main: &Path, branch: &str, base: Option<&str>) -> Result<Plan> {
 /// is taken at their word and not corrected -- the path is on screen, and the
 /// only thing that would be gained by overruling them is being wrong somewhere
 /// they cannot see.
-pub fn plan_into(main: &Path, branch: &str, base: Option<&str>, at: Option<&Path>) -> Result<Plan> {
+pub fn plan_into(
+    main: &Path,
+    branch: &str,
+    base: Option<&str>,
+    at: Option<&Path>,
+    env: Option<crate::devcontainer::Env>,
+) -> Result<Plan> {
     let branch = branch.trim().to_string();
     if branch.is_empty() {
         bail!(crate::i18n::t("err.worktree.no_branch"));
@@ -188,7 +212,7 @@ pub fn plan_into(main: &Path, branch: &str, base: Option<&str>, at: Option<&Path
     // somebody else's project is already standing in -- and a path that is on
     // screen looking fine until you press it is the worst way to find out
     free_to_make(&folder)?;
-    Ok(Plan { folder, main, branch, base, fresh, host: None, origin: String::new(), env: None })
+    Ok(Plan { folder, main, branch, base, fresh, host: None, origin: String::new(), env })
 }
 
 /// Whether a folder can be made here, in the words the person will read.
@@ -271,9 +295,9 @@ pub fn plan_on(
         fresh: true,
         host: Some(host.clone()),
         origin: origin.trim().to_string(),
-        // Only where there is nothing yet. A machine that already has the
-        // project has already been set up, by whoever set it up
-        env: host.is_made().then_some(env).flatten(),
+        // Whatever kind of machine it is. A new worktree is bare wherever it
+        // is cut: nothing is installed in it, here or on a server
+        env,
     })
 }
 
@@ -1259,7 +1283,8 @@ mod tests {
         // Every one of them is read before any of them runs
         assert_eq!(p.line().lines().count(), 4, "{}", p.line());
 
-        // A machine that is already there was set up by whoever set it up
+        // A machine that is already there still gets a folder with nothing
+        // installed in it. The preparation follows the folder, not the machine
         let there = crate::config::HostSpec {
             name: "bench".into(),
             at: "ssh://me@host:22".into(),
@@ -1269,7 +1294,21 @@ mod tests {
         let q = plan_on(&there, "work", Some("main"), None, "",
                         crate::devcontainer::read(r#"{"postCreateCommand":"npm ci"}"#))
             .expect("計画できる");
-        assert_eq!(q.argvs().len(), 1, "既にある機械に支度を流し込んでいる");
+        assert_eq!(q.argvs().len(), 2, "既にある機械で支度をしていない: {:?}", q.argvs());
+        assert!(q.argvs()[1].last().is_some_and(|l| l.contains("npm ci")), "{:?}", q.argvs()[1]);
+        // Nothing is fetched there: the project is on that machine already
+        assert!(q.argvs()[0].contains(&"worktree".to_string()));
+
+        // And on this machine too, which is as bare as any of them
+        let main = repo("prep");
+        let here = plan_into(&main, "work", Some("main"), None,
+                             crate::devcontainer::read(r#"{"postCreateCommand":"cargo fetch"}"#))
+            .expect("計画できる");
+        assert_eq!(here.argvs().len(), 2, "この PC で支度をしていない");
+        assert!(here.argvs()[1].last().is_some_and(|l| l.contains("cargo fetch")));
+        // Turned off, nothing of it is there
+        let bare = plan_into(&main, "work", Some("main"), None, None).expect("計画できる");
+        assert_eq!(bare.argvs().len(), 1);
     }
 
     /// Somebody who names a place gets that place, and is not corrected.
@@ -1282,23 +1321,23 @@ mod tests {
         let main = repo("elsewhere");
         let mine = std::env::temp_dir().join("shikisha-chosen").join("right here");
         let _ = std::fs::remove_dir_all(&mine);
-        let p = plan_into(&main, "polite-marmot", Some("main"), Some(&mine)).expect("計画できる");
+        let p = plan_into(&main, "polite-marmot", Some("main"), Some(&mine), None).expect("計画できる");
         assert_eq!(p.folder, mine, "指定した場所が使われていない");
         assert_ne!(p.folder, folder_for(&main, "polite-marmot"), "既定に引き戻されている");
         // And it is the place the command names, not just the one on screen
         assert!(p.line().contains("\"") && p.line().contains("right here"), "{}", p.line());
 
         // Nothing named: the app's own answer stands
-        let same = plan_into(&main, "polite-marmot", Some("main"), None).expect("計画できる");
+        let same = plan_into(&main, "polite-marmot", Some("main"), None, None).expect("計画できる");
         assert_eq!(same.folder, folder_for(&main, "polite-marmot"));
         // An empty name is the same as none
-        let blank = plan_into(&main, "polite-marmot", Some("main"), Some(Path::new("")))
+        let blank = plan_into(&main, "polite-marmot", Some("main"), Some(Path::new("")), None)
             .expect("計画できる");
         assert_eq!(blank.folder, same.folder);
 
         // A place already taken is refused here, not when the button is pressed
         std::fs::create_dir_all(&mine).unwrap();
-        assert!(plan_into(&main, "polite-marmot", Some("main"), Some(&mine)).is_err());
+        assert!(plan_into(&main, "polite-marmot", Some("main"), Some(&mine), None).is_err());
         let _ = std::fs::remove_dir_all(mine.parent().unwrap());
     }
 

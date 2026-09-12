@@ -1337,7 +1337,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      has an AI to start; without one the dialog is what it always was */
   #branch .bstartrow { display:flex; gap:var(--s2); align-items:center; }
   /* A display rule of their own would otherwise beat the hidden attribute */
-  #branch .bstartrow[hidden], #branch .bfan[hidden], #branch .bais[hidden] { display:none; }
+  #branch .bstartrow[hidden], #branch .bfan[hidden], #branch .bais[hidden],
+  #branch .bsetup[hidden], #branch .bsetupsay[hidden] { display:none; }
+  #branch .bsetup { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
+  #branch .bsetupsay { padding-left:22px; }
   #branch .bstartrow .say { color:var(--dim); font-size:11.5px; flex:0 0 auto; }
   #branch .bfan { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
   #branch .bais { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding-left:22px; }
@@ -1827,6 +1830,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <button class="bmore" type="button" aria-expanded="false"><span class="caret">&#9656;</span><span class="nm"></span></button>
       <div class="bextra" hidden>
         <div class="bstartrow" hidden><span class="say"></span><div id="bstart"></div></div>
+        <label class="bsetup" hidden><input type="checkbox" id="bsetupon" checked><span></span></label>
+        <div class="bsetupsay hint" hidden></div>
         <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
         <div class="bais" hidden></div>
         <div class="bcarry"></div>
@@ -2741,6 +2746,8 @@ function openBranch(g) {
   branchStart = "";
   const fan = document.getElementById("bfanon");
   if (fan) fan.checked = false;
+  const setupOn = document.getElementById("bsetupon");
+  if (setupOn) setupOn.checked = true;
   const ais = b.querySelector(".bais");
   ais.dataset.key = "";
   ais.textContent = "";
@@ -2782,7 +2789,7 @@ function askBranch() {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:false, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing()});
   }, 180);
 }
 
@@ -2856,6 +2863,11 @@ function drawStart(b) {
 let branchBase = "";
 let branchHost = "";
 function basing() { return branchBase; }
+// Whether the project's own preparation runs. On unless somebody turned it off
+function preparing() {
+  const t = document.getElementById("bsetupon");
+  return t ? t.checked : true;
+}
 
 // The names still ticked, in the order they were offered
 function carrying() {
@@ -2897,6 +2909,7 @@ function drawBranch() {
   b.querySelector(".bcmd").textContent = mine && !p.error
     ? ((p.lines && p.lines.length) ? p.lines.join("\n") : p.line) : "";
   drawStart(b);
+  drawSetup(b, here ? p : null);
   drawDest(b, here ? p : null);
   drawCarry(b, here ? (p.carry || []) : []);
   showMore(b, !b.querySelector(".bextra").hidden);
@@ -2910,6 +2923,29 @@ function drawBranch() {
 // Which machine this happens on. This one is not in the settings and is not in
 // the list: it is what choosing nothing means, so it is the first entry and the
 // one the dialog opens on
+// What the project says it needs, and the choice not to.
+//
+// Only where the project has said something: a switch for a thing that does
+// not exist is a switch nobody can tell the meaning of. What it came from is
+// named, because these are commands somebody else wrote and a person agreeing
+// to them is owed the name of the file they are in
+function drawSetup(b, p) {
+  const row = b.querySelector(".bsetup");
+  const say = b.querySelector(".bsetupsay");
+  if (!row || !say) return;
+  const from = (p && p.setup_from) || "";
+  row.hidden = !from;
+  say.hidden = !from;
+  if (!from) return;
+  row.querySelector("span").textContent = T["tui.branch.setup"] || "";
+  const missing = (p && p.setup_unresolved) || [];
+  const lines = [(T["tui.branch.setup.from"] || "from {name}").replace("{name}", from)];
+  // Named, never dropped: a setup that skipped half of itself in silence is
+  // the worst of both
+  if (missing.length) lines.push((T["tui.branch.setup.unresolved"] || "{names}")
+    .replace("{names}", missing.join(", ")));
+  say.textContent = lines.join("  ");
+}
 function drawDest(b, p) {
   const box = document.getElementById("bdest");
   if (!box) return;
@@ -3037,11 +3073,13 @@ function drawCarry(b, items) {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:true, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing()});
   };
   const more = b.querySelector(".bmore");
   if (more) more.addEventListener("click", () =>
     showMore(b, b.querySelector(".bextra").hidden));
+  const setupOn = document.getElementById("bsetupon");
+  if (setupOn) setupOn.addEventListener("change", askBranch);
   const fan = document.getElementById("bfanon");
   if (fan) fan.addEventListener("change", () => { drawStart(b); askBranch(); });
   const bat = document.getElementById("bat");
@@ -9940,8 +9978,11 @@ mod tests {
         assert!(PAGE.contains(r#"make:true, carry:carrying(), start:starting(), ais:fanning(),"#), "作る道に起動先が乗らない");
         // The place travels on both roads too. On one only, the line somebody
         // read would be about a folder the button then did not use
-        assert_eq!(PAGE.matches(r#"at:(at ? at.value.trim() : ""), host:branchHost});"#).count(), 2,
-                   "場所と機械が両方の道に乗っていない");
+        assert_eq!(
+            PAGE.matches(r#"at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing()});"#).count(),
+            2,
+            "場所・機械・支度が両方の道に乗っていない"
+        );
         // With the fan-out ticked, the single choice is not sent as well
         assert!(PAGE.contains(r#"function starting() { return fanning().length ? "" : branchStart; }"#));
         // Nothing offered on a machine with no AI: the dialog is what it was

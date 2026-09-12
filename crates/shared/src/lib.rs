@@ -209,6 +209,10 @@ pub enum Ev {
         /// The machine to make it on, by the name the settings gave it.
         /// Empty is this one
         host: String,
+        /// Whether to run what the project says its environment needs. On
+        /// unless somebody says otherwise: a folder that skipped it is a
+        /// folder the first thing anybody does in is fail to build
+        setup: bool,
     },
     /// A colour was chosen for the project a folder belongs to. Empty means
     /// "go back to the one you work out yourselves"
@@ -589,14 +593,15 @@ pub struct BranchAsk {
     pub ais: Vec<String>,
     pub at: String,
     pub host: String,
+    pub setup: bool,
 }
 
 impl BranchAsk {
     /// The ask carried by a branch event, or nothing for any other event.
     pub fn of(ev: Ev) -> Option<Self> {
         match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais, at, host } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host })
+            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, setup } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, setup })
             }
             _ => None,
         }
@@ -751,6 +756,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             start: v.get("start").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             at: v.get("at").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            // Absent means yes: an older shell that does not send it is not
+            // asking for a folder nothing can be built in
+            setup: v.get("setup").and_then(|x| x.as_bool()).unwrap_or(true),
             ais: v
                 .get("ais")
                 .and_then(|x| x.as_array())
