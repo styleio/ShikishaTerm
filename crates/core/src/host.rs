@@ -91,6 +91,14 @@ pub struct Headless {
     /// The pages the runtime has open, on this machine or on whoever is
     /// connected. Nothing starts a browser until a page is asked for
     pages: std::rc::Rc<crate::placed::Placed>,
+    /// Keystrokes handed to this shell, waiting to be read back.
+    ///
+    /// A shell with nobody in front of it still receives them: everything a
+    /// person does from afar that is not a queue of its own -- typing, picking
+    /// a tab, the board's menu -- arrives as the keystroke it stands for, and
+    /// is handed here. Dropping them, which is what this did, left a server
+    /// that could be watched and not driven
+    typed: std::collections::VecDeque<Event>,
 }
 
 /// How big a page is, with no window to fit it into.
@@ -109,7 +117,14 @@ impl Headless {
     /// The same, with its pages opened somewhere of your choosing. For a test
     /// that wants a real browser and nobody's real cookies.
     pub(crate) fn browsing(rows: u16, cols: u16, pages: std::rc::Rc<crate::placed::Placed>) -> Self {
-        Self { mail: Mailbox::default(), rows, cols, last: None, pages }
+        Self {
+            mail: Mailbox::default(),
+            rows,
+            cols,
+            last: None,
+            pages,
+            typed: std::collections::VecDeque::new(),
+        }
     }
 
     /// Take in whatever the pages have said since last time.
@@ -148,8 +163,13 @@ impl Shell for Headless {
     fn set_phone_size(&mut self, size: Option<(u16, u16)>) { if let Some((r, c)) = size { self.rows = r; self.cols = c; } }
     fn is_hidden(&self) -> bool { true }
     fn last_drawn(&self) -> Option<&crate::uistate::UiState> { self.last.as_ref() }
-    fn queue_input(&mut self, ev: Event) { let _ = ev; }
-    fn inject(&mut self, ev: Event) { let _ = ev; }
+    /// What a person pressed, for the loop to read on its next turn.
+    ///
+    /// Both doors lead to the same queue here. The window keeps them apart
+    /// because one of them is a real keyboard it is already holding; there is
+    /// no keyboard here, so there is nothing to keep apart
+    fn queue_input(&mut self, ev: Event) { self.typed.push_back(ev); }
+    fn inject(&mut self, ev: Event) { self.typed.push_back(ev); }
     fn toggle_tab_bar(&self) {}
     fn take_open_settings( &mut self, ) -> Option<(Option<String>, bool, Option<String>, Option<u32>)> { None }
     fn open_vault(&self) {}
@@ -174,6 +194,11 @@ impl Shell for Headless {
         let _ = active_tab;
         let until = std::time::Instant::now() + timeout;
         loop {
+            // What somebody pressed comes first, and one at a time: the loop
+            // acts on one key per turn, exactly as it does at a window
+            if let Some(key) = self.typed.pop_front() {
+                return Ok(Some(key));
+            }
             if self.hear_pages() {
                 return Ok(None);
             }
@@ -219,5 +244,46 @@ impl Shell for Headless {
         let _ = flash;
         self.last = Some(crate::view::ui_state_of(tabs, ui, None));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// A keystroke handed to a runtime with no window comes back out of it.
+    ///
+    /// Everything a person does from afar that has no queue of its own --
+    /// typing, picking a tab, the board's menu, stopping a run -- arrives as
+    /// the keystroke it stands for and is handed to the shell. This shell used
+    /// to drop them, which left a server that could be watched and not driven,
+    /// and nothing said so.
+    #[test]
+    fn a_keystroke_reaches_a_runtime_with_no_window() {
+        let mut shell = Headless::new(24, 80);
+        let typed = |c: char| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        shell.inject(typed('l'));
+        shell.queue_input(typed('s'));
+
+        let wait = Duration::from_millis(50);
+        assert_eq!(shell.poll(wait, None).unwrap(), Some(typed('l')));
+        assert_eq!(shell.poll(wait, None).unwrap(), Some(typed('s')));
+        // One key per turn, as at a window -- and nothing left over
+        assert_eq!(shell.poll(wait, None).unwrap(), None);
+    }
+
+    /// Waiting for nothing still waits: a loop that spun here would spend a
+    /// core on an empty room
+    #[test]
+    fn with_nothing_pressed_it_waits_out_its_turn() {
+        let mut shell = Headless::new(24, 80);
+        let began = std::time::Instant::now();
+        assert_eq!(shell.poll(Duration::from_millis(120), None).unwrap(), None);
+        assert!(
+            began.elapsed() >= Duration::from_millis(100),
+            "何も無いのにすぐ戻っている: {:?}",
+            began.elapsed()
+        );
     }
 }

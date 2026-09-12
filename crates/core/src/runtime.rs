@@ -2093,6 +2093,66 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Coach { step }) => {
                         shell.mail().coach_done = Some(step);
                     }
+                    // The pane's own restart, pressed from afar. The window
+                    // has filled this queue since panes existed; nothing
+                    // filled it from a phone, so the button did nothing and
+                    // said nothing
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::RestartPane { id, keep }) => {
+                        shell.mail().restart_panes.push((id, keep));
+                    }
+                    // Putting away a tab's usage-limit notice. Reading it is
+                    // the whole act, and it is usually read from a phone --
+                    // where, until now, putting it away put nothing away
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::LimitAck { tab }) => {
+                        shell.mail().limit_acks.push(tab);
+                    }
+                    // Arranging the screen, from a device with room to
+                    // arrange it. The same queues the window's own presses
+                    // fill -- one place decides what a split means
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FocusPane { id }) => {
+                        shell.mail().focus_panes.push(id);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::ClosePane { id }) => {
+                        shell.mail().close_panes.push(id);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::SplitPane { id, down }) => {
+                        shell.mail().pane_splits.push((id, down));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::PaneRatio { divider, ratio }) => {
+                        shell.mail().pane_ratios.push((divider, ratio));
+                    }
+                    // The tab bar's +. Two things, as at the window: where the
+                    // tab should land, and the keystroke that opens the form
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::AddTab { pane, folder }) => {
+                        let mail = shell.mail();
+                        mail.add_tab_pane = pane.or(mail.add_tab_pane);
+                        if let Some(f) = folder {
+                            mail.add_tab_folder = Some(f);
+                        }
+                        for e in keys_for(&shikisha_shared::Ev::AddTab { pane: None, folder: None }) {
+                            shell.inject(e);
+                        }
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderName { folder, name }) => {
+                        shell.mail().folder_names.push((folder, name));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderClose { folder }) => {
+                        shell.mail().folder_closes.push(folder);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderDiscard { folder }) => {
+                        shell.mail().folder_discards.push(folder);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderColor { folder, color }) => {
+                        shell.mail().folder_colors.push((folder, color));
+                    }
+                    // How big the text is, and how wide the tab bar is, as the
+                    // person looking wants them
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FontSize { px }) => {
+                        shell.mail().font_size = Some(px);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::TabWidth { px }) => {
+                        shell.mail().tab_width = Some(px);
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         let keys = keys_for(&ev);

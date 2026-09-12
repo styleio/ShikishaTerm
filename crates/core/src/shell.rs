@@ -4537,7 +4537,17 @@ document.addEventListener("mouseup", e => {
   if (inBar(e)) return;
   const s = window.getSelection();
   const t = s ? s.toString() : "";
-  if (t) { send({kind:"copy", text:t}); return; }
+  if (t) {
+    // Whoever is looking gets it in their own clipboard. At the window that is
+    // this machine, and the runtime does it (the same manners as PuTTY: select
+    // and it is copied). From somewhere else it is that device's clipboard,
+    // and nothing but that device can put it there -- `execCommand` rather
+    // than the clipboard API because a board reached over plain http is not a
+    // secure context, and there the newer one does not exist at all
+    if (REMOTE) { try { document.execCommand("copy"); } catch (err) {} }
+    else send({kind:"copy", text:t});
+    return;
+  }
   // On a phone, tapping a terminal tab opens the sub-input bar (see openTermBar)
   // rather than the hidden #kbd, so the keyboard never lands on top of the screen.
   //
