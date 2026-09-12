@@ -8220,12 +8220,22 @@ mod tests {
         for chunk in paste_chunks(&t, "echo shikisha-ok") {
             t.write_passthrough(&chunk).unwrap();
         }
-        std::thread::sleep(Duration::from_millis(400));
-        assert!(
-            screen(&t).contains("echo shikisha-ok"),
-            "本文は入力欄に入る: {}",
-            screen(&t)
-        );
+        // Waited for rather than slept through. A fixed wait is a guess about
+        // how busy the machine is, and on a loaded one a real shell had not
+        // echoed the text yet -- so the screen was read empty and the test
+        // failed for a reason that was never about what it is checking
+        let mut typed = false;
+        for _ in 0..60 {
+            if screen(&t).contains("echo shikisha-ok") {
+                typed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(typed, "本文は入力欄に入る: {}", screen(&t));
+        // Long enough that an Enter nobody sent would have run it by now. A
+        // slow machine only makes this wait more generous, never less
+        std::thread::sleep(Duration::from_millis(200));
         assert!(
             !has_line(&t, "shikisha-ok"),
             "まだ実行はされていない: {}",
@@ -8656,8 +8666,18 @@ mod tests {
             false => vec!["sh".to_string(), "-c".into(), "pwd".into()],
         };
         let mut t = Tab::spawn("cwd".into(), &argv, None, 10, 60, opts).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(1200));
-        let screen = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
+        // Waited for rather than slept through, for the same reason as
+        // `a_prompt_is_typed_first_and_submitted_after`: how long a real shell
+        // takes to print its first line is a fact about how busy the machine
+        // is, and a fixed number is a guess at it
+        let mut screen = String::new();
+        for _ in 0..60 {
+            screen = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
+            if screen.contains("shikisha-cwd-test") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         t.kill();
         assert!(
             screen.contains("shikisha-cwd-test"),
