@@ -578,11 +578,19 @@ fn branch_known(at: &Path, branch: &str) -> bool {
 
 /// Where the project itself must be, worked out from a branch folder's path.
 ///
-/// The reverse of the shape this app gives a branch's folder:
+/// The reverse of the shape this app **used to** give a branch's folder:
 /// `<parent>/<name>.worktrees/<branch as folders>`. A branch with slashes in it
 /// is that many folders deep, which is why the branch has to be known to walk
 /// back up — and why the branch is written down rather than read off the
 /// folder's label, which flattens the slashes and cannot be undone.
+///
+/// **Branches made since do not sit beside their project**, and nothing about
+/// `<home>/SHIKISHA-TERM/branches/<name>/<branch>` says where the project is —
+/// the project could be on any drive. `None` is the answer for those, and the
+/// caller's own answer stands first anyway: the settings name the project when
+/// a folder of it is open, and when nothing does, the person is asked once and
+/// it is remembered. This is kept for the folders that were made in the old
+/// shape, which are still on people's machines.
 pub fn checkout_for(cwd: &Path, branch: &str) -> Option<PathBuf> {
     let deep = branch.split('/').filter(|s| !s.is_empty()).count().max(1);
     let mut at = cwd;
