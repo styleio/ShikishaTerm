@@ -430,6 +430,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // connections on another -- see `ssh::use_secrets`)
     if let Some(c) = cfg.as_ref() {
         ssh::use_secrets(c.resolve_tokens(None));
+        // The sandbox service's key travels with the rest, under its own name
+        crate::e2b::use_key(c.resolve_tokens(None).get("e2b_api_key").cloned());
     }
     let mut last_session = crate::lastsession::Saved::load();
     if !cmd_args.is_empty() {
@@ -516,6 +518,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // opened yet, so an encrypted one had nothing in it
     if let Some(c) = cfg.as_ref() {
         ssh::use_secrets(c.resolve_tokens(password.as_deref()));
+        crate::e2b::use_key(c.resolve_tokens(password.as_deref()).get("e2b_api_key").cloned());
     }
     // Resolve the model bridge's connection info again now that the password is confirmed
     // (encrypted-secret keys get unlocked here too). Tabs spawned before the
@@ -1047,6 +1050,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // ...and the same for the connections, which keep their own
                 // copy: a password taken out of the settings stops working
                 ssh::use_secrets(newcfg.resolve_tokens(password.as_deref()));
+        crate::e2b::use_key(newcfg.resolve_tokens(password.as_deref()).get("e2b_api_key").cloned());
                 if let Some(eng) = engine.as_ref() {
                     eng.set_ai_engine(newcfg.ai_engine.clone().filter(|s| !s.is_empty()));
                 }
@@ -3628,6 +3632,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         &wanted,
                         Some(&ask.base),
                         Some(ask.at.trim()),
+                        // Where a machine that has never seen this project can
+                        // fetch it from. The project's own remote, because that
+                        // is the one address both ends already agree on
+                        &crate::repo::remote_url_of(&from).unwrap_or_default(),
                     ),
                     None => crate::worktree::plan_into(
                         &from,

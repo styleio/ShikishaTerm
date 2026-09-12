@@ -31,6 +31,9 @@ pub struct Plan {
     /// the line on screen and the line that runs come from one place -- and on
     /// another machine "one place" has to include which machine
     pub host: Option<crate::config::HostSpec>,
+    /// Where the project can be fetched from, for a machine that has never
+    /// seen it. Empty everywhere else, where the project is already there
+    pub origin: String,
 }
 
 impl Plan {
@@ -40,6 +43,41 @@ impl Plan {
             Some(h) => h.name.clone(),
             None => String::new(),
         }
+    }
+
+    /// Everything that will run, in order.
+    ///
+    /// One command nearly always: a branch is cut from a checkout that is
+    /// already there. A machine that is made fresh has no checkout, so the
+    /// project is fetched first and the branch cut second -- two commands, and
+    /// both of them on screen, because a person checking what will happen is
+    /// owed all of it and not the first half.
+    pub fn argvs(&self) -> Vec<Vec<String>> {
+        let fresh_machine = self.host.as_ref().is_some_and(|h| h.is_made());
+        if !fresh_machine {
+            return vec![self.argv()];
+        }
+        let at = self.folder.display().to_string();
+        vec![
+            vec![
+                "git".into(),
+                "clone".into(),
+                "--branch".into(),
+                // The branch a clone lands on is named as the remote has it,
+                // without the remote's own prefix
+                self.base.rsplit('/').next().unwrap_or(&self.base).to_string(),
+                self.origin.clone(),
+                at.clone(),
+            ],
+            vec![
+                "git".into(),
+                "-C".into(),
+                at,
+                "switch".into(),
+                "-c".into(),
+                self.branch.clone(),
+            ],
+        ]
     }
 
     /// Exactly what will run, in the words git will get. Shown to the person
@@ -66,8 +104,26 @@ impl Plan {
         v
     }
 
-    /// The same line, as a person reads it. Quoted only where it has to be
+    /// The same, as a person reads it. Quoted only where it has to be
     pub fn line(&self) -> String {
+        self.argvs().iter().map(|a| said(a)).collect::<Vec<_>>().join("
+")
+    }
+}
+
+/// One command, as a person reads it.
+fn said(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| match a.contains(' ') {
+            true => format!("\"{a}\""),
+            false => a.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+impl Plan {
+    fn unused_line(&self) -> String {
         self.argv()
             .iter()
             .map(|a| match a.contains(' ') {
@@ -116,7 +172,7 @@ pub fn plan_into(main: &Path, branch: &str, base: Option<&str>, at: Option<&Path
     // somebody else's project is already standing in -- and a path that is on
     // screen looking fine until you press it is the worst way to find out
     free_to_make(&folder)?;
-    Ok(Plan { folder, main, branch, base, fresh, host: None })
+    Ok(Plan { folder, main, branch, base, fresh, host: None, origin: String::new() })
 }
 
 /// Whether a folder can be made here, in the words the person will read.
@@ -148,6 +204,7 @@ pub fn plan_on(
     branch: &str,
     base: Option<&str>,
     at: Option<&str>,
+    origin: &str,
 ) -> Result<Plan> {
     let branch = branch.trim().to_string();
     if branch.is_empty() {
@@ -156,13 +213,37 @@ pub fn plan_on(
     if !name_is_usable(&branch) {
         bail!(crate::i18n::tp("err.worktree.bad_branch", &[("name", &branch)]));
     }
-    let project = host.project.as_deref().map(str::trim).unwrap_or_default();
-    if project.is_empty() {
-        bail!(crate::i18n::tp("err.worktree.no_project", &[("host", &host.name)]));
-    }
+    // A machine that is made has no project on it yet, so what it needs is
+    // somewhere to fetch one from; one that is already there needs the folder
+    // the project is already in. Neither can stand in for the other
+    let project = match host.is_made() {
+        true => {
+            if origin.trim().is_empty() {
+                bail!(crate::i18n::tp("err.worktree.no_origin", &[("host", &host.name)]));
+            }
+            // Where a clone lands on a machine built from an image: its own
+            // home, which is the one path every one of these images has
+            host.project.as_deref().map(str::trim).filter(|p| !p.is_empty()).unwrap_or("/home/user")
+        }
+        false => {
+            let p = host.project.as_deref().map(str::trim).unwrap_or_default();
+            if p.is_empty() {
+                bail!(crate::i18n::tp("err.worktree.no_project", &[("host", &host.name)]));
+            }
+            p
+        }
+    };
     let folder = match at.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => p.to_string(),
-        None => remote_folder(host, project, &branch),
+        None => match host.is_made() {
+            // Nothing is there yet, so the only shape to keep is the branch's
+            true => format!(
+                "{}/{}",
+                project.trim_end_matches('/'),
+                branch.split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("/")
+            ),
+            false => remote_folder(host, project, &branch),
+        },
     };
     Ok(Plan {
         main: PathBuf::from(project),
@@ -172,6 +253,7 @@ pub fn plan_on(
         // Git says otherwise if it is not, and says it in git's words
         fresh: true,
         host: Some(host.clone()),
+        origin: origin.trim().to_string(),
     })
 }
 
@@ -212,8 +294,9 @@ pub fn create(plan: &Plan) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let argv = plan.argv();
-    run_for(plan, &argv)?;
+    for argv in plan.argvs() {
+        run_for(plan, &argv)?;
+    }
     if plan.fresh {
         // Best effort: the folder is made and usable either way, and a missing
         // note only means a later diff has to guess its starting point
@@ -929,19 +1012,23 @@ pub fn run_for(plan: &Plan, argv: &[String]) -> Result<()> {
     let Some(host) = plan.host.as_ref() else {
         return run(argv);
     };
+    // A machine that is made is asked for once and then kept, so the two
+    // commands of a clone land on the same machine. A second plan gets a
+    // second machine, which is right: two folders are two machines
+    if host.is_made() {
+        let sandbox = sandbox_for(host)?;
+        let line = for_a_shell(argv);
+        let ran = crate::e2b::exec(&sandbox, &line, None)?;
+        if ran.ok() {
+            return Ok(());
+        }
+        bail!(crate::i18n::tp(
+            "err.worktree.failed",
+            &[("said", &ran.said()), ("command", &line)]
+        ));
+    }
     let spec = crate::config::host_spec(host)?;
-    // Quoted for a server's shell, which is not this one. Only where it is
-    // needed, so an ordinary path stays readable in the log and on screen
-    let line = argv
-        .iter()
-        .map(|a| match a.contains(' ') || a.contains('\'') || a.contains('"') {
-            // A server's shell, not this one: single quotes, and a single
-            // quote inside them closed and reopened the way sh wants
-            true => format!("'{}'", a.replace('\'', "'\\''")),
-            false => a.clone(),
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
+    let line = for_a_shell(argv);
     let ran = crate::ssh::exec(&spec, &line, 60_000)?;
     if ran.ok() {
         return Ok(());
@@ -950,6 +1037,50 @@ pub fn run_for(plan: &Plan, argv: &[String]) -> Result<()> {
         "err.worktree.failed",
         &[("said", &ran.said()), ("command", &line)]
     ))
+}
+
+/// The machine a plan belongs to, made if it is not there yet.
+///
+/// Kept for as long as the program runs, per machine named in the settings, so
+/// that a clone and the branch cut from it happen on the same one. A sandbox
+/// nobody stops still stops on its own, so nothing is left running for ever by
+/// forgetting
+fn sandbox_for(host: &crate::config::HostSpec) -> Result<crate::e2b::Sandbox> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static MADE: OnceLock<Mutex<HashMap<String, crate::e2b::Sandbox>>> = OnceLock::new();
+    let made = MADE.get_or_init(Default::default);
+    if let Some(s) = made.lock().ok().and_then(|m| m.get(&host.name).cloned()) {
+        return Ok(s);
+    }
+    let key = crate::e2b::key()
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    let made_one = crate::e2b::create(
+        &key,
+        host.template.as_deref().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("base"),
+        host.minutes.unwrap_or(30),
+    )?;
+    if let Ok(mut m) = made.lock() {
+        m.insert(host.name.clone(), made_one.clone());
+    }
+    Ok(made_one)
+}
+
+/// One command, in the words a server's shell wants.
+///
+/// Not this machine's shell: the far end is a server, and single quotes are
+/// what a server's shell takes literally. Only where they are needed, so an
+/// ordinary path stays readable on screen and in the log
+fn for_a_shell(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| match a.contains(' ') || a.contains('\'') || a.contains('"') {
+            // A server's shell, not this one: single quotes, and a single
+            // quote inside them closed and reopened the way sh wants
+            true => format!("'{}'", a.replace('\'', "'\\''")),
+            false => a.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn run(argv: &[String]) -> Result<()> {
@@ -1021,6 +1152,52 @@ mod tests {
         assert!(at.ends_with("fix/crash"));
     }
 
+    /// A machine that is made fresh has no project on it, so the project is
+    /// fetched before the branch is cut.
+    ///
+    /// Two commands, both on screen. A person checking what is about to happen
+    /// is owed all of it: shown only the first half, they would be agreeing to
+    /// a clone and getting a branch as well
+    #[test]
+    fn a_machine_made_from_nothing_is_given_the_project_first() {
+        let host = crate::config::HostSpec {
+            name: "sandbox".into(),
+            kind: Some("e2b".into()),
+            template: Some("base".into()),
+            ..Default::default()
+        };
+        assert!(host.is_made(), "作る機械だと見なされていない");
+
+        let p = plan_on(&host, "polite-marmot", Some("origin/master"), None, "https://example.test/p.git")
+            .expect("計画できる");
+        let steps = p.argvs();
+        assert_eq!(steps.len(), 2, "2段になっていない: {steps:?}");
+        // The project arrives first, on the branch the remote calls it, with
+        // the remote's own prefix left off -- a clone has no remotes yet
+        assert_eq!(
+            steps[0],
+            ["git", "clone", "--branch", "master", "https://example.test/p.git", "/home/user/polite-marmot"]
+        );
+        assert_eq!(steps[1], ["git", "-C", "/home/user/polite-marmot", "switch", "-c", "polite-marmot"]);
+        // Both of them are what the person reads
+        assert_eq!(p.line().lines().count(), 2, "片方しか見えていない: {}", p.line());
+
+        // Nowhere to fetch from is a refusal, not a clone of nothing
+        assert!(plan_on(&host, "polite-marmot", Some("origin/master"), None, "").is_err());
+
+        // A machine that is already there is one command, from the checkout
+        let there = crate::config::HostSpec {
+            name: "bench".into(),
+            at: "ssh://me@host:22".into(),
+            project: Some("/srv/p".into()),
+            ..Default::default()
+        };
+        assert!(!there.is_made());
+        let q = plan_on(&there, "polite-marmot", Some("main"), None, "").expect("計画できる");
+        assert_eq!(q.argvs().len(), 1);
+        assert!(q.line().contains("worktree add"), "{}", q.line());
+    }
+
     /// Somebody who names a place gets that place, and is not corrected.
     ///
     /// The path is on screen before the button is pressed, so overruling it
@@ -1090,6 +1267,7 @@ mod tests {
             base: "origin/main".into(),
             fresh: true,
             host: None,
+            origin: String::new(),
         };
         assert_eq!(
             plan.argv(),
