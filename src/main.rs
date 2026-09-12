@@ -1894,7 +1894,11 @@ fn connect_to(url: &str) -> Result<()> {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 return Ok(());
             }
-            if shikisha_shared::allowed_from_page(&ev) {
+            // What happened to a page, and nothing else. An evaluation's
+            // answer is on that list too -- a page is allowed to answer what
+            // it was asked -- but it belongs to whoever asked, who is inside
+            // `Browser` waiting for it
+            if shikisha_shared::allowed_from_page(&ev) && !matches!(ev, Ev::Result { .. }) {
                 let _ = reports.send(ev);
             }
         }
@@ -1948,6 +1952,10 @@ fn draw_for_server(
             }
         };
         win.browse_through(out.port());
+        append_hook_log(&format!(
+            "pages: drawing for {base}, its network reached through it (proxy on {})",
+            out.port()
+        ));
         let said = shikisha_core::faraway::draw_for(
             &base,
             &token,

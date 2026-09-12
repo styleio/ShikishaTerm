@@ -63,10 +63,29 @@ pub fn encode(op: Op, payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The most a phone may say in one frame.
+///
+/// Everything it sends is an intent -- a tap, a line of text, a request to
+/// look at something -- and none of those is large. A frame past this is not
+/// a phone.
+pub const ONE_INTENT: usize = 64 * 1024;
+
+/// The most a device drawing pages may say in one frame.
+///
+/// These are answers rather than intents, and an answer can be a whole page's
+/// HTML or a picture of one. Still bounded: a number this size is a mistake
+/// somewhere, not a page
+pub const ONE_ANSWER: usize = 32 * 1024 * 1024;
+
 /// Read one frame from the client (a client frame is always masked).
-/// An oversized frame (>64KiB) or a missing mask is treated as a protocol
-/// violation and closed with an error.
+/// An oversized frame or a missing mask is treated as a protocol violation
+/// and closed with an error.
 pub fn read_frame<R: Read>(r: &mut R) -> std::io::Result<(Op, Vec<u8>)> {
+    read_frame_upto(r, ONE_INTENT)
+}
+
+/// The same, for a line whose answers are bigger than an intent.
+pub fn read_frame_upto<R: Read>(r: &mut R, most: usize) -> std::io::Result<(Op, Vec<u8>)> {
     let mut hdr = [0u8; 2];
     r.read_exact(&mut hdr)?;
     let opcode = hdr[0] & 0x0F;
@@ -84,8 +103,8 @@ pub fn read_frame<R: Read>(r: &mut R) -> std::io::Result<(Op, Vec<u8>)> {
     if !masked {
         return Err(err("client frame was not masked"));
     }
-    if len > 64 * 1024 {
-        return Err(err("frame too large"));
+    if len > most {
+        return Err(err(&format!("frame too large ({len} bytes)")));
     }
     let mut mask = [0u8; 4];
     r.read_exact(&mut mask)?;

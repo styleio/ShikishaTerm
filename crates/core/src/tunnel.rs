@@ -478,7 +478,10 @@ fn carry_one(
     next: &Arc<std::sync::atomic::AtomicU32>,
 ) {
     let Ok(mut reading) = sock.try_clone() else { return };
-    let Some(head) = read_head(&mut reading) else { return };
+    let Some(head) = read_head(&mut reading) else {
+        crate::append_hook_log("tunnel: a browser opened a connection and said nothing");
+        return;
+    };
     let Some(asked) = Asked::read(&head) else {
         let _ = (&*sock).write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
         return;
@@ -495,6 +498,7 @@ fn carry_one(
     };
 
     if !say(Kind::Open, asked.to.as_bytes()) {
+        crate::append_hook_log(&format!("tunnel: could not ask for {} -- the line is gone", asked.to));
         return;
     }
     match asked.tunnelled {
