@@ -1,0 +1,85 @@
+---
+title: ダウンロードを開始しました
+description: SHIKISHA-TERM.zip をダウンロードしています。初回に出る Windows の警告、ファイルの確かめ方、起動までの3手順。
+template: splash
+# 手引きの前後リンクも「ページを編集」も、ここでは邪魔になるだけ
+prev: false
+next: false
+editUrl: false
+# このページの目的は「ファイルが届くあいだ、ブラウザをここに留めておく」こと。
+# リリースの添付ファイルは Content-Disposition: attachment で返るので、この
+# refresh はページを離れずにダウンロードだけを始める。0 ではなく 1 秒なのは、
+# 先に画面を描かせるため。
+head:
+  - tag: meta
+    attrs:
+      name: robots
+      content: noindex
+  - tag: meta
+    attrs:
+      http-equiv: refresh
+      content: "1;url=https://github.com/styleio/ShikishaTerm/releases/latest/download/SHIKISHA-TERM.zip"
+---
+
+<div style="text-align:center;margin:0 0 2em">
+  <p style="font-size:1.15em;margin:0 0 .4em"><strong>ありがとうございます。<code>SHIKISHA-TERM.zip</code> をダウンロードフォルダーへ送っています。</strong></p>
+  <p style="opacity:.72;font-size:.92em;margin:0">
+    始まらないときは
+    <a href="https://github.com/styleio/ShikishaTerm/releases/latest/download/SHIKISHA-TERM.zip">こちらから直接どうぞ</a>。
+  </p>
+</div>
+
+## 初回に Windows が1度だけ止めます
+
+最初に実行したとき、Windows が **「WindowsによってPCが保護されました」** と出して、
+「実行しない」しかボタンを見せません。**詳細情報 → 実行** で進めます。2回目からは出ません。
+
+これは SmartScreen の画面で、zip にコード署名証明書が付いていないから出ます。
+ファイルから何か見つかったわけではありません。配布物はタグ付きコミットから
+GitHub Actions が公開の場で作っています。
+
+この画面に会いたくなければ、[Microsoft Store 版](https://apps.microsoft.com/detail/9PB8XQVM87Z0)
+が同じ中身で、Microsoft の署名付き・自動更新付きです。
+
+## 中身を確かめたいとき
+
+```powershell
+Get-FileHash .\SHIKISHA-TERM.zip -Algorithm SHA256
+```
+
+zip を作ったのと同じビルドが書いた
+[SHIKISHA-TERM.zip.sha256](https://github.com/styleio/ShikishaTerm/releases/latest/download/SHIKISHA-TERM.zip.sha256)
+と見比べてください。
+
+## 起動までの3手順
+
+1. **好きな場所に展開します。** フォルダーでも USB メモリでも構いません。
+   インストールは発生しないので、フォルダーごと消せばきれいに消えます。
+2. **`SHIKISHA-TERM.exe` を実行します。** ターミナルのタブが1つ開いた状態で始まります。
+3. **`[e]` を押します。** 設定画面がウィンドウの中で開き、どのフォルダーでどのAIを
+   動かすかをそこで選べます。JSON を書く必要はありません。
+
+続きは[手引き](/ja/manual/)（4ページ）と、[自動化](/ja/automation/)。
+AI同士に仕事を渡し合わせるのは自動化のほうです。
+
+## ひとつだけお願いがあります
+
+zip から先ほどの警告を消すには、コード署名証明書が要ります。
+[SignPath Foundation](https://signpath.org/) はオープンソースに無償で発行していますが、
+その前に「外から確かめられる評判」を求めます。GitHub のプロジェクトでいちばん分かりやすい
+その形が、スターです。
+
+使えそうだと思われたら、**[GitHub でスターを付けてください](https://github.com/styleio/ShikishaTerm)**。
+1秒で終わって、しかも通りすがりの人にできることの中では、署名付きの配布にいちばん近づく
+行為です。あなたの次に zip を落とす人のためにもなります。
+
+<p style="opacity:.72;font-size:.9em;margin-top:2em">
+  新しい版のお知らせは <a href="https://x.com/SHIKISHATERM">@SHIKISHATERM</a> に流しています。
+  更新自体はアプリのほうから知らせますので、こちらは「何がどう変わったか」を読む場所です。
+</p>
+
+<p style="opacity:.72;font-size:.9em;margin-top:1em">
+  動かない、または分かりにくいところがありましたか？
+  <a href="https://github.com/styleio/ShikishaTerm/issues">GitHub で教えてください</a>。
+  使い始めて10分のあいだに出てくる報告がいちばん役に立ちます。
+</p>

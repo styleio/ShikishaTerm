@@ -7,6 +7,10 @@
  * GitHub も辿り着けなくなる。このサイトは日英2言語で、しかも本文で「GitHub で
  * スターを付けてほしい」と頼んでいるので、その2つは狭い画面でも出しておく。
  *
+ * X は広い画面だけ。390px に3つ並べると題字が "SHIKISHA-TE" で切れる
+ * (実測: 題字に必要な 149px に対し、X 有りで 115px、無しで 147px)。
+ * 名前が欠けるほうが損なので、狭い画面では X を畳む。行き先は本文にもある。
+ *
  * theme だけは 50rem 未満で畳んだままにする。390px 幅に題字と3つは入らないし、
  * 配色は OS の設定に従う既定で困らない。
  *
@@ -112,6 +116,15 @@ const shouldRenderSearch =
           auto;
         align-content: center;
       }
+    }
+  }
+
+  /* 狭い画面で X を畳む。starlight.core の外に置く必要がある —— アイコンが着て
+     いる .sl-flex は layer に入っていないので、layer の中からでは
+     (詳細度で勝っていても) display:flex を上書きできない */
+  @media (max-width: 50rem) {
+    .social-icons :global(a[href*="x.com"]) {
+      display: none;
     }
   }
 </style>
