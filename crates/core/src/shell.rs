@@ -2511,7 +2511,7 @@ function tabRow(t, g, deep, head) {
     el("span", {class:"num"}, String(t.index)),
     // After the dot, never before it: the dot's column is what makes the
     // sidebar read as one line down the side
-    t.ai ? aiMark(t.ai) : null,
+    markFor(t),
     el("span", {class:"nm", title:t.profile}, t.name),
     t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
     spark(t.activity));
@@ -3308,7 +3308,7 @@ function drawStrip() {
           + st + (t.ai ? " aitab ai-" + t.ai : ""),
         title:(t.name || "") + (t.state_label ? " — " + t.state_label : ""),
         onclick:() => send({kind:"select", tab:t.index})},
-      t.ai ? aiMark(t.ai) : el("span", {class:"dot " + t.state}),
+      markFor(t) || el("span", {class:"dot " + t.state}),
       el("span", {class:"nm"}, t.name || ""));
     if (t.index === S.active) sel = one;
     tabs.append(one);
@@ -3418,9 +3418,21 @@ const AI_MARK = {
   meta: "◯",
   deepseek: "⋚",
   qwen: "⬡",
-  aider: "❯",
+  // It gave the chevron to the terminals, which had nothing at all and are
+  // the reason anybody knows what a chevron means. A pencil was the
+  // obvious replacement and is the wrong one: U+270E draws nothing here,
+  // which this repository already found out once and left a test about.
+  // This was picked by putting the candidates in the real window and
+  // looking -- the only way to know, since the chevron renders and the
+  // pencil beside it in the same block does not
+  aider: "❖",
   "": "◆",
 };
+
+// What a tab that is not an AI is drawn with. A terminal gets the prompt
+// every terminal has had for forty years; the rest -- a page, a file, a
+// diff -- are not terminals and are not given one
+const KIND_MARK = { pty: "❯" };
 
 // One AI's mark, in its own colour.
 //
@@ -3429,6 +3441,14 @@ const AI_MARK = {
 // picks the emoji form draws it from a colour font -- which ignores the colour
 // this app asked for, and comes out the wrong size. U+FE0E is the request for
 // the text form, and it is what keeps the mark a mark
+// The mark a tab wears, whatever kind it is. `null` when it has none, so the
+// caller can fall back to a plain dot rather than draw an empty box
+function markFor(t) {
+  if (t.ai) return aiMark(t.ai);
+  const k = KIND_MARK[t.kind || ""];
+  return k ? el("span", {class:"aim", title:t.profile || ""}, k + "︎") : null;
+}
+
 function aiMark(key) {
   const k = (key || "").toLowerCase();
   const glyph = (Object.prototype.hasOwnProperty.call(AI_MARK, k) ? AI_MARK[k] : AI_MARK[""]);
@@ -3490,7 +3510,7 @@ function pillsRow(mine, deep) {
     // the plain chip instead -- it still has to be counted, and giving it an
     // AI's mark would say it is one
     for (const t of ts) {
-      pill.append(t.ai ? aiMark(t.ai) : el("span", {class:"chip"}));
+      pill.append(markFor(t) || el("span", {class:"chip"}));
     }
     box.append(pill);
   }
@@ -10285,12 +10305,20 @@ mod tests {
         // The one that is the mark rather than a stand-in for it stays out
         assert!(!table.contains("grok"), "商標そのものの字が入っている");
         assert!(!PAGE.contains("\u{1D54F}"), "X の字が入っている");
+        // A terminal is marked too, and not with somebody else's mark. The
+        // chevron belonged to aider until terminals -- which had nothing at
+        // all -- turned out to be the reason anybody knows what one means
+        assert!(PAGE.contains("const KIND_MARK = { pty: \"❯\" };"), "端末に記号が無い");
+        assert!(table.contains("aider: \"❖\""), "aider が端末と同じ字のまま");
+        // Only a terminal. A page, a file and a diff are not terminals, and a
+        // prompt drawn on one of them is a lie about what it is
+        assert!(!PAGE.contains("KIND_MARK = { pty: \"❯\", "), "端末でないものに端末の印が出る");
         // Drawn as text, not as an emoji: a colour font ignores --ai
         assert!(PAGE.contains(r#"glyph + "︎""#), "字形の指定が無く、色が効かない");
         // And worn after the status dot, so its column survives
         let row = PAGE.split("function tabRow(").nth(1).unwrap_or_default();
         let dot = row.find(r#"el("span", {class:"dot " + t.state})"#);
-        let mark = row.find("t.ai ? aiMark(t.ai) : null");
+        let mark = row.find("markFor(t),");
         assert!(dot.is_some() && mark.is_some() && dot < mark, "記号が点より前に出ている");
     }
 
