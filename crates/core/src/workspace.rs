@@ -739,7 +739,12 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         // A tab whose own command is an ssh address still wins: that is
         // somebody naming a machine for that tab, and the folder does not
         // overrule it (resolve_launch fills this in after)
-        remote: elsewhere.and_then(|h| crate::config::host_spec(h).ok()),
+        remote: elsewhere
+            .filter(|h| !h.is_made())
+            .and_then(|h| crate::config::host_spec(h).ok()),
+        // A machine that has to be made has no address to put above, so it
+        // travels as itself and is asked for when a tab actually starts
+        cloud: elsewhere.filter(|h| h.is_made()).cloned(),
         // Where on that machine. Sent once the shell is up, because a shell
         // over there starts where the far end puts it and there is nowhere to
         // pass a folder in the asking
@@ -750,6 +755,31 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
 #[cfg(test)]
 mod remote_folder_tests {
     use super::*;
+
+    /// A machine that has to be made is not a machine with an address. Sending
+    /// it down the ssh road would ask this program to connect to nothing --
+    /// the entry has no `at` to connect to -- so the tab carries the settings
+    /// entry instead, and the sandbox is asked for when it actually starts
+    #[test]
+    fn a_machine_that_must_be_made_is_not_an_address() {
+        let json = r#"{
+          "hosts": [ {"name":"cloud","at":"","kind":"e2b","project":"/home/user/p"} ],
+          "workspaces": [ { "name":"w",
+            "folders": [ {"name":"out there","cwd":"/home/user/p","host":"cloud"} ],
+            "tabs": [ {"name":"there","command":"sh","group":0} ] } ]
+        }"#;
+        let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
+        let (wss, errs) = cfg.resolve_workspaces();
+        assert!(errs.is_empty(), "{errs:?}");
+        let ws = wss.first().expect("ワークスペースが無い");
+        let ft = ws.tabs.first().expect("タブが無い");
+        let opts = tab_options(&ft.cfg, ws.folder_of(ft));
+        assert!(opts.remote.is_none(), "住所の無い機械を住所として扱っている");
+        assert_eq!(opts.cloud.as_ref().map(|h| h.name.as_str()), Some("cloud"));
+        // Whichever kind it is, the folder is not this machine's to check
+        assert!(opts.held.is_none());
+        assert_eq!(opts.remote_cwd.as_deref(), Some("/home/user/p"));
+    }
 
     /// The settings a person writes reach the tab as a terminal on that
     /// machine. Every step, from the file down: the folder's `host` is read,

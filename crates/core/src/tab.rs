@@ -52,6 +52,11 @@ pub struct TabOptions {
     /// so it is sent as the first thing typed -- which is what a person would
     /// do, and is on screen like anything else typed
     pub remote_cwd: Option<String>,
+    /// The machine this tab's terminal is on, when that machine has to be made
+    /// before it can be talked to. Separate from `remote` because there is no
+    /// address to connect to until one exists: what is held here is the
+    /// settings entry, and the sandbox is asked for at the moment of starting
+    pub cloud: Option<crate::config::HostSpec>,
 }
 
 /// Why a tab is being held rather than started.
@@ -115,6 +120,7 @@ impl Default for TabOptions {
             group: None,
             remote: None,
             remote_cwd: None,
+            cloud: None,
             // The guarded ones, for anything built without an answer: a tab
             // that lost the setting on the way here must refuse a commit to
             // main, not wave it through
@@ -870,10 +876,10 @@ pub fn launch_problem_for(name: &str, prog: &str, opts: &TabOptions, raw: &str) 
     // Three callers built this explanation out of pieces and two of them
     // forgot a piece; taking the options whole is what makes forgetting
     // impossible
-    if opts.remote.is_some() {
+    if opts.remote.is_some() || opts.cloud.is_some() {
         return crate::i18n::tp(
             "msg.start.other",
-            &[("name", name), ("error", &raw.replace(' ', ""))],
+            &[("name", name), ("error", &raw.replace('\0', ""))],
         );
     }
     launch_problem(name, prog, opts.cwd.as_deref(), raw)
@@ -1396,7 +1402,7 @@ mod tests {
         // Both answers said 1 -- what is honoured, never the 5 that was asked
         let answers = String::from_utf8_lossy(&said.lock().unwrap()).to_string();
         assert_eq!(
-            answers, "[?1u[?1u",
+            answers, "\x1b[?1u\x1b[?1u",
             "できないことまで「やる」と答えている: {answers:?}"
         );
     }
@@ -2684,6 +2690,13 @@ impl Tab {
         self.opts.remote.as_ref()
     }
 
+    /// The machine this tab's terminal is on, when it had to be made. The file
+    /// commands do not reach one yet: a sandbox speaks its own file protocol,
+    /// not sftp
+    pub fn cloud(&self) -> Option<&crate::config::HostSpec> {
+        self.opts.cloud.as_ref()
+    }
+
     /// Why this tab is not running what it was asked to run, when it is not.
     pub fn held(&self) -> Option<&Held> {
         self.opts.held.as_ref()
@@ -2736,10 +2749,11 @@ impl Tab {
     ) -> Result<Self> {
         let profile = Self::resolve_profile(argv, &profile_spec);
         // Where this tab's terminal is. A local one is a process behind a
-        // ConPTY; a remote one is a channel on a connection (see `crate::ssh`).
-        // The difference ends here: from the writer down, both are a thing that
-        // reads bytes, writes bytes, and has a size
-        let local = opts.remote.is_none();
+        // ConPTY; a remote one is a channel on a connection (see `crate::ssh`)
+        // or a stream from a sandbox (see `crate::e2b`). The difference ends
+        // here: from the writer down, all three are a thing that reads bytes,
+        // writes bytes, and has a size
+        let local = opts.remote.is_none() && opts.cloud.is_none();
         let pair = local
             .then(|| {
                 native_pty_system().openpty(PtySize {
@@ -2817,8 +2831,8 @@ impl Tab {
             Box<dyn ChildKiller + Send + Sync>,
             Option<u32>,
             Option<Box<dyn portable_pty::Child + Send + Sync>>,
-        ) = match (pair, opts.remote.as_ref()) {
-            (Some(pair), _) => {
+        ) = match (pair, opts.remote.as_ref(), opts.cloud.as_ref()) {
+            (Some(pair), _, _) => {
                 let child = pair.slave.spawn_command(cmd)?;
                 drop(pair.slave);
                 let pid = child.process_id();
@@ -2827,11 +2841,19 @@ impl Tab {
             // Nothing of ours runs for a remote tab: the shell is the far end's
             // own, started by the far end, and there is no local process id to
             // put in a job object
-            (None, Some(spec)) => {
+            (None, Some(spec), _) => {
                 let (m, k) = crate::ssh::shell(spec, rows, cols, opts.remote_cwd.as_deref())?;
                 (m, k, None, None)
             }
-            (None, None) => anyhow::bail!("a tab with no terminal of any kind"),
+            // The same, except the far end does not exist yet. Asking for it
+            // here rather than earlier is what keeps a machine from being
+            // rented by a workspace that is only being read
+            (None, None, Some(host)) => {
+                let box_ = crate::e2b::sandbox_for(host, None)?;
+                let (m, k) = crate::e2b::shell(&box_, rows, cols, opts.remote_cwd.as_deref())?;
+                (m, k, None, None)
+            }
+            (None, None, None) => anyhow::bail!("a tab with no terminal of any kind"),
         };
         // Everything this tab goes on to start belongs to this tab. Killing the
         // program we launched has never reached what it launched -- a .cmd shim
