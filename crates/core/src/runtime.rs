@@ -1683,12 +1683,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                  progress. The terminal truncates lines to fit, so the response may be missing content."
                             ));
                         }
+                        let ended = tabs[idx - 1].state;
                         append_hook_log(&format!(
-                            "on_done fired tab{idx}: response {} chars: {}",
+                            "{} fired tab{idx} [{}]: response {} chars: {}",
+                            crate::hooks::ending_hook(ended),
+                            ended.label(),
                             ctx.output.chars().count(),
                             log_excerpt(&ctx.output, 100)
                         ));
-                        eng.fire("on_done", &ctx, None);
+                        eng.fire_ending(ended, &ctx);
                         // Beginner-friendly "notify me when this AI answers": a
                         // per-tab shortcut for an on_done that calls notify.
                         if let Some(dest) = tabs[idx - 1].notify_on_done.clone() {
