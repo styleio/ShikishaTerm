@@ -1994,3 +1994,5 @@ fn quit_confirmed(busy: usize) -> bool {
     yes
 }
 
+#[cfg(test)]
+mod settings_confirm_tests;
