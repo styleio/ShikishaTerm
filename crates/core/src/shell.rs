@@ -336,13 +336,26 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.aitab { border-left-color:var(--ai); }
   .tab.aitab.sel { border-left-color:var(--ai); }
   .tab.aitab .nm { color:var(--ai); font-weight:600; }
-  .ai-claude   { --ai:#d97757; }
-  .ai-codex    { --ai:#19c37d; }
-  .ai-gemini   { --ai:#4285f4; }
-  .ai-deepseek { --ai:#5b7cff; }
-  .ai-qwen     { --ai:#a06bff; }
-  .ai-aider    { --ai:#e5644d; }
-  .ai-kimi     { --ai:#12b3a8; }
+  /* Each AI in the colour it uses for itself, so a person who knows the tool
+     knows the tab. A CLI is named by its own command (claude, codex...); a
+     model bridge by the provider it was pointed at, which is why both spellings
+     land on one colour */
+  .ai-claude, .ai-anthropic   { --ai:#d97706; }
+  .ai-codex, .ai-openai       { --ai:#10a37f; }
+  .ai-gemini, .ai-google      { --ai:#4880ed; }
+  .ai-copilot                 { --ai:#0078d4; }
+  .ai-perplexity              { --ai:#20b2aa; }
+  .ai-meta                    { --ai:#0866ff; }
+  .ai-deepseek                { --ai:#4d6bfe; }
+  .ai-qwen                    { --ai:#615ced; }
+  .ai-aider                   { --ai:#10b981; }
+  .ai-kimi                    { --ai:#12b3a8; }
+  /* The mark itself. A plain character rather than a logo: nothing is copied,
+     nothing needs anybody's permission, and it still says which AI at a glance.
+     Held to the text size of the row it sits in, and never allowed to grow into
+     an emoji -- see aiMark() for why that matters */
+  .aim { flex:none; color:var(--ai,var(--dim)); font-size:12px; line-height:1;
+    width:12px; text-align:center; }
 
   /* A folder, as a heading over the tabs working in it. Drawn only when there
      is more than one, so nobody meets the idea before they need it.
@@ -2389,6 +2402,9 @@ function tabRow(t, g, deep, head) {
       onclick:() => send({kind:"select", tab:t.index})},
     el("span", {class:"dot " + t.state}),
     el("span", {class:"num"}, String(t.index)),
+    // After the dot, never before it: the dot's column is what makes the
+    // sidebar read as one line down the side
+    t.ai ? aiMark(t.ai) : null,
     el("span", {class:"nm", title:t.profile}, t.name),
     t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
     spark(t.activity));
@@ -3148,6 +3164,46 @@ function cutMark() {
   return s;
 }
 
+// The mark each AI is drawn with.
+//
+// Plain characters, not the vendors' logos. A logo is a trademark and every
+// one of these vendors requires written permission for it -- the names may be
+// used in plain text and the artwork may not -- so nothing is copied here and
+// nothing has to be asked for. The character is a stand-in that still says
+// which AI at a glance, worn in the colour that AI uses for itself.
+//
+// Grok is deliberately absent. Its mark is a stylised X, and the character
+// that would stand in for it IS that mark rather than something resembling it.
+//
+// A key not on this list gets the last entry: a tab whose AI we have no mark
+// for still has to be told apart from a shell.
+const AI_MARK = {
+  claude: "✳", anthropic: "✳",
+  codex: "⚛", openai: "⚛",
+  gemini: "✦", google: "✦",
+  copilot: "∞",
+  perplexity: "✣",
+  meta: "◯",
+  deepseek: "⋚",
+  qwen: "⬡",
+  aider: "❯",
+  "": "◆",
+};
+
+// One AI's mark, in its own colour.
+//
+// The variation selector on the end is not decoration. Several of these
+// characters have an emoji form as well as a text form, and a system that
+// picks the emoji form draws it from a colour font -- which ignores the colour
+// this app asked for, and comes out the wrong size. U+FE0E is the request for
+// the text form, and it is what keeps the mark a mark
+function aiMark(key) {
+  const k = (key || "").toLowerCase();
+  const glyph = (Object.prototype.hasOwnProperty.call(AI_MARK, k) ? AI_MARK[k] : AI_MARK[""]);
+  return el("span", {class:"aim" + (k ? " ai-" + k : ""), title:key || ""},
+    glyph + "︎");
+}
+
 // Which state a person has to hear about first.
 //
 // Not the order the states were declared in: this is the order of who is
@@ -3198,11 +3254,11 @@ function pillsRow(mine, deep) {
     const pill = el("div", {class:"pill", title:(ts[0] && ts[0].state_label) || st,
         onclick:() => send({kind:"select", tab:ts[0].index})},
       el("span", {class:"dot " + st}));
-    // One chip per tab, in its AI's colour. A tab that is not an AI at all
-    // (a shell, a page) still gets one, in the resting grey, because the
-    // count of what is in here has to be right
+    // One mark per tab. A tab that is not an AI at all (a shell, a page) gets
+    // the plain chip instead -- it still has to be counted, and giving it an
+    // AI's mark would say it is one
     for (const t of ts) {
-      pill.append(el("span", {class:"chip" + (t.ai ? " ai-" + t.ai : "")}));
+      pill.append(t.ai ? aiMark(t.ai) : el("span", {class:"chip"}));
     }
     box.append(pill);
   }
@@ -9924,6 +9980,38 @@ mod tests {
             PAGE.contains(r#"if (armedPane === cls + p.id || (t && t.state === "EXIT"))"#),
             "動いているペインを一押しで落とせてしまう"
         );
+    }
+
+    /// Every AI this app can name has a mark, and none of them is a logo.
+    ///
+    /// The marks are plain characters on purpose: the vendors' artwork is
+    /// trademarked and every one of them requires written permission for it,
+    /// while the names may be used in plain text. So a mark that ever became
+    /// an image file, or a key that fell through to nothing, would both be
+    /// regressions -- one legal, one a tab nobody can tell apart from a shell.
+    #[test]
+    fn every_ai_the_app_can_name_has_a_mark_and_none_of_them_is_a_logo() {
+        let table = PAGE
+            .split("const AI_MARK = {")
+            .nth(1)
+            .and_then(|r| r.split("};").next())
+            .expect("AI の記号表が画面から消えている");
+        // The CLIs `Tab::ai_kind` answers with, spelled there and here
+        for key in ["claude", "codex", "gemini", "aider"] {
+            assert!(table.contains(&format!("{key}:")), "{key} の記号が無い");
+        }
+        // A key with no entry still gets one
+        assert!(table.contains(r#""": "#), "知らないAIの受け皿が無い");
+        // The one that is the mark rather than a stand-in for it stays out
+        assert!(!table.contains("grok"), "商標そのものの字が入っている");
+        assert!(!PAGE.contains("\u{1D54F}"), "X の字が入っている");
+        // Drawn as text, not as an emoji: a colour font ignores --ai
+        assert!(PAGE.contains(r#"glyph + "︎""#), "字形の指定が無く、色が効かない");
+        // And worn after the status dot, so its column survives
+        let row = PAGE.split("function tabRow(").nth(1).unwrap_or_default();
+        let dot = row.find(r#"el("span", {class:"dot " + t.state})"#);
+        let mark = row.find("t.ai ? aiMark(t.ai) : null");
+        assert!(dot.is_some() && mark.is_some() && dot < mark, "記号が点より前に出ている");
     }
 
     /// The order the sidebar reads states in covers every state there is.
