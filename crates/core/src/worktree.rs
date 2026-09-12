@@ -370,6 +370,108 @@ pub fn discard_soon(folder: std::path::PathBuf) {
     });
 }
 
+/// A branch about to be called something else.
+///
+/// The folder stays where it is. It was named after the branch on the day it
+/// was made, and the two go their own ways from here -- which is what git
+/// itself does, since a folder's branch can be switched at any time and nobody
+/// expects the folder to move. Moving it would take the tabs standing in it
+/// with it, and a build's leftovers name their own folder in every file they
+/// wrote, so a move is a rebuild too
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rename {
+    pub folder: PathBuf,
+    pub from: String,
+    pub to: String,
+    /// The remote branch this one follows, when it has been sent before
+    pub sent_as: Option<String>,
+}
+
+impl Rename {
+    /// What will run, in the words git will get
+    pub fn argv(&self) -> Vec<String> {
+        vec![
+            "git".into(),
+            "-C".into(),
+            self.folder.display().to_string(),
+            "branch".into(),
+            "-m".into(),
+            self.from.clone(),
+            self.to.clone(),
+        ]
+    }
+
+    /// The same line, as a person reads it
+    pub fn line(&self) -> String {
+        self.argv()
+            .iter()
+            .map(|a| match a.contains(' ') {
+                true => format!("\"{a}\""),
+                false => a.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// Works out what calling this folder's branch something else would do.
+///
+/// Only a folder this app cut for a branch: the project's own checkout is on
+/// the branch the project is on, and renaming that from a settings screen is
+/// not what anybody came here for.
+pub fn rename_plan(folder: &Path, to: &str) -> Result<Rename> {
+    let to = to.trim().to_string();
+    if to.is_empty() {
+        bail!(crate::i18n::t("err.worktree.no_branch"));
+    }
+    if !name_is_usable(&to) {
+        bail!(crate::i18n::tp("err.worktree.bad_branch", &[("name", &to)]));
+    }
+    if !crate::repo::is_linked(folder) {
+        bail!(crate::i18n::t("err.worktree.not_a_branch"));
+    }
+    let from = crate::repo::branch_of(folder)
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.not_a_branch")))?;
+    Ok(Rename { folder: folder.to_path_buf(), from, to, sent_as: upstream_of(folder) })
+}
+
+/// Does it, and stops the new name from pushing under the old one.
+///
+/// Git moves `branch.<name>.*` across on its own, the note about where this
+/// branch grew from included, but it leaves the branch following the remote
+/// branch it was pushed to -- under the name it had then. Left alone, the next
+/// push goes quietly to the old name and the new one never appears. Letting
+/// the following go means the next push says it is setting one up, which is
+/// the truth
+pub fn rename(r: &Rename) -> Result<()> {
+    run(&r.argv())?;
+    if r.sent_as.is_some() {
+        let _ = run(&[
+            "git".into(),
+            "-C".into(),
+            r.folder.display().to_string(),
+            "branch".into(),
+            "--unset-upstream".into(),
+        ]);
+    }
+    Ok(())
+}
+
+/// The remote branch this folder's branch follows, if it follows one.
+fn upstream_of(folder: &Path) -> Option<String> {
+    let mut asking = std::process::Command::new("git");
+    asking
+        .arg("-C")
+        .arg(folder)
+        .args(["rev-parse", "--abbrev-ref", "@{upstream}"]);
+    let out = crate::detach_console(&mut asking).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!said.is_empty()).then_some(said)
+}
+
 /// Whether this folder can be thrown away at all -- asked before anything is
 /// closed, so a refusal costs nothing.
 pub fn ready_to_discard(folder: &Path) -> Result<()> {
@@ -730,6 +832,62 @@ mod tests {
         for good in ["main", "feature/login", "fix/crash-on-open", "work-2", "release/1.2.3"] {
             assert!(name_is_usable(good), "普通の名前が通らない: {good:?}");
         }
+    }
+
+    /// Work names itself once it is under way, and the folder does not follow.
+    ///
+    /// Against a real repository, because every interesting part of this is
+    /// git's: that the note about where the branch grew from travels with the
+    /// new name, and that the following of a remote branch does not.
+    #[test]
+    fn a_branch_can_be_called_something_else_later() {
+        let Some(main) = real_repo("rename") else { return };
+        let plan = plan(&main, "mighty-gannet", Some("main")).expect("計画できる");
+        create(&plan).expect("作れる");
+        let folder = plan.folder.clone();
+        git(&main, &["config", &format!("branch.{}.shikishaBase", "mighty-gannet"), "main"]);
+
+        // Read before it runs, and it is the line that runs
+        let r = rename_plan(&folder, " fix/crash ").expect("改名を計画できる");
+        assert_eq!(r.from, "mighty-gannet");
+        assert_eq!(r.to, "fix/crash", "前後の空白は落とす");
+        assert!(r.line().contains("branch -m mighty-gannet fix/crash"), "{}", r.line());
+        rename(&r).expect("改名できる");
+
+        assert_eq!(crate::repo::branch_of(&folder).as_deref(), Some("fix/crash"));
+        // Where it grew from is a fact about the branch, so it comes along
+        let note = std::process::Command::new("git")
+            .arg("-C").arg(&folder)
+            .args(["config", "--get", "branch.fix/crash.shikishaBase"])
+            .output().expect("git が動く");
+        assert_eq!(String::from_utf8_lossy(&note.stdout).trim(), "main", "生まれの記録が消えた");
+        // The folder stays put: it was named on the first day and nothing moves
+        assert!(folder.exists(), "フォルダが動いてしまった");
+
+        // A name git would refuse never reaches git
+        assert!(rename_plan(&folder, "two words").is_err());
+        assert!(rename_plan(&folder, "").is_err());
+        // The project's own folder is not a branch cut from it
+        assert!(rename_plan(&main, "whatever").is_err(), "本体の枝を改名できてしまう");
+    }
+
+    /// A repository git itself made, or nothing. Skipped rather than failed
+    /// where git is not installed: this is the only test here that needs it
+    fn real_repo(name: &str) -> Option<PathBuf> {
+        let at = std::env::temp_dir().join(format!("shikisha-rn-{name}"));
+        let _ = std::fs::remove_dir_all(&at);
+        let main = at.join("myproject");
+        std::fs::create_dir_all(&main).ok()?;
+        git(&main, &["init", "-q", "-b", "main", "."]);
+        git(&main, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
+                     "--allow-empty", "-m", "one"]);
+        crate::repo::branch_of(&main).is_some().then_some(main)
+    }
+
+    fn git(at: &Path, args: &[&str]) {
+        let mut run = std::process::Command::new("git");
+        run.arg("-C").arg(at).args(args);
+        let _ = crate::detach_console(&mut run).output();
     }
 
     /// A name for work that has none yet is one git will take, and one a
