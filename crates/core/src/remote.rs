@@ -2267,8 +2267,11 @@ mod tests {
             "スマホから選んだフォルダを開けない"
         );
 
+        // Named as well as looped, so the two standing cases are in this test's
+        // own words: the master password is answered in the TUI, and settings
+        // opens as a child WebView of the window.
         assert!(!menu("k"), "マスターパスワードを遠くから呼べてしまう");
-        assert!(!menu("e") && !menu("o"), "窓の中にしか出ないものを呼べる");
+        assert!(!menu("e"), "窓の中にしか出ないものを呼べる");
         // Sizing from afar is intentionally allowed: a phone needs a terminal that
         // fits it, and the two sides hand off (each re-reports only on its own size
         // change) rather than fight in a loop.
@@ -2331,13 +2334,30 @@ mod tests {
         const GATE: &str = include_str!("remote.rs");
         const LOOP: &str = include_str!("runtime.rs");
 
+        // Read with one newline convention, whatever this machine checked the
+        // source out with. Windows hands these files over as CRLF, where a
+        // boundary written as "\n}\n" matches nothing at all -- so every region
+        // below ran to the end of the file, the "gate" was this whole module
+        // (these tests included), and the check read its own assertions as arms
+        // of the match it was meant to be inspecting
+        let gate_src = GATE.replace("\r\n", "\n");
+        let loop_src = LOOP.replace("\r\n", "\n");
         let between = |text: &str, from: &str, to: &str| -> String {
             let a = text.find(from).unwrap_or_else(|| panic!("{from} が無い"));
             let b = text[a..].find(to).map(|i| a + i).unwrap_or(text.len());
             text[a..b].to_string()
         };
         // What the gate answers `true` to
-        let gate = between(GATE, "fn allowed_from_afar", "\n}\n");
+        let gate = between(&gate_src, "fn allowed_from_afar", "\n}\n");
+        // ...and that what was read really is the one function. However that
+        // goes wrong it goes wrong quietly: a region running past the end of
+        // the match still parses, still fills the list, and stops meaning
+        // anything at all
+        assert!(
+            gate.len() < gate_src.len() / 4 && gate.contains("_ => false,"),
+            "門の範囲が読めていない（{}文字）",
+            gate.len()
+        );
         // An arm is its patterns, then `=>`, then what it answers. Only the
         // ones that do not answer `false` are being let through
         let mut allowed: Vec<String> = Vec::new();
@@ -2360,12 +2380,13 @@ mod tests {
 
         // ...and the two places an intent can be answered: a queue of its own,
         // or the keystroke a person at a window would have pressed
-        let routed = LOOP
+        let routed = loop_src
             .match_indices("RemoteCmd::Ui(")
-            .map(|(at, _)| LOOP[at..].chars().take(200).collect::<String>())
+            .map(|(at, _)| loop_src[at..].chars().take(200).collect::<String>())
             .collect::<Vec<_>>()
             .join(" ");
-        let keys = between(LOOP, "pub fn keys_for", "\n}\n");
+        let keys = between(&loop_src, "pub fn keys_for", "\n}\n");
+        assert!(keys.len() < loop_src.len() / 4, "打鍵表の範囲が読めていない");
 
         let mut lost = Vec::new();
         for name in &allowed {
