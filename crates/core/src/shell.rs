@@ -302,6 +302,27 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .wslink { cursor:pointer; }
   .wslink:hover { color:var(--text); text-decoration:underline; }
   /* Output volume as a real bar chart, not characters */
+  /* The heading a folder's tabs get when there are several, so the set can be
+     put away as one and the count can be read without counting rows */
+  /* 29px, not a number of its own: a tab under a folder sits at 26px of
+     padding behind a 3px border, and this heading stands where those rows do */
+  .bundle { display:flex; align-items:center; gap:var(--s2); padding:1px 0 1px 29px;
+    color:var(--dim); font-size:12px; cursor:pointer; }
+  .bundle .caret { flex:none; }
+  .bundle .worst { color:var(--muted); }
+  /* What a folded set says instead of its rows. One pill per state, each
+     wearing that state's dot and a chip for every tab in it -- so the row
+     grows with the number of states, not the number of tabs.
+     Indented 23px so that the first dot, once the pill's own 6px is added,
+     lands in the same column as every status dot above it */
+  .pills { display:flex; flex-wrap:wrap; gap:var(--s2); padding:1px 0 3px 23px; }
+  .pill { display:flex; align-items:center; gap:var(--s1); padding:2px 6px;
+    border-radius:var(--r-ctl); background:var(--raise); cursor:pointer; }
+  /* Smaller than the status dot beside it, on purpose. An 8px box with this
+     radius is a circle, and two circles of one size read as two of the same
+     thing -- these are not: the dot is the state, the chips are what is in it */
+  .pill .chip { width:6px; height:6px; border-radius:var(--r-chip);
+    background:var(--ai,var(--dim)); }
   .spark { display:flex; align-items:flex-end; gap:1px; height:14px; flex:none; }
   .spark i { width:2px; background:var(--brand); opacity:.75; }
 
@@ -2146,10 +2167,22 @@ function drawTabs() {
     // The household's branches put away together, from the pill on its head
     if (housed(g) && folded.has("kin:" + g.family)) continue;
     if (g.empty) { into.append(emptyRow(g)); continue; }
-    into.append(folderRow(g, kinOf(g), heads(g)));
+    into.append(folderRow(g, kinOf(g), heads(g), inside[gi]));
     // Its tabs are hidden while it is folded, and the heading says so
     if (folded.has(g.folder)) continue;
-    for (const t of inside[gi]) into.append(tabRow(t, g, housed(g), heads(g)));
+    const mine = inside[gi];
+    // A folder running one thing needs no heading over it -- the row above
+    // already is that heading. Two or more get one, so the set can be put
+    // away together and counted without counting rows
+    if (mine.length >= 2) {
+      const away = folded.has("tabs:" + g.folder);
+      into.append(bundleRow(g, mine, away, housed(g)));
+      if (away) {
+        into.append(pillsRow(mine, housed(g)));
+        continue;
+      }
+    }
+    for (const t of mine) into.append(tabRow(t, g, housed(g), heads(g)));
   }
   for (const t of loose) nav.append(tabRow(t, null, false, false));
   // A "+" at the end of the list. Opens the settings page already in the "add tab" state
@@ -2279,7 +2312,7 @@ function drawCoach() {
 // which project, the shape is whether this is the project's own folder or a
 // branch of it. The head of a household also says which branch the project
 // itself is standing on, and how many branches hang under it
-function folderRow(g, kin, head) {
+function folderRow(g, kin, head, mine) {
   const shut = folded.has(g.folder);
   const chip = g.linked ? cutMark() : el("span", {class:"chip"});
   if (g.color) {
@@ -2294,6 +2327,19 @@ function folderRow(g, kin, head) {
     // still shows which folder is the one with the problem
     ailing(g) ? el("span", {class:"ail", title:whyFolder(g)}, "⚠") : null,
     el("span", {class:"nm"}, g.name || ""));
+  // Shut, the row has to speak for what it is hiding: the state of whichever
+  // tab inside is waiting on somebody first, and the shape of the work going
+  // on in there. Open, it says neither -- the rows below are already saying
+  // both, and a second copy on the heading is the sidebar repeating itself
+  if (shut && (mine || []).length) {
+    const worst = worstOf(mine);
+    row.append(el("span", {class:"dot " + worst,
+      title:(mine.find(t => t.state === worst) || {}).state_label || worst}));
+    // Every tab's bars laid over each other, so one busy tab still shows
+    row.append(spark(mine.map(t => t.activity || [])
+      .reduce((a, b) => a.map((v, i) => Math.max(v, b[i] || 0)),
+              new Array(10).fill(0))));
+  }
   if (head && g.branch) {
     row.append(el("span", {class:"on", title:T["tui.folder.on.title"] || ""}, g.branch));
   }
@@ -3100,6 +3146,67 @@ function cutMark() {
     '<circle cx="3.5" cy="9.7" r="1.4" fill="currentColor" stroke="none"/>' +
     '<circle cx="8.5" cy="2.3" r="1.4" fill="currentColor" stroke="none"/></svg>';
   return s;
+}
+
+// Which state a person has to hear about first.
+//
+// Not the order the states were declared in: this is the order of who is
+// waiting. A folder holding one tab that wants an answer and five that are
+// finished has to say the first thing, and a folded set has to lead with it
+// too. Kept in step with the app's own list by a test
+const STATE_RANK = ["QUESTION", "FAILED", "LIMIT", "BUSY", "BACKGROUND", "DONE", "WAIT", "EXIT"];
+const rankOf = st => { const i = STATE_RANK.indexOf(st); return i < 0 ? STATE_RANK.length : i; };
+// The one state that speaks for a set of tabs
+const worstOf = ts => (ts || []).map(t => t.state)
+    .sort((a, b) => rankOf(a) - rankOf(b))[0] || "";
+
+// The heading over a folder's tabs, when it has more than one.
+//
+// Pressing it puts the whole set away. The count is on it because "how many
+// are in here" is the question a put-away set otherwise makes somebody open it
+// to answer
+function bundleRow(g, mine, away, deep) {
+  const word = mine.length === 1
+      ? (T["tui.folder.tabs.one"] || "1 tab")
+      : (T["tui.folder.tabs"] || "{n} tabs").replace("{n}", mine.length);
+  // Put away, the heading has to say the one thing the pills below it can
+  // only show in colour. A set folded on a tab that wants an answer, read by
+  // somebody who has never seen this app, is otherwise a row of dots
+  const worst = away ? (mine.find(t => t.state === worstOf(mine)) || {}).state_label : null;
+  return el("div", {class:"bundle" + (deep ? " deep" : ""),
+      title:T["tui.folder.tabs.title"] || "",
+      onclick:e => { e.stopPropagation(); fold("tabs:" + g.folder); }},
+    el("span", {}, word),
+    worst ? el("span", {class:"worst"}, worst) : null,
+    // Last, the way the branch count above it wears its own
+    el("span", {class:"caret"}, away ? "▸" : "▾"));
+}
+
+// What a folded set of tabs shows instead of its rows: one pill per state.
+//
+// Tabs in the same state share a dot, so five finished tabs are one pill and
+// not five rows -- and the moment one of them starts working the set splits in
+// two and says so without being opened. Pressing a pill goes to the first tab
+// in it, which is the one somebody folding a set and then looking at it wants
+function pillsRow(mine, deep) {
+  const box = el("div", {class:"pills" + (deep ? " deep" : "")});
+  const seen = [];
+  for (const t of mine) if (!seen.includes(t.state)) seen.push(t.state);
+  seen.sort((a, b) => rankOf(a) - rankOf(b));
+  for (const st of seen) {
+    const ts = mine.filter(t => t.state === st);
+    const pill = el("div", {class:"pill", title:(ts[0] && ts[0].state_label) || st,
+        onclick:() => send({kind:"select", tab:ts[0].index})},
+      el("span", {class:"dot " + st}));
+    // One chip per tab, in its AI's colour. A tab that is not an AI at all
+    // (a shell, a page) still gets one, in the resting grey, because the
+    // count of what is in here has to be right
+    for (const t of ts) {
+      pill.append(el("span", {class:"chip" + (t.ai ? " ai-" + t.ai : "")}));
+    }
+    box.append(pill);
+  }
+  return box;
 }
 
 // Draw output volume as a real bar chart, not ▁▄█ characters
@@ -9816,6 +9923,55 @@ mod tests {
         assert!(
             PAGE.contains(r#"if (armedPane === cls + p.id || (t && t.state === "EXIT"))"#),
             "動いているペインを一押しで落とせてしまう"
+        );
+    }
+
+    /// The order the sidebar reads states in covers every state there is.
+    ///
+    /// `STATE_RANK` decides which state a shut folder wears and which pill
+    /// leads a folded set. A state missing from it sorts last by accident --
+    /// so a tab that wants an answer could sit behind five finished ones,
+    /// which is the one arrangement this whole ordering exists to prevent.
+    #[test]
+    fn the_order_the_sidebar_reads_states_in_covers_all_of_them() {
+        use crate::detect::TabState;
+        const EVERY: [TabState; 8] = [
+            TabState::Wait,
+            TabState::Busy,
+            TabState::Background,
+            TabState::Question,
+            TabState::Done,
+            TabState::Limit,
+            TabState::Failed,
+            TabState::Exited,
+        ];
+        let list = PAGE
+            .split("const STATE_RANK = [")
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .expect("STATE_RANK が画面から消えている");
+        let ranked: Vec<&str> =
+            list.split(',').map(|s| s.trim().trim_matches('"')).filter(|s| !s.is_empty()).collect();
+        for s in EVERY {
+            assert!(ranked.contains(&s.label()), "{} が並び順に入っていない", s.label());
+        }
+        assert_eq!(ranked.len(), EVERY.len(), "並び順に余計なものが混ざっている: {ranked:?}");
+        // And the one that must come first does
+        assert_eq!(ranked[0], TabState::Question.label(), "人を待たせる状態が先頭ではない");
+    }
+
+    /// Several tabs in one folder get a heading, and a folded folder speaks
+    /// for them. Both are what stop a sidebar of six agents from being six
+    /// rows that have to be read one at a time.
+    #[test]
+    fn a_folder_with_several_tabs_can_be_put_away_as_one() {
+        assert!(PAGE.contains("if (mine.length >= 2) {"), "束の見出しが1つのタブにも出る/出ない");
+        assert!(PAGE.contains(r#"fold("tabs:" + g.folder)"#), "束を畳む札が無い");
+        assert!(PAGE.contains("function pillsRow(mine, deep)"), "畳んだときの表示が無い");
+        // Shut, the heading wears the state of whatever is waiting inside
+        assert!(
+            PAGE.contains("if (shut && (mine || []).length) {"),
+            "畳んだ作業フォルダが中の状態を言っていない"
         );
     }
 
