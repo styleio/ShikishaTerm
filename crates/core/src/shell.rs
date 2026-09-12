@@ -78,19 +78,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the two panels' switches at the ends they belong to, and the three buttons
      the system would have drawn. Nothing else goes in here -- a bar that grows
      a control a month is a bar nobody reads */
-  #titlebar { grid-column:1/4; grid-row:1; display:flex; align-items:stretch;
+  /* Middled, not stretched: a stretched child puts its text against the top
+     of the bar, which is where the name and the icon ended up. The buttons
+     stretch on their own below, because a window's buttons fill the bar's
+     height wherever you press them */
+  #titlebar { grid-column:1/4; grid-row:1; display:flex; align-items:center;
     background:var(--panel); border-bottom:1px solid var(--line);
     user-select:none; -webkit-user-select:none; }
   /* The empty middle. Nothing in it: it is somewhere to take hold of */
-  #titlebar .drag { flex:1 1 auto; min-width:0; }
+  #titlebar .drag { flex:1 1 auto; align-self:stretch; min-width:0; }
   #titlebar .ico { flex:0 0 auto; width:16px; height:16px; margin:0 var(--s2) 0 10px; }
   #titlebar .mark { flex:0 1 auto; font-size:11px; letter-spacing:.02em;
     color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     margin-right:var(--s2); }
   /* The two switches. Quiet until the pointer is on them, and lit while the
      panel they open is out -- the same "this is on" the tab strip uses */
-  #titlebar button { flex:0 0 auto; width:38px; border:none; background:none;
-    color:var(--dim); cursor:pointer; font-size:13px; line-height:1;
+  #titlebar button { flex:0 0 auto; align-self:stretch; width:38px; border:none;
+    background:none; color:var(--dim); cursor:pointer; font-size:13px; line-height:1;
     display:flex; align-items:center; justify-content:center; }
   #titlebar button:hover { background:var(--hover); color:var(--text); }
   #titlebar button.on { background:var(--raise); color:var(--text); }
