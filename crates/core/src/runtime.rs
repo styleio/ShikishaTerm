@@ -1093,28 +1093,28 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     startup_errors.push(e);
                 }
                 notifier = notify::Notifier::new(dests, newcfg.primary_notify.clone());
-                // set_config above put the app's halves in. The workspace on
-                // screen has the last word on every one of them, and says it
-                // here -- saving the settings is one of the two moments the
-                // answers can change, the other being a switch
-                if let Some(w) = workspaces.get(ws_index) {
-                    crate::workspace::hand_over(w, &caps, &notifier, &prs);
-                }
                 // Only swap out the parts that come from config. Rebuilding it
                 // entirely would leave nobody aware of pages already placed in the
                 // window, so they'd stay stuck on screen with no way to remove them
                 // (this used to happen: the moment settings were saved, the settings
                 // screen would stick around and tabs would stop responding).
-                caps.set_config(
-                    newcfg.capabilities.clone(),
+                caps.set_secrets(
                     newcfg.resolve_tokens(password.as_deref()),
                     newcfg.resolve_secret_terms(password.as_deref()),
-                    newcfg.automation_permissions.clone(),
                 );
                 // ...and the same for the connections, which keep their own
                 // copy: a password taken out of the settings stops working
                 ssh::use_secrets(newcfg.resolve_tokens(password.as_deref()));
         crate::e2b::use_key(newcfg.resolve_tokens(password.as_deref()).get("e2b_api_key").cloned());
+                // Everything that is the workspace's rather than the app's, said
+                // again now that the settings have been read afresh. It has to
+                // come after set_config, not before: that call puts the app's
+                // own doors and permission table in, and the workspace on screen
+                // has the last word on both. It also needs the secrets set_config
+                // just loaded, because this is where the GitHub token is read
+                if let Some(w) = workspaces.get(ws_index) {
+                    crate::workspace::hand_over(w, &caps, &notifier, &prs);
+                }
                 if let Some(eng) = engine.as_ref() {
                     eng.set_ai_engine(newcfg.ai_engine.clone().filter(|s| !s.is_empty()));
                 }
