@@ -34,6 +34,10 @@ pub struct Plan {
     /// Where the project can be fetched from, for a machine that has never
     /// seen it. Empty everywhere else, where the project is already there
     pub origin: String,
+    /// What the project says its environment needs, when it says. A machine
+    /// made a second ago holds the source and nothing else, so without this a
+    /// clone is a folder nothing can be built in
+    pub env: Option<crate::devcontainer::Env>,
 }
 
 impl Plan {
@@ -58,7 +62,7 @@ impl Plan {
             return vec![self.argv()];
         }
         let at = self.folder.display().to_string();
-        vec![
+        let mut steps = vec![
             vec![
                 "git".into(),
                 "clone".into(),
@@ -72,12 +76,24 @@ impl Plan {
             vec![
                 "git".into(),
                 "-C".into(),
-                at,
+                at.clone(),
                 "switch".into(),
                 "-c".into(),
                 self.branch.clone(),
             ],
-        ]
+        ];
+        // What the project says it needs, after it is there to need it. Each
+        // is a line for a shell rather than a program and its arguments,
+        // because that is how the file it came from writes them -- and the
+        // whole line is one argument, so nothing in it is split again
+        for line in self.env.iter().flat_map(|e| e.setup.iter()) {
+            steps.push(vec![
+                "sh".into(),
+                "-lc".into(),
+                format!("cd {at} && {line}"),
+            ]);
+        }
+        steps
     }
 
     /// Exactly what will run, in the words git will get. Shown to the person
@@ -172,7 +188,7 @@ pub fn plan_into(main: &Path, branch: &str, base: Option<&str>, at: Option<&Path
     // somebody else's project is already standing in -- and a path that is on
     // screen looking fine until you press it is the worst way to find out
     free_to_make(&folder)?;
-    Ok(Plan { folder, main, branch, base, fresh, host: None, origin: String::new() })
+    Ok(Plan { folder, main, branch, base, fresh, host: None, origin: String::new(), env: None })
 }
 
 /// Whether a folder can be made here, in the words the person will read.
@@ -205,6 +221,7 @@ pub fn plan_on(
     base: Option<&str>,
     at: Option<&str>,
     origin: &str,
+    env: Option<crate::devcontainer::Env>,
 ) -> Result<Plan> {
     let branch = branch.trim().to_string();
     if branch.is_empty() {
@@ -254,6 +271,9 @@ pub fn plan_on(
         fresh: true,
         host: Some(host.clone()),
         origin: origin.trim().to_string(),
+        // Only where there is nothing yet. A machine that already has the
+        // project has already been set up, by whoever set it up
+        env: host.is_made().then_some(env).flatten(),
     })
 }
 
@@ -1016,7 +1036,7 @@ pub fn run_for(plan: &Plan, argv: &[String]) -> Result<()> {
     // commands of a clone land on the same machine. A second plan gets a
     // second machine, which is right: two folders are two machines
     if host.is_made() {
-        let sandbox = sandbox_for(host)?;
+        let sandbox = sandbox_for(host, plan.env.as_ref().and_then(|e| e.image.as_deref()))?;
         let line = for_a_shell(argv);
         let ran = crate::e2b::exec(&sandbox, &line, None)?;
         if ran.ok() {
@@ -1045,7 +1065,7 @@ pub fn run_for(plan: &Plan, argv: &[String]) -> Result<()> {
 /// that a clone and the branch cut from it happen on the same one. A sandbox
 /// nobody stops still stops on its own, so nothing is left running for ever by
 /// forgetting
-fn sandbox_for(host: &crate::config::HostSpec) -> Result<crate::e2b::Sandbox> {
+fn sandbox_for(host: &crate::config::HostSpec, image: Option<&str>) -> Result<crate::e2b::Sandbox> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static MADE: OnceLock<Mutex<HashMap<String, crate::e2b::Sandbox>>> = OnceLock::new();
@@ -1055,15 +1075,25 @@ fn sandbox_for(host: &crate::config::HostSpec) -> Result<crate::e2b::Sandbox> {
     }
     let key = crate::e2b::key()
         .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.e2b.no_key")))?;
-    let made_one = crate::e2b::create(
-        &key,
-        host.template.as_deref().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("base"),
-        host.minutes.unwrap_or(30),
-    )?;
+    let made_one = crate::e2b::create(&key, template_for(host, image), host.minutes.unwrap_or(30))?;
     if let Ok(mut m) = made.lock() {
         m.insert(host.name.clone(), made_one.clone());
     }
     Ok(made_one)
+}
+
+/// What the machine is built from.
+///
+/// The project's own word first: a repository that says which image it wants
+/// has said the thing that matters most about its environment, and overruling
+/// it with a setting would make that file decoration. The machine's own
+/// setting is what stands when the project says nothing
+fn template_for<'a>(host: &'a crate::config::HostSpec, image: Option<&'a str>) -> &'a str {
+    image
+        .map(str::trim)
+        .filter(|i| !i.is_empty())
+        .or_else(|| host.template.as_deref().map(str::trim).filter(|t| !t.is_empty()))
+        .unwrap_or("base")
 }
 
 /// One command, in the words a server's shell wants.
@@ -1168,7 +1198,7 @@ mod tests {
         };
         assert!(host.is_made(), "作る機械だと見なされていない");
 
-        let p = plan_on(&host, "polite-marmot", Some("origin/master"), None, "https://example.test/p.git")
+        let p = plan_on(&host, "polite-marmot", Some("origin/master"), None, "https://example.test/p.git", None)
             .expect("計画できる");
         let steps = p.argvs();
         assert_eq!(steps.len(), 2, "2段になっていない: {steps:?}");
@@ -1183,7 +1213,7 @@ mod tests {
         assert_eq!(p.line().lines().count(), 2, "片方しか見えていない: {}", p.line());
 
         // Nowhere to fetch from is a refusal, not a clone of nothing
-        assert!(plan_on(&host, "polite-marmot", Some("origin/master"), None, "").is_err());
+        assert!(plan_on(&host, "polite-marmot", Some("origin/master"), None, "", None).is_err());
 
         // A machine that is already there is one command, from the checkout
         let there = crate::config::HostSpec {
@@ -1193,9 +1223,53 @@ mod tests {
             ..Default::default()
         };
         assert!(!there.is_made());
-        let q = plan_on(&there, "polite-marmot", Some("main"), None, "").expect("計画できる");
+        let q = plan_on(&there, "polite-marmot", Some("main"), None, "", None).expect("計画できる");
         assert_eq!(q.argvs().len(), 1);
         assert!(q.line().contains("worktree add"), "{}", q.line());
+    }
+
+    /// A project that says what its environment needs gets it, after the
+    /// project is there to need it.
+    ///
+    /// Two things come from that file and nothing else does: what the machine
+    /// is built from, and what to run once the source has landed. Both are on
+    /// screen with everything else, because a person agreeing to this is
+    /// agreeing to commands the project wrote, not ones this app did
+    #[test]
+    fn a_project_that_says_what_it_needs_is_listened_to() {
+        let host = crate::config::HostSpec {
+            name: "sandbox".into(),
+            kind: Some("e2b".into()),
+            template: Some("base".into()),
+            ..Default::default()
+        };
+        let env = crate::devcontainer::read(
+            r#"{"image":"node:22","onCreateCommand":"npm ci","postCreateCommand":["npm","run","build"]}"#,
+        );
+        let p = plan_on(&host, "work", Some("origin/main"), None, "https://example.test/p.git", env)
+            .expect("計画できる");
+        let steps = p.argvs();
+        assert_eq!(steps.len(), 4, "取得・枝・2つの支度: {steps:?}");
+        assert_eq!(steps[2], ["sh", "-lc", "cd /home/user/work && npm ci"]);
+        assert_eq!(steps[3], ["sh", "-lc", "cd /home/user/work && npm run build"]);
+        // The project's word about the image beats the machine's setting: a
+        // repository that names one has said the thing that matters most
+        assert_eq!(template_for(&host, p.env.as_ref().and_then(|e| e.image.as_deref())), "node:22");
+        assert_eq!(template_for(&host, None), "base", "何も言わなければ機械の設定");
+        // Every one of them is read before any of them runs
+        assert_eq!(p.line().lines().count(), 4, "{}", p.line());
+
+        // A machine that is already there was set up by whoever set it up
+        let there = crate::config::HostSpec {
+            name: "bench".into(),
+            at: "ssh://me@host:22".into(),
+            project: Some("/srv/p".into()),
+            ..Default::default()
+        };
+        let q = plan_on(&there, "work", Some("main"), None, "",
+                        crate::devcontainer::read(r#"{"postCreateCommand":"npm ci"}"#))
+            .expect("計画できる");
+        assert_eq!(q.argvs().len(), 1, "既にある機械に支度を流し込んでいる");
     }
 
     /// Somebody who names a place gets that place, and is not corrected.
@@ -1268,6 +1342,7 @@ mod tests {
             fresh: true,
             host: None,
             origin: String::new(),
+            env: None,
         };
         assert_eq!(
             plan.argv(),

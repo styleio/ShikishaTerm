@@ -3776,6 +3776,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // fetch it from. The project's own remote, because that
                         // is the one address both ends already agree on
                         &crate::repo::remote_url_of(&from).unwrap_or_default(),
+                        // What the project itself says its environment needs.
+                        // Read from the checkout here, because it is the same
+                        // repository that is about to be fetched over there
+                        repo.as_deref().and_then(crate::devcontainer::of),
                     ),
                     None => crate::worktree::plan_into(
                         &from,
