@@ -369,6 +369,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     height:calc(100% - var(--fy) - var(--navh) - var(--fb) - var(--askh, 0px));
     object-fit:contain; object-position:top center; background:#000; touch-action:none;
     transform-origin:0 0; }
+  /* Said in place of the relay, for a page drawn on somebody else's device.
+     The same rectangle, since it stands where the picture would have been, and
+     deliberately quiet: nothing has gone wrong, the page is simply somewhere
+     this screen cannot see */
+  #nocast { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--navh));
+    right:var(--fr); bottom:calc(var(--fb) + var(--askh, 0px));
+    display:flex; align-items:center; justify-content:center; padding:var(--s6);
+    background:var(--sunk); color:var(--dim); font-size:13px; line-height:1.6;
+    text-align:center; }
+  #nocast span { max-width:46ch; }
   /* Trackpad-style synthetic cursor: a Windows-like arrow whose tip is the
      click point. The negative margin aligns the arrow tip (SVG coords 2,1)
      exactly with left/top */
@@ -1487,6 +1497,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       </div>
     </div>
     <canvas id="cast" hidden></canvas>
+    <!-- And, in the same place, what is said instead when the page being
+         looked at is drawn on the device of whoever opened it: there is no
+         picture of such a page to send anywhere, so the only honest thing to
+         put where the relay would have been is where the page actually is -->
+    <div id="nocast" hidden></div>
     <div id="cur" hidden></div>
     <textarea id="kbd" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
     <pre id="probe">MMMMMMMMMM</pre>
@@ -3351,8 +3366,23 @@ window.__state = function (json) {
   // While viewing a browser tab, the phone shows the screen relay (canvas).
   // The window (PC) still layers the real page as before, so it never uses the relay
   const cast = document.getElementById("cast");
-  cast.hidden = !(web && REMOTE);
-  if (web && REMOTE) castStart(); else castStop();
+  // Unless the page is drawn on the device of whoever opened it. Then there is
+  // no picture of it to relay -- it is already in front of the one person who
+  // can see it -- so this says where it is rather than asking for a frame that
+  // can only be refused (faraway::Far::screencast)
+  const seen = activeTab();
+  const drawnOn = (web && REMOTE && seen && seen.away) ? String(seen.away) : "";
+  cast.hidden = !(web && REMOTE) || !!drawnOn;
+  const elsewhere = document.getElementById("nocast");
+  elsewhere.hidden = !drawnOn;
+  // Rebuilt only when the device changes, so a state push every few frames
+  // does not replace the words while somebody is reading them
+  if (drawnOn && elsewhere.dataset.who !== drawnOn) {
+    elsewhere.dataset.who = drawnOn;
+    elsewhere.textContent = "";
+    elsewhere.append(el("span", {}, (T["err.far.no_cast"] || "").replace("{who}", drawnOn)));
+  }
+  if (web && REMOTE && !drawnOn) castStart(); else castStop();
   // Window only: over a browser tab, reuse the sub-input bar (composer) — actions
   // only, no target — and reserve room so the native browser doesn't hide it.
   syncBrowserDock();
@@ -7583,9 +7613,9 @@ pub const MENU: [(&str, &str); 9] = [
 /// One list, two readers: `remote::allowed_from_afar` refuses these, and the
 /// board dims the ones it can't perform itself. Adding a window-only item here
 /// is all it takes for both sides to agree.
-pub const WINDOW_ONLY_MENU: [&str; 3] = [
-    // Settings and the browser open as child WebViews inside the window.
-    "e", "o",
+pub const WINDOW_ONLY_MENU: [&str; 2] = [
+    // Settings opens as a child WebView inside the window.
+    "e",
     // The master password is asked in the TUI, where answering it blocks the app
     // until the person at the window replies.
     "k",
@@ -8229,6 +8259,82 @@ mod tests {
         );
     }
 
+    /// The board's script is JavaScript a browser can actually parse.
+    ///
+    /// It is one script, so one syntax error anywhere in it takes the whole
+    /// board down at once: nothing is defined, no state ever arrives, and what
+    /// is left on screen is the static header -- which reads as a server that
+    /// stopped. It happened on the way to the line above: a second `const away`
+    /// inside `window.__state`, legal-looking in a diff and fatal in a browser.
+    ///
+    /// Every other test here reads the page as text, and text cannot tell a
+    /// duplicate declaration from a fine one. This one hands it to a parser.
+    /// Node does the parsing, because no crate here parses JavaScript and node
+    /// is on both CI runners; where there is none it says so rather than
+    /// pretending to have checked.
+    #[test]
+    fn the_board_script_is_javascript_a_browser_can_parse() {
+        let page = super::page();
+        let mut script = String::new();
+        let mut rest = page.as_str();
+        while let Some(at) = rest.find("<script>") {
+            rest = &rest[at + "<script>".len()..];
+            let Some(end) = rest.find("</script>") else { break };
+            script.push_str(&rest[..end]);
+            script.push('\n');
+            rest = &rest[end..];
+        }
+        assert!(script.len() > 10_000, "ページから台本を取り出せていない: {}文字", script.len());
+        let file = std::env::temp_dir().join(format!("shikisha-board-{}.js", std::process::id()));
+        std::fs::write(&file, &script).expect("台本を書き出せない");
+        let checked = std::process::Command::new("node").arg("--check").arg(&file).output();
+        let _ = std::fs::remove_file(&file);
+        match checked {
+            Ok(done) => assert!(
+                done.status.success(),
+                "盤面の台本が構文エラーで丸ごと死ぬ:\n{}",
+                String::from_utf8_lossy(&done.stderr)
+            ),
+            Err(e) => eprintln!("node が無いので構文検査は行われていない ({e})。CI では走る"),
+        }
+    }
+
+    /// A page drawn on somebody else's device says so, instead of a black box.
+    ///
+    /// Such a page has no picture that can be sent anywhere (there is one
+    /// screen it is on, and it is not this one), so the relay it would have
+    /// filled stays empty for ever. Shown an empty relay, a phone reads the app
+    /// as having stopped -- the board therefore says where the page is, and
+    /// does not ask for a frame that can only be refused.
+    #[test]
+    fn a_page_drawn_elsewhere_is_explained_rather_than_left_blank() {
+        let p = super::page();
+        // Which of the two is up, decided from the tab's own `away`
+        assert!(
+            p.contains(r#"const drawnOn = (web && REMOTE && seen && seen.away) ? String(seen.away) : "";"#),
+            "ページがどこで描かれているかを盤面が見ていない"
+        );
+        assert!(
+            p.contains("cast.hidden = !(web && REMOTE) || !!drawnOn;"),
+            "見えるはずのない中継画面が出たままになる"
+        );
+        assert!(
+            p.contains("if (web && REMOTE && !drawnOn) castStart(); else castStop();"),
+            "届かない絵を要求している"
+        );
+        // ...and that the words are the ones the refusal itself uses, with the
+        // device's name in them. A second sentence saying the same thing in
+        // other words is a second thing to keep true
+        assert!(
+            p.contains(r#"(T["err.far.no_cast"] || "").replace("{who}", drawnOn)"#),
+            "断りの文言を盤面が使っていない"
+        );
+        assert!(
+            crate::i18n::t("err.far.no_cast").contains("{who}"),
+            "文言に端末の呼び名が入る場所が無い"
+        );
+    }
+
     /// The tab bar is a width, and putting it away is that width being zero.
     ///
     /// Two pieces of state -- a width and a "hidden" flag -- would be two
@@ -8819,13 +8925,19 @@ mod tests {
             PAGE.contains("setProperty(\"--navh\", n.hidden ? \"0px\" : \"36px\")"),
             "バーを出してもページが下がらない"
         );
-        // The page and the relay canvas are pushed down by the same amount
-        // (otherwise the browser's top edge would hide behind the bar)
-        assert_eq!(
-            PAGE.matches("top:calc(var(--fy) + var(--navh))").count(),
-            2,
-            "バーを出しても #page と中継キャンバスの両方は下がらない"
-        );
+        // Everything that stands where the page stands is pushed down by the
+        // same amount: the page itself, the relay canvas, and the line said in
+        // the relay's place for a page drawn on somebody else's device. Any one
+        // of them left out tucks its top edge behind the bar
+        for id in ["#page {", "#cast {", "#nocast {"] {
+            let at = PAGE.find(id).unwrap_or_else(|| panic!("{id} の規則が無い"));
+            let rule = &PAGE[at..];
+            let rule = &rule[..rule.find('}').unwrap_or(rule.len())];
+            assert!(
+                rule.contains("top:calc(var(--fy) + var(--navh))"),
+                "{id} がバーの分だけ下がらない"
+            );
+        }
         // Rows/columns come from #main; the browser view's placement comes
         // from #page. Deriving both from one rectangle would shrink the
         // terminal just because the bar appeared

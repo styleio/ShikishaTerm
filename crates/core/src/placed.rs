@@ -202,6 +202,16 @@ impl BrowserHost for Placed {
     fn screencast(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
         self.on(to, |b| b.screencast(to, on))
     }
+
+    /// The one host that has two answers to this. A page of this machine's own
+    /// says nothing (there is nothing to say: it is here), and one on somebody
+    /// else's desk names the desk
+    fn drawn_on(&self, to: Option<&str>) -> Option<String> {
+        match self.side(to) {
+            Draw::Here => None,
+            Draw::There => Some(self.there.who()),
+        }
+    }
     fn record(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
         self.on(to, |b| b.record(to, on))
     }
@@ -276,6 +286,59 @@ mod tests {
         assert_eq!(Draw::of("here"), Draw::Here);
         assert_eq!(Draw::of(""), Draw::Here);
         assert_eq!(Draw::of("なにか"), Draw::Here, "知らない語は留守番できる側");
+    }
+
+    /// A page drawn over there says which device has it, and a page of this
+    /// machine's own says nothing.
+    ///
+    /// This is what the screen is built on. Such a page has no picture anybody
+    /// else can be shown (`faraway::Far::screencast` refuses, and rightly), so
+    /// the board says where the page is rather than showing a relay that can
+    /// never fill in -- which reads as the app having stopped.
+    #[test]
+    fn a_page_drawn_on_the_connected_device_says_which_device() {
+        let placed = Placed::new();
+        // Somebody is there, and answers "done" to whatever is put to them
+        let line = placed.far();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        line.attach(tx, "台所のノート");
+        let back = line.clone();
+        std::thread::spawn(move || {
+            while let Ok(text) = rx.recv() {
+                let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let said = crate::faraway::Said::Answer {
+                    id: v["id"].as_u64().unwrap(),
+                    ok: true,
+                    value: serde_json::Value::Null,
+                };
+                back.heard(&serde_json::to_string(&said).unwrap());
+            }
+        });
+        placed.prefer(Draw::There);
+        placed
+            .open_child(
+                "0/probe",
+                "http://127.0.0.1:9990/",
+                (0, 0, 800, 600),
+                BrowserProfile::shared_default(),
+            )
+            .expect("向こうに開けない");
+        assert_eq!(
+            placed.drawn_on(Some("0/probe")).as_deref(),
+            Some("台所のノート"),
+            "向こうで描いているのに、どの端末かを言わない"
+        );
+        // The next page goes here. Where each one is was written down when it
+        // was opened, so this one is unaffected by that
+        placed.prefer(Draw::Here);
+        assert_eq!(
+            placed.drawn_on(Some("0/probe")).as_deref(),
+            Some("台所のノート"),
+            "開いた後に設定で場所が変わってしまう"
+        );
+        // And a page nobody opened is this machine's business, like every other
+        // question about one
+        assert_eq!(placed.drawn_on(Some("0/never")), None, "無いページが向こう扱い");
     }
 
     /// A page that was never opened is this machine's business, so the answer

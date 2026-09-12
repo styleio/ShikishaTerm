@@ -315,6 +315,10 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     // What a script is asking the person about this page, if
                     // anything. The board draws the bar under the page from it
                     t.ask = ui.asks.iter().find(|(k, _)| k == key).map(|(_, a)| a.clone());
+                    // And, when the page is not drawn here at all, the device
+                    // it is drawn on. Filled in here with everything else about
+                    // the tab, so no second pass can disagree about it
+                    t.away = ui.away.iter().find(|(k, _)| k == key).map(|(_, who)| who.clone());
                     Some(t)
                 }
                 Surface::Sftp { key, name, dir, .. } => {
@@ -382,6 +386,53 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
             !anyone_active && ring_idle
         },
+    }
+}
+
+#[cfg(test)]
+mod drawn_away_tests {
+    use super::{Surface, Ui, ui_state_of};
+
+    /// Where a page is drawn reaches the screen with the page, and only with
+    /// that page.
+    ///
+    /// Built here, once, along with everything else about the tab. The state was
+    /// assembled in two places once before and the two drifted; a note attached
+    /// to the wrong page would be worse than none, because it would be read.
+    #[test]
+    fn the_page_drawn_elsewhere_is_the_only_one_marked() {
+        let ui = Ui {
+            active: 1,
+            surfaces: vec![
+                Surface::Browser { key: "probe".into(), name: "試し".into() },
+                Surface::Browser { key: "here".into(), name: "こちら".into() },
+            ],
+            away: vec![("probe".to_string(), "台所のノート".to_string())],
+            ..Default::default()
+        };
+        let state = ui_state_of(&[], &ui, None);
+        assert_eq!(
+            state.tabs[0].away.as_deref(),
+            Some("台所のノート"),
+            "向こうで描いているページに、どの端末かが付いていない"
+        );
+        assert_eq!(state.tabs[1].away, None, "こちらのページまで向こう扱いになっている");
+    }
+
+    /// Nothing is said about a page drawn here, which is nearly every page.
+    #[test]
+    fn a_page_of_this_machines_own_says_nothing_about_where_it_is() {
+        let ui = Ui {
+            active: 1,
+            surfaces: vec![Surface::Browser { key: "probe".into(), name: "試し".into() }],
+            ..Default::default()
+        };
+        let state = ui_state_of(&[], &ui, None);
+        assert_eq!(state.tabs[0].away, None);
+        // ...and it is left out of the state altogether rather than sent as a
+        // null on every push
+        let json = serde_json::to_string(&state).unwrap_or_default();
+        assert!(!json.contains("\"away\""), "言うことが無いのに毎回送っている");
     }
 }
 
@@ -573,6 +624,10 @@ pub struct Ui {
     /// What each page of this workspace is asking the person, by the name
     /// automation gives it. Drawn as a bar under that page
     pub asks: Vec<(String, crate::uistate::AskState)>,
+    /// Which of this workspace's pages are drawn on the connected device
+    /// rather than here, by the same name, each with what that device is
+    /// called (`caps::drawn_away`)
+    pub away: Vec<(String, String)>,
     /// How many lines back from the current screen we're scrolled (0 = live)
     pub scrolled: usize,
     /// The AIs this machine can start, for the dialog that makes a folder

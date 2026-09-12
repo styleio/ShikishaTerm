@@ -134,6 +134,11 @@ impl Far {
     pub fn drain(&self) -> Vec<Ev> {
         std::mem::take(&mut self.inner.heard.lock().unwrap_or_else(|e| e.into_inner()))
     }
+
+    /// What the device drawing the pages is called.
+    pub fn who(&self) -> String {
+        self.inner.who()
+    }
 }
 
 impl Line {
@@ -188,6 +193,20 @@ impl Line {
 }
 
 impl Inner {
+    /// What to call the device at the other end, in a sentence somebody reads.
+    ///
+    /// A paired device is named by the name it gave. One that is still pairing
+    /// has given none, and every sentence here is about it either way -- so it
+    /// is named by the only thing known about it rather than left as a hole in
+    /// the middle of the line ("This page is drawn on , so...").
+    fn who(&self) -> String {
+        let said = self.who.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match said.trim().is_empty() {
+            true => crate::i18n::t("far.device"),
+            false => said,
+        }
+    }
+
     /// Put one ask to the far side and wait for what it says.
     fn ask(&self, ask: &Ask, ms: u64) -> anyhow::Result<serde_json::Value> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
@@ -199,7 +218,6 @@ impl Inner {
                 self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
                 anyhow::bail!(crate::i18n::t("err.far.nobody"));
             };
-            serde_json::json!({ "id": id, "ask": ask }).to_string();
             sender.send(serde_json::json!({ "id": id, "ask": ask }).to_string())
         };
         if out.is_err() {
@@ -215,7 +233,7 @@ impl Inner {
                 self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
                 Err(anyhow::anyhow!(crate::i18n::tp(
                     "err.far.no_answer",
-                    &[("who", &self.who.lock().unwrap_or_else(|e| e.into_inner()).clone())]
+                    &[("who", &self.who())]
                 )))
             }
         }
@@ -300,10 +318,7 @@ impl BrowserHost for Far {
     /// the other setting is for
     fn screencast(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
         let _ = (to, on);
-        anyhow::bail!(crate::i18n::tp(
-            "err.far.no_cast",
-            &[("who", &self.inner.who.lock().unwrap_or_else(|e| e.into_inner()).clone())]
-        ))
+        anyhow::bail!(crate::i18n::tp("err.far.no_cast", &[("who", &self.inner.who())]))
     }
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Found> {
@@ -678,6 +693,39 @@ mod tests {
             asked.iter().any(|a| a.contains("Page.captureScreenshot")),
             "向こうのブラウザに撮らせていない: {asked:?}"
         );
+    }
+
+    /// A device that has not said what it is called is still named.
+    ///
+    /// Pairing is not finished, so the board has no name for it yet -- and
+    /// every sentence here is one somebody reads. Taken straight from what the
+    /// device said, the refusal came out as "This page is drawn on , so there
+    /// is no picture of it to send".
+    #[test]
+    fn a_device_that_has_not_said_its_name_is_still_named() {
+        let far = Far::new();
+        let (tx, _rx) = channel::<String>();
+        far.line().attach(tx, "");
+        assert_eq!(far.who(), crate::i18n::t("far.device"), "名無しの端末が名無しのまま");
+        let refused = far
+            .screencast(Some("ws/page"), true)
+            .expect_err("向こうの絵が送れてしまっている")
+            .to_string();
+        assert!(
+            refused.contains(&crate::i18n::t("far.device")),
+            "断り文の中に端末の呼び名が無い: {refused}"
+        );
+    }
+
+    /// ...and one that has is named by its own name
+    #[test]
+    fn the_refusal_to_send_a_picture_says_where_the_page_is() {
+        let (far, _stub) = wired();
+        let refused = far
+            .screencast(Some("ws/page"), true)
+            .expect_err("向こうの絵が送れてしまっている")
+            .to_string();
+        assert!(refused.contains("台所のノート"), "どの端末で描いているか言わない: {refused}");
     }
 
     /// Nobody there is not the same as a browser that said no
