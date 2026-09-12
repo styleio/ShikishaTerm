@@ -163,6 +163,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // is working in, and searching them. The same folder the git panel
         // already shows the contents of, listed instead of diffed
         Ev::Files { .. } => true,
+        // The window's own bar is not a thing a phone has. Refused rather than
+        // ignored: a page somewhere else must not be able to close this window
+        Ev::Window { .. } => false,
         // Putting the right-hand column away, or dragging its edge. A phone
         // has less width to spare than a window does, so this is the one it
         // needs most

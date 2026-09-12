@@ -1301,12 +1301,28 @@ fn run_window(
 
     // Shared, because a page asking to open a window is answered on the
     // message loop, and the answer is a page built inside this same window
-    let window = std::rc::Rc::new(
-        WindowBuilder::new()
+    // The frame is ours to draw. The system keeps what it is better at --
+    // resizing from the edges (tao hit-tests them for an undecorated window)
+    // and the drop shadow, which `with_undecorated_shadow` asks for by name --
+    // and the page draws the bar, because the bar is where the panels are
+    // opened from and a system bar has nowhere to put them.
+    //
+    // What this costs, said plainly: Windows 11's Snap Layouts flyout appears
+    // when the pointer rests on a *system* maximize button, and ours is not
+    // one. Dragging to an edge, Win+arrow, and double-clicking the bar all
+    // still snap, because those are the window manager's, not the button's.
+    let window = std::rc::Rc::new({
+        let b = WindowBuilder::new()
             .with_title(title)
-            .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0))
-            .build(&ev_loop)?,
-    );
+            .with_decorations(false)
+            .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0));
+        #[cfg(windows)]
+        let b = {
+            use tao::platform::windows::WindowBuilderExtWindows;
+            b.with_undecorated_shadow(true)
+        };
+        b.build(&ev_loop)?
+    });
     // The notification-area icon. Its presses, and a second copy's request
     // for the window, arrive through the window's own procedure (see tray.rs)
     let tray = {
@@ -1365,6 +1381,10 @@ fn run_window(
             let own = std::rc::Rc::clone(&own);
             let asked = std::rc::Rc::clone(&asked);
             let refused = std::cell::Cell::new(0u8);
+            // The bar the page draws acts on this window, so the handler holds
+            // it. Same thread as the message loop, which is where these calls
+            // have to be made from anyway
+            let win = std::rc::Rc::clone(&window);
             let mut ctx = WebContext::new(Some(shell_data_dir()));
             let view = WebViewBuilder::new_with_web_context(&mut ctx)
                 .with_url(&url)
@@ -1380,6 +1400,27 @@ fn run_window(
                         return;
                     }
                     let ev = heard(body, None, true, &mut asked.borrow_mut());
+                    // The bar asking this window to do something to itself.
+                    // Answered on the spot: the loop that would otherwise be
+                    // told is a tick away, and a drag that starts a tick late
+                    // is a drag the pointer has already left behind
+                    if let Some(Ev::Window { act }) = ev.as_ref() {
+                        shikisha_core::append_hook_log(&format!("window act: {act}"));
+                        match act.as_str() {
+                            "drag" => {
+                                let _ = win.drag_window();
+                            }
+                            "minimize" => win.set_minimized(true),
+                            "maximize" => win.set_maximized(!win.is_maximized()),
+                            // The same message the frame's own ✕ sent, so
+                            // whatever closing means is decided in one place
+                            "close" => {
+                                let _ = ipc.send(Ev::CloseRequested);
+                            }
+                            _ => {}
+                        }
+                        return;
+                    }
                     if let Some(ev) = ev {
                         let _ = ipc.send(ev);
                     }
@@ -2036,6 +2077,16 @@ fn run_window(
                 event: WindowEvent::Resized(size),
                 ..
             } => {
+                // The bar draws its middle button from this. A window can be
+                // maximised without that button being pressed -- dragged to
+                // an edge, Win+Up -- and a bar that said otherwise would be
+                // showing the wrong one of two glyphs
+                if let Some(v) = main_view(&shell) {
+                    let _ = v.evaluate_script(&format!(
+                        "window.__maximized && window.__maximized({});",
+                        window.is_maximized()
+                    ));
+                }
                 if size.width > 0 && size.height > 0 {
                     if let Some(v) = main_view(&shell) {
                         let _ = v.set_bounds(wry::Rect {

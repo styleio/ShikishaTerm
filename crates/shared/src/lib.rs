@@ -318,6 +318,13 @@ pub enum Ev {
     /// browser in the same sandbox as the rally's AI-authored code (browser
     /// functions on that one tab, nothing else).
     RunLua { code: String },
+    /// The window's own bar, which the page draws now that the frame is ours:
+    /// "drag" (the bar was taken hold of), "minimize", "maximize" (toggles),
+    /// "close". Answered where the window is, not in the loop -- the page is
+    /// asking this window to do something to itself
+    Window {
+        act: String,
+    },
     /// The file panel asking for a folder's contents, or for a search of the
     /// folder it stands in. `panel` names the place the same way the git panel
     /// does -- the tab whose working folder this is -- and `act` is one of a
@@ -810,6 +817,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        // The window's own bar (see `Ev::Window`).
+        Some("window") => Ev::Window {
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         // The file panel asking for a listing or a search (see `Ev::Files`).
         Some("files") => Ev::Files {

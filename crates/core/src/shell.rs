@@ -52,6 +52,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     /* And how wide the column on the right is. Same one-number rule: 0 is put
        away, and nothing else has to be kept in step with it */
     --sidew:{{SIDE_W}}px;
+    /* How tall the window's own bar is. 32px is what Windows draws, and the
+       buttons in it are the size the system's are, so the corner of the
+       screen behaves the way the corner of every other window does */
+    --titleh:32px;
     /* Space and corners, in the steps the style guide gives. The board is a
        denser surface than the settings and does not use the wide end of the
        ladder, but a gap here is one of these or it is a mistake */
@@ -64,10 +68,39 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The terminal itself, and the read-only copies of it in other panes */
   #screen, .pscreen { font-size:var(--fs); }
   #app { position:relative; display:grid; grid-template-columns:auto 1fr auto;
-    grid-template-rows:1fr auto; height:100%; }
+    grid-template-rows:var(--titleh) 1fr auto; height:100%; }
+  /* Nothing to control from a page that is not in this window */
+  #app.noframe { grid-template-rows:0 1fr auto; }
+  #app.noframe #titlebar { display:none; }
+
+  /* ── The window's own bar ────────────────────────
+     The frame is ours, so this is the whole of it: somewhere to take hold of,
+     the two panels' switches at the ends they belong to, and the three buttons
+     the system would have drawn. Nothing else goes in here -- a bar that grows
+     a control a month is a bar nobody reads */
+  #titlebar { grid-column:1/4; grid-row:1; display:flex; align-items:stretch;
+    background:var(--panel); border-bottom:1px solid var(--line);
+    user-select:none; -webkit-user-select:none; }
+  #titlebar .drag { flex:1 1 auto; min-width:0; display:flex; align-items:center;
+    gap:var(--s2); padding:0 var(--s3); overflow:hidden; }
+  #titlebar .mark { flex:0 0 auto; font-size:11px; letter-spacing:.02em;
+    color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* The two switches. Quiet until the pointer is on them, and lit while the
+     panel they open is out -- the same "this is on" the tab strip uses */
+  #titlebar button { flex:0 0 auto; width:38px; border:none; background:none;
+    color:var(--dim); cursor:pointer; font-size:13px; line-height:1;
+    display:flex; align-items:center; justify-content:center; }
+  #titlebar button:hover { background:var(--hover); color:var(--text); }
+  #titlebar button.on { background:var(--raise); color:var(--text); }
+  /* The system's three. Wider, because that is the size the corner of a
+     window is everywhere else, and the glyphs are the system's own */
+  #titlebar .wbtn { width:46px; font-family:"Segoe Fluent Icons","Segoe MDL2 Assets",var(--mono);
+    font-size:10px; }
+  #titlebar .wbtn.close:hover { background:var(--stop); color:#fff; }
+
 
   /* ── Left tab bar ───────────────────────── */
-  #tabs { grid-row:1/3; width:var(--tabw); background:var(--panel);
+  #tabs { grid-row:2/4; width:var(--tabw); background:var(--panel);
     border-right:1px solid var(--line); overflow-y:auto; padding:6px 0;
     display:flex; flex-direction:column; }
   /* Put away, the bar is a width of nothing rather than a display of none: the
@@ -78,7 +111,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the same gesture and there is no reason to teach it twice. It sits half
      over the boundary and never goes off the left edge, so a bar that has been
      put away can still be caught and pulled back out */
-  #tabgrip { position:absolute; top:0; bottom:0; z-index:6; width:9px;
+  #tabgrip { position:absolute; top:var(--titleh); bottom:0; z-index:6; width:9px;
     left:max(0px, calc(var(--tabw) - 4px)); cursor:col-resize; }
   #tabgrip:hover, #tabgrip.dragging { background:var(--brand); opacity:.35; }
 
@@ -91,7 +124,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The column is named rather than left to fall where it may: an item that
      spans rows is placed before the ones that do not, so a nameless column
      took the middle and pushed the terminal to the far side */
-  #side { grid-column:3; grid-row:1/3; width:var(--sidew); min-width:0; background:var(--panel);
+  #side { grid-column:3; grid-row:2/4; width:var(--sidew); min-width:0; background:var(--panel);
     border-left:1px solid var(--line); display:flex; flex-direction:column;
     overflow:hidden; }
   #side[hidden] { display:none; }
@@ -158,7 +191,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #filepanel .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--faint);
     font-size:11.5px; border-top:1px solid var(--line); }
   /* The column's own edge, held the same way as the tab bar's */
-  #sidegrip { position:absolute; top:0; bottom:0; z-index:6; width:9px;
+  #sidegrip { position:absolute; top:var(--titleh); bottom:0; z-index:6; width:9px;
     right:max(0px, calc(var(--sidew) - 4px)); cursor:col-resize; }
   #sidegrip[hidden] { display:none; }
   #sidegrip:hover, #sidegrip.dragging { background:var(--brand); opacity:.35; }
@@ -1140,7 +1173,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #veil[hidden] { display:none; }
   /* Startup splash. Visible on load, hidden once the first board state arrives.
      Sits below the password veil (z-index 50) so the prompt shows on top of it. */
-  #splash { position:fixed; inset:0; z-index:40; display:flex; flex-direction:column;
+  /* Everything below the bar. The frame is the page's now: a splash that
+     covered the bar would be a window nobody could move, and a board that
+     took a while to come up would look like one that had hung */
+  #splash { position:fixed; inset:var(--titleh) 0 0 0; z-index:40; display:flex; flex-direction:column;
     align-items:center; justify-content:center; gap:var(--s5); background:var(--bg); }
   #splash[hidden] { display:none; }
   #splash .logo { font-size:26px; letter-spacing:3px; font-weight:700; color:var(--brand); }
@@ -1523,6 +1559,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     html, body, #app { max-width:100vw; overflow-x:hidden; }
     /* Stack with flex instead of grid, to avoid a grid's "phantom second column" */
     #app { display:flex; flex-direction:column; }
+    /* There is no window here to take hold of, minimise or close */
+    #titlebar { display:none; }
     #main { flex:1; min-height:0; }
 
     /* Move the footer up into a top bar. The hamburger fits inside this bar,
@@ -1582,6 +1620,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      :root is simply replaced -->
 <style id="theme"></style></head><body>
 <div id="app">
+  <!-- The window's own bar. Drawn here because the frame is ours; hidden
+       outright on a phone, where there is no window to act on -->
+  <div id="titlebar"></div>
   <div id="splash"><div class="logo">SHIKISHA-TERM</div><div class="spin"></div><div class="msg"></div></div>
   <div id="hamburger">&#9776;</div>
   <div id="backdrop"></div>
@@ -1823,6 +1864,10 @@ const TOKEN = (function () {
 // and no runtime behind it, so it decided it was local and waited forever for
 // state that nothing was going to push.
 const REMOTE = {{REMOTE}};
+// A page that is not in this window draws no frame for it: there is nothing
+// there to take hold of, and a ✕ that closed somebody else's window would be
+// a surprise. The class does it once, before the first frame is drawn
+if (REMOTE) document.getElementById("app").classList.add("noframe");
 // The PC ended this session (its "disconnect"). Nothing reconnects afterwards —
 // not the state socket, not the screen relay — until a person opens the link
 // again, which reloads this page and clears the flag with it.
@@ -2371,8 +2416,6 @@ function folderMenu(e, g) {
     ailing(g) ? item(T["tui.repair.go"] || "", () => openRepair(g)) : null,
     item(T["tui.tab.add"] || "ADD TAB", () => addTabHere(g)),
     // Only where there is a project to cut a branch from
-    g.color ? item(T["tui.folder.changes"] || "What changed here",
-                   () => openSide("git")) : null,
     g.color ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
                    () => openBranch(g)) : null,
     // The name, the colour and getting rid of it are settings, and settings
@@ -3460,6 +3503,7 @@ window.__state = function (json) {
   // bar being touched — so it is settled from the state, every update, on both
   // surfaces (see syncPen)
   syncPen();
+  drawTitle();
   drawTabs();
   drawStatus();
   drawNav();
@@ -3883,6 +3927,7 @@ function setTabWidth(px) {
   const w = px <= 0 ? 0 : Math.max(TABW_MIN, Math.min(TABW_MAX, Math.round(px)));
   document.documentElement.style.setProperty("--tabw", w + "px");
   send({kind:"tabwidth", px: w});
+  drawTitle();
   scheduleReport();
 }
 // The bar has come to rest at whatever it is now: that is a width worth
@@ -3930,6 +3975,52 @@ window.__toggleTabBar = function () {
   settleTabWidth();
 })();
 
+// ── The window's own bar ────────────────────────────────
+// The frame is the page's now, so this is where a window is taken hold of,
+// put away, filled out, and closed. Everything here asks the window to do it;
+// nothing here decides anything, so what closing means stays in the one place
+// that always decided it.
+let winMax = false;
+function winAct(act) { send({kind: "window", act}); }
+// Told by the window itself, because a window can be maximised by the system
+// -- dragged to an edge, Win+Up -- without this bar being touched
+window.__maximized = function (on) {
+  if (winMax === !!on) return;
+  winMax = !!on;
+  drawTitle();
+};
+function drawTitle() {
+  const bar = document.getElementById("titlebar");
+  if (!bar || (typeof REMOTE !== "undefined" && REMOTE)) return;
+  // Rebuilt only when what it would say changed: it is under the pointer, and
+  // the page is redrawn several times a second
+  const key = [tabWidth() > 0, sideWidth() > 0, winMax].join("|");
+  if (bar.dataset.key === key) return;
+  bar.dataset.key = key;
+  bar.textContent = "";
+  // The switch for a panel sits at the end that panel is on
+  bar.append(el("button", {class: tabWidth() > 0 ? "on" : "",
+    title: T["tui.title.tabs"] || "", onclick: () => window.__toggleTabBar()}, "\u25e7"));
+  const drag = el("div", {class: "drag"});
+  // Taking hold of the bar. The window does the dragging, so the pointer keeps
+  // every snap the system has; double-click is the other half of the same
+  // gesture everywhere else
+  drag.onmousedown = e => { if (e.button === 0 && e.target === drag) winAct("drag"); };
+  drag.ondblclick = e => { if (e.target === drag) winAct("maximize"); };
+  // What the system bar used to say, in the place it used to say it: which
+  // program this window is. Which workspace it is showing is the footer's
+  drag.append(el("span", {class: "mark"}, "SHIKISHA-TERM"));
+  bar.append(drag);
+  bar.append(el("button", {class: sideWidth() > 0 ? "on" : "",
+    title: T["tui.title.side"] || "", onclick: () => window.__toggleSideBar()}, "\u25e8"));
+  bar.append(el("button", {class: "wbtn", title: T["tui.title.min"] || "",
+    onclick: () => winAct("minimize")}, "\ue921"));
+  bar.append(el("button", {class: "wbtn", title: (winMax ? T["tui.title.restore"] : T["tui.title.max"]) || "",
+    onclick: () => winAct("maximize")}, winMax ? "\ue923" : "\ue922"));
+  bar.append(el("button", {class: "wbtn close", title: T["tui.title.close"] || "",
+    onclick: () => winAct("close")}, "\ue8bb"));
+}
+
 // ── The column on the right ──────────────────────────────
 // The same three moving parts as the tab bar, on the other edge: one width
 // that is also whether it is there at all, a grip to drag it by, and a key to
@@ -3960,6 +4051,7 @@ function setSideWidth(px) {
   document.documentElement.style.setProperty("--sidew", w + "px");
   send({kind:"sidewidth", px: w});
   drawSide();
+  drawTitle();
   scheduleReport();
 }
 function settleSideWidth() {
@@ -3971,12 +4063,6 @@ window.__toggleSideBar = function () {
   if (sideWidth() > 0) { settleSideWidth(); setSideWidth(0); }
   else setSideWidth(lastSideW);
 };
-// Bring it out on a named panel -- what the folder menu asks for
-function openSide(which) {
-  if (which) sidePanel = which;
-  if (sideWidth() <= 0) setSideWidth(lastSideW);
-  else drawSide();
-}
 
 (function () {
   const grip = document.getElementById("sidegrip");
@@ -8755,7 +8841,7 @@ mod tests {
         // through it — the last one is what makes walking to another tab work
         assert!(
             p.contains("castDock.style.display = \"flex\"; syncPen();")
-                && p.contains("syncPen();\n  drawTabs();"),
+                && p.contains("syncPen();\n  drawTitle();\n  drawTabs();"),
             "開閉と状態更新のどこかが自分で決めている"
         );
     }
@@ -8874,7 +8960,7 @@ mod tests {
     #[test]
     fn the_tab_bar_is_one_number_wide() {
         let p = super::page();
-        assert!(p.contains("#tabs { grid-row:1/3; width:var(--tabw);"), "タブバーの幅が固定のまま");
+        assert!(p.contains("#tabs { grid-row:2/4; width:var(--tabw);"), "タブバーの幅が固定のまま");
         // The grip never leaves the screen, or a bar put away could not be
         // pulled back out
         assert!(
@@ -8908,7 +8994,7 @@ mod tests {
     fn the_side_column_is_one_number_wide() {
         let p = super::page();
         assert!(
-            p.contains("#side { grid-column:3; grid-row:1/3; width:var(--sidew);"),
+            p.contains("#side { grid-column:3; grid-row:2/4; width:var(--sidew);"),
             "右の欄が3列目に置かれていないか、幅が固定のまま"
         );
         assert!(
@@ -8929,6 +9015,35 @@ mod tests {
         // One panel, wherever it is put: a second copy of the markup would be
         // a second thing to keep right
         assert_eq!(p.matches("id=\"gitpanel\"").count(), 1, "git の画面が2つある");
+    }
+
+    /// The window's frame is the page's: the bar is there, it can be taken
+    /// hold of, and the three the system used to draw are all present. A bar
+    /// missing one of these is a window that cannot be moved, or closed.
+    #[test]
+    fn the_window_wears_its_own_bar() {
+        let p = super::page();
+        assert!(p.contains(r#"<div id="titlebar"></div>"#), "帯そのものが無い");
+        // The whole of its state is these four acts
+        for act in ["drag", "minimize", "maximize", "close"] {
+            assert!(p.contains(&format!("winAct(\"{act}\")")), "{act} がどこからも呼ばれない");
+        }
+        // Taken hold of by the bar itself, never by a button sitting on it
+        assert!(
+            p.contains(r#"drag.onmousedown = e => { if (e.button === 0 && e.target === drag) winAct("drag"); };"#),
+            "帯を掴む所が無いか、ボタンの上でも掴んでしまう"
+        );
+        // A page that is not in this window draws no frame for it
+        assert!(
+            p.contains(r#"if (REMOTE) document.getElementById("app").classList.add("noframe");"#),
+            "スマホに窓の操作が出てしまう"
+        );
+        // The splash must not cover the bar: the frame is ours, and a covered
+        // bar is a window nobody can move while the board is coming up
+        assert!(
+            p.contains("#splash { position:fixed; inset:var(--titleh) 0 0 0;"),
+            "起動画面が帯を覆っている"
+        );
     }
 
     /// The file list: one of it, in the column, with the strip listing it
