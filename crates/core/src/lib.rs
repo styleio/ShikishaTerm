@@ -63,6 +63,7 @@ pub mod send;
 pub mod serve;
 pub mod sessionfind;
 pub mod shell;
+pub mod e2b;
 pub mod ssh;
 pub mod tab;
 pub mod tailscale;

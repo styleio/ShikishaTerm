@@ -1042,6 +1042,8 @@
   "err.worktree.no_branch": "Type a branch name.",
   "err.worktree.bad_branch": "Git will not take {name} as a branch name.",
   "err.worktree.no_project": "{host} has not been told where this project is checked out on it.",
+  "err.e2b.call": "The sandbox service could not be reached: {e}",
+  "err.e2b.said": "The sandbox service answered with something unexpected: {said}",
   "err.host.address": "{at} is not an address this understands. Write it as ssh://you@machine:22.",
   "err.worktree.not_a_repo": "This folder is not in a git repository.",
   "err.worktree.no_workspace": "No workspace by that name.",
