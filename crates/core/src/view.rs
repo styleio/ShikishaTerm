@@ -423,6 +423,85 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
 }
 
 #[cfg(test)]
+mod file_panel_tests {
+    use super::*;
+    use crate::elsewhere::Elsewhere;
+
+    fn panel_of(json: &str) -> Option<Elsewhere> {
+        let cfg: config::Config = serde_json::from_str(json).expect("設定が読めない");
+        let (wss, errs) = cfg.resolve_workspaces();
+        assert!(errs.is_empty(), "{errs:?}");
+        let ws = wss.first().expect("ワークスペースが無い");
+        surfaces_of(Some(ws), &[], &[], &[]).into_iter().find_map(|s| match s {
+            Surface::Sftp { at, .. } => Some(at),
+            _ => None,
+        })?
+    }
+
+    /// A panel on a tab that names a server reaches that server. Nothing about
+    /// the folder it happens to sit in changes that: somebody wrote the
+    /// address on that tab, and a tab's settings belong to the tab
+    #[test]
+    fn an_address_written_on_the_tab_is_the_one_used() {
+        let at = panel_of(
+            r#"{
+              "hosts": [ {"name":"cloud","at":"","kind":"e2b"} ],
+              "workspaces": [ { "name":"w", "id": "w",
+                "folders": [ {"name":"out there","cwd":"/home/user/p","host":"cloud"} ],
+                "tabs": [ {"name":"files","id":"files",
+                           "command":"sftp://someone@example.com:2222","group":0} ] } ]
+            }"#,
+        )
+        .expect("パネルが機械を持っていない");
+        match at {
+            Elsewhere::Ssh(spec) => {
+                assert_eq!(spec.host, "example.com");
+                assert_eq!(spec.port, 2222);
+                assert_eq!(spec.user, "someone");
+            }
+            Elsewhere::Cloud(_) => panic!("タブに書かれた住所をフォルダが上書きした"),
+        }
+    }
+
+    /// A panel with nothing written on it, in a folder that lives somewhere
+    /// else, reaches that somewhere else.
+    ///
+    /// This is the only thing a cloud sandbox can be: it has no address for
+    /// anybody to have written, so without this the panel has nothing to reach
+    /// and says so on screen forever
+    #[test]
+    fn a_panel_with_no_address_reaches_the_folders_machine() {
+        let at = panel_of(
+            r#"{
+              "hosts": [ {"name":"cloud","at":"","kind":"e2b"} ],
+              "workspaces": [ { "name":"w", "id": "w",
+                "folders": [ {"name":"out there","cwd":"/home/user/p","host":"cloud"} ],
+                "tabs": [ {"name":"files","id":"files","command":"sftp://","group":0} ] } ]
+            }"#,
+        )
+        .expect("パネルがフォルダの機械に届いていない");
+        match at {
+            Elsewhere::Cloud(host) => assert_eq!(host.name, "cloud"),
+            Elsewhere::Ssh(spec) => panic!("住所が無いのに SSH にした: {}", spec.host),
+        }
+    }
+
+    /// A panel with nothing written on it, in a folder that is on this
+    /// machine, has no far end at all -- and says so, rather than guessing one
+    #[test]
+    fn a_panel_in_a_folder_here_has_nowhere_to_reach() {
+        let at = panel_of(
+            r#"{
+              "workspaces": [ { "name":"w", "id": "w",
+                "folders": [ {"name":"here","cwd":"."} ],
+                "tabs": [ {"name":"files","id":"files","command":"sftp://","group":0} ] } ]
+            }"#,
+        );
+        assert!(at.is_none(), "行き先が無いのに行き先を作った");
+    }
+}
+
+#[cfg(test)]
 mod drawn_away_tests {
     use super::{Surface, Ui, ui_state_of};
 
