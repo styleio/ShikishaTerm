@@ -556,12 +556,29 @@ pub fn bases(main: &Path) -> Vec<String> {
 /// a timestamp and a handful of hex is not. Free names only -- the first one
 /// that is not already a branch here.
 pub fn suggest(main: &Path) -> String {
-    // From two, because the checkout itself is the first piece of work.
+    // Two words rather than a number, because this name is what the branch is
+    // called for as long as the work has no title, and a list of them has to be
+    // readable: `work-2` and `work-3` sit next to each other and say the same
+    // nothing, while `mighty-gannet` and `polite-marmot` tell themselves apart
+    // across a room. An adjective and a noun -- never a real person's surname,
+    // which a random adjective in front of it is one draw away from insulting
+    //
     // Only the branch names are consulted: working out where each folder would
     // go asks the disk whether it can be written to, and asking that a hundred
     // times to think of a name would be a folder full of probes and a slow
     // dialog. A name whose folder is somehow already there is refused later,
     // by the one that actually makes it
+    for _ in 0..20 {
+        match petname::petname(2, "-") {
+            Some(name) if !branch_exists(main, &name) => return name,
+            // Drawn again: two draws can land on one name, and the list is
+            // large enough that they rarely do twice
+            Some(_) => continue,
+            // No word lists at all, which is not a reason to offer no name
+            None => break,
+        }
+    }
+    // From two, because the checkout itself is the first piece of work
     for n in 2..200 {
         let name = format!("work-{n}");
         if !branch_exists(main, &name) {
@@ -712,6 +729,25 @@ mod tests {
         }
         for good in ["main", "feature/login", "fix/crash-on-open", "work-2", "release/1.2.3"] {
             assert!(name_is_usable(good), "普通の名前が通らない: {good:?}");
+        }
+    }
+
+    /// A name for work that has none yet is one git will take, and one a
+    /// person can tell from the next one.
+    ///
+    /// The second half is what a number could not do, and is why the words are
+    /// here: twenty draws landing on one word twice would be a list nobody can
+    /// read. Checked rather than assumed, because a word list can shrink
+    #[test]
+    fn work_with_no_name_is_offered_two_words() {
+        let main = repo("suggest");
+        let drawn: std::collections::HashSet<String> =
+            (0..20).map(|_| suggest(&main)).collect();
+        assert!(drawn.len() > 15, "20回引いて{}種類しか出ない", drawn.len());
+        for name in &drawn {
+            assert!(name_is_usable(name), "git が受け取らない名前: {name:?}");
+            assert_eq!(name.matches('-').count(), 1, "2語でつながっていない: {name:?}");
+            assert!(!name.starts_with("work-"), "数字の名前に落ちている: {name:?}");
         }
     }
 
