@@ -33,7 +33,10 @@ export default defineConfig({
         { tag: "meta", attrs: { name: "twitter:image", content: "https://shikisha-term.com/og.png" } },
         { tag: "link", attrs: { rel: "apple-touch-icon", href: "/apple-touch-icon.png" } },
       ],
-      social: [{ icon: "github", label: "GitHub", href: REPO }],
+      social: [
+        { icon: "github", label: "GitHub", href: REPO },
+        { icon: "x.com", label: "X", href: "https://x.com/SHIKISHATERM" },
+      ],
       // 検索は入れない。ページは実質5枚で、索引は4500語ほどしかない。
       // それでいて検索欄はヘッダーの真ん中を丸ごと占め、狭い画面では唯一の
       // ボタンとして残る。その場所は言語の切り替えに使いたい。
@@ -55,7 +58,9 @@ export default defineConfig({
         { label: "Translating", link: "/translating/" },
         { label: "Privacy", link: "/privacy/", translations: { ja: "プライバシー" } },
         { label: "Microsoft Store", link: "https://apps.microsoft.com/detail/9PB8XQVM87Z0", attrs: { target: "_blank" } },
-        { label: "Portable zip", link: `${REPO}/releases/latest`, attrs: { target: "_blank" } },
+        // zip は「押した瞬間に落ちてきて、こちらのページが残る」入口 (/get/) へ。
+        // 初回の SmartScreen はそこで先に説明する
+        { label: "Portable zip", link: "/get/", translations: { ja: "ポータブル版（zip）" } },
       ],
       customCss: ["./src/styles/custom.css"],
     }),

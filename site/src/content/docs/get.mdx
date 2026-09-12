@@ -1,0 +1,87 @@
+---
+title: Your download has started
+description: SHIKISHA-TERM.zip is downloading. What Windows will say the first time you run it, how to check the file, and the three steps to a running tab.
+template: splash
+# Neither the docs pagination nor "Edit page" belongs on a page like this.
+prev: false
+next: false
+editUrl: false
+# The whole point of this page is that the browser stays here while the file
+# arrives, so nothing may navigate away. A release asset is served with
+# Content-Disposition: attachment, so this refresh downloads without unloading
+# the page. One second, not zero, so the page is painted first.
+head:
+  - tag: meta
+    attrs:
+      name: robots
+      content: noindex
+  - tag: meta
+    attrs:
+      http-equiv: refresh
+      content: "1;url=https://github.com/styleio/ShikishaTerm/releases/latest/download/SHIKISHA-TERM.zip"
+---
+
+<div style="text-align:center;margin:0 0 2em">
+  <p style="font-size:1.15em;margin:0 0 .4em"><strong>Thanks — <code>SHIKISHA-TERM.zip</code> is on its way to your Downloads folder.</strong></p>
+  <p style="opacity:.72;font-size:.92em;margin:0">
+    Nothing happening?
+    <a href="https://github.com/styleio/ShikishaTerm/releases/latest/download/SHIKISHA-TERM.zip">Start the download yourself</a>.
+  </p>
+</div>
+
+## Windows will stop you once. That is expected.
+
+The first time you run it, Windows says **"Windows protected your PC"** and offers only a
+**Don't run** button. **More info → Run anyway** gets past it, and you will not see it again.
+
+That screen is SmartScreen, and it appears because the zip carries no code-signing
+certificate — not because anything was found in the file. Every release is built in public
+by GitHub Actions from a tagged commit.
+
+If you would rather never meet that screen,
+[the Microsoft Store copy](https://apps.microsoft.com/detail/9PB8XQVM87Z0) is the same
+build, signed by Microsoft, and it updates itself.
+
+## Check the bytes, if you like
+
+```powershell
+Get-FileHash .\SHIKISHA-TERM.zip -Algorithm SHA256
+```
+
+Compare it with
+[SHIKISHA-TERM.zip.sha256](https://github.com/styleio/ShikishaTerm/releases/latest/download/SHIKISHA-TERM.zip.sha256),
+which is written by the same build that made the zip.
+
+## Three steps to a running tab
+
+1. **Unzip it anywhere** — a folder, a USB stick. Nothing is installed, and deleting the
+   folder removes it completely.
+2. **Run `SHIKISHA-TERM.exe`.** A terminal tab is already there.
+3. **Press `[e]`.** The settings screen opens inside the window, and you pick which AI runs
+   in which folder. There is no JSON to edit.
+
+From there, [the manual](/manual/) is four pages, and
+[automation](/automation/) is where agents start handing work to each other.
+
+## One thing that would help
+
+Making that Windows warning disappear from the zip takes a code-signing certificate.
+[SignPath Foundation](https://signpath.org/) issues them to open source projects for free,
+and asks for *"a certain verifiable reputation"* first. For a project on GitHub, the most
+legible form that takes is stars.
+
+So if this turns out to be useful:
+**[star it on GitHub](https://github.com/styleio/ShikishaTerm)**. It takes a second, and it
+is the one thing a stranger can do that makes a signed build likelier — for everyone who
+downloads the zip after you.
+
+<p style="opacity:.72;font-size:.9em;margin-top:2em">
+  Releases are announced on <a href="https://x.com/SHIKISHATERM">@SHIKISHATERM</a>, and the
+  app tells you about updates by itself, so following is only for reading what shipped and why.
+</p>
+
+<p style="opacity:.72;font-size:.9em;margin-top:1em">
+  Something broke, or something was confusing?
+  <a href="https://github.com/styleio/ShikishaTerm/issues">Tell me on GitHub</a>. Bug reports
+  from the first ten minutes of using something are the most useful ones there are.
+</p>
