@@ -1494,6 +1494,21 @@ pub struct WorkspaceSpec {
     /// AI-vs-AI discussion settings (when present, the built-in discussion orchestrator is put into each AI tab)
     #[serde(default)]
     pub discuss: Option<DiscussSpec>,
+
+    /// The notification destinations this workspace can reach, out of the ones
+    /// registered app-wide. Absent means every one of them, which is what a
+    /// workspace that has never been asked the question says.
+    ///
+    /// Here because the destinations are the one setting where sharing the
+    /// app's answer is itself the accident: work's AI finishing its task and
+    /// the message arriving in a personal chat is not a preference anybody can
+    /// hold, and no amount of care when writing the script prevents it
+    #[serde(default)]
+    pub notify: Option<Vec<String>>,
+    /// The destination an unnamed `shikisha.notify(text)` reaches from this
+    /// workspace. Absent means the app's own answer
+    #[serde(default)]
+    pub primary_notify: Option<String>,
 }
 
 /// Contents of a workspace definition file (workspaces/*.json)
@@ -2055,6 +2070,7 @@ pub struct Folder {
 }
 
 /// A workspace resolved at launch time (tabs are flattened; depth preserves the hierarchy)
+#[derive(Default)]
 pub struct Workspace {
     pub name: String,
     /// What automation and the secret store call this workspace. Unique across
@@ -2076,6 +2092,14 @@ pub struct Workspace {
     pub stops: Vec<StopCond>,
     /// AI-vs-AI discussion settings
     pub discuss: Option<DiscussSpec>,
+    /// The notification destinations reachable from here. Already the whole
+    /// answer: a list is this workspace's own, and `None` is "every registered
+    /// one", which is what the app says for a workspace that named none. The
+    /// notifier is never told which of the two it was handed
+    pub notify: Option<Vec<String>>,
+    /// The destination an unnamed notify reaches from here, settled the same
+    /// way -- this workspace's, or the app's when it can be reached from here
+    pub primary_notify: Option<String>,
 }
 
 impl Workspace {
@@ -2504,6 +2528,34 @@ fn resolve_folders(
     // so two folders holding a "reviewer" each is the same collision as two in one
     let moved = settle_tab_ids(&mut tabs);
     (folders, tabs, moved)
+}
+
+/// Where this workspace's notifications can go, and where an unnamed one goes.
+///
+/// Settled here, once, the same way a folder's protected branches are: what the
+/// workspace said, or what the app said for the workspaces that said nothing.
+///
+/// The app's own default destination is only inherited when this workspace can
+/// reach it. A workspace that has listed its own destinations has drawn a line,
+/// and quietly leaving the app's personal chat as the one an unnamed
+/// `notify(text)` lands in would walk straight back across it -- so when the
+/// line excludes it, this workspace has no default and says so, rather than
+/// having one it cannot use
+fn settle_notify(
+    own: Option<&Vec<String>>,
+    own_primary: Option<&String>,
+    app_primary: Option<&String>,
+) -> (Option<Vec<String>>, Option<String>) {
+    let clean = |s: &String| {
+        let t = s.trim().to_string();
+        (!t.is_empty()).then_some(t)
+    };
+    let only: Option<Vec<String>> = own.map(|list| list.iter().filter_map(clean).collect());
+    let reachable = |n: &String| only.as_ref().is_none_or(|l| l.contains(n));
+    let primary = own_primary
+        .and_then(clean)
+        .or_else(|| app_primary.and_then(clean).filter(reachable));
+    (only, primary)
 }
 
 /// A byte-order mark is not JSON.
@@ -3055,6 +3107,10 @@ impl Config {
                     secrets_allow_all: false,
                     stops: Vec::new(),
                     discuss: None,
+                    // Nothing has drawn a line, so the app's own answer is the
+                    // whole answer
+                    notify: None,
+                    primary_notify: self.primary_notify.clone(),
                 });
             }
             return (out, errors);
@@ -3101,6 +3157,11 @@ impl Config {
                 ws.name.clone()
             };
             errors.extend(moved_note(&name, &moved));
+            let (notify_only, notify_primary) = settle_notify(
+                ws.notify.as_ref(),
+                ws.primary_notify.as_ref(),
+                self.primary_notify.as_ref(),
+            );
             out.push(Workspace {
                 name,
                 id: ws.id.clone().unwrap_or_default(),
@@ -3119,6 +3180,8 @@ impl Config {
                 // Prefer config's setting; fall back to the definition file's if absent
                 stops: if ws.stops.is_empty() { file_stops } else { ws.stops.clone() },
                 discuss: ws.discuss.clone().or(file_discuss),
+                notify: notify_only,
+                primary_notify: notify_primary,
             });
         }
         errors.extend(settle_workspace_ids(&mut out));
@@ -4113,6 +4176,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Where a workspace's notifications go is settled at launch, once.
+    ///
+    /// Two things are being checked, and the second is the one that matters: a
+    /// workspace that has drawn its own line does not keep the app's default
+    /// destination underneath it. A company workspace listing only the company
+    /// chat, with the app's default still pointing at a personal one, would
+    /// otherwise send every unnamed notification exactly where the line was
+    /// drawn to stop it going.
+    #[test]
+    fn a_workspace_says_where_its_notifications_go() {
+        let cfg: Config = serde_json::from_str(
+            r#"{
+                "primary_notify": "mine",
+                "notify": {
+                  "mine": {"type":"slack","webhook":"https://example.com/a"},
+                  "work": {"type":"slack","webhook":"https://example.com/b"}
+                },
+                "workspaces": [
+                  {"name":"個人"},
+                  {"name":"会社", "notify":["work"]},
+                  {"name":"会社2", "notify":["work"], "primary_notify":"work"},
+                  {"name":"どちらも", "primary_notify":"work"}
+                ]
+              }"#,
+        )
+        .unwrap();
+        let (spaces, errs) = cfg.resolve_workspaces();
+        assert!(errs.is_empty(), "{errs:?}");
+        let at = |i: usize| (spaces[i].notify.clone(), spaces[i].primary_notify.clone());
+
+        // Said nothing: the app's answer, whole
+        assert_eq!(at(0), (None, Some("mine".into())));
+        // Drew a line that excludes the app's default: no default, not a
+        // default it is not allowed to use
+        assert_eq!(at(1), (Some(vec!["work".into()]), None));
+        // Drew a line and named its own
+        assert_eq!(at(2), (Some(vec!["work".into()]), Some("work".into())));
+        // Named its own without drawing a line
+        assert_eq!(at(3), (None, Some("work".into())));
+    }
+
+    /// A settings file written before any of this existed reads the same way.
+    #[test]
+    fn a_workspace_without_the_new_keys_still_reads() {
+        let cfg: Config =
+            serde_json::from_str(r#"{"workspaces":[{"name":"古い","tabs":[]}]}"#).unwrap();
+        assert!(cfg.workspaces[0].notify.is_none());
+        assert!(cfg.workspaces[0].primary_notify.is_none());
+    }
+
     /// A secrets file written before names meant anything is brought forward
     /// without anybody losing a password: the program's own credentials move
     /// behind a `/`, and everything a workspace was allowed to use turns up
@@ -4140,6 +4253,7 @@ mod tests {
             secrets_allow_all: all,
             stops: Vec::new(),
             discuss: None,
+            ..Default::default()
         };
         let spaces = [ws("blog", &["github"], false), ws("shop", &[], true)];
         assert!(migrate_secrets(&path, None, &spaces).unwrap(), "何も動かなかった");

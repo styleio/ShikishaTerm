@@ -541,6 +541,7 @@ pub fn switch_workspace(
     engine: &mut Option<HookEngine>,
     engines: &mut [Option<HookEngine>],
     caps: &hooks::Caps,
+    notifier: &crate::notify::Notifier,
     last: &crate::lastsession::Saved,
 ) {
     // Guard against every backing array, not just `workspaces`: the per-workspace
@@ -569,6 +570,13 @@ pub fn switch_workspace(
     // Placed pages also only appear in the tab list for whichever one is currently viewed.
     caps.set_workspace(to);
     caps.set_workspace_id(&workspaces[to].id);
+    // ...and so does where its notifications land. A message that says a task
+    // finished belongs to the workspace the task was in, not to whichever one
+    // happened to be open when the app started
+    notifier.scope_to(
+        workspaces[to].notify.clone(),
+        workspaces[to].primary_notify.clone(),
+    );
     config::save_last_workspace(&workspaces[to].name);
     *tabs = std::mem::take(&mut ws_tabs[to]);
     if tabs.is_empty() {

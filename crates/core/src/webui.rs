@@ -6782,6 +6782,7 @@ function wsPane(ws) {
   }
   box.append(wsDiscussCard(ws));
   box.append(wsStopsCard(ws));
+  box.append(wsNotifyCard(ws));
   box.append(wsSecretsCard(ws));
 
   // Writing it out is about this workspace. Reading one in makes a different
@@ -6812,6 +6813,102 @@ function wsPane(ws) {
       wss.splice(sel.ws, 1); sel = {ws:0, tab:null, global:true}; render();
     }}, T["settings.workspace.delete"])));
   return box;
+}
+
+// Where a message from this workspace goes.
+//
+// The destinations themselves are registered once for the app -- an address and
+// a token are worth writing down once. Which of them this workspace may reach
+// is a different question, and it is the one worth asking here: work finishing
+// its task into a personal chat is not a preference anybody holds, and it is
+// not something care when writing the automation can prevent.
+//
+// Both answers show what is in force and where it came from, because a line
+// drawn in one of two places is only worth having if a person can see which
+// place drew it.
+function wsNotifyCard(ws) {
+  current.notify = current.notify || {};
+  const all = () => Object.keys(current.notify);
+  const reaching = () => Array.isArray(ws.notify) ? all().filter(n => ws.notify.includes(n)) : all();
+
+  const own = el("input", {type:"checkbox"});
+  own.checked = Array.isArray(ws.notify);
+  const ownLabel = el("label", {class:"check"});
+  ownLabel.append(own, document.createTextNode(T["settings.ws.notify.own"]));
+  const list = el("div", {class:"row"});
+  const prim = el("select");
+  const inForce = el("div", {class:"hint"});
+
+  const drawForce = () => {
+    const app = (current.primary_notify || "").trim();
+    // The app's own default is only inherited when it can be reached from
+    // here, which is the same rule the program settles on at launch
+    const inherited = (app && reaching().includes(app)) ? app : "";
+    const mine = (ws.primary_notify || "").trim();
+    const only = reaching();
+    if (mine) inForce.textContent = fill(T["settings.ws.notify.now_own"], {name: mine});
+    else if (inherited) inForce.textContent = fill(T["settings.ws.notify.now_app"], {name: inherited});
+    else if (only.length === 1) inForce.textContent = fill(T["settings.ws.notify.now_only"], {name: only[0]});
+    else inForce.textContent = T["settings.ws.notify.now_nobody"];
+    return inherited;
+  };
+
+  const drawPrim = () => {
+    const inherited = drawForce();
+    prim.textContent = "";
+    prim.append(el("option", {value:""}, inherited
+      ? fill(T["settings.ws.notify.prim_app"], {name: inherited})
+      : T["settings.ws.notify.prim_none"]));
+    for (const n of reaching()) prim.append(el("option", {value:n}, n));
+    prim.value = reaching().includes((ws.primary_notify || "").trim()) ? ws.primary_notify.trim() : "";
+  };
+  prim.addEventListener("change", () => {
+    if (prim.value) ws.primary_notify = prim.value;
+    else delete ws.primary_notify;
+    drawForce();
+    refreshSave();
+  });
+
+  const drawList = () => {
+    list.textContent = "";
+    list.hidden = !own.checked;
+    for (const n of all()) {
+      const cb = el("input", {type:"checkbox"});
+      cb.checked = (ws.notify || []).includes(n);
+      cb.addEventListener("change", () => {
+        const set = new Set(ws.notify || []);
+        if (cb.checked) set.add(n); else set.delete(n);
+        ws.notify = all().filter(x => set.has(x));
+        // A default nothing can reach any more is not a default
+        if (!ws.notify.includes((ws.primary_notify || "").trim())) delete ws.primary_notify;
+        drawPrim();
+        refreshSave();
+      });
+      const lab = el("label", {class:"check"});
+      lab.append(cb, document.createTextNode(n));
+      list.append(lab);
+    }
+  };
+  own.addEventListener("change", () => {
+    // Ticking the box starts from everything it can reach today, so the act of
+    // drawing the line changes nothing until a box is actually unticked
+    if (own.checked) ws.notify = all().slice();
+    else delete ws.notify;
+    drawList();
+    drawPrim();
+    refreshSave();
+  });
+
+  drawList();
+  drawPrim();
+  if (!all().length) return card(T["settings.ws.notify.title"],
+    el("div", {class:"hint"}, T["settings.ws.notify.none"]));
+  return card(T["settings.ws.notify.title"],
+    el("div", {class:"hint"}, T["settings.ws.notify.hint"]),
+    row(T["settings.ws.notify.primary"], prim),
+    el("div", {class:"row"}, ownLabel),
+    list,
+    inForce);
 }
 
 // Where the work happens. One folder per group, and a tab has none of its own:
@@ -8703,6 +8800,10 @@ async function load() {
                  browsers:w.browsers || null,
                  secrets_allow: w.secrets_allow || [],
                  secrets_allow_all: !!w.secrets_allow_all,
+                 // Absent is its own answer (follow the app), so an unwritten
+                 // one must not become an empty list on the way in
+                 notify: Array.isArray(w.notify) ? w.notify : null,
+                 primary_notify: w.primary_notify || "",
                  stops: Array.isArray(w.stops) ? w.stops : [],
                  discuss: w.discuss || null };
     if (ws.file) {
@@ -8867,6 +8968,10 @@ function payload() {
     // secret was whose -- so it is kept rather than dropped on the first save
     if (w.secrets_allow && w.secrets_allow.length) o.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) o.secrets_allow_all = true;
+    // Where this workspace's notifications go. Written only when it has an
+    // answer of its own: nothing written is how it says "whatever the app says"
+    if (Array.isArray(w.notify)) o.notify = w.notify;
+    if ((w.primary_notify || "").trim()) o.primary_notify = w.primary_notify.trim();
     // Stop conditions (judge). Already written into the file for a file-referenced workspace, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
     // AI vs AI discussion
