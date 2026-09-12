@@ -372,6 +372,13 @@ pub struct BranchPlan {
     pub project: String,
     #[serde(default)]
     pub project_at: String,
+    /// The machines this can be made on, this one first. Names only: the
+    /// addresses and what is filed under them are the settings' business
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    /// Which of them is chosen. Empty is this machine
+    #[serde(default)]
+    pub host: String,
 }
 
 /// What Claude's subscription has left, as the status line draws it.

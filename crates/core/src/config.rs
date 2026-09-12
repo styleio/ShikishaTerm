@@ -15,8 +15,37 @@ use anyhow::{Context as _, Result};
 use serde::Deserialize;
 use std::path::Path;
 
+/// A machine that is not this one, and can hold work of its own.
+///
+/// Named once and referred to by that name everywhere else, because the same
+/// machine is the same machine whichever folder is asking -- and because a
+/// person who changes a port should change it in one place. What is not here
+/// is the password: a credential lives in the secrets file under a name of its
+/// own, and this holds the name.
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
+pub struct HostSpec {
+    /// What this machine is called in the picker. Its own, not the address:
+    /// two accounts on one server are two entries
+    pub name: String,
+    /// Where it is, written the way the world writes it: `ssh://me@host:22`
+    pub at: String,
+    /// The folder a project is checked out in over there. A worktree cut on
+    /// that machine is cut from this
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Where branches go over there. Absent means beside the checkout's own
+    /// parent, which is the only thing that can be guessed about a machine
+    /// this program has never seen
+    #[serde(default)]
+    pub branches: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
+    /// Machines that are not this one. Empty on every install until somebody
+    /// adds one, and the picker says "this PC" and nothing else until then
+    #[serde(default)]
+    pub hosts: Vec<HostSpec>,
     /// List of workspaces (projects). Switched between like virtual desktops
     #[serde(default)]
     pub workspaces: Vec<WorkspaceSpec>,
@@ -1964,6 +1993,27 @@ impl Workspace {
     pub fn cwd_of(&self, t: &FlatTab) -> Option<std::path::PathBuf> {
         self.folder_of(t).and_then(|f| f.cwd.clone())
     }
+}
+
+/// The connection a named machine stands for.
+///
+/// The address is written the way the world writes it, the same as a tab's, so
+/// there is one spelling to learn. The password is not here and never is: it
+/// is filed under `ssh/host/<name>/password`, worked out from the name so that
+/// nobody has to write it down twice.
+pub fn host_spec(host: &HostSpec) -> anyhow::Result<crate::ssh::Spec> {
+    let argv = vec![host.at.trim().to_string()];
+    let (addr, port, user) = ssh_endpoint(&argv)
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.host.address", &[("at", &host.at)])))?;
+    Ok(crate::ssh::Spec {
+        host: addr,
+        port,
+        user,
+        password_key: Some(format!("ssh/host/{}/password", host.name)),
+        key: None,
+        passphrase_key: Some(format!("ssh/host/{}/passphrase", host.name)),
+        ..Default::default()
+    })
 }
 
 /// Where a tab's terminal is, when it is not on this machine.
