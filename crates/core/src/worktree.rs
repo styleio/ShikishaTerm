@@ -496,11 +496,16 @@ pub fn ready_to_discard(folder: &Path) -> Result<()> {
 
 /// Where a branch's folder goes, and why there.
 ///
-/// Beside the checkout, in one folder that holds all of them: it is easy to
-/// find, short enough for Windows, and easy to be rid of. Three things send it
-/// somewhere else instead -- a parent that cannot be written to, a path long
-/// enough to start breaking tools, and a folder that is being synced to the
-/// cloud, where every branch would be uploaded in full.
+/// Under the person's own folder, in one place that holds every branch of
+/// every project. **The project's folder is left exactly as it was** -- which
+/// is the point: beside the checkout, every project grew a second folder next
+/// to it that nobody made and nobody asked for, and it turned up in the
+/// editor's file tree, in backups, and in whatever the person had pointed at
+/// the folder that project lives in.
+///
+/// Two things send it somewhere else instead: a home folder that cannot be
+/// written to, and one that is being synced to the cloud, where every branch
+/// would be uploaded in full.
 pub fn folder_for(main: &Path, branch: &str) -> PathBuf {
     let name = main
         .file_name()
@@ -509,17 +514,55 @@ pub fn folder_for(main: &Path, branch: &str) -> PathBuf {
     // The branch's own shape is kept: `feature/login` is two folders, which is
     // what makes it impossible for two branches to want one folder
     let leaf: PathBuf = branch.split('/').filter(|s| !s.is_empty()).collect();
-    if let Some(parent) = main.parent() {
-        let beside = parent.join(format!("{name}.worktrees")).join(&leaf);
-        if !synced(parent) && writable(parent) && beside.display().to_string().len() < 180 {
-            return beside;
-        }
-    }
-    away_from_home().join(&name).join(&leaf)
+    branches_root().join(&name).join(&leaf)
 }
 
-/// The place for folders that cannot sit beside their checkout. Ours, per
-/// machine, and never synced anywhere
+/// The one place branches live, worked out once.
+///
+/// Once because the answer costs a folder made and removed in the person's
+/// home, and the dialog asks for it on every keystroke -- and because whether
+/// a home folder can be written to does not change while a program is running
+fn branches_root() -> PathBuf {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        // A test run never writes into the person's own folder. A run that
+        // leaves folders in somebody's home has changed the machine it was
+        // meant to be checking, and two runs at once would fight over the same
+        // names -- so the process gets one of its own. What the real answer
+        // would be is checked directly, by a test of its own
+        if cfg!(test) {
+            return std::env::temp_dir()
+                .join(format!("shikisha-branches-{}", std::process::id()));
+        }
+        real_branches_root()
+    })
+    .clone()
+}
+
+/// The person's own folder, or ours when theirs cannot hold it.
+fn real_branches_root() -> PathBuf {
+    match home_dir().filter(|h| !synced(h) && writable(h)) {
+        // Named for the program, then for what these are, so somebody who
+        // finds this folder without being told can tell both
+        Some(home) => home.join("SHIKISHA-TERM").join("branches"),
+        None => away_from_home(),
+    }
+}
+
+/// The person's own folder, as this system spells it.
+fn home_dir() -> Option<PathBuf> {
+    for key in ["USERPROFILE", "HOME"] {
+        let Ok(said) = std::env::var(key) else { continue };
+        let at = PathBuf::from(said.trim());
+        if at.is_dir() {
+            return Some(at);
+        }
+    }
+    None
+}
+
+/// The place for branches that cannot sit in the person's own folder. Ours,
+/// per machine, and never synced anywhere
 fn away_from_home() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA")
         .ok()
@@ -769,33 +812,60 @@ pub fn run(argv: &[String]) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// A project of this test's own. Named after the test, because where
+    /// branches go is keyed by the project's name alone now -- two tests both
+    /// calling their project "myproject" would be handed each other's folders
     fn repo(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("shikisha-wt-{name}")).join("myproject");
+        let d = std::env::temp_dir().join(format!("shikisha-wt-{name}")).join(format!("proj-{name}"));
         let _ = std::fs::remove_dir_all(d.parent().unwrap());
+        let _ = std::fs::remove_dir_all(branches_root().join(format!("proj-{name}")));
         std::fs::create_dir_all(d.join(".git")).unwrap();
         std::fs::write(d.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         d
     }
 
     #[test]
-    fn a_branch_gets_a_folder_beside_the_checkout() {
+    fn a_branch_gets_a_folder_of_its_own_away_from_the_project() {
         let main = repo("place");
         let at = folder_for(&main, "feature/login");
-        // One folder holds all of them, so there is one thing to find and one
-        // thing to delete
-        assert_eq!(at.parent().unwrap().parent().unwrap().file_name().unwrap(), "myproject.worktrees");
+        // The project's folder is left alone: nothing of ours appears beside it
+        assert!(!at.starts_with(main.parent().unwrap()), "本体の隣に置いている: {at:?}");
+        // One place holds all of them, under the project they belong to
+        assert!(at.starts_with(branches_root().join("proj-place")), "{at:?}");
         assert!(at.ends_with("feature/login"), "枝の名前がそのまま入れ子になる: {at:?}");
-        assert!(at.starts_with(main.parent().unwrap()), "本体の隣に置く");
         // Two branches that differ only in shape never want the same folder
         assert_ne!(folder_for(&main, "feature/login"), folder_for(&main, "feature-login"));
+        // Two projects of the same name in different places still collide here,
+        // which is the price of one place; the folder is refused when it is
+        // already there rather than written into
+        assert_eq!(folder_for(&main, "x"), folder_for(Path::new("Z:/elsewhere/proj-place"), "x"));
     }
 
+    /// Where the branches go does not depend on where the project is.
+    ///
+    /// A project on a drive that is not there, or one nobody may write to, used
+    /// to send its branches somewhere else. Now there is nowhere else to send
+    /// them: they were never going to sit beside it
     #[test]
-    fn a_folder_that_cannot_be_written_sends_it_somewhere_it_can() {
-        let main = PathBuf::from("Z:/nowhere/myproject");
-        let at = folder_for(&main, "fix/crash");
-        assert!(at.starts_with(away_from_home()), "書けない場所の隣には置かない: {at:?}");
+    fn a_project_nobody_can_write_to_changes_nothing() {
+        let at = folder_for(Path::new("Z:/nowhere/myproject"), "fix/crash");
+        assert!(at.starts_with(branches_root()), "{at:?}");
         assert!(at.ends_with("fix/crash"));
+    }
+
+    /// The place itself is the person's own folder, unless it cannot be.
+    #[test]
+    fn branches_live_in_the_persons_own_folder() {
+        let root = real_branches_root();
+        match home_dir().filter(|h| !synced(h) && writable(h)) {
+            Some(home) => {
+                assert!(root.starts_with(&home), "自分のフォルダの下に無い: {root:?}");
+                assert!(root.ends_with("SHIKISHA-TERM/branches") || root.ends_with(r"SHIKISHA-TERMranches"),
+                        "{root:?}");
+            }
+            // No home to speak of: ours, per machine
+            None => assert!(root.starts_with(away_from_home()), "{root:?}"),
+        }
     }
 
     #[test]
@@ -876,7 +946,8 @@ mod tests {
     fn real_repo(name: &str) -> Option<PathBuf> {
         let at = std::env::temp_dir().join(format!("shikisha-rn-{name}"));
         let _ = std::fs::remove_dir_all(&at);
-        let main = at.join("myproject");
+        let main = at.join(format!("proj-{name}"));
+        let _ = std::fs::remove_dir_all(branches_root().join(format!("proj-{name}")));
         std::fs::create_dir_all(&main).ok()?;
         git(&main, &["init", "-q", "-b", "main", "."]);
         git(&main, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
@@ -936,7 +1007,7 @@ mod tests {
 
     #[test]
     fn a_branch_really_gets_its_own_folder() {
-        let main = std::env::temp_dir().join("shikisha-wt-real").join("myproject");
+        let main = std::env::temp_dir().join("shikisha-wt-real").join("proj-real");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
@@ -989,7 +1060,7 @@ mod tests {
     /// What a fresh folder is missing, and getting it there.
     #[test]
     fn what_git_does_not_carry_can_be_brought_along() {
-        let main = std::env::temp_dir().join("shikisha-wt-carry").join("myproject");
+        let main = std::env::temp_dir().join("shikisha-wt-carry").join("proj-carry");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
@@ -1049,7 +1120,7 @@ mod tests {
     /// Throwing a branch's folder away, and refusing to.
     #[test]
     fn a_folder_with_work_in_it_is_not_thrown_away() {
-        let main = std::env::temp_dir().join("shikisha-wt-discard").join("myproject");
+        let main = std::env::temp_dir().join("shikisha-wt-discard").join("proj-discard");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
