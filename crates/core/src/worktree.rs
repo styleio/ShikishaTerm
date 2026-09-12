@@ -25,9 +25,23 @@ pub struct Plan {
     pub base: String,
     /// Whether the branch is being made, or is one that already exists
     pub fresh: bool,
+    /// The machine it happens on. None is this one.
+    ///
+    /// Carried on the plan rather than looked up again when it runs, because
+    /// the line on screen and the line that runs come from one place -- and on
+    /// another machine "one place" has to include which machine
+    pub host: Option<crate::config::HostSpec>,
 }
 
 impl Plan {
+    /// Where this happens, as the person reads it.
+    pub fn where_at(&self) -> String {
+        match &self.host {
+            Some(h) => h.name.clone(),
+            None => String::new(),
+        }
+    }
+
     /// Exactly what will run, in the words git will get. Shown to the person
     /// first, then handed to the process: one line, one source
     pub fn argv(&self) -> Vec<String> {
@@ -102,7 +116,7 @@ pub fn plan_into(main: &Path, branch: &str, base: Option<&str>, at: Option<&Path
     // somebody else's project is already standing in -- and a path that is on
     // screen looking fine until you press it is the worst way to find out
     free_to_make(&folder)?;
-    Ok(Plan { folder, main, branch, base, fresh })
+    Ok(Plan { folder, main, branch, base, fresh, host: None })
 }
 
 /// Whether a folder can be made here, in the words the person will read.
@@ -120,29 +134,100 @@ fn free_to_make(folder: &Path) -> Result<()> {
     }
 }
 
+/// Works out what making this branch on another machine would do.
+///
+/// Almost nothing the local planner does can be done from here without asking
+/// the far end -- whether a branch exists, what the remote calls its default,
+/// whether a folder can be written to -- and asking costs a round trip. The
+/// dialog asks again on every keystroke, so this asks nothing: it assembles
+/// the line, shows it, and lets git on the far side be the one that refuses.
+/// A refusal from git arrives with git's own words, which is better than a
+/// guess made here.
+pub fn plan_on(
+    host: &crate::config::HostSpec,
+    branch: &str,
+    base: Option<&str>,
+    at: Option<&str>,
+) -> Result<Plan> {
+    let branch = branch.trim().to_string();
+    if branch.is_empty() {
+        bail!(crate::i18n::t("err.worktree.no_branch"));
+    }
+    if !name_is_usable(&branch) {
+        bail!(crate::i18n::tp("err.worktree.bad_branch", &[("name", &branch)]));
+    }
+    let project = host.project.as_deref().map(str::trim).unwrap_or_default();
+    if project.is_empty() {
+        bail!(crate::i18n::tp("err.worktree.no_project", &[("host", &host.name)]));
+    }
+    let folder = match at.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => p.to_string(),
+        None => remote_folder(host, project, &branch),
+    };
+    Ok(Plan {
+        main: PathBuf::from(project),
+        branch,
+        folder: PathBuf::from(folder),
+        base: base.map(str::trim).filter(|b| !b.is_empty()).unwrap_or("origin/main").to_string(),
+        // Git says otherwise if it is not, and says it in git's words
+        fresh: true,
+        host: Some(host.clone()),
+    })
+}
+
+/// Where a branch goes on a machine this program has never looked at.
+///
+/// The same shape as here -- one place, a folder per project, the branch's own
+/// shape kept -- with forward slashes, because the far end is a server and a
+/// server is not Windows often enough to guess otherwise. Where that one place
+/// is has to be told to us: nothing can be worked out about a machine from
+/// here, and inventing `$HOME` for a server we have never seen is inventing
+fn remote_folder(host: &crate::config::HostSpec, project: &str, branch: &str) -> String {
+    let project = project.trim_end_matches('/');
+    let leaf = project.rsplit('/').next().unwrap_or("repo");
+    let root = match host.branches.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+        Some(b) => b.trim_end_matches('/').to_string(),
+        // Beside the checkout, which is the only place we can name without
+        // being told -- and it is where a person who has not said would look
+        None => format!("{}.branches", project),
+    };
+    let leafs: Vec<&str> = branch.split('/').filter(|s| !s.is_empty()).collect();
+    match host.branches.is_some() {
+        true => format!("{root}/{leaf}/{}", leafs.join("/")),
+        false => format!("{root}/{}", leafs.join("/")),
+    }
+}
+
 /// Makes the folder, and remembers what it was cut from.
 ///
 /// The note goes into the repository's own settings rather than ours: what a
 /// branch grew from is a fact about the branch, and one that outlives this app
 /// being installed
 pub fn create(plan: &Plan) -> Result<()> {
-    free_to_make(&plan.folder)?;
-    if let Some(parent) = plan.folder.parent() {
-        std::fs::create_dir_all(parent)?;
+    // A folder on another machine is not ours to look at, and git over there
+    // refuses in its own words if something is already standing in the way
+    if plan.host.is_none() {
+        free_to_make(&plan.folder)?;
+        if let Some(parent) = plan.folder.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
     }
     let argv = plan.argv();
-    run(&argv)?;
+    run_for(plan, &argv)?;
     if plan.fresh {
         // Best effort: the folder is made and usable either way, and a missing
         // note only means a later diff has to guess its starting point
-        let _ = run(&[
-            "git".into(),
-            "-C".into(),
-            plan.folder.display().to_string(),
-            "config".into(),
-            format!("branch.{}.shikishaBase", plan.branch),
-            plan.base.clone(),
-        ]);
+        let _ = run_for(
+            plan,
+            &[
+                "git".into(),
+                "-C".into(),
+                plan.folder.display().to_string(),
+                "config".into(),
+                format!("branch.{}.shikishaBase", plan.branch),
+                plan.base.clone(),
+            ],
+        );
     }
     Ok(())
 }
@@ -836,6 +921,37 @@ fn name_is_usable(branch: &str) -> bool {
 }
 
 /// Runs one command and complains in the person's language when it fails.
+/// The same line, run wherever this plan belongs.
+///
+/// One door, so nothing has to remember to ask "which machine" a second time.
+/// A failure over there arrives with git's own words, the same as here
+pub fn run_for(plan: &Plan, argv: &[String]) -> Result<()> {
+    let Some(host) = plan.host.as_ref() else {
+        return run(argv);
+    };
+    let spec = crate::config::host_spec(host)?;
+    // Quoted for a server's shell, which is not this one. Only where it is
+    // needed, so an ordinary path stays readable in the log and on screen
+    let line = argv
+        .iter()
+        .map(|a| match a.contains(' ') || a.contains('\'') || a.contains('"') {
+            // A server's shell, not this one: single quotes, and a single
+            // quote inside them closed and reopened the way sh wants
+            true => format!("'{}'", a.replace('\'', "'\\''")),
+            false => a.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let ran = crate::ssh::exec(&spec, &line, 60_000)?;
+    if ran.ok() {
+        return Ok(());
+    }
+    bail!(crate::i18n::tp(
+        "err.worktree.failed",
+        &[("said", &ran.said()), ("command", &line)]
+    ))
+}
+
 pub fn run(argv: &[String]) -> Result<()> {
     let (head, rest) = argv.split_first().expect("空のコマンド");
     let mut running = std::process::Command::new(head);
@@ -973,6 +1089,7 @@ mod tests {
             folder: PathBuf::from("D:/work/myproject.worktrees/feature/login"),
             base: "origin/main".into(),
             fresh: true,
+            host: None,
         };
         assert_eq!(
             plan.argv(),

@@ -206,6 +206,9 @@ pub enum Ev {
         /// Where to put it, when somebody would rather it went elsewhere.
         /// Empty is the place this app would choose
         at: String,
+        /// The machine to make it on, by the name the settings gave it.
+        /// Empty is this one
+        host: String,
     },
     /// A colour was chosen for the project a folder belongs to. Empty means
     /// "go back to the one you work out yourselves"
@@ -576,14 +579,15 @@ pub struct BranchAsk {
     pub start: String,
     pub ais: Vec<String>,
     pub at: String,
+    pub host: String,
 }
 
 impl BranchAsk {
     /// The ask carried by a branch event, or nothing for any other event.
     pub fn of(ev: Ev) -> Option<Self> {
         match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais, at } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais, at })
+            Ev::Branch { from, branch, base, make, carry, start, ais, at, host } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host })
             }
             _ => None,
         }
@@ -737,6 +741,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .unwrap_or_default(),
             start: v.get("start").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             at: v.get("at").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             ais: v
                 .get("ais")
                 .and_then(|x| x.as_array())

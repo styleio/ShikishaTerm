@@ -3557,6 +3557,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for ask in shell.mail().take_branches() {
             let from = std::path::PathBuf::from(&ask.from);
             let name = ask.branch.clone();
+            // The machines this could be made on. This one is always there and
+            // is not in the list: it is what an empty choice means
+            let machines: Vec<crate::config::HostSpec> =
+                cfg.as_ref().map(|c| c.hosts.clone()).unwrap_or_default();
+            let on = machines.iter().find(|h| h.name == ask.host.trim() && !h.name.is_empty());
             // What this project can offer -- the branches to grow from, and
             // the things git will not carry -- is a fact about the folder, not
             // about what has been typed so far. Answered even when the name is
@@ -3608,16 +3613,30 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .as_deref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
+                hosts: machines.iter().map(|h| h.name.clone()).collect(),
+                host: on.map(|h| h.name.clone()).unwrap_or_default(),
                 ..Default::default()
             };
             if ask.ais.is_empty() {
                 let at = std::path::PathBuf::from(ask.at.trim());
-                match crate::worktree::plan_into(
-                    &from,
-                    &wanted,
-                    Some(&ask.base),
-                    (!ask.at.trim().is_empty()).then_some(at.as_path()),
-                ) {
+                // On this machine or another. Two planners rather than one
+                // with a switch inside it: almost nothing the local one does
+                // can be done about a machine we would have to ask
+                let planned = match on {
+                    Some(h) => crate::worktree::plan_on(
+                        h,
+                        &wanted,
+                        Some(&ask.base),
+                        Some(ask.at.trim()),
+                    ),
+                    None => crate::worktree::plan_into(
+                        &from,
+                        &wanted,
+                        Some(&ask.base),
+                        (!ask.at.trim().is_empty()).then_some(at.as_path()),
+                    ),
+                };
+                match planned {
                     Err(e) => view.error = Some(format!("{e:#}")),
                     Ok(plan) => {
                         view.branch = plan.branch.clone();

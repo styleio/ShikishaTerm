@@ -1237,7 +1237,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      rather than offered, because the row somebody pressed already chose the
      one and this machine is still the only answer to the other. A picker with
      one entry that cannot change is a control that lies about being one */
-  #branch .bproject, #branch .bdest { display:flex; align-items:baseline; gap:var(--s3);
+  #branch .bproject { display:flex; align-items:baseline; gap:var(--s3);
     font-size:13px; color:var(--text); min-height:22px; }
   #branch .bproject .at { font-family:var(--mono); font-size:11px; color:var(--faint);
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1302,7 +1302,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bfan { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
   #branch .bais { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding-left:22px; }
   #branch .bais label { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
-  #branch #bbase, #branch #bstart { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
+  #branch #bdest { align-self:flex-start; }
+  #branch #bbase, #branch #bstart, #branch #bdest { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
     border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 12px; cursor:pointer; height:36px;
     max-width:42%; flex:0 0 auto; display:flex; align-items:center; gap:var(--s2);
     white-space:nowrap; overflow:hidden; }
@@ -1766,7 +1767,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       </div>
       <div class="bfield">
         <span class="blabel"></span>
-        <div class="bdest"><span class="nm"></span></div>
+        <div id="bdest"><span class="nm"></span><span class="caret">&#9662;</span></div>
       </div>
       <div class="bfield">
         <label class="blabel" for="bq"></label>
@@ -2672,7 +2673,9 @@ function openBranch(g) {
                  T["tui.branch.where"] || "Where it goes",
                  T["tui.branch.cmd"] || "What actually runs"];
   b.querySelectorAll(".blabel").forEach((l, i) => { l.textContent = names[i] || ""; });
-  b.querySelector(".bdest .nm").textContent = T["tui.branch.dest.here"] || "This PC";
+  branchHost = "";
+  const dest = document.getElementById("bdest");
+  if (dest) { dest.dataset.said = ""; dest.textContent = ""; }
   const q = document.getElementById("bq");
   q.placeholder = T["tui.branch.placeholder"] || "branch name";
   q.value = "";
@@ -2732,7 +2735,7 @@ function askBranch() {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:false, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : "")});
+          at:(at ? at.value.trim() : ""), host:branchHost});
   }, 180);
 }
 
@@ -2804,6 +2807,7 @@ function drawStart(b) {
 
 // What it will grow from: whatever the picker is showing
 let branchBase = "";
+let branchHost = "";
 function basing() { return branchBase; }
 
 // The names still ticked, in the order they were offered
@@ -2846,6 +2850,7 @@ function drawBranch() {
   b.querySelector(".bcmd").textContent = mine && !p.error
     ? ((p.lines && p.lines.length) ? p.lines.join("\n") : p.line) : "";
   drawStart(b);
+  drawDest(b, here ? p : null);
   drawCarry(b, here ? (p.carry || []) : []);
   showMore(b, !b.querySelector(".bextra").hidden);
   drawBases(b, here ? p : null);
@@ -2855,6 +2860,34 @@ function drawBranch() {
 // The branches this one can grow from. Filled once, then left alone: rebuilt
 // on every answer it would jump back to the first one each time somebody
 // chose another
+// Which machine this happens on. This one is not in the settings and is not in
+// the list: it is what choosing nothing means, so it is the first entry and the
+// one the dialog opens on
+function drawDest(b, p) {
+  const box = document.getElementById("bdest");
+  if (!box) return;
+  const machines = (p && p.hosts) || [];
+  const here = T["tui.branch.dest.here"] || "This PC";
+  const said = branchHost || here;
+  if (box.dataset.said !== said) {
+    box.dataset.said = said;
+    box.textContent = "";
+    box.append(el("span", {class:"nm"}, said), el("span", {class:"caret"}, "▾"));
+  }
+  box.onclick = e => {
+    e.stopPropagation();
+    const rows = [el("div", {onclick:() => {
+      closeFolderMenu(); branchHost = ""; box.dataset.said = ""; drawBranch(); askBranch();
+    }}, here)];
+    machines.forEach(name => rows.push(el("div", {onclick:() => {
+      closeFolderMenu(); branchHost = name; box.dataset.said = ""; drawBranch(); askBranch();
+    }}, name)));
+    // Where machines come from, said once rather than offered as a button that
+    // would have to leave this dialog half-finished to be pressed
+    rows.push(el("div", {class:"say"}, T["tui.branch.dest.add.hint"] || ""));
+    openList(box, rows);
+  };
+}
 function drawBases(b, p) {
   const box = document.getElementById("bbase");
   if (!box) return;
@@ -2957,7 +2990,7 @@ function drawCarry(b, items) {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:true, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : "")});
+          at:(at ? at.value.trim() : ""), host:branchHost});
   };
   const more = b.querySelector(".bmore");
   if (more) more.addEventListener("click", () =>
@@ -9517,8 +9550,8 @@ mod tests {
         assert!(PAGE.contains(r#"make:true, carry:carrying(), start:starting(), ais:fanning(),"#), "作る道に起動先が乗らない");
         // The place travels on both roads too. On one only, the line somebody
         // read would be about a folder the button then did not use
-        assert_eq!(PAGE.matches(r#"at:(at ? at.value.trim() : "")});"#).count(), 2,
-                   "場所が両方の道に乗っていない");
+        assert_eq!(PAGE.matches(r#"at:(at ? at.value.trim() : ""), host:branchHost});"#).count(), 2,
+                   "場所と機械が両方の道に乗っていない");
         // With the fan-out ticked, the single choice is not sent as well
         assert!(PAGE.contains(r#"function starting() { return fanning().length ? "" : branchStart; }"#));
         // Nothing offered on a machine with no AI: the dialog is what it was
