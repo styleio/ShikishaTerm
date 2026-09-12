@@ -843,6 +843,27 @@ impl Capabilities {
         Ok(self.forget_press(name))
     }
 
+    /// Which of the workspace's open pages are drawn on somebody else's
+    /// machine, by display name, each with what that machine is called.
+    ///
+    /// Empty whenever the pages are this machine's own, which is the ordinary
+    /// case. The board needs it because a page on a person's own desk has no
+    /// picture that can be sent anywhere else: shown a blank relay, a phone
+    /// reads that as the app having stopped.
+    pub fn drawn_away(&self) -> Vec<(String, String)> {
+        let held = self.host.borrow();
+        let Some(host) = held.as_ref() else { return Vec::new() };
+        let ws = self.ws.get();
+        self.hosted
+            .borrow()
+            .iter()
+            .filter(|(w, _)| *w == ws)
+            .filter_map(|(_, name)| {
+                host.drawn_on(Some(&Self::key(ws, name))).map(|who| (name.clone(), who))
+            })
+            .collect()
+    }
+
     /// What the pages of the workspace in view are asking, by display name,
     /// for the board to draw
     pub fn asks_now(&self) -> Vec<(String, crate::uistate::AskState)> {

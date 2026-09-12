@@ -609,6 +609,18 @@ pub trait BrowserHost {
     /// Stop every recording at once (a tab ended, or the run did)
     fn record_all_off(&self);
 
+    /// What the device drawing this page is called, when the page is not drawn
+    /// on this machine at all.
+    ///
+    /// A host that paints its own pages says nothing, which is the default and
+    /// the ordinary case. The one that can place a page on somebody else's
+    /// machine answers with that machine's name, and the screen needs it: such
+    /// a page has no picture anyone here can be shown, so the only honest thing
+    /// to put in its place is where it actually is.
+    fn drawn_on(&self, to: Option<&str>) -> Option<String> {
+        let _ = to;
+        None
+    }
 }
 
 /// Read one intent from the screen.

@@ -2478,6 +2478,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             aim: aim_of(workspaces.get(ws_index), &surfaces, &tabs, active),
             nav,
             asks: caps.asks_now(),
+            away: caps.drawn_away(),
             scrolled: session_at(&surfaces, active)
                 .and_then(|i| tabs.get(i))
                 .map(|t| {

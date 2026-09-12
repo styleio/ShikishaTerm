@@ -112,6 +112,13 @@ pub struct TabState {
     /// this; the page itself never sees it, so it cannot press it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask: Option<AskState>,
+    /// The device this page is drawn on, when that is not this machine at all
+    /// (the `browser_draw` setting). Such a page is already in front of the
+    /// person whose machine it is and there is no picture of it to send
+    /// anywhere else, so the screen says where it is instead of showing a relay
+    /// that can never fill in
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub away: Option<String>,
 }
 
 /// What a script is asking the person about a page, for the bar the board
@@ -970,6 +977,8 @@ impl TabState {
             readable: readable(t),
             // A session is not a page; nothing asks the person about it here
             ask: None,
+            // ...and a session is drawn wherever its terminal is, which is here
+            away: None,
         }
     }
 
@@ -1035,6 +1044,9 @@ impl TabState {
             // Nothing was said here to read back
             readable: false,
             ask: None,
+            // Where it is drawn is known to the runtime, not to this; filled
+            // in by `view::ui_state_of` along with everything else
+            away: None,
         }
     }
 }
@@ -1338,6 +1350,7 @@ mod tests {
             cost: None,
             readable: false,
             ask: None,
+            away: None,
         }
     }
 
