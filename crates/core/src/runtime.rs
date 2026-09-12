@@ -713,8 +713,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The zoom level waiting to be written down, and when to write it
     let mut font_size: Option<u8> = None;
     let mut tab_width: Option<u16> = None;
+    let mut side_width: Option<u16> = None;
     let mut font_save_at: Option<std::time::Instant> = None;
     let mut tab_save_at: Option<std::time::Instant> = None;
+    let mut side_save_at: Option<std::time::Instant> = None;
     // Whether the composer is shut, as the window's own page last said. The
     // pen a placed page draws for itself follows it
     let mut composer_shut = false;
@@ -2153,6 +2155,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::TabWidth { px }) => {
                         shell.mail().tab_width = Some(px);
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::SideWidth { px }) => {
+                        shell.mail().side_width = Some(px);
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         let keys = keys_for(&ev);
@@ -2731,6 +2736,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 });
             }
         }
+        // The right-hand column, held back the same way and for the same reason
+        if let Some(px) = shell.mail().take_side_width() {
+            side_width = Some(config::clamp_side_bar(px));
+            side_save_at = Some(std::time::Instant::now() + Duration::from_secs(2));
+        }
+        if side_save_at.is_some_and(|at| std::time::Instant::now() >= at) {
+            side_save_at = None;
+            if let Some(px) = side_width.take() {
+                config::save_setting(&["side_bar_width"], serde_json::json!(px));
+                watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
+                append_hook_log(&if px == 0 {
+                    "the side column is put away".to_string()
+                } else {
+                    format!("the side column is now {px}px wide")
+                });
+            }
+        }
 
         // ⊞ / ⊟ in a pane's caption. Divides that pane, not whichever one had
         // focus: the button is attached to a pane, so it must mean that one
@@ -2967,8 +2989,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     "resolve" => "git_apply".to_string(),
                     _ => format!("git_{act}"),
                 };
+                // A panel of its own first, then the tab being looked at: the
+                // column on the right reports on whatever folder the person is
+                // working in, and names that tab rather than a surface. A tab
+                // with no folder is not an answer, so it is not offered as one
                 let dir = panel_places(&surfaces)
                     .into_iter()
+                    .chain(tab_places(&tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
                     .find(|p| p.key.matches(&panel))
                     .map(|p| p.dir);
                 let answer = match (caps.allows(&name, grants::Subject::Human), dir) {
@@ -4461,6 +4488,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // for one screen, and the list of tabs is the part you
                         // are not reading while you read the other
                         KeyCode::Char('s') => shell.toggle_tab_bar(),
+                        // Ctrl+B g brings the changed files out on the right,
+                        // and puts them away again. The same one width says
+                        // which, so there is no second flag to fall out of
+                        // step with it
+                        KeyCode::Char('g') => shell.toggle_side_bar(),
                         // Ctrl+B = puts the dividers back to even halves. The
                         // mouse can do it by double-clicking one; this does the
                         // whole screen at once

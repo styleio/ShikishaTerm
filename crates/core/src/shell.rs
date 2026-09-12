@@ -49,6 +49,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
        -- one number for both, so "hidden" needs no second piece of state to
        disagree with the first */
     --tabw:{{TAB_W}}px;
+    /* And how wide the column on the right is. Same one-number rule: 0 is put
+       away, and nothing else has to be kept in step with it */
+    --sidew:{{SIDE_W}}px;
     /* Space and corners, in the steps the style guide gives. The board is a
        denser surface than the settings and does not use the wide end of the
        ladder, but a gap here is one of these or it is a mistake */
@@ -60,7 +63,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:var(--bg); color:var(--text); font-family:var(--mono); font-size:14px; }
   /* The terminal itself, and the read-only copies of it in other panes */
   #screen, .pscreen { font-size:var(--fs); }
-  #app { position:relative; display:grid; grid-template-columns:auto 1fr;
+  #app { position:relative; display:grid; grid-template-columns:auto 1fr auto;
     grid-template-rows:1fr auto; height:100%; }
 
   /* ── Left tab bar ───────────────────────── */
@@ -78,6 +81,45 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #tabgrip { position:absolute; top:0; bottom:0; z-index:6; width:9px;
     left:max(0px, calc(var(--tabw) - 4px)); cursor:col-resize; }
   #tabgrip:hover, #tabgrip.dragging { background:var(--brand); opacity:.35; }
+
+  /* ── The column on the right ─────────────────────
+     One panel stands in it at a time, chosen from the strip along its top.
+     The strip is there with one panel in it, because that is where the next
+     one goes: a row that appears later moves everything under it.
+     The width is the whole of its state -- 0 is put away -- and the grip
+     stays where it was so the way back is where the way out was */
+  /* The column is named rather than left to fall where it may: an item that
+     spans rows is placed before the ones that do not, so a nameless column
+     took the middle and pushed the terminal to the far side */
+  #side { grid-column:3; grid-row:1/3; width:var(--sidew); min-width:0; background:var(--panel);
+    border-left:1px solid var(--line); display:flex; flex-direction:column;
+    overflow:hidden; }
+  #side[hidden] { display:none; }
+  #side .sbar { flex:0 0 auto; display:flex; align-items:center; gap:var(--s1);
+    padding:var(--s1) var(--s2); border-bottom:1px solid var(--line); }
+  #side .sbar .grow { flex:1 1 auto; }
+  #side .sbar button { padding:3px 10px; font-size:11.5px; border-radius:var(--r-chip);
+    border:1px solid transparent; background:none; color:var(--dim); cursor:pointer; }
+  #side .sbar button:hover { background:var(--hover); color:var(--text); }
+  #side .sbar button.on { background:var(--raise); color:var(--text); }
+  #side .sbar button.away { font-size:13px; line-height:1; padding:3px 8px; }
+  /* Which folder the panel is reporting on. The same weight the tab rows give
+     a folder name, because it is the same fact */
+  #side .sbar .swhere { font-size:11px; color:var(--dim); min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  #side .sbody { flex:1 1 auto; min-height:0; display:flex; position:relative; }
+  /* In the column the panel is simply what fills it. Standing where a terminal
+     stands, it is placed against the focused pane instead -- one panel, two
+     places it can be put, and only the placement differs */
+  #side #gitpanel { position:relative; left:auto; top:auto; right:auto; bottom:auto;
+    flex:1 1 auto; min-width:0; }
+  #side .sempty { flex:1 1 auto; padding:var(--s4) var(--s3); color:var(--faint);
+    font-size:11.5px; line-height:1.6; }
+  /* The column's own edge, held the same way as the tab bar's */
+  #sidegrip { position:absolute; top:0; bottom:0; z-index:6; width:9px;
+    right:max(0px, calc(var(--sidew) - 4px)); cursor:col-resize; }
+  #sidegrip[hidden] { display:none; }
+  #sidegrip:hover, #sidegrip.dragging { background:var(--brand); opacity:.35; }
   /* Settings lives here as a fixed gear pinned to the very bottom, not a tab */
   .tab.gearrow { margin-top:auto; color:var(--dim); border-top:1px solid var(--line);
     justify-content:center; padding:10px; }
@@ -336,7 +378,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      dividers. The tab bar's edge was left out, and because a click begins with
      a mousedown the grip switched itself off between the two halves of a
      double-click -- so the one gesture that puts the width back never arrived */
-  body.dragdiv .pdiv, body.dragdiv #tabgrip { pointer-events:auto; }
+  body.dragdiv .pdiv, body.dragdiv #tabgrip, body.dragdiv #sidegrip { pointer-events:auto; }
   .pane .pbody { position:absolute; left:0; right:0; top:0; bottom:0; overflow:hidden; }
   .pane.headed .phead { display:flex; }
   .pane.headed .pbody { top:22px; }
@@ -1457,6 +1499,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #app.drawer #backdrop { display:block; position:fixed; inset:0; z-index:20;
       background:rgba(0,0,0,.45); }
 
+    /* There is no width to share at this size, so the column out is the page:
+       it covers the work rather than squeezing it into a keyhole. Everything
+       in it is the same panel the window draws, at the same narrow width a
+       window gets when it is dragged this small */
+    /* Under the top bar rather than over it: the panel out is the page, but
+       STOP is the one control that must never be behind something */
+    #side { position:fixed; top:calc(42px + env(safe-area-inset-top));
+      right:0; bottom:0; left:0; z-index:29; width:auto; border-left:none; }
+    /* Its edge is a window gesture: a finger drags the page, not the divider */
+    #sidegrip { display:none; }
+
     /* Body content sits below the top bar now, so it no longer needs margin for ☰ */
     #board { padding:16px 12px; }
     .card { overflow-x:auto; }          /* tables wider than the card scroll inside it */
@@ -1525,6 +1578,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <button id="pageDown" class="pagebtn" aria-label="newer">&#9660;</button>
     </div>
   </div>
+  <!-- The column on the right. Its strip says which panel is standing in it;
+       the panel itself is moved in here when this is where it belongs, so
+       there is one of it however many places it can be put -->
+  <aside id="side" hidden>
+    <div class="sbar"></div>
+    <div class="sbody"></div>
+  </aside>
+  <!-- The column's edge, as something you can take hold of -->
+  <div id="sidegrip" hidden></div>
   <div id="veil" hidden></div>
   <!-- The Vault: search past conversations and reopen one. Its own overlay
        rather than the veil, because it has an input and must not close on the
@@ -2244,6 +2306,8 @@ function folderMenu(e, g) {
     ailing(g) ? item(T["tui.repair.go"] || "", () => openRepair(g)) : null,
     item(T["tui.tab.add"] || "ADD TAB", () => addTabHere(g)),
     // Only where there is a project to cut a branch from
+    g.color ? item(T["tui.folder.changes"] || "What changed here",
+                   () => openSide("git")) : null,
     g.color ? item(T["tui.folder.branch"] || "Parallel work (git worktree)",
                    () => openBranch(g)) : null,
     // The name, the colour and getting rid of it are settings, and settings
@@ -3336,11 +3400,18 @@ window.__state = function (json) {
   // Nothing to draw for a pane with nothing in it -- it says so itself
   screen.hidden = cover || S.active === 0 || web || git || files;
   const panel = document.getElementById("gitpanel");
-  const wasGit = panel && !panel.hidden;
+  const main = document.getElementById("main");
+  const wasGit = panel && !panel.hidden && panel.parentNode === main;
+  // A pane holds the panel only for a git tab. Anywhere else it stands in the
+  // column on the right, which takes it and turns it back on if that is where
+  // it belongs -- so the panel is put out here and claimed there, and never
+  // left over a terminal it no longer covers
+  if (panel && git && panel.parentNode !== main) main.append(panel);
   if (panel) panel.hidden = cover || !git;
+  drawSide();
   // Ask the moment it comes into view, and whenever the panel being looked at
   // changes -- a list that was true a workspace ago is not worth drawing
-  if (panel && !panel.hidden) {
+  if (panel && git && !panel.hidden) {
     const t = gitTab();
     if (!wasGit || G.panel !== ((t && (t.id || t.name)) || null)) {
       gitRefresh(false);
@@ -3772,6 +3843,144 @@ window.__toggleTabBar = function () {
   grip.ondblclick = (e) => { e.preventDefault(); setTabWidth(TABW_DEF); settleTabWidth(); };
   settleTabWidth();
 })();
+
+// ── The column on the right ──────────────────────────────
+// The same three moving parts as the tab bar, on the other edge: one width
+// that is also whether it is there at all, a grip to drag it by, and a key to
+// put it away. Kept beside that one rather than folded into it -- two bars
+// that must not drift apart are still two bars, and a shared helper that took
+// "which side" as an argument would be read at every call site to find out
+// which one it meant.
+const SIDEW_MIN = {{SIDE_W_MIN}}, SIDEW_MAX = {{SIDE_W_MAX}}, SIDEW_DEF = {{SIDE_W_DEF}};
+let lastSideW = SIDEW_DEF;
+// Which panel stands in the column. One today; the strip is drawn from this
+// list, so the next one is a row here rather than a shape change
+const SIDE_PANELS = [["git", () => T["tui.side.git"] || "Changes"]];
+let sidePanel = "git";
+function sideWidth() {
+  const v = parseFloat(getComputedStyle(document.documentElement)
+    .getPropertyValue("--sidew"));
+  return isFinite(v) ? Math.round(v) : 0;
+}
+// Set it, draw it, and tell the app -- which writes it down so the next start
+// opens the same way. The terminal is re-measured for the same reason the tab
+// bar re-measures it: it just got narrower, and an AI handed the wrong column
+// count wraps its screen wrongly
+function setSideWidth(px) {
+  const w = px <= 0 ? 0 : Math.max(SIDEW_MIN, Math.min(SIDEW_MAX, Math.round(px)));
+  document.documentElement.style.setProperty("--sidew", w + "px");
+  send({kind:"sidewidth", px: w});
+  drawSide();
+  scheduleReport();
+}
+function settleSideWidth() {
+  const w = sideWidth();
+  if (w > 0) lastSideW = w;
+}
+// Put the column away, or bring it back the width it was
+window.__toggleSideBar = function () {
+  if (sideWidth() > 0) { settleSideWidth(); setSideWidth(0); }
+  else setSideWidth(lastSideW);
+};
+// Bring it out on a named panel -- what the folder menu asks for
+function openSide(which) {
+  if (which) sidePanel = which;
+  if (sideWidth() <= 0) setSideWidth(lastSideW);
+  else drawSide();
+}
+
+(function () {
+  const grip = document.getElementById("sidegrip");
+  if (!grip) return;
+  grip.title = T["tui.side.grip"] || "";
+  grip.onmousedown = (e) => {
+    e.preventDefault();
+    grip.classList.add("dragging");
+    document.body.classList.add("dragdiv");
+    const right = document.getElementById("app").getBoundingClientRect().right;
+    const move = (ev) => {
+      const want = right - ev.clientX;
+      // Dragged nearly shut means shut, for the same reason as the other edge:
+      // otherwise the one thing the drag looks like it should do is the one
+      // thing it cannot
+      setSideWidth(want < SIDEW_MIN / 2 ? 0 : want);
+    };
+    const up = () => {
+      grip.classList.remove("dragging");
+      document.body.classList.remove("dragdiv");
+      settleSideWidth();
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+  grip.ondblclick = (e) => { e.preventDefault(); setSideWidth(SIDEW_DEF); settleSideWidth(); };
+  settleSideWidth();
+})();
+
+// A git panel launched as a tab of its own is the same panel, and there is one
+// of it. While such a tab is the one being looked at, it holds the panel and
+// the column steps aside -- no second copy, and nothing said about why
+function gitSurfaceUp() {
+  return !!(S && S.tabs || []).some(t => t.index === S.active && t.kind === "git");
+}
+// Draw the column: whether it is there, the strip along its top, and which
+// panel is standing in the body
+function drawSide() {
+  const side = document.getElementById("side");
+  const grip = document.getElementById("sidegrip");
+  if (!side || !grip) return;
+  const held = gitSurfaceUp();
+  const out = sideWidth() > 0 && !held;
+  side.hidden = !out;
+  grip.hidden = held;
+  if (!out) return;
+  const bar = side.querySelector(".sbar");
+  const body = side.querySelector(".sbody");
+  // Which folder this is about. The column follows the tab being looked at, so
+  // a list with no name over it is a list you have to guess at
+  const at = gitRepoTab();
+  const g = at && at.group != null ? ((S && S.groups) || [])[at.group] : null;
+  const where = (g && (g.name || g.folder)) || "";
+  // The strip is rebuilt only when what it would say changed: it is a row of
+  // buttons under the pointer several times a second otherwise
+  const key = SIDE_PANELS.map(([id]) => id).join(",") + "|" + sidePanel + "|" + where;
+  if (bar.dataset.key !== key) {
+    bar.dataset.key = key;
+    bar.textContent = "";
+    for (const [id, label] of SIDE_PANELS) {
+      bar.append(el("button", {class: sidePanel === id ? "on" : "",
+        onclick:() => { sidePanel = id; drawSide(); }}, label()));
+    }
+    bar.append(el("span", {class:"grow"}));
+    if (where) bar.append(el("span", {class:"swhere", title:(g && g.folder) || where}, where));
+    bar.append(el("button", {class:"away", title:T["tui.side.hide"] || "",
+      onclick:() => { settleSideWidth(); setSideWidth(0); }}, "✕"));
+  }
+  if (sidePanel !== "git") return;
+  const panel = document.getElementById("gitpanel");
+  // A folder is what git needs, and the tab being looked at is how the column
+  // knows which one. Said plainly where the list would have been, rather than
+  // an empty list that looks like "nothing has changed"
+  const t = gitRepoTab();
+  let note = body.querySelector(".sempty");
+  if (!t) {
+    if (panel && panel.parentNode === body) document.getElementById("main").append(panel);
+    if (panel) panel.hidden = true;
+    if (!note) { note = el("div", {class:"sempty"}); body.append(note); }
+    note.textContent = T["tui.side.notab"] || "";
+    return;
+  }
+  if (note) note.remove();
+  if (panel && panel.parentNode !== body) body.append(panel);
+  if (panel) {
+    panel.hidden = false;
+    // Coming into view, or a different folder in the same place, starts over
+    if (G.panel !== (t.id || t.name)) gitRefresh(false);
+    else drawGit();
+  }
+}
 
 // One unfocused pane's terminal contents.
 window.__panescreen = function (id, html) {
@@ -5443,12 +5652,23 @@ function targetNote() {
 // Panels available on this surface. "target" (operate a tab) shows a placeholder
 // until that feature lands, but it's listed now so the switcher is present on both
 // the phone (keys/actions/target) and the desktop (actions/target).
+// The changes standing in the column beside a terminal. The commit bar belongs
+// in the switcher then, but not in front of it: the line being typed is still
+// for the tab being looked at, and a panel that moves the bar out from under
+// somebody mid-sentence is the bar taken away
+function sideGitUp() {
+  return sideWidth() > 0 && sidePanel === "git" && !gitSurfaceTab() && !!gitRepoTab();
+}
 function panelOptions() {
+  const opts = panelOptionsHere();
+  return sideGitUp() && opts.indexOf("git") < 0 ? opts.concat("git") : opts;
+}
+function panelOptionsHere() {
   const base = (typeof REMOTE !== "undefined" && REMOTE) ? ["keys", "actions"] : ["actions"];
   // On a git panel the line being written is a commit message, so that panel
   // comes first and Send means commit. The others are still in the switcher --
   // the bar is not taken away, it is pointed somewhere else
-  if (gitTab()) return ["git"].concat(base);
+  if (gitSurfaceTab()) return ["git"].concat(base);
   // A browser tab is operated, not an operator, so it has no 🎯 target panel —
   // instead it gains 📼 (record page actions as Lua / run composer Lua on the
   // page). Otherwise it's the same sub-input bar as an AI tab.
@@ -5705,8 +5925,25 @@ let G = { panel:null, branch:null, branches:[], rows:null, sel:null, staged:fals
           view:"changes", log:[], commit:null, about:null, remotes:false };
 let gitUi = null;
 
-function gitTab() {
+// A git panel launched as a tab of its own: the folder it reports on is its
+// own, written down beside it in the settings
+function gitSurfaceTab() {
   return (S && S.tabs || []).find(t => t.index === S.active && t.kind === "git");
+}
+// The tab the column reports on: the one being looked at, when its working
+// folder is in a repository. The colour a folder wears is that answer already
+// -- it is absent for a folder no repository holds -- so nothing is run to
+// find out, and the column is right about a folder git is busy rebasing
+function gitRepoTab() {
+  const t = (S && S.tabs || []).find(x => x.index === S.active && !x.settings);
+  if (!t || t.group == null) return null;
+  const g = ((S && S.groups) || [])[t.group];
+  return g && g.color ? t : null;
+}
+// Whichever of the two is standing. Every button on the panel goes through
+// here, so the panel itself never learns where it is
+function gitTab() {
+  return gitSurfaceTab() || gitRepoTab();
 }
 function gitAsk(act, args) {
   const t = gitTab();
@@ -7729,6 +7966,10 @@ fn built(sticky: bool, by: Served) -> String {
     .replace("{{FONT}}", &look.font_css())
     .replace("{{FONT_SIZE}}", &look.size_px().to_string())
     .replace("{{TAB_W}}", &crate::config::tab_bar_px().to_string())
+    .replace("{{SIDE_W}}", &crate::config::side_bar_px().to_string())
+    .replace("{{SIDE_W_MIN}}", &crate::config::SIDE_BAR_MIN_PX.to_string())
+    .replace("{{SIDE_W_MAX}}", &crate::config::SIDE_BAR_MAX_PX.to_string())
+    .replace("{{SIDE_W_DEF}}", &crate::config::SIDE_BAR_DEFAULT_PX.to_string())
     .replace("{{TAB_W_MIN}}", &crate::config::TAB_BAR_MIN_PX.to_string())
     .replace("{{TAB_W_MAX}}", &crate::config::TAB_BAR_MAX_PX.to_string())
     .replace("{{TAB_W_DEF}}", &crate::config::TAB_BAR_DEFAULT_PX.to_string())
@@ -8364,7 +8605,9 @@ mod tests {
         // A drag switches off every pointer target but the handles. Leave the
         // grip out of that list and its own double-click stops arriving
         assert!(
-            p.contains("body.dragdiv .pdiv, body.dragdiv #tabgrip { pointer-events:auto; }"),
+            p.contains(
+                "body.dragdiv .pdiv, body.dragdiv #tabgrip, body.dragdiv #sidegrip { pointer-events:auto; }"
+            ),
             "ドラッグ中に取っ手自身がポインタを失う"
         );
         // The bounds are the app's, handed in rather than written twice
@@ -8376,6 +8619,36 @@ mod tests {
             p.contains(&format!("const TABW_MIN = {}", crate::config::TAB_BAR_MIN_PX)),
             "ページとアプリで下限が食い違っている"
         );
+    }
+
+    /// The column on the right is held to the same three promises: one number
+    /// is its whole state, the grip stays catchable at every width, and the
+    /// bounds come from the app rather than being written twice.
+    #[test]
+    fn the_side_column_is_one_number_wide() {
+        let p = super::page();
+        assert!(
+            p.contains("#side { grid-column:3; grid-row:1/3; width:var(--sidew);"),
+            "右の欄が3列目に置かれていないか、幅が固定のまま"
+        );
+        assert!(
+            p.contains("right:max(0px, calc(var(--sidew) - 4px))"),
+            "しまった欄を掴み直せる位置に取っ手が無い"
+        );
+        assert!(p.contains("window.__toggleSideBar"), "キーからしまう入口が無い");
+        assert!(!p.contains("{{SIDE_W"), "幅の値がページに差し込まれていない");
+        assert!(
+            p.contains(&format!("const SIDEW_MIN = {}", crate::config::SIDE_BAR_MIN_PX)),
+            "ページとアプリで下限が食い違っている"
+        );
+        // Three columns, or the third one has nowhere to stand
+        assert!(
+            p.contains("grid-template-columns:auto 1fr auto"),
+            "盤面が3列になっていない"
+        );
+        // One panel, wherever it is put: a second copy of the markup would be
+        // a second thing to keep right
+        assert_eq!(p.matches("id=\"gitpanel\"").count(), 1, "git の画面が2つある");
     }
 
     /// Elements marked hidden must actually be hidden.

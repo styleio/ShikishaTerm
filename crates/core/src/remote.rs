@@ -159,6 +159,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // do on this PC by opening the same panel, and a phone that can hand an
         // AI a whole task can certainly stage a file
         Ev::Git { .. } => true,
+        // Putting the right-hand column away, or dragging its edge. A phone
+        // has less width to spare than a window does, so this is the one it
+        // needs most
+        Ev::SideWidth { .. } => true,
         // The file panel, on the same reasoning. Sending a photo from a phone
         // to a server is one of the things this exists for
         Ev::Sftp { .. } => true,

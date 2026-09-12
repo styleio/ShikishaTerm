@@ -6,6 +6,8 @@
 
   "//tab_bar_width": "左タブバーの幅(ピクセル)。省略時は既定の幅。画面で境界線をドラッグしても変わり、その値がここに書き戻される。0 でタブバーをしまう (Ctrl+B s でも同じ)",
   "tab_bar_width": 290,
+  "//side_bar_width": "右の欄の幅(ピクセル)。0 または省略でしまってある。画面で境界線をドラッグしても変わり、その値がここに書き戻される (Ctrl+B g でも出し入れできる)",
+  "side_bar_width": 0,
 
   "//secrets": "Slack/Discord/Telegramのトークンはここではなくsecretsファイルへ (共有厳禁)",
   "secrets": "secrets.json",
