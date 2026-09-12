@@ -7359,13 +7359,25 @@ function tabPane(ws, t) {
     box.append(nbox);
   }
 
-  // Automation: make it visible at a glance what's already configured
+  // Automation. One chooser rather than a row per trigger: a tab has eight of
+  // them and seven are normally empty, so a list of rows is mostly a list of
+  // things that are not happening. What a person wants at a glance is the
+  // opposite -- which ones ARE set -- and that is one line under the chooser
   const ev = el("div", {class:"events"});
-  for (const [id, label, hint] of eventsFor(t).filter(e => e[0] !== "_shared")) {
+  {
+    const pick = el("select");
+    for (const [id, label] of eventsFor(t)) pick.append(el("option", {value:id}, label));
+    const hint = el("div", {class:"hint", id:"ev-hint"});
+    const drawHint = () => {
+      const chosen = eventsFor(t).find(e => e[0] === pick.value);
+      hint.textContent = chosen ? chosen[2] : "";
+    };
+    pick.addEventListener("change", drawHint);
+    drawHint();
     ev.append(el("div", {class:"event"},
-      el("div", {class:"name"}, label, el("div", {class:"hint"}, hint)),
-      el("span", {class:"state", id:"st-" + id}, "—"),
-      el("button", {class:"quiet", onclick:() => openAuto(ws, t, id)}, T["common.edit"])));
+      el("div", {class:"name"}, pick, hint),
+      el("button", {class:"quiet", onclick:() => openAuto(ws, t, pick.value)}, T["common.edit"])));
+    ev.append(el("div", {class:"hint", id:"ev-set"}, T["automation.none_set"]));
   }
   if (runs) {
     box.append(card(T["settings.tab.automation"], ev));
@@ -7996,12 +8008,15 @@ function kindPanel(t, cmdInput, rebuild, real) {
 // ── Automation editor ───────────────────────────────────
 // Session hooks. None of these ever fire for a browser
 const TAB_EVENTS = [
-  ["on_start",    T["automation.on_start"],           T["automation.on_start.hint"]],
-  ["on_done",     T["automation.on_done"],     T["automation.on_done.hint"]],
-  ["on_question", T["automation.on_question"],     T["automation.on_question.hint"]],
-  ["on_exit",     T["automation.on_exit"],           T["automation.on_exit.hint"]],
-  ["on_busy",     T["automation.on_busy"],     T["automation.on_busy.hint"]],
-  ["_shared",     T["automation._shared"],       ""],
+  ["on_start",      T["automation.on_start"],      T["automation.on_start.hint"]],
+  ["on_busy",       T["automation.on_busy"],       T["automation.on_busy.hint"]],
+  ["on_question",   T["automation.on_question"],   T["automation.on_question.hint"]],
+  ["on_done",       T["automation.on_done"],       T["automation.on_done.hint"]],
+  ["on_failed",     T["automation.on_failed"],     T["automation.on_failed.hint"]],
+  ["on_limit",      T["automation.on_limit"],      T["automation.on_limit.hint"]],
+  ["on_background", T["automation.on_background"], T["automation.on_background.hint"]],
+  ["on_exit",       T["automation.on_exit"],       T["automation.on_exit.hint"]],
+  ["_shared",       T["automation._shared"],       ""],
 ];
 // Browser hooks. A page has no state, so the wording differs
 const PAGE_EVENTS = [
@@ -8029,13 +8044,15 @@ async function fetchAuto(dir) {
 }
 async function loadAutoStates(ws, t) {
   const data = await fetchAuto(autoDirOf(ws, t));
-  for (const [id] of eventsFor(t)) {
-    const s = document.getElementById("st-" + id);
-    if (!s) continue;
-    const on = (data[id] || "").trim().length > 0;
-    s.textContent = on ? T["automation.set"] : T["automation.unset"];
-    s.className = "state" + (on ? " on" : "");
-  }
+  const set = eventsFor(t)
+      .filter(([id]) => (data[id] || "").trim().length > 0)
+      .map(([, label]) => label);
+  const line = document.getElementById("ev-set");
+  if (!line) return;
+  line.textContent = set.length
+      ? fill(T["automation.set_list"], {names: set.join(" / ")})
+      : T["automation.none_set"];
+  line.className = "hint" + (set.length ? " on" : "");
 }
 
 async function openAuto(ws, t, event) {
@@ -9101,6 +9118,53 @@ if (/^[a-z0-9_]+$/.test(asked)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every trigger this screen offers is a trigger that actually fires.
+    ///
+    /// The two lists live in different languages -- `HOOK_NAMES` in Rust says
+    /// what the engine will call, `TAB_EVENTS` in the page's script says what
+    /// a person may write -- and nothing but this joins them. An entry the
+    /// page offers and the engine never calls is a box to type code into that
+    /// silently never runs, which is worse than not offering it at all; an
+    /// ending the engine can reach with no entry here can only be handled by
+    /// editing a file by hand.
+    #[test]
+    fn every_trigger_the_screen_offers_is_one_the_engine_fires() {
+        let block = PAGE
+            .split("const TAB_EVENTS = [")
+            .nth(1)
+            .and_then(|r| r.split("];").next())
+            .expect("TAB_EVENTS が画面から消えている");
+        let offered: Vec<&str> = block
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("[\""))
+            .filter_map(|l| l.split('"').next())
+            .collect();
+        assert!(offered.len() >= 8, "引き金の一覧が短すぎる: {offered:?}");
+        for name in &offered {
+            if *name == "_shared" {
+                continue; // not a trigger: shared helpers the others call
+            }
+            assert!(
+                crate::hooks::HOOK_NAMES.contains(name),
+                "{name} は画面にあるがエンジンが呼ばない"
+            );
+        }
+        // And every way a turn can end is reachable from here
+        for state in [
+            crate::detect::TabState::Done,
+            crate::detect::TabState::Failed,
+            crate::detect::TabState::Limit,
+            crate::detect::TabState::Background,
+        ] {
+            let hook = crate::hooks::ending_hook(state);
+            assert!(
+                offered.contains(&hook),
+                "{} の受け皿 {hook} が画面から選べない",
+                state.label()
+            );
+        }
+    }
 
     /// A server tab's settings survive being saved from this screen.
     ///

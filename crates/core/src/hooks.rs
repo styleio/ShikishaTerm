@@ -1418,7 +1418,40 @@ pub struct HookEngine {
     subject: Rc<Cell<crate::grants::Subject>>,
 }
 
-const HOOK_NAMES: [&str; 6] = ["on_start", "on_question", "on_busy", "on_done", "on_exit", "on_notify"];
+/// The hooks a tab can define.
+///
+/// `on_done` is the one every ending reaches. The three beside it -- failed,
+/// stopped at the usage limit, still running in the background -- are chosen
+/// instead of it when a script defines them, never as well as it: see
+/// [`Engine::fire_ending`]. So a script that only knows about `on_done` keeps
+/// seeing all four endings, and a script that wants to treat a failure
+/// differently says so by writing the function
+pub const HOOK_NAMES: [&str; 9] = [
+    "on_start",
+    "on_question",
+    "on_busy",
+    "on_done",
+    "on_failed",
+    "on_limit",
+    "on_background",
+    "on_exit",
+    "on_notify",
+];
+
+/// The hook that speaks for one way a turn ended.
+///
+/// Anything that is not an ending answers `on_done`, because the caller only
+/// asks this when a turn has ended and a fallback that fires the general hook
+/// is better than one that fires nothing
+pub fn ending_hook(state: crate::detect::TabState) -> &'static str {
+    use crate::detect::TabState;
+    match state {
+        TabState::Failed => "on_failed",
+        TabState::Limit => "on_limit",
+        TabState::Background => "on_background",
+        _ => "on_done",
+    }
+}
 
 /// Hooks available on a browser tab.
 ///
@@ -4718,6 +4751,22 @@ end
         self.scripts.is_empty()
     }
 
+    /// Fire the hook that speaks for how this turn ended.
+    ///
+    /// The specific one when a script defines it, `on_done` otherwise, and
+    /// never both -- the same rule the scopes already follow (tab beats
+    /// workspace beats base, one runs). Firing both would hand the same
+    /// finished turn over twice, which for a hook that notifies a phone is
+    /// two buzzes for one answer.
+    pub fn fire_ending(&mut self, state: crate::detect::TabState, ctx: &TabCtx) {
+        let specific = ending_hook(state);
+        let hook = match self.resolve(specific, ctx.index) {
+            Some(_) => specific,
+            None => "on_done",
+        };
+        self.fire(hook, ctx, None);
+    }
+
     /// Fire a hook. extra is e.g. the screen text for on_question
     pub fn fire(&mut self, hook: &str, ctx: &TabCtx, extra: Option<&str>) {
         let Some(id) = self.resolve(hook, ctx.index) else {
@@ -7105,5 +7154,102 @@ end"##
         let os_val: Value = e.lua.globals().get("os").unwrap();
         assert!(matches!(io_val, Value::Nil), "ioは無効のはず");
         assert!(matches!(os_val, Value::Nil), "osは無効のはず");
+    }
+}
+
+#[cfg(test)]
+mod ending_tests {
+    use super::*;
+    use crate::detect::TabState;
+
+    fn ctx(state: TabState) -> TabCtx {
+        TabCtx {
+            index: 1,
+            name: "tab1".into(),
+            id: Some("id1".into()),
+            state: state.label().into(),
+            profile: "test".into(),
+            is_model: false,
+            output: String::new(),
+            chain_depth: 0,
+            locked: false,
+            reply: None,
+        }
+    }
+
+    /// What the script did, read back the way every other hook test reads it:
+    /// through the commands it asked for
+    fn said(e: &mut HookEngine) -> Vec<String> {
+        e.drain_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::SendPrompt { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Each ending has its own name, and everything else answers the general
+    /// one -- a caller that asks about a turn still running gets `on_done`
+    /// rather than nothing, because firing the general hook is a smaller
+    /// mistake than firing none
+    #[test]
+    fn each_ending_names_its_own_hook() {
+        assert_eq!(ending_hook(TabState::Done), "on_done");
+        assert_eq!(ending_hook(TabState::Failed), "on_failed");
+        assert_eq!(ending_hook(TabState::Limit), "on_limit");
+        assert_eq!(ending_hook(TabState::Background), "on_background");
+        for s in [TabState::Busy, TabState::Wait, TabState::Question, TabState::Exited] {
+            assert_eq!(ending_hook(s), "on_done", "{} の受け皿", s.label());
+        }
+        // Every name it can answer has to be a hook a script may define, or it
+        // would resolve to nothing for the rest of time
+        for s in [TabState::Done, TabState::Failed, TabState::Limit, TabState::Background] {
+            assert!(HOOK_NAMES.contains(&ending_hook(s)), "{} の受け皿が未登録", s.label());
+        }
+    }
+
+    /// A script that only knows `on_done` keeps seeing every ending. This is
+    /// the promise that lets the three new hooks be added without rewriting
+    /// anybody's automation
+    #[test]
+    fn a_script_with_only_on_done_still_sees_a_failure() {
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_done(tab) shikisha.send_to_tab(1, "done:" .. tab.state) end
+            "#,
+        )
+        .unwrap();
+        for s in [TabState::Failed, TabState::Limit, TabState::Background, TabState::Done] {
+            e.fire_ending(s, &ctx(s));
+        }
+        assert_eq!(
+            said(&mut e),
+            ["done:FAILED", "done:LIMIT", "done:BACKGROUND", "done:DONE"],
+            "on_done しか書いていない台本が、終わり方を取りこぼしている"
+        );
+    }
+
+    /// And once it does say what a failure should do, the failure goes there
+    /// INSTEAD -- never to both, which for a hook that notifies a phone would
+    /// be two buzzes for one finished turn
+    #[test]
+    fn a_named_ending_takes_over_from_on_done_rather_than_joining_it() {
+        let mut e = HookEngine::from_source(
+            r#"
+            function on_done(tab) shikisha.send_to_tab(1, "done") end
+            function on_failed(tab) shikisha.send_to_tab(1, "failed") end
+            "#,
+        )
+        .unwrap();
+        e.fire_ending(TabState::Failed, &ctx(TabState::Failed));
+        e.fire_ending(TabState::Done, &ctx(TabState::Done));
+        // The limit has no function of its own, so it falls back
+        e.fire_ending(TabState::Limit, &ctx(TabState::Limit));
+        assert_eq!(
+            said(&mut e),
+            ["failed", "done", "done"],
+            "名前のついた終わり方が on_done と二重に鳴っている"
+        );
     }
 }
