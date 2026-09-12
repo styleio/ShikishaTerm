@@ -66,6 +66,7 @@ since every one of them can be changed in the settings.
 | `Ctrl+B =` | Put the dividers back to even halves |
 | `Ctrl+B <` / `Ctrl+B >` | Move the divider left or up / right or down |
 | `Ctrl+B s` | Put the tab bar away, or bring it back |
+| `Ctrl+B g` | Show the changed files on the right, or put them away |
 | `Ctrl+B w` / `Ctrl+B W` | Workspace list / next workspace |
 | `Ctrl+B [` | Copy mode (`/` searches, `n` and `N` walk the matches) |
 | `Ctrl+B c` | Copy the latest answer |

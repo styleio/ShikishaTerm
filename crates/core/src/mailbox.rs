@@ -51,6 +51,9 @@ pub struct Mailbox {
     /// The width the tab bar is now drawn at, when its edge has just been
     /// dragged. 0 = put away
     pub tab_width: Option<u16>,
+    /// The width the right-hand column is now drawn at, when its edge has just
+    /// been dragged or it has been put away. 0 = put away
+    pub side_width: Option<u16>,
     /// Pages placed in the window that have taken the keyboard since the last
     /// drain, by the name automation addresses them with
     pub touches: Vec<String>,
@@ -205,6 +208,9 @@ impl Mailbox {
     }
     pub fn take_tab_width(&mut self) -> Option<u16> {
         self.tab_width.take()
+    }
+    pub fn take_side_width(&mut self) -> Option<u16> {
+        self.side_width.take()
     }
     pub fn take_touches(&mut self) -> Vec<String> {
         std::mem::take(&mut self.touches)
