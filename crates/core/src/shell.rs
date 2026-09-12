@@ -316,18 +316,29 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      nothing has to be told the number twice */
   #strip { position:absolute; left:0; right:0; top:0; height:32px; z-index:2;
     display:flex; align-items:stretch; gap:0;
-    background:var(--panel); border-bottom:1px solid var(--line); overflow-x:auto;
-    scrollbar-width:none; }
-  #strip::-webkit-scrollbar { display:none; }
-  #strip .stab { display:flex; align-items:center; gap:var(--s2); flex:0 0 auto;
-    max-width:220px; padding:0 var(--s3); cursor:pointer; color:var(--muted);
+    background:var(--panel); border-bottom:1px solid var(--line); }
+  /* The tabs scroll; the + does not. It is the only way to add one from here,
+     and a control that leaves the window when the sixth tab arrives is a
+     control that is not there */
+  #strip .stabs { flex:1 1 auto; min-width:0; display:flex; align-items:stretch;
+    overflow-x:auto; scrollbar-width:none; }
+  #strip .stabs::-webkit-scrollbar { display:none; }
+  /* They give up width before they give up being visible: each one shrinks,
+     its name clipped with an ellipsis, down to a floor that still shows the
+     state, the AI and the first of the name. Only past that floor does the
+     row scroll -- so a tab going off the edge is the exception rather than
+     what happens as soon as the window is not wide */
+  #strip .stab { display:flex; align-items:center; gap:var(--s2); flex:0 1 auto;
+    min-width:72px; max-width:220px; padding:0 var(--s3); cursor:pointer;
+    color:var(--muted);
     border-right:1px solid var(--line); border-bottom:2px solid transparent; }
   #strip .stab:hover { background:var(--hover); }
   #strip .stab.sel { color:var(--text); background:var(--bg);
     border-bottom-color:var(--brand); }
-  #strip .stab .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #strip .stab .nm { min-width:0; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
   #strip .snew { flex:0 0 auto; padding:0 var(--s3); display:flex; align-items:center;
-    color:var(--dim); cursor:pointer; }
+    color:var(--dim); cursor:pointer; border-left:1px solid var(--line); }
   #strip .snew:hover { color:var(--text); background:var(--hover); }
   /* Which repository a folder belongs to. A label, not a state, so it is worn
      the way the branch beside it is: quiet, and never in a state's colour */
@@ -3254,6 +3265,7 @@ function cutMark() {
 // There is no close control here. Closing is a thing the app has one way of
 // doing -- the pane's own -- and a second way that looks the same but goes
 // somewhere else is how a person ends up shutting the wrong thing
+let stripSel = null;
 function drawStrip() {
   const strip = document.getElementById("strip");
   if (!strip) return;
@@ -3271,13 +3283,18 @@ function drawStrip() {
     if (was !== strip.hidden) layout();
     return;
   }
+  const tabs = el("div", {class:"stabs"});
+  let sel = null;
   for (const t of mine) {
-    strip.append(el("div", {class:"stab" + (t.index === S.active ? " sel" : ""),
-        title:t.profile || "", onclick:() => send({kind:"select", tab:t.index})},
+    const one = el("div", {class:"stab" + (t.index === S.active ? " sel" : ""),
+        title:t.name || "", onclick:() => send({kind:"select", tab:t.index})},
       el("span", {class:"dot " + t.state}),
       t.ai ? aiMark(t.ai) : null,
-      el("span", {class:"nm"}, t.name || "")));
+      el("span", {class:"nm"}, t.name || ""));
+    if (t.index === S.active) sel = one;
+    tabs.append(one);
   }
+  strip.append(tabs);
   // The same road the sidebar's + takes: from a phone it walks to the settings
   // page, because the window's own way of opening them is refused from afar
   // and would do nothing at all. And it carries which folder it was asked
@@ -3285,6 +3302,13 @@ function drawStrip() {
   const g = active.group != null ? (S.groups || [])[active.group] : null;
   strip.append(el("div", {class:"snew", title:T["tui.pane.add"] || "",
       onclick:() => addTabHere(g)}, "+"));
+  // Switching to a tab that is scrolled out of sight leaves the bar showing
+  // somewhere else entirely. Only on the switch, never on every frame: doing
+  // it on every frame would drag the row back while somebody is scrolling it
+  if (sel && stripSel !== S.active) {
+    stripSel = S.active;
+    sel.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }
   // Appearing and disappearing changes how tall every pane is, and a terminal
   // told the wrong height reflows somebody's whole interface
   if (was !== strip.hidden) layout();
@@ -10201,6 +10225,22 @@ mod tests {
         // And it obeys the two heights a pressable thing is allowed
         assert!(PAGE.contains("#strip { position:absolute; left:0; right:0; top:0; height:32px;"),
                 "帯の高さが規約の2つ (36px / 32px) のどちらでもない");
+        // The + stays put while the tabs scroll past it. Measured at 820px
+        // wide before this: the sixth tab was cut off mid-word and the +,
+        // the only way to add one from here, had left the window entirely
+        assert!(PAGE.contains("#strip .stabs { flex:1 1 auto;"), "帯の中でタブだけが流れる作りになっていない");
+        assert!(
+            PAGE.contains(r#"strip.append(tabs);"#)
+                && PAGE.split("strip.append(tabs);").nth(1).unwrap_or_default().contains("snew"),
+            "+ がタブと一緒に流れて画面から出る"
+        );
+        // They shrink before they vanish, down to a floor that still says
+        // which state, which AI and the start of the name
+        assert!(PAGE.contains("#strip .stab { display:flex; align-items:center; gap:var(--s2); flex:0 1 auto;
+    min-width:72px;"),
+                "タブが縮まずに溢れる");
+        // ...and switching to one that is out of sight brings it into sight
+        assert!(PAGE.contains("if (sel && stripSel !== S.active) {"), "選んだタブが見えない場所のまま");
     }
 
     /// Every AI this app can name has a mark, and none of them is a logo.
