@@ -156,19 +156,6 @@ fn said(argv: &[String]) -> String {
         .join(" ")
 }
 
-impl Plan {
-    fn unused_line(&self) -> String {
-        self.argv()
-            .iter()
-            .map(|a| match a.contains(' ') {
-                true => format!("\"{a}\""),
-                false => a.clone(),
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-}
-
 /// Works out where a branch's folder goes and what will make it.
 ///
 /// `base` is what a new branch grows from; leave it out for the sensible one.
@@ -1089,7 +1076,8 @@ pub fn run_for(plan: &Plan, argv: &[String]) -> Result<()> {
     // commands of a clone land on the same machine. A second plan gets a
     // second machine, which is right: two folders are two machines
     if host.is_made() {
-        let sandbox = sandbox_for(host, plan.env.as_ref().and_then(|e| e.image.as_deref()))?;
+        let sandbox =
+            crate::e2b::sandbox_for(host, plan.env.as_ref().and_then(|e| e.image.as_deref()))?;
         let line = for_a_shell(argv);
         let ran = crate::e2b::exec(&sandbox, &line, None)?;
         if ran.ok() {
@@ -1110,43 +1098,6 @@ pub fn run_for(plan: &Plan, argv: &[String]) -> Result<()> {
         "err.worktree.failed",
         &[("said", &ran.said()), ("command", &line)]
     ))
-}
-
-/// The machine a plan belongs to, made if it is not there yet.
-///
-/// Kept for as long as the program runs, per machine named in the settings, so
-/// that a clone and the branch cut from it happen on the same one. A sandbox
-/// nobody stops still stops on its own, so nothing is left running for ever by
-/// forgetting
-fn sandbox_for(host: &crate::config::HostSpec, image: Option<&str>) -> Result<crate::e2b::Sandbox> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static MADE: OnceLock<Mutex<HashMap<String, crate::e2b::Sandbox>>> = OnceLock::new();
-    let made = MADE.get_or_init(Default::default);
-    if let Some(s) = made.lock().ok().and_then(|m| m.get(&host.name).cloned()) {
-        return Ok(s);
-    }
-    let key = crate::e2b::key()
-        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.e2b.no_key")))?;
-    let made_one = crate::e2b::create(&key, template_for(host, image), host.minutes.unwrap_or(30))?;
-    if let Ok(mut m) = made.lock() {
-        m.insert(host.name.clone(), made_one.clone());
-    }
-    Ok(made_one)
-}
-
-/// What the machine is built from.
-///
-/// The project's own word first: a repository that says which image it wants
-/// has said the thing that matters most about its environment, and overruling
-/// it with a setting would make that file decoration. The machine's own
-/// setting is what stands when the project says nothing
-fn template_for<'a>(host: &'a crate::config::HostSpec, image: Option<&'a str>) -> &'a str {
-    image
-        .map(str::trim)
-        .filter(|i| !i.is_empty())
-        .or_else(|| host.template.as_deref().map(str::trim).filter(|t| !t.is_empty()))
-        .unwrap_or("base")
 }
 
 /// One command, in the words a server's shell wants.
@@ -1356,8 +1307,9 @@ tools/conpty.ps1"));
         assert_eq!(steps[3], ["sh", "-lc", "cd /home/user/work && npm run build"]);
         // The project's word about the image beats the machine's setting: a
         // repository that names one has said the thing that matters most
-        assert_eq!(template_for(&host, p.env.as_ref().and_then(|e| e.image.as_deref())), "node:22");
-        assert_eq!(template_for(&host, None), "base", "何も言わなければ機械の設定");
+        let picked = |i| crate::e2b::template_for(&host, i);
+        assert_eq!(picked(p.env.as_ref().and_then(|e| e.image.as_deref())), "node:22");
+        assert_eq!(picked(None), "base", "何も言わなければ機械の設定");
         // Every one of them is read before any of them runs
         assert_eq!(p.line().lines().count(), 4, "{}", p.line());
 
@@ -1441,8 +1393,9 @@ tools/conpty.ps1"));
         match home_dir().filter(|h| !synced(h) && writable(h)) {
             Some(home) => {
                 assert!(root.starts_with(&home), "自分のフォルダの下に無い: {root:?}");
-                assert!(root.ends_with("SHIKISHA-TERM/branches") || root.ends_with(r"SHIKISHA-TERMranches"),
-                        "{root:?}");
+                // `Path::ends_with` matches whole path parts, not the end
+                // of the text, so one spelling answers on every system
+                assert!(root.ends_with("SHIKISHA-TERM/branches"), "{root:?}");
             }
             // No home to speak of: ours, per machine
             None => assert!(root.starts_with(away_from_home()), "{root:?}"),
