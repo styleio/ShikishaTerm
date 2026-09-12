@@ -338,6 +338,12 @@ pub fn restart_tab(t: &mut Tab, alone: bool, keep: bool, rows: u16, cols: u16) -
 /// Two doors ask for this — `Ctrl+B %` and the ⊞ / ⊟ in a pane's caption — and
 /// they must divide identically: which surface the new half shows, and where
 /// focus lands, are decisions, not details of whichever door was used
+/// The editor the file list opens when there is nowhere else to put a file.
+///
+/// One name, so pressing ten files leaves one editor. It is not written to the
+/// settings: it exists while it is open and is gone when it is closed.
+pub const EDITOR_SCRATCH: &str = "editor.here";
+
 pub fn split_focused(
     l: &mut crate::layout::Layout,
     dir: crate::layout::Dir,
@@ -712,6 +718,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut save_at: Option<std::time::Instant> = None;
     // The zoom level waiting to be written down, and when to write it
     let mut font_size: Option<u8> = None;
+    // The editors as they stand: which folder each works in, and which file it
+    // is showing. Held here rather than in the settings, because the file
+    // somebody opened this afternoon is not a setting
+    let mut editors: Vec<crate::view::EditorOpen> = Vec::new();
+    // The one just asked for, to be brought into view at the top of the pass
+    // (the surfaces were worked out before the press arrived)
+    let mut open_editor: Option<String> = None;
     let mut tab_width: Option<u16> = None;
     let mut side_width: Option<u16> = None;
     let mut font_save_at: Option<std::time::Instant> = None;
@@ -902,13 +915,57 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // The upper bound of pressable numbers needs more than just the session count.
         let hosted = caps.hosted_names();
         let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
-        let surfaces = surfaces_of(workspaces.get(ws_index), &titles, &hosted);
+        let surfaces = surfaces_of(workspaces.get(ws_index), &titles, &hosted, &editors);
         let surface_count = surfaces.len();
         // Keep the tree and `active` in step. Anything in the loop may set
         // `active` (a digit, an automation, the settings screen closing); the
         // focused pane follows it, and moving focus between panes sets `active`
         // at the point it happens. One sync point, so neither can drift.
         pane_layout.clamp(surface_count);
+        // An editor was asked for. If it is already in a pane, look at it;
+        // otherwise divide the pane in front and put it beside -- the file and
+        // what is running stay on screen together, which is the whole point of
+        // reading it here rather than in another program
+        if let Some(key) = open_editor.take() {
+            if let Some(n) = surfaces
+                .iter()
+                .position(|s| matches!(s, Surface::Editor { key: k, .. } if *k == key))
+                .map(|i| i + 1)
+            {
+                match pane_layout.pane_of(n) {
+                    // Already on screen: look at it rather than opening a
+                    // second window onto the same file
+                    Some(id) => {
+                        pane_layout.focus_pane(id);
+                    }
+                    None => {
+                        // Divide the screen only when it is whole. Once there
+                        // are two, the file goes into the one that is not being
+                        // looked at -- an empty one first. Splitting every time
+                        // is how you end up with six slivers and nothing
+                        // readable in any of them
+                        let focus = pane_layout.focus();
+                        let other = pane_layout
+                            .leaves()
+                            .into_iter()
+                            .filter(|(id, _)| *id != focus)
+                            .min_by_key(|(_, s)| usize::from(*s != 0))
+                            .map(|(id, _)| id);
+                        match other {
+                            Some(id) => {
+                                pane_layout.set_surface(id, n);
+                                pane_layout.focus_pane(id);
+                            }
+                            None => {
+                                pane_layout.split(layout::Dir::Row, n);
+                            }
+                        }
+                    }
+                }
+                active = pane_layout.focused_surface();
+                view_touched_ms = start.elapsed().as_millis() as u64;
+            }
+        }
         if pane_layout.focused_surface() != active {
             pane_layout.show(active);
         }
@@ -2040,6 +2097,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Files { panel, act, args }) => {
                         shell.mail().files.push((panel, act, args));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::EditOpen { panel, path }) => {
+                        shell.mail().edits.push((panel, path));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Sftp { panel, act, args }) => {
                         shell.mail().sftps.push((panel, act, args));
                     }
@@ -2504,6 +2564,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             max_chain,
             now_ms: start.elapsed().as_millis() as u64,
             surfaces: surfaces.clone(),
+            // What the disk says about each open file, as of now. One metadata
+            // call per open editor per pass -- cheap enough to ask every time,
+            // and asking every time is what makes "somebody else wrote this"
+            // something the editor notices rather than something it is told
+            editors: editors
+                .iter()
+                .map(|e| {
+                    let mut e = e.clone();
+                    e.stamp = match (&e.dir, &e.showing) {
+                        (Some(d), Some(rel)) => local_under(d, rel)
+                            .map(|at| crate::files::stamp_of(&at))
+                            .filter(|s| !s.is_empty()),
+                        _ => None,
+                    };
+                    e
+                })
+                .collect(),
             layout: pane_layout.clone(),
             // Whether the thing in view can be put back the way it started. A
             // session always can; a page only if we know how it was opened.
@@ -3214,6 +3291,69 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
 
+        // A file was pressed in the list. Which editor takes it is decided the
+        // way everything else on screen is decided -- by what is in front:
+        //
+        //   an editor in front   -> that one
+        //   an editor elsewhere  -> the first one of this folder
+        //   no editor at all     -> a throwaway one, reused from then on
+        //
+        // so nothing has to be set up before pressing a file, and pressing ten
+        // files leaves one editor rather than ten
+        for (panel, path) in shell.mail().take_edits() {
+            let Some(dir) = panel_places(&surfaces)
+                .into_iter()
+                .chain(tab_places(&tabs).into_iter().filter(|p| !p.dir.as_os_str().is_empty()))
+                .find(|p| p.key.matches(&panel))
+                .map(|p| p.dir)
+            else {
+                continue;
+            };
+            let focused = surfaces
+                .get(pane_layout.focused_surface().wrapping_sub(1))
+                .and_then(|s| match s {
+                    Surface::Editor { key, .. } => Some(key.clone()),
+                    _ => None,
+                });
+            let key = focused
+                .or_else(|| {
+                    surfaces.iter().find_map(|s| match s {
+                        Surface::Editor { key, dir: Some(d), .. }
+                            if crate::uistate::same_folder(d, &dir) =>
+                        {
+                            Some(key.clone())
+                        }
+                        _ => None,
+                    })
+                })
+                .unwrap_or_else(|| EDITOR_SCRATCH.to_string());
+            // An empty path is the file being put away rather than opened. The
+            // throwaway editor has nothing left to be, so it goes with it
+            let showing = if path.trim().is_empty() {
+                None
+            } else {
+                let Some(full) = local_under(&dir, &path) else { continue };
+                Some((path.clone(), full))
+            };
+            if showing.is_none() && key == EDITOR_SCRATCH {
+                editors.retain(|e| e.key != key);
+                active = pane_layout.focused_surface();
+                continue;
+            }
+            let entry = crate::view::EditorOpen {
+                key: key.clone(),
+                dir: Some(dir.clone()),
+                showing: showing.as_ref().map(|(rel, _)| rel.clone()),
+                // Filled in when the state is built, from the disk itself
+                stamp: None,
+                scratch: key == EDITOR_SCRATCH,
+            };
+            match editors.iter_mut().find(|e| e.key == key) {
+                Some(e) => *e = entry,
+                None => editors.push(entry),
+            }
+            open_editor = Some(key);
+        }
         // The column's file list. Answered on the spot: it is one folder of
         // this machine, or a search that stops itself
         for (panel, act, args) in shell.mail().take_files() {
@@ -4987,7 +5127,10 @@ pub fn focused_page(layout: &crate::layout::Layout, surfaces: &[Surface]) -> Opt
         Surface::Browser { key, .. } => Some(key.clone()),
         // The panel is drawn by the board, so there is no page in front of
         // anything -- a message can be raised over it like any other pane
-        Surface::Session(_) | Surface::Git { .. } | Surface::Sftp { .. } => None,
+        Surface::Session(_)
+        | Surface::Git { .. }
+        | Surface::Sftp { .. }
+        | Surface::Editor { .. } => None,
     }
 }
 /// Write down what a tab is aimed at: in the settings file, and in the copy of
@@ -5116,6 +5259,70 @@ pub fn files_answer(
                 })
                 .to_string(),
                 Err(e) => fail(format!("{e:#}")),
+            }
+        }
+        // One file, as text, for the editor to show. A file too big to read
+        // in one piece is not one somebody is reading here, and saying so is
+        // better than a window that stops answering while it loads
+        "read" => {
+            let Some(at) = local_under(&root, &str_of("path")) else {
+                return fail(i18n::t("err.sftp.outside"));
+            };
+            let size = std::fs::metadata(&at).map(|m| m.len()).unwrap_or(0);
+            if size > crate::files::READ_LIMIT {
+                return fail(i18n::tp(
+                    "err.files.too_big",
+                    &[("mb", &(crate::files::READ_LIMIT / (1024 * 1024)).to_string())],
+                ));
+            }
+            match std::fs::read(&at) {
+                // What is not text has no lines to put in an editor, and
+                // guessing at its encoding would write the guess back
+                Ok(bytes) if bytes.contains(&0) => fail(i18n::t("err.files.binary")),
+                Ok(bytes) => serde_json::json!({
+                    "act": "read",
+                    "panel": panel,
+                    "ok": true,
+                    "path": str_of("path"),
+                    "text": String::from_utf8_lossy(&bytes),
+                    "stamp": crate::files::stamp_of(&at),
+                    // What the file was when it was read. A save compares this
+                    // with what is on disk, so a save can tell "nobody touched
+                    // it" from "somebody did"
+                    "mark": crate::files::mark_of(&bytes),
+                })
+                .to_string(),
+                Err(e) => fail(format!("{e}")),
+            }
+        }
+        // ...and back again. `mark` is what the page was given when it read:
+        // if the file no longer matches it, somebody else wrote in the
+        // meantime and this save would throw their work away, so it refuses
+        // and says so rather than winning the race
+        "write" => {
+            let Some(at) = local_under(&root, &str_of("path")) else {
+                return fail(i18n::t("err.sftp.outside"));
+            };
+            let had = str_of("mark");
+            let now = std::fs::read(&at).map(|b| crate::files::mark_of(&b)).unwrap_or_default();
+            if !had.is_empty() && had != now {
+                return fail(i18n::t("err.files.moved_on"));
+            }
+            let text = str_of("text");
+            match std::fs::write(&at, text.as_bytes()) {
+                Ok(()) => serde_json::json!({
+                    "act": "write",
+                    "panel": panel,
+                    "ok": true,
+                    "path": str_of("path"),
+                    "mark": crate::files::mark_of(text.as_bytes()),
+                    // Our own write moved the stamp on; hand back the new one
+                    // so the editor does not read its own save as somebody
+                    // else's change
+                    "stamp": crate::files::stamp_of(&at),
+                })
+                .to_string(),
+                Err(e) => fail(format!("{e}")),
             }
         }
         // By name, or by what is inside. Both stop themselves and say so
@@ -5454,7 +5661,10 @@ pub fn ui_surface_at(surfaces: &[Surface], n: usize) -> Option<&Surface> {
 pub fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
     match surfaces.get(active.checked_sub(1)?)? {
         Surface::Session(i) => Some(*i),
-        Surface::Browser { .. } | Surface::Git { .. } | Surface::Sftp { .. } => None,
+        Surface::Browser { .. }
+        | Surface::Git { .. }
+        | Surface::Sftp { .. }
+        | Surface::Editor { .. } => None,
     }
 }
 /// What size each tab's terminal should be drawn at.
@@ -6011,9 +6221,10 @@ pub fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
             Surface::Session(i) => tabs.get(*i).map(|t| t.key()).unwrap_or_default(),
             // A page and a panel are addressed the same way a session is:
             // by the name automation knows them by, never the one on screen
-            Surface::Browser { key, .. } | Surface::Git { key, .. } | Surface::Sftp { key, .. } => {
-                hooks::TabKey { id: Some(key.clone()) }
-            }
+            Surface::Browser { key, .. }
+            | Surface::Git { key, .. }
+            | Surface::Sftp { key, .. }
+            | Surface::Editor { key, .. } => hooks::TabKey { id: Some(key.clone()) },
         })
         .collect()
 }
@@ -7770,7 +7981,7 @@ mod tests {
         let tabs = ["エンジニア"];
         let hosted = vec!["html".to_string()];
 
-        let surfaces = surfaces_of(Some(&ws), &tabs, &hosted);
+        let surfaces = surfaces_of(Some(&ws), &tabs, &hosted, &[]);
         assert_eq!(
             surfaces,
             vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
@@ -7825,7 +8036,7 @@ mod tests {
             ("エンジニア", "ai", "claude"),
         ]);
         let tabs = ["エンジニア"];
-        let surfaces = surfaces_of(Some(&ws), &tabs, &[]);
+        let surfaces = surfaces_of(Some(&ws), &tabs, &[], &[]);
         assert_eq!(
             surfaces,
             vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
@@ -7841,7 +8052,7 @@ mod tests {
         let ws = ws_from(&[("エンジニア", "ai", "claude")]);
         let tabs = ["エンジニア", "あとから"];
         let hosted = vec!["settings".to_string()];
-        let surfaces = surfaces_of(Some(&ws), &tabs, &hosted);
+        let surfaces = surfaces_of(Some(&ws), &tabs, &hosted, &[]);
         assert_eq!(
             surfaces,
             vec![

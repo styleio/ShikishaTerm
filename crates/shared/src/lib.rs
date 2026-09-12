@@ -324,6 +324,15 @@ pub enum Ev {
     /// browser in the same sandbox as the rally's AI-authored code (browser
     /// functions on that one tab, nothing else).
     RunLua { code: String },
+    /// A file was pressed in the list: show it in an editor. `panel` names the
+    /// place the same way the file list does (the tab whose folder this is),
+    /// `path` is relative to that folder. Which editor it lands in is the
+    /// loop's to decide -- the page does not know what is on screen elsewhere.
+    /// An empty `path` closes that editor's file instead
+    EditOpen {
+        panel: String,
+        path: String,
+    },
     /// The window's own bar, which the page draws now that the frame is ours:
     /// "drag" (the bar was taken hold of), "minimize", "maximize" (toggles),
     /// "close". Answered where the window is, not in the loop -- the page is
@@ -827,6 +836,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        // A file pressed in the list (see `Ev::EditOpen`).
+        Some("editopen") => Ev::EditOpen {
+            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         // The window's own bar (see `Ev::Window`).
         Some("window") => Ev::Window {

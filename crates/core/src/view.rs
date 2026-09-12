@@ -257,7 +257,9 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         // no line to press
         if g.empty
             && ui.surfaces.iter().any(|s| match s {
-                Surface::Git { dir: Some(d), .. } | Surface::Sftp { dir: Some(d), .. } => {
+                Surface::Git { dir: Some(d), .. }
+                | Surface::Sftp { dir: Some(d), .. }
+                | Surface::Editor { dir: Some(d), .. } => {
                     crate::uistate::same_folder(d, at)
                 }
                 _ => false,
@@ -327,6 +329,24 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     });
                     Some(crate::uistate::TabState::sftp(i + 1, key, name, group))
                 }
+                Surface::Editor { key, name, dir } => {
+                    let showing = ui
+                        .editors
+                        .iter()
+                        .find(|e| &e.key == key)
+                        .and_then(|e| e.showing.clone());
+                    // It works in a folder, so it stands under that folder's
+                    // heading and is folded away with it -- the same as the
+                    // panels beside it
+                    let group = dir.as_deref().and_then(|d| {
+                        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, d))
+                    });
+                    let mut t = crate::uistate::TabState::editor(i + 1, key, name, group);
+                    t.file = showing;
+                    t.file_stamp =
+                        ui.editors.iter().find(|e| &e.key == key).and_then(|e| e.stamp.clone());
+                    Some(t)
+                }
                 Surface::Git { key, name, dir, .. } => {
                     // The panel reports on a folder, so it stands under that
                     // folder's heading and is put away with it. Worked out from
@@ -381,7 +401,10 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     .map(|t| t.ms_since_change(ui.now_ms) < QUIET_MS)
                     .unwrap_or(false),
                 // Neither a page nor a panel is doing anything on its own
-                Surface::Browser { .. } | Surface::Git { .. } | Surface::Sftp { .. } => false,
+                Surface::Browser { .. }
+                | Surface::Git { .. }
+                | Surface::Sftp { .. }
+                | Surface::Editor { .. } => false,
             });
             let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
             !anyone_active && ring_idle
@@ -441,7 +464,32 @@ mod drawn_away_tests {
 /// Things not in config (a browser automation opened later, a tab launched
 /// via arguments) get appended at the end. There's no way to decide a
 /// position for something that was never written down.
-pub fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[String]) -> Vec<Surface> {
+/// An editor as it stands right now: which folder it works in, and which file
+/// it is showing. Held by the loop rather than the settings, because the file
+/// somebody opened this afternoon is not a setting.
+///
+/// `scratch` marks the throwaway one the file list opens when there is no
+/// editor to put a file in. It is not written anywhere: it exists while it is
+/// open and is gone when it is closed.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct EditorOpen {
+    pub key: String,
+    pub dir: Option<std::path::PathBuf>,
+    /// The file it is showing, as it should read on the tab
+    pub showing: Option<String>,
+    /// What the disk says about that file right now. The page compares it with
+    /// what it was given when it read: the same means nobody has touched it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamp: Option<String>,
+    pub scratch: bool,
+}
+
+pub fn surfaces_of(
+    ws: Option<&config::Workspace>,
+    titles: &[&str],
+    hosted: &[String],
+    editors: &[EditorOpen],
+) -> Vec<Surface> {
     let mut out: Vec<Surface> = Vec::new();
     let mut used_tabs = vec![false; titles.len()];
     let mut used_web: Vec<&str> = Vec::new();
@@ -449,6 +497,17 @@ pub fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[St
         for ft in &ws.tabs {
             let argv = ft.cfg.command.argv();
             if argv.is_empty() {
+                continue;
+            }
+            if config::is_editor_panel(&argv) {
+                let key = ft
+                    .cfg
+                    .id
+                    .clone()
+                    .or_else(|| ft.cfg.name.clone())
+                    .unwrap_or_else(|| "editor".into());
+                let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
+                out.push(Surface::Editor { key, name, dir: ws.cwd_of(ft) });
                 continue;
             }
             if config::is_sftp_panel(&argv) {
@@ -530,6 +589,22 @@ pub fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[St
             out.push(Surface::Session(i));
         }
     }
+    // The throwaway editor, if one is open. Same standing as a page placed
+    // while the program runs: not in the settings, here because somebody
+    // opened it, gone when they close it
+    for e in editors.iter().filter(|e| e.scratch) {
+        if !out.iter().any(|s| matches!(s, Surface::Editor { key, .. } if key == &e.key)) {
+            out.push(Surface::Editor {
+                key: e.key.clone(),
+                name: e
+                    .showing
+                    .as_deref()
+                    .map(leaf_of)
+                    .unwrap_or_else(|| i18n::t("tui.state.editor")),
+                dir: e.dir.clone(),
+            });
+        }
+    }
     // Things not in config (opened later by automation, the settings screen, etc.) — the name is all there is
     for h in hosted {
         if !used_web.iter().any(|u| u == h) {
@@ -544,6 +619,18 @@ pub fn surfaces_of(ws: Option<&config::Workspace>, titles: &[&str], hosted: &[St
                 key: h.clone(),
                 name,
             });
+        }
+    }
+    // An editor's tab says which file it is showing rather than what it was
+    // called -- that is the one thing about it worth reading from across the
+    // window. Done here so a configured editor and a throwaway one read alike
+    for s in out.iter_mut() {
+        if let Surface::Editor { key, name, .. } = s {
+            if let Some(showing) =
+                editors.iter().find(|e| &e.key == key).and_then(|e| e.showing.as_deref())
+            {
+                *name = leaf_of(showing);
+            }
         }
     }
     out
@@ -600,6 +687,11 @@ pub struct Ui {
     pub now_ms: u64,
     /// The surfaces on screen (one per tab-bar row), in the order written in config
     pub surfaces: Vec<Surface>,
+    /// Which file each editor is showing, by the editor's own name. The page
+    /// asks for the contents itself, so it has to be told this -- and it has to
+    /// survive a reload, which is why it travels in the state rather than
+    /// living in the page
+    pub editors: Vec<crate::view::EditorOpen>,
     /// How the content area is divided, and which pane the keyboard is aimed at.
     /// `active` is always the surface in the focused pane
     pub layout: crate::layout::Layout,
@@ -678,6 +770,17 @@ pub enum Surface {
         /// the folder's own
         protect: Vec<String>,
     },
+    /// The editor: one text file of this tab's folder, drawn by the board.
+    ///
+    /// Like the git panel it has no process and no page, and it carries the
+    /// folder it works in because it has no tab of its own to borrow one from.
+    /// Which file it is showing is not written down here -- that is chosen
+    /// while the program runs, and a file chosen yesterday is not a setting
+    Editor {
+        key: String,
+        name: String,
+        dir: Option<std::path::PathBuf>,
+    },
     /// The file panel: two lists of files, one on this machine and one on a
     /// server, drawn by the board.
     ///
@@ -695,6 +798,11 @@ pub enum Surface {
         /// puts you
         remote_dir: String,
     },
+}
+
+/// The last part of a path, which is what a row has room for.
+fn leaf_of(path: &str) -> String {
+    path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
 pub fn title_of(argv: &[String]) -> String {
