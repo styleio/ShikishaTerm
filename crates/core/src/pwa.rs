@@ -170,6 +170,39 @@ mod tests {
     }
 
     /// The token must never end up somewhere a launcher keeps.
+    /// What a browser reads before it will offer to install anything.
+    ///
+    /// Written down because the list is somebody else's and silent: a missing
+    /// field does not produce an error, it produces a browser that never
+    /// offers the install and never says why. The one condition not checkable
+    /// from here is the address being a secure context, which is the settings
+    /// page's business (it says so, and says what to run).
+    #[test]
+    fn the_manifest_says_everything_a_browser_asks_for() {
+        let m: serde_json::Value = serde_json::from_str(&manifest_json()).unwrap();
+        for named in ["name", "short_name", "start_url", "display", "icons"] {
+            assert!(!m[named].is_null(), "{named} が無い");
+        }
+        // A window of its own, rather than a tab with the address bar above it
+        assert_eq!(m["display"], "standalone");
+        // The two sizes every launcher is promised. Smaller ones are allowed
+        // to be missing; these two are not
+        let sizes: Vec<&str> = m["icons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|i| i["sizes"].as_str())
+            .collect();
+        for want in ["192x192", "512x512"] {
+            assert!(sizes.contains(&want), "{want} の絵が無い: {sizes:?}");
+        }
+        // And one a launcher may cut a shape out of without cutting the mark
+        assert!(
+            m["icons"].as_array().unwrap().iter().any(|i| i["purpose"] == "maskable"),
+            "型抜きされる launcher 向けの絵が無い"
+        );
+    }
+
     #[test]
     fn the_manifest_carries_no_token() {
         let m = manifest_json();
