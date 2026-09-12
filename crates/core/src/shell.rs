@@ -115,6 +115,48 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     flex:1 1 auto; min-width:0; }
   #side .sempty { flex:1 1 auto; padding:var(--s4) var(--s3); color:var(--faint);
     font-size:11.5px; line-height:1.6; }
+
+  /* ── The file list ───────────────────────────────
+     The working folder as a tree, one folder read at a time. Rows step in by
+     the same 14px the tab bar's branches do, because it is the same kind of
+     list and the eye has learnt that step already */
+  #filepanel[hidden] { display:none; }
+  #filepanel { flex:1 1 auto; min-width:0; display:flex; flex-direction:column;
+    overflow:hidden; font-size:13px; }
+  #filepanel .fsearch { flex:0 0 auto; display:flex; align-items:center; gap:var(--s2);
+    padding:var(--s2); border-bottom:1px solid var(--line); }
+  #filepanel .fsearch input { flex:1 1 auto; min-width:0; height:28px; padding:0 var(--s3);
+    border:1px solid var(--edge); border-radius:var(--r-ctl); background:var(--bg);
+    color:var(--text); font-family:var(--mono); font-size:12px; }
+  #filepanel .fsearch input:focus { outline:none; border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #filepanel .fmode { flex:0 0 auto; display:flex; gap:var(--s1); }
+  #filepanel .fmode button { padding:5px 12px; font-size:12.5px; border-radius:var(--r-chip);
+    border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
+  #filepanel .fmode button.on { color:var(--text); border-color:var(--brand);
+    background:color-mix(in srgb, var(--brand) 14%, transparent); }
+  #filepanel .flist { flex:1 1 auto; overflow:auto; padding:var(--s1) 0; }
+  /* No gap: the folder and the name are one path, and a space between them
+     reads as two things. The caret and the line number carry their own */
+  #filepanel .frow { display:flex; align-items:center; padding:0 10px;
+    min-height:24px; cursor:pointer; white-space:nowrap; }
+  #filepanel .frow:hover { background:var(--hover); }
+  #filepanel .frow .car { flex:0 0 auto; width:10px; margin-right:var(--s2);
+    font-size:9px; color:var(--dim); }
+  #filepanel .frow .nm { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  /* Which folder a result came out of. Quieter than the name, and it is the
+     part that gives way when the row runs out of room */
+  #filepanel .frow .dir { flex:0 1 auto; min-width:0; overflow:hidden;
+    text-overflow:ellipsis; color:var(--faint); }
+  #filepanel .frow.dir .nm { color:var(--text); }
+  #filepanel .frow.file .nm { color:var(--dim); }
+  #filepanel .frow .ln { flex:0 0 auto; margin-left:var(--s2); color:var(--faint);
+    font-size:11px; font-variant-numeric:tabular-nums; }
+  /* The line a search matched, under the file it is in */
+  #filepanel .fhit { padding:0 10px 4px 32px; color:var(--faint); font-size:11px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #filepanel .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--faint);
+    font-size:11.5px; border-top:1px solid var(--line); }
   /* The column's own edge, held the same way as the tab bar's */
   #sidegrip { position:absolute; top:0; bottom:0; z-index:6; width:9px;
     right:max(0px, calc(var(--sidew) - 4px)); cursor:col-resize; }
@@ -1599,7 +1641,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
        there is one of it however many places it can be put -->
   <aside id="side" hidden>
     <div class="sbar"></div>
-    <div class="sbody"></div>
+    <div class="sbody">
+      <!-- The file list lives here and nowhere else. The git panel is moved in
+           beside it when the column is the place it stands -->
+      <div id="filepanel" hidden></div>
+    </div>
   </aside>
   <!-- The column's edge, as something you can take hold of -->
   <div id="sidegrip" hidden></div>
@@ -3895,8 +3941,11 @@ const SIDEW_MIN = {{SIDE_W_MIN}}, SIDEW_MAX = {{SIDE_W_MAX}}, SIDEW_DEF = {{SIDE
 let lastSideW = SIDEW_DEF;
 // Which panel stands in the column. One today; the strip is drawn from this
 // list, so the next one is a row here rather than a shape change
-const SIDE_PANELS = [["git", () => T["tui.side.git"] || "Changes"]];
-let sidePanel = "git";
+const SIDE_PANELS = [
+  ["files", () => T["tui.side.files"] || "Files"],
+  ["git", () => T["tui.side.git"] || "Changes"],
+];
+let sidePanel = "files";
 function sideWidth() {
   const v = parseFloat(getComputedStyle(document.documentElement)
     .getPropertyValue("--sidew"));
@@ -3965,6 +4014,173 @@ function openSide(which) {
 function gitSurfaceUp() {
   return !!(S && S.tabs || []).some(t => t.index === S.active && t.kind === "git");
 }
+// ── The file list ───────────────────────────────────────
+// What is in the working folder, as a tree that opens a folder at a time, and
+// a search over the same folder by name or by what is inside.
+//
+// Nothing is held but what has been looked at: a folder is read when it is
+// opened, and the answer is kept so that opening it again is instant and
+// closing it costs nothing. The tree is the whole folder -- what git ignores
+// is still a file somebody put there -- while the search asks the repository
+// what it ignores, because a search that returns a thousand build artefacts is
+// a search nobody can read.
+const FS = {
+  panel: null,      // which tab's folder this is, so a change of tab starts over
+  rows: {},         // folder path (relative, "" is the root) -> its rows
+  open: {},         // folder path -> whether it is opened out
+  asked: {},        // folder path -> already asked for, so it is asked once
+  q: "", mode: "name",
+  hits: null,       // search results, or null while the tree is what is shown
+  capped: false, said: "", bad: false,
+  // Bumped by everything that changes what the list would say. The page is
+  // redrawn several times a second; a tree of a thousand rows rebuilt that
+  // often costs the window its smoothness, and takes the row out from under
+  // a finger that is already on it
+  rev: 0,
+};
+let fsUi = null, fsTimer = 0;
+
+function filesAsk(act, args) {
+  const t = folderTab();
+  if (!t) return;
+  send({kind: "files", panel: t.id || t.name || "", act, args: args || {}});
+}
+// Everything the panel learns comes back through here
+window.__files = function (d) {
+  if (!d || !d.act) return;
+  if (!d.ok) { FS.said = d.error || ""; FS.bad = true; drawFiles(); return; }
+  FS.said = ""; FS.bad = false;
+  FS.rev++;
+  if (d.act === "ls") {
+    FS.rows[d.at || ""] = d.rows || [];
+  } else {
+    // An answer to a search nobody is waiting for any more (the box moved on)
+    if ((d.q || "") !== FS.q) return;
+    FS.hits = d.hits || [];
+    FS.capped = !!d.capped;
+  }
+  drawFiles();
+};
+// Start over on a folder: everything held was about the last one
+function filesReset(key) {
+  FS.panel = key;
+  FS.rows = {}; FS.open = {}; FS.asked = {};
+  FS.q = ""; FS.hits = null; FS.capped = false; FS.said = ""; FS.bad = false;
+  FS.rev++;
+  if (fsUi && fsUi.q) fsUi.q.value = "";
+  filesLoad("");
+}
+function filesLoad(at) {
+  if (FS.asked[at]) return;
+  FS.asked[at] = true;
+  filesAsk("ls", {at});
+}
+// Typing waits for a pause: one keystroke is not a question, and every
+// keystroke is a walk of the folder
+function filesSearchSoon() {
+  clearTimeout(fsTimer);
+  fsTimer = setTimeout(() => {
+    if (!FS.q) { FS.hits = null; FS.capped = false; drawFiles(); return; }
+    filesAsk(FS.mode === "name" ? "find" : "grep", {q: FS.q});
+  }, 250);
+}
+function filesBuild(box) {
+  box.textContent = "";
+  const search = el("div", {class: "fsearch"});
+  const q = el("input", {type: "text", autocomplete: "off", spellcheck: "false",
+    placeholder: T["files.find.ph"] || "Search this folder"});
+  q.oninput = () => { FS.q = q.value.trim(); filesSearchSoon(); };
+  search.append(q);
+  const mode = el("div", {class: "fmode"});
+  const modes = {};
+  for (const [id, label] of [["name", T["files.find.name"] || "Name"],
+                             ["text", T["files.find.text"] || "Inside"]]) {
+    modes[id] = el("button", {onclick: () => {
+      FS.mode = id;
+      FS.rev++;
+      drawFiles();
+      if (FS.q) filesAsk(id === "name" ? "find" : "grep", {q: FS.q});
+    }}, label);
+    mode.append(modes[id]);
+  }
+  search.append(mode);
+  const list = el("div", {class: "flist"});
+  const say = el("div", {class: "fsay"});
+  box.append(search, list, say);
+  fsUi = {q, modes, list, say};
+}
+// One row of the tree. `depth` is how far in it sits; the step is the tab
+// bar's, so the two lists read as one idea
+function filesRow(name, path, dir, depth, hit) {
+  const row = el("div", {class: "frow " + (dir ? "dir" : "file"), title: path,
+    style: "padding-left:" + (10 + depth * 14) + "px",
+    onclick: () => {
+      if (dir) {
+        FS.open[path] = !FS.open[path];
+        FS.rev++;
+        if (FS.open[path]) filesLoad(path);
+        drawFiles();
+        return;
+      }
+      // A file is handed over rather than opened: there is no editor here, and
+      // the useful thing to do with a path is give it to the AI in the box
+      insertIntoComposer(path);
+    }});
+  row.append(el("span", {class: "car"}, dir ? (FS.open[path] ? "\u25be" : "\u25b8") : ""));
+  // A result is a file from anywhere under here, so it says where. The tree
+  // does not: its rows are already standing under the folder they are in
+  if (hit) {
+    const cut = path.lastIndexOf("/");
+    if (cut >= 0) {
+      // Cut from the front, because the end of a path is the telling part
+      const folder = path.slice(0, cut + 1);
+      const shown = folder.length > 30 ? "\u2026" + folder.slice(-29) : folder;
+      row.append(el("span", {class: "dir"}, shown));
+    }
+  }
+  row.append(el("span", {class: "nm"}, name));
+  if (hit && hit.line != null) row.append(el("span", {class: "ln"}, String(hit.line)));
+  return row;
+}
+function filesTree(into, at, depth) {
+  const rows = FS.rows[at];
+  if (!rows) return;
+  for (const r of rows) {
+    const path = at ? at + "/" + r.name : r.name;
+    into.append(filesRow(r.name, path, r.dir, depth, null));
+    if (r.dir && FS.open[path]) filesTree(into, path, depth + 1);
+  }
+}
+function drawFiles() {
+  const box = document.getElementById("filepanel");
+  if (!box || box.hidden) return;
+  if (!fsUi || !box.firstChild) filesBuild(box);
+  const u = fsUi;
+  u.q.value === FS.q || (document.activeElement === u.q ? null : (u.q.value = FS.q));
+  for (const id in u.modes) u.modes[id].className = FS.mode === id ? "on" : "";
+  if (u.list.dataset.rev !== String(FS.rev)) {
+    u.list.dataset.rev = String(FS.rev);
+    u.list.textContent = "";
+    if (FS.hits) {
+      for (const h of FS.hits) {
+        const cut = h.path.lastIndexOf("/");
+        u.list.append(filesRow(cut < 0 ? h.path : h.path.slice(cut + 1), h.path, false, 0, h));
+        if (h.text) u.list.append(el("div", {class: "fhit", title: h.text}, h.text));
+      }
+    } else {
+      filesTree(u.list, "", 0);
+    }
+  }
+  // What the list cannot say for itself: nothing matched, a search that
+  // stopped early, or -- with nothing else to say -- what a press does
+  const empty = FS.hits ? !FS.hits.length : !((FS.rows[""] || []).length);
+  u.say.textContent = FS.said ? FS.said
+    : empty ? (FS.hits ? (T["files.none"] || "") : (T["files.empty"] || ""))
+    : FS.capped ? (T["files.capped"] || "")
+    : (T["files.hint"] || "");
+  u.say.style.color = FS.bad ? "var(--stop)" : "";
+}
+
 // Draw the column: whether it is there, the strip along its top, and which
 // panel is standing in the body
 function drawSide() {
@@ -3980,7 +4196,7 @@ function drawSide() {
   const body = side.querySelector(".sbody");
   // Which folder this is about. The column follows the tab being looked at, so
   // a list with no name over it is a list you have to guess at
-  const at = gitRepoTab();
+  const at = folderTab();
   const g = at && at.group != null ? ((S && S.groups) || [])[at.group] : null;
   const where = (g && (g.name || g.folder)) || "";
   // The strip is rebuilt only when what it would say changed: it is a row of
@@ -3998,27 +4214,45 @@ function drawSide() {
     bar.append(el("button", {class:"away", title:T["tui.side.hide"] || "",
       onclick:() => { settleSideWidth(); setSideWidth(0); }}, "✕"));
   }
-  if (sidePanel !== "git") return;
+  // Both panels stand on a working folder, and the tab being looked at is how
+  // the column knows which one. Said plainly where the list would have been,
+  // rather than an empty list that reads as "there is nothing here"
   const panel = document.getElementById("gitpanel");
-  // A folder is what git needs, and the tab being looked at is how the column
-  // knows which one. Said plainly where the list would have been, rather than
-  // an empty list that looks like "nothing has changed"
-  const t = gitRepoTab();
+  const files = document.getElementById("filepanel");
+  // The changes need a repository; the files only need the folder
+  const repo = repoTab();
+  const wantGit = !!repo && sidePanel === "git";
+  const wantFiles = !!at && sidePanel === "files";
+  // The changes panel goes back to the pane whenever the column is not the
+  // place it stands, so it is never left over a terminal it no longer covers
+  if (panel && !wantGit && panel.parentNode === body) {
+    document.getElementById("main").append(panel);
+    panel.hidden = true;
+  }
+  if (files) files.hidden = !wantFiles;
   let note = body.querySelector(".sempty");
-  if (!t) {
-    if (panel && panel.parentNode === body) document.getElementById("main").append(panel);
-    if (panel) panel.hidden = true;
+  // Nothing to stand on, or nothing for this panel to stand on. Said plainly
+  // where the list would have been, rather than an empty list that reads as
+  // "there is nothing here"
+  const missing = !at ? (T["tui.side.notab"] || "")
+    : (sidePanel === "git" && !repo) ? (T["tui.side.norepo"] || "")
+    : "";
+  if (missing) {
     if (!note) { note = el("div", {class:"sempty"}); body.append(note); }
-    note.textContent = T["tui.side.notab"] || "";
+    note.textContent = missing;
     return;
   }
   if (note) note.remove();
-  if (panel && panel.parentNode !== body) body.append(panel);
-  if (panel) {
+  if (wantGit) {
+    if (panel.parentNode !== body) body.append(panel);
     panel.hidden = false;
     // Coming into view, or a different folder in the same place, starts over
-    if (G.panel !== (t.id || t.name)) gitRefresh(false);
+    if (G.panel !== (repo.id || repo.name)) gitRefresh(false);
     else drawGit();
+  }
+  if (wantFiles) {
+    if (FS.panel !== (at.id || at.name)) filesReset(at.id || at.name);
+    else drawFiles();
   }
 }
 
@@ -4933,6 +5167,7 @@ if (REMOTE) {
     // this line a panel opened on a phone asks its questions into the dark and
     // waits for ever -- which is what both of them did
     if (d.git) window.__git(d.git);
+    if (d.files) window.__files(d.files);
     if (d.sftp) window.__sftp(d.sftp);
     if ("luadone" in d) window.__luaDone(d.luadone);
     if ("suggested" in d) window.__suggested(d.suggested);
@@ -5697,7 +5932,7 @@ function targetNote() {
 // for the tab being looked at, and a panel that moves the bar out from under
 // somebody mid-sentence is the bar taken away
 function sideGitUp() {
-  return sideWidth() > 0 && sidePanel === "git" && !gitSurfaceTab() && !!gitRepoTab();
+  return sideWidth() > 0 && sidePanel === "git" && !gitSurfaceTab() && !!repoTab();
 }
 function panelOptions() {
   const opts = panelOptionsHere();
@@ -5970,20 +6205,25 @@ let gitUi = null;
 function gitSurfaceTab() {
   return (S && S.tabs || []).find(t => t.index === S.active && t.kind === "git");
 }
-// The tab the column reports on: the one being looked at, when its working
-// folder is in a repository. The colour a folder wears is that answer already
-// -- it is absent for a folder no repository holds -- so nothing is run to
-// find out, and the column is right about a folder git is busy rebasing
-function gitRepoTab() {
+// The tab the column stands on: the one being looked at, when it works
+// somewhere. A list of files only needs a folder
+function folderTab() {
   const t = (S && S.tabs || []).find(x => x.index === S.active && !x.settings);
-  if (!t || t.group == null) return null;
-  const g = ((S && S.groups) || [])[t.group];
+  return t && t.group != null ? t : null;
+}
+// The same tab, when its folder is in a repository -- which is what the
+// changes panel needs. The colour a folder wears is that answer already: it is
+// absent for a folder no repository holds, so nothing is run to find out, and
+// the column is right about a folder git is busy rebasing
+function repoTab() {
+  const t = folderTab();
+  const g = t ? ((S && S.groups) || [])[t.group] : null;
   return g && g.color ? t : null;
 }
 // Whichever of the two is standing. Every button on the panel goes through
 // here, so the panel itself never learns where it is
 function gitTab() {
-  return gitSurfaceTab() || gitRepoTab();
+  return gitSurfaceTab() || repoTab();
 }
 function gitAsk(act, args) {
   const t = gitTab();
@@ -8691,6 +8931,27 @@ mod tests {
         assert_eq!(p.matches("id=\"gitpanel\"").count(), 1, "git の画面が2つある");
     }
 
+    /// The file list: one of it, in the column, with the strip listing it
+    /// first — the order the next panel is added into, not around.
+    #[test]
+    fn the_file_list_stands_in_the_column() {
+        let p = super::page();
+        assert_eq!(p.matches("id=\"filepanel\"").count(), 1, "ファイル一覧の画面が2つある");
+        let strip = p.find("const SIDE_PANELS").expect("欄の帯の定義が無い");
+        let files = p[strip..].find("\"files\"").expect("帯にファイルが無い");
+        let git = p[strip..].find("\"git\"").expect("帯に変更が無い");
+        assert!(files < git, "帯の並びがファイル→変更になっていない");
+        // Every answer has a way back to the page, on both surfaces
+        assert!(p.contains("window.__files = function"), "答えの受け口が無い");
+        assert!(
+            p.contains("if (d.files) window.__files(d.files);"),
+            "スマホにファイル一覧の答えが届かない"
+        );
+        // A file is handed to the composer rather than opened: there is no
+        // editor, and saying otherwise would be a promise with nothing behind it
+        assert!(p.contains("insertIntoComposer(path);"), "押しても入力欄に入らない");
+    }
+
     /// Elements marked hidden must actually be hidden.
     ///
     /// HTML's hidden attribute defaults to display:none, but declaring
@@ -9281,6 +9542,10 @@ mod tests {
         // is silence rather than a failure and so is worth pinning down
         assert!(PAGE.contains("if (d.sftp) window.__sftp(d.sftp);"), "スマホに答えが届かない");
         assert!(PAGE.contains("if (d.git) window.__git(d.git);"), "スマホに git の答えが届かない");
+        assert!(
+            PAGE.contains("if (d.files) window.__files(d.files);"),
+            "スマホにファイル一覧の答えが届かない"
+        );
     }
 
     /// The top bar is drawn by the shell, not injected into the page.

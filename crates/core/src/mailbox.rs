@@ -111,8 +111,10 @@ pub struct Mailbox {
     pub run_luas: Vec<String>,
     /// What the git panel has asked for since the last drain: (panel, act, args)
     pub gits: Vec<(String, String, serde_json::Value)>,
-    /// The same, for the file panel
+    /// The same, for the transfer panel (this machine and a server)
     pub sftps: Vec<(String, String, serde_json::Value)>,
+    /// The same, for the column's file list (one machine, one folder)
+    pub files: Vec<(String, String, serde_json::Value)>,
     /// Recorded steps reported by pages. The loop turns each into one Lua
     /// line for the composer.
     pub recorded: Vec<RecordedStep>,
@@ -285,6 +287,9 @@ impl Mailbox {
     /// Takes what the git panel has asked for since the last drain
     pub fn take_gits(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.gits)
+    }
+    pub fn take_files(&mut self) -> Vec<(String, String, serde_json::Value)> {
+        std::mem::take(&mut self.files)
     }
     /// Takes what the file panel has asked for since the last drain
     pub fn take_sftps(&mut self) -> Vec<(String, String, serde_json::Value)> {

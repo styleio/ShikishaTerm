@@ -159,6 +159,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // do on this PC by opening the same panel, and a phone that can hand an
         // AI a whole task can certainly stage a file
         Ev::Git { .. } => true,
+        // The column's file list: reading the names in the folder the person
+        // is working in, and searching them. The same folder the git panel
+        // already shows the contents of, listed instead of diffed
+        Ev::Files { .. } => true,
         // Putting the right-hand column away, or dragging its edge. A phone
         // has less width to spare than a window does, so this is the one it
         // needs most

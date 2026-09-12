@@ -46,6 +46,7 @@ pub trait Shell {
     fn open_vault(&self);
     fn open_palette(&self);
     fn push_git(&self, json: &str);
+    fn push_files(&self, json: &str);
     fn push_sftp(&self, json: &str);
     fn push_recorded(&self, line_json: &str);
     fn queue_vault(&mut self, ev: shikisha_shared::Ev);
@@ -177,6 +178,7 @@ impl Shell for Headless {
     fn open_vault(&self) {}
     fn open_palette(&self) {}
     fn push_git(&self, json: &str) { let _ = json; }
+    fn push_files(&self, json: &str) { let _ = json; }
     fn push_sftp(&self, json: &str) { let _ = json; }
     fn push_recorded(&self, line_json: &str) { let _ = line_json; }
     fn queue_vault(&mut self, ev: shikisha_shared::Ev) { let _ = ev; }
