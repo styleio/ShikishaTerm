@@ -2536,6 +2536,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default(),
+            folders_elsewhere: workspaces
+                .get(ws_index)
+                .map(|w| {
+                    w.folders
+                        .iter()
+                        .filter(|f| f.host.is_some())
+                        .filter_map(|f| f.cwd.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
             self_cost: self_cost.clone(),
             // With a stand-in laid out there is a link to show even when
             // nothing is listening — that is the whole point of it (netaddr::demo_link)

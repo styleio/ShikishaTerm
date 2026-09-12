@@ -1913,6 +1913,11 @@ pub struct FolderConfig {
     /// repository with
     #[serde(default)]
     pub project: Option<String>,
+    /// The machine this folder is on, by the name in `hosts`. Absent is this
+    /// one. A folder somewhere else is not missing from this machine -- it was
+    /// never meant to be here -- so nothing about it is repaired or offered
+    #[serde(default)]
+    pub host: Option<String>,
     /// The branches this folder will not commit straight onto, when it wants
     /// something other than the app-wide answer. Absent means it follows that
     /// one; an empty list means this folder guards nothing
@@ -2035,6 +2040,8 @@ impl CommandSpec {
 pub struct Folder {
     pub name: Option<String>,
     pub id: Option<String>,
+    /// The machine it is on, already looked up. None is this one
+    pub host: Option<HostSpec>,
     /// Where its tabs start. Absent means wherever the app itself is
     pub cwd: Option<std::path::PathBuf>,
     /// What it would take to make this folder on a machine that does not have
@@ -2443,18 +2450,38 @@ fn foldered_with(folders: &[FolderConfig], legacy: &[TabConfig]) -> Vec<FolderCo
 /// in one list in the order they are shown.
 /// The third value is the automation names that had to be moved aside because
 /// two tabs claimed the same one (see [`settle_tab_ids`])
-fn resolve_folders(defs: &[FolderConfig], protect: &[String]) -> (Vec<Folder>, Vec<FlatTab>, Vec<String>) {
+fn resolve_folders(
+    defs: &[FolderConfig],
+    protect: &[String],
+    hosts: &[HostSpec],
+) -> (Vec<Folder>, Vec<FlatTab>, Vec<String>) {
     let mut folders = Vec::with_capacity(defs.len());
     let mut tabs = Vec::new();
     for (at, def) in defs.iter().enumerate() {
         folders.push(Folder {
             name: def.name.clone().filter(|n| !n.trim().is_empty()),
             id: def.id.clone().filter(|i| !i.trim().is_empty()),
+            // Looked up once, here, so that nothing downstream has to know
+            // there was a name to look up. A name nothing answers to is the
+            // same as none: the folder is on this machine
+            host: def
+                .host
+                .as_deref()
+                .map(str::trim)
+                .filter(|h| !h.is_empty())
+                .and_then(|h| hosts.iter().find(|x| x.name == h))
+                .cloned(),
             // Relative stays relative to the settings, so that a whole folder
-            // of them can be carried to another machine
+            // of them can be carried to another machine.
+            //
+            // Unless the folder is on another machine, where a path is that
+            // machine's and not this one's to interpret. `/srv/api` is not an
+            // absolute path on Windows, so it would be joined to a folder
+            // here and the folder would then be missing -- which it is, and
+            // which is beside the point
             cwd: def.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(|c| {
                 let p = std::path::PathBuf::from(c);
-                match p.is_absolute() {
+                match p.is_absolute() || def.host.as_deref().is_some_and(|h| !h.trim().is_empty()) {
                     true => p,
                     false => root_dir().join(p),
                 }
@@ -3015,7 +3042,7 @@ impl Config {
             // a screenful of work somebody arranged
             if !self.folders.is_empty() || !self.tabs.is_empty() {
                 let (folders, tabs, moved) =
-                    resolve_folders(&foldered_with(&self.folders, &self.tabs), &self.git.protected());
+                    resolve_folders(&foldered_with(&self.folders, &self.tabs), &self.git.protected(), &self.hosts);
                 errors.extend(moved_note("DEFAULT", &moved));
                 out.push(Workspace {
                     name: "DEFAULT".into(),
@@ -3066,7 +3093,7 @@ impl Config {
                     None,
                 ),
             };
-            let (folders, tabs, moved) = resolve_folders(&folder_defs, &self.git.protected());
+            let (folders, tabs, moved) = resolve_folders(&folder_defs, &self.git.protected(), &self.hosts);
             // Prefer the display name from config; fall back to the definition file's name if empty
             let name = if ws.name.is_empty() {
                 file_name.unwrap_or_else(|| "UNNAMED".into())

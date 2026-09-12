@@ -198,6 +198,12 @@ enum Job {
         spec: Spec,
         rows: u16,
         cols: u16,
+        /// Where it should stand once it is open. A shell over there starts
+        /// where the far end puts it and the asking carries no folder, so the
+        /// only way to say is to type it -- which is done here, on the channel
+        /// this module already holds. Done anywhere else it would need the
+        /// writer, and the writer belongs to whoever is at the keyboard
+        cwd: Option<String>,
         out: Sender<Vec<u8>>,
         reply: Sender<Result<u64>>,
     },
@@ -335,8 +341,17 @@ async fn close_idle(live: &mut Live) {
 
 async fn handle(live: &mut Live, job: Job) {
     match job {
-        Job::Shell { spec, rows, cols, out, reply } => {
+        Job::Shell { spec, rows, cols, cwd, out, reply } => {
             let r = open_shell(live, &spec, rows, cols, out).await;
+            // Typed, so it is on screen like anything else typed, and so that
+            // nothing else has to know it happened
+            if let (Ok(id), Some(at)) = (&r, cwd.as_deref().map(str::trim).filter(|a| !a.is_empty()))
+            {
+                if let Some(ch) = live.shells.get(id) {
+                    let line = format!("cd '{}'\n", at.replace('\'', "'\\''"));
+                    let _ = ch.data(line.as_bytes()).await;
+                }
+            }
             let _ = reply.send(r);
         }
         Job::Write { id, data } => {
@@ -890,6 +905,7 @@ pub fn shell(
     spec: &Spec,
     rows: u16,
     cols: u16,
+    cwd: Option<&str>,
 ) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>)>
 {
     let (out_tx, out_rx) = channel::<Vec<u8>>();
@@ -899,6 +915,7 @@ pub fn shell(
             spec: spec.clone(),
             rows,
             cols,
+            cwd: cwd.map(str::to_string),
             out: out_tx,
             reply: reply_tx,
         })
@@ -1079,7 +1096,7 @@ mod tests {
         };
         // A first meeting: nothing is remembered about this server, and the
         // test must not write into the real settings folder either
-        let (pty, mut killer) = shell(&spec, 24, 80).expect("the terminal did not open");
+        let (pty, mut killer) = shell(&spec, 24, 80, None).expect("the terminal did not open");
         let mut reader = pty.try_clone_reader().expect("reader");
         let mut writer = pty.take_writer().expect("writer");
 

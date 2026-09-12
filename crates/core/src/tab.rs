@@ -47,6 +47,11 @@ pub struct TabOptions {
     /// The bytes come from a connection instead of a child process; everything
     /// above that is the same, which is the point of [`crate::ssh`]
     pub remote: Option<crate::ssh::Spec>,
+    /// Where on that machine the shell should stand. A shell over there starts
+    /// where the far end puts it, and the asking has nowhere to carry a folder,
+    /// so it is sent as the first thing typed -- which is what a person would
+    /// do, and is on screen like anything else typed
+    pub remote_cwd: Option<String>,
 }
 
 /// Why a tab is being held rather than started.
@@ -109,6 +114,7 @@ impl Default for TabOptions {
             cwd: None,
             group: None,
             remote: None,
+            remote_cwd: None,
             // The guarded ones, for anything built without an answer: a tab
             // that lost the setting on the way here must refuse a commit to
             // main, not wave it through
@@ -854,6 +860,25 @@ fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
 /// tool installed, or where a saved absolute folder no longer exists. Both come
 /// back from the OS as a bare "file not found", so instead of surfacing that,
 /// name the likely cause and point at the setting to change.
+pub fn launch_problem_for(name: &str, prog: &str, opts: &TabOptions, raw: &str) -> String {
+    // Nothing about a tab on another machine is this machine's to judge.
+    // Neither the folder nor the program is here, and both were checked here
+    // anyway: a failure on the wire came back as "that folder is not on this
+    // PC" and then as "install sh", each true of this machine and neither the
+    // reason. What is left is the error itself, which says what happened.
+    //
+    // Three callers built this explanation out of pieces and two of them
+    // forgot a piece; taking the options whole is what makes forgetting
+    // impossible
+    if opts.remote.is_some() {
+        return crate::i18n::tp(
+            "msg.start.other",
+            &[("name", name), ("error", &raw.replace(' ', ""))],
+        );
+    }
+    launch_problem(name, prog, opts.cwd.as_deref(), raw)
+}
+
 pub fn launch_problem(
     name: &str,
     prog: &str,
@@ -2803,7 +2828,7 @@ impl Tab {
             // own, started by the far end, and there is no local process id to
             // put in a job object
             (None, Some(spec)) => {
-                let (m, k) = crate::ssh::shell(spec, rows, cols)?;
+                let (m, k) = crate::ssh::shell(spec, rows, cols, opts.remote_cwd.as_deref())?;
                 (m, k, None, None)
             }
             (None, None) => anyhow::bail!("a tab with no terminal of any kind"),
@@ -3287,10 +3312,10 @@ impl Tab {
     /// program or a missing working folder, the two things a portable build runs
     /// into when it lands on a PC that isn't the one it was configured on.
     pub fn launch_hint(&self, raw: &str) -> String {
-        launch_problem(
+        launch_problem_for(
             &self.title,
             self.argv.first().map(String::as_str).unwrap_or(""),
-            self.opts.cwd.as_deref(),
+            &self.opts,
             raw,
         )
     }
