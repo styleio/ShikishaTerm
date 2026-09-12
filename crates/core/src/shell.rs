@@ -1338,36 +1338,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bstartrow { display:flex; gap:var(--s2); align-items:center; }
   /* A display rule of their own would otherwise beat the hidden attribute */
   #branch .bstartrow[hidden], #branch .bfan[hidden], #branch .bais[hidden],
-  #branch .bsetup[hidden], #branch .bsetupsay[hidden], #branch .boffer[hidden] { display:none; }
+  #branch .bsetup[hidden], #branch .bsetupsay[hidden] { display:none; }
   /* A file this project could have. Shown whole, because what is being agreed
      to is the file, not the idea of a file */
-  #branch .boffer { display:flex; flex-direction:column; gap:var(--s2); }
-  #branch .boffer .file { color:var(--text); }
-  #branch .bsetup { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
-  #branch .bsetupsay { padding-left:22px; }
-  #branch .bstartrow .say { color:var(--dim); font-size:11.5px; flex:0 0 auto; }
-  #branch .bfan { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
-  #branch .bais { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding-left:22px; }
-  #branch .bais label { display:flex; align-items:center; gap:var(--s2); font-size:12px; cursor:pointer; }
-  #branch #bdest { align-self:flex-start; }
-  #branch #bbase, #branch #bstart, #branch #bdest { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
-    border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 12px; cursor:pointer; height:36px;
-    max-width:42%; flex:0 0 auto; display:flex; align-items:center; gap:var(--s2);
-    white-space:nowrap; overflow:hidden; }
-  #branch #bbase:hover, #branch #bstart:hover { border-color:var(--brand); }
-  #branch #bbase .nm, #branch #bstart .nm { overflow:hidden; text-overflow:ellipsis; }
-  #branch #bbase .caret, #branch #bstart .caret { color:var(--dim); font-size:9px; }
-  #branch #bstart { max-width:none; flex:1 1 auto; }
-  .fmenu.tall { max-height:min(52vh, 420px); overflow:auto; }
-  #browse .vlist { overflow:auto; display:flex; flex-direction:column; gap:var(--s1); max-height:52vh; }
-  #browse .vrow { padding:var(--s2) var(--s3); border-radius:var(--r-ctl); cursor:pointer; }
-  #browse .vrow:hover { background:var(--raise); }
-  /* A well is read, never typed into, so it takes the sunken face rather than
-     the page's own -- section 2 */
-  #branch .bwhere, #branch .bcmd, #browse .bwhere, #sask .bwhere { font-family:var(--mono); font-size:11.5px; color:var(--text);
-    background:var(--sunk); border:1px solid var(--line); border-radius:var(--r-ctl);
-    padding:var(--s2) var(--s3); overflow:auto; white-space:pre-wrap; word-break:break-all; }
-  #branch .bcmd { color:var(--dim); }
   /* Everything that already has a sensible answer, behind one press. Somebody
      adding a worktree names it and presses the button; the rest is here for
      the times they want to disagree with an answer, and the row saying how
@@ -1836,12 +1809,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="bstartrow" hidden><span class="say"></span><div id="bstart"></div></div>
         <label class="bsetup" hidden><input type="checkbox" id="bsetupon" checked><span></span></label>
         <div class="bsetupsay hint" hidden></div>
-        <div class="boffer" hidden>
-          <div class="hint say"></div>
-          <div class="bcmd file"></div>
-          <div class="hint why"></div>
-          <div class="row"><button class="keep" type="button"></button></div>
-        </div>
         <label class="bfan" hidden><input type="checkbox" id="bfanon"><span></span></label>
         <div class="bais" hidden></div>
         <div class="bcarry"></div>
@@ -2943,7 +2910,6 @@ function drawSetup(b, p) {
   const row = b.querySelector(".bsetup");
   const say = b.querySelector(".bsetupsay");
   if (!row || !say) return;
-  drawOffer(b, p);
   const from = (p && p.setup_from) || "";
   row.hidden = !from;
   say.hidden = !from;
@@ -2956,29 +2922,6 @@ function drawSetup(b, p) {
   if (missing.length) lines.push((T["tui.branch.setup.unresolved"] || "{names}")
     .replace("{names}", missing.join(", ")));
   say.textContent = lines.join("  ");
-}
-// What this project could be given, when it says nothing and something can be
-// worked out. The file is shown whole and written only when it is pressed:
-// these are commands that will run on somebody's machine, and a file that
-// appeared in a repository without being read is a file nobody asked for
-function drawOffer(b, p) {
-  const box = b.querySelector(".boffer");
-  if (!box) return;
-  const offer = (p && p.offer) || null;
-  box.hidden = !offer;
-  if (!offer) return;
-  box.querySelector(".say").textContent = T["tui.branch.offer"] || "";
-  box.querySelector(".file").textContent = offer.json || "";
-  box.querySelector(".why").textContent = (T["tui.branch.offer.why"] || "{why}")
-    .replace("{why}", (offer.why || []).join(", "));
-  const keep = box.querySelector(".keep");
-  keep.textContent = T["tui.branch.offer.keep"] || "";
-  keep.onclick = () => {
-    send({kind:"keepenv", from:branchFrom});
-    // Gone the moment it is pressed: pressing twice would be asking for a file
-    // that is already there, and the answer to that is a refusal nobody needs
-    box.hidden = true;
-  };
 }
 function drawDest(b, p) {
   const box = document.getElementById("bdest");

@@ -1111,6 +1111,49 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // What a project says its environment needs, and what could be
+        // proposed when it says nothing. Both read here rather than guessed by
+        // the page: they come from files on disk, and one of them is an offer
+        // to write into somebody's repository
+        ("GET", "/api/devcontainer") => {
+            let at = query_param(req.url(), "path")
+                .map(|c| percent_decode(&c))
+                .unwrap_or_default();
+            let at = std::path::Path::new(at.trim());
+            let root = crate::repo::main_checkout(at);
+            let has = root.as_deref().and_then(crate::devcontainer::of);
+            let offer = has
+                .is_none()
+                .then(|| root.as_deref().and_then(crate::devcontainer::propose))
+                .flatten();
+            req.respond(json_resp(serde_json::json!({ "has": has, "offer": offer })))?;
+        }
+        // Put the offered file in the project. Worked out again on this side,
+        // so what lands is what this side proposed whatever a page said
+        ("POST", "/api/devcontainer") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let at = std::path::PathBuf::from(
+                p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim(),
+            );
+            let resp = match crate::repo::main_checkout(&at)
+                .as_deref()
+                .and_then(crate::devcontainer::propose)
+            {
+                None => serde_json::json!({
+                    "ok": false, "error": crate::i18n::t("err.devcontainer.nothing")
+                }),
+                Some(d) => match crate::devcontainer::save(&d) {
+                    Ok(()) => serde_json::json!({ "ok": true, "at": d.at }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                },
+            };
+            req.respond(json_resp(resp))?;
+        }
         ("GET", "/api/cli-help") => {
             let prog = query_param(req.url(), "cmd")
                 .map(|c| percent_decode(&c))
@@ -6855,6 +6898,7 @@ function folderPane(ws, g, gi) {
     paint(where && where.family);
     if (!where || !where.cut) return;
     if (where.branch) box.insertBefore(renameCard(g, where.branch), buttons);
+    box.insertBefore(envCard(g), buttons);
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
       if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
@@ -6867,6 +6911,62 @@ function folderPane(ws, g, gi) {
     }}, T["settings.group.discard"]));
     buttons.append(el("span", {class:"hint"}, T["settings.group.discard.hint"]));
   });
+  return box;
+}
+
+// What this project says its environment needs, and the offer of one when it
+// says nothing.
+//
+// On the project's own page, not on the one that lists machines and not in the
+// dialog that makes folders. It writes into this repository, so it belongs
+// where this repository's own settings are -- a machine is used by many
+// projects, and somebody making a folder came to make a folder.
+function envCard(g) {
+  const box = el("div");
+  box.hidden = true;
+  fetch("/api/devcontainer?path=" + encodeURIComponent(g.cwd || ""), {headers:{"X-Token":TOKEN}})
+    .then(r => r.json())
+    .then(said => {
+      box.hidden = false;
+      if (said && said.has) {
+        const missing = said.has.unresolved || [];
+        box.append(card(T["settings.group.env"],
+          el("div", {class:"hint"}, fill(T["settings.group.env.has"], {path: said.has.from})),
+          ...(said.has.setup || []).map(line => el("div", {class:"realcmd"}, el("code", {class:"mono"}, line))),
+          missing.length
+            ? el("div", {class:"hint"}, fill(T["settings.group.env.unresolved"], {names: missing.join(", ")}))
+            : null));
+        return;
+      }
+      // Nothing to propose is said plainly rather than left blank: "there is
+      // no devcontainer" and "one could be made for you" are different facts
+      if (!said || !said.offer) {
+        box.append(card(T["settings.group.env"],
+          el("div", {class:"hint"}, T["settings.group.env.none"]),
+          el("div", {class:"hint"}, T["settings.group.env.nothing"])));
+        return;
+      }
+      const keep = el("button", {}, T["settings.group.env.keep"]);
+      keep.addEventListener("click", async () => {
+        const r = await fetch("/api/devcontainer",
+          {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd})})
+          .then(r => r.json()).catch(() => ({ok:false, error:""}));
+        if (!r.ok) { toast(r.error || "", true); return; }
+        toast(fill(T["msg.devcontainer.kept"], {path: r.at}));
+        // Drawn again from what is now on disk, so the card says what is
+        // there rather than what was offered a moment ago
+        box.textContent = "";
+        box.hidden = true;
+        box.append(envCard(g));
+      });
+      box.append(card(T["settings.group.env"],
+        el("div", {class:"hint"}, T["settings.group.env.none"]),
+        el("div", {class:"hint"}, T["settings.group.env.offer"]),
+        el("div", {class:"realcmd"}, el("code", {class:"mono"}, said.offer.json)),
+        el("div", {class:"hint"}, fill(T["settings.group.env.why"], {why: (said.offer.why || []).join(", ")})),
+        el("div", {class:"row"}, keep)));
+    })
+    .catch(() => {});
   return box;
 }
 
