@@ -257,11 +257,34 @@ pub struct Config {
     /// chose rather than with whatever an old file happened to say
     #[serde(default)]
     pub automation_permissions: crate::grants::GrantSpec,
-    /// Remote UI viewable from a phone etc. Disabled by default
+    /// Remote UI viewable from a phone etc. Disabled by default.
+    ///
+    /// App-wide, and deliberately so. Every part of it describes one server on
+    /// one machine -- an address, a port, one pairing with one phone -- and
+    /// there is no reading of it under which a workspace would want a different
+    /// answer. What a phone can then DO is a different question, and that one is
+    /// already the workspace's: a touch arrives as the same intent a click does,
+    /// and is held to the table and the doors of the workspace on screen (see
+    /// [`WorkspaceSpec::automation_permissions`]).
+    ///
+    /// The one thing a workspace might still want to say is "do not show me on
+    /// a phone at all". That is a new curtain rather than a setting split in
+    /// two, so it is not here: it needs a screen of its own on the phone, and
+    /// one that said "disconnected" when the truth is "this one is not shown
+    /// here" would be worse than not having it at all
     #[serde(default)]
     pub remote: RemoteSpec,
     /// Who may drive this app from outside, over its named pipe. The default
     /// is the processes this app started and nothing else — see api.rs
+    ///
+    /// App-wide for the same reason: there is one pipe, and it belongs to the
+    /// process. Splitting the setting would not split the pipe, and a second
+    /// per-workspace switch would only be a second place to read one answer
+    /// from. What a call may actually do is already the workspace's -- the key
+    /// names the tab, [`crate::runtime::subject_of`] turns that into who is
+    /// calling, and the answer comes from the workspace on screen. A key naming
+    /// a tab that is not in it is nobody, and is answered as an AI: the side
+    /// that cannot do harm if the guess is wrong
     #[serde(default)]
     pub external_api: crate::api::ApiSpec,
     /// How the terminal is drawn

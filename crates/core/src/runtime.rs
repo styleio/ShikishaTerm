@@ -584,7 +584,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         cfg.as_ref().and_then(|c| c.browser_draw.as_deref()).unwrap_or_default(),
     ));
     caps.set_workspace(ws_index);
+    // Somewhere to ask about pull requests, on its own thread. Quiet and
+    // harmless when there is no GitHub token: it simply never knows anything,
+    // and no row grows a line
+    let prs = crate::pr::Watch::start();
     if let Some(w) = workspaces.get(ws_index) {
+        // Everything this workspace answers for, handed over in one act -- the
+        // same one a switch uses, so the first workspace is not a special case.
+        // Before the engine below is built, because the Lua it compiles belongs
+        // to this workspace and must meet this workspace's doors
+        crate::workspace::hand_over(w, &caps, &notifier, &prs);
         engines[ws_index] = build_engine(cfg.as_ref(), Some(w), &mut startup_errors, &caps);
         // Declared browsers are NOT opened here: placing a page occupies the
         // window thread, and at startup the person is often already clicking.
@@ -781,15 +790,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // What this whole app is costing the machine, refreshed on the same beat as
     // the per-tab figures. Shown in the board's header
     let mut self_cost: Option<String> = None;
-    // Somewhere to ask about pull requests, on its own thread. Quiet and
-    // harmless when the person has no GitHub token: it simply never knows
-    // anything, and no row grows a line
-    let prs = crate::pr::Watch::start();
-    // Everything the workspace being opened answers for, handed over in one act
-    // -- the same one a switch uses, so the first workspace is not a special case
-    if let Some(w) = workspaces.get(ws_index) {
-        crate::workspace::hand_over(w, &caps, &notifier, &prs);
-    }
     let (mut keymap, key_errs) = crate::keys::Keys::load(cfg.as_ref());
     startup_errors.extend(key_errs);
     let mut prefix_active = false;
