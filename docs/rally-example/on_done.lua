@@ -1,12 +1,13 @@
--- AIの手番が終わった。受け渡しファイルを読み、実行し、審判で終了を判定する (AIタブの on_done)。
--- ディレクトリ方式なので、このファイルの中身がそのまま on_done(tab, screen) の本体になる。
+-- The AI's turn is over. Read the hand-off file, run it, and let the judge decide
+-- whether it is finished (the AI tab's on_done).
+-- This is the directory style, so the contents of this file are the body of on_done(tab, screen).
 
--- 人間が始めた会話には反応しない(自己ループ・乗っ取り防止)。
--- ラリー中は send_to_tab で往復するのでチェーンは1以上になる。
+-- Do not react to a conversation a person started (no self-loops, no taking over).
+-- During a rally the turns go back and forth through send_to_tab, so the chain is 1 or more.
 if tab.chain_depth == 0 then return end
 
--- 決着済みなら、もう何もしない(手番も送らない)。
--- これが無いと set_result 後もAIが動き続け、プロンプトが溜まって「無限ループ」に見える
+-- Already decided: do nothing more (and send no further turns).
+-- Without this the AI keeps going after set_result, prompts pile up, and it looks like an endless loop
 if shikisha.get_var("rally_done") then return end
 
 local br = RALLY.browser
@@ -16,49 +17,50 @@ if not run then return end
 local infile = run .. "/in.lua"
 local humanfile = run .. "/human.txt"
 
--- 概算コスト(やり取り文字数)を積む。tokens 停止条件の材料
+-- Add up the rough cost (characters exchanged). What the tokens stop condition measures
 shikisha.set_var("rally_tok", (shikisha.get_var("rally_tok") or 0) + #(tab.output or ""))
 
--- 1) 人間依頼ファイル？ → ブラウザを見せて帯を出し、押されるまで待つ
+-- 1) A request for a person? -> show the browser, put up the banner, wait until it is pressed
 local human = shikisha.exchange_take(humanfile)
 if human and #human > 0 then
   shikisha.show(br)
-  shikisha.browser_wait(br, { ask = human, label = "できたら押す" })
+  shikisha.browser_wait(br, { ask = human, label = "Press when done" })
   shikisha.show(ai)
-  shikisha.send_to_tab(ai, "人間が対応を終えました。続けてください。次の1手を " .. infile .. " に書いてください。")
+  shikisha.send_to_tab(ai, "The person has finished. Carry on. Write your next move to " .. infile .. ".")
   return
 end
 
--- 2) 操作ファイル？ → LINT(構文) → サンドボックス実行 → 記録
+-- 2) A move? -> LINT (syntax) -> run in the sandbox -> record
 local code = shikisha.exchange_take(infile)
 if code and #code > 0 then
   local lint_err = shikisha.lint(code)
   if lint_err then
     shikisha.send_to_tab(ai, table.concat({
-      "書いてくれたLuaが構文エラーでした:",
+      "The Lua you wrote has a syntax error:",
       lint_err,
-      "直して " .. infile .. " に書き直してください。",
+      "Fix it and write it to " .. infile .. " again.",
     }, "\n"))
     return
   end
-  -- すぐブラウザタブへ切り替えて、動くところを見せる(待たずに即切替=きびきび)。
-  -- 「切替が遅い」対策として、実行の前に余計なスリープは入れない
+  -- Switch to the browser tab at once, so the move is seen happening (no waiting = snappy).
+  -- To keep the switch from feeling slow, nothing sleeps before the run
   shikisha.show(br)
   local err = shikisha.run_scoped(br, code)
   if err then
     shikisha.show(ai)
     shikisha.send_to_tab(ai, table.concat({
-      "実行でエラーになりました:",
+      "Running it failed:",
       err,
-      "別の手を " .. infile .. " に書いてください。",
+      "Write a different move to " .. infile .. ".",
     }, "\n"))
     return
   end
-  -- 成功した手だけ記録する(貼れば再現できるよう、鍵名のまま積む)
+  -- Record only the moves that worked (kept with secret names, so pasting it replays the run)
   shikisha.exchange_append(shikisha.get_var("rally_record"), code)
   shikisha.set_var("rally_round", (shikisha.get_var("rally_round") or 0) + 1)
-  -- ブラウザを見せたまま、本文が出るまで短くポーリング。出たら即進む(きびきび)、
-  -- 遅ければ待つ。先に少し待つのは、遷移前の古い画面を掴まないため
+  -- Keep the browser in view and poll briefly until the page body appears. Move on
+  -- as soon as it does (snappy); wait if it is slow. The short wait first is so the
+  -- old page from before the navigation is not picked up
   for _ = 1, 12 do
     shikisha.sleep(150)
     local t = shikisha.browser_text(br, "body")
@@ -66,25 +68,25 @@ if code and #code > 0 then
   end
 end
 
--- 3) 審判: 停止条件を評価。成立したら終了コードを記録して終わる
+-- 3) The judge: check the stop conditions. If one is met, record the exit code and finish
 local verdict = RALLY_judge(tab.output)
 if verdict then
-  shikisha.set_var("rally_done", true)                 -- 以後の on_done を止める(手番を送らない)
+  shikisha.set_var("rally_done", true)                 -- stops later on_done calls (no more turns)
   shikisha.show(verdict.outcome == "success" and ai or br)
   shikisha.set_result(verdict.code or 0, verdict.reason or "")
   return
 end
 
--- 4) まだ終わらない → AIの手番へ戻し、今の画面テキストを返して次の1手を促す
+-- 4) Not over yet -> hand the turn back to the AI with the current screen text, and ask for the next move
 shikisha.show(ai)
 local text = shikisha.browser_text(br, "body") or ""
 if #text > RALLY.screen_chars then
-  text = text:sub(1, RALLY.screen_chars) .. "…(以下略)"
+  text = text:sub(1, RALLY.screen_chars) .. "... (truncated)"
 end
 shikisha.send_to_tab(ai, table.concat({
-  "実行しました。今の画面テキスト:",
+  "Done. The screen text now:",
   "----",
   text,
   "----",
-  "次の1手を " .. infile .. " に書いてください。目的: " .. RALLY.goal,
+  "Write your next move to " .. infile .. ". Goal: " .. RALLY.goal,
 }, "\n"))

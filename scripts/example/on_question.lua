@@ -1,8 +1,9 @@
--- 確認・選択肢を聞かれたときに実行されます
--- 使える変数: tab, screen (画面テキスト全体)
--- 文字列を返すと自動送信、返さなければ人間の判断待ちになります
+-- Runs when the tab is asked to confirm or choose
+-- Available: tab, screen (the whole screen as text)
+-- Return a string to send it automatically; return nothing to leave it to a person
 
-if screen:match("削除") or screen:match("rm %-rf") then
-  return nil          -- 危険そうな確認は人間に任せる
+-- A CLI may ask in the language it is set to, so both spellings are matched
+if screen:match("[Dd]elete") or screen:match("削除") or screen:match("rm %-rf") then
+  return nil          -- leave dangerous-looking questions to a person
 end
-return "1\r"          -- 選択肢1を選ぶ
+return "1\r"          -- pick option 1

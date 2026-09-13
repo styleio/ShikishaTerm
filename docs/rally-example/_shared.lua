@@ -1,67 +1,70 @@
--- ラリーの設定と審判。このデスク用に書き換える。
--- _shared.lua は同じディレクトリのフックより先に読まれ、名前空間を共有する。
+-- The rally's settings and its judge. Rewrite these for your desk.
+-- _shared.lua is read before the hooks in the same directory, and shares their namespace.
 --
--- 置き場所: このディレクトリを、AIセッションタブの automation に指す。
---   例) config.json のAIタブ:  { "name": "ai", "command": "claude --model opus",
+-- Where it goes: point the AI session tab's automation at this directory.
+--   e.g. the AI tab in config.json:  { "name": "ai", "command": "claude --model opus",
 --         "id": "ai", "automation": "scripts/rally" }
 --
--- ■ 仕組み (画面を読まない・ファイルで受け渡す)
---   AIは毎手番、次の1手のLuaを exchange の in.lua に *書き* 、手番を終える。
---   こちらは in.lua を読んで(バイト正確)、LINT→サンドボックス実行→記録 する。
---   TUIの描画に依存しないので、コードフェンスが消える/指示エコーを誤検知する
---   といった不具合が原理的に起きない。
+-- How it works (the screen is not read; moves are handed over in files)
+--   Each turn, the AI *writes* its next move as Lua into in.lua in the exchange
+--   folder, then ends its turn. This side reads in.lua (byte for byte), then
+--   LINT -> run in the sandbox -> record. Nothing depends on how the TUI draws,
+--   so problems like a vanishing code fence or an echoed instruction being
+--   mistaken for an answer cannot happen in the first place.
 --
--- ■ 審判 (終了はこちらが決める。AIに完了宣言はさせない)
---   RALLY.stops を上から評価し、最初に成立した条件が勝つ(first-match-wins)。
---   決定的条件(css/xpath/screen/console/rounds/time/tokens)を土台にし、
---   曖昧なゴールのときだけ console(AIの発言) を混ぜる。安全網(rounds/time/tokens)は必ず入れる。
+-- The judge (this side decides when it is over; the AI is never asked to declare it done)
+--   RALLY.stops is checked from the top, and the first condition met wins (first-match-wins).
+--   Build on the deterministic conditions (css/xpath/screen/console/rounds/time/tokens),
+--   and mix in console (what the AI says) only for a fuzzy goal. Always keep the
+--   safety net (rounds/time/tokens).
 --
--- 注意: 往復は「自動チェーン」を1回ずつ数える。全体設定 max_chain を
--- rounds上限以上に上げておくこと(既定10だと10往復で止まる)。
+-- Note: each round trip counts as one automatic chain. Raise the global
+-- max_chain to at least the rounds limit (at the default of 10 it stops after 10 rounds).
 
 RALLY = {
-  -- 操作するブラウザタブの id (config.json のブラウザタブの "id")
+  -- The id of the browser tab to drive (the "id" of the browser tab in config.json)
   browser = "br",
 
-  -- 目的。AIにそのまま渡る
-  goal = "（ここに目的を書く。例: 日記SaaSにログインして本文を投稿する）",
+  -- The goal. Passed to the AI as it is
+  goal = "(Write the goal here. e.g. sign in to the diary service and post an entry)",
 
-  -- 1手ごとにAIへ返す画面テキストの最大文字数
+  -- The most characters of screen text sent back to the AI after each move
   screen_chars = 3000,
 
-  -- 停止条件(審判)。上から順に評価し、最初に成立したものが勝つ。
-  --   when="css"/"xpath" … 要素が見える     sel=セレクタ
-  --   when="screen"       … ブラウザ本文に文字列  pattern=... (複数なら別行で並べる)
-  --   when="console"      … AIの発言に文字列     pattern=...
-  --   when="rounds"       … 実行回数            max=N
-  --   when="time"         … 経過秒              sec=N
-  --   when="tokens"       … 概算コスト(やり取り文字数) max=N
-  -- outcome="success"/"fail", code=終了コード, reason=理由
-  -- 同じ指標に、しきい値違いで複数置ける(例: rounds=10で成功, rounds=50で保険失敗)。
+  -- Stop conditions (the judge). Checked from the top; the first one met wins.
+  --   when="css"/"xpath" ... an element is visible          sel=selector
+  --   when="screen"       ... text in the browser page body  pattern=... (one line each for several)
+  --   when="console"      ... text in what the AI said       pattern=...
+  --   when="rounds"       ... moves run                      max=N
+  --   when="time"         ... seconds elapsed                sec=N
+  --   when="tokens"       ... rough cost (characters exchanged) max=N
+  -- outcome="success"/"fail", code=exit code, reason=why
+  -- The same measure can appear more than once with different thresholds
+  -- (e.g. success at rounds=10, a safety-net failure at rounds=50).
   stops = {
-    -- 達成の例(目的に合わせて書く):
-    -- { when="css",    sel="#editor",              outcome="success", code=0, reason="エディタ表示" },
-    -- { when="screen", pattern="投稿しました",       outcome="success", code=0, reason="投稿完了" },
-    -- 失敗の例:
-    -- { when="screen", pattern="エラー",            outcome="fail",    code=1, reason="エラー表示" },
+    -- Examples of success (write them for your goal):
+    -- { when="css",    sel="#editor",              outcome="success", code=0, reason="editor is showing" },
+    -- { when="screen", pattern="Posted",           outcome="success", code=0, reason="post published" },
+    -- Examples of failure:
+    -- { when="screen", pattern="Error",            outcome="fail",    code=1, reason="an error is showing" },
     -- { when="css",    sel=".g-recaptcha",         outcome="fail",    code=3, reason="CAPTCHA" },
 
-    -- 安全網(暴走保険。必ず入れる。危険承知で外すなら自己責任):
-    { when="rounds", max=20,     outcome="fail", code=124, reason="往復上限に到達" },
-    { when="time",   sec=600,    outcome="fail", code=124, reason="時間上限に到達" },
-    { when="tokens", max=300000, outcome="fail", code=125, reason="コスト上限(概算)に到達" },
+    -- The safety net (against a runaway. Always keep it; remove it knowingly and at your own risk):
+    { when="rounds", max=20,     outcome="fail", code=124, reason="reached the round limit" },
+    { when="time",   sec=600,    outcome="fail", code=124, reason="reached the time limit" },
+    { when="tokens", max=300000, outcome="fail", code=125, reason="reached the (estimated) cost limit" },
   },
 }
 
--- 審判本体。停止条件を評価し、成立した条件(テーブル)を返す。無ければ nil。
--- screen_out はこの手番のAIの発言(tab.output)。console 条件で使う。
+-- The judge itself. Checks the stop conditions and returns the one met (a table), or nil.
+-- screen_out is what the AI said this turn (tab.output). Used by console conditions.
 function RALLY_judge(screen_out)
   local br = RALLY.browser
   for _, s in ipairs(RALLY.stops or {}) do
     local hit = false
     if s.when == "css" or s.when == "xpath" then
       local sel = (s.when == "xpath") and { xpath = s.sel } or s.sel
-      -- 要素が無い/ページ未読込でも止めない。見えたときだけ true
+      -- A missing element or a page not yet loaded does not stop it. True only when visible
       local ok, state = pcall(shikisha.browser_find, br, sel)
       hit = ok and state == "visible"
     elseif s.when == "screen" then

@@ -1,30 +1,30 @@
 {
-  "//": "デスク定義ファイル。config.json の desks から file で参照する",
+  "//": "A desk definition file. Referred to from desks in config.json with file",
   "name": "ProjectX",
   "automation": "scripts/projectx",
-  "//folders": "1つの作業フォルダと、そこで働くタブ。フォルダを分けたいときだけ groups を増やす",
+  "//folders": "One working folder, and the tabs that work in it. Add more groups only when you want the folders split",
   "folders": [
     {
-      "//cwd": "AIが見るプロジェクトの場所。省略するとアプリと同じ場所",
+      "//cwd": "Where the project the AI works on lives. Left out, it is the app's own folder",
       "cwd": "D:/work/myproject",
       "tabs": [
         {
-          "name": "A:実装",
+          "name": "A: build",
           "command": "claude",
           "children": [
             {
-              "name": "B:レビュー",
+              "name": "B: review",
               "command": "codex",
               "locked": true,
               "automation": "scripts/projectx/reviewer"
             },
             {
-              "name": "C:デプロイ",
+              "name": "C: deploy",
               "command": "ssh -p 22 -i C:/keys/id_ed25519 -o ServerAliveInterval=60 user@example.com",
               "profile": "claude",
               "locked": true,
               "auto_restart": true,
-              "//端末設定": "encoding は省略時UTF-8、log を true にすると logs/ に会話を保存",
+              "//terminal": "encoding defaults to UTF-8. Set log to true to save the conversation under logs/",
               "scrollback": 10000,
               "log": true
             }
