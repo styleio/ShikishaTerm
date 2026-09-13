@@ -77,6 +77,10 @@ pub fn of(root: &Path) -> Option<Env> {
 
 /// The same, from the text itself.
 pub fn read(text: &str) -> Option<Env> {
+    // Notepad and PowerShell both put a byte-order mark in front when told
+    // "UTF-8", and JSON does not allow one: the file would be read as saying
+    // nothing, with no word about why
+    let text = text.trim_start_matches('\u{feff}');
     let v: serde_json::Value = serde_json::from_str(&plain(text)).ok()?;
     let image = v
         .get("image")
@@ -393,6 +397,14 @@ mod tests {
         assert_eq!(e.env, [("RUST_LOG".to_string(), "debug".to_string())]);
         assert_eq!(e.user.as_deref(), Some("vscode"));
         assert!(e.any());
+    }
+
+    /// A file saved by a Windows editor starts with a byte-order mark. It was
+    /// read as no file at all, so the project's setup quietly never ran.
+    #[test]
+    fn a_file_saved_by_a_windows_editor_is_read() {
+        let e = read("\u{feff}{ \"postCreateCommand\": \"cargo fetch\" }").expect("BOM付きが読めない");
+        assert_eq!(e.setup, ["cargo fetch"]);
     }
 
     /// The spec's order is the order they run in. Out of order is a setup that
