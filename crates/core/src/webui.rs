@@ -1851,7 +1851,13 @@ fn handle(
                     .map_err(Into::into);
             };
             let mut map = serde_json::Map::new();
-            for name in EVENT_FILES {
+            // A script written as one file holds every trigger in it. Read as a
+            // folder it answered "nothing set" for a tab whose script runs
+            if dir.is_file() {
+                let body = std::fs::read_to_string(&dir).unwrap_or_default();
+                map.insert("file".into(), serde_json::Value::String(body));
+            }
+            for name in EVENT_FILES.iter().filter(|_| !dir.is_file()) {
                 let f = dir.join(format!("{name}.lua"));
                 let body = std::fs::read_to_string(&f).unwrap_or_default();
                 map.insert(name.to_string(), serde_json::Value::String(body));
@@ -1878,6 +1884,22 @@ fn handle(
                 return Ok(());
             };
             let parsed: serde_json::Value = serde_json::from_str(&body)?;
+            // One file, written back whole. Never a folder made in its place:
+            // that would fail on the file already there, or, where the file was
+            // missing, leave a folder with a script's name that nothing loads
+            if let Some(code) = parsed.get("file").and_then(|v| v.as_str()) {
+                if dir.is_dir() {
+                    req.respond(Response::from_string("not a file").with_status_code(400))?;
+                    return Ok(());
+                }
+                crate::crypto::write_atomic(&dir, code)?;
+                req.respond(Response::from_string(r#"{"ok":true}"#))?;
+                return Ok(());
+            }
+            if dir.is_file() {
+                req.respond(Response::from_string("not a folder").with_status_code(400))?;
+                return Ok(());
+            }
             std::fs::create_dir_all(&dir)?;
             for name in EVENT_FILES {
                 let Some(code) = parsed.get(name).and_then(|v| v.as_str()) else {
@@ -8851,6 +8873,11 @@ const PAGE_EVENTS = [
 // Having a place to write code that never runs is worse than not having it at all
 const eventsFor = t => kindOf(t.command) === "browser" ? PAGE_EVENTS : TAB_EVENTS;
 let autoTarget = null, autoData = {}, autoEvent = "on_done";
+// A script kept as one file, rather than a file per trigger. The same thing to
+// the engine; to this screen it is one text holding every trigger
+const isOneFile = data => typeof (data && data.file) === "string";
+const definedIn = source =>
+  [...(source || "").matchAll(/^\s*function\s+([A-Za-z_]\w*)\s*\(/gm)].map(m => m[1]);
 
 function autoDirOf(desk, t) {
   if (t.automation) return t.automation;
@@ -8867,8 +8894,9 @@ async function fetchAuto(dir) {
 }
 async function loadAutoStates(desk, t) {
   const data = await fetchAuto(autoDirOf(desk, t));
+  const inFile = isOneFile(data) ? definedIn(data.file) : null;
   const set = eventsFor(t)
-      .filter(([id]) => (data[id] || "").trim().length > 0)
+      .filter(([id]) => inFile ? inFile.includes(id) : (data[id] || "").trim().length > 0)
       .map(([, label]) => label);
   const line = document.getElementById("ev-set");
   if (!line) return;
@@ -8888,12 +8916,21 @@ async function openAuto(desk, t, event) {
   const events = eventsFor(t);
   for (const [id, label] of events) s.append(el("option", {value:id}, label));
   autoData = await fetchAuto(autoTarget.dir);
-  // Use showEvent here (switchEvent would capture the textarea's still-there previous-tab
-  // content as the new tab's data)
-  // Defaults to whichever event is listed first for that tab (on_load for a browser)
-  showEvent(event || events[0][0]);
-  document.getElementById("airow").style.display = aiEngines.length ? "flex" : "none";
-  document.getElementById("ainone").style.display = aiEngines.length ? "none" : "flex";
+  autoTarget.file = isOneFile(autoData);
+  // One file is edited whole: there is no trigger to pick, and what the AI
+  // writes is the body of one trigger, which has nowhere to go in it
+  for (const e of [s, s.previousElementSibling]) e.style.display = autoTarget.file ? "none" : "";
+  if (autoTarget.file) {
+    document.getElementById("autocode").value = autoData.file;
+    document.getElementById("autohint").textContent = T["automation.editor.file"];
+  } else {
+    // Use showEvent here (switchEvent would capture the textarea's still-there previous-tab
+    // content as the new tab's data)
+    // Defaults to whichever event is listed first for that tab (on_load for a browser)
+    showEvent(event || events[0][0]);
+  }
+  document.getElementById("airow").style.display = aiEngines.length && !autoTarget.file ? "flex" : "none";
+  document.getElementById("ainone").style.display = aiEngines.length || autoTarget.file ? "none" : "flex";
   document.getElementById("aipreview").style.display = "none";
   // Don't leave the previous tab's AI request text or generated result behind either
   document.getElementById("autoask").value = "";
@@ -8921,6 +8958,16 @@ function showEvent(id) {
 function closeAuto() { document.getElementById("autobox").style.display = "none"; }
 
 async function saveAuto() {
+  if (autoTarget.file) {
+    const r = await fetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
+        {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+         body: JSON.stringify({file: document.getElementById("autocode").value})});
+    if (!r.ok) return automsg(T["automation.editor.save_failed"], true);
+    closeAuto();
+    loadAutoStates(autoTarget.desk, autoTarget.t);
+    msg(T["automation.editor.saved"]);
+    return;
+  }
   autoData[autoEvent] = document.getElementById("autocode").value;
   const r = await fetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
       {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
