@@ -117,8 +117,8 @@ Finding the spot and saying "here" is why an editor belongs inside a terminal.
 
 ### Monaco
 **No.** Five web workers, several megabytes and a bundler. The board is one
-string and the phone reads the same page. The editor it is usually paired with
-turns every diagnostic off anyway and treats it as a reading surface — so the
+string and the phone reads the same page. What is needed here is a surface to
+read a file and fix a line in, not a language service with diagnostics — so the
 core of a smaller one is enough.
 
 ### A visual Markdown editor
