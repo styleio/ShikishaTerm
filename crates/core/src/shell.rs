@@ -4167,6 +4167,7 @@ window.__state = function (json) {
         }
       }
       if (ED.key !== key || (want && want !== ED.path)) {
+        edStash();
         ED.key = key;
         if (want) {
           ED.path = want; ED.loading = true; ED.said = ""; ED.bad = false;
@@ -4175,6 +4176,7 @@ window.__state = function (json) {
           ED.path = null; ED.text = ""; ED.mark = null; ED.dirty = false;
         }
       } else if (!want && ED.path) {
+        edStash();
         ED.path = null; ED.text = ""; ED.mark = null; ED.dirty = false;
       }
       if (!wasEdit || true) drawEdit();
@@ -4855,6 +4857,17 @@ const ED = {
   loading: false,
 };
 let edUi = null, edAce = null, edAceAsked = false;
+// Unsaved typing, by file, for the files that are not on screen. The editor
+// shows one file at a time, and opening another -- or closing it -- used to
+// read the new one straight over a draft and throw the typing away. Kept here
+// until it is saved or the person reloads the file, and put back when that file
+// is opened again
+const edDrafts = new Map();
+function edStash() {
+  if (!ED.path || !ED.dirty || !edAce) return;
+  edDrafts.set(ED.key + " " + ED.path,
+    {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp});
+}
 
 // Which tab is the editor being looked at, if that is what is being looked at
 function editorTab() {
@@ -4923,19 +4936,30 @@ function editHeard(d) {
     if (!d.ok) { ED.said = d.error || ""; ED.bad = true; drawEdit(); return; }
     ED.path = d.path; ED.mark = d.mark; ED.stamp = d.stamp || null; ED.text = d.text || "";
     ED.dirty = false; ED.outside = false; ED.said = ""; ED.bad = false;
+    // A draft left in this file comes back. It keeps the mark it was typed
+    // against, so a save still cannot land on bytes that changed since; and if
+    // they did change, that is said the same way as for a file open on screen
+    const key = ED.key + " " + d.path;
+    const draft = edDrafts.get(key);
+    edDrafts.delete(key);
+    if (draft) {
+      ED.outside = draft.mark !== d.mark;
+      ED.mark = draft.mark; ED.stamp = draft.stamp; ED.text = draft.base;
+    }
     drawEdit();
     if (edAce) {
       // Setting the text is not the person typing, so it must not look like it
-      edAce.session.doc.setValue(ED.text);
+      edAce.session.doc.setValue(draft ? draft.text : ED.text);
       edAce.session.getUndoManager().reset();
       edAce.clearSelection();
-      ED.dirty = false;
+      ED.dirty = draft ? draft.text !== ED.text : false;
       drawEdit();
     }
     return;
   }
   if (d.act === "write") {
     if (!d.ok) { ED.said = d.error || ""; ED.bad = true; drawEdit(); return; }
+    edDrafts.delete(ED.key + " " + ED.path);
     ED.mark = d.mark; ED.stamp = d.stamp || null;
     ED.text = edAce ? edAce.getValue() : ED.text;
     ED.dirty = false; ED.outside = false;
@@ -4958,6 +4982,8 @@ function editOverwrite() {
 }
 function editReload() {
   if (!ED.path) return;
+  // Reloading is choosing the file over the draft, so no draft comes back
+  edDrafts.delete(ED.key + " " + ED.path);
   ED.loading = true; ED.said = ""; ED.bad = false;
   editAsk("read", {path: ED.path});
 }
@@ -10069,6 +10095,11 @@ mod tests {
             p.contains("if (ED.dirty) {\n          ED.outside = true;"),
             "書きかけのまま読み直してしまう"
         );
+        // Opening another file, or closing this one, puts the draft aside first
+        // and brings it back when that file is opened again
+        let switching = p.find("if (ED.key !== key || (want && want !== ED.path)) {").expect("切り替えが無い");
+        assert!(p[switching..switching + 400].matches("edStash();").count() == 2, "別のファイルを開くと書きかけが消える");
+        assert!(p.contains("const draft = edDrafts.get(key);"), "書きかけが戻ってこない");
         // The save carries the mark it was given, so the app can refuse
         assert!(
             p.contains(r#"editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text, mark: ED.mark});"#),
