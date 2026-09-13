@@ -218,7 +218,7 @@
   "tui.help.mouse.divider": "  divider     Drag to resize the tab bar",
   "tui.help.close": "Press any key to close",
   "tui.coach.folder": "Add the folder your AIs will work in.",
-  "tui.coach.plus": "Start an AI here. The same + also cuts another branch of this project.",
+  "tui.coach.plus": "Start an AI here.",
   "tui.coach.close": "Close",
   "tui.thanks.title": "How is it going?",
   "tui.thanks.body.github": "If it is working well for you, a star on GitHub would help a lot!",
