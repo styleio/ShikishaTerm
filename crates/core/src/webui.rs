@@ -2579,7 +2579,7 @@ fn handle(
 /// same app: the settings screen, the transcript view and the manual are not
 /// three products with three looks, and a message means the same thing and
 /// behaves the same way on each of them (src/toast.rs).
-fn themed(html: String) -> String {
+pub(crate) fn themed(html: String) -> String {
     let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
     let scheme = look.scheme();
     crate::push::inject(crate::toast::render(html))

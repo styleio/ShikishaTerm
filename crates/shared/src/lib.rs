@@ -321,6 +321,13 @@ pub enum Ev {
     /// The `?` beside the gear: the manual on the site, in the PC's browser.
     /// Window-only -- a phone reaches the same page through a plain link
     Help,
+    /// A tool from the left bar's scissors: wait `delay` seconds, take the
+    /// screen the pointer is on, and open `tool` over the picture.
+    ///
+    /// Window-only. A phone has no screen this program can take -- its page
+    /// opens the same tool on a picture the person chooses, and asks this
+    /// machine for nothing
+    Snip { tool: String, delay: u8 },
     /// A Lua quick-action fired from the bar. `index` is its position in
     /// config.actions; the code is looked up and run server-side (the page never
     /// holds Lua source). Allowed from afar — it runs the user's own action.
@@ -848,6 +855,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("thanks") => Ev::Thanks { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
         Some("update") => Ev::Update { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
         Some("help") => Ev::Help,
+        Some("snip") => Ev::Snip {
+            tool: v.get("tool").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            // A wait longer than this is not a wait anybody chose
+            delay: v.get("delay").and_then(|x| x.as_u64()).unwrap_or(0).min(10) as u8,
+        },
         Some("limit_ack") => Ev::LimitAck {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },

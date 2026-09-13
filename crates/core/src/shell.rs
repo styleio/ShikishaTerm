@@ -212,6 +212,18 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     width:22px; height:22px; border:1px solid var(--line); border-radius:50%;
     display:inline-flex; align-items:center; justify-content:center; }
   .tab.gearrow .help:hover { color:var(--text); border-color:var(--text); }
+  .tab.gearrow .snipbtn { font-size:16px; line-height:1; opacity:.8; }
+  .tab.gearrow .snipbtn:hover { opacity:1; }
+  /* The tools menu: how long to wait, then which tool */
+  .fmenu div.snipwait { display:flex; align-items:center; gap:var(--s1); cursor:default; flex-wrap:wrap; }
+  .fmenu div.snipwait:hover { background:transparent; }
+  .fmenu div.snipwait .lbl { color:var(--dim); font-size:11.5px; margin-right:var(--s1); }
+  .fmenu .chip { font:inherit; font-size:12px; height:24px; min-width:34px; padding:0 var(--s2);
+    border-radius:var(--r-chip); border:1px solid var(--line); background:transparent; color:var(--text);
+    cursor:pointer; }
+  .fmenu .chip.on { background:var(--brand); border-color:var(--brand); color:var(--bg); font-weight:600; }
+  /* A tool opened on a phone: over the whole board, which stays connected underneath */
+  #sniplayer { position:fixed; inset:0; z-index:90; width:100%; height:100%; border:0; background:var(--bg); }
   /* The first-run pointer: a bubble beside the one thing to press next,
      with a corner pointing at it. Nothing about it moves on its own */
   #coach { position:fixed; z-index:55; max-width:260px; background:var(--panel); color:var(--text);
@@ -2487,9 +2499,75 @@ function drawTabs() {
       ? el("a", {class:"help", href:manual, target:"_blank", rel:"noopener",
           title:T["tui.help.site"] || "Manual", onclick:e => e.stopPropagation()}, "?")
       : el("span", {class:"help", title:T["tui.help.site"] || "Manual",
-          onclick:e => { e.stopPropagation(); send({kind:"help"}); }}, "?")));
+          onclick:e => { e.stopPropagation(); send({kind:"help"}); }}, "?"),
+    // The tools that start from a picture (snip.rs). Here, beside settings
+    // and help, because they are the app's own tools rather than something
+    // said to an AI: what they give back goes to the clipboard or a file
+    el("span", {class:"snipbtn", title:T["tui.snip.title"] || "Tools",
+        onclick:e => { e.stopPropagation(); openSnipMenu(e); }}, "✂️")));
   drawCoach();
 }
+
+// ── The tools that start from a picture ──────────────────
+// What the app can run and how long it can wait, handed in by the app
+// (snip.rs) so the menu never offers a tool the tool page cannot open
+const SNIP_TOOLS = {{SNIP_TOOLS}};
+const SNIP_WAITS = {{SNIP_WAITS}};
+// The wait last chosen. This screen's own preference, kept by the browser: a
+// person who waits three seconds every time should not have to say so every time
+function snipWait() {
+  try {
+    const v = Number(localStorage.getItem("shikisha.snipWait"));
+    return SNIP_WAITS.includes(v) ? v : SNIP_WAITS[0];
+  } catch (e) { return SNIP_WAITS[0]; }
+}
+function setSnipWait(v) {
+  try { localStorage.setItem("shikisha.snipWait", String(v)); } catch (e) {}
+}
+function openSnipMenu(e) {
+  const anchor = e.currentTarget;
+  const draw = () => {
+    const rows = [];
+    // First, how long to wait. The program is in front when this is pressed,
+    // and waiting is how whatever is behind it gets into the picture. A phone
+    // takes no picture of its own screen, so it has nothing to wait for
+    if (!REMOTE) {
+      const wait = el("div", {class:"snipwait"},
+        el("span", {class:"lbl"}, T["tui.snip.wait"] || ""));
+      for (const w of SNIP_WAITS) {
+        wait.append(el("button", {class:"chip" + (w === snipWait() ? " on" : ""),
+          onclick:ev => { ev.stopPropagation(); setSnipWait(w); draw(); }},
+          w === 0 ? (T["tui.snip.now"] || "Now") : (T["tui.snip.seconds"] || "{n}s").replace("{n}", w)));
+      }
+      rows.push(wait);
+    }
+    for (const t of SNIP_TOOLS) {
+      rows.push(el("div", {onclick:() => { closeFolderMenu(); runSnip(t); }},
+        T["snip.tool." + t] || t));
+    }
+    openList(anchor, rows);
+  };
+  draw();
+}
+function runSnip(tool) {
+  if (!REMOTE) {
+    send({kind:"snip", tool, delay:snipWait()});
+    return;
+  }
+  // A phone: the same tool page, over a picture chosen on the phone, laid over
+  // the board so the board's connection does not have to be made again after
+  const old = document.getElementById("sniplayer");
+  if (old) old.remove();
+  const f = document.createElement("iframe");
+  f.id = "sniplayer";
+  f.src = "/snip?src=pick&tool=" + encodeURIComponent(tool);
+  document.body.append(f);
+}
+window.addEventListener("message", e => {
+  const f = document.getElementById("sniplayer");
+  // Only the layer this board opened may close it
+  if (f && e.source === f.contentWindow && e.data && e.data.snip === "close") f.remove();
+});
 
 // ── The first-run pointer ────────────────────
 // A bubble beside the one thing to press next: "add a folder" while there is
@@ -9926,6 +10004,14 @@ fn built(sticky: bool, by: Served) -> String {
     .replace("{{TAB_W_MIN}}", &crate::config::TAB_BAR_MIN_PX.to_string())
     .replace("{{TAB_W_MAX}}", &crate::config::TAB_BAR_MAX_PX.to_string())
     .replace("{{TAB_W_DEF}}", &crate::config::TAB_BAR_DEFAULT_PX.to_string())
+    .replace(
+        "{{SNIP_TOOLS}}",
+        &serde_json::to_string(crate::snip::TOOLS).unwrap_or_else(|_| "[]".into()),
+    )
+    .replace(
+        "{{SNIP_WAITS}}",
+        &serde_json::to_string(crate::snip::WAITS).unwrap_or_else(|_| "[0]".into()),
+    )
     .replace("{{THEME}}", &scheme.css_vars())
     .replace(
         "{{SCHEME}}",
