@@ -17,6 +17,19 @@ document.addEventListener("click", function (ev) {
   // not open. Sending it back to where it already is would strand people.
   if (location.pathname.replace(/\/?$/, "/") === thanks) return;
 
+  // Not every Store link opens a tab of its own: the one in the steps, and
+  // the "next page" link the sidebar makes, open in this one. Moving this
+  // window to the thanks page then cancelled the Store before it loaded, and
+  // the visitor was thanked for a Store that never opened. Such a link is
+  // opened in a tab here instead; if the browser will not allow one, the link
+  // is left to go where it says.
+  if (link.target !== "_blank") {
+    var store = window.open(link.href, "_blank");
+    if (!store) return;
+    try { store.opener = null; } catch (e) {}
+    ev.preventDefault();
+  }
+
   setTimeout(function () {
     location.href = thanks;
   }, 0);
