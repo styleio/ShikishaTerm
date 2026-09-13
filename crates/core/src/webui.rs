@@ -2700,6 +2700,15 @@ const PAGE: &str = r##"<!doctype html>
  .deskbanner.sel { background:var(--panel2); }
  .deskbanner .nm { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
  /* Leaving the program's settings: the way back sits where one is looked for */
+ /* The way into a settings place (the program's, or this desk's). A plain
+    button (§5: --edge rim on --panel2), so it reads as pressable against the
+    tree of rows around it without competing with the page's one main button */
+ .navitem.placebtn { display:flex; align-items:center; gap:var(--s2); min-height:32px;
+   margin:var(--s1) 0 var(--s2); padding:6px 10px; border:1px solid var(--edge);
+   background:var(--panel2); color:var(--text); font-size:12.5px; }
+ .navitem.placebtn:hover { background:var(--panel2); border-color:var(--edge-hi); }
+ .navitem.placebtn .body { flex:1; min-width:0; }
+ .navitem.placebtn .go { flex:none; color:var(--dim); }
  .navback { display:flex; align-items:center; gap:var(--s2); color:var(--dim); }
  .navback .go { flex:none; font-size:16px; line-height:1; }
  .navhead { margin:var(--s3) var(--s3) var(--s2); color:var(--text); font-size:14px; font-weight:600; }
@@ -2711,11 +2720,7 @@ const PAGE: &str = r##"<!doctype html>
  .wsbadge { flex:none; width:22px; height:22px; border-radius:var(--r-chip);
    background:var(--raise); color:var(--dim); font-size:11px; font-weight:600;
    display:flex; align-items:center; justify-content:center; }
- /* The program's own settings, and the way into them */
- .approw { display:flex; align-items:center; gap:var(--s2); color:var(--dim);
-   margin-bottom:var(--s2); }
- .approw.sel { color:var(--text); }
- .approw .go { flex:none; color:var(--muted); }
+ /* An entry inside a settings place, a step in from its heading */
  .appitem { padding-left:var(--s4); }
  /* Choosing another desk. Floats, so the list under it does not move */
  .fmenu { position:fixed; z-index:60; min-width:220px; max-width:280px;
@@ -3319,6 +3324,23 @@ const isObj = v => !!v && typeof v === "object" && !Array.isArray(v);
 let current = {};        // Contents of config.json (holds the base settings)
 let desks = [];            // Desks and tabs
 let sel = {desk:0, tab:null, global:true, section:"basic"};
+// Whether a desk's own settings are what is open. They are what a desk
+// with neither a folder nor a tab picked shows
+const inDeskPlace = () => !sel.global && sel.tab == null && (sel.grp ?? null) === null;
+// Leave a settings place for the tree of a desk: its first folder, the thing
+// the tree is for. A desk with no folder has nothing else to show but its
+// settings, and stays there
+function toTree(di) {
+  const d = desks[di];
+  sel = {desk:di, grp:(d && (d.folders || []).length) ? 0 : null, tab:null, global:false};
+}
+// One of a desk's settings on screen, by id
+function goDeskSection(id, block) {
+  sel = {desk:sel.desk, grp:null, tab:null, global:false, dsection:id};
+  render();
+  const cur = document.querySelector(".navitem.sel");
+  if (cur) cur.scrollIntoView({block: block || "nearest"});
+}
 // Put one global card on screen, by id, with its entry in the list in view.
 function goSection(id, block) {
   sel = {desk:sel.desk, tab:null, global:true, section:id};
@@ -4065,7 +4087,7 @@ function pickDesk(anchor) {
   const menu = el("div", {class:"fmenu"});
   desks.forEach((w, i) => {
     menu.append(el("button", {class:"fmenuitem" + (i === sel.desk ? " on" : ""),
-      onclick:() => { shut(); sel = {desk:i, grp:null, tab:null, global:false}; render(); }},
+      onclick:() => { shut(); sel = {desk:i, grp:null, tab:null, global:false, dsection:"basic"}; render(); }},
       el("span", {class:"wsbadge"}, (w.name || "?").trim().slice(0, 1).toUpperCase()),
       el("span", {class:"nm"}, w.name || T["settings.tab.unnamed"])));
   });
@@ -4095,43 +4117,53 @@ function renderNav() {
   // they are open nothing of any desk is on the list, and the way back is at
   // the top where a person looks for one. The two used to share one column,
   // and nothing said which of them a card below was about
-  if (sel.global) {
-    nav.append(el("button", {class:"navitem navback",
-        onclick:() => { sel = {desk:sel.desk, grp:null, tab:null, global:false}; render(); }},
+  // Both settings places -- the program's and one desk's -- are entered the
+  // same way and left the same way: a button with a › to go in, a ‹ at the
+  // top to come back. One pattern to learn, and a column that stays short
+  const place = (head, sections, current, go) => {
+    nav.append(el("button", {class:"navitem navback", onclick:() => { toTree(sel.desk); render(); }},
       el("span", {class:"go"}, "‹"),
       el("div", {class:"body"}, T["tui.nav.back"])));
-    nav.append(el("div", {class:"navhead"}, T["settings.global"]));
-    globalSections().forEach(s => {
-      const b = el("button", {class:"navitem appitem" + (sel.section === s.id ? " sel" : ""),
-        onclick:() => goSection(s.id)});
+    nav.append(el("div", {class:"navhead"}, head));
+    sections.forEach(s => {
+      const b = el("button", {class:"navitem appitem" + (current === s.id ? " sel" : ""),
+        onclick:() => go(s.id)});
       b.append(el("div", {class:"body"}, el("span", {}, s.label),
         s.sub ? el("span", {class:"sub"}, s.sub) : null));
       nav.append(b);
     });
+  };
+  if (sel.global) {
+    place(T["settings.global"], globalSections(), sel.section, goSection);
     return;
   }
-  nav.append(el("button", {class:"navitem approw",
-    onclick:() => { sel = {desk:sel.desk, tab:null, global:true,
-                           section: sel.section || globalSections()[0].id}; render(); }},
-    el("div", {class:"body"}, T["settings.global"]),
-    el("span", {class:"go"}, "›")));
-  // The desk, as one control: pressing it lists the desks, and choosing one
-  // opens that desk's page. In here, going to a desk and reading its settings
-  // are the same act -- there is nothing else to switch to one for -- so the
-  // row carries one meaning, not a name to press and a caret beside it that
-  // did something else
   const desk = desks[sel.desk] || desks[0];
+  if (desk && inDeskPlace()) {
+    place(fill(T["settings.dsec.head"], {name: desk.name || T["settings.tab.unnamed"]}),
+      deskSections(desk), sel.dsection, goDeskSection);
+    return;
+  }
+  const enter = (label, onclick) => nav.append(el("button", {class:"navitem placebtn", onclick},
+    el("div", {class:"body"}, label),
+    el("span", {class:"go"}, "›")));
+  enter(T["settings.global"], () => {
+    sel = {desk:sel.desk, tab:null, global:true, section: sel.section || globalSections()[0].id};
+    render();
+  });
+  // The desk: pressing it lists the desks, and choosing one switches the tree
+  // below to that desk and opens its settings. Its settings themselves are the
+  // button under it
   if (desk) {
     const badge = el("span", {class:"wsbadge"},
       (desk.name || "?").trim().slice(0, 1).toUpperCase());
-    nav.append(el("button", {class:"deskbanner" + (sel.tab == null
-        && (sel.grp ?? null) === null ? " sel" : ""),
+    nav.append(el("button", {class:"deskbanner",
         title:T["settings.desk.switch"],
         onclick: e => pickDesk(e.currentTarget)},
       badge,
       el("span", {class:"nm"}, desk.name || T["settings.tab.unnamed"]),
       el("span", {class:"wsgap"}),
       el("span", {class:"wspick"}, "▾")));
+    enter(T["settings.dsec.enter"], () => { goDeskSection(sel.dsection || "basic"); });
   }
 
   [desks[sel.desk]].forEach((desk) => {
@@ -4716,7 +4748,10 @@ function crumbParts() {
   const name = desk.name || T["settings.tab.unnamed"];
   const g = (desk.folders || [])[sel.grp];
   if (sel.tab === null) {
-    if (!g) return ["", name];
+    if (!g) {
+      const s = deskSections(desk).find(x => x.id === sel.dsection);
+      return [name, s ? s.label : T["settings.dsec.enter"]];
+    }
     return [name, folderLabel(g, sel.grp)];
   }
   const t = (desk.tabs || [])[sel.tab];
@@ -4836,7 +4871,12 @@ function renderDetail() {
   const desk = desks[sel.desk];
   if (!desk) return;
   if (sel.tab === null) {
-    if (sel.grp === null || sel.grp === undefined) return d.append(deskPane(desk));
+    if (sel.grp === null || sel.grp === undefined) {
+      const secs = deskSections(desk);
+      const sec = secs.find(s => s.id === sel.dsection) || secs[0];
+      sel.dsection = sec.id;
+      return d.append(sec.build(desk));
+    }
     const g = (desk.folders || [])[sel.grp];
     if (!g) { sel.grp = null; return renderDetail(); }
     return d.append(folderPane(desk, g, sel.grp));
@@ -5166,10 +5206,11 @@ function globalSections() {
   ];
 }
 
-// Cards that belong to a desk's page. A link to one of these (the git panel's
-// gear asks for "git") lands on the desk in view, at that card, since there is
-// no app-wide copy of any of them to land on
-const DESK_CARDS = ["git", "protect", "github", "notify-desk", "providers", "permissions", "caps"];
+// Links that name one of a desk's settings (the git panel's gear asks for
+// "git"): the desk in view, at that entry, since there is no copy of the
+// program's to land on. Older names for the same places are kept here
+const DESK_LINKS = {git:"git", protect:"git", github:"github", providers:"providers",
+                    permissions:"permissions", caps:"caps"};
 
 // ── Update ─────────────────────────────────────────────────────
 // The one place a newer version is fetched, checked and put in place. The
@@ -7004,7 +7045,38 @@ function aiSelect() {
   return s;
 }
 
-function deskPane(desk) {
+// A desk's settings, one card to an entry in the list -- the same shape the
+// program's own settings have. `id` is also the deep-link handle
+function deskSections(desk) {
+  const s = (id, build) => ({id, label:T["settings.dsec." + id], sub:T["settings.dsec." + id + ".sub"], build});
+  const list = [
+    s("basic", deskBasic),
+    s("notify", notifyCard),
+    s("providers", providersCard),
+    s("permissions", permissionsCard),
+    s("git", gitCard),
+    s("github", deskGithubCard),
+    s("secrets", deskSecretsCard),
+    s("discuss", deskDiscussCard),
+    s("stops", deskStopsCard),
+  ];
+  // Written by hand in the file, so listed only where there is something written
+  if (deskCapsCard(desk)) list.splice(4, 0, s("caps", deskCapsCard));
+  // It ends in a file dialog, which a phone has no way to open
+  if (!REMOTE) list.push(s("share", deskShareCard));
+  return list;
+}
+
+function deskShareCard() {
+  // Writing it out is about this desk. Reading one in makes a different
+  // one, so it is asked for where another desk is asked for
+  return card(T["settings.desk.share"],
+    el("div", {class:"row"},
+      el("button", {onclick:() => exportWs(sel.desk)}, T["settings.desk.export"])),
+    el("div", {class:"hint"}, T["settings.desk.share.hint"]));
+}
+
+function deskBasic(desk) {
   const box = el("div");
   // Name and id are identity, and sit together. The id is what automation and
   // the secret store use, so it survives renaming what is on screen -- and a
@@ -7036,30 +7108,6 @@ function deskPane(desk) {
     e.append(bar);
     box.append(e);
   }
-  box.append(deskDiscussCard(desk));
-  box.append(deskStopsCard(desk));
-  // Everything below is this desk's alone, with no answer of the app's
-  // underneath: what it notifies, which AI accounts it uses, what its
-  // automation may do and reach, what git does, and its secrets
-  box.append(notifyCard(desk));
-  box.append(providersCard(desk));
-  box.append(permissionsCard(desk));
-  // Nothing to be sure about means no card at all, and append() would write
-  // the word "null" onto the page if handed one
-  const gates = deskCapsCard(desk);
-  if (gates) box.append(gates);
-  box.append(gitCard(desk));
-  box.append(deskGithubCard(desk));
-  box.append(deskSecretsCard(desk));
-
-  // Writing it out is about this desk. Reading one in makes a different
-  // one, so it is asked for where another desk is asked for -- not on the
-  // page of the desk it would have nothing to do with. It ends in a file
-  // dialog either way, which a phone has no way to open
-  if (!REMOTE) box.append(card(T["settings.desk.share"],
-    el("div", {class:"row"},
-      el("button", {onclick:() => exportWs(sel.desk)}, T["settings.desk.export"])),
-    el("div", {class:"hint"}, T["settings.desk.share.hint"])));
 
   box.append(el("div", {class:"row"},
     el("button", {class:"danger", onclick: async () => {
@@ -9384,13 +9432,11 @@ load().then(() => {
     goSection(sec, "center");
     return;
   }
-  // A card that lives on a desk's page: that desk, at that card
-  if (sec && DESK_CARDS.includes(sec)) {
+  // One of a desk's settings: that desk, at that entry
+  if (sec && DESK_LINKS[sec]) {
     const at = idx("desk");
     sel = {desk:(desks[at] ? at : sel.desk), grp:null, tab:null, global:false};
-    render();
-    const c = document.getElementById("desk-" + sec);
-    if (c) c.scrollIntoView({block:"start"});
+    goDeskSection(DESK_LINKS[sec], "center");
     return;
   }
   const wi = idx("addtab");
