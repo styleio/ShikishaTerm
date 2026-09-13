@@ -267,11 +267,12 @@ pub struct Config {
     /// and is held to the table and the doors of the desk on screen (see
     /// [`DeskSpec::automation_permissions`]).
     ///
-    /// The one thing a desk might still want to say is "do not show me on
-    /// a phone at all". That is a new curtain rather than a setting split in
-    /// two, so it is not here: it needs a screen of its own on the phone, and
-    /// one that said "disconnected" when the truth is "this one is not shown
-    /// here" would be worse than not having it at all
+    /// "Do not show this desk on a phone at all" was asked and answered: no.
+    /// The person at the keyboard and the person holding the phone are the same
+    /// person, so there is nothing for a curtain to keep from anybody -- and it
+    /// would cost a screen of its own, since one saying "disconnected" when the
+    /// truth is "this one is not shown here" is worse than not having it. The
+    /// phone is this person's second window, never a guest's
     #[serde(default)]
     pub remote: RemoteSpec,
     /// Who may drive this app from outside, over its named pipe. The default
