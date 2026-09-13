@@ -195,7 +195,7 @@ pub struct Capabilities {
     /// Without remembering this, there's no way to know where to fix the position
     /// or where to close. Otherwise pages stayed put wherever they were opened and
     /// didn't follow when the window moved
-    /// Pages placed in the window (owning workspace, display name).
+    /// Pages placed in the window (owning desk, display name).
     /// A Vec so the placement order is preserved
     hosted: std::cell::RefCell<Vec<(usize, String)>>,
     /// How each placed page was opened (its URL and where its data is stored),
@@ -205,8 +205,8 @@ pub struct Capabilities {
     /// to be reconstructed — and only whoever opened it knows what that was. Kept
     /// past the close so an open can be undone and redone (see `browser_spec`)
     opened: std::cell::RefCell<HashMap<String, (String, shikisha_shared::BrowserProfile)>>,
-    /// The workspace currently being viewed. Names are only meaningful within it
-    ws: std::cell::Cell<usize>,
+    /// The desk currently being viewed. Names are only meaningful within it
+    desk: std::cell::Cell<usize>,
     /// Which pages are currently shown, and where. Skipped if unchanged.
     /// More than one at a time once the content area is split into panes
     shown: std::cell::RefCell<Vec<PageAt>>,
@@ -222,10 +222,10 @@ pub struct Capabilities {
     /// the settings screen. Only pages config opened are allowed to be closed when
     /// they disappear from config
     declared: std::cell::RefCell<std::collections::HashSet<String>>,
-    /// The name the workspace on screen is filed under. A script asking for
-    /// `token` means this workspace's `token` and can mean nothing else, so
+    /// The name the desk on screen is filed under. A script asking for
+    /// `token` means this desk's `token` and can mean nothing else, so
     /// there is no list of what it may borrow -- it has only its own
-    ws_id: std::cell::RefCell<String>,
+    desk_id: std::cell::RefCell<String>,
     /// What each secret is for, by its full name. Says whether an AI's turn
     /// may use it and which sites it may be typed into; the values themselves
     /// live in `tokens` and are never handed out. Read from the same file at
@@ -273,11 +273,11 @@ impl Capabilities {
             area: std::cell::Cell::new((0, 0, 0, 0)),
             hosted: std::cell::RefCell::new(Vec::new()),
             opened: std::cell::RefCell::new(HashMap::new()),
-            ws: std::cell::Cell::new(0),
+            desk: std::cell::Cell::new(0),
             shown: std::cell::RefCell::new(Vec::new()),
             nav: std::cell::RefCell::new(HashMap::new()),
             declared: std::cell::RefCell::new(std::collections::HashSet::new()),
-            ws_id: std::cell::RefCell::new(String::new()),
+            desk_id: std::cell::RefCell::new(String::new()),
             secret_terms: std::cell::RefCell::new(HashMap::new()),
             open_result: std::cell::RefCell::new(None),
             replay: std::cell::RefCell::new(Vec::new()),
@@ -321,8 +321,8 @@ impl Capabilities {
     /// Swap out the secrets, which belong to the whole app.
     ///
     /// The doors and the permission table used to come through here too, and
-    /// that was a trap: they are the workspace's, and a reload that set the
-    /// app's answers after the workspace's had been handed over put the app's
+    /// that was a trap: they are the desk's, and a reload that set the
+    /// app's answers after the desk's had been handed over put the app's
     /// back without a word. They now arrive only through [`Self::set_capabilities`]
     /// and [`Self::set_grants`], so there is nowhere left for the two to race.
     ///
@@ -339,12 +339,12 @@ impl Capabilities {
         *self.secret_terms.borrow_mut() = terms;
     }
 
-    /// The doors the workspace on screen has.
+    /// The doors the desk on screen has.
     ///
     /// Swapped on a switch, not only on a reload: a gateway carries a token
     /// already attached and `allow_dirs` names folders a script may read, so
-    /// which doors exist at all is this workspace's answer rather than the
-    /// app's. Already settled (see [`crate::config::Workspace::capabilities`])
+    /// which doors exist at all is this desk's answer rather than the
+    /// app's. Already settled (see [`crate::config::Desk::capabilities`])
     pub fn set_capabilities(&self, spec: CapabilitySpec) {
         let wants_http = !spec.http.is_empty() || !spec.allow_hosts.is_empty();
         *self.spec.borrow_mut() = spec;
@@ -353,10 +353,10 @@ impl Capabilities {
         }
     }
 
-    /// Who may call what, in the workspace on screen.
+    /// Who may call what, in the desk on screen.
     ///
     /// Swapped on a switch for the same reason as the doors: an AI allowed to
-    /// write files in a workspace somebody keeps their own notes in is not
+    /// write files in a desk somebody keeps their own notes in is not
     /// therefore allowed to in the one with the company's repository in it
     pub fn set_grants(&self, spec: crate::grants::GrantSpec) {
         *self.grants.borrow_mut() = crate::grants::Grants::new(spec);
@@ -517,10 +517,10 @@ impl Capabilities {
         out
     }
 
-    /// Say which workspace is on screen. Called at start and on every switch,
+    /// Say which desk is on screen. Called at start and on every switch,
     /// because a script asking for `token` means a different secret in each
-    pub fn set_workspace_id(&self, ws_id: &str) {
-        *self.ws_id.borrow_mut() = ws_id.to_string();
+    pub fn set_desk_id(&self, desk_id: &str) {
+        *self.desk_id.borrow_mut() = desk_id.to_string();
     }
 
     /// Retrieve a secret's raw value (Rust-internal only. Never returned to Lua).
@@ -528,7 +528,7 @@ impl Capabilities {
     /// This is the program's own door: the SSH tab reaching for its password,
     /// the HTTP gateway attaching the token config told it to. A script never
     /// arrives here -- it comes through [`Self::script_secret`], which can
-    /// only ask for its own workspace's, and only what it is allowed
+    /// only ask for its own desk's, and only what it is allowed
     pub fn secret_value(&self, key: &str) -> Result<String> {
         self.tokens.borrow().get(key).cloned().ok_or_else(|| {
             anyhow::anyhow!(crate::i18n::tp(
@@ -541,7 +541,7 @@ impl Capabilities {
     /// The secret a script means when it writes `token`, with what it is for.
     ///
     /// A script names one word. What it gets is that word inside its own
-    /// workspace and nothing else: no other workspace's, and none of the names
+    /// desk and nothing else: no other desk's, and none of the names
     /// the program keeps for itself (an ssh password, a provider's key), which
     /// carry punctuation a script is not allowed to type. An AI's turn is held
     /// to the secrets that say so.
@@ -556,8 +556,8 @@ impl Capabilities {
         if !crate::config::valid_secret_name(name) {
             bail!(crate::i18n::tp("err.caps.secret_bad_name", &[("key", name)]));
         }
-        let ws = self.ws_id.borrow().clone();
-        let key = crate::config::workspace_secret_key(&ws, name);
+        let desk = self.desk_id.borrow().clone();
+        let key = crate::config::desk_secret_key(&desk, name);
         let terms = self.secret_terms.borrow().get(&key).cloned().ok_or_else(|| {
             anyhow::anyhow!(refused(crate::i18n::tp(
                 "err.caps.secret_unregistered",
@@ -608,15 +608,15 @@ impl Capabilities {
             .as_ref()
             .map(std::rc::Rc::clone)
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.caps.no_host_window")))?;
-        let ws = self.ws.get();
+        let desk = self.desk.get();
         self.opened.borrow_mut().insert(
-            Self::key(ws, name),
+            Self::key(desk, name),
             (url.to_string(), profile.clone()),
         );
-        host.open_child(&Self::key(ws, name), url, self.area.get(), profile)?;
+        host.open_child(&Self::key(desk, name), url, self.area.get(), profile)?;
         let mut hosted = self.hosted.borrow_mut();
-        if !hosted.iter().any(|(w, x)| *w == ws && x == name) {
-            hosted.push((ws, name.to_string()));
+        if !hosted.iter().any(|(w, x)| *w == desk && x == name) {
+            hosted.push((desk, name.to_string()));
         }
         // Newly placed items get their position decided on the next redraw
         self.shown.borrow_mut().clear();
@@ -638,30 +638,30 @@ impl Capabilities {
     /// page shares one cookie jar and the per-profile folders sit empty. Until that
     /// is untangled, reopening gets a fresh page, not a fresh identity.
     pub fn browser_spec(&self, name: &str) -> Option<(String, shikisha_shared::BrowserProfile)> {
-        self.opened.borrow().get(&Self::key(self.ws.get(), name)).cloned()
+        self.opened.borrow().get(&Self::key(self.desk.get(), name)).cloned()
     }
 
     /// Names of pages placed inside the window (in placement order).
     /// Becomes the tab ordering as-is
     pub fn hosted_names(&self) -> Vec<String> {
-        let ws = self.ws.get();
+        let desk = self.desk.get();
         self.hosted
             .borrow()
             .iter()
-            .filter(|(w, _)| *w == ws)
+            .filter(|(w, _)| *w == desk)
             .map(|(_, n)| n.clone())
             .collect()
     }
 
-    /// Tell it which workspace is currently being viewed. Called on every switch
-    pub fn set_workspace(&self, ws: usize) {
-        self.ws.set(ws);
+    /// Tell it which desk is currently being viewed. Called on every switch
+    pub fn set_desk(&self, desk: usize) {
+        self.desk.set(desk);
     }
 
     /// The actual name used when placing something in the window.
-    /// A different workspace means a different page even under the same display name
-    fn key(ws: usize, name: &str) -> String {
-        format!("{ws}/{name}")
+    /// A different desk means a different page even under the same display name
+    fn key(desk: usize, name: &str) -> String {
+        format!("{desk}/{name}")
     }
 
     /// Tell it the content area. Called every time the window is resized
@@ -684,10 +684,10 @@ impl Capabilities {
         let Some(h) = self.host.borrow().as_ref().map(std::rc::Rc::clone) else {
             return;
         };
-        let ws = self.ws.get();
+        let desk = self.desk.get();
         for (w, held) in self.hosted.borrow().iter() {
-            // Pages from other workspaces are kept alive but collapsed
-            let r = if *w == ws {
+            // Pages from other desks are kept alive but collapsed
+            let r = if *w == desk {
                 want
                     .iter()
                     .find(|(n, _)| n == held)
@@ -715,8 +715,8 @@ impl Capabilities {
         name: &str,
         f: impl FnOnce(&dyn shikisha_shared::BrowserHost, Option<&str>) -> Result<T>,
     ) -> Result<T> {
-        let ws = self.ws.get();
-        if !self.hosted.borrow().iter().any(|(w, x)| *w == ws && x == name) {
+        let desk = self.desk.get();
+        if !self.hosted.borrow().iter().any(|(w, x)| *w == desk && x == name) {
             return Err(anyhow::anyhow!(crate::i18n::tp(
                 "err.caps.browser_not_open",
                 &[("name", name)]
@@ -728,24 +728,24 @@ impl Capabilities {
             .as_ref()
             .map(std::rc::Rc::clone)
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.caps.no_host_window")))?;
-        f(host.as_ref(), Some(&Self::key(ws, name)))
+        f(host.as_ref(), Some(&Self::key(desk, name)))
     }
 
     /// Record that the bar's button was pressed for a page. The board (or the
     /// phone) reports it to the main loop, which hands it here by the page's
-    /// display name; the bar is only ever drawn for the workspace in view
+    /// display name; the bar is only ever drawn for the desk in view
     pub fn note_press(&self, name: &str) {
         self.pressed
             .borrow_mut()
-            .insert(Self::key(self.ws.get(), name), true);
+            .insert(Self::key(self.desk.get(), name), true);
     }
 
     /// Turn an in-window name back into the human-facing display name.
     ///
-    /// None if it doesn't belong to the workspace currently being viewed.
-    /// An event from a page in another workspace must not be allowed to trigger this hook
+    /// None if it doesn't belong to the desk currently being viewed.
+    /// An event from a page in another desk must not be allowed to trigger this hook
     pub fn name_of_child(&self, child: &str) -> Option<String> {
-        let head = format!("{}/", self.ws.get());
+        let head = format!("{}/", self.desk.get());
         child.strip_prefix(&head).map(str::to_string)
     }
 
@@ -853,7 +853,7 @@ impl Capabilities {
         self.with(name, |_, _| Ok(()))?;
         self.forget_press(name);
         self.asks.borrow_mut().insert(
-            Self::key(self.ws.get(), name),
+            Self::key(self.desk.get(), name),
             (text.to_string(), label.to_string()),
         );
         Ok(())
@@ -865,7 +865,7 @@ impl Capabilities {
         Ok(self.forget_press(name))
     }
 
-    /// Which of the workspace's open pages are drawn on somebody else's
+    /// Which of the desk's open pages are drawn on somebody else's
     /// machine, by display name, each with what that machine is called.
     ///
     /// Empty whenever the pages are this machine's own, which is the ordinary
@@ -875,21 +875,21 @@ impl Capabilities {
     pub fn drawn_away(&self) -> Vec<(String, String)> {
         let held = self.host.borrow();
         let Some(host) = held.as_ref() else { return Vec::new() };
-        let ws = self.ws.get();
+        let desk = self.desk.get();
         self.hosted
             .borrow()
             .iter()
-            .filter(|(w, _)| *w == ws)
+            .filter(|(w, _)| *w == desk)
             .filter_map(|(_, name)| {
-                host.drawn_on(Some(&Self::key(ws, name))).map(|who| (name.clone(), who))
+                host.drawn_on(Some(&Self::key(desk, name))).map(|who| (name.clone(), who))
             })
             .collect()
     }
 
-    /// What the pages of the workspace in view are asking, by display name,
+    /// What the pages of the desk in view are asking, by display name,
     /// for the board to draw
     pub fn asks_now(&self) -> Vec<(String, crate::uistate::AskState)> {
-        let head = format!("{}/", self.ws.get());
+        let head = format!("{}/", self.desk.get());
         self.asks
             .borrow()
             .iter()
@@ -905,14 +905,14 @@ impl Capabilities {
 
     /// Clear the pressed record. Keyed by the in-window name
     fn forget_press(&self, name: &str) -> bool {
-        let key = Self::key(self.ws.get(), name);
+        let key = Self::key(self.desk.get(), name);
         self.pressed.borrow_mut().remove(&key).unwrap_or(false)
     }
 
     pub fn browser_unask(&self, name: &str) -> Result<()> {
         self.with(name, |_, _| Ok(()))?;
         self.forget_press(name);
-        self.asks.borrow_mut().remove(&Self::key(self.ws.get(), name));
+        self.asks.borrow_mut().remove(&Self::key(self.desk.get(), name));
         Ok(())
     }
 
@@ -934,7 +934,7 @@ impl Capabilities {
     pub fn browser_nav(&self, name: &str, spec: crate::config::NavSpec) -> Result<()> {
         // Can't show controls on a page that isn't open. Rejected here
         self.with(name, |_, _| Ok(()))?;
-        let key = Self::key(self.ws.get(), name);
+        let key = Self::key(self.desk.get(), name);
         if spec.is_empty() {
             self.nav.borrow_mut().remove(&key);
         } else {
@@ -945,7 +945,7 @@ impl Capabilities {
 
     pub fn browser_unnav(&self, name: &str) -> Result<()> {
         self.with(name, |_, _| Ok(()))?;
-        self.nav.borrow_mut().remove(&Self::key(self.ws.get(), name));
+        self.nav.borrow_mut().remove(&Self::key(self.desk.get(), name));
         Ok(())
     }
 
@@ -1053,14 +1053,14 @@ impl Capabilities {
     /// deleted, yet it reappears elsewhere (and won't go away until restart).
     /// Pages automation opened on its own, and the settings screen, are left untouched here
     pub fn keep_only_declared(&self, names: &[String]) -> Vec<String> {
-        let ws = self.ws.get();
+        let desk = self.desk.get();
         let want: std::collections::HashSet<String> =
-            names.iter().map(|n| Self::key(ws, n)).collect();
+            names.iter().map(|n| Self::key(desk, n)).collect();
         let stale: Vec<String> = self
             .declared
             .borrow()
             .iter()
-            .filter(|k| k.starts_with(&format!("{ws}/")) && !want.contains(*k))
+            .filter(|k| k.starts_with(&format!("{desk}/")) && !want.contains(*k))
             .cloned()
             .collect();
         let mut closed = Vec::new();
@@ -1078,7 +1078,7 @@ impl Capabilities {
     pub fn note_declared(&self, name: &str) {
         self.declared
             .borrow_mut()
-            .insert(Self::key(self.ws.get(), name));
+            .insert(Self::key(self.desk.get(), name));
     }
 
     /// What to show (used by the screen-drawing loop).
@@ -1086,17 +1086,17 @@ impl Capabilities {
     pub fn nav_of(&self, name: &str) -> Option<crate::config::NavSpec> {
         self.nav
             .borrow()
-            .get(&Self::key(self.ws.get(), name))
+            .get(&Self::key(self.desk.get(), name))
             .copied()
     }
 
     pub fn browser_close(&self, name: &str) -> Result<()> {
-        let ws = self.ws.get();
-        let key = Self::key(ws, name);
+        let desk = self.desk.get();
+        let key = Self::key(desk, name);
         if let Some(h) = self.host.borrow().as_ref() {
             h.close_child(&key)?;
         }
-        self.hosted.borrow_mut().retain(|(w, x)| !(*w == ws && x == name));
+        self.hosted.borrow_mut().retain(|(w, x)| !(*w == desk && x == name));
         self.pressed.borrow_mut().remove(&key);
         self.asks.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
@@ -1183,7 +1183,7 @@ mod reload_tests {
         assert_eq!(c.hosted_names(), vec!["settings".to_string()], "置いたページを忘れた");
         assert!(c.nav_of("html").is_some(), "上のバーを忘れた");
         assert!(c.forget_press("html"), "押された帯を忘れた");
-        // The bar being asked is the workspace in view's, by display name
+        // The bar being asked is the desk in view's, by display name
         assert_eq!(
             c.asks_now(),
             vec![(
@@ -1283,11 +1283,11 @@ mod tests {
         assert_eq!(c.redact("ab cd ab"), "ab cd ab");
     }
 
-    /// A script names one word and gets its own workspace's secret of that
-    /// name -- never another workspace's, never one of the program's own, and
+    /// A script names one word and gets its own desk's secret of that
+    /// name -- never another desk's, never one of the program's own, and
     /// never one an AI has not been let near
     #[test]
-    fn a_script_reaches_only_its_own_workspaces_secrets() {
+    fn a_script_reaches_only_its_own_desks_secrets() {
         let _turn = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
         use crate::config::SecretMeta;
         use crate::grants::Subject;
@@ -1315,7 +1315,7 @@ mod tests {
             terms,
             Default::default(),
         );
-        c.set_workspace_id("blog");
+        c.set_desk_id("blog");
 
         let got = |name: &str, who| c.script_secret(name, who).map(|(v, _)| v);
         assert_eq!(got("diary", Subject::Human).unwrap(), "hunter2secret");
@@ -1323,14 +1323,14 @@ mod tests {
         // Written for a person to use; an AI's turn is turned away
         assert_eq!(got("deploy", Subject::Human).unwrap(), "ghp_xxx");
         assert!(got("deploy", Subject::Ai).is_err(), "AIに開いていない鍵が渡った");
-        // Another workspace's cannot be named at all, however it is spelled
+        // Another desk's cannot be named at all, however it is spelled
         for reach in ["other.diary", "ssh/blog/prod/password", "../other.diary"] {
             assert!(got(reach, Subject::Human).is_err(), "{reach} が通ってしまう");
         }
         assert!(got("nope", Subject::Human).is_err(), "未登録は取れない");
 
-        // Switching workspaces changes what the same word means
-        c.set_workspace_id("other");
+        // Switching desks changes what the same word means
+        c.set_desk_id("other");
         assert_eq!(got("diary", Subject::Human).unwrap(), "somebody else's");
         assert!(got("deploy", Subject::Human).is_err());
 
@@ -1358,7 +1358,7 @@ mod tests {
             )]),
             Default::default(),
         );
-        c.set_workspace_id("blog");
+        c.set_desk_id("blog");
         let _ = take_refusal(); // anything another test left behind
 
         // Allowed: nothing to say
@@ -1404,7 +1404,7 @@ mod tests {
             terms,
             Default::default(),
         );
-        c.set_workspace_id("blog");
+        c.set_desk_id("blog");
         let got = |name: &str, who| c.script_secret(name, who).map(|(v, _)| v);
         assert_eq!(got("errand", Subject::Ai).unwrap(), "ai only");
         assert!(got("errand", Subject::Human).is_err(), "人だけに閉じた鍵が渡った");

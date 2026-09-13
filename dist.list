@@ -58,4 +58,4 @@ SECURITY.md
 config.example.json
 secrets.example.json
 scripts/**
-workspaces/**
+desks/**

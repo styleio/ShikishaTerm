@@ -16,9 +16,9 @@ use crate::view::{
     RESULT_TAB, ScreenPush, Size, Surface, Ui, pty_dims, remote_floor, screen_push, surfaces_of,
     terminal_size, title_of,
 };
-use crate::workspace::{
+use crate::desk::{
     apply_ws_config, build_engine, extract_env_block, open_declared_browsers, panel_places,
-    spawn_workspace, surface_of_id, switch_workspace,
+    spawn_desk, surface_of_id, switch_desk,
 };
 use crate::{
     api, ball, bridge, caps, config, crypto, exchange, folders, grants, hooks, i18n, layout,
@@ -32,7 +32,7 @@ use crate::{
     keymap::key_to_bytes,
     resume_plan_of,
     send::{PASTE_ACK_MS, PASTE_CHUNK, SUBMIT_GIVE_UP_MS, SUBMIT_QUIET_MS},
-    workspace::{TabAuto, automation_by_pane, carried_conversation},
+    desk::{TabAuto, automation_by_pane, carried_conversation},
 };
 use crate::{FIXED_TOKEN_MIN, append_hook_log, random_hex, remote_token};
 use anyhow::Result;
@@ -384,10 +384,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         None
     };
     let mut startup_errors: Vec<String> = Vec::new();
-    let mut workspaces: Vec<config::Workspace> = Vec::new();
+    let mut desks: Vec<config::Desk> = Vec::new();
     if let Some(c) = &cfg {
-        let (ws, errs) = c.resolve_workspaces();
-        workspaces = ws;
+        let (desk, errs) = c.resolve_desks();
+        desks = desk;
         startup_errors.extend(errs);
         // Resolve and cache the model bridge's connection info (at this point encrypted
         // secrets aren't unlocked yet; it's resolved again below once the password is
@@ -411,21 +411,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     };
 
     let mut tabs: Vec<Tab> = Vec::new();
-    let remembered = config::load_last_workspace();
-    let mut ws_index = starting_workspace(
-        cfg.as_ref().and_then(|c| c.restore_workspace).unwrap_or(true),
+    let remembered = config::load_last_desk();
+    let mut desk_index = starting_desk(
+        cfg.as_ref().and_then(|c| c.restore_desk).unwrap_or(true),
         remembered.as_deref(),
-        &workspaces.iter().map(|w| w.name.clone()).collect::<Vec<_>>(),
+        &desks.iter().map(|w| w.name.clone()).collect::<Vec<_>>(),
     );
-    if let Some(w) = workspaces.get(ws_index) {
+    if let Some(w) = desks.get(desk_index) {
         // Knowing where we started is a handy clue later, when tracking down "why is
         // this the screen we're on".
         append_hook_log(&format!(
-            "Startup: workspace \"{}\" ({})",
+            "Startup: desk \"{}\" ({})",
             w.name,
             match remembered.as_deref() {
                 Some(r) if r == w.name => "resuming last session",
-                _ => "first workspace",
+                _ => "first desk",
             }
         ));
     }
@@ -454,16 +454,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             cols,
             tab::TabOptions::default(),
         )?);
-    } else if let Some(w) = workspaces.get(ws_index) {
-        // If we're resuming where we left off, launch that same workspace too.
-        // Hard-coding this to the first workspace would restore only the name while
+    } else if let Some(w) = desks.get(desk_index) {
+        // If we're resuming where we left off, launch that same desk too.
+        // Hard-coding this to the first desk would restore only the name while
         // showing a screen with different contents.
-        spawn_workspace(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
+        spawn_desk(w, rows, cols, &mut tabs, &mut startup_errors, Some(&last_session));
     }
     // No config yet = first run. Guide the user so the experience isn't just
     // "a single shell opens and nothing else happens", leaving them unsure what to do.
     let first_run = cmd_args.is_empty() && cfg.is_none();
-    if tabs.is_empty() && workspaces.is_empty() {
+    if tabs.is_empty() && desks.is_empty() {
         let argv = vec!["powershell.exe".to_string()];
         tabs.push(Tab::spawn(
             "SHELL".into(),
@@ -481,8 +481,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         let _ = t.resize(rows, cols);
     }
 
-    // The Lua hook engine is per-workspace (shared variables are scoped inside it too).
-    // Unused workspaces don't get one built; it's created on demand when switched to.
+    // The Lua hook engine is per-desk (shared variables are scoped inside it too).
+    // Unused desks don't get one built; it's created on demand when switched to.
     let mut max_chain = cfg.as_ref().and_then(|c| c.max_chain).unwrap_or(10);
     let mut done_confirm_ms = cfg
         .as_ref()
@@ -557,7 +557,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // password and this one may have to open an encrypted store
     if let Some(c) = cfg.as_ref()
         && let Some(path) = c.secrets_path() {
-            match config::migrate_secrets(&path, password.as_deref(), &workspaces) {
+            match config::migrate_secrets(&path, password.as_deref(), &desks) {
                 Ok(true) => append_hook_log("secrets: names brought forward to the new shape"),
                 Ok(false) => {}
                 Err(e) => startup_errors.push(format!("secrets: {e:#}")),
@@ -575,7 +575,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         ),
         None => caps::Capabilities::disabled(),
     });
-    let mut engines: Vec<Option<HookEngine>> = (0..workspaces.len().max(1)).map(|_| None).collect();
+    let mut engines: Vec<Option<HookEngine>> = (0..desks.len().max(1)).map(|_| None).collect();
     // If we have a window, put browsers inside it
     caps.set_host(shell.host());
     // ...and if pages can be drawn either here or on a connected device, the
@@ -583,18 +583,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     shell.draw_pages(placed::Draw::of(
         cfg.as_ref().and_then(|c| c.browser_draw.as_deref()).unwrap_or_default(),
     ));
-    caps.set_workspace(ws_index);
+    caps.set_desk(desk_index);
     // Somewhere to ask about pull requests, on its own thread. Quiet and
     // harmless when there is no GitHub token: it simply never knows anything,
     // and no row grows a line
     let prs = crate::pr::Watch::start();
-    if let Some(w) = workspaces.get(ws_index) {
-        // Everything this workspace answers for, handed over in one act -- the
-        // same one a switch uses, so the first workspace is not a special case.
+    if let Some(w) = desks.get(desk_index) {
+        // Everything this desk answers for, handed over in one act -- the
+        // same one a switch uses, so the first desk is not a special case.
         // Before the engine below is built, because the Lua it compiles belongs
-        // to this workspace and must meet this workspace's doors
-        crate::workspace::hand_over(w, &caps, &notifier, &prs);
-        engines[ws_index] = build_engine(cfg.as_ref(), Some(w), &mut startup_errors, &caps);
+        // to this desk and must meet this desk's doors
+        crate::desk::hand_over(w, &caps, &notifier, &prs);
+        engines[desk_index] = build_engine(cfg.as_ref(), Some(w), &mut startup_errors, &caps);
         // Declared browsers are NOT opened here: placing a page occupies the
         // window thread, and at startup the person is often already clicking.
         // The board goes up first; the loop opens them right after (below).
@@ -603,7 +603,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     }
     let mut open_browsers_after_first_paint = true;
     let mut first_paint_done = false;
-    let slot = ws_index.min(engines.len().saturating_sub(1));
+    let slot = desk_index.min(engines.len().saturating_sub(1));
     let mut engine = engines[slot].take();
     // The current ad-hoc "operate a target" attachment, as (source pane, target),
     // so a repeated goal to the same target doesn't re-brief from scratch.
@@ -712,11 +712,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // conversations were carried, because with carrying turned off it is what
     // Ctrl+B r reaches for — the way back stays available, it is just not taken
     // for you
-    if let Some(ws) = workspaces.get(ws_index) {
+    if let Some(desk) = desks.get(desk_index) {
         for t in tabs.iter_mut() {
-            t.previous = last_session.conversation_for(&ws.name, t);
+            t.previous = last_session.conversation_for(&desk.name, t);
         }
-        if let Some(saved) = last_session.panes_for(&ws.name) {
+        if let Some(saved) = last_session.panes_for(&desk.name) {
             // Whether those panes still point at surfaces that exist is not
             // decided here: the loop clamps the tree to what is on screen every
             // frame, which is the one place that knows
@@ -725,7 +725,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
     }
     // When to next write down what is on screen. Rare events (a conversation
-    // learned, a workspace switched) are worth writing at once; a divider being
+    // learned, a desk switched) are worth writing at once; a divider being
     // dragged is not, and a delay keeps a drag from writing a file per frame
     let mut save_at: Option<std::time::Instant> = None;
     // The zoom level waiting to be written down, and when to write it
@@ -834,14 +834,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut last_detect = Instant::now() - Duration::from_secs(1);
     // The browser currently being screen-relayed (only streams while someone's watching)
     let mut casting: Option<String> = None;
-    // Workspaces use a virtual-desktop model: switching means hiding, not stopping.
-    // Each workspace keeps its own set of tabs, launched the first time it's activated.
-    // Launched tabs live in `tabs`; the shelf reserves space for the remaining workspaces.
-    let mut ws_tabs: Vec<Vec<Tab>> = Vec::new();
-    // One pane tree per workspace, parked here while that workspace is off screen
-    let mut ws_panes: Vec<crate::layout::Layout> = Vec::new();
-    ws_tabs.resize_with(workspaces.len(), Vec::new);
-    ws_panes.resize_with(workspaces.len(), || crate::layout::Layout::single(0));
+    // Desks use a virtual-desktop model: switching means hiding, not stopping.
+    // Each desk keeps its own set of tabs, launched the first time it's activated.
+    // Launched tabs live in `tabs`; the shelf reserves space for the remaining desks.
+    let mut desk_tabs: Vec<Vec<Tab>> = Vec::new();
+    // One pane tree per desk, parked here while that desk is off screen
+    let mut desk_panes: Vec<crate::layout::Layout> = Vec::new();
+    desk_tabs.resize_with(desks.len(), Vec::new);
+    desk_panes.resize_with(desks.len(), || crate::layout::Layout::single(0));
     // Watch the config file for changes (saving takes effect without a restart)
     let mut watcher = watch::Watcher::new(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
     // Look for a newer version: now, and once a day while this runs. Looking
@@ -849,12 +849,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     update::start(cfg.as_ref().and_then(|c| c.update_check).unwrap_or(true));
     let mut cfg = cfg;
 
-    let mut ws_open = false;
+    let mut desk_open = false;
     let mut help_open = false;
     let mut qr_open = false;
     // While the settings overlay is up, automation (ball-follow, ShowTab) must
     // not yank the screen to another tab — settings is a place of its own, not a
-    // tab you get pushed out of. Only an explicit human tab/workspace pick, or
+    // tab you get pushed out of. Only an explicit human tab/desk pick, or
     // "close settings", leaves it.
     let mut settings_open = false;
     // Flag for dragging the tab-bar border (lets the mouse adjust its width)
@@ -891,12 +891,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 startup_errors.append(&mut errs);
             }
 
-        // Open the workspace's declared browsers on the iteration AFTER the
+        // Open the desk's declared browsers on the iteration AFTER the
         // first full draw: the board answers clicks first, then the window
         // thread pays the (brief) cost of placing pages.
         if open_browsers_after_first_paint && first_paint_done {
             open_browsers_after_first_paint = false;
-            if let Some(w) = workspaces.get(ws_index) {
+            if let Some(w) = desks.get(desk_index) {
                 open_declared_browsers(w, &caps, &mut startup_errors);
             }
         }
@@ -919,7 +919,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // The upper bound of pressable numbers needs more than just the session count.
         let hosted = caps.hosted_names();
         let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
-        let surfaces = surfaces_of(workspaces.get(ws_index), &titles, &hosted, &editors);
+        let surfaces = surfaces_of(desks.get(desk_index), &titles, &hosted, &editors);
         let surface_count = surfaces.len();
         // Keep the tree and `active` in step. Anything in the loop may set
         // `active` (a digit, an automation, the settings screen closing); the
@@ -1006,76 +1006,76 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Reload and apply once the config is saved (no app restart needed)
         if watcher.changed()
             && let Some(newcfg) = config::load() {
-                let (new_ws, errs) = newcfg.resolve_workspaces();
+                let (new_ws, errs) = newcfg.resolve_desks();
                 startup_errors.extend(errs);
-                // Which workspace was active before this reload. Its live tabs are
+                // Which desk was active before this reload. Its live tabs are
                 // in `tabs` (not the cache), so it's skipped when re-keying below.
-                let prev_ws_index = ws_index;
+                let prev_ws_index = desk_index;
                 // The language is only read at startup, so changing it in settings
                 // doesn't apply to the current screen. Add a note to the board's
                 // notification prompting the user to close and reopen.
                 // (the settings GUI's alert doesn't show inside the in-app WebView,
                 // so we convey it here instead)
                 let lang_restart = i18n::would_change(newcfg.language.as_deref());
-                // Apply immediately to the workspace being viewed; others get it on switch
+                // Apply immediately to the desk being viewed; others get it on switch
                 let target = new_ws
                     .iter()
-                    .position(|w| Some(&w.name) == workspaces.get(ws_index).map(|w| &w.name))
+                    .position(|w| Some(&w.name) == desks.get(desk_index).map(|w| &w.name))
                     .unwrap_or(0);
                 let mut msg = i18n::t("msg.config_reloaded");
                 if let Some(w) = new_ws.get(target) {
                     msg = apply_ws_config(&mut tabs, w, rows, cols, &mut startup_errors);
-                    ws_index = target;
+                    desk_index = target;
                     // Bring browsers in line with config too: open added ones, close
                     // removed ones, redraw the bar and band. If reopening were required
                     // to take effect, editing settings would be pointless
                     // (pages already open are left untouched).
                     open_declared_browsers(w, &caps, &mut startup_errors);
                 }
-                // Re-key the cached background tabs by workspace NAME, not by
-                // position. A reload can reorder workspaces (adding/moving one),
-                // and a position-indexed cache would then hand a workspace another
-                // one's tabs — the bug where switching to a freshly added workspace
-                // showed a different one's tabs. Tabs whose workspace survives move
-                // with it; a removed workspace's background tabs are killed; the
-                // active workspace's tabs live in `tabs`, so its slot stays empty.
+                // Re-key the cached background tabs by desk NAME, not by
+                // position. A reload can reorder desks (adding/moving one),
+                // and a position-indexed cache would then hand a desk another
+                // one's tabs — the bug where switching to a freshly added desk
+                // showed a different one's tabs. Tabs whose desk survives move
+                // with it; a removed desk's background tabs are killed; the
+                // active desk's tabs live in `tabs`, so its slot stays empty.
                 let mut cached_by_name: std::collections::HashMap<String, Vec<Tab>> =
                     std::collections::HashMap::new();
-                for (i, w) in workspaces.iter().enumerate() {
+                for (i, w) in desks.iter().enumerate() {
                     if i == prev_ws_index {
                         continue;
                     }
-                    if let Some(slot) = ws_tabs.get_mut(i) {
+                    if let Some(slot) = desk_tabs.get_mut(i) {
                         let cached = std::mem::take(slot);
                         if !cached.is_empty() {
                             cached_by_name.insert(w.name.clone(), cached);
                         }
                     }
                 }
-                ws_tabs = new_ws
+                desk_tabs = new_ws
                     .iter()
                     .map(|w| cached_by_name.remove(&w.name).unwrap_or_default())
                     .collect();
-                // Workspaces that vanished from config: their background tabs are done.
+                // Desks that vanished from config: their background tabs are done.
                 for mut orphaned in cached_by_name.into_values() {
                     for t in orphaned.iter_mut() {
                         t.kill();
                     }
                 }
-                // The per-workspace Lua engine cache is indexed by position, and that
-                // position shifts whenever workspaces are added/removed here. Reset it
+                // The per-desk Lua engine cache is indexed by position, and that
+                // position shifts whenever desks are added/removed here. Reset it
                 // to match the new count (all None) so switching to a newly added
-                // workspace can't index out of bounds; each inactive workspace's engine
+                // desk can't index out of bounds; each inactive desk's engine
                 // is rebuilt on demand on the next switch (the active one is rebuilt below).
                 engines = (0..new_ws.len().max(1)).map(|_| None).collect();
                 // The parked pane trees are indexed the same way, so they shift
                 // with it. A tree kept against a moved position would divide the
-                // wrong workspace into panes pointing at the wrong tabs, which
+                // wrong desk into panes pointing at the wrong tabs, which
                 // looks deliberate and is not — start those over instead.
-                ws_panes = (0..new_ws.len().max(1))
+                desk_panes = (0..new_ws.len().max(1))
                     .map(|_| crate::layout::Layout::single(0))
                     .collect();
-                workspaces = new_ws;
+                desks = new_ws;
                 ai_choices = startable_ais();
                 max_chain = newcfg.max_chain.unwrap_or(10);
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
@@ -1106,21 +1106,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // copy: a password taken out of the settings stops working
                 ssh::use_secrets(newcfg.resolve_tokens(password.as_deref()));
         crate::e2b::use_key(newcfg.resolve_tokens(password.as_deref()).get("e2b_api_key").cloned());
-                // Everything that is the workspace's rather than the app's, said
+                // Everything that is the desk's rather than the app's, said
                 // again now that the settings have been read afresh. It has to
                 // come after set_config, not before: that call puts the app's
-                // own doors and permission table in, and the workspace on screen
+                // own doors and permission table in, and the desk on screen
                 // has the last word on both. It also needs the secrets set_config
                 // just loaded, because this is where the GitHub token is read
-                if let Some(w) = workspaces.get(ws_index) {
-                    crate::workspace::hand_over(w, &caps, &notifier, &prs);
+                if let Some(w) = desks.get(desk_index) {
+                    crate::desk::hand_over(w, &caps, &notifier, &prs);
                 }
                 if let Some(eng) = engine.as_ref() {
                     eng.set_ai_engine(newcfg.ai_engine.clone().filter(|s| !s.is_empty()));
                 }
                 engine = build_engine(
                     Some(&newcfg),
-                    workspaces.get(ws_index),
+                    desks.get(desk_index),
                     &mut startup_errors,
                     &caps,
                 );
@@ -1176,13 +1176,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 cfg = Some(newcfg);
                 // Re-resolve the model bridge's connection info, and hand it to
-                // the tabs — including the ones parked in workspaces that are
+                // the tabs — including the ones parked in desks that are
                 // not on screen, which are just as open as the ones that are
                 if let Some(c) = &cfg {
                     reload_providers(
                         c,
                         password.as_deref(),
-                        tabs.iter_mut().chain(ws_tabs.iter_mut().flatten()),
+                        tabs.iter_mut().chain(desk_tabs.iter_mut().flatten()),
                     );
                 }
                 watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
@@ -1254,7 +1254,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // ordinary restart below. Only ever in this direction: a folder
             // that has GONE leaves a running tab alone, because stopping
             // somebody's agent mid-sentence is worse than the folder being gone
-            for t in tabs.iter_mut().chain(ws_tabs.iter_mut().flatten()) {
+            for t in tabs.iter_mut().chain(desk_tabs.iter_mut().flatten()) {
                 if t.held().is_some() && tab::Held::of(t.cwd()).is_none() {
                     t.release();
                 }
@@ -1555,8 +1555,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     tabs.iter().map(|t| t.session.clone()).collect::<Vec<_>>(),
                 );
                 if Some(&mark) != last_saved.as_ref() {
-                    if let Some(ws) = workspaces.get(ws_index) {
-                        last_session.remember(&ws.name, &tabs, Some(&pane_layout));
+                    if let Some(desk) = desks.get(desk_index) {
+                        last_session.remember(&desk.name, &tabs, Some(&pane_layout));
                         last_session.write();
                     }
                     last_saved = Some(mark);
@@ -1855,8 +1855,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // What the screen push last sent, so a viewer that joins now
                     // is handed the same picture the ones already here can see
                     screen_html: last_remote_rows.join("\n"),
-                    workspace: workspaces
-                        .get(ws_index)
+                    desk: desks
+                        .get(desk_index)
                         .map(|w| w.name.clone())
                         .unwrap_or_default(),
                     auto_enabled,
@@ -1942,7 +1942,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // rather than on the 200ms detection tick
         if let Some(a) = api_server.as_ref() {
             while let Ok(call) = a.rx.try_recv() {
-                // A workspace with no Lua of its own still has an engine's
+                // A desk with no Lua of its own still has an engine's
                 // worth of commands to offer; make one rather than answer
                 // "not available" (the same gap-filler as 🎯 operate and ▶)
                 if engine.is_none() {
@@ -2439,10 +2439,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let _ = caps.browser_where(key);
         }
 
-        // If the current workspace is a discussion, find the opening speaker
+        // If the current desk is a discussion, find the opening speaker
         // (first participant) so the dashboard can offer a "start" card.
-        let (discuss_start, discuss_start_name) = workspaces
-            .get(ws_index)
+        let (discuss_start, discuss_start_name) = desks
+            .get(desk_index)
             .and_then(|w| {
                 let d = w.discuss.as_ref()?;
                 if d.agents.iter().filter(|s| !s.trim().is_empty()).count() < 2 {
@@ -2466,8 +2466,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // The first-run pointer: worked out from what is on screen, and what
         // has been pointed at before. Written down the moment it moves on, so
         // the next start does not point at the same thing twice
-        let folder_count = workspaces
-            .get(ws_index)
+        let folder_count = desks
+            .get(desk_index)
             .map(|w| w.folders.iter().filter(|f| f.cwd.is_some()).count())
             .unwrap_or(0);
         let past_the_plus = tabs.iter().any(|t| t.is_ai() || t.place.linked);
@@ -2501,14 +2501,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             settings: settings_open,
             // The flag itself, engine or no engine. It used to be sent only
             // while a Lua engine existed, which left the bar saying AUTO ON
-            // after an emergency stop in a workspace with no automation of
+            // after an emergency stop in a desk with no automation of
             // its own -- and the stop still means something there: it is
             // what interrupted the AIs, and what keeps a hand-over from
             // starting until it is turned back on
             auto: Some(auto_enabled),
-            ws_names: workspaces.iter().map(|w| w.name.clone()).collect(),
-            ws_index,
-            ws_open,
+            desk_names: desks.iter().map(|w| w.name.clone()).collect(),
+            desk_index,
+            desk_open,
             help_open,
             // Only worth carrying while it is on screen; it is the same list
             // every frame otherwise
@@ -2528,8 +2528,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .as_ref()
                 .map(|c| c.folder_colors.clone())
                 .unwrap_or_default(),
-            folders: workspaces
-                .get(ws_index)
+            folders: desks
+                .get(desk_index)
                 .map(|w| {
                     w.folders
                         .iter()
@@ -2539,8 +2539,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            folders_elsewhere: workspaces
-                .get(ws_index)
+            folders_elsewhere: desks
+                .get(desk_index)
                 .map(|w| {
                     w.folders
                         .iter()
@@ -2563,7 +2563,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             remote_on: remote_ui.is_some(),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
-            aim: aim_of(workspaces.get(ws_index), &surfaces, &tabs, active),
+            aim: aim_of(desks.get(desk_index), &surfaces, &tabs, active),
             nav,
             asks: caps.asks_now(),
             away: caps.drawn_away(),
@@ -2905,7 +2905,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // puts a drawn thing over it. So while something is being shown
             // over the screen, the browsers step aside. They keep their pages;
             // being given no rectangle is all that happens to them
-            let covered = help_open || ws_open || qr_open;
+            let covered = help_open || desk_open || qr_open;
             // The settings form is a screen, not a pane: it covers the content
             // area and the layout waits underneath. It asks about the whole
             // app, so seating it in one corner of the app made as little sense
@@ -2942,8 +2942,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // Hand off that the bar's button was pressed. The board (or the phone)
         // names the page the bar stands under, by the name automation gives it;
-        // the bar is only ever drawn for the workspace in view, so that name is
-        // this workspace's
+        // the bar is only ever drawn for the desk in view, so that name is
+        // this desk's
         for name in shell.mail().take_presses() {
             caps.note_press(&name);
             append_hook_log(&format!("Bar pressed {name}"));
@@ -3054,10 +3054,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 folders.extend(panel_places(&surfaces));
                 eng.set_states(tab_states(&tabs));
                 eng.set_places(folders);
-                // This workspace's, which is already either its own or the
-                // app's handed down (see Config::resolve_workspaces)
-                let spec = workspaces
-                    .get(ws_index)
+                // This desk's, which is already either its own or the
+                // app's handed down (see Config::resolve_desks)
+                let spec = desks
+                    .get(desk_index)
                     .map(|w| w.git.clone())
                     .or_else(|| cfg.as_ref().map(|c| c.git.clone()))
                     .unwrap_or_default();
@@ -3413,7 +3413,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
                 continue;
             };
-            // Running needs an engine; make a bare one if this workspace didn't
+            // Running needs an engine; make a bare one if this desk didn't
             // otherwise have any Lua (same gap-filler as 🎯 operate).
             if engine.is_none() {
                 engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
@@ -3498,7 +3498,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         //
         // A search is answered into `vault_view`, which the state carries while
         // the overlay is open. Reopening writes a tab into the active
-        // workspace's settings; the change-watcher then launches it, resumed,
+        // desk's settings; the change-watcher then launches it, resumed,
         // through the ordinary reload -- the one place a tab is safely made
         for query in shell.mail().take_vault_queries() {
             // The present, then the past. What is on screen right now across
@@ -3535,8 +3535,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // A folder renamed in the list, or taken out of it. Both are changes
         // to the settings, so the reload that follows is what actually shows
         for (folder, name) in shell.mail().take_folder_names() {
-            let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
-            if let Err(e) = config::rename_folder(&ws, std::path::Path::new(&folder), &name) {
+            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+            if let Err(e) = config::rename_folder(&desk, std::path::Path::new(&folder), &name) {
                 flash = Some(format!("{e:#}"));
             }
         }
@@ -3551,8 +3551,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 flash = Some(format!("{e:#}"));
                 continue;
             }
-            let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
-            match config::remove_folder(&ws, &at) {
+            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+            match config::remove_folder(&desk, &at) {
                 Ok(()) => {
                     flash = Some(i18n::tp(
                         "msg.folder.discarded",
@@ -3568,8 +3568,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // silently -- a folder that was asked to go and did not is a surprise
         // waiting in the settings
         for folder in shell.mail().take_folder_closes() {
-            let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
-            match config::remove_folder(&ws, std::path::Path::new(&folder)) {
+            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+            match config::remove_folder(&desk, std::path::Path::new(&folder)) {
                 // Said out loud, because the folder is still on disk and this
                 // is the only sign that it was left there on purpose
                 Ok(()) => flash = Some(i18n::tp("msg.folder.closed", &[("path", &folder)])),
@@ -3583,9 +3583,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 browse_view = Some(crate::uistate::BrowseState::of(&path));
                 continue;
             }
-            let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
+            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
             let at = std::path::PathBuf::from(&path);
-            match config::append_folder(&ws, None, &at, None) {
+            match config::append_folder(&desk, None, &at, None) {
                 Ok(()) => {
                     browse_view = None;
                     flash = Some(i18n::tp("msg.folder.opened", &[("path", &path)]));
@@ -3607,8 +3607,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // happens are the lines that happen
         for (folder, choose, branch, take) in shell.mail().take_repairs() {
             let at = std::path::PathBuf::from(&folder);
-            let ws = workspaces.get(ws_index);
-            let ws_name = ws.map(|w| w.name.clone()).unwrap_or_default();
+            let desk = desks.get(desk_index);
+            let desk_name = desk.map(|w| w.name.clone()).unwrap_or_default();
             // The answer to the one question that has to be asked, written into
             // the settings the moment it is given. Every machine after this one
             // reads it instead of asking
@@ -3629,14 +3629,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 )),
             };
             if let Some(spec) = chosen.as_ref()
-                && let Err(e) = config::set_folder_source(&ws_name, &at, spec) {
+                && let Err(e) = config::set_folder_source(&desk_name, &at, spec) {
                     flash = Some(format!("{e:#}"));
                 }
             // What the settings say now: the answer just given, or what was
             // written down when the folder was made
             let source = match chosen.as_ref() {
                 Some(spec) => spec.read(),
-                None => ws
+                None => desk
                     .and_then(|w| w.folders.iter().find(|f| f.cwd.as_deref() == Some(at.as_path())))
                     .map(|f| f.source.clone())
                     .unwrap_or_default(),
@@ -3644,7 +3644,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // The project the settings already name, when they do. Preferred
             // over working it out from the path: what somebody wrote down beats
             // what a folder's shape suggests
-            let checkout = ws.and_then(|w| {
+            let checkout = desk.and_then(|w| {
                 w.folders.iter().find_map(|f| {
                     let cwd = f.cwd.as_deref()?;
                     let url = crate::repo::remote_url_of(cwd)?;
@@ -3658,7 +3658,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 })
             });
-            let name = ws
+            let name = desk
                 .and_then(|w| w.folders.iter().find(|f| f.cwd.as_deref() == Some(at.as_path())))
                 .and_then(|f| f.name.clone())
                 .unwrap_or_else(|| {
@@ -3704,7 +3704,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // the only case that asks, and the answer ends the asking
                     // for every machine, not just this one
                     view.asking = matches!(blocked, crate::folders::Blocked::Unknown);
-                    view.projects = projects_here(ws);
+                    view.projects = projects_here(desk);
                     view.said = blocked_said(&blocked);
                     view.blocked = Some(blocked);
                 }
@@ -3772,8 +3772,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 true => repo.as_deref().map(crate::worktree::suggest).unwrap_or_default(),
                 false => name.clone(),
             };
-            let ws = workspaces
-                .get(ws_index)
+            let desk = desks
+                .get(desk_index)
                 .map(|w| w.name.clone())
                 .unwrap_or_default();
             // What the new folder runs, chosen from what this machine has
@@ -3857,7 +3857,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // nowhere on the next reload
                             let wrote = crate::worktree::create(&plan).and_then(|()| {
                                 config::append_folder_starting(
-                                    &ws,
+                                    &desk,
                                     Some(&plan.main),
                                     &plan.folder,
                                     Some(&plan.branch),
@@ -3910,7 +3910,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let one = start_of(ai, &ai_choices);
                         let wrote = crate::worktree::create(plan).and_then(|()| {
                             config::append_folder_starting(
-                                &ws,
+                                &desk,
                                 Some(&plan.main),
                                 &plan.folder,
                                 Some(&plan.branch),
@@ -3958,8 +3958,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // The folder the conversation was had in decides which group it
                 // comes back into -- one already working there, or a new one
                 let folder = cwd.as_deref().map(std::path::Path::new);
-                let ws = workspaces.get(ws_index).map(|w| w.name.clone()).unwrap_or_default();
-                if config::append_tab(&ws, tab, folder) {
+                let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+                if config::append_tab(&desk, tab, folder) {
                     flash = Some(i18n::tp("msg.vault.reopened", &[("title", &title)]));
                 } else {
                     flash = Some(i18n::t("msg.vault.reopen_failed"));
@@ -4067,7 +4067,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     eng.stop_operate(src_pane);
                 }
                 operating = None;
-                if remember_aim(workspaces.get_mut(ws_index), operator_name.as_deref(), None) {
+                if remember_aim(desks.get_mut(desk_index), operator_name.as_deref(), None) {
                     // Our own write is not news to the watcher (see the font size)
                     watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
                 }
@@ -4081,8 +4081,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // it. The settings screen used to be the only place that could be
             // asked for, and it refused there; now that the aim is picked on
             // screen, the refusal belongs on screen too.
-            let in_discuss = workspaces
-                .get(ws_index)
+            let in_discuss = desks
+                .get(desk_index)
                 .and_then(|w| w.discuss.as_ref())
                 .is_some_and(|d| {
                     let me = operator_name.as_deref().unwrap_or_default();
@@ -4129,7 +4129,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // Remember it, whether or not there is work yet: what is picked on
             // screen IS the setting, and it has to survive the next start
             if remember_aim(
-                workspaces.get_mut(ws_index),
+                desks.get_mut(desk_index),
                 operator_name.as_deref(),
                 Some(&target_id),
             ) {
@@ -4159,7 +4159,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             // Operating needs an engine to run in; make a bare one if this
-            // workspace didn't otherwise have any Lua (same gap as Lua actions).
+            // desk didn't otherwise have any Lua (same gap as Lua actions).
             if engine.is_none() {
                 engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
             }
@@ -4172,12 +4172,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .zip(engine.as_mut())
                     .map(|(ctx, eng)| {
                         if is_browser {
-                            // The referee is the workspace's, as it always was
+                            // The referee is the desk's, as it always was
                             // for a browser driven from the settings file. The
                             // ad-hoc path used to hand over an empty one, so
                             // whoever aimed on screen quietly had no stops
-                            let stops = workspaces
-                                .get(ws_index)
+                            let stops = desks
+                                .get(desk_index)
                                 .map(|w| config::stops_to_lua(&w.stops))
                                 .unwrap_or_else(|| "{}".to_string());
                             eng.start_operate(src_pane, &target_id, &stops, &ctx)
@@ -4222,12 +4222,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
         // The sidebar gear. Opens settings from any tab (the menu "e" key only
         // fires while INDEX is in view, so the gear needs its own path).
-        // The workspace being viewed rides along so its group opens expanded.
+        // The desk being viewed rides along so its group opens expanded.
         if let Some((section, ret, folder, tabpos)) = shell.take_open_settings() {
-            // The gear passes the workspace being viewed, and the tab in view so
+            // The gear passes the desk being viewed, and the tab in view so
             // the page opens on its card; a deep-link shortcut may instead name
             // a section to land on and ask to return once saved.
-            let mut query = format!("&ws={ws_index}");
+            let mut query = format!("&desk={desk_index}");
             if let Some(f) = folder {
                 query += &format!("&folder={}", urlish(&f));
             }
@@ -4432,7 +4432,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // copy is started from there. The Store copy hands the job to the
         // Store instead, which ends the program itself when it is done
         if let Some(what) = update::take_apply() {
-            if shell.confirm_quit(quit_busy(&tabs, &ws_tabs)) {
+            if shell.confirm_quit(quit_busy(&tabs, &desk_tabs)) {
                 match what {
                     update::Apply::Store { version } => {
                         let _ = shell.install_store_update(&version);
@@ -4452,7 +4452,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if close_pressed && resident {
             shell.hide();
             shell.say_where_it_went();
-        } else if (close_pressed || quit_chosen) && shell.confirm_quit(quit_busy(&tabs, &ws_tabs)) {
+        } else if (close_pressed || quit_chosen) && shell.confirm_quit(quit_busy(&tabs, &desk_tabs)) {
             break;
         }
         let Some(ev) = polled else {
@@ -4462,7 +4462,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 flash = None;
-                // Overlays (help / QR / workspace list) take top priority
+                // Overlays (help / QR / desk list) take top priority
                 if help_open {
                     help_open = false;
                     continue;
@@ -4471,21 +4471,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     qr_open = false;
                     continue;
                 }
-                if ws_open {
+                if desk_open {
                     match key.code {
-                        KeyCode::Esc | KeyCode::Char('q') => ws_open = false,
+                        KeyCode::Esc | KeyCode::Char('q') => desk_open = false,
                         KeyCode::Char(c @ '1'..='9') => {
                             let n = c as usize - '1' as usize;
-                            if n < workspaces.len() {
-                                switch_workspace(
+                            if n < desks.len() {
+                                switch_desk(
                                     n,
-                                    &mut ws_index,
+                                    &mut desk_index,
                                     &mut tabs,
-                                    &mut ws_tabs,
-                                    &workspaces,
+                                    &mut desk_tabs,
+                                    &desks,
                                     &mut active,
                                     &mut pane_layout,
-                                    &mut ws_panes,
+                                    &mut desk_panes,
                                     rows,
                                     cols,
                                     &mut startup_errors,
@@ -4499,9 +4499,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     &last_session,
                                 );
                             }
-                            ws_open = false;
-                            // Switching workspace drops the settings overlay (it's
-                            // hosted per-workspace); don't leave the flag stuck on.
+                            desk_open = false;
+                            // Switching desk drops the settings overlay (it's
+                            // hosted per-desk); don't leave the flag stuck on.
                             settings_open = false;
                         }
                         _ => {}
@@ -4530,7 +4530,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some(code) = meant {
                     match code {
                         KeyCode::Char('q') => {
-                            if shell.confirm_quit(quit_busy(&tabs, &ws_tabs)) {
+                            if shell.confirm_quit(quit_busy(&tabs, &desk_tabs)) {
                                 break;
                             }
                         }
@@ -4596,7 +4596,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 cols,
                             );
                         }
-                        // Ctrl+B l toggles the input lock / w workspace list / ? help
+                        // Ctrl+B l toggles the input lock / w desk list / ? help
                         KeyCode::Char('l') => {
                             if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
                                 t.locked = !t.locked;
@@ -4611,24 +4611,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // With nowhere to switch to, opening a list of one
                             // is not an answer -- and saying nothing at all is
                             // indistinguishable from a menu item that is broken
-                            if workspaces.len() > 1 {
-                                ws_open = true;
+                            if desks.len() > 1 {
+                                desk_open = true;
                             } else {
-                                flash = Some(i18n::t("msg.ws.only_one"));
+                                flash = Some(i18n::t("msg.desk.only_one"));
                             }
                         }
                         KeyCode::Char('W') => {
-                            if workspaces.len() > 1 {
-                                let next = (ws_index + 1) % workspaces.len();
-                                switch_workspace(
+                            if desks.len() > 1 {
+                                let next = (desk_index + 1) % desks.len();
+                                switch_desk(
                                     next,
-                                    &mut ws_index,
+                                    &mut desk_index,
                                     &mut tabs,
-                                    &mut ws_tabs,
-                                    &workspaces,
+                                    &mut desk_tabs,
+                                    &desks,
                                     &mut active,
                                     &mut pane_layout,
-                                    &mut ws_panes,
+                                    &mut desk_panes,
                                     rows,
                                     cols,
                                     &mut startup_errors,
@@ -4657,7 +4657,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 .take()
                                 .map(|f| format!("&folder={}", percent_encode(&f)));
                             let query = format!(
-                                "&addtab={ws_index}{}&nonce={}",
+                                "&addtab={desk_index}{}&nonce={}",
                                 at.unwrap_or_default(),
                                 start.elapsed().as_millis()
                             );
@@ -4851,10 +4851,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // With nowhere to switch to, opening a list of one
                             // is not an answer -- and saying nothing at all is
                             // indistinguishable from a menu item that is broken
-                            if workspaces.len() > 1 {
-                                ws_open = true;
+                            if desks.len() > 1 {
+                                desk_open = true;
                             } else {
-                                flash = Some(i18n::t("msg.ws.only_one"));
+                                flash = Some(i18n::t("msg.desk.only_one"));
                             }
                         }
                         KeyCode::Char('r') => {
@@ -4897,9 +4897,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // Throwing it at an external browser would leave no way to
                         // tell which window belongs to whom.
                         // "Edit settings" wants the General group open (gen=1); the
-                        // workspace being viewed rides along too, so its group expands.
+                        // desk being viewed rides along too, so its group expands.
                         KeyCode::Char('e') => {
-                            let query = format!("&ws={ws_index}&gen=1");
+                            let query = format!("&desk={desk_index}&gen=1");
                             flash = Some(
                                 match open_settings(&mut web, &config_file, &remote_info, &web_password, &caps, &query)
                                 {
@@ -4923,7 +4923,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         KeyCode::Char('f') => shell.open_vault(),
                         KeyCode::Char('p') => shell.open_palette(),
                         KeyCode::Char('q')
-                            if shell.confirm_quit(quit_busy(&tabs, &ws_tabs)) => {
+                            if shell.confirm_quit(quit_busy(&tabs, &desk_tabs)) => {
                                 break;
                             }
                         _ => {}
@@ -4997,8 +4997,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     }
     // The last word on what was on screen. The periodic write above may be up
     // to a few seconds stale, and quitting is exactly when that matters
-    if let Some(ws) = workspaces.get(ws_index) {
-        last_session.remember(&ws.name, &tabs, Some(&pane_layout));
+    if let Some(desk) = desks.get(desk_index) {
+        last_session.remember(&desk.name, &tabs, Some(&pane_layout));
         last_session.write();
     }
     for t in tabs.iter_mut() {
@@ -5207,13 +5207,13 @@ pub fn focused_page(layout: &crate::layout::Layout, surfaces: &[Surface]) -> Opt
 /// every pick would announce a settings reload). Returns whether the file was
 /// written, which is the caller's cue to leave the watcher unbothered.
 pub fn remember_aim(
-    ws: Option<&mut config::Workspace>,
+    desk: Option<&mut config::Desk>,
     operator: Option<&str>,
     aim: Option<&str>,
 ) -> bool {
     let Some(name) = operator else { return false };
-    if let Some(ws) = ws {
-        for t in ws.tabs.iter_mut() {
+    if let Some(desk) = desk {
+        for t in desk.tabs.iter_mut() {
             if t.cfg.id.as_deref() == Some(name) {
                 t.cfg.drives = aim.map(str::to_string);
             }
@@ -5239,14 +5239,14 @@ pub fn remember_aim(
 /// id back into the number the screen speaks in. There is no separate "default
 /// target" setting to reconcile with — one place holds the answer.
 pub fn aim_of(
-    ws: Option<&config::Workspace>,
+    desk: Option<&config::Desk>,
     surfaces: &[Surface],
     tabs: &[Tab],
     surface: usize,
 ) -> Option<usize> {
     let t = session_at(surfaces, surface).and_then(|i| tabs.get(i))?;
     let me = t.id.clone()?;
-    let aim = ws?
+    let aim = desk?
         .tabs
         .iter()
         .find(|x| x.cfg.id.as_deref() == Some(me.as_str()))?
@@ -5699,9 +5699,9 @@ pub fn blocked_said(why: &folders::Blocked) -> String {
 /// Taken from the folders that are open, because those are the projects this
 /// person actually works on -- and each is named by its remote, which is the
 /// same string on every machine and therefore the thing worth writing down.
-pub fn projects_here(ws: Option<&config::Workspace>) -> Vec<crate::uistate::Project> {
+pub fn projects_here(desk: Option<&config::Desk>) -> Vec<crate::uistate::Project> {
     let mut out: Vec<crate::uistate::Project> = Vec::new();
-    for f in ws.map(|w| w.folders.as_slice()).unwrap_or_default() {
+    for f in desk.map(|w| w.folders.as_slice()).unwrap_or_default() {
         let Some(cwd) = f.cwd.as_deref() else { continue };
         let Some(url) = crate::repo::remote_url_of(cwd) else { continue };
         let origin = folders::scrub(&url);
@@ -5850,7 +5850,7 @@ pub fn start_remote_bg(
                     }
                     Err(e) => {
                         errors.push(crate::i18n::tp(
-                            "err.ws.remote_ui",
+                            "err.desk.remote_ui",
                             &[("e", &e.to_string())],
                         ));
                         None
@@ -5862,7 +5862,7 @@ pub fn start_remote_bg(
         Err(e) => {
             let _ = tx.send((
                 None,
-                vec![crate::i18n::tp("err.ws.remote_ui", &[("e", &e.to_string())])],
+                vec![crate::i18n::tp("err.desk.remote_ui", &[("e", &e.to_string())])],
             ));
         }
     }
@@ -6127,13 +6127,13 @@ pub fn hand_line(
 ///
 /// Don't follow right after a human touches the screen. Getting yanked away
 /// mid-read is the worst outcome, so once someone touches it, stay quiet for a while.
-/// Which workspace to start from.
+/// Which desk to start from.
 ///
 /// What's remembered is the name, not the number. Numbers shift with
 /// reordering or additions, which would turn "resume where I left off
 /// yesterday" into something else entirely.
 /// Falls back to the first one if not found (e.g. it was deleted or renamed).
-pub fn starting_workspace(enabled: bool, last: Option<&str>, names: &[String]) -> usize {
+pub fn starting_desk(enabled: bool, last: Option<&str>, names: &[String]) -> usize {
     if !enabled {
         return 0;
     }
@@ -6916,10 +6916,10 @@ pub fn keys_for(ev: &shikisha_shared::Ev) -> Vec<Event> {
         // The board's menu is a plain keystroke while looking at INDEX.
         // Adding the prefix key would mean only characters present on both sides work.
         Ev::Menu { key } => key.chars().next().map(plain).map(|k| vec![k]).unwrap_or_default(),
-        // The workspace-switcher button. Prefixed (Ctrl+B w) so it opens the
+        // The desk-switcher button. Prefixed (Ctrl+B w) so it opens the
         // list no matter which tab is showing — a bare 'w' would be typed into
         // the visible session instead (the old Menu "w" bug: "wwww").
-        Ev::OpenWs => prefixed('w'),
+        Ev::OpenDesk => prefixed('w'),
         Ev::Stop => prefixed('x'),
         // The status bar's ↻. Same key a person at the window would press, so the
         // restart itself (cancel this tab's loops, kill, relaunch) lives in one place
@@ -6995,7 +6995,7 @@ pub fn copy_text(text: &str) -> String {
     }
 }
 
-/// How many tabs are busy across every workspace: what a shell shows a person
+/// How many tabs are busy across every desk: what a shell shows a person
 /// before it asks whether to quit anyway
 pub fn quit_busy(tabs: &[Tab], parked: &[Vec<Tab>]) -> usize {
     let busy = |t: &Tab| t.state == TabState::Busy;
@@ -7570,10 +7570,10 @@ mod tests {
 
     /// Settings, as a test writes them. `<sh>` stands for "something that
     /// holds a terminal open" and becomes whatever this system calls that
-    fn workspace_from(json: &str) -> config::Workspace {
+    fn desk_from_json(json: &str) -> config::Desk {
         let json = json.replace("<sh>", &crate::test_shell());
         let cfg: config::Config = serde_json::from_str(&json).unwrap();
-        cfg.resolve_workspaces().0.into_iter().next().unwrap()
+        cfg.resolve_desks().0.into_iter().next().unwrap()
     }
 
 
@@ -7589,15 +7589,15 @@ mod tests {
     /// silent by design: a tab starting fresh is what a tab normally does.
     #[test]
     fn a_tab_is_launched_back_into_what_it_was_saying() {
-        let ws = workspace_from(
-            r#"{"workspaces":[{"name":"W","folders":[{"tabs":[{"name":"AGENT","command":"claude"}]}]}]}"#,
+        let desk = desk_from_json(
+            r#"{"desks":[{"name":"W","folders":[{"tabs":[{"name":"AGENT","command":"claude"}]}]}]}"#,
         );
-        let cfg = &ws.tabs[0].cfg;
+        let cfg = &desk.tabs[0].cfg;
         let argv = vec!["claude".to_string()];
         let here = Some(std::path::PathBuf::from("D:\\Work"));
         let remembered = |program: &str, session: &str| crate::lastsession::Saved {
             version: 1,
-            workspaces: vec![crate::lastsession::SavedWs {
+            desks: vec![crate::lastsession::SavedWs {
                 name: "W".into(),
                 panes: None,
                 tabs: vec![crate::lastsession::SavedTab {
@@ -7611,7 +7611,7 @@ mod tests {
             }],
         };
         let plan = |saved: &crate::lastsession::Saved| {
-            carried_conversation(Some(saved), &ws, &argv, cfg, &here, "AGENT")
+            carried_conversation(Some(saved), &desk, &argv, cfg, &here, "AGENT")
         };
 
         // This tab was told to start clean, so nothing is carried however well
@@ -7620,7 +7620,7 @@ mod tests {
         let mut off = cfg.clone();
         off.restore_conversation = Some(false);
         assert_eq!(
-            carried_conversation(Some(&known), &ws, &argv, &off, &here, "AGENT"),
+            carried_conversation(Some(&known), &desk, &argv, &off, &here, "AGENT"),
             tab::Resume::Fresh,
             "設定を切っても引き継いでいる"
         );
@@ -7645,7 +7645,7 @@ mod tests {
         assert_eq!(
             carried_conversation(
                 Some(&remembered("gemini", "11111111-1111-4111-8111-111111111111")),
-                &ws,
+                &desk,
                 &gemini,
                 cfg,
                 &here,
@@ -7656,7 +7656,7 @@ mod tests {
         );
 
         // Nothing remembered at all -- a tab that is new since last time
-        let empty = crate::lastsession::Saved { version: 1, workspaces: Vec::new() };
+        let empty = crate::lastsession::Saved { version: 1, desks: Vec::new() };
         assert_eq!(plan(&empty), tab::Resume::Fresh);
     }
 
@@ -7668,13 +7668,13 @@ mod tests {
     /// open the wrong conversation.
     #[test]
     fn a_reopened_conversation_outranks_the_remembered_one() {
-        let ws = workspace_from(
-            r#"{"workspaces":[{"name":"W","folders":[{"tabs":[
+        let desk = desk_from_json(
+            r#"{"desks":[{"name":"W","folders":[{"tabs":[
                 {"name":"AGENT","command":"claude","resume":"picked-from-the-vault"}
             ]}]}]}"#,
         );
         assert_eq!(
-            resume_plan_of(ws.tabs[0].cfg.resume.as_deref()),
+            resume_plan_of(desk.tabs[0].cfg.resume.as_deref()),
             tab::Resume::Id(tab::Session {
                 id: "picked-from-the-vault".into(),
                 source: tab::SessionSource::Store,
@@ -7746,12 +7746,12 @@ mod tests {
         assert!(k.modifiers.is_empty());
     }
 
-    /// The workspace-switcher button must arrive prefixed (Ctrl+B w) so it opens
+    /// The desk-switcher button must arrive prefixed (Ctrl+B w) so it opens
     /// the list from any tab. The old Menu "w" path was a plain 'w', which just
     /// got typed into whatever session was showing ("wwww") instead of opening.
     #[test]
-    fn the_workspace_button_arrives_prefixed() {
-        let evs = super::keys_for(&shikisha_shared::Ev::OpenWs);
+    fn the_desk_button_arrives_prefixed() {
+        let evs = super::keys_for(&shikisha_shared::Ev::OpenDesk);
         assert_eq!(evs.len(), 2, "前置キー + 'w' の2打鍵");
         let Event::Key(k) = &evs[0] else { panic!("前置キーが打鍵でない") };
         assert_eq!(k.code, KeyCode::Char('b'));
@@ -7870,7 +7870,7 @@ mod tests {
     /// The status bar's restart button must land on the same keystroke a person
     /// at the window would press, and must carry the prefix so it works from
     /// whichever tab is showing. Without the prefix an 'r' would simply be typed
-    /// into the session (the "wwww" bug the workspace button already ran into).
+    /// into the session (the "wwww" bug the desk button already ran into).
     #[test]
     fn the_restart_button_arrives_prefixed() {
         let evs = super::keys_for(&shikisha_shared::Ev::Restart);
@@ -7975,15 +7975,15 @@ mod tests {
     /// every time config is read, so it never drifts out of sync even after reordering.
     #[test]
     fn the_scripts_are_numbered_the_way_the_screen_is() {
-        let ws = ws_from(&[
+        let desk = desk_from_rows(&[
             ("HTML解析", "html", "browser https://example.com/"),
             ("エンジニア", "ai", "claude"),
         ]);
-        let mut ws = ws;
-        ws.tabs[0].cfg.automation = Some("scripts/html".into());
-        ws.tabs[1].cfg.automation = Some("scripts/ai".into());
+        let mut desk = desk;
+        desk.tabs[0].cfg.automation = Some("scripts/html".into());
+        desk.tabs[1].cfg.automation = Some("scripts/ai".into());
 
-        let got = automation_by_pane(&ws);
+        let got = automation_by_pane(&desk);
         // Ordered by screen number: the browser is 1, claude is 2
         assert_eq!(
             got,
@@ -7998,17 +7998,17 @@ mod tests {
     /// A discussion participant's/referee's tab id must resolve correctly to a screen number
     #[test]
     fn discuss_agents_resolve_to_panes() {
-        let ws = ws_from(&[
+        let desk = desk_from_rows(&[
             ("参加A", "ai1", "claude"),
             ("参加B", "ai2", "codex"),
             ("審判", "ref", "claude"),
         ]);
-        assert_eq!(surface_of_id(&ws, "ai1"), Some(1));
-        assert_eq!(surface_of_id(&ws, "ai2"), Some(2));
-        assert_eq!(surface_of_id(&ws, "ref"), Some(3));
-        assert_eq!(surface_of_id(&ws, "いない"), None);
+        assert_eq!(surface_of_id(&desk, "ai1"), Some(1));
+        assert_eq!(surface_of_id(&desk, "ai2"), Some(2));
+        assert_eq!(surface_of_id(&desk, "ref"), Some(3));
+        assert_eq!(surface_of_id(&desk, "いない"), None);
         // The name on screen is a label, not an address: two tabs may share one
-        assert_eq!(surface_of_id(&ws, "審判"), None);
+        assert_eq!(surface_of_id(&desk, "審判"), None);
     }
 
     /// An aim is not automation, and must not take a tab's own automation away.
@@ -8020,15 +8020,15 @@ mod tests {
     /// and handed back when it is let go, so the two no longer fight.
     #[test]
     fn an_aim_does_not_replace_the_tabs_own_automation() {
-        let mut ws = ws_from(&[
+        let mut desk = desk_from_rows(&[
             ("エージェント", "ai", "claude"),
             ("ページ", "br", "browser https://example.com/"),
         ]);
-        ws.tabs[0].cfg.drives = Some("br".into());
-        ws.tabs[0].cfg.automation = Some("scripts/mine".into());
+        desk.tabs[0].cfg.drives = Some("br".into());
+        desk.tabs[0].cfg.automation = Some("scripts/mine".into());
 
         assert_eq!(
-            automation_by_pane(&ws),
+            automation_by_pane(&desk),
             vec![(1, TabAuto::Path("scripts/mine".to_string()))],
             "狙いを持つタブが自分の自動化を奪われている"
         );
@@ -8042,14 +8042,14 @@ mod tests {
     /// "HTML should be first in order — why did it end up second?"
     #[test]
     fn the_order_on_screen_is_the_order_in_the_settings() {
-        let ws = ws_from(&[
+        let desk = desk_from_rows(&[
             ("HTML解析", "html", "browser https://example.com/"),
             ("エンジニア", "ai", "claude"),
         ]);
         let tabs = ["エンジニア"];
         let hosted = vec!["html".to_string()];
 
-        let surfaces = surfaces_of(Some(&ws), &tabs, &hosted, &[]);
+        let surfaces = surfaces_of(Some(&desk), &tabs, &hosted, &[]);
         assert_eq!(
             surfaces,
             vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
@@ -8062,7 +8062,7 @@ mod tests {
         assert_eq!(surface_at(&surfaces, 1), 2);
     }
 
-    fn ws_from(rows: &[(&str, &str, &str)]) -> config::Workspace {
+    fn desk_from_rows(rows: &[(&str, &str, &str)]) -> config::Desk {
         let tabs = rows
             .iter()
             .map(|(name, id, cmd)| {
@@ -8078,7 +8078,7 @@ mod tests {
                 }
             })
             .collect();
-        config::Workspace {
+        config::Desk {
             name: "試験".into(),
             id: "shiken".into(),
             folders: vec![config::Folder::default()],
@@ -8100,12 +8100,12 @@ mod tests {
     /// state, not by moving the slot.
     #[test]
     fn a_browser_keeps_its_place_even_before_it_opens() {
-        let ws = ws_from(&[
+        let desk = desk_from_rows(&[
             ("HTML解析", "html", "browser https://example.com/"),
             ("エンジニア", "ai", "claude"),
         ]);
         let tabs = ["エンジニア"];
-        let surfaces = surfaces_of(Some(&ws), &tabs, &[], &[]);
+        let surfaces = surfaces_of(Some(&desk), &tabs, &[], &[]);
         assert_eq!(
             surfaces,
             vec![Surface::Browser { key: "html".into(), name: "HTML解析".into() }, Surface::Session(0)],
@@ -8118,10 +8118,10 @@ mod tests {
     /// later, or a tab launched via arguments.
     #[test]
     fn what_the_settings_do_not_mention_goes_last() {
-        let ws = ws_from(&[("エンジニア", "ai", "claude")]);
+        let desk = desk_from_rows(&[("エンジニア", "ai", "claude")]);
         let tabs = ["エンジニア", "あとから"];
         let hosted = vec!["settings".to_string()];
-        let surfaces = surfaces_of(Some(&ws), &tabs, &hosted, &[]);
+        let surfaces = surfaces_of(Some(&desk), &tabs, &hosted, &[]);
         assert_eq!(
             surfaces,
             vec![
@@ -8580,7 +8580,7 @@ mod tests {
 
     /// On first run, INDEX must show onboarding guidance (never leave the user
     /// unsure what to do).
-    /// Launching must start from the workspace that was previously open.
+    /// Launching must start from the desk that was previously open.
     ///
     /// Always starting from the first one means extra switching effort every
     /// launch whenever what you want to try is the second one. During
@@ -8593,7 +8593,7 @@ mod tests {
             .collect();
 
         assert_eq!(
-            starting_workspace(true, Some("たまごカート編集部"), &names),
+            starting_desk(true, Some("たまごカート編集部"), &names),
             1,
             "前に開いていたものに戻らない"
         );
@@ -8604,20 +8604,20 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(
-            starting_workspace(true, Some("たまごカート編集部"), &reordered),
+            starting_desk(true, Some("たまごカート編集部"), &reordered),
             1
         );
         assert_eq!(
-            starting_workspace(true, Some("指揮者"), &reordered),
+            starting_desk(true, Some("指揮者"), &reordered),
             2,
-            "並べ替えで別のワークスペースを開いている"
+            "並べ替えで別のデスクを開いている"
         );
 
         // Deleted, renamed, no memory of it, or disabled -> falls back to the first one
-        assert_eq!(starting_workspace(true, Some("消えた"), &names), 0);
-        assert_eq!(starting_workspace(true, None, &names), 0);
-        assert_eq!(starting_workspace(false, Some("検証"), &names), 0, "切ってある");
-        assert_eq!(starting_workspace(true, Some("指揮者"), &[]), 0, "空でも落ちない");
+        assert_eq!(starting_desk(true, Some("消えた"), &names), 0);
+        assert_eq!(starting_desk(true, None, &names), 0);
+        assert_eq!(starting_desk(false, Some("検証"), &names), 0, "切ってある");
+        assert_eq!(starting_desk(true, Some("指揮者"), &[]), 0, "空でも落ちない");
     }
 
 
@@ -8705,26 +8705,26 @@ mod tests {
 
     #[test]
     fn hot_reload_applies_changes_without_restarting_untouched_tabs() {
-        let ws0 = workspace_from(
-            r#"{"workspaces":[{"name":"T","folders":[{"tabs":[
+        let desk0 = desk_from_json(
+            r#"{"desks":[{"name":"T","folders":[{"tabs":[
                 {"name":"one","command":"<sh>"},
                 {"name":"two","command":"<sh>"}
             ]}]}]}"#,
         );
         let mut tabs = Vec::new();
         let mut errs = Vec::new();
-        spawn_workspace(&ws0, 24, 80, &mut tabs, &mut errs, None);
+        spawn_desk(&desk0, 24, 80, &mut tabs, &mut errs, None);
         assert_eq!(tabs.len(), 2, "{errs:?}");
         let one_before = tabs[0].signature();
 
         // one: gains a lock (applies immediately) / two: removed / three: added
-        let ws1 = workspace_from(
-            r#"{"workspaces":[{"name":"T","folders":[{"tabs":[
+        let desk1 = desk_from_json(
+            r#"{"desks":[{"name":"T","folders":[{"tabs":[
                 {"name":"one","command":"<sh>","locked":true},
                 {"name":"three","command":"<sh>"}
             ]}]}]}"#,
         );
-        let msg = apply_ws_config(&mut tabs, &ws1, 24, 80, &mut errs);
+        let msg = apply_ws_config(&mut tabs, &desk1, 24, 80, &mut errs);
 
         assert_eq!(
             tabs.iter().map(|t| t.title.clone()).collect::<Vec<_>>(),
@@ -8737,13 +8737,13 @@ mod tests {
         assert!(msg.contains("added 1") && msg.contains("stopped 1"), "{msg}");
 
         // A change to the encoding requires a rebuild, so it gets deferred and flagged
-        let ws2 = workspace_from(
-            r#"{"workspaces":[{"name":"T","folders":[{"tabs":[
+        let desk2 = desk_from_json(
+            r#"{"desks":[{"name":"T","folders":[{"tabs":[
                 {"name":"one","command":"<sh>","encoding":"shift_jis"},
                 {"name":"three","command":"<sh>"}
             ]}]}]}"#,
         );
-        let msg2 = apply_ws_config(&mut tabs, &ws2, 24, 80, &mut errs);
+        let msg2 = apply_ws_config(&mut tabs, &desk2, 24, 80, &mut errs);
         assert!(tabs[0].needs_restart, "要再起動の印が付く");
         assert!(msg2.contains("1 need a restart"), "{msg2}");
 

@@ -266,11 +266,11 @@ mod tests {
     fn with_nobody_connected_a_page_is_drawn_on_this_machine() {
         let placed = Placed::new();
         placed.prefer(Draw::There);
-        assert_eq!(placed.side(Some("ws/p")), Draw::Here, "開く前から向こう扱い");
+        assert_eq!(placed.side(Some("desk/p")), Draw::Here, "開く前から向こう扱い");
         // Opening needs a browser, which a test machine may not have -- what
         // is being checked is which side was asked, which the error says
         let refused = placed
-            .open_child("ws/p", "https://example.com/", (0, 0, 800, 600), BrowserProfile::shared_default());
+            .open_child("desk/p", "https://example.com/", (0, 0, 800, 600), BrowserProfile::shared_default());
         let said = refused.map(|()| String::new()).unwrap_or_else(|e| e.to_string());
         assert!(
             !said.contains(&crate::i18n::t("err.far.nobody")),
@@ -347,7 +347,7 @@ mod tests {
     fn a_page_nobody_opened_is_answered_by_the_side_that_is_always_here() {
         let placed = Placed::new();
         let err = placed
-            .href(Some("ws/never"), 1_000)
+            .href(Some("desk/never"), 1_000)
             .unwrap_err()
             .to_string();
         assert!(

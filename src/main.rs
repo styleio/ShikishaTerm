@@ -1142,9 +1142,9 @@ impl WinSurface {
                     let json = serde_json::to_string(&state).unwrap_or_default();
                     if w.last.is_none() {
                         shikisha_core::append_hook_log(&format!(
-                            "Sending state: {} tabs, workspace \"{}\", {} chars",
+                            "Sending state: {} tabs, desk \"{}\", {} chars",
                             state.tabs.len(),
-                            state.workspace,
+                            state.desk,
                             json.len()
                         ));
                     }

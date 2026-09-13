@@ -105,8 +105,8 @@ pub const REMOTE_CLIENT_HEADER: &str = "X-Remote-Client";
 /// left off.
 const NATIVE_DIALOG_PATHS: [&str; 3] = [
     "/api/pick",
-    "/api/workspace/export",
-    "/api/workspace/import",
+    "/api/desk/export",
+    "/api/desk/import",
 ];
 
 fn header_value(req: &tiny_http::Request, name: &'static str) -> String {
@@ -281,7 +281,7 @@ fn cli_help(prog: &str) -> Result<String, String> {
 /// Safely resolves the ?file=... path.
 /// Only allows .json files under the same directory as the config file,
 /// and rejects absolute paths or parent-directory references (..) (path traversal countermeasure)
-fn safe_workspace_path(
+fn safe_desk_path(
     url: &str,
     config_path: &std::path::Path,
 ) -> Option<std::path::PathBuf> {
@@ -1299,10 +1299,10 @@ fn handle(
                 v.get(k).and_then(|x| x.as_str()).unwrap_or_default().trim().to_string()
             };
             let some = |t: String| (!t.is_empty()).then_some(t);
-            let ws = text("ws");
+            let desk = text("desk");
             let tab = text("tab");
             let under = |what: &str| {
-                (!ws.is_empty() && !tab.is_empty()).then(|| format!("ssh/{ws}/{tab}/{what}"))
+                (!desk.is_empty() && !tab.is_empty()).then(|| format!("ssh/{desk}/{tab}/{what}"))
             };
             let jump = v.get("jump").filter(|j| {
                 j.get("host").and_then(|h| h.as_str()).unwrap_or("").trim() != ""
@@ -1578,17 +1578,17 @@ fn handle(
             }
             }
         }
-        // Read/write a workspace definition file (external file reference)
-        ("GET", "/api/workspace") => {
-            let Some(p) = safe_workspace_path(req.url(), config_path) else {
+        // Read/write a desk definition file (external file reference)
+        ("GET", "/api/desk") => {
+            let Some(p) = safe_desk_path(req.url(), config_path) else {
                 return req
                     .respond(Response::from_string("bad path").with_status_code(400))
                     .map_err(Into::into);
             };
             serve_user_json(req, &p, r#"{"tabs":[]}"#)?;
         }
-        ("POST", "/api/workspace") => {
-            let Some(p) = safe_workspace_path(req.url(), config_path) else {
+        ("POST", "/api/desk") => {
+            let Some(p) = safe_desk_path(req.url(), config_path) else {
                 return req
                     .respond(Response::from_string("bad path").with_status_code(400))
                     .map_err(Into::into);
@@ -1763,9 +1763,9 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
-        // Export a single workspace, scripts and all, as one file.
+        // Export a single desk, scripts and all, as one file.
         // Addressed by index into the saved config — not the screen's in-progress edits
-        ("POST", "/api/workspace/export") => {
+        ("POST", "/api/desk/export") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
                 req.respond(Response::from_string("payload too large").with_status_code(413))?;
@@ -1773,14 +1773,14 @@ fn handle(
             };
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let index = p.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let resp = match crate::wspack::pack(config_path, index) {
+            let resp = match crate::deskpack::pack(config_path, index) {
                 Ok((name, text)) => {
                     let picked = picker().and_then(|p| {
                         p.save(
-                            &crate::i18n::t("settings.ws.export.title"),
+                            &crate::i18n::t("settings.desk.export.title"),
                             config_path.parent(),
                             &name,
-                            (&crate::i18n::t("settings.ws.file_kind"), "json"),
+                            (&crate::i18n::t("settings.desk.file_kind"), "json"),
                         )
                     });
                     match picked {
@@ -1809,19 +1809,19 @@ fn handle(
                 ),
             )?;
         }
-        // Import an exported file. Adds one workspace to the config
-        ("POST", "/api/workspace/import") => {
+        // Import an exported file. Adds one desk to the config
+        ("POST", "/api/desk/import") => {
             let picked = picker().and_then(|p| {
                 p.open(
-                    &crate::i18n::t("settings.ws.import.title"),
+                    &crate::i18n::t("settings.desk.import.title"),
                     config_path.parent(),
-                    (&crate::i18n::t("settings.ws.file_kind"), "json"),
+                    (&crate::i18n::t("settings.desk.file_kind"), "json"),
                 )
             });
             let resp = match picked {
                 Some(path) => match std::fs::read_to_string(&path)
                     .map_err(anyhow::Error::from)
-                    .and_then(|t| crate::wspack::unpack(config_path, &t))
+                    .and_then(|t| crate::deskpack::unpack(config_path, &t))
                 {
                     Ok(placed) => serde_json::json!({
                         "ok": true,
@@ -2048,8 +2048,8 @@ fn handle(
             let ok = crate::browserstate::delete_snapshot(label).is_ok();
             req.respond(json_resp(serde_json::json!({ "ok": ok })))?;
         }
-        // Which GitHub account answers for one workspace, and for how much
-        // longer. Asked per workspace, because the token is now the workspace's
+        // Which GitHub account answers for one desk, and for how much
+        // longer. Asked per desk, because the token is now the desk's
         // first: the answer for the company's repositories is not the answer for
         // somebody's own.
         //
@@ -2058,18 +2058,18 @@ fn handle(
         // a row that stops showing pull request numbers looks exactly like a
         // branch that has none
         ("GET", "/api/github") => {
-            let ws = query_param(req.url(), "ws")
+            let desk = query_param(req.url(), "desk")
                 .map(|c| percent_decode(&c))
                 .unwrap_or_default();
-            let own = match ws.trim().is_empty() {
+            let own = match desk.trim().is_empty() {
                 true => None,
                 false => {
                     let pw = password.lock().unwrap().clone();
                     crate::config::secret_value(
                         &secrets_file(config_path),
                         pw.as_deref(),
-                        &crate::config::workspace_secret_key(
-                            ws.trim(),
+                        &crate::config::desk_secret_key(
+                            desk.trim(),
                             crate::config::GITHUB_SECRET,
                         ),
                     )
@@ -2574,7 +2574,7 @@ const PAGE: &str = r##"<!doctype html>
  .headlinks { display:flex; align-items:center; gap:var(--s3); }
  /* Drawer handle and current-section label: phone only (see the narrow block). */
  .navtoggle { display:none; font-size:17px; line-height:1; padding:6px 10px; }
- /* Where you are, in two parts: the workspace gives way first (it ellipsises),
+ /* Where you are, in two parts: the desk gives way first (it ellipsises),
     the thing actually being edited always stays whole. */
  #crumb { display:none; align-items:baseline; gap:var(--s2); min-width:0;
    font-weight:600; font-size:14px; white-space:nowrap; }
@@ -2633,22 +2633,22 @@ const PAGE: &str = r##"<!doctype html>
    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
  .navgroup { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
    margin:var(--s4) var(--s3) var(--s1); }
- /* The sign at the top: which workspace everything under here belongs to.
-    Pressing the name (or the gear) opens that workspace's own page; the caret
+ /* The sign at the top: which desk everything under here belongs to.
+    Pressing the name (or the gear) opens that desk's own page; the caret
     is how you go to another one */
- .wsbanner { display:flex; align-items:center; gap:var(--s1); padding:2px;
+ .deskbanner { display:flex; align-items:center; gap:var(--s1); padding:2px;
    border-radius:var(--r-ctl); }
- .wsbanner.sel { background:var(--panel2); }
- .wsbanner .wsname { flex:0 1 auto; min-width:0; display:flex; align-items:center;
+ .deskbanner.sel { background:var(--panel2); }
+ .deskbanner .wsname { flex:0 1 auto; min-width:0; display:flex; align-items:center;
    gap:var(--s2); background:none; border:0; color:var(--text); font-size:14px;
    font-weight:600; padding:6px 4px; cursor:pointer; text-align:left; min-height:32px; }
- .wsbanner .wsname:hover { background:var(--panel); border-radius:var(--r-ctl); }
- .wsbanner .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .deskbanner .wsname:hover { background:var(--panel); border-radius:var(--r-ctl); }
+ .deskbanner .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
  .wsgap { flex:1 1 auto; }
  .wspick { font-size:12px; color:var(--dim); }
- .wsbanner:hover .wspick { color:var(--text); }
- /* The initial, as a plate. A workspace has no colour of its own, so this is
-    the one thing on the row that says "a workspace" rather than "a name" */
+ .deskbanner:hover .wspick { color:var(--text); }
+ /* The initial, as a plate. A desk has no colour of its own, so this is
+    the one thing on the row that says "a desk" rather than "a name" */
  .wsbadge { flex:none; width:22px; height:22px; border-radius:var(--r-chip);
    background:var(--raise); color:var(--dim); font-size:11px; font-weight:600;
    display:flex; align-items:center; justify-content:center; }
@@ -2658,7 +2658,7 @@ const PAGE: &str = r##"<!doctype html>
  .approw.sel { color:var(--text); }
  .approw .go { flex:none; color:var(--muted); }
  .appitem { padding-left:var(--s4); }
- /* Choosing another workspace. Floats, so the list under it does not move */
+ /* Choosing another desk. Floats, so the list under it does not move */
  .fmenu { position:fixed; z-index:60; min-width:220px; max-width:280px;
    background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
    box-shadow:0 8px 24px #0007; padding:4px; display:flex; flex-direction:column; }
@@ -3225,7 +3225,7 @@ const GIT_MESSAGE_LUA = __GITLUA__;
 // The branches guarded until somebody says otherwise. Poured in from the app
 // so the box shows what is really running, not a copy of it kept here
 const PROTECT_DEFAULT = __PROTECT__;
-// The name this workspace's GitHub token is filed under. Poured in from the one
+// The name this desk's GitHub token is filed under. Poured in from the one
 // place that decides it, so the card that offers to set it and the program that
 // reaches for it cannot drift apart
 const GITHUB_SECRET = __GHSECRET__;
@@ -3235,11 +3235,11 @@ const protectList = text => (text || "").split(/[\s,]+/).filter(Boolean);
 const protectText = list => (list || []).join(" ");
 // What the app guards where a folder has not said anything of its own
 // The list a folder inherits when it has said nothing of its own: its
-// workspace's, or the app's for a workspace that has said nothing either. The
+// desk's, or the app's for a desk that has said nothing either. The
 // same order the program settles at launch, so the greyed-out box on a folder's
 // page shows the names that will actually guard it
-const protectOf = ws => {
-  const g = (ws && ws.git) || current.git || {};
+const protectOf = desk => {
+  const g = (desk && desk.git) || current.git || {};
   return Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT;
 };
 const protectApp = () => protectOf(null);
@@ -3248,15 +3248,15 @@ const fill = (s, args) => Object.entries(args)
   .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
 const api = (m, b) => fetch("/api/config", {
    method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
-const wsApi = (m, file, b) => fetch("/api/workspace?file=" + encodeURIComponent(file), {
+const deskApi = (m, file, b) => fetch("/api/desk?file=" + encodeURIComponent(file), {
    method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
 
 let current = {};        // Contents of config.json (holds the base settings)
-let wss = [];            // Workspaces and tabs
-let sel = {ws:0, tab:null, global:true, section:"basic"};
+let desks = [];            // Desks and tabs
+let sel = {desk:0, tab:null, global:true, section:"basic"};
 // Put one global card on screen, by id, with its entry in the list in view.
 function goSection(id, block) {
-  sel = {ws:sel.ws, tab:null, global:true, section:id};
+  sel = {desk:sel.desk, tab:null, global:true, section:id};
   render();
   const cur = document.querySelector(".navitem.sel");
   if (cur) cur.scrollIntoView({block: block || "nearest"});
@@ -3348,7 +3348,7 @@ function sfield(label, control, hint) {
     hint ? el("div", {class:"hint"}, hint) : null);
 }
 
-// A credential this tab needs, filed under the workspace and the tab.
+// A credential this tab needs, filed under the desk and the tab.
 //
 // Nothing about it is written into the settings -- not even a reference. The
 // name follows from where it is, so it is never typed twice and a tab that is
@@ -3358,13 +3358,13 @@ function secretField(t, which, label, hint, describe) {
   const input = el("input", {type:"password", placeholder:hint});
   const note = el("span", {class:"hint"});
   const nameOf = () => {
-    const ws = wss[sel.ws];
-    const w = (ws && (ws.id || "").trim()), tid = (t.id || "").trim();
+    const desk = desks[sel.desk];
+    const w = (desk && (desk.id || "").trim()), tid = (t.id || "").trim();
     return w && tid ? "ssh/" + w + "/" + tid + "/" + which : "";
   };
   const refresh = async () => {
     const k = nameOf();
-    if (!k) { note.textContent = T["settings.secrets.ws_needs_id"]; return; }
+    if (!k) { note.textContent = T["settings.secrets.desk_needs_id"]; return; }
     const j = await fetchSecrets();
     const has = j && (j.secrets || []).some(x => x.key === k);
     note.textContent = has ? T["settings.ssh.password.set"] : "";
@@ -3372,7 +3372,7 @@ function secretField(t, which, label, hint, describe) {
   setTimeout(refresh, 0);
   const go = el("button", {onclick: async () => {
     const k = nameOf();
-    if (!k) { toast(T["settings.secrets.ws_needs_id"], true); return; }
+    if (!k) { toast(T["settings.secrets.desk_needs_id"], true); return; }
     if (!input.value) { toast(T["settings.secrets.value_required"], true); return; }
     const r = await saveSecret({key: k, value: input.value, description: describe(),
                                 human: true, ai: false, urls: []});
@@ -3539,10 +3539,10 @@ function row(label, ...kids) { return el("div", {class:"row"}, el("label", {}, l
 function card(title, ...kids) { return el("div", {class:"card"}, el("h2", {}, title), ...kids); }
 
 // ── Tab id handling ────────────────────────────────────
-// Collects existing tab ids within a workspace (falls back to the display name if there's no id).
+// Collects existing tab ids within a desk (falls back to the display name if there's no id).
 // Used as candidates for reference fields (discussion participants/judge/moderator, stop-condition target tab)
-function tabIds(ws) {
-  return [...new Set((ws.tabs || [])
+function tabIds(desk) {
+  return [...new Set((desk.tabs || [])
     .map(t => (t.id || t.name || "").trim())
     .filter(Boolean))];
 }
@@ -3570,22 +3570,22 @@ function freeId(base, used) {
   if (!used.has(base)) return base;
   for (let n = 2; ; n++) { const c = base + "-" + n; if (!used.has(c)) return c; }
 }
-// Turns base into an id that doesn't collide within ws (-2, -3, ... if already used). self excludes itself
-function uniqueId(ws, base, self) {
-  return freeId(base, new Set((ws.tabs || [])
+// Turns base into an id that doesn't collide within desk (-2, -3, ... if already used). self excludes itself
+function uniqueId(desk, base, self) {
+  return freeId(base, new Set((desk.tabs || [])
     .filter(t => t !== self).map(t => (t.id || "").trim()).filter(Boolean)));
 }
-// The same, for a workspace's own name: automation and the secret store file it
-// under this, so it has to be unlike every other workspace's, not just unlike
+// The same, for a desk's own name: automation and the secret store file it
+// under this, so it has to be unlike every other desk's, not just unlike
 // its neighbours in a folder
 function uniqueWsId(base, self) {
-  return freeId(base, new Set(wss
+  return freeId(base, new Set(desks
     .filter(w => w !== self).map(w => (w.id || "").trim()).filter(Boolean)));
 }
 // What a tab would be called by automation if nobody says otherwise: its
 // display name, or -- for a tab that has none, and is therefore shown by its
 // command -- the command. config.rs settles unnamed tabs the same way, and the
-// two have to agree: a workspace opened in the settings screen must not come
+// two have to agree: a desk opened in the settings screen must not come
 // out under a different name than the one the app filed its secrets beside
 function inferredTabId(t) {
   // The program, not the whole command line: two browser tabs become "browser"
@@ -3597,8 +3597,8 @@ function inferredTabId(t) {
 // Fills in an id for every tab that has none, a safety net at save time: a tab
 // with no id at all cannot be pointed at -- not by automation, and not by the
 // gear that opens its settings. Editable afterwards like any other.
-function ensureIds(ws) {
-  const tabs = ws.tabs || [];
+function ensureIds(desk) {
+  const tabs = desk.tabs || [];
   const used = new Set(tabs.map(t => (t.id || "").trim()).filter(Boolean));
   for (const t of tabs) {
     if ((t.id || "").trim()) continue;
@@ -3606,12 +3606,12 @@ function ensureIds(ws) {
     t.id = id; used.add(id);
   }
 }
-// Every workspace gets a name of its own before writing, for the same reason
+// Every desk gets a name of its own before writing, for the same reason
 // every tab does: what refers to it must not change when the label does
 function ensureWsIds() {
-  for (const w of wss) {
+  for (const w of desks) {
     if ((w.id || "").trim()) continue;
-    w.id = uniqueWsId(slugId(w.name) || "workspace", w);
+    w.id = uniqueWsId(slugId(w.name) || "desk", w);
   }
 }
 // The automation names that two things claim at once. Saving stops on these:
@@ -3619,7 +3619,7 @@ function ensureWsIds() {
 function collidingIds() {
   const out = [];
   const seenWs = new Set();
-  for (const w of wss) {
+  for (const w of desks) {
     const id = (w.id || "").trim();
     if (id && seenWs.has(id)) out.push(id); else seenWs.add(id);
     const seen = new Set();
@@ -3632,10 +3632,10 @@ function collidingIds() {
 }
 // A dropdown for picking a tab id (candidates = existing tab ids). emptyLabel is the label for the empty option.
 // Pass exclude(t)=>bool when tabs that are aimed at something should be excluded
-function idSelect(ws, val, emptyLabel, onChange, exclude) {
+function idSelect(desk, val, emptyLabel, onChange, exclude) {
   const s = el("select");
   s.append(el("option", {value:""}, emptyLabel));
-  const ids = [...new Set((ws.tabs || [])
+  const ids = [...new Set((desk.tabs || [])
     .filter(t => !(exclude && exclude(t)))
     .map(t => (t.id || t.name || "").trim()).filter(Boolean))];
   for (const id of ids) s.append(el("option", {value:id}, id));
@@ -3981,21 +3981,21 @@ function treeRow(rail, mark, opts, ...body) {
 }
 
 // Folders the person has put away. Kept for as long as the page is open, the
-// same as a workspace's own fold
+// same as a desk's own fold
 const folderShut = new Set();
 
-// Which workspace the sidebar is showing. A menu rather than a list, because
+// Which desk the sidebar is showing. A menu rather than a list, because
 // the list under it belongs to one of them at a time
-function pickWorkspace(anchor) {
+function pickDesk(anchor) {
   const menu = el("div", {class:"fmenu"});
-  wss.forEach((w, i) => {
-    menu.append(el("button", {class:"fmenuitem" + (i === sel.ws ? " on" : ""),
-      onclick:() => { shut(); sel = {ws:i, grp:null, tab:null, global:false}; render(); }},
+  desks.forEach((w, i) => {
+    menu.append(el("button", {class:"fmenuitem" + (i === sel.desk ? " on" : ""),
+      onclick:() => { shut(); sel = {desk:i, grp:null, tab:null, global:false}; render(); }},
       el("span", {class:"wsbadge"}, (w.name || "?").trim().slice(0, 1).toUpperCase()),
       el("span", {class:"nm"}, w.name || T["settings.tab.unnamed"])));
   });
   menu.append(el("button", {class:"fmenuitem add",
-    onclick:() => { shut(); addWs(); }}, T["settings.workspace.add"]));
+    onclick:() => { shut(); addWs(); }}, T["settings.desk.add"]));
   const at = anchor.getBoundingClientRect();
   menu.style.top = Math.round(at.bottom + 4) + "px";
   menu.style.left = Math.round(at.left - 200) + "px";
@@ -4011,28 +4011,28 @@ function pickWorkspace(anchor) {
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
-  // The workspace being edited, as a sign at the top rather than one branch of
+  // The desk being edited, as a sign at the top rather than one branch of
   // a tree. The two things under it are not siblings -- one is the program's
   // own settings, the other is what somebody built -- and showing them as
   // equals in one list is what made this list hard to read
-  const ws = wss[sel.ws] || wss[0];
-  if (ws) {
+  const desk = desks[sel.desk] || desks[0];
+  if (desk) {
     const badge = el("span", {class:"wsbadge"},
-      (ws.name || "?").trim().slice(0, 1).toUpperCase());
-    nav.append(el("div", {class:"wsbanner" + (!sel.global && sel.tab == null
+      (desk.name || "?").trim().slice(0, 1).toUpperCase());
+    nav.append(el("div", {class:"deskbanner" + (!sel.global && sel.tab == null
         && (sel.grp ?? null) === null ? " sel" : "")},
       el("button", {class:"wsname", onclick:() => {
-        sel = {ws:sel.ws, grp:null, tab:null, global:false}; render();
-      }}, badge, el("span", {class:"nm"}, ws.name || T["settings.tab.unnamed"])),
+        sel = {desk:sel.desk, grp:null, tab:null, global:false}; render();
+      }}, badge, el("span", {class:"nm"}, desk.name || T["settings.tab.unnamed"])),
       el("span", {class:"wsgap"}),
-      el("button", {class:"twist wspick", title:T["settings.ws.switch"],
-        onclick: e => { e.stopPropagation(); pickWorkspace(e.currentTarget); }}, "▾")));
+      el("button", {class:"twist wspick", title:T["settings.desk.switch"],
+        onclick: e => { e.stopPropagation(); pickDesk(e.currentTarget); }}, "▾")));
   }
   // The program's own settings. Pressing it puts its list where the tree is,
   // because a person is either setting up the program or setting up a
-  // workspace, and never reading both columns at once
+  // desk, and never reading both columns at once
   nav.append(el("button", {class:"navitem approw" + (sel.global ? " sel" : ""),
-    onclick:() => { sel = {ws:sel.ws, tab:null, global:true,
+    onclick:() => { sel = {desk:sel.desk, tab:null, global:true,
                            section: sel.section || globalSections()[0].id}; render(); }},
     el("div", {class:"body"}, T["settings.global"]),
     el("span", {class:"go"}, sel.global ? "▾" : "›")));
@@ -4047,26 +4047,26 @@ function renderNav() {
     return;
   }
 
-  [wss[sel.ws]].forEach((ws) => {
-    if (!ws) return;
-    const wi = sel.ws;
+  [desks[sel.desk]].forEach((desk) => {
+    if (!desk) return;
+    const wi = sel.desk;
     // `?? null` because a selection made elsewhere (the gear, a deep link) may
     // simply not mention a folder, and "no folder" has to match "no folder"
     const here = (g, t) => !sel.global && (sel.grp ?? null) === g
       && (sel.tab ?? null) === t;
-    // Every folder, always -- the one a workspace starts with is a folder like
+    // Every folder, always -- the one a desk starts with is a folder like
     // any other, and hiding it is how "where does this actually run" became
     // impossible to find.
     //
     // Laid out as a list first and drawn second, because an elbow can only be
     // drawn once it is known what comes after it
     const rows = [];
-    (ws.folders || []).forEach((g, gi) => {
+    (desk.folders || []).forEach((g, gi) => {
       rows.push({depth:1, kind:"folder", g, gi});
       // A folder that is folded keeps its tabs to itself. What it is holding
       // is still said by its mark, which is why the mark is the way to fold it
       if (folderShut.has(wi + ":" + gi)) return;
-      (ws.tabs || []).forEach((t, ti) => {
+      (desk.tabs || []).forEach((t, ti) => {
         if ((t.group || 0) !== gi) return;
         rows.push({depth: t.depth ? 3 : 2, kind:"tab", t, ti, gi});
       });
@@ -4085,27 +4085,27 @@ function renderNav() {
         twist.title = shut ? T["settings.group.unfold"] : T["settings.group.fold"];
         nav.append(treeRow(rails[i], [twist, folderMark(r.g.color)],
           {class:"navitem navfolder" + (here(r.gi, null) ? " sel" : ""),
-           onclick:() => { sel = {ws:wi, grp:r.gi, tab:null, global:false}; render(); }},
+           onclick:() => { sel = {desk:wi, grp:r.gi, tab:null, global:false}; render(); }},
           el("span", {}, folderLabel(r.g, r.gi)),
           el("span", {class:"sub"}, r.g.cwd || T["settings.group.folder.ph"])));
       } else if (r.kind === "tab") {
         nav.append(treeRow(rails[i], [null, tabMark(aiColour(r.t.command))],
           {class:"navitem navtab" + (r.t.depth ? " child" : "") +
              (here(r.gi, r.ti) ? " sel" : ""),
-           onclick:() => { sel = {ws:wi, grp:r.gi, tab:r.ti, global:false}; render(); }},
+           onclick:() => { sel = {desk:wi, grp:r.gi, tab:r.ti, global:false}; render(); }},
           el("span", {class:"nm"}, r.t.name || T["settings.tab.unnamed"]),
           el("span", {class:"sub"}, cmdToText(r.t.command) || T["automation.unset"])));
       } else if (r.kind === "addtab") {
         nav.append(treeRow(rails[i], [null, null], {class:"navitem navadd",
           onclick:() => {
-            sel = {ws:wi, grp:r.gi, tab:addTabTo(ws, r.gi), global:false};
+            sel = {desk:wi, grp:r.gi, tab:addTabTo(desk, r.gi), global:false};
             render();
           }}, T["settings.tab.add"]));
       } else {
         nav.append(treeRow(rails[i], [null, null], {class:"navitem navadd",
           onclick:() => {
-            (ws.folders = ws.folders || []).push({name:"", id:"", cwd:""});
-            sel = {ws:wi, grp:ws.folders.length - 1, tab:null, global:false};
+            (desk.folders = desk.folders || []).push({name:"", id:"", cwd:""});
+            sel = {desk:wi, grp:desk.folders.length - 1, tab:null, global:false};
             render(); refreshSave();
           }}, T["settings.group.add"]));
       }
@@ -4126,32 +4126,32 @@ const blankTab = t => !(t.name || "").trim() && !(t.id || "").trim()
 
 // Adds one tab. But if there's already an in-progress empty tab, just selects that instead.
 // Returns the index of the added (or found) tab
-function addTabTo(ws, group) {
-  ws.tabs = ws.tabs || [];
+function addTabTo(desk, group) {
+  desk.tabs = desk.tabs || [];
   // Which folder it will run in. Named by the caller, else the one being
   // looked at, else the first: a tab has to be somewhere, and "somewhere"
   // was the part nobody could answer when the button was at the bottom of
   // the whole list
   if (group === undefined || group === null) {
-    const at = ws.tabs[sel.tab];
+    const at = desk.tabs[sel.tab];
     group = at ? (at.group || 0) : (sel.grp || 0);
   }
-  let i = ws.tabs.findIndex(t => (t.group || 0) === group && blankTab(t));
+  let i = desk.tabs.findIndex(t => (t.group || 0) === group && blankTab(t));
   if (i < 0) {
     // Beside the others in the same folder, so the list stays in folder order
-    let j = ws.tabs.length;
-    while (j > 0 && (ws.tabs[j - 1].group || 0) > group) j--;
+    let j = desk.tabs.length;
+    while (j > 0 && (desk.tabs[j - 1].group || 0) > group) j--;
     // A new tab starts as an AI. This is a terminal for running AIs, and the
     // AI panel is where the switches that decide how one runs live -- a tab
     // that began as a plain shell hid them behind a dropdown nobody knew to
     // open. A shell is one pick away in the Kind row above.
-    ws.tabs.splice(j, 0, newTab({group, command: defaultAiCommand()}));
+    desk.tabs.splice(j, 0, newTab({group, command: defaultAiCommand()}));
     i = j;
   }
   return i;
 }
 
-// ── New-workspace wizard ───────────────────────
+// ── New-desk wizard ───────────────────────
 // The from-scratch flow: just pick a purpose (a template), then pick AIs from a dropdown,
 // and tabs, discuss blocks, stop conditions, and personas are auto-generated behind the scenes.
 // The primitives (model x/y, discuss, etc.) stay as they are. Only a thin GUI is added on top.
@@ -4318,15 +4318,15 @@ function partsValid(parts) {
   }
   return null;
 }
-function landOnWs(ws) {
+function landOnWs(desk) {
   // Made by a wizard, a template or from nothing -- all of them arrive here, so
-  // this is the one place that has to make sure a workspace has its folder
-  if (!(ws.folders || []).length) ws.folders = [{name:"", id:"", cwd:""}];
-  (ws.tabs || []).forEach(t => { if (t.group === undefined) t.group = 0; });
-  wss.push(ws); sel = {ws:wss.length - 1, tab:null, global:false}; render(); refreshSave();
+  // this is the one place that has to make sure a desk has its folder
+  if (!(desk.folders || []).length) desk.folders = [{name:"", id:"", cwd:""}];
+  (desk.tabs || []).forEach(t => { if (t.group === undefined) t.group = 0; });
+  desks.push(desk); sel = {desk:desks.length - 1, tab:null, global:false}; render(); refreshSave();
 }
 
-// "+ Add workspace" → first, have the user pick a purpose
+// "+ Add desk" → first, have the user pick a purpose
 function addWs() {
   const m = openModal();
   const pick = fn => { m.remove(); fn(); };
@@ -4352,7 +4352,7 @@ function addWs() {
       el("button", {class:"quiet", onclick:() => m.remove()}, T["common.cancel"])));
 }
 function createBlankWs() {
-  landOnWs({name: T["settings.workspace"], automation:"", tabs:[]});
+  landOnWs({name: T["settings.desk"], automation:"", tabs:[]});
 }
 
 // 🗣 Discussion wizard
@@ -4396,7 +4396,7 @@ function wizardDiscuss() {
   const m = openModal(
     el("h2", {}, T["wizard.discuss.title"]),
     el("div", {class:"hint"}, T["wizard.discuss.hint"]),
-    row(T["settings.workspace.name"], nameIn),
+    row(T["settings.desk.name"], nameIn),
     el("div", {style:"margin-top:var(--s3);color:var(--text);font-size:13px"}, T["wizard.discuss.participants_label"]), list, addBtn,
     el("div", {class:"row", style:"margin-top:var(--s3)"}, el("label", {}, T["wizard.discuss.judge_label"]), judgeSel,
       el("label", {class:"beside"}, T["wizard.discuss.verdict_label"]), verdictSel),
@@ -4429,7 +4429,7 @@ function wizardBrowser() {
   const m = openModal(
     el("h2", {}, T["wizard.browser.title"]),
     el("div", {class:"hint"}, T["wizard.browser.hint"]),
-    row(T["settings.workspace.name"], nameIn),
+    row(T["settings.desk.name"], nameIn),
     el("div", {class:"row", style:"margin-top:var(--s2)"}, el("label", {}, T["wizard.browser.url_label"]), urlIn),
     el("div", {class:"row"}, el("label", {}, T["wizard.browser.ai_label"]), aiPick(ai)),
     el("div", {class:"row", style:"border-top:1px solid var(--line);margin-top:var(--s3);padding-top:var(--s4)"},
@@ -4488,7 +4488,7 @@ function wizardReview() {
   const m = openModal(
     el("h2", {}, T["wizard.review.title"]),
     el("div", {class:"hint"}, T["wizard.review.hint"]),
-    row(T["settings.workspace.name"], nameIn),
+    row(T["settings.desk.name"], nameIn),
     el("div", {class:"row", style:"margin-top:var(--s2)"}, el("label", {}, T["wizard.review.repo_label"]), repoIn, repoBtn),
     el("div", {class:"row"}, el("label", {}, T["wizard.review.coder_label"]), aiPick(coder)),
     el("div", {style:"margin-top:var(--s3);color:var(--text);font-size:13px"}, T["wizard.review.reviewers_label"]), list, addBtn,
@@ -4550,15 +4550,15 @@ function crumbParts() {
     const s = globalSections().find(x => x.id === sel.section);
     return ["", s ? s.label : T["settings.global"]];
   }
-  const ws = wss[sel.ws];
-  if (!ws) return ["", ""];
-  const name = ws.name || T["settings.tab.unnamed"];
-  const g = (ws.folders || [])[sel.grp];
+  const desk = desks[sel.desk];
+  if (!desk) return ["", ""];
+  const name = desk.name || T["settings.tab.unnamed"];
+  const g = (desk.folders || [])[sel.grp];
   if (sel.tab === null) {
     if (!g) return ["", name];
     return [name, folderLabel(g, sel.grp)];
   }
-  const t = (ws.tabs || [])[sel.tab];
+  const t = (desk.tabs || [])[sel.tab];
   const where = g ? name + " › " + folderLabel(g, sel.grp) : name;
   return [where, (t && t.name) || T["settings.tab.unnamed"]];
 }
@@ -4672,17 +4672,17 @@ function renderDetail() {
     sel.section = sec.id;
     return d.append(sec.build());
   }
-  const ws = wss[sel.ws];
-  if (!ws) return;
+  const desk = desks[sel.desk];
+  if (!desk) return;
   if (sel.tab === null) {
-    if (sel.grp === null || sel.grp === undefined) return d.append(wsPane(ws));
-    const g = (ws.folders || [])[sel.grp];
+    if (sel.grp === null || sel.grp === undefined) return d.append(deskPane(desk));
+    const g = (desk.folders || [])[sel.grp];
     if (!g) { sel.grp = null; return renderDetail(); }
-    return d.append(folderPane(ws, g, sel.grp));
+    return d.append(folderPane(desk, g, sel.grp));
   }
-  const t = ws.tabs[sel.tab];
+  const t = desk.tabs[sel.tab];
   if (!t) { sel.tab = null; return renderDetail(); }
-  d.append(tabPane(ws, t));
+  d.append(tabPane(desk, t));
 }
 
 // The global settings are a FLAT list of self-named cards, not a themed
@@ -4702,7 +4702,7 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.busy_repeat.hint"])),
     row(T["settings.auto_switch"], checkDefaultOn(current, "auto_switch", T["settings.auto_switch.label"]),
         el("span", {class:"hint"}, T["settings.auto_switch.hint"])),
-    row(T["settings.restore_ws"], checkDefaultOn(current, "restore_workspace", T["settings.restore_ws.label"]),
+    row(T["settings.restore_ws"], checkDefaultOn(current, "restore_desk", T["settings.restore_ws.label"]),
         el("span", {class:"hint"}, T["settings.restore_ws.hint"])),
     row(T["settings.resident"], checkDefaultOn(current, "resident", T["settings.resident.label"]),
         el("span", {class:"hint"}, T["settings.resident.hint"])),
@@ -5167,11 +5167,11 @@ async function downloadRally(runId) {
 }
 
 // ── Secrets ────────────────────────────────────────────────────────────────
-const secretKey = (ws, name) => (ws.id || "") + "." + name;
-// The short name of a secret belonging to this workspace, or null for one that
+const secretKey = (desk, name) => (desk.id || "") + "." + name;
+// The short name of a secret belonging to this desk, or null for one that
 // does not
-function secretShortName(ws, key) {
-  const head = (ws.id || "") + ".";
+function secretShortName(desk, key) {
+  const head = (desk.id || "") + ".";
   return key.startsWith(head) ? key.slice(head.length) : null;
 }
 // Everything the store holds, asked for once and handed to whoever is drawing.
@@ -5584,12 +5584,12 @@ const grantFolded = {};
 const manualHref = name => "/help?token=" + encodeURIComponent(TOKEN)
   + (name ? "#cmd-" + name : "");
 
-// The table, for whoever owns it: the app, or one workspace.
+// The table, for whoever owns it: the app, or one desk.
 //
 // Both pages hold the same component, because the question is the same one and a
 // second copy of sixty rows would be a second place for the list to drift from
 // what the app enforces. `owner` is the object the rows are written into --
-// `current` for the app, a workspace for a workspace.
+// `current` for the app, a desk for a desk.
 function permissionsTable(owner) {
   // Read without writing: merely opening this card must not make the settings
   // look edited. The key appears in the file the first time a box disagrees
@@ -5605,7 +5605,7 @@ function permissionsTable(owner) {
     const rule = all[cmd.name] || {};
     if (on === cmd[col]) delete rule[col]; else rule[col] = on;
     if (Object.keys(rule).length) all[cmd.name] = rule; else delete all[cmd.name];
-    // An empty table still means "this is mine" for a workspace, and means
+    // An empty table still means "this is mine" for a desk, and means
     // nothing at all for the app, which is the one difference between the two
     if (Object.keys(all).length || owner !== current) owner.automation_permissions = all;
     else delete owner.automation_permissions;
@@ -5665,7 +5665,7 @@ function permissionsTable(owner) {
   };
   draw();
   const reset = el("button", {onclick:() => {
-    // Back to the answers the commands' authors chose. For a workspace that is
+    // Back to the answers the commands' authors chose. For a desk that is
     // an empty table of its own, not the app's table: the line it drew stays
     if (owner === current) delete owner.automation_permissions;
     else owner.automation_permissions = {};
@@ -5894,7 +5894,7 @@ function hostDialog(at, redraw, kind) {
   setTimeout(recheck, 0);
 }
 
-// The branch names, for whoever owns them: the app, or one workspace. Both
+// The branch names, for whoever owns them: the app, or one desk. Both
 // pages hold the same field, because it is the same question asked one level
 // further in
 function protectField(owner) {
@@ -6801,28 +6801,28 @@ function aiSelect() {
   return s;
 }
 
-function wsPane(ws) {
+function deskPane(desk) {
   const box = el("div");
   // Name and id are identity, and sit together. The id is what automation and
   // the secret store use, so it survives renaming what is on screen -- and a
-  // workspace that arrives here without one gets it now, from its name, rather
+  // desk that arrives here without one gets it now, from its name, rather
   // than waiting for a save
-  if (!(ws.id || "").trim()) {
-    ws.id = uniqueWsId(slugId(ws.name) || "workspace", ws);
+  if (!(desk.id || "").trim()) {
+    desk.id = uniqueWsId(slugId(desk.name) || "desk", desk);
     refreshSave();
   }
-  const wsIdInput = field(ws, "id", "", {grow:false, width:280, mono:true});
-  box.append(card(T["settings.workspace"],
-    row(T["settings.workspace.name"], field(ws, "name", T["settings.workspace.name"], {grow:false, width:280,
+  const deskIdInput = field(desk, "id", "", {grow:false, width:280, mono:true});
+  box.append(card(T["settings.desk"],
+    row(T["settings.desk.name"], field(desk, "name", T["settings.desk.name"], {grow:false, width:280,
         onInput:() => renderNav()})),
-    row(T["settings.workspace.id"], wsIdInput,
-        el("span", {class:"hint"}, T["settings.workspace.id.hint"])),
-    ws.file ? row(T["settings.workspace.file"], el("span", {class:"hint mono"}, ws.file)) : null,
-    row(T["settings.tab.automation"], ...pathField(ws, "automation", T["settings.workspace.automation.hint"], "dir",
+    row(T["settings.desk.id"], deskIdInput,
+        el("span", {class:"hint"}, T["settings.desk.id.hint"])),
+    desk.file ? row(T["settings.desk.file"], el("span", {class:"hint mono"}, desk.file)) : null,
+    row(T["settings.tab.automation"], ...pathField(desk, "automation", T["settings.desk.automation.hint"], "dir",
         T["settings.tab.automation_dir.pick"]),
-        el("span", {class:"hint"}, T["settings.workspace.automation.hint"]))));
+        el("span", {class:"hint"}, T["settings.desk.automation.hint"]))));
 
-  if (!(ws.tabs || []).length) {
+  if (!(desk.tabs || []).length) {
     const e = el("div", {class:"empty"},
       el("div", {class:"big"}, T["settings.template.empty"]),
       el("div", {}, T["settings.template.hint"]));
@@ -6833,53 +6833,53 @@ function wsPane(ws) {
     e.append(bar);
     box.append(e);
   }
-  box.append(wsDiscussCard(ws));
-  box.append(wsStopsCard(ws));
-  box.append(wsGitCard(ws));
-  box.append(wsGithubCard(ws));
-  box.append(wsNotifyCard(ws));
-  box.append(wsProvidersCard(ws));
+  box.append(deskDiscussCard(desk));
+  box.append(deskStopsCard(desk));
+  box.append(deskGitCard(desk));
+  box.append(deskGithubCard(desk));
+  box.append(deskNotifyCard(desk));
+  box.append(deskProvidersCard(desk));
   // Nothing to be sure about means no card at all, and append() would write
   // the word "null" onto the page if handed one
-  const gates = wsCapsCard(ws);
+  const gates = deskCapsCard(desk);
   if (gates) box.append(gates);
-  box.append(wsPermissionsCard(ws));
-  box.append(wsSecretsCard(ws));
+  box.append(deskPermissionsCard(desk));
+  box.append(deskSecretsCard(desk));
 
-  // Writing it out is about this workspace. Reading one in makes a different
-  // one, so it is asked for where another workspace is asked for -- not on the
-  // page of the workspace it would have nothing to do with. It ends in a file
+  // Writing it out is about this desk. Reading one in makes a different
+  // one, so it is asked for where another desk is asked for -- not on the
+  // page of the desk it would have nothing to do with. It ends in a file
   // dialog either way, which a phone has no way to open
-  if (!REMOTE) box.append(card(T["settings.ws.share"],
+  if (!REMOTE) box.append(card(T["settings.desk.share"],
     el("div", {class:"row"},
-      el("button", {onclick:() => exportWs(sel.ws)}, T["settings.ws.export"])),
-    el("div", {class:"hint"}, T["settings.ws.share.hint"])));
+      el("button", {onclick:() => exportWs(sel.desk)}, T["settings.desk.export"])),
+    el("div", {class:"hint"}, T["settings.desk.share.hint"])));
 
   box.append(el("div", {class:"row"},
     el("button", {class:"danger", onclick: async () => {
-      if (!await confirmAction(fill(T["settings.workspace.delete_confirm"], {name: ws.name}), T["settings.workspace.delete"])) return;
-      // Everything filed under this workspace's name goes with it: what its
+      if (!await confirmAction(fill(T["settings.desk.delete_confirm"], {name: desk.name}), T["settings.desk.delete"])) return;
+      // Everything filed under this desk's name goes with it: what its
       // automation used, and what its server tabs signed in with. Said out
       // loud first, because a password cannot be got back
-      const id = (ws.id || "").trim();
+      const id = (desk.id || "").trim();
       if (id) {
         const j = await fetchSecrets();
         const mine = ((j && j.secrets) || [])
           .map(s => s.key)
           .filter(k => k.startsWith(id + ".") || k.startsWith("ssh/" + id + "/"));
         if (mine.length &&
-            !await confirmAction(fill(T["settings.workspace.delete_secrets"], {n: mine.length}), T["settings.workspace.delete"])) return;
+            !await confirmAction(fill(T["settings.desk.delete_secrets"], {n: mine.length}), T["settings.desk.delete"])) return;
         await dropSecrets(mine);
       }
-      wss.splice(sel.ws, 1); sel = {ws:0, tab:null, global:true}; render();
-    }}, T["settings.workspace.delete"])));
+      desks.splice(sel.desk, 1); sel = {desk:0, tab:null, global:true}; render();
+    }}, T["settings.desk.delete"])));
   return box;
 }
 
-// Where a message from this workspace goes.
+// Where a message from this desk goes.
 //
 // The destinations themselves are registered once for the app -- an address and
-// a token are worth writing down once. Which of them this workspace may reach
+// a token are worth writing down once. Which of them this desk may reach
 // is a different question, and it is the one worth asking here: work finishing
 // its task into a personal chat is not a preference anybody holds, and it is
 // not something care when writing the automation can prevent.
@@ -6887,17 +6887,17 @@ function wsPane(ws) {
 // Both answers show what is in force and where it came from, because a line
 // drawn in one of two places is only worth having if a person can see which
 // place drew it.
-// The line a workspace draws around something the app registered once.
+// The line a desk draws around something the app registered once.
 //
 // The same question is asked of notification destinations and of model
 // connections, so it is asked with the same control: a tick for "only these",
-// and the list to tick. Unticked, this workspace has the app's whole list --
+// and the list to tick. Unticked, this desk has the app's whole list --
 // and ticking starts from exactly that list, so drawing the line changes
 // nothing at all until a box is actually unticked. Nobody finds out they have
 // drawn a line by having something stop working.
-function reachControl(ws, key, names, label, after) {
+function reachControl(desk, key, names, label, after) {
   const own = el("input", {type:"checkbox"});
-  own.checked = Array.isArray(ws[key]);
+  own.checked = Array.isArray(desk[key]);
   const ownLabel = el("label", {class:"check"});
   ownLabel.append(own, document.createTextNode(label));
   const list = el("div", {class:"row"});
@@ -6906,11 +6906,11 @@ function reachControl(ws, key, names, label, after) {
     list.hidden = !own.checked;
     for (const n of names()) {
       const cb = el("input", {type:"checkbox"});
-      cb.checked = (ws[key] || []).includes(n);
+      cb.checked = (desk[key] || []).includes(n);
       cb.addEventListener("change", () => {
-        const kept = new Set(ws[key] || []);
+        const kept = new Set(desk[key] || []);
         if (cb.checked) kept.add(n); else kept.delete(n);
-        ws[key] = names().filter(x => kept.has(x));
+        desk[key] = names().filter(x => kept.has(x));
         after();
         refreshSave();
       });
@@ -6920,8 +6920,8 @@ function reachControl(ws, key, names, label, after) {
     }
   };
   own.addEventListener("change", () => {
-    if (own.checked) ws[key] = names().slice();
-    else delete ws[key];
+    if (own.checked) desk[key] = names().slice();
+    else delete desk[key];
     drawList();
     after();
     refreshSave();
@@ -6937,140 +6937,140 @@ function reachControl(ws, key, names, label, after) {
 // accident rather than the convenience, and it is not something care when
 // writing the tab prevents: the name is all a tab says, and the name resolves
 // to whatever the app has.
-function wsProvidersCard(ws) {
+function deskProvidersCard(desk) {
   current.providers = current.providers || {};
   const all = () => Object.keys(current.providers);
-  const reaching = () => Array.isArray(ws.providers) ? all().filter(n => ws.providers.includes(n)) : all();
+  const reaching = () => Array.isArray(desk.providers) ? all().filter(n => desk.providers.includes(n)) : all();
   const inForce = el("div", {class:"hint"});
   const draw = () => {
     const only = reaching();
-    if (!only.length) inForce.textContent = T["settings.ws.providers.now_none"];
+    if (!only.length) inForce.textContent = T["settings.desk.providers.now_none"];
     else inForce.textContent = fill(
-      Array.isArray(ws.providers) ? T["settings.ws.providers.now_own"] : T["settings.ws.providers.now_app"],
+      Array.isArray(desk.providers) ? T["settings.desk.providers.now_own"] : T["settings.desk.providers.now_app"],
       {names: only.join(", ")});
   };
   draw();
-  if (!all().length) return card(T["settings.ws.providers.title"],
-    el("div", {class:"hint"}, T["settings.ws.providers.none"]));
-  return card(T["settings.ws.providers.title"],
-    el("div", {class:"hint"}, T["settings.ws.providers.hint"]),
-    ...reachControl(ws, "providers", all, T["settings.ws.providers.own"], draw),
+  if (!all().length) return card(T["settings.desk.providers.title"],
+    el("div", {class:"hint"}, T["settings.desk.providers.none"]));
+  return card(T["settings.desk.providers.title"],
+    el("div", {class:"hint"}, T["settings.desk.providers.hint"]),
+    ...reachControl(desk, "providers", all, T["settings.desk.providers.own"], draw),
     inForce);
 }
 
-// What git does in this workspace: which branches refuse a commit, and how the
+// What git does in this desk: which branches refuse a commit, and how the
 // message gets written.
 //
-// A workspace is usually one person's work for one party, and both of these
+// A desk is usually one person's work for one party, and both of these
 // belong to that: the company's repositories guard release branches the private
 // ones have never heard of, and the sentence a commit message has to obey is the
 // reviewer's, not the app's.
-function wsGitCard(ws) {
+function deskGitCard(desk) {
   const own = el("input", {type:"checkbox"});
-  own.checked = !!ws.git;
+  own.checked = !!desk.git;
   const ownLabel = el("label", {class:"check"});
-  ownLabel.append(own, document.createTextNode(T["settings.ws.git.own"]));
+  ownLabel.append(own, document.createTextNode(T["settings.desk.git.own"]));
   const holder = el("div", {});
   const inForce = el("div", {class:"hint"});
   const draw = () => {
     holder.textContent = "";
-    const g = ws.git || current.git || {};
+    const g = desk.git || current.git || {};
     const names = protectText(Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT);
-    inForce.textContent = fill(ws.git ? T["settings.ws.git.now_own"] : T["settings.ws.git.now_app"],
-      {names: names || T["settings.ws.git.none"],
-       how: g.message_lua !== undefined ? T["settings.ws.git.by_lua"]
-          : ((g.message_hint || "").trim() ? T["settings.ws.git.by_hint"] : T["settings.ws.git.by_builtin"])});
-    if (!ws.git) return;
+    inForce.textContent = fill(desk.git ? T["settings.desk.git.now_own"] : T["settings.desk.git.now_app"],
+      {names: names || T["settings.desk.git.none"],
+       how: g.message_lua !== undefined ? T["settings.desk.git.by_lua"]
+          : ((g.message_hint || "").trim() ? T["settings.desk.git.by_hint"] : T["settings.desk.git.by_builtin"])});
+    if (!desk.git) return;
     holder.append(
       el("div", {class:"hint"}, T["settings.protect.hint"]),
-      el("div", {class:"row"}, protectField(ws)),
+      el("div", {class:"row"}, protectField(desk)),
       el("div", {class:"hint"}, T["settings.protect.wild"]),
-      ...gitFields(ws));
+      ...gitFields(desk));
   };
   own.addEventListener("change", () => {
     // A copy of the app's, so drawing the line changes nothing by itself
-    if (own.checked) ws.git = JSON.parse(JSON.stringify(current.git || {}));
-    else delete ws.git;
+    if (own.checked) desk.git = JSON.parse(JSON.stringify(current.git || {}));
+    else delete desk.git;
     draw();
     refreshSave();
   });
   draw();
-  return card(T["settings.ws.git.title"],
-    el("div", {class:"hint"}, T["settings.ws.git.hint"]),
+  return card(T["settings.desk.git.title"],
+    el("div", {class:"hint"}, T["settings.desk.git.hint"]),
     el("div", {class:"row"}, ownLabel),
     inForce,
     holder);
 }
 
-// Which GitHub account answers for this workspace.
+// Which GitHub account answers for this desk.
 //
 // The pull request number on a branch's row is read with a token, and for a long
 // time that was one token for the whole machine -- so a company repository and a
 // private one were both asked about with whichever account happened to answer
-// first. A workspace can now be given its own, as the secret named "github"
+// first. A desk can now be given its own, as the secret named "github"
 // beside its other secrets.
 //
 // The state and the date, never the value. And a token that has run out is said
 // out loud: a row that quietly stops showing numbers looks exactly like a branch
 // that has no pull request, and somebody would spend the afternoon looking at
 // the wrong thing.
-function wsGithubCard(ws) {
+function deskGithubCard(desk) {
   const dot = el("span", {class:"dot"});
-  const state = el("span", {class:"hint"}, T["settings.ws.github.checking"]);
+  const state = el("span", {class:"hint"}, T["settings.desk.github.checking"]);
   const where = el("div", {class:"hint"});
   const life = el("div", {class:"hint"});
   const set = el("button", {onclick: () => {
-    if (!(ws.id || "").trim()) { toast(T["settings.secrets.ws_needs_id"], true); return; }
-    secretDialog(ws, null, GITHUB_SECRET);
-  }}, T["settings.ws.github.set"]);
+    if (!(desk.id || "").trim()) { toast(T["settings.secrets.desk_needs_id"], true); return; }
+    secretDialog(desk, null, GITHUB_SECRET);
+  }}, T["settings.desk.github.set"]);
   (async () => {
     let j;
     try {
-      j = await (await fetch("/api/github?ws=" + encodeURIComponent(ws.id || ""),
+      j = await (await fetch("/api/github?desk=" + encodeURIComponent(desk.id || ""),
         {headers:{"X-Token":TOKEN}})).json();
-    } catch (e) { state.textContent = T["settings.ws.github.unknown"]; return; }
-    const source = j.source ? T["settings.ws.github.from." + j.source] : null;
+    } catch (e) { state.textContent = T["settings.desk.github.unknown"]; return; }
+    const source = j.source ? T["settings.desk.github.from." + j.source] : null;
     dot.classList.add(j.signed_in ? "on" : "off");
     if (!j.source) {
-      state.textContent = T["settings.ws.github.none"];
+      state.textContent = T["settings.desk.github.none"];
       state.classList.add("warn");
     } else if (j.signed_in) {
       state.textContent = j.login
-        ? fill(T["settings.ws.github.on_as"], {login: j.login})
-        : T["settings.ws.github.on"];
+        ? fill(T["settings.desk.github.on_as"], {login: j.login})
+        : T["settings.desk.github.on"];
     } else {
       // 401 is the one worth telling apart: the token exists and GitHub will
       // not take it. Said as "it has run out or been taken away" rather than as
       // "not signed in", which would send somebody looking for a missing token
       state.textContent = j.status === 401
-        ? T["settings.ws.github.expired"]
-        : fill(T["settings.ws.github.unreachable"], {status: j.status || 0});
+        ? T["settings.desk.github.expired"]
+        : fill(T["settings.desk.github.unreachable"], {status: j.status || 0});
       state.classList.add("warn");
     }
-    if (source) where.textContent = fill(T["settings.ws.github.where"], {source});
+    if (source) where.textContent = fill(T["settings.desk.github.where"], {source});
     if (j.expires_days === null || j.expires_days === undefined) {
-      if (j.signed_in) life.textContent = T["settings.ws.github.forever"];
+      if (j.signed_in) life.textContent = T["settings.desk.github.forever"];
     } else if (j.expires_days < 0) {
-      life.textContent = T["settings.ws.github.ran_out"];
+      life.textContent = T["settings.desk.github.ran_out"];
       life.classList.add("warn");
     } else {
-      life.textContent = fill(T["settings.ws.github.days"], {n: j.expires_days});
+      life.textContent = fill(T["settings.desk.github.days"], {n: j.expires_days});
       life.classList.toggle("warn", j.expires_days <= 7);
     }
   })();
-  return card(T["settings.ws.github.title"],
-    el("div", {class:"hint"}, T["settings.ws.github.hint"]),
+  return card(T["settings.desk.github.title"],
+    el("div", {class:"hint"}, T["settings.desk.github.hint"]),
     el("div", {class:"row"}, dot, state),
     where,
     life,
     el("div", {class:"row"}, set),
-    el("div", {class:"hint"}, T["settings.ws.github.kind"]),
-    el("div", {class:"hint"}, T["settings.ws.github.org"]));
+    el("div", {class:"hint"}, T["settings.desk.github.kind"]),
+    el("div", {class:"hint"}, T["settings.desk.github.org"]));
 }
 
 // Who may run which command here.
 //
-// The table is the app's until this workspace takes one of its own, and then it
+// The table is the app's until this desk takes one of its own, and then it
 // is entirely its own -- rows it does not mention answer from the standard
 // answers, not from the app's table. Two places to read one row is the thing
 // this avoids: the row nobody thought to look in the other place for is the one
@@ -7078,34 +7078,34 @@ function wsGithubCard(ws) {
 //
 // Taking a table copies the app's, so the act of drawing the line changes
 // nothing until a box does.
-function wsPermissionsCard(ws) {
+function deskPermissionsCard(desk) {
   const own = el("input", {type:"checkbox"});
-  own.checked = !!ws.automation_permissions;
+  own.checked = !!desk.automation_permissions;
   const ownLabel = el("label", {class:"check"});
-  ownLabel.append(own, document.createTextNode(T["settings.ws.grants.own"]));
+  ownLabel.append(own, document.createTextNode(T["settings.desk.grants.own"]));
   const holder = el("div", {});
   const inForce = el("div", {class:"hint"});
   const draw = () => {
     holder.textContent = "";
-    const rows = Object.keys(ws.automation_permissions || current.automation_permissions || {}).length;
+    const rows = Object.keys(desk.automation_permissions || current.automation_permissions || {}).length;
     inForce.textContent = fill(
-      ws.automation_permissions ? T["settings.ws.grants.now_own"] : T["settings.ws.grants.now_app"],
+      desk.automation_permissions ? T["settings.desk.grants.now_own"] : T["settings.desk.grants.now_app"],
       {n: rows});
-    if (!ws.automation_permissions) return;
-    const {body, reset} = permissionsTable(ws);
+    if (!desk.automation_permissions) return;
+    const {body, reset} = permissionsTable(desk);
     holder.append(el("div", {class:"row"}, reset,
       el("a", {href:manualHref(""), target:"_blank"}, T["settings.permissions.manual"])), body);
   };
   own.addEventListener("change", () => {
     // A copy of the app's, so nothing changes the moment the line is drawn
-    if (own.checked) ws.automation_permissions = JSON.parse(JSON.stringify(current.automation_permissions || {}));
-    else delete ws.automation_permissions;
+    if (own.checked) desk.automation_permissions = JSON.parse(JSON.stringify(current.automation_permissions || {}));
+    else delete desk.automation_permissions;
     draw();
     refreshSave();
   });
   draw();
-  return card(T["settings.ws.grants.title"],
-    el("div", {class:"hint"}, T["settings.ws.grants.hint"]),
+  return card(T["settings.desk.grants.title"],
+    el("div", {class:"hint"}, T["settings.desk.grants.hint"]),
     el("div", {class:"row"}, ownLabel),
     inForce,
     holder);
@@ -7117,35 +7117,35 @@ function wsPermissionsCard(ws) {
 // and hosts raw paths are allowed in, are written by hand into the settings
 // file. So what this card does is say which of the two places is being obeyed
 // and what it says -- without that, a person reading their script's error had no
-// way to tell whether the doors in front of it were this workspace's or the
+// way to tell whether the doors in front of it were this desk's or the
 // app's. A gateway carries a token already attached, which is why it is worth
 // being sure.
-function wsCapsCard(ws) {
-  const own = !!ws.capabilities;
-  const spec = ws.capabilities || current.capabilities || {};
+function deskCapsCard(desk) {
+  const own = !!desk.capabilities;
+  const spec = desk.capabilities || current.capabilities || {};
   const app = current.capabilities || {};
   const some = o => Object.keys(o.files || {}).length || Object.keys(o.http || {}).length
     || (o.allow_dirs || []).length || (o.allow_hosts || []).length;
   // Nothing anywhere is the ordinary state, and a card saying so on every page
   // is noise. Said only where there is something to be sure about
   if (!some(spec) && !some(app)) return null;
-  const body = [el("div", {class:"hint"}, own ? T["settings.ws.caps.own"] : T["settings.ws.caps.app"])];
+  const body = [el("div", {class:"hint"}, own ? T["settings.desk.caps.own"] : T["settings.desk.caps.app"])];
   const put = (label, list) => {
     if (list.length) body.push(el("div", {class:"hint mono"}, label + ": " + list.join(", ")));
   };
-  put(T["settings.ws.caps.files"], Object.keys(spec.files || {}));
-  put(T["settings.ws.caps.http"], Object.keys(spec.http || {}));
-  put(T["settings.ws.caps.dirs"], spec.allow_dirs || []);
-  put(T["settings.ws.caps.hosts"], spec.allow_hosts || []);
-  if (!some(spec)) body.push(el("div", {class:"hint"}, T["settings.ws.caps.nothing"]));
-  body.push(el("div", {class:"hint"}, T["settings.ws.caps.where"]));
-  return card(T["settings.ws.caps.title"], ...body);
+  put(T["settings.desk.caps.files"], Object.keys(spec.files || {}));
+  put(T["settings.desk.caps.http"], Object.keys(spec.http || {}));
+  put(T["settings.desk.caps.dirs"], spec.allow_dirs || []);
+  put(T["settings.desk.caps.hosts"], spec.allow_hosts || []);
+  if (!some(spec)) body.push(el("div", {class:"hint"}, T["settings.desk.caps.nothing"]));
+  body.push(el("div", {class:"hint"}, T["settings.desk.caps.where"]));
+  return card(T["settings.desk.caps.title"], ...body);
 }
 
-function wsNotifyCard(ws) {
+function deskNotifyCard(desk) {
   current.notify = current.notify || {};
   const all = () => Object.keys(current.notify);
-  const reaching = () => Array.isArray(ws.notify) ? all().filter(n => ws.notify.includes(n)) : all();
+  const reaching = () => Array.isArray(desk.notify) ? all().filter(n => desk.notify.includes(n)) : all();
   const prim = el("select");
   const inForce = el("div", {class:"hint"});
 
@@ -7154,12 +7154,12 @@ function wsNotifyCard(ws) {
     // The app's own default is only inherited when it can be reached from
     // here, which is the same rule the program settles on at launch
     const inherited = (app && reaching().includes(app)) ? app : "";
-    const mine = (ws.primary_notify || "").trim();
+    const mine = (desk.primary_notify || "").trim();
     const only = reaching();
-    if (mine) inForce.textContent = fill(T["settings.ws.notify.now_own"], {name: mine});
-    else if (inherited) inForce.textContent = fill(T["settings.ws.notify.now_app"], {name: inherited});
-    else if (only.length === 1) inForce.textContent = fill(T["settings.ws.notify.now_only"], {name: only[0]});
-    else inForce.textContent = T["settings.ws.notify.now_nobody"];
+    if (mine) inForce.textContent = fill(T["settings.desk.notify.now_own"], {name: mine});
+    else if (inherited) inForce.textContent = fill(T["settings.desk.notify.now_app"], {name: inherited});
+    else if (only.length === 1) inForce.textContent = fill(T["settings.desk.notify.now_only"], {name: only[0]});
+    else inForce.textContent = T["settings.desk.notify.now_nobody"];
     return inherited;
   };
 
@@ -7167,33 +7167,33 @@ function wsNotifyCard(ws) {
     const inherited = drawForce();
     prim.textContent = "";
     prim.append(el("option", {value:""}, inherited
-      ? fill(T["settings.ws.notify.prim_app"], {name: inherited})
-      : T["settings.ws.notify.prim_none"]));
+      ? fill(T["settings.desk.notify.prim_app"], {name: inherited})
+      : T["settings.desk.notify.prim_none"]));
     for (const n of reaching()) prim.append(el("option", {value:n}, n));
-    prim.value = reaching().includes((ws.primary_notify || "").trim()) ? ws.primary_notify.trim() : "";
+    prim.value = reaching().includes((desk.primary_notify || "").trim()) ? desk.primary_notify.trim() : "";
   };
   prim.addEventListener("change", () => {
-    if (prim.value) ws.primary_notify = prim.value;
-    else delete ws.primary_notify;
+    if (prim.value) desk.primary_notify = prim.value;
+    else delete desk.primary_notify;
     drawForce();
     refreshSave();
   });
 
   // A default nothing can reach any more is not a default
   const after = () => {
-    if (Array.isArray(ws.notify) && !ws.notify.includes((ws.primary_notify || "").trim())) {
-      delete ws.primary_notify;
+    if (Array.isArray(desk.notify) && !desk.notify.includes((desk.primary_notify || "").trim())) {
+      delete desk.primary_notify;
     }
     drawPrim();
   };
 
   drawPrim();
-  if (!all().length) return card(T["settings.ws.notify.title"],
-    el("div", {class:"hint"}, T["settings.ws.notify.none"]));
-  return card(T["settings.ws.notify.title"],
-    el("div", {class:"hint"}, T["settings.ws.notify.hint"]),
-    row(T["settings.ws.notify.primary"], prim),
-    ...reachControl(ws, "notify", all, T["settings.ws.notify.own"], after),
+  if (!all().length) return card(T["settings.desk.notify.title"],
+    el("div", {class:"hint"}, T["settings.desk.notify.none"]));
+  return card(T["settings.desk.notify.title"],
+    el("div", {class:"hint"}, T["settings.desk.notify.hint"]),
+    row(T["settings.desk.notify.primary"], prim),
+    ...reachControl(desk, "notify", all, T["settings.desk.notify.own"], after),
     inForce);
 }
 
@@ -7203,10 +7203,10 @@ function wsNotifyCard(ws) {
 // which is the state anyone who has not asked for a second one stays in.
 // A folder, and everything about it. One page per folder, reached the same way
 // it is reached in the tab list, because "where does this run" is a fact about
-// the folder rather than about the workspace it happens to sit in.
-function folderPane(ws, g, gi) {
+// the folder rather than about the desk it happens to sit in.
+function folderPane(desk, g, gi) {
   const box = el("div");
-  const tabsHere = () => (ws.tabs || []).filter(t => (t.group || 0) === gi);
+  const tabsHere = () => (desk.tabs || []).filter(t => (t.group || 0) === gi);
 
   // This folder's own answer about which branches refuse a direct commit.
   // Unticked it follows the app's, which is what the box shows greyed out
@@ -7217,11 +7217,11 @@ function folderPane(ws, g, gi) {
     protectBox.disabled = !ownProtect.checked;
     protectBox.placeholder = ownProtect.checked
       ? T["settings.protect.ph"]
-      : protectText(protectOf(ws));
+      : protectText(protectOf(desk));
     protectBox.value = Array.isArray(g.protect) ? protectText(g.protect) : "";
   };
   ownProtect.addEventListener("change", () => {
-    if (ownProtect.checked) g.protect = protectOf(ws).slice();
+    if (ownProtect.checked) g.protect = protectOf(desk).slice();
     else delete g.protect;
     drawProtect();
     refreshSave();
@@ -7281,14 +7281,14 @@ function folderPane(ws, g, gi) {
   // getting rid of the folder itself. Two different acts: one can be undone by
   // opening it again, and the other cannot
   const drop = () => {
-    ws.folders.splice(gi, 1);
-    (ws.tabs || []).forEach(t => { if ((t.group || 0) > gi) t.group--; });
-    sel = {ws:sel.ws, grp:null, tab:null, global:false};
+    desk.folders.splice(gi, 1);
+    (desk.tabs || []).forEach(t => { if ((t.group || 0) > gi) t.group--; });
+    sel = {desk:sel.desk, grp:null, tab:null, global:false};
     render(); refreshSave();
   };
   const guard = () => {
     if (tabsHere().length) { toast(T["settings.group.in_use"], true); return false; }
-    if ((ws.folders || []).length <= 1) { toast(T["settings.group.last"], true); return false; }
+    if ((desk.folders || []).length <= 1) { toast(T["settings.group.last"], true); return false; }
     return true;
   };
   const buttons = el("div", {class:"row"},
@@ -7519,24 +7519,24 @@ async function familyOf(cwd) {
 
 // AI vs AI discussion. Lines up participant tab ids and cycles them round-robin or moderated (moderator picks the next speaker).
 // At the round cap, the judge renders a verdict (winner/synthesis). The goal (topic) is typed into an input field
-function wsDiscussCard(ws) {
+function deskDiscussCard(desk) {
   const body = el("div", {id:"wsdiscussbody"});
   const ensure = () => {
-    ws.discuss = ws.discuss || { agents:[], order:"round-robin", max_rounds:6, verdict:"winner" };
-    ws.discuss.personas = ws.discuss.personas || {};
-    return ws.discuss;
+    desk.discuss = desk.discuss || { agents:[], order:"round-robin", max_rounds:6, verdict:"winner" };
+    desk.discuss.personas = desk.discuss.personas || {};
+    return desk.discuss;
   };
   const on = el("input", {type:"checkbox"});
-  on.checked = !!ws.discuss;
-  body.style.display = ws.discuss ? "" : "none";
+  on.checked = !!desk.discuss;
+  body.style.display = desk.discuss ? "" : "none";
   on.addEventListener("change", () => {
-    if (on.checked) { ensure(); body.style.display=""; } else { ws.discuss = null; body.style.display="none"; }
+    if (on.checked) { ensure(); body.style.display=""; } else { desk.discuss = null; body.style.display="none"; }
     render(); refreshSave();
   });
   const onLabel = el("label", {class:"check"});
   onLabel.append(on, document.createTextNode(T["settings.discuss.enable"]));
 
-  const d = ws.discuss || {};
+  const d = desk.discuss || {};
   const txt = (val, ph, save) => { const e = el("input", {value:val||"", placeholder:ph||""});
     e.addEventListener("input", () => { save(e.value); refreshSave(); }); return e; };
   const numf = (val, save) => { const e = el("input", {type:"number", value:(val ?? 6), style:"width:90px"});
@@ -7549,7 +7549,7 @@ function wsDiscussCard(ws) {
   const personaBox = el("div", {id:"discusspersonas"});
   const drawPersonas = () => {
     personaBox.textContent = "";
-    const dd = ws.discuss; if (!dd) return;
+    const dd = desk.discuss; if (!dd) return;
     dd.personas = dd.personas || {};
     const ids = [...new Set((dd.agents||[])
       .concat(dd.judge ? [dd.judge] : [])
@@ -7573,9 +7573,9 @@ function wsDiscussCard(ws) {
   const chipBox = el("div", {class:"hint", style:"display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center;margin-top:var(--s1)"});
   const drawChips = () => {
     chipBox.textContent = "";
-    const cur = (ws.discuss && ws.discuss.agents) || [];
+    const cur = (desk.discuss && desk.discuss.agents) || [];
     // Only candidate tabs that are a discussable AI (CLI/model API), not already a participant, and not aimed at anything
-    const cand = (ws.tabs || [])
+    const cand = (desk.tabs || [])
       .filter(t => isDiscussable(t) && !(t.drives||"").trim())
       .map(t => (t.id || "").trim())
       .filter(id => id && !cur.includes(id));
@@ -7591,9 +7591,9 @@ function wsDiscussCard(ws) {
   const roundsIn = numf(d.max_rounds, v => ensure().max_rounds = v);
   // Judge and moderator are likewise restricted to discussable AIs (aimed tabs, shells, and Aider are excluded)
   const notDiscuss = t => (t.drives||"").trim() || !isDiscussable(t);
-  const judgeIn = idSelect(ws, d.judge, T["wizard.discuss.judge_none"],
+  const judgeIn = idSelect(desk, d.judge, T["wizard.discuss.judge_none"],
     v => { ensure().judge = v; drawPersonas(); }, notDiscuss);
-  const modIn = idSelect(ws, d.moderator, T["wizard.discuss.judge_none"],
+  const modIn = idSelect(desk, d.moderator, T["wizard.discuss.judge_none"],
     v => { ensure().moderator = v; drawPersonas(); }, notDiscuss);
   const verdictSel = self(d.verdict || "winner",
     [["winner",T["wizard.discuss.verdict.winner"]],["synthesis",T["wizard.discuss.verdict.synthesis"]]], v => ensure().verdict = v);
@@ -7620,18 +7620,18 @@ function wsDiscussCard(ws) {
     body);
 }
 
-// Stop conditions (judge). Per-workspace. Evaluated top to bottom; the first one satisfied wins.
+// Stop conditions (judge). Per-desk. Evaluated top to bottom; the first one satisfied wins.
 // Defines "when does this collaborative task end (success/failure)"
-function wsStopsCard(ws) {
-  ws.stops = ws.stops || [];
+function deskStopsCard(desk) {
+  desk.stops = desk.stops || [];
   const list = el("div", {id:"wsstopslist"});
   const redraw = () => {
     list.textContent = "";
-    if (!ws.stops.length) list.append(el("div", {class:"hint"}, T["settings.stops.empty"]));
-    ws.stops.forEach((s, i) => list.append(stopRow(ws, s, i, redraw)));
+    if (!desk.stops.length) list.append(el("div", {class:"hint"}, T["settings.stops.empty"]));
+    desk.stops.forEach((s, i) => list.append(stopRow(desk, s, i, redraw)));
   };
   const add = el("button", {onclick:() => {
-    ws.stops.push({ when:"screen", outcome:"success", code:0 }); redraw(); refreshSave();
+    desk.stops.push({ when:"screen", outcome:"success", code:0 }); redraw(); refreshSave();
   }}, T["settings.stops.add"]);
   const c = card(T["settings.stops.title"],
     el("div", {class:"hint"},
@@ -7642,7 +7642,7 @@ function wsStopsCard(ws) {
   return c;
 }
 
-function stopRow(ws, s, i, redraw) {
+function stopRow(desk, s, i, redraw) {
   const set = (k, v) => { s[k] = v; refreshSave(); };
   const sel = (val, opts, on) => {
     const e = el("select", {});
@@ -7665,7 +7665,7 @@ function stopRow(ws, s, i, redraw) {
   const dyn = [];
   if (s.when === "screen" || s.when === "css" || s.when === "xpath" || s.when === "console") {
     if (s.when !== "console")
-      dyn.push(idSelect(ws, s.tab, T["settings.stops.target_tab"], v => set("tab", v)));
+      dyn.push(idSelect(desk, s.tab, T["settings.stops.target_tab"], v => set("tab", v)));
     if (s.when === "css" || s.when === "xpath")
       dyn.push(inp(s.sel, s.when === "xpath" ? "//button[...]" : "#id", "text", v => set("sel", v)));
     else
@@ -7679,30 +7679,30 @@ function stopRow(ws, s, i, redraw) {
   const outcome = sel(s.outcome || "success", [["success",T["settings.stops.outcome.success"]],["fail",T["settings.stops.outcome.fail"]]], v => set("outcome", v));
   const code = inp(s.code || 0, "code", "number", v => set("code", v));
   const reason = inp(s.reason, T["settings.stops.reason_ph"], "text", v => set("reason", v || null));
-  const rm = el("button", {class:"quiet", title:T["common.delete"], onclick:() => { ws.stops.splice(i, 1); redraw(); refreshSave(); }}, "×");
+  const rm = el("button", {class:"quiet", title:T["common.delete"], onclick:() => { desk.stops.splice(i, 1); redraw(); refreshSave(); }}, "×");
 
   const row = el("div", {class:"stoprow"}, when, ...dyn,
     el("span", {class:"arrow"}, "→"), outcome, code, reason, rm);
   return row;
 }
 
-// The secrets a workspace has.
+// The secrets a desk has.
 //
 // A boxed list you read down, and one dialog to change one of them. The row
 // says what a person needs in order to pick one out -- its name, who may use
 // it, what it is for, how many addresses it may be typed into -- and the whole
 // row is the way in, so there is no button to find.
-function wsSecretsCard(ws) {
+function deskSecretsCard(desk) {
   const listBox = el("div", {id:"wssecretslist"}, el("div", {class:"hint"}, "…"));
   const add = el("button", {onclick: () => {
-    if (!(ws.id || "").trim()) { toast(T["settings.secrets.ws_needs_id"], true); return; }
-    secretDialog(ws, null);
+    if (!(desk.id || "").trim()) { toast(T["settings.secrets.desk_needs_id"], true); return; }
+    secretDialog(desk, null);
   }}, T["settings.secrets.add"]);
-  const c = card(T["settings.secrets.ws_title"],
-    el("div", {class:"hint"}, T["settings.secrets.ws_hint"]),
+  const c = card(T["settings.secrets.desk_title"],
+    el("div", {class:"hint"}, T["settings.secrets.desk_hint"]),
     listBox,
     el("div", {class:"row"}, add));
-  setTimeout(() => loadWsSecrets(ws), 0);
+  setTimeout(() => loadWsSecrets(desk), 0);
   return c;
 }
 
@@ -7730,14 +7730,14 @@ function secretWhere(s) {
   };
 }
 
-async function loadWsSecrets(ws) {
+async function loadWsSecrets(desk) {
   const box = document.getElementById("wssecretslist");
   if (!box) return;
   const j = await fetchSecrets();
   if (!j) { box.textContent=""; box.append(el("div",{class:"hint warn"},T["settings.secrets.load_failed"])); return; }
   box.textContent = "";
   if (j.mode === "locked") {
-    box.append(el("div",{class:"hint warn"},T["settings.secrets.ws_locked"]));
+    box.append(el("div",{class:"hint warn"},T["settings.secrets.desk_locked"]));
     return;
   }
   // Kept in the open, because nobody has set a master password yet. Said here
@@ -7746,16 +7746,16 @@ async function loadWsSecrets(ws) {
     box.append(el("div", {class:"hint warn"}, T["settings.secrets.mode.plaintext"]));
   }
   const mine = (j.secrets || [])
-    .map(s => ({...s, short: secretShortName(ws, s.key)}))
+    .map(s => ({...s, short: secretShortName(desk, s.key)}))
     .filter(s => s.short !== null);
   if (!mine.length) {
-    box.append(el("div",{class:"hint"},T["settings.secrets.ws_none"]));
+    box.append(el("div",{class:"hint"},T["settings.secrets.desk_none"]));
     return;
   }
   const rows = el("div", {class:"rows"});
   for (const s of mine) {
     const where = secretWhere(s);
-    rows.append(el("div", {class:"listrow secretrow", onclick: () => secretDialog(ws, s)},
+    rows.append(el("div", {class:"listrow secretrow", onclick: () => secretDialog(desk, s)},
       el("span", {class:"mono secretname"}, s.short),
       secretWhoChip(s),
       el("span", {class:"hint secretdesc"}, s.description || T["settings.secrets.no_desc"]),
@@ -7775,7 +7775,7 @@ async function loadWsSecrets(ws) {
 // `called` fills the name in for a secret the app itself looks for by name --
 // today that is the GitHub token, which is only useful under the one name the
 // program asks for. Typing it correctly is not a thing to leave to a person
-function secretDialog(ws, have, called) {
+function secretDialog(desk, have, called) {
   const editing = !!have;
   const name = el("input", {type:"text", class:"mono", placeholder:T["settings.secrets.key_ph"]});
   name.value = editing ? have.short : (called || "");
@@ -7907,7 +7907,7 @@ function secretDialog(ws, have, called) {
         ? el("button", {class:"danger", onclick: async () => {
             if (!await confirmAction(fill(T["settings.secrets.delete_confirm"], {key: have.short}), T["common.delete"])) return;
             const r = await deleteSecret(have.key);
-            if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: have.short})); shut(); loadWsSecrets(ws); }
+            if (r.ok) { toast(fill(T["settings.secrets.deleted"], {key: have.short})); shut(); loadWsSecrets(desk); }
             else toast(r.error || T["settings.secrets.delete_failed"], true);
           }}, T["common.delete"])
         : null,
@@ -7932,10 +7932,10 @@ function secretDialog(ws, have, called) {
     const short = name.value.trim();
     if (!short) { toast(T["settings.secrets.key_required"], true); return; }
     if (!editing && !value.value) { toast(T["settings.secrets.value_required"], true); return; }
-    const r = await saveSecret({key: editing ? have.key : secretKey(ws, short),
+    const r = await saveSecret({key: editing ? have.key : secretKey(desk, short),
       value: value.value, description: desc.value,
       human: humanIn.checked, ai: aiIn.checked, urls: urlsNow()});
-    if (r.ok) { toast(fill(T["settings.secrets.saved_key"], {key: short})); shut(); loadWsSecrets(ws); }
+    if (r.ok) { toast(fill(T["settings.secrets.saved_key"], {key: short})); shut(); loadWsSecrets(desk); }
     else toast(r.error || T["settings.secrets.save_failed"], true);
   });
   recheck();
@@ -7945,34 +7945,34 @@ function secretDialog(ws, have, called) {
 // Exporting the in-progress editing state would create a config that only the recipient has
 function savedAlready() {
   if (snapshot() === savedSnapshot) return true;
-  result(T["settings.ws.save_first"], true);
+  result(T["settings.desk.save_first"], true);
   return false;
 }
 
-const wsShare = (path, body) => fetch(path, {method:"POST",
+const deskShare = (path, body) => fetch(path, {method:"POST",
   headers:{"Content-Type":"application/json", "X-Token":TOKEN}, body})
   .then(r => r.json()).catch(e => ({ok:false, error:e.message || e}));
 
 async function exportWs(i) {
   if (!savedAlready()) return;
-  const j = await wsShare("/api/workspace/export", JSON.stringify({index:i}));
+  const j = await deskShare("/api/desk/export", JSON.stringify({index:i}));
   if (j.cancelled) return;
-  if (!j.ok) return result(fill(T["settings.ws.export_failed"], {error:j.error || ""}), true);
-  result(fill(T["settings.ws.exported"], {path:j.path}));
+  if (!j.ok) return result(fill(T["settings.desk.export_failed"], {error:j.error || ""}), true);
+  result(fill(T["settings.desk.exported"], {path:j.path}));
 }
 
 async function importWs() {
   if (!savedAlready()) return;
-  const j = await wsShare("/api/workspace/import", null);
+  const j = await deskShare("/api/desk/import", null);
   if (j.cancelled) return;
-  if (!j.ok) return result(fill(T["settings.ws.import_failed"], {error:j.error || ""}), true);
+  if (!j.ok) return result(fill(T["settings.desk.import_failed"], {error:j.error || ""}), true);
   // The config has already been rewritten on the server side; reload it here on screen
   await load();
-  sel = {ws:wss.length - 1, tab:null, global:false};
+  sel = {desk:desks.length - 1, tab:null, global:false};
   render();
   const moved = (j.moved || []).map(m => m[0] + " → " + m[1]).join(" / ");
-  result(fill(T["settings.ws.imported"], {name:j.name, files:j.files})
-    + (moved ? "  " + fill(T["settings.ws.imported.moved"], {moved}) : ""));
+  result(fill(T["settings.desk.imported"], {name:j.name, files:j.files})
+    + (moved ? "  " + fill(T["settings.desk.imported.moved"], {moved}) : ""));
 }
 
 const TEMPLATES = {
@@ -7984,16 +7984,16 @@ const TEMPLATES = {
   wsl:    [ {name:"Ubuntu", command:"wsl -d Ubuntu --cd /home/me/proj -- bash", profile:"claude"} ],
 };
 function addTemplate(kind) {
-  const ws = wss[sel.ws];
-  const at = (ws.tabs || [])[sel.tab];
+  const desk = desks[sel.desk];
+  const at = (desk.tabs || [])[sel.tab];
   const group = at ? (at.group || 0) : 0;
-  ws.tabs = (ws.tabs || []).concat(TEMPLATES[kind].map(x => newTab(Object.assign({group}, x))));
-  sel.tab = ws.tabs.length - TEMPLATES[kind].length;
+  desk.tabs = (desk.tabs || []).concat(TEMPLATES[kind].map(x => newTab(Object.assign({group}, x))));
+  sel.tab = desk.tabs.length - TEMPLATES[kind].length;
   render();
   msg(T["settings.template.added"]);
 }
 
-function tabPane(ws, t) {
+function tabPane(desk, t) {
   const box = el("div");
 
   // Basics: name and ID are identity, so place them side by side.
@@ -8003,18 +8003,18 @@ function tabPane(ws, t) {
   // one, else a unique string -- so the field is never blank and the tab can
   // always be pointed at. The person can change it; it is a normal field.
   if (!(t.id || "").trim()) {
-    t.id = uniqueId(ws, inferredTabId(t), t);
+    t.id = uniqueId(desk, inferredTabId(t), t);
     refreshSave(); renderNav();
   }
   const idInput = field(t, "id", "", {grow:false, width:280, mono:true});
   const refreshIdPh = () => {
-    idInput.placeholder = uniqueId(ws, inferredTabId(t), t);
+    idInput.placeholder = uniqueId(desk, inferredTabId(t), t);
   };
   const nameInput = field(t, "name", T["settings.tab.name.ph"], {grow:false, width:280,
     onInput:() => { renderNav(); refreshIdPh(); }});
   nameInput.addEventListener("blur", () => {
     if (!(t.id || "").trim()) {
-      const sug = uniqueId(ws, inferredTabId(t), t);
+      const sug = uniqueId(desk, inferredTabId(t), t);
       t.id = sug; idInput.value = sug; refreshSave(); renderNav();
     }
   });
@@ -8157,12 +8157,12 @@ function tabPane(ws, t) {
     drawHint();
     ev.append(el("div", {class:"event"},
       el("div", {class:"name"}, pick, hint),
-      el("button", {class:"quiet", onclick:() => openAuto(ws, t, pick.value)}, T["common.edit"])));
+      el("button", {class:"quiet", onclick:() => openAuto(desk, t, pick.value)}, T["common.edit"])));
     ev.append(el("div", {class:"hint", id:"ev-set"}, T["automation.none_set"]));
   }
   if (runs) {
     box.append(card(T["settings.tab.automation"], ev));
-    loadAutoStates(ws, t);
+    loadAutoStates(desk, t);
   }
 
   // Details: fold away things that are rarely touched
@@ -8183,16 +8183,16 @@ function tabPane(ws, t) {
   // Which folder this tab sits in. Same family as the order buttons below — both
   // decide where the tab sits — so they stay together. Only offered when there is
   // more than one folder. Through a holder, because a select speaks strings and a group is a number
-  if ((ws.folders || []).length > 1)
+  if ((desk.folders || []).length > 1)
     det.append(row(T["settings.tab.folder"],
       choose({at: String(t.group || 0)}, "at",
-             ws.folders.map((g, i) => [String(i), folderLabel(g, i)]),
-             v => { sel.tab = setTabGroup(ws, sel.tab, Number(v)); render(); refreshSave(); }),
+             desk.folders.map((g, i) => [String(i), folderLabel(g, i)]),
+             v => { sel.tab = setTabGroup(desk, sel.tab, Number(v)); render(); refreshSave(); }),
       el("span", {class:"hint"}, T["settings.tab.folder.hint"])));
   det.append(
     el("div", {class:"row"}, el("label", {}, T["settings.tab.order"]),
-       el("button", {class:"quiet", onclick:() => moveTab(ws, -1)}, T["settings.tab.move_up"]),
-       el("button", {class:"quiet", onclick:() => moveTab(ws, 1)}, T["settings.tab.move_down"]),
+       el("button", {class:"quiet", onclick:() => moveTab(desk, -1)}, T["settings.tab.move_up"]),
+       el("button", {class:"quiet", onclick:() => moveTab(desk, 1)}, T["settings.tab.move_down"]),
        el("button", {class:"quiet", onclick:() => { t.depth = Math.min((t.depth||0)+1, sel.tab); render(); }}, T["settings.tab.indent"]),
        el("button", {class:"quiet", onclick:() => { t.depth = Math.max((t.depth||0)-1, 0); render(); }}, T["settings.tab.outdent"])));
   box.append(el("div", {class:"card"}, det));
@@ -8202,10 +8202,10 @@ function tabPane(ws, t) {
       if (!await confirmAction(fill(T["settings.tab.delete_confirm"], {name: t.name || T["settings.tab.unnamed"]}), T["settings.tab.delete"])) return;
       // The password this tab signs in with is this tab's, and nothing else
       // can name it once the tab is gone
-      const w = (ws.id || "").trim(), tid = (t.id || "").trim();
+      const w = (desk.id || "").trim(), tid = (t.id || "").trim();
       if (w && tid) await dropSecrets(["ssh/" + w + "/" + tid + "/password",
                                        "ssh/" + w + "/" + tid + "/passphrase"]);
-      ws.tabs.splice(sel.tab, 1); sel.tab = null; render();
+      desk.tabs.splice(sel.tab, 1); sel.tab = null; render();
     }}, T["settings.tab.delete"])));
   return box;
 }
@@ -8214,24 +8214,24 @@ function tabPane(ws, t) {
 // work in the same place, so leaving them behind would split one family across
 // two folders. The list stays ordered by folder, which is what the headings in
 // the nav and the tab bar are drawn from. Returns where the tab ended up
-function setTabGroup(ws, i, group) {
+function setTabGroup(desk, i, group) {
   let end = i + 1;
-  while (end < ws.tabs.length && ws.tabs[end].depth > ws.tabs[i].depth) end++;
-  const moved = ws.tabs.splice(i, end - i);
+  while (end < desk.tabs.length && desk.tabs[end].depth > desk.tabs[i].depth) end++;
+  const moved = desk.tabs.splice(i, end - i);
   moved.forEach(t => t.group = group);
-  let at = ws.tabs.length;
-  for (let k = 0; k < ws.tabs.length; k++) if ((ws.tabs[k].group || 0) > group) { at = k; break; }
-  ws.tabs.splice(at, 0, ...moved);
+  let at = desk.tabs.length;
+  for (let k = 0; k < desk.tabs.length; k++) if ((desk.tabs[k].group || 0) > group) { at = k; break; }
+  desk.tabs.splice(at, 0, ...moved);
   return at;
 }
 
-function moveTab(ws, d) {
+function moveTab(desk, d) {
   const i = sel.tab, j = i + d;
-  if (j < 0 || j >= ws.tabs.length) return;
+  if (j < 0 || j >= desk.tabs.length) return;
   // Swapping across a folder boundary would move a tab to another folder
   // without saying so. The folder is picked in the tab's own settings
-  if ((ws.tabs[i].group || 0) !== (ws.tabs[j].group || 0)) return;
-  [ws.tabs[i], ws.tabs[j]] = [ws.tabs[j], ws.tabs[i]];
+  if ((desk.tabs[i].group || 0) !== (desk.tabs[j].group || 0)) return;
+  [desk.tabs[i], desk.tabs[j]] = [desk.tabs[j], desk.tabs[i]];
   sel.tab = j; render();
 }
 
@@ -8570,7 +8570,7 @@ function connectionFields(box, t, conn, build, cmdInput) {
       // Held on to now: an event's target is gone by the time the answer
       // arrives, and reaching for it then is how a button stays grey forever
       const btn = ev.currentTarget;
-      const ws = wss[sel.ws];
+      const desk = desks[sel.desk];
       said.textContent = T["settings.server.test.doing"];
       said.style.color = "";
       btn.classList.add("held");
@@ -8579,7 +8579,7 @@ function connectionFields(box, t, conn, build, cmdInput) {
         user: conn.user || "", key: sv.key || "",
         jump: sv.jump || null, keepalive: sv.keepalive || 0,
         file_command: sv.file_command || "",
-        ws: (ws && (ws.id || "").trim()) || "", tab: (t.id || "").trim(),
+        desk: (desk && (desk.id || "").trim()) || "", tab: (t.id || "").trim(),
       });
       btn.classList.remove("held");
       said.textContent = r && r.ok
@@ -8812,11 +8812,11 @@ const PAGE_EVENTS = [
 const eventsFor = t => kindOf(t.command) === "browser" ? PAGE_EVENTS : TAB_EVENTS;
 let autoTarget = null, autoData = {}, autoEvent = "on_done";
 
-function autoDirOf(ws, t) {
+function autoDirOf(desk, t) {
   if (t.automation) return t.automation;
   const slug = s => (s || "").replace(/[^A-Za-z0-9_-]/g, "").toLowerCase();
-  const wi = wss.indexOf(ws) + 1, ti = (ws.tabs || []).indexOf(t) + 1;
-  return "scripts/" + (slug(ws.name) || ("ws" + wi)) + "/" + (slug(t.id) || slug(t.name) || ("tab" + ti));
+  const wi = desks.indexOf(desk) + 1, ti = (desk.tabs || []).indexOf(t) + 1;
+  return "scripts/" + (slug(desk.name) || ("desk" + wi)) + "/" + (slug(t.id) || slug(t.name) || ("tab" + ti));
 }
 
 async function fetchAuto(dir) {
@@ -8825,8 +8825,8 @@ async function fetchAuto(dir) {
         {headers:{"X-Token":TOKEN}})).json();
   } catch (e) { return {}; }
 }
-async function loadAutoStates(ws, t) {
-  const data = await fetchAuto(autoDirOf(ws, t));
+async function loadAutoStates(desk, t) {
+  const data = await fetchAuto(autoDirOf(desk, t));
   const set = eventsFor(t)
       .filter(([id]) => (data[id] || "").trim().length > 0)
       .map(([, label]) => label);
@@ -8838,8 +8838,8 @@ async function loadAutoStates(ws, t) {
   line.className = "hint" + (set.length ? " on" : "");
 }
 
-async function openAuto(ws, t, event) {
-  autoTarget = { ws, t, dir: autoDirOf(ws, t) };
+async function openAuto(desk, t, event) {
+  autoTarget = { desk, t, dir: autoDirOf(desk, t) };
   document.getElementById("autotitle").textContent =
       fill(T["automation.editor.title"], {name: t.name || T["settings.tab.unnamed"]});
   document.getElementById("autopath").textContent = autoTarget.dir;
@@ -8889,7 +8889,7 @@ async function saveAuto() {
   const created = autoTarget.t.automation !== autoTarget.dir;
   autoTarget.t.automation = autoTarget.dir;
   closeAuto();
-  loadAutoStates(autoTarget.ws, autoTarget.t);
+  loadAutoStates(autoTarget.desk, autoTarget.t);
   msg(created ? T["automation.editor.saved_new"] : T["automation.editor.saved"]);
 }
 
@@ -8916,7 +8916,7 @@ function aiBusy(on) {
 async function askAi() {
   const want = document.getElementById("autoask").value.trim();
   if (!want) return automsg(T["automation.editor.want"], true);
-  const ws = autoTarget.ws;
+  const desk = autoTarget.desk;
   automsg("");
   aiBusy(true);
   try {
@@ -8924,8 +8924,8 @@ async function askAi() {
         headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
         body: JSON.stringify({event: autoEvent, prompt: want,
           engine: current.ai_engine || null,
-          tabs: (ws.tabs || []).map((x, i) => ({index:i+1, name:x.name || fill(T["settings.tab.default_name"], {n: i+1}), id:x.id || ""})),
-          self: (ws.tabs || []).indexOf(autoTarget.t) + 1})});
+          tabs: (desk.tabs || []).map((x, i) => ({index:i+1, name:x.name || fill(T["settings.tab.default_name"], {n: i+1}), id:x.id || ""})),
+          self: (desk.tabs || []).indexOf(autoTarget.t) + 1})});
     const j = await r.json();
     if (!j.ok) return automsg(fill(T["automation.editor.failed"], {error: j.error}), true);
     document.getElementById("aicode").textContent = j.code;
@@ -8947,7 +8947,7 @@ function automsg(t, warn) { const m = document.getElementById("automsg");
   m.textContent = t; m.style.color = warn ? "var(--danger)" : "var(--muted)"; }
 
 // ── Load / save ──────────────────────────────────
-// A workspace's working folders, and never none of them: the one everything
+// A desk's working folders, and never none of them: the one everything
 // lands in is a folder like any other. Mirrors foldered() in config.rs, which
 // says the same thing on the way to launching them
 function foldersOf(w) {
@@ -8956,7 +8956,7 @@ function foldersOf(w) {
   if (!folders.length) folders.push({name:"", id:"", cwd:"", tabs:[]});
   // Tabs written the old way, beside the folders instead of inside one. The
   // program reads them again (config.rs does the same folding), and this screen
-  // has to as well: showing "no tabs" for a workspace that is running two is
+  // has to as well: showing "no tabs" for a desk that is running two is
   // worse than not showing them at all, because the next save would be made
   // from what is on the screen. They join the folder they would have been put
   // in, and saving writes them there.
@@ -8967,11 +8967,11 @@ function foldersOf(w) {
 }
 
 // The screen keeps one flat list of tabs, each remembering which folder it is in
-function readFolders(ws, w) {
+function readFolders(desk, w) {
   const fs = foldersOf(w);
-  ws.folders = fs.map(f => ({name:f.name, id:f.id, cwd:f.cwd}));
-  ws.tabs = [];
-  fs.forEach((f, i) => flatten(f.tabs, 0, i, ws.tabs));
+  desk.folders = fs.map(f => ({name:f.name, id:f.id, cwd:f.cwd}));
+  desk.tabs = [];
+  fs.forEach((f, i) => flatten(f.tabs, 0, i, desk.tabs));
 }
 
 function flatten(tabs, depth, group, out) {
@@ -9075,15 +9075,15 @@ async function load() {
     current.actions = defaultActions();
   }
   loadedLanguage = (current.language || "").trim().toLowerCase();
-  const list = (Array.isArray(current.workspaces) && current.workspaces.length)
-      ? current.workspaces
+  const list = (Array.isArray(current.desks) && current.desks.length)
+      ? current.desks
       : [{ name:"DEFAULT", folders: current.folders || [], tabs: current.tabs || [] }];
   // Read once, from wherever it was written, and then let go of the old spelling
   // so that saving settles the file into one shape rather than both.
   delete current.tabs;
-  wss = [];
+  desks = [];
   for (const w of list) {
-    const ws = { name:w.name || "", id:w.id || "", file:w.file || null,
+    const desk = { name:w.name || "", id:w.id || "", file:w.file || null,
                  automation:w.automation || w.lua || "", tabs:[], folders:[],
                  // Not touched from the screen, but kept so saving doesn't drop it
                  browsers:w.browsers || null,
@@ -9103,22 +9103,22 @@ async function load() {
                  git: w.git || null,
                  stops: Array.isArray(w.stops) ? w.stops : [],
                  discuss: w.discuss || null };
-    if (ws.file) {
-      const got = await readUserJson(await wsApi("GET", ws.file));
-      // A workspace file is loaded to be written back. If it can't be read, the
+    if (desk.file) {
+      const got = await readUserJson(await deskApi("GET", desk.file));
+      // A desk file is loaded to be written back. If it can't be read, the
       // tabs would come out empty and saving would erase them, so stop here too.
       if (got.failure) return showLoadFailure(got.failure);
       const f = got.value;
-      readFolders(ws, f);
-      if (!ws.automation) ws.automation = f.automation || f.lua || "";
-      if (!ws.secrets_allow.length) ws.secrets_allow = f.secrets_allow || [];
-      if (!ws.secrets_allow_all) ws.secrets_allow_all = !!f.secrets_allow_all;
-      if (!ws.stops.length && Array.isArray(f.stops)) ws.stops = f.stops;
-      if (!ws.discuss && f.discuss) ws.discuss = f.discuss;
-    } else readFolders(ws, w);
-    wss.push(ws);
+      readFolders(desk, f);
+      if (!desk.automation) desk.automation = f.automation || f.lua || "";
+      if (!desk.secrets_allow.length) desk.secrets_allow = f.secrets_allow || [];
+      if (!desk.secrets_allow_all) desk.secrets_allow_all = !!f.secrets_allow_all;
+      if (!desk.stops.length && Array.isArray(f.stops)) desk.stops = f.stops;
+      if (!desk.discuss && f.discuss) desk.discuss = f.discuss;
+    } else readFolders(desk, w);
+    desks.push(desk);
   }
-  if (sel.ws >= wss.length) sel = {ws:0, tab:null, global:true};
+  if (sel.desk >= desks.length) sel = {desk:0, tab:null, global:true};
   render();
   markClean();
   msg(T["common.loaded"]);
@@ -9240,9 +9240,9 @@ function payload() {
   // A discussion is only saved when there are 2 or more participants
   const cleanDiscuss = w => (w.discuss && (w.discuss.agents || []).length >= 2) ? w.discuss : null;
 
-  // A workspace that was split out into a separate file gets written to that file
+  // A desk that was split out into a separate file gets written to that file
   const files = [];
-  for (const w of wss) {
+  for (const w of desks) {
     if (!w.file) continue;
     const body = { name:w.name, folders:foldersOut(w) };
     if (w.automation) body.automation = w.automation;
@@ -9252,30 +9252,30 @@ function payload() {
     const dc = cleanDiscuss(w); if (dc) body.discuss = dc;
     files.push({ file:w.file, body });
   }
-  out.workspaces = wss.map(w => {
+  out.desks = desks.map(w => {
     const o = { name:w.name, id:w.id };
     if (w.file) o.file = w.file;
     else { if (w.automation) o.automation = w.automation; o.folders = foldersOut(w); }
     // Don't lose a setting that isn't on screen just because it was saved from the screen
     if (w.browsers) o.browsers = w.browsers;
     // Allow-list of secrets the rally may use (denied by default)
-    // Which secrets a workspace was allowed to borrow, from when there was one
+    // Which secrets a desk was allowed to borrow, from when there was one
     // pool of them to borrow from. Nothing reads it any more except the step
     // that carries an older secrets file forward, which needs it to know whose
     // secret was whose -- so it is kept rather than dropped on the first save
     if (w.secrets_allow && w.secrets_allow.length) o.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) o.secrets_allow_all = true;
-    // Where this workspace's notifications go. Written only when it has an
+    // Where this desk's notifications go. Written only when it has an
     // answer of its own: nothing written is how it says "whatever the app says"
     if (Array.isArray(w.notify)) o.notify = w.notify;
     if ((w.primary_notify || "").trim()) o.primary_notify = w.primary_notify.trim();
-    // Which model connections this workspace may use, written the same way:
+    // Which model connections this desk may use, written the same way:
     // nothing written is "all of the app's"
     if (Array.isArray(w.providers)) o.providers = w.providers;
     if (w.capabilities) o.capabilities = w.capabilities;
     if (w.automation_permissions) o.automation_permissions = w.automation_permissions;
     if (w.git) o.git = w.git;
-    // Stop conditions (judge). Already written into the file for a file-referenced workspace, so don't duplicate it here
+    // Stop conditions (judge). Already written into the file for a file-referenced desk, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
     // AI vs AI discussion
     if (!w.file) { const dc = cleanDiscuss(w); if (dc) o.discuss = dc; }
@@ -9287,11 +9287,11 @@ function payload() {
 async function doSave() {
   // Tabs with an empty id get one derived from the name before writing (a safety net against dropped references).
   // Since this is a side effect, it's done only right before saving (never inside payload's unsaved-check)
-  for (const w of wss) ensureIds(w);
+  for (const w of desks) ensureIds(w);
   ensureWsIds();
   const { out, files } = payload();
   for (const f of files) {
-    const rf = await wsApi("POST", f.file, JSON.stringify(f.body, null, 2));
+    const rf = await deskApi("POST", f.file, JSON.stringify(f.body, null, 2));
     const jf = await rf.json().catch(() => ({ok:false}));
     if (!jf.ok) { result(fill(T["settings.file_save_failed"], {file: f.file}), true); return; }
   }
@@ -9353,12 +9353,12 @@ function openExt(dest) {
 placeHeadLinks();
 measureHeader();
 
-// If the URL has addtab=<workspace-index>, start with one tab already added
-// to that workspace after loading (this is where the tab bar's + comes from).
-// ws=<workspace-index> only expands that group (the gear passes the workspace
+// If the URL has addtab=<desk-index>, start with one tab already added
+// to that desk after loading (this is where the tab bar's + comes from).
+// desk=<desk-index> only expands that group (the gear passes the desk
 // being viewed, so the settings open onto the one you came from).
 // Careful: Number(null) is 0, so a missing parameter must be rejected as text
-// first — otherwise every plain open would start editing workspace 0
+// first — otherwise every plain open would start editing desk 0
 load().then(() => {
   const q = new URLSearchParams(location.search);
   const idx = k => /^\d+$/.test(q.get(k) || "") ? Number(q.get(k)) : -1;
@@ -9371,48 +9371,48 @@ load().then(() => {
     return;
   }
   const wi = idx("addtab");
-  if (wss[wi]) {
+  if (desks[wi]) {
     // Asked for from a folder: that is where it goes. The form used to add it
     // wherever the default was, which is the first folder -- so a tab asked
     // for from the third one turned up in the first
     const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
     const from = (q.get("folder") || "").trim();
     const gi = from
-      ? (wss[wi].folders || []).findIndex(g => same(g.cwd) === same(from))
+      ? (desks[wi].folders || []).findIndex(g => same(g.cwd) === same(from))
       : -1;
-    sel = {ws:wi, grp:null, tab:addTabTo(wss[wi], gi >= 0 ? gi : undefined), global:false};
-    sel.grp = wss[wi].tabs[sel.tab].group || 0;
+    sel = {desk:wi, grp:null, tab:addTabTo(desks[wi], gi >= 0 ? gi : undefined), global:false};
+    sel.grp = desks[wi].tabs[sel.tab].group || 0;
     render();
     const s = document.querySelector(".navitem.sel");
     if (s) s.scrollIntoView({block:"center"});
     return;
   }
-  // "Edit settings" (?gen=1), or an open with no workspace to focus, lands on the
-  // General group expanded. The sidebar gear (?ws=N, no gen) lands on the workspace
+  // "Edit settings" (?gen=1), or an open with no desk to focus, lands on the
+  // General group expanded. The sidebar gear (?desk=N, no gen) lands on the desk
   // it came from with General collapsed — press its ▸ to open it.
   // ?tab=<id or name> lands on that tab's card: the gear pressed while a
   // tab is in view means the settings for that tab. Its folder narrows the
   // search when two folders have a tab of the same name; failing that, any
   // folder's will do, and failing that the page lands where it would have
-  const cur = idx("ws");
+  const cur = idx("desk");
   // ?tabpos=<n>&folder=<cwd> lands on the n-th terminal tab of that folder:
   // the gear pressed while a tab is in view. A place, not a name, so a tab
   // that was never named lands the same. An empty folder means the one with
   // no path of its own (the app's folder), where a group-less tab lives.
   const tabPos = /^\d+$/.test(q.get("tabpos") || "") ? Number(q.get("tabpos")) : -1;
-  if (tabPos >= 0 && wss[cur]) {
+  if (tabPos >= 0 && desks[cur]) {
     const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
     const from = (q.get("folder") || "").trim();
     const gi = from
-      ? (wss[cur].folders || []).findIndex(g => same(g.cwd) === same(from))
-      : (wss[cur].folders || []).findIndex(g => !(g.cwd || "").trim());
+      ? (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(from))
+      : (desks[cur].folders || []).findIndex(g => !(g.cwd || "").trim());
     if (gi >= 0) {
-      const tabs = wss[cur].tabs || [];
+      const tabs = desks[cur].tabs || [];
       const here = [];
       tabs.forEach((t, i) => { if ((t.group || 0) === gi) here.push(i); });
       const ti = here[tabPos];
       if (ti != null) {
-        sel = {ws:cur, grp:gi, tab:ti, global:false};
+        sel = {desk:cur, grp:gi, tab:ti, global:false};
         render();
         const s = document.querySelector(".navitem.sel");
         if (s) s.scrollIntoView({block:"center"});
@@ -9423,21 +9423,21 @@ load().then(() => {
   // ?folder=<path> lands on that folder's own page: the tab list's edit
   // entry knows the folder, not which line of the settings file it is on
   const want = (q.get("folder") || "").trim();
-  if (want && wss[cur]) {
+  if (want && desks[cur]) {
     const same = c => (c || "").replace(/[\\/]+$/, "").toLowerCase();
-    const gi = (wss[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
+    const gi = (desks[cur].folders || []).findIndex(g => same(g.cwd) === same(want));
     if (gi >= 0) {
-      sel = {ws:cur, grp:gi, tab:null, global:false};
+      sel = {desk:cur, grp:gi, tab:null, global:false};
       render();
       const s = document.querySelector(".navitem.sel");
       if (s) s.scrollIntoView({block:"center"});
       return;
     }
   }
-  if (q.get("gen") === "1" || !wss[cur]) {
-    sel = {ws:(wss[cur] ? cur : sel.ws), grp:null, tab:null, global:true, section:"basic"};
+  if (q.get("gen") === "1" || !desks[cur]) {
+    sel = {desk:(desks[cur] ? cur : sel.desk), grp:null, tab:null, global:true, section:"basic"};
   } else {
-    sel = {ws:cur, grp:null, tab:null, global:false};
+    sel = {desk:cur, grp:null, tab:null, global:false};
   }
   render();
   const s = document.querySelector(".navitem.sel");
@@ -10506,23 +10506,23 @@ mod tests {
     }
 
     #[test]
-    fn workspace_path_rejects_traversal() {
+    fn desk_path_rejects_traversal() {
         let cfg = std::path::Path::new("C:/app/config.json");
         // Happy path
-        assert!(safe_workspace_path("/api/workspace?file=workspaces/x.json", cfg).is_some());
+        assert!(safe_desk_path("/api/desk?file=desks/x.json", cfg).is_some());
         // Path traversal, absolute paths, and non-JSON are rejected
-        assert!(safe_workspace_path("/api/workspace?file=../secrets.json", cfg).is_none());
-        assert!(safe_workspace_path("/api/workspace?file=workspaces/../../x.json", cfg).is_none());
+        assert!(safe_desk_path("/api/desk?file=../secrets.json", cfg).is_none());
+        assert!(safe_desk_path("/api/desk?file=desks/../../x.json", cfg).is_none());
         assert!(
-            safe_workspace_path(
-                &format!("/api/workspace?file={}", crate::outside_path("x.json")),
+            safe_desk_path(
+                &format!("/api/desk?file={}", crate::outside_path("x.json")),
                 cfg
             )
             .is_none()
         );
-        assert!(safe_workspace_path("/api/workspace?file=workspaces/x.lua", cfg).is_none());
+        assert!(safe_desk_path("/api/desk?file=desks/x.lua", cfg).is_none());
         // URL-encoded .. is rejected too
-        assert!(safe_workspace_path("/api/workspace?file=%2E%2E%2Fsecrets.json", cfg).is_none());
+        assert!(safe_desk_path("/api/desk?file=%2E%2E%2Fsecrets.json", cfg).is_none());
     }
 
     /// A dialog is dismissed by a press on the backdrop, never by a click on it.

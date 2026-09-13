@@ -83,7 +83,7 @@ shikisha.send_to_tab(2, "please review")            -- by number too (changes on
 **The name shown on the tab will not reach it.** That name is a heading: you can
 write anything there, including the same thing on two tabs. Two tabs called
 "Review" would leave nobody able to say which one received the work, so the
-address is the automation name only. It is unique within the workspace and does
+address is the automation name only. It is unique within the desk and does
 not change when you rename the tab.
 
 Every tab has one even if you never chose it (it is made from the tab's name).
@@ -117,7 +117,7 @@ printf '\e]9;build finished\a'                    # body only
 
 It appears under that tab's name and, if you are looking at a different tab, as a
 one-line toast. Looking at the tab already is not news, so the toast is held back.
-| `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared inside the workspace |
+| `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared inside the desk |
 
 If `on_question.lua` **returns a string**, that string is sent automatically.
 Returning `nil` (or nothing) leaves the decision to the human.
@@ -360,7 +360,7 @@ first (`apt install chromium`) and that is the one it uses. With none, it fetche
 version it names, and only at the moment one is first asked for. Nothing is bundled, so
 anybody who never opens a page pays nothing for this.
 
-Declare one alongside the tabs of a workspace. A browser you declare becomes a tab,
+Declare one alongside the tabs of a desk. A browser you declare becomes a tab,
 numbered after the sessions — `Ctrl+B` and its number switches to it like any other.
 
 ```json
@@ -619,14 +619,14 @@ Hosts are matched **exactly** and only `https` is allowed
 (tricks like `api.example.com.evil.com` are rejected).
 Every file and network operation is recorded in `logs/hooks.log`.
 
-### A workspace can answer for itself
+### A desk can answer for itself
 
-Everything in this section is the app's answer for every workspace. A workspace
+Everything in this section is the app's answer for every desk. A desk
 that works for somebody else -- a company's repositories beside your own -- can
-write its own instead, inside its entry in `workspaces`:
+write its own instead, inside its entry in `desks`:
 
 ```jsonc
-"workspaces": [
+"desks": [
   {
     "name": "work",
     "id": "work",
@@ -641,13 +641,13 @@ write its own instead, inside its entry in `workspaces`:
 ```
 
 Each of these replaces the app's answer rather than adding to it, and each may
-be left out, which means "whatever the app says". The workspace's settings page
+be left out, which means "whatever the app says". The desk's settings page
 shows what is in force and which of the two places said it.
 
 Its GitHub token is not written here: it is the secret named `github` beside
-that workspace's other secrets, and the workspace page offers to set it. Use a
-fine-grained token covering only the repositories that workspace works on. A
-workspace given none falls back to `GITHUB_TOKEN` in the environment, then to
+that desk's other secrets, and the desk page offers to set it. Use a
+fine-grained token covering only the repositories that desk works on. A
+desk given none falls back to `GITHUB_TOKEN` in the environment, then to
 whatever your own `gh` is signed in as.
 
 ---
@@ -834,7 +834,7 @@ thought of.
 
 | Command | Description |
 |---|---|
-| `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared within the workspace |
+| `shikisha.get_var("key")` / `shikisha.set_var("key", value)` | Remembered variables, shared within the desk |
 | `shikisha.log("text")` | Write a line to `logs/hooks.log` |
 | `shikisha.notify("text")` / `shikisha.notify("target", "text")` | Notify Slack / Discord / Telegram, this PC's own notification area, or a phone that registered itself (only targets you configured). With no target named, it goes to the default one |
 | `shikisha.remote_url()` | The URL a phone can reach this app on, or `nil` while remote is off. Put it in a notification so "come and help" is one tap away |
@@ -884,14 +884,14 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 
 ### Secrets (passwords and tokens)
 
-A password or a token is registered under **Secrets on the workspace's settings
+A password or a token is registered under **Secrets on the desk's settings
 page**. A script writes the name it was given and never receives the value.
 
 ```lua
 shikisha.browser_fill_secret("br", "#password", "github")
 ```
 
-- The name means something **inside that workspace only**. Another workspace's
+- The name means something **inside that desk only**. Another desk's
   secrets, and the ones the program keeps for itself (an SSH password, say),
   cannot be reached by naming them
 - Registering one asks **where the secret may be used**. It is filled in on

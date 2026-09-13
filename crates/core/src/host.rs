@@ -6,7 +6,7 @@
 //! written down here, so the loop can be written once and run either way.
 //!
 //! What is *not* here is just as deliberate. A shell is never asked what a tab
-//! is doing, what a workspace holds, or what should happen next -- it measures
+//! is doing, what a desk holds, or what should happen next -- it measures
 //! itself, it draws what it is handed, and it posts what it saw into the
 //! mailbox. The thinking is the runtime's.
 

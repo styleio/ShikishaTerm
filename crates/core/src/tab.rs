@@ -2862,7 +2862,7 @@ impl Tab {
             }
             // The same, except the far end does not exist yet. Asking for it
             // here rather than earlier is what keeps a machine from being
-            // rented by a workspace that is only being read
+            // rented by a desk that is only being read
             (None, None, Some(host)) => {
                 let box_ = crate::e2b::sandbox_for(host, None)?;
                 let (m, k) = crate::e2b::shell(&box_, rows, cols, opts.remote_cwd.as_deref())?;

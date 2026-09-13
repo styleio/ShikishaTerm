@@ -52,7 +52,7 @@ pub struct Spec {
     pub host: String,
     pub port: u16,
     pub user: String,
-    /// The name the password is stored under (`ssh/<workspace>/<tab>/password`)
+    /// The name the password is stored under (`ssh/<desk>/<tab>/password`)
     pub password_key: Option<String>,
     /// A private key file, and the name its passphrase is stored under
     pub key: Option<String>,

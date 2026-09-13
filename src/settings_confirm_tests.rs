@@ -141,8 +141,8 @@ fn settings_confirmations_require_a_person() {
         "orphans",
         "provider",
         "notify",
-        "workspace",
-        "workspace-secrets",
+        "desk",
+        "desk-secrets",
         "folder",
         "secret",
         "tab",
@@ -206,7 +206,7 @@ fn settings_confirmations_require_a_person() {
             assert_eq!(eval(&b, "return probeState();"), before);
             press(&b, &key, "button");
         }
-        if kind == "workspace"
+        if kind == "desk"
             && let Ok(script) = std::env::var("SHIKISHA_CONFIRM_SHOT_SCRIPT") {
                 let output = std::env::var("SHIKISHA_CONFIRM_SHOT_OUTPUT").unwrap();
                 assert!(
@@ -269,7 +269,7 @@ fn settings_confirmations_require_a_person() {
                 "dialog .primary",
             );
         }
-        if kind == "workspace-secrets" {
+        if kind == "desk-secrets" {
             assert_eq!(eval(&b, "return probeState();"), before);
             press(&b, "common.cancel", "dialog button");
             assert_eq!(eval(&b, "return probeState();"), before);

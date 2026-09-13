@@ -116,7 +116,7 @@ pub fn read(text: &str) -> Option<Env> {
                 }
         }
     }
-    env.folder = v.get("workspaceFolder").and_then(|x| x.as_str()).map(str::to_string);
+    env.folder = v.get("deskFolder").and_then(|x| x.as_str()).map(str::to_string);
     env.user = v
         .get("remoteUser")
         .or_else(|| v.get("containerUser"))

@@ -78,12 +78,12 @@ fn clip(text: &str, max: usize) -> String {
     text.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
 }
 
-/// Where the workspace on screen is allowed to send, and where it sends when
+/// Where the desk on screen is allowed to send, and where it sends when
 /// nobody named a destination.
 ///
-/// One answer, settled at launch by [`crate::config::Config::resolve_workspaces`]
-/// and swapped when the workspace changes. Nothing here knows whether the
-/// workspace said it or the app did
+/// One answer, settled at launch by [`crate::config::Config::resolve_desks`]
+/// and swapped when the desk changes. Nothing here knows whether the
+/// desk said it or the app did
 #[derive(Default)]
 struct Reach {
     /// The names that can be reached, or `None` for every registered one
@@ -95,7 +95,7 @@ struct Reach {
 
 pub struct Notifier {
     dests: HashMap<String, Destination>,
-    /// Swapped on a workspace switch, so it sits behind a cell: everything
+    /// Swapped on a desk switch, so it sits behind a cell: everything
     /// holds the notifier by reference, and a send and a switch never happen
     /// at the same moment
     reach: std::cell::RefCell<Reach>,
@@ -122,18 +122,18 @@ impl Notifier {
         }
     }
 
-    /// Point it at the workspace now on screen.
+    /// Point it at the desk now on screen.
     ///
-    /// Called on every switch, with that workspace's settled answer. Until this
+    /// Called on every switch, with that desk's settled answer. Until this
     /// existed there was one destination list for the whole app, so the AI in
-    /// the work workspace and the AI in the personal one finished their tasks
+    /// the work desk and the AI in the personal one finished their tasks
     /// into the same chat -- and which chat it was depended on nothing a person
     /// could see from where they were working
     pub fn scope_to(&self, only: Option<Vec<String>>, primary: Option<String>) {
         *self.reach.borrow_mut() = Reach { only, primary };
     }
 
-    /// Whether this workspace can reach a destination at all. A name nobody
+    /// Whether this desk can reach a destination at all. A name nobody
     /// registered is not reachable either, and is reported as unknown
     fn reachable(&self, name: &str) -> bool {
         self.dests.contains_key(name)
@@ -145,7 +145,7 @@ impl Notifier {
                 .is_none_or(|l| l.iter().any(|n| n == name))
     }
 
-    /// The destinations this workspace can reach, in name order
+    /// The destinations this desk can reach, in name order
     fn reaching(&self) -> Vec<String> {
         let mut names: Vec<String> = self.dests.keys().filter(|n| self.reachable(n)).cloned().collect();
         names.sort();
@@ -169,12 +169,12 @@ impl Notifier {
         }
     }
 
-    /// Whether this workspace has anywhere to send at all
+    /// Whether this desk has anywhere to send at all
     pub fn is_empty(&self) -> bool {
         self.reaching().is_empty()
     }
 
-    /// Send to every destination this workspace can reach (for connectivity
+    /// Send to every destination this desk can reach (for connectivity
     /// testing). The test button is answering "does a message from here
     /// arrive", so it sends exactly where work from here would
     pub fn send_all(&self, text: &str) -> String {
@@ -396,15 +396,15 @@ mod tests {
         assert!(n.send_opt(None, "hi").contains("NOTIFY[solo]"), "1件ならそれがプライマリ");
     }
 
-    /// A workspace can only send where that workspace is allowed to send.
+    /// A desk can only send where that desk is allowed to send.
     ///
     /// The accident this prevents is not a mistake in the script: the
     /// destinations are registered once for the whole app, so automation
-    /// written for work, running in the work workspace, could name the personal
+    /// written for work, running in the work desk, could name the personal
     /// chat and be obeyed. With a line drawn, it is refused -- and told that it
     /// was refused from here, rather than that the name does not exist
     #[test]
-    fn a_workspace_only_reaches_its_own_destinations() {
+    fn a_desk_only_reaches_its_own_destinations() {
         let two: HashMap<String, Destination> = serde_json::from_str(
             r#"{"work":{"type":"slack","webhook":"https://example.com/a"},
                 "mine":{"type":"slack","webhook":"https://example.com/b"}}"#,
@@ -415,7 +415,7 @@ mod tests {
         assert!(n.send_opt(None, "hi").contains("NOTIFY[mine]"));
         assert!(n.send("work", "hi").contains("NOTIFY[work]"));
 
-        // The work workspace: its own default, and the personal chat out of reach
+        // The work desk: its own default, and the personal chat out of reach
         n.scope_to(Some(vec!["work".into()]), Some("work".into()));
         assert!(n.send_opt(None, "hi").contains("NOTIFY[work]"), "この環境の既定に行かない");
         let said = n.send("mine", "hi");
@@ -427,7 +427,7 @@ mod tests {
         let sent = n.send_all("test");
         assert!(sent.contains("work") && !sent.contains("mine"), "テスト送信が外へ漏れる: {sent}");
 
-        // A workspace with nothing it can reach says so, rather than falling
+        // A desk with nothing it can reach says so, rather than falling
         // back to the app's destination
         n.scope_to(Some(Vec::new()), None);
         assert!(n.is_empty(), "送れないのに送れると言っている");

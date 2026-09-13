@@ -1,18 +1,18 @@
-//! Take a workspace out into a single file, and bring one back in.
+//! Take a desk out into a single file, and bring one back in.
 //!
-//! A workspace isn't just the row of tabs. The tabs point at automation
+//! A desk isn't just the row of tabs. The tabs point at automation
 //! scripts that live elsewhere, and without those, what you took out won't
 //! run. So settings and scripts go into one container.
 //!
 //! When bringing one in, if the destination is already occupied, use a
-//! different name. If you bring in two workspaces that share a folder name
+//! different name. If you bring in two desks that share a folder name
 //! and the later one silently overwrites the earlier one's contents,
 //! there's no way to notice.
 //!
 //! Not included: notification destinations, secrets.json, capabilities.
-//! Those belong to the whole app's settings, not to any one workspace, and
-//! shipping them around would mean handing out credentials. The workspace's
-//! own allow-list of secrets is written out (it says what the workspace
+//! Those belong to the whole app's settings, not to any one desk, and
+//! shipping them around would mean handing out credentials. The desk's
+//! own allow-list of secrets is written out (it says what the desk
 //! needs) but not read in: a file somebody else wrote does not get to grant
 //! itself this machine's secrets. The person re-grants them on the settings
 //! screen, knowing what they are handing over
@@ -24,10 +24,10 @@ use std::path::{Path, PathBuf};
 /// Format version written. An unreadable version is refused. Better than
 /// silently importing only part of it.
 ///
-/// 1: the tabs sat directly on the workspace.
+/// 1: the tabs sat directly on the desk.
 /// 2: the tabs sit inside working folders (`folders[].tabs`), the shape the
 ///    settings screen has written since working folders arrived. A program
-///    that only knows 1 refuses this rather than importing an empty workspace
+///    that only knows 1 refuses this rather than importing an empty desk
 const FORMAT: u64 = 2;
 /// Versions this program can read. An older file is folded into the current
 /// shape on the way in, the same way the config loader folds an older config
@@ -51,7 +51,7 @@ pub struct Placed {
 }
 
 /// The folder every relative path in the config is based on: the one the
-/// `config`, `scripts` and `workspaces` folders sit in together (see the
+/// `config`, `scripts` and `desks` folders sit in together (see the
 /// folder charter in RULES). The config file lives in its own folder there,
 /// or directly there in the old layout; either way this is where
 /// `scripts/ws1` is read from when a tab runs it. Based on the config's own
@@ -60,7 +60,7 @@ pub struct Placed {
 fn base_of(config_path: &Path) -> Result<&Path> {
     let dir = config_path
         .parent()
-        .ok_or_else(|| anyhow!(crate::i18n::t("err.wspack.no_config_dir")))?;
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.deskpack.no_config_dir")))?;
     Ok(match (dir.file_name().and_then(|n| n.to_str()), dir.parent()) {
         (Some("config"), Some(root)) => root,
         _ => dir,
@@ -104,19 +104,19 @@ fn automation_of(v: &Value) -> Option<String> {
     None
 }
 
-/// Runs `f` over every tab of the workspace, wherever it was written: inside
+/// Runs `f` over every tab of the desk, wherever it was written: inside
 /// a working folder, beside the folders the old way, or nested under another
 /// tab. One walk shared by collecting and rewriting, so the two cannot
 /// disagree about which tabs exist
-fn each_tab_mut(ws: &mut Value, f: &mut dyn FnMut(&mut Value)) {
+fn each_tab_mut(desk: &mut Value, f: &mut dyn FnMut(&mut Value)) {
     fn walk(tabs: Option<&mut Value>, f: &mut dyn FnMut(&mut Value)) {
         for t in tabs.and_then(Value::as_array_mut).into_iter().flatten() {
             f(t);
             walk(t.get_mut("children"), f);
         }
     }
-    walk(ws.get_mut("tabs"), f);
-    for g in ws
+    walk(desk.get_mut("tabs"), f);
+    for g in desk
         .get_mut("folders")
         .and_then(Value::as_array_mut)
         .into_iter()
@@ -126,14 +126,14 @@ fn each_tab_mut(ws: &mut Value, f: &mut dyn FnMut(&mut Value)) {
     }
 }
 
-/// Collects every automation location referenced by the workspace and all its tabs
-fn referenced(ws: &Value) -> Vec<String> {
+/// Collects every automation location referenced by the desk and all its tabs
+fn referenced(desk: &Value) -> Vec<String> {
     let mut out = Vec::new();
-    if let Some(a) = automation_of(ws) {
+    if let Some(a) = automation_of(desk) {
         out.push(a);
     }
-    let mut ws = ws.clone();
-    each_tab_mut(&mut ws, &mut |t| {
+    let mut desk = desk.clone();
+    each_tab_mut(&mut desk, &mut |t| {
         if let Some(a) = automation_of(t) {
             out.push(a);
         }
@@ -179,7 +179,7 @@ fn read_dir_lua(base: &Path, rel: &str, out: &mut Map<String, Value>) -> Result<
         } else if name.to_ascii_lowercase().ends_with(".lua") {
             if out.len() >= MAX_FILES {
                 bail!(crate::i18n::tp(
-                    "err.wspack.too_many_scripts",
+                    "err.deskpack.too_many_scripts",
                     &[("max", &MAX_FILES.to_string())]
                 ));
             }
@@ -203,24 +203,24 @@ fn is_blank(v: &Value) -> bool {
     }
 }
 
-/// Pulls `workspaces` out of the config.
-/// Folders or tabs written directly, the way they were before workspaces
-/// existed, are treated as a single workspace called DEFAULT -- the same
+/// Pulls `desks` out of the config.
+/// Folders or tabs written directly, the way they were before desks
+/// existed, are treated as a single desk called DEFAULT -- the same
 /// one the program launches from them
-fn workspace_list(cfg: &Value) -> Vec<Value> {
-    match cfg.get("workspaces").and_then(Value::as_array) {
+fn desk_list(cfg: &Value) -> Vec<Value> {
+    match cfg.get("desks").and_then(Value::as_array) {
         Some(a) if !a.is_empty() => a.clone(),
         _ => {
-            let mut ws = json!({ "name": "DEFAULT" });
+            let mut desk = json!({ "name": "DEFAULT" });
             for key in ["folders", "tabs"] {
                 if let Some(v) = cfg.get(key).filter(|v| !is_blank(v)) {
-                    ws[key] = v.clone();
+                    desk[key] = v.clone();
                 }
             }
-            if ws.get("folders").is_none() && ws.get("tabs").is_none() {
+            if desk.get("folders").is_none() && desk.get("tabs").is_none() {
                 Vec::new()
             } else {
-                vec![ws]
+                vec![desk]
             }
         }
     }
@@ -231,20 +231,20 @@ fn workspace_list(cfg: &Value) -> Vec<Value> {
 /// self-contained, in one piece and in one shape
 fn inline(base: &Path, entry: &Value) -> Result<Value> {
     let file = entry.get("file").and_then(Value::as_str);
-    let mut ws = match file {
+    let mut desk = match file {
         Some(f) => {
             let p = under_base(base, &f.replace('\\', "/")).ok_or_else(|| {
-                anyhow!(crate::i18n::tp("err.wspack.file_outside", &[("f", f)]))
+                anyhow!(crate::i18n::tp("err.deskpack.file_outside", &[("f", f)]))
             })?;
             let text = std::fs::read_to_string(&p).map_err(|e| {
                 anyhow!(crate::i18n::tp(
-                    "err.wspack.file_unreadable",
+                    "err.deskpack.file_unreadable",
                     &[("f", f), ("e", &e.to_string())]
                 ))
             })?;
             let body = serde_json::from_str::<Value>(&text).map_err(|e| {
                 anyhow!(crate::i18n::tp(
-                    "err.wspack.file_bad_json",
+                    "err.deskpack.file_bad_json",
                     &[("f", f), ("e", &e.to_string())]
                 ))
             })?;
@@ -262,32 +262,32 @@ fn inline(base: &Path, entry: &Value) -> Result<Value> {
         if k == "file" || files_own || is_blank(v) {
             continue;
         }
-        ws[k] = v.clone();
+        desk[k] = v.clone();
     }
-    if is_blank(ws.get("name").unwrap_or(&Value::Null)) {
-        ws["name"] = Value::String("UNNAMED".into());
+    if is_blank(desk.get("name").unwrap_or(&Value::Null)) {
+        desk["name"] = Value::String("UNNAMED".into());
     }
     // One spelling on the way out. The old one is still read on the way in
-    if let Some(lua) = ws.as_object_mut().and_then(|o| o.remove("lua"))
-        && ws.get("automation").is_none_or(is_blank) {
-            ws["automation"] = lua;
+    if let Some(lua) = desk.as_object_mut().and_then(|o| o.remove("lua"))
+        && desk.get("automation").is_none_or(is_blank) {
+            desk["automation"] = lua;
         }
-    crate::config::ensure_folders(&mut ws);
-    Ok(ws)
+    crate::config::ensure_folders(&mut desk);
+    Ok(desk)
 }
 
-/// Bundles the workspace picked by index into the contents of a single
+/// Bundles the desk picked by index into the contents of a single
 /// file. Returns (suggested file name, contents)
 pub fn pack(config_path: &Path, index: usize) -> Result<(String, String)> {
     let base = base_of(config_path)?;
     let cfg: Value = serde_json::from_str(&std::fs::read_to_string(config_path)?)?;
-    let list = workspace_list(&cfg);
+    let list = desk_list(&cfg);
     let entry = list
         .get(index)
-        .ok_or_else(|| anyhow!(crate::i18n::t("err.wspack.no_such_workspace")))?;
-    let ws = inline(base, entry)?;
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.deskpack.no_such_desk")))?;
+    let desk = inline(base, entry)?;
 
-    let refs = referenced(&ws);
+    let refs = referenced(&desk);
     let keep = roots(base, &refs);
     let mut scripts = Map::new();
     for r in &keep {
@@ -299,15 +299,15 @@ pub fn pack(config_path: &Path, index: usize) -> Result<(String, String)> {
         }
     }
 
-    let name = ws
+    let name = desk
         .get("name")
         .and_then(Value::as_str)
-        .unwrap_or("workspace")
+        .unwrap_or("desk")
         .to_string();
     let bundle = json!({
-        "shikisha_workspace": FORMAT,
+        "shikisha_desk": FORMAT,
         "exported_at": crate::hooks::local_stamp("%Y-%m-%d %H:%M:%S"),
-        "workspace": ws,
+        "desk": desk,
         // The unit to re-place. If this is already taken, use a different name
         "roots": keep,
         "scripts": Value::Object(scripts),
@@ -322,7 +322,7 @@ fn safe_file_name(name: &str) -> String {
         .map(|c| if r#"\/:*?"<>|"#.contains(c) { '_' } else { c })
         .collect();
     let s = s.trim().trim_matches('.').to_string();
-    if s.is_empty() { "workspace".into() } else { s }
+    if s.is_empty() { "desk".into() } else { s }
 }
 
 /// Finds a name that isn't taken. If `scripts/ws2` is taken, tries `scripts/ws2-2`
@@ -341,7 +341,7 @@ fn free_name(base: &Path, rel: &str) -> Result<String> {
             return Ok(cand);
         }
     }
-    bail!(crate::i18n::tp("err.wspack.cannot_name", &[("rel", rel)]))
+    bail!(crate::i18n::tp("err.deskpack.cannot_name", &[("rel", rel)]))
 }
 
 /// Rewrites prefixes. Renaming `scripts/ws2` to `scripts/ws2-2` also moves
@@ -358,8 +358,8 @@ fn remap(path: &str, moves: &[(String, String)]) -> String {
     path.to_string()
 }
 
-/// Rewrites the automation locations referenced by the workspace and its tabs to wherever they were placed
-fn rewrite(ws: &mut Value, moves: &[(String, String)]) {
+/// Rewrites the automation locations referenced by the desk and its tabs to wherever they were placed
+fn rewrite(desk: &mut Value, moves: &[(String, String)]) {
     fn one(v: &mut Value, moves: &[(String, String)]) {
         for key in ["automation", "lua"] {
             let Some(s) = v.get(key).and_then(Value::as_str).map(str::to_string) else {
@@ -369,8 +369,8 @@ fn rewrite(ws: &mut Value, moves: &[(String, String)]) {
             v[key] = Value::String(to);
         }
     }
-    one(ws, moves);
-    each_tab_mut(ws, &mut |t| one(t, moves));
+    one(desk, moves);
+    each_tab_mut(desk, &mut |t| one(t, moves));
 }
 
 /// Picks a display name that isn't already used. If the same name appears
@@ -381,10 +381,10 @@ fn free_title(list: &[Value], want: &str) -> String {
 
 /// The automation name to file this one under.
 ///
-/// It travels in the bundle, so a workspace carried to another machine keeps
+/// It travels in the bundle, so a desk carried to another machine keeps
 /// the name its secrets are stored beside -- bring the secrets file too and
 /// nothing has to be typed again. Two copies of the same bundle on one machine
-/// are two different workspaces, though, and they cannot share a name: the
+/// are two different desks, though, and they cannot share a name: the
 /// second one takes `-2`, and is asked for its passwords when it first needs
 /// them
 fn free_ws_id(list: &[Value], want: &str) -> String {
@@ -408,38 +408,38 @@ fn free_field(list: &[Value], field: &str, want: &str) -> String {
     want.to_string()
 }
 
-/// Imports a file that was taken out. Adds one workspace to the config, and
+/// Imports a file that was taken out. Adds one desk to the config, and
 /// places its scripts wherever there's room
 pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     if text.len() > MAX_BYTES {
-        bail!(crate::i18n::t("err.wspack.file_too_big"));
+        bail!(crate::i18n::t("err.deskpack.file_too_big"));
     }
     let base = base_of(config_path)?;
     let bundle: Value = serde_json::from_str(text).map_err(|e| {
         anyhow!(crate::i18n::tp(
-            "err.wspack.cannot_read",
+            "err.deskpack.cannot_read",
             &[("e", &e.to_string())]
         ))
     })?;
-    match bundle.get("shikisha_workspace").and_then(Value::as_u64) {
+    match bundle.get("shikisha_desk").and_then(Value::as_u64) {
         Some(v) if READABLE.contains(&v) => {}
         Some(v) => bail!(crate::i18n::tp(
-            "err.wspack.bad_version",
+            "err.deskpack.bad_version",
             &[("v", &v.to_string())]
         )),
-        None => bail!(crate::i18n::t("err.wspack.not_a_workspace_file")),
+        None => bail!(crate::i18n::t("err.deskpack.not_a_desk_file")),
     }
-    let mut ws = bundle
-        .get("workspace")
+    let mut desk = bundle
+        .get("desk")
         .cloned()
         .filter(Value::is_object)
-        .ok_or_else(|| anyhow!(crate::i18n::t("err.wspack.empty_content")))?;
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.deskpack.empty_content")))?;
     // A file from before working folders (format 1) has its tabs beside the
     // folders. They go into the first folder, as the loader would put them
-    crate::config::ensure_folders(&mut ws);
-    // What this machine's secrets the workspace may read is this machine's
+    crate::config::ensure_folders(&mut desk);
+    // What this machine's secrets the desk may read is this machine's
     // answer, not the file's (see the module doc)
-    if let Some(o) = ws.as_object_mut() {
+    if let Some(o) = desk.as_object_mut() {
         o.remove("secrets_allow");
         o.remove("secrets_allow_all");
     }
@@ -451,7 +451,7 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
         .unwrap_or_default();
     if scripts.len() > MAX_FILES {
         bail!(crate::i18n::tp(
-            "err.wspack.too_many_scripts",
+            "err.deskpack.too_many_scripts",
             &[("max", &MAX_FILES.to_string())]
         ));
     }
@@ -467,7 +467,7 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     {
         let r = r.replace('\\', "/");
         if under_base(base, &r).is_none() {
-            bail!(crate::i18n::tp("err.wspack.outside_folder", &[("path", &r)]));
+            bail!(crate::i18n::tp("err.deskpack.outside_folder", &[("path", &r)]));
         }
         let to = free_name(base, &r)?;
         if to != r {
@@ -479,16 +479,16 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     for (path, code) in &scripts {
         let path = remap(&path.replace('\\', "/"), &moves);
         if !path.to_ascii_lowercase().ends_with(".lua") {
-            bail!(crate::i18n::tp("err.wspack.non_lua", &[("path", &path)]));
+            bail!(crate::i18n::tp("err.deskpack.non_lua", &[("path", &path)]));
         }
         let dest = under_base(base, &path).ok_or_else(|| {
-            anyhow!(crate::i18n::tp("err.wspack.outside_folder", &[("path", &path)]))
+            anyhow!(crate::i18n::tp("err.deskpack.outside_folder", &[("path", &path)]))
         })?;
         if dest.exists() {
-            bail!(crate::i18n::tp("err.wspack.would_overwrite", &[("path", &path)]));
+            bail!(crate::i18n::tp("err.deskpack.would_overwrite", &[("path", &path)]));
         }
         let code = code.as_str().ok_or_else(|| {
-            anyhow!(crate::i18n::tp("err.wspack.not_a_string", &[("path", &path)]))
+            anyhow!(crate::i18n::tp("err.deskpack.not_a_string", &[("path", &path)]))
         })?;
         writes.push((dest, code.to_string()));
     }
@@ -499,29 +499,29 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
         }
         crate::crypto::write_atomic(dest, code)?;
     }
-    rewrite(&mut ws, &moves);
+    rewrite(&mut desk, &moves);
 
     let mut cfg: Value = serde_json::from_str(&std::fs::read_to_string(config_path)?)?;
-    let mut list = workspace_list(&cfg);
-    let want = ws.get("name").and_then(Value::as_str).unwrap_or("UNNAMED");
+    let mut list = desk_list(&cfg);
+    let want = desk.get("name").and_then(Value::as_str).unwrap_or("UNNAMED");
     let name = free_title(&list, want);
-    ws["name"] = Value::String(name.clone());
+    desk["name"] = Value::String(name.clone());
     // What automation and the secret store call it. Written down here rather
     // than left for the loader, so that the answer does not change from one
     // launch to the next
-    let want_id = match ws.get("id").and_then(Value::as_str).map(str::trim) {
+    let want_id = match desk.get("id").and_then(Value::as_str).map(str::trim) {
         Some(w) if !w.is_empty() => w.to_string(),
         _ => match crate::config::slug_id(&name) {
-            s if s.is_empty() => "workspace".into(),
+            s if s.is_empty() => "desk".into(),
             s => s,
         },
     };
-    ws["id"] = Value::String(free_ws_id(&list, &want_id));
-    list.push(ws);
-    cfg["workspaces"] = Value::Array(list);
-    // Now that it's moved into workspaces, the folders and tabs written
+    desk["id"] = Value::String(free_ws_id(&list, &want_id));
+    list.push(desk);
+    cfg["desks"] = Value::Array(list);
+    // Now that it's moved into desks, the folders and tabs written
     // directly would be dead weight: the program and the settings screen
-    // both stop reading them the moment a workspace list exists
+    // both stop reading them the moment a desk list exists
     if let Some(o) = cfg.as_object_mut() {
         o.remove("tabs");
         o.remove("folders");
@@ -546,7 +546,7 @@ mod tests {
         std::fs::write(
             &cfg,
             serde_json::to_string_pretty(&json!({
-                "workspaces": [{
+                "desks": [{
                     "name": "編集部",
                     "id": "henshu",
                     "automation": "scripts/ws1",
@@ -577,7 +577,7 @@ mod tests {
     }
 
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("shikisha-wspack-{tag}"));
+        let d = std::env::temp_dir().join(format!("shikisha-deskpack-{tag}"));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -587,21 +587,21 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(cfg).unwrap()).unwrap()
     }
 
-    /// Confirms scripts travel along with the workspace, wherever its tabs
+    /// Confirms scripts travel along with the desk, wherever its tabs
     /// were written. Passing only the config, without what it points at,
     /// leaves it dead on the other end
     #[test]
-    fn a_workspace_travels_with_its_scripts() {
+    fn a_desk_travels_with_its_scripts() {
         let d = tmp("pack");
         let cfg = setup(&d);
         let (name, text) = pack(&cfg, 0).unwrap();
         assert_eq!(name, "編集部.stws.json");
         let v: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["shikisha_workspace"], json!(FORMAT));
+        assert_eq!(v["shikisha_desk"], json!(FORMAT));
         let s = v["scripts"].as_object().unwrap();
         assert_eq!(
             s["scripts/ws1/on_start.lua"], "-- はじめ",
-            "ワークスペースのスクリプトが入っていない"
+            "デスクのスクリプトが入っていない"
         );
         assert_eq!(
             s["scripts/ws1/html/on_load.lua"], "-- よみこみ",
@@ -614,12 +614,12 @@ mod tests {
         // The re-place unit is only the parent. Nested folders travel with their parent
         assert_eq!(v["roots"], json!(["scripts/inner.lua", "scripts/ws1"]));
         // The tabs are where the program reads them from
-        let ws = &v["workspace"];
-        assert_eq!(ws["folders"][0]["tabs"][1]["name"], "html");
-        assert_eq!(ws["folders"][1]["tabs"][0]["children"][0]["name"], "inner");
-        assert!(ws.get("tabs").is_none(), "タブが作業フォルダの外にも書かれている");
-        // What the workspace needs is written down, so the recipient knows
-        assert_eq!(ws["secrets_allow"], json!(["github"]));
+        let desk = &v["desk"];
+        assert_eq!(desk["folders"][0]["tabs"][1]["name"], "html");
+        assert_eq!(desk["folders"][1]["tabs"][0]["children"][0]["name"], "inner");
+        assert!(desk.get("tabs").is_none(), "タブが作業フォルダの外にも書かれている");
+        // What the desk needs is written down, so the recipient knows
+        assert_eq!(desk["secrets_allow"], json!(["github"]));
     }
 
     /// Confirms that importing the same thing twice doesn't break the first
@@ -638,11 +638,11 @@ mod tests {
         let second = unpack(&cfg, &text).unwrap();
         assert_eq!(second.name, "編集部-3");
 
-        // Two copies of one bundle are two workspaces, and each is filed under
+        // Two copies of one bundle are two desks, and each is filed under
         // a name of its own -- otherwise one copy's secrets would answer for the
         // other's. The name is written down now, not guessed at every launch
         let v = read_cfg(&cfg);
-        let ids: Vec<&str> = v["workspaces"]
+        let ids: Vec<&str> = v["desks"]
             .as_array()
             .unwrap()
             .iter()
@@ -674,7 +674,7 @@ mod tests {
         unpack(&cfg, &text).unwrap();
 
         let v = read_cfg(&cfg);
-        let added = &v["workspaces"][1];
+        let added = &v["desks"][1];
         assert_eq!(added["automation"], "scripts/ws1-2");
         assert_eq!(
             added["folders"][0]["tabs"][1]["automation"], "scripts/ws1-2/html",
@@ -684,8 +684,8 @@ mod tests {
             added["folders"][1]["tabs"][0]["children"][0]["automation"], "scripts/inner-2.lua",
             "入れ子のタブが元の場所を指したまま"
         );
-        // The first workspace is exactly as it was
-        assert_eq!(v["workspaces"][0]["folders"][0]["tabs"][1]["automation"], "scripts/ws1/html");
+        // The first desk is exactly as it was
+        assert_eq!(v["desks"][0]["folders"][0]["tabs"][1]["automation"], "scripts/ws1/html");
     }
 
     /// Confirms nothing is written outside the settings folder.
@@ -697,8 +697,8 @@ mod tests {
         let away = crate::outside_path("逃げた.lua");
         for path in ["../逃げた.lua", "scripts/../../逃げた.lua", away.as_str()] {
             let text = serde_json::to_string(&json!({
-                "shikisha_workspace": FORMAT,
-                "workspace": {"name": "わるいもの", "folders": []},
+                "shikisha_desk": FORMAT,
+                "desk": {"name": "わるいもの", "folders": []},
                 "roots": [],
                 "scripts": { path: "-- ここには書けない" },
             }))
@@ -714,8 +714,8 @@ mod tests {
         let d = tmp("kind");
         let cfg = setup(&d);
         let text = serde_json::to_string(&json!({
-            "shikisha_workspace": FORMAT,
-            "workspace": {"name": "わるいもの", "folders": []},
+            "shikisha_desk": FORMAT,
+            "desk": {"name": "わるいもの", "folders": []},
             "roots": [],
             "scripts": { "scripts/x.cmd": "echo" },
         }))
@@ -730,9 +730,9 @@ mod tests {
         let d = tmp("format");
         let cfg = setup(&d);
         for bad in [
-            json!({"workspace": {}}),
-            json!({"shikisha_workspace": 0, "workspace": {}}),
-            json!({"shikisha_workspace": FORMAT + 1, "workspace": {}}),
+            json!({"desk": {}}),
+            json!({"shikisha_desk": 0, "desk": {}}),
+            json!({"shikisha_desk": FORMAT + 1, "desk": {}}),
         ] {
             assert!(unpack(&cfg, &bad.to_string()).is_err(), "読めてしまう: {bad}");
         }
@@ -746,8 +746,8 @@ mod tests {
         let d = tmp("v1");
         let cfg = setup(&d);
         let text = serde_json::to_string(&json!({
-            "shikisha_workspace": 1,
-            "workspace": {
+            "shikisha_desk": 1,
+            "desk": {
                 "name": "むかし",
                 "automation": "scripts/old",
                 "tabs": [{"name": "AI", "command": "claude", "automation": "scripts/old/ai"}]
@@ -760,24 +760,24 @@ mod tests {
         assert_eq!(placed.name, "むかし");
         assert!(d.join("scripts/old/on_start.lua").exists());
 
-        let added = &read_cfg(&cfg)["workspaces"][1];
+        let added = &read_cfg(&cfg)["desks"][1];
         assert_eq!(added["folders"][0]["tabs"][0]["name"], "AI");
         assert_eq!(added["folders"][0]["tabs"][0]["automation"], "scripts/old/ai");
         assert!(added.get("tabs").is_none(), "古い形のまま書かれている");
     }
 
     /// Confirms a file cannot grant itself this machine's secrets. What the
-    /// workspace may read is decided here, by the person, after it arrives
+    /// desk may read is decided here, by the person, after it arrives
     #[test]
     fn an_import_does_not_grant_itself_secrets() {
         let d = tmp("secrets");
         let cfg = setup(&d);
         let (_, text) = pack(&cfg, 0).unwrap();
         let mut bundle: Value = serde_json::from_str(&text).unwrap();
-        bundle["workspace"]["secrets_allow_all"] = json!(true);
+        bundle["desk"]["secrets_allow_all"] = json!(true);
         unpack(&cfg, &bundle.to_string()).unwrap();
 
-        let added = &read_cfg(&cfg)["workspaces"][1];
+        let added = &read_cfg(&cfg)["desks"][1];
         assert!(added.get("secrets_allow").is_none(), "許可リストが持ち込まれた");
         assert!(added.get("secrets_allow_all").is_none(), "全許可が持ち込まれた");
     }
@@ -792,7 +792,7 @@ mod tests {
         std::fs::write(d.join("scripts/b.lua"), "-- b").unwrap();
         std::fs::write(
             &cfg,
-            json!({"workspaces": [{
+            json!({"desks": [{
                 "name": "混在",
                 "folders": [{"name": "a", "tabs": [{"name": "A", "command": "claude"}]}],
                 "tabs": [{"name": "B", "command": "claude", "automation": "scripts/b.lua"}]
@@ -803,7 +803,7 @@ mod tests {
 
         let (_, text) = pack(&cfg, 0).unwrap();
         let v: Value = serde_json::from_str(&text).unwrap();
-        let names: Vec<_> = v["workspace"]["folders"][0]["tabs"]
+        let names: Vec<_> = v["desk"]["folders"][0]["tabs"]
             .as_array()
             .unwrap()
             .iter()
@@ -811,14 +811,14 @@ mod tests {
             .collect();
         assert_eq!(names, ["A", "B"]);
         assert_eq!(v["scripts"]["scripts/b.lua"], "-- b", "外に書かれたタブのスクリプトが入っていない");
-        assert!(v["workspace"].get("tabs").is_none());
+        assert!(v["desk"].get("tabs").is_none());
     }
 
-    /// Confirms a config with folders and no workspace list still has
-    /// something to take out: the DEFAULT workspace the program launches
-    /// from them. Bringing one in then moves it into a workspace list
+    /// Confirms a config with folders and no desk list still has
+    /// something to take out: the DEFAULT desk the program launches
+    /// from them. Bringing one in then moves it into a desk list
     #[test]
-    fn a_config_without_workspaces_exports_its_folders() {
+    fn a_config_without_desks_exports_its_folders() {
         let d = tmp("nows");
         let cfg = d.join("config.json");
         std::fs::write(
@@ -831,38 +831,38 @@ mod tests {
         let (name, text) = pack(&cfg, 0).unwrap();
         assert_eq!(name, "DEFAULT.stws.json");
         let v: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["workspace"]["folders"][0]["tabs"][0]["name"], "AI");
+        assert_eq!(v["desk"]["folders"][0]["tabs"][0]["name"], "AI");
 
         let placed = unpack(&cfg, &text).unwrap();
         assert_eq!(placed.name, "DEFAULT-2");
         let after = read_cfg(&cfg);
-        assert_eq!(after["workspaces"].as_array().unwrap().len(), 2);
-        assert_eq!(after["workspaces"][0]["folders"][0]["cwd"], "D:/x");
+        assert_eq!(after["desks"].as_array().unwrap().len(), 2);
+        assert_eq!(after["desks"][0]["folders"][0]["cwd"], "D:/x");
         assert!(after.get("folders").is_none(), "移した後も直書きの folders が残っている");
     }
 
-    /// Confirms a workspace kept in its own separate file still travels whole
+    /// Confirms a desk kept in its own separate file still travels whole
     #[test]
-    fn a_workspace_kept_in_its_own_file_still_travels_whole() {
+    fn a_desk_kept_in_its_own_file_still_travels_whole() {
         let d = tmp("file");
         let cfg = d.join("config.json");
-        std::fs::create_dir_all(d.join("workspaces")).unwrap();
+        std::fs::create_dir_all(d.join("desks")).unwrap();
         std::fs::write(
-            d.join("workspaces/x.json"),
+            d.join("desks/x.json"),
             json!({"folders": [{"tabs": [{"name": "AI", "command": "claude"}]}]}).to_string(),
         )
         .unwrap();
         std::fs::write(
             &cfg,
-            json!({"workspaces": [{"name": "外だし", "file": "workspaces/x.json"}]}).to_string(),
+            json!({"desks": [{"name": "外だし", "file": "desks/x.json"}]}).to_string(),
         )
         .unwrap();
 
         let (_, text) = pack(&cfg, 0).unwrap();
         let v: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["workspace"]["name"], "外だし");
-        assert_eq!(v["workspace"]["folders"][0]["tabs"][0]["name"], "AI");
-        assert!(v["workspace"].get("file").is_none(), "参照のまま持ち出している");
+        assert_eq!(v["desk"]["name"], "外だし");
+        assert_eq!(v["desk"]["folders"][0]["tabs"][0]["name"], "AI");
+        assert!(v["desk"].get("file").is_none(), "参照のまま持ち出している");
     }
 
     /// Confirms the config entry wins over its definition file only where it
@@ -871,9 +871,9 @@ mod tests {
     fn an_entry_wins_over_its_file_only_where_it_says_something() {
         let d = tmp("merge");
         let cfg = d.join("config.json");
-        std::fs::create_dir_all(d.join("workspaces")).unwrap();
+        std::fs::create_dir_all(d.join("desks")).unwrap();
         std::fs::write(
-            d.join("workspaces/x.json"),
+            d.join("desks/x.json"),
             json!({
                 "name": "ファイルの名前",
                 "lua": "scripts/file",
@@ -885,9 +885,9 @@ mod tests {
         .unwrap();
         std::fs::write(
             &cfg,
-            json!({"workspaces": [{
+            json!({"desks": [{
                 "name": "",
-                "file": "workspaces/x.json",
+                "file": "desks/x.json",
                 "automation": "scripts/entry",
                 "stops": [],
                 "folders": [{"tabs": [{"name": "読まれない", "command": "claude"}]}]
@@ -897,12 +897,12 @@ mod tests {
         .unwrap();
 
         let (_, text) = pack(&cfg, 0).unwrap();
-        let ws = &serde_json::from_str::<Value>(&text).unwrap()["workspace"];
-        assert_eq!(ws["name"], "ファイルの名前", "空の名前がファイルの名前に勝った");
-        assert_eq!(ws["automation"], "scripts/entry", "項目の指定がファイルに負けた");
-        assert!(ws.get("lua").is_none(), "古い綴りが残っている");
-        assert_eq!(ws["stops"][0]["when"], "x", "空のリストがファイルの中身に勝った");
-        assert_eq!(ws["folders"][0]["tabs"][0]["name"], "AI", "ファイルの隣のタブが読まれた");
+        let desk = &serde_json::from_str::<Value>(&text).unwrap()["desk"];
+        assert_eq!(desk["name"], "ファイルの名前", "空の名前がファイルの名前に勝った");
+        assert_eq!(desk["automation"], "scripts/entry", "項目の指定がファイルに負けた");
+        assert!(desk.get("lua").is_none(), "古い綴りが残っている");
+        assert_eq!(desk["stops"][0]["when"], "x", "空のリストがファイルの中身に勝った");
+        assert_eq!(desk["folders"][0]["tabs"][0]["name"], "AI", "ファイルの隣のタブが読まれた");
     }
 
     /// Confirms scripts are read from beside the config folder, where a tab
@@ -914,7 +914,7 @@ mod tests {
         let cfg = d.join("config/config.json");
         std::fs::write(
             &cfg,
-            json!({"workspaces": [{
+            json!({"desks": [{
                 "name": "x",
                 "automation": "scripts/a",
                 "folders": [{"tabs": [{"name": "AI", "command": "claude"}]}]

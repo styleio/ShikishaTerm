@@ -46,7 +46,7 @@ GUI itself can be automated.
 
 The rule in `caps.rs` is that a script cannot assemble its own path or URL; it can only
 call registered names. git follows the same rule, but **registering a gateway per
-repository is too much ceremony** — working folders come and go, and every new workspace
+repository is too much ceremony** — working folders come and go, and every new desk
 would add one.
 
 So use a name that already exists:

@@ -294,13 +294,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      page costs a core a fifth of itself for as long as it runs */
   .tab.folder .more.pulse, .tab.addtab.pulse { color:var(--brand); font-weight:700;
     animation:pulse 1.2s step-end infinite; }
-  /* Workspace switcher above INDEX. Clicking it opens the workspace list popup */
-  .tab.wsrow { color:var(--dim); font-weight:700; border-bottom:1px solid var(--line); }
-  .tab.wsrow:hover { color:inherit; }
-  .tab.wsrow .wscaret { margin-left:auto; font-size:11px; }
-  /* Make the workspace name in the header/footer clickable */
-  .wslink { cursor:pointer; }
-  .wslink:hover { color:var(--text); text-decoration:underline; }
+  /* Desk switcher above INDEX. Clicking it opens the desk list popup */
+  .tab.deskrow { color:var(--dim); font-weight:700; border-bottom:1px solid var(--line); }
+  .tab.deskrow:hover { color:inherit; }
+  .tab.deskrow .deskcaret { margin-left:auto; font-size:11px; }
+  /* Make the desk name in the header/footer clickable */
+  .desklink { cursor:pointer; }
+  .desklink:hover { color:var(--text); text-decoration:underline; }
   /* Output volume as a real bar chart, not characters */
   /* The heading a folder's tabs get when there are several, so the set can be
      put away as one and the count can be read without counting rows */
@@ -1242,12 +1242,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      so with the usage sentences in the row, the 1fr column quietly grew past
      the window and STOP went off the right edge, at exactly the width a
      person needs it. With the item allowed to be narrower than its words,
-     the shrinkable parts (workspace name, usage words) truncate instead */
+     the shrinkable parts (desk name, usage words) truncate instead */
   #status { grid-column:2; display:flex; align-items:center; gap:var(--s3);
     padding:5px 12px; border-top:1px solid var(--line); background:var(--panel);
     font-size:12px; color:var(--dim); flex-wrap:nowrap; min-width:0; overflow:hidden; }
   #status .grow { flex:1; }
-  /* Only the workspace name gets truncated when space is tight — pills and STOP never shrink */
+  /* Only the desk name gets truncated when space is tight — pills and STOP never shrink */
   #status > span:first-child { min-width:0; white-space:nowrap;
     overflow:hidden; text-overflow:ellipsis; }
   #status .pill, #stop, #restart { flex:none; white-space:nowrap; }
@@ -2197,12 +2197,12 @@ addEventListener("blur", release);
 function drawTabs() {
   const nav = document.getElementById("tabs");
   nav.textContent = "";
-  // Above INDEX: the current workspace and a switcher. Clicking opens the list popup
-  nav.append(el("div", {class:"tab wsrow", title:T["tui.menu.workspace"] || "WORKSPACE",
-      onclick:() => send({kind:"openws"})},
+  // Above INDEX: the current desk and a switcher. Clicking opens the list popup
+  nav.append(el("div", {class:"tab deskrow", title:T["tui.menu.desk"] || "DESK",
+      onclick:() => send({kind:"opendesk"})},
     el("span", {class:"num"}, "◇"),
-    el("span", {class:"nm"}, S.workspace || ""),
-    el("span", {class:"wscaret"}, "▾")));
+    el("span", {class:"nm"}, S.desk || ""),
+    el("span", {class:"deskcaret"}, "▾")));
   nav.append(el("div", {class:"tab" + (S.board ? " sel" : ""),
       onclick:() => send({kind:"select", tab:0})},
     el("span", {class:"num"}, "0"),
@@ -2688,7 +2688,7 @@ function closeFolderMenu() {
   }
   for (const m of document.querySelectorAll(".fmenu")) m.remove();
 }
-// The three ways a workspace grows, said as what happens rather than as what
+// The three ways a desk grows, said as what happens rather than as what
 // they are. Parallel work only appears where there is a project to cut a
 // branch from, so someone with no repository never meets the idea
 function addMenu(e) {
@@ -3543,8 +3543,8 @@ function drawBoard() {
   b.append(el("div", {class:"mark"}, WORDMARK.join("\n")),
            el("div", {class:"mark-lite"}, "SHIKISHA-TERM"),
            el("div", {class:"sub"},
-             el("span", {class:"wslink", title:T["tui.menu.workspace"] || "WORKSPACE",
-               onclick:() => send({kind:"openws"})}, S.workspace || ""),
+             el("span", {class:"desklink", title:T["tui.menu.desk"] || "DESK",
+               onclick:() => send({kind:"opendesk"})}, S.desk || ""),
              el("span", {}, "   " + BUILD),
              // What this app is costing the machine, all in -- the terminal,
              // the agents it launched, and the browser it embeds. Its own
@@ -3634,13 +3634,13 @@ function lanes() {
 // ── Discussion topic banner ──────────────────
 // A prominent prompt floated over any tab while an AI-vs-AI discussion is at
 // rest. Type a topic → it's sent to the opening speaker and the round starts.
-// The banner is rebuilt only when the target changes (workspace / speaker),
+// The banner is rebuilt only when the target changes (desk / speaker),
 // so a half-typed topic survives the frequent state pushes.
 function drawTopicBar() {
   const bar = document.getElementById("topicbar");
   const show = !!(S && S.discuss_start && S.discuss_idle);
   if (!show) { bar.hidden = true; return; }
-  const sig = (S.workspace || "") + "|" + S.discuss_start + "|" + (S.discuss_start_name || "");
+  const sig = (S.desk || "") + "|" + S.discuss_start + "|" + (S.discuss_start_name || "");
   if (bar.dataset.sig === sig && bar.childNodes.length) { bar.hidden = false; return; }
   bar.dataset.sig = sig;
   bar.textContent = "";
@@ -3800,8 +3800,8 @@ function drawStatus() {
   // Passing null to append renders it as the literal string "null".
   // el() filters that out internally, but this is a raw append, so filter it out here too
   [
-    el("span", {class:"wslink", title:T["tui.menu.workspace"] || "WORKSPACE",
-      onclick:() => send({kind:"openws"})}, S.workspace || ""),
+    el("span", {class:"desklink", title:T["tui.menu.desk"] || "DESK",
+      onclick:() => send({kind:"opendesk"})}, S.desk || ""),
     el("span", {class:"pill " + (S.auto_enabled ? "on" : "off")},
       "AUTO " + (S.auto_enabled ? "ON" : "OFF")),
     S.remote_on ? el("span", {class:"pill on"}, "REMOTE") : null,
@@ -3836,15 +3836,15 @@ function drawStatus() {
 // The overlay screen. Closes on Esc or a click anywhere
 function drawVeil() {
   const v = document.getElementById("veil");
-  const shown = S.help_open || S.ws_open || !!S.qr;
+  const shown = S.help_open || S.desk_open || !!S.qr;
   v.hidden = !shown;
   if (!shown) return;
   v.textContent = "";
   const box = el("div", {class:"box"});
-  if (S.ws_open) {
-    box.append(el("h3", {}, T["tui.workspace"] || "WORKSPACE"));
-    S.workspaces.forEach((w, i) => {
-      box.append(el("div", {class:"pick" + (i === S.ws_index ? " sel" : ""),
+  if (S.desk_open) {
+    box.append(el("h3", {}, T["tui.desk"] || "DESK"));
+    S.desks.forEach((w, i) => {
+      box.append(el("div", {class:"pick" + (i === S.desk_index ? " sel" : ""),
         onclick:() => send({kind:"menu", key:String(i + 1)})},
         (i + 1) + ".  " + w));
     });
@@ -4191,7 +4191,7 @@ window.__state = function (json) {
   if (panel) panel.hidden = cover || !git;
   drawSide();
   // Ask the moment it comes into view, and whenever the panel being looked at
-  // changes -- a list that was true a workspace ago is not worth drawing
+  // changes -- a list that was true a desk ago is not worth drawing
   if (panel && git && !panel.hidden) {
     const t = gitTab();
     if (!wasGit || G.panel !== ((t && (t.id || t.name)) || null)) {
@@ -4659,7 +4659,7 @@ function drawTitle() {
   bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) winAct("drag"); };
   bar.ondblclick = e => { if (!e.target.closest("button")) winAct("maximize"); };
   // Whose window this is, and what it is called -- what the system bar said,
-  // where it said it. Which workspace it is showing is the footer's to say.
+  // where it said it. Which desk it is showing is the footer's to say.
   // The picture is the one the phone already fetches, from the same route
   bar.append(el("img", {class: "ico", src: "/pwa/icon-192.png", alt: ""}));
   bar.append(el("span", {class: "mark"}, "SHIKISHA-TERM"));
@@ -5658,7 +5658,7 @@ const focus = () => {
   if (a && a.closest && a.closest("#nav")) return;
   // Never steal focus while a text field is being used (the cast input bar, the
   // discussion-topic box, etc.). Otherwise every keystroke would be swallowed by
-  // #kbd and fired as a board shortcut (e.g. typing "w" opens the workspace list).
+  // #kbd and fired as a board shortcut (e.g. typing "w" opens the desk list).
   if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA")) return;
   // A model pane has no command line to type at: its only input is the
   // composer, so the caret belongs there (like Claude, whose cursor always sits
@@ -6812,10 +6812,10 @@ function openSettings(section, ret, folder) {
     }
   }
   if (typeof REMOTE !== "undefined" && REMOTE) {
-    // The workspace in view goes first, as the window's path sends it: the
-    // page reads the folder and place against that workspace, and without it
+    // The desk in view goes first, as the window's path sends it: the
+    // page reads the folder and place against that desk, and without it
     // landed on the general cards whatever else was asked for
-    const p = {ws: (S && S.ws_index) || 0};
+    const p = {desk: (S && S.desk_index) || 0};
     if (section) p.section = section;
     if (ret) p.ret = "1";
     if (folder) p.folder = folder;
@@ -6833,7 +6833,7 @@ function walkToSettings(params) {
   location.href = "cfg?t=" + encodeURIComponent(TOKEN) + (q ? "&" + q : "");
 }
 // The tab bar's +. In the window this becomes Ctrl+B t, which opens the settings
-// as a child WebView already adding a tab to the workspace in view. A phone has
+// as a child WebView already adding a tab to the desk in view. A phone has
 // no such WebView and no keystroke that could summon one — the intent was simply
 // refused from afar, so the + did nothing at all. It walks to the same page and
 // asks for the same thing instead.
@@ -6845,7 +6845,7 @@ function walkToSettings(params) {
 function addTabHere(g, pane) {
   const at = g && g.folder ? g.folder : "";
   if (typeof REMOTE !== "undefined" && REMOTE) {
-    const p = {addtab: (S && S.ws_index) || 0};
+    const p = {addtab: (S && S.desk_index) || 0};
     if (at) p.folder = at;
     walkToSettings(p);
   } else {
@@ -9157,7 +9157,7 @@ pub const MENU: [(&str, &str); 9] = [
     ("f", "tui.menu.vault"),
     ("i", "tui.menu.phone"),
     ("r", "tui.menu.restart"),
-    ("w", "tui.menu.workspace"),
+    ("w", "tui.menu.desk"),
     ("t", "tui.menu.notify"),
     ("k", "tui.menu.password"),
     ("?", "tui.menu.help"),
@@ -10149,7 +10149,7 @@ mod tests {
     #[test]
     fn every_piece_of_state_is_used() {
         for field in [
-            "workspace", "active", "auto_enabled", "remote_on", "tabs", "flash",
+            "desk", "active", "auto_enabled", "remote_on", "tabs", "flash",
             "holder", "depth", "max", "awaiting_human", "locked", "profile",
             "activity", "state", "name", "index",
         ] {
@@ -10474,7 +10474,7 @@ mod tests {
     /// from a phone alike. It carries the tab's PLACE (folder + ordinal), not
     /// its name, so a tab that was never named -- no display name, no
     /// automation id -- lands just the same. It used to carry only the
-    /// workspace, so pressing it on tab 2 landed on the workspace's page.
+    /// desk, so pressing it on tab 2 landed on the desk's page.
     #[test]
     fn the_gear_carries_the_tab_in_view() {
         assert!(
@@ -10484,8 +10484,8 @@ mod tests {
         );
         assert!(PAGE.contains("if (tabpos != null) p.tabpos = tabpos;"), "スマホの道に位置が乗らない");
         assert!(
-            PAGE.contains("const p = {ws: (S && S.ws_index) || 0};"),
-            "スマホの道にワークスペースが乗らない（無いと基本カードに落ちる）"
+            PAGE.contains("const p = {desk: (S && S.desk_index) || 0};"),
+            "スマホの道にデスクが乗らない（無いと基本カードに落ちる）"
         );
         assert!(PAGE.contains("tabpos: tabpos});"), "窓の道に位置が乗らない");
     }
@@ -10620,7 +10620,7 @@ mod tests {
     #[test]
     fn the_tab_bar_plus_reaches_the_settings_from_a_phone() {
         assert!(
-            PAGE.contains("const p = {addtab: (S && S.ws_index) || 0};")
+            PAGE.contains("const p = {addtab: (S && S.desk_index) || 0};")
                 && PAGE.contains("walkToSettings(p);"),
             "スマホの + が設定ページへ歩いて行かない"
         );

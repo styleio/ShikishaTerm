@@ -16,7 +16,7 @@
 //! files. Windows lets a running executable be renamed but not overwritten,
 //! so the swap is rename-and-copy, with a journal written before the first
 //! rename so an interrupted swap is put back on the next start. What a person
-//! wrote (`config/`, `data/`, `logs/`, `workspaces/`, `scripts/`) is never
+//! wrote (`config/`, `data/`, `logs/`, `desks/`, `scripts/`) is never
 //! overwritten. The version replaced is kept under `data/update/prev/`, so
 //! "the previous version" is one press away.
 //!
@@ -55,7 +55,7 @@ const EXE: &str = "SHIKISHA-TERM.exe";
 /// overwritten in place and are renamed aside first
 const HELD_OPEN: &[&str] = &[EXE, "conpty.dll", "OpenConsole.exe"];
 /// Folders a person owns. A file in them is placed only where none exists
-const OWNED: &[&str] = &["config", "data", "logs", "workspaces", "scripts"];
+const OWNED: &[&str] = &["config", "data", "logs", "desks", "scripts"];
 /// How often the latest version is read while the program runs
 const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long the new copy waits for the old one to leave before claiming the layout
@@ -1191,7 +1191,7 @@ mod tests {
             ("config.example.json", "new example"),
             ("config/config.json", "should not land"),
             ("scripts/example/a.lua", "new example script"),
-            ("workspaces/projectx.example.json", "new ws example"),
+            ("desks/projectx.example.json", "new desk example"),
             ("conpty.dll", "new dll"),
         ] {
             let f = src.join(p);
@@ -1214,7 +1214,7 @@ mod tests {
         assert_eq!(read("config.example.json"), "new example");
         assert_eq!(read("config/config.json"), "mine", "設定が上書きされた");
         assert_eq!(read("scripts/example/a.lua"), "mine too", "人が触った例が上書きされた");
-        assert_eq!(read("workspaces/projectx.example.json"), "new ws example", "無い例は置く");
+        assert_eq!(read("desks/projectx.example.json"), "new desk example", "無い例は置く");
         assert_eq!(read("conpty.dll"), "new dll");
         assert_eq!(read("conpty.dll.old"), "old dll", "使用中のものは脇に残す");
         assert!(!root.join("lang/ja.json.old").exists(), "上書きできるものに .old が残った");

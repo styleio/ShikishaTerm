@@ -4,7 +4,7 @@
 //! reads it next may want it in another shape. Two things are promised here:
 //!
 //! 1. **Nothing is changed before a copy of it is kept.** The first start of
-//!    a version copies `config/*.json` and `workspaces/*.json` into
+//!    a version copies `config/*.json` and `desks/*.json` into
 //!    `data/backup/<old version>-<stamp>/`, and only then touches anything.
 //!    If the copy cannot be made, nothing is touched. The five newest copies
 //!    are kept.
@@ -46,10 +46,41 @@ pub struct Step {
 /// the shape of a settings file adds one line here, and a fixture of a real
 /// file from the version before it under `tests/fixtures/`, so the test that
 /// walks every fixture to the present keeps walking.
-const STEPS: &[Step] = &[
-    // No version has changed the shape since the stamp was introduced.
-    // The first one goes here: Step { to: "0.9.0", apply: to_0_9_0 },
-];
+const STEPS: &[Step] = &[Step { to: "0.10.0", apply: to_0_10_0 }];
+
+/// The unit a person switches between is called a desk.
+///
+/// It had another name, and the name was the key the settings file is written
+/// with. Read by a version that only knows the new one, a file written with the
+/// old key is a file with no desks in it -- the app comes up empty and nothing
+/// says why, which is the worst way for a rename to arrive. So the file is
+/// brought forward here, including the paths of the definition files, which
+/// lived in a folder named after the old word
+fn to_0_10_0(doc: &mut serde_json::Value) -> Result<()> {
+    let Some(root) = doc.as_object_mut() else {
+        return Ok(());
+    };
+    if let Some(list) = root.remove("workspaces") {
+        root.entry("desks").or_insert(list);
+    }
+    if let Some(note) = root.remove("//workspaces") {
+        root.entry("//desks").or_insert(note);
+    }
+    for desk in root
+        .get_mut("desks")
+        .and_then(|d| d.as_array_mut())
+        .into_iter()
+        .flatten()
+    {
+        let Some(file) = desk.get_mut("file").and_then(|f| f.as_str()).map(str::to_string) else {
+            continue;
+        };
+        if let Some(rest) = file.strip_prefix("workspaces/").or_else(|| file.strip_prefix("workspaces\\")) {
+            desk["file"] = serde_json::json!(format!("desks/{rest}"));
+        }
+    }
+    Ok(())
+}
 
 /// What the first start of this version did, for the person and the log
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -77,10 +108,10 @@ fn record(root: &Path, v: &str) {
     let _ = crate::crypto::write_atomic(&version_path(root), v);
 }
 
-/// What a person wrote and would miss: settings, secrets, workspace files
+/// What a person wrote and would miss: settings, secrets, desk files
 fn owned_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for dir in ["config", "workspaces"] {
+    for dir in ["config", "desks"] {
         let Ok(rd) = std::fs::read_dir(root.join(dir)) else { continue };
         for e in rd.flatten() {
             let p = e.path();
@@ -196,8 +227,8 @@ fn on_start_at(root: &Path, current: &str, steps: &[Step]) -> Outcome {
             return out;
         }
     }
-    // The steps run over the settings file and every workspace file alike:
-    // a workspace file is the same shape as a workspace inside the settings
+    // The steps run over the settings file and every desk file alike:
+    // a desk file is the same shape as a desk inside the settings
     let mut reached = current.to_string();
     for f in owned_files(root) {
         if f.file_name().is_some_and(|n| n == "secrets.json") {
@@ -312,6 +343,33 @@ mod tests {
         assert!(seen >= 1, "fixture が1つも無い");
     }
 
+    /// The rename arrives without anybody losing what they had written.
+    ///
+    /// A settings file written before it is a file whose desks are filed under
+    /// the old word. Read as it stands, the app comes up with none of them and
+    /// says nothing, so the step has to move them -- and move the paths of the
+    /// definition files too, since those named a folder that has also been
+    /// renamed
+    #[test]
+    fn the_older_word_for_a_desk_is_carried_over() {
+        let mut doc = serde_json::json!({
+            "//workspaces": "what it was for",
+            "workspaces": [
+                {"name": "A", "file": "workspaces/projectx.json"},
+                {"name": "B", "folders": []}
+            ]
+        });
+        to_0_10_0(&mut doc).unwrap();
+        assert!(doc.get("workspaces").is_none(), "古い呼び名が残っている");
+        assert_eq!(doc["desks"][0]["file"], "desks/projectx.json");
+        assert_eq!(doc["desks"][1]["name"], "B");
+        assert_eq!(doc["//desks"], "what it was for");
+        // ...and a file already in the new shape is left exactly as it is
+        let once = doc.clone();
+        to_0_10_0(&mut doc).unwrap();
+        assert_eq!(doc, once);
+    }
+
     /// A layout with settings and no stamp is backed up before anything
     /// else, the stamp is written, and the second start does nothing
     #[test]
@@ -319,10 +377,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("shikisha-migrate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("config")).unwrap();
-        std::fs::create_dir_all(root.join("workspaces")).unwrap();
+        std::fs::create_dir_all(root.join("desks")).unwrap();
         std::fs::write(root.join("config/config.json"), r#"{"n": 0, "mine": true}"#).unwrap();
         std::fs::write(root.join("config/secrets.json"), r#"{"s": 1}"#).unwrap();
-        std::fs::write(root.join("workspaces/p.json"), r#"{"n": 0}"#).unwrap();
+        std::fs::write(root.join("desks/p.json"), r#"{"n": 0}"#).unwrap();
         let steps = [Step { to: "0.9.0", apply: bump }];
         let out = on_start_at(&root, "0.9.0", &steps);
         assert_eq!(out.from.as_deref(), Some(BASELINE), "刻印が無ければ基準の版");
@@ -330,7 +388,7 @@ mod tests {
         let backup = out.backup.expect("バックアップが無い");
         assert_eq!(std::fs::read_to_string(backup.join("config/config.json")).unwrap(), r#"{"n": 0, "mine": true}"#);
         assert!(backup.join("config/secrets.json").is_file());
-        assert!(backup.join("workspaces/p.json").is_file());
+        assert!(backup.join("desks/p.json").is_file());
         let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("config/config.json")).unwrap()).unwrap();
         assert_eq!((cfg["n"].as_u64(), cfg["mine"].as_bool()), (Some(1), Some(true)));
         assert_eq!(std::fs::read_to_string(root.join("config/secrets.json")).unwrap(), r#"{"s": 1}"#, "secrets に触った");

@@ -78,7 +78,7 @@ pub struct Mailbox {
     /// The answer to a location query we asked for (name inside the window, URL, can-go-back, can-go-forward)
     pub wheres: Vec<(String, String, bool, bool)>,
     /// Browser load start/end notifications (name inside the window, whether loading).
-    /// The name is in "{ws}/{id}" form; converting to the id happens on the loop side
+    /// The name is in "{desk}/{id}" form; converting to the id happens on the loop side
     /// (WinSurface doesn't know about caps). Same convention as `wheres`.
     pub loading: Vec<(String, bool)>,
     /// Relay-screen frames (JPEG byte buffers). The loop delivers these to phones.
