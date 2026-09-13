@@ -2653,17 +2653,19 @@ const PAGE: &str = r##"<!doctype html>
    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
  .navgroup { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
    margin:var(--s4) var(--s3) var(--s1); }
- /* The sign at the top: which desk everything under here belongs to.
-    Pressing the name (or the gear) opens that desk's own page; the caret
-    is how you go to another one */
- .deskbanner { display:flex; align-items:center; gap:var(--s1); padding:2px;
-   border-radius:var(--r-ctl); }
+ /* The desk everything under here belongs to. One button: it lists the
+    desks, and choosing one opens that desk's page */
+ .deskbanner { width:100%; display:flex; align-items:center; gap:var(--s2);
+   padding:6px 8px 6px 4px; min-height:36px; border-radius:var(--r-ctl);
+   background:none; border:0; color:var(--text); font-size:14px; font-weight:600;
+   cursor:pointer; text-align:left; font-family:inherit; }
+ .deskbanner:hover { background:var(--panel); }
  .deskbanner.sel { background:var(--panel2); }
- .deskbanner .wsname { flex:0 1 auto; min-width:0; display:flex; align-items:center;
-   gap:var(--s2); background:none; border:0; color:var(--text); font-size:14px;
-   font-weight:600; padding:6px 4px; cursor:pointer; text-align:left; min-height:32px; }
- .deskbanner .wsname:hover { background:var(--panel); border-radius:var(--r-ctl); }
- .deskbanner .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .deskbanner .nm { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ /* Leaving the program's settings: the way back sits where one is looked for */
+ .navback { display:flex; align-items:center; gap:var(--s2); color:var(--dim); }
+ .navback .go { flex:none; font-size:16px; line-height:1; }
+ .navhead { margin:var(--s3) var(--s3) var(--s2); color:var(--text); font-size:14px; font-weight:600; }
  .wsgap { flex:1 1 auto; }
  .wspick { font-size:12px; color:var(--dim); }
  .deskbanner:hover .wspick { color:var(--text); }
@@ -4031,9 +4033,10 @@ function pickDesk(anchor) {
   });
   menu.append(el("button", {class:"fmenuitem add",
     onclick:() => { shut(); addWs(); }}, T["settings.desk.add"]));
+  // Under the row it opened from, and never off the left of the screen
   const at = anchor.getBoundingClientRect();
   menu.style.top = Math.round(at.bottom + 4) + "px";
-  menu.style.left = Math.round(at.left - 200) + "px";
+  menu.style.left = Math.max(8, Math.round(at.left)) + "px";
   const away = e => { if (!menu.contains(e.target)) shut(); };
   function shut() {
     menu.remove();
@@ -4046,32 +4049,20 @@ function pickDesk(anchor) {
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
-  // The desk being edited, as a sign at the top rather than one branch of
-  // a tree. The two things under it are not siblings -- one is the program's
-  // own settings, the other is what somebody built -- and showing them as
-  // equals in one list is what made this list hard to read
-  const desk = desks[sel.desk] || desks[0];
-  if (desk) {
-    const badge = el("span", {class:"wsbadge"},
-      (desk.name || "?").trim().slice(0, 1).toUpperCase());
-    nav.append(el("div", {class:"deskbanner" + (!sel.global && sel.tab == null
-        && (sel.grp ?? null) === null ? " sel" : "")},
-      el("button", {class:"wsname", onclick:() => {
-        sel = {desk:sel.desk, grp:null, tab:null, global:false}; render();
-      }}, badge, el("span", {class:"nm"}, desk.name || T["settings.tab.unnamed"])),
-      el("span", {class:"wsgap"}),
-      el("button", {class:"twist wspick", title:T["settings.desk.switch"],
-        onclick: e => { e.stopPropagation(); pickDesk(e.currentTarget); }}, "▾")));
-  }
-  // The program's own settings. Pressing it puts its list where the tree is,
-  // because a person is either setting up the program or setting up a
-  // desk, and never reading both columns at once
-  nav.append(el("button", {class:"navitem approw" + (sel.global ? " sel" : ""),
-    onclick:() => { sel = {desk:sel.desk, tab:null, global:true,
-                           section: sel.section || globalSections()[0].id}; render(); }},
-    el("div", {class:"body"}, T["settings.global"]),
-    el("span", {class:"go"}, sel.global ? "▾" : "›")));
+  // The larger world on top, the smaller under it: the program's own
+  // settings, then the desk, then its folders and their tabs -- so how far
+  // down a row is says how much of the program it decides.
+  //
+  // The program's settings are a place of their own, entered and left. While
+  // they are open nothing of any desk is on the list, and the way back is at
+  // the top where a person looks for one. The two used to share one column,
+  // and nothing said which of them a card below was about
   if (sel.global) {
+    nav.append(el("button", {class:"navitem navback",
+        onclick:() => { sel = {desk:sel.desk, grp:null, tab:null, global:false}; render(); }},
+      el("span", {class:"go"}, "‹"),
+      el("div", {class:"body"}, T["tui.nav.back"])));
+    nav.append(el("div", {class:"navhead"}, T["settings.global"]));
     globalSections().forEach(s => {
       const b = el("button", {class:"navitem appitem" + (sel.section === s.id ? " sel" : ""),
         onclick:() => goSection(s.id)});
@@ -4080,6 +4071,29 @@ function renderNav() {
       nav.append(b);
     });
     return;
+  }
+  nav.append(el("button", {class:"navitem approw",
+    onclick:() => { sel = {desk:sel.desk, tab:null, global:true,
+                           section: sel.section || globalSections()[0].id}; render(); }},
+    el("div", {class:"body"}, T["settings.global"]),
+    el("span", {class:"go"}, "›")));
+  // The desk, as one control: pressing it lists the desks, and choosing one
+  // opens that desk's page. In here, going to a desk and reading its settings
+  // are the same act -- there is nothing else to switch to one for -- so the
+  // row carries one meaning, not a name to press and a caret beside it that
+  // did something else
+  const desk = desks[sel.desk] || desks[0];
+  if (desk) {
+    const badge = el("span", {class:"wsbadge"},
+      (desk.name || "?").trim().slice(0, 1).toUpperCase());
+    nav.append(el("button", {class:"deskbanner" + (sel.tab == null
+        && (sel.grp ?? null) === null ? " sel" : ""),
+        title:T["settings.desk.switch"],
+        onclick: e => pickDesk(e.currentTarget)},
+      badge,
+      el("span", {class:"nm"}, desk.name || T["settings.tab.unnamed"]),
+      el("span", {class:"wsgap"}),
+      el("span", {class:"wspick"}, "▾")));
   }
 
   [desks[sel.desk]].forEach((desk) => {
