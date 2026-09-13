@@ -892,7 +892,9 @@ pub fn launch_problem_for(name: &str, prog: &str, opts: &TabOptions, raw: &str) 
     // Three callers built this explanation out of pieces and two of them
     // forgot a piece; taking the options whole is what makes forgetting
     // impossible
-    if opts.remote.is_some() || opts.cloud.is_some() {
+    // Nor is "model" a program to install: it is this app's own word for a
+    // connection, and the error already says what is wrong with that connection
+    if opts.remote.is_some() || opts.cloud.is_some() || prog == "model" {
         return crate::i18n::tp(
             "msg.start.other",
             &[("name", name), ("error", &raw.replace('\0', ""))],
@@ -2762,6 +2764,14 @@ impl Tab {
         opts: TabOptions,
         plan: Resume,
     ) -> Result<Self> {
+        // A model tab whose connection could not be handed to it. Said as what
+        // it is, before anything else is tried: going on would look for a
+        // program called "model" and report that missing instead
+        if opts.model.is_none()
+            && let Some(why) = crate::bridge::why_not(argv)
+        {
+            anyhow::bail!(why);
+        }
         let profile = Self::resolve_profile(argv, &profile_spec);
         // Where this tab's terminal is. A local one is a process behind a
         // ConPTY; a remote one is a channel on a connection (see `crate::ssh`)

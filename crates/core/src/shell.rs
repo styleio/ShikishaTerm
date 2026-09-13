@@ -1614,10 +1614,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the other half -- a page is a window of its own and cannot be drawn over.
      (When the focused pane holds such a page, the page draws the message
      itself; see caps::browser_toast.) */
+  /* Never narrower than a sentence can be read in, though: a narrow pane in
+     front squeezed a message to a column of three words per line. Wider than
+     its pane, it stays centred on the pane as far as the content area lets it */
   #toast { --toast-pos:absolute; --toast-z:32;
     --toast-bottom:calc(var(--fb) + 52px);
-    --toast-x:calc(var(--fx) + (100% - var(--fx) - var(--fr)) / 2);
-    --toast-max:min(calc(100% - var(--fx) - var(--fr) - 24px), 560px); }
+    --toast-max:min(max(calc(100% - var(--fx) - var(--fr) - 24px), 320px), calc(100% - 24px), 560px);
+    --toast-x:clamp(calc(var(--toast-max) / 2 + 12px),
+      calc(var(--fx) + (100% - var(--fx) - var(--fr)) / 2),
+      calc(100% - var(--toast-max) / 2 - 12px)); }
 {{TOAST_CSS}}
 
   /* ── Remote history paging (phone only) ──────────────────────────────
@@ -9738,16 +9743,22 @@ mod tests {
     fn a_message_is_seated_over_the_pane_it_is_about() {
         let p = super::page();
         assert!(
-            p.contains("--toast-x:calc(var(--fx) + (100% - var(--fx) - var(--fr)) / 2)"),
+            p.contains("calc(var(--fx) + (100% - var(--fx) - var(--fr)) / 2),"),
             "トーストが窓の中央のまま（ペインに座っていない）"
         );
         assert!(
             p.contains("--toast-bottom:calc(var(--fb) + 52px)"),
             "トーストがペインの底ではなく窓の底に付いている"
         );
+        // As wide as its pane, but never so narrow a sentence cannot be read,
+        // and never past the content area
         assert!(
-            p.contains("--toast-max:min(calc(100% - var(--fx) - var(--fr) - 24px), 560px)"),
-            "狭いペインでトーストがはみ出す"
+            p.contains("--toast-max:min(max(calc(100% - var(--fx) - var(--fr) - 24px), 320px), calc(100% - 24px), 560px)"),
+            "狭いペインでトーストが読めない幅になる"
+        );
+        assert!(
+            p.contains("--toast-x:clamp(calc(var(--toast-max) / 2 + 12px),"),
+            "ペインより広いトーストが画面の外にはみ出す"
         );
     }
 
