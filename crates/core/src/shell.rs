@@ -4635,6 +4635,21 @@ window.__toggleTabBar = function () {
 // that always decided it.
 let winMax = false;
 function winAct(act) { send({kind: "window", act}); }
+// A press on the bar, waiting to find out whether it is a drag
+function holdBar(down) {
+  const done = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", done);
+  };
+  const move = e => {
+    if (!(e.buttons & 1)) return done();
+    if (Math.abs(e.screenX - down.screenX) + Math.abs(e.screenY - down.screenY) < 4) return;
+    done();
+    winAct("drag");
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", done);
+}
 // Told by the window itself, because a window can be maximised by the system
 // -- dragged to an edge, Win+Up -- without this bar being touched
 window.__maximized = function (on) {
@@ -4653,8 +4668,14 @@ function drawTitle() {
   bar.textContent = "";
   // Taking hold of the bar: anywhere on it that is not a button. The window
   // does the dragging, so the pointer keeps every snap the system has, and
-  // double-click is the other half of the same gesture everywhere else
-  bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) winAct("drag"); };
+  // double-click is the other half of the same gesture everywhere else.
+  //
+  // The dragging starts once the pointer has moved, not on the press. Handed
+  // to the system on the press, its move loop took the release with it, the
+  // page never saw a click finish, and so it never saw a double-click either:
+  // the bar double-clicked and nothing happened. A few pixels of travel is how
+  // the system's own caption tells a press from a drag
+  bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) holdBar(e); };
   bar.ondblclick = e => { if (!e.target.closest("button")) winAct("maximize"); };
   // Whose window this is, and what it is called -- what the system bar said,
   // where it said it. Which desk it is showing is the footer's to say.
@@ -10024,10 +10045,13 @@ mod tests {
         // Taken hold of by the bar itself, never by a button sitting on it
         assert!(
             p.contains(
-                r#"bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) winAct("drag"); };"#
+                r#"bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) holdBar(e); };"#
             ),
             "帯を掴む所が無いか、ボタンの上でも掴んでしまう"
         );
+        // Dragged only once the pointer moves: a drag started on the press takes
+        // the release with it, and the double-click never arrives
+        assert!(p.contains("if (Math.abs(e.screenX - down.screenX) + Math.abs(e.screenY - down.screenY) < 4) return;"));
         // Whose window this is, at the end a window says it
         assert!(p.contains(r#"src: "/pwa/icon-192.png""#), "窓の絵が帯に無い");
         // A page that is not in this window draws no frame for it
