@@ -7398,7 +7398,7 @@ window.__git = function (d) {
     // way out under it. Anything else is reported as it came
     G.offer = d.why === "protected";
     G.said = G.offer
-      ? (T["git.protected"] || "").replace("{branch}", (G.branch && G.branch.name) || "")
+      ? (T["git.protected"] || "").replace("{branch}", d.branch || (G.branch && G.branch.name) || "")
       : (d.error || "");
     G.bad = true;
     drawGit();
