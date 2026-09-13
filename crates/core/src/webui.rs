@@ -4087,7 +4087,7 @@ function pickDesk(anchor) {
   const menu = el("div", {class:"fmenu"});
   desks.forEach((w, i) => {
     menu.append(el("button", {class:"fmenuitem" + (i === sel.desk ? " on" : ""),
-      onclick:() => { shut(); sel = {desk:i, grp:null, tab:null, global:false, dsection:"basic"}; render(); }},
+      onclick:() => { shut(); toTree(i); render(); }},
       el("span", {class:"wsbadge"}, (w.name || "?").trim().slice(0, 1).toUpperCase()),
       el("span", {class:"nm"}, w.name || T["settings.tab.unnamed"])));
   });
@@ -4151,8 +4151,9 @@ function renderNav() {
     render();
   });
   // The desk: pressing it lists the desks, and choosing one switches the tree
-  // below to that desk and opens its settings. Its settings themselves are the
-  // button under it
+  // below to that desk -- nothing more. Its settings open only from the button
+  // under it: somebody switching desks is looking for a folder or a tab, and
+  // being carried into a settings page they did not ask for loses the tree
   if (desk) {
     const badge = el("span", {class:"wsbadge"},
       (desk.name || "?").trim().slice(0, 1).toUpperCase());
@@ -7125,7 +7126,7 @@ function deskBasic(desk) {
             !await confirmAction(fill(T["settings.desk.delete_secrets"], {n: mine.length}), T["settings.desk.delete"])) return;
         await dropSecrets(mine);
       }
-      desks.splice(sel.desk, 1); sel = {desk:0, tab:null, global:true}; render();
+      desks.splice(sel.desk, 1); toTree(0); render();
     }}, T["settings.desk.delete"])));
   return box;
 }
@@ -9506,7 +9507,9 @@ load().then(() => {
   if (q.get("gen") === "1" || !desks[cur]) {
     sel = {desk:(desks[cur] ? cur : sel.desk), grp:null, tab:null, global:true, section:"basic"};
   } else {
-    sel = {desk:cur, grp:null, tab:null, global:false};
+    // The desk's tree, not its settings: the gear on the board means "this
+    // desk", and which of its settings is wanted is the person's to choose
+    toTree(cur);
   }
   render();
   const s = document.querySelector(".navitem.sel");
