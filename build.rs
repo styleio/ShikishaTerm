@@ -1,9 +1,9 @@
-//! ビルドしたものを画面から見分けられるようにする。
+//! Makes a build tell you which build it is, on screen.
 //!
-//! 「直したはずなのに直っていない」の原因が、古い実行ファイルを動かして
-//! いただけ、ということが何度かあった。日時が見えていれば、
-//! 「最新は MM/DD HH:MM です」と伝えるだけで新旧を照合できる。
-//! ハッシュだけでは、どちらが新しいかが読み取れない。
+//! More than once, "I fixed it and it is still broken" turned out to be an old
+//! executable still running. With the date and time visible, "the latest is
+//! MM/DD HH:MM" is enough to tell old from new. A hash on its own cannot say
+//! which of two is the newer one.
 
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new(cmd).args(args).output().ok()?;
@@ -15,17 +15,17 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
 }
 
 fn main() {
-    // 新旧を見比べられるよう、まず日時
+    // The date and time first, so old and new can be compared at a glance
     let built = run("powershell", &["-NoProfile", "-Command", "Get-Date -Format 'MM/dd HH:mm'"])
         .unwrap_or_else(|| "?".into());
-    // どのコミットかも添える (同じ分に複数ビルドしたときの区別用)
+    // Which commit, too (to tell apart several builds made in the same minute)
     let rev = run("git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "nogit".into());
     let dirty = run("git", &["status", "--porcelain"])
         .map(|s| !s.is_empty())
         .unwrap_or(false);
 
-    // ダウンロードした人が最初に見るのは Explorer のアイコン。
-    // 汎用のコンソールアイコンのままだと、そこで「拾い物」に見える
+    // The first thing someone who downloads this sees is its icon in Explorer.
+    // Left as the generic console icon, it looks like something picked up off the street
     if std::env::var("CARGO_CFG_WINDOWS").is_ok() {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/icon.ico");
@@ -43,13 +43,13 @@ fn main() {
         res.set("OriginalFilename", "SHIKISHA-TERM.exe");
         res.set("InternalName", "SHIKISHA-TERM");
         if let Err(e) = res.compile() {
-            // アイコンが無くてもソフトは動く。ビルドごと止める理由にはならない
-            println!("cargo:warning=アイコンを埋め込めませんでした: {e}");
+            // The program runs without its icon. Not a reason to stop the whole build
+            println!("cargo:warning=could not embed the icon: {e}");
         }
     }
 
-    // exe の隣に置くものは dist.list に書いてある。配る側 (ここ・stage.ps1・
-    // release.yml) が各自リストを持っていた頃は、静かに食い違った
+    // What goes beside the exe is written in dist.list. When each thing that hands
+    // it out (this, stage.ps1, release.yml) kept its own list, they quietly disagreed
     for pattern in dist_patterns("beside-exe") {
         copy_beside_exe(&pattern, false);
     }
@@ -63,26 +63,27 @@ fn main() {
         rev,
         if dirty { "+" } else { "" }
     );
-    // ビルドのたびに日時を入れ直す
+    // Stamp the date and time again on every build
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=assets/icon.ico");
     watch_git_head();
     println!("cargo:rerun-if-changed=lang");
     println!("cargo:rerun-if-changed=docs");
     println!("cargo:rerun-if-changed=profiles");
-    // tools/conpty.ps1 が後から置くこともある。見張っていないと、取得した
-    // 次のビルドで exe の隣に届かず、静かに in-box ConPTY のままになる
+    // tools/conpty.ps1 may put it there later. Unwatched, the build after it is
+    // fetched would not carry it beside the exe, and the in-box ConPTY would
+    // quietly stay in use
     println!("cargo:rerun-if-changed=vendor/conpty");
 }
 
-/// コミットし直したらラベルも取り直す。
+/// Take the label again after a new commit.
 ///
-/// `.git/HEAD` の中身は "ref: refs/heads/main" のままなので、そこだけを見張って
-/// いるとコミットしても build.rs が再実行されない。結果、古いハッシュと "+" が
-/// 残り続け、「動かしているものが最新かを見分ける」という目的そのものが崩れる。
-/// HEAD が指している先 (refs/heads/main) も一緒に見張る。
+/// `.git/HEAD` still reads "ref: refs/heads/main", so watching only that file
+/// means committing does not rerun build.rs. The old hash and the "+" stay,
+/// which defeats the whole point: telling whether what is running is the
+/// latest. What HEAD points to (refs/heads/main) is watched as well.
 fn watch_git_head() {
-    // worktree / submodule でも正しい場所を指す
+    // Points at the right place in a worktree or a submodule as well
     let Some(git) = run("git", &["rev-parse", "--absolute-git-dir"]) else {
         return;
     };
@@ -91,7 +92,7 @@ fn watch_git_head() {
     let Ok(head) = std::fs::read_to_string(git.join("HEAD")) else {
         return;
     };
-    // detached HEAD なら HEAD 自体が書き換わるので、これ以上見張るものは無い
+    // A detached HEAD rewrites HEAD itself, so there is nothing more to watch
     let Some(r) = head.strip_prefix("ref:") else {
         return;
     };
@@ -99,8 +100,9 @@ fn watch_git_head() {
     if refpath.exists() {
         println!("cargo:rerun-if-changed={}", refpath.display());
     } else {
-        // 束ねられていると refs/heads/... のファイルは無い。無いパスを見張らせると
-        // 毎回再実行されて増分ビルドが遅くなるので、実在するものだけを渡す
+        // Packed refs leave no refs/heads/... file. Watching a path that does not
+        // exist reruns this every time and slows incremental builds, so only real
+        // files are handed over
         let packed = git.join("packed-refs");
         if packed.exists() {
             println!("cargo:rerun-if-changed={}", packed.display());
@@ -108,14 +110,15 @@ fn watch_git_head() {
     }
 }
 
-/// dist.list の指定した節に並んだ `dir/pattern` を読む。
+/// Reads the `dir/pattern` lines under one section of dist.list.
 ///
-/// わざと素朴な形式にしてある。同じファイルを PowerShell 側 (tools/stage.ps1)
-/// も読むので、両方にライブラリが要る形式にすると、いつか解釈がずれる
+/// Kept deliberately plain. The PowerShell side (tools/stage.ps1) reads the
+/// same file, and a format that needed a library on both sides would one day be
+/// read two different ways
 fn dist_patterns(section: &str) -> Vec<String> {
     println!("cargo:rerun-if-changed=dist.list");
     let Ok(text) = std::fs::read_to_string("dist.list") else {
-        println!("cargo:warning=dist.list が読めません。exe の隣に何も配れません");
+        println!("cargo:warning=could not read dist.list, so nothing can be placed beside the exe");
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -136,16 +139,16 @@ fn dist_patterns(section: &str) -> Vec<String> {
     out
 }
 
-/// `dir/pattern` にあたるものを、そのまま exe の隣へ置く。
+/// Places whatever matches `dir/pattern` beside the exe, as it is.
 ///
-/// 隣に置かれたものは埋め込みより優先される。置きっぱなしにすると、
-/// 直したはずのものが動かしたものへ届かない
+/// What sits beside the exe wins over what is embedded. Leave a stale copy
+/// there and a fix never reaches the program that runs
 ///
-/// `flat` は入れ物のフォルダを作らず exe と同じ階層へ置く指定。
-/// Windows が exe の隣しか見ないもの (conpty.dll) のためにある
+/// `flat` places it at the exe's own level, with no folder around it. It exists
+/// for the things Windows only looks for beside the exe (conpty.dll)
 ///
-/// OUT_DIR は target/<profile>/build/<pkg>-<hash>/out なので、
-/// 3つ上が exe の置き場になる
+/// OUT_DIR is target/<profile>/build/<pkg>-<hash>/out, so three levels up is
+/// where the exe lives
 fn copy_beside_exe(pattern: &str, flat: bool) {
     let Ok(out) = std::env::var("OUT_DIR") else {
         return;
@@ -155,7 +158,7 @@ fn copy_beside_exe(pattern: &str, flat: bool) {
         dir.pop();
     }
     let Some((dir_name, file_pat)) = pattern.rsplit_once('/') else {
-        println!("cargo:warning=dist.list の書き方が読めません: {pattern}");
+        println!("cargo:warning=a dist.list line could not be read: {pattern}");
         return;
     };
     let dest = if flat { dir } else { dir.join(dir_name) };
@@ -173,15 +176,15 @@ fn copy_beside_exe(pattern: &str, flat: bool) {
         if !matches_pattern(name, file_pat) {
             continue;
         }
-        // 配れなくても止めない。埋め込んだもので動く
+        // Not being able to place it does not stop anything. The embedded copy still works
         if let Err(err) = std::fs::copy(&from, dest.join(name)) {
-            println!("cargo:warning={dir_name} を配れませんでした {name}: {err}");
+            println!("cargo:warning=could not place {name} from {dir_name}: {err}");
         }
     }
 }
 
-/// `*` を1つだけ含む形 (`*.json`, `AUTOMATION*.md`) に対する照合。
-/// それ以上は要らない。要るようになったら、その時に足す
+/// Matching against a pattern with a single `*` (`*.json`, `AUTOMATION*.md`).
+/// Nothing more is needed. If it ever is, add it then
 fn matches_pattern(name: &str, pat: &str) -> bool {
     match pat.split_once('*') {
         Some((head, tail)) => {

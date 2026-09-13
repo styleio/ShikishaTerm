@@ -18,7 +18,7 @@ repository = "https://github.com/styleio/ShikishaTerm"
 homepage = "https://github.com/styleio/ShikishaTerm"
 keywords = ["terminal", "tui", "ai", "agents", "automation"]
 categories = ["command-line-utilities"]
-# 配布物に含めないもの (crates.io に出す場合の保険)
+# What is left out of the package (a safeguard in case this is ever published to crates.io)
 exclude = ["logs/", "target/", "docs/demo.gif"]
 
 [[bin]]
@@ -67,7 +67,7 @@ rustls = { version = "0.23.43", default-features = false, features = ["ring", "s
 webpki-roots = "1.0.9"
 vt100 = "0.16"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
-# wry と同じ版に揃える (ICoreWebView2 の型が一致しないと CDP を呼べない)
+# Kept at the same version as wry (CDP cannot be called unless the ICoreWebView2 types match)
 webview2-com = "0.38.2"
 windows = { version = "0.61.3", features = [
   "Win32_Foundation",

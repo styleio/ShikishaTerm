@@ -1610,7 +1610,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #browse .pl { padding:0 10px; border-radius:var(--r-ctl); flex:none; }
     #browse .pr .when { display:none; }
     /* Three buttons do not fit on one phone line, and a button broken in the
-       middle of its word ("キャン／セル") reads as two. The add button takes a
+       middle of its word (which a language without spaces lets happen) reads
+       as two. The add button takes a
        line; Cancel and the primary share the next, at the right as ever */
     #browse .pbtns { flex-wrap:wrap; }
     #browse .pbtns .sp { flex-basis:100%; height:0; }
@@ -3021,7 +3022,7 @@ function closeBrowse() {
   if (b) b.hidden = true;
   pickMaking = false;
 }
-// "今日 18:50", "昨日 21:15", "09/10 14:20", and the year only when it is not
+// "today 18:50", "yesterday 21:15", "09/10 14:20", and the year only when it is not
 // this one. A date is read against today, so it is said against today
 function pickWhen(sec) {
   if (sec == null) return "";
@@ -6930,7 +6931,7 @@ if (REMOTE) {
         // once; anything else means the PC ended this session.
         const body = await r.text().catch(() => "");
         if (body === "password") {
-          const pw = prompt(T["tui.remote.password_prompt"] || "パスワード");
+          const pw = prompt(T["tui.remote.password_prompt"] || "Enter the password for this board");
           if (pw !== null && pw !== "") {
             // In the body, not the address: an address is what gets kept
             const a = await fetch("auth?t=" + encodeURIComponent(TOKEN), {
@@ -6942,10 +6943,10 @@ if (REMOTE) {
             if (a.status === 429) {
               // Too many wrong ones in a row; the door opens again in a moment
               const n = a.headers.get("Retry-After") || "60";
-              alert((T["tui.remote.password_wait"] || "しばらく待ってからもう一度お試しください（{n}秒）").replace("{n}", n));
+              alert((T["tui.remote.password_wait"] || "Too many tries in a row. Wait {n} seconds, then try again").replace("{n}", n));
               return;
             }
-            alert(T["tui.remote.password_wrong"] || "パスワードが違います");
+            alert(T["tui.remote.password_wrong"] || "Wrong password");
           }
           return;
         }

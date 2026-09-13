@@ -452,7 +452,7 @@ fn git_folder(
 /// Which machine a tab is on, for the file commands.
 ///
 /// Named the same way a repository is named -- by the tab that sits there --
-/// so that `sftp_put("本番", ...)` and `git_commit("本番", ...)` read alike and
+/// so that `sftp_put("prod", ...)` and `git_commit("prod", ...)` read alike and
 /// neither needs a second thing to register. A tab that is not a remote one
 /// says so plainly, because "nothing happened" is the worst possible answer
 fn remote_of(

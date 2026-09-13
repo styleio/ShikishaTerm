@@ -36,7 +36,7 @@ pub struct Client {
     /// Names the row, not the device. Short and stable, so revoking is a
     /// matter of naming a row rather than matching a hash by eye
     pub id: String,
-    /// What a person calls it: "台所のiPad", "work laptop". Empty until the
+    /// What a person calls it: "kitchen iPad", "work laptop". Empty until the
     /// device first connects and says something about itself
     #[serde(default)]
     pub name: String,

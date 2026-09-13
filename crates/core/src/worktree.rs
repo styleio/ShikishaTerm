@@ -1198,7 +1198,7 @@ fn for_a_shell(argv: &[String]) -> String {
 }
 
 pub fn run(argv: &[String]) -> Result<()> {
-    let (head, rest) = argv.split_first().expect("空のコマンド");
+    let (head, rest) = argv.split_first().expect("a command with nothing in it");
     let mut running = std::process::Command::new(head);
     running.args(rest);
     // A clone of a private repository will ask for a password, and there is

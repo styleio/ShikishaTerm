@@ -20,7 +20,7 @@ first, then use it.
 | The settings page | `src/webui.rs` | Same tokens, three of them under older names (`--muted` `--accent` `--danger`) |
 | Toasts | `src/toast.rs` | Shared by both pages |
 | Every word on screen | `lang/en.json`, overlaid by `lang/ja.json` | Never a literal in the page; see §7 |
-| How words are chosen | `.claude/RULES.md` "利用者に見せる言葉", "日本語の文章" | This guide does not repeat them |
+| How words are chosen | `.claude/RULES.md`, the sections on words shown to users and on writing Japanese | This guide does not repeat them |
 
 The board page is rebuilt from a state object several times a second. Anything
 drawn on it must survive being redrawn: build once, touch only what changed

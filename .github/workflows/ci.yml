@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # 窓のある本体。ConPTY と WebView2 を使うのでここでしか動かない
+  # The program with a window. It uses ConPTY and WebView2, so it runs only here
   windows:
     runs-on: windows-latest
     steps:
@@ -33,8 +33,8 @@ jobs:
         shell: pwsh
         run: ./tools/notices.ps1 -Check
 
-  # 窓のないランタイム。ここが通らなくなったら Linux 版は静かに腐る——
-  # 窓のあるクレートは Linux でビルドできないので、対象は core / shared / serve
+  # The runtime with no window. If this stops passing, the Linux build rots quietly --
+  # the crates with a window cannot build on Linux, so this covers core / shared / serve
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -50,8 +50,8 @@ jobs:
       - name: Test
         run: cargo test -p shikisha-core -p shikisha-shared -p shikisha-serve --locked --verbose
 
-      # 配るのは musl の静的リンク。どの distro でも同じ1つのファイルが動く、
-      # という約束は、ここで組めることが前提になっている
+      # What ships is statically linked against musl. The promise that one file runs on every distro
+      # rests on it building here
       - name: The static build still links
         run: |
           sudo apt-get update -qq && sudo apt-get install -y musl-tools
@@ -64,9 +64,9 @@ jobs:
           cat /tmp/what
           grep -qE "static-pie linked|statically linked" /tmp/what
 
-      # 配る側のスクリプトを、それぞれが名乗っている shell で見る。
-      # install.sh は誰の機械の sh に流し込まれるか分からないので POSIX、
-      # mkpkg / mkrepo は CI と手元でしか走らないので bash でよい
+      # Check the scripts that hand things out in the shell each one says it is written for.
+      # install.sh is piped into whatever sh is on somebody's machine, so it is POSIX;
+      # mkpkg / mkrepo only run in CI and locally, so bash is fine
       - name: The scripts are the shell they say they are
         run: |
           sudo apt-get install -y dash shellcheck
@@ -78,16 +78,16 @@ jobs:
             echo "ok $f"
           done
 
-      # リポジトリに入っている公開鍵が、本当にあの鍵か。
-      # 差し替えられたら、指紋を書き換えない限りここで止まる——
-      # 書き換えれば、それは差分として人の目に映る
+      # Is the public key in the repository really that key?
+      # If it is swapped, this stops unless the fingerprint is changed too --
+      # and a changed fingerprint shows up in a diff for a person to see
       - name: The archive key is the one we published
         run: |
           gpg --show-keys --with-colons packaging/linux/shikisha-archive-key.asc > /tmp/key
           grep -q "^fpr:::::::::A73AFDB4C9ADA2AB390C470AD960246DC636013B:" /tmp/key
           gpg --show-keys packaging/linux/shikisha-archive-key.asc
 
-      # 中身が正しい .deb と .rpm になるか。タグを打つ前に分かる場所で見る
+      # Do the contents make a correct .deb and .rpm? Checked where it is known before a tag is pushed
       - name: The packages hold what they claim
         run: |
           sudo apt-get install -y rpm
@@ -99,8 +99,8 @@ jobs:
           rpm -qpl /tmp/pkg/*.rpm > /tmp/rpm.list 2>/dev/null
           grep -q /usr/bin/shikisha-serve /tmp/rpm.list
 
-      # リポジトリの木。鍵はここには無いので署名は付かないが、
-      # 「どのファイルが、どこに、どの名前で出るか」はこれで分かる
+      # The repository tree. There is no key here, so nothing is signed, but
+      # this shows which files come out, where, and under what names
       - name: The repository tree comes out whole
         run: |
           sudo apt-get install -y apt-utils createrepo-c
@@ -117,8 +117,8 @@ jobs:
             test -f "/tmp/repo/$f" || { echo "missing: $f"; exit 1; }
           done
           test -s /tmp/repo/apt/dists/stable/main/binary-amd64/Packages
-          # Packages が指すファイルが本当にそこにあるか。ここがずれると
-          # apt は「ある」と言われたものを取りに行って 404 を踏む
+          # Is every file Packages points at really there? If this drifts,
+          # apt goes to fetch what it was told exists and gets a 404
           awk '/^Filename:/ {print $2}' /tmp/repo/apt/dists/stable/main/binary-amd64/Packages |
             while read -r rel; do
               test -s "/tmp/repo/apt/$rel" || { echo "Packages names a file that is not there: $rel"; exit 1; }

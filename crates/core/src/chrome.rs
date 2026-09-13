@@ -1266,7 +1266,7 @@ impl shikisha_shared::BrowserHost for Pages {
         use crate::pageops::Speaks as _;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Err(e) = self.eval(to, js, CALL_MS) {
-            crate::append_hook_log(&format!("chrome: {} からの応答なし: {e}", to.unwrap_or("?")));
+            crate::append_hook_log(&format!("chrome: no answer from {}: {e}", to.unwrap_or("?")));
         }
         Ok(id)
     }

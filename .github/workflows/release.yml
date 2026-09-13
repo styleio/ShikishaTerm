@@ -1,13 +1,13 @@
 name: Release
 
-# タグを打つと配布物を作って Releases に下書きで添付する。
+# Pushing a tag builds what ships and attaches it to a draft on Releases.
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# 出口は3つ: Windows の zip、Microsoft Store の msix、Linux の静的バイナリ。
-# 3つとも同じタグの同じソースから、この1本のワークフローで作る。
+# Three ways out: the Windows zip, the Microsoft Store msix, and the static Linux binary.
+# All three come from the same source at the same tag, in this one workflow.
 #
-# 手動実行 (workflow_dispatch) は空撃ち用。成果物をアーティファクトに置くだけで
-# リリースは作らないので、発射前に梱包が通るかを安全に確認できる
+# Running it by hand (workflow_dispatch) is a dry run. It only leaves the builds as artifacts
+# and makes no release, so packaging can be checked safely before the real thing
 on:
   push:
     tags: ["v*"]
@@ -53,10 +53,10 @@ jobs:
         shell: pwsh
         run: ./tools/notices.ps1 -Check
 
-      # 展開してすぐ動く形にまとめる。何を同梱するかは dist.list ただ1つが決める
-      # (配る側が各自リストを持っていた頃は、静かに食い違った)。
-      # 設定ファイルは example のみ同梱する — 利用者の config.json / secrets.json
-      # を上書きしないため。logs/ は初回書き込み時に本体が作るので同梱しない
+      # Put it together so it runs as soon as it is unpacked. dist.list alone decides what goes in
+      # (when each thing that hands it out kept its own list, they quietly disagreed).
+      # Only the example settings files are included -- so a user's own config.json / secrets.json
+      # are never overwritten. logs/ is not included; the program makes it the first time it writes
       - name: Stage the portable folder
         shell: pwsh
         run: |
@@ -142,9 +142,9 @@ jobs:
           path: target/msix/*-store.msix
           retention-days: 30
 
-  # 窓の無いランタイムを、どの distro でも動く1ファイルにする。
-  # musl の静的リンクなので glibc の版を問わない —— VPS に置いて動くこと、
-  # というのがここでの唯一の約束
+  # Make the runtime with no window into one file that runs on every distro.
+  # Statically linked against musl, so the glibc version does not matter -- running once placed on a VPS
+  # is the only promise made here
   linux:
     strategy:
       fail-fast: false
@@ -181,8 +181,8 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
 
-      # 静的でなければ配る意味がない。file が静的リンクと言わなければ、
-      # どこかで動的リンクに落ちている
+      # There is no point shipping it if it is not static. If file does not say statically linked,
+      # something has fallen back to dynamic linking
       - name: It is one file that needs nothing
         run: |
           BIN=target/${{ matrix.target }}/release/shikisha-serve
@@ -191,9 +191,9 @@ jobs:
           grep -qE "static-pie linked|statically linked" /tmp/what
           "$BIN" --version
 
-      # 3つの形で出す。curl で入れる tar、apt の .deb、dnf の .rpm。
-      # tar には service ファイルを同梱する——署名の内側に入るので、
-      # install.sh が2つ目のダウンロードをしなくて済む
+      # Three shapes: a tar for curl, a .deb for apt, an .rpm for dnf.
+      # The tar includes the service file -- it sits inside the signature, so
+      # install.sh never needs a second download
       - name: Pack
         run: |
           VERSION=${GITHUB_REF_NAME}
@@ -207,8 +207,8 @@ jobs:
           sh packaging/linux/mkpkg.sh "$BIN" "$VERSION" "${{ matrix.arch }}" out
           ls -la out
 
-      # 配るもの全部に checksum と署名。apt/dnf は自分の索引で真贋を見るが、
-      # 単体で拾った .deb を確かめる手段は、これしか無い
+      # A checksum and a signature for everything that ships. apt/dnf check their own index,
+      # but for a .deb picked up on its own, this is the only way to check it
       - name: Checksum and sign
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
@@ -234,9 +234,9 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # apt と dnf のリポジトリ。利用者の sources.list に書かれて残る URL なので、
-  # 置き場所は自分のドメイン (pkg.shikisha-term.com) で、裏の保管庫は
-  # いつでも替えられるようにしてある
+  # The apt and dnf repositories. The URL stays written in users' sources.list, so
+  # it lives on our own domain (pkg.shikisha-term.com), and the storage behind it
+  # can be changed at any time
   repo:
     needs: linux
     if: startsWith(github.ref, 'refs/tags/')
@@ -254,8 +254,8 @@ jobs:
           path: incoming
           merge-multiple: true
 
-      # `awscli` は 24.04 の apt に無い(候補すら出ない)。ランナーの像に
-      # AWS CLI v2 が最初から入っているので、入れるのではなく在ることを確かめる
+      # `awscli` is not in apt on 24.04 (not even as a candidate). The runner image
+      # already has AWS CLI v2, so this checks that it is there rather than installing it
       - name: Tools
         run: |
           sudo apt-get update -qq
@@ -269,8 +269,8 @@ jobs:
           createrepo_c --version | head -1
           rpmsign --version | head -1
 
-      # 鍵が無ければ署名の無いリポジトリができる。それは誰も受け付けないので、
-      # 黙って進むのではなく、ここで止める
+      # Without the key, the repository would be unsigned. Nobody accepts that, so
+      # stop here rather than carrying on quietly
       - name: The signing key
         env:
           REPO_SIGNING_KEY: ${{ secrets.REPO_SIGNING_KEY }}
@@ -288,8 +288,8 @@ jobs:
           echo "KEY_FPR=$FPR" >> "$GITHUB_ENV"
           echo "signing as $FPR"
 
-      # 既に公開してある版を全部持ってくる。索引を今回の分だけで組み直すと、
-      # 古い版が黙って消え、それを名指しで入れていた人の apt が壊れる
+      # Bring back every version already published. Rebuilding the index from this release alone
+      # would quietly drop the old ones and break apt for anyone who pinned one
       - name: Everything already published
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -306,8 +306,8 @@ jobs:
       - name: Build the repositories
         run: bash packaging/linux/mkrepo.sh packages out
 
-      # パッケージが先、索引が後。逆にすると、索引を読んだ人が「ある」と
-      # 言われたファイルを取りに行って 404 を踏む数秒が生まれる
+      # Packages first, index second. The other way round opens a few seconds in which someone
+      # reads the index, goes to fetch a file it says exists, and gets a 404
       - name: Publish
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -317,8 +317,8 @@ jobs:
           aws s3 sync out "s3://$BUCKET" --endpoint-url "$R2" --no-progress --size-only \
               --exclude "*" --include "apt/pool/*" --include "rpm/*.rpm" \
               --cache-control "public, max-age=31536000, immutable"
-          # 索引は絶対に古いものを返させない。古い InRelease が返ると、
-          # apt はハッシュ不一致で止まり、利用者には直しようがない
+          # Never let the index be served stale. If an old InRelease comes back,
+          # apt stops on a hash mismatch and the user has no way to fix it
           aws s3 sync out "s3://$BUCKET" --endpoint-url "$R2" --no-progress --delete \
               --exclude "apt/pool/*" --exclude "rpm/*.rpm" \
               --cache-control "no-cache"

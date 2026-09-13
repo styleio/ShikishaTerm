@@ -2402,7 +2402,7 @@ fn handle(
             req.respond(json_resp(serde_json::json!({ "clients": rows })))?;
         }
         // Naming a device. A list of six-character ids is a list nobody can act
-        // on; "台所のiPad" is what makes revoking a decision rather than a guess
+        // on; "kitchen iPad" is what makes revoking a decision rather than a guess
         ("POST", "/api/remote/clients/name") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -6874,12 +6874,12 @@ function remoteCard() {
 
   /// When a device was last heard from, said the way a person says it.
   function whenSeen(secs) {
-    if (!secs) return T["settings.phone.device.never"] || "まだ来ていません";
+    if (!secs) return T["settings.phone.device.never"] || "has not come back yet";
     const ago = Math.max(0, Math.floor(Date.now() / 1000) - secs);
-    if (ago < 90) return T["settings.phone.device.now"] || "いま";
-    if (ago < 3600) return fill(T["settings.phone.device.minutes"] || "{n}分前", {n: Math.floor(ago / 60)});
-    if (ago < 86400) return fill(T["settings.phone.device.hours"] || "{n}時間前", {n: Math.floor(ago / 3600)});
-    return fill(T["settings.phone.device.days"] || "{n}日前", {n: Math.floor(ago / 86400)});
+    if (ago < 90) return T["settings.phone.device.now"] || "just now";
+    if (ago < 3600) return fill(T["settings.phone.device.minutes"] || "{n} minutes ago", {n: Math.floor(ago / 60)});
+    if (ago < 86400) return fill(T["settings.phone.device.hours"] || "{n} hours ago", {n: Math.floor(ago / 3600)});
+    return fill(T["settings.phone.device.days"] || "{n} days ago", {n: Math.floor(ago / 86400)});
   }
 
   async function refreshDevices() {
@@ -9726,7 +9726,7 @@ function renderBody(lines) {
 }
 
 // The one heading a speaker can't forge: the judge's verdict carries the
-// judge's name — "判定（審判 X）". No-judge endings use the aggregate / round-
+// judge's name — "Verdict (judge X)". No-judge endings use the aggregate / round-
 // limit label. Everything else that looks like a heading is a speaker's own
 // Markdown, not a transcript boundary. Returns the boundary line index, or -1.
 function verdictBoundary(lines) {

@@ -459,7 +459,7 @@ local html = shikisha.browser_html("br")
 ```
 
 A selector is `"#id"` (CSS), `{ xpath = "..." }`, or `{ ref = N }`. XPath earns its
-place on forms and admin pages, where "the cell beside the label that reads 名前" has
+place on forms and admin pages, where "the cell beside the label that reads Name" has
 no CSS spelling.
 
 The numbers for `{ ref = N }` come from `browser_digest`:
@@ -950,8 +950,8 @@ permission table -- so what you can do by hand and what a script may do cannot
 come apart.
 
 The panel is a connection, addressed exactly the way a terminal on another
-machine is, so it is a tab the file commands can be told: `sftp_put("その
-呼び名", "dist/a.txt", "public/a.txt")` sends to the server the screen is
+machine is, so it is a tab the file commands can be told: `sftp_put("that
+name", "dist/a.txt", "public/a.txt")` sends to the server the screen is
 showing. A terminal tab written to the same address shares the connection with
 it; nobody has to say so.
 
